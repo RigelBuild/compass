@@ -68,8 +68,9 @@ ingress fans accepted events out to a second consumer — a board ingest arm —
 while a bounded per-repo reconcile sweep (startup + slow ticker, the
 `NotifyReconciler` pattern) replaces the standing poll as the reliability and
 cold-start/backfill path. The poll driver and its config/flags retire; its
-`forge_list_cursors` page-cursor table loses its only writer now and is
-dropped in a later post-soak migration (T4/OQ-3); the `forge_repo_subscriptions`
+`forge_list_cursors` page-cursor table loses its only writer now and its
+definition is dropped from `0001_init.sql` directly (T4; OQ-3 ruled — Compass
+is pre-live, the init migration is edited in place); the `forge_repo_subscriptions`
 target table survives unchanged as the webhook lane's subscribed-repo set
 (DL-162's table-is-authoritative model is transport-independent). The shared
 GitHub client moves onto `NewAppTokenSource`, completing the App-only
@@ -84,9 +85,9 @@ Load-bearing pieces, in the vocabulary already on `main`:
   every registered sink — the new board ingest queue today, plus the notify
   arm's async enqueue once it exists (`NotifyRouter.Route` is synchronous with
   DB + network I/O, `notify_router.go:150-178`, so it cannot sit behind
-  `Enqueue` directly — see OQ-7). No handler changes; the
-  verify/ack/dedup/oversize properties (`github_webhook.go:22-42`) are
-  inherited wholesale.
+  `Enqueue` directly — see OQ-7, resolved: this lane owns both sides). No
+  handler changes; the verify/ack/dedup/oversize properties
+  (`github_webhook.go:22-42`) are inherited wholesale.
 - **Same canonical pipeline, same sink.** The webhook arm MUST run the exact
   poll-path normalization — `translateOne`: `StripOwner` → `TranslateIssue` →
   clone-stamp `ForgeRef` + `Repo` (`ingest.go:82-99`) — before
@@ -99,8 +100,8 @@ Load-bearing pieces, in the vocabulary already on `main`:
   Labels` that `TranslateIssue` maps (`translate.go:44-55`). The board arm
   therefore hydrates: on each board-relevant event it conditionally re-reads
   the issue via `GetIssueConditional` (`notify_reader.go:129`) and sinks the
-  fresh `forge.Issue`. See OQ-4 for the payload-carried alternative and the
-  recommendation.
+  fresh `forge.Issue`. Ruled (OQ-4): hydrate, with per-coordinate coalescing
+  at the T1 drain; the payload-carried alternative is rejected.
 - **Reconcile backstop = catch-up primitive.** A `BoardReconciler` sibling of
   `NotifyReconciler` (startup sweep + slow ticker + pacing +
   `ErrBudgetExhausted` abort, `notify_reconcile.go:96-113,115-119`) walks each
@@ -120,12 +121,13 @@ Load-bearing pieces, in the vocabulary already on `main`:
   (`serve.go:1057-1067`) is repurposed: Warn when enabled
   `forge_repo_subscriptions` rows exist but the App lane is off.
 
-**Dependency (stated, not owned here):** the notify lane's server boot wiring
+**Sequencing (owned here):** the notify lane's server boot wiring
 (`buildForgeNotifyLane`, agent-notification design §T7) is NOT yet on `main` —
 grep for `buildForgeNotifyLane|forgeNotifyLane|ForgeAppConfig` in `go/server`
 returns nothing; `NewGitHubWebhookHandler` is exercised only by tests
-(`github_webhook_test.go:49`). Ingress ownership between the two lanes is
-load-bearing — see OQ-7 for the landing-order contract.
+(`github_webhook_test.go:49`). This is not a cross-lane risk: this lane
+(compass-forge) owns BOTH the board slice and the notify T7, so the shared
+ingress is built once by its one owner — see OQ-7 (resolved).
 
 ### Alternatives considered
 
@@ -183,9 +185,12 @@ load-bearing — see OQ-7 for the landing-order contract.
    `githubapp.go:72-81`); no App → board ingestion hard-off with a boot Warn
    (the `warnDisabledForgePolling` idiom, `serve.go:1057-1067`). No PAT
    fallback anywhere on the read path (Matt's App-only directive).
-4. **Never rewrite a shipped migration:** migrations stop at the consolidated
-   `0001_init.sql` (the only file in `go/internal/store/migrations/`); every
-   schema change here is a NEW `0002_*.sql`.
+4. **Pre-live single init migration:** Compass is pre-live; `0001_init.sql`
+   (the only file in `go/internal/store/migrations/`) is edited in place, not
+   migrated over — a squashed single init migration is the house convention
+   until first production data. Every schema change in this record lands by
+   editing `0001_init.sql` (T4). If a parallel PR lands a `0002`, condense
+   back into `0001` (Matt's ruling, 2026-08-27).
 5. **Ingress invariants inherited, not re-implemented:** signature verify,
    fast-ack, delivery-id LRU dedup, 1 MiB body cap all live in
    `github_webhook.go:22-42,110-125` and are shared with the notify lane.
@@ -202,8 +207,9 @@ load-bearing — see OQ-7 for the landing-order contract.
    `UpsertIssueForgeFields` is unconditional last-write-wins with no
    `updated_at` comparison (`issues.go:103-134`; the `ON CONFLICT ... DO
    UPDATE SET title = EXCLUDED.title, ...` at `issues.go:122-126` compares
-   nothing). This design does NOT yet hold the single-writer assumption;
-   the resolution is OQ-6 (load-bearing).
+   nothing). This design does NOT hold the single-writer assumption; the
+   ruled fix is the OQ-6(a) store-level recency guard, threaded end-to-end
+   in T4a (firm).
 8. **Repo case normalization at the event boundary:** every GitHub event
    repo passes through `normalizeGitHubRepo` (`serve.go:1091-1101`; export
    an equivalent if needed) before the gate, the hydrate, and the sink.
@@ -262,7 +268,11 @@ conditional GET and sinks through the shared `Ingester`.
 
 - Behavior: at `Enqueue`, filter `Change ∈ {OPENED, STATE, UPDATE} ∧ Kind ==
   ISSUE` + channel try-send — nothing else (the non-blocking contract). On
-  drain, normalize the event repo (constraint 8) → `IsEnabledRepo` gate →
+  drain, COALESCE per coordinate first (OQ-4's batching lever): drain every
+  queued event for the same `(repo, number)` before hydrating, so an edit
+  storm of N rapid events on one issue costs ONE GET, not N — the event only
+  proves "changed", so one fresh read serves the whole burst. Then normalize
+  the event repo (constraint 8) → `IsEnabledRepo` gate →
   `GetIssueConditional(repo, number, "")` (unconditional: the event proves
   change; no stored per-issue ETag in v1) → on success `IngestIssues(ctx,
   repo, []forge.Issue{res.V})`. Per-event errors log-and-continue
@@ -287,7 +297,9 @@ conditional GET and sinks through the shared `Ingester`.
   dropped (no hydrate GET spent); mixed-case `full_name` normalized before
   gate/sink — the lowercased subscription row matches and no duplicate
   coordinate is minted; full queue drops without blocking Enqueue; hydrate
-  error retries next event, never crashes.
+  error retries next event, never crashes; a burst of N events on one
+  coordinate coalesces to one hydrate GET (the coalesce lever observable at
+  the fake hydrator's call count).
 
 ### T2 — updated-order conditional list: `ListUpdatedIssues`
 
@@ -361,9 +373,14 @@ granularity.
 
 - Sweep semantics: per enabled repo, `ListUpdatedIssues(repo, watermark,
   etag)`; NotModified → done (ETag carried); else sink rows through
-  `IngestIssues`, then store `max(UpdatedAt)` + fresh ETag. Zero watermark
-  (new deployment / newly enabled repo) = one full walk — the cold-start
-  answer.
+  `IngestIssues`, then store `max(UpdatedAt)` + fresh ETag. Zero/absent
+  watermark (fresh deployment, an App REINSTALL, or a newly enabled repo) =
+  one full walk — the cold-start AND reinstall-backfill answer. This is the
+  industry-standard webhook-App pattern (REST-list backfill on install +
+  webhooks to stay in sync; GitHub's own best practice is to subscribe to
+  webhook events instead of polling): a reinstall's absent watermark row
+  auto-triggers the full re-walk on the next sweep, so NO separate backfill
+  mechanism exists or is needed (OQ-1, Matt's follow-up, answered there).
 - Clock skew is a non-issue: the watermark compares GitHub's own
   `updated_at` against GitHub's own `updated_at` (`Issue.UpdatedAt` is
   *"parsed from the LIST row's updated_at"*, `provider.go:54-56`) — no
@@ -387,47 +404,44 @@ granularity.
 
 ### T4 — store: watermark persistence + `forge_list_cursors` retirement
 
-- Package: `go/internal/store` (+ new migration).
-- Migrations (NEW files — constraint 4), SPLIT additive-from-destructive:
-  - `0002_board_webhook.sql` — additive only: `ALTER TABLE
-    forge_repo_subscriptions ADD COLUMN swept_updated_at TIMESTAMPTZ,
-    ADD COLUMN list_etag TEXT NOT NULL DEFAULT '';`. Per **OQ-6(a) —
-    CONTINGENT on Matt ruling (a)** — also `ALTER TABLE issues ADD COLUMN
-    forge_updated_at TIMESTAMPTZ;`. This column is INERT until the write path
-    populates it: the bare column plus a `>=` guard is a silent no-op, because
+- Package: `go/internal/store` (schema edited in `0001_init.sql`).
+- Schema (EDIT `0001_init.sql` IN PLACE — constraint 4, the pre-live
+  convention; Matt: *"0001. we aren't live yet for compass, can just edit
+  0001."* The prior 0002/0003 split and its rolling-deploy-crash rationale
+  are retired — moot with no live deployment):
+  - DROP the `forge_list_cursors` table definition outright
+    (`0001_init.sql:675`) — dead once the poll retires; its only writer is
+    the driver's page-cursor path.
+  - ADD `swept_updated_at TIMESTAMPTZ` and `list_etag TEXT NOT NULL DEFAULT
+    ''` columns to the `forge_repo_subscriptions` table definition
+    (`0001_init.sql:616`).
+  - ADD the `forge_updated_at TIMESTAMPTZ` column to the `issues` table
+    definition (`0001_init.sql:571`) — the OQ-6(a) recency-guard column, now
+    UNCONDITIONAL. The column is INERT until the write path populates it:
+    the bare column plus a `>=` guard is a silent no-op, because
     `Issue.UpdatedAt` reaches no writer today — the canonical proto `Issue`
     has no `updated_at` slot (`compass.proto:825-854`, fields 1-18),
     `TranslateIssue` does not map it (`translate.go:44-55`),
     `protoToForgeFields` does not carry it (`issue_projection.go:208-224`),
     `IssueForgeFields` has no such field (`issues.go:78-90`), and
     `UpsertIssueForgeFields`'s INSERT column list never sets it
-    (`issues.go:118-121`). So OQ-6(a) is NOT just a column — it is the
-    multi-file threading in T4a below; the column and the threading land
-    together or not at all.
-  - `0003_drop_forge_list_cursors.sql` — `DROP TABLE forge_list_cursors;`,
-    shipped AFTER a soak window (OQ-3). Coupling the irreversible DROP to
-    the reversible ALTER in one migration would crash an old poll-driver
-    binary still running during a rolling deploy or a code revert; the split
-    is the PRIMARY recommendation, not the fallback.
-- **T4a — recency-guard write-path threading (CONTINGENT on OQ-6 = (a)).**
-  Only if Matt rules OQ-6 option (a). The full chain the guard needs, or it
-  never fires: (1) add `updated_at` to the canonical proto `Issue` (next free
-  field number) + regen Go/TS; (2) map it in `TranslateIssue`
-  (`translate.go:44-55`) from `forge.Issue.UpdatedAt` (`provider.go:54-57`);
-  (3) carry it in `protoToForgeFields` (`issue_projection.go:208-224`) and
-  add it to `IssueForgeFields` (`issues.go:78-90`); (4) include it in
-  `UpsertIssueForgeFields`'s INSERT column list (`issues.go:118-121`); (5)
-  make the `ON CONFLICT DO UPDATE` conditional —
-  `WHERE issues.forge_updated_at IS NULL OR EXCLUDED.forge_updated_at IS NULL
-  OR EXCLUDED.forge_updated_at >= issues.forge_updated_at` (the NULL arms let
-  pre-migration rows and any not-yet-threaded writer still update, so the
-  guard is additive, never a regression). Test cycle: two interleaved sinks
-  of one coordinate (stale-then-fresh AND fresh-then-stale) — the fresher
+    (`issues.go:118-121`). So the column and the T4a threading land
+    together — T4a is a firm task, not a contingency.
+- **T4a — recency-guard write-path threading (FIRM — OQ-6 ruled (a)).** The
+  full chain the guard needs, or it never fires: (1) add `updated_at` to the
+  canonical proto `Issue` (next free field number) + regen Go/TS; (2) map it
+  in `TranslateIssue` (`translate.go:44-55`) from `forge.Issue.UpdatedAt`
+  (`provider.go:54-57`); (3) carry it in `protoToForgeFields`
+  (`issue_projection.go:208-224`) and add it to `IssueForgeFields`
+  (`issues.go:78-90`); (4) include it in `UpsertIssueForgeFields`'s INSERT
+  column list (`issues.go:118-121`); (5) make the `ON CONFLICT DO UPDATE`
+  conditional — `WHERE issues.forge_updated_at IS NULL OR
+  EXCLUDED.forge_updated_at IS NULL OR EXCLUDED.forge_updated_at >=
+  issues.forge_updated_at` (the NULL arms let rows written before the
+  threading and any not-yet-threaded writer still update, so the guard is
+  additive, never a regression). Test cycle: two interleaved sinks of one
+  coordinate (stale-then-fresh AND fresh-then-stale) — the fresher
   `updated_at` wins both orders; a NULL-either-side write still applies.
-  **If OQ-6 resolves to (b) [funnel the reconciler through the T1 drain] or
-  (c), T4 drops the `forge_updated_at` column entirely and T4a does not
-  exist** — (b)/(c) need no store change, so the `0002` migration then adds
-  only the two `forge_repo_subscriptions` columns.
 - Re-enable semantics (correct as-is, stated to save the derivation): a repo
   disabled then re-enabled keeps its stale watermark — the next sweep walks
   from that watermark and back-fills the disabled-window gap. No reset
@@ -446,8 +460,9 @@ granularity.
 - Deletes: the `forge_list_cursors` read/upsert/prune store methods and their
   pgtest coverage (`forge_cursors_pgtest_test.go:5-9`).
 - Test cycle: pgtest — watermark round-trip, zero-value on never-swept,
-  coordinate isolation across (provider, host); migration applies cleanly on
-  a 0001-initialized database.
+  coordinate isolation across (provider, host); the edited `0001_init.sql`
+  applies cleanly on a fresh database (no `forge_list_cursors`; the three
+  new columns present).
 
 ### T5 — serve wiring: retire the poll, mount the board arm, App-only credential
 
@@ -481,23 +496,23 @@ granularity.
   when enabled `forge_repo_subscriptions` rows exist (repurposed
   `warnDisabledForgePolling`, `serve.go:1057-1067`, renamed
   `warnDisabledBoardIngestion`).
-- Coordination (see OQ-7 — load-bearing): nothing exists yet to compose
-  with. No `buildForgeNotifyLane` / `ForgeAppConfig` / notify enqueue is on
-  `main` (verified: grep in `go/server` returns only tests), and there is no
-  "NotifyRouter enqueue" to fan into — `NotifyRouter.Route` is SYNCHRONOUS
-  with DB + network I/O (`notify_router.go:150-178`: cursor load, checks
-  roll-up fetch), so it cannot sit behind `ForgeEventSink.Enqueue`'s
-  MUST-NOT-BLOCK contract; the async wrapper is the notify design's unbuilt
-  T7. Both landing orders, concretely:
-  - **Board-first (this slice lands first):** THIS slice owns the
-    `POST /webhooks/github` mount, the `ForgeAppConfig` block, and the
-    `fanoutSink` type + its registration seam — and mounts
-    `fanoutSink{board}` only (a single-element fan-out). The notify T7 later
-    appends its async sink through the one-line registration seam.
-  - **Notify-first:** the board arm appends its sink to the existing
-    fan-out.
-  Either way the `fanoutSink` type and registration seam belong to whichever
-  record freezes first; this record claims them if it lands first.
+- Ownership (OQ-7 ruled: single shared mount, THIS lane owns it): nothing
+  exists yet to compose with — no `buildForgeNotifyLane` / `ForgeAppConfig`
+  / notify enqueue is on `main` (verified: grep in `go/server` returns only
+  tests), and there is no "NotifyRouter enqueue" to fan into —
+  `NotifyRouter.Route` is SYNCHRONOUS with DB + network I/O
+  (`notify_router.go:150-178`: cursor load, checks roll-up fetch), so it
+  cannot sit behind `ForgeEventSink.Enqueue`'s MUST-NOT-BLOCK contract; the
+  async wrapper is the notify design's unbuilt T7 — owned by THIS SAME lane
+  (compass-forge owns both the board slice and the notify T7). The shared
+  GitHub ingress — the `POST /webhooks/github` mount, the `ForgeAppConfig`
+  block, and the `fanoutSink` type + its registration seam — is built ONCE,
+  owned by this lane, and both consumers register on it. Sequencing is one
+  owner ordering its own two slices, not a cross-lane contract: whichever of
+  {this board slice, the notify T7} lands its wiring first builds the mount +
+  fanout (board-first mounts `fanoutSink{board}`, a single-element
+  fan-out), and the other composes in through the one-line registration
+  seam.
 - Test cycle: server pgtest (`-tags unix`) — signed fake `issues` webhook
   through the REAL ingress (the `forge_webhook_fakes_test.go:8-11` pattern) →
   board projection observes the hydrated issue on its bus; App-config-absent
@@ -521,140 +536,148 @@ granularity.
 - [ ] T2 — `(*forge.GitHub).ListUpdatedIssues` updated-order conditional walk
 - [ ] T3 — `BoardReconciler`: startup sweep + 30-min ticker + watermark
       advance-after-sink
-- [ ] T4 — store: repo watermark columns (`swept_updated_at`, `list_etag`) in
-      the additive `0002` + `forge_list_cursors` DROP post-soak (`0003`)
+- [ ] T4 — store: edit `0001_init.sql` in place (pre-live) — DROP
+      `forge_list_cursors`, ADD `swept_updated_at` + `list_etag` to
+      `forge_repo_subscriptions`, ADD `issues.forge_updated_at`; watermark
+      store methods replace the page-cursor methods
 - [ ] T4a — recency-guard write-path threading (proto `updated_at` + regen →
       `TranslateIssue` → `protoToForgeFields`/`IssueForgeFields` → conditional
-      `UpsertIssueForgeFields`) — CONTINGENT on Matt ruling OQ-6 = (a); dropped
-      if OQ-6 = (b)/(c)
+      `UpsertIssueForgeFields`) — FIRM (OQ-6 ruled (a))
 - [ ] T5 — serve wiring: retire `ingest.Driver` + poll flags + read-path PAT;
       mount board arm behind the shared ingress; App-only credential
 - [ ] T6 — docs + runbook delta (superseded poll record, App webhook events,
       removed flags)
 
-## Open Questions
+## Resolved decisions (Matt, 2026-08-27)
 
-OQ-1 through OQ-7 are the seven implementation forks; each carries a
-recommendation. **Load-bearing** = an executor building against the frozen
-record hits it as real ambiguity; it blocks merge and goes to Matt in one
-batched ask.
+Matt ruled all seven forks at the freeze gate (PR #695). Each entry leads
+with the decision; rejected options survive as a short tail for future
+readers.
 
-- **OQ-1 (LOAD-BEARING) — retire vs. demote the poll driver.** Delete
-  `ingest.Driver` entirely (T5), or keep it compiled as an opt-in
-  emergency full-resync path? **Recommend: retire.** The standing loop is
-  exactly the rate spend Matt is eliminating; the reconciler's zero-watermark
-  sweep IS a full resync (T3), reachable operationally by clearing a repo's
-  watermark row — an escape hatch with no second transport, consistent with
-  W4's "ONE webhook path only". Keeping dead-but-compiled poll code invites
-  drift against the single-writer assumption (`issue_projection.go:62-67`).
-  Known limitation either way (pre-existing, not a fork): NO transport in
-  this design removes a board row — GitHub `deleted`/`transferred` actions
-  are dropped by the parse table (`gitHubStateOrUpdateKind` maps only
-  opened/closed/reopened/edited/labeled/unlabeled,
-  `githubapp_webhook.go:174-185`) and a deleted issue vanishes from every
-  list, so a deleted/transferred issue persists on the board until manually
-  removed. The poll had this gap identically (upsert-only sink).
-- **OQ-2 (LOAD-BEARING) — cold-start / downtime backfill primitive.** How
-  does a fresh deployment (or one that missed deliveries) get initial + gap
-  state? **Recommend: the T3 watermark sweep** — startup sweep + 30-min
-  ticker, `ListUpdatedIssues(repo, watermark, etag)`; zero watermark = one
-  full walk. Cost bound: steady-state is one conditional page-1 GET per
-  enabled repo per 30 min (304 ≈ free — *"a 304 on an authorized request is
-  NOT charged"*, `notify_reader.go:12-13`); cold start is one full list walk
-  per repo, identical to a single legacy poll pass. `ListNewArtifacts` alone
-  is NOT sufficient: it is created-order (`sinceNumber`) and misses updates
-  to existing issues (`notify_reader.go:226-231`), which the board must
-  observe (title/state/label edits).
-- **OQ-3 — `forge_list_cursors` disposition** (DL-163). The table is dead
-  once the page-poll retires (its only writer is the driver's page-cursor
-  path). **Recommend: split — additive `0002` now, the `DROP` in `0003`
-  after a soak window** (new migrations, never a rewrite of the consolidated
-  `0001_init.sql`, constraint 4). Coupling the irreversible DROP to the
-  reversible ALTER in one migration crashes an old poll-driver binary still
-  running during a rolling deploy or a code revert (T4); dropping directly
-  in `0002` is the rejected alternative. Not load-bearing for correctness
-  (an empty table is
-  harmless), but the executor needs the ruling before writing the migration —
-  flagged for the batched ask.
-- **OQ-4 (LOAD-BEARING) — webhook → canonical Issue normalization: hydrate
-  vs. payload-carried.** The GitHub `issues` webhook payload carries the full
-  issue object on the wire, but the landed parser deliberately extracts only
-  `number/html_url/state` (`whIssue`, `githubapp_webhook.go:52-57`) and the
-  normalized `ForgeEvent` has no slots for title/body/labels/author
-  (`notify_event.go:17-49`). `TranslateIssue` needs
-  `Number/Title/Body/State/URL/ForgeAccount/Labels` (`translate.go:44-55`).
-  **Recommend: hydrate — one conditional GET per accepted board event**
-  (T1's `GetIssueConditional`). Rationale: (a) no widening of `ForgeEvent`,
-  which the notify lane co-owns; (b) the GET returns coherent, current state
-  even for stale/re-ordered deliveries, where trusting a payload snapshot
-  can regress a newer title/state; (c) cost is bounded by real human edit
-  rate on subscribed repos — orders of magnitude below the retired 1-min
-  page walk. The alternative (widen `whIssue` + `ForgeEvent` to carry the
-  full issue) saves that GET but couples the two lanes' event currency and
-  imports the ordering hazard.
-  Cost caveat: the T1 hydrate `GetIssueConditional(repo, number, "")` is a
-  CHARGED, unconditional read every time (fine at human edit rate); OQ-2's
-  "304 ≈ free" framing applies to the reconcile sweep's page-1 conditional
-  GET only, NOT to this hydrate — the two must not be conflated.
-- **OQ-5 — poll-config disposition** (`ForgeConfig`, `serve.go:117-144`).
-  **Recommend:** retire `Poll` + `PollInterval` (+ flags `--forge-poll`,
-  `--forge-poll-interval`, envs `$COMPASS_FORGE_POLL(_INTERVAL)`,
-  `main.go:358-365`); keep `Host`, `SeedRepos`/`--forge-repos` (the DL-162
-  seed model survives — a webhook lane still needs the subscribed-repo set),
-  and `ReviewerSecretName`/`SecretName` only as far as the WRITE path still
+- **OQ-1 — the poll driver RETIRES.** `ingest.Driver` is deleted entirely
+  (T5). The standing loop is exactly the rate spend Matt is eliminating; the
+  reconciler's zero-watermark sweep IS a full resync (T3), reachable
+  operationally by clearing a repo's watermark row — an escape hatch with no
+  second transport, consistent with W4's "ONE webhook path only"; and
+  dead-but-compiled poll code invites drift against the single-writer
+  assumption (`issue_projection.go:62-67`). **Matt's follow-up ("for initial
+  setup of Compass, if you reinstall the App etc how do we backfill
+  issues/prs etc? … what do other apps that use webhooks with github/linear
+  do?"), answered:** the industry-standard pattern for a webhook
+  GitHub/Linear App is REST-list backfill on install + webhooks to stay in
+  sync (GitHub's own best-practice guidance: subscribe to webhook events
+  instead of polling to stay within the API rate limit; integration guides
+  paginate existing issues/PRs with the installation token on install).
+  This design ALREADY implements exactly that: the T3 zero-watermark sweep
+  IS the backfill — a fresh install, a REINSTALL, or a newly enabled repo
+  has no watermark row, so the first sweep walks the repo's full
+  updated-order issue list once (identical cost to one legacy poll pass),
+  seeds the board, and webhooks carry the hot path from there. Reinstall
+  backfill is therefore automatic — the reinstall's zero/absent watermark
+  triggers a full re-walk on the next sweep; no separate backfill mechanism
+  exists or is needed. Known limitation (pre-existing, unchanged): NO
+  transport in this design removes a board row — GitHub
+  `deleted`/`transferred` actions are dropped by the parse table
+  (`gitHubStateOrUpdateKind` maps only opened/closed/reopened/edited/
+  labeled/unlabeled, `githubapp_webhook.go:174-185`) and a deleted issue
+  vanishes from every list, so a deleted/transferred issue — including one
+  deleted during a downtime window — persists on the board until manually
+  removed. The poll had this gap identically (upsert-only sink). (Rejected:
+  keep the driver compiled as an opt-in emergency full-resync path.)
+- **OQ-2 — the T3 watermark sweep IS the cold-start / downtime / backfill
+  primitive.** Decided along the recommendation, reinforced by OQ-1's
+  ruling: startup sweep + 30-min ticker, `ListUpdatedIssues(repo, watermark,
+  etag)`; zero watermark = one full walk. Cost bound: steady-state is one
+  conditional page-1 GET per enabled repo per 30 min (304 ≈ free — *"a 304
+  on an authorized request is NOT charged"*, `notify_reader.go:12-13`); cold
+  start is one full list walk per repo, identical to a single legacy poll
+  pass. (Rejected: `ListNewArtifacts` alone — it is created-order
+  (`sinceNumber`) and misses updates to existing issues
+  (`notify_reader.go:226-231`), which the board must observe.)
+- **OQ-3 — `forge_list_cursors` is dropped by EDITING `0001_init.sql`
+  directly** (DL-163). Matt: *"0001. we aren't live yet for compass, can
+  just edit 0001. if some PR made a 0002 can condense again."* Compass is
+  pre-live and `0001_init.sql` is the ONLY migration in
+  `go/internal/store/migrations/`, so every schema change in this record —
+  the `forge_list_cursors` DROP and the three new columns — lands by
+  editing `0001_init.sql` in place (T4, constraint 4). This OVERRIDES the
+  record's prior split-0002/0003 recommendation; the rolling-deploy-crash
+  rationale for the split is moot with no live deployment. (Rejected:
+  additive `0002` + post-soak `0003` DROP; DROP bundled into a new `0002`.)
+- **OQ-4 — HYDRATE, with batching.** One conditional GET per accepted board
+  event (T1's `GetIssueConditional`). Rationale: (a) no widening of
+  `ForgeEvent`, which the notify lane co-owns; (b) the GET returns coherent,
+  current state even for stale/re-ordered deliveries, where trusting a
+  payload snapshot can regress a newer title/state; (c) cost is bounded by
+  real human edit rate on subscribed repos — orders of magnitude below the
+  retired 1-min page walk. **Matt's follow-up ("can we batch together to
+  minimize api rate limit cost?"), answered — YES, two levers, both in the
+  design:** (1) the T1 drain COALESCES per coordinate: N rapid events on
+  one issue (edit storms, label churn) collapse to ONE hydrate GET, not N;
+  (2) the T3 reconcile sweep batches by construction — it hydrates via one
+  updated-order LIST call per repo (`ListUpdatedIssues`, T2), never
+  per-issue GETs, so the backstop path is inherently batched. Honest limit:
+  the per-event hot-path hydrate stays one conditional GET per DISTINCT
+  coordinate — GitHub REST has no issue-batch-GET endpoint, and the GitHub
+  arm is REST throughout (`getJSONCond`, `notify_reader.go:84`; its only
+  GraphQL reference is the deliberately-unbuilt review-thread read,
+  `github.go:577`). If per-coordinate coalescing proves insufficient under
+  real load, a GraphQL multi-issue batch fetch is a documented FUTURE
+  optimization, not v1. Cost caveat (unchanged): the T1 hydrate
+  `GetIssueConditional(repo, number, "")` is a CHARGED, unconditional read
+  every time (fine at human edit rate); OQ-2's "304 ≈ free" framing applies
+  to the reconcile sweep's page-1 conditional GET only, NOT to this hydrate
+  — the two must not be conflated. (Rejected: widen `whIssue` + `ForgeEvent`
+  to carry the full payload — saves the GET but couples the two lanes'
+  event currency and imports the ordering hazard.)
+- **OQ-5 — poll config RETIRES; `ReconcileBackstop` added.** Decided along
+  the recommendation, consistent with OQ-1's retire: retire `Poll` +
+  `PollInterval` (+ flags `--forge-poll`, `--forge-poll-interval`, envs
+  `$COMPASS_FORGE_POLL(_INTERVAL)`, `main.go:358-365`); keep `Host` and
+  `SeedRepos`/`--forge-repos` (the DL-162 seed model survives — a webhook
+  lane still needs the subscribed-repo set), and
+  `ReviewerSecretName`/`SecretName` only as far as the WRITE path still
   consumes them (the agent forge-write gate, `serve.go:134-141`, is
   explicitly out of scope here; the App-only cutover for WRITES is the
   notify lane's W1 posture and its own slice). Add `ReconcileBackstop
-  time.Duration` (default 30 min). Not load-bearing given OQ-1 rules retire;
-  listed for completeness of the config delta.
-- **OQ-6 (LOAD-BEARING) — concurrent board writers.** The T1 webhook drain
-  and the T3 reconciler both sink `PublishIssueUpdate`: the projection's
-  single-writer assumption is violated (*"two concurrent publishes of the
-  SAME coordinate could record in commit order or in lock order ... a
-  per-coordinate guard would be needed if concurrent same-coordinate
-  ingestion is ever introduced"*, `issue_projection.go:62-67`), and
-  `UpsertIssueForgeFields` is unconditional last-write-wins with no recency
-  guard (`issues.go:103-134`; the `ON CONFLICT ... DO UPDATE` at
-  `issues.go:122-126` compares nothing) — `provider.go:56` says outright
-  that *"the board sink ignores it"* of `Issue.UpdatedAt`. Failure shape: a
-  sweep carrying a stale list-row snapshot overwrites a fresher
-  webhook-hydrated write; the stale title/state persists up to 30 min.
-  Options:
-  - **(a) [RECOMMENDED] Store-level recency guard:** carry `Issue.UpdatedAt`
-    into `IssueForgeFields` and make the `ON CONFLICT DO UPDATE` conditional
-    on `EXCLUDED.forge_updated_at >= issues.forge_updated_at` — the DL-129
-    recency-guard precedent already in the tree (`provider.go:55-56` cites
-    it for PR-C). Writer-count-agnostic: handles interleaving at the store,
-    no cold-start queue-flood, and future-proofs any later writer — the
-    minimal correct answer. Cost is NOT just a column: the guard fires only
-    if `Issue.UpdatedAt` is threaded end-to-end — proto `updated_at` + regen,
-    `TranslateIssue`, `protoToForgeFields`/`IssueForgeFields`, and a
-    conditional `UpsertIssueForgeFields` — the full chain scoped as **T4a**
-    (a bare `forge_updated_at` column with no writer is a silent NULL no-op).
-    T4a lands only if this option is ruled; (b)/(c) drop it.
-  - (b) Funnel the reconciler through the T1 drain queue (the reconciler
-    becomes a producer; the drain stays the one writer): restores the
-    documented single-writer assumption with NO store change, but a
-    zero-watermark cold-start full walk floods the bounded queue
-    (backpressure interaction).
-  - (c) Per-coordinate mutex in `IssueProjection`: serializes commit+record
-    but does NOT fix stale-fetch-wins — insufficient alone; rejected as a
-    sole fix.
-- **OQ-7 (LOAD-BEARING) — shared GitHub ingress ownership.** The
-  `fanoutSink` T1/T5 compose has nothing to compose with yet: the notify
-  arm's async enqueue wrapper is unbuilt (`NotifyRouter.Route` is
-  synchronous with DB + network I/O, `notify_router.go:150-178`) and no
-  `ForgeAppConfig` / mount exists on `main` (grep: tests only).
-  **Recommend: the landing-order contract, stated concretely in T5** —
-  board-first ⇒ this slice owns the `POST /webhooks/github` mount +
-  `ForgeAppConfig` + the `fanoutSink` registration seam and mounts
-  `fanoutSink{board}` only (notify T7 appends its sink later); notify-first
-  ⇒ the board arm appends its sink to the existing fan-out. Either way the
-  `fanoutSink` type + registration seam belong to whichever record freezes
-  first — this record claims them if it lands first. The alternative
-  (extract the shared mount into a slice-zero task both lanes depend on)
-  removes the race but costs heavier cross-lane coordination; the
-  landing-order contract is the lean answer.
+  time.Duration` (default 30 min).
+- **OQ-6 — option (a): store-level recency guard. T4a is FIRM.** Carry
+  `Issue.UpdatedAt` into `IssueForgeFields` and make the `ON CONFLICT DO
+  UPDATE` conditional on `EXCLUDED.forge_updated_at >=
+  issues.forge_updated_at` — the DL-129 recency-guard precedent already in
+  the tree (`provider.go:55-56` cites it for PR-C). Writer-count-agnostic:
+  it handles interleaving at the store, has no cold-start queue-flood, and
+  future-proofs any later writer — the minimal correct answer to the
+  violated single-writer assumption (the T1 drain and the T3 reconciler are
+  two concurrent writers into `PublishIssueUpdate`,
+  `issue_projection.go:62-67`, and `UpsertIssueForgeFields` compares
+  nothing, `issues.go:122-126` — a sweep carrying a stale list-row snapshot
+  could otherwise overwrite a fresher webhook-hydrated write for up to 30
+  min). The guard fires only if `Issue.UpdatedAt` is threaded end-to-end —
+  the full T4a chain (proto `updated_at` + regen → `TranslateIssue` →
+  `protoToForgeFields`/`IssueForgeFields` → conditional
+  `UpsertIssueForgeFields`); a bare `forge_updated_at` column with no
+  writer is a silent NULL no-op, so the column (T4) and the threading (T4a)
+  land together. (Rejected: (b) funnel the reconciler through the T1 drain
+  queue — restores single-writer with no store change, but a zero-watermark
+  cold-start full walk floods the bounded queue; (c) per-coordinate mutex
+  in `IssueProjection` — serializes commit+record but does NOT fix
+  stale-fetch-wins, insufficient alone.)
+- **OQ-7 — SINGLE SHARED MOUNT, owned by THIS lane.** Matt: *"shared, you
+  are owning both sides anyway?"* — correct: compass-forge owns both the
+  board slice AND the notify lane's T7. The shared GitHub ingress — the
+  `POST /webhooks/github` mount, the `ForgeAppConfig` block, and the
+  `fanoutSink` that fans accepted events to the board arm and the notify
+  arm — is built ONCE, owned by this lane, and both consumers register on
+  it. The notify arm's async enqueue wrapper is still unbuilt T7 work
+  (`NotifyRouter.Route` is synchronous with DB + network I/O,
+  `notify_router.go:150-178`), so whichever of the lane's own two slices
+  {this board slice, the notify T7} lands its wiring first builds the mount +
+  fanout and the other composes in — one owner sequencing its own two
+  slices, NOT a cross-lane landing-order contract. (Rejected: the
+  landing-order contract between two independent lanes — moot with one
+  owner; extracting the mount into a slice-zero task both lanes depend on —
+  coordination weight with no remaining race to remove.)
 
 ## Ledger-impact
 
@@ -674,11 +697,15 @@ agent, NOT this record):
   table-as-target model and `--forge-repos` seed survive verbatim as the
   webhook lane's subscribed-repo set; the `--forge-poll` flag clause retires.
 - **DL-163 (`DECISIONS.md:98`) — AMEND.** `forge_list_cursors` loses its
-  only writer; disposition per OQ-3 (recommended: dropped in a NEW migration,
-  the shipped DDL never rewritten). The other three tables are unchanged.
+  only writer and is dropped by editing `0001_init.sql` in place (OQ-3
+  ruled: Compass is pre-live; the init migration is edited directly, never
+  post-soak-migrated). The other three tables are unchanged.
 - **DL-264 (`DECISIONS.md:99`) — UNCHANGED, cited as precedent.** Its
   webhook-only + bounded-reconcile model is extended to the board lane.
-- **NEW DL (proposed statement):** "Board ingestion is WEBHOOK-DRIVEN: the
+- **NEW DL — landed as DL-279 (`DECISIONS.md:103`); its ledger row's
+  "`forge_list_cursors` dropped post-soak" clause needs the OQ-3 wording fix
+  (dropped by editing `0001_init.sql`, pre-live) — coordinator-owned.
+  Proposed statement:** "Board ingestion is WEBHOOK-DRIVEN: the
   GitHub App webhook ingress (DL-264's `POST /webhooks/github`) fans accepted
   `issues` events to a board ingest arm that hydrates each coordinate via a
   conditional GET and sinks through the one StripOwner→TranslateIssue→stamp
