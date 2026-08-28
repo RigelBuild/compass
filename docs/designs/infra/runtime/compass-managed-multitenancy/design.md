@@ -1,29 +1,31 @@
-# Compass managed-service multi-tenancy and NATS substrate
+# Compass multi-tenancy and NATS eventing substrate
 
 Status: Draft
 
 Tracking: RIG-2861
 
-> **Design record.** This designs the tenancy model, the Server↔Runner
-> connection topology, and the NATS/eventing substrate placement for Compass as
-> a multi-tenant managed service on shared infrastructure. Code citations
-> resolve against the working copy at the RIG-2861 branch point (line numbers
-> drift as code evolves). Frozen on merge; executing agents read this as the
-> contract for RIG-2861.
+> **Design record.** This designs a core capability of the Compass OSS
+> product: the tenancy model, the Server↔Runner connection topology, and the
+> NATS eventing substrate that make one Compass deployment multi-tenant,
+> horizontally scalable across Server instances, and HA-capable. Code
+> citations resolve against the working copy at the RIG-2861 branch point
+> (line numbers drift as code evolves). Frozen on merge; executing agents
+> read this as the contract for RIG-2861.
 
 ## Problem / Intent
 
-Compass will ship as a **multi-tenant managed service on shared
-infrastructure** — not Server-per-tenant, not isolated per-tenant Runners:
-shared infra with per-tenant isolation enforced above the metal. The parent
-end-state record already declares Compass "a hosted multi-tenant agent
-platform" built on an open-source core
-(`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:19-24`),
-with multi-tenancy explicitly the managed-service layer over a
-single-tenant-deployable OSS core (same record, the "OSS core and managed
-service" section, lines 71-101). The codebase is genuinely single-tenant
-today, so the substrate choices below are cheap to build in now and expensive
-to retrofit later:
+Compass's core must support **multiple tenants in one deployment** and
+**scale horizontally across Server instances** — shared infrastructure with
+per-tenant isolation enforced above the metal, and any Server instance able
+to serve any request. These are OSS-core capabilities: they make the public
+product multi-tenant, scalable, and HA-capable in its own right. The managed
+service — the hosted multi-tenant platform the parent end-state record
+declares (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:19-24`),
+with multi-tenancy the managed layer over a single-tenant-deployable OSS core
+(same record, the "OSS core and managed service" section, lines 71-101) — is
+a **consumer and operator** of this core, not its subject. The codebase is
+genuinely single-tenant and single-instance today, so the substrate choices
+below are cheap to build in now and expensive to retrofit later:
 
 - **No tenant model.** `CreateUser` is a flat insert — `INSERT INTO accounts
   (id, handle, display_name) VALUES ($1, $2, $3)` then a `user_accounts`
@@ -41,7 +43,7 @@ to retrofit later:
   (`go/internal/runnerhub/relay_comms.go:159-184`); the durable half is
   `agent_placements` (`go/internal/store/agent_placements.go:66` — an UPSERT
   keyed on the agent, doc `:33-39`).
-- **Delivery fan-out is an in-process bus — the cross-instance gap.** The
+- **Delivery fan-out is an in-process ring — the cross-instance gap.** The
   delivery consumer tails the in-process comms event bus (`bus
   *events.Bus[*compassv1.SubscribeCommsResponse]`,
   `go/internal/delivery/consumer.go:148`, constructed at `:222`) and
@@ -55,7 +57,7 @@ to retrofit later:
   session bound on instance B — nothing handles that hop today.
 
 This record answers three coupled questions — tenant data isolation,
-Server↔Runner connection topology, and NATS adoption/placement — each with
+Server↔Runner connection topology, and the eventing substrate — each with
 options, tradeoffs, and a recommendation, plus a staged adoption path so
 operational cost is paid when it is earned.
 
@@ -92,10 +94,10 @@ operational cost is paid when it is earned.
 3. **Schema-per-tenant** (middle ground) — rejected; see Alternatives
    considered.
 
-**Recommendation: option 2** for the managed tier, with a **documented escape
-hatch to a dedicated database for a compliance-sensitive tenant**. The escape
-hatch is cheap on the data side precisely because the shared-DB schema still
-carries `tenant_id` everywhere: a dedicated-DB tenant runs the identical
+**Recommendation: option 2** for the multi-tenant tier, with a **documented
+escape hatch to a dedicated database for a compliance-sensitive tenant**. The
+escape hatch is cheap on the data side precisely because the shared-DB schema
+still carries `tenant_id` everywhere: a dedicated-DB tenant runs the identical
 schema with exactly one tenant row, so the data move is clean. It is not
 zero code: `Store` owns exactly one pool (`go/internal/store/store.go:37`),
 so serving a promoted tenant needs per-tenant pool routing inside `Store` —
@@ -128,7 +130,60 @@ Mechanics:
   admission limits at the Server edge, not by physical separation; a tenant
   that outgrows that is the escape-hatch case.
 
-### Q2 — Server↔Runner connection topology: all-to-all over a message-bus fabric
+#### Neon as the product database
+
+The managed product database is Neon, which is standard Postgres — RLS,
+`CREATE ROLE`, `FORCE ROW LEVEL SECURITY`, and `current_setting()` are all
+core Postgres features present there. Nothing in the Q1 design changes for
+Neon; the design was Neon-correct by construction, and the alignment is worth
+stating precisely because it is load-bearing:
+
+- **The pooled endpoint is PgBouncer in transaction mode.** In transaction
+  mode a physical backend connection is shared across tenants between
+  transactions, so a session-level `SET` of the tenancy GUC **leaks across
+  tenants** — while `SET LOCAL` / `set_config(..., true)` is
+  transaction-scoped and safe. That is exactly the discipline this record
+  already mandates and exactly the alternative it already bans (Global
+  Constraints): our correctness choice is Neon's hard requirement. The same
+  code runs unchanged against Neon's pooled and direct endpoints.
+- **Roles.** Neon grants `neon_superuser`, not true superuser — which is
+  fine, because the design requires a dedicated **non-superuser application
+  role** that cannot bypass RLS. `FORCE ROW LEVEL SECURITY` per table (T2)
+  still applies: the app role owns the tables it migrates.
+- **Per-statement GUC evaluation.** RLS policies must wrap the GUC read in a
+  scalar subquery — `(SELECT current_setting('compass.tenant_id', true))` —
+  so the planner evaluates it once per statement instead of once per row.
+  T2's policy shape carries this.
+- **Branching is a dev/test tool, not a tenancy mechanism.** Neon's
+  copy-on-write branches are valuable for per-PR preview databases and for
+  running the T2 RLS spill suite against a branch of production shape — a
+  materially stronger test than a synthetic fixture. But a branch is **not**
+  tenant isolation: production tenancy stays RLS-in-one-database, and
+  "a branch per tenant" must never be conflated with the shared-pool model.
+- **Against Neon Authorize.** Neon's RLS-from-JWT feature
+  (`pg_session_jwt`) targets edge clients talking directly to Postgres. Compass
+  has an application-server tier that resolves and sets tenant context
+  server-side (`go/internal/comms/comms.go:10-15` is the identity posture);
+  moving tenant-context authority into a JWT consumed by the database would
+  bypass that tier. Recommendation: do not adopt it — tenant-context
+  authority stays at the Server tier.
+- **The serverless-driver caveat does not apply.** Neon's HTTP-mode
+  serverless driver cannot run `SET LOCAL` (no interactive transactions);
+  the Compass Server is Go on pgx over the Postgres wire protocol
+  (`go/internal/store/store.go:33-37`), so native transactions and
+  `SET LOCAL` work normally. If an edge/JS component ever talks to the
+  database directly, that is a design change to be raised — not a supported
+  path.
+
+### Q2 — Server↔Runner connection topology: load-balanced Servers, subject-addressable Runners
+
+The topology has two distinct shapes for two distinct parties. **Servers are
+stateless, standard L7-load-balanced instances**: any Server handles any
+client request behind an ALB, and nothing about a Server instance is special
+to a tenant or a session — except the live client sockets it happens to hold.
+**Runners are individually subject-addressable over the fabric**: a command
+for a session must reach the one Runner hosting it, so Runners are addressed,
+never balanced.
 
 **Options.**
 
@@ -149,32 +204,57 @@ Mechanics:
    orphans its whole Runner set until a re-ownership
    protocol completes (a protocol option 1 forces you to invent). Scheduling
    is constrained to the owner's view of capacity, not the fleet's.
-2. **All Servers reach all Runners, direct gRPC mesh.** Any Server can drive
-   any Runner, satisfying non-sticky wake — but with N Servers × M Runners
-   standing Connect streams, per-pair enrollment/reconnect state, and every
-   Server duplicating the hub's binding maps for every Runner. The hub's
-   in-memory binding model (`SessionForAccount`,
+2. **Every Server reaches every Runner over a direct gRPC mesh.** Any Server
+   can drive any Runner, satisfying non-sticky wake — but with N Servers × M
+   Runners standing Connect streams, per-pair enrollment/reconnect state, and
+   every Server duplicating the hub's binding maps for every Runner. The
+   hub's in-memory binding model (`SessionForAccount`,
    `go/internal/runnerhub/relay_comms.go:170-184`) does not survive this
    shape: the binding must become shared state anyway, at which point the N×M
    stream mesh is pure overhead.
-3. **All-to-all over a message-bus fabric (recommended).** Each Runner holds
-   ONE connection — to the bus — and each Server holds ONE. Session commands
-   are published to per-Runner subjects; Runner events fan in on per-Server
-   or queue-group subjects. Any Server drives any Runner by publishing;
-   Runner failover is a resubscribe, Server failover is invisible to Runners.
-   The session→Runner routing truth stays durable in Postgres
+3. **A message-bus fabric (recommended).** Each Runner holds ONE connection —
+   to the fabric — and each Server holds ONE. Session commands are published
+   to per-Runner subjects; Runner events fan in on queue-group subjects. Any
+   Server drives any Runner by publishing; Runner failover is a resubscribe,
+   Server failover is invisible to Runners. The session→Runner routing truth
+   stays durable in Postgres
    (`agent_placements`, `go/internal/store/agent_placements.go:8-22,33-39`) —
-   the bus routes, it never owns placement.
+   the fabric routes, it never owns placement.
 
 **Recommendation: option 3.** RIG-2394's D9 non-sticky wake contract
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md:801-816`)
 *requires* any-Server-drives-any-Runner, and once that is required, the
 choice is only between an N×M direct-stream mesh and a hub-and-spoke fabric —
 the fabric wins on connection count, failover semantics, and blast radius.
-This is exactly where NATS earns its place (Q3). A Server-to-Server
-forwarding variant — a genuine middle ground — is weighed in Alternatives
-considered; it loses at managed scale but is the recommended **Phase-1**
-Runner topology (see Staged adoption path).
+This is exactly where NATS earns its place (Q3).
+
+**The three-hop model.** How a client request becomes a delivered event
+across N Servers, and which hop each balancing mechanism owns:
+
+1. **Client → ALB → any Server** (synchronous RPC). Standard L7 load
+   balancing over HTTP; Servers are stateless, so any instance handles any
+   request. NATS is not in this path.
+2. **Internal event processing → NATS queue group** (competing consumers).
+   When a message is posted or a Runner publishes an event, every Server
+   instance subscribes to the subject under one queue-group name, and NATS
+   delivers each message to **exactly one** instance. NATS does this
+   balancing itself — the load balancer is not in this path. This is the
+   "process each posted message once across N Servers" work: dedup, delivery
+   cursor persistence, recipient resolution.
+3. **Delivery to a live client → per-connection subject** (addressed, not
+   balanced). A client's live subscription stream is stateful and pinned to
+   the one Server holding that socket; that Server subscribes to a
+   per-connection subject (`client.<sessionID>` shape — a plain subject,
+   never a queue group). When the delivery worker on hop 2 needs to reach a
+   live recipient, it publishes to that subject, and only the Server holding
+   the socket receives it and pushes down the wire.
+
+The classic gotcha — "the client is connected to Server A via the load
+balancer, but the event landed on Server B" — is solved by hop 3: B does the
+*processing*, then routes the *delivery* to A over A's per-connection
+subject. The load balancer only ever sees hop 1. The same addressed-vs-
+balanced split applies to Runners: per-Runner subjects to address a specific
+Runner, queue groups to share Runner-event processing across Servers.
 
 What carries over unchanged:
 
@@ -203,9 +283,34 @@ agent), and commands for it route to that Runner's subject. Affinity is a
 *routing lookup*, not a *connection ownership*; failover changes a row and a
 subject, never a stream topology.
 
-### Q3 — NATS adoption + placement: transport/routing fabric under the async layer, Postgres stays the source of truth
+### Q3 — the eventing substrate: one NATS `EventFabric`, embedded or clustered; JetStream as the delivery transport
 
-**What NATS is for here — and what it is not.** NATS is an eventing/messaging
+**One implementation.** There is exactly one eventing substrate: NATS, behind
+one `EventFabric`. The NATS server is a Go **library**
+(`github.com/nats-io/nats-server/v2/server`), not only an external daemon, so
+the single-binary / dev / OSS-default case does not need a bespoke in-process
+fabric — it embeds the real NATS server in-process:
+
+```go
+opts := &server.Options{DontListen: true, JetStream: true}
+ns, _ := server.NewServer(opts)
+go ns.Start()
+ns.ReadyForConnections(10 * time.Second)
+nc, _ := nats.Connect(ns.ClientURL(), nats.InProcessServer(ns))
+```
+
+`DontListen: true` plus `nats.InProcessServer(ns)` yields a fully in-process
+NATS — zero network sockets, zero sidecar process, zero extra dependency to
+distribute, compiled into the Server binary — **including in-process
+JetStream**. The multi-instance / HA case connects the same client to a
+clustered external NATS. **Application code is identical across both modes**:
+same client, same subjects, same queue groups; the only difference is one
+configuration value (embed vs connect-to-cluster). One implementation, one
+code path, one set of semantics to test — and the embedded mode is the
+"runs with no external services" OSS default, backed by real NATS instead of
+a bespoke channel fabric.
+
+**What NATS is for here — and what it is not.** NATS is the eventing
 substrate UNDER the async layer. It does not replace Connect at the
 synchronous RPC edges (Client↔Server RPC stays Connect/gRPC, DL-013), it does
 not touch the agent↔Runner vsock hop (RIG-2394), and it never becomes a second
@@ -214,63 +319,72 @@ DL-019/DL-020 spirit ("the ring is never a second store; losing it loses no
 committed state",
 `docs/designs/product/compass-architecture-lineage/design.md:52-56`).
 
-**Candidate roles, judged individually.**
+**What rides the substrate.**
 
-1. **Cross-instance comms event bus (adopt).** Today's fan-out is
-   write-through Postgres then publish on the in-process `events.Bus`
-   (`go/internal/comms/comms.go:1-16`, `go/internal/comms/doc.go:6-16`). At
-   >1 instance the publish additionally goes to a NATS subject per event
-   space; every instance's bus bridges NATS → its local ring, so all existing
-   subscribers (SubscribeComms, the delivery consumer at
-   `go/internal/delivery/consumer.go:143-152`) are untouched. Core NATS
-   (at-most-once) suffices: the bus is already loss-tolerant by design — the
-   durable delivery cursor + reconnect sweep recover anything the ring
-   drops (`go/internal/delivery/consumer.go:3-9`, cursor advance on ack only).
-2. **Cross-instance session→account/placement routing (adopt).** The hub's
-   in-memory binding maps become instance-local caches over durable truth
-   (`agent_placements` + a session-binding table), with NATS carrying
-   invalidation/update events so any instance resolves a session without
-   polling. Postgres is the arbiter on any cache miss or conflict.
-3. **Delivery-worker queue groups (adopt).** The delivery consumer's dispatch
-   work partitions across instances with NATS queue-group semantics — each
-   posted-message event is claimed by one worker — replacing the implicit
-   "the one process does everything" model. The `ControlDispatcher` /
-   `SessionResolver` / `DeliveryReads` interfaces
-   (`go/internal/delivery/consumer.go:42-63`) are the injection seams; the
-   consumer logic above them does not change.
-4. **Server↔Runner command/event fabric (adopt — the Q2 topology).**
-   Per-Runner command subjects, Runner event fan-in, enrollment heartbeats.
-   Request-reply for the RPC-shaped legs (`RelayCommsCall`,
-   `CommitConversationFrame`) with the same fail-closed semantics as today
-   (`go/internal/runnerhub/relay_comms.go:242-320`).
-5. **JetStream durable streams (adopt narrowly — only where no Postgres
-   cursor exists).** For comms delivery, JetStream is *rejected*: the durable
-   per-(agent, channel) cursor in Postgres
-   (`go/internal/store/delivery_cursors.go`, advanced only on recipient ack —
-   `go/internal/runnerhub/hub.go:713-724`) is already the at-least-once
-   guarantee, and a JetStream consumer cursor beside it would be a second
-   source of delivery truth (exactly the dual-store DL-020 forbids).
-   JetStream is the right tool only for streams with **no existing Postgres
-   cursor and genuinely bus-shaped durability needs**: Runner telemetry
-   fan-in and scheduling events (both consumed by RIG-2485), where replay of
-   a bounded window beats inventing a new Postgres cursor table per stream.
-   Each JetStream adoption is a per-stream decision with the burden of proof
-   on JetStream.
+- **Comms delivery (JetStream).** Today's fan-out is write-through Postgres
+  then publish on the in-process ring (`go/internal/comms/comms.go:1-16`,
+  `go/internal/comms/doc.go:6-16`); the delivery consumer tails it
+  (`go/internal/delivery/consumer.go:143-152`). Under the fabric, a posted
+  message commits to Postgres first (write-through preserved,
+  `go/internal/comms/doc.go:9-12`), then rides a JetStream stream for
+  fan-out: JetStream provides durable at-least-once delivery, bounded
+  replay, and queue-group consumption. **JetStream is a transport, never a
+  second truth store**: the message row and the per-(agent, channel)
+  delivery cursor in Postgres (`go/internal/store/delivery_cursors.go`,
+  advanced only on recipient ack — `go/internal/runnerhub/hub.go:713-724`)
+  remain the recovery truth, so anything JetStream drops or double-delivers
+  is reconciled against the cursor (preserving DL-020). This reverses the
+  earlier draft's rejection of JetStream for comms delivery — see
+  Alternatives considered for the reversal record.
+- **Routing/binding invalidation (core NATS).** The hub's in-memory binding
+  maps become instance-local caches over durable truth (`agent_placements` +
+  a session-binding table), with core NATS carrying invalidation/update
+  events so any instance resolves a session without polling. Postgres is the
+  arbiter on any cache miss or conflict; core NATS at-most-once suffices
+  because a dropped invalidation degrades to a cache-miss re-read.
+- **Delivery queue groups.** The delivery consumer's dispatch work partitions
+  across instances with queue-group semantics — each posted-message event is
+  claimed by exactly one worker (the three-hop model's hop 2). The
+  `ControlDispatcher` / `SessionResolver` / `DeliveryReads` interfaces
+  (`go/internal/delivery/consumer.go:42-63`) are the injection seams; the
+  consumer logic above them does not change.
+- **Server↔Runner command/event fabric (the Q2 topology).** Per-Runner
+  command subjects, Runner event fan-in on queue groups, enrollment
+  heartbeats. Request-reply for the RPC-shaped legs (`RelayCommsCall`,
+  `CommitConversationFrame`) with the same fail-closed semantics as today
+  (`go/internal/runnerhub/relay_comms.go:242-320`). This rides NATS only
+  once the server is clustered (Phase 1): the Runner is an external box, and
+  the embedded single-binary server takes no network sockets (`DontListen`),
+  so at Phase 0 the Runner↔Server edge stays on today's Connect transport —
+  `RunnerFabric`'s Phase-0 implementation wraps the existing command router
+  (OQ-5 owns the Connect-edge successor).
+
+**JetStream configuration is part of the design, not an ops detail.** The
+defaults trade durability for throughput and can lose acknowledged writes
+under power failure (the December 2025 Jepsen analysis of NATS documented
+~14% acknowledged-write loss under default settings). The delivery stream
+runs with: `sync_interval: 100ms` (bounded fsync window), file storage with
+R3 replication in the clustered mode (the embedded single-node mode is R1 by
+construction — Postgres is the recovery truth either way), explicit
+per-message acks, and `max_deliver` with a dead-letter subject so a
+poison message parks instead of redelivering forever.
 
 **Rejected placements.** NATS as a Client-facing transport (stays Connect);
 NATS on the agent↔Runner hop (frozen vsock, RIG-2394); JetStream as the comms
-message store (Postgres write-through is the product's structure — the
+**message store** (Postgres write-through is the product's structure — the
 audit/search substrate rationale behind DL-021,
 `docs/designs/product/compass-architecture-lineage/design.md:46-51` — and
-that survives this record intact).
+that survives this record intact: JetStream carries delivery, Postgres keeps
+the message).
 
-**Recommendation.** Adopt NATS as the **cross-instance transport/routing
-fabric**: core NATS pub/sub for the comms bus bridge and routing invalidation,
-queue groups for delivery workers, per-Runner subjects for the Q2 topology;
-JetStream only for telemetry/scheduling fan-in, never for comms delivery.
-Postgres remains the sole durability source of truth. Adoption is staged (see
-Staged adoption path) so single-instance deployments — including the OSS core
-— never pay for a broker they do not run.
+**Recommendation.** Adopt NATS as the **single eventing substrate**: embedded
+in-process (with in-process JetStream) for the single-binary/OSS default,
+clustered for multi-instance; JetStream as the durable comms-delivery
+transport; core NATS pub/sub for routing/binding invalidation; queue groups
+for delivery workers; per-Runner subjects for the Q2 topology. Postgres
+remains the sole durability source of truth. Adoption is staged (see Staged
+adoption path) so a single-instance deployment — including the OSS core —
+never operates an external broker.
 
 ## Scope boundary with RIG-2485
 
@@ -313,6 +427,8 @@ provisioning, billing, box lifecycle) is the private control-plane layer
 (RIG-2485 and the managed control plane), consistent with RIG-1717's
 one-architecture-two-products split
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:71-101`).
+The where-does-work-land convention this split implies is formalized in
+`docs/designs/meta/oss-core-managed-boundary/design.md`.
 
 ## Substrate independence
 
@@ -325,21 +441,34 @@ pod on a nested-virt Kubernetes node pool. So the choice of managed box
 substrate does not change any Q1/Q2/Q3 answer, interface, or task in this
 record.
 
-That substrate choice is nonetheless a live managed-control-plane fork, because
-RIG-2394's D2 froze the *managed* path as elastic **bare-metal** (AWS `*.metal`,
-GCP `c3-metal`) specifically to dodge the ~10% nested-virtualization tax, and
-called a nested cloud VM "a self-inflicted tradeoff, never the managed path"
+That substrate choice is nonetheless a live managed-control-plane fork.
+RIG-2394's D2 froze the *managed* path as elastic **bare-metal** (AWS
+`*.metal`, GCP `c3-metal`) specifically to dodge the nested-virtualization
+tax, and called a nested cloud VM "a self-inflicted tradeoff, never the
+managed path"
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md:671-692`).
-Two facts verified this session stale that premise: AWS enabled nested
+Two later facts stale that premise: AWS enabled nested
 virtualization on **non-metal** EC2 (C8i/M8i/R8i, no surcharge, 2026-02), and
 Azure offers a credit-funded nested-virt AKS node pool — so a nested-virt
 **node pool** (running the Runner + cloud-hypervisor as ordinary host
 processes, *not* Kata pod-sandbox runtime-class, whose CRI/containerd control
 plane cannot carry the agent↔Runner gateway RPC — RIG-2394 D4) is now a real
-managed option beside bare-metal. Because that fork spans this record's managed
-topology and RIG-2485/RIG-2394-D2's box lifecycle, it is routed to Matt as a
-cross-lane decision (RIG-2878), not decided here; it gates only the box layer
-*beneath* this substrate-agnostic topology.
+managed option beside bare-metal. On the tax itself: the widely-cited ~10% is
+nested-virtualization **CPU performance overhead** — a community
+rule-of-thumb, not an AWS-published billing surcharge. On a non-metal
+instance the agent microVM runs two virtualization levels down (Nitro → EC2
+guest → microVM), and the nesting cost (extra VM-exits, nested page-table
+walks, virtualized I/O) shows up as roughly 10% more host CPU for the same
+work — paid as **~10% fewer concurrent sessions per box** at the same latency
+target, i.e. proportionally more or bigger instances for the same load.
+`*.metal` pays zero (the microVM runs directly on host VT-x, one
+virtualization level). Our agent workload is largely I/O-bound waiting on LLM
+calls, so the real overhead is likely under the rule-of-thumb and is worth
+measuring on the actual workload before treating 10% as a planning fact.
+Because that fork spans this record's topology and RIG-2485/RIG-2394-D2's box
+lifecycle, its home is the private managed monorepo's AWS-EKS substrate
+design (RIG-2878), not this record; it gates only the box layer *beneath*
+this substrate-agnostic topology.
 
 ## Alternatives considered
 
@@ -360,17 +489,6 @@ and rejected on merit: it turns every fleet upgrade into an N-tenant rollout
 and forfeits cross-tenant density, the economic driver of the managed service
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:91-94`).
 
-### Postgres LISTEN/NOTIFY as the terminal fabric (Q3)
-
-LISTEN/NOTIFY handles cross-instance comms fan-out with zero new
-infrastructure and is adopted here as the **stepping-stone phase** (see Staged
-adoption path). It is rejected as the terminal state: payloads are capped at
-8KB, notifications are dropped on disconnected listeners (fine for the
-loss-tolerant bus, useless for queue semantics), there are no queue groups or
-subject hierarchies, and every notification is a store round-trip on the same
-cluster the tenancy model is already asking to carry all durable truth —
-at managed-service scale the fabric load belongs off the store of record.
-
 ### N×M direct gRPC mesh (Q2 option 2)
 
 Weighed in Q2 and rejected: satisfies non-sticky wake but scales standing
@@ -379,147 +497,99 @@ binding maps out of single-hub RAM into shared state — after which the mesh
 adds nothing the fabric does not do with two orders of magnitude fewer
 connections.
 
-### Server-to-Server forwarding (Q2 middle ground)
+### Two `EventFabric` implementations — in-process channels beside NATS (Q3)
 
-A Runner enrolls with exactly **one** Server; the placement/binding rows in
-Postgres name the *serving* Server; any other Server forwards a session
-command over one internal gRPC hop — an S×S mesh among Servers, not S×M
-across the Runner fleet. It satisfies RIG-2394's D9 non-sticky wake
-(`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md:801-816`):
-a Server death is handled by its Runners re-enrolling elsewhere plus a row
-update, with no re-ownership protocol to invent. It keeps DL-013 fully
-intact (Runner↔Server stays Connect), needs no broker, and composes with the
-Phase-1 LISTEN/NOTIFY comms fabric. Real costs: a forwarding-hop latency tax
-on every cross-Server command, a Server-failure window while its Runners
-re-enroll, S×S mesh state that still grows with the Server fleet, and the
-cross-Server command-ordering question (see Global Constraints) — though
-forwarding through the serving Server naturally serializes one Runner's
-command stream. The bus still wins **at managed scale** — one connection per
-party instead of a growing S×S mesh, failover as a resubscribe instead of a
-re-enroll window, and no forwarding-latency tax on every cross-Server
-command — but forwarding is the honest Phase-1 shape, and the Staged
-adoption path adopts it there.
+An earlier draft of this record kept the in-process `events.Bus` ring
+(`go/events/events.go:1-13`) as a first `EventFabric` implementation for the
+single-binary case, with NATS as a second implementation swapped in at
+multi-instance scale. Rejected: the NATS server embeds in-process
+(`server.Options{DontListen: true}` + `nats.InProcessServer`), which gives
+the zero-external-dependency property with **one** implementation — so a
+second bespoke channel fabric is pure cost: two code paths to test, two
+semantics to keep aligned, and an implementation swap at exactly the moment
+a deployment is under scaling pressure. One implementation, one config value.
 
-### Collapsing Phase 1 — in-process straight to NATS (Q3)
+### Postgres LISTEN/NOTIFY as the fabric (Q3)
 
-The staged path interposes a LISTEN/NOTIFY fabric (T4) that the terminal
-NATS state discards, and the record's own Phase-2 gate text ("they tend to
-arrive together at managed-service scale") doubts the Phase-1 window is
-long — so a deployment could skip Phase 1 entirely: in-process → NATS at the
-multi-instance boundary, deleting T4, T4b, and the T6-on-Phase-1 edges. The argument for
-collapsing: the 2-3-instance window with no delivery partitioning may be too
-short to earn a throwaway fabric with its own reconnect/resync machinery.
-The counter: a self-host/OSS deployment wanting multi-instance without a
-broker would miss LISTEN/NOTIFY — but that class ships Phase 0 as its
-permanent default per this record. Resolution (not an open question):
-LISTEN/NOTIFY stays the recommended default for the gradual-growth path, and
-**T4 is optional** — T6 depends on T3/T5 only (T4 and the Phase-1 Runner
-work T4b are stepping-stones the collapsed path skips) — and a deployment expecting
-rapid growth past the Phase-2 gate may skip Phase 1 (see Staged adoption
-path).
+Rejected: payloads are capped at 8KB, notifications are dropped for
+disconnected listeners, there are no queue groups or subject hierarchies, and
+every notification is a round-trip on the same cluster the tenancy model
+already asks to carry all durable truth. Embedded NATS removes its one
+argument — zero new infrastructure — because in-process NATS is also zero
+new infrastructure, with real subjects and queue groups.
 
-### JetStream as the delivery-durability layer (Q3)
+### JetStream as the comms-delivery layer — reversal record (Q3)
 
-Rejected (detailed in Q3 role 5): the Postgres delivery cursor advanced on
-recipient ack (`go/internal/store/delivery_cursors.go`;
+An earlier draft **rejected** JetStream for comms delivery, on the argument
+that the Postgres delivery cursor advanced on recipient ack
+(`go/internal/store/delivery_cursors.go`;
 `go/internal/runnerhub/hub.go:713-724`) is already the at-least-once
-guarantee, and a parallel JetStream consumer cursor would be a second
-delivery-truth store — the DL-020 dual-store failure mode.
+guarantee, and a JetStream consumer cursor beside it would be a second
+delivery-truth store (the DL-020 dual-store failure mode). That rejection is
+**reversed** — JetStream is now the comms-delivery transport (Q3) — because
+two things changed: embedded NATS makes JetStream a zero-external-dependency
+option even in the OSS single-binary default, and the roles are cleanly
+separable — JetStream is the delivery *transport* (durable at-least-once
+fan-out with bounded replay), while the Postgres message row + delivery
+cursor remain the *recovery truth* every reconciliation terminates in. The
+dual-truth-store objection dissolves when JetStream's consumer state is
+treated as disposable transport state, never consulted for recovery — which
+the Global Constraints pin.
 
 ## Staged adoption path
 
-Operational cost is paid when earned. Each phase has an explicit advancement
-gate; a deployment that never crosses a gate never runs the next phase's
-infrastructure. The OSS core ships Phase 0 as its permanent default.
+Operational cost is paid when earned. NATS is the fabric in every phase; the
+phase boundary changes only where the NATS server runs. The OSS core ships
+Phase 0 as its permanent default.
 
-### Phase 0 — single instance, in-process bus (today)
+### Phase 0 — single binary, embedded NATS (the OSS permanent default)
 
-The shipped shape: one Server, the generic in-process `events.Bus`
-(`go/events/events.go:1-13`) backing SubscribeEvents, SubscribeComms, and the
-delivery consumer. No broker, no cross-instance anything. The Phase-0 work in
-this record is **seam work plus one single-instance-safe behavior change**:
-introduce the `EventFabric` and `RunnerFabric` interfaces (Plan T3/T5) with
-in-process implementations, land the tenancy schema (Plan T1/T2), and make
-session bindings durable (T5 — a Server restart resolves a pre-restart
-session, which fails today) — so later phases are implementation swaps, not
-rewrites.
+One Server binary embeds the NATS server in-process
+(`server.Options{DontListen: true, JetStream: true}` +
+`nats.Connect(ns.ClientURL(), nats.InProcessServer(ns))`): zero network
+sockets for the fabric, zero sidecar, zero external services — and
+in-process JetStream backing durable comms delivery. The Phase-0 work in
+this record is the tenancy schema (T1/T2), the `EventFabric` / `RunnerFabric`
+seams (T3) — `EventFabric` on the embedded-NATS implementation, `RunnerFabric`
+keeping the Runner on today's Connect transport (the Runner is external and
+the embedded server takes no network sockets, so the Runner↔Server hop stays
+Connect until clustered NATS lands at Phase 1, per OQ-5) — and durable
+session bindings (T4 — a Server restart resolves a pre-restart session, which
+fails today). Queue groups and JetStream-durable comms delivery are
+Server-internal and present in the code from Phase 0, exercised by the one
+instance; per-Runner NATS command subjects come online at Phase 1 with the
+clustered server.
 
-**Gate to Phase 1:** a second Server instance is actually needed — HA
-requirement or vertical-scaling ceiling on the managed deployment — not
-before.
+**Gate to Phase 1:** a second Server instance is actually needed — an HA
+requirement or a vertical-scaling ceiling — not before. The gate signal is
+surfaced through the Server's OTel collector (the bundled OTLP fan-in
+endpoint, `go/internal/stack/collector_container.go:22-32`): the delivery
+consumer's dispatch backlog depth (the consumer is one ctx-rooted `Run` loop
+today, `go/internal/delivery/consumer.go:255`) and Server saturation metrics,
+with the emitter added as gate-instrumentation work in T3.
 
-### Phase 1 — few instances, Postgres LISTEN/NOTIFY stepping-stone
+### Phase 1 — multi-instance / HA, clustered NATS
 
-Cross-instance comms fan-out over LISTEN/NOTIFY behind the `EventFabric`
-seam: a mutation still writes Postgres first (write-through preserved,
-`go/internal/comms/doc.go:9-12`), then NOTIFYs a compact event reference;
-each instance's listener re-publishes onto its local ring. Session-binding
-invalidation rides the same channel. No new infrastructure — the cluster the
-deployment already operates carries the fabric.
-
-**Phase-1 Runner topology: Server-to-Server forwarding** (weighed in
-Alternatives considered; owned by Plan T4b). Each Runner enrolls with
-exactly one Server; placement/binding rows in Postgres name the serving
-Server (T5 makes bindings durable); any other Server forwards a session
-command over one internal gRPC hop. This requires generalizing the hub's
-single-Runner binding assumption — "a reconnect clears the whole map"
-(`go/internal/runnerhub/hub.go:869-870`) — to multi-Runner/multi-Server
-enrollment; T4b owns that generalization and the forwarding hop.
-
-A deployment expecting rapid growth past the Phase-2 gate MAY skip this
-phase entirely and adopt NATS at the multi-instance boundary (T4 is an
-optional stepping-stone — see the collapsing-Phase-1 alternative);
-LISTEN/NOTIFY remains the recommended default for the gradual-growth path.
-
-**Gate to Phase 2:** any of — (a) NOTIFY publish latency or the primary's
-LISTEN/NOTIFY connection load crosses a deployment-set threshold, surfaced
-through the Server's OTel collector (the bundled OTLP fan-in endpoint,
-`go/internal/stack/collector_container.go:22-32`; the fabric emitter that
-reports it is added as gate-instrumentation work in T4); (b) the
-Server↔Runner forwarding-edge count or the re-enroll churn on Server
-failure crosses a deployment-set threshold on the same OTel surface (the
-emitter reporting it is gate-instrumentation work in T4b; fleet
-elasticity under RIG-2485 makes edges churn); (c) the single delivery
-consumer instance's dispatch backlog depth stays above a deployment-set
-drain threshold (the consumer is one ctx-rooted `Run` loop today,
-`go/internal/delivery/consumer.go:255`; its backlog emitter is likewise
-gate-instrumentation work). Any one suffices — they tend to arrive together
-at managed-service scale.
-
-### Phase 2 — managed scale, NATS fabric
-
-A NATS cluster lands as the transport/routing fabric (Q3 recommendation):
-
-- `EventFabric` swaps LISTEN/NOTIFY for core NATS subjects (per event space,
-  tenant-scoped subject prefixes; extending per-tenant isolation to the
-  fabric via NATS accounts/permissions is the recommended example — OQ-3
-  finalizes the mechanism);
-- the delivery consumer's trigger side moves to a queue group (one claimant
-  per posted-message event);
-- Server↔Runner moves to the Q2 bus topology: per-Runner command subjects,
-  event fan-in, request-reply for the RPC-shaped relay legs.
+Flip the NATS connection from embedded to a clustered external NATS — one
+configuration value; no code change, no implementation swap. Queue groups now
+balance delivery work across instances, per-Runner subjects route commands
+from any Server, JetStream delivery is cluster-replicated (R3 file storage),
+and binding invalidation fans out across instances — all semantics the code
+already carries from Phase 0, now backed by the cluster.
 
 Postgres remains the durability source of truth throughout; the fabric
-carries references and routing, and anything the fabric drops is recovered
-by the existing cursor sweeps.
+carries delivery and routing, and anything the fabric drops is recovered by
+the existing cursor sweeps (`go/internal/delivery/consumer.go:3-9`).
 
-**Gate to Phase 3:** a concrete stream exists with no Postgres cursor and a
-demonstrated replay need — Runner telemetry fan-in or scheduling events under
-RIG-2485 — evidenced by a measured signal: the gap/loss count on that stream
-across consumer restarts (core NATS drops what a disconnected subscriber
-misses), surfaced through the Server's OTel collector
-(`go/internal/stack/collector_container.go:22-32`; the per-stream gap
-counter is added as gate-instrumentation work with the stream), exceeding a
-deployment-set tolerance where a new Postgres cursor table for that stream
-is judged worse than a bounded JetStream window.
+### JetStream telemetry/scheduling streams (gated, with RIG-2485)
 
-### Phase 3 — JetStream, per-stream and narrow
-
-JetStream enabled only for the streams that passed the Phase-3 gate,
-per-stream. Comms delivery never moves (its Postgres cursor is the
-guarantee). Each adoption records its retention window and its recovery
-story; a JetStream stream is never the sole holder of state the product
-cannot regenerate.
+Streams with no Postgres cursor and a genuine bounded-replay need — Runner
+telemetry fan-in and scheduling events, both consumed by RIG-2485 — get
+their own JetStream streams (T6) only when that lane's consumers exist and a
+measured gap/loss signal on the stream, surfaced through the same OTel
+collector, exceeds a deployment-set tolerance. Each such stream records its
+retention window and recovery story; a JetStream stream is never the sole
+holder of state the product cannot regenerate.
 
 ## Plan
 
@@ -527,11 +597,16 @@ cannot regenerate.
 
 - **Postgres is the sole durability source of truth for fabric-carried
   state.** No task may introduce a second store of committed
-  comms/routing/session-binding state; the fabric carries transport/routing
-  references only, and every fabric recovery path terminates in a Postgres
-  cursor or row (preserves DL-019/DL-020's spirit). Transcript bodies are
-  out of scope: the blob seam (DL-019) and the two-tier transcript archive
-  (DL-093, `docs/designs/DECISIONS.md:95`) remain their durability owners.
+  comms/routing/session-binding state; JetStream is a delivery transport
+  whose consumer state is disposable, and every fabric recovery path
+  terminates in a Postgres cursor or row (preserves DL-019/DL-020's spirit).
+  Transcript bodies are out of scope: the blob seam (DL-019) and the
+  two-tier transcript archive (DL-093, `docs/designs/DECISIONS.md:95`)
+  remain their durability owners.
+- **One eventing path — NATS only.** No parallel in-process channel fabric;
+  the single-binary default embeds the NATS server in-process
+  (`DontListen: true` + in-process JetStream). Application code is identical
+  across embedded and clustered modes.
 - **Fail-closed identity everywhere.** Tenant and account resolution follow
   the existing posture: identity is never a request field, always resolved
   server-side from the authenticated connection
@@ -540,32 +615,35 @@ cannot regenerate.
   (`go/internal/runnerhub/relay_comms.go:7-15`).
 - **The OSS core stays single-tenant-degenerate.** No `if multiTenant`
   behavioral forks; single-tenant runs the same schema with one bootstrap
-  tenant row and the Phase-0 in-process fabric. No broker is required to run
-  the OSS core.
+  tenant row and the embedded-NATS fabric. No external services are required
+  to run the OSS core.
 - **The agent↔Runner hop is frozen.** vsock through the attribution boundary
   (RIG-2394); no task exposes NATS to the in-VM side.
-- **Seams before swaps.** Every fabric change lands behind an interface with
-  the in-process implementation first (the hub's own posture,
-  `go/internal/runnerhub/hub.go:10-14`); a phase advance swaps an
-  implementation, never rewrites a consumer.
+- **Seams before swaps.** Every fabric consumer lands behind an interface
+  (the hub's own posture, `go/internal/runnerhub/hub.go:10-14`). The
+  embedded↔clustered switch is a configuration value behind the same NATS
+  implementation — a deployment change, never an implementation swap.
 - **Migrations stay embedded-and-ordered** (`go/internal/store/store.go:18-31`);
   tenancy DDL rides the same mechanism.
 - **Cross-Server command ordering on one Runner subject must be safe.**
   Per-Runner command subjects with multiple Server publishers guarantee
   only per-publisher ordering in NATS, while today's Sessions stream is a
   single ordered stream per Runner. Either commands for one session are
-  serialized through its placement-owning path (the forwarding shape does
-  this naturally), or the relay legs are idempotent/order-independent — a
-  required invariant with a required test (T6).
+  serialized through its placement-owning path, or the relay legs are
+  idempotent/order-independent — a required invariant with a required test
+  (T5).
 - **Session-level `SET` of the tenancy GUC is banned.** All tenant scoping
   goes through `beginTenantTx` (`SET LOCAL` inside an explicit
-  transaction); a session-level `SET` leaks tenant identity across pgxpool
-  checkouts.
-- **No transaction-pooling proxy.** The design assumes a direct
-  `pgxpool → Postgres` connection; a transaction-pooling proxy (pgbouncer
-  transaction mode) breaks Phase-1 LISTEN/NOTIFY (which needs a real
-  session) and complicates the GUC discipline. A later record may design
-  for one; until then its absence is a stated invariant.
+  transaction); a session-level `SET` leaks tenant identity across pooled
+  connection checkouts.
+- **Transaction-mode connection pooling is supported and expected.** Neon's
+  pooled endpoint is PgBouncer in transaction mode, where a physical backend
+  is shared across tenants between transactions. Correctness rests on the
+  transaction-scoped GUC discipline this record mandates — `SET LOCAL` /
+  `set_config(..., true)` only — and session `SET` stays banned precisely
+  because it leaks across pooled checkouts. The design must hold unchanged
+  on pooled and direct endpoints; T2's test cycle verifies against a
+  transaction-mode pooler.
 
 ### T1 — tenant schema + identity plumbing
 
@@ -588,7 +666,7 @@ context seam that carries the resolved tenant.
   under a tenant context stamps the row; single-tenant boot seeds exactly one
   tenant idempotently.
 
-### T2 — RLS enforcement + per-transaction tenant scoping
+### T2 — RLS enforcement + per-transaction tenant scoping (Neon-aware)
 
 RLS policies on every tenant-owned table, filtering on a per-transaction GUC
 the store sets from the context tenant; the store's application role runs
@@ -604,7 +682,7 @@ definition, not follow-ups:
 - **GUC-unset semantics.** `current_setting('compass.tenant_id')` on a
   never-set connection raises error 42704 (not zero rows), and a
   session-level `SET` (the banned form, Global Constraints) would leave the
-  value behind across pgxpool checkouts — `SET LOCAL` itself is
+  value behind across pooled checkouts — `SET LOCAL` itself is
   transaction-scoped and resets at COMMIT/ROLLBACK. The policy must use
   `current_setting('compass.tenant_id', true)` (missing_ok) plus an
   explicit non-empty guard. That guard is defense against the never-set
@@ -612,6 +690,10 @@ definition, not follow-ups:
   an *empty* value; a session `SET` that installs a *non-empty* tenant id is
   prevented by the `SET LOCAL`-only ban (Global Constraints), not by the
   guard — the ban is the real defense against a mis-scoped non-empty leftover.
+- **Scalar-subquery GUC reads.** Every policy wraps the GUC read as
+  `(SELECT current_setting('compass.tenant_id', true))` so the planner
+  evaluates it once per statement, not once per row — the per-row form is a
+  quiet O(rows) tax on every policied query.
 - **`SET LOCAL` only.** Session-level `SET` of the GUC is banned (Global
   Constraints); all tenant scoping goes through `beginTenantTx`.
 - **The refactor is whole-store, and bounded.** Many store methods run a
@@ -627,8 +709,8 @@ definition, not follow-ups:
 - **Interfaces:** consumes T1's `TenantFromContext`. Produces: migration
   `NNNN_rls.sql` (`ALTER TABLE … ENABLE ROW LEVEL SECURITY` and
   `ALTER TABLE … FORCE ROW LEVEL SECURITY`, plus one policy per table of
-  the shape `USING (current_setting('compass.tenant_id', true) <> '' AND
-  tenant_id = current_setting('compass.tenant_id', true))`);
+  the shape `USING ((SELECT current_setting('compass.tenant_id', true)) <> ''
+  AND tenant_id = (SELECT current_setting('compass.tenant_id', true)))`);
   `func (s *Store) beginTenantTx(ctx context.Context) (pgx.Tx, error)` —
   `Begin` + `SET LOCAL compass.tenant_id`, batched with the first query in
   one round-trip — threaded through every existing store method (all run
@@ -637,136 +719,83 @@ definition, not follow-ups:
   rows, cross-tenant writes fail, a never-set connection fails closed (no
   rows, never all rows, never an error-42704 escape), and a pooled
   connection previously scoped to tenant A and reused without scoping does
-  not see tenant A's rows; plus an owner-role probe proving
-  `FORCE ROW LEVEL SECURITY` is in effect (the migration-applying role
-  cannot read cross-tenant).
+  not see tenant A's rows; the pooled-reuse case runs against a
+  **transaction-mode pooler** (PgBouncer transaction mode — Neon's pooled
+  endpoint shape), not only a direct connection; plus an owner-role probe
+  proving `FORCE ROW LEVEL SECURITY` is in effect (the migration-applying
+  role cannot read cross-tenant). Where a Neon branch of production shape is
+  available, the suite additionally runs there (branching as a test tool,
+  Q1 Neon subsection).
 
-### T3 — `EventFabric` seam + in-process implementation (Phase 0)
+### T3 — fabric seams: embedded-NATS `EventFabric`, Connect `RunnerFabric` (Phase 0 default)
 
-Extract the cross-instance fan-out seam above the in-process bus so comms and
-delivery publish through it.
+The fabric seams and their Phase-0 implementations. `EventFabric` (comms and
+delivery publish through it) runs on embedded in-process NATS by default.
+`RunnerFabric` (the hub's command router lands behind it) keeps the Runner on
+today's Connect transport at Phase 0 — the Runner is an external box and the
+embedded server takes no network sockets — so its Phase-0 implementation wraps
+the existing command router (`go/internal/runnerhub/hub.go:925-938`);
+per-Runner NATS command subjects land with clustered NATS at T5.
 
-- **Interfaces:** consumes `go/events.Bus`
-  (`go/events/events.go:1-13`) and the comms write-through publish sites
-  (`go/internal/comms/doc.go:9-12`). Produces:
-  `package fabric` with
-  `type EventFabric interface { Publish(ctx context.Context, subject string, ref EventRef) error; Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error) }`
-  where `EventRef` is a compact reference (event kind + row id + tenant),
-  never a payload copy — subscribers re-read Postgres; and
-  `fabric.InProcess` (a no-op loopback: publish calls local subscribers
-  synchronously with the ring as today).
-- **Test cycle:** comms + delivery behavior unchanged under `InProcess`
-  (existing suites green); a two-fabric-instance test proves the seam carries
-  a publish across instances (with a channel-backed test fabric).
-
-### T4 — LISTEN/NOTIFY fabric (Phase 1)
-
-`fabric.PgNotify`: publish = `NOTIFY` a channel with the serialized
-`EventRef`; each instance runs one listener connection re-publishing onto its
-local ring. Session-binding invalidation for T5 rides the same fabric.
-
-- **Interfaces:** consumes T3's `EventFabric` + the store pool. Produces
-  `fabric.NewPgNotify(pool *pgxpool.Pool, log *slog.Logger) *PgNotify`;
-  a reconnect loop with a full local-ring resync on listener reconnect
-  (dropped NOTIFYs are recovered by the same cursor sweeps that recover ring
-  loss, `go/internal/delivery/consumer.go:3-9`).
-- **Test cycle:** `pgtest` two-instance test — post on A, deliver to a
-  session resolved on B; listener kill/reconnect recovers via sweep, no
-  message loss (cursor advances exactly once).
-
-### T4b — Server-to-Server command forwarding (Phase 1)
-
-The Runner half of Phase 1 that T4 (the comms half) does not cover: each
-Runner enrolls with exactly one Server, and any other Server forwards a
-session command over one internal gRPC hop to the serving Server, which
-drives its locally-enrolled Runner (the Server-to-Server forwarding shape,
-Alternatives considered). This generalizes the hub's single-Runner binding
-assumption — "a reconnect clears the whole map"
-(`go/internal/runnerhub/hub.go:869-870`) — to multi-Runner/multi-Server
-enrollment.
-
-- **Interfaces:** consumes T5's durable session bindings (the
-  `session_bindings` and `agent_placements` tables,
-  `go/internal/store/agent_placements.go:33-39`) and
-  the hub's enrollment/binding surface (the single-Runner re-enroll posture,
-  `go/internal/runnerhub/hub.go:86-89`; the whole-map-clear assumption to
-  generalize, `:869-870`; today's command router, `:925-938`). Produces: a
-  serving-Server column on the session/placement binding (which Server
-  currently holds a Runner's enrollment); a `RunnerFabric`
-  direct-Connect+forwarding implementation that, on a command for a session
-  whose serving Server is another instance, forwards over one internal gRPC
-  hop to that Server; the generalization of the hub binding maps beyond
-  the single-Runner assumption; and the OTel emitter reporting
-  forwarding-edge count and Server-failure re-enroll churn (the Phase-2
-  gate-(b) instrumentation).
-- **Test cycle:** cross-Server command routing (a command issued on instance
-  A for a session served by instance B forwards and lands); per-Runner
-  command serialization through the placement-owning path (the cross-Server
-  ordering invariant, Global Constraints — no steer-after-start reorder);
-  Server-failure re-enroll window (a dead serving Server's Runners re-enroll
-  elsewhere and the rows update, fail-closed until they do).
-- Depends: T5 (durable bindings). Like T4, this is a Phase-1 stepping-stone
-  a deployment may skip by jumping straight to the Phase-2 NATS bus (the
-  collapsing-Phase-1 path).
-
-### T5 — durable session bindings + `RunnerFabric` seam
+### T4 — durable session bindings
 
 Move the hub's session→account/Runner binding truth from single-hub RAM to
 Postgres (beside `agent_placements`), with the hub's maps demoted to a cache
-invalidated over the `EventFabric`; define the `RunnerFabric` interface the
-Q2 topology lands behind.
+invalidated over the `EventFabric`.
 
 - **Interfaces:** consumes `agent_placements`
-  (`go/internal/store/agent_placements.go:33-39`) and the hub binding surface
+  (`go/internal/store/agent_placements.go:33-39`), the hub binding surface
   (`bindContainer`/`promoteSession`/`unbindSession`,
-  `go/internal/runnerhub/relay_comms.go:30-157`). Produces: migration
+  `go/internal/runnerhub/relay_comms.go:30-157`), and T3's `EventFabric`
+  (invalidation events). Produces: migration
   `NNNN_session_bindings.sql`
   (`session_bindings(session_id PK, agent_account_id FK, runner_id, bound_at_unix_ms)`);
   store methods `RecordSessionBinding` / `ResolveSessionAccount` /
-  `DeleteSessionBinding` (fail-closed `ErrNotFound`); and
-  `type RunnerFabric interface { SendCommand(ctx context.Context, runnerID string, cmd *compassv1internal.SessionsResponse) error; Events(ctx context.Context) (<-chan RunnerEvent, error) }`
-  with the direct-Connect implementation wrapping today's command router
-  (`go/internal/runnerhub/hub.go:925-938`).
+  `DeleteSessionBinding` (fail-closed `ErrNotFound`).
 - **Test cycle:** a Server restart resolves a pre-restart session's account
   from the durable binding (fails today); the fail-closed contract holds — a
   stopped/unbound session is `CodeNotFound` exactly as
-  `go/internal/runnerhub/relay_comms.go:242-249` specifies.
+  `go/internal/runnerhub/relay_comms.go:242-249` specifies; a binding change
+  invalidates the cache on a second fabric instance.
 
-### T6 — NATS fabric implementations (Phase 2)
+### T5 — clustered-NATS deployment mode (Phase 1)
 
-`fabric.NATS` implementing `EventFabric` (tenant-prefixed subjects; NATS
-accounts/permissions per tenant is the recommended, non-normative example —
-OQ-3 finalizes the fabric-isolation mechanism) and `RunnerFabric` (per-Runner
-command subjects, event fan-in, request-reply for `RelayCommsCall` /
-`CommitConversationFrame` legs preserving their status-code contracts,
-`go/internal/runnerhub/relay_comms.go:242-320`); delivery trigger moves to a
-queue group behind the existing consumer interfaces
-(`go/internal/delivery/consumer.go:42-63`).
+The config-flip to a clustered external NATS, and everything that must be
+proven correct only under multiple instances: queue-group delivery
+partitioning, per-Runner command subjects driven from any Server,
+request-reply for the RPC-shaped relay legs preserving their status-code
+contracts (`go/internal/runnerhub/relay_comms.go:242-320`), JetStream R3
+file-storage replication, and the cross-Server ordering invariant. This is a
+deployment mode plus its multi-instance test surface — not an implementation
+swap; T3's fabric code is unchanged.
 
-- **Interfaces:** consumes T3/T5 seams + a NATS cluster (deployment owned by
-  infra; connection config via server flags/env). Produces the two fabric
-  implementations plus subject-naming doc
-  (`compass.<tenant>.comms.<kind>`, `compass.runner.<runner_id>.cmd`,
-  `compass.runner.events` queue-grouped) as a supporting file beside this
-  record. **Ordering invariant (Global Constraints):** a per-Runner command
-  subject with multiple Server publishers gives only per-publisher ordering
-  in NATS, where today's Sessions stream is one ordered stream per Runner —
-  so commands for one session MUST be serialized through its
-  placement-owning path, or the relay legs MUST be
-  idempotent/order-independent; T6 picks and implements one.
-- **Test cycle:** integration suite against an embedded/test NATS server:
-  cross-instance deliver, queue-group single-claim, Runner failover
+- **Interfaces:** consumes T3's fabric (`fabric.Config` clustered mode) and
+  T4's durable bindings; a NATS cluster (deployment owned by infra;
+  connection config via server flags/env). Produces: the clustered `Config`
+  wiring + JetStream R3 stream configuration; tenant-scoped subject prefixes
+  (per-tenant NATS accounts/permissions is the recommended, non-normative
+  example — OQ-3 finalizes the fabric-isolation mechanism); the
+  multi-instance integration suite. **Ordering invariant (Global
+  Constraints):** a per-Runner command subject with multiple Server
+  publishers gives only per-publisher ordering in NATS, where today's
+  Sessions stream is one ordered stream per Runner — so commands for one
+  session MUST be serialized through its placement-owning path, or the relay
+  legs MUST be idempotent/order-independent; T5 picks and implements one.
+- **Test cycle:** integration suite against a clustered test NATS:
+  cross-instance deliver (post on A, deliver to a session held on B via the
+  per-connection subject), queue-group single-claim, Runner failover
   (resubscribe re-routes commands), fabric outage degrades to sweep-recovered
   delivery with zero committed-state loss, and the ordering invariant —
   steer-after-start published from two Server instances against one session
   must not reorder.
 
-### T7 — JetStream telemetry/scheduling streams (Phase 3, gated)
+### T6 — JetStream telemetry/scheduling streams (gated)
 
-Only after the Phase-3 gate: JetStream streams for Runner telemetry fan-in
-and scheduling events, consumed by RIG-2485.
+Only after the telemetry/scheduling gate (Staged adoption path): JetStream
+streams for Runner telemetry fan-in and scheduling events, consumed by
+RIG-2485.
 
-- **Interfaces:** consumes T6's NATS cluster + RIG-2485's event payload
+- **Interfaces:** consumes T3's fabric + RIG-2485's event payload
   definitions (that lane owns them). Produces stream/retention configs and a
   thin publisher on the Runner-event path; explicitly NOT a delivery-cursor
   replacement.
@@ -777,23 +806,18 @@ and scheduling events, consumed by RIG-2485.
 
 - [ ] **T1** — tenant schema + identity plumbing (`tenants`, `tenant_id`,
       bootstrap seed, context seam)
-- [ ] **T2** — RLS enforcement + per-transaction tenant scoping (depends: T1)
-- [ ] **T3** — `EventFabric` seam + in-process implementation (Phase 0)
-- [ ] **T4** — LISTEN/NOTIFY fabric (Phase 1; depends: T3) — OPTIONAL
-      stepping-stone a deployment may skip (see the collapsing-Phase-1
-      alternative)
-- [ ] **T4b** — Server-to-Server command forwarding + multi-Runner
-      enrollment generalization (Phase 1; depends: T5) — OPTIONAL
-      stepping-stone a deployment may skip (see the collapsing-Phase-1
-      alternative)
-- [ ] **T5** — durable session bindings + `RunnerFabric` seam (Phase 0;
-      depends: T3)
-- [ ] **T6** — NATS `EventFabric` + `RunnerFabric` + delivery queue groups
-      (Phase 2; depends: T3, T5, and the Phase-2 gate; T4 and T4b are
-      Phase-1 stepping-stones required only on the gradual-growth path —
-      the collapsed path skips both)
-- [ ] **T7** — JetStream telemetry/scheduling streams (Phase 3; depends: T6,
-      the Phase-3 gate, and RIG-2485 payload contracts)
+- [ ] **T2** — RLS enforcement + per-transaction tenant scoping, Neon-aware
+      (scalar-subquery policies, transaction-mode-pooler verification;
+      depends: T1)
+- [ ] **T3** — fabric seams: embedded-NATS `EventFabric` (`DontListen` +
+      in-process JetStream, JetStream-durable comms delivery) + Connect
+      `RunnerFabric` (Runner stays on Connect until Phase 1); Phase 0 default
+- [ ] **T4** — durable session bindings (depends: T3)
+- [ ] **T5** — clustered-NATS deployment mode: config flip, queue groups,
+      per-Runner subjects, JetStream R3, cross-Server ordering invariant
+      test (Phase 1; depends: T3, T4, and the Phase-1 gate)
+- [ ] **T6** — JetStream telemetry/scheduling streams (gated; depends: T3,
+      the telemetry/scheduling gate, and RIG-2485 payload contracts)
 
 ## Ledger impact
 
@@ -803,38 +827,44 @@ they are named N1-N4 here only for cross-reference.
 
 ### Proposed row adds
 
-- **N1 (Storage):** "Managed-tier tenant isolation is one shared Postgres
+- **N1 (Storage):** "Multi-tenant isolation is one shared Postgres
   database with a `tenant_id` column and row-level security enforced per
   transaction (fail-closed GUC scoping); a compliance-sensitive tenant may be
   promoted to a dedicated database running the identical schema (escape
   hatch, not a fork); the OSS core runs the same schema single-tenant with
   one bootstrap tenant row" — Record: this record, §Q1.
-- **N2 (Topology & tiers):** "Server↔Runner topology at managed scale is
-  all-Servers-to-all-Runners over a message-bus fabric (one connection per
-  party to the fabric), never single-Server-owns-Runners and never an N×M
-  direct-stream mesh; session→Runner routing truth stays durable in Postgres
-  (`agent_placements` + session bindings), and the Runner remains a pure
-  forwarder with Server-side fail-closed account resolution" — Record: this
-  record, §Q2.
-- **N3 (Transport):** "NATS is adopted as the cross-instance
-  transport/routing fabric under the async layer — comms event fan-out
-  bridge, session-binding invalidation, delivery-worker queue groups, and the
-  Server↔Runner command/event fabric — via the staged path single-instance
-  in-process → Postgres LISTEN/NOTIFY → NATS, each phase behind an
-  advancement gate; Connect stays the synchronous RPC edge and the
-  agent↔Runner hop stays vsock (RIG-2394)" — Record: this record, §Q3 +
-  §Staged adoption path. Supersedes DL-014 and DL-021.
-- **N4 (Storage):** "Postgres is the sole durability source of truth for
-  fabric-carried state (comms, routing, session bindings): the fabric
-  carries transport/routing references only, every fabric recovery path
-  terminates in a Postgres cursor or row, and JetStream is admitted
-  per-stream only where no Postgres cursor exists (telemetry / scheduling
-  fan-in) — never for comms delivery. This does not disturb the existing
-  transcript-body blob seam (DL-019) or the two-tier transcript archive
-  (DL-093), which remain the durability owners for transcript bodies" —
-  Record: this record, §Q3 role 5 + §Phase 3. Supersedes DL-019, re-scoping
-  ONLY its "JetStream is comms-only" clause; the store-of-record and
-  transcript-blob clauses survive verbatim.
+- **N2 (Topology & tiers):** "Servers are stateless L7-load-balanced
+  instances (any Server handles any client request); Runners are
+  individually subject-addressable over a message-bus fabric (one connection
+  per party), never single-Server-owns-Runners and never an N×M
+  direct-stream mesh; delivery to a live client routes over a per-connection
+  subject to the one Server holding the socket; session→Runner routing truth
+  stays durable in Postgres (`agent_placements` + session bindings), and the
+  Runner remains a pure forwarder with Server-side fail-closed account
+  resolution" — Record: this record, §Q2.
+- **N3 (Transport):** "NATS is the single eventing substrate — embedded
+  in-process (`DontListen` + in-process JetStream) for the
+  single-binary/OSS default, clustered for multi-instance, identical
+  application code across both. JetStream is the durable comms-delivery
+  transport (at-least-once fan-out with bounded replay); Postgres keeps the
+  message row and the per-(agent, channel) delivery cursor as the recovery
+  truth. Core NATS carries routing/binding invalidation; queue groups
+  partition delivery work; per-Runner subjects carry the Server↔Runner
+  command/event fabric. Connect stays the synchronous RPC edge and the
+  agent↔Runner hop stays vsock (RIG-2394). No LISTEN/NOTIFY phase exists" —
+  Record: this record, §Q3 + §Staged adoption path. Supersedes DL-014 and
+  DL-021.
+- **N4 (Storage):** "Postgres remains the sole durability source of truth
+  for committed comms/routing/session-binding state: JetStream is an
+  at-least-once delivery TRANSPORT whose consumer state is disposable, never
+  a second truth store; every fabric recovery path terminates in a Postgres
+  cursor or row. Supersedes DL-019's 'JetStream is comms-only' clause —
+  JetStream now carries comms delivery as transport, with Postgres still the
+  truth — while DL-019's store-of-record and transcript-blob clauses survive
+  verbatim (the blob seam and the two-tier transcript archive, DL-093,
+  remain the durability owners for transcript bodies)" — Record: this
+  record, §Q3. Supersedes DL-019, re-scoping ONLY its "JetStream is
+  comms-only" clause.
 
 ### Proposed supersessions (Active rows, Matt-ruled — see Open Questions OQ-1)
 
@@ -852,14 +882,14 @@ they are named N1-N4 here only for cross-reference.
   by N3. The write-through half survives — a mutation still commits to
   Postgres before any fan-out (`go/internal/comms/doc.go:9-12`) and comms
   stays first-party — but the "not a swappable NATS-backed seam" half is
-  exactly what the `EventFabric` seam reverses for the cross-instance hop.
+  exactly what the `EventFabric` reverses for the cross-instance hop.
 
 ### Rows that survive untouched
 
 - **DL-020** (in-memory bus is a cache/fan-out ring, never a second store,
-  `docs/designs/DECISIONS.md:77`) — actively preserved: the fabric extends
-  the ring's loss-tolerant cache role across instances; N4 restates the
-  single-store invariant.
+  `docs/designs/DECISIONS.md:77`) — actively preserved: JetStream inherits
+  the loss-tolerant transport role across instances with Postgres the
+  recovery truth; N4 restates the single-store invariant.
 - **DL-093** (two-tier transcript archive: Postgres hot-tail pruned at
   flush + S3-compatible object-store cold archive,
   `docs/designs/DECISIONS.md:95`) — N4 explicitly preserves it: the archive
@@ -886,17 +916,18 @@ needs a first-class supersession decision either way — see OQ-5.
 These are Matt-ruled Active decisions (2026-07-04/06) that directly forbid
 what Q3 recommends: DL-021 says the comms substrate is "not a swappable
 NATS-backed seam"; DL-014/019 confine NATS/JetStream to "comms-internal
-only". Introducing NATS as the cross-instance comms/routing fabric and the
-Server↔Runner control-plane fabric is precisely reopening them — permitted
-under the RIG-2675 nothing-frozen posture, but the supersession call is
-Matt's, not this record's.
+only". Introducing NATS as the single eventing substrate — with JetStream
+now **actively carrying comms delivery** as the durable transport, a broader
+DL-019 reversal than earlier drafts contemplated — is precisely reopening
+them: permitted under the RIG-2675 nothing-frozen posture, but the
+supersession call is Matt's, not this record's.
 
-**The fork, framed precisely:** adopt NATS as the *transport/routing fabric
-under the async layer* — with Postgres still the sole durability source of
-truth (preserving the DL-019/DL-020 spirit: write-through first, every
-recovery path a Postgres cursor, the fabric loses nothing committed) — or
-keep the DL-014/019/021 posture and scale on Postgres LISTEN/NOTIFY plus a
-direct-stream Runner mesh indefinitely.
+**The fork, framed precisely:** adopt NATS as the single eventing substrate
+with JetStream as the comms-delivery transport — Postgres still the sole
+durability source of truth (preserving the DL-019/DL-020 spirit:
+write-through first, every recovery path a Postgres cursor, the fabric loses
+nothing committed) — or keep the DL-014/019/021 posture and confine NATS to
+comms-internal use, leaving cross-instance scale-out without a fabric.
 
 **Recommendation:** supersede DL-014 and DL-021 via N3, and DL-019 via N4
 (which re-scopes only the JetStream clause and restates the surviving
@@ -915,23 +946,25 @@ per-transaction `SET LOCAL` cost and planner care on hot queries; the
 failure mode of the alternative is a silent data breach, the failure mode of
 RLS is a measurable slowdown.
 
-### OQ-3 (non-load-bearing, deferred) — NATS deployment shape at Phase 2
+### OQ-3 (non-load-bearing, deferred) — NATS deployment shape
 
-Cluster sizing, placement (co-located with Servers vs dedicated), and
-whether per-tenant isolation uses NATS accounts or subject-permission
-scoping alone. Deferred with rationale: the fabric carries transport/routing
-references only (event kind + row id + tenant — N4), and the durable tenant
-boundary is RLS on the Postgres re-read, so a cross-tenant `EventRef`
+The primary axis — embedded in-process vs clustered external — is decided
+(Q3): embedded is the single-binary/OSS default, clustered is the
+multi-instance mode, and the switch is one configuration value. What remains
+deferred: cluster sizing, placement (co-located with Servers vs dedicated),
+and whether per-tenant fabric isolation uses NATS accounts or
+subject-permission scoping alone. Deferred with rationale: the `EventRef`
+carries references only (event kind + row id + tenant — N4), and the durable
+tenant boundary is RLS on the Postgres re-read, so a cross-tenant `EventRef`
 delivered to the wrong instance re-reads under that instance's *request-path*
 RLS scope and returns zero rows (the system-role background paths of OQ-4
 read cross-tenant by design, but expose data only onto a recipient's own
 tenant-scoped connection — the user-facing exposure boundary stays the
-RLS-scoped request read);
-not the primary tenant boundary, and no interface in the Plan changes with
-the answer (`fabric.NATS` config is deployment input). The Phase-2 gate is
-not near; RIG-2485's telemetry volume estimates should inform it. The "NATS
-accounts/permissions per tenant" wording in T6 and Phase 2 is a
-non-normative recommended example — OQ-3 finalizes that choice.
+RLS-scoped request read); the fabric is not the primary tenant boundary, and
+no interface in the Plan changes with the answer (`fabric.Config` is
+deployment input). RIG-2485's telemetry volume estimates should inform the
+clustered shape. The "NATS accounts/permissions per tenant" wording in T5 is
+a non-normative recommended example — OQ-3 finalizes that choice.
 
 ### OQ-4 (load-bearing) — cross-tenant system paths under RLS
 
@@ -967,7 +1000,7 @@ which is why this is Matt's call, not the record's.
 DL-013 verbatim: "Transport is gRPC everywhere (Client↔Server and
 Runner↔Server), authenticated by per-Runner provisioned tokens"
 (`docs/designs/DECISIONS.md:65`). N2's own "one connection per party to the
-fabric" retires the Runner↔Server Connect edge at Phase 2 — enrollment, the
+fabric" retires the Runner↔Server Connect edge at Phase 1 — enrollment, the
 Sessions command stream, and PublishEvents all move to the fabric — so
 DL-013's per-Runner-provisioned-token authn clause needs a successor either
 way; "assumes composing" is not tenable. Two variants:
