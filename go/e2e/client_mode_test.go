@@ -14,7 +14,7 @@ package e2e
 // with its real minted admin token.
 //
 // runClient / bridgeService.Connect live in cmd/compass-app package main under
-// //go:build unix && gtk3 and need a webview/display, so they cannot run in
+// //go:build unix && gtk4 and need a webview/display, so they cannot run in
 // headless podman CI and are not importable — this test therefore composes the
 // importable pieces (bridge.NewTLSTarget, the generated compass.v1 connect
 // client, tokenstore) against the real server, never calling runClient nor

@@ -353,6 +353,14 @@ ruling cheap to apply and keeps a later reversal cheap.
 
 ## Global Constraints
 
+> **Amendment (RIG-1770, GTK4 migration — DL-282, 2026-08-28).** The "Linux
+> system libs" constraint below names `webkit2gtk-4.1`; that is the
+> pre-migration stack. The shell now builds Wails' default GTK4 +
+> webkitgtk-6.0 (repo tag `gtk4`; closure `gtk4`/`webkitgtk_6_0` in
+> `tools/toolchain/gtk-closure.nix`), so read the shell's system prerequisite
+> as the gtk4 + webkitgtk-6.0 dev packages. The frozen prose is retained per
+> the banner-amendment convention.
+
 - **Go 1.25 floor** for anything under `go/` (`go/go.mod:15`: `go 1.25.0`); one
   Go module for the whole backend (`go/go.mod:1-3`), so `compass-stack` joins
   the existing module, never a second one.

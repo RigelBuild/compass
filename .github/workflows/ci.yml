@@ -1240,7 +1240,7 @@ jobs:
           # has no session bus and cannot autolaunch one (no X11 $DISPLAY under
           # wayland; no dbus-launch on PATH under x11), so each leg runs under a
           # private per-run bus via `dbus-run-session --` (torn down with the
-          # leg). GTK3/webkit2gtk-4.1 tolerated a missing bus; GTK4 does not.
+          # leg). The legacy webkit2gtk-4.1 stack tolerated a missing bus; GTK4 does not.
           #
           # dbus-daemon reads its session config from the compiled-in sysconfdir
           # (/etc/dbus-1/session.conf), which does NOT exist on the minimal

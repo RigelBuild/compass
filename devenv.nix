@@ -103,7 +103,7 @@ in
     # curl in current-system — not only one whose current-system ships curl.
     curl
 
-    # pkg-config: the Wails v3 cgo link needs it to discover the GTK3/WebKitGTK
+    # pkg-config: the Wails v3 cgo link needs it to discover the GTK4/WebKitGTK
     # `.pc` files (via PKG_CONFIG_PATH, set over the GTK closure in
     # `env` below, which owns that rationale). Kept in this parsed list, not the
     # Linux-guarded env block, because it has a bin the toolchain-parity gate
@@ -150,9 +150,9 @@ in
   ++ [
     inputs.hk.packages.${pkgs.stdenv.system}.default
   ]
-  # xvfb-run: a virtual framebuffer wrapper for the multi-window gtk3 e2e
+  # xvfb-run: a virtual framebuffer wrapper for the multi-window gtk4 e2e
   # (go/cmd/compass-app, design record compass-multi-window §M4) — the real
-  # GTK3/WebKit shell needs a display to open windows, and dev boxes + CI
+  # GTK4/WebKit shell needs a display to open windows, and dev boxes + CI
   # runners are headless. Linux-only (X11) and appended OUTSIDE the parsed
   # `packages` literal: the toolchain-parity gate resolves every bare attr in
   # that literal on macOS too, where xvfb-run does not exist. The package is
@@ -223,13 +223,13 @@ in
     MOON_TOOLCHAIN_FORCE_GLOBALS = "true";
   }
   # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
-  # GTK3/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
+  # GTK4/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
   # library's `.pc` file along PKG_CONFIG_PATH, built here over the transitive
   # propagated-dependency closure of the GTK/WebKitGTK set so a `.pc`
-  # `Requires:` walk (gdk-3.0 → zlib, pango → freetype2/fontconfig, …) resolves.
+  # `Requires:` walk (gtk4 → zlib, pango → freetype2/fontconfig, …) resolves.
   # Both `.pc` install subdirs are searched: a dev output splits its `.pc` files
   # across `lib/pkgconfig` and `share/pkgconfig` (zlib ships `zlib.pc` under
-  # `share/`, which gdk-3.0 requires), so searching only `lib/` fails the walk.
+  # `share/`, which gtk4 transitively requires), so searching only `lib/` fails the walk.
   # The package set and subdir order are defined once in
   # tools/toolchain/gtk-closure.nix (imported just below), the single
   # definition every in-repo consumer resolves so they cannot drift.
@@ -239,14 +239,14 @@ in
   # out of the parsed `packages` list means the heavy WebKitGTK closure is never
   # realized by the toolchain-parity gate on a CI runner. The per-PR moon gate
   # still never compiles the native app; the one CI lane that does — the
-  # multi-window gtk3 e2e (compass-multi-window §M4) — is a dedicated,
+  # multi-window gtk4 e2e (compass-multi-window §M4) — is a dedicated,
   # affected-guarded ci.yml step that realizes this same closure out of band via
   # tools/toolchain/gtk-e2e-env.nix, so the moon battery stays GTK-free.
   // lib.optionalAttrs pkgs.stdenv.isLinux {
     PKG_CONFIG_PATH =
       let
-        # The GTK3/WebKitGTK set, imported from the shared
-        # module so the dev shell and the gtk3 e2e CI helper
+        # The GTK4/WebKitGTK set, imported from the shared
+        # module so the dev shell and the gtk4 e2e CI helper
         # (tools/toolchain/gtk-e2e-env.nix) resolve one closure and cannot drift.
         pcClosure = lib.closePropagation (import ./tools/toolchain/gtk-closure.nix pkgs);
       in

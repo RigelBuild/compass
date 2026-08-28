@@ -25,7 +25,7 @@ with pkgs;
   libsoup_3
   cairo
   pango
-  # atk (GTK3-era accessibility) and gdk-pixbuf are intentionally omitted:
+  # atk (legacy GTK accessibility) and gdk-pixbuf are intentionally omitted:
   # GTK4 routes accessibility through at-spi2 (gtk4.pc pulls atspi-2 via
   # gtk4-atspi.pc), so atk is unreachable in the gtk4/webkitgtk-6.0 .pc
   # Requires-walk and would be dead closure weight; gdk-pixbuf is still needed
