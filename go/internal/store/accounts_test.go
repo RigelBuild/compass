@@ -764,8 +764,8 @@ func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 		s := newTestStore(t)
 		id := newID()
 		if _, err := s.pool.Exec(ctx,
-			"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
-			id, SystemAccountHandle, "Squatter",
+			"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
+			id, SystemAccountHandle, "Squatter", string(s.resolveTenant(ctx)),
 		); err != nil {
 			t.Fatalf("insert squatter account: %v", err)
 		}
@@ -791,8 +791,8 @@ func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 		owner := mustUser(t, s, "owner")
 		id := newID()
 		if _, err := s.pool.Exec(ctx,
-			"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
-			id, SystemAccountHandle, "Squatter",
+			"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
+			id, SystemAccountHandle, "Squatter", string(s.resolveTenant(ctx)),
 		); err != nil {
 			t.Fatalf("insert squatter account: %v", err)
 		}

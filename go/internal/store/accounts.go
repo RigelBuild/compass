@@ -47,8 +47,8 @@ func (s *Store) CreateUser(ctx context.Context, u NewUser) (Account, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
-		id, u.Handle, u.DisplayName,
+		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
+		id, u.Handle, u.DisplayName, string(s.resolveTenant(ctx)),
 	); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
@@ -102,8 +102,8 @@ func (s *Store) BootstrapAdmin(ctx context.Context, u NewUser) (Account, error) 
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
-		id, u.Handle, u.DisplayName,
+		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
+		id, u.Handle, u.DisplayName, string(s.resolveTenant(ctx)),
 	); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
@@ -202,8 +202,8 @@ func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayN
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after a successful commit; safe on every non-commit path.
 
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
-		id, handle, displayName,
+		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
+		id, handle, displayName, string(s.resolveTenant(ctx)),
 	); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
@@ -287,8 +287,8 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
-		accountID, a.Handle, a.DisplayName,
+		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
+		accountID, a.Handle, a.DisplayName, string(s.resolveTenant(ctx)),
 	); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
