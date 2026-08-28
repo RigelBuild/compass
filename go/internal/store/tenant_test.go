@@ -117,3 +117,35 @@ func TestCreateUserStampsTenant(t *testing.T) {
 		t.Fatalf("tenant-context CreateUser stamped %q, want %q", got, otherTenant)
 	}
 }
+
+// TestCreateAgentStampsTenant proves the agent-insert path also stamps the
+// context tenant. CreateAgent inserts through a different (transactional) path
+// than CreateUser, so a wrong-tenant stamp there would not be caught by the
+// CreateUser test nor by the NOT NULL column — this asserts the persisted
+// tenant_id on the agent account directly. The owning user is created under the
+// same tenant context so the owner FK resolves within the tenant.
+func TestCreateAgentStampsTenant(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, err := s.pool.Exec(ctx,
+		"INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ($1, $2, $3, $4)",
+		"tenant-agent", "agent-tenant", "Agent Tenant", int64(1),
+	); err != nil {
+		t.Fatalf("insert tenant: %v", err)
+	}
+	tenant := TenantID("tenant-agent")
+	tctx := WithTenant(ctx, tenant)
+
+	owner, err := s.CreateUser(tctx, NewUser{Handle: "agent-owner", DisplayName: "Owner"})
+	if err != nil {
+		t.Fatalf("CreateUser(owner): %v", err)
+	}
+	agent, err := s.CreateAgent(tctx, owner.ID, NewAgent{Handle: "worker", DisplayName: "Worker"})
+	if err != nil {
+		t.Fatalf("CreateAgent(with tenant): %v", err)
+	}
+	if got := tenantOf(t, s, agent.ID); got != string(tenant) {
+		t.Fatalf("tenant-context CreateAgent stamped %q, want %q", got, tenant)
+	}
+}
