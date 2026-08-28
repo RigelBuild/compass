@@ -241,7 +241,23 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(true);
 	});
 
-	test("forgeAffected on the ci.yml self-edit path", () => {
+	test("forgeAffected on a testdata fixture change (still the forge surface)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["go/internal/forge/testdata/linear/create_issue.json"],
+				}),
+			).forgeAffected,
+		).toBe(true);
+	});
+
+	test("forgeAffected NOT triggered by a ci.yml-only PR (RIG-2909)", () => {
+		// The live oracle is the expensive extra verification on top of the
+		// untagged golden-replay battery; a PR that only touches this workflow
+		// file (or any other CI/docs-only change) must not run it — that
+		// over-trigger flaked unrelated PRs on a Linear API blip. Oracle-wiring
+		// changes are re-verified by the push/schedule full sweep instead.
 		expect(
 			generate(
 				prInput({
@@ -249,8 +265,8 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 					changedPaths: [".github/workflows/ci.yml"],
 				}),
 			).forgeAffected,
-		).toBe(true);
-		// A different workflow file must NOT trigger forge.
+		).toBe(false);
+		// A different workflow file must not trigger forge either.
 		expect(
 			generate(
 				prInput({

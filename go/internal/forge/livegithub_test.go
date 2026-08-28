@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -474,10 +475,12 @@ func TestLiveLinearCreateIssue(t *testing.T) {
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "create_issue")
-	got, err := ln.CreateIssue(ctx, team, CreateIssue{
-		Title:  "compass-live-issue-" + newRunID(),
-		Body:   f.Request.Input.body(),
-		Labels: f.Request.Input.labels(),
+	got, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{
+			Title:  "compass-live-issue-" + newRunID(),
+			Body:   f.Request.Input.body(),
+			Labels: f.Request.Input.labels(),
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
@@ -497,7 +500,9 @@ func TestLiveLinearCommentOnIssue(t *testing.T) {
 	ctx := context.Background()
 	ln := liveLinear(ts)
 
-	issue, err := ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
@@ -525,8 +530,10 @@ func TestLiveLinearGetIssue(t *testing.T) {
 	ln := liveLinear(ts)
 
 	f := liveFixture(t, providerLinear, "get_issue")
-	issue, err := ln.CreateIssue(ctx, team, CreateIssue{
-		Title: "compass-live-get-" + newRunID(),
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{
+			Title: "compass-live-get-" + newRunID(),
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -552,8 +559,10 @@ func TestLiveLinearListIssues(t *testing.T) {
 	ctx := context.Background()
 	ln := liveLinear(ts)
 
-	setup, err := ln.CreateIssue(ctx, team, CreateIssue{
-		Title: "compass-live-list-" + newRunID(),
+	setup, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{
+			Title: "compass-live-list-" + newRunID(),
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -615,18 +624,30 @@ func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
 	return rows[0]
 }
 
-// --- rate-limit backoff ------------------------------------------------------
+// --- transient-condition backoff ---------------------------------------------
 
-// createWithBackoff wraps ANY GitHub content-creating call with a single
-// bounded backoff on GitHub's SECONDARY rate limit (403 abuse-detection on
-// rapid content creation — issue/PR/comment creates and the H3 branch-seed
-// commit all trip it). This is real live-API timing behavior on the network
-// path: it never executes on the skip path, and it is a bounded one-shot
-// ctx-aware backoff, NOT a retry loop masking a bug (rule://no-retries).
+// createWithBackoff wraps ANY live content-creating call (GitHub or Linear) with
+// a single bounded backoff on a TRANSIENT live-API condition, then re-issues once.
+// Two conditions qualify, both real live-API timing behavior on the network path,
+// neither a code bug the retry would mask (rule://no-retries):
+//
+//   - GitHub's SECONDARY rate limit (403 abuse-detection on rapid content
+//     creation — issue/PR/comment creates and the H3 branch-seed commit trip it);
+//     it clears in seconds.
+//   - A transient network timeout — the HTTP client's deadline elapsing while
+//     awaiting response headers (a third-party latency/availability blip against
+//     api.github.com / api.linear.app). RIG-2909: a single such blip on a Linear
+//     setup create was failing the whole forge-oracle gate on unrelated PRs.
+//
+// It is a bounded ONE-SHOT ctx-aware backoff, not a retry loop: exactly one
+// re-issue, and if the condition persists the second attempt's error propagates
+// and the test fails loud (a genuine outage or a real bug is not papered over).
+// It never executes on the skip path (no credentials -> the caller t.Skips first).
 func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T, error) {
 	got, err := create()
-	if isSecondaryRateLimit(err) {
-		// Back off once, then re-issue — GitHub's secondary limit clears quickly.
+	if isSecondaryRateLimit(err) || isTransientNetworkTimeout(err) {
+		// Back off once, then re-issue — the secondary limit clears quickly and a
+		// transient header timeout is gone by the next attempt.
 		select {
 		case <-ctx.Done():
 			var zero T
@@ -691,6 +712,25 @@ func isSecondaryRateLimit(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(se.Message), "secondary rate limit")
+}
+
+// isTransientNetworkTimeout reports whether err is a transient network timeout:
+// the HTTP client's deadline elapsing while awaiting response headers (the
+// `Post "...": context deadline exceeded (Client.Timeout exceeded while awaiting
+// headers)` shape). The client wraps this as a *url.Error whose Timeout() is
+// true and which wraps context.DeadlineExceeded; the provider then wraps that as
+// `do request: %w`, so both errors.As(net.Error) and errors.Is(DeadlineExceeded)
+// see through the chain. This is a third-party latency/availability blip, not a
+// bug in our client — exactly the class createWithBackoff re-issues once.
+func isTransientNetworkTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 // --- teardown (test-side REST; the Provider interface has no close/delete) ----
@@ -1085,7 +1125,7 @@ func linearUpdateSpecs() []captureSpec {
 				ctx := context.Background()
 				ln := recordingLinear(ts, rt)
 				in := CreateIssue{Title: "compass-live-issue-" + newRunID(), Body: "stamped body"}
-				got, err := ln.CreateIssue(ctx, team, in)
+				got, err := createWithBackoff(ctx, func() (Issue, error) { return ln.CreateIssue(ctx, team, in) })
 				if err != nil {
 					t.Fatalf("CreateIssue: %v", err)
 				}
@@ -1099,7 +1139,9 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
+				})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -1116,7 +1158,9 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
+				})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
@@ -1135,7 +1179,9 @@ func linearUpdateSpecs() []captureSpec {
 				ts, team := requireLinear(t)
 				ctx := context.Background()
 				setup := setupLinear(ts)
-				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+				})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
 				}
