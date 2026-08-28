@@ -159,21 +159,22 @@ func TestServerEmissionSocketDoorTracesPostMessage(t *testing.T) {
 	}
 }
 
-// TestServerEmissionDisabledProducesNoSpansNoHeader is the disabled-path
+// TestServerEmissionDisabledSetsNoTraceResponseHeader is the disabled-path
 // contract: with NO global provider installed (the shipped default when
-// OTEL_EXPORTER_OTLP_ENDPOINT is unset), a PostMessage over the socket door
-// produces ZERO exported spans and NO traceresponse header — otelconnect falls
-// back to the global no-op provider, so no span is ever recorded and the
-// interceptor finds no valid span context to stamp.
-func TestServerEmissionDisabledProducesNoSpansNoHeader(t *testing.T) {
+// OTEL_EXPORTER_OTLP_ENDPOINT is unset), a PostMessage over the socket door sets
+// NO traceresponse header — otelconnect falls back to the global no-op provider,
+// so no span is ever recorded and the interceptor finds no valid span context to
+// stamp. (Span absence is proven transitively: no header can be stamped without a
+// recording span; a direct in-memory-exporter check would be vacuous, since no
+// code path routes spans into a non-global provider.)
+func TestServerEmissionDisabledSetsNoTraceResponseHeader(t *testing.T) {
 	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-	// Save/restore globals but install NO SDK provider: an in-memory exporter is
-	// attached to a provider that is NEVER set global, so it can only receive a
-	// span if the door wrongly recorded one against some other provider.
+	// Save/restore globals but install NO SDK provider: the shipped disabled
+	// state. otelconnect and the trace-response interceptor both read the global
+	// tracer provider, so with only the default no-op global in place the door can
+	// record no span and the interceptor finds no valid span context to stamp.
 	prevTP := otel.GetTracerProvider()
 	prevProp := otel.GetTextMapPropagator()
-	exp := tracetest.NewInMemoryExporter()
-	_ = sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp)) // deliberately NOT set global
 	t.Cleanup(func() {
 		otel.SetTracerProvider(prevTP)
 		otel.SetTextMapPropagator(prevProp)
@@ -184,9 +185,9 @@ func TestServerEmissionDisabledProducesNoSpansNoHeader(t *testing.T) {
 
 	resp, _ := postOverSocket(t, ctx, socketPath, channelID)
 
-	if spans := exp.GetSpans(); len(spans) != 0 {
-		t.Fatalf("disabled path exported %d spans, want 0", len(spans))
-	}
+	// The real disabled-path proof: no valid span context ⇒ no traceresponse
+	// header. (An in-memory exporter cannot prove absence here — no code path
+	// routes spans into a non-global provider, so its emptiness is vacuous.)
 	if hdr := resp.Header().Get(traceResponseHdr); hdr != "" {
 		t.Fatalf("disabled path set traceresponse = %q, want none", hdr)
 	}
