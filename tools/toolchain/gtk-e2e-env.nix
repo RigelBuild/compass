@@ -1,4 +1,4 @@
-# The out-of-band environment for the multi-window gtk3 e2e gate (design record
+# The out-of-band environment for the multi-window gtk4 e2e gate (design record
 # compass-multi-window §M4) — the ONE CI lane that compiles + runs the Compass
 # native app (Wails v3, go/cmd/compass-app). The per-PR moon battery is
 # deliberately GTK-free (devenv.nix's `env` block owns that rationale), so the
@@ -8,7 +8,7 @@
 #
 # Pins nixpkgs to the SAME devenv.lock revision the dev shell and gate-tools.nix
 # resolve, so the e2e runner links byte-for-byte the libraries a dev box does.
-# The GTK3/WebKitGTK package set is imported from tools/toolchain/gtk-closure.nix
+# The GTK4/WebKitGTK package set is imported from tools/toolchain/gtk-closure.nix
 # — the one definition devenv.nix's PKG_CONFIG_PATH is also built from — so the
 # two cannot drift.
 #
@@ -22,7 +22,7 @@
 #              the cgo link.
 #   pkgConfig  a buildEnv over the closure; the step sets PKG_CONFIG_PATH to its
 #              lib/pkgconfig + share/pkgconfig subdirs so the cgo link resolves
-#              the gtk+-3.0 / webkit2gtk-4.1 `.pc` files (and the libs they
+#              the gtk4 / webkitgtk-6.0 `.pc` files (and the libs they
 #              reference) — the same two-subdir shape devenv.nix uses.
 #   cc         the nixpkgs cc-wrapper; the step sets CC/CXX to its bin/cc,bin/c++
 #              so the cgo link uses the glibc WebKitGTK was built against (not

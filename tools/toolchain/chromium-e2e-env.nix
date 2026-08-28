@@ -4,7 +4,7 @@
 # from PLAYWRIGHT_CHROMIUM_PATH (apps/ui/playwright.config.ts:31-33).
 #
 # Realized here rather than through the shared gate-tools.nix / toolchain-parity
-# machinery for two reasons, mirroring how gtk-e2e-env.nix handles the gtk3 e2e
+# machinery for two reasons, mirroring how gtk-e2e-env.nix handles the gtk4 e2e
 # browser stack:
 #   - nixpkgs `chromium` is Linux-only (no darwin build), so it cannot live in
 #     devenv.nix's parsed `packages` literal — the parity gate resolves every
