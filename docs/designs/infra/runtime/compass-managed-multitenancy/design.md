@@ -130,50 +130,41 @@ Mechanics:
   admission limits at the Server edge, not by physical separation; a tenant
   that outgrows that is the escape-hatch case.
 
-#### Neon as the product database
+#### Correctness behind a transaction-mode connection pooler
 
-The managed product database is Neon, which is standard Postgres — RLS,
-`CREATE ROLE`, `FORCE ROW LEVEL SECURITY`, and `current_setting()` are all
-core Postgres features present there. Nothing in the Q1 design changes for
-Neon; the design was Neon-correct by construction, and the alignment is worth
-stating precisely because it is load-bearing:
+The OSS core targets any standard Postgres, and a real deployment usually sits
+behind a connection pooler — a self-hoster behind PgBouncer or pgpool, a cloud
+operator behind a managed pooling proxy. When that pooler runs in
+**transaction mode**, tenant scoping is correct by construction here, and the
+alignment is load-bearing because a session-scoped mistake stays silent until
+it leaks:
 
-- **The pooled endpoint is PgBouncer in transaction mode.** In transaction
-  mode a physical backend connection is shared across tenants between
-  transactions, so a session-level `SET` of the tenancy GUC **leaks across
-  tenants** — while `SET LOCAL` / `set_config(..., true)` is
-  transaction-scoped and safe. That is exactly the discipline this record
-  already mandates and exactly the alternative it already bans (Global
-  Constraints): our correctness choice is Neon's hard requirement. The same
-  code runs unchanged against Neon's pooled and direct endpoints.
-- **Roles.** Neon grants `neon_superuser`, not true superuser — which is
-  fine, because the design requires a dedicated **non-superuser application
-  role** that cannot bypass RLS. `FORCE ROW LEVEL SECURITY` per table (T2)
-  still applies: the app role owns the tables it migrates.
+- **A transaction-mode pooler shares one physical backend across tenants.** It
+  hands a backend connection to a different client between transactions, so a
+  session-level `SET` of the tenancy GUC **leaks across tenants** — while
+  `SET LOCAL` / `set_config(..., true)` is transaction-scoped and safe. That
+  is exactly the discipline this record mandates and exactly the alternative it
+  bans (Global Constraints): the correctness choice is the pooler's hard
+  requirement, not an optional optimization, and the same code runs unchanged
+  against pooled and direct endpoints.
+- **A non-superuser application role under `FORCE ROW LEVEL SECURITY`.** The
+  store applies migrations at `Open` (`go/internal/store/store.go:18-31`), so
+  its role *owns* every tenant-owned table — and a table owner bypasses RLS
+  unless `FORCE` is set. The design requires a dedicated application role that
+  cannot bypass RLS plus `FORCE ROW LEVEL SECURITY` per table (T2); a managed
+  Postgres that grants only a near-superuser role (not true `SUPERUSER`)
+  satisfies this by construction.
 - **Per-statement GUC evaluation.** RLS policies must wrap the GUC read in a
-  scalar subquery — `(SELECT current_setting('compass.tenant_id', true))` —
-  so the planner evaluates it once per statement instead of once per row.
-  T2's policy shape carries this.
-- **Branching is a dev/test tool, not a tenancy mechanism.** Neon's
-  copy-on-write branches are valuable for per-PR preview databases and for
-  running the T2 RLS spill suite against a branch of production shape — a
-  materially stronger test than a synthetic fixture. But a branch is **not**
-  tenant isolation: production tenancy stays RLS-in-one-database, and
-  "a branch per tenant" must never be conflated with the shared-pool model.
-- **Against Neon Authorize.** Neon's RLS-from-JWT feature
-  (`pg_session_jwt`) targets edge clients talking directly to Postgres. Compass
-  has an application-server tier that resolves and sets tenant context
-  server-side (`go/internal/comms/comms.go:10-15` is the identity posture);
-  moving tenant-context authority into a JWT consumed by the database would
-  bypass that tier. Recommendation: do not adopt it — tenant-context
-  authority stays at the Server tier.
-- **The serverless-driver caveat does not apply.** Neon's HTTP-mode
-  serverless driver cannot run `SET LOCAL` (no interactive transactions);
-  the Compass Server is Go on pgx over the Postgres wire protocol
-  (`go/internal/store/store.go:33-37`), so native transactions and
-  `SET LOCAL` work normally. If an edge/JS component ever talks to the
-  database directly, that is a design change to be raised — not a supported
-  path.
+  scalar subquery — `(SELECT current_setting('compass.tenant_id', true))` — so
+  the planner evaluates it once per statement instead of once per row. T2's
+  policy shape carries this.
+- **A direct wire-protocol client, not an HTTP/edge driver.** The Server is Go
+  on pgx over the Postgres wire protocol (`go/internal/store/store.go:33-37`),
+  so native transactions and `SET LOCAL` work normally. An HTTP-mode/edge
+  Postgres driver that cannot run interactive transactions (and therefore no
+  `SET LOCAL`) is not a supported path for tenant scoping; an edge/JS component
+  talking to the database directly would be a design change to raise, not a
+  supported path.
 
 ### Q2 — Server↔Runner connection topology: load-balanced Servers, subject-addressable Runners
 
@@ -636,14 +627,13 @@ holder of state the product cannot regenerate.
   goes through `beginTenantTx` (`SET LOCAL` inside an explicit
   transaction); a session-level `SET` leaks tenant identity across pooled
   connection checkouts.
-- **Transaction-mode connection pooling is supported and expected.** Neon's
-  pooled endpoint is PgBouncer in transaction mode, where a physical backend
-  is shared across tenants between transactions. Correctness rests on the
-  transaction-scoped GUC discipline this record mandates — `SET LOCAL` /
-  `set_config(..., true)` only — and session `SET` stays banned precisely
-  because it leaks across pooled checkouts. The design must hold unchanged
-  on pooled and direct endpoints; T2's test cycle verifies against a
-  transaction-mode pooler.
+- **Transaction-mode connection pooling is supported and expected.** A
+  transaction-mode pooler shares one physical backend across tenants between
+  transactions. Correctness rests on the transaction-scoped GUC discipline
+  this record mandates — `SET LOCAL` / `set_config(..., true)` only — and
+  session `SET` stays banned precisely because it leaks across pooled
+  checkouts. The design must hold unchanged on pooled and direct endpoints;
+  T2's test cycle verifies against a transaction-mode pooler.
 
 ### T1 — tenant schema + identity plumbing
 
@@ -666,7 +656,7 @@ context seam that carries the resolved tenant.
   under a tenant context stamps the row; single-tenant boot seeds exactly one
   tenant idempotently.
 
-### T2 — RLS enforcement + per-transaction tenant scoping (Neon-aware)
+### T2 — RLS enforcement + per-transaction tenant scoping (pooler-aware)
 
 RLS policies on every tenant-owned table, filtering on a per-transaction GUC
 the store sets from the context tenant; the store's application role runs
@@ -720,12 +710,10 @@ definition, not follow-ups:
   rows, never all rows, never an error-42704 escape), and a pooled
   connection previously scoped to tenant A and reused without scoping does
   not see tenant A's rows; the pooled-reuse case runs against a
-  **transaction-mode pooler** (PgBouncer transaction mode — Neon's pooled
-  endpoint shape), not only a direct connection; plus an owner-role probe
-  proving `FORCE ROW LEVEL SECURITY` is in effect (the migration-applying
-  role cannot read cross-tenant). Where a Neon branch of production shape is
-  available, the suite additionally runs there (branching as a test tool,
-  Q1 Neon subsection).
+  **transaction-mode pooler** (PgBouncer in transaction mode), not only a
+  direct connection; plus an owner-role probe proving `FORCE ROW LEVEL
+  SECURITY` is in effect (the migration-applying role cannot read
+  cross-tenant).
 
 ### T3 — fabric seams: embedded-NATS `EventFabric`, Connect `RunnerFabric` (Phase 0 default)
 
@@ -837,7 +825,7 @@ RIG-2485.
 
 - [ ] **T1** — tenant schema + identity plumbing (`tenants`, `tenant_id`,
       bootstrap seed, context seam)
-- [ ] **T2** — RLS enforcement + per-transaction tenant scoping, Neon-aware
+- [ ] **T2** — RLS enforcement + per-transaction tenant scoping, pooler-aware
       (scalar-subquery policies, transaction-mode-pooler verification;
       depends: T1)
 - [ ] **T3** — fabric seams: embedded-NATS `EventFabric` (`DontListen` +
