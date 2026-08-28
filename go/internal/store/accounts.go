@@ -657,6 +657,12 @@ func validateNewParent(ctx context.Context, tx pgx.Tx, agentAccountID, newParent
 		return fmt.Errorf("store: resolve new parent owner: %w", err)
 	}
 	if AccountID(parentOwner) != agentOwner {
+		// Cross-owner reparent is rejected. On the ReparentAgent RPC path this
+		// clause is edge-shadowed: comms.ReparentAgent rejects a foreign parent
+		// at the service edge (naming the submitted handle, DL-269 oracle
+		// invariant) BEFORE calling the store, so this ErrPermissionDenied only
+		// surfaces to a direct store caller (independently tested) — it remains
+		// as store-layer defense-in-depth, not dead code.
 		return fmt.Errorf("%w: parent agent %q has a different owner", ErrPermissionDenied, newParentAgentID)
 	}
 
