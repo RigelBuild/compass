@@ -2354,7 +2354,7 @@ function exportedTurnSpan(exporter: InMemorySpanExporter) {
 }
 
 describe("CompassAgent — T2 trace continuity (message → turn topology)", () => {
-	test("idle steer with a valid traceparent PARENTS the turn span on the remote context (SDK-synchronicity canary)", async () => {
+	test("idle steer with a valid traceparent PARENTS the turn span on the remote context (modeled runWithParent-wrap contract)", async () => {
 		const h = startTracedAgent();
 		h.agent.steer(deliverMsg("m1", "hi"), "", TP_HEADER);
 		await tick();
