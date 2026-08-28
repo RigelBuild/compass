@@ -155,10 +155,24 @@ export async function runOnce(deps: Deps): Promise<number> {
 	return 0;
 }
 
-/** `git grep -nIE 'SEA-[0-9]+'` over tracked files; empty on no match (exit 1). */
+/**
+ * `git grep -nIE 'SEA-[0-9]+'` over tracked files. `git grep` exits 0 with
+ * matches, 1 on no match (a legitimately clean, empty result), and >=2 on a
+ * real error (e.g. not a git work tree). We must distinguish the last from the
+ * clean case: swallowing it would make the gate report clean on a broken scan —
+ * fail-OPEN, the exact false-green a fail-closed gate exists to stop. Exit >=2
+ * throws, so runOnce's catch returns exit 2.
+ */
 async function gitGrep(): Promise<string[]> {
-	const raw = await $`git grep -nIE ${"SEA-[0-9]+"}`.nothrow().text();
-	return raw.split("\n").filter((l) => l.length > 0);
+	const res = await $`git grep -nIE ${"SEA-[0-9]+"}`.nothrow().quiet();
+	if (res.exitCode >= 2)
+		throw new Error(
+			`git grep exited ${res.exitCode}: ${res.stderr.toString().trim()}`,
+		);
+	return res.stdout
+		.toString()
+		.split("\n")
+		.filter((l) => l.length > 0);
 }
 
 if (import.meta.main) {
