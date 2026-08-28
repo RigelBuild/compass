@@ -859,9 +859,14 @@ export async function main(
 		? createTraceBridge()
 		: undefined;
 
+	// Resolve the pinned model selector ONCE and share it between the session
+	// option and the boot-model-health belt below, so the "was a model pinned?"
+	// signal the two consult can never diverge.
+	const modelPattern = resolveModelSelector(env);
+
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
-		modelPattern: resolveModelSelector(env),
+		modelPattern,
 		// The tee-backed manager, so every session write teems upstream and the
 		// resumed history (if any) is already loaded.
 		sessionManager: manager,
@@ -958,6 +963,46 @@ export async function main(
 				}
 			: {}),
 	});
+
+	// Boot-model-health belt. createAgentSession SWALLOWS a models.yml validation
+	// error — a rejected provider config leaves the registry with a recorded
+	// error and the session falls back to built-in-only model resolution, booting
+	// model-less when the pinned selector can no longer resolve. The cost surfaces
+	// far from the cause: the first prompt throws "No model configured" deep in a
+	// turn, with nothing pointing back at the bad config. So surface it here, at
+	// boot: log the config error loudly whenever one is present, and refuse to
+	// boot when an operator PINNED a model that did not resolve (rather than limp
+	// on to the deferred first-turn crash).
+	const modelRegistry = session.modelRegistry;
+	const modelError = modelRegistry.getError();
+	if (modelError !== undefined) {
+		console.error(
+			`[compass-agent] models.yml config rejected (${modelError.id}): ${modelError.message} — falling back to built-in model resolution`,
+		);
+	}
+	// A pinned pattern sets the SDK's explicit-model flag, which SKIPS the
+	// default-role fallback — so pinned-but-unresolvable is exactly `model ===
+	// undefined` here, while an unpinned boot gets the SDK default and is left
+	// alone. This early throw bypasses the drain→close→disconnect finally below,
+	// so release the two holders `main` owns (the connected MCP manager, then the
+	// socket) here. Nest them so a rejecting disconnect still closes the socket,
+	// and log — never rethrow — that rejection, so it cannot mask the actionable
+	// diagnostic this belt exists to surface.
+	if (modelPattern !== undefined && session.model === undefined) {
+		try {
+			await mcp.disconnect();
+		} catch (disconnectError) {
+			console.error(
+				"[compass-agent] MCP disconnect failed during fail-closed shutdown:",
+				disconnectError,
+			);
+		} finally {
+			transport.close();
+		}
+		throw new Error(
+			`[compass-agent] pinned model "${modelPattern}" did not resolve against the model registry — refusing to boot model-less (would throw "No model configured" on first turn)${modelError !== undefined ? `; config error: ${modelError.message}` : ""}`,
+		);
+	}
 
 	// Post-construction assignment, not a `createAgentSession` option: the SDK
 	// declares `getApiKey` as a public mutable field on `Agent` (`agent.d.ts:209`)

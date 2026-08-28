@@ -537,11 +537,29 @@ interface FakeSession {
 	// test awaits before pushing session events, so there is no race and no spin.
 	readonly subscribed: Promise<AgentSessionEventListener>;
 	agent: { getApiKey?: (model: Model) => Promise<string | undefined> };
+	// The boot-model-health belt reads these two: a recorded models.yml config
+	// error (swallowed by createAgentSession) and the resolved model. `model` is
+	// only ever checked for undefined, so `unknown` is honest.
+	modelRegistry: { getError(): { id: string; message: string } | undefined };
+	model: unknown;
 }
 
-function fakeSession(opts: { promptError?: Error } = {}): FakeSession {
+function fakeSession(
+	opts: {
+		promptError?: Error;
+		modelError?: { id: string; message: string };
+		model?: unknown;
+	} = {},
+): FakeSession {
 	const gate = Promise.withResolvers<AgentSessionEventListener>();
-	const rec: FakeSession = { subscribed: gate.promise, agent: {} };
+	const rec: FakeSession = {
+		subscribed: gate.promise,
+		agent: {},
+		// Default: no config error, and a truthy resolved model — the happy path
+		// every existing test represents, which never trips the fail-closed belt.
+		modelRegistry: { getError: () => opts.modelError },
+		model: "model" in opts ? opts.model : { id: "resolved" },
+	};
 	Object.assign(rec.agent, {
 		// `promptError` makes an SDK op reject, which is how a real turn failure
 		// crashes the run loop (agent.ts:163 awaits it inside the try).
@@ -954,6 +972,232 @@ describe("main", () => {
 		expect(seen).toEqual([
 			{ cwd: "/work/repo", modelPattern: "anthropic/claude-opus-4-5" },
 		]);
+	});
+
+	// BOOT-MODEL-HEALTH BELT.
+	//
+	// createAgentSession swallows a models.yml validation error and falls back to
+	// built-in resolution; a pinned selector that no longer resolves then boots
+	// the session model-less, and the first prompt throws "No model configured"
+	// far from the cause. The belt surfaces the error loudly at boot and refuses a
+	// pinned-but-unresolvable boot.
+	test("logs the swallowed models.yml config error loudly at boot", async () => {
+		const errs: string[] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => {
+			errs.push(args.map(String).join(" "));
+		};
+		try {
+			await main(
+				{ HOME: scratch() },
+				deps(
+					fakeSession({
+						modelError: { id: "litellm", message: "provider foo rejected" },
+					}),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			);
+		} finally {
+			console.error = original;
+		}
+		// A resolved model + a recorded error: main completes (no throw) AND the
+		// loud line names both the offending config id and the reason.
+		const line = errs.find((e) => e.includes("models.yml config rejected"));
+		if (line === undefined) throw new Error("no config-rejected line logged");
+		expect(line).toContain("litellm");
+		expect(line).toContain("provider foo rejected");
+	});
+
+	test("does NOT log a config-rejected line when the registry has no error", async () => {
+		// Non-vacuity for the log test: the default fake reports getError() ===
+		// undefined, so the loud line must NOT fire on a clean boot.
+		const errs: string[] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => {
+			errs.push(args.map(String).join(" "));
+		};
+		try {
+			await main(
+				{ HOME: scratch() },
+				deps(
+					fakeSession(),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			);
+		} finally {
+			console.error = original;
+		}
+		expect(errs.some((e) => e.includes("models.yml config rejected"))).toBe(
+			false,
+		);
+	});
+
+	test("refuses to boot when a pinned model did not resolve, naming the pattern", async () => {
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					deps(
+						fakeSession({
+							model: undefined,
+							modelError: { id: "litellm", message: "provider foo rejected" },
+						}),
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
+					),
+				),
+			).rejects.toThrow(
+				/pinned model "litellm\/claude-opus".*config error: provider foo rejected/,
+			);
+		} finally {
+			console.error = original;
+		}
+	});
+
+	test("boots normally when a pinned model resolved", async () => {
+		// Pinned + resolved (default fake model) is the ordinary success path — no
+		// throw, even though a selector was pinned.
+		await expect(
+			main(
+				{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+				deps(
+					fakeSession(),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	test("does NOT refuse a model-less boot when NO model was pinned", async () => {
+		// The load-bearing discriminator: unpinned + model-less is the legitimate
+		// SDK-default path (the operator pinned nothing), so the belt must NOT
+		// refuse. Dropping the `modelPattern !== undefined` guard reddens this.
+		await expect(
+			main(
+				{ HOME: scratch() },
+				deps(
+					fakeSession({ model: undefined }),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	test("releases both resource holders when it refuses a pinned-unresolvable boot", async () => {
+		// The early throw bypasses the drain→close→disconnect finally, so the belt
+		// must tear down BOTH holders it owns: the connected MCP manager and the
+		// socket. Pin both — dropping `await mcp.disconnect()` leaks every MCP
+		// subprocess/HTTP session, dropping `transport.close()` leaks the socket;
+		// each reddens exactly one assertion here. `connectMcp` is injected (rather
+		// than left at the default no-op) so the disconnect is observable.
+		let closed = false;
+		let disconnected = false;
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					{
+						...deps(
+							fakeSession({ model: undefined }),
+							fakeCarrier(emptyLog(), {
+								control: emptyControlStream,
+								onClose: () => {
+									closed = true;
+								},
+							}),
+						),
+						connectMcp: () =>
+							Promise.resolve({
+								tools: [],
+								disconnect: () => {
+									disconnected = true;
+									return Promise.resolve();
+								},
+							}),
+					},
+				),
+			).rejects.toThrow(/pinned model/);
+		} finally {
+			console.error = original;
+		}
+		expect(closed).toBe(true);
+		expect(disconnected).toBe(true);
+	});
+
+	test("still closes the socket and surfaces the diagnostic when the fail-closed disconnect rejects", async () => {
+		// The belt nests `mcp.disconnect()` in a try/catch/finally so a rejecting
+		// disconnect neither leaks the socket (finally still runs transport.close)
+		// nor masks the actionable diagnostic (the catch swallows-and-logs the
+		// disconnect error rather than letting it propagate in place of the throw).
+		// Pin both: un-nesting the catch would leave the socket open AND reject with
+		// the disconnect error instead of the pinned-model message.
+		let closed = false;
+		let rejection: unknown;
+		const original = console.error;
+		console.error = () => {};
+		try {
+			rejection = await main(
+				{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+				{
+					...deps(
+						fakeSession({ model: undefined }),
+						fakeCarrier(emptyLog(), {
+							control: emptyControlStream,
+							onClose: () => {
+								closed = true;
+							},
+						}),
+					),
+					connectMcp: () =>
+						Promise.resolve({
+							tools: [],
+							disconnect: () =>
+								Promise.reject(new Error("MCP manager disconnect boom")),
+						}),
+				},
+			).then(
+				() => new Error("main resolved but should have refused to boot"),
+				(err: unknown) => err,
+			);
+		} finally {
+			console.error = original;
+		}
+		expect(closed).toBe(true);
+		const message =
+			rejection instanceof Error ? rejection.message : String(rejection);
+		// The pinned-model diagnostic surfaces AND the swallowed disconnect error
+		// does not mask it: un-nesting the belt's catch would reject with the
+		// "disconnect boom" message instead, reddening both assertions.
+		expect(message).toContain('pinned model "litellm/claude-opus"');
+		expect(message).not.toContain("disconnect boom");
+	});
+
+	test("refuses a pinned-unresolvable boot even when the registry recorded no config error", async () => {
+		// Pinned + model-less + getError() === undefined: the belt still refuses
+		// (the fail-closed guard is model resolution, not the presence of a config
+		// error), and the throw's `; config error:` suffix collapses to empty.
+		// Pins the ternary's empty branch — a regression that always appended the
+		// suffix, or gated the throw on a present modelError, reddens this.
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					deps(
+						fakeSession({ model: undefined }),
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
+					),
+				),
+			).rejects.toThrow(
+				/pinned model "litellm\/claude-opus" did not resolve.*first turn\)$/,
+			);
+		} finally {
+			console.error = original;
+		}
 	});
 
 	test("treats an empty or whitespace-only COMPASS_WORKDIR as unset, not as a cwd", async () => {
