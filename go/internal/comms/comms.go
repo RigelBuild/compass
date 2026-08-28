@@ -299,6 +299,25 @@ func (c *Comms) ReparentAgent(
 		if err != nil {
 			return nil, edgeError(err)
 		}
+		// Oracle-safe remap (DL-269), mirroring CreateAgent's parent pre-check:
+		// a resolved-but-foreign parent (an owner-qualified handle naming another
+		// owner's agent) must be byte-identical to an unknown one. Resolve the
+		// caller's owner and reject a foreign parent HERE, naming the SUBMITTED
+		// new_parent_handle — otherwise the store's clause-1 ErrPermissionDenied
+		// ("parent agent %q has a different owner") gets re-keyed below to name
+		// the AGENT handle, which differs from the unknown-parent NOT_FOUND
+		// (named with the parent handle) and leaks the parent's existence.
+		owner, err := c.store.ResolveOwner(ctx, caller)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		parentOwner, err := c.store.AgentOwner(ctx, newParentID)
+		if err != nil {
+			return nil, edgeError(notFoundHandle(err, h))
+		}
+		if parentOwner != owner {
+			return nil, edgeError(notFoundHandle(store.ErrNotFound, h))
+		}
 	}
 	acc, err := c.store.ReparentAgent(
 		ctx,

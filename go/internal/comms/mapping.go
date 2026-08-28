@@ -273,26 +273,37 @@ func channelKindFromWire(k compassv1.ChannelKind) store.ChannelKind {
 // Merge is keyed POST-resolution (by resolved account id), so two distinct
 // spellings of the SAME handle (e.g. `matt/ux` and a bare `ux` from one of
 // matt's agents) collapse onto one MemberUpdate rather than yielding two
-// conflicting rows. Resolution is ATOMIC across all four lists (OQ-2): any
-// unresolved handle fails the whole call with NOT_FOUND naming every unresolved
-// handle. All four lists resolve in the caller's namespace/visibility scope.
+// conflicting rows. Resolution is ATOMIC across all four lists (OQ-2): the four
+// lists resolve in ONE store call, so any unresolved handle fails the whole
+// request with NOT_FOUND naming EVERY unresolved handle across all four lists in
+// its submitted spelling — not just the first failing list's misses. No store
+// mutation runs unless every handle in every list resolved. All four lists
+// resolve in the caller's namespace/visibility scope.
 func (c *Comms) memberUpdatesFromWire(ctx context.Context, caller store.AccountID, req *compassv1.UpdateChannelMembersRequest) ([]store.MemberUpdate, error) {
-	add, err := c.resolveHandles(ctx, caller, req.GetAddMemberHandles())
+	addH := req.GetAddMemberHandles()
+	subscribeH := req.GetSubscribeHandles()
+	unsubscribeH := req.GetUnsubscribeHandles()
+	removeH := req.GetRemoveMemberHandles()
+
+	// Resolve all four lists in one AccountsByHandles call so the OQ-2 error
+	// names every unresolved handle across every list, not just the first list
+	// with a miss. resolveHandles preserves submitted order, so each list's ids
+	// are sliced back out by offset.
+	combined := make([]string, 0, len(addH)+len(subscribeH)+len(unsubscribeH)+len(removeH))
+	combined = append(combined, addH...)
+	combined = append(combined, subscribeH...)
+	combined = append(combined, unsubscribeH...)
+	combined = append(combined, removeH...)
+	resolved, err := c.resolveHandles(ctx, caller, combined)
 	if err != nil {
 		return nil, err
 	}
-	subscribe, err := c.resolveHandles(ctx, caller, req.GetSubscribeHandles())
-	if err != nil {
-		return nil, err
-	}
-	unsubscribe, err := c.resolveHandles(ctx, caller, req.GetUnsubscribeHandles())
-	if err != nil {
-		return nil, err
-	}
-	remove, err := c.resolveHandles(ctx, caller, req.GetRemoveMemberHandles())
-	if err != nil {
-		return nil, err
-	}
+	i := 0
+	next := func(n int) []store.AccountID { s := resolved[i : i+n]; i += n; return s }
+	add := next(len(addH))
+	subscribe := next(len(subscribeH))
+	unsubscribe := next(len(unsubscribeH))
+	remove := next(len(removeH))
 
 	byID := make(map[store.AccountID]*store.MemberUpdate)
 	order := make([]store.AccountID, 0)

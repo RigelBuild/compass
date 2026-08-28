@@ -13,6 +13,7 @@ package comms
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -80,8 +81,13 @@ func TestReparentAgentForeignCallerNotFound(t *testing.T) {
 }
 
 // TestReparentAgentCrossOwnerParentNotFound: a parent under a different owner is
-// remapped to NOT_FOUND (was PermissionDenied) — the oracle-safe merge on the
-// new_parent_handle target.
+// remapped to NOT_FOUND (was PermissionDenied) AND is byte-identical to an
+// UNKNOWN parent — the oracle-safe merge on the new_parent_handle target
+// (DL-269). Asserting the message, not just the code, is load-bearing: a
+// code-only check passes even if the foreign case names the agent handle while
+// the unknown case names the parent handle, which is the exact existence-probe
+// (enumerate another owner's agents by owner-qualified handle) the invariant
+// forbids.
 func TestReparentAgentCrossOwnerParentNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -90,15 +96,52 @@ func TestReparentAgentCrossOwnerParentNotFound(t *testing.T) {
 	mustAgent(t, st, owner.ID, "a")
 	mustAgent(t, st, other.ID, "foreign")
 
-	// The caller owner-qualifies the parent into `other`'s namespace. The
-	// resolver resolves it (not viewer-scoped), the store's clause-1 same-owner
-	// check fails as ErrPermissionDenied, and the handler remaps it to NOT_FOUND
-	// naming the submitted agent handle.
-	_, err := svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+	// Existing-but-foreign parent: resolves (AgentByHandle is not viewer-scoped),
+	// then the edge same-owner pre-check rejects it as NOT_FOUND naming the
+	// submitted new_parent_handle.
+	_, foreignErr := svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
 		AgentHandle:     "a",
 		NewParentHandle: "other/foreign",
 	}))
-	connectCodeIs(t, err, connect.CodeNotFound, "cross-owner parent")
+	connectCodeIs(t, foreignErr, connect.CodeNotFound, "cross-owner parent")
+
+	// Unknown parent under the same owner-qualifier: misses at resolution,
+	// NOT_FOUND naming the same submitted spelling.
+	_, unknownErr := svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+		AgentHandle:     "a",
+		NewParentHandle: "other/ghost",
+	}))
+	connectCodeIs(t, unknownErr, connect.CodeNotFound, "unknown parent")
+
+	// The oracle invariant: a foreign parent must be indistinguishable from an
+	// unknown one. Both must be NOT_FOUND (above) naming the SUBMITTED
+	// new_parent_handle — never the agent handle or a resolved id. Before the
+	// edge same-owner pre-check, the foreign case fell through to the store and
+	// was re-keyed to name the AGENT handle ("a"), while the unknown case named
+	// the parent handle — the exact divergence a caller uses to enumerate another
+	// owner's agents. Asserting each names its own parent spelling (and NOT the
+	// agent handle) closes that probe; the two cases are structurally identical,
+	// differing only by the handle the caller itself submitted.
+	if got := connect.CodeOf(foreignErr); got != connect.CodeOf(unknownErr) {
+		t.Fatalf("foreign vs unknown parent code differs: foreign=%v unknown=%v", got, connect.CodeOf(unknownErr))
+	}
+	if !strings.Contains(foreignErr.Error(), "other/foreign") {
+		t.Fatalf("foreign-parent error must name the submitted parent handle, got %q", foreignErr.Error())
+	}
+	if strings.Contains(foreignErr.Error(), `"a"`) {
+		t.Fatalf("oracle leak: foreign-parent error names the AGENT handle, distinguishing it from an unknown parent: %q", foreignErr.Error())
+	}
+	if !strings.Contains(unknownErr.Error(), "other/ghost") {
+		t.Fatalf("unknown-parent error must name the submitted parent handle, got %q", unknownErr.Error())
+	}
+	// Byte-identical modulo the caller's own submitted spelling: swapping the
+	// parent handle in the foreign error for the unknown one's yields the same
+	// string, proving the only difference is the input the caller already knows.
+	normalizedForeign := strings.ReplaceAll(foreignErr.Error(), "other/foreign", "PARENT")
+	normalizedUnknown := strings.ReplaceAll(unknownErr.Error(), "other/ghost", "PARENT")
+	if normalizedForeign != normalizedUnknown {
+		t.Fatalf("oracle leak: foreign vs unknown parent errors differ beyond the submitted handle.\n foreign: %q\n unknown: %q", foreignErr.Error(), unknownErr.Error())
+	}
 }
 
 func TestReparentAgentCycleFailedPrecondition(t *testing.T) {

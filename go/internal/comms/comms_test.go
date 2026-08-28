@@ -176,6 +176,38 @@ func TestUpdateChannelMembersUnknownHandleIsNotFound(t *testing.T) {
 	}
 }
 
+// TestUpdateChannelMembersNamesMissesAcrossAllLists: OQ-2 completeness — an
+// unresolved handle in a LATER list (subscribe) must be named alongside one in
+// an earlier list (add), not swallowed. Before the one-pass resolution the four
+// lists resolved sequentially and the error named only the first failing list's
+// misses; the design ruling (design.md §OQ-2) requires the error name ALL
+// unresolved handles across every list.
+func TestUpdateChannelMembersNamesMissesAcrossAllLists(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := created.Msg.GetChannel().GetId()
+
+	// ghost-add is in the FIRST list, ghost-sub in a LATER one. Both must be
+	// named — the failure must not stop at the first list.
+	_, updErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		ChannelId:        chID,
+		AddMemberHandles: []string{"ghost-add"},
+		SubscribeHandles: []string{"ghost-sub"},
+	}))
+	connectCodeIs(t, updErr, connect.CodeNotFound, "misses across add + subscribe lists")
+	if updErr == nil || !strings.Contains(updErr.Error(), "ghost-add") || !strings.Contains(updErr.Error(), "ghost-sub") {
+		t.Fatalf("error %v must name EVERY unresolved handle across all lists (ghost-add AND ghost-sub)", updErr)
+	}
+}
+
 func TestSearchMessagesAuthorizationScoped(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
