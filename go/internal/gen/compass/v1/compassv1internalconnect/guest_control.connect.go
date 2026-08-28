@@ -80,8 +80,8 @@ type GuestControlClient interface {
 	// Exec runs one command to completion and returns its captured output. A
 	// non-zero exit is a SUCCESSFUL call whose ExecResponse.exit_code is
 	// non-zero — never a Connect error. A Connect error means the exec could not
-	// be attempted: a spawn failure, a refused uid (0/caps), a timeout, or an
-	// unprovisioned gate.
+	// be attempted or could not complete: a spawn failure, a refused uid (0), a
+	// timeout, or an unprovisioned gate.
 	Exec(context.Context, *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error)
 	// ExecStream runs a long-lived command over one bidi stream: the request
 	// stream carries the start frame, then stdin bytes and an optional
@@ -185,8 +185,8 @@ type GuestControlHandler interface {
 	// Exec runs one command to completion and returns its captured output. A
 	// non-zero exit is a SUCCESSFUL call whose ExecResponse.exit_code is
 	// non-zero — never a Connect error. A Connect error means the exec could not
-	// be attempted: a spawn failure, a refused uid (0/caps), a timeout, or an
-	// unprovisioned gate.
+	// be attempted or could not complete: a spawn failure, a refused uid (0), a
+	// timeout, or an unprovisioned gate.
 	Exec(context.Context, *connect.Request[v1.ExecRequest]) (*connect.Response[v1.ExecResponse], error)
 	// ExecStream runs a long-lived command over one bidi stream: the request
 	// stream carries the start frame, then stdin bytes and an optional
