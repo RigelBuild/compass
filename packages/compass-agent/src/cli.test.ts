@@ -1135,35 +1135,44 @@ describe("main", () => {
 		// Pin both: un-nesting the catch would leave the socket open AND reject with
 		// the disconnect error instead of the pinned-model message.
 		let closed = false;
+		let rejection: unknown;
 		const original = console.error;
 		console.error = () => {};
 		try {
-			await expect(
-				main(
-					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
-					{
-						...deps(
-							fakeSession({ model: undefined }),
-							fakeCarrier(emptyLog(), {
-								control: emptyControlStream,
-								onClose: () => {
-									closed = true;
-								},
-							}),
-						),
-						connectMcp: () =>
-							Promise.resolve({
-								tools: [],
-								disconnect: () =>
-									Promise.reject(new Error("MCP manager disconnect boom")),
-							}),
-					},
-				),
-			).rejects.toThrow(/pinned model "litellm\/claude-opus"/);
+			rejection = await main(
+				{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+				{
+					...deps(
+						fakeSession({ model: undefined }),
+						fakeCarrier(emptyLog(), {
+							control: emptyControlStream,
+							onClose: () => {
+								closed = true;
+							},
+						}),
+					),
+					connectMcp: () =>
+						Promise.resolve({
+							tools: [],
+							disconnect: () =>
+								Promise.reject(new Error("MCP manager disconnect boom")),
+						}),
+				},
+			).then(
+				() => new Error("main resolved but should have refused to boot"),
+				(err: unknown) => err,
+			);
 		} finally {
 			console.error = original;
 		}
 		expect(closed).toBe(true);
+		const message =
+			rejection instanceof Error ? rejection.message : String(rejection);
+		// The pinned-model diagnostic surfaces AND the swallowed disconnect error
+		// does not mask it: un-nesting the belt's catch would reject with the
+		// "disconnect boom" message instead, reddening both assertions.
+		expect(message).toContain('pinned model "litellm/claude-opus"');
+		expect(message).not.toContain("disconnect boom");
 	});
 
 	test("refuses a pinned-unresolvable boot even when the registry recorded no config error", async () => {
