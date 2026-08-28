@@ -26,7 +26,7 @@ override, and it is the operator's to invoke.
 
 1. **Fetch the diff.** Resolve the PR's diff and touched-file list. Compass
    product CI and PRs live on GitHub, so the diff is the PR's GitHub diff.
-   [TODO SEA-1734] issue/PR tools land pre-Dogfood; until then resolve the diff
+   [TODO RIG-1734] issue/PR tools land pre-Dogfood; until then resolve the diff
    through the operator-provisioned GitHub surface the wave already uses.
    Both the diff and the touched-file list go to the reviewer in its spawn brief.
 2. **Spawn the `review` subagent — one call per round.** Use the `task` tool,
@@ -85,7 +85,7 @@ or explicitly deferred with a filed follow-up issue.** This is broader than the
 severity floor — at all-clear a `low` finding can no longer be silently dropped;
 it is fixed or filed. A deferral without an issue number is not a deferral, it is
 a dropped finding.
-[TODO SEA-1734] name the concrete issue-filing tool once it lands; until then,
+[TODO RIG-1734] name the concrete issue-filing tool once it lands; until then,
 file the follow-up on the operator-provisioned tracker surface the wave uses.
 
 ## Recall — the escaped-defect retro

@@ -1,4 +1,4 @@
-# Compass dogfood e2e harness — full-stack scenario testing (SEA-1681)
+# Compass dogfood e2e harness — full-stack scenario testing (RIG-1681)
 
 Status: Draft
 
@@ -31,7 +31,7 @@ drives the REAL deployable stack — real server, real runner, a real
 `compass-agent` container running a real model turn — end to end, and nothing
 composes the already-proven seams into one ordered, repeatable scenario.
 
-SEA-1681 closes that gap, and Matt expanded its scope (direct, 2026-08-05):
+RIG-1681 closes that gap, and Matt expanded its scope (direct, 2026-08-05):
 the deliverable is not one 5-leg test but a **reusable e2e harness** — test
 infrastructure that stands the full stack up once and exposes composable
 scenario primitives (create-agent, provision, start-session/drive-turn,
@@ -67,9 +67,9 @@ its own.
   baked uid, and the engine's support for that remap is floor-checked by
   `VerifyUsernsRemapSupport` (`podman.go:415-438`, called from `main.go:97`). The
   once-blocking uid-1000-host requirement (`verifyRunnerUID`) has since been
-  lifted (SEA-1691), so the full-stack tier runs on ordinary arbitrary-uid CI
+  lifted (RIG-1691), so the full-stack tier runs on ordinary arbitrary-uid CI
   runners. The interim uid handling for embedded Dogfood is preflight-and-refuse
-  (compass-native T4, SEA-1685).
+  (compass-native T4, RIG-1685).
 - **AF_UNIX sun_path budget.** `stack.Config.Validate` rejects a `RuntimeDir`
   whose per-container agent-socket tail would overflow the platform sun_path
   cap — on Linux "a RuntimeDir over 38 bytes overflows the cap"
@@ -105,8 +105,8 @@ its own.
   backend-only + deterministic-model configuration is the per-PR CI gate and
   regression base; live-model and UI-inclusive runs are on-demand/nightly
   (nondeterministic, keys + cost). The two once-blocking feasibility
-  prerequisites have since landed — agent-image distribution (SEA-1690, GHCR
-  publish) and the host-uid lift (SEA-1691, the userns keep-id remap) — so the
+  prerequisites have since landed — agent-image distribution (RIG-1690, GHCR
+  publish) and the host-uid lift (RIG-1691, the userns keep-id remap) — so the
   full-stack deterministic tier now runs as the required per-PR check directly
   on ordinary arbitrary-uid CI runners, with no interim merge-queue/nightly
   staging. This is the subject of Decision D2.
@@ -202,7 +202,7 @@ H1's red case, with the adapter change preferred (mirror of the podman test's
 documented avoidance, `integration_podman_test.go:30-39`). The CI half is NOT
 small: the image is a large self-contained NixOS closure built only by that
 opt-in task, with no publish/cache pipeline to put it on a CI runner — that
-distribution story is the GHCR publish pipeline (SEA-1690), folded into
+distribution story is the GHCR publish pipeline (RIG-1690), folded into
 Decision D2, not an adapter tweak.
 
 ### A2 — Scenario-authoring API: composable primitives
@@ -215,7 +215,7 @@ grounded wire contracts:
 | Primitive | Wire contract |
 | --- | --- |
 | `CreateAgent(handle, displayName)` | `CommsService.CreateAgent{handle, display_name, parent_agent_id}` → `{account}` (`proto/compass/v1/comms.proto:526-542`); find-or-create by handle via `ListAccounts` (CreateAgent has no idempotency key) |
-| `Provision(accountID, reqID)` | `CompassService.ProvisionAgentWorkspace{agent_account_id, client_request_id, persona}` → `{container_name}` — repo carriage REMOVED (SEA-1527): "spawn/provision no longer clone a repo … the agent self-clones whatever it needs after launch"; tags 2-4 (`remote_url`/`local_path`/`ref`) are reserved (`proto/compass/v1/compass.proto:429-459`). Stable `client_request_id` so a timeout-retry dedups (`:442-447`) |
+| `Provision(accountID, reqID)` | `CompassService.ProvisionAgentWorkspace{agent_account_id, client_request_id, persona}` → `{container_name}` — repo carriage REMOVED (RIG-1527): "spawn/provision no longer clone a repo … the agent self-clones whatever it needs after launch"; tags 2-4 (`remote_url`/`local_path`/`ref`) are reserved (`proto/compass/v1/compass.proto:429-459`). Stable `client_request_id` so a timeout-retry dedups (`:442-447`) |
 | `StartSession(container, prompt, resumeID)` | `CompassService.StartAgentSession{container_name, initial_prompt, resume_session_id}` → `{session_id}` (`compass.proto:480-500`); `resume_session_id` set ⇒ the server "reconstructs the stored transcript into a session-JSONL body the Runner materializes into the new container" (`:488-493`) |
 | `PostMessage(channel, blocks, reqID)` | `CommsService.PostMessage{channel_id, blocks, topic, client_request_id}` (`comms.proto:663-689`); an `@handle` token inside a text block is the mention surface (`go/internal/delivery/consumer.go:299-308` `mentionRE`) |
 | `SubscribeComms()` | `CommsService.SubscribeComms` streaming (`comms.proto:109`) — the event-gated wait source (Replay-then-Live, the `waitMessagePosted` shape, `integration_pgtest_test.go:434-449`) |
@@ -414,14 +414,14 @@ harness implements that chain as library primitives against the same RPC
 contracts T5 specs, so T5's CLI can later wrap the same primitives, but the
 harness does NOT wait for T5's CLI to land (the RPC contracts are on main
 now; the sequencing note is OQ4-adjacent, resolved in-plan: no dependency).
-What leg 2 DOES depend on is a runnable `compass-agent:latest` — SEA-1359's
+What leg 2 DOES depend on is a runnable `compass-agent:latest` — RIG-1359's
 runtime activation (artifacts merged: `packages/compass-agent/src/cli.ts`,
 `agent-image/`, `devenv.nix:281` `--image compass-agent:latest`; final
 activation in progress) — flagged in H2's red case, not an open fork.
 
 ## Alternatives considered
 
-- **Option B — `devenv up` (SEA-1360) + shell-script orchestration (the T7
+- **Option B — `devenv up` (RIG-1360) + shell-script orchestration (the T7
   shape).** The dogfood loop's own mechanism: `processes.{compass-server,
   compass-runner}` + `services.postgres` with ordered start and a
   GetServerInfo readiness probe (`devenv.nix:166-290`), the real
@@ -512,7 +512,7 @@ fixture reaches Ready with the REAL agent image configured, both clients
 answer an authenticated RPC, a configured `AgentModel`/`EgressAllow` reaches
 the runner's flags, and `Down` leaves no child processes.
 
-As-built delta (SEA-1785, #181): H1 shipped a THIRD additive `stack.Config`
+As-built delta (RIG-1785, #181): H1 shipped a THIRD additive `stack.Config`
 field beyond `{AgentModel, EgressAllow}` — `CheckoutDir string`
 (`go/internal/stack/config.go:52-59`), forwarded conditionally as
 `--checkout-dir` (`spec.go:67-71`, empty value omits the flag, same
@@ -551,7 +551,7 @@ Interfaces:
   `integration_podman_test.go:20-28`).
 
 Test cycle: red — running the scenario against H1's fixture with today's
-stack: the turn cannot complete without H3's model backend (and SEA-1359's
+stack: the turn cannot complete without H3's model backend (and RIG-1359's
 final activation); the transcript assert stays empty. Green — with H3 landed,
 the scenario passes; the settle signal is the one confirmed with the
 compass-agent owner (H3 coordination).
@@ -571,12 +571,12 @@ all of which must close before legs 3/4 are buildable —
    seam, beside createCommsTools)"
    (`packages/compass-agent/src/lifecycle.ts:137-141`; `comms.ts:204-206`
    carries the same notice). A canned model emitting `agents_spawn_peer`
-   today gets "unknown tool". This is tracked as **SEA-1741** (child of
-   SEA-1359), and is pure entrypoint wiring: the transport seam already
+   today gets "unknown tool". This is tracked as **RIG-1741** (child of
+   RIG-1359), and is pure entrypoint wiring: the transport seam already
    carries both arms (`transport/index.ts:57-58` `comms()`/`lifecycle()`,
    socket-wired `:103-104`), and natives registered at construction survive a
    later `config.tools` control via `agent.ts` `#withNatives` (DL-028;
-   SEA-1532) — so no new transport or config work, only constructing the
+   RIG-1532) — so no new transport or config work, only constructing the
    brokers in `cli.ts main()` and adding the returned tools alongside
    `customTools: mcp.tools`.
 2. **The canned/scripted provider MECHANISM.** A deterministic provider
@@ -587,7 +587,7 @@ all of which must close before legs 3/4 are buildable —
    mechanism (compass-agent owner, 2026-08-05): a `models.yml` custom entry
    whose `baseUrl` points at a stub OpenAI-compatible server the harness
    stands up, returning the canned tool-calls per turn — a test-fixture
-   concern, explicitly NOT part of SEA-1741. The injection point is the
+   concern, explicitly NOT part of RIG-1741. The injection point is the
    existing opaque-selector seam — no new selector wiring.
 3. **Headless APPROVAL semantics.** All three native tools carry
    `approval: "write"` (`lifecycle.ts:146,191`; `comms.ts:212`) and neither
@@ -596,8 +596,8 @@ all of which must close before legs 3/4 are buildable —
    auto-executing (yolo default) — there is no human to approve. This task
    pins that approval policy in the entrypoint.
 
-**RECOMMENDED: fold gap (1) — tool registration (SEA-1741) — and gap (3) —
-the headless approval policy — into SEA-1359's final runtime activation (its
+**RECOMMENDED: fold gap (1) — tool registration (RIG-1741) — and gap (3) —
+the headless approval policy — into RIG-1359's final runtime activation (its
 own recommended arm, OQ4): ONE image change, not separate respins.** Gap (2),
 the canned provider, is a harness-side test fixture (stub `baseUrl`) that
 rides H1/H2, not the agent image. H4's green condition depends on all three
@@ -733,7 +733,7 @@ Actions (`.github/workflows/ci.yml`; the repo has no Woodpecker config, so any
 Woodpecker migration is out of scope for this record). Per Decision D2 the
 Dogfood end state — which this task now implements — is a required per-PR check
 running the full-stack deterministic tier on an ORDINARY arbitrary-uid
-ubuntu-latest runner. Two once-blocking prerequisites have landed: SEA-1690
+ubuntu-latest runner. Two once-blocking prerequisites have landed: RIG-1690
 published `compass-agent` to GHCR, and the uid-1000 requirement was lifted by
 the userns keep-id remap (`go/internal/runtime/podman.go`'s
 `--userns=keep-id:uid=%d,gid=%d`, `:389`, floor-checked by
@@ -766,7 +766,7 @@ Interfaces:
 
 - Consumes: `go test -tags podman ./go/e2e/...` (mirroring the pgtest step
   shape, `.github/workflows/ci.yml`'s Real-Postgres suites); H3's documented
-  `COMPASS_MODEL` selector; the published `compass-agent:latest` image (SEA-1690)
+  `COMPASS_MODEL` selector; the published `compass-agent:latest` image (RIG-1690)
   OR — on an image-input-changing PR — the image built+loaded from the tree via
   `container copy agent`; the postgres toolchain (`initdb`/`postgres`/`createdb`)
   carried onto PATH from the devenv `packages` list (`devenv.nix`); live-mode
@@ -790,12 +790,12 @@ reports without gating.
 
 - [ ] H1 [harness] harness core: bring-up fixture over `stack.Up`, real agent image, authenticated clients (red-green + clean-Down smoke)
 - [ ] H2 [harness] leg-2 primitives (CreateAgent → Provision → StartSession) + real-turn scenario with transcript assert (red-green)
-- [ ] H3 [compass-agent] full agent-lane contract: native tool registration in the entrypoint + deterministic provider behind the `COMPASS_MODEL` seam + headless approval policy; canned scripts for all four turn shapes (red-green + zero-egress proof; recommended folded into SEA-1359's activation)
-- [ ] H4 [harness] legs 3+4 scenario: agent-driven spawn (F2 ownership + second container) and cross-agent @mention (steer/deliver split) (red-green; green gated on H3 1-3, i.e. SEA-1741 tool registration + the canned provider)
+- [ ] H3 [compass-agent] full agent-lane contract: native tool registration in the entrypoint + deterministic provider behind the `COMPASS_MODEL` seam + headless approval policy; canned scripts for all four turn shapes (red-green + zero-egress proof; recommended folded into RIG-1359's activation)
+- [ ] H4 [harness] legs 3+4 scenario: agent-driven spawn (F2 ownership + second container) and cross-agent @mention (steer/deliver split) (red-green; green gated on H3 1-3, i.e. RIG-1741 tool registration + the canned provider)
 - [ ] H5 [harness] leg-5 scenario: remove → re-provision → resume across a real container boundary (red-green)
 - [ ] H6 [harness] teardown + idempotence: exact-name preflight/cleanup; double-run gate (red-green via second-run provision)
 - [ ] H7 [ui] UI-inclusive tier scenario — gated on OQ3 + compass-ui/compass-native coordination (fast-follow unless ruled otherwise)
-- [ ] H8 [ci] GitHub Actions wiring (D2): a required per-PR full-stack e2e check (`go test -tags podman ./e2e/...`) on ordinary arbitrary-uid ubuntu-latest — SEA-1690 (GHCR image) + SEA-1691 (host-uid lift) both landed, so no interim staging; seeds the agent image per-PR (built-from-tree when the PR changes image inputs, else pull `:latest`); postgres toolchain on PATH via devenv `packages`; live tier on-demand/nightly
+- [ ] H8 [ci] GitHub Actions wiring (D2): a required per-PR full-stack e2e check (`go test -tags podman ./e2e/...`) on ordinary arbitrary-uid ubuntu-latest — RIG-1690 (GHCR image) + RIG-1691 (host-uid lift) both landed, so no interim staging; seeds the agent image per-PR (built-from-tree when the PR changes image inputs, else pull `:latest`); postgres toolchain on PATH via devenv `packages`; live tier on-demand/nightly
 
 ## Decisions
 
@@ -810,17 +810,17 @@ reports without gating.
    tasks H3/H8.
 2. **D2 — Per-PR gate cadence (Decision, Matt, 2026-08-05).** The full-stack
    deterministic tier is the per-PR gate; the feasibility constraints in its way
-   are FIXED, not worked around. Agent-image distribution rides SEA-1690
+   are FIXED, not worked around. Agent-image distribution rides RIG-1690
    (publish `compass-agent` to GHCR), which is needed regardless and becomes
    part of getting this e2e test into CI. The runner's original
    uid-1000-on-the-HOST requirement was a known limitation that "can't be
-   required long term"; lifting it to arbitrary host uids (SEA-1691, the userns
+   required long term"; lifting it to arbitrary host uids (RIG-1691, the userns
    keep-id remap) lets the gate run on ordinary CI runners. Both once-blocking
    prerequisites have since landed, so the full-stack deterministic tier now
    runs as the required per-PR check directly on ordinary arbitrary-uid runners
    — no interim merge-queue/nightly staging. (The interim uid handling for
    embedded Dogfood remains the preflight-and-refuse of compass-native T4,
-   SEA-1685.)
+   RIG-1685.)
    Supersedes the drafted OQ5 arms: neither a bespoke uid-1000 runner ([A]) nor
    a permanent nightly-only fallback ([B]) — fix the constraints, gate per-PR.
    Folded through Global Constraints, Approach A1, and task H8.
@@ -866,14 +866,14 @@ D2 (see §Decisions); OQ3/OQ4 remain open.
    native-client) is exactly what #1075 settles. So OQ3 is a recommended
    fast-follow (H7) off the capstone critical path; rule it once #1075 unparks
    and the shell is finalized, not against a moving target.
-2. **OQ4 — Leg-2 activation dependency (SEA-1359).** Leg 2 needs a runnable
+2. **OQ4 — Leg-2 activation dependency (RIG-1359).** Leg 2 needs a runnable
    `compass-agent:latest` doing a real (canned or live) turn. The artifacts
    are on main (`packages/compass-agent/src/cli.ts`, `agent-image/`,
-   `devenv.nix:281` runner `--image compass-agent:latest`) but SEA-1359's
+   `devenv.nix:281` runner `--image compass-agent:latest`) but RIG-1359's
    final runtime activation is In Progress. Is the capstone's H2/H3 sequenced
-   strictly after SEA-1359 closes, or may H3's deterministic backend land as
+   strictly after RIG-1359 closes, or may H3's deterministic backend land as
    part of the activation itself (one image change instead of two)?
-   **Recommended: coordinate H3 into the SEA-1359 owner's lane as a single
+   **Recommended: coordinate H3 into the RIG-1359 owner's lane as a single
    image change.** Load-bearing for sequencing only — the design is identical
    either way.
 
@@ -887,4 +887,4 @@ the PG hot-tail transcript append, the session-status transition, and the
 `AwaitSessionSettled` primitive either way); whether `EnsureImage` grows a
 present-check vs the harness using a resolvable `containers-storage:` ref
 (H1, implementer's choice — the CI-distribution half of the image story is
-Decision D2 via SEA-1690, not deferrable).
+Decision D2 via RIG-1690, not deferrable).

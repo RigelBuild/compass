@@ -1,6 +1,6 @@
 //go:build unix
 
-// Package delivery is the Server-side notification fan-out consumer (SEA-1569
+// Package delivery is the Server-side notification fan-out consumer (RIG-1569
 // T3, design record D1). It tails the in-process comms event bus and, for each
 // posted message, resolves the subscribed agent sessions and dispatches a
 // `deliver` control down the existing Sessions relay to each live recipient —
@@ -193,7 +193,7 @@ type Consumer struct {
 	// (coalescing wakeups): the hook appends and signals without blocking Deliver.
 	settleQueue []settleEvent
 	// startQueue buffers session-start edges the hook enqueues, drained by the
-	// loop under its ctx into the reconnect sweep (SEA-1569 T6). Same shape as
+	// loop under its ctx into the reconnect sweep (RIG-1569 T6). Same shape as
 	// settleQueue: a slice (never lost) plus the shared notify wakeup, so the
 	// hook appends and signals without blocking the hub's Start goroutine.
 	startQueue []startEvent

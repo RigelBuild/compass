@@ -10,7 +10,7 @@ import (
 
 // podmanRemoveForce force-removes a container by its EXACT name, tolerating a
 // missing container (a fresh slate is the goal, not a guaranteed prior
-// existence). This is the SEA-1790 A6 preflight: before a re-run Provisions the
+// existence). This is the RIG-1790 A6 preflight: before a re-run Provisions the
 // same deterministic name, the leaked container from a prior lifetime is swept
 // so `podman create --name` does not collide.
 //

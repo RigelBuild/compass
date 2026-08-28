@@ -774,7 +774,7 @@ func TestAnswerAskNonexistentNotFound(t *testing.T) {
 }
 
 // TestAnswerAskValidation pins the reject arm of the atomic-answer contract the
-// SEA-1243 reshape ratifies (record §"Server-side answer validation"): coverage
+// RIG-1243 reshape ratifies (record §"Server-side answer validation"): coverage
 // must be EXACT (contract 3 — no unknown qid, no repeated qid, no gap) and each
 // covered answer must respect its question's option set and arity (contract 5 —
 // single-select arity, option-not-offered, duplicate option). Every listed
@@ -882,7 +882,7 @@ func TestAnswerAskEmptySkipSatisfiesCoverage(t *testing.T) {
 	}
 }
 
-// TestAnswerAskRejectsReAnswer pins Fork 2 (SEA-1243): an ask is answered
+// TestAnswerAskRejectsReAnswer pins Fork 2 (RIG-1243): an ask is answered
 // EXACTLY ONCE. The first answer persists and flips the Ask.Answered flag; a
 // second answer — even a different one — is rejected with ErrConflict rather
 // than silently overwriting the recorded answer. The trailing read proves the
@@ -1007,7 +1007,7 @@ func TestAnswerAskRejectsDuplicateOption(t *testing.T) {
 	}
 }
 
-// TestAnswerAskConcurrentDistinctAsksSerialize is the SEA-1226 red-first
+// TestAnswerAskConcurrentDistinctAsksSerialize is the RIG-1226 red-first
 // regression: two distinct asks on ONE message answered concurrently. AnswerAsk
 // reads the whole block set, records its answer on its own ask in that snapshot,
 // and writes ALL blocks back (updateMessageBlocksExec) — so an unserialized
@@ -1041,14 +1041,14 @@ func TestAnswerAskConcurrentDistinctAsksSerialize(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	// Both answers must be durable. Under the SEA-1226 lost-update the later
+	// Both answers must be durable. Under the RIG-1226 lost-update the later
 	// write's stale block snapshot overwrites the earlier answer, so one of
 	// these reads back empty.
 	if got := answeredAsk(t, ctx, s, author.ID, ch.ID, "ask-x"); !reflect.DeepEqual(got, []string{"opt-a"}) {
-		t.Fatalf("ask-x chosen = %v, want [opt-a] (lost update: SEA-1226)", got)
+		t.Fatalf("ask-x chosen = %v, want [opt-a] (lost update: RIG-1226)", got)
 	}
 	if got := answeredAsk(t, ctx, s, author.ID, ch.ID, "ask-y"); !reflect.DeepEqual(got, []string{"opt-b"}) {
-		t.Fatalf("ask-y chosen = %v, want [opt-b] (lost update: SEA-1226)", got)
+		t.Fatalf("ask-y chosen = %v, want [opt-b] (lost update: RIG-1226)", got)
 	}
 }
 
@@ -1130,7 +1130,7 @@ func TestAnswerAskConcurrentSameAskOneConflict(t *testing.T) {
 }
 
 // TestAppendMessageRejectsMalformedAsk pins the marshal-totality half of the
-// SEA-1243 ask invariant (contract 1; blocks.go validateAskQuestions, fired at
+// RIG-1243 ask invariant (contract 1; blocks.go validateAskQuestions, fired at
 // AppendMessage via marshalBlocks): an ask block is ErrInvalidArgument if it
 // carries zero questions, any empty question_id, or a duplicate question_id
 // within the ask — a duplicate or empty key would make an AskQuestionAnswer
@@ -1205,7 +1205,7 @@ func TestListMessagesFailsLoudOnZeroQuestionAsk(t *testing.T) {
 }
 
 // TestListMessagesFailsLoudOnEmptyQuestionID pins the read-back half of the
-// SEA-1243 question_id totality invariant (Greptile P1): the write path
+// RIG-1243 question_id totality invariant (Greptile P1): the write path
 // (validateAskQuestions, blocks.go:95) rejects an empty question_id, but the
 // read path (unmarshalBlocks, blocks.go:170) today only rejects ZERO-question
 // asks — a stored ask whose single question has an empty question_id survives

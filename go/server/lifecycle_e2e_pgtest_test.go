@@ -2,7 +2,7 @@
 
 package server
 
-// End-to-end T7 of the FROZEN spawn/despawn design (SEA-1617 / record SEA-1360):
+// End-to-end T7 of the FROZEN spawn/despawn design (RIG-1617 / record RIG-1360):
 // the WHOLE agent-initiated spawn/despawn wire, driven over a REAL per-container
 // AgentGateway unix socket against a real Postgres + a real Runner-over-stub-
 // engine. Where lifecycle_pgtest_test.go (T5) drives the lifecycleService seam
@@ -483,7 +483,7 @@ type e2eWire struct {
 // below.
 func newE2EWire(t *testing.T) *e2eWire {
 	t.Helper()
-	dsn := pgtest.RequireDSN(t) // hard-fails on infra-missing (SEA-1523), never skips silently.
+	dsn := pgtest.RequireDSN(t) // hard-fails on infra-missing (RIG-1523), never skips silently.
 	// First cleanup registered, so LIFO removes the tree LAST — after the loop's
 	// drain and the host's socket close have both run (see below).
 	runtimeDir := runnertest.ShortRuntimeDir(t, e2eNamePrefix, e2eAccountIDHexLen)

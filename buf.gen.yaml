@@ -23,7 +23,7 @@ clean: true
 # agent_gateway.proto + forge.proto → the compass-agent TS client;
 # buf.gen.internal-go.yaml for agent.proto + runner.proto + agent_gateway.proto +
 # forge.proto → go/internal/gen). Keep this list in sync with those templates'
-# `paths:` — a proto that leaks here breaks the SEA-1267 fence (the gen-fence check
+# `paths:` — a proto that leaks here breaks the RIG-1267 fence (the gen-fence check
 # in proto/moon.yml catches a forgotten entry).
 inputs:
   - directory: proto

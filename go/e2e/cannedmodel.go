@@ -1,4 +1,4 @@
-// The harness-side CANNED model backend (SEA-1787 H3): a tiny host-side HTTP
+// The harness-side CANNED model backend (RIG-1787 H3): a tiny host-side HTTP
 // server that speaks the openai-completions streaming SSE contract the agent's
 // SDK provider dials, so a leg-2 turn settles on a deterministic scripted reply
 // with ZERO live-model egress. It is the model backend the custom

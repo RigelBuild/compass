@@ -2,7 +2,7 @@
 
 package runner
 
-// T5 Half-A end-to-end proof (SEA-1351): the Runner-side agent->Runner call
+// T5 Half-A end-to-end proof (RIG-1351): the Runner-side agent->Runner call
 // transport, exercised through the REAL integrated stack rather than the T2
 // gateway/socket unit fakes. Every test dials the actual per-container Unix
 // socket that Provision served, over a real h2c Connect AgentGatewayClient, and
@@ -352,7 +352,7 @@ func TestFreshStartSendsReplayCompleteFirst(t *testing.T) {
 // TestResumeStartSendsReplayCompleteFirst — a resume Start (non-empty
 // resume_session_id) lifts the agent's replay barrier by sending replay_complete
 // as the FIRST control op, exactly like a fresh start. A file-based resume
-// (SEA-1570) loads its transcript synchronously (COMPASS_RESUME_SESSION_FILE)
+// (RIG-1570) loads its transcript synchronously (COMPASS_RESUME_SESSION_FILE)
 // before the agent subscribes to the control stream, so replay_complete arriving
 // on that stream is the correct "replay done, live ops may flow" signal; without
 // it every channel-driven turn on a resumed agent is refused by the closed

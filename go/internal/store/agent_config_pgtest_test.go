@@ -2,7 +2,7 @@
 
 package store
 
-// Config-bundle POOL round-trips (SEA-1624 T1), pgtest gate — these exercise
+// Config-bundle POOL round-trips (RIG-1624 T1), pgtest gate — these exercise
 // PutAgentConfig/CurrentAgentConfig against a real Postgres via the shared
 // harness (newTestStore/mustUser only exist under this tag). The door
 // validation + canonical-hash logic is proven purely in the default-gate
@@ -150,7 +150,7 @@ func TestPutAgentConfigCurrentOnlyRetention(t *testing.T) {
 	}
 }
 
-// TestDeleteAgentConfigRoundTrip proves the return-to-unconfigured path (SEA-1625
+// TestDeleteAgentConfigRoundTrip proves the return-to-unconfigured path (RIG-1625
 // T2): after a Put, DeleteAgentConfig clears the singleton so CurrentAgentConfig
 // reports ErrNotFound (the empty-config state), and the table holds zero rows.
 func TestDeleteAgentConfigRoundTrip(t *testing.T) {

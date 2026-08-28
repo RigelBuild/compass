@@ -24,5 +24,5 @@ finished issue open has not finished.**
 Merged ≠ done: a merged PR is evidence toward done, not done. An issue with three
 deliverables is not closed at PR #1 — file the remainder or keep it open.
 
-[TODO SEA-1734: name the concrete issue/PR tools and how status/close are
+[TODO RIG-1734: name the concrete issue/PR tools and how status/close are
 performed once they land; until then, treat this behaviorally.]

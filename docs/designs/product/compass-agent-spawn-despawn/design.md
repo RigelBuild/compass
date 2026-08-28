@@ -317,7 +317,7 @@ whole wave's spawn/despawn capability. The surfaced `not_found` is also
 confusable — the caller cannot tell "target missing" from "your own session
 is unbound"; the handler knows which lookup failed, so the MVP surfaces a
 distinct in-band code for the caller-session-unbound case (cheap, since the
-handler already distinguishes the two lookups), tracked in **SEA-1578**.
+handler already distinguishes the two lookups), tracked in **RIG-1578**.
 The durable-placement fallback is deliberately NOT
 taken: resolving the caller from `agent_placements` instead of the live
 binding would reopen the misattribution enroll's `clear()` exists to close
@@ -419,7 +419,7 @@ error the model reads; it never tears the transport down.
   `LifecycleStore` and making the CreateAgent/placement/session writes
   itself) — rejected: it duplicates `service.go`'s placement/session
   invariants (`service.go:118-135`, `:158-186`) across two packages — a
-  second copy that would drift (a SEA-1516 reattach change to the
+  second copy that would drift (a RIG-1516 reattach change to the
   server-side write would not reach the hub copy) — and widens the hub
   beyond its stated scope. The `CommsCaller`/`ForgeCaller` precedent
   delegates execution to the domain package and leaves the hub only
@@ -448,7 +448,7 @@ Every task below inherits these; they are not repeated per task.
   live proto.** Four held-for-review variants converge on
   `SessionsResponse.command` (in-proto today: 2–6, `runner.proto:164-170`):
   the ownership-layer record's `forge_notification = 7` (its
-  design.md:1633), SEA-1327's `secrets_version = 8`, SEA-1568's
+  design.md:1633), RIG-1327's `secrets_version = 8`, RIG-1568's
   `config_version = 9`, and this record's `remove = 10` — allocated by
   compass-repo (the single proto-owner) against that reservation ledger at
   the coordinated impl PR, because "next free off the live proto" misses
@@ -456,7 +456,7 @@ Every task below inherits these; they are not repeated per task.
   (the others are signal-only Server→Runner pushes): `remove = 8` in
   `SessionsRequest.result` (in-proto today 2–7, `error = 7`,
   `runner.proto:145-152`). The internal-only files stay internal-gen-only
-  (the SEA-1267 gen-fence: `LifecycleCall*` / `RelayLifecycleCall*` must be
+  (the RIG-1267 gen-fence: `LifecycleCall*` / `RelayLifecycleCall*` must be
   added to the fence grep alongside `CommsCall*`). `RemoveAgentWorkspace*`
   is deliberately **not** added to the fence: it is a PUBLIC
   `compass.proto` family (client-facing, like `ProvisionAgentWorkspace*`),
@@ -823,13 +823,13 @@ lane). **Resolved (Matt, 2026-07-29): (a) same-owner for MVP** — "same owner
 for MVP. we'll do auth scopes after we get up and running." No new schema;
 the wave's supervisor topology is a convention the prompt enforces, not the
 authz layer. Finer-grained caller-scoped authz (spawner-only, role-scoped, or
-a capability model) is deferred to **SEA-1573**.
+a capability model) is deferred to **RIG-1573**.
 
 ### OQ-2 — Initial prompt vs persona for the spawned peer (non-load-bearing — RESOLVED)
 
 Reclassified non-load-bearing: its own recommendation leaves every task
 unchanged (the record's definition), and it has since been resolved
-externally. Persona is owned by compass-agent via SEA-1571, and Matt ruled
+externally. Persona is owned by compass-agent via RIG-1571, and Matt ruled
 the persona SOURCE is a field on `AgentAccount` (a `persona TEXT` column +
 `store.NewAgent`/`AgentAccount` field threaded through `CreateAgent`,
 materialized to `$HOME/.compass/persona.txt` by the Runner, read into
@@ -837,7 +837,7 @@ materialized to `$HOME/.compass/persona.txt` by the Runner, read into
 spawn ships `initial_prompt` only — threaded to the existing
 `StartAgentSessionRequest.initial_prompt` ("Optional initial prompt to send
 once the session is ready", compass.proto:362-364) — while persona rides
-the separate SEA-1571 AgentAccount-field seam; a `persona` field on
+the separate RIG-1571 AgentAccount-field seam; a `persona` field on
 `SpawnPeerRequest` is an additive future add if spawn-time persona-set is
 ever wanted.
 
@@ -850,7 +850,7 @@ live-container cap enforced at the spawn handler (count live placements,
 refuse above N with in-band `resource_exhausted`). **Resolved (Matt,
 2026-07-29): (a) no limit for MVP** — "no limit for MVP, we can follow up
 with a better limits design later (per user, per agent, etc)." Proper spawn
-limits are deferred to **SEA-1574**. Consequence for OQ-6: with no cap
+limits are deferred to **RIG-1574**. Consequence for OQ-6: with no cap
 shipping, the **bounded relay deadline (Approach) is the sole MVP guard** on
 how long an agent can monopolize the Runner's serial command plane.
 
@@ -889,4 +889,4 @@ fully later." The bounded relay deadline is the sole MVP guard (OQ-3 ships no
 cap). Concurrent per-command dispatch — the router already correlates
 out-of-order completions by request id (`router.go:33-36`), but concurrency
 touches the dispatcher idempotency map and the send-serialization invariant
-(`sendMu`, `router.go:38-40`) — is deferred to **SEA-1575**.
+(`sendMu`, `router.go:38-40`) — is deferred to **RIG-1575**.

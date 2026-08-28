@@ -1,6 +1,6 @@
 package store
 
-// Config-bundle DOOR contracts (SEA-1624 T1), default gate — pure functions
+// Config-bundle DOOR contracts (RIG-1624 T1), default gate — pure functions
 // over []byte, no Postgres. validateAndHashConfigBundle is the security-critical
 // store door: it validates every tar member and computes the canonical content
 // version in one streamed pass. These tests exercise every rejection path
@@ -396,7 +396,7 @@ func itoa(n int) string {
 // mkYAMLMap is a minimal valid YAML mapping body for a settings/models member.
 const mkYAMLMap = "compaction:\n  enabled: true\n"
 
-// TestValidateConfigBundleAcceptsNewMembers pins the SEA-1678 grammar accepts:
+// TestValidateConfigBundleAcceptsNewMembers pins the RIG-1678 grammar accepts:
 // settings/config.yml (YAML mapping), flat rules/*.md|.mdc, flat agents/*.md,
 // and the two top-level files AGENTS.md and models.yml (models YAML-mapping).
 func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
@@ -424,7 +424,7 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 }
 
 // TestValidateConfigBundleRejectsNewMembers pins the structural rejection matrix
-// for the SEA-1678 grammar: settings variants/nesting/non-mapping, nested rules,
+// for the RIG-1678 grammar: settings variants/nesting/non-mapping, nested rules,
 // non-.md agents, and a top-level file other than AGENTS.md/models.yml.
 func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 	cases := []struct {

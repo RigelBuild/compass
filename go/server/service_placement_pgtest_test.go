@@ -629,7 +629,7 @@ type recordingRunner struct {
 
 	// failStart, when set, makes the loop answer every Start with a RunnerError
 	// (ALREADY_RUNNING) instead of a session id — the mid-chain failure the
-	// spawn-rollback test drives (SEA-1618 T5). Set under mu before the command
+	// spawn-rollback test drives (RIG-1618 T5). Set under mu before the command
 	// is driven, read under mu in serve, so -race sees a clean handoff.
 	failStart bool
 
@@ -693,7 +693,7 @@ func (r *recordingRunner) serve(
 			}
 		}
 		if cmd.GetDeliverControl() != nil {
-			// A send-only control deliver (SEA-1569 §5): a real Runner answers a
+			// A send-only control deliver (RIG-1569 §5): a real Runner answers a
 			// SUCCESSFUL deliver with NO result (success rides a later
 			// delivery_ack), so record it and send nothing — the RIG-1641 T4 e2e
 			// observes the pushed steer/deliver as this recorded wire command.

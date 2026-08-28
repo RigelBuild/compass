@@ -4,7 +4,7 @@
 // Server over the RunnerService connection and reassemble the server-streamed
 // frames into one in-memory bundle. The first frame carries the version; every
 // subsequent frame carries a tarball byte chunk, so a bundle larger than the
-// connect/gRPC unary recv cap still rides the wire (SEA-1568 T3). The bundle
+// connect/gRPC unary recv cap still rides the wire (RIG-1568 T3). The bundle
 // bytes ride in memory only; the security caps (decompressed size, file count)
 // are enforced downstream at unpack (T4's ConfigMaterializer), never here.
 package runner

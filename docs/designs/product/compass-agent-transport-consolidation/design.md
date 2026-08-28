@@ -5,7 +5,7 @@ Status: Active
 > Freezes on merge; later changes supersede by
 > citation, never rewrite (`../compass-0.5/design.md:10-12`, convention restated
 > in `../compass-0.6/design.md:1116-1118`). Extends the frozen
-> `../compass-agent-runner-transport/design.md` (merged as #849, SEA-1351) and
+> `../compass-agent-runner-transport/design.md` (merged as #849, RIG-1351) and
 > supersedes-by-citation its Decision #2 and its OQ-8 (Matt's ruling,
 > 2026-07-22: "get everything onto the unix socket(s)"), plus the v0.6 §T5
 > stdio-*carrier* clauses those two rest on (`../compass-0.6/design.md:1416-1418`
@@ -85,7 +85,7 @@ the Runner (not the agent), gap-detectable upstream, malformed-frame tolerant.**
 
 Today's stdin lane: nothing. `AgentControl` is deliberately undefined on the
 wire (`proto/compass/v1/agent.proto:73-85` doc comment: it "lands
-with its decoder once its payload shapes are settled" — SEA-1310's parked
+with its decoder once its payload shapes are settled" — RIG-1310's parked
 payload decision); only the typed domain union + `ControlSource =
 AsyncIterable<AgentControl>` exist
 (`packages/compass-agent/src/control.ts:30-58`), and the Runner
@@ -186,7 +186,7 @@ inversion `RunnerService.Sessions` uses one hop up
 - **The wire message is the frozen-variant `AgentControl` oneof** — variant
   names/types per the v0.6 ratification
   (`../compass-0.6/design.md:1439-1451`), payload fields still owned by
-  SEA-1310's parked decision (`agent.proto:76-85`). This record moves the
+  RIG-1310's parked decision (`agent.proto:76-85`). This record moves the
   CARRIER; it does not decide the payload shape (OQ-1 flags the interaction).
   The agent-side `ControlSource` seam is already carrier-blind
   (`control.ts:55-58`: "The wire decode … lives entirely behind this") — the
@@ -196,7 +196,7 @@ inversion `RunnerService.Sessions` uses one hop up
   oneof has SEVEN, adding `deliver` (`../compass-0.6/design.md:1442`). C1 lands
   all seven on the wire; C4's dispatcher fast-paths `deliver` (below) rather
   than through the domain union, so the union extension is deferred to when a
-  built `deliver` domain op exists (SEA-1310/RT-3) — the seam is carrier-blind
+  built `deliver` domain op exists (RIG-1310/RT-3) — the seam is carrier-blind
   for the six it knows and routes the seventh explicitly.
 - **Mid-turn delivery is off the turn's await — a dispatcher, with a stated
   ordering contract.** The agent's control loop is strictly sequential and its
@@ -278,7 +278,7 @@ before socket close" in its red set.
   a migration at all.
 - **Migrate ONLY control; keep telemetry on stdout (the inverse half-move).**
   The strongest competitor, worth naming: control is unbuilt (zero-cost carrier
-  change, dissolves the SEA-1310 §2 mid-turn class), while telemetry is the one
+  change, dissolves the RIG-1310 §2 mid-turn class), while telemetry is the one
   LIVE, working channel — and migrating telemetry is precisely what introduces
   the OQ-2 loss model, the `ReadMaxBytes` question, and the teardown-ordering
   hazard. Foreclosed by Matt's ruling ("get EVERYTHING onto the unix
@@ -325,7 +325,7 @@ before socket close" in its red set.
   on the socket handler covering `Publish`, `PostConversationFrame`, and
   `Comms`; a message past it is a stream/unary error routed to OQ-2's reconnect
   path, not an OOM.
-- **SEA-1267 gen-fence: extend the symbol list for every new internal name.**
+- **RIG-1267 gen-fence: extend the symbol list for every new internal name.**
   The fence is a fixed literal grep (`proto/moon.yml:123`:
   `AgentFrame|AgentControl|SessionFrame|RunnerService|RunnerError|compassv1internal`,
   with `AgentGateway|CommsCall` added by the frozen record's T1) with the
@@ -346,7 +346,7 @@ before socket close" in its red set.
   cover them. No existing message/field changes (new oneof variants and a new
   field number are additive); the stdout relay retirement deletes Go/TS code,
   not proto surface (`AgentFrame` stays — it is the stream payload).
-- **`AgentControl` payload fields stay SEA-1310's.** This record defines the
+- **`AgentControl` payload fields stay RIG-1310's.** This record defines the
   oneof CARRIER message with the frozen variant names
   (`../compass-0.6/design.md:1439-1451`) but leaves the payload message fields
   exactly as parked (`proto/compass/v1/agent.proto:76-85`) — C1
@@ -421,7 +421,7 @@ message PublishFrameRequest { AgentFrame frame = 1; }  // trace/session only; no
 message PublishFrameResponse {}                        // ack at stream close, mirrors PublishEventsResponse
 // The durable-frame unary carries the SAME AgentFrame message, constrained by
 // C4 to a conversation_posted/conversation_updated variant, plus an agent-minted
-// idempotency_key (envelope field, C2 dedup — NOT a payload field, so SEA-1310's
+// idempotency_key (envelope field, C2 dedup — NOT a payload field, so RIG-1310's
 // parked decision is untouched). Runner-sequenced upstream through the same
 // ordered per-session publisher as Publish frames (C2), so hub gap-detection is
 // identical; the difference is delivered-or-erred to the agent.
@@ -438,7 +438,7 @@ message ControlSubscribeRequest {}                     // the socket IS the sess
 // v0.6 oneof; payload fields land per-variant as representable (OQ-1). The
 // envelope carries a Runner-assigned control_seq for retention/redelivery
 // (amended OQ-6) — an ENVELOPE field, not a payload field, so it does not touch
-// SEA-1310's parked payload decision.
+// RIG-1310's parked payload decision.
 message AgentControl {
   uint64 control_seq = 8;  // Runner-assigned, monotonic per session; the redelivery cursor (amended OQ-6)
   oneof control {
@@ -456,8 +456,8 @@ message AskAnswerControl { string ask_id = 1; repeated string chosen_option_ids 
 message ReplayComplete {}
 // SteerControl / DeliverControl / TranscriptReplay carry an inbound SDK
 // AgentMessage; ConfigControl carries a tool set. Their FIELDS remain
-// SEA-1310's parked decision (agent.proto:76-85) — defined here as empty
-// shells so the oneof is complete on the wire, populated by SEA-1310's
+// RIG-1310's parked decision (agent.proto:76-85) — defined here as empty
+// shells so the oneof is complete on the wire, populated by RIG-1310's
 // stacked PR (OQ-1).
 message SteerControl {}
 message DeliverControl {}
@@ -653,7 +653,7 @@ subscription, ops ≤ the cursor are NOT, and an op named in `applied_above` is 
 re-sent even though it sits past the cursor; a barrier test asserting held live
 ops are released only after `ReleaseReplayBarrier` (P1 #3); a no-agent test
 asserting `ErrNoAgent`. GREEN: handler + sender + retention; all pass. Non-goal:
-the Runner-side callers that DECIDE what to send (SEA-1310 / RT-3 lanes), and the
+the Runner-side callers that DECIDE what to send (RIG-1310 / RT-3 lanes), and the
 `deliver` payload cursor those lanes reconcile with this `control_seq`.
 
 ### C4 — Agent-side: socket `FrameSink` (split by durability) + socket `ControlSource` + dispatcher
@@ -748,7 +748,7 @@ the trace backlog within the shutdown deadline (P1 #2); a source test asserting
 yielded ops match the pushed stream; **the
 mid-turn test** (with the iterator consumer suspended awaiting a long `prompt`
 turn, a pushed `steer` reaches `immediate.steer` before the turn resolves — the
-SEA-1310 §2 latent bug pinned red, deadlocks-by-queueing over a naive
+RIG-1310 §2 latent bug pinned red, deadlocks-by-queueing over a naive
 pass-through source); an ordering-inversion test asserting prompt-then-steer
 applies steer first (invariant 2); a barrier test asserting a pre-`ReplayComplete`
 steer on the immediate path is refused-and-counted, not applied (invariant 1); a
@@ -775,7 +775,7 @@ verbatim). `StreamingIO` and the exec spawn (`podman.go:438-455`) are untouched
 — pipes exist, protocol-idle.
 
 > **Amended — stderr unified under `drainToLog`, not kept verbatim (Matt, 2026-07-31).**
-> As shipped (compass #16, SEA-1364 C5), stderr does **not** keep `drainStderr`
+> As shipped (compass #16, RIG-1364 C5), stderr does **not** keep `drainStderr`
 > verbatim. `drainStderr` was retired and generalized into a single
 > `drainToLog` run on **both** pipes (in `go/internal/runner/agent_exec.go` —
 > stderr and stdout drains), backed by a bounded `readBoundedLine` in the same
@@ -821,11 +821,11 @@ untouched — OQ-3's proof).
 **Note on the wire-level mid-turn assertion.** C4/C5's "mid-turn steer lands
 end-to-end" exercises the dispatcher MECHANISM (a `steer` op routed to
 `immediate.steer` ahead of the turn). Carrying a real `AgentMessage` steer
-payload over the wire needs SEA-1310's payload decision; until then the E2E
+payload over the wire needs RIG-1310's payload decision; until then the E2E
 drives the immediate path with the empty-shell `SteerControl` and asserts the
 dispatcher ROUTES it immediately (reaching `immediate.steer`, distinct from the
 iterator pull), not that a populated message reaches the SDK. The populated-
-payload end-to-end assertion is owed to SEA-1310's stacked PR (OQ-1). Stated so
+payload end-to-end assertion is owed to RIG-1310's stacked PR (OQ-1). Stated so
 the acceptance criterion is satisfiable against C1's empty shells.
 
 ## Tasks
@@ -866,7 +866,7 @@ Batched for Matt; each carried this record's recommendation. **Matt ruled on
 accepted (LGTM).** Folded below as the frozen decisions this record merges on.
 
 - **OQ-1 (LOAD-BEARING; RESOLVED — Matt, 2026-07-22) — Does the parked `AgentMessage` payload decision
-  (SEA-1310) block the control-lane migration?** The stdin decoder was parked
+  (RIG-1310) block the control-lane migration?** The stdin decoder was parked
   because control ops carry an inbound SDK `AgentMessage` + a tool set no
   compass.v1 message represents (`proto/compass/v1/agent.proto:76-85`).
   Moving the CARRIER to a Connect stream does not resolve that — but it does
@@ -875,21 +875,21 @@ accepted (LGTM).** Folded below as the frozen decisions this record merges on.
   (string / id+options / empty). *Recommendation:* control rides the socket
   NOW with `SteerControl`/`DeliverControl`/`TranscriptReplay`/`ConfigControl`
   landed as empty-shell messages (C1) — additive field population is
-  buf-breaking-safe when SEA-1310 rules — so consolidation resolves framing,
+  buf-breaking-safe when RIG-1310 rules — so consolidation resolves framing,
   correlation, and the mid-turn DISPATCH MECHANISM today, while the payload
   decision stays exactly as parked. **Sequencing constraint this creates:** an
   empty-shell `steer`/`deliver`/`replay`/`config` op is TRANSMITTABLE on the
   wire before its payload exists, so C3's Runner-side callers MUST NOT send
-  those variants until SEA-1310 populates them (the agent can only count them as
-  unmapped) — i.e. the RT-3/SEA-1310 lanes own the "start sending real payloads"
+  those variants until RIG-1310 populates them (the agent can only count them as
+  unmapped) — i.e. the RT-3/RIG-1310 lanes own the "start sending real payloads"
   switch, and this record lands only the carrier + the mechanism test. The
   claim is deliberately "resolves the mid-turn DISPATCH class," not "resolves
   mid-turn steer end-to-end" — the latter waits on the payload. The alternative
-  (hold C3/C4-control until SEA-1310 rules) re-couples two decisions the frozen
+  (hold C3/C4-control until RIG-1310 rules) re-couples two decisions the frozen
   record already decoupled.
   **Resolved — ratified (Matt, 2026-07-22).** Control rides the socket now with
   empty-shell control messages (C1); C3's Runner-side callers must not send the
-  `steer`/`deliver`/`replay`/`config` variants until SEA-1310 populates them.
+  `steer`/`deliver`/`replay`/`config` variants until RIG-1310 populates them.
 - **OQ-2 (LOAD-BEARING, security-relevant; RESOLVED — Matt, 2026-07-22) — Telemetry stream reconnect + the
   new loss model.** Today a broken relay ends telemetry for the session
   (`relay.go:162-166`: send failure logs + breaks; stdout EOF ends the loop) and
@@ -994,7 +994,7 @@ accepted (LGTM).** Folded below as the frozen decisions this record merges on.
   (3) iterator-end is terminal (→ STOPPED) ONLY on a Runner-initiated clean
   close, distinguished from a transport drop (which triggers the retry, not a
   terminal status). Redelivery of missed prompt/steer/askAnswer across a control
-  drop is SEA-1310/RT-3's cursor problem, not this record's — noted so the
+  drop is RIG-1310/RT-3's cursor problem, not this record's — noted so the
   boundary is explicit. **Matt: confirm takeover + retry + clean-close-only-
   terminal, or flag if control-op redelivery must be designed here.**
   **Resolved — takeover + retry + clean-close-only-terminal (Matt, 2026-07-22).**
@@ -1004,10 +1004,10 @@ accepted (LGTM).** Folded below as the frozen decisions this record merges on.
   a Runner-initiated clean close.
   **Amended — control-op redelivery designed IN THIS RECORD (Matt, 2026-07-23).**
   The 2026-07-22 resolution's out-of-scope clause ("missed prompt/steer/
-  askAnswer redelivery is SEA-1310/RT-3's cursor problem") is superseded: the
+  askAnswer redelivery is RIG-1310/RT-3's cursor problem") is superseded: the
   control lane is now lossless end-to-end. Each `AgentControl` carries a
   Runner-assigned monotonic `control_seq` (envelope field, C1 — NOT a payload
-  field, so SEA-1310's parked payload decision is untouched); the Runner RETAINS
+  field, so RIG-1310's parked payload decision is untouched); the Runner RETAINS
   every op past the agent's `ControlAck` cursor and drops any op the ack reports
   individually applied (below); it TRANSFERS retained ops to the replacement
   subscription on takeover (C3) and REDELIVERS from the cursor on reconnect after
@@ -1029,5 +1029,5 @@ accepted (LGTM).** Folded below as the frozen decisions this record merges on.
   makes `ControlSender.Send` success mean "durably queued until acked," closing
   the caller-already-got-success hazard (P1 #6). The RT-3 `deliver` cursor
   (`../compass-0.6/design.md:1452-1466`) is reconciled with `control_seq` by the
-  SEA-1310/RT-3 lanes; this record owns the generic control-op retention
+  RIG-1310/RT-3 lanes; this record owns the generic control-op retention
   mechanism, they own the `deliver`-specific payload semantics layered on it.

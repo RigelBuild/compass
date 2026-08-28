@@ -69,7 +69,7 @@ type SecretDeclaration struct {
 	UpdatedAt  time.Time
 }
 
-// DeclareSecret adds a names-only registry row (SEA-1327 T3). It stores NO
+// DeclareSecret adds a names-only registry row (RIG-1327 T3). It stores NO
 // value — the value lives in the SecretSpec provider. name is validated against
 // SecretSpec's env-var-name grammar at the door (a bad name is
 // ErrInvalidArgument before touching Postgres, since the name becomes a

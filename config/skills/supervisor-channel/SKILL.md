@@ -37,7 +37,7 @@ reader can trust that anything in `#announcements` or `#incidents` is the
 posture, not one worker's guess. A node with something for these channels
 routes it to you (DM the owner to post) and you decide whether it goes up.
 
-[TODO SEA-1722: the restricted-post ACL is not yet an enforced primitive. Until
+[TODO RIG-1722: the restricted-post ACL is not yet an enforced primitive. Until
 it lands, this posture is behavioral — hold it by convention: you are the only
 node that posts to `#announcements` / `#incidents`, and other nodes route
 through you rather than posting directly.]
@@ -65,6 +65,6 @@ headlines a node sees without scrolling — "CI is red, see the incident topic i
 `#incidents`," "release freeze until Monday." You curate it: pin what is
 currently true and tree-wide, unpin it when it stops being true.
 
-[TODO SEA-1723: the pinned board is not yet a primitive. Until it lands, carry
+[TODO RIG-1723: the pinned board is not yet a primitive. Until it lands, carry
 headlines as a single standing topic in `#announcements` that you keep edited to
 the current state, and point nodes at it.]

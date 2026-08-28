@@ -1,16 +1,16 @@
-# Design: Compass Bridge re-clothe (SEA-2111)
+# Design: Compass Bridge re-clothe (RIG-2111)
 
 Status: Active
 Owner lane: compass-ux (design) → compass-ui (execution)
-Refs: SEA-2111 (live board doesn't match the company-site reference render);
-after the SEA-2034 DS-token cutover (merged, main `18e988b5`). Two adjacent
+Refs: RIG-2111 (live board doesn't match the company-site reference render);
+after the RIG-2034 DS-token cutover (merged, main `18e988b5`). Two adjacent
 concerns are split into their own lanes/PRs, not folded here: the state-dot
-pixel-art glyph adoption → SEA-2118 (mechanical frozen-spec adoption, global
-across surfaces); review/CI badge semantic clarity → SEA-2117 (its own design
+pixel-art glyph adoption → RIG-2118 (mechanical frozen-spec adoption, global
+across surfaces); review/CI badge semantic clarity → RIG-2117 (its own design
 pass — see T4). This record is the board-structure re-clothe and ships on the
 current state-dots.
 Governing spec: `apps/ui/src/design/surfaces.md` §"Bridge — the Issues and PRs
-board" (L196–268, frozen T6/SEA-1816)
+board" (L196–268, frozen T6/RIG-1816)
 Reference render: the canonical Rigel company-site board reference render (the
 brand reference for this surface — see
 [`docs/specs/brand/surfaces.md`](../../../specs/brand/surfaces.md) §"The board
@@ -52,10 +52,10 @@ Every task below inherits these; none restates them.
   motion.md's primitive list — it ships as a dormant hook (T5, Decision D2),
   not a coined token.
 - **State-dots and badge-clarity are OUT of this lane.** The state-dot
-  pixel-art glyph adoption is SEA-2118 (its own global PR — Matt ruled the
+  pixel-art glyph adoption is RIG-2118 (its own global PR — Matt ruled the
   glyphs ship at 9px; grounded blast radius is 5 files + the `.r-tab` overlay,
   too wide to fold into a board-scoped PR). The review/CI badge semantic-clarity
-  redesign is SEA-2117 (its own design pass); T4 here recolors the existing
+  redesign is RIG-2117 (its own design pass); T4 here recolors the existing
   badges onto the semantic tier and consumes whatever badge FORM that design
   freezes. The board keeps today's `StateDot` unchanged; no `.state-dot` rule
   is touched here.
@@ -105,19 +105,19 @@ written against them.
   motion tokens only; wired to no data until a real source lands. The
   motion-spec addition routes to D9/foundation-T8, the data field to the store
   lane.
-- **D3 — CI/review badges: recolor onto the semantic tier; FORM per SEA-2117.**
+- **D3 — CI/review badges: recolor onto the semantic tier; FORM per RIG-2117.**
   T4 re-points the badges from the raw `--cx-ok/error/warn` they use today onto
   the dedicated `--cx-ci-*`/`--cx-review-*` tier, and adopts whatever badge
-  form the SEA-2117 badge-clarity design freezes (pixel-art 1-bit glyphs
+  form the RIG-2117 badge-clarity design freezes (pixel-art 1-bit glyphs
   leading). The `.cx-badge` naming in `surfaces.md` is the token/vocabulary
   contract, not a labelled-DOM-box mandate. The live `commented` verdict maps
-  to `--cx-review-pending`. If SEA-2117 has not frozen by the time T4 runs, T4
+  to `--cx-review-pending`. If RIG-2117 has not frozen by the time T4 runs, T4
   ships the interim compact recolored pip and the glyph form lands as a fast
   follow — T4 does not block on it.
 - **D4 — roving-tabindex 2-D keyboard grid is OUT of scope** (was OQ-5): filed
   as a follow-up interaction issue at dispatch; this record changes only the
   clothing, not the keyboard model.
-- **D5 — state-dot glyph adoption is a separate lane** (SEA-2118, see Global
+- **D5 — state-dot glyph adoption is a separate lane** (RIG-2118, see Global
   Constraints); the board ships on the current `StateDot`.
 
 ## Approach
@@ -195,7 +195,7 @@ field.
 Reference (the company-site board reference render, its rows cited below) vs live, each row mapped to the
 live file+line it changes and the token it lands on. Live line numbers at main
 `18e988b5`. (The former G9 state-dot row is removed — it is its own lane,
-SEA-2118.)
+RIG-2118.)
 
 | # | Reference has | Live has | Live change site | Token(s) |
 | --- | --- | --- | --- | --- |
@@ -218,7 +218,7 @@ affordances): the `N agents · M in-flight` toolbar sub (`Bridge.tsx:140-142`),
 the Swimlanes/Status grouping toggle (`Bridge.tsx:160-175`), the gutter's
 `N items` meta + `→` open affordance (`Bridge.tsx:236-242`), the lane-head
 counts (`Bridge.tsx:193`), PR-chip and issue-chip cross-links, selection sync,
-the current `StateDot` (untouched here — its glyph adoption is SEA-2118).
+the current `StateDot` (untouched here — its glyph adoption is RIG-2118).
 
 ## Plan
 
@@ -306,19 +306,19 @@ onto the `--cx-review-pending` color (D3). All three consumer sites
 (`Bridge.tsx:61,64`, `IssueCard.tsx:79,83`, `DoneView.tsx:37,41`) share the
 rules, so one edit covers them.
 
-**Badge FORM per SEA-2117 (D3).** The badge-clarity design (SEA-2117, pixel-art
+**Badge FORM per RIG-2117 (D3).** The badge-clarity design (RIG-2117, pixel-art
 1-bit glyphs leading) owns what the badge *looks like*; T4 consumes that frozen
-form. If SEA-2117 is frozen when T4 runs, T4 renders the chosen glyph/pip form
+form. If RIG-2117 is frozen when T4 runs, T4 renders the chosen glyph/pip form
 (a `BadgeGlyph`-style inline SVG mirrors the state-dot emission contract and the
-consumer sites flip from bare `<span>` to the component). If SEA-2117 has NOT
+consumer sites flip from bare `<span>` to the component). If RIG-2117 has NOT
 frozen, T4 ships the interim compact square pip recolored onto the tier (7px,
 no radius — the reference render) and the glyph form lands as a fast follow — T4
-does not block on SEA-2117.
+does not block on RIG-2117.
 
 Interfaces: consumes `ciBadge(pr): "pending" | "success" | "failure" |
 undefined` (`board-render.ts:119-121`) and `reviewBadge(pr): "changes" |
 "approved" | "commented" | undefined` (`board-render.ts:102-112`) unchanged;
-produces the recolor + the SEA-2117 form (or interim pip). Test cycle:
+produces the recolor + the RIG-2117 form (or interim pip). Test cycle:
 `Bridge.test.tsx:145-148` badge-presence assertions stay green; stylelint;
 harness.
 
@@ -424,10 +424,10 @@ verified rather than vacuously green (G11).
 - **Roving-tabindex 2-D grid** (`surfaces.md:236-239,264-265` flip item 6) —
   a keyboard/interaction change, not clothing; filed as a follow-up issue at
   dispatch time (D4).
-- **State-dot 1-bit glyph adoption** — its own lane, SEA-2118 (D5); the board
+- **State-dot 1-bit glyph adoption** — its own lane, RIG-2118 (D5); the board
   ships on the current `StateDot`.
-- **Review/CI badge form redesign** — its own design lane, SEA-2117 (D3); T4
-  recolors onto the tier and consumes the badge form SEA-2117 freezes.
+- **Review/CI badge form redesign** — its own design lane, RIG-2117 (D3); T4
+  recolors onto the tier and consumes the badge form RIG-2117 freezes.
 - **Motion primitive spec authorship** — D9/foundation-T8 owns adding a
   card-advance topology to `motion.md`; T5 here only consumes tokens (D2).
 - **Merged-column retention windowing** — server-side / store lane (D1b); the

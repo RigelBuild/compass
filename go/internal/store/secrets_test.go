@@ -2,7 +2,7 @@
 
 package store
 
-// Secret names-registry contracts (SEA-1327 T3): the round-trip of a declared
+// Secret names-registry contracts (RIG-1327 T3): the round-trip of a declared
 // row with its delivery/kind/provider/host/actor intact and name-ordered, the
 // UNIQUE conflict on a duplicate name, the door name-validation that rejects a
 // bad name before any row is written, the declared_by FK on an unknown actor,

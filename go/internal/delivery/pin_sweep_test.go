@@ -2,7 +2,7 @@
 
 package delivery
 
-// SEA-1723 T7 — the session-start pin sweep, RED-first. A session-start edge
+// RIG-1723 T7 — the session-start pin sweep, RED-first. A session-start edge
 // (OnSessionStarted) drains through the loop's drainStarts, which runs the
 // EXISTING cursor sweep (sweepSession) and then the new sibling pin step
 // (sweepPins): for every channel the agent sweeps (SweepChannels, the D1

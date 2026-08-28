@@ -77,7 +77,7 @@ var configTopDirs = map[string]struct{}{
 	topDirAgents:     {},
 }
 
-// Top-level regular-file members admitted by exact filename (SEA-1678 T2), and
+// Top-level regular-file members admitted by exact filename (RIG-1678 T2), and
 // the one file admitted under settings/ (yml-only, OQ-1). Any other top-level
 // file or settings variant stays rejected — the structural twin of the store
 // door (the credential denylist is store-door-only, never mirrored here).

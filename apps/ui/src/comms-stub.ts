@@ -255,7 +255,7 @@ const MATT_ACCOUNT: Account = {
 	kind: "user",
 };
 
-/** The reserved platform system sender `@compass` (SEA-1820). A third account
+/** The reserved platform system sender `@compass` (RIG-1820). A third account
  *  kind alongside the caller and agents — never a roster/directory entry (it is
  *  not a STUB_AGENTS row, so it never enters the agent tree), but it IS a comms
  *  account so its posts render with the system-author style and an `@compass`
@@ -536,7 +536,7 @@ export const STUB_MESSAGES: Message[] = [
 						{
 							questionId: "q1",
 							question:
-								"Q2 (live-daemon integration CI) — new sub-issue, or fold into SEA-1023?",
+								"Q2 (live-daemon integration CI) — new sub-issue, or fold into RIG-1023?",
 							allowMultiple: false,
 							chosenOptionIds: [],
 							options: [
@@ -548,7 +548,7 @@ export const STUB_MESSAGES: Message[] = [
 								},
 								{
 									id: "opt-fold",
-									label: "Fold into SEA-1023",
+									label: "Fold into RIG-1023",
 									description: "Keep it under the one ACP session lane.",
 								},
 							],

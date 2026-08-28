@@ -11,7 +11,7 @@
 //
 // The mint is derived, never stored: the same client_credentials call the
 // platform's linear-auto-done job uses (design record
-// linear-auto-done-auth.md / SEA-1087). client id + secret
+// linear-auto-done-auth.md / RIG-1087). client id + secret
 // come from Actions secrets, cross TLS once to Linear's token endpoint, and the
 // minted token is masked out of the logs before it is exported.
 //
@@ -49,7 +49,7 @@ export const OUTPUT_ENV_NAME = "LINEAR_FORGE";
  * the injected `fetchFn`, so tests drive it without a network. Fails closed
  * fast: a hung token request would otherwise block the job until the runner's
  * timeout. Mirrors the platform linear-auto-done job's mintAppToken (design
- * record linear-auto-done-auth.md / SEA-1087).
+ * record linear-auto-done-auth.md / RIG-1087).
  */
 export async function mintAppToken(
 	creds: AppTokenCredentials,

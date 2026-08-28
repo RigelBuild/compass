@@ -1,7 +1,7 @@
 //go:build unix
 
 // The fleet agent-config declaration handlers — the operator-facing write path on
-// CompassService (SEA-1625 T2). PutAgentConfig / DeleteAgentConfig are admin-gated
+// CompassService (RIG-1625 T2). PutAgentConfig / DeleteAgentConfig are admin-gated
 // on the network door (admin_gate.go classifies them adminOnly); GetAgentConfigInfo
 // is value-free (names only) and classified authenticatedOpen. They sit on the same
 // service struct as the rest of CompassService (service.go) rather than a separate

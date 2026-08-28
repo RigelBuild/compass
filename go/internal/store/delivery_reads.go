@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// The delivery consumer's read side (SEA-1569 T3, design record D1). These live
+// The delivery consumer's read side (RIG-1569 T3, design record D1). These live
 // beside the T2 cursor methods (delivery_cursors.go) so the fan-out consumer's
 // store surface is proven against real Postgres in one pgtest-tagged file, the
 // same discipline the cursor reads follow. All four are pure reads — the

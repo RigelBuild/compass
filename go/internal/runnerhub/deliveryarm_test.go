@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// The RunnerHub's SEA-1569 T3 arms: the send-only DispatchControl relay (§5, the
+// The RunnerHub's RIG-1569 T3 arms: the send-only DispatchControl relay (§5, the
 // crux: a successful deliver must NOT block on a result), the delivery_ack cursor
 // arm (§6), and the settle-edge sink fired at deliverSession (§2). Each test pins
 // the observable contract a plausible regression would break, with a fake
@@ -237,7 +237,7 @@ type promotedRecord struct {
 	sessionID string
 }
 
-// fakePresenceSink records the hub's presence-edge calls — the SEA-1569 T8
+// fakePresenceSink records the hub's presence-edge calls — the RIG-1569 T8
 // lifecycle + reconciliation sink. Concurrency-safe for parity with the real
 // component, which is fed from the hub's goroutine.
 type fakePresenceSink struct {
@@ -485,7 +485,7 @@ func TestDeliveryAckStoreFaultIsNonFatal(t *testing.T) {
 	}
 }
 
-// SEA-1569 T3 §6: an ack drop increments the dedicated DroppedAcks counter. A
+// RIG-1569 T3 §6: an ack drop increments the dedicated DroppedAcks counter. A
 // delivery_ack is not a conversation frame; a drop (an unbound acking session or
 // an unknown message) is logged + counted and never a teardown. This drives two
 // ack drops — an unbound acking session and an unknown message — and asserts

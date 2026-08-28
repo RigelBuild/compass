@@ -9,12 +9,12 @@
 //     terminal STOPPED) is a PRIORITY frame the spine never drops and flushes
 //     ahead of the trace backlog; a trace-only frame (state UNSPECIFIED) rides
 //     the bounded, drop-oldest trace queue.
-//   - a "transcriptEntry" frame is DURABLE (SEA-1570): it is sent on the
+//   - a "transcriptEntry" frame is DURABLE (RIG-1570): it is sent on the
 //     PostConversationFrame UNARY via emitDurable(), awaited, and retried with
 //     bounded backoff until delivered-or-erred, carrying an agent-minted
 //     idempotency_key so a lost-response retry is deduped by the Runner (C2),
 //     never duplicated. It is NEVER dropped on a reconnect.
-//   - a "deliveryAck" frame is a control-plane ack (SEA-1310 §8): it rides the
+//   - a "deliveryAck" frame is a control-plane ack (RIG-1310 §8): it rides the
 //     Publish spine's never-drop PRIORITY lane, ahead of the trace backlog. It
 //     is NOT durable — the Runner's isConversationFrame guard REJECTS an ack on
 //     the PostConversationFrame unary; the Runner consumes it off the
@@ -278,7 +278,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				frame.kind === "forgeNotificationAck"
 			) {
 				// A per-notification/message delivery receipt is a control-plane ack
-				// (SEA-1310 §8; RIG-2732 W3 forge ack): it rides the Publish spine's
+				// (RIG-1310 §8; RIG-2732 W3 forge ack): it rides the Publish spine's
 				// never-drop PRIORITY lane, NOT the durable unary. The Runner's
 				// isConversationFrame guard REJECTS an ack on the PostConversationFrame
 				// unary (post_conversation_frame.go:94-108), and its consume side
@@ -297,7 +297,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 		},
 
 		emitDurable(frame: OutboundFrame): Promise<void> {
-			// SEA-1570 transcript lane: the durable send is forked into the FiberSet
+			// RIG-1570 transcript lane: the durable send is forked into the FiberSet
 			// (same drain tracking as emit's launch), but its definitive give-up
 			// PROPAGATES to the caller so the tee backend can buffer/retry/fatal (R4).
 			// The Deferred→promise reject bridge is wired at FORK time (design record

@@ -2,7 +2,7 @@
 
 package store
 
-// The presence component's read side (SEA-1569 T8, design record D4):
+// The presence component's read side (RIG-1569 T8, design record D4):
 // AgentHasOpenAsk (the WAITING overlay input) and SharesVisibleChannel (the
 // AgentPresenceChanged fan-out scoping). Both are properties only a real
 // Postgres proves — the JSONB path-existence probe that must catch an

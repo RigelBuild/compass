@@ -7,7 +7,7 @@ Status: Draft
 > results surfaced ON the PR, a previewable UI build, and a validation skill
 > bundled with the Compass agents — so review time is judgment, not
 > reproduction. Extends the existing e2e harness record
-> (`docs/designs/platform/compass-dogfood-e2e/design.md`, SEA-1681, H1-H8).
+> (`docs/designs/platform/compass-dogfood-e2e/design.md`, RIG-1681, H1-H8).
 > Local-dev / gate mechanics are a separate record
 > (`docs/designs/platform/compass-local-dev/design.md`). UI-visible changes
 > are additionally previewable in an isolated PR-preview environment defined

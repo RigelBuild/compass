@@ -129,7 +129,7 @@ function lifecycleFailure(
 /**
  * The native lifecycle tool set. Exactly two tools: spawn and despawn a peer.
  *
- * Wired into the container entrypoint by `cli.ts main()` (SEA-1741): the tools
+ * Wired into the container entrypoint by `cli.ts main()` (RIG-1741): the tools
  * are merged into the session's `customTools` and so register as `#withNatives`
  * natives. This package's tests also exercise the end-to-end contract directly.
  */

@@ -1,7 +1,7 @@
 # Design: Compass DS Token Full Cutover + Canvas Migration
 
 Status: Draft
-Supersedes: the incremental/strangler framing of SEA-1876 (component-tier follow-up to PR #220)
+Supersedes: the incremental/strangler framing of RIG-1876 (component-tier follow-up to PR #220)
 Owner lane: compass-ui · DS-tier owner: compass-ux (D2, `compass-ux-foundation/design.md`)
 
 ## Problem / Intent
@@ -10,7 +10,7 @@ Compass has two parallel token tiers: the DS `--cx-*` semantic tier
 (`apps/ui/src/design/tokens.css`, merged) and a legacy GitHub-dark `:root` tier
 at the top of `apps/ui/src/app.css` (lines 7-58: `--bg: #0a0d12`, `--text`,
 `--st-*`, `--purple`, `--accent`, …) that ~540 `var()` references still
-consume. The strangler plan (D10/DL-157, refined by SEA-1876) kept both tiers
+consume. The strangler plan (D10/DL-157, refined by RIG-1876) kept both tiers
 alive and migrated surface by surface. Matt's ruling (2026-08-07): *"why do we
 have 'legacy' refs in a codebase that hasn't even been dogfooded yet?"* — a
 pre-dogfood codebase has no live users to protect, so the strangler frame is
@@ -206,7 +206,7 @@ silent decision hides, but not batched to Matt as forks:
 
 ### Alternatives considered
 
-**The incremental strangler (SEA-1876's original frame, D10/DL-157).** Keep
+**The incremental strangler (RIG-1876's original frame, D10/DL-157).** Keep
 both tiers; flip surface-by-surface (content, board, composer, settings) over
 several PRs; retire the legacy `:root` last. Rejected: the strangler's whole
 value is protecting a live system's users from a big-bang restyle, and

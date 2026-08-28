@@ -1,4 +1,4 @@
-/* Axis badge — .cx-axis-badge (SEA-2117 / SEA-2121, design
+/* Axis badge — .cx-axis-badge (RIG-2117 / RIG-2121, design
    compass-badge-clarity Option B). A fixed 2-char axis code (`CI` / `RV`) in
    the mono UI face + a 9×9 1-bit pixel-art status glyph, both riding the status
    color. The wrapper's data-axis+data-status is the single source of truth: it

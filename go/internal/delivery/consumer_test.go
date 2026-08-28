@@ -2,7 +2,7 @@
 
 package delivery
 
-// The fan-out consumer's acceptance cases (SEA-1569 T3, design.md:744-761),
+// The fan-out consumer's acceptance cases (RIG-1569 T3, design.md:744-761),
 // RED-first. Each drives the consumer through the real events bus + hand-written
 // fakes and gates on the recorder's observed dispatches — never a sleep, never a
 // retry (rule://no-retries). context.Background() is the test root
@@ -397,7 +397,7 @@ func TestRefusedDispatchIsNonFatalNoAdvance(t *testing.T) {
 	}
 }
 
-// FIX 1 (SEA-1569 T3 review): a bus-lag overrun must RE-SUBSCRIBE and keep
+// FIX 1 (RIG-1569 T3 review): a bus-lag overrun must RE-SUBSCRIBE and keep
 // delivering, not terminate the singleton consumer goroutine. design.md:227-231
 // rules a resync "a latency blip, never a loss" and says the consumer "treats a
 // resync exactly as SubscribeComms clients do" — a client re-subscribes and
@@ -462,7 +462,7 @@ func TestBusLagResubscribesAndKeepsDelivering(t *testing.T) {
 	}
 }
 
-// FIX A (SEA-1569 T3 round-2 review): a bus-lag resync must SUBSCRIBE before it
+// FIX A (RIG-1569 T3 round-2 review): a bus-lag resync must SUBSCRIBE before it
 // sweeps, or a message committed+published in the window between the sweep's
 // owed-read and the fresh Subscribe's lock-acquire is delivered to no one until
 // the recipient reconnects. The post path commits the store row before
@@ -598,7 +598,7 @@ func (d *blockCapturingDispatcher) waitFor(t *testing.T, messageID string) block
 	}
 }
 
-// FIX 3 (SEA-1569 T3 review): the no-live-author path must deliver from the
+// FIX 3 (RIG-1569 T3 review): the no-live-author path must deliver from the
 // STORED block set, not the posted (possibly partial) wire message. The branch
 // comment and design.md:177-178,:306 both specify "from its stored block set";
 // the pre-fix code fanned out the raw bus `msg`. This seeds the store with a

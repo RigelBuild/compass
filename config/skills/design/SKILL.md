@@ -163,7 +163,7 @@ MUST, in order:
    issues, one per right-sized task or lane. Each carries: `Owner:` (the
    executing lane), the record path plus the task's `Interfaces:`/scope, and the
    dependency order. Parent them under the producing issue so they're visible.
-   [TODO SEA-1734] name the concrete issue-filing tool once it lands; until then,
+   [TODO RIG-1734] name the concrete issue-filing tool once it lands; until then,
    file on the operator-provisioned tracker surface the wave uses.
 2. **Dispatch them** — hand each filed issue to its owning lane (post to the
    owner on the coordination channel). A filed-but-orphaned issue is not

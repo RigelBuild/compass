@@ -209,7 +209,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		UseTLS:    *f.s3UseTLS || envTrue(os.Getenv("COMPASS_S3_USE_TLS")),
 	}
 
-	// Forge poll driver (SEA-1810): flag-then-env, all-optional (see forge.resolve).
+	// Forge poll driver (RIG-1810): flag-then-env, all-optional (see forge.resolve).
 	forgeConfig, err := forge.resolve()
 	if err != nil {
 		return server.ServeConfig{}, false, err
@@ -372,7 +372,7 @@ func resolveNetworkDoor(listen, tlsCert, tlsKey string) (string, *server.TLSConf
 	}
 }
 
-// forgeFlags holds the SEA-1810/RIG-2883 forge CLI flag pointers, registered as
+// forgeFlags holds the RIG-1810/RIG-2883 forge CLI flag pointers, registered as
 // a group so run() stays short (they mirror the S3 flag set's precedence).
 type forgeFlags struct {
 	repos          *string

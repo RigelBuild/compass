@@ -149,7 +149,7 @@ func configBundleAt(t *testing.T, version string) AgentConfigBundle {
 }
 
 // configBundleFrom builds an AgentConfigBundle at version from arbitrary members,
-// so a fan-out test can carry the five new SEA-1678 categories (fullBundle) or a
+// so a fan-out test can carry the five new RIG-1678 categories (fullBundle) or a
 // partial/tolerant-empty subset and, on a version bump, a CHANGED member.
 func configBundleFrom(t *testing.T, version string, entries map[string][]byte) AgentConfigBundle {
 	t.Helper()
@@ -403,7 +403,7 @@ func TestRefreshConfigRootPathContainsContainerName(t *testing.T) {
 	}
 }
 
-// SEA-1678 T6 — the fan-out update path carries all FIVE new config categories.
+// RIG-1678 T6 — the fan-out update path carries all FIVE new config categories.
 //
 // At provision a fullBundle (settings/config.yml + top-level AGENTS.md +
 // models.yml + a flat rules/ member + a flat agents/ member, atop the

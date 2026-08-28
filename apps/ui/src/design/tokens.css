@@ -153,7 +153,7 @@
 	/* --- Message author (voice) — the system/@compass author color. User and
 	   agent authors reuse existing semantic tokens (--cx-accent / --cx-ok); only
 	   the system voice needs its own. Magenta, the closest non-purple decorative
-	   primitive to the retired legacy --pink; purple stays mark-only (SEA-2008). */
+	   primitive to the retired legacy --pink; purple stays mark-only (RIG-2008). */
 	--cx-author-system: var(--rigel-magenta);
 
 	/* --- Editor theme (--cx-ed-*) — embedded editor/Shiki share the chrome palette (D8) --- */

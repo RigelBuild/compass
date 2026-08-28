@@ -427,7 +427,7 @@ message AskQuestion {
   // for allow_multiple, alongside) picking options.
   string custom_text = 8;
   // True when the answer was recorded by timeout auto-selection rather than a
-  // participant (SEA-1310 owns whether/when the Compass answer path can time
+  // participant (RIG-1310 owns whether/when the Compass answer path can time
   // out; the field is the audit carrier either way).
   bool timed_out = 9;
 }
@@ -484,7 +484,7 @@ message SubscribeCommsResponse {
     AccountChanged account_changed = 14;
     AgentWorkspaceChanged agent_workspace_changed = 15;
     CommsResyncRequired resync_required = 16;
-    // A live agent's presence changed (SEA-1569). Derived from the session
+    // A live agent's presence changed (RIG-1569). Derived from the session
     // lifecycle (not a heartbeat); PUBLIC — UI board state consumes it.
     AgentPresenceChanged agent_presence_changed = 17;
     // A topic was created, renamed, merged, or archived (Zulip threading model)
@@ -546,7 +546,7 @@ message AgentWorkspaceChanged {
 // Mirrors compass.proto's ResyncRequired.
 message CommsResyncRequired {}
 
-// A live agent's presence changed (SEA-1569). Presence is derived from the
+// A live agent's presence changed (RIG-1569). Presence is derived from the
 // session lifecycle (D4) — a projection of the session state and the Runner
 // link, not a heartbeat. PUBLIC (UI board state, comms presence, the
 // delivery-settle gate consume it); NOT gen-fenced.
@@ -560,7 +560,7 @@ message AgentPresenceChanged {
   string activity = 3;
 }
 
-// The presence states a live agent projects (SEA-1569, OQ-1). MVP is four
+// The presence states a live agent projects (RIG-1569, OQ-1). MVP is four
 // states derived from the session lifecycle; PUBLIC, NOT gen-fenced.
 enum AgentPresence {
   AGENT_PRESENCE_UNSPECIFIED = 0;

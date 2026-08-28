@@ -2,7 +2,7 @@
 
 package server
 
-// DB-free unit tests for the SEA-1810 forge wiring that need no Postgres: the
+// DB-free unit tests for the RIG-1810 forge wiring that need no Postgres: the
 // ForgeConfig enable predicate + defaulting, the TTL-caching TokenSource
 // (record test 6), and the two distinct startup secret-validation error texts
 // (record test 7's discriminability — validateForgeSecret is a pure function of

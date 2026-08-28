@@ -213,15 +213,15 @@ func TestForgeWebhookMatrix_LinearIngress(t *testing.T) {
 	}
 
 	t.Run("issue create (OPENED, project carried)", func(t *testing.T) {
-		ev, ok := parse(t, ln.openIssue(t, 5, "https://linear.app/rigel/SEA-5"))
+		ev, ok := parse(t, ln.openIssue(t, 5, "https://linear.app/rigel/RIG-5"))
 		if !ok {
 			t.Fatal("ok = false, want true")
 		}
-		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxOpened, url: "https://linear.app/rigel/SEA-5", project: "proj-alpha"})
+		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxOpened, url: "https://linear.app/rigel/RIG-5", project: "proj-alpha"})
 	})
 
 	t.Run("issue state change (STATE)", func(t *testing.T) {
-		ev, ok := parse(t, ln.changeIssueState(t, 5, "https://linear.app/rigel/SEA-5", "completed"))
+		ev, ok := parse(t, ln.changeIssueState(t, 5, "https://linear.app/rigel/RIG-5", "completed"))
 		if !ok {
 			t.Fatal("ok = false, want true")
 		}
@@ -231,7 +231,7 @@ func TestForgeWebhookMatrix_LinearIngress(t *testing.T) {
 	})
 
 	t.Run("issue edit no-state (UPDATE)", func(t *testing.T) {
-		ev, ok := parse(t, ln.editIssue(t, 5, "https://linear.app/rigel/SEA-5"))
+		ev, ok := parse(t, ln.editIssue(t, 5, "https://linear.app/rigel/RIG-5"))
 		if !ok {
 			t.Fatal("ok = false, want true")
 		}
@@ -239,15 +239,15 @@ func TestForgeWebhookMatrix_LinearIngress(t *testing.T) {
 	})
 
 	t.Run("comment create (COMMENT)", func(t *testing.T) {
-		ev, ok := parse(t, ln.commentOnIssue(t, 5, "https://linear.app/rigel/SEA-5", "a comment", "matt"))
+		ev, ok := parse(t, ln.commentOnIssue(t, 5, "https://linear.app/rigel/RIG-5", "a comment", "matt"))
 		if !ok {
 			t.Fatal("ok = false, want true")
 		}
-		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxComment, url: "https://linear.app/rigel/SEA-5", comment: true, forgeAccount: "matt", project: "proj-alpha"})
+		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxComment, url: "https://linear.app/rigel/RIG-5", comment: true, forgeAccount: "matt", project: "proj-alpha"})
 	})
 
 	t.Run("issue remove (counted-and-dropped, ok=false)", func(t *testing.T) {
-		_, ok := parse(t, ln.removeIssue(t, 5, "https://linear.app/rigel/SEA-5"))
+		_, ok := parse(t, ln.removeIssue(t, 5, "https://linear.app/rigel/RIG-5"))
 		if ok {
 			t.Error("ok = true, want false (remove has no notification kind)")
 		}

@@ -340,7 +340,7 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 	}
 }
 
-// SEA-1707 T6/D6: an ask is carried by a message, a message lives in a topic, so
+// RIG-1707 T6/D6: an ask is carried by a message, a message lives in a topic, so
 // an ask is visible in its topic yet answerable channel-wide (first-responder-
 // wins). Topic scoping changes WHERE the ask renders, not WHO may answer it.
 // This locks channel-scoped (not topic-scoped) answerability: the answerer has
@@ -687,7 +687,7 @@ func TestPostMessageRoutesTopicOverWire(t *testing.T) {
 	}
 }
 
-// TestPostMessageStripsCallerAskID pins Fork 1 (SEA-1243): ask_id is server-
+// TestPostMessageStripsCallerAskID pins Fork 1 (RIG-1243): ask_id is server-
 // owned. askFromWire drops any caller-supplied Ask.ask_id, so an ask posted over
 // the wire always gets a fresh 32-hex id minted by the store, a caller-forged id
 // never survives, two posts carrying the SAME forged id get DISTINCT minted ids

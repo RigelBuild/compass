@@ -2,7 +2,7 @@
 
 Status: Draft
 
-Linear: SEA-1575. Follow-up Matt ordered when resolving the spawn/despawn
+Linear: RIG-1575. Follow-up Matt ordered when resolving the spawn/despawn
 record's OQ-6 ("accept for MVP, file follow up to design fully later",
 2026-07-29).
 
@@ -39,7 +39,7 @@ runs under a deadline so a wedged provision fails the tool call in-band
 `go/internal/runner/gateway/lifecycle.go:46-47`: "The inbound deadline rides
 ctx into the forward"). It is the **sole** MVP guard: spawn caps were deferred
 (spawn/despawn record `:852-855`: "Proper spawn limits are deferred to
-**SEA-1574**. Consequence for OQ-6: with no cap shipping, the **bounded relay
+**RIG-1574**. Consequence for OQ-6: with no cap shipping, the **bounded relay
 deadline (Approach) is the sole MVP guard** on how long an agent can
 monopolize the Runner's serial command plane."). The deadline bounds how long
 one caller waits; it does nothing for the other commands queued behind the
@@ -49,7 +49,7 @@ provision. Removing the head-of-line blocking requires concurrency.
 
 - **Single-Runner dogfood target.** The design serves the current one-Runner,
   one-stream deployment; multi-stream/high-volume hardening stays T9's
-  (SEA-1328) scope per `dispatch.go:85-87` ("A future high-volume /
+  (RIG-1328) scope per `dispatch.go:85-87` ("A future high-volume /
   multi-stream Runner needs bounded eviction + in-flight-sentinel dedup here;
   deferred to T9") — except the pieces this record deliberately pulls forward
   (in-flight sentinel, per-container transition lock; see Approach and OQ-1).
@@ -75,7 +75,7 @@ provision. Removing the head-of-line blocking requires concurrency.
   existing config-worker discipline (`dispatch.go:174-177` — `defer func() {
   cancel(); <-d.configWorkerDone }()`). No leak under any Receive/Send error
   path.
-- **Forward dependency on T9 (SEA-1328).** This record lands the scoped
+- **Forward dependency on T9 (RIG-1328).** This record lands the scoped
   per-container transition lock T9's issue body lists as its own items (see
   OQ-1). Whoever picks up T9 MUST consume/extend that lock, not re-introduce
   it. T4 updates the code comments that currently defer to T9
@@ -279,8 +279,8 @@ the Start TOCTOU (`host.go:244-252`):
 > concurrent callers reachable"
 
 This record makes those callers reachable FIRST, so the lock cannot stay
-deferred. Critically, this is not a new one-off lock: SEA-1575 and T9 share
-the same locking machinery. T9's issue body (SEA-1328) documents the
+deferred. Critically, this is not a new one-off lock: RIG-1575 and T9 share
+the same locking machinery. T9's issue body (RIG-1328) documents the
 per-session transition lock and in-flight sentinel as its own items and notes
 the concurrent-host-caller races are "verified unreachable in the single-Runner
 MVP ... reachable only when T9 builds in-process reattach against a persistent
@@ -393,7 +393,7 @@ in the spawned goroutine before `handle`), with zero interface change.
    One uniform dispatch path; every invariant handled once; Status latency
    decoupled from Provision by construction; mirrors the concurrency shape the
    Server side already ships (router sendMu + pendingCall join).
-3. **Do nothing now; gate entirely on T9 (SEA-1328).** T9 is Backlog and
+3. **Do nothing now; gate entirely on T9 (RIG-1328).** T9 is Backlog and
    genuinely not started (no owner, no assignee, no branch). Gating leaves the
    agent-facing HOL blocking — which the spawn/despawn record ships
    agent-triggerable in a loop — in place indefinitely, guarded only by the
@@ -599,20 +599,20 @@ Concurrent dispatch makes concurrent `SessionHost` callers reachable before
 the per-session transition lock exists — `host.go:250-252` defers that lock to
 T9 ("A per-session transition lock is deferred to T9, where in-process
 reattach against a persistent host first makes concurrent callers reachable").
-SEA-1575 and T9 (SEA-1328) share the same locking machinery: T9's issue body
+RIG-1575 and T9 (RIG-1328) share the same locking machinery: T9's issue body
 documents the per-session transition lock + in-flight sentinel as its own
 items and marks the concurrent-host-caller races "verified unreachable in the
 single-Runner MVP ... reachable only when T9 builds in-process reattach
 against a persistent host". This record makes them reachable first. Options:
 
 - **(A) Start T9's transition lock now, scoped to per-container lifecycle
-  serialization (RECOMMENDED — the record as written, T4).** SEA-1575 is
+  serialization (RECOMMENDED — the record as written, T4).** RIG-1575 is
   self-contained; the lock is small, local to `agentHost`, and is T9's OWN
   design built early — not a throwaway. Cost: if T9's eventual persistent-host
   redesign reshapes the host, the lock may need rework; mitigated by the
   forward-dependency note (T9 consumes/extends this lock, never re-introduces
   it) carried in Global Constraints and the T4 comment rewrite.
-- **(B) Gate SEA-1575 entirely on full T9.** No duplicated machinery ever —
+- **(B) Gate RIG-1575 entirely on full T9.** No duplicated machinery ever —
   but T9 is genuinely NOT started (Backlog, no owner, no assignee, no branch),
   so this gates the fix for an already-shipped, agent-triggerable HOL exposure
   on an unscheduled item of much larger scope (persistent host, in-process
@@ -621,7 +621,7 @@ against a persistent host". This record makes them reachable first. Options:
 
 **Resolved (Matt, 2026-08-09): (A)** — build T9's per-container transition
 lock now, scoped to the lifecycle paths concurrent dispatch reaches (T4), with
-the forward-dependency note so T9 (SEA-1328) consumes/extends it. The Approach,
+the forward-dependency note so T9 (RIG-1328) consumes/extends it. The Approach,
 Global Constraints, and T4 are written to this ruling.
 
 ### OQ-2 (not load-bearing — default chosen; flag only if Matt objects): worker pool vs goroutine-per-command
@@ -645,13 +645,13 @@ strict duplicate detection, the joiner should skip the Send instead (a
 one-line change in `handle`'s join arm). Recorded so the interaction is
 visible, not decided by accident.
 
-### OQ-4 (LOAD-BEARING — blocks merge until Matt rules): Provision concurrency before SEA-1574 caps exist
+### OQ-4 (LOAD-BEARING — blocks merge until Matt rules): Provision concurrency before RIG-1574 caps exist
 
 Today's serial dispatch loop is an accidental **concurrency-1 throttle** on
 agent-triggered Provisions: one agent looping spawns gets at most one podman
 build/pull at a time, because the loop can't start the next command until the
 current one returns. This record removes that throttle before any explicit cap
-exists — spawn caps were explicitly deferred to **SEA-1574** (Problem section;
+exists — spawn caps were explicitly deferred to **RIG-1574** (Problem section;
 the relay deadline is named there as the *sole* MVP guard). So N distinct-id
 Provisions become N concurrent podman launches, each up to
 `defaultCommandTimeout` (120s, `podman.go:329`) of CPU/disk/network — a
@@ -672,12 +672,12 @@ bounds WAITERS, not Runner-side concurrent WORK. Options:
   (T-cap) and a test (a slow-Provision fan-out beyond the cap queues the
   overflow but a concurrent Stop still returns immediately). Restores a real,
   intentional throttle instead of silently deleting the accidental one.
-- **(ii) Order SEA-1574 before SEA-1575.** No cap logic in this change, but it
+- **(ii) Order RIG-1574 before RIG-1575.** No cap logic in this change, but it
   blocks a shipped-exposure fix behind an unscheduled cap design, and leaves
-  the window fully open until SEA-1574 lands.
+  the window fully open until RIG-1574 lands.
 - **(iii) Accept the widened window explicitly for the single-Runner dogfood.**
   Cheapest now; correct only if the dogfood Runner is never driven by an
-  adversarial/looping agent before SEA-1574. Makes the accidental-throttle
+  adversarial/looping agent before RIG-1574. Makes the accidental-throttle
   removal a conscious, recorded decision rather than an inherited one.
 
 **Resolved (Matt, 2026-08-09): (i)** — land the Provision-arm concurrency cap

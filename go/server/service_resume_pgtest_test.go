@@ -2,7 +2,7 @@
 
 package server
 
-// T6 (SEA-1667): the resume branch of StartAgentSession. When
+// T6 (RIG-1667): the resume branch of StartAgentSession. When
 // resume_session_id is non-empty the handler (1) gates the caller via
 // RequireAgentSessionSubscriber BEFORE any Runner call — an unknown or foreign
 // id is NotFound and no Start is ever pushed; (2) BindLifetime write-once to

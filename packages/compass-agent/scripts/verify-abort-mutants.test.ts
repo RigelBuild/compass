@@ -17,7 +17,7 @@ import {
 /** Verbatim tail of a green `bun test` run on this package. */
 const GREEN = `
 src/transport/control-source.test.ts:
-[compass-agent] control unmapped: control:steer — payload staged (SEA-1310)
+[compass-agent] control unmapped: control:steer — payload staged (RIG-1310)
 
  13 pass
  0 fail

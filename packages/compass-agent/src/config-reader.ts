@@ -356,7 +356,7 @@ export async function readMountedAgentsMd(
 }
 
 /**
- * The role's block-0 system prompt `prompts/<role>/SYSTEM.md` (SEA-1732 T10),
+ * The role's block-0 system prompt `prompts/<role>/SYSTEM.md` (RIG-1732 T10),
  * read as TEXT for direct injection via `createAgentSession({ customSystemPrompt })`
  * — which REPLACES OMP's block-0 (routed through the SDK's custom-system-prompt
  * template, sdk.ts:2727). The operator-set role label (COMPASS_ROLE) selects the

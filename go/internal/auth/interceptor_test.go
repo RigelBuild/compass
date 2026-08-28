@@ -1,7 +1,7 @@
 package auth
 
 // Shared unary-door test scaffolding + the pure header-parse boundary table
-// (SEA-1195 T3, the S3 gate), transcribed from the authoritative Rust suite in
+// (RIG-1195 T3, the S3 gate), transcribed from the authoritative Rust suite in
 // crates/compass-daemon/src/auth.rs (#[cfg(test)] mod tests, the bearer_auth
 // cases). The Rust interceptor mutates a tonic Request and attaches an
 // AuthedAccount extension; the Go door is a connect UnaryInterceptorFunc that

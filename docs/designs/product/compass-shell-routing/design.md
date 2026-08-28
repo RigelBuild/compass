@@ -1,7 +1,7 @@
 # Compass shell routing (@solidjs/router adoption)
 
 Status: Draft
-Tracker: SEA-1693
+Tracker: RIG-1693
 Ledger-impact: reserves DL-127 (shell-routing: @solidjs/router adoption + routes-vs-store source-of-truth call, one row); compass appends at ship
 
 ## Problem / Intent
@@ -11,12 +11,12 @@ The Compass ADE shell dispatches its six surfaces from an in-memory signal —
 "agent" | "bridge" | "backlog" | "done" | "settings"`, store.ts:75-81) — with
 zero URL routing anywhere in `apps/ui` (no `window.location` / `location.hash`
 / `hashchange` / `history.pushState` / `@solidjs/router` usage; grep-confirmed
-empty). SEA-1655's frozen deep-link `#/channel/<channelId>/topic/<topicId>`
+empty). RIG-1655's frozen deep-link `#/channel/<channelId>/topic/<topicId>`
 (compass-zulip-threading-model §D5, design.md:272-273 "Deep-link route
 `#/channel/<channelId>/topic/<topicId>`"; §T5 design.md:704) and general
 shareable/bookmarkable/back-button navigation require real URL routing. This
 record introduces it as a shell-wide routing layer: the router base merges
-first, then SEA-1655 T5 stacks the topic route on it.
+first, then RIG-1655 T5 stacks the topic route on it.
 
 ## Approach
 
@@ -45,7 +45,7 @@ selection that today lives only in signals:
 | --- | --- | --- |
 | `/` | `<Bridge />` (`view() === "bridge"`, App.tsx:111-113) | Default surface, matching the boot default `createSignal<View>("bridge")` (store.ts:654). |
 | `/channel/:channelId` | `<ChannelView />` (App.tsx:114-116) | `:channelId` replaces bare `selectedChannelId` for this surface. |
-| `/channel/:channelId/topic/:topicId` | Topic view — **SEA-1655 T5, not this record** | Reserved here so the frozen deep-link nests under the channel segment; T5 adds the `<Route>`. |
+| `/channel/:channelId/topic/:topicId` | Topic view — **RIG-1655 T5, not this record** | Reserved here so the frozen deep-link nests under the channel segment; T5 adds the `<Route>`. |
 | `/agent/:agentId` | `<AgentView />` (Switch fallback, App.tsx:110) | The fallback becomes an explicit param route. |
 | `/backlog` | `<BacklogView />` (App.tsx:117-119) | |
 | `/done` | `<DoneView />` (App.tsx:120-122) | |
@@ -54,7 +54,7 @@ selection that today lives only in signals:
 
 Under HashRouter these render as `#/`, `#/channel/<id>`, `#/agent/<id>`, etc.
 — the `#/channel/<channelId>/topic/<topicId>` string is exactly the frozen
-SEA-1655 route.
+RIG-1655 route.
 
 The shell chrome (topbar, sidebars, `UsageBar`) stays outside the routed
 region: `App` becomes the root layout route and only the `<main class="main">`
@@ -123,7 +123,7 @@ inbound location to the store. Rationale:
   there is no second copy of the truth to reconcile.
 - The mirror alternative (store stays truth, an effect writes `location.hash`
   and a `hashchange` listener writes back) keeps TWO authorities and needs
-  loop-breaking guards in both directions; every future route (SEA-1655's
+  loop-breaking guards in both directions; every future route (RIG-1655's
   topic, and anything after) pays that tax again.
 - The churn is bounded but **not zero**. Components keep their read surface:
   `store.view()` and `store.selectedChannelId()` stay signals, written by the
@@ -271,14 +271,14 @@ action-then-assert sites is explicit T3 scope (§Plan), not incidental.
 ### A5 — Native-seam composition (flagged for compass-native co-review)
 
 Routing sits entirely ABOVE the transport/connection boundary (DL-106/107).
-Invariant this section preserves (verbatim, from the SEA-1688 owner):
+Invariant this section preserves (verbatim, from the RIG-1688 owner):
 
 > The transport boundary is the ONLY seam — nothing above it (the router
 > included) may assume local/embedded. A deep-link/route MUST resolve to the
 > same `createGrpcWebTransport({fetch})` call regardless of
 > embedded-vs-native-client mode; the provider-supplied fetch
 > (WHATWG-compatible) is the single injection point (DL-106). The
-> ConnectionProvider interface (SEA-1688) exposes that fetch and carries ZERO
+> ConnectionProvider interface (RIG-1688) exposes that fetch and carries ZERO
 > Wails/shell type, so apps/ui has zero shell dependency.
 
 Consequences for this record: a route change never dials anything and never
@@ -288,12 +288,12 @@ transport seam `createLiveClients` owns (`live/client.ts:30-35`) — the single
 place transport is chosen. The mode difference is a `fetch` swap *below* the
 store: `createGrpcWebTransport({fetch})` with the dev default fetch or the
 shell's `compass_rpc` custom fetch (`daemon-transport.ts:8-13`), the identical
-call. That fetch injection into `createLiveClients` is SEA-1688 T1 work and is
+call. That fetch injection into `createLiveClients` is RIG-1688 T1 work and is
 not yet wired (`client.ts:30-35` today constructs clients without a `fetch`
 param); routing sits above the seam `createLiveClients` **will** expose, so it
 is unaffected either way. Deep-links resolve identically in embedded and
 native-client mode, and the routing layer imports nothing from any shell/Wails
-API. The ConnectionProvider fetch/provider TS signature is SEA-1688's own
+API. The ConnectionProvider fetch/provider TS signature is RIG-1688's own
 record — not designed here.
 
 Caller identity is **not** a routing concern: the route-sync effect only moves
@@ -320,7 +320,7 @@ webview (DL-110); there is no server rendering HTML to hook.
 
 Path routing needs a server that answers every deep route with the app shell;
 in a webview loading a static bundle, a refresh on `/channel/x` 404s or blanks.
-HashRouter is precisely why SEA-1655's frozen route is spelled `#/...`.
+HashRouter is precisely why RIG-1655's frozen route is spelled `#/...`.
 
 ### Keep in-memory dispatch (status quo) — rejected
 
@@ -351,11 +351,11 @@ the first-party router already provides — and forfeits the SolidStart on-ramp
   supersedes no active row) — appended by the ledger single-writer at ship
   (freeze = merge), not by this record.
 - Router base only — the `/channel/:channelId/topic/:topicId` route component
-  is SEA-1655 T5's, stacked on this base.
+  is RIG-1655 T5's, stacked on this base.
 
 ## Plan
 
-Router base only (SEA-1655 T5 stacks separately). Every task inherits
+Router base only (RIG-1655 T5 stacks separately). Every task inherits
 `## Global Constraints`.
 
 **Sequencing — one PR.** T1, T2, and T3 land together as a single PR. T1 alone
@@ -466,7 +466,7 @@ touches real `location.hash`.
   effect writes `location.hash`, a listener applies inbound changes) keeps every
   reader and test synchronous but pays a bidirectional loop guard re-paid per
   future route. **Decision: routes-as-truth, async cost accepted** — idiomatic
-  Solid Router, free back/forward/deep-link, and SEA-1655 T5 stacks on it
+  Solid Router, free back/forward/deep-link, and RIG-1655 T5 stacks on it
   cleanly.
 - **Non-load-bearing (deferred):** SolidStart SSR migration for
   hosted-Compass. Documented as the forward-compat rationale only;

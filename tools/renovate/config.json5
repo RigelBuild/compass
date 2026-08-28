@@ -21,7 +21,7 @@
   // before-4am-ET window with 2-3h of margin in both DST phases. GHA scheduled
   // runs are best-effort and routinely start 5-30+ min late, so this margin keeps
   // a delayed start from sliding past 04:00 ET — which would silently open zero
-  // PRs forever (SEA-1220).
+  // PRs forever (RIG-1220).
   timezone: "America/New_York",
   dependencyDashboard: true,
 
@@ -431,7 +431,7 @@
       // branch HEAD carries no release-age metadata, so a strict cooldown treats it
       // as permanently `pending`: on a near-daily `rolling` branch the HEAD is
       // always younger than any window, so the digest would sit on the dashboard
-      // forever with zero PRs cut (the SEA-1220 silent-no-updates shape). Disable
+      // forever with zero PRs cut (the RIG-1220 silent-no-updates shape). Disable
       // the cooldown for THIS rule only — the window exists for the compromised-npm-
       // release risk, which applies weakly to a cachix-curated channel repo.
       minimumReleaseAge: null,

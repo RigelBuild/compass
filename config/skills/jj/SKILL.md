@@ -136,7 +136,7 @@ jj-vine submit <issue>-<slug>                 # push (through the CI gate) + ope
   `user/` prefix. In multi-agent work, keep the name descriptive of the lane so
   peers can tell stacks apart.
 
-`[TODO SEA-1882]` Distinct from the `jj-hp` CI gate above, the
+`[TODO RIG-1882]` Distinct from the `jj-hp` CI gate above, the
 push-*authorization* guard that enforces the never-push-`main` and
 owner-allowlist invariant is a bundled OMP extension that intercepts your
 push/merge commands in-container and hard-blocks a violation — load-bearing,
@@ -147,7 +147,7 @@ or run a push-*authorization* guard wrapper that is not provisioned in your
 clone.
 `jj-vine submit` (gated through `jj-hp`) remains the push path.
 
-`[TODO SEA-1734]` Reading PR and review state (checks, threads, merge status) uses
+`[TODO RIG-1734]` Reading PR and review state (checks, threads, merge status) uses
 the Compass forge tools, which land pre-Dogfood as an operator-provisioned
 surface. Name and use the concrete tools once they land; until then, drive the
 review loop through `skill://review`.

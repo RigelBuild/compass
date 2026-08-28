@@ -31,7 +31,7 @@ Named rather than blanket, because a line range is a claim about a commit and
 drifts silently as the file above it grows — a reader checking one against a
 later tree is seeing drift, not necessarily an error.
 
-Tracker: SEA-1355.
+Tracker: RIG-1355.
 
 ## Problem / Intent
 
@@ -261,7 +261,7 @@ Every task below inherits these; they are not repeated per task.
   exists: `PostMessageRequest.blocks` can carry `ask` blocks (`comms.proto`
   MessageBlock), so `comms_post_message` can *raise* an ask — raising is allowed
   (it is a user-facing question), answering is not; the two ask-raising lanes
-  (this and the not-yet-built SEA-1310 outbound ask derivation) both only
+  (this and the not-yet-built RIG-1310 outbound ask derivation) both only
   raise, neither answers.
 - **Egress seal preserved.** No new network path out of the agent container.
   The comms transport is the frozen per-container Unix socket
@@ -269,7 +269,7 @@ Every task below inherits these; they are not repeated per task.
   address; the nft mechanism and the future default-deny opt-in
   (`compass-agent-container-runtime.md:206-217`) are untouched. No bearer
   token, Server address, or account identity enters the agent container.
-- **SEA-1267 gen-fence.** No internal symbol — `AgentFrame`, `AgentControl`,
+- **RIG-1267 gen-fence.** No internal symbol — `AgentFrame`, `AgentControl`,
   `SessionFrame`, `RunnerService`, `RunnerError`, `compassv1internal` and the
   control/gateway names alongside them — may appear in the public gen trees
   `packages/compass-client/src/gen` or `go/gen`. The authoritative list is the
@@ -642,7 +642,7 @@ In `packages/compass-agent/src/`:
   `[answered ${fence}] <q> → <answer>`, resolving an option id to its label
   against `options` and falling back to the bare id. The fully-skipped ask —
   answered with every question left empty — stays indistinguishable until
-  `Ask.answered` reaches the wire (SEA-1519, compass-server's lane); the store
+  `Ask.answered` reaches the wire (RIG-1519, compass-server's lane); the store
   names this itself as the only reliable answered-signal.
 
   *Both renderers, not one.* The post path returns

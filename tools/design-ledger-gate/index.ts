@@ -1,4 +1,4 @@
-// design-ledger-gate — validate the Compass design-decision ledger (SEA-1187).
+// design-ledger-gate — validate the Compass design-decision ledger (RIG-1187).
 //
 // The design corpus under docs/designs/<bucket>/ freezes on merge; later
 // records supersede specific decisions by citation. Supersession was only

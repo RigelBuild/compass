@@ -13,7 +13,7 @@ import {
 import type { Issue as DomainIssue } from "../stub-data";
 import { runEventStream } from "./events";
 
-// The SubscribeEvents read-driver seam (SEA-1729 read slice). A fake server is a
+// The SubscribeEvents read-driver seam (RIG-1729 read slice). A fake server is a
 // `createRouterTransport` handler serving CompassService.SubscribeEvents — the
 // vendor's documented no-HTTP test path — so the round-trip exercises the real
 // driver + adapt boundary, never a mock. The handler is an async generator that
@@ -111,7 +111,7 @@ async function drainUntil(predicate: () => boolean): Promise<void> {
 	}
 }
 
-describe("runEventStream (SEA-1729 read driver)", () => {
+describe("runEventStream (RIG-1729 read driver)", () => {
 	test("pushes adapted domain issues; a repeat id REPLACES (upsert)", async () => {
 		const transport = scriptedTransport([
 			issueResp(1n, "a", { title: "first", state: IssueState.TODO }),

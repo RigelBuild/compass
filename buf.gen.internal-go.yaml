@@ -15,7 +15,7 @@
 #                  consumed by internal/server (handler) + internal/runner (client).
 #
 # Emits into go/internal/gen — NOT the public go/gen. Go's `internal/` visibility
-# rule makes the SEA-1267 fence compiler-enforced: nothing outside the
+# rule makes the RIG-1267 fence compiler-enforced: nothing outside the
 # github.com/RigelBuild/compass/go module can import these types
 # (go-toolchain-default.md:332-333). Same go module as go/gen (one go.mod), a
 # distinct directory + import path — not a nested module.

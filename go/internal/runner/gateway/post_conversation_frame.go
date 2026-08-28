@@ -4,7 +4,7 @@ package gateway
 
 // post_conversation_frame.go is the durable-frame ingest: the delivered-or-
 // erred handler that carries a conversation_posted / conversation_updated frame
-// (and the SEA-1570 transcript_entry tee variant) off the lossy Publish spine
+// (and the RIG-1570 transcript_entry tee variant) off the lossy Publish spine
 // (transport-consolidation record OQ-2(c), P1 #1).
 // It commits the frame request/response via the dedicated
 // RunnerService.CommitConversationFrame unary — the durable counterpart to the
@@ -37,7 +37,7 @@ import (
 // leaves that spine entirely and commits request/response, so a Server-side loss
 // is a Connect error the agent retries, never a silent gapless drop. It rejects
 // a frame the durable unary does not carry with CodeInvalidArgument (the lane
-// carries conversation_posted / conversation_updated and the SEA-1570
+// carries conversation_posted / conversation_updated and the RIG-1570
 // transcript_entry tee variant), and fails closed
 // CodePermissionDenied when no session is bound. Dedups on idempotency_key: a
 // key already committed in this process returns success without re-committing
@@ -92,7 +92,7 @@ func (g *Gateway) PostConversationFrame(
 }
 
 // isConversationFrame reports whether frame is the durable transcript frame the
-// CommitConversationFrame unary carries: the SEA-1570 transcript_entry variant.
+// CommitConversationFrame unary carries: the RIG-1570 transcript_entry variant.
 // A conversation frame, a session frame, an ack, or an unset oneof is rejected.
 // (The conversation_posted / conversation_updated write-through was removed with
 // the Zulip threading model; only the transcript lane survives.)

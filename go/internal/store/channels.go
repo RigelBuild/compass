@@ -714,9 +714,9 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 // the caller-facing not-found/forbidden merge is the caller's, layered on the
 // membership it reads from the returned channel. Two callers rely on it: the
 // comms coordination reconcile reads a just-committed coordination channel for
-// its post-commit ChannelChanged emit (SEA-1722 T5), and the UpdatePinnedBoard
+// its post-commit ChannelChanged emit (RIG-1722 T5), and the UpdatePinnedBoard
 // handler reads the member set and post policy together to authorize a board
-// mutation against the channel's policy (SEA-1723 T6).
+// mutation against the channel's policy (RIG-1723 T6).
 func (s *Store) GetChannel(ctx context.Context, id ChannelID) (Channel, error) {
 	return s.getChannel(ctx, id)
 }

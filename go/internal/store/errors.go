@@ -28,7 +28,7 @@ var (
 	// ErrConflict is a conflict the store refuses: a uniqueness violation (a
 	// duplicate account handle, a channel name already taken in its group, or a
 	// re-used id), or an operation rejected because its target is already in a
-	// terminal state (a second answer to an already-answered ask, SEA-1243).
+	// terminal state (a second answer to an already-answered ask, RIG-1243).
 	ErrConflict = errors.New("store: conflict")
 
 	// ErrInvalidArgument is a malformed input the store rejects before touching

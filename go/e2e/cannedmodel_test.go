@@ -1,4 +1,4 @@
-// Hermetic (non-podman) unit test for the canned model SSE stub (SEA-1787 H3).
+// Hermetic (non-podman) unit test for the canned model SSE stub (RIG-1787 H3).
 // It is DELIBERATELY UNTAGGED so it runs in the standard `moon run
 // compass-go:test` lane with no container — the deterministic red->green proof
 // that the stub emits SSE the openai-completions parser accepts, independent of

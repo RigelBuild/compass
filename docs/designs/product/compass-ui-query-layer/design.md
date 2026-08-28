@@ -1,7 +1,7 @@
 # Compass UI query layer (@tanstack/solid-query + connect-query-core adoption)
 
 Status: Draft
-Tracker: SEA-1696
+Tracker: RIG-1696
 Ledger-impact: reserves one row (Compass UI query layer adoption); compass appends at ship
 
 ## Problem / Intent
@@ -72,7 +72,7 @@ Today the UI loads that surface two ad-hoc ways, both cache-less:
    `const [comms, setComms] = createSignal<CommsState>(...)`
    (store.ts:754-756) via `adoptComms` (store.ts:785-790).
 
-**The concrete blocker (SEA-1655): paginated history cannot ride the
+**The concrete blocker (RIG-1655): paginated history cannot ride the
 wholesale stream.** The snapshot reader eagerly pages *every* visible
 channel's messages to exhaustion — `fetchSnapshot` "loads every visible
 channel's messages eagerly" and explicitly notes "Lazy per-channel load would
@@ -379,7 +379,7 @@ factories.
 
 `createResource` is per-owner: no cross-component cache, no dedup of
 identical in-flight reads, no staleness/retry/invalidation model, and no
-infinite-query primitive — weakest exactly where the SEA-1655 blocker bites
+infinite-query primitive — weakest exactly where the RIG-1655 blocker bites
 (paginated history). Building those on top is writing TanStack Query badly.
 
 ### Wait for a first-party connect-solid-query — rejected
@@ -505,7 +505,7 @@ Interfaces:
 Acceptance: unit test — a fake stream push for channel C invalidates C's
 `listMessages`/`listTopics` keys and no other channel's; suites green.
 
-### T5 — Paginated history queries (SEA-1655 unblock)
+### T5 — Paginated history queries (RIG-1655 unblock)
 
 Expose store-level query-backed reads for topic history: an infinite
 `listMessages` query (`pageParamKey: "beforeMessageId"`,
@@ -520,7 +520,7 @@ Interfaces:
 - consumes: `createConnectInfiniteQuery`/`createConnectQuery` (T2);
   `CommsService.method.listMessages` / `.listTopics` descriptors
   (comms_pb.ts:2085-2111); T4's invalidation fan-out.
-- produces: store accessors (shape finalized with the SEA-1655 topic-view
+- produces: store accessors (shape finalized with the RIG-1655 topic-view
   implementer) e.g. `topicHistory(channelId, topicId)` exposing
   `data/fetchNextPage/hasNextPage/isPending`; `postMessage`/`updateTopic`
   paths gain key invalidation.
@@ -584,7 +584,7 @@ package already carries the fetch-parameterized factories
 `createGrpcWebTransport({ baseUrl, fetch, ... })`,
 packages/compass-client/src/index.ts:133-137). Nothing in the query layer
 names a shell API or assumes local; the ConnectionProvider signature is
-SEA-1688's record, not designed here — this record consumes the clients and
+RIG-1688's record, not designed here — this record consumes the clients and
 transport as `createLiveClients` builds them.
 
 ## Open Questions
@@ -608,7 +608,7 @@ The one genuine fork. Options:
    can shrink to "channels + accounts only". Cost: re-homing the resync
    protocol and local-ask preservation onto a generic cache rewrites the
    most consistency-critical driver in the app, with test migration to
-   match — high risk, and it blocks the SEA-1655 unblock behind a rewrite.
+   match — high risk, and it blocks the RIG-1655 unblock behind a rewrite.
 3. **Hybrid with per-entity `setQueryData` for hot paths**: option 1 plus
    surgical newest-page patches. Booked in §A4 as a permitted optimization,
    not a separate fork.
@@ -625,7 +625,7 @@ The alternative — components using `useMutation` directly — leaks server
 state above the accessor seam and forks the write path. Recommendation:
 store methods stay the only write surface; `useMutation` is used inside the
 store only where its pending/error state is needed by a surface. Flagged
-only because the SEA-1655 composer implementer may prefer hook-local pending
+only because the RIG-1655 composer implementer may prefer hook-local pending
 state; the seam rule (§A3) should win.
 
 ## Ledger note

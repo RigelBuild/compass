@@ -6,7 +6,7 @@ All seven Open Questions ruled by Matt (2026-08-21) — folded into the body; se
 
 Tracker: RIG-1641.
 
-Amends: `compass-notification-delivery/design.md` (SEA-1569) — D5 mention→steer
+Amends: `compass-notification-delivery/design.md` (RIG-1569) — D5 mention→steer
 routing (design.md:507-562) and OQ-3's offline clause (design.md:951-960).
 
 Ledger: this record's PR appends a new `DL-<n>` row to
@@ -40,7 +40,7 @@ The three-path proof of the gap, at source:
    for agent := range mentioned {
        sessionID, live := c.resolver.SessionForAccount(agent)
        if !live {
-           continue // no live turn to interrupt; redelivery only if subscribed-or-home (SEA-1641)
+           continue // no live turn to interrupt; redelivery only if subscribed-or-home (RIG-1641)
        }
        c.dispatchSteerTo(ctx, sessionID, msg)
    }
@@ -89,7 +89,7 @@ and silently FALSE for the unsubscribed non-home one — the shipped
 the tracking issue (`dispatch.go:123-127`): "An UNSUBSCRIBED non-home member
 has no sweep redelivery (UndeliveredMessages is subscription-gated […]),
 so a mention reaches it only while it is live: offline + unsubscribed =
-nothing this cycle, by design (SEA-1641 tracks whether that gap should become
+nothing this cycle, by design (RIG-1641 tracks whether that gap should become
 recoverable)."
 
 Intent: a mention is never silently dropped once the settle edge processes
@@ -612,7 +612,7 @@ pre-check (cost control, §Decisions OQ-2).
 **T4 — routeMentions/fanOut integration + docstring truth.** Wire T2's record
 and T3's wake into the `!live` arms of `routeMentions` (`dispatch.go:136-142`)
 and `fanOut` (`dispatch.go:108-111`); rewrite the `dispatch.go:123-127`
-docstring (the "by design, SEA-1641 tracks" text) to describe the recoverable
+docstring (the "by design, RIG-1641 tracks" text) to describe the recoverable
 path; end-to-end pgtest: post a mention at an offline unsubscribed member ⇒
 owed row + wake fired; simulated start (`OnSessionStarted`) ⇒ the mention
 arrives as exactly one STEER; ack ⇒ row cleared, second start sweeps nothing;

@@ -10,7 +10,7 @@
 //     agent made deliberately, as a tool.
 //   - CommitAgentPost / CommitAgentUpdate turn a relayed conversation FRAME (the
 //     agent's own turn, streamed out as it speaks) into a durable comms row
-//     (SEA-1364 T3). They survive only as test helpers now: their production
+//     (RIG-1364 T3). They survive only as test helpers now: their production
 //     caller (the ConversationSink write-through) was removed with the sink, so
 //     no non-test path reaches them.
 //

@@ -9,7 +9,7 @@ Status: Active
 > `../compass-0.6/design.md` (RT-2 home channel, RT-3 turn-end delivery, the
 > delivery-timing amendment) and the merged Server-ownership-layer record
 > (`../compass-server-ownership-layer/design.md`, #995) are consumed and cited,
-> never re-decided. Tracker: SEA-1569. Lane: compass-comms (driver);
+> never re-decided. Tracker: RIG-1569. Lane: compass-comms (driver);
 > co-owned pieces are named per task.
 
 ## Problem / Intent
@@ -22,7 +22,7 @@ feeds only the Client-facing `SubscribeComms` stream (`subscribe.go:31-44`).
 The agent-bound seam exists but is inert: the `AgentControl` oneof already
 carries `deliver = 3` (`compass/proto/compass/v1/agent.proto:122`), yet
 `DeliverControl` is an empty shell (`agent.proto:153-154`: "Empty shells —
-payload fields parked (SEA-1310)") and the Runner's control lane refuses to send
+payload fields parked (RIG-1310)") and the Runner's control lane refuses to send
 one (`gateway/control.go:65-70`, `errEmptyControlVariant`). Nothing bridges a
 `MessagePosted` to a running session — Matt: "if you send a message to an
 agent's home channel and it doesn't get delivered the whole app is unusable"
@@ -71,13 +71,13 @@ notifications (#995) ride.
   and counts them unmapped while the shells are empty
   (`compass/packages/compass-agent/src/transport/control-source.ts:20-24,
   353-377`).
-- **SEA-1310 §8 proto state**: `AgentControl.deliver = 3` exists
+- **RIG-1310 §8 proto state**: `AgentControl.deliver = 3` exists
   (`compass/proto/compass/v1/agent.proto:122`) but `DeliverControl {}` is an
   empty shell (`agent.proto:153-154`), and the Runner refuses to send an empty
   shell (`gateway/control.go:65-70`). `AgentFrame` has no `delivery_ack` variant
   today (`agent.proto:40-68`; grep `DeliveryAck` matches only the design-record
   citation in comments, `agent.proto:56`, `:159`). The proto delta below is
-  co-owned: it lands as compass-spec's consolidated SEA-1310 follow-up, in
+  co-owned: it lands as compass-spec's consolidated RIG-1310 follow-up, in
   coordination with compass/compass-agent — never unilaterally from this lane.
 - **#995 Server ownership layer** (merged 2026-07-30,
   `../compass-server-ownership-layer/design.md`): Decision 5 freezes the forge
@@ -373,12 +373,12 @@ workstream.
 
 ### D3 — `DeliverControl` payload: the first-party `compass.v1.Message`; the ack is the message id
 
-**The SEA-1310 parking reason does not apply here.** The shells were parked
+**The RIG-1310 parking reason does not apply here.** The shells were parked
 because "their fields carry an inbound SDK `AgentMessage` (a four-way union with
 an opaque provider payload)… neither of which any existing compass.v1 message
 represents" (`agent.proto:103-112`). A channel post is not that: it is a
 first-party `compass.v1.Message` (`comms.proto:234-251`), fully representable
-today — and SEA-1310 §1's opaque-SDK parking applies to steer+config, not
+today — and RIG-1310 §1's opaque-SDK parking applies to steer+config, not
 deliver, so deliver un-parks independently. The payload contract is resolved
 with the compass-agent co-owner (OQ-2, resolved):
 
@@ -414,7 +414,7 @@ regenerate imported public types into the internal trees
 (`comms.proto:258-264`), threading needs `parent_message_id`, and any
 projection becomes a second message schema to keep in sync. The agent formats
 what it needs from the full shape. compass-agent has confirmed exactly this
-(full `Message`, agent formats from structured fields, citing SEA-1310), so
+(full `Message`, agent formats from structured fields, citing RIG-1310), so
 OQ-2 is a documented resolution, not an open fork.
 
 **Mention-borne steer gets the same treatment.** The frozen model routes an
@@ -422,7 +422,7 @@ OQ-2 is a documented resolution, not an open fork.
 (`../compass-0.6/design.md:425-430`) — also a first-party `Message`. So the
 channel-borne `SteerControl` carries the same single `Message` field (no seq;
 the id is in the Message). The generic SDK-`AgentMessage` steer (a
-Runner-originated steer outside any channel) stays parked under SEA-1310;
+Runner-originated steer outside any channel) stays parked under RIG-1310;
 nothing here re-opens it.
 
 **Ack timing.** RT-3 says the ack is emitted "on delivery"
@@ -595,12 +595,12 @@ proto work — yet grep finds no production sender of `AgentControl_AskAnswer`
 (channel delivery / mentions / presence / forge), so this record does not
 build it, but the generic `DispatchControl` rail makes it a small follow-up:
 a `RespondToAsk` hook calling the same `ControlDispatcher` (T3) — filed as
-**SEA-1577** (comms/agent lane owns; Refs SEA-1569), per OQ-8's ratification
+**RIG-1577** (comms/agent lane owns; Refs RIG-1569), per OQ-8's ratification
 (Matt, 2026-07-29).
 
 ## Global Constraints
 
-- **SEA-1267 gen fence.** Internal symbols (`AgentFrame`, `AgentControl`,
+- **RIG-1267 gen fence.** Internal symbols (`AgentFrame`, `AgentControl`,
   `DeliverControl`, `SteerControl`, `DeliveryAck`, …) MUST NOT leak into the
   public gen trees `packages/compass-client/src/gen` or `go/gen`; the fence
   greps for them (`compass/proto/moon.yml:121-151`). `DeliveryAck` and any
@@ -616,7 +616,7 @@ a `RespondToAsk` hook calling the same `ControlDispatcher` (T3) — filed as
   Decision 5 are consumed as written; a task that would deviate stops and
   escalates rather than reinterpreting.
 - **Proto co-ownership.** Every `agent.proto`/`runner.proto` change here lands
-  as part of compass-spec's consolidated SEA-1310 follow-up, coordinated with
+  as part of compass-spec's consolidated RIG-1310 follow-up, coordinated with
   compass-agent — one schema PR, both sides regenerate (`buf generate` all
   three lanes, `moon.yml:50-71`), drift + gen-fence + breaking gates green.
 - **Red-green testing.** Every task writes its failing test first
@@ -660,8 +660,8 @@ independent editor to be discovered at a red drift-gate.
   `message DispatchControl { string session_id = 1; AgentControl op = 2; }`;
   `deliver_control` takes `command = 11` — the number ASSIGNED by
   compass-repo's canonical oneof allocation (`forge_notification = 7`,
-  `secrets_version = 8` SEA-1327, `config_version = 9` SEA-1568,
-  `remove = 10` #1019, `deliver_control = 11` SEA-1569 — the block 7-11
+  `secrets_version = 8` RIG-1327, `config_version = 9` RIG-1568,
+  `remove = 10` #1019, `deliver_control = 11` RIG-1569 — the block 7-11
   reserved), ratified by compass-repo on `#svc.compass` (2026-07-29) and
   confirmed to this lane by DM. This lane CONSUMES the assigned number; the
   actual `.proto` edit is authored by compass-repo at implementation time
@@ -679,7 +679,7 @@ independent editor to be discovered at a red drift-gate.
   agent_presence_changed = 17` (16 is `resync_required`, `comms.proto:390`);
   `enum AgentPresence { UNSPECIFIED; IDLE; WORKING; WAITING; OFFLINE }`
   (four states per OQ-1's ratification — still PUBLIC, NOT gen-fenced,
-  SEA-1267).
+  RIG-1267).
 - Gen fence: add `\bDeliveryAck\b` and `\bDispatchControl\b` to
   `moon.yml:151`'s pattern.
 - Test cycle: `buf lint` + `buf breaking` + regen all three lanes + drift +
@@ -945,7 +945,7 @@ non-load-bearing and merges on the recommendation. No open fork remains.
   this record's recommendation: full first-party `Message`, agent formats
   from structured fields (server fans structured Messages; agent renders,
   coalesces, acks). Deliver un-parks independently of steer/config —
-  SEA-1310 §1's opaque-SDK parking applies to steer+config, not deliver. No
+  RIG-1310 §1's opaque-SDK parking applies to steer+config, not deliver. No
   Matt ask needed; the record's freeze ratifies. Kept here as a documented
   resolution, not an open fork.
 - **OQ-3 (load-bearing) — mention-vs-deliver interaction. RATIFIED (Matt,
@@ -1008,13 +1008,13 @@ non-load-bearing and merges on the recommendation. No open fork remains.
   Forward note, scoped OUT: Matt is separately considering a2a channel
   mutexes/locks (an "… is typing" equivalent); not designed here.
 - **OQ-8 (NEW) — ask-answer push ownership. RATIFIED (Matt, 2026-07-29):
-  separate follow-up, filed and owned — SEA-1577.** The `RespondToAsk` →
+  separate follow-up, filed and owned — RIG-1577.** The `RespondToAsk` →
   `AgentControl.ask_answer` wake (see D6's scope note) rides the exact rail
   this record builds and needs zero proto work, but is outside Item-6's
   enumerated scope (channel delivery / mentions / presence / forge). It is a
   separate small follow-up — a `RespondToAsk` hook calling T3's
-  `ControlDispatcher` — owned by the comms/agent lane, filed as **SEA-1577**
-  (team SEA, project Compass, P2, Refs SEA-1569).
+  `ControlDispatcher` — owned by the comms/agent lane, filed as **RIG-1577**
+  (team SEA, project Compass, P2, Refs RIG-1569).
 
 ## Ledger impact
 

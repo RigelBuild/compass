@@ -35,7 +35,7 @@ const migrationLockKey int64 = 0x0C0A_5500_0000_0001
 // it with Open and release it with Close.
 type Store struct {
 	pool *pgxpool.Pool
-	// objectStore is the archive-tier object-store seam (SEA-1667 T4), injected
+	// objectStore is the archive-tier object-store seam (RIG-1667 T4), injected
 	// via SetObjectStore. nil until slice B wires a real client (store tests
 	// inject an in-memory fake); a flush against a nil store fails loudly.
 	objectStore ObjectStore
@@ -44,7 +44,7 @@ type Store struct {
 	// tunable (lowered by tests to exercise the valve).
 	safetyValveCapBytes int
 	// coordinationHook is the manager-comms coordination-channel reconcile
-	// (SEA-1722 T5), registered by the comms layer via SetCoordinationHook at
+	// (RIG-1722 T5), registered by the comms layer via SetCoordinationHook at
 	// server assembly and invoked by the two parent-edge writers (CreateAgent,
 	// ReparentAgent) on their own tx right after writing parent_agent_id. nil
 	// until wired (a store with no hook — every store-only test — is a no-op).

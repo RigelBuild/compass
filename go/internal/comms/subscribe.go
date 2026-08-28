@@ -68,7 +68,7 @@ func (c *Comms) SubscribeComms(
 	// token that survives restarts and covers the empty-ring bootstrap
 	// (design.md:809-816). A visibility-scoped boundary is a different token with
 	// a different meaning; the count-metadata exposure is accepted as within the
-	// threat model (SEA-1333 OQ4, Matt's ruling).
+	// threat model (RIG-1333 OQ4, Matt's ruling).
 	if req.Msg.GetSinceSeq() == 0 {
 		head, err := c.store.MessagesHeadSeq(ctx)
 		if err != nil {
@@ -261,7 +261,7 @@ type eventVisibility interface {
 	// IsAgentWorkspaceVisible gates AgentWorkspaceChanged (OpenAgentWorkspace:
 	// home-channel membership).
 	IsAgentWorkspaceVisible(ctx context.Context, actor store.AccountID, agentAccountID store.AccountID) (bool, error)
-	// SharesVisibleChannel gates AgentPresenceChanged (SEA-1569 T8): the actor
+	// SharesVisibleChannel gates AgentPresenceChanged (RIG-1569 T8): the actor
 	// receives an agent's presence only when it shares at least one channel with
 	// that agent — the shared-channel rule matching the fan-out's per-actor
 	// scoping (design.md:487-491).

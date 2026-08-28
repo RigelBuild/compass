@@ -49,7 +49,7 @@ type Comms struct {
 	// a caller on the context; adminID is the fallback when none is set.
 	adminID store.AccountID
 	// presence is the in-memory presence enum source GetRoster joins the durable
-	// tree + activity against (SEA-1721 T2). Nil until SetPresenceSource wires it
+	// tree + activity against (RIG-1721 T2). Nil until SetPresenceSource wires it
 	// (comms<->hub is a construction cycle, broken by a post-construction setter
 	// exactly like hub.SetSettleSink). Set once at server assembly BEFORE any RPC
 	// is served, so it needs no lock. Nil-safe: a Comms with no presence source
@@ -141,7 +141,7 @@ func (c *Comms) CreateAgent(
 	}
 	// Install the coordination emit buffer so the store's in-tx coordination hook
 	// (fired inside CreateAgent when this agent has a parent) records its channel
-	// change here; drained + emitted post-commit below (SEA-1722 T5).
+	// change here; drained + emitted post-commit below (RIG-1722 T5).
 	ctx, coordChanges := withCoordChanges(ctx)
 	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
 		Handle:        req.Msg.GetHandle(),
@@ -287,7 +287,7 @@ func (c *Comms) ReparentAgent(
 ) (*connect.Response[compassv1.ReparentAgentResponse], error) {
 	// Install the coordination emit buffer so the store's in-tx coordination hook
 	// (fired inside ReparentAgent for both the new and old managers) records its
-	// channel changes here; drained + emitted post-commit below (SEA-1722 T5).
+	// channel changes here; drained + emitted post-commit below (RIG-1722 T5).
 	ctx, coordChanges := withCoordChanges(ctx)
 	caller := c.actorFromContext(ctx)
 	agentID, err := c.resolveAgentHandle(ctx, caller, req.Msg.GetAgentHandle())
@@ -521,7 +521,7 @@ func (c *Comms) UpdateTopic(
 	return connect.NewResponse(&compassv1.UpdateTopicResponse{Topic: topicToWire(topic)}), nil
 }
 
-// ---- manager-comms-substrate RPCs (SEA-1740 T1) ----
+// ---- manager-comms-substrate RPCs (RIG-1740 T1) ----
 //
 // GetRoster, SetChannelPolicy, and UpdatePinnedBoard are the T1 proto surface of
 // the manager-comms substrate. T1 lands the contract (proto + regen) proto-first;

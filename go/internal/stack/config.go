@@ -92,7 +92,7 @@ type Config struct {
 	// --mount flag parses (cmd/compass-runner/main.go parseMount). Empty (nil)
 	// adds no extra mounts — the core applies no default, mirroring EgressAllow.
 	// The dogfood e2e harness uses it to deliver a canned-model models.yml into
-	// the agent's ~/.omp/agent (SEA-1787 H3); the embedded supervisor and the
+	// the agent's ~/.omp/agent (RIG-1787 H3); the embedded supervisor and the
 	// compass-stack CLI leave it unset.
 	Mounts []string
 }

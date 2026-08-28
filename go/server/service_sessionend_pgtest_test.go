@@ -2,7 +2,7 @@
 
 package server
 
-// The SEA-1667 T4 session-end flush trigger (the third of three, design.md
+// The RIG-1667 T4 session-end flush trigger (the third of three, design.md
 // §1040-1046), driven through the real StopAgentSession handler against a real
 // Postgres and a real Runner door. On a successful Stop the handler archives the
 // session's remaining hot-tail as ONE session_end segment so history is complete

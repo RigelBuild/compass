@@ -17,9 +17,9 @@ Keep `SEA-####` issue references as **bare plain text** — they are load-bearin
 provenance (records cite each other through them). Do **not** wrap them in a
 `linear.app` link, in either form:
 
-- inline: `[SEA-1234](https://linear.app/…)` — write `SEA-1234`
-- reference-definition: a trailing `[SEA-1234]: https://linear.app/…` line —
-  drop the definition; keep the bare `SEA-1234` in the prose
+- inline: `[RIG-1234](https://linear.app/…)` — write `RIG-1234`
+- reference-definition: a trailing `[RIG-1234]: https://linear.app/…` line —
+  drop the definition; keep the bare `RIG-1234` in the prose
 
 A public reader sees an opaque internal ticket ID, which is honest and
 harmless. A dead `linear.app` URL is worse than no URL.

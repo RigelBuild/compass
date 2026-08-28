@@ -70,7 +70,7 @@ type AgentEnv struct {
 // execSpec builds the streaming exec that starts the agent: unprivileged, in
 // the checkout, carrying exactly the vars the agent reads. Env-delivery secrets
 // are NOT passed on this exec: the Runner's materializer writes them to the
-// 0600 in-container $HOME/.compass/env (SEA-1327 T5), and the agent sources that
+// 0600 in-container $HOME/.compass/env (RIG-1327 T5), and the agent sources that
 // file from its own namespace at startup. They are deliberately not `-e
 // KEY=VALUE` here (host-process-list visible) nor `--env-file` (podman resolves
 // that path host-side, where the container-internal file does not exist).

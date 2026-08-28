@@ -98,7 +98,7 @@ type dispatcher struct {
 	// pendingCall (runnerhub/router.go). Single-Runner MVP: the set is small and
 	// lives for the stream's life — it is not evicted. Bounded eviction (plus the
 	// per-container transition lock this change already lands) is the remaining
-	// T9 work (SEA-1328); see docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
+	// T9 work (RIG-1328); see docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 	handled map[string]*inflightResult
 
 	// configSignal coalesces ConfigVersion signals into a single pending

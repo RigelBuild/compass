@@ -1,4 +1,4 @@
-# Compass Live Roster — the agent tree reads the live roster (SEA-2033)
+# Compass Live Roster — the agent tree reads the live roster (RIG-2033)
 
 Status: Draft
 
@@ -186,7 +186,7 @@ decisions):
    tree-empty state the surfaces spec already defines
    (`design/surfaces.md:129-131`: "Tree-empty (no agents yet) renders a real
    empty-state row set: a one-line explanation and the palette hint ... not a
-   blank column"). No client-side fake supervisor: SEA-1820 / DL-192 seed the
+   blank column"). No client-side fake supervisor: RIG-1820 / DL-192 seed the
    root manager server-side (`seedRootSupervisor`, DL-192), so a live empty
    tree is a legitimate transient, not a state to paper over. (The empty-state
    VISUALS are the disjoint compass-ux styling lane; this record owes only the
@@ -223,7 +223,7 @@ decisions):
 - **Presence/activity on `Account` + `accountChanged` (server-side),
   eliminating the client join:** structurally the cleanest long-term shape —
   one identity source, no client join — but a proto + comms-server lane far
-  outside SEA-2033's UI scope. Noted as the rejected long-term direction, not
+  outside RIG-2033's UI scope. Noted as the rejected long-term direction, not
   taken now.
 
 No new abstraction is introduced: the change is one new `CommsState`
@@ -374,7 +374,7 @@ Convert the dead const to the documented reactive seam.
   renders the stopped dot; account order is preserved. Store tests — offline
   store returns the fixture through `agents()`; a store with a fake comms state
   joins live accounts + presence; `agentById` reacts to an agent-set change
-  (the SEA-1645 reactivity the comment at `store.ts:790-795` owes).
+  (the RIG-1645 reactivity the comment at `store.ts:790-795` owes).
 
 ### T4 — component cutover (retire STUB_AGENTS as render source)
 
@@ -504,7 +504,7 @@ the frozen contract.
   worse than none). A live `role`/`model`/`cwd` later is a server-field lane
   (proto addition), parked.
 - **R4 (empty roster) — surfaces-spec tree-empty row, no client-seeded fake
-  supervisor.** Render the tree-empty row (`surfaces.md:129-131`); SEA-1820/
+  supervisor.** Render the tree-empty row (`surfaces.md:129-131`); RIG-1820/
   DL-192 seed the root manager server-side, so a live-empty tree is transient
   and honest. (Gated on `firstSnapshotArrived()` so the connect-window is not a
   false empty — see T5.)

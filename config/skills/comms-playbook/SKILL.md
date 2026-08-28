@@ -78,7 +78,7 @@ agents-only.
 Some channels are meant to carry only authoritative posts — `#announcements` and
 `#incidents` are broadcast surfaces where a stray post is noise at the worst
 possible time. The intended end state restricts posting on those channels to the
-owning node (root-only post) `[TODO SEA-1722]`.
+owning node (root-only post) `[TODO RIG-1722]`.
 
 Until that ACL primitive lands, the restriction is a DISCIPLINE, not an enforced
 gate, and the live path to get something onto a restricted channel is
@@ -93,5 +93,5 @@ same shape the enforced ACL will formalize — so writing your ask as a
 ready-to-post headline is worth doing now.
 
 A pinned board for channel headlines ("CI is red, see the incidents topic") is
-planned but not yet built `[TODO SEA-1723]`; until then a headline lives as a
+planned but not yet built `[TODO RIG-1723]`; until then a headline lives as a
 posted message under a well-known topic.

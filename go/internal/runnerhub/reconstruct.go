@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// T5 (SEA-1667): the resume-body reconstructor. ReconstructSessionBody rebuilds
+// T5 (RIG-1667): the resume-body reconstructor. ReconstructSessionBody rebuilds
 // the loadable SDK session file a resuming agent starts from, by pure
 // read-and-concatenate over the two-tier transcript store — no control-lane ops,
 // no entry-JSON parsing. See the method doc for the normal (PG-only) and the

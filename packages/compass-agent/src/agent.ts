@@ -95,7 +95,7 @@ export class CompassAgent {
 	// are applied as replay (context), and live prompt/steer are refused until
 	// `#replayComplete` — a belt-and-suspenders on the frozen replay barrier.
 	#replayComplete = false;
-	// SEA-1310 §8 — RT-3 turn-end delivery (DELIVER arm). A delivered channel
+	// RIG-1310 §8 — RT-3 turn-end delivery (DELIVER arm). A delivered channel
 	// message is coalesced to a turn-end prompt: mid-turn delivers queue and flush
 	// as ONE prompt when the turn settles; an idle deliver starts a turn at once.
 	//
@@ -205,7 +205,7 @@ export class CompassAgent {
 	// re-throws (error).
 	async run(): Promise<void> {
 		const unsubscribe = this.#session.subscribe((event) => {
-			// Turn-tracking (SEA-1310 §8): an ADDITIONAL read of the same event,
+			// Turn-tracking (RIG-1310 §8): an ADDITIONAL read of the same event,
 			// beside the mapper fan-out below — never disturbing it. A turn-start
 			// edge marks the session active; `agent_end` settles it and flushes any
 			// coalesced delivers into one turn-end prompt.
@@ -275,7 +275,7 @@ export class CompassAgent {
 		);
 	}
 
-	// SEA-1310 §8 — deliver a channel message into the live session (RT-3). The
+	// RIG-1310 §8 — deliver a channel message into the live session (RT-3). The
 	// entry the immediate handle calls when a `DeliverControl.message` decodes.
 	// The replay barrier is enforced UPSTREAM at the control source (a
 	// pre-ReplayComplete immediate op is refused-and-counted before it reaches
@@ -295,7 +295,7 @@ export class CompassAgent {
 		// dropped (counted), independent of the control-source's control_seq dedup
 		// (frozen record :811-812).
 		//
-		// Re-ack subtlety (SEA-1310 §8 review MEDIUM): `#processedMessageIds` holds
+		// Re-ack subtlety (RIG-1310 §8 review MEDIUM): `#processedMessageIds` holds
 		// ids from ENQUEUE time (:205, before injection), not injection time. The
 		// Publish PRIORITY lane an ack rides is never-drop only within its retry
 		// budget (publish-spine.ts:156-158) — a Runner restart or a >~1s socket
@@ -398,8 +398,8 @@ export class CompassAgent {
 			});
 	}
 
-	// SEA-1310 §8 — channel-borne steer arm. The entry the immediate handle calls
-	// when a `SteerControl.message` decodes (populated by SEA-1569 (T7)). Unlike
+	// RIG-1310 §8 — channel-borne steer arm. The entry the immediate handle calls
+	// when a `SteerControl.message` decodes (populated by RIG-1569 (T7)). Unlike
 	// deliver (which coalesces to a turn-end prompt), a steer is an @-mention
 	// interrupt: mid-turn it injects into the running loop (interrupt at the next
 	// tool boundary); idle it starts a fresh turn to drain the injected steer
@@ -603,7 +603,7 @@ export class CompassAgent {
 		}
 	}
 
-	// Track a session turn edge (SEA-1310 §8, RIG-2732 W3). A turn-start edge
+	// Track a session turn edge (RIG-1310 §8, RIG-2732 W3). A turn-start edge
 	// marks the session active; `agent_end` settles it and flushes the coalesced
 	// deliver AND forge-notification queues as turn-end prompts. See the
 	// `#turnActive` field comment for why the flush is safe synchronously on the
@@ -643,7 +643,7 @@ export class CompassAgent {
 	// synchronous `prompt` call), never gated behind the prompt's completion — so
 	// a crash mid-turn does not lose a receipt for a batch that WAS injected.
 	//
-	// Rejection-safety belt (SEA-1310 §8 / RIG-2732 W3): `Agent.prompt` injects
+	// Rejection-safety belt (RIG-1310 §8 / RIG-2732 W3): `Agent.prompt` injects
 	// synchronously up to its first await and can only signal a NOT-injected
 	// batch as a settled REJECTION — a synchronous throw at its very top: the
 	// AgentBusyError streaming guard (agent.ts:985) or the "No model" check
@@ -891,12 +891,12 @@ export class CompassAgent {
 }
 
 // Coalesce a batch of delivered channel messages into ONE prompt input string
-// (SEA-1310 §8). Pure + exported so it is unit-testable. The batch is GROUPED
+// (RIG-1310 §8). Pure + exported so it is unit-testable. The batch is GROUPED
 // per topic (`msg.topicId`) at format time: a topic belongs to exactly one
 // channel, so topic-grouping is per-(channel, topic), one digest section per
 // topic within the channel batch (D3/D4). This is FORMAT-TIME only — the flush
 // still emits one coalesced prompt and one ack per message (`#flushTurnEnd`),
-// so the SEA-1310 §8 ack-safety belt is untouched.
+// so the RIG-1310 §8 ack-safety belt is untouched.
 //
 // Topic order is first-seen; message order within a topic is preserved. Each
 // message's `text`-case blocks are concatenated and an `askAnswer`-case block

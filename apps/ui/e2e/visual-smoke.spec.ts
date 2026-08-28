@@ -1,6 +1,6 @@
 import { test } from "@playwright/test";
 
-// Visual-smoke harness (SEA-2034 T1). Navigates the HashRouter surfaces of the
+// Visual-smoke harness (RIG-2034 T1). Navigates the HashRouter surfaces of the
 // app and writes one full-page PNG per surface into e2e/__screens__/ for Matt's
 // before/after review. The webServer boots the app under `--mode fixture`, so
 // the app boots fully on the in-memory fixture store (stub-data.ts) with no
@@ -49,12 +49,12 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await page.locator(".bridge").waitFor({ state: "visible" });
 		// Drive the real interaction path so the PR pane actually renders: the
 		// pane is shown only when an issue is selected AND the PR tab is active.
-		// Select the compass-ui issue (SEA-1022 / PR #453) — its review set carries a
+		// Select the compass-ui issue (RIG-1022 / PR #453) — its review set carries a
 		// `commented` verdict, so the shot captures the recolored review-pending
 		// (faint-grey) chip alongside the approved chips. That review-pending
 		// value is the only one with a visual delta in this PR: approved/changes
 		// map to alias tokens (--cx-ok/--cx-error) that are unchanged.
-		const card = page.locator(".cx-card", { hasText: "SEA-1022" }).first();
+		const card = page.locator(".cx-card", { hasText: "RIG-1022" }).first();
 		await card.waitFor({ state: "visible" });
 		await card.click();
 		await page.getByRole("button", { name: "Pull request" }).click();

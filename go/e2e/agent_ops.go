@@ -34,7 +34,7 @@ func (f *Fixture) CreateAgent(ctx context.Context, handle, displayName string) (
 
 // Provision provisions the agent's per-account workspace container over
 // CompassService and returns the assigned container name. clientRequestID is the
-// idempotency key. Repo carriage was removed (SEA-1527), so no repo/ref fields
+// idempotency key. Repo carriage was removed (RIG-1527), so no repo/ref fields
 // exist to set.
 func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID string) (containerName string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)

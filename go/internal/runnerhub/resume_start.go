@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// T6 (SEA-1667): the resume handoff on the Server->Runner start relay.
+// T6 (RIG-1667): the resume handoff on the Server->Runner start relay.
 // StartResume is the resume-carrying sibling of Start (commands.go): it relays
 // the SAME StartAgentSession command, but additionally attaches the
 // server-reconstructed session body onto the INTERNAL SessionsResponse.resume_body

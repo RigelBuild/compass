@@ -13,7 +13,7 @@ below was verified against the working tree this run; paths are repo-relative
 under `` unless otherwise pathed, so the record survives the
 decided move of the Compass tree to `RigelBuild/compass`.
 
-Tracker: SEA-1364.
+Tracker: RIG-1364.
 
 ## Problem / Intent
 
@@ -1504,7 +1504,7 @@ rather than left as an aspiration a green test would appear to satisfy.
   `ignore_only` entry. Adding one is out of scope: the existing exemptions are
   pre-launch removals that must be *removed* at launch (`buf.yaml:63-64`), not
   a list to grow.
-- **SEA-1267 gen-fence.** `gen-fence` greps the two PUBLIC gen trees for
+- **RIG-1267 gen-fence.** `gen-fence` greps the two PUBLIC gen trees for
   internal-only symbols (`proto/moon.yml:141`). The grep list already contains
   the unanchored prefixes `AgentGateway` and `CommsCall`; the new
   `ForgeCall*`/`RelayForgeCall*`/`ForgeNotification` families are **not**
@@ -2785,7 +2785,7 @@ place. Revisit when the guard is observed to be throttling in normal operation
 > `SpawnPeerRequest`) are **deleted**, not left optional — a spawned/provisioned
 > agent is given a git credential + workspace and clones for itself after
 > launch. The frozen ruling below stands as the reasoning; only the "optional"
-> realization in (2) is superseded. Durable record: SEA-1527; the ledger row
+> realization in (2) is superseded. Durable record: RIG-1527; the ledger row
 > DL-090 (authored by the design-ledger single-writer) lands via sealed#1019.
 
 **Ruling: it never resolves, because it is always explicit. `repo` is REQUIRED

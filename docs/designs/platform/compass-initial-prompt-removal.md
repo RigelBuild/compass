@@ -1,7 +1,7 @@
 # Remove dead `initial_prompt` from the agent-session start path
 
 Status: Active
-Tracking: SEA-1959. Ruled by Matt as a separate cutover shipping ahead of the
+Tracking: RIG-1959. Ruled by Matt as a separate cutover shipping ahead of the
 runner deliver-leg build (2026-08-12).
 
 > **Design record.** All file+line citations below are paths in
@@ -16,7 +16,7 @@ runner deliver-leg build (2026-08-12).
 accepted on the wire but **never delivered to the agent** — dead plumbing.
 There is no working server-originated turn-driver in its place *yet*: the
 intended replacement is a message posted to the agent's home channel (the
-SEA-1569 delivery path), but that leg is not wired end to end today (see "The
+RIG-1569 delivery path), but that leg is not wired end to end today (see "The
 real turn-driver" below) and is being built as an immediately-following work
 item. Removing the dead field removes a misleading API surface that promises a
 first turn it never delivers — independent of when the replacement lands.
@@ -133,7 +133,7 @@ the other session commands, none a deliver) — and the gateway parks
 can be sent (`go/internal/runner/gateway/control.go:190-215`,
 `errEmptyControlVariant` `:65-70`). So no server-originated control op drives a
 live agent turn yet. Building that deliver leg is a separate,
-immediately-following work item (ruled by Matt 2026-08-12; the SEA-1728 e2e
+immediately-following work item (ruled by Matt 2026-08-12; the RIG-1728 e2e
 real-turn coverage stacks on it). This record removes the dead `initial_prompt`
 field on its own; the replacement turn-driver it names becomes functional when
 the deliver leg lands.
@@ -157,8 +157,8 @@ prevents any future field from silently decoding stale bytes.
 
 `buf breaking` is a non-issue here: the breaking gate was removed pre-dogfood
 (`buf.yaml:37` and `proto/moon.yml:165` both read "buf breaking gate removed
-pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client (tracked:
-SEA-1951)"). There is no `breaking` task in `proto/moon.yml` (its tasks are
+pre-dogfood (RIG-1922); RE-ADD AT GA / first pinned client (tracked:
+RIG-1951)"). There is no `breaking` task in `proto/moon.yml` (its tasks are
 lint/gen/drift/gen-fence/ci, `:25-169`) and no `FIELD_NO_DELETE` `ignore_only`
 list in `buf.yaml` (its only `ignore_only` block is for lint rules, `:28-36`).
 So the removal needs no exemption and satisfies no breaking check — `reserved`
@@ -196,7 +196,7 @@ ignore (or reject) a non-empty value. Why it loses:
 The field is harmless at runtime but actively misleads: the e2e fixture
 (`go/e2e/agent_ops.go:50-52`, "brings the agent … online … with an initial
 prompt") and every `InitialPrompt: "go"` test literal encode the false belief
-that the prompt seeds a turn. The recent SEA-1728 e2e work had to discover the
+that the prompt seeds a turn. The recent RIG-1728 e2e work had to discover the
 hard way that the prompt is never delivered (and that the home-channel deliver
 leg meant to replace it is itself not yet wired); the next reader will too,
 until the field is gone.
@@ -210,7 +210,7 @@ until the field is gone.
 - Buf discipline: field removals MUST `reserved` both the field number and the
   name in the same edit (forward-compat hygiene). There is no `buf breaking`
   gate to satisfy — it was removed pre-dogfood (`buf.yaml:37`,
-  `proto/moon.yml:165`; re-added at GA per SEA-1951) — so no `FIELD_NO_DELETE`
+  `proto/moon.yml:165`; re-added at GA per RIG-1951) — so no `FIELD_NO_DELETE`
   exemption is needed.
 - Regen ordering is proto → codegen → callers: edit the `.proto`, run
   `moon run proto:gen` (three buf lanes — public, agent-TS, internal-Go;

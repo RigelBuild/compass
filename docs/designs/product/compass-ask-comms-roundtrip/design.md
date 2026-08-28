@@ -147,7 +147,7 @@ Agent-side, the decode already exists:
 wire op into the domain union (`op: { kind: "askAnswer", askId: v.askId,
 answers: v.answers }`), typed at `control.ts:47-51`. The **apply arm is
 parked**: `agent.ts:519-529` surfaces it as a counted unmapped op —
-`"ask_answer delivery staged — awaiting SEA-1310 ask correlation key"` — never
+`"ask_answer delivery staged — awaiting RIG-1310 ask correlation key"` — never
 dropped. This record's consume task un-parks that arm: on a post-barrier
 `askAnswer`, format the answers into a prompt injection delivered on the
 agent's next turn, following the established turn-end-delivery pattern the
@@ -229,7 +229,7 @@ there is **no Ask or conversation-block variant**; fields 1-2
 the streaming conversation write-through is gone" (`agent.proto:47-49`). So the
 path `compass-ask-typed-derivation.md` (DL-043) specified — deriving an
 outbound Ask conversation frame from the OMP `ask` tool-call via the
-`mapping.ts` `#deriveAsk` helper — is **dead**: SEA-1708 removed agent
+`mapping.ts` `#deriveAsk` helper — is **dead**: RIG-1708 removed agent
 conversation-frame
 production, and `mapping.ts` has no ask arm today (grep for `deriveAsk`/`ask`
 in `packages/compass-agent/src/mapping.ts` matches only todo-plan extraction
@@ -412,7 +412,7 @@ Interfaces:
 
 Flip the staged-arm pins: extend
 `packages/compass-agent/src/agent.test.ts:341-397` ("CompassAgent —
-ask_answer is staged, never delivered to the SDK (SEA-1310)") so the
+ask_answer is staged, never delivered to the SDK (RIG-1310)") so the
 post-barrier case asserts DELIVERY instead of staging: a post-`replayComplete`
 `askAnswer` whose `askId` is registered in `PendingAsks` is formatted and
 delivered to the SDK as a prompt (idle → starts a turn; mid-turn → coalesces

@@ -141,7 +141,7 @@ func workspaceToWire(w store.AgentWorkspace) *compassv1.AgentWorkspace {
 }
 
 // MessageToWire maps a store.Message onto the compass.v1 wire Message. Exported
-// so the delivery consumer (internal/delivery, SEA-1569 T3) dispatches a
+// so the delivery consumer (internal/delivery, RIG-1569 T3) dispatches a
 // re-read settled message through the ONE store->wire mapper rather than a
 // second convention (the settle gate and the no-live-author path both re-read
 // the message's current blocks from the store before dispatch).

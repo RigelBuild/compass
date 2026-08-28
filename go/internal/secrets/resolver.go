@@ -209,7 +209,7 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 // valid secret name; an empty value is rejected up front.
 //
 // Verified against secretspec v0.15.0 source (secrets.rs:1635-1647, compass
-// ruling SEA-1327 f63edea3): `set <NAME>` with the value omitted from argv and
+// ruling RIG-1327 f63edea3): `set <NAME>` with the value omitted from argv and
 // stdin not a tty takes the piped-stdin branch — a first-class
 // io::stdin().read_to_string() with no interactive prompt constructed — then
 // trims the value and rejects an empty one. So `secretspec set <NAME>

@@ -1,5 +1,5 @@
 /**
- * The generator-stamp gate (SEA-1405).
+ * The generator-stamp gate (RIG-1405).
  *
  * `protoc-gen-es` comes from the pinned nixpkgs (devenv.nix), so its version is
  * the nixpkgs's to choose and there is no lockfile pin to compare against. What

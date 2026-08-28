@@ -25,8 +25,8 @@ Status: Draft
 > for the shipped mechanism.
 >
 > Freezes on merge; later changes supersede by citation, never rewrite
-> (convention: `../compass-0.5/design.md:10-12`). Tracked as SEA-1678. Extends
-> the frozen SEA-1568 record
+> (convention: `../compass-0.5/design.md:10-12`). Tracked as RIG-1678. Extends
+> the frozen RIG-1568 record
 > [`../compass-agent-config-delivery/design.md`](../compass-agent-config-delivery/design.md)
 > (CD-1..CD-4) — this record adds bundle **categories** to that machinery and
 > builds no new channel.
@@ -80,7 +80,7 @@ Status: Draft
 
 ## Problem / Intent
 
-SEA-1568/SEA-1674 landed the config-delivery seam, but the bundle carries only
+RIG-1568/RIG-1674 landed the config-delivery seam, but the bundle carries only
 three categories — the in-container reader "maps it into the three
 `createAgentSession` option surfaces the SDK exposes — skills, extensions, and
 MCP servers" (`packages/compass-agent/src/config-reader.ts:7-8`) — so a
@@ -121,7 +121,7 @@ and restated where this record's tasks touch them:
    ContainerPath: agentConfigMountPath, ReadOnly: true})`) and a later
    `current` flip is live inside the running container. No mount-set change.
 4. **One env channel** (sibling GC-4). The settings file is not an env
-   surface; env-vars stay exclusively on SEA-1327's secret surface. Nothing
+   surface; env-vars stay exclusively on RIG-1327's secret surface. Nothing
    here writes `-e`/`Env`.
 5. **Nothing secret-bearing enters the bundle** (sibling GC-7 + CD-3's
    credential-free rule, extended): the OMP settings schema marks credential
@@ -334,7 +334,7 @@ rather than by native user/project layering (which object injection
 collapses). One boot-once limit, named: `contextFiles` is resolved once at
 session build (`sdk.ts:1471-1473`) and reused by later system-prompt
 rebuilds (`sdk.ts:2476`), so this covers the boot cwd's repo — roaming
-multi-repo pickup is SEA-1698 (filed, out of scope).
+multi-repo pickup is RIG-1698 (filed, out of scope).
 
 **Persona overlap, reconciled.** `COMPASS_PERSONA` is a **system-prompt
 identity overlay** appended after the default prompt (`cli.ts:424-431`:
@@ -369,9 +369,9 @@ HOME, empty unless we populate it), "project" = `.omp/` inside the checkout
 | --- | --- | --- | --- | --- |
 | Settings (`config.yml`, the "config.json" surface; bundle member yml-only per OQ-1) | overlay via the `configFiles` option (installed `@16.5.2` `config/settings.ts:269`), resolved as `settings ?? settingsManager ?? Settings.init` (`sdk.ts:1154-1156`); merge order `settings.ts:1376-1378` | No — SDK defaults | **Deliver (CP-1)** | The headline gap: compaction/context/model-roles/tool enablement all live here. Injected as a `Settings.loadIsolated` `settingsManager` (amended 2026-07-31) |
 | AGENTS.md (context files) | cwd walk-up `discovery/agents-md.ts:25-50` via `discoverContextFiles` (`sdk.ts:775-782`, project scope only); option short-circuit `sdk.ts:1177-1179` | No fleet channel (checkout's own loads) | **Deliver (CP-2)** | Fleet working conventions; injected as `contextFiles: [fleetGlobal, ...discoverContextFiles(cwd, agentDir)]` — COMPOSED, the agent re-runs project discovery itself (amended 2026-07-31) |
-| Skills | `discovery/builtin.ts:276-289` (`.omp/skills`, `agentDir/skills`) | **Yes** — mount + `skills:` option (`config-reader.ts:75`, `cli.ts:417`) | Already delivered | SEA-1568/1674 |
-| Extensions | `discovery/builtin.ts:473`, `:565` (`extensions/` per config dir) | **Yes** — `additionalExtensionPaths` + `disableExtensionDiscovery` (`cli.ts:418-419`) | Already delivered | SEA-1568/1674 |
-| MCP servers (`mcp.json`/`.mcp.json`) | `discovery/builtin.ts:197-200` | **Yes** — mounted `mcp/*.json` + `enableMCP: false` (`cli.ts:420-421`) | Already delivered | SEA-1568/1674 |
+| Skills | `discovery/builtin.ts:276-289` (`.omp/skills`, `agentDir/skills`) | **Yes** — mount + `skills:` option (`config-reader.ts:75`, `cli.ts:417`) | Already delivered | RIG-1568/1674 |
+| Extensions | `discovery/builtin.ts:473`, `:565` (`extensions/` per config dir) | **Yes** — `additionalExtensionPaths` + `disableExtensionDiscovery` (`cli.ts:418-419`) | Already delivered | RIG-1568/1674 |
+| MCP servers (`mcp.json`/`.mcp.json`) | `discovery/builtin.ts:197-200` | **Yes** — mounted `mcp/*.json` + `enableMCP: false` (`cli.ts:420-421`) | Already delivered | RIG-1568/1674 |
 | Slash commands (`commands/*.md`) | `discovery/builtin.ts:334-335`; `extensibility/custom-commands/loader.ts:106` | No | **Defer** | Interactive slash surface; the headless socket-driven agent takes no slash input |
 | Rules (`rules/*.md`,`*.mdc`) | option short-circuit: "`options.rules !== undefined ? { items: options.rules, warnings: undefined } : await loadCapability<Rule>(ruleCapability.id, { cwd })`" (installed `@16.5.2` `sdk.ts:1434-1436`) | No | **Deliver (CP-4)** | The wave ships 18 rule files and the fleet AGENTS.md (CP-2) references them by `rule://` name — delivering AGENTS.md without rules/ ships dangling references. The fleet `Rule[]` (built from the mounted `rules/*.md` + `*.mdc` with `createSourceMeta` + `buildRuleFromMarkdown`) **composes** with the checkout's discovered rules: the entrypoint re-runs `loadCapability<Rule>(ruleCapability.id, { cwd })` itself and passes `[...fleetRules, ...discovered]`, fleet-first (amended 2026-07-31) |
 | Prompts (`prompts/*.md`) | `discovery/builtin.ts:424-425` | No | **Defer** | TUI prompt-picker surface |
@@ -387,11 +387,11 @@ HOME, empty unless we populate it), "project" = `.omp/` inside the checkout
 | `plugin-overrides.json` | `extensibility/plugins/loader.ts:61` (`getConfigDirPaths("plugin-overrides.json", { user: false })` — project-only) | No | **Defer** | Project-level only by loader contract; repo-controlled already |
 | LSP config | `lsp/config.ts:371-383` (filenames per config dir) | No | **Defer** | Devenv concern; DL-025 makes the image/agent own its devenv |
 | DAP config | `dap/config.ts:134-144` | No | **Defer** | Same as LSP |
-| `.env` (SDK dotenv autoload) | eager **import-time** load of `$HOME/.env`, configRoot/.env, agentDir/.env, and **cwd/.env** (`env.ts:196-213`), with `OMP_*`→`PI_*` mirroring (`env.ts:169-173`) | **Yes** — the checkout's own `.env` autoloads (cwd is the checkout, `agent_exec.go:76-78`, `cli.ts:337`) | **Defer / never** | Env rides SEA-1327 / GC-4, never the bundle. (Historical: the frozen record's T4 cleared `PI_CONFIG_FILES`/`OMP_CONFIG_FILES` against a repo-`.env` injection vector; the installed 16.5.2 runtime never reads that env var and settings now ride the `settingsManager` object, so that vector does not exist — amended 2026-07-31) |
+| `.env` (SDK dotenv autoload) | eager **import-time** load of `$HOME/.env`, configRoot/.env, agentDir/.env, and **cwd/.env** (`env.ts:196-213`), with `OMP_*`→`PI_*` mirroring (`env.ts:169-173`) | **Yes** — the checkout's own `.env` autoloads (cwd is the checkout, `agent_exec.go:76-78`, `cli.ts:337`) | **Defer / never** | Env rides RIG-1327 / GC-4, never the bundle. (Historical: the frozen record's T4 cleared `PI_CONFIG_FILES`/`OMP_CONFIG_FILES` against a repo-`.env` injection vector; the installed 16.5.2 runtime never reads that env var and settings now ride the `settingsManager` object, so that vector does not exist — amended 2026-07-31) |
 | `SYSTEM.md` (system-prompt customization) | `createAgentSession` → `buildSystemPromptInternal` (`sdk.ts:2720`) → `loadSystemPromptFiles` (`system-prompt.ts:391-399`) whenever no `customSystemPrompt` is passed (gate `callerControlsCustomPrompt`, `system-prompt.ts:653-658`); the builtin provider reads BOTH `getAgentDir()/SYSTEM.md` and the nearest project config dir's `SYSTEM.md` (`builtin.ts:235-259`); result feeds the prompt as `systemPromptCustomization` (`system-prompt.ts:822-838`) | **Yes (project level)** — the checkout's `.omp/SYSTEM.md` loads today: the compass entrypoint passes only `systemPrompt` (a post-processing fn, `cli.ts:424-431`), so the gate is open | **Defer** | An **ACTIVE in-container surface**, not TUI-only: user level would activate the moment a fleet file landed at `$HOME/.omp/agent/SYSTEM.md`. The checkout-controlled project SYSTEM.md is pre-existing behavior outside this record's delta |
 | `APPEND_SYSTEM.md` | `main.ts:817-825` (`findConfigFile`, consumed at `main.ts:864-866`) | N/A in-container | **Out of scope (structurally)** | Loaded by the **TUI/CLI entry** (`main.ts`) only — genuinely not on the `createAgentSession` path |
 | `TITLE_SYSTEM.md` | `system-prompt.ts:302-310`, consumed `main.ts:384` and `interactive-mode.ts:1149` | N/A in-container | **Out of scope (structurally)** | Same TUI-only path |
-| Model auth / provider credentials | `sdk.ts:1201` (`discoverAuthStorage(agentDir)`); seed override `cli.ts:440` (`session.agent.getApiKey = createSeedApiKeyResolver(home)`) | **Yes** — SEA-1327 auth seed | Out of scope | Credentials never ride the bundle (GC-5) |
+| Model auth / provider credentials | `sdk.ts:1201` (`discoverAuthStorage(agentDir)`); seed override `cli.ts:440` (`session.agent.getApiKey = createSeedApiKeyResolver(home)`) | **Yes** — RIG-1327 auth seed | Out of scope | Credentials never ride the bundle (GC-5) |
 
 The prevention property, restated: every config read above is anchored on
 `getAgentDir()` or the project config dir — but through **three resolvers**,

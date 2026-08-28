@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# Public engineering docsite (SEA-1763). Astro Starlight rendering the reviewed
+# Public engineering docsite (RIG-1763). Astro Starlight rendering the reviewed
 # docs/ tree to a public Cloudflare Pages site. System tasks: bun/astro from the
 # devenv toolchain on PATH. install/lint/format are inherited (bun tag →
 # root:install; biome + markdownlint are the root whole-repo sweep, which lints
@@ -75,7 +75,7 @@ tasks:
 
   # Deploy dist/ to Cloudflare Pages. CD (runInCI:false): `deploy` on push:main
   # (production), `deploy-preview` on pull_request (a per-branch preview URL).
-  # Both run deploy.ts, which is ported in T3 (SEA-1765); until then this task
+  # Both run deploy.ts, which is ported in T3 (RIG-1765); until then this task
   # is declared for the graph shape but never runs (runInCI:false, and no local
   # invocation in T1).
   deploy: &deploy-task

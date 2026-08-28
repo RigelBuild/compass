@@ -24,7 +24,7 @@ import type { PublishSpine } from "./../publish-spine";
 // 1999 immediate applies serializes 1,999,000 seqs onto the priority lane,
 // which is never dropped — unlike the trace queue's `TRACE_QUEUE_CAP`
 // drop-oldest there is no backstop here. Range-encoding `applied_above` is the
-// fix and lands in SEA-1466; this file only documents and exposes the growth.
+// fix and lands in RIG-1466; this file only documents and exposes the growth.
 // `markApplied` is idempotent — a redelivered already-applied op
 // re-acks (so the Runner retires it) without corrupting the cursor. Every apply
 // emits a `ControlAck` on the shared Publish spine's priority lane; the Runner
@@ -40,7 +40,7 @@ export class AckCursor {
 	}
 
 	// Current size of the out-of-order applied set — the observability seam for
-	// the unbounded growth documented above; range-encoding lands in SEA-1466.
+	// the unbounded growth documented above; range-encoding lands in RIG-1466.
 	get pendingAbove(): number {
 		return this.#above.size;
 	}

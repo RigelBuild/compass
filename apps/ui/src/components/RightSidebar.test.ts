@@ -179,7 +179,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 	});
 
 	// An unresolvable pin (no visible agent for the id) now surfaces a MARKED
-	// activity-bar item (SEA-1645) — the derivation no longer filters. The
+	// activity-bar item (RIG-1645) — the derivation no longer filters. The
 	// resolvable pin beside it is unmarked, so the marking is selective.
 	test("an unresolvable pin surfaces a marked fleet item", () => {
 		withGroups(
@@ -215,7 +215,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 				}
 				// The UNMARKED fleet items with an agentId are exactly the resolvable
 				// pins, each resolving a real stub agent. A marked (unreachable) item
-				// may carry an agentId that resolves no stub (SEA-1645), so exclude it.
+				// may carry an agentId that resolves no stub (RIG-1645), so exclude it.
 				const withAgent = (fleet?.items ?? []).filter(
 					(item) => item.agentId !== undefined && item.unreachable !== true,
 				);

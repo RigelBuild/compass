@@ -100,7 +100,7 @@ func TestLinearCreateIssueRequestGolden(t *testing.T) {
 		probeResp(true), // actor probe: capable
 		{status: 200, body: `{"data":{"issueCreate":{"issue":{
 			"number":42,"title":"a bug","description":"stamped body",
-			"url":"https://linear.app/x/issue/SEA-42","state":{"name":"Todo","type":"unstarted"},
+			"url":"https://linear.app/x/issue/RIG-42","state":{"name":"Todo","type":"unstarted"},
 			"labels":{"nodes":[]},"creator":null,"updatedAt":"2026-08-01T12:30:00Z"}}}}`},
 	}}
 	l := newTestLinear(rt, &fakeTokenSource{token: "sekret"}, slog.New(&capturingHandler{}))
@@ -137,7 +137,7 @@ func TestLinearCreateIssueRequestGolden(t *testing.T) {
 		t.Errorf("displayIconUrl = %v, want %q", input["displayIconUrl"], attributionIconURL)
 	}
 	if got.Number != 42 || got.Title != "a bug" || got.Body != "stamped body" ||
-		got.State != "open" || got.URL != "https://linear.app/x/issue/SEA-42" {
+		got.State != "open" || got.URL != "https://linear.app/x/issue/RIG-42" {
 		t.Errorf("decoded Issue = %+v", got)
 	}
 }
@@ -149,7 +149,7 @@ func TestLinearCommentOnIssueRequestGolden(t *testing.T) {
 		{status: 200, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-9"}]}}}`}, // resolve issue id
 		probeResp(true), // actor probe
 		{status: 200, body: `{"data":{"commentCreate":{"comment":{
-			"id":"comment-uuid","url":"https://linear.app/x/issue/SEA-7#comment-1",
+			"id":"comment-uuid","url":"https://linear.app/x/issue/RIG-7#comment-1",
 			"body":"a reply","user":null}}}}`},
 	}}
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
@@ -174,7 +174,7 @@ func TestLinearCommentOnIssueRequestGolden(t *testing.T) {
 	if input["createAsUser"] != attributionUser {
 		t.Errorf("createAsUser = %v, want %q", input["createAsUser"], attributionUser)
 	}
-	if got.Body != "a reply" || got.URL != "https://linear.app/x/issue/SEA-7#comment-1" {
+	if got.Body != "a reply" || got.URL != "https://linear.app/x/issue/RIG-7#comment-1" {
 		t.Errorf("decoded Comment = %+v", got)
 	}
 }
@@ -218,7 +218,7 @@ func TestLinearGetIssueMapping(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{
 		{status: 200, body: `{"data":{"issues":{"nodes":[{
 			"number":7,"title":"a bug","description":"raw <!--owner--> body",
-			"url":"https://linear.app/x/issue/SEA-7","state":{"name":"Done","type":"completed"},
+			"url":"https://linear.app/x/issue/RIG-7","state":{"name":"Done","type":"completed"},
 			"labels":{"nodes":[{"name":"bug"},{"name":"p1"}]},
 			"creator":{"displayName":"alice"},"updatedAt":"2026-08-01T12:30:00Z"}]}}}`},
 	}}

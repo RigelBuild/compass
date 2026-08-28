@@ -1,4 +1,4 @@
-// The AckCursor's progress signal (SEA-1364 C4b follow-up hardening).
+// The AckCursor's progress signal (RIG-1364 C4b follow-up hardening).
 //
 // `appliedCount` is not bookkeeping — the Control source's no-progress
 // reconnect budget reads it as its ONLY termination signal for a slow-flapping

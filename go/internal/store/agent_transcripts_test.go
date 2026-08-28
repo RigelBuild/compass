@@ -2,7 +2,7 @@
 
 package store
 
-// The durable two-tier transcript store (SEA-1667 T4), proven against real
+// The durable two-tier transcript store (RIG-1667 T4), proven against real
 // Postgres with the object-store seam FAKED (no live S3). Covers the record's
 // T4 test cycle: FK rejection; idempotent duplicate key; ordering; the
 // session-scoped rebase across lifetimes; the post-supersession read view;

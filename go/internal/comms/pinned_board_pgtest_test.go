@@ -2,7 +2,7 @@
 
 package comms
 
-// UpdatePinnedBoard handler contracts at the RPC edge (SEA-1723 T6,
+// UpdatePinnedBoard handler contracts at the RPC edge (RIG-1723 T6,
 // design.md:626-637): the handler authorizes a board mutation against the
 // channel's post_policy (any member on OPEN, only the owner on OWNER_ONLY, a
 // non-owner collapsing to the SAME CodeNotFound a non-member gets — no oracle),

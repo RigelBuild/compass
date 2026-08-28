@@ -13,7 +13,7 @@
 // It is generated ONLY into the internal Go lane (guestd's handler + the host's
 // client via buf.gen.internal-go.yaml -> go/internal/gen), never onto the
 // public @compass/client surface or any TS lane — a host<->guest control plane
-// is not a server-door client, so the SEA-1267 gen-fence intent holds. The
+// is not a server-door client, so the RIG-1267 gen-fence intent holds. The
 // public buf.gen.yaml excludes this file; buf.gen.agent-ts.yaml (an allowlist)
 // simply never lists it.
 //

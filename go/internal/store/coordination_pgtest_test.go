@@ -2,7 +2,7 @@
 
 package store
 
-// Coordination-channel store contracts (SEA-1722 T5, design.md:530-592): the
+// Coordination-channel store contracts (RIG-1722 T5, design.md:530-592): the
 // two parent-edge writers (CreateAgent, ReparentAgent) invoke the registered
 // coordination hook on their OWN tx right after writing parent_agent_id, and the
 // tx-level store helpers the comms reconcile drives (per-owner group get-or-

@@ -453,7 +453,7 @@ func TestListUpdatedIssuesBudgetErrorPropagates(t *testing.T) {
 // TestLinearReaderNoETags: a Linear issue read returns a 200-equivalent with an
 // EMPTY ETag (GraphQL has no ETags — the documented backstop limitation).
 func TestLinearReaderNoETags(t *testing.T) {
-	body := `{"data":{"issues":{"nodes":[{"number":7,"title":"t","description":"d","url":"https://linear.app/x/SEA-7","state":{"name":"Todo","type":"unstarted"},"labels":{"nodes":[]},"creator":null,"updatedAt":""}]}}}`
+	body := `{"data":{"issues":{"nodes":[{"number":7,"title":"t","description":"d","url":"https://linear.app/x/RIG-7","state":{"name":"Todo","type":"unstarted"},"labels":{"nodes":[]},"creator":null,"updatedAt":""}]}}}`
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: body}}}
 	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, nil)
 

@@ -2,7 +2,7 @@
 
 package store
 
-// Channel-policy store contracts (SEA-1722 T4, design.md:488-528): the post
+// Channel-policy store contracts (RIG-1722 T4, design.md:488-528): the post
 // policy (OWNER_ONLY rejects a non-owner with the SAME ErrNotFound a non-member
 // gets — no oracle), the mandatory-subscription flag (an explicit unsubscribe is
 // refused, and the D1 read-side delivers to a member whose row says

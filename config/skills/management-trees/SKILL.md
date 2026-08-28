@@ -182,4 +182,4 @@ These are referenced only; the tools are not live yet:
 
 - Tree navigation / visualizing the tree — [TODO compass_tree].
 - Fresh-read of the roster and your parent (re-parenting can change it) —
-  [TODO SEA-1721].
+  [TODO RIG-1721].

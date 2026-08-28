@@ -3,7 +3,7 @@
 // Command compass is the operator-facing Compass CLI: a Cobra subcommand tree
 // that dials the Compass Server's authenticated door and drives fleet-wide
 // operator actions. Today it hosts the agent-config noun (push/show/delete of
-// the fleet config bundle, SEA-1671); secrets is a planned future sibling noun,
+// the fleet config bundle, RIG-1671); secrets is a planned future sibling noun,
 // so the root is kept extensible rather than agent-config-specific.
 //
 // Unlike the other cmd/ binaries this one deliberately uses Cobra (the

@@ -2,7 +2,7 @@
 
 package presence
 
-// The presence projection's acceptance cases (SEA-1569 T8, design record D4,
+// The presence projection's acceptance cases (RIG-1569 T8, design record D4,
 // design.md:880-890), RED-first. Each drives the publisher through the real
 // events bus + hand-written fakes and gates on the recorder's observed
 // AgentPresenceChanged publishes — never a sleep, never a retry

@@ -1,4 +1,4 @@
-// The tee seam (SEA-1570 T2): a container-local-filesystem `SessionStorageBackend`
+// The tee seam (RIG-1570 T2): a container-local-filesystem `SessionStorageBackend`
 // (indexed-session-storage.ts:25-36 — the ten async methods) that TEES every
 // committed write upstream as a durable `TranscriptEntry` frame while keeping the
 // authoritative bytes on the local disk the SDK's own session loader reads.
@@ -17,7 +17,7 @@
 //     wrapper (session-manager.ts:973-974) and the wrapper throws ENOENT for
 //     un-indexed paths, so the Runner-materialized file must appear in the scan.
 //     loadIndex therefore ALSO indexes an explicit `resumeFile` (options,
-//     SEA-1570 T2 Option B) by its exact absolute path, so a resume file that
+//     RIG-1570 T2 Option B) by its exact absolute path, so a resume file that
 //     lives OUTSIDE `sessionDir` is discoverable and need not live under it.
 //   - the rest (`updateSessionTitle`/`truncate`/`move`/`remove`) → local-only
 //     (titles are a Server-side rendering concern; nothing durable depends on
@@ -78,7 +78,7 @@ export interface TranscriptTeeOptions {
 	/** Override the escalating retry schedule (tests inject a fast one). */
 	readonly emitBackoffMs?: readonly number[];
 	/** An extra absolute session-file path to index beyond the scanned session dir
-	    (the Runner-materialized resume file; SEA-1570 T8/T2). Canonicalized with
+	    (the Runner-materialized resume file; RIG-1570 T8/T2). Canonicalized with
 	    `path.resolve` and indexed under that resolved key so the SDK wrapper's
 	    lookup gate (statSync ~:177 / readText ~:205 / readTextSlices ~:213 in
 	    indexed-session-storage.ts, all keyed on `setSessionFile`'s
@@ -242,7 +242,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 				throw err;
 			}
 		}
-		// SEA-1570 T2 (Option B): also index the explicit Runner-materialized
+		// RIG-1570 T2 (Option B): also index the explicit Runner-materialized
 		// resume file, which lives OUTSIDE the scanned session dir. Dedup by exact
 		// path (a resume file that happens to live in sessionDir is already
 		// listed). A not-yet-materialized resume file (ENOENT) is a valid fresh

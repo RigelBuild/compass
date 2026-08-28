@@ -206,7 +206,7 @@ dev server" check becomes a task.
   (`package.json:8`). Zero new dependencies; the gate is one spec file plus a
   moon task.
 - **`puppeteer-core` (the issue's proposal, rejected).** RIG-1536 predates the
-  repo's Playwright adoption (SEA-2034 T1); its claim "Chromium and
+  repo's Playwright adoption (RIG-2034 T1); its claim "Chromium and
   `puppeteer-core` are already in the environment" no longer describes the
   repo — `puppeteer-core` is not in `package.json` (its devDependencies are
   fully listed at `package.json:27-43`; no puppeteer entry), and

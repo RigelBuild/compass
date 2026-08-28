@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// SEA-1569 T3 — enroll (the Runner-reconnect teardown) fires the hub's
+// RIG-1569 T3 — enroll (the Runner-reconnect teardown) fires the hub's
 // SessionReapSink with the session ids whose bindings it just cleared, so the
 // delivery consumer can reap held-deliver registry entries a no-frame author
 // death left behind (design.md:172-175). White-box (package runnerhub) so the

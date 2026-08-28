@@ -2,7 +2,7 @@
 #
 # A push to main deploys production; a pull_request deploys a per-PR Cloudflare
 # Pages preview and upserts the preview-URL comment (apps/eng-docs/scripts/
-# deploy.ts, SEA-1765). This is a STANDALONE CD workflow — it is deliberately
+# deploy.ts, RIG-1765). This is a STANDALONE CD workflow — it is deliberately
 # NOT part of `moon ci :ci` (the CI gate in ci.yml), so a deploy failure never
 # gates a merge and a green CI never waits on Cloudflare.
 name: eng-docs

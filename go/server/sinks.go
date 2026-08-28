@@ -51,7 +51,7 @@ import (
 // comms — the CommsService handler, which executes an agent-initiated comms call
 // under the account a session resolves to (RelayCommsCall). log carries the
 // hub's gap/unknown-frame diagnostics; nil falls back to slog.Default(). st is
-// the store of record: the hub's durable transcript lane (SEA-1667 T4)
+// the store of record: the hub's durable transcript lane (RIG-1667 T4)
 // write-throughs a relayed transcript_entry to it via SetTranscriptStore, wired
 // here so the one store instance backs the transcript commit path.
 func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.SessionTailSink, commsSvc *comms.Comms, log *slog.Logger) *runnerhub.Hub {
@@ -65,7 +65,7 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 		log,
 	)
 	hub.SetTranscriptStore(st)
-	// SEA-1667 T5: the same store backs the resume-body reconstructor's read
+	// RIG-1667 T5: the same store backs the resume-body reconstructor's read
 	// seam (SessionResumeSnapshot + ReadArchiveSegment), wired here beside the
 	// write seam so the one store instance serves both legs.
 	hub.SetTranscriptReader(st)
@@ -90,13 +90,13 @@ var _ runnerhub.ForgeCaller = (*forgeService)(nil)
 // wireHubServiceCycles breaks the post-construction cycles between the hub and
 // the account-facing services that are built before it (the hub relays through
 // them, so they cannot take the hub at construction): the hub<->lifecycle cycle
-// (SEA-1618 T5, RelayLifecycleCall) and the hub<->board cycle (agent primary
+// (RIG-1618 T5, RelayLifecycleCall) and the hub<->board cycle (agent primary
 // lifecycle T3-a, RelayBoardCall — the board caller executes against the store +
 // the issue projection). Called once at assembly before any RPC is served.
 func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store, issueBrd *board.IssueProjection) {
 	hub.SetLifecycleCaller(newLifecycleService(st, hub))
 	hub.SetBoardCaller(newBoardService(st, issueBrd))
-	// The roster read (SEA-1721 T2) joins the hub's in-memory presence enum; the
+	// The roster read (RIG-1721 T2) joins the hub's in-memory presence enum; the
 	// hub in turn reads it from the T8 presence projection wired at
 	// startPresencePublisher (hub.SetPresenceSource). comms->hub is set here (the
 	// hub is stable and delegates lazily), hub->publisher when the publisher
@@ -121,10 +121,10 @@ func (h hubPresenceSource) PresenceFor(accountIDs []store.AccountID) map[store.A
 	return out
 }
 
-// startDeliveryConsumer builds the SEA-1569 T3 fan-out consumer over the comms
+// startDeliveryConsumer builds the RIG-1569 T3 fan-out consumer over the comms
 // bus, wires the consumer<->hub construction cycle (the consumer takes hub as
 // its ControlDispatcher + SessionResolver; the hub takes the consumer as its
-// SettleSink AND its SessionStartSink — the reconnect sweep edge (SEA-1569 T6) —
+// SettleSink AND its SessionStartSink — the reconnect sweep edge (RIG-1569 T6) —
 // with st as its delivery-cursor store, the post-construction
 // setters that break the cycle), and starts its bus-tail goroutine on the serve
 // group rooted on gctx (so it cancels at shutdown; it also ends when the comms
@@ -145,7 +145,7 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *ev
 	g.Go(func() error { return c.Run(gctx) })
 }
 
-// startPresencePublisher builds the SEA-1569 T8 presence projection over the
+// startPresencePublisher builds the RIG-1569 T8 presence projection over the
 // comms bus (it both tails and publishes onto it) + the store's open-ask read
 // surface + the hub's Status relay for reconciliation, wires the
 // component<->hub construction cycle (the hub takes the component as its
@@ -157,13 +157,13 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *ev
 func startPresencePublisher(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
 	p := presence.NewPublisher(commsBus, st, hub, log)
 	hub.SetPresenceSink(p)
-	// The roster read source (SEA-1721 T2): the hub reads the enum snapshot and
+	// The roster read source (RIG-1721 T2): the hub reads the enum snapshot and
 	// fires the set_status activity publish through the same projection it feeds.
 	hub.SetPresenceSource(p)
 	g.Go(func() error { return p.Run(gctx) })
 }
 
-// startCommsBusConsumers starts both comms-bus consumers (SEA-1569): the T3
+// startCommsBusConsumers starts both comms-bus consumers (RIG-1569): the T3
 // delivery fan-out consumer and the T8 presence projection. Serve calls this one
 // helper so the two starts, which share the same construction inputs (comms bus,
 // store, hub, serve group, gctx), stay one statement at the call site.

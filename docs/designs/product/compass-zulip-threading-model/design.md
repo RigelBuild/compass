@@ -16,7 +16,7 @@ Status: Active
 > `compass-0.8-threading-and-session-renderer` (retired, RIG-2453),
 > [compass-threading-ui](../compass-threading-ui/design.md),
 > [compass-slack-thread-rendering](../compass-slack-thread-rendering.md),
-> ledger rows **DL-040** and **DL-041**, and **SEA-1364 T3's conversation
+> ledger rows **DL-040** and **DL-041**, and **RIG-1364 T3's conversation
 > write-through** (the streamed-turn → comms auto-post path — D7/T7);
 > **clarifies** DL-037, DL-029, DL-028, DL-072. The ledger delta ships in this
 > same PR: DL-040 → Superseded, DL-041 → Superseded, plus new rows for the
@@ -277,7 +277,7 @@ whole Slack surface — `ThreadView`, `ThreadStream`, `ThreadPanel`, the
   deep-nav sub-rows routing straight to a topic view, so the human reaches an
   active conversation in one click without first opening the channel's full
   index.
-- SEA-1332 (compass-message-surface-rendering, designed-not-built; DL-041 "The
+- RIG-1332 (compass-message-surface-rendering, designed-not-built; DL-041 "The
   message surface is a virtualized thread list") re-points: the virtualized
   list unit becomes the **topic's message list** (the topic view), and that
   record's implementation follows this contract rather than its original
@@ -291,7 +291,7 @@ carried by a message, a message lives in a topic, so an ask is **visible in
 its topic and answerable channel-wide, first-responder-wins**. Topic scoping
 changes where the ask renders, not who may answer it.
 
-### D7 — One comms-write path: the streaming write-through is removed (supersedes SEA-1364 T3)
+### D7 — One comms-write path: the streaming write-through is removed (supersedes RIG-1364 T3)
 
 Ruled with F7's dissolution (see Decisions): an agent's streamed turn does
 **not** write to comms at all. Today the EventMapper dual-surfaces streamed
@@ -324,7 +324,7 @@ commits KEYED"):
 **The conversation write-through half of that is removed (T7)** — the two
 conversation variants and every keyed commit behind them. The shared durable
 conversation-frame lane itself — `AgentGateway.PostConversationFrame` →
-`RunnerService.CommitConversationFrame` — **survives**: SEA-1570's durable
+`RunnerService.CommitConversationFrame` — **survives**: RIG-1570's durable
 transcript tee rides this exact lane by design (`transcript_entry`, field 7,
 `agent.proto:73-79`), and its runner-forward half is merged and live —
 `post_conversation_frame.go:76` calls `CommitConversationFrame`, gated by
@@ -457,7 +457,7 @@ use for organization. This is the status quo with a costume.
   source row only after moving every message to the target in the same tx, so
   messages are never orphaned or cascaded away (`ON DELETE RESTRICT`
   everywhere, per `0001_init.sql` convention).
-- **The comms tool is the only agent comms-write path.** With the SEA-1364 T3
+- **The comms tool is the only agent comms-write path.** With the RIG-1364 T3
   write-through removed (D7/T7), a comms Message row is created only by
   `comms_post_message` (agents) or the human client's PostMessage — both
   carry a mandatory topic. No server-side path materializes a Message from a
@@ -472,13 +472,13 @@ live adversary. T1 unblocks everything topic-shaped; T2 unblocks T3; T4/T5
 ride the regenerated stubs; T6 is last (ledger + record flips travel with
 this design PR itself, not a task).
 
-**Merge-order constraint (in-flight PRs):** compass PR **#88** (SEA-1569 T6,
+**Merge-order constraint (in-flight PRs):** compass PR **#88** (RIG-1569 T6,
 reconnect/start redelivery sweep — open at this writing) touches
 `go/internal/delivery`, `go/internal/runnerhub`, and `go/server/sinks.go` —
 the surfaces this record's T7 deletes from and T3's deliver-op payload change
 rides through, and consumers of the regenerated stubs. It must **land or be
 parked before T7's removals and T1's regen-everything breaking chain start**,
-or they strand it on removed code. (#90 — SEA-1570's own T7 — already merged
+or they strand it on removed code. (#90 — RIG-1570's own T7 — already merged
 as `f1d3aa595` — is NOT merely out of the way: it added `transcript_entry`
 (field 7) as a co-tenant on the PostConversationFrame →
 CommitConversationFrame lane, which is exactly why T1/T7 narrow the removal
@@ -497,7 +497,7 @@ D7's proto delta: **remove** (not reserve) `AgentFrame.conversation_posted`
 `AgentGateway.PostConversationFrame` (`agent_gateway.proto:67`) +
 `RunnerService.CommitConversationFrame` (`runner.proto:134`) RPCs, their
 request/response messages, and `transcript_entry` (field 7) are **kept** —
-they are the shared durable conversation-frame lane SEA-1570's transcript
+they are the shared durable conversation-frame lane RIG-1570's transcript
 tee rides (D7); T7 removes only the conversation write-through, never the
 transcript forward path. After the removal the lane is transcript_entry-only,
 kept under its current name (a rename is separate scope). Regenerate all gen
@@ -679,7 +679,7 @@ Per D5/F11. Replace `threadsOf`/`ThreadView`/`ThreadStream`/`ThreadPanel`/
 becomes a topic index with a "new topic" affordance and no composer**; a new
 **topic view (`openTopic`) renders one topic's messages with the composer, and
 no nested threading**; the **left sidebar's channel rows list the channel's ~3
-most recent topics** as deep-nav sub-rows. SEA-1332 virtualization re-points at
+most recent topics** as deep-nav sub-rows. RIG-1332 virtualization re-points at
 the topic message list when it builds.
 
 The removal/sweep set also includes `RightSidebar.fleetpane.test.tsx` — its
@@ -728,11 +728,11 @@ Agent-facing tool descriptions and any operator docs referencing "threads" /
 
 ### T7 — Remove the streaming write-through: streamed turns stop writing comms — **compass-agent + compass-runner + compass-server** (proto removals ride T1)
 
-Per D7 (supersedes SEA-1364 T3). Lands FIRST — independent of the topic
+Per D7 (supersedes RIG-1364 T3). Lands FIRST — independent of the topic
 model, and required before T2's `NOT NULL` schema so no topicless writer
 remains. The shared durable conversation-frame lane
 (`PostConversationFrame` → `CommitConversationFrame`) **survives** for
-SEA-1570's `transcript_entry`; only the `conversation_posted`/
+RIG-1570's `transcript_entry`; only the `conversation_posted`/
 `conversation_updated` co-tenants and their comms write-through are
 removed. The lane split:
 
@@ -744,7 +744,7 @@ removed. The lane split:
   `conversationPosted`/`conversationUpdated` `OutboundFrame` variants
   (`frame.ts:50-51`) but keeps `transcriptEntry`; `transport/frame-sink.ts`
   keeps the durable unary path and `transport/index.ts` keeps
-  `postConversationFrame` — SEA-1570's `transcriptEntry` frames ride them.
+  `postConversationFrame` — RIG-1570's `transcriptEntry` frames ride them.
 - **compass-runner**: the gateway keeps `PostConversationFrame`
   (`go/internal/runner/gateway/post_conversation_frame.go`), the
   `ConversationCommitter` seam (`gateway.go:111-117`), and the
@@ -757,9 +757,9 @@ removed. The lane split:
   `ConversationPosted`/`ConversationUpdated` dispatch cases; with both
   cases gone the kept endpoint becomes the inert transcript-lane endpoint
   (every frame falls to `commitFrame`'s existing `default` →
-  `CodeInvalidArgument` until SEA-1570's server-side transcript persist
+  `CodeInvalidArgument` until RIG-1570's server-side transcript persist
   lands its case), which is exactly why the RPC/handler/hub surface is
-  retained rather than deleted — deleting it would strand SEA-1570's
+  retained rather than deleted — deleting it would strand RIG-1570's
   durable transcript lane, the regression this narrowing prevents. comms
   drops `CommitAgentPostKeyed` / `CommitAgentUpdateKeyed`
   (`agent_caller.go:299-314`); server drops the `commsConversationSink`
@@ -790,7 +790,7 @@ removed. The lane split:
 
 ## Tasks
 
-- [ ] T7 — Streaming write-through removal: streamed turns stop writing comms; session trace + SEA-1570 transcript lane unchanged (compass-agent + compass-runner + compass-server; proto removals ride T1) — lands first
+- [ ] T7 — Streaming write-through removal: streamed turns stop writing comms; session trace + RIG-1570 transcript lane unchanged (compass-agent + compass-runner + compass-server; proto removals ride T1) — lands first
 - [ ] T1 — Proto delta: `Topic`, topic-addressed posting, `ListTopics`/`UpdateTopic`, `TopicUpserted`; remove (not reserve) `parent_message_id` + the channel container (compass-repo)
 - [ ] T2 — Store: `topics` table + `messages.topic_id` in the collapsed-baseline schema (no channel_id, no data conversion), topic CRUD, topic-under-channel validation (compass-server store)
 - [ ] T3 — Comms service: topic routing + `TopicUpserted` fan-out, deliver-op topic metadata, cursor channel via topic join (compass-server comms)
@@ -857,7 +857,7 @@ that plan carried is preserved independently by F3.
 The pre-ratification fork asked which topic a streamed turn's comms row
 should get (inherit the triggering deliver's? a server-resolved default?).
 Matt dissolved the question by ruling **Option A: agent streamed turns do not
-write to comms at all** — the SEA-1364 T3 conversation write-through is
+write to comms at all** — the RIG-1364 T3 conversation write-through is
 removed (D7, T7). A comms Message appears only on an explicit
 `comms_post_message(topic)` call, which already carries a mandatory topic, so
 no topicless comms-write path exists and no conversation-frame `topic_id`

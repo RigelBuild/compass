@@ -222,7 +222,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 
 	// Open one subscription before the post so it sees the live fan of the
 	// deliver-side MessagePosted event. sinceSeq 0 snapshots then tails. (The
-	// recipient-side steer/deliver split is the deferred TODO(SEA-1788) below,
+	// recipient-side steer/deliver split is the deferred TODO(RIG-1788) below,
 	// not observed here.)
 	sub, err := f.SubscribeComms(ctx, 0)
 	if err != nil {
@@ -257,7 +257,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	}
 
 	// ── Leg-4 recipient-side steer/deliver SPLIT (RIG-2488, replaces the former
-	// TODO(SEA-1788)) ──────────────────────────────────────────────────────────
+	// TODO(RIG-1788)) ──────────────────────────────────────────────────────────
 	//
 	// The mentioned peer's live session must receive a STEER for a mention while
 	// an unmentioned-but-subscribed member receives a plain DELIVER of the same

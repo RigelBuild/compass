@@ -2,7 +2,7 @@
 
 package comms
 
-// The conversation write-through (SEA-1364 T3): CommitAgentPost / CommitAgentUpdate
+// The conversation write-through (RIG-1364 T3): CommitAgentPost / CommitAgentUpdate
 // turn a relayed agent conversation frame into a durable comms row under the
 // account the RunnerHub resolved the session to. Every test drives the real
 // Postgres store + real bus (the newHandler / newStreamHarness harnesses the rest

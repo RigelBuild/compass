@@ -19,9 +19,9 @@
 //     mere receipt (P1 #6).
 //   - `steer` / `deliver` are the IMMEDIATE-dispatch class (mid-turn interrupt /
 //     turn-end delivery): processed on the event loop at decode, ahead of any
-//     queued iterator op. As of SEA-1310 §8 BOTH carry the comms Message on the
+//     queued iterator op. As of RIG-1310 §8 BOTH carry the comms Message on the
 //     wire (`SteerControl.message` / `DeliverControl.message`, the latter added
-//     by SEA-1569 (T7)) — decoded here and dispatched through `immediate.steer` /
+//     by RIG-1569 (T7)) — decoded here and dispatched through `immediate.steer` /
 //     `immediate.deliver`, where the CompassAgent dedups on `msg.id`, injects
 //     (steer as a mid-turn interrupt / idle-start turn; deliver coalesced to a
 //     turn-end prompt), and acks per message. An empty SteerControl (no `message`
@@ -31,7 +31,7 @@
 //     refused-and-counted, never applied.
 //   - `replay` / `config` are also empty shells in C1 (OQ-1) — no payload to seed
 //     context / configure the session — so they too are counted-unmapped at
-//     decode until SEA-1310 populates them (then yielded like `prompt`).
+//     decode until RIG-1310 populates them (then yielded like `prompt`).
 //
 // Because an immediate op counted at decode is "applied" ahead of an earlier
 // iterator op still queued behind a running turn (invariant 2), the highest
@@ -113,7 +113,7 @@ export const CONTROL_RECONNECT_MIN_UPTIME_MS = 5000;
 // cursor advanced) OR an op currently in flight — one yielded to the consumer
 // and awaiting its apply-then-ack. Reset by progress, never by elapsed time.
 //
-// The in-flight arm is load-bearing, not a nicety (SEA-1540). The source is
+// The in-flight arm is load-bearing, not a nicety (RIG-1540). The source is
 // apply-then-ack and its single consumer (CompassAgent's control loop) awaits
 // the WHOLE turn before pulling the next op, so while a long turn applies op N
 // the ack cursor cannot advance — op N is acked only when the consumer returns
@@ -159,10 +159,10 @@ export const CONTROL_RECONNECT_NO_PROGRESS_MAX = 10;
 
 // The immediate-dispatch handle: the SDK actions a mid-turn `steer` / turn-end
 // `deliver` drives without waiting for the iterator's next pull. Frozen C4
-// signature (design.md C4 Interfaces). As of SEA-1310 §8 the handle carries the
+// signature (design.md C4 Interfaces). As of RIG-1310 §8 the handle carries the
 // full comms `Message` (`.id` intact) — no longer the empty shell of C4b: BOTH
 // arms decode their `message` field (`SteerControl.message`, populated by
-// SEA-1569 (T7); `DeliverControl.message`) and forward it here, where the CompassAgent
+// RIG-1569 (T7); `DeliverControl.message`) and forward it here, where the CompassAgent
 // dedups on `msg.id`, injects (steer as a mid-turn interrupt / idle-start turn;
 // deliver coalesced to a turn-end prompt), and acks per message.
 export interface ImmediateControl {
@@ -187,9 +187,9 @@ export interface ImmediateControl {
 }
 
 // Decode the immediate-op payload into the comms `Message` the `immediate`
-// handle applies. `DeliverControl.message` (SEA-1310 §8) carries the full comms
+// handle applies. `DeliverControl.message` (RIG-1310 §8) carries the full comms
 // Message with its `.id` — return it when present. `SteerControl.message` (added
-// by SEA-1569 (T7)) likewise carries the comms Message. An empty SteerControl (no
+// by RIG-1569 (T7)) likewise carries the comms Message. An empty SteerControl (no
 // `message` field) has nothing to read and yields `undefined` → counted-unmapped
 // (staged) at the caller; a deliver whose `message` is absent is malformed → also
 // `undefined` → counted-unmapped. The caller never fabricates a payload.
@@ -287,7 +287,7 @@ const defaultOnUnmapped = (u: UnmappedEvent): void =>
  *   `publishSpine()` ack lane)
  * @param immediate the SDK steer/deliver actions the immediate path drives —
  *   threaded per the frozen signature; not invoked while the wire carries empty
- *   shells (OQ-2(A)), SEA-1310 populates the payload
+ *   shells (OQ-2(A)), RIG-1310 populates the payload
  * @param options optional `onUnmapped` / `now` collaborators
  */
 export function createSocketControlSource(
@@ -328,7 +328,7 @@ export function createSocketControlSource(
 	// enforces it locally (invariant 1) — a belt-and-suspenders on the Runner's
 	// hold and CompassAgent's iterator-side barrier.
 	let replayComplete = false;
-	// SEA-1540: an op is "in flight" when the iterator has yielded it to the
+	// RIG-1540: an op is "in flight" when the iterator has yielded it to the
 	// consumer and is awaiting the apply-then-ack the next pull proves. Set by
 	// the iterator's next() and read by pump's no-progress budget: a drop while
 	// an apply is in flight is progress, not a wedge — a long turn cannot advance
@@ -415,7 +415,7 @@ export function createSocketControlSource(
 				// Immediate-dispatch class. Barrier-enforced (invariant 1): a live
 				// immediate op before ReplayComplete is refused-and-counted. Otherwise
 				// decode the payload: both STEER and DELIVER carry the comms Message
-				// (SEA-1310 §8; steer's `message` field populated by SEA-1569 (T7)) and
+				// (RIG-1310 §8; steer's `message` field populated by RIG-1569 (T7)) and
 				// dispatch through `immediate.steer` / `immediate.deliver`. An empty
 				// SteerControl (no `message` field) decodes to undefined and is
 				// counted-unmapped (staged) without fabricating a payload (OQ-2(A)).
@@ -430,7 +430,7 @@ export function createSocketControlSource(
 				} else if (msg === undefined) {
 					count(
 						`control:${kind}`,
-						"empty-shell steer/deliver — payload staged (SEA-1310)",
+						"empty-shell steer/deliver — payload staged (RIG-1310)",
 					);
 				} else if (wire.control.case === "steer") {
 					immediate.steer(msg, wire.control.value.fromHandle);
@@ -445,11 +445,11 @@ export function createSocketControlSource(
 			case "replay":
 			case "config": {
 				// Empty shells in C1 (OQ-1): no payload to seed context / configure the
-				// session, so counted-unmapped at decode. SEA-1310 populates them and
+				// session, so counted-unmapped at decode. RIG-1310 populates them and
 				// they flow through the iterable like prompt.
 				count(
 					`control:${kind}`,
-					"empty-shell replay/config — payload staged (SEA-1310)",
+					"empty-shell replay/config — payload staged (RIG-1310)",
 				);
 				acks.markApplied(seq);
 				return;
@@ -512,7 +512,7 @@ export function createSocketControlSource(
 		// genuinely new application (a redelivery the source dedups and re-acks is
 		// correctly NOT progress), and the in-flight arm keeps a long apply
 		// mid-turn — which cannot advance the cursor until the consumer returns for
-		// the next op — from reading as a wedge (SEA-1540).
+		// the next op — from reading as a wedge (RIG-1540).
 		let noProgress = 0;
 		let appliedAtLastDrop = acks.appliedCount;
 		for (;;) {
@@ -605,7 +605,7 @@ export function createSocketControlSource(
 			// an op in flight at drop time (`applyInFlight`) — a long apply
 			// mid-turn cannot advance the ack cursor until the consumer returns for
 			// the next op, so without the in-flight arm a healthy session flapping
-			// during one long turn would be killed mid-apply (SEA-1540). Either arm
+			// during one long turn would be killed mid-apply (RIG-1540). Either arm
 			// zeroes the counter, so a healthy session is untouched however widely
 			// its blips are spaced — the distinction a reconnect-RATE window could
 			// not draw, since a healthy sparse-blip session and a socket wedging at

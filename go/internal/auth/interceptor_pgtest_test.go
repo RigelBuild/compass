@@ -2,7 +2,7 @@
 
 package auth
 
-// Store-backed BearerInterceptor contract tests (SEA-1195 T3, the S3 gate),
+// Store-backed BearerInterceptor contract tests (RIG-1195 T3, the S3 gate),
 // transcribed from the authoritative Rust suite in
 // crates/compass-daemon/src/auth.rs (#[cfg(test)] mod tests, the bearer_auth
 // cases). BearerInterceptor now resolves a presented token against the Postgres

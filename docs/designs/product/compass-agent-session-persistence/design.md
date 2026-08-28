@@ -3,7 +3,7 @@
 Status: Active
 
 > Freezes on merge; later changes supersede by citation, never rewrite.
-> Implements Linear SEA-1570 (pre-dogfood item 4) against TWO fixed rulings:
+> Implements Linear RIG-1570 (pre-dogfood item 4) against TWO fixed rulings:
 > Matt's storage-ownership ruling of 2026-07-31 (storage is SERVER-OWNED — the
 > agent emits its transcript over the existing durable frame channel and holds
 > zero S3 credentials), and Matt's collapse rulings of 2026-07-31, which
@@ -15,11 +15,11 @@ Status: Active
 > the new container at provision, loaded by the agent through the SDK's own
 > native loader; a definitively-erred emit escalates and FAILS the session at
 > a bounded cap. The `TranscriptReplay` payload, the control-lane replay
-> driver, the replay barrier, the replay admission bound, and the SEA-1310
+> driver, the replay barrier, the replay admission bound, and the RIG-1310
 > co-ratification are all DEAD (inventoried in the second appendix; ledger
-> DL-086 → DL-087). SEA-1310 no longer blocks anything here. The post-MVP
+> DL-086 → DL-087). RIG-1310 no longer blocks anything here. The post-MVP
 > unification of the two wire streams into one token stream carrying log
-> metadata is filed as SEA-1580, out of scope for this record.
+> metadata is filed as RIG-1580, out of scope for this record.
 
 ## Problem / Intent
 
@@ -34,7 +34,7 @@ to reclaim (`go/internal/runner/host.go:166-168`: "A crash instead leaves the
 socket files on disk, which the next Provision reclaims"), and the in-container
 transcript has no such reclaim path — it is simply gone with the container's
 writable layer. A crashed, reloaded-elsewhere, or re-provisioned agent loses
-its whole conversation. SEA-1570 (pre-dogfood item 4) requires the session log
+its whole conversation. RIG-1570 (pre-dogfood item 4) requires the session log
 to survive the container and a session to be resumable in a NEW container with
 its context intact. Durability is server-owned: the agent TEES each committed
 transcript entry upstream over the existing durable agent→Runner→Server frame
@@ -65,7 +65,7 @@ native session loader, with no agent-side replay code at all.
    server-reconstructed JSONL body the Runner materializes into the new
    container's session dir at provision, loaded SDK-native by the agent —
    which kills the control-lane replay driver, the `TranscriptReplay`
-   payload, the replay barrier, the replay admission bound, and the SEA-1310
+   payload, the replay barrier, the replay admission bound, and the RIG-1310
    co-ratification in one stroke. R4: a definitively-erred emit buffers and
    retries under a bounded cap with escalating warn→error logs, and FAILS THE
    SESSION loudly at cap exhaustion.
@@ -93,7 +93,7 @@ session entries; the SERVER persists them (it owns durable storage) AND
 projects the same entries to clients as the block-level trace. The lossy
 per-token stream survives only as a liveness layer (next section). The
 post-MVP follow-up that collapses the two wire streams into ONE token-by-token
-stream carrying log metadata is filed as **SEA-1580** — referenced here, not
+stream carrying log metadata is filed as **RIG-1580** — referenced here, not
 designed here.
 
 ### Liveness: two agent→server streams for MVP (R2)
@@ -125,7 +125,7 @@ live leg is throwaway.
 
 The durable log stream rides infrastructure that is already on main;
 grounding is split by surface — proto + generated bindings at compass
-origin/main `153a2a4` (SEA-1569 merged), hand-written Go/TS unchanged between
+origin/main `153a2a4` (RIG-1569 merged), hand-written Go/TS unchanged between
 `335bb06` and `153a2a4`:
 
 - **Frame producer (agent).** `packages/compass-agent/src/transport/frame-sink.ts`
@@ -143,7 +143,7 @@ origin/main `153a2a4` (SEA-1569 merged), hand-written Go/TS unchanged between
   `conversation_posted = 1`, `conversation_updated = 2`, `session = 3`,
   `replay_complete_ack = 4`, `control_ack = 5`, `delivery_ack = 6`
   (`agent.proto@153a2a4:40-75`). Additions to the oneof are additive and
-  buf-breaking-safe — the ack variants and SEA-1569's `delivery_ack` were
+  buf-breaking-safe — the ack variants and RIG-1569's `delivery_ack` were
   added exactly this way ("Additive to the frozen oneof; buf-breaking-safe",
   `agent_pb.ts@153a2a4:425-428`).
 - **Relay.** The Runner is a pure verbatim forwarder on both lanes. Durable:
@@ -348,11 +348,11 @@ Properties the tee carries:
 
 ### The wire shape: TranscriptEntry
 
-One additive oneof variant; SEA-1569 is the live precedent ("Additive to the
+One additive oneof variant; RIG-1569 is the live precedent ("Additive to the
 frozen oneof; buf-breaking-safe", `agent_pb.ts@153a2a4:425-428`). No control-
 lane payload is added: the `TranscriptReplay` shell at `agent.proto@153a2a4:160`
 stays EMPTY — nothing in this record fills, consumes, or depends on it, and
-the SEA-1310 co-ratification is retracted (peer-contract relief; see the
+the RIG-1310 co-ratification is retracted (peer-contract relief; see the
 Open Questions dispositions).
 
 - **`TranscriptEntry transcript_entry = 7`** on the `AgentFrame` oneof (tags
@@ -394,7 +394,7 @@ append throws it (`session-manager.ts:674`).
   not its eventual backend evolution.
 - **The post-MVP analytics/index layer + retention GC.** The opt-in
   analytics/index layer built OFF the archive (Loki/ES/ClickHouse-style,
-  rebuildable, never in the resume path — a new SEA-1580-adjacent follow-up)
+  rebuildable, never in the resume path — a new RIG-1580-adjacent follow-up)
   and the retention GC that reclaims ended-session PG hot-tails are both named
   seams, not built here.
 - **The socket/control transport.** Frozen by the consolidation record;
@@ -403,7 +403,7 @@ append throws it (`session-manager.ts:674`).
 - **Runner-side shipping.** No step ships logs after teardown; the Runner
   remains a pure verbatim forwarder on both relay lanes (materializing a
   file at provision is provisioning, not relaying).
-- **The single-stream unification (SEA-1580).** Collapsing the durable
+- **The single-stream unification (RIG-1580).** Collapsing the durable
   settled-entry stream and the live per-token stream into ONE token stream
   carrying log metadata is the filed post-MVP follow-up; MVP ships the two
   streams above.
@@ -427,7 +427,7 @@ the first appendix; the flipped ledger rows are DL-063/064/065/066/082/083.
 ### Control-lane replay resume — SUPERSEDED by the collapse (2026-07-31)
 
 The interim revision of THIS record designed resume as a server-driven replay
-down the SEA-1569 control lane: the Server pushed each stored entry as a
+down the RIG-1569 control lane: the Server pushed each stored entry as a
 `TranscriptReplay` op via `DispatchControl`, the agent applied it through
 `appendMessage`, a Runner replay barrier (`HoldForReplay`, gaining its first
 production caller) held live input until `ReplayCompleteAck`, and a replay
@@ -553,11 +553,11 @@ the whole history and the archive tier is deferred.
   server-side, behind the transcript store) — this is the concrete form of
   "the Server can swap storage backends without touching the agent".
 - **Matt's collapse rulings (2026-07-31) are fixed inputs**: one canonical
-  artifact (the session log; the trace is a projection — SEA-1580 unifies
+  artifact (the session log; the trace is a projection — RIG-1580 unifies
   the wire streams post-MVP); two agent→server streams for MVP (durable
   settled-entry + ephemeral per-token); resume is a Runner-materialized file
   loaded SDK-native — no task may add agent-side replay consumption, a
-  replay barrier caller, a `TranscriptReplay` payload, or any SEA-1310
+  replay barrier caller, a `TranscriptReplay` payload, or any RIG-1310
   dependency.
 - **The durable emit lane's guarantees are the load-bearing invariant**:
   transcript frames ride the delivered-or-erred PostConversationFrame →
@@ -581,7 +581,7 @@ the whole history and the archive tier is deferred.
   Silent give-up (`frame-sink.ts:109-115`) is telemetry-only behavior and
   MUST NOT apply to the transcript lane.
 - **Proto grounding is split by surface**: proto + generated bindings are
-  grounded at compass origin/main `153a2a4` (SEA-1569 merged: `delivery_ack
+  grounded at compass origin/main `153a2a4` (RIG-1569 merged: `delivery_ack
   = 6` taken); hand-written Go/TS (`control.go`, `hub.go`, `handler.go`,
   `relay_comms.go`, `agent.ts`, `frame-sink.ts`, `cli.ts`) is unchanged
   between `335bb06` and `153a2a4` and cited at those files' current state.
@@ -592,11 +592,11 @@ the whole history and the archive tier is deferred.
   `session-loader.ts:202-228`, `#rewriteAtomically` at
   `session-manager.ts:621-635`, `appendCompaction` elision at `:1544-1545`).
 - **Proto changes are additive-only** (proto3 additions; buf-breaking-safe —
-  SEA-1569 is the live precedent for an added oneof variant):
+  RIG-1569 is the live precedent for an added oneof variant):
   `TranscriptEntry transcript_entry = 7` on the `AgentFrame` oneof (next free
   tag at `153a2a4`; re-confirm at authoring) and `resume_session_id` on the
   public `StartAgentSessionRequest`. The `TranscriptReplay` shell stays
-  EMPTY — this record adds no control-lane payload and carries no SEA-1310
+  EMPTY — this record adds no control-lane payload and carries no RIG-1310
   dependency.
 - **The checkpoint discriminator is mandatory on the emit path**: every
   `writeFull`-originated frame carries `checkpoint = true`; server-side
@@ -623,18 +623,18 @@ the whole history and the archive tier is deferred.
 Ordered by dependency; owners in brackets. T1 is the shared proto surface
 (compass owns the repo's proto single-writer lane), T2–T3 compass-agent,
 T4–T6 compass-server, T7–T8 compass-runner, T9 the end-to-end smoke. No task
-gates on any cross-owner ratification: SEA-1310 is off the critical path.
+gates on any cross-owner ratification: RIG-1310 is off the critical path.
 
 ### T1 [compass] — additive proto: `TranscriptEntry` frame + `resume_session_id`
 
 Two additive changes, both buf-breaking-safe (proto3 field/variant
-additions — the live precedent is SEA-1569, which added `delivery_ack = 6` to
+additions — the live precedent is RIG-1569, which added `delivery_ack = 6` to
 the same oneof, `agent_pb.ts@153a2a4:425-428`):
 
 ```proto
 // proto/compass/v1/agent.proto — AgentFrame oneof, additive. Tags 1-6 are
 // taken at origin/main 153a2a4 (conversation_posted=1, conversation_updated=2,
-// session=3, replay_complete_ack=4, control_ack=5, delivery_ack=6 — SEA-1569),
+// session=3, replay_complete_ack=4, control_ack=5, delivery_ack=6 — RIG-1569),
 // so the next free tag is 7. Re-confirm at authoring time; the exact tag is
 // not load-bearing.
 message AgentFrame {
@@ -696,7 +696,7 @@ message ResumeBody {
   // The reconstructed post-supersession session-JSONL body (T5) — string,
   // consistent with TranscriptEntry.entry_json above.
   string session_body = 1;
-  // Inline-image blob bytes are OUT of MVP scope (SEA-1582): no grounded
+  // Inline-image blob bytes are OUT of MVP scope (RIG-1582): no grounded
   // agent-side capture seam exists, so the carrier holds only the JSONL body.
 }
 
@@ -1173,7 +1173,7 @@ latency/consistency never gates a container restart:
   resume path that touches the object store, and it does not fire in normal
   operation — normal sessions have no `safety_valve` segments, so resume stays
   PG-only.
-- Inline-image blobs are out of MVP scope (SEA-1582): the reconstructed body
+- Inline-image blobs are out of MVP scope (RIG-1582): the reconstructed body
   carries only the session-JSONL. On load the SDK still runs
   `resolveBlobRefsInEntries` / `resolveImageData` (`session-loader.ts:265-269`;
   `blob-store.ts:256-266`); with no blob dir a missing ref logs a warning and
@@ -1183,7 +1183,7 @@ latency/consistency never gates a container restart:
 Interfaces:
 
 ```go
-// go/internal/runnerhub (beside the SEA-1569 dispatch path)
+// go/internal/runnerhub (beside the RIG-1569 dispatch path)
 
 // ReconstructSessionBody assembles the post-supersession session-JSONL body
 // for sessionID: the latest checkpoint's full body verbatim FIRST, then every
@@ -1341,14 +1341,14 @@ mid-session compaction, the superseded entries are archived to an object-store
 segment AND an `agent_session_archive_segments` manifest row exists for it AND
 the PG hot-tail is pruned to `[checkpoint..now]`; the resume that follows reads
 PG-only — the object store is asserted NOT read on the normal resume path. This
-is the acceptance gate for SEA-1570.
+is the acceptance gate for RIG-1570.
 
 Test cycle: this IS the test — an integration test in the e2e suite
 (`go/internal/runner/e2e_transport_test.go` conventions).
 
 ## Tasks
 
-- [ ] T1 [compass] additive proto: `TranscriptEntry transcript_entry = 7` on the AgentFrame oneof (tags 1-6 taken at 153a2a4; re-confirm at authoring), `TranscriptEntry{entry_json, checkpoint, entry_seq}` with the per-lifetime-stamped / server-rebased entry_seq comment, `resume_session_id` public on `StartAgentSessionRequest`; internal `ResumeBody` (`string session_body`; inline-image blobs OUT of MVP scope, SEA-1582) as a TOP-LEVEL sibling field on the INTERNAL `SessionsResponse` envelope (outside the `command` oneof, NOT inside `start`) on a fresh internal tag (never the retired `ResumeContext=12` slot); `TranscriptReplay` shell untouched (buf gates; round-trip tests)
+- [ ] T1 [compass] additive proto: `TranscriptEntry transcript_entry = 7` on the AgentFrame oneof (tags 1-6 taken at 153a2a4; re-confirm at authoring), `TranscriptEntry{entry_json, checkpoint, entry_seq}` with the per-lifetime-stamped / server-rebased entry_seq comment, `resume_session_id` public on `StartAgentSessionRequest`; internal `ResumeBody` (`string session_body`; inline-image blobs OUT of MVP scope, RIG-1582) as a TOP-LEVEL sibling field on the INTERNAL `SessionsResponse` envelope (outside the `command` oneof, NOT inside `start`) on a fresh internal tag (never the retired `ResumeContext=12` slot); `TranscriptReplay` shell untouched (buf gates; round-trip tests)
 - [ ] T2 [compass-agent] `TranscriptTeeBackend` + `createTeeSessionStorage` in `packages/compass-agent/src/session-tee.ts`: local-FS read/write + awaited tee emit (append→delta frame, writeFull→checkpoint frame), real loadIndex over the session dir, R4 erred-emit buffer/escalate/fail-session, `OutboundFrame` + durable sink lane for `transcriptEntry`, `COMPASS_RESUME_SESSION_FILE` → `setSessionFile` at the composition root, drain barrier beside the sink drain, `MainDeps.createSessionStorage` seam (unit + cli tests)
 - [ ] T3 [compass-agent] resume proof-smoke: reconstruct a captured tee run into a session-JSONL body, restart `main()` with `COMPASS_RESUME_SESSION_FILE`, assert SDK-native context load (`setSessionFile`/`loadEntriesFromFile`), no tee emission during load, fresh per-lifetime entry_seq after resume; compaction-elision round-trip
 - [ ] T4a [compass-server] PG hot-tail tier: `NNNN_agent_session_transcript_entries.sql` (next contiguous slot, ≥0006 given `0005_agent_persona.sql`, exact NNNN assigned at merge; PK (session_id, entry_seq) with SESSION-scoped entry_seq via write-once lifetime-bind rebase base, UNIQUE idempotency_key, checkpoint flag; FK `agent_sessions`, created in `0003_agent_ownership.sql`) holding `[latest checkpoint..now]` (pruned at flush) + `AppendTranscriptEntry`/`SessionTranscript` store funcs + persist-on-receipt case in `Hub.CommitConversationFrame` + checkpoint-supersession read view + trace projection source + `agent_session_archive_segments` manifest table + PG-only reconstruction (store + hub tests)
@@ -1357,7 +1357,7 @@ Test cycle: this IS the test — an integration test in the e2e suite
 - [ ] T6 [compass-server] resume identity + authz: `resume_session_id` gated by `RequireAgentSessionSubscriber` before any Runner call; stable logical id keys the stored transcript across resumes; NO pointer row, NO locator on any message; reconstructed body rides the INTERNAL `SessionsResponse` sibling field only (outside the `start` command, handler tests)
 - [ ] T7 [compass-runner] widen the durable-lane guard: `isConversationFrame` admits `transcript_entry` (today rejected `CodeInvalidArgument`; pairs with T4's hub `commitFrame` case + T1's C4 proto-comment revision); agent-side S3 provisioning/egress/env GUTTED — never built (gateway red→green tests)
 - [ ] T8 [compass-runner] `agentHost.Start` resume orchestration: force-teardown primary fence; materialize the reconstructed JSONL into the new container's session dir at provision (exec-write, credential-install pattern); exec the agent with `COMPASS_RESUME_SESSION_FILE`; NO barrier (host tests)
-- [ ] T9 [all] end-to-end resume smoke against live Runner + Server — the SEA-1570 acceptance gate
+- [ ] T9 [all] end-to-end resume smoke against live Runner + Server — the RIG-1570 acceptance gate
 
 ## Open Questions — all ruled (Matt, 2026-07-31); dispositions recorded
 
@@ -1377,16 +1377,16 @@ no-op) died with the replay resume model: R3's resume loads a FILE through
 the SDK's own loader, so the backend must serve real reads (see Alternatives
 for the rejected read-shim variant). Decided design point, not a fork.
 
-### OQ-R2 — SEA-1310 sequencing → DISSOLVED (peer-contract relief)
+### OQ-R2 — RIG-1310 sequencing → DISSOLVED (peer-contract relief)
 
 The fork existed only because resume WAS `TranscriptReplay`. Under R3 resume
 never touches the control lane, the `TranscriptReplay` shell stays empty
-(`agent.proto@153a2a4:160`), and no payload needs co-ratification. SEA-1310
-no longer blocks SEA-1570 in either direction — an explicit RELIEF on the
+(`agent.proto@153a2a4:160`), and no payload needs co-ratification. RIG-1310
+no longer blocks RIG-1570 in either direction — an explicit RELIEF on the
 peer contract; the co-ratification request is retracted (the driver is
 messaging compass to retract it). The former T9 is deleted.
 
-### OQ-R3 — inline-image blobs → OUT of MVP resume scope (deferred to SEA-1582)
+### OQ-R3 — inline-image blobs → OUT of MVP resume scope (deferred to RIG-1582)
 
 MVP resume persists the SDK session-JSONL transcript losslessly — all text,
 tool-call, and reasoning context. Inline-image blob BYTES are out of MVP
@@ -1403,7 +1403,7 @@ not image bytes. On resume the SDK's own load-time resolution still runs
 `BlobStore` (`blob-store.ts:256-266`); with no blob dir materialized a missing
 ref logs `Blob not found for image reference` and is returned unchanged — the
 SDK warns and does NOT crash, only inline-image context degrades. Agent-side
-blob capture is deferred to SEA-1582.
+blob capture is deferred to RIG-1582.
 
 ### OQ-R4 — ordering/durability of the emit lane → RESOLVED (R4 + await-per-op + entry_seq)
 
@@ -1469,13 +1469,13 @@ it is build scope.
   per-entry durable frame emit + the same terminal `drain()` barrier (the
   loss-bound discussion carried over to the emit lane and is now closed by
   the R4 erred-emit ruling).
-- **SEA-1310 independence (OQ-3, DL-066)** — first INVERTED by the interim
+- **RIG-1310 independence (OQ-3, DL-066)** — first INVERTED by the interim
   replay model (co-ratification), then DISSOLVED by the collapse: no
   `TranscriptReplay` dependency remains in either direction (see the second
   appendix).
 - **Blobs to an S3 sibling keyspace (OQ-4)** — superseded; settled as the
   OQ-R3 outcome: inline-image blobs are out of MVP resume scope, deferred to
-  SEA-1582.
+  RIG-1582.
 - **OQ-5 endpoint provenance / OQ-6 ranged readSlices / OQ-7 creds-via-env** —
   moot: no agent-side endpoint, no agent-side remote reads, no agent-side
   credentials.
@@ -1529,10 +1529,10 @@ None of it is build scope.
 - **The replay admission bound (OQ-R5)** — dissolved with the admission path
   itself. The in-place warning about filling the shell
   (`control.go:549-555`) stays with the shell, not with this record.
-- **The SEA-1310 co-ratification (OQ-R2, the former T9)** — retracted.
+- **The RIG-1310 co-ratification (OQ-R2, the former T9)** — retracted.
   Resume no longer depends on any `AgentControl` payload, so the
-  cross-record co-ratification is dropped and SEA-1310 is unblocked from
-  SEA-1570 in both directions (peer-contract relief; DL-086 → DL-087).
+  cross-record co-ratification is dropped and RIG-1310 is unblocked from
+  RIG-1570 in both directions (peer-contract relief; DL-086 → DL-087).
 - **The agent-side emit gate during replay** — dissolved. Replay applied
   entries through `appendMessage`, which would have re-emitted without a
   gate; the SDK-native load goes through the backend's READ methods, which

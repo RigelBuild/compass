@@ -102,7 +102,7 @@ tasks:
       - '/go/internal/gen/**/*'
       - '/devenv.lock'
   gen-fence:
-    # SEA-1267 enforcement, and distinct from drift: drift only catches a schema
+    # RIG-1267 enforcement, and distinct from drift: drift only catches a schema
     # edit that wasn't regenerated. It CANNOT catch a forgotten `exclude_paths`
     # entry — once an internal symbol leaks into a public tree and is committed,
     # regen reproduces it and drift passes green. This check is the real fence:
@@ -112,8 +112,8 @@ tasks:
     # symbol list as internal messages are added. Current internal surfaces:
     # agent.proto (AgentFrame/AgentControl/SessionFrame + the AgentControl
     # payload messages + the ReplayCompleteAck/ControlAck AgentFrame ack
-    # variants + the SEA-1570 TranscriptEntry frame payload) + runner.proto
-    # (RunnerService/RunnerError + the SEA-1570 ResumeBody carrier + the SEA-1568
+    # variants + the RIG-1570 TranscriptEntry frame payload) + runner.proto
+    # (RunnerService/RunnerError + the RIG-1570 ResumeBody carrier + the RIG-1568
     # FetchAgentConfig* RPC messages and the ConfigVersion signal) +
     # agent_gateway.proto
     # (AgentGateway + the CommsCall* envelopes it defines: CommsCallRequest/
@@ -123,7 +123,7 @@ tasks:
     # RelayLifecycleCall* (like RelayCommsCall*) is a runner.proto internal
     # envelope. `compassv1internal`
     # catches any Go-package leak regardless of message name.
-    # forge.proto (SEA-1731 A1): the ForgeCall* carrier family + RelayForgeCall*
+    # forge.proto (RIG-1731 A1): the ForgeCall* carrier family + RelayForgeCall*
     # (the ForgeCallRequest/Result/Error envelopes, agent_gateway.proto, and the
     # runner.proto relay pair), the seven forge op requests + ListIssuesResponse +
     # Subscribe/UnsubscribeForge*, and the forge.proto leaf itself
@@ -151,7 +151,7 @@ tasks:
     # is load-bearing for the public AgentSessionFrame (compass.proto, a frozen
     # contract): it contains "SessionFrame" as a substring, so an unanchored
     # grep false-fires the moment it generates into a public tree
-    # (SEA-1267/OQ-2.4). Word boundaries also future-proof the others (a public
+    # (RIG-1267/OQ-2.4). Word boundaries also future-proof the others (a public
     # "AgentControlFoo" would not trip "AgentControl"). AgentGateway and CommsCall
     # stay UNANCHORED (prefix-matched) on purpose: the generated identifiers are
     # families — AgentGatewayService and CommsCallRequest/CommsCallResult/
@@ -159,14 +159,14 @@ tasks:
     # symbols. Internal symbols only ever leak as whole identifiers (a generated
     # type name or a `compassv1internal.` package ref), never as a substring, so
     # this mix still catches every real leak.
-    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bConfigVersion\b|\bRunnerService\b|\bRunnerError\b|GuestControl|AgentGateway|CommsCall|LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall|FetchAgentConfig|PublishFrame|PostConversationFrame|ControlSubscribe|BoardCall|SetIssueState|ForgeCall|ForgeNotification|\bForgeArtifactKind\b|SubscribeForge|UnsubscribeForge|\bCommentRef\b|\bCreateIssueRequest\b|\bCommentOnIssueRequest\b|\bGetIssueRequest\b|\bListIssuesRequest\b|\bListIssuesResponse\b|\bCreatePullRequestRequest\b|\bCommentOnPullRequestRequest\b|\bGetPullRequestRequest\b|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "SEA-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
+    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bConfigVersion\b|\bRunnerService\b|\bRunnerError\b|GuestControl|AgentGateway|CommsCall|LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall|FetchAgentConfig|PublishFrame|PostConversationFrame|ControlSubscribe|BoardCall|SetIssueState|ForgeCall|ForgeNotification|\bForgeArtifactKind\b|SubscribeForge|UnsubscribeForge|\bCommentRef\b|\bCreateIssueRequest\b|\bCommentOnIssueRequest\b|\bGetIssueRequest\b|\bListIssuesRequest\b|\bListIssuesResponse\b|\bCreatePullRequestRequest\b|\bCommentOnPullRequestRequest\b|\bGetPullRequestRequest\b|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "RIG-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
     options:
       runFromWorkspaceRoot: true
       cache: false
     inputs:
       - '/packages/compass-client/src/gen/**/*'
       - '/go/gen/**/*'
-  # buf breaking gate removed pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client (tracked: SEA-1951).
+  # buf breaking gate removed pre-dogfood (RIG-1922); RE-ADD AT GA / first pinned client (tracked: RIG-1951).
   ci:
     deps: ['lint', 'drift', 'gen-fence']
     options:

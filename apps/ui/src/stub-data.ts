@@ -248,7 +248,7 @@ export interface Issue {
  *  Compass state is canonical; this carries the tracker's *native* status. */
 export interface TrackerRef {
 	kind: TrackerKind;
-	/** The tracker's native issue id, e.g. "SEA-1042". */
+	/** The tracker's native issue id, e.g. "RIG-1042". */
 	id: string;
 	/** The tracker's native status name in the user's org. */
 	status: string;
@@ -313,7 +313,7 @@ export interface Terminal {
 /** Durable comms identity (SubscribeComms · Postgres). The agent-kind arm
  *  gains an additive homeChannelId mirroring ratified 0.6 RT-2
  *  (`../compass-architecture-lineage/design.md`); the proto landing of
- *  `home_channel_id` on AgentAccount is the comms-server lane (SEA-1195). */
+ *  `home_channel_id` on AgentAccount is the comms-server lane (RIG-1195). */
 export interface Account {
 	/** Account id, e.g. "acc-cook" — the one id space. */
 	id: string;
@@ -474,7 +474,7 @@ export const STUB_AGENTS: Agent[] = [
 			homeChannelId: "dm-supervisor",
 		},
 		lifecycle: "working",
-		activity: "coordinating the wave — routing SEA-1128",
+		activity: "coordinating the wave — routing RIG-1128",
 		role: "supervisor",
 		model: "claude-opus-4",
 		cwd: "~/agents/workspaces/supervisor/platform",
@@ -827,9 +827,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1022",
+			id: "RIG-1022",
 			status: "In Review",
-			url: "https://linear.app/sealed/issue/SEA-1022",
+			url: "https://linear.app/sealed/issue/RIG-1022",
 		},
 		commits: [
 			{
@@ -872,9 +872,9 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [],
 		tracker: {
 			kind: "linear",
-			id: "SEA-965",
+			id: "RIG-965",
 			status: "In Progress",
-			url: "https://linear.app/sealed/issue/SEA-965",
+			url: "https://linear.app/sealed/issue/RIG-965",
 		},
 		commits: [
 			{
@@ -936,9 +936,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1023",
+			id: "RIG-1023",
 			status: "In Progress",
-			url: "https://linear.app/sealed/issue/SEA-1023",
+			url: "https://linear.app/sealed/issue/RIG-1023",
 		},
 		commits: [
 			{
@@ -993,9 +993,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-864",
+			id: "RIG-864",
 			status: "Blocked",
-			url: "https://linear.app/sealed/issue/SEA-864",
+			url: "https://linear.app/sealed/issue/RIG-864",
 		},
 	},
 	{
@@ -1043,9 +1043,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1085",
+			id: "RIG-1085",
 			status: "In Review",
-			url: "https://linear.app/sealed/issue/SEA-1085",
+			url: "https://linear.app/sealed/issue/RIG-1085",
 		},
 	},
 	{
@@ -1093,9 +1093,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-847",
+			id: "RIG-847",
 			status: "In Review",
-			url: "https://linear.app/sealed/issue/SEA-847",
+			url: "https://linear.app/sealed/issue/RIG-847",
 		},
 	},
 	{
@@ -1139,9 +1139,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-888",
+			id: "RIG-888",
 			status: "In Progress",
-			url: "https://linear.app/sealed/issue/SEA-888",
+			url: "https://linear.app/sealed/issue/RIG-888",
 		},
 	},
 	{
@@ -1164,9 +1164,9 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1128",
+			id: "RIG-1128",
 			status: "Todo",
-			url: "https://linear.app/sealed/issue/SEA-1128",
+			url: "https://linear.app/sealed/issue/RIG-1128",
 		},
 	},
 	{
@@ -1207,9 +1207,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1145",
+			id: "RIG-1145",
 			status: "Done",
-			url: "https://linear.app/sealed/issue/SEA-1145",
+			url: "https://linear.app/sealed/issue/RIG-1145",
 		},
 	},
 	{
@@ -1250,9 +1250,9 @@ export const STUB_ISSUES: Issue[] = [
 		],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1130",
+			id: "RIG-1130",
 			status: "Done",
-			url: "https://linear.app/sealed/issue/SEA-1130",
+			url: "https://linear.app/sealed/issue/RIG-1130",
 		},
 	},
 	{
@@ -1274,9 +1274,9 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1146",
+			id: "RIG-1146",
 			status: "Backlog",
-			url: "https://linear.app/sealed/issue/SEA-1146",
+			url: "https://linear.app/sealed/issue/RIG-1146",
 		},
 	},
 ];
@@ -1297,7 +1297,7 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 		title: "Audit-log retention policy — design",
 		body: "",
 		forgeState: "open",
-		url: "https://linear.app/sealed/issue/SEA-1201",
+		url: "https://linear.app/sealed/issue/RIG-1201",
 		forgeAccount: "matt",
 		labels: [],
 		state: "todo",
@@ -1308,9 +1308,9 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 		prs: [],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1201",
+			id: "RIG-1201",
 			status: "Todo",
-			url: "https://linear.app/sealed/issue/SEA-1201",
+			url: "https://linear.app/sealed/issue/RIG-1201",
 		},
 	},
 	{
@@ -1321,7 +1321,7 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 		title: "Compass daemon — graceful shutdown on SIGTERM",
 		body: "",
 		forgeState: "open",
-		url: "https://linear.app/sealed/issue/SEA-1180",
+		url: "https://linear.app/sealed/issue/RIG-1180",
 		forgeAccount: "matt",
 		labels: [],
 		state: "backlog",
@@ -1332,9 +1332,9 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 		prs: [],
 		tracker: {
 			kind: "linear",
-			id: "SEA-1180",
+			id: "RIG-1180",
 			status: "Backlog",
-			url: "https://linear.app/sealed/issue/SEA-1180",
+			url: "https://linear.app/sealed/issue/RIG-1180",
 		},
 	},
 ];

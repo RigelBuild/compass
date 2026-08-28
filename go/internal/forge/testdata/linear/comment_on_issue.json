@@ -40,7 +40,7 @@
 				"commentCreate": {
 					"comment": {
 						"id": "comment-uuid",
-						"url": "https://linear.app/x/issue/SEA-7#comment-1",
+						"url": "https://linear.app/x/issue/RIG-7#comment-1",
 						"body": "a reply",
 						"user": null
 					}
@@ -49,7 +49,7 @@
 		},
 		"want": {
 			"ID": 0,
-			"URL": "https://linear.app/x/issue/SEA-7#comment-1",
+			"URL": "https://linear.app/x/issue/RIG-7#comment-1",
 			"Body": "a reply",
 			"ForgeAccount": ""
 		}

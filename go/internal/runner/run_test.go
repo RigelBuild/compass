@@ -3,7 +3,7 @@
 package runner
 
 // Startup validation of the Runner's runtime dir against the AF_UNIX sun_path
-// budget (SEA-1443): a misconfigured deployment must refuse to boot with a
+// budget (RIG-1443): a misconfigured deployment must refuse to boot with a
 // legible message instead of failing at the first provision with a bare EINVAL.
 
 import (

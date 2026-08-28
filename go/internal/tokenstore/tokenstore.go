@@ -1,5 +1,5 @@
 // Package tokenstore persists the native-client remote bearer token, keyring
-// first with an atomic 0600-file fallback (SEA-1686 T5.2, DL-109). It is keyed
+// first with an atomic 0600-file fallback (RIG-1686 T5.2, DL-109). It is keyed
 // by the remote server URL so two remotes never collide, and — critically — the
 // file fallback stores the {serverURL, token} pair so a re-pointed server_url
 // can never replay one remote's bearer to another (the F1 replay guard, OQ-4).
@@ -75,7 +75,7 @@ const probeUser = "compass-app::keyring-probe"
 // The choice is made once and cached, so an operational keyring failure after a
 // successful bind propagates as an error rather than silently diverting one
 // operation to the file — which would split-brain the credential across
-// backends (SEA-2009).
+// backends (RIG-2009).
 type keyringStore struct {
 	fallback *fileStore
 

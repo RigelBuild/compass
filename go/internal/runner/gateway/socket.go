@@ -3,7 +3,7 @@
 // Package gateway is the Runner side of the agent->Runner call transport: a
 // per-container Unix-socket Connect server the in-container first-party agent
 // dials to reach its Runner (design
-// docs/designs/product/compass-agent-runner-transport/design.md, SEA-1351 T2).
+// docs/designs/product/compass-agent-runner-transport/design.md, RIG-1351 T2).
 //
 // One socket per container, 1:1 with the session the container hosts, so the
 // socket IS that session's identity: no credential travels the local hop, and

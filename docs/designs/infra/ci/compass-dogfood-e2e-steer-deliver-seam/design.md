@@ -25,7 +25,7 @@ session while a subscribed-but-unmentioned peer gets a **deliver**.
 
 `go/e2e/legthreefour_test.go` passes today (spawn + second container + the
 deliver-side bus fan), but the steer-vs-deliver **split** on the recipient side
-is a deferred `TODO(SEA-1788)` (legthreefour_test.go:239-255). The op-kind
+is a deferred `TODO(RIG-1788)` (legthreefour_test.go:239-255). The op-kind
 (`steer` | `deliver`) travels Server→Runner→agent over the Runner's per-session
 `Control` stream (`proto/compass/v1/agent_gateway.proto:77`) — an agent-facing
 internal surface no client RPC observes — so the over-the-wire e2e has no way to
@@ -214,7 +214,7 @@ In dependency order — T2 depends on T1, T3 on T1+T2.
   `ctx`-bounded via a derived deadline exactly as `AwaitTurnSettled`, exposing
   `func (f *Fixture) AwaitControlDispatch(ctx, sessionID string, match func(opKind, messageID string) bool) (opKind string, err error)`.
 - **T3 — the leg-4 split assertion.** Extend the one ordered run in
-  `TestLegThreeFourSpawnAndMessaging` (replace the `TODO(SEA-1788)` block,
+  `TestLegThreeFourSpawnAndMessaging` (replace the `TODO(RIG-1788)` block,
   legthreefour_test.go:239-255) — not a new podman test, which would re-pay the
   multi-minute stack+container cost. **Second recipient reuses the leg-3
   spawner** (subscribed-but-unmentioned) — no third container: subscribe it to
@@ -264,7 +264,7 @@ In dependency order — T2 depends on T1, T3 on T1+T2.
     event-gated + `ctx`-bounded, mirroring `AwaitTurnSettled` (agent_ops.go:131).
 - [ ] **T3 — leg-4 steer/deliver split assertion**
   - Interfaces: extends the one ordered run in `TestLegThreeFourSpawnAndMessaging`
-    (`go/e2e/legthreefour_test.go`, replacing the `TODO(SEA-1788)` block); consumes
+    (`go/e2e/legthreefour_test.go`, replacing the `TODO(RIG-1788)` block); consumes
     T2's `AwaitControlDispatch`. Second recipient is the **reused leg-3 spawner**
     (no third container), subscribed to the mentioned peer's home channel via a
     fixture `SubscribeMember(ctx, channelID, accountID)` wrapping
@@ -294,7 +294,7 @@ ledgers). Ledger-impact: none.
   `SessionInjectionKind` enum on `compass.proto`.** Not a real fork: `AgentControl`
   / `SteerControl` live in `agent.proto`, marked INTERNAL-ONLY
   (`proto/compass/v1/agent.proto:3-6`) and fenced off the public client gen by
-  `buf.gen.yaml:28-32` (a leak trips the SEA-1267 gen-fence check in
+  `buf.gen.yaml:28-32` (a leak trips the RIG-1267 gen-fence check in
   `proto/moon.yml`). `SessionEvent` is on the **public** `compass.proto`
   (`SubscribeAgentSession`'s payload), so its `SessionInjection` case cannot carry
   the internal discriminant — the public enum is the only option that keeps the

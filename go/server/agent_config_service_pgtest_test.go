@@ -2,7 +2,7 @@
 
 package server
 
-// Store-gated CompassService config-declaration handler contracts (SEA-1625 T2):
+// Store-gated CompassService config-declaration handler contracts (RIG-1625 T2):
 // PutAgentConfig persists + returns the store version and emits a ConfigVersion
 // signal carrying that version; GetAgentConfigInfo returns an empty-but-valid
 // response on an unconfigured fleet and the bucketed member NAMES (never content)

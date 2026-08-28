@@ -169,7 +169,7 @@ const networkBodyReadTimeout = 30 * time.Second
 // the request), and RunnerService.Enroll (unary) — has a bounded request body,
 // so the deadline protects them without ever cutting a legitimate call.
 //
-// Residual risk (accepted, tracked as a SEA-1298 follow-up): the exemption is
+// Residual risk (accepted, tracked as a RIG-1298 follow-up): the exemption is
 // keyed on r.URL.Path and applied before authentication, so an UNAUTHENTICATED
 // client can still slow-drip a request body to these two paths with no deadline
 // armed. The bearer interceptor rejects it on the headers, but the HTTP-layer
@@ -184,7 +184,7 @@ var bodyDeadlineExempt = map[string]struct{}{
 }
 
 // withBodyReadDeadline wraps the network-door handler to close the slow-body DoS
-// window that ReadHeaderTimeout leaves open (SEA-1298): it sets a per-request
+// window that ReadHeaderTimeout leaves open (RIG-1298): it sets a per-request
 // read deadline via http.ResponseController, so a client that sends headers
 // promptly then drips the body no longer ties up a connection. The deadline is
 // per-HTTP/2-stream (Go 1.20+ SetReadDeadline semantics), so one slow request
@@ -330,7 +330,7 @@ func buildNetworkServer(
 		netRoot = networkCORS(cfg.CORSAllowedOrigin).Handler(netMux)
 	}
 	// Outermost: bound the request-body read so a slow-body drip cannot tie up
-	// a connection (SEA-1298). Wraps whatever netRoot is above (CORS or the bare
+	// a connection (RIG-1298). Wraps whatever netRoot is above (CORS or the bare
 	// mux) at the HTTP-body layer; the long-lived Runner request streams are
 	// exempt (bodyDeadlineExempt).
 	netRoot = withBodyReadDeadline(netRoot, networkBodyReadTimeout)
@@ -342,7 +342,7 @@ func buildNetworkServer(
 		// header read and idle connection lifetime to close the slow-loris DoS
 		// window (the UDS/dev doors are loopback/local). The request-body half
 		// of that window (a client that sends headers promptly then drips the
-		// body, SEA-1298) is closed by withBodyReadDeadline above rather than a
+		// body, RIG-1298) is closed by withBodyReadDeadline above rather than a
 		// blunt http.Server.ReadTimeout: a ReadTimeout caps the whole request
 		// lifetime and would kill the long-lived Runner request streams, so the
 		// body deadline is applied per-request and skips those (bodyDeadlineExempt).

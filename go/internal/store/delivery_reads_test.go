@@ -2,7 +2,7 @@
 
 package store
 
-// The delivery consumer's read side (SEA-1569 T3, design record D1): subscriber
+// The delivery consumer's read side (RIG-1569 T3, design record D1): subscriber
 // resolution with the home-channel disjunct, the author agent/human split, and
 // the message-id -> channel / message reads the ack arm and settle gate use.
 // These are properties only a real Postgres proves (the SQL disjunct, the JOIN

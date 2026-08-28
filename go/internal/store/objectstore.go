@@ -12,7 +12,7 @@ import (
 )
 
 // S3Config is the server-side, endpoint-agnostic object-store configuration for
-// the archive tier (SEA-1667 T4, slice B). It mirrors the COMPASS_DATABASE_DSN
+// the archive tier (RIG-1667 T4, slice B). It mirrors the COMPASS_DATABASE_DSN
 // flag/env precedence (cmd/compass-server/main.go): the server holds the
 // endpoint/bucket/credentials, the agent and Runner hold none (DL-089). It is
 // S3-compatible and endpoint-agnostic — the same fields drive Garage, R2,

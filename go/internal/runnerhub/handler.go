@@ -25,7 +25,7 @@ import (
 )
 
 // AgentConfigStore is the Server-side fleet config-bundle resolve surface that
-// FetchAgentConfig delegates to — the SEA-1568 T1 store (`*store.Store` satisfies
+// FetchAgentConfig delegates to — the RIG-1568 T1 store (`*store.Store` satisfies
 // it via CurrentAgentConfig). Narrow by design, the secrets.Resolver pattern: the
 // handler depends on this one method, not the whole store, and a server built
 // with no config surface passes nil.

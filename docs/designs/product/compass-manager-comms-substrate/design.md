@@ -1,12 +1,12 @@
 # Compass Manager comms substrate — roster query, coordination channel, pinned board
 
 Status: Draft
-Tracker: SEA-1721, SEA-1722, SEA-1723
+Tracker: RIG-1721, RIG-1722, RIG-1723
 
 > DRAFT — all nine Open Questions ratified by Matt 2026-07-31 (see Decisions
 > section); freezes at merge.
-> Cards: SEA-1721 (agent roster query), SEA-1722 (manager-owned coordination
-> channel), SEA-1723 (pinned board). One record because the three primitives
+> Cards: RIG-1721 (agent roster query), RIG-1722 (manager-owned coordination
+> channel), RIG-1723 (pinned board). One record because the three primitives
 > compose: the roster and the coordination channel both derive from the agent
 > tree (DL-095), and the pinned board's first two homes are the root
 > #announcements-class channel and the coordination channel this record mints.
@@ -17,7 +17,7 @@ The Compass Manager operating model — a root Manager coordinating mid-level
 Managers, each coordinating its own reports — needs three comms primitives that
 do not exist today:
 
-1. **No roster pull (SEA-1721).** Presence is an *event only*:
+1. **No roster pull (RIG-1721).** Presence is an *event only*:
    `AgentPresenceChanged { agent_account_id, presence }`
    (`compass/proto/compass/v1/comms.proto:498-503`) rides `SubscribeComms`, and
    no query RPC exists — the `CommsService` block (`comms.proto:34-110`)
@@ -26,7 +26,7 @@ do not exist today:
    drop) cannot ask "who is in my tree, who is online, what is each doing."
    The event also carries **no activity string** — the enum is bare 4-state
    (`AgentPresence`, `comms.proto:507-513`, per DL-074).
-2. **No restricted-post / mandatory-subscribe channel (SEA-1722).** A mid-level
+2. **No restricted-post / mandatory-subscribe channel (RIG-1722).** A mid-level
    Manager needs a coordination channel for its reports — built on the same
    missing primitive as top-level #announcements/#incidents: a post ACL
    (owner-only where wanted) plus every report subscribed and unable to
@@ -41,7 +41,7 @@ do not exist today:
    member may post. `ChannelGroupVisibility` (OWNER/SHARED,
    `comms.proto:196-201`) is a *visibility* axis and must not be overloaded to
    mean post permission.
-3. **No pinned board (SEA-1723).** There is no server-side "editable headline
+3. **No pinned board (RIG-1723).** There is no server-side "editable headline
    every Manager sees on startup, re-pushed on edit" (e.g. "CI is red — see
    Thread 12344 in #incidents"). This is explicitly NOT DL-096's sidebar pins,
    which are a per-user, client-local, `localStorage`-backed *presentation*
@@ -69,7 +69,7 @@ tracks them. The pinned board is channel content delivered over DL-071/072/073
 `compass-agent-comms-tools/design.md:182-197` fixed: "No new authz code is
 written; no new authz policy is invented").
 
-### A1 — SEA-1721: roster query — a `GetRoster` RPC + `compass_roster` tool over the D4 presence snapshot
+### A1 — RIG-1721: roster query — a `GetRoster` RPC + `compass_roster` tool over the D4 presence snapshot
 
 **Read path, not a new projection.** DL-074 froze presence as a 4-state
 in-memory projection: "the hub keeps the last-published state per agent in
@@ -111,7 +111,7 @@ Server restart recovers every agent's activity string from Postgres; the
 agent-side re-publish on session (re)attach is kept as a FRESHNESS mechanism,
 not the recovery path. See OQ-1 (resolved).
 
-### A2 — SEA-1722: coordination channel — a channel-level `post_policy` + `mandatory_subscription`, auto-provisioned from tree edges
+### A2 — RIG-1722: coordination channel — a channel-level `post_policy` + `mandatory_subscription`, auto-provisioned from tree edges
 
 **Model it on `Channel`, as policy fields — not a new `ChannelKind`, not
 visibility.** Two additive fields on `Channel` (`comms.proto:204-221`):
@@ -209,21 +209,21 @@ majority of manager↔report coordination need not be seen by every other
 report, and an OPEN channel would burn every subscribed report's tokens
 broadcasting it.
 
-**Relationship to SEA-1622 — precursor, not part-of.** SEA-1622 (unify
+**Relationship to RIG-1622 — precursor, not part-of.** RIG-1622 (unify
 channels + workspaces under the agent tree) is post-MVP and depends on
-agent-trees: "Unifying them under the agent tree … is SEA-1622, post-MVP …
-the two trees coexist until SEA-1622 lands"
+agent-trees: "Unifying them under the agent tree … is RIG-1622, post-MVP …
+the two trees coexist until RIG-1622 lands"
 (`compass-agent-trees/design.md:230-236`; DL-095, `DECISIONS.md:43`). This
-record builds the *ACL + mandatory-subscription mechanism* SEA-1622 will later
+record builds the *ACL + mandatory-subscription mechanism* RIG-1622 will later
 compose onto tree-derived channel scoping. The fields live on `Channel`, not
 on the `ChannelGroup` namespace tree, precisely so the later folding moves the
 channel's *location* without touching its *policy*.
 
-### A3 — SEA-1723: pinned board — a pure pointer set over existing topic-scoped messages; edit = topic-mandatory post + repoint, so redelivery IS delivery
+### A3 — RIG-1723: pinned board — a pure pointer set over existing topic-scoped messages; edit = topic-mandatory post + repoint, so redelivery IS delivery
 
 **Not DL-096.** Stated once more for the freeze: DL-096's sidebar pins are
 "a per-user client-local UI preference (`localStorage`-backed …)"
-(`DECISIONS.md:156`) — presentation, no server state. SEA-1723's pinned board
+(`DECISIONS.md:156`) — presentation, no server state. RIG-1723's pinned board
 is server-side channel content: authored by the channel owner, stored in
 Postgres, broadcast to every subscriber, redelivered on edit. The two share a
 word, nothing else; neither supersedes the other.
@@ -297,7 +297,7 @@ Every task below inherits these; task briefs do not restate them.
   below are into the compass clone.
 - **Additive-only proto changes.** New fields, new enum values, new RPCs, new
   oneof arms only — no renumbering, no wire-type changes, buf-breaking-safe.
-- **SEA-1267 gen fence.** Presence/roster surfaces are PUBLIC, not gen-fenced
+- **RIG-1267 gen fence.** Presence/roster surfaces are PUBLIC, not gen-fenced
   (matching `AgentPresenceChanged`'s "PUBLIC … NOT gen-fenced" posture,
   `comms.proto:496-497`); the `CommsCallRequest`/`RelayCommsCall` carrier
   family keeps its existing fence classification. compass-repo is the sole
@@ -324,7 +324,7 @@ Every task below inherits these; task briefs do not restate them.
 
 ## Plan
 
-### T1 — proto delta (gates all others) — [compass-repo] [SEA-1721 + SEA-1722 + SEA-1723]
+### T1 — proto delta (gates all others) — [compass-repo] [RIG-1721 + RIG-1722 + RIG-1723]
 
 One additive change-set to `proto/compass/v1/`:
 
@@ -380,7 +380,7 @@ One additive change-set to `proto/compass/v1/`:
 Interfaces: the proto messages/RPCs above, verbatim; `buf lint` +
 `buf breaking` clean; regenerated Go/TS in the single buf.gen lane.
 
-### T2 — roster read path: hub snapshot join + durable activity store + `GetRoster` handler — [compass-comms] SEA-1721
+### T2 — roster read path: hub snapshot join + durable activity store + `GetRoster` handler — [compass-comms] RIG-1721
 
 The hub's in-memory presence map (DL-074) stays ENUM-only; the activity
 string lives in a new durable store table; the handler joins hub + tree +
@@ -451,7 +451,7 @@ RESTART — write via `SetActivity`, rebuild the hub state from scratch
 (fresh hub, same store), and `GetRoster` still returns the string
 (reloaded from the table, not the hub).
 
-### T3 — agent tool leg: `compass_roster` + `compass_set_status` — [compass-agent] SEA-1721
+### T3 — agent tool leg: `compass_roster` + `compass_set_status` — [compass-agent] RIG-1721
 
 Two new `AgentTool`s in `createCommsTools`
 (`compass-agent-comms-tools/design.md:484-485` shape) over the broker; new
@@ -485,7 +485,7 @@ agent id (session-resolved); set_status → durable row upserted AND immediate
 `AgentPresenceChanged` with activity; over-cap activity truncated
 server-side (the truncated value is what lands in the table).
 
-### T4 — channel policy store + enforcement — [compass-comms] SEA-1722
+### T4 — channel policy store + enforcement — [compass-comms] RIG-1722
 
 Migration adds `post_policy`, `owner_account_id`, `mandatory_subscription` to
 `channels`; enforcement in the comms handlers.
@@ -527,7 +527,7 @@ mandatory channel rejected; delivery reaches a member whose row says
 unsubscribed members seeds a cursor row for each of them in the same txn
 (no un-seeded delivery target).
 
-### T5 — coordination-channel auto-provision + tree reconciliation — [compass-comms] SEA-1722
+### T5 — coordination-channel auto-provision + tree reconciliation — [compass-comms] RIG-1722
 
 Hook the two STORE-level writers of `agent_accounts.parent_agent_id`:
 `store.CreateAgent` (`accounts.go:131`, INSERT at `:156-158`) and
@@ -591,7 +591,7 @@ DL-077); collision with a manager-owned channel resumes; collision with a
 user-owned channel does NOT adopt but suffixes, AND the parent-edge write
 still succeeds (the reconcile hook never rolls back the spawn/reparent).
 
-### T6 — pinned-board store + `UpdatePinnedBoard` — [compass-comms] SEA-1723
+### T6 — pinned-board store + `UpdatePinnedBoard` — [compass-comms] RIG-1723
 
 Migration: `channel_pins (channel_id, message_id, position, pinned_at,
 pinned_by_account_id, PRIMARY KEY (channel_id, message_id))`, per-channel cap
@@ -636,7 +636,7 @@ position preserved); replace naming a no-longer-pinned id fails in-band
 rejected in-band at cap+1; non-owner pin on OWNER_ONLY rejected;
 `ChannelChanged` carries the updated board.
 
-### T7 — pinned-board delivery: the pin sweep — [compass-comms] SEA-1723
+### T7 — pinned-board delivery: the pin sweep — [compass-comms] RIG-1723
 
 Extend the D2 session-start sweep (`compass-notification-delivery/design.md:340-346`)
 with a sibling pin step, and let live edits ride D1 unchanged (the edit's new
@@ -662,7 +662,7 @@ session receives current pins even when `acked_seq` ≥ pin seq; edited board
 (new message id) delivers to all subscribers at author settle; a message
 pinned and swept in the same session is injected once (dedup).
 
-### T8 — UI render: board strip + policy affordances — [compass-ui] [SEA-1722 + SEA-1723]
+### T8 — UI render: board strip + policy affordances — [compass-ui] [RIG-1722 + RIG-1723]
 
 - Channel header renders `Channel.pinned_entries` as a compact board strip
   (resolve message ids via the query layer, DL-128); edit/unpin affordances
@@ -685,29 +685,29 @@ non-owner composer disabled; pin strip renders and updates on
   `GetRoster`, `AgentPresenceChanged.activity`, `PinnedEntry` +
   `UpdatePinnedBoard` (pin-by-existing-message_id), `SetChannelPolicy`,
   `CommsCallRequest`/`Result` arms (`roster`, `set_status`, `pin`); buf
-  lint/breaking clean. [compass-repo] [SEA-1721/1722/1723] — gates T2-T8.
+  lint/breaking clean. [compass-repo] [RIG-1721/1722/1723] — gates T2-T8.
 - [ ] **T2** — hub presence snapshot (enum-only), durable `agent_activity`
   table + store activity read/write, store tree reads,
   `GetRoster` handler (account-visibility-scoped, `accountVisibleFromWhere`;
-  presence events keep the shared-channel rule). [compass-comms] SEA-1721
+  presence events keep the shared-channel rule). [compass-comms] RIG-1721
 - [ ] **T3** — `compass_roster` + `compass_set_status` (durable write-through
   - event publish) tools + relay arms.
-  [compass-agent] SEA-1721
+  [compass-agent] RIG-1721
 - [ ] **T4** — channel policy migration + `PostMessage`/`UpdateChannelMembers`
   enforcement + D1 mandatory-subscription disjunct + `SetChannelPolicy`
-  (cursor-seeding txn). [compass-comms] SEA-1722
+  (cursor-seeding txn). [compass-comms] RIG-1722
 - [ ] **T5** — coordination-channel auto-provision hooked at the two
   store-level `parent_agent_id` writers (spawn + public CreateAgent +
   reparent by construction) + membership reconciliation, ownership-checked
-  resume. [compass-comms] SEA-1722
+  resume. [compass-comms] RIG-1722
 - [ ] **T6** — `channel_pins` store + `UpdatePinnedBoard` (pointer-only
   pin/unpin/repoint over existing message_ids; CAS repoint + FOR UPDATE
-  serialization; cap). [compass-comms] SEA-1723
+  serialization; cap). [compass-comms] RIG-1723
 - [ ] **T7** — session-start pin sweep beside the D2 cursor sweep; live edits
-  ride D1 unchanged. [compass-comms] SEA-1723
+  ride D1 unchanged. [compass-comms] RIG-1723
 - [ ] **T8** — UI: board strip, owner-only composer gating, hidden subscribe
   toggle on mandatory channels, activity string in presence renders.
-  [compass-ui] [SEA-1722/1723]
+  [compass-ui] [RIG-1722/1723]
 
 ## Decisions (ratified by Matt 2026-07-31)
 
@@ -768,7 +768,7 @@ vs a per-member role/locked-subscribe bit. **Resolved: the channel-level
 fields**: kind encodes conversation topology (`comms.proto:226-230`), not
 authority — a kind forks a matrix; per-member bits invite row drift and don't
 express "same policy as #announcements" (all members, always). Channel-level
-policy also composes cleanly into SEA-1622's later tree-folding: the policy
+policy also composes cleanly into RIG-1622's later tree-folding: the policy
 travels with the channel wherever the namespace lands, and a later
 `OWNER_AND_PARENTS`/role-based enum value is additive. The
 `mandatory_subscription` guarantee is enforced read-side in D1's subscriber
@@ -819,12 +819,12 @@ channel-scoped broadcast content delivered as chat via the existing rail, with
 no centre/badge/read-state; the delivery cursor is plumbing, not user-facing
 read state. But it IS a new notification-shaped primitive, so the call is
 surfaced rather than assumed. **Resolved: compatible, no DL-054 amendment** —
-Matt confirmed the judgment; the fallback (scoping SEA-1723 to agent-side
+Matt confirmed the judgment; the fallback (scoping RIG-1723 to agent-side
 delivery only, no UI board strip) was not needed.
 
 ### OQ-7 — RESOLVED (Matt 2026-07-31): SetChannelPolicy ships as the enabler; top-level provisioning stays out of scope
 
-SEA-1722's brief says the coordination channel is "the SAME missing primitive
+RIG-1722's brief says the coordination channel is "the SAME missing primitive
 behind restricted-post #announcements / #incidents". This record designs the
 PRIMITIVE (post_policy + mandatory_subscription + board) and the
 coordination-channel auto-provisioning; it does NOT auto-provision
@@ -887,7 +887,7 @@ The #announcements-class channels themselves stay OWNER_ONLY (unchanged).
 ## Ledger impact
 
 Appended to `docs/designs/product/DECISIONS.md` (§ Comms & tools) in the same
-PR — DL-135/136/137 (main's max row was DL-128; #1089 (SEA-1732) took the
+PR — DL-135/136/137 (main's max row was DL-128; #1089 (RIG-1732) took the
 DL-129..134 block first, so this record shifts to the next free block
 (deconflicted via the wave coordinator; the gate has no contiguity check). Status
 `Active (Matt, 2026-07-31)`. The rows below are the wording as written there:
@@ -906,7 +906,7 @@ DL-129..134 block first, so this record shifts to the next free block
   DL-074's in-memory posture for the STRING; the presence enum stays
   in-memory. Presence EVENTS keep the shared-channel visibility rule while
   the roster uses account visibility (divergence stated: an owner sharing no
-  channel with its agent gets snapshot-only presence). SEA-1721
+  channel with its agent gets snapshot-only presence). RIG-1721
 - **DL-136** (new, § Comms & tools) — Channel post authority and forced
   subscription are channel-level policy fields (`post_policy`
   OPEN/OWNER_ONLY + `owner_account_id` + `mandatory_subscription`), never a
@@ -926,7 +926,7 @@ DL-129..134 block first, so this record shifts to the next free block
   report→manager and lateral coordination flows through DMs/group DMs, and
   agents at every level heavily prefer direct DMs/small targeted group DMs
   to keep coordination-token-cost low (standing directive, Matt). Precursor
-  primitive to SEA-1622, not part of it. SEA-1722
+  primitive to RIG-1622, not part of it. RIG-1722
 - **DL-137** (new, § Comms & tools) — The pinned board is a server-side
   per-channel capped ordered POINTER set over existing topic-scoped
   messages: pinning references an existing `message_id` (validated to a
@@ -938,7 +938,7 @@ DL-129..134 block first, so this record shifts to the next free block
   sweep beside the D2 cursor sweep dispatching current pins regardless of
   cursor position; edits land at turn-settle (never steer); explicitly
   distinct from DL-096's client-local sidebar pins, and compatible with
-  DL-054 (no centre/badge/read state). SEA-1723
+  DL-054 (no centre/badge/read state). RIG-1723
 
 Existing rows touched (cited; DL-074 AMENDED, none superseded):
 
@@ -951,7 +951,7 @@ Existing rows touched (cited; DL-074 AMENDED, none superseded):
   no-durable-table posture, ratified by Matt 2026-07-31.
 - **DL-075/077** — spawn/despawn semantics consumed by T5's lifecycle rules.
 - **DL-095** — the tree remains the organizing primitive; roster and
-  coordination channels derive from it; SEA-1622 relationship restated
+  coordination channels derive from it; RIG-1622 relationship restated
   (precursor, not part-of).
 - **DL-096** — cited only to disambiguate; untouched.
 - **DL-098** — composed with, not amended: pins point at topic-scoped

@@ -719,7 +719,7 @@ export type AskQuestion = Message$1<"compass.v1.AskQuestion"> & {
 
   /**
    * True when the answer was recorded by timeout auto-selection rather than a
-   * participant (SEA-1310 owns whether/when the Compass answer path can time
+   * participant (RIG-1310 owns whether/when the Compass answer path can time
    * out; the field is the audit carrier either way).
    *
    * @generated from field: bool timed_out = 9;
@@ -875,7 +875,7 @@ export type SubscribeCommsResponse = Message$1<"compass.v1.SubscribeCommsRespons
     case: "resyncRequired";
   } | {
     /**
-     * A live agent's presence changed (SEA-1569). Derived from the session
+     * A live agent's presence changed (RIG-1569). Derived from the session
      * lifecycle (not a heartbeat); PUBLIC — UI board state consumes it.
      *
      * @generated from field: compass.v1.AgentPresenceChanged agent_presence_changed = 17;
@@ -1070,7 +1070,7 @@ export const CommsResyncRequiredSchema: GenMessage<CommsResyncRequired> = /*@__P
   messageDesc(file_compass_v1_comms, 23);
 
 /**
- * A live agent's presence changed (SEA-1569). Presence is derived from the
+ * A live agent's presence changed (RIG-1569). Presence is derived from the
  * session lifecycle (D4) — a projection of the session state and the Runner
  * link, not a heartbeat. PUBLIC (UI board state, comms presence, the
  * delivery-settle gate consume it); NOT gen-fenced.
@@ -2329,7 +2329,7 @@ export const ChannelKindSchema: GenEnum<ChannelKind> = /*@__PURE__*/
   enumDesc(file_compass_v1_comms, 3);
 
 /**
- * The presence states a live agent projects (SEA-1569, OQ-1). MVP is four
+ * The presence states a live agent projects (RIG-1569, OQ-1). MVP is four
  * states derived from the session lifecycle; PUBLIC, NOT gen-fenced.
  *
  * @generated from enum compass.v1.AgentPresence

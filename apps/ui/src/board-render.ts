@@ -62,7 +62,7 @@ export function prBadge(
 }
 
 /** The user-facing card key for a board item (DL-071). The tracker id in its
- *  native form when linked (e.g. `SEA-1042`), else the forge coordinate
+ *  native form when linked (e.g. `RIG-1042`), else the forge coordinate
  *  `${repo}#${number}` — host-qualified `${host}/${repo}#${number}` only when
  *  the board holds artifacts from more than one distinct ForgeRef, so two
  *  artifacts never collide on `repo` alone. Both forms always renderable, no

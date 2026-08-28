@@ -2,7 +2,7 @@
 
 package comms
 
-// Coordination-channel handler contracts (SEA-1722 T5, design.md:530-592): the
+// Coordination-channel handler contracts (RIG-1722 T5, design.md:530-592): the
 // CreateAgent-with-parent and ReparentAgent RPC paths fire the store's in-tx
 // coordination hook (registered here via RegisterCoordinationHook) and emit the
 // coordination ChannelChanged post-commit, and the manual entrypoints

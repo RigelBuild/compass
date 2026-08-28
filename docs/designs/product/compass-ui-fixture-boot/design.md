@@ -117,7 +117,7 @@ mounts the same render tree** — no fixture network client, no fake transport,
 no WhoAmI. The visual-smoke harness header (`visual-smoke.spec.ts:3-9`) still
 declares this shape — it "Navigates the HashRouter surfaces of the stub-data
 app … for Matt's before/after review", with no daemon; the live wiring
-(SEA-1729) is what invalidated it in practice.
+(RIG-1729) is what invalidated it in practice.
 
 ### A1 — Mode selection + the hard wall (the load-bearing choice)
 
@@ -518,7 +518,7 @@ All forks below were surfaced to Matt and ruled before freeze (2026-08-16).
 
 **Ledger-impact: none.** This is a dev-infra/testing boot-path addition: it
 supersedes no frozen product decision (the board model DL-069/DL-071, the
-live-wiring records SEA-1729, and the test-strategy record's Go e2e tier are
+live-wiring records RIG-1729, and the test-strategy record's Go e2e tier are
 all untouched — the fixture mode is complementary UI-layer determinism, and
 the live boot path is behavior-identical when the mode is off). No
 `DECISIONS.md` delta owed; the driver handles ledger/PR mechanics either way.

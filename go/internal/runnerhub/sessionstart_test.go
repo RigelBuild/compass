@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// SEA-1569 T6 — the hub's session-start-edge sink, fired at promoteSession when
+// RIG-1569 T6 — the hub's session-start-edge sink, fired at promoteSession when
 // StartAgentSession binds a live agent session. The delivery consumer subscribes
 // to this edge (SetSessionStartSink) to run the reconnect sweep for the freshly
 // -live session. White-box (package runnerhub) so the tests drive the unexported

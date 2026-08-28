@@ -1056,7 +1056,7 @@ export type ProvisionAgentWorkspaceRequest = Message<"compass.v1.ProvisionAgentW
   agentHandle: string;
 
   /**
-   * Repo carriage removed (SEA-1527, Matt 2026-07-29): spawn/provision no longer
+   * Repo carriage removed (RIG-1527, Matt 2026-07-29): spawn/provision no longer
    * clone a repo for the agent. The container is provisioned with a git
    * credential + workspace and the agent self-clones whatever it needs after
    * launch.
@@ -1195,7 +1195,7 @@ export type StartAgentSessionRequest = Message<"compass.v1.StartAgentSessionRequ
    * logical session: the Server (subscriber-authz gated) reconstructs the
    * stored transcript into a session-JSONL body the Runner materializes into
    * the new container at provision. Empty = fresh. No storage locator ever
-   * rides any request — storage is Server-internal (SEA-1570).
+   * rides any request — storage is Server-internal (RIG-1570).
    *
    * @generated from field: string resume_session_id = 3;
    */
@@ -2070,7 +2070,7 @@ export type TrackerRef = Message<"compass.v1.TrackerRef"> & {
   kind: string;
 
   /**
-   * the tracker's native issue id, e.g. "SEA-1042"
+   * the tracker's native issue id, e.g. "RIG-1042"
    *
    * @generated from field: string id = 2;
    */
@@ -2304,7 +2304,7 @@ export const ServerStateSchema: GenEnum<ServerState> = /*@__PURE__*/
  * applies as written). OQ6, design docs/designs/platform/go-toolchain-default.md
  * :1378-1396.
  *
- * Scope: T4 (SEA-1243) ships the DISCONNECTED *signal* only. The server-side
+ * Scope: T4 (RIG-1243) ships the DISCONNECTED *signal* only. The server-side
  * reattach-window enforcement — the per-session registry, the bounded timer,
  * the expiry→ERRORED transition, and GetAgentStatus reconciliation on reattach
  * — is T9 (go-toolchain-default.md:979). Until T9 lands, a dropped Runner link
@@ -2432,7 +2432,7 @@ export const AgentPlanEntryStatusSchema: GenEnum<AgentPlanEntryStatus> = /*@__PU
  * steer/deliver control discriminant (agent.proto), re-declared here on the
  * public surface because SessionEvent — the public SubscribeAgentSession payload
  * — cannot reference the fenced internal enum without breaching the gen-fence
- * (SEA-1267); see the steer/deliver-seam design record, OQ2.
+ * (RIG-1267); see the steer/deliver-seam design record, OQ2.
  *
  * @generated from enum compass.v1.SessionInjectionKind
  */
@@ -2837,7 +2837,7 @@ export const CompassService: GenService<{
  * (enforced in the handler: caller account kind == User, an agent account is
  * rejected PermissionDenied); ListSecrets is callable by user AND agent tokens
  * (the Setup agent drives it). The proto carries no gate — authz is the
- * handler's (SEA-1327 T7).
+ * handler's (RIG-1327 T7).
  *
  * @generated from service compass.v1.SecretsService
  */

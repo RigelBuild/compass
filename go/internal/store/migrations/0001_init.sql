@@ -64,7 +64,7 @@ CREATE TABLE user_accounts (
 -- under its children. Same-owner and no-cycle are validated server-side on every
 -- write, not by the schema — the FK only guarantees the referent exists and is
 -- an agent account. INVARIANT: every write of parent_agent_id must invoke the
--- registered coordination hook (SEA-1722 T5) — the manager-comms coordination
+-- registered coordination hook (RIG-1722 T5) — the manager-comms coordination
 -- channel is auto-provisioned/reconciled from this edge, so a writer that sets
 -- it without invoking the hook (store.CreateAgent, store.ReparentAgent) leaves
 -- the tree and channel state divergent.
@@ -154,7 +154,7 @@ CREATE INDEX channel_groups_owner_idx ON channel_groups (owner_user_id);
 -- A named conversation in a group (group_id NULL = ungrouped, owner-scoped).
 -- kind is 0 channel / 1 DM / 2 GROUP_DM. Membership lives in channel_members.
 --
--- Channel-policy fields (0014, SEA-1722 T4): post_policy mirrors the
+-- Channel-policy fields (0014, RIG-1722 T4): post_policy mirrors the
 -- ChannelPostPolicy enum — 0 OPEN (any member may post, default), 1 OWNER_ONLY
 -- (only owner_account_id may post). owner_account_id is the owner/operator
 -- account for policy operations; NULL leaves the channel unowned (the only legal
@@ -353,7 +353,7 @@ CREATE TABLE tokens (
 CREATE INDEX tokens_subject_idx ON tokens (subject_kind, subject_id);
 
 -- ── Secrets names registry ──────────────────────────────────────────────────
--- The Server-side secrets NAMES registry (SEA-1327 T3): the DECLARED set of
+-- The Server-side secrets NAMES registry (RIG-1327 T3): the DECLARED set of
 -- secrets — their names and how each is delivered/routed — and NOTHING about
 -- their values. Values live only in the SecretSpec provider (keyring/1Password/
 -- Vault/…); the Server resolves them at fetch time and never persists them.
@@ -396,7 +396,7 @@ CREATE TABLE secrets (
 CREATE INDEX secrets_declared_by_idx ON secrets (declared_by);
 
 -- ── Agent session ownership & placement ──────────────────────────────────────
--- The durable session-ownership chain (SEA-1342 / SEA-1516): SubscribeAgentSession
+-- The durable session-ownership chain (RIG-1342 / RIG-1516): SubscribeAgentSession
 -- resolves a session_id to the home channel it must authorize the caller against,
 -- persisted so the resolution survives a Server restart. The chain is
 -- session_id -> agent_account_id -> home_channel_id (the container hop that
@@ -430,7 +430,7 @@ CREATE TABLE agent_sessions (
 -- direction reattach reads once it knows which agents a Runner held.
 CREATE INDEX agent_sessions_agent_idx ON agent_sessions (agent_account_id);
 
--- Operational placement state (SEA-1516 reattach): where each agent runs, and
+-- Operational placement state (RIG-1516 reattach): where each agent runs, and
 -- under what name, written at ProvisionAgentWorkspace. Deliberately NOT part of
 -- the authz chain — placement is where an agent runs, not who may watch it.
 -- PK on the agent, not a surrogate: an agent is on AT MOST ONE Runner under one
@@ -460,7 +460,7 @@ CREATE INDEX agent_placements_runner_idx ON agent_placements (runner_id);
 CREATE UNIQUE INDEX agent_placements_container_key ON agent_placements (container_name);
 
 -- ── Agent session transcripts (two-tier store) ───────────────────────────────
--- The durable TWO-TIER transcript store (SEA-1667 T4): a Postgres HOT TAIL
+-- The durable TWO-TIER transcript store (RIG-1667 T4): a Postgres HOT TAIL
 -- holding [latest checkpoint .. now] = the normal resume set, plus a manifest of
 -- the object-store COLD ARCHIVE (verbatim JSONL segments). Both tables are
 -- FK-rooted in agent_sessions ON DELETE RESTRICT.
@@ -499,7 +499,7 @@ CREATE TABLE agent_session_archive_segments (
 );
 
 -- ── Delivery cursors ──────────────────────────────────────────────────────────
--- The durable per-(agent, channel) delivery cursor (SEA-1569 T2, design record
+-- The durable per-(agent, channel) delivery cursor (RIG-1569 T2, design record
 -- D2). One row records how far an agent has confirmed delivery on a channel, so
 -- a sweep after a restart / reconnect replays exactly the owed-but-unacked tail
 -- and never the full history. The cursor is agent-only: agent_account_id
@@ -565,7 +565,7 @@ CREATE TABLE agent_activity (
 );
 
 -- ── Agent config bundle (fleet singleton) ─────────────────────────────────────
--- The Server-side fleet CONFIG-BUNDLE store (SEA-1624 T1): the ONE fleet-wide
+-- The Server-side fleet CONFIG-BUNDLE store (RIG-1624 T1): the ONE fleet-wide
 -- agent config bundle — the gzip-tarball of skills/, extensions/, and mcp/
 -- material every agent materializes into its scoped config dir. Unlike secrets
 -- (a set of named rows), config is a SINGLETON: exactly one current bundle for
@@ -589,7 +589,7 @@ CREATE TABLE agent_config_bundle (
 );
 
 -- ── Issues: the durable board issue ──────────────────────────────────────────
--- The store-of-record for a Compass board issue (SEA-1728, DL-019): the
+-- The store-of-record for a Compass board issue (RIG-1728, DL-019): the
 -- forge-derived facts a poll ingests, plus the Compass-owned machinery a board
 -- item carries. The forge coordinate (forge_provider, forge_host, repo, number)
 -- is the IDEMPOTENCY KEY (issues_coordinate_key): a re-poll UPDATES the existing
@@ -636,7 +636,7 @@ CREATE UNIQUE INDEX issues_coordinate_key
     ON issues (forge_provider, forge_host, repo, number);
 
 -- ── Forge subscriptions & reconcile watermarks ───────────────────────────────
--- The DL-053 forge webhook-lane target machinery (SEA-1810; webhook-driven per
+-- The DL-053 forge webhook-lane target machinery (RIG-1810; webhook-driven per
 -- DL-281). Coordinate-aligned to the 0013 issue convention: SMALLINT provider
 -- enum + forge_host in every key. Every provider CHECK admits the full declared
 -- enum IN (1, 2, 3, 4) — the CHECK's job is "never UNSPECIFIED(0)", not gating

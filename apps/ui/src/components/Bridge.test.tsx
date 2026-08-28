@@ -301,7 +301,7 @@ describe("Bridge card badges (Record B §3)", () => {
 // so these drive real window `keydown`s (the same seam the dispatcher listens
 // on) and assert against the live DOM + store. The fixture has no swimlane
 // multi-card cell, so the multi-card traversal is exercised in status mode (the
-// in_review column stacks SEA-1022/1085/847) and the empty-cell skip in swimlane
+// in_review column stacks RIG-1022/1085/847) and the empty-cell skip in swimlane
 // mode (compass-ui's queued/blocked cells are empty between its cards).
 const boardGrouping = (container: HTMLElement): HTMLElement | null =>
 	container.querySelector('[aria-label="Board grouping"]');
@@ -365,7 +365,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	test("the cursor seeds to the selected card (store seeds STUB_ISSUES[0])", () => {
 		const { store, container } = mountBridge();
 		expect(store.selectedIssueId()).toBe(STUB_ISSUES[0].id); // ws-1022
-		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		expect(cursorLabel(container)).toBe("Issue RIG-1022");
 	});
 
 	// Keyboard-driving tests re-host onto the full shell (`mountApp`) so the
@@ -376,28 +376,28 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	test("Up/Down traverse a multi-card column (status mode in_review stack)", () => {
 		const { container } = mountApp("/");
 		clickGrouping(container, "Status");
-		// The in_review column stacks three cards; the cursor rests on SEA-1022.
-		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		// The in_review column stacks three cards; the cursor rests on RIG-1022.
+		expect(cursorLabel(container)).toBe("Issue RIG-1022");
 		enterBoard(container);
 		press({ key: "ArrowDown" });
-		expect(cursorLabel(container)).toBe("Issue SEA-1085");
+		expect(cursorLabel(container)).toBe("Issue RIG-1085");
 		press({ key: "ArrowDown" });
-		expect(cursorLabel(container)).toBe("Issue SEA-847");
+		expect(cursorLabel(container)).toBe("Issue RIG-847");
 		// No wrap: Down at the column end clamps.
 		press({ key: "ArrowDown" });
-		expect(cursorLabel(container)).toBe("Issue SEA-847");
+		expect(cursorLabel(container)).toBe("Issue RIG-847");
 		press({ key: "ArrowUp" });
-		expect(cursorLabel(container)).toBe("Issue SEA-1085");
+		expect(cursorLabel(container)).toBe("Issue RIG-1085");
 	});
 
 	test("Left skips empty cells and lands on the row gutter (swimlane)", () => {
 		const { container } = mountApp("/");
-		// compass-ui's row: SEA-1022 (in_review) and SEA-965 (in_progress) are the
+		// compass-ui's row: RIG-1022 (in_review) and RIG-965 (in_progress) are the
 		// only cards; queued/blocked cells are empty, and the gutter is column -1.
-		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		expect(cursorLabel(container)).toBe("Issue RIG-1022");
 		enterBoard(container);
 		press({ key: "ArrowLeft" });
-		expect(cursorLabel(container)).toBe("Issue SEA-965"); // in_progress
+		expect(cursorLabel(container)).toBe("Issue RIG-965"); // in_progress
 		press({ key: "ArrowLeft" });
 		// The empty queued/blocked cells are skipped — straight to the gutter head.
 		expect(cursorLabel(container)).toBe("compass-ui lane");
@@ -410,7 +410,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		const { store, container } = mountApp("/");
 		clickGrouping(container, "Status");
 		enterBoard(container);
-		press({ key: "ArrowDown" }); // cursor → SEA-1085 (ws-1085)
+		press({ key: "ArrowDown" }); // cursor → RIG-1085 (ws-1085)
 		const event = press({ key: "Enter" });
 		expect(store.selectedIssueId()).toBe("ws-1085");
 		expect(event.defaultPrevented).toBe(true);
@@ -440,7 +440,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 			scope: "main",
 			run: () => commsSendRan++,
 		});
-		// Cursor on SEA-1022 (assignee acc-compass-ui). Shift+Enter opens the agent.
+		// Cursor on RIG-1022 (assignee acc-compass-ui). Shift+Enter opens the agent.
 		enterBoard(container);
 		const event = press({ key: "Enter", shiftKey: true });
 		expect(event.defaultPrevented).toBe(true);
@@ -454,7 +454,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 
 	test("Space fires the cursor card's cross-link (Issues → PRs)", () => {
 		const { store, container } = mountApp("/");
-		// Cursor SEA-1022 has a PR chip; Space is its cross-link (select + flip).
+		// Cursor RIG-1022 has a PR chip; Space is its cross-link (select + flip).
 		enterBoard(container);
 		const event = press({ key: " " });
 		expect(event.defaultPrevented).toBe(true);
@@ -464,12 +464,12 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 
 	test("Space on a chip-less card is still claimed (no select, no scroll, no fall-through)", () => {
 		const { store, container } = mountApp("/");
-		// Move to SEA-965 (compass-ui, in_progress) — an issue with no PR, so no
+		// Move to RIG-965 (compass-ui, in_progress) — an issue with no PR, so no
 		// cross-link. Space must STILL be claimed: the handler reports handled, the
 		// dispatcher preventDefaults, and nothing selects / scrolls / falls through.
 		enterBoard(container);
 		press({ key: "ArrowLeft" });
-		expect(cursorLabel(container)).toBe("Issue SEA-965");
+		expect(cursorLabel(container)).toBe("Issue RIG-965");
 		const selectedBefore = store.selectedIssueId();
 		const event = press({ key: " " });
 		expect(event.defaultPrevented).toBe(true); // claimed → native scroll suppressed
@@ -494,7 +494,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		const { container } = mountBridge();
 		const cursor = container.querySelector<HTMLElement>('[tabindex="0"]');
 		if (!cursor) throw new Error("no cursor stop");
-		expect(cursor.getAttribute("aria-label")).toBe("Issue SEA-1022");
+		expect(cursor.getAttribute("aria-label")).toBe("Issue RIG-1022");
 		expect(cursor.getAttribute("aria-description")).toContain("column");
 		// The cursor card names the Space cross-link (design §491).
 		expect(cursor.getAttribute("aria-keyshortcuts")).toBe("Space");
@@ -520,7 +520,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		// + `.bridge-lane` gutters); the Unassigned lane is a non-interactive <div>,
 		// so `button.…` selects only real stops in DOM order.
 		const { container } = mountBridge();
-		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		expect(cursorLabel(container)).toBe("Issue RIG-1022");
 		clickTab(container, "PRs");
 		const stops = container.querySelectorAll<HTMLElement>(
 			"button.cx-card, button.bridge-lane",
@@ -540,9 +540,9 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		// A plain click still selects, exactly as before the roving group.
 		const cards = [...container.querySelectorAll<HTMLElement>(".cx-card")];
 		const target = cards.find((c) =>
-			c.getAttribute("aria-label")?.includes("SEA-965"),
+			c.getAttribute("aria-label")?.includes("RIG-965"),
 		);
-		if (!target) throw new Error("no SEA-965 card");
+		if (!target) throw new Error("no RIG-965 card");
 		fireEvent.click(target);
 		flushSync();
 		expect(store.selectedIssueId()).toBe("ws-965");

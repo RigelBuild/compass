@@ -1,7 +1,7 @@
 # Compass UX foundation — target design system + interaction model
 
 Status: Draft
-Linear: SEA-1663
+Linear: RIG-1663
 Supersedes: the pre-freeze draft of this record (sealed PR #1075; its
 DL-114..122 block never shipped)
 
@@ -59,7 +59,7 @@ reopen any of them inside a task.
    dense supervision surface, not a marketing page, so "fluid" means robust
    min/max and sensible reflow of the shell regions, not a mobile redesign. The
    Go shell, OS windows, and mode plumbing are compass-native's lane
-   (SEA-1684); this record designs what renders inside a webview/tab and the
+   (RIG-1684); this record designs what renders inside a webview/tab and the
    render contract, including how the UI **decomposes into independently
    mountable window-scoped views** (D6 multi-window).
 3. **Styling tech**: pure CSS custom properties + a small first-party SolidJS
@@ -95,7 +95,7 @@ reopen any of them inside a task.
    this record's scope.
 7. **The target IA is frozen** (DL-095/096, DL-113, DL-098/099,
    DL-067/070/097, DL-129, DL-039). This record designs how it looks and how it
-   is navigated; it does not redesign the IA. SEA-1622 (channels under the
+   is navigated; it does not redesign the IA. RIG-1622 (channels under the
    agent tree) is unfrozen — the design must accommodate that direction
    without depending on its mechanism.
 8. **Naming/markup conventions** (record-adopted from the codebase, not
@@ -494,14 +494,14 @@ mountable window-scoped view** — it mounts against the DL-127 hash route for
 that surface, carries its own focus zones (D4) and command scope (D5), and needs
 no sibling region to function (a Bridge window renders without the sidebars). A
 single-window session composes these views into the shell grid below; a
-multi-window session mounts one view per window. Deferred (**SEA-1808**, Beta
+multi-window session mounts one view per window. Deferred (**RIG-1808**, Beta
 milestone), not built here: tabs *within* a window (Linear-style) and in-window
 split views — the view decomposition is designed to admit both later without
 rework (a tab strip or a splitter hosts the same window-scoped views), but
 neither ships in the dogfood scope. **Cross-lane seam:** compass-native's frozen
 record (`compass-native-app/design.md`, DL-110) is single-window today (one
 window loading the built UI); DL-160 expands its scope, so compass-native's
-shell record needs a multi-window amendment (SEA-1684's lane) before this
+shell record needs a multi-window amendment (RIG-1684's lane) before this
 decomposition can be hosted in real OS windows — flagged here so the dependency
 is explicit, not implicit.
 
@@ -522,7 +522,7 @@ is explicit, not implicit.
   "Re-parent agent…" command for re-parenting. Below the tree, the channel
   rail: channel rows + their 3 most-recent topics as indented deep-nav
   sub-rows (DL-098). The two trees render with the SAME tree-row contract so
-  SEA-1622's later unification is a data change, not a visual one. The
+  RIG-1622's later unification is a data change, not a visual one. The
   state-dot column is the sanctioned one-pulse-per-region exception (D9): a
   scannable field of working pulses is brand-legal by the pulse budget rule.
   Starting point: the canonical Rigel company-site Manager-tree reference render (production-quality, Managers as
@@ -726,10 +726,10 @@ ships working throughout. Sequencing (detail in `## Adoption path`): tokens +
 base land first behind `[data-theme="night"]`, components re-clothe
 surface-by-surface, keyboard/palette lands as pure addition, old vocabulary
 is deleted as each surface flips. **This record's merge is independent of the
-in-flight impl lanes** (SEA-1645 unreachable-pin, SEA-1633 board remodel):
+in-flight impl lanes** (RIG-1645 unreachable-pin, RIG-1633 board remodel):
 they continue on the current vocabulary. Adoption step 4's board/sidebar
 flips sequence AFTER those lanes merge. Coordination call: if T1-T3 land
-before SEA-1633 reaches its styling, SEA-1633 should build directly against
+before RIG-1633 reaches its styling, RIG-1633 should build directly against
 `.cx-*` and skip the build-on-legacy-then-re-skin double-work — a compass-ui
 coordination note, not a blocker.
 
@@ -801,13 +801,13 @@ to it incrementally so `apps/ui` ships working at every step.
    the same diff (no shims): left sidebar/tree → Bridge board → comms
    (channel/topic) → right sidebar → workspace/trace → Backlog/Done/Settings.
    Ordering tracks the frozen-IA implementation lanes: the board flip lands
-   after SEA-1633's remodel merges; the right-sidebar flip lands after SEA-1645
+   after RIG-1633's remodel merges; the right-sidebar flip lands after RIG-1645
    (unreachable-pin, DL-113; the left sidebar/tree flip has no such dependency).
 5. **Legacy vocabulary retired** — `--bg*`, `--st-*`, `--accent*` and orphan
    selectors deleted; the stylelint guard flips from warn to error; done
    means `app.css`'s `:root` block (`app.css:7-58`) is gone.
 
-In-flight lanes SEA-1645 (unreachable-pin) and SEA-1633 (board remodel)
+In-flight lanes RIG-1645 (unreachable-pin) and RIG-1633 (board remodel)
 continue on the current vocabulary and re-skin at their surface's flip step —
 they neither block nor are blocked by this record.
 
@@ -996,7 +996,7 @@ Remaining deferrals, carried from the pre-freeze draft (none load-bearing):
 4. **[NLB → Beta milestone] In-window tabs (Linear-style) and split views.**
    The multi-window decomposition (D6.1) is designed to admit both — a tab
    strip or a splitter hosts the same window-scoped views with no rework — but
-   neither ships in dogfood scope. Filed as **SEA-1808** (Beta milestone; Matt,
+   neither ships in dogfood scope. Filed as **RIG-1808** (Beta milestone; Matt,
    2026-08-05). Recommendation: defer to Beta; the decomposition is the only
    part that must be right now, and it is.
 
@@ -1018,7 +1018,7 @@ IDs do not shift positionally.
 | DL-154 | Delivery layout: in-tree `apps/ui/src/design/` (tokens.css/base.css/components/) + `keyboard/` contracts; stylelint guard bans raw hex, `--rigel-*`, and literal durations outside tokens.css, with one narrow allowlist — the mark component's CSS may name `--rigel-purple` directly (purple is never aliased into `--cx-*`); no token package, no W3C token source (D7) |
 | DL-155 | Brand seam: primitives mirrored with provenance from the frozen spec; the mark per the brand surface table is the one purple per surface with the 16px floor honored; Compass-owned `--cx-ed-*` editor-theme mapping from the Night Owl syntax ramp; mutual co-review (D8) |
 | DL-156 | Motion: the product UI consumes the frozen brand motion system in pure CSS/SVG (no client animation runtime) — brand duration/easing/pulse/streaming tokens, the green working pulse with the one-pulse-per-region budget, chase-light spinner/bar loaders, the boot-sequence, reduced-motion as substitution not removal; literal durations are review failures (D9) |
-| DL-157 | Adoption path: design-first, five-step incremental migration (tokens → shell → keyboard spine → surface flips → legacy retirement); in-flight lanes SEA-1645/SEA-1633 re-skin post-merge (D10) |
+| DL-157 | Adoption path: design-first, five-step incremental migration (tokens → shell → keyboard spine → surface flips → legacy retirement); in-flight lanes RIG-1645/RIG-1633 re-skin post-merge (D10) |
 | DL-158 | The agent workspace simplifies to the agent's home channel + its session trace (two fixed panes, no arbitrary split tree); no terminal pane and no file-viewer pane in dogfood (isolated containers; an operator dev-server-view affordance is deferred to backlog, PR review lives on the user's forge); the terminal `PaneKind` arm + `newTerminalPane` retire at the workspace flip (D6/D10) |
 | DL-159 | One UI codebase renders in two hosts — the Wails v3 desktop app (primary) and the browser (the managed/hosted product at `compass.rigel.build`) — over the same transport-agnostic UI above the `connection.ts` provider seam; the layout is fluid within its window/viewport (a dense supervision surface that reflows, not a fixed-pixel canvas and not a mobile redesign) (D6/§Global Constraints 2) |
-| DL-160 | The desktop app is first-class multi-window: every top-level surface (Bridge, a channel, an agent workspace, Backlog/Done, Settings) is an independently mountable window-scoped view (own DL-127 route, own focus zones + command scope, no sibling region required); compass-native spawns/manages OS windows, this record owns the decomposition; in-window tabs (Linear-style) and split views are deferred to the Beta milestone (SEA-1808), admitted by the same decomposition without rework (D6.1) |
+| DL-160 | The desktop app is first-class multi-window: every top-level surface (Bridge, a channel, an agent workspace, Backlog/Done, Settings) is an independently mountable window-scoped view (own DL-127 route, own focus zones + command scope, no sibling region required); compass-native spawns/manages OS windows, this record owns the decomposition; in-window tabs (Linear-style) and split views are deferred to the Beta milestone (RIG-1808), admitted by the same decomposition without rework (D6.1) |

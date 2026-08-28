@@ -231,7 +231,7 @@ The hardening work reuses that discipline:
   `Exec` is completion-shaped; a **streaming variant is reserved in the seam
   now** (live stdio + kill/wait handle, mirroring how `ContainerRuntime`
   splits `Exec`/`ExecStreaming`, `go/internal/runtime/podman.go:293-307`) for
-  SEA-1720's agent-launched dev servers, even if unimplemented, so freezing
+  RIG-1720's agent-launched dev servers, even if unimplemented, so freezing
   the seam does not force a breaking change later.
 
 There is no placement seam for the agent process itself: the agent runs in
@@ -545,7 +545,7 @@ configurations end to end, with `ContainerRuntime`'s existing verbs frozen:
   volume mount), and egress arming need without threading them through every
   `Exec` call. A streaming variant (`ExecStreaming`-shaped: live stdio +
   kill/wait handle, mirroring `go/internal/runtime/podman.go:299-307`) is
-  **reserved in the interface now** for SEA-1720, even if unimplemented.
+  **reserved in the interface now** for RIG-1720, even if unimplemented.
   Reuses `runtime.ExecOutput` (`go/internal/runtime/podman.go:139-146`) —
   fully buffered stdout/stderr, an accepted limit for whole-suite output
   until the streaming variant lands. `SpecBuilder`
@@ -734,7 +734,7 @@ relaunch on activity.
   seamlessness ever depends on `$HOME` state surviving, that is a later
   decision to move `$HOME` onto the volume, not assumed here). Consequently
   **idle detection gates on there being no live streaming exec**: a running
-  dev server (SEA-1720) or an in-flight heavy op blocks suspend — suspending
+  dev server (RIG-1720) or an in-flight heavy op blocks suspend — suspending
   under one would kill it, which the user would see. Idle means the inner loop
   is quiescent *and* nothing long-lived is running.
 - **Resume:** on activity, relaunch through the standard `AgentRuntime.Launch`
@@ -872,10 +872,10 @@ Nothing pinned in the Approach is re-opened here.
 3. **[non-load-bearing] Volume expiry value.** Drafted default: 14 days
    after session close, tunable per deployment. Pure cost policy; M0's
    working-set GB distribution calibrates it. Deferred to measurement.
-4. **[load-bearing] SEA-1720 streaming-exec seam shape.** `ComputeRuntime`
+4. **[load-bearing] RIG-1720 streaming-exec seam shape.** `ComputeRuntime`
    reserves a streaming variant (live stdio + kill/wait handle) for
    agent-launched dev servers; the port-exposure and lifecycle wiring are
-   SEA-1720's scope. **Recommendation:** freeze the reserved signature in S1
+   RIG-1720's scope. **Recommendation:** freeze the reserved signature in S1
    mirroring `ContainerRuntime.ExecStreaming`
    (`go/internal/runtime/podman.go:299-307`); implement nothing here.
 5. **[resolved — decided, now task I1] Inter-tenant isolation boundary =

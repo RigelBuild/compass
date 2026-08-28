@@ -181,7 +181,7 @@ pane states the unreachable condition explicitly.
 dot, both component glyphs, not the brand mark.
 
 **Flip checklist.** This flip sequences after the unreachable-pin lane
-(DL-113 / SEA-1645) merges; until then the right sidebar stays on the current
+(DL-113 / RIG-1645) merges; until then the right sidebar stays on the current
 vocabulary.
 
 1. Replace the activity bar with `.cx-tabs[data-orientation="v"]`; render pinned,
@@ -247,7 +247,7 @@ open-PR count).
 **Mark placement.** None. The board is glyph-dense with state dots and status
 badges; the brand mark does not appear on it.
 
-**Flip checklist.** This flip sequences after the board-remodel lane (SEA-1633)
+**Flip checklist.** This flip sequences after the board-remodel lane (RIG-1633)
 merges. If the token and component contracts land first, that lane should build
 directly against `.cx-*` and skip the build-on-legacy-then-re-skin double-work.
 
@@ -450,7 +450,7 @@ The render contract:
   view code serves both.
 
 **Deferred.** In-window tabs (Linear-style) and in-window split views are deferred
-to the Beta milestone (SEA-1808) and are not built here. The decomposition is
+to the Beta milestone (RIG-1808) and are not built here. The decomposition is
 designed to admit both later without rework — a tab strip or a splitter hosts the
 same window-scoped views — but neither ships in the dogfood scope.
 
@@ -458,7 +458,7 @@ same window-scoped views — but neither ships in the dogfood scope.
 shell. The frozen compass-native record (`compass-native-app/design.md`, DL-110)
 is single-window today: one window loading the built UI. This decomposition
 expands that scope, so compass-native's shell record needs a multi-window
-amendment (SEA-1684's lane) before the views can be hosted in separate OS
+amendment (RIG-1684's lane) before the views can be hosted in separate OS
 windows. This is a dependency to track, not a blocker on the view decomposition
 itself — the views are independently mountable regardless of how many windows
 host them.

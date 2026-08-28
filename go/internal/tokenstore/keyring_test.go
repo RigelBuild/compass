@@ -109,7 +109,7 @@ func TestKeyringStoreErrNotFoundNeverFallsBack(t *testing.T) {
 // Once the store has bound to the keyring, a later transient keyring failure
 // (locked keychain, cancelled prompt, D-Bus hiccup) must PROPAGATE as an error
 // — never silently divert that one operation to the file fallback, which would
-// split-brain the credential across backends (SEA-2009). Sharpest for Delete: a
+// split-brain the credential across backends (RIG-2009). Sharpest for Delete: a
 // silent fallback there returns nil while the credential stays live in the
 // keyring. This test is red against per-call fallback, green against bind-once.
 func TestKeyringStoreBoundKeyringPropagatesTransientError(t *testing.T) {
@@ -135,7 +135,7 @@ func TestKeyringStoreBoundKeyringPropagatesTransientError(t *testing.T) {
 		t.Error("Write: want error on transient keyring failure, got nil (must not fall back)")
 	}
 	if err := s.Delete(testURL); err == nil {
-		t.Error("Delete: want error on transient keyring failure, got nil — a silent nil hides a live credential (SEA-2009)")
+		t.Error("Delete: want error on transient keyring failure, got nil — a silent nil hides a live credential (RIG-2009)")
 	}
 	if fallbackFileExists(t, dir) {
 		t.Error("fallback file written after keyring bind; credential split-brained across backends")

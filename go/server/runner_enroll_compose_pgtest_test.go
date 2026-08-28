@@ -2,7 +2,7 @@
 
 package server
 
-// Whole-flow composition of the Server<->Runner enrollment seam (SEA-1914 S2,
+// Whole-flow composition of the Server<->Runner enrollment seam (RIG-1914 S2,
 // DL-178). This is the one seam no suite on main composes: a REAL Runner (the
 // production internal/runner.Dial client) enrolling through the PRODUCTION
 // RunnerService door — the one buildNetworkServer mounts behind its Runner-subject

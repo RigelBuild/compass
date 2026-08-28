@@ -15,7 +15,7 @@ re-expressed here as DL-164..DL-171.
 > `store.addWorkstream`, the `WorkstreamSpec` type, and the "＋ New workstream"
 > toolbar button. Cards come from the tracker and the Manager builds the tree
 > (issues are forge-ingested per DL-069/DL-161; the Manager builds the rest per
-> DL-095/DL-134; positive replacement SEA-1820). The sections below are
+> DL-095/DL-134; positive replacement RIG-1820). The sections below are
 > reconciled to the surviving start/stop surface — `StartAgentDialog`, the
 > spawn/stop phase machine, and stop control stay.
 
@@ -59,7 +59,7 @@ with** the container-scoped SHALL at `compass.md:368-370`.
 
 *(Port note: the prior record carried a fourth reconciliation — relaxing
 `ProvisionAgentWorkspace`'s repo requirement for self-clone. That already
-shipped in compass under SEA-1527: `ProvisionAgentWorkspaceRequest` no longer
+shipped in compass under RIG-1527: `ProvisionAgentWorkspaceRequest` no longer
 carries a repo (`compass.proto:506-509` — "Repo carriage removed … the agent
 self-clones"), so it drops from T0's scope entirely, along with the prior
 record's clone-target-validation and agent-credential prerequisites, which
@@ -95,7 +95,7 @@ Baseline RPCs from `proto/compass/v1/compass.proto`, verified this run:
 
 - `rpc ProvisionAgentWorkspace(...)` (`compass.proto:54`):
   `agent_account_id` + `client_request_id` → `container_name`. Repo-less
-  since SEA-1527 — the container is provisioned with a git credential +
+  since RIG-1527 — the container is provisioned with a git credential +
   workspace and the agent self-clones (`compass.proto:506-509`). *(An
   internal server step of `SpawnAgent`, not a client call — see Control
   flow.)*
@@ -148,7 +148,7 @@ idempotent on an already-live container. **Build-order:** this end-to-end
 idempotency composes three primitives already built. `provisionDedupID`
 binds a non-empty `client_request_id` to the agent account through a
 domain-separated hash, so a retry of the same provision dedups (since
-SEA-1527 removed repo carriage, the key derives from account +
+RIG-1527 removed repo carriage, the key derives from account +
 `client_request_id` alone — correct: `client_request_id` is the explicit
 idempotency key, though two concurrent repo-less spawns for one account are
 distinguished only by that id). The command router joins a retry whose id is
@@ -763,7 +763,7 @@ the compass service-owner. Independent of the UI tasks, so no freeze block.
   Server orchestrates the existing RunnerHub `Provision` then `Start`
   (`runnerhub/commands.go:40-88`). *(The internal monorepo's T0 additionally relaxed the
   repo requirement in `runner/spec.go` and guarded `cloneRepo` — all shipped
-  in compass under SEA-1527; `BuildSpec` at `spec.go:76-88` already builds a
+  in compass under RIG-1527; `BuildSpec` at `spec.go:76-88` already builds a
   repo-less spec. Dropped from scope.)*
   **Acceptance (end-to-end idempotency):** a retry with the same
   `client_request_id` returns the same `session_id` and provisions no
@@ -890,7 +890,7 @@ agent's cards carries a `sessionId`, every other card has no binding.
 add-a-workstream board mutation (`addWorkstream`) and UI-side agent creation
 (`CommsService.CreateAgent`) are dropped — cards come from the tracker
 (issues forge-ingested, DL-069/DL-161) and the Manager builds the tree
-(DL-095/DL-134; positive replacement SEA-1820), not a UI mutation.
+(DL-095/DL-134; positive replacement RIG-1820), not a UI mutation.
 
 ### DL-165 (port amendment, this record) — live-wired posture
 

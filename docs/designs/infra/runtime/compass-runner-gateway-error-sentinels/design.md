@@ -2,7 +2,7 @@
 
 Status: Active
 
-Linear: SEA-1442. Approach ruled by Matt (full fix across all three lanes:
+Linear: RIG-1442. Approach ruled by Matt (full fix across all three lanes:
 proto enum value + server mapping arm + runner sentinels); this record
 documents and decomposes the decided approach — it does not re-open the
 choice.
@@ -53,7 +53,7 @@ The canonical operator-fault path is the socket-path-too-long check, a bare
 The diagnostic *message* survives the relay (`RunnerError.message` is carried;
 `commands.go:216` — `fmt.Errorf("runner: %s", e.GetMessage())`), but the
 *classification* is lost: the admin sees `Internal`, which reads as a Compass
-bug rather than a knob to turn. Per SEA-1442, fix this as ONE change covering
+bug rather than a knob to turn. Per RIG-1442, fix this as ONE change covering
 the sibling operator-fault paths, not a one-off for the too-long check.
 
 ## Global Constraints
@@ -71,7 +71,7 @@ the sibling operator-fault paths, not a one-off for the too-long check.
   generated only into internal Go consumers, so no public TS client is
   affected.
 - **Enum precedent to mirror exactly**: `RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED
-  = 4` added for SEA-1569 (`runner.proto:418-422`) — a new value with a doc
+  = 4` added for RIG-1569 (`runner.proto:418-422`) — a new value with a doc
   comment naming its Connect mapping ("-> Connect ResourceExhausted") and the
   distinguishing rationale.
 - **`go test -race` is the merge gate** (CGO_ENABLED=1); new tests must be
@@ -401,7 +401,7 @@ Owned by compass-server; hand off after T1. Two edits:
 One integration-level test proving the full chain: a Runner whose provision
 fails on a wrapped operator-fault error surfaces to the Hub caller as
 `connect.CodeFailedPrecondition` with the diagnostic text intact — the
-end-to-end contract SEA-1442 names (RED before the pair lands, GREEN after).
+end-to-end contract RIG-1442 names (RED before the pair lands, GREEN after).
 Candidate home: the runnerhub test harness that already drives real
 dispatch/relay round-trips (e.g. beside `deliveryarm_test.go`, which asserts
 RunnerError codes over the relay at

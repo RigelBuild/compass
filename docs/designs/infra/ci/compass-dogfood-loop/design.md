@@ -309,7 +309,7 @@ start and report, not crash on first call"
 container-spawn + session-start today. But spawn+idle does NOT satisfy the
 ruled acceptance ("runs an agent turn"), and a real turn needs BOTH a
 credential in the container AND the provider host in `--egress-allow`
-(Approach §4). The production cred path IS being built: the SEA-1327 secrets
+(Approach §4). The production cred path IS being built: the RIG-1327 secrets
 materializer (ITEM 7 — FetchSecrets → the runner writes the frozen
 `auth-seed.json`) is the writer the compass-server lane owns, so the real-turn
 leg sequences AFTER ITEM 7 rather than needing a throwaway seed. How and when
@@ -592,10 +592,10 @@ were batched to Matt at the design-PR gate and ruled as noted.
    real-turn leg follows the ITEM 7 + driver chain.** The compass-repo enroll
    loop (postgres, server+TLS, mint, runner enrolled+idle) has no credential
    dependency and ships standalone as `[repo]` tasks T1-T4/T6/T7. The FULL
-   "runs a turn" acceptance completes once the SEA-1327 secrets materializer
+   "runs a turn" acceptance completes once the RIG-1327 secrets materializer
    (compass-server lane) and the driver (T5) land. A real turn needs three
    coupled pieces, all deferred to that chain: (i) the provider credential —
-   the frozen 0600 `$HOME/.compass/auth-seed.json` the SEA-1327 materializer
+   the frozen 0600 `$HOME/.compass/auth-seed.json` the RIG-1327 materializer
    writes (`packages/compass-agent/src/cli.ts:47-50,98-102`;
    `cli.test.ts:110-111`); (ii) the provider host in `--egress-allow` (default
    is pure default-deny, `go/internal/runtime/egress.go:29-31`,
@@ -628,7 +628,7 @@ were batched to Matt at the design-PR gate and ruled as noted.
    brings up the light, idempotent enroll loop; the image build + real turn run
    on demand.
 
-A related public-API fork in the ITEM 7 (SEA-1327 secrets) lane was ruled in
+A related public-API fork in the ITEM 7 (RIG-1327 secrets) lane was ruled in
 the same batch: the `SetSecret`/`ListSecrets`/`DeleteSecret` RPCs go on a new
 `SecretsService` (not folded onto `CompassService`). That governs the ITEM 7
 proto edit, not this record's tasks; noted here only for provenance.

@@ -2,7 +2,7 @@
 
 package auth
 
-// Streaming bearer-door contract tests (SEA-1195 T3, the S3 gate), transcribed
+// Streaming bearer-door contract tests (RIG-1195 T3, the S3 gate), transcribed
 // from the authoritative Rust suite in crates/compass-daemon/src/auth.rs
 // (#[cfg(test)] mod tests, the bearer_auth cases). Those cover the unary door;
 // the Go door splits authentication across a UnaryInterceptorFunc and a streaming

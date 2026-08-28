@@ -2,7 +2,7 @@
 
 package server
 
-// Integration tests for the authenticated TLS network door (SEA-1195 T3b): TLS
+// Integration tests for the authenticated TLS network door (RIG-1195 T3b): TLS
 // termination against an in-test self-signed pair, the bearer+admin-gate chain
 // over a real connect client, the IssueToken handler's input contract, the
 // oracle-safety of the bearer rejection paths, and the bootstrap-admin token's

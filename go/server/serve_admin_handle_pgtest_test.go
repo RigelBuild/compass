@@ -2,7 +2,7 @@
 
 package server
 
-// The --admin-handle wiring (SEA-1362 T1): the operator-settable bootstrap-admin
+// The --admin-handle wiring (RIG-1362 T1): the operator-settable bootstrap-admin
 // handle must actually name the created account, not merely a log field. These
 // tests OBSERVE the account the store minted — a round-trip of the flag into
 // ServeConfig is necessary but not sufficient, because an inert knob round-trips

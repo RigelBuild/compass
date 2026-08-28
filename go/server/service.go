@@ -180,7 +180,7 @@ func (s *service) ProvisionAgentWorkspace(
 	// it, the container -> account mapping lived only in the RunnerHub's
 	// in-memory binding, so a Server restart or Runner re-enroll between
 	// Provision and Start left StartAgentSession unable to say whose session it
-	// was recording. It is also what SEA-1516 reattach recovery reads to name
+	// was recording. It is also what RIG-1516 reattach recovery reads to name
 	// every agent stranded by a Runner restart.
 	if err := s.store.RecordAgentPlacement(ctx, store.AccountID(req.Msg.GetAgentHandle()), runnerID, resp.GetContainerName()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
@@ -273,7 +273,7 @@ func (s *service) StopAgentSession(
 	if err != nil {
 		return nil, err
 	}
-	// SEA-1667 T4 session-end flush (the third flush trigger, design.md §1040-1046):
+	// RIG-1667 T4 session-end flush (the third flush trigger, design.md §1040-1046):
 	// archive the remaining hot-tail as one session_end segment so history is
 	// COMPLETE for analytics. It does NOT prune the PG tail and is NEVER read on
 	// resume. BEST-EFFORT: the Stop relay already irreversibly killed the agent, so
@@ -565,7 +565,7 @@ func (s *service) SubscribeAgentSession(
 	}
 }
 
-// startResumeSession is the resume leg of StartAgentSession (T6, SEA-1667). It
+// startResumeSession is the resume leg of StartAgentSession (T6, RIG-1667). It
 // runs BEFORE any Runner call for the parts that must: (1) authorize the caller
 // on the resumed session via RequireAgentSessionSubscriber — an unknown or
 // foreign resume_session_id is one indistinguishable NotFound (the

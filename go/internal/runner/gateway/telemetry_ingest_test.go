@@ -185,7 +185,7 @@ func durableFrame(text string) *compassv1internal.AgentFrame {
 }
 
 // transcriptEntryFrame builds a durable transcript_entry AgentFrame — the
-// SEA-1570 tee variant PostConversationFrame carries beside the conversation
+// RIG-1570 tee variant PostConversationFrame carries beside the conversation
 // frames.
 func transcriptEntryFrame(entryJSON string, checkpoint bool, seq uint64) *compassv1internal.AgentFrame {
 	return &compassv1internal.AgentFrame{
@@ -384,7 +384,7 @@ func TestPublishOrdersThreeTraceFrames(t *testing.T) {
 
 // --- Case 2 ------------------------------------------------------------------
 
-// A transcript_entry frame (the SEA-1570 tee variant) rides the same durable
+// A transcript_entry frame (the RIG-1570 tee variant) rides the same durable
 // unary as the conversation frames: it must reach the committer byte-identical
 // under the request's session and idempotency key. Guards T7's guard widening.
 // RED before the isConversationFrame widening: transcript_entry is rejected
@@ -839,7 +839,7 @@ func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 }
 
 // A non-transcript frame fails closed CodeInvalidArgument BEFORE the commit RPC
-// — post-T7 the durable unary carries only the SEA-1570 transcript_entry variant,
+// — post-T7 the durable unary carries only the RIG-1570 transcript_entry variant,
 // so a trace/session frame, an empty AgentFrame with an unset oneof, and a nil
 // frame must each be rejected without ever reaching the committer.
 // RED: drop the isConversationFrame guard -> a non-conversation frame reaches the

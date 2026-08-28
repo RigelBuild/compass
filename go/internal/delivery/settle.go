@@ -34,7 +34,7 @@ func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessi
 	}
 }
 
-// OnSessionStarted is the hub's SessionStartSink hook (SEA-1569 T6), called from
+// OnSessionStarted is the hub's SessionStartSink hook (RIG-1569 T6), called from
 // promoteSession right after the hub binds account->session at StartAgentSession
 // (and, in the single-Runner MVP, on the re-promotion each session takes after a
 // Runner re-enroll clears the bindings). Like OnSessionSettled it must NOT block

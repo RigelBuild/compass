@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Issues store contracts (SEA-1728 part 3a): the forge coordinate is the
+// Issues store contracts (RIG-1728 part 3a): the forge coordinate is the
 // idempotency key so a re-poll keeps a stable id and never clobbers a human-set
 // lifecycle state, a persisted issue always has a real state (DEFAULT BACKLOG),
 // unknown ids are ErrNotFound, and the issue survives a store restart (DL-019

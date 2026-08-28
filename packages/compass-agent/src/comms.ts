@@ -332,7 +332,7 @@ function presenceLabel(presence: AgentPresence): string {
 /**
  * The native comms tool set. Five tools; never an ask-answering one.
  *
- * Wired into the container entrypoint by `cli.ts main()` (SEA-1741): the tools
+ * Wired into the container entrypoint by `cli.ts main()` (RIG-1741): the tools
  * are merged into the session's `customTools` and so register as `#withNatives`
  * natives. This package's tests also exercise the end-to-end contract directly.
  */

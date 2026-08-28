@@ -87,7 +87,7 @@ export function createFakeCompass(): FakeCompass {
 			}
 			return { accountId: whoAmIAccountId.accountId };
 		},
-		// The board read stream (SEA-1729). This double drives only the
+		// The board read stream (RIG-1729). This double drives only the
 		// agent-lifecycle + probe paths, so the event stream yields NOTHING and
 		// holds open until the caller aborts — mirroring the real transport (a
 		// gRPC-Web call ends its response stream on abort) and comms-fake's

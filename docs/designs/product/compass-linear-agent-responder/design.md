@@ -117,7 +117,7 @@ hardening a public receiver needs. `buildNetworkServer`
 http.NewServeMux()` (`network_door.go:270`) and mounts the Connect handlers on
 it (`netMux.Handle(netPath, netHandler)`, `network_door.go:271`); the whole mux
 is wrapped by the slow-body guard — "Outermost: bound the request-body read so
-a slow-body drip cannot tie up a connection (SEA-1298)"
+a slow-body drip cannot tie up a connection (RIG-1298)"
 (`network_door.go:306-310`) — and the server sets `ReadHeaderTimeout: 10 *
 time.Second` with the comment "G112: the network door is the internet-facing
 surface" (`network_door.go:315-323`).
@@ -473,7 +473,7 @@ routing), the comms handler (PostAsAccount), and the secrets resolver — so a
 separate service would need its own authenticated channel back into
 compass-server carrying exactly the same data, doubling the surface instead of
 shrinking it. The network door already exists as the hardened internet-facing
-surface (TLS, `ReadHeaderTimeout` G112, `withBodyReadDeadline` SEA-1298,
+surface (TLS, `ReadHeaderTimeout` G112, `withBodyReadDeadline` RIG-1298,
 `network_door.go:306-323`). (Matt confirmed reuse of the network door, RIG-2729
 OQ-2.)
 
@@ -534,7 +534,7 @@ the Linear loop needs and a bespoke injection would have to rebuild.
   never-resolved → 503, never accept). A STALE `webhookTimestamp` on a
   valid signature is 200-with-drop (ack + discard), never 400 — no retry
   burn on a replayed signed body. The mount inherits
-  `withBodyReadDeadline` + `ReadHeaderTimeout` (G112/SEA-1298,
+  `withBodyReadDeadline` + `ReadHeaderTimeout` (G112/RIG-1298,
   `network_door.go:306-323`); additionally cap the webhook body read with
   `http.MaxBytesReader` (1 MiB) — webhook payloads are small.
 - Constant-time signature compare (`crypto/hmac.Equal`), raw-body HMAC (never
@@ -976,7 +976,7 @@ Proposed rows:
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-254 | The Linear Agent Session responder is a plain `POST /webhooks` `http.Handler` mounted on the compass-server network TLS door (inside `buildNetworkServer`, beside the Connect mounts, inheriting the G112/SEA-1298 guards; NOT a Connect service, NOT a dedicated ingress), fail-closed on the raw-body HMAC-SHA256 `Linear-Signature` check (bad/missing signature → 400; a stale-but-validly-signed `webhookTimestamp` is 200-with-drop, never a retry-burning 400), acking 200 before any work (Linear's 5s SLA) with all agent work async; the public base URL (webhook host + deep-link base) is a per-deployment config value, never hardcoded | Active (Matt, YYYY-MM-DD) | [linear agent responder §Part 1](product/compass-linear-agent-responder/design.md#part-1--the-webhook-receiver-on-the-network-door) |
+| DL-254 | The Linear Agent Session responder is a plain `POST /webhooks` `http.Handler` mounted on the compass-server network TLS door (inside `buildNetworkServer`, beside the Connect mounts, inheriting the G112/RIG-1298 guards; NOT a Connect service, NOT a dedicated ingress), fail-closed on the raw-body HMAC-SHA256 `Linear-Signature` check (bad/missing signature → 400; a stale-but-validly-signed `webhookTimestamp` is 200-with-drop, never a retry-burning 400), acking 200 before any work (Linear's 5s SLA) with all agent work async; the public base URL (webhook host + deep-link base) is a per-deployment config value, never hardcoded | Active (Matt, YYYY-MM-DD) | [linear agent responder §Part 1](product/compass-linear-agent-responder/design.md#part-1--the-webhook-receiver-on-the-network-door) |
 | DL-255 | A delegated Linear session is routed to a stable Compass Manager keyed on Compass's recorded forge ownership index (`forge_authored_artifacts`, DL-055/DL-205) — NEVER a header parsed from forge text (DL-050/DL-094 forbid it reaching a routing decision); an issue with no recorded ownership row routes to the supervisor/top-level Manager via a dedicated routing channel, which decides the lane and stamps it through the DL-050 write chokepoint so later events resolve directly | Active (Matt, YYYY-MM-DD) | [linear agent responder §Part 2](product/compass-linear-agent-responder/design.md#part-2--routing-a-delegated-linear-session-to-a-stable-manager) |
 | DL-256 | The Linear return path is a dumb link (Option B, Matt 2026-08-25): on `created` the responder emits one `thought` plus an `externalUrls` "Open in Compass" deep link to the resolved Manager's home channel and nothing else — NO activity relay, NO settle observation, NO Linear session-lifecycle machine. One Linear session is NOT forced 1-1 to a comms topic; the prompt lands in an issue-named topic (persisted in a new `linear_agent_sessions` table) delivered as `@linear`-authored deliver-rail messages deduped by `PostAsAccount`'s `client_request_id` on the `Linear-Delivery` UUID, but the deep link targets the home channel. Option C (coarse one-way status) is the ratified follow-up; Option A (full bidirectional relay) is off-table until Linear's activity vocabulary is configurable | Active (Matt, YYYY-MM-DD) | [linear agent responder §Part 3](product/compass-linear-agent-responder/design.md#part-3--the-return-path-a-dumb-link-option-b) |
 

@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// Hub presence surface (SEA-1721 T2): PresenceFor snapshots the in-memory enum
+// Hub presence surface (RIG-1721 T2): PresenceFor snapshots the in-memory enum
 // (absent → OFFLINE), PublishActivity fires the set_status live event through the
 // wired presence source, and a hub with no source wired is nil-safe (all OFFLINE,
 // publish dropped). Driven through a hand-written fakePresenceSource, no store.

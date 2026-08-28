@@ -2,7 +2,7 @@
 
 package server
 
-// Integration test for the network door's CORS policy (SEA-1195 T3b), pinning
+// Integration test for the network door's CORS policy (RIG-1195 T3b), pinning
 // the spec Requirement "The network door defaults closed to browser origins"
 // (docs/specs/product/compass.md:693-707): unless --cors-allowed-origin names a
 // single explicit browser origin the door applies NO CORS at all; when set it

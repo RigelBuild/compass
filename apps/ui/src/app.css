@@ -273,7 +273,7 @@
 	width: 10px;
 	display: inline-flex;
 	justify-content: center;
-	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s grandfathered by the RIG-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s;
 }
 
@@ -924,7 +924,7 @@
 
 .ws-caret {
 	display: inline-block;
-	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the RIG-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s ease;
 }
 
@@ -1675,7 +1675,7 @@
 .backlog-chevron {
 	color: var(--cx-text-faint);
 	font-size: 10px;
-	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the RIG-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s ease;
 }
 
@@ -2288,7 +2288,7 @@
 	color: var(--cx-text);
 }
 
-/* An unreachable pin's tab is dimmed (SEA-1645 P2) so the activity bar itself
+/* An unreachable pin's tab is dimmed (RIG-1645 P2) so the activity bar itself
  * distinguishes a dead pin from a live one — the affirmative visual mark that
  * pairs with the title's "(unreachable)" suffix and the absent StateDot. */
 .r-tab.unreachable {
@@ -2913,7 +2913,7 @@
 
 .browse-caret {
 	display: inline-block;
-	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the RIG-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s ease;
 	margin-right: 4px;
 	color: var(--cx-text-faint);

@@ -45,7 +45,7 @@ your routing without opting in, and posting is restricted so the channel stays
 authoritative — a report can trust that a posted assignment is the assignment. A
 report with something for the channel routes it to you (DM the owner to post).
 
-[TODO SEA-1722: the restricted-post ACL and auto-subscribe are not yet enforced
+[TODO RIG-1722: the restricted-post ACL and auto-subscribe are not yet enforced
 primitives. Until they land, hold this behaviorally — you own the posts that set
 lane posture and assignments, reports route through you, and you subscribe your
 reports as you spawn them.]
@@ -57,6 +57,6 @@ lane headlines your reports see without scrolling — the current freeze, the
 active incident topic, the priority of the moment. You curate it for your lane
 the way the Supervisor curates it for the tree.
 
-[TODO SEA-1723: the pinned board is not yet a primitive. Until it lands, carry
+[TODO RIG-1723: the pinned board is not yet a primitive. Until it lands, carry
 lane headlines as a single standing topic you keep edited to the current state,
 and point your reports at it.]

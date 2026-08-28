@@ -444,7 +444,7 @@ agent's control lane → chat ping lands.
 Proposed DECISIONS.md rows — pure append under **Comms & tools** (the #995
 forge rows' home, DECISIONS.md:99-103). On current `main` (after #1035
 renumbered the duplicate DL-071 to DL-091) the highest allocated id is DL-091
-(DECISIONS.md:129), DL-082..089 are reserved for #1021 (SEA-1570, in flight),
+(DECISIONS.md:129), DL-082..089 are reserved for #1021 (RIG-1570, in flight),
 and DL-056..066 is an older unexplained gap. The next free id above the
 reserved band is **DL-092**, which this amendment proposes. (The single-writer
 owns the final id; only the id cell changes.) The placement-correction row

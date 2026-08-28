@@ -114,7 +114,7 @@ linters:
 
     # nolintlint governs the inline `//nolint` directives themselves — the
     # per-site suppression form this module uses for architectural false
-    # positives (SEA-1287). Every directive must name its linter and carry a
+    # positives (RIG-1287). Every directive must name its linter and carry a
     # reason, and a directive that no longer suppresses anything is flagged —
     # so a stale inline suppression can't rot silently, the same anti-rot
     # ratchet `warn-unused: true` gives the central exclusion rules.
@@ -140,7 +140,7 @@ linters:
     # module grows and a rule stops matching.
     warn-unused: true
 
-    # Policy (SEA-1287): the central rules below are PATH-CLASSES only — whole
+    # Policy (RIG-1287): the central rules below are PATH-CLASSES only — whole
     # categories of file (here, test files) that earn a looser standard. Per-site
     # architectural false positives live inline at their site as
     # `//nolint:<linter> // <reason>` (nolintlint settings above enforce the

@@ -3,7 +3,7 @@
 package store
 
 // UpdateMessageBlocksAsAuthor: the AUTHORIZING block-update path, the store leg
-// of the relayed-agent-input write-through (SEA-1364 T3). Its whole reason to
+// of the relayed-agent-input write-through (RIG-1364 T3). Its whole reason to
 // exist is that updateMessageBlocksExec takes a bare MessageID and
 // performs NO membership or authorship check — safe for AnswerAsk, which has
 // already gated on the actor's visible set, but a privilege hole on a path whose

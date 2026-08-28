@@ -1,6 +1,6 @@
 // The agent side of the agent->Runner call transport: a RunnerCallTransport over
 // a Connect client that dials the Runner's per-container Unix socket
-// (design docs/designs/product/compass-agent-runner-transport/design.md, SEA-1351
+// (design docs/designs/product/compass-agent-runner-transport/design.md, RIG-1351
 // T4). The in-container first-party agent reaches its Runner over a bind-mounted
 // Unix socket — a local hop, no network path, so the egress seal is untouched.
 //
@@ -37,7 +37,7 @@ import { setTransportRuntime } from "./runtime-channel";
 
 /**
  * The agent's handle on the AgentGateway RPCs over the Runner socket. T4
- * (SEA-1351) landed `comms`; the transport-consolidation C4 lane extends it with
+ * (RIG-1351) landed `comms`; the transport-consolidation C4 lane extends it with
  * the frame/control spine the socket sink + source ride:
  *
  *  - `comms` — the agent-initiated comms call, consumed by the comms-tools

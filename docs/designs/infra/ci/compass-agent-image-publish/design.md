@@ -1,7 +1,7 @@
 # Publish the compass-agent image to GHCR
 
 Status: Draft
-Tracking: SEA-1690 (blocks compass-native SEA-1683/T2, SEA-1685/T4, SEA-1687/T6)
+Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 
 > **Design record.** This designs the GHCR publish lane for the `compass-agent`
 > runtime image; it targets the **`RigelBuild/compass`** repo — every
@@ -21,7 +21,7 @@ frozen decision DL-112 (`docs/designs/product/compass-native-app/design.md`
 §OQ6) the native app does not bundle the agent image: `compass-stack` `podman
 pull`s it from GHCR at first run. Nothing publishes the image today. This
 record designs the publish lane — the GHCR side of that seam; the pull side is
-compass-native's (SEA-1683/T2).
+compass-native's (RIG-1683/T2).
 
 ## Approach
 
@@ -43,7 +43,7 @@ decision, not an assumption:
     is enforced and verified, not assumed.
   - `:latest` — moving; documented **first-run fallback only**, never the
     default consumption path.
-- **Forward note (non-load-bearing):** GA (SEA-1687) will likely add a
+- **Forward note (non-load-bearing):** GA (RIG-1687) will likely add a
   release-version tag (e.g. `:v1.2.3`) alongside `:git-<sha>`. The publish
   script below takes its tag list as arguments, so that is a one-line later
   add — no scheme change.
@@ -502,7 +502,7 @@ Interfaces:
   design records, beside the other `compass-*` records. T4 folds the durable
   operational content into the compass repo's `docs/architecture/build-and-ci.md`
   once implemented; this record stays the design of record in sealed.
-- **[Non-load-bearing] GA release tag.** SEA-1687 will likely want
+- **[Non-load-bearing] GA release tag.** RIG-1687 will likely want
   `:v<semver>` alongside `:git-<sha>`; T1's tag-list CLI makes that a
   no-redesign later add. Deferred to GA planning.
 - **[Non-load-bearing] `:git-<sha>` tag retention.** Immutable per-sha tags

@@ -1,6 +1,6 @@
 package auth
 
-// AdminGate + classifyProcedure + check contract tests (SEA-1195 T3a, the S3
+// AdminGate + classifyProcedure + check contract tests (RIG-1195 T3a, the S3
 // "admin-guard" gate item), transcribed from the authoritative Rust suite in
 // crates/compass-daemon/src/auth.rs (#[cfg(test)] mod tests, the admin-gate
 // section: admin_gate_rejects_a_non_admin_on_a_gated_rpc,

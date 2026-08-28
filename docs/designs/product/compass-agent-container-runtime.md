@@ -14,7 +14,7 @@ is against the working tree at `6b192e731` (branch
 `git ls-tree -r origin/main --name-only | grep -c compass-daemon` → `0`) and is
 never cited as live below.
 
-> **Re-authored (SEA-1327 reopen).** A prior version of this record built a
+> **Re-authored (RIG-1327 reopen).** A prior version of this record built a
 > cred-avoidance sandbox around Nix evaluation (host-store overlay, a dedicated
 > eval uid, capture-env-once, eval-phase egress narrowing). Matt's directives
 > invert that premise — see *Threat model* below — so Decisions 1–3 are
@@ -357,7 +357,7 @@ model-scoped credential routing" (`pi-agent-core` `agent.d.ts:66-70`). So:
   agent restart, no env involvement. Provider creds never appear in
   `secretspec`-style env/file delivery, in exec env maps, or in argv.
 
-This re-expresses SEA-1115's Rust-era `ProviderCredentials` intent
+This re-expresses RIG-1115's Rust-era `ProviderCredentials` intent
 (`docs/designs/agents/sea-1115-agent-provisioning-cotal.md:113`, `:151`) on
 the Go stack, with the SDK auth surface replacing the harness-supplied
 env-var/file fork — the first-party agent has a first-party credential API,

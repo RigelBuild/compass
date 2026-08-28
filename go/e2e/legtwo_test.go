@@ -66,7 +66,7 @@ func TestLegTwoPrimitives(t *testing.T) {
 // turn -> AwaitTurnSettled -> assert the session's transcript is non-empty. On
 // H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn cannot complete without a
 // deterministic model backend, so on the bare stack the settle would hang and
-// the transcript stay empty. H3 (SEA-1787) lands that backend — the canned stub
+// the transcript stay empty. H3 (RIG-1787) lands that backend — the canned stub
 // the fixture stands up via WithCannedModel — so this same scenario now runs
 // GREEN with zero live-model egress.
 //

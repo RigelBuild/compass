@@ -3,7 +3,7 @@
 package gateway
 
 // Hermetic suite for the Runner->Server forward handler Gateway.Comms (transport
-// design T3, SEA-1351). White-box (package gateway) so it drives the handler and
+// design T3, RIG-1351). White-box (package gateway) so it drives the handler and
 // its two seams directly, sleep-free: the fakes record every fact synchronously,
 // so every assertion reads a value the in-memory call already produced.
 //

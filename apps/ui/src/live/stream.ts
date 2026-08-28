@@ -22,7 +22,7 @@
 // The two cursors are kept apart on PURPOSE. `snapshot_seq` (the read-RPC
 // boundary) and the stream `seq` (the tail cursor) are two counters doing two
 // jobs, and the frozen design line "tail from snapshot_seq + 1" conflated them.
-// Under the SEA-1333 amendment the snapshot boundary may resolve as store-space
+// Under the RIG-1333 amendment the snapshot boundary may resolve as store-space
 // (durable BIGSERIAL) while the stream seq is bus-space (resets per boot) — the
 // two are incomparable, so any arithmetic across them silently drops rows after
 // a restart. This driver treats snapshot_seq as an opaque token and tails from

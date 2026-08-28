@@ -74,7 +74,7 @@ type ServeConfig struct {
 	// (T1). Required: the comms vertical is store-backed, so Serve opens the
 	// store at startup and refuses to serve without it.
 	DatabaseDSN string
-	// S3 is the object-store archive tier config (SEA-1667 T4). Optional: when
+	// S3 is the object-store archive tier config (RIG-1667 T4). Optional: when
 	// unset (no endpoint/bucket) the server boots without an archive tier and the
 	// store's nil object-store guard fails a flush loudly only if one is ever
 	// attempted. Mirrors the DATABASE_DSN flag/env precedence at the CLI.
@@ -293,7 +293,7 @@ func secretsStateDir(cfg ServeConfig) string {
 	return filepath.Join(base, "secrets")
 }
 
-// openStore opens the store of record and wires the SEA-1667 T4 object-store
+// openStore opens the store of record and wires the RIG-1667 T4 object-store
 // archive seam onto it. When the S3 config is ABSENT (no endpoint/bucket) the
 // seam is left nil and the server boots socket-only — the store's nil-guard
 // fails a flush loudly only if one is ever attempted, so a dev server with no
@@ -422,7 +422,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	publishReady(bus)
 
 	// The store of record (T1) backs the comms vertical and the token store, and
-	// carries the SEA-1667 T4 object-store archive seam. Open it before serving so
+	// carries the RIG-1667 T4 object-store archive seam. Open it before serving so
 	// a bad DSN, a failed migration, or a bad S3 config fails startup here, not
 	// mid-request.
 	st, err := openStore(ctx, cfg)
@@ -491,7 +491,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	commsSvc := comms.NewComms(st, commsBus, admin.ID)
 	// Register the coordination-channel reconcile as the store's in-tx hook, so
 	// the two parent-edge writers auto-provision/reconcile a manager's
-	// coordination channel atomically with the tree edge (SEA-1722 T5). Wired here
+	// coordination channel atomically with the tree edge (RIG-1722 T5). Wired here
 	// before serving; the store invokes it on its own tx.
 	commsSvc.RegisterCoordinationHook(st)
 
@@ -513,11 +513,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	hubLog := slog.Default()
 	hub := newRunnerHub(st, brd, tail, commsSvc, hubLog)
 	svc := newService(cfg.Version, bus, st, hub, brd, issueBrd, tail)
-	// Break the hub<->lifecycle (SEA-1618 T5), hub<->board (agent primary
-	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (SEA-1577)
+	// Break the hub<->lifecycle (RIG-1618 T5), hub<->board (agent primary
+	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (RIG-1577)
 	// construction cycles; see wireHubServiceCycles in sinks.go.
 	wireHubServiceCycles(hub, commsSvc, st, issueBrd)
-	// Seed the root Manager "supervisor" on first launch (SEA-1820). The seed
+	// Seed the root Manager "supervisor" on first launch (RIG-1820). The seed
 	// needs a Runner whose command stream can serve Provision/Start, which is not
 	// up at boot — the embedded stack starts the Runner only after the server is
 	// serving, and its command stream attaches only after it enrolls — so it
@@ -593,7 +593,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		g.Go(func() error { return lane.arm.Run(gctx) })
 		g.Go(func() error { return lane.reconciler.Run(gctx) })
 	}
-	// The comms-bus consumers (SEA-1569): the T3 delivery fan-out consumer and
+	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
 	// ends when the comms bus closes in drainDoors).

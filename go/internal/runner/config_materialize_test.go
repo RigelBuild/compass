@@ -115,7 +115,7 @@ func validBundle() map[string][]byte {
 	}
 }
 
-// fullBundle is validBundle plus all five SEA-1678 config categories
+// fullBundle is validBundle plus all five RIG-1678 config categories
 // (settings/config.yml, top-level AGENTS.md + models.yml, a flat rules/ member,
 // and a flat agents/ member), so a provision/refresh fixture can prove the
 // update path carries every delivered category end-to-end — not just the
@@ -614,7 +614,7 @@ func TestConfigMaterializeProvisionPathDoesNotRelabel(t *testing.T) {
 // yamlMap is a minimal valid YAML-mapping body for a settings/models member.
 var yamlMap = []byte("compaction:\n  enabled: true\n")
 
-// TestConfigMaterializeLandsNewMembers pins the SEA-1678 T2 unpack of all five
+// TestConfigMaterializeLandsNewMembers pins the RIG-1678 T2 unpack of all five
 // new members: settings/config.yml, top-level AGENTS.md + models.yml, flat
 // rules/*.md|.mdc, and flat agents/*.md all land under <root>/<version>/ with
 // pinned modes (0644 files, 0755 dirs).

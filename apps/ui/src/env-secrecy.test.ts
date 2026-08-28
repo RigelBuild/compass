@@ -4,7 +4,7 @@
 // app. No moon task consumes these paths (they are inputs to nothing that
 // lints, tests, or scans), so review is the ONLY thing between a committed token
 // and an exfiltrated one — and review is exactly what missed it the first time
-// (SEA-1539). This gate gives the `.gitignore` rules teeth so they cannot
+// (RIG-1539). This gate gives the `.gitignore` rules teeth so they cannot
 // silently re-widen, and — the property that actually matters — pins the real
 // tracked set so it can never grow past the one dev-defaults file.
 //
@@ -87,7 +87,7 @@ describe("env-secrecy gate (no new committable .env; tracked env set pinned to d
 		expect(
 			envFiles,
 			unexpected.length > 0
-				? `Unexpected tracked env file(s) under apps/ui: [${unexpected.join(", ")}]. A VITE_* value in any tracked env file is baked into dist/ and shipped to every browser (SEA-1539). Untrack it (git rm --cached <file>); only ${DEV_DEFAULTS} (loopback dev defaults, no secret) may be tracked.`
+				? `Unexpected tracked env file(s) under apps/ui: [${unexpected.join(", ")}]. A VITE_* value in any tracked env file is baked into dist/ and shipped to every browser (RIG-1539). Untrack it (git rm --cached <file>); only ${DEV_DEFAULTS} (loopback dev defaults, no secret) may be tracked.`
 				: "",
 		).toEqual([DEV_DEFAULTS]);
 	});

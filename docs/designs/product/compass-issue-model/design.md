@@ -245,7 +245,7 @@ message ChangedStats {
 // the fixture's TrackerRef (stub-data.ts:113-120).
 message TrackerRef {
   string kind = 1;              // "linear" | "jira" | "github" — the tracker family
-  string id = 2;               // the tracker's native issue id, e.g. "SEA-1042"
+  string id = 2;               // the tracker's native issue id, e.g. "RIG-1042"
   string status = 3;           // the tracker's native status name in the user's org
   string url = 4;
 }
@@ -700,7 +700,7 @@ separate field (`forge_account`), which the `verified` cross-check reads.
 - **Card issue key.** Every board item is forge-backed, so the card key
   (`card-issue`, WorkstreamCard.tsx:25, currently the bare `ws.issue` string)
   becomes the tracker id when linked (`tracker.id`, rendered in the tracker's
-  native form — e.g. `SEA-1042`, not `SEA#1042`), else the forge coordinate.
+  native form — e.g. `RIG-1042`, not `SEA#1042`), else the forge coordinate.
   The coordinate is `${repo}#${number}` in the single-forge common case, but
   qualifies with the `ForgeRef` host — `${host}/${repo}#${number}` — when the
   board holds artifacts from more than one `ForgeRef`, so the DL-091

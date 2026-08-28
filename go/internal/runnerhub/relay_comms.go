@@ -68,7 +68,7 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 	// consumer/component loop and returns promptly, so promoteSession never blocks
 	// on store work and never holds h.mu across a sink call (mirrors the settle
 	// edge at deliverSession). Both nil-safe (a hub with neither wired is today's
-	// behavior — SEA-1569 T6 session-start, T8 presence).
+	// behavior — RIG-1569 T6 session-start, T8 presence).
 	sessionStart := h.sessionStart
 	presence := h.presence
 	h.mu.Unlock()
@@ -76,7 +76,7 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 		sessionStart.OnSessionStarted(sessionID, account)
 	}
 
-	// The reconciliation edge (SEA-1569 T8, design.md:494-503): a Runner
+	// The reconciliation edge (RIG-1569 T8, design.md:494-503): a Runner
 	// re-enroll clears bindings and each session re-promotes here, so presence is
 	// reconstructed on this edge. Notify AFTER releasing the lock and only once
 	// the binding is recorded, nil-safe; the sink enqueues into the component's
@@ -91,7 +91,7 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 // RelayCommsCall for a stopped session_id fails closed CodeNotFound — the same
 // answer as a never-seen session, never a stale reuse.
 //
-// It also drives presence to OFFLINE (SEA-1569 T8): a clean Stop tears the
+// It also drives presence to OFFLINE (RIG-1569 T8): a clean Stop tears the
 // session down, but a STOPPED/DISCONNECTED frame arriving after the unbind can
 // no longer resolve the account at deliverSession, so without an edge here the
 // account's presence would stay WORKING/IDLE/WAITING forever. Fire a terminal
@@ -168,7 +168,7 @@ func (h *Hub) accountForSession(sessionID string) (store.AccountID, bool) {
 }
 
 // SessionForAccount resolves the LIVE session bound to an agent account — the
-// REVERSE of accountForSession, the direction the delivery consumer (SEA-1569
+// REVERSE of accountForSession, the direction the delivery consumer (RIG-1569
 // T3) needs to dispatch a deliver to a resolved subscriber. The bool is false
 // when the account has no live session (never started, stopped, or dropped on a
 // Runner reconnect): the consumer pushes nothing now and lets the D2 cursor
@@ -285,7 +285,7 @@ func (h *Hub) RelayCommsCall(
 // CommitConversationFrame durably commits one relayed transcript_entry frame to
 // the transcript store, keyed at most once on the agent-minted idempotency_key —
 // the DURABLE counterpart to the loss-tolerant Deliver/PublishEvents path (#24 /
-// OQ-3, SEA-1667 T4). The Runner asserts no account; this resolves session_id ->
+// OQ-3, RIG-1667 T4). The Runner asserts no account; this resolves session_id ->
 // account from the hub's own binding purely as the fail-closed liveness gate
 // (exactly as RelayCommsCall does), then writes the entry to the transcript
 // store under the session id. The transcript row is keyed by session_id, not by
@@ -293,7 +293,7 @@ func (h *Hub) RelayCommsCall(
 // Runner" check, not an attribution written into the row.
 //
 // The conversation_posted / conversation_updated write-through was removed with
-// the Zulip threading model, so the durable lane now carries ONLY the SEA-1570
+// the Zulip threading model, so the durable lane now carries ONLY the RIG-1570
 // transcript_entry variant — the exact frame the Runner's Gateway forwards
 // (runner/gateway/post_conversation_frame.go). The method name and the request/
 // response messages keep the established CommitConversationFrame shape.
@@ -351,7 +351,7 @@ func (h *Hub) CommitConversationFrame(
 }
 
 // commitFrame dispatches one durable frame to the transcript store by its set
-// oneof variant. The durable lane carries only the SEA-1570 transcript_entry
+// oneof variant. The durable lane carries only the RIG-1570 transcript_entry
 // variant (the conversation_posted / conversation_updated write-through was
 // removed with the Zulip threading model), so a frame with any other variant —
 // or none — is CodeInvalidArgument, the terminal "malformed frame" the Runner

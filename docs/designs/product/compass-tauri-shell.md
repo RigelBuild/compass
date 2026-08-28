@@ -2,7 +2,7 @@
 
 Status: Superseded by compass-native-app/design.md
 
-Design for the Compass desktop shell (SEA-1022): the thin native app that hosts
+Design for the Compass desktop shell (RIG-1022): the thin native app that hosts
 the UI webview and connects it to the Compass daemon. Companion to the
 [architecture lineage](compass-architecture-lineage/design.md) record and the transport spec
 [`../../specs/product/compass.md`](../../specs/product/compass.md).

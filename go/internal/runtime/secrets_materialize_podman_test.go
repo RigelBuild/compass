@@ -2,7 +2,7 @@
 
 package runtime
 
-// Real-podman coverage for env-delivery secret materialization (SEA-1327 T5).
+// Real-podman coverage for env-delivery secret materialization (RIG-1327 T5).
 //
 // This test defends the write-then-read contract the broken `podman exec
 // --env-file` channel could never satisfy: the materializer writes the

@@ -2,7 +2,7 @@
 
 Status: Draft
 
-Tracker: SEA-1983. Template: the internal monorepo's proto-drop —
+Tracker: RIG-1983. Template: the internal monorepo's proto-drop —
 "refactor(ci): drop proto; pin bun/node/moon via nix, go via go-overlay".
 Compass diverges from that template wherever the CI substrate does: the
 internal monorepo runs the internal Woodpecker CI/CD against a nix-built CI
@@ -47,7 +47,7 @@ monorepo's shape, relocated to compass's existing toolchain-gate directory:
   `devenv.nix:127`, so darwin is a supported dev platform.
 - `go.nix` — version only (`{ version = "1.26.6"; }`); the derivation comes
   from the go-overlay input (next section), which carries its own per-platform
-  hashes. Designed against the post-#298 tree: SEA-1982 bumps the pin to
+  hashes. Designed against the post-#298 tree: RIG-1982 bumps the pin to
   1.26.6 (`.prototools:13`: `go = "1.26.6"`), and go-overlay ships a
   `manifests/go/1.26.6.nix` (verified against
   `purpleclay/go-overlay@main:manifests/go/`).
@@ -83,7 +83,7 @@ parse; option (a) — keep `setup-*` but read versions out of the new nix pin
 files — would keep four install mechanisms and the two-substrate drift risk
 the parity gate exists to police, purely to preserve GH's toolchain caches.
 Option (b) makes CI run the identical derivations the dev shell runs —
-the single-owner point of SEA-1983 — and shrinks ci.yml. The nix step's own
+the single-owner point of RIG-1983 — and shrinks ci.yml. The nix step's own
 comment already frames nix as the mechanism that reproduces dev-shell pins
 where setup-* can't (`ci.yml:230-236`); post-proto that applies to every
 toolchain.
@@ -319,7 +319,7 @@ merge").
 ### Keep setup-* actions reading versions from the nix pin files (fork 1a)
 
 Smallest ci.yml diff and keeps GH-hosted toolchain caches, but preserves the
-two-substrate split (four non-nix installers + one nix step) that SEA-1983
+two-substrate split (four non-nix installers + one nix step) that RIG-1983
 exists to end, keeps a sed/eval parse of a pin file in YAML
 (the injection-hardening the current step needs, `ci.yml:149-153,200-204`, is
 a cost of exactly this pattern), and leaves the parity gate policing a
@@ -341,7 +341,7 @@ detection retain value independent of CI's install path.
 
 ## Global Constraints
 
-1. **Gated on SEA-1982 / PR #298.** Implementation starts only after the Go
+1. **Gated on RIG-1982 / PR #298.** Implementation starts only after the Go
    1.26.5→1.26.6 govulncheck bump merges — this change edits `.prototools`
    (deleting it) and `devenv.nix`, both touched by #298, and must not race
    it. All pins here assume the post-#298 tree (Go pin = `1.26.6`,
@@ -474,7 +474,7 @@ root:markdownlint` green.
    covers only github-actions/bun-lockfile/gomod
    (`.github/dependabot.yml:12,28,40`) and has no nix ecosystem, so
    bun/node/moon/go pin bumps become manual PRs. This is no regression —
-   `.prototools` bumps are manual today (SEA-1982 is one) — and the design is
+   `.prototools` bumps are manual today (RIG-1982 is one) — and the design is
    correct without automation. Recommendation: accept manual bumps now;
    revisit if/when compass adopts a renovate config, reusing the internal
    monorepo's regex managers re-targeted at `tools/toolchain/versions/*.nix`.

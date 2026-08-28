@@ -16,7 +16,7 @@ Tracker: SEA
 > the superseded *RPC* has shipped: grep of
 > `compass/proto/compass/v1/*.proto` this run finds no `UpdateIssueState`
 > RPC (verified absent). The `Issue`/`IssueState` READ types DID ship in
-> SEA-1727 S1a (PR #145, `compass.proto:595` `enum IssueState`,
+> RIG-1727 S1a (PR #145, `compass.proto:595` `enum IssueState`,
 > `compass.proto:645` `message Issue`) and survive unchanged — only the
 > `CompassService` write RPC was frozen on paper and is dropped before build.
 
@@ -207,7 +207,7 @@ rather than re-homed, including the `seam.updateIssueStatus` mirror call
 inside promote (`store.ts:1859`). The board renders lifecycle from the frozen
 read path: the canonical `Issue` rides "`SubscribeEventsResponse` as a new
 oneof variant … `Issue issue = 16;` // the canonical board unit, pushed on
-every change" (`compass-issue-model/design.md:284-297`), shipping in SEA-1727
+every change" (`compass-issue-model/design.md:284-297`), shipping in RIG-1727
 S1a (PR #145). The `UpdateIssueState` RPC is **dropped from the contract
 before it is ever built** — grep of `compass/proto/compass/v1/` this run finds
 no `UpdateIssueState` RPC, so there is no wire build, no migration, and
@@ -242,7 +242,7 @@ population:
 
 - The `Issue`/`PullRequest` canonical type family, the `IssueState` enum,
   and the `SubscribeEventsResponse.issue` READ path (DL-067, DL-069,
-  SEA-1727 S1a / PR #145) — untouched.
+  RIG-1727 S1a / PR #145) — untouched.
 - DL-033's seven working states + DL-091's terminal `ARCHIVED` as the state
   MODEL (`DECISIONS.md:145`, `:153`) — untouched; only the write surface
   moves.
@@ -265,7 +265,7 @@ population:
    also create a conflict surface between two user intents; the ruling
    gives the user ONE write surface (the tracker) and the agents another,
    with the projection serializing both.
-3. **Fold the agent op into the SEA-1731 `ForgeCall*` family vs a sibling
+3. **Fold the agent op into the RIG-1731 `ForgeCall*` family vs a sibling
    family.** Weighed both:
    - *Fold into `ForgeCall`*: cheapest wire delta — one new oneof variant on
      `ForgeCallRequest`/`ForgeCallResult`, no new RPCs, the gen-fence
@@ -310,7 +310,7 @@ population:
   `compass-agent-spawn-despawn/design.md:132-135`). The relay IS the
   agent-facing RPC edge; no task may add a public agent-callable state RPC.
 - **The read path is frozen.** `Issue`/`PullRequest`/`IssueState` and
-  `SubscribeEventsResponse.issue = 16` (SEA-1727 S1a, PR #145) are consumed
+  `SubscribeEventsResponse.issue = 16` (RIG-1727 S1a, PR #145) are consumed
   as-is; no task edits them.
 - **Additive proto only.** New RPCs, messages, and oneof variants at fresh
   tags behind the buf breaking gate; `UpdateIssueState` is never authored
@@ -319,7 +319,7 @@ population:
   proto writer (coordinated, not read off the live proto —
   `compass-agent-spawn-despawn/design.md:447-448`).
 - **Gen-fence discipline.** `BoardCall*`/`RelayBoardCall*`/`SetIssueState*`
-  are internal-only symbols: extend the SEA-1267 gen-fence grep
+  are internal-only symbols: extend the RIG-1267 gen-fence grep
   (`proto/moon.yml:158`) with the unanchored
   `BoardCall|RelayBoardCall|SetIssueState` family, matching the
   `LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall` entries already
@@ -581,12 +581,12 @@ decisions the record is now designed against.
    tool and it isn't tracked by Compass already, Compass goes and fetches it,
    tracks it into the store, and then returns that." This is a **store-first
    read-through** model. The frozen `compass-server-ownership-layer` record
-   (SEA-1728) specified the opposite for forge reads — a **stateless
+   (RIG-1728) specified the opposite for forge reads — a **stateless
    pass-through relay**: "nothing is stored, nothing is resolved, and no
    coordinate can drift" (`compass-server-ownership-layer/design.md:352-354`).
    This does not change THIS amendment's issue-state WRITE path (the BoardCall
-   family + projection are unaffected), but it reshapes SEA-1731 (A1
-   forge-carrier proto) and the SEA-1728 forge read path. **Impact:** the A1
+   family + projection are unaffected), but it reshapes RIG-1731 (A1
+   forge-carrier proto) and the RIG-1728 forge read path. **Impact:** the A1
    proto's `ForgeCall*` read arms may need to become store-reads with a
    fetch-on-miss, and the naming/shape may change. Parked here because it is
    Matt's ruling to make on the frozen forge contract; A1 authoring holds on

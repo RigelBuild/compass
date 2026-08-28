@@ -64,7 +64,7 @@ premise has since dissolved:
   the compass-server network TLS door (mounted beside the Connect mounts in
   `buildNetworkServer`, `go/server/network_door.go:233-333`), raw-body
   HMAC-SHA256 fail-closed, ack-200-fast / work-async, inheriting the
-  G112/SEA-1298 body-read guards. The CODE is unlanded: the RIG-2717
+  G112/RIG-1298 body-read guards. The CODE is unlanded: the RIG-2717
   implementation stack (PRs #637-639 = its T1/T2/T3/T3a/T5) ships the
   verifiers and the `--public-url` / `$COMPASS_PUBLIC_URL` config
   (RIG-2717 T5, `compass-linear-agent-responder/design.md:728-734`) but
@@ -200,7 +200,7 @@ See Resolved decisions (W1).
 
 Two mounts on the same network TLS door, sharing the RIG-2717 shape
 (fail-closed raw-body HMAC, ack-200-fast / work-async, bounded body,
-G112/SEA-1298 inherited):
+G112/RIG-1298 inherited):
 
 - **`POST /webhooks/github`** — NEW sibling mount beside the Connect mounts
   (`network_door.go:270-277`). GitHub signs with `X-Hub-Signature-256`

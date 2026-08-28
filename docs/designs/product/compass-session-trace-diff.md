@@ -1,8 +1,8 @@
-# Compass session-trace DiffBlock: real line diff (SEA-1350)
+# Compass session-trace DiffBlock: real line diff (RIG-1350)
 
 Status: Active
 
-Tracking: SEA-1350 (two advisory findings from the PR #847 review-of-record,
+Tracking: RIG-1350 (two advisory findings from the PR #847 review-of-record,
 Matt-ruled deferred to this follow-up). UI-only; walking-skeleton renderer
 scope. Parent contract: the frozen compass-0.8 threading/renderer record
 scopes the Compass UI as a no-daemon walking skeleton
@@ -62,7 +62,7 @@ export interface FileDiff {
 }
 ```
 
-`FileDiff` mirrors a proto shape on the SEA-1342 go/proto lane; the UI only
+`FileDiff` mirrors a proto shape on the RIG-1342 go/proto lane; the UI only
 consumes it. The diff is computed client-side from the whole-file old/new
 pair, for display only.
 
@@ -209,7 +209,7 @@ read inside `<For each={rows()}>` exactly as today
   must pass; biome-clean.
 - UI-only: no `compass.v1` contract change, no transport change, no
   `FileDiff` shape change (`session-events.ts:22-27` mirrors a proto on the
-  SEA-1342 lane), no daemon.
+  RIG-1342 lane), no daemon.
 - One new npm dependency: `diff` (jsdiff), the line-level Myers engine
   (fork a — Matt ruled use a diff library). `diff@9.0.0`: BSD-3-Clause
   (compatible with the UI's AGPL-3.0-only), zero deps and zero peer deps,
