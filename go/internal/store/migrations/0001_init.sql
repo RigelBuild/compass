@@ -586,6 +586,11 @@ CREATE TABLE issues (
     labels         TEXT[]   NOT NULL DEFAULT '{}',
     agent_handle   TEXT     NOT NULL DEFAULT '',  -- '' = non-Compass author
 
+    -- OQ-6(a) recency-guard column (RIG-2883 T4): the forge's last-updated
+    -- timestamp for the artifact. INERT until T4a threads the write path
+    -- (Issue.UpdatedAt reaches no writer today); the bare column is a no-op.
+    forge_updated_at TIMESTAMPTZ,
+
     -- Compass machinery (server-owned; none on the forge). state defaults to
     -- BACKLOG; CHECK 1..8: a persisted issue is NEVER UNSPECIFIED(0). The
     -- machinery columns get their writers in later slices.
@@ -618,6 +623,8 @@ CREATE TABLE forge_repo_subscriptions (
     forge_host     TEXT     NOT NULL,
     repo           TEXT     NOT NULL,
     enabled        BOOLEAN  NOT NULL DEFAULT TRUE,
+    swept_updated_at TIMESTAMPTZ,              -- last swept forge updated_at watermark; NULL = never swept
+    list_etag      TEXT     NOT NULL DEFAULT '', -- conditional-GET etag for the repo LIST walk
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (forge_provider, forge_host, repo)
@@ -671,7 +678,8 @@ CREATE TABLE forge_artifact_cursors (
 -- A durable conditional-GET cache; etag advances ONLY after every row of that
 -- page's content is durably sunk. has_next persists the Link-chain fact so a 304
 -- can keep walking a multi-page repo. advanced_at records the last content
--- advance (an etag-storing 200+sink), NOT the last poll.
+-- advance (an etag-storing 200+sink), NOT the last poll. Retires with the poll
+-- driver (RIG-2883 T5), atomically with its serve.go consumer.
 CREATE TABLE forge_list_cursors (
     forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
     forge_host     TEXT     NOT NULL,

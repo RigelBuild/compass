@@ -26,8 +26,9 @@ func TestMigration0016TablesExist(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	// forge_repo_subscriptions
-	mustExec(t, s, `INSERT INTO forge_repo_subscriptions (forge_provider, forge_host, repo) VALUES (1, 'github.com', 'a/b')`)
+	// forge_repo_subscriptions — including the RIG-2883 T4 columns
+	// (swept_updated_at watermark + list_etag), proving they applied.
+	mustExec(t, s, `INSERT INTO forge_repo_subscriptions (forge_provider, forge_host, repo, swept_updated_at, list_etag) VALUES (1, 'github.com', 'a/b', now(), '"e"')`)
 	// forge_list_cursors
 	mustExec(t, s, `INSERT INTO forge_list_cursors (forge_provider, forge_host, repo, page) VALUES (1, 'github.com', 'a/b', 1)`)
 	// forge_artifact_cursors — both legal kind values (1=issue, 2=pull_request)
@@ -35,6 +36,9 @@ func TestMigration0016TablesExist(t *testing.T) {
 	// provider-domain 1..4 accept test.
 	mustExec(t, s, `INSERT INTO forge_artifact_cursors (forge_provider, forge_host, repo, kind, number) VALUES (1, 'github.com', 'a/b', 1, 7)`)
 	mustExec(t, s, `INSERT INTO forge_artifact_cursors (forge_provider, forge_host, repo, kind, number) VALUES (1, 'github.com', 'a/b', 2, 8)`)
+	// issues — the RIG-2883 T4 forge_updated_at column is present (INERT this
+	// slice; T4a threads its write path). Proven present by inserting it.
+	mustExec(t, s, `INSERT INTO issues (id, forge_provider, forge_host, repo, number, forge_updated_at) VALUES ('i-1', 1, 'github.com', 'a/b', 7, now())`)
 	// agent_forge_subscriptions needs a real agent_account_id (FK); seed one.
 	owner := mustUser(t, s, "forge-owner")
 	agent := mustAgent(t, s, owner.ID, "forge-agent")
@@ -371,6 +375,161 @@ func TestForgeCursorInvalidArgument(t *testing.T) {
 	sentinelIs(t, s.SetForgeRepoSubscriptionEnabled(ctx, 0, "h", "r", true), ErrInvalidArgument, "set zero provider")
 	sentinelIs(t, s.SetForgeRepoSubscriptionEnabled(ctx, ForgeProviderGitHub, "", "r", true), ErrInvalidArgument, "set empty host")
 	sentinelIs(t, s.SetForgeRepoSubscriptionEnabled(ctx, ForgeProviderGitHub, "h", "", true), ErrInvalidArgument, "set empty repo")
+}
+
+// ── Test 8: forge_repo_subscriptions watermark round-trip (RIG-2883 T4) ───────
+
+// TestForgeRepoWatermarkRoundTrip proves the swept_updated_at + list_etag
+// watermark persists: a never-swept row reads zero/empty, an unknown coordinate
+// also reads zero/empty (not an error — the reconciler treats "no row" and
+// "never swept" identically), a store then reads back, and a store on an unknown
+// coordinate is ErrNotFound (the subscription must exist first).
+func TestForgeRepoWatermarkRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	sub := ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b", Enabled: true}
+	if err := s.EnsureForgeRepoSubscription(ctx, sub); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	// Never-swept row: zero time, empty etag.
+	mark, etag, err := s.LoadForgeRepoWatermark(ctx, ForgeProviderGitHub, "github.com", "a/b")
+	if err != nil {
+		t.Fatalf("load never-swept: %v", err)
+	}
+	if !mark.IsZero() || etag != "" {
+		t.Fatalf("never-swept = (%v, %q), want (zero, \"\")", mark, etag)
+	}
+
+	// Unknown coordinate (no row) also reads zero/empty, not an error.
+	mark, etag, err = s.LoadForgeRepoWatermark(ctx, ForgeProviderGitLab, "gitlab.com", "x/y")
+	if err != nil {
+		t.Fatalf("load unknown coordinate: %v", err)
+	}
+	if !mark.IsZero() || etag != "" {
+		t.Fatalf("unknown coordinate = (%v, %q), want (zero, \"\")", mark, etag)
+	}
+
+	// Store then round-trip.
+	want := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	if err := s.StoreForgeRepoWatermark(ctx, ForgeProviderGitHub, "github.com", "a/b", want, `"v1"`); err != nil {
+		t.Fatalf("store watermark: %v", err)
+	}
+	mark, etag, err = s.LoadForgeRepoWatermark(ctx, ForgeProviderGitHub, "github.com", "a/b")
+	if err != nil {
+		t.Fatalf("load after store: %v", err)
+	}
+	if !mark.Equal(want) {
+		t.Fatalf("watermark = %v, want %v", mark, want)
+	}
+	if etag != `"v1"` {
+		t.Fatalf("etag = %q, want %q", etag, `"v1"`)
+	}
+
+	// Storing on an unknown coordinate -> ErrNotFound (the subscription must exist).
+	err = s.StoreForgeRepoWatermark(ctx, ForgeProviderGitHub, "github.com", "no/such", want, "")
+	sentinelIs(t, err, ErrNotFound, "store watermark on unknown coordinate")
+}
+
+// ── Test 9: watermark coordinate isolation across (provider, host) ────────────
+
+func TestForgeRepoWatermarkCoordinateIsolation(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	const repo = "a/b"
+	subs := []struct {
+		provider ForgeProvider
+		host     string
+		mark     time.Time
+		etag     string
+	}{
+		{ForgeProviderGitHub, "github.com", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), `"gh"`},
+		{ForgeProviderGitHub, "ghe.example.com", time.Date(2026, 2, 2, 0, 0, 0, 0, time.UTC), `"ghe"`},
+		{ForgeProviderGitLab, "github.com", time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC), `"gl"`},
+	}
+	for _, c := range subs {
+		if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: c.provider, Host: c.host, Repo: repo, Enabled: true}); err != nil {
+			t.Fatalf("ensure (%d,%q): %v", c.provider, c.host, err)
+		}
+		if err := s.StoreForgeRepoWatermark(ctx, c.provider, c.host, repo, c.mark, c.etag); err != nil {
+			t.Fatalf("store (%d,%q): %v", c.provider, c.host, err)
+		}
+	}
+	// Each coordinate reads back exactly its own watermark and etag.
+	for _, c := range subs {
+		mark, etag, err := s.LoadForgeRepoWatermark(ctx, c.provider, c.host, repo)
+		if err != nil {
+			t.Fatalf("load (%d,%q): %v", c.provider, c.host, err)
+		}
+		if !mark.Equal(c.mark) || etag != c.etag {
+			t.Fatalf("coordinate (%d,%q) = (%v, %q), want (%v, %q)", c.provider, c.host, mark, etag, c.mark, c.etag)
+		}
+	}
+}
+
+// ── Test 10: enabled-repo enumeration + point membership (RIG-2883 T4) ────────
+
+func TestListAndIsEnabledForgeRepos(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// No rows -> nil, and the point check is false.
+	repos, err := s.ListEnabledForgeRepos(ctx)
+	if err != nil {
+		t.Fatalf("list enabled repos empty: %v", err)
+	}
+	if repos != nil {
+		t.Fatalf("empty = %v, want nil", repos)
+	}
+	ok, err := s.IsEnabledForgeRepo(ctx, "a/b")
+	if err != nil {
+		t.Fatalf("is-enabled empty: %v", err)
+	}
+	if ok {
+		t.Fatal("is-enabled = true on empty, want false")
+	}
+
+	// Seed enabled repos out of lexical order across coordinates, plus one
+	// disabled — enumeration is ascending and excludes the disabled repo.
+	seed := []ForgeRepoSubscription{
+		{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "z/z", Enabled: true},
+		{Provider: ForgeProviderGitLab, Host: "gitlab.com", Repo: "a/a", Enabled: true},
+		{Provider: ForgeProviderGitHub, Host: "ghe.example.com", Repo: "m/m", Enabled: true},
+	}
+	for _, sub := range seed {
+		if err := s.EnsureForgeRepoSubscription(ctx, sub); err != nil {
+			t.Fatalf("ensure %+v: %v", sub, err)
+		}
+	}
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "d/d", Enabled: false}); err != nil {
+		t.Fatalf("ensure disabled: %v", err)
+	}
+
+	repos, err = s.ListEnabledForgeRepos(ctx)
+	if err != nil {
+		t.Fatalf("list enabled repos: %v", err)
+	}
+	if len(repos) != 3 || repos[0] != "a/a" || repos[1] != "m/m" || repos[2] != "z/z" {
+		t.Fatalf("list enabled repos = %v, want [a/a m/m z/z] ascending", repos)
+	}
+
+	// Point check: an enabled repo is true, the disabled repo is false.
+	ok, err = s.IsEnabledForgeRepo(ctx, "m/m")
+	if err != nil {
+		t.Fatalf("is-enabled m/m: %v", err)
+	}
+	if !ok {
+		t.Fatal("is-enabled m/m = false, want true")
+	}
+	ok, err = s.IsEnabledForgeRepo(ctx, "d/d")
+	if err != nil {
+		t.Fatalf("is-enabled d/d: %v", err)
+	}
+	if ok {
+		t.Fatal("is-enabled d/d (disabled) = true, want false")
+	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

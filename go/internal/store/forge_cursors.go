@@ -2,19 +2,23 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
-// The forge poll driver's durable state (SEA-1810 T2, design
-// docs/designs/product/compass-forge-poll-driver/design.md §T2): the repo-LIST
-// per-page FETCH cursor (forge_list_cursors) and the board's per-REPO poll
-// targets (forge_repo_subscriptions). The two DL-053 anticipatory tables
-// (agent_forge_subscriptions, forge_artifact_cursors) are writer-less this
-// slice and get their store surface with their writers.
+// The board arm's durable state (RIG-2883): the per-REPO poll targets and their
+// swept-updated-at watermark (forge_repo_subscriptions), plus the poll driver's
+// per-page FETCH cursor (forge_list_cursors) — the latter retires atomically
+// with its serve.go consumer in T5, so it survives this additive slice. The two
+// DL-053 anticipatory tables (agent_forge_subscriptions, forge_artifact_cursors)
+// are writer-less this slice and get their store surface with their writers.
 
 // ForgeListPageCursor is one durable page row of a repo's issue-LIST fetch
 // cursor (the DL-053 FETCH-cursor model at repo-LIST granularity). ETag ""
-// means never fetched (an unconditional GET).
+// means never fetched (an unconditional GET). Retires with the poll driver (T5).
 type ForgeListPageCursor struct {
 	Provider ForgeProvider // GITHUB(1)/GITLAB(2)/FORGEJO(3)/LINEAR(4); never 0
 	Host     string
@@ -24,9 +28,9 @@ type ForgeListPageCursor struct {
 	HasNext  bool
 }
 
-// ForgeRepoSubscription is one board poll target: a repo the poll driver walks
+// ForgeRepoSubscription is one board poll target: a repo the board arm walks
 // (OQ-C's table model). Enabled=false soft-disables the target without deleting
-// its cursor history.
+// its watermark history.
 type ForgeRepoSubscription struct {
 	Provider ForgeProvider
 	Host     string
@@ -133,8 +137,65 @@ func (s *Store) PruneForgeListCursorPages(ctx context.Context, provider ForgePro
 	return nil
 }
 
+// LoadForgeRepoWatermark reads the repo's swept_updated_at watermark and its
+// conditional-GET list_etag. A never-swept repo (swept_updated_at IS NULL)
+// returns the zero time.Time; an unknown coordinate is not an error — it too
+// returns the zero watermark and empty etag (the reconciler treats "no row" and
+// "never swept" identically, walking from the beginning). Zero/empty coordinate
+// fields -> ErrInvalidArgument.
+func (s *Store) LoadForgeRepoWatermark(ctx context.Context, provider ForgeProvider, host, repo string) (time.Time, string, error) {
+	if err := validCoordinate(provider, host, repo); err != nil {
+		return time.Time{}, "", err
+	}
+	var swept *time.Time
+	var etag string
+	err := s.pool.QueryRow(ctx,
+		`SELECT swept_updated_at, list_etag
+		   FROM forge_repo_subscriptions
+		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3`,
+		int32(provider), host, repo,
+	).Scan(&swept, &etag)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, "", nil
+	}
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("store: load forge repo watermark: %w", err)
+	}
+	if swept == nil {
+		return time.Time{}, etag, nil
+	}
+	return *swept, etag, nil
+}
+
+// StoreForgeRepoWatermark writes the repo's swept_updated_at watermark and
+// list_etag, touching updated_at. An unknown coordinate -> ErrNotFound (the
+// subscription must exist — the seed/upsert path owns row creation). Zero/empty
+// coordinate fields -> ErrInvalidArgument.
+func (s *Store) StoreForgeRepoWatermark(ctx context.Context, provider ForgeProvider, host, repo string, mark time.Time, etag string) error {
+	if err := validCoordinate(provider, host, repo); err != nil {
+		return err
+	}
+	var swept *time.Time
+	if !mark.IsZero() {
+		swept = &mark
+	}
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE forge_repo_subscriptions
+		    SET swept_updated_at = $4, list_etag = $5, updated_at = now()
+		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3`,
+		int32(provider), host, repo, swept, etag,
+	)
+	if err != nil {
+		return fmt.Errorf("store: store forge repo watermark: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w: forge repo subscription (%d, %q, %q)", ErrNotFound, provider, host, repo)
+	}
+	return nil
+}
+
 // EnsureForgeRepoSubscription inserts the target if absent; on conflict it DOES
-// NOTHING — the T4 seed reconcile is a bootstrap-only insert and the table is
+// NOTHING — the seed reconcile is a bootstrap-only insert and the table is
 // authoritative after the first insert (the seed never deletes, disables, or
 // re-enables an existing row). Zero/empty coordinate fields -> ErrInvalidArgument.
 func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSubscription) error {
@@ -152,9 +213,57 @@ func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSu
 	return nil
 }
 
+// ListEnabledForgeRepos reads every enabled target's repo, ascending — the board
+// reconciler's per-pass target enumeration across all coordinates. No rows is a
+// nil slice, not an error.
+func (s *Store) ListEnabledForgeRepos(ctx context.Context) ([]string, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT repo
+		   FROM forge_repo_subscriptions
+		  WHERE enabled = TRUE
+		  ORDER BY repo ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: list enabled forge repos: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var repo string
+		if err := rows.Scan(&repo); err != nil {
+			return nil, fmt.Errorf("store: scan forge repo: %w", err)
+		}
+		out = append(out, repo)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate forge repos: %w", err)
+	}
+	return out, nil
+}
+
+// IsEnabledForgeRepo reports whether an enabled subscription exists for the repo
+// (the point membership check the webhook arm gates on). An empty repo ->
+// ErrInvalidArgument.
+func (s *Store) IsEnabledForgeRepo(ctx context.Context, repo string) (bool, error) {
+	if repo == "" {
+		return false, fmt.Errorf("%w: repo is required", ErrInvalidArgument)
+	}
+	var exists bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM forge_repo_subscriptions
+		    WHERE repo = $1 AND enabled = TRUE)`,
+		repo,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: is enabled forge repo: %w", err)
+	}
+	return exists, nil
+}
+
 // ListEnabledForgeRepoSubscriptions reads the enabled targets for one (provider,
-// host), ascending repo — the driver's per-pass target enumeration. No rows is a
-// nil slice, not an error. Zero provider / empty host -> ErrInvalidArgument.
+// host), ascending repo. No rows is a nil slice, not an error. Zero provider /
+// empty host -> ErrInvalidArgument.
 func (s *Store) ListEnabledForgeRepoSubscriptions(ctx context.Context, provider ForgeProvider, host string) ([]ForgeRepoSubscription, error) {
 	if provider == ForgeProviderUnspecified {
 		return nil, fmt.Errorf("%w: forge provider is required", ErrInvalidArgument)
