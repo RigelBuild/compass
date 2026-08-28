@@ -39,7 +39,7 @@
 # the pull side. See docs/architecture/build-and-ci.md and the design record
 # docs/designs/infra/ci/compass-agent-image-publish/design.md.
 
-name: Publish agent image
+name: agent-image
 
 on:
   push:
@@ -79,7 +79,7 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish
+    name: publish
     runs-on: ubuntu-latest
     # workflow_dispatch runs on any branch; guard so a dispatch from a feature
     # branch can never mint a `:git-<sha>` for unmerged code nor move `:latest`

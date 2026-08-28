@@ -11,7 +11,7 @@
 # secret surface. The App's Workflows permission is LOAD-BEARING — the
 # github-actions manager pushes commits under .github/workflows/, which a GitHub
 # App may only do with that permission (see the T8 human-action runbook).
-name: Renovate
+name: renovate
 
 on:
   schedule:
@@ -40,6 +40,7 @@ concurrency:
 
 jobs:
   renovate:
+    name: run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

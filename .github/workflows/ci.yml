@@ -26,7 +26,7 @@
 # failure is attributed to a named check rather than to a line in one job's log.
 # The four special legs that already needed an environment the bare moon battery
 # has no business realizing — pgtest, microvm, forge-oracle, gtk4-e2e — remain
-# their own peer jobs. A single required `CI` rollup (below) still fronts the
+# their own peer jobs. A single required `rollup` check (below) still fronts the
 # whole set, so branch protection requires one check regardless of the fan-out.
 #
 # AFFECTED ON PRs, FULL ON MAIN — now per leg. A pull request runs only what it
@@ -46,28 +46,30 @@
 # reaches main.
 #
 # pgtest — the real-Postgres suites — runs as its own peer job (below), behind
-# the `CI` rollup, rather than as a step in the moon battery. It was peeled out
+# the `rollup` check, rather than as a step in the moon battery. It was peeled out
 # so a Postgres-service flake or the slow `-race` suite no longer serializes
 # behind the whole battery: the two lanes fail independently and a
 # service-container flake reds only `pgtest` (a re-run clears it), not the
 # hermetic gate. The suites are build-tagged `pgtest`, so the moon battery's `go
 # test ./...` never compiles them — the pgtest job is the only thing that runs
-# them. It joins the `CI` rollup's `needs`, so there is still one required check.
+# them. It joins the `rollup` check's `needs`, so there is still one required check.
 
-name: CI
+name: ci
 
 on:
   pull_request:
-    # The default types (opened, synchronize, reopened) OMIT `edited`, which is
-    # the only event fired when a PR's BASE branch is re-pointed. A stacked PR
-    # whose base flips when the PR below it merges/closes fires only
-    # `pull_request.edited` — with the default set, no fresh CI runs against the
-    # new base and `gh run rerun` only replays the frozen stale merge SHA (a
-    # phantom red against the dead base's tree; the only escape was close+reopen).
-    # `edited` closes that gap. It also fires on title/body edits, so the job
-    # below guards on `changes.base` to stay a no-op for everything but a real
-    # base re-point — no added CI spend on a title/body edit.
-    types: [opened, synchronize, reopened, edited]
+    # The default types (opened, synchronize, reopened). `edited` is
+    # deliberately ABSENT: jj-vine edits every PR's body ~1s after opening it,
+    # and an `edited` trigger fired a full phantom run that self-skipped and
+    # double-listed every check on the PR (a cosmetic artifact with a latent
+    # skipped-required-as-passing false green). The one thing `edited` used to
+    # buy — a fresh run when a stacked PR's BASE is re-pointed — is handled
+    # out of band by pr-base-repoint.yml, which guards on `changes.base` and
+    # re-triggers this workflow via `workflow_dispatch` (see the `pr` input
+    # below). A triggered run cannot post zero contexts (a skipped job still
+    # posts a `skipped` context), so the phantom could not be narrowed away in
+    # place — the trigger itself had to move.
+    types: [opened, synchronize, reopened]
   push:
     branches: [main]
   schedule:
@@ -76,31 +78,45 @@ on:
     # 07:17 UTC, off the top-of-hour cron congestion GitHub throttles.
     - cron: '17 7 * * *'
   workflow_dispatch:
-    # The forge fixture-regeneration lane (regen-forge-fixtures job below). It is
-    # operator-triggered ONLY — the live `-update` capture rewrites the golden
-    # testdata against the real testbed, whose PATs live only in Actions secrets,
-    # so a local `-update` is impossible. The gate events above never trigger the
-    # regen job (its own `if:` gates on this event name); this trigger exists
-    # solely so an operator can dispatch a fixture refresh from the Actions tab.
+    # TWO distinct dispatch lanes, disambiguated by the `pr` input:
+    #   - `pr` EMPTY  → the operator-only forge fixture-regeneration lane
+    #     (regen-forge-fixtures below). The live `-update` capture rewrites the
+    #     golden testdata against the real testbed, whose PATs live only in
+    #     Actions secrets, so a local `-update` is impossible. Its own `if:`
+    #     gates on `workflow_dispatch` AND an empty `pr`, so the gate jobs stay
+    #     off it and this trigger only refreshes fixtures from the Actions tab.
+    #   - `pr` SET (a PR number) → the base-re-point re-trigger. When a stacked
+    #     PR's base is re-pointed, pr-base-repoint.yml dispatches this workflow
+    #     with `pr=<N>`; the gate jobs below run the FULL battery (as on a
+    #     push) against that PR's freshly-recomputed `refs/pull/<N>/merge` — a
+    #     default `GITHUB_TOKEN` event triggers no workflow, so
+    #     `workflow_dispatch` is the one re-trigger that needs no minted
+    #     credential. A fresh run (unlike `gh run rerun`) picks up the merge
+    #     ref GitHub recomputes against the new base (actions/checkout#919).
+    inputs:
+      pr:
+        description: 'PR number to re-run against its recomputed merge ref (base re-point); empty = forge fixture regen'
+        required: false
+        default: ''
 
 # One in-flight run per ref per event action. A superseded push's run is
 # answering a question nobody is asking any more. Both the event and its action
 # are in the key so runs answering different questions about the same ref don't
 # cancel each other: a nightly schedule and a coincident post-merge push
-# (different events), and a PR's `opened`/`edited`/`synchronize` sub-actions
-# (same event, different questions). That last case is load-bearing: jj-vine
-# opens a PR, then ~1s later edits the body to add the stack diagram, and that
-# `edited` run must not cancel the still-running real `opened` run — otherwise
-# the required check ends cancelled+skipped (the edited run self-skips via the
-# job `if` below) and reads as a false green.
+# (different events). A PR branch's superseded pushes fire
+# `pull_request.synchronize`, so they share one group and collapse to one
+# in-flight run per ref, as intended.
 #
 # `push` and `schedule` payloads have no `action` field, so
 # `${{ github.event.action }}` renders to a constant empty string for them —
-# their grouping is unchanged by this key addition (every main push still
-# collapses to `ci-<ref>-push-` and still cancels the prior one; a schedule run
-# still coexists with a coincident push via the distinct event name). A PR
-# branch's superseded pushes fire `pull_request.synchronize`, so they too share
-# one group and collapse to one in-flight run per ref, as intended.
+# their grouping is unchanged by this key (every main push still collapses to
+# `ci-<ref>-push-` and still cancels the prior one; a schedule run still
+# coexists with a coincident push via the distinct event name). A base-re-point
+# re-trigger arrives as `workflow_dispatch` on the PR's HEAD branch, so its
+# `github.ref` (`refs/heads/<head>`) differs from the PR's own
+# `pull_request` runs (`refs/pull/<N>/merge`) — no cross-cancel between a
+# re-point run and a concurrent push to that branch — while two re-points of
+# the same PR share a group and the newer supersedes the older.
 concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}-${{ github.event.action }}
   cancel-in-progress: true
@@ -110,19 +126,21 @@ permissions:
 
 jobs:
   setup:
-    name: Setup (concern matrix)
+    name: setup
     runs-on: ubuntu-latest
     # The discovery + grouping stage: run `moon query projects` (affected on a
     # PR, full on push/schedule) and translate the live answer into the matrix
     # the `moon` job fans out over, plus the four special-leg affected flags.
-    # moon owns discovery; the generator owns only grouping, guarded loud on any
-    # untagged / double-tagged project or coverage gap. Same no-op-`edited` guard
-    # every gate job carries.
+    # untagged / double-tagged project or coverage gap. Same dispatch-aware gate
+    # guard every gate job carries.
+    # Run on every gate event (push, schedule, pull_request) and on a
+    # base-re-point re-trigger — a `workflow_dispatch` carrying a non-empty
+    # `pr` input. Stay OFF the fixture-regen dispatch (empty `pr`), which
+    # runs regen-forge-fixtures alone. `github.event.inputs.pr` is '' for
+    # every non-dispatch event, so the left disjunct carries those.
     if: >-
-      github.event_name != 'workflow_dispatch' &&
-      (github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null)
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != ''
     timeout-minutes: 15
     env:
       # Same short temp root as every gate job — see the moon battery below for
@@ -148,6 +166,12 @@ jobs:
           # detection diffs base...HEAD — both need real history, not a shallow
           # single-ref checkout.
           fetch-depth: 0
+          # On a base-re-point re-trigger (workflow_dispatch with pr set) check
+          # out the PR's merge ref, which GitHub recomputes against the new base
+          # for a FRESH run (actions/checkout#919 — a plain rerun would replay
+          # the stale merge SHA). Empty on every other event → checkout's default
+          # triggering ref.
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
@@ -209,7 +233,7 @@ jobs:
         run: bun run tools/ci-matrix/index.ts
 
   moon:
-    name: Moon battery (${{ matrix.group }})
+    name: moon (${{ matrix.group }})
     runs-on: ubuntu-latest
     needs: setup
     # One leg per concern group, discovered at run time from setup's matrix. No
@@ -217,19 +241,18 @@ jobs:
     # exist in the workspace, translated by the generator. `fail-fast: false` so
     # one group's failure does not cancel the others (each is an independently
     # attributable named check). NO `continue-on-error`: a leg's failure must red
-    # its check and, through the rollup, the required `CI` status.
+    # its check and, through the rollup, the required `rollup` status.
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.setup.outputs.matrix) }}
-    # Same no-op-`edited` guard every gate job carries (see setup): a title/body
-    # edit that did not move the base is a no-op; push/schedule pass through;
-    # workflow_dispatch stays off (regen-only).
+    # Same dispatch-aware gate guard every gate job carries (see setup): run on
+    # push/schedule/pull_request and on a base-re-point re-trigger
+    # (workflow_dispatch with a non-empty pr); stay off the fixture-regen
+    # dispatch (empty pr, regen-only).
     if: >-
-      github.event_name != 'workflow_dispatch' &&
-      (github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null)
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != ''
     # The forks group builds through nix (devenv's Rust crates via its flake's
     # fenix pin), the dominant cost, so 90m is the ceiling every leg shares for
     # now. A later dedup can give each group its own tighter ceiling; the forks
@@ -259,6 +282,9 @@ jobs:
           # The drift gate's `git diff --no-index` needs real git; a shallow
           # single-ref checkout does not provide it.
           fetch-depth: 0
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - if: matrix.run == 'true'
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
@@ -379,22 +405,20 @@ jobs:
         uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
 
   pgtest:
-    name: pgtest (real-Postgres suites)
+    name: pgtest
     runs-on: ubuntu-latest
     needs: setup
     # Peeled out of the moon gate so a Postgres-service flake or a slow -race
     # suite no longer serializes behind the whole battery. The job-level `if:`
-    # ANDs the shared no-op-`edited` guard with the pgtest affected gate: on a PR
+    # ANDs the dispatch-aware gate guard with the pgtest affected gate: on a PR
     # it runs only when setup's closure contains compass-go (pgtest_affected),
     # and always on push/schedule (setup emits the flag 'true' there). A failed
     # setup leaves the output empty → `'' == 'true'` is false → the job skips,
     # and the rollup turns that skip red because the paired flag is not 'false'.
     # The in-step guards stay as defense-in-depth.
     if: >-
-      github.event_name != 'workflow_dispatch' &&
-      (github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null) &&
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
       (github.event_name != 'pull_request' ||
       needs.setup.outputs.pgtest_affected == 'true')
     timeout-minutes: 20
@@ -428,6 +452,10 @@ jobs:
       # checkout: pgtest runs NO git diff (its guard greps files via `grep -rl`),
       # so a default shallow checkout suffices — no `fetch-depth: 0` needed.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
@@ -551,22 +579,20 @@ jobs:
           exit "$rc"
 
   microvm:
-    name: microvm (KVM boot suite)
+    name: microvm
     runs-on: ubuntu-latest
     needs: setup
     # Peeled out of the moon gate so the KVM boot suite runs as its own lane, in
     # parallel with the moon battery and the other peer jobs, behind the CI
-    # rollup. The job-level `if:` ANDs the shared no-op-`edited` guard with the
+    # rollup. The job-level `if:` ANDs the dispatch-aware gate guard with the
     # microVM affected gate: on a PR it runs only when setup's closure contains
     # compass-go or compass-guest-image (microvm_affected), and always on
     # push/schedule. No privileged container — the boot leg runs rootless on a
     # bare runner with the udev + sysctl relaxations below (design T2 / §E-D2).
     # The in-step guards stay as defense-in-depth.
     if: >-
-      github.event_name != 'workflow_dispatch' &&
-      (github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null) &&
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
       (github.event_name != 'pull_request' ||
       needs.setup.outputs.microvm_affected == 'true')
     timeout-minutes: 30
@@ -578,6 +604,10 @@ jobs:
     steps:
       # microVM runs no git-diff, so a default shallow checkout suffices.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
@@ -777,22 +807,21 @@ jobs:
           exit "$rc"
 
   forge-oracle:
-    name: forge-oracle (live-contract oracle)
+    name: forge
     runs-on: ubuntu-latest
     needs: setup
     # Peeled out of the moon gate so the secret-bearing live oracle runs as its
-    # own lane behind the CI rollup; the tri-event + same-repo-head guards stay
-    # on the steps as defense-in-depth. The job-level `if:` ANDs the shared
-    # no-op-`edited` guard with the forge affected gate: on a PR the job runs
-    # only when setup found the forge surface affected (forge_affected — the
-    # go/internal/forge/** or ci.yml change), and always on push/schedule. The
+    # own lane behind the rollup; the tri-event + same-repo-head guards stay
+    # on the steps as defense-in-depth. The job-level `if:` ANDs the
+    # dispatch-aware gate guard with the forge affected gate: on a PR the job
+    # runs only when setup found the forge surface affected (forge_affected —
+    # the go/internal/forge/** or ci.yml change), and always on push/schedule
+    # and on a base-re-point re-trigger. The
     # in-step forge_affected detection + tri-event/same-repo-head guards stay as
     # defense-in-depth. No privileged container.
     if: >-
-      github.event_name != 'workflow_dispatch' &&
-      (github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null) &&
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
       (github.event_name != 'pull_request' ||
       needs.setup.outputs.forge_affected == 'true')
     timeout-minutes: 30
@@ -803,6 +832,9 @@ jobs:
         with:
           # The forge-affected git diff needs the base branch history.
           fetch-depth: 0
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
@@ -880,7 +912,7 @@ jobs:
           # Fail LOUD if the base ref does not resolve rather than swallowing the
           # error as "not affected" (mirrors the gtk4-affected gate): an
           # unresolvable base (e.g. a stacked PR's base churning under a
-          # pull_request.edited re-point) must red the gate, never skip it green.
+          # base re-point) must red the gate, never skip it green.
           if ! git rev-parse --verify --quiet "$base" >/dev/null; then
             echo "::error::forge affected gate: base ref $base does not resolve — cannot compute the affected set"
             exit 1
@@ -915,7 +947,9 @@ jobs:
            github.event.pull_request.head.repo.full_name == github.repository &&
            steps.forge_affected.outputs.forge_affected == 'true') ||
           github.event_name == 'push' ||
-          github.event_name == 'schedule'
+          github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.pr != '')
         env:
           LINEAR_FORGE_CLIENT_ID: ${{ secrets.LINEAR_FORGE_CLIENT_ID }}
           LINEAR_FORGE_CLIENT_SECRET: ${{ secrets.LINEAR_FORGE_CLIENT_SECRET }}
@@ -949,7 +983,9 @@ jobs:
            github.event.pull_request.head.repo.full_name == github.repository &&
            steps.forge_affected.outputs.forge_affected == 'true') ||
           github.event_name == 'push' ||
-          github.event_name == 'schedule'
+          github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.pr != '')
         env:
           # The T2 env contract (design §358-362, §431-436): the GitHub live legs
           # gate on the LIVEGITHUB_* trio, the Linear live legs gate independently
@@ -1006,7 +1042,9 @@ jobs:
            github.event.pull_request.head.repo.full_name == github.repository &&
            steps.forge_affected.outputs.forge_affected == 'true') ||
           github.event_name == 'push' ||
-          github.event_name == 'schedule'
+          github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.pr != '')
         run: |
           src=internal/forge/livegithub_test.go
           ghskip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' "$src")
@@ -1032,21 +1070,20 @@ jobs:
           echo "forge oracle: the live-contract suite ran both the GitHub and Linear legs against the testbed and reported ok"
 
   gtk4-e2e:
-    name: gtk4-e2e (multi-window native app gate)
+    name: gtk4
     runs-on: ubuntu-latest
     needs: setup
-    # Peeled out of the moon gate into its own lane behind the CI rollup; the
+    # Peeled out of the moon gate into its own lane behind the rollup; the
     # native GTK4/WebKit app gate realizes a heavy out-of-band WebKitGTK/weston
     # closure the bare moon gate has no business building. The job-level `if:`
-    # ANDs the shared no-op-`edited` guard with the gtk4 affected gate: on a PR
+    # ANDs the dispatch-aware gate guard with the gtk4 affected gate: on a PR
     # it runs only when setup found go/cmd/compass-app/ or a shared GTK closure
-    # input changed (gtk4_affected), and always on push/schedule. The in-step
-    # affected guard stays as defense-in-depth. No privileged container.
+    # input changed (gtk4_affected), and always on push/schedule and on a
+    # base-re-point re-trigger. The in-step affected guard stays as
+    # defense-in-depth. No privileged container.
     if: >-
-      github.event_name != 'workflow_dispatch' &&
-      (github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null) &&
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
       (github.event_name != 'pull_request' ||
       needs.setup.outputs.gtk4_affected == 'true')
     timeout-minutes: 30
@@ -1057,6 +1094,9 @@ jobs:
         with:
           # The gtk4 affected `git -C ..` diff needs the base branch history.
           fetch-depth: 0
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
@@ -1134,7 +1174,8 @@ jobs:
         # the closure is the only other input that changes what it links), so a
         # Go/UI/docs PR never pays the WebKitGTK realization. push-to-main and the
         # nightly schedule always run it (the full-sweep backstop), matching the
-        # moon affected/full split.
+        # moon affected/full split; a base-re-point re-trigger (workflow_dispatch)
+        # also runs it full.
         if: success()
         working-directory: go
         env:
@@ -1147,7 +1188,7 @@ jobs:
             # fetch-depth:0 (job checkout) gives the base ref for the diff. Fail
             # LOUD if it does not resolve rather than swallowing the error as
             # "not affected": an unresolvable base (e.g. a stacked PR's base
-            # churning under a pull_request.edited re-point) must red the gate,
+            # churning under a base re-point) must red the gate,
             # never skip it green. No `|| true` on the diff for the same reason —
             # under `bash -e` a genuine diff failure aborts the step.
             if ! git -C .. rev-parse --verify --quiet "$base" >/dev/null; then
@@ -1334,8 +1375,8 @@ jobs:
             exit 1
           fi
 
-  dogfood-e2e:
-    name: Dogfood e2e (deterministic full-stack tier)
+  e2e:
+    name: e2e
     runs-on: ubuntu-latest
     # A DEDICATED job in a PRIVILEGED container, split off from the moon battery, for one
     # reason: the image-affected seed path. On a PR that changes the image
@@ -1356,7 +1397,7 @@ jobs:
     # services by label) and break the Real-Postgres step's DSN. This tier needs
     # no Postgres service anyway — it stands up its OWN private postgres
     # (go/cmd/compass-postgres) inside the stack. The cost is a second nix +
-    # toolchain bootstrap; the `CI` rollup below keeps the single required check.
+    # toolchain bootstrap; the `rollup` check below keeps the single required check.
     container:
       # A glibc≥2.27 image carrying podman + newuidmap: the runner mounts its
       # node20 (dynamically linked) into the container to run the JS actions
@@ -1370,13 +1411,13 @@ jobs:
       # container sandbox withholds.
       image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       options: --privileged
-    # Mirror the moon battery's guard: skip the no-op `edited` (title/body) case, and
-    # stay off `workflow_dispatch` (regen-only — see the moon job's guard).
+    # Mirror the moon battery's dispatch-aware gate guard: run on
+    # push/schedule/pull_request and on a base-re-point re-trigger
+    # (workflow_dispatch with a non-empty pr); stay off the fixture-regen
+    # dispatch (empty pr, regen-only).
     if: >-
-      github.event_name != 'workflow_dispatch' &&
-      (github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null)
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != ''
     timeout-minutes: 60
     env:
       # Same short temp root as the moon battery: the e2e suite binds AF_UNIX sockets
@@ -1524,6 +1565,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - name: Hand the checkout to the podman user (as root)
         # actions/checkout runs as the container user (root), so the worktree
@@ -1699,8 +1743,22 @@ jobs:
         # image_affected=false — silently pulling published :latest and testing
         # the WRONG image with no signal. A broken moon means the detection
         # cannot be trusted, so fail the step loudly rather than guess.
-        if: github.event_name == 'pull_request'
+        # On a base-re-point re-trigger (workflow_dispatch with pr) this runs
+        # too, but not the moon query: the merge ref is already checked out and
+        # `:latest` is still stale relative to a re-pointed PR's own image
+        # changes, so building from the merge tree is the only choice that can
+        # never test a stale image — set image_affected=true unconditionally
+        # (the re-point is rare, so always paying the build is the fail-safe
+        # trade). moon's affected query has no base ref on a dispatch anyway.
+        if: >-
+          github.event_name == 'pull_request' ||
+          (github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.pr != '')
         run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "image_affected=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
           if ! moon_out=$(moon query tasks --affected --project compass-agent-image); then
             echo "::error::moon query for compass-agent-image affected-detection failed; cannot trust the image-affected signal, so failing rather than testing a possibly-stale published image"
             exit 1
@@ -1767,7 +1825,7 @@ jobs:
             podman tag ghcr.io/rigelbuild/compass-agent:latest compass-agent:latest
           fi
 
-      - name: Dogfood e2e (deterministic full-stack tier)
+      - name: e2e (deterministic full-stack tier)
         working-directory: go
         env:
           # -race needs cgo, matching go/moon.yml's race lane. Without it `go
@@ -1835,8 +1893,8 @@ jobs:
           fi
           echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
 
-  CI:
-    name: CI
+  rollup:
+    name: rollup
     # The single required check: a rollup that succeeds only if every work job
     # above did. Requiring THIS one status (not each work job) means the set of
     # jobs can be split or renamed without touching branch protection — a new
@@ -1852,10 +1910,10 @@ jobs:
     #     matters: when the RUN is cancelled — every push to a ref supersedes the
     #     prior in-flight run via the `cancel-in-progress` concurrency above,
     #     which cancels both work jobs — `always()` would STILL run this rollup,
-    #     see `needs.moon.result == 'cancelled'`, and red the required `CI`
+    #     see `needs.moon.result == 'cancelled'`, and red the required `rollup`
     #     check on that superseded commit. On a busy main that is a false red on
     #     nearly every intermediate merge. `!cancelled()` instead SKIPS the
-    #     rollup on a cancelled run, so a superseded commit's `CI` check is
+    #     rollup on a cancelled run, so a superseded commit's `rollup` check is
     #     neutral, never red; the ref's tip run is never superseded, so it always
     #     gets a real verdict and the merge gate is unaffected. A per-job cancel
     #     that is NOT a run supersede (a work-job `timeout-minutes`) does not set
@@ -1863,36 +1921,31 @@ jobs:
     #     on that `cancelled` result below. The one deliberate narrowing vs
     #     `always()`: manually cancelling the TIP run (a human clicking Cancel on
     #     the PR head's own run, not a supersede) also lands in the cancelled
-    #     state, so the rollup skips and the required `CI` check goes neutral —
+    #     state, so the rollup skips and the required `rollup` check goes neutral —
     #     i.e. mergeable without a verdict. That takes a deliberate human action
     #     against one's own gating run and is the accepted, standard `!cancelled()`
     #     tradeoff; `always()` would have red'd it instead.
-    #   - `github.event_name != 'workflow_dispatch'`: the work jobs stay off a
-    #     fixture-regen dispatch (regen-forge-fixtures runs alone there), so both
-    #     `needs` skip — this rollup must skip too, or `!cancelled()` would red the
-    #     required check on `skipped != success` for a run that never gates a merge.
-    #   - the SAME no-op-`edited` guard the work jobs carry, so on a PR title/body
-    #     edit that did not move the base — where both work jobs skip — this rollup
-    #     skips too, rather than running and failing on `skipped != success`. A
-    #     bare `!cancelled()` would red the required check on a legitimate no-op
-    #     edit.
-    # `!cancelled()` must be parenthesized against the OR group: `&&` binds tighter
-    # than `||`, so without the parens the trailing `|| changes.base != null` would
-    # detach from the AND.
-    needs: [setup, moon, dogfood-e2e, pgtest, microvm, forge-oracle, gtk4-e2e]
+    #   - the work jobs stay off a fixture-regen dispatch (regen-forge-fixtures
+    #     runs alone there, with an empty `pr` input), so both `needs` skip —
+    #     this rollup must skip too, or `!cancelled()` would red the required
+    #     check on `skipped != success` for a run that never gates a merge. It
+    #     DOES run on a base-re-point re-trigger (workflow_dispatch with a
+    #     non-empty `pr`), where the work jobs run and it must render a verdict.
+    # `!cancelled()` must be parenthesized against the dispatch OR group: `&&`
+    # binds tighter than `||`, so without the parens the trailing
+    # `|| inputs.pr != ''` would detach from the AND.
+    needs: [setup, moon, e2e, pgtest, microvm, forge-oracle, gtk4-e2e]
     if: >-
       !cancelled() &&
-      github.event_name != 'workflow_dispatch' && (
-      github.event_name != 'pull_request' ||
-      github.event.action != 'edited' ||
-      github.event.changes.base != null )
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '')
     runs-on: ubuntu-latest
     steps:
       - name: Require every work job to have succeeded
         # `needs.<job>.result` is one of success | failure | cancelled | skipped.
         # This step runs only when the rollup's own `if` let it (see above): a
-        # cancelled RUN skips the whole rollup, and the no-op-`edited` case skips
-        # it too.
+        # cancelled RUN skips the whole rollup, and a fixture-regen dispatch
+        # skips it too.
         #
         # `setup` and `moon` are UNCONDITIONALLY required: they run on every gate
         # event, so only plain `success` passes for them — a failure, a per-job
@@ -1913,7 +1966,7 @@ jobs:
         run: |
           setup='${{ needs.setup.result }}'
           moon='${{ needs.moon.result }}'
-          dogfood='${{ needs.dogfood-e2e.result }}'
+          e2e='${{ needs.e2e.result }}'
           pgtest='${{ needs.pgtest.result }}'
           microvm='${{ needs.microvm.result }}'
           forge='${{ needs.forge-oracle.result }}'
@@ -1922,7 +1975,7 @@ jobs:
           microvm_flag='${{ needs.setup.outputs.microvm_affected }}'
           forge_flag='${{ needs.setup.outputs.forge_affected }}'
           gtk4_flag='${{ needs.setup.outputs.gtk4_affected }}'
-          echo "setup=$setup moon=$moon dogfood-e2e=$dogfood pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4"
+          echo "setup=$setup moon=$moon e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4"
           echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag"
           rc=0
           # setup and moon must plainly succeed.
@@ -1934,9 +1987,9 @@ jobs:
             echo "::error::the moon battery did not succeed (result=$moon)"
             rc=1
           fi
-          # dogfood-e2e is not affected-gated — plain success required.
-          if [ "$dogfood" != "success" ]; then
-            echo "::error::dogfood-e2e did not succeed (result=$dogfood)"
+          # e2e is not affected-gated — plain success required.
+          if [ "$e2e" != "success" ]; then
+            echo "::error::e2e did not succeed (result=$e2e)"
             rc=1
           fi
           # Each gated special leg: success always passes; skipped passes ONLY
@@ -1963,16 +2016,20 @@ jobs:
           echo "all required work jobs succeeded (or correctly skipped per their setup flag)"
 
   regen-forge-fixtures:
-    name: Regenerate forge golden fixtures
+    name: regen-fixtures
     runs-on: ubuntu-latest
     # The operator-only fixture-regeneration lane. The live `-update` capture
     # (TestLiveUpdateFixtures) rewrites go/internal/forge/testdata/ against the
     # real GitHub + Linear testbed — whose PATs live only in Actions secrets, so
     # a local `-update` is impossible — then opens a BOT PR carrying the rewritten
     # fixtures for human review. It is a SEPARATE job, never a step in the moon battery:
-    # gating on `workflow_dispatch` keeps it off every normal gate event, so the
-    # required `CI` rollup above (which does not `needs:` this job) is untouched.
-    if: github.event_name == 'workflow_dispatch'
+    # gating on `workflow_dispatch` with an EMPTY `pr` input keeps it off every
+    # normal gate event AND off the base-re-point re-trigger (which carries a
+    # non-empty `pr` and drives the gate jobs, not this regen lane), so the
+    # required `rollup` check above (which does not `needs:` this job) is untouched.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.pr == ''
     # The top-level `permissions: contents: read` is the floor; this job widens
     # its own to open a PR: contents:write to push the regen branch,
     # pull-requests:write to open the PR against it.

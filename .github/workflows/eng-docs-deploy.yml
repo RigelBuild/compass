@@ -5,7 +5,7 @@
 # deploy.ts, SEA-1765). This is a STANDALONE CD workflow — it is deliberately
 # NOT part of `moon ci :ci` (the CI gate in ci.yml), so a deploy failure never
 # gates a merge and a green CI never waits on Cloudflare.
-name: eng-docs-deploy
+name: eng-docs
 
 on:
   push:
@@ -22,6 +22,7 @@ concurrency:
 
 jobs:
   deploy:
+    name: deploy
     runs-on: ubuntu-latest
     # Fork guard: a push always runs; a PR only runs when it comes from a branch
     # in THIS repo. Fork PRs get no secrets (CLOUDFLARE_*/GH_TOKEN), so a deploy

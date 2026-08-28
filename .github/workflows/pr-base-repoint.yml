@@ -1,0 +1,121 @@
+# Base-re-point re-trigger for stacked PRs.
+#
+# ci.yml deliberately does NOT listen to `pull_request.edited`: that event
+# fires on every title/body edit (jj-vine edits every PR's body ~1s after
+# opening it), and the phantom run it produced self-skipped and double-listed
+# every check on the PR — a cosmetic mess with a latent
+# skipped-required-as-passing false green. But `edited` is ALSO the only event
+# fired when a stacked PR's BASE branch is re-pointed (the PR below it
+# merges/closes and GitHub re-points this PR at the new base). That case needs
+# a fresh CI run against the recomputed merge commit; a plain `gh run rerun`
+# only replays the frozen stale merge SHA (actions/checkout#919), which is the
+# exact phantom red `edited` was once added to fix.
+#
+# So `edited` lives HERE, narrowly: this workflow guards on `changes.base` so
+# it is a no-op for every title/body edit, and on a real base re-point it
+# re-triggers ci.yml out of band. The re-trigger is a `workflow_dispatch`
+# carrying the PR number, NOT a label bounce or a close/reopen: an event
+# created with the default `GITHUB_TOKEN` triggers no new workflow run (the
+# sole exceptions are `workflow_dispatch` and `repository_dispatch`), so
+# `workflow_dispatch` is the one re-trigger that needs no minted App token.
+# ci.yml's dispatch arm checks out `refs/pull/<pr>/merge`, which GitHub
+# recomputes against the new base for a fresh run, and runs the full battery
+# against it.
+
+name: pr-base-repoint
+
+on:
+  pull_request:
+    types: [edited]
+
+# Least privilege: the one thing this workflow does is dispatch ci.yml, which
+# needs `actions: write`. Nothing else.
+permissions:
+  actions: write
+
+# One re-trigger in flight per PR. A second base re-point supersedes the first;
+# the older dispatch is answering a question about a base that no longer holds.
+concurrency:
+  group: pr-base-repoint-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  repoint:
+    name: guard
+    runs-on: ubuntu-latest
+    # Fire ONLY on a real base re-point, and ONLY for a same-repo PR. `edited`
+    # sets `github.event.changes.base` only when the base actually moved, so a
+    # title/body edit is `null` and skips here — the no-op the phantom-removal
+    # depends on. The fork guard is a hard boundary: a fork PR's token is
+    # read-only (it could not dispatch anyway) and must never be handed
+    # `actions: write`; a fork's own CI already runs from its fork, and a fork
+    # base re-point is vanishingly rare, so skipping it costs nothing.
+    if: >-
+      github.event.changes.base != null &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 5
+    steps:
+      - name: Re-trigger ci.yml against the recomputed merge ref
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        # Dispatch ci.yml with `pr=<number>`; ci.yml's gate jobs recognise a
+        # non-empty `pr` as a base-re-point re-trigger (an empty `pr` is the
+        # separate operator-only fixture-regen lane) and check out
+        # `refs/pull/<pr>/merge`. `--ref` is the PR's HEAD branch: a dispatch
+        # needs a ref that carries the workflow, and the head branch is where a
+        # stacked PR lives; ci.yml's concurrency key keys the dispatch run to
+        # that head ref, distinct from the PR's own `pull_request` runs.
+        #
+        # Record a UTC timestamp taken JUST BEFORE the dispatch. The verify
+        # step below anchors its poll to runs created after this instant, so it
+        # confirms THIS dispatch's run — never a pre-existing queued run on the
+        # same head branch (a rapid double re-point), which would otherwise let
+        # the verify pass even if this dispatch silently produced nothing.
+        run: |
+          echo "since=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$GITHUB_OUTPUT"
+          gh workflow run ci.yml --ref "$HEAD_REF" -f pr="$PR_NUMBER"
+
+      - name: Verify a fresh ci.yml run started
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SINCE: ${{ steps.dispatch.outputs.since }}
+        # "Loud to a log" is not loud to the gate: if the dispatch silently
+        # produced no run, the PR would keep showing its green stale checks and
+        # nobody would know the re-point went untested. So poll the runs API for
+        # a `workflow_dispatch` ci.yml run on this head branch created at or
+        # after the dispatch instant, and fail this guard RED if none appears
+        # within the window. The guard being red is itself the signal the
+        # operator sees on the PR.
+        run: |
+          # Match a workflow_dispatch ci.yml run on our head branch whose
+          # createdAt is >= the instant we dispatched (SINCE), so a pre-existing
+          # run from an earlier re-point can never satisfy this check — only a
+          # run this step actually caused. Poll up to ~2min for run-creation lag.
+          deadline=$(( SECONDS + 120 ))
+          found=0
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            n=$(gh run list \
+              --workflow ci.yml \
+              --branch "$HEAD_REF" \
+              --event workflow_dispatch \
+              --limit 10 \
+              --json status,createdAt \
+              --jq '[.[] | select(.createdAt >= env.SINCE)] | length')
+            if [ "${n:-0}" -gt 0 ]; then
+              found=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$found" != 1 ]; then
+            echo "::error::dispatched ci.yml for PR #$PR_NUMBER on $HEAD_REF but no fresh workflow_dispatch run created at/after $SINCE appeared within the window — the base re-point was NOT re-tested; investigate before trusting this PR's checks"
+            exit 1
+          fi
+          echo "fresh ci.yml workflow_dispatch run confirmed for $HEAD_REF (created >= $SINCE)"

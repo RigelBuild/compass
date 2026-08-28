@@ -251,37 +251,6 @@
       depNameTemplate: "renovate",
       datasourceTemplate: "npm",
     },
-    {
-      // ── Containerized postgres image (RIG-2774, DL-260) ──
-      // go/internal/stack/postgres_image.go pins the S4 container-backed postgres
-      // image (DefaultPostgresImage) as a Go const the native managers can't see.
-      // Surface it as a docker dep so upstream postgres:18 security REBUILDS (same
-      // major, new digest) flow through a reviewable PR instead of the pin silently
-      // rotting. This is a STANDALONE default the T8 adapter runs, with NO parity
-      // coupling — unlike pgtest.go's pgImage, disabled below because it is locked
-      // to ci.yml's service image. DL-260 freezes the MAJOR at 18 for on-disk-
-      // format stability; the packageRule below (allowedVersions /^18$/) moves only
-      // the digest, so an 18->19 major is a deliberate design action (re-run the T8
-      // podman integration test), never an auto-PR.
-      //
-      // depName is `postgres-stack`, NOT `postgres`: the CI-service fence below is
-      // `matchDepNames: ["postgres"], enabled: false` with no manager/file scope,
-      // so a `postgres` depName here would inherit that disable and open zero PRs.
-      // The distinct name keeps the two postgres pins independently governed.
-      //
-      // versioningTemplate is explicit `docker`: a custom.regex manager defaults to
-      // `semver-coerced` regardless of datasource (see the catalog manager note
-      // above), which mishandles a `<tag>@<digest>` docker reference.
-      customType: "regex",
-      managerFilePatterns: ["/^go/internal/stack/postgres_image\\.go$/"],
-      matchStrings: [
-        "postgres:(?<currentValue>\\d+)@(?<currentDigest>sha256:[a-f0-9]{64})",
-      ],
-      depNameTemplate: "postgres-stack",
-      packageNameTemplate: "docker.io/library/postgres",
-      datasourceTemplate: "docker",
-      versioningTemplate: "docker",
-    },
   ],
 
   // ── The github-actions manager: SHA-pin maintenance (RIG-2432) ──
@@ -410,23 +379,6 @@
       // a manual two-file PR. Disable it for Renovate.
       matchDepNames: ["postgres"],
       enabled: false,
-    },
-    {
-      // ── Containerized postgres image: digest-only within major 18 (RIG-2774) ──
-      // DL-260 freezes the postgres MAJOR at 18 (on-disk-format stability). Pin the
-      // allowed version to major 18 so only the digest moves; an 18->19 major bump
-      // is a deliberate design action (re-run the T8 podman integration test to
-      // verify on-disk-format compatibility), never an auto-PR. Scoped by the
-      // distinct `postgres-stack` depName (see the customManager above) so it never
-      // touches the `postgres` CI-service fence above. No matchUpdateTypes: the
-      // rule must apply to ALL update types so allowedVersions filters a major
-      // candidate too — scoping it to `digest` would leave a `19` unfiltered. The
-      // repo-wide 5-day minimumReleaseAge soak is KEPT: Docker Hub carries a
-      // tag_last_pushed timestamp for the digest, so a rebuild clears the window
-      // and opens a PR (no permanent-pending stall the git-refs channel dep has).
-      matchManagers: ["custom.regex"],
-      matchDepNames: ["postgres-stack"],
-      allowedVersions: "/^18$/",
     },
     {
       // ── gomod `go` directive: manual floor policy ──
