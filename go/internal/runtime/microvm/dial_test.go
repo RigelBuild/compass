@@ -237,8 +237,12 @@ func TestDialGuest_HandshakeDeadline(t *testing.T) {
 }
 
 // healthHandler is a canned GuestControl handler: every Health returns the same
-// response, so the round-trip test asserts the fields survive the wire.
+// response, so the round-trip test asserts the fields survive the wire. It
+// embeds UnimplementedGuestControlHandler so it satisfies the exec surface U1
+// grew onto GuestControl (Exec/ExecStream/Signal/Provision) without this V2a
+// test exercising them.
 type healthHandler struct {
+	compassv1internalconnect.UnimplementedGuestControlHandler
 	resp *compassv1.HealthResponse
 }
 

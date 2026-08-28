@@ -37,15 +37,47 @@ package compass.v1;
 // Suffix-less service name follows the AgentGateway precedent (a Runner/host-side
 // door, not a public *Service) — carved out per-file in buf.yaml.
 //
-// The transport is unauthenticated: no credential travels the vsock hop. For
-// V2a Health this is correct — the host owns both ends of the hybrid vsock and
-// the AF_UNIX socket path is the session's structural identity, so "it answered
-// on the vsock we opened" is sufficient. When V2b adds the higher-value RPCs
-// (Exec/Signal/Provision), that assumption must be revisited explicitly: an Exec
-// surface may warrant the host authenticating guestd's identity beyond reaching
-// it on the expected socket.
+// The transport carries no credential over the vsock hop, by design (OQ-A
+// resolved, record §(e)): the boundary is structural, not a secret. The host
+// owns both ends of the hybrid vsock and the per-session AF_UNIX endpoint lives
+// in a runtime dir only the Runner's uid can reach, so "it answered on the
+// socket we opened" is the host's proof of the guest's identity. guestd
+// independently refuses any vsock peer that is not the host (CID 2), closing the
+// in-guest loopback (CID 1). As a cheap binding against a swapped guest, the
+// host mints a boot nonce on the kernel cmdline (compass.boot_nonce=<hex>) that
+// guestd echoes in HealthResponse.boot_nonce; Start verifies it before opening
+// the exec gate. This is an identity binding (right guest on the right socket),
+// not a secret channel — any nonce guestd can present, a guest-root attacker can
+// read from /proc/cmdline, so a bearer token would buy no boundary the VM +
+// socket ownership do not already provide.
 service GuestControl {
   rpc Health(HealthRequest) returns (HealthResponse);
+
+  // Exec runs one command to completion and returns its captured output. A
+  // non-zero exit is a SUCCESSFUL call whose ExecResponse.exit_code is
+  // non-zero — never a Connect error. A Connect error means the exec could not
+  // be attempted: a spawn failure, a refused uid (0/caps), a timeout, or an
+  // unprovisioned gate.
+  rpc Exec(ExecRequest) returns (ExecResponse);
+
+  // ExecStream runs a long-lived command over one bidi stream: the request
+  // stream carries the start frame, then stdin bytes and an optional
+  // half-close; the response stream carries the exec_id, then interleaved
+  // stdout/stderr, then exactly one terminal exit frame. Kill rides Signal
+  // (below), not this stream, so a teardown never contends with an in-flight
+  // stdin write.
+  rpc ExecStream(stream ExecStreamRequest) returns (stream ExecStreamResponse);
+
+  // Signal delivers a signal to a running exec by exec_id; an empty exec_id
+  // targets the guest itself (graceful Stop, record §(d)). Signalling an
+  // already-exited exec is a no-op success.
+  rpc Signal(SignalRequest) returns (SignalResponse);
+
+  // Provision transitions the supervisor ready -> provisioned: it records the
+  // session's default exec uid and base env and, when nft_script is non-empty,
+  // arms egress (V3; a non-empty script is unimplemented in V2b). Exec and
+  // ExecStream are refused until Provision succeeds.
+  rpc Provision(ProvisionRequest) returns (ProvisionResponse);
 }
 
 message HealthRequest {}
@@ -54,4 +86,103 @@ message HealthResponse {
   string guestd_version = 1;
   bool net_provisioned = 2;
   bool workspace_mounted = 3;
+  // boot_nonce echoes the host-minted compass.boot_nonce cmdline value so Start
+  // can bind this guest to the VM it launched before opening the exec gate
+  // (record §(e), OQ-A). Empty until V2b guestd parses the cmdline nonce.
+  bytes boot_nonce = 4;
 }
+
+// ExecRequest is a one-shot exec. It mirrors runtime.ExecSpec field for field.
+message ExecRequest {
+  // command is argv; command[0] is the program.
+  repeated string command = 1;
+  // uid is the exec's user. Absent = the session default uid set by Provision
+  // (the baked agent uid). uid 0 is REFUSED with a failed-precondition error
+  // before any spawn — the guest supervisor never runs an exec as root.
+  optional uint32 uid = 2;
+  // workdir is the working directory; absent = the child's default.
+  optional string workdir = 3;
+  // env is merged over the session base env; exec-specific keys win.
+  map<string, string> env = 4;
+  // stdin is fed to the child's stdin — the body over the wire, NEVER the argv,
+  // so a script and any secret it embeds never appear in the guest process
+  // list.
+  optional bytes stdin = 5;
+  // timeout_seconds bounds the command; the guest enforces it too.
+  uint32 timeout_seconds = 6;
+}
+
+message ExecResponse {
+  bytes stdout = 1;
+  bytes stderr = 2;
+  // exit_code is the command's exit status. Non-zero is a successful call with
+  // a failed command, never a Connect error (see the Exec doc-comment).
+  int32 exit_code = 3;
+}
+
+// ExecStreamRequest frames flow host -> guest: exactly one StartExec first,
+// then any number of stdin frames, then an optional StdinClose half-close.
+message ExecStreamRequest {
+  oneof frame {
+    StartExec start = 1;
+    bytes stdin = 2;
+    StdinClose stdin_close = 3;
+  }
+}
+
+message StartExec {
+  repeated string command = 1;
+  // uid as in ExecRequest: absent = session default; 0 REFUSED.
+  optional uint32 uid = 2;
+  optional string workdir = 3;
+  map<string, string> env = 4;
+}
+
+// StdinClose half-closes the child's stdin pipe without ending the stream.
+message StdinClose {}
+
+// ExecStreamResponse frames flow guest -> host: exactly one ExecStarted first,
+// then interleaved stdout/stderr, then exactly one ExecExit.
+message ExecStreamResponse {
+  oneof frame {
+    ExecStarted started = 1;
+    bytes stdout = 2;
+    bytes stderr = 3;
+    ExecExit exit = 4;
+  }
+}
+
+// ExecStarted is the first response frame; exec_id is the handle Signal targets.
+message ExecStarted {
+  string exec_id = 1;
+}
+
+// ExecExit is the terminal response frame, emitted from guestd's own reap.
+message ExecExit {
+  // exit_code is meaningful when signal == 0.
+  int32 exit_code = 1;
+  // signal is non-zero when the child died by signal (e.g. SIGKILL on Kill).
+  int32 signal = 2;
+}
+
+message SignalRequest {
+  // exec_id targets a running exec; "" targets the guest itself (Stop).
+  string exec_id = 1;
+  // signal is the signal number: SIGKILL for a Kill, SIGTERM for Stop.
+  int32 signal = 2;
+}
+
+message SignalResponse {}
+
+message ProvisionRequest {
+  // nft_script is the egress ruleset (V3, EgressPolicy.NftScript()); empty in
+  // V2b, where a non-empty value is unimplemented.
+  string nft_script = 1;
+  // default_exec_uid is the session's agent uid (ContainerSpec.UID), the
+  // default for an exec with no uid. Validated non-zero.
+  uint32 default_exec_uid = 2;
+  // base_env is the base environment every exec inherits (ContainerSpec.Env).
+  map<string, string> base_env = 3;
+}
+
+message ProvisionResponse {}

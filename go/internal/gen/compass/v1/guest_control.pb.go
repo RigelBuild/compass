@@ -91,8 +91,12 @@ type HealthResponse struct {
 	GuestdVersion    string                 `protobuf:"bytes,1,opt,name=guestd_version,json=guestdVersion,proto3" json:"guestd_version,omitempty"`
 	NetProvisioned   bool                   `protobuf:"varint,2,opt,name=net_provisioned,json=netProvisioned,proto3" json:"net_provisioned,omitempty"`
 	WorkspaceMounted bool                   `protobuf:"varint,3,opt,name=workspace_mounted,json=workspaceMounted,proto3" json:"workspace_mounted,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// boot_nonce echoes the host-minted compass.boot_nonce cmdline value so Start
+	// can bind this guest to the VM it launched before opening the exec gate
+	// (record §(e), OQ-A). Empty until V2b guestd parses the cmdline nonce.
+	BootNonce     []byte `protobuf:"bytes,4,opt,name=boot_nonce,json=bootNonce,proto3" json:"boot_nonce,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HealthResponse) Reset() {
@@ -146,19 +150,864 @@ func (x *HealthResponse) GetWorkspaceMounted() bool {
 	return false
 }
 
+func (x *HealthResponse) GetBootNonce() []byte {
+	if x != nil {
+		return x.BootNonce
+	}
+	return nil
+}
+
+// ExecRequest is a one-shot exec. It mirrors runtime.ExecSpec field for field.
+type ExecRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// command is argv; command[0] is the program.
+	Command []string `protobuf:"bytes,1,rep,name=command,proto3" json:"command,omitempty"`
+	// uid is the exec's user. Absent = the session default uid set by Provision
+	// (the baked agent uid). uid 0 is REFUSED with a failed-precondition error
+	// before any spawn — the guest supervisor never runs an exec as root.
+	Uid *uint32 `protobuf:"varint,2,opt,name=uid,proto3,oneof" json:"uid,omitempty"`
+	// workdir is the working directory; absent = the child's default.
+	Workdir *string `protobuf:"bytes,3,opt,name=workdir,proto3,oneof" json:"workdir,omitempty"`
+	// env is merged over the session base env; exec-specific keys win.
+	Env map[string]string `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// stdin is fed to the child's stdin — the body over the wire, NEVER the argv,
+	// so a script and any secret it embeds never appear in the guest process
+	// list.
+	Stdin []byte `protobuf:"bytes,5,opt,name=stdin,proto3,oneof" json:"stdin,omitempty"`
+	// timeout_seconds bounds the command; the guest enforces it too.
+	TimeoutSeconds uint32 `protobuf:"varint,6,opt,name=timeout_seconds,json=timeoutSeconds,proto3" json:"timeout_seconds,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ExecRequest) Reset() {
+	*x = ExecRequest{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecRequest) ProtoMessage() {}
+
+func (x *ExecRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecRequest.ProtoReflect.Descriptor instead.
+func (*ExecRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ExecRequest) GetCommand() []string {
+	if x != nil {
+		return x.Command
+	}
+	return nil
+}
+
+func (x *ExecRequest) GetUid() uint32 {
+	if x != nil && x.Uid != nil {
+		return *x.Uid
+	}
+	return 0
+}
+
+func (x *ExecRequest) GetWorkdir() string {
+	if x != nil && x.Workdir != nil {
+		return *x.Workdir
+	}
+	return ""
+}
+
+func (x *ExecRequest) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+func (x *ExecRequest) GetStdin() []byte {
+	if x != nil {
+		return x.Stdin
+	}
+	return nil
+}
+
+func (x *ExecRequest) GetTimeoutSeconds() uint32 {
+	if x != nil {
+		return x.TimeoutSeconds
+	}
+	return 0
+}
+
+type ExecResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Stdout []byte                 `protobuf:"bytes,1,opt,name=stdout,proto3" json:"stdout,omitempty"`
+	Stderr []byte                 `protobuf:"bytes,2,opt,name=stderr,proto3" json:"stderr,omitempty"`
+	// exit_code is the command's exit status. Non-zero is a successful call with
+	// a failed command, never a Connect error (see the Exec doc-comment).
+	ExitCode      int32 `protobuf:"varint,3,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecResponse) Reset() {
+	*x = ExecResponse{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecResponse) ProtoMessage() {}
+
+func (x *ExecResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecResponse.ProtoReflect.Descriptor instead.
+func (*ExecResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ExecResponse) GetStdout() []byte {
+	if x != nil {
+		return x.Stdout
+	}
+	return nil
+}
+
+func (x *ExecResponse) GetStderr() []byte {
+	if x != nil {
+		return x.Stderr
+	}
+	return nil
+}
+
+func (x *ExecResponse) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+// ExecStreamRequest frames flow host -> guest: exactly one StartExec first,
+// then any number of stdin frames, then an optional StdinClose half-close.
+type ExecStreamRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Frame:
+	//
+	//	*ExecStreamRequest_Start
+	//	*ExecStreamRequest_Stdin
+	//	*ExecStreamRequest_StdinClose
+	Frame         isExecStreamRequest_Frame `protobuf_oneof:"frame"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecStreamRequest) Reset() {
+	*x = ExecStreamRequest{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecStreamRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecStreamRequest) ProtoMessage() {}
+
+func (x *ExecStreamRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecStreamRequest.ProtoReflect.Descriptor instead.
+func (*ExecStreamRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ExecStreamRequest) GetFrame() isExecStreamRequest_Frame {
+	if x != nil {
+		return x.Frame
+	}
+	return nil
+}
+
+func (x *ExecStreamRequest) GetStart() *StartExec {
+	if x != nil {
+		if x, ok := x.Frame.(*ExecStreamRequest_Start); ok {
+			return x.Start
+		}
+	}
+	return nil
+}
+
+func (x *ExecStreamRequest) GetStdin() []byte {
+	if x != nil {
+		if x, ok := x.Frame.(*ExecStreamRequest_Stdin); ok {
+			return x.Stdin
+		}
+	}
+	return nil
+}
+
+func (x *ExecStreamRequest) GetStdinClose() *StdinClose {
+	if x != nil {
+		if x, ok := x.Frame.(*ExecStreamRequest_StdinClose); ok {
+			return x.StdinClose
+		}
+	}
+	return nil
+}
+
+type isExecStreamRequest_Frame interface {
+	isExecStreamRequest_Frame()
+}
+
+type ExecStreamRequest_Start struct {
+	Start *StartExec `protobuf:"bytes,1,opt,name=start,proto3,oneof"`
+}
+
+type ExecStreamRequest_Stdin struct {
+	Stdin []byte `protobuf:"bytes,2,opt,name=stdin,proto3,oneof"`
+}
+
+type ExecStreamRequest_StdinClose struct {
+	StdinClose *StdinClose `protobuf:"bytes,3,opt,name=stdin_close,json=stdinClose,proto3,oneof"`
+}
+
+func (*ExecStreamRequest_Start) isExecStreamRequest_Frame() {}
+
+func (*ExecStreamRequest_Stdin) isExecStreamRequest_Frame() {}
+
+func (*ExecStreamRequest_StdinClose) isExecStreamRequest_Frame() {}
+
+type StartExec struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Command []string               `protobuf:"bytes,1,rep,name=command,proto3" json:"command,omitempty"`
+	// uid as in ExecRequest: absent = session default; 0 REFUSED.
+	Uid           *uint32           `protobuf:"varint,2,opt,name=uid,proto3,oneof" json:"uid,omitempty"`
+	Workdir       *string           `protobuf:"bytes,3,opt,name=workdir,proto3,oneof" json:"workdir,omitempty"`
+	Env           map[string]string `protobuf:"bytes,4,rep,name=env,proto3" json:"env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StartExec) Reset() {
+	*x = StartExec{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StartExec) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StartExec) ProtoMessage() {}
+
+func (x *StartExec) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StartExec.ProtoReflect.Descriptor instead.
+func (*StartExec) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *StartExec) GetCommand() []string {
+	if x != nil {
+		return x.Command
+	}
+	return nil
+}
+
+func (x *StartExec) GetUid() uint32 {
+	if x != nil && x.Uid != nil {
+		return *x.Uid
+	}
+	return 0
+}
+
+func (x *StartExec) GetWorkdir() string {
+	if x != nil && x.Workdir != nil {
+		return *x.Workdir
+	}
+	return ""
+}
+
+func (x *StartExec) GetEnv() map[string]string {
+	if x != nil {
+		return x.Env
+	}
+	return nil
+}
+
+// StdinClose half-closes the child's stdin pipe without ending the stream.
+type StdinClose struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StdinClose) Reset() {
+	*x = StdinClose{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StdinClose) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StdinClose) ProtoMessage() {}
+
+func (x *StdinClose) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StdinClose.ProtoReflect.Descriptor instead.
+func (*StdinClose) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{6}
+}
+
+// ExecStreamResponse frames flow guest -> host: exactly one ExecStarted first,
+// then interleaved stdout/stderr, then exactly one ExecExit.
+type ExecStreamResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Types that are valid to be assigned to Frame:
+	//
+	//	*ExecStreamResponse_Started
+	//	*ExecStreamResponse_Stdout
+	//	*ExecStreamResponse_Stderr
+	//	*ExecStreamResponse_Exit
+	Frame         isExecStreamResponse_Frame `protobuf_oneof:"frame"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecStreamResponse) Reset() {
+	*x = ExecStreamResponse{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecStreamResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecStreamResponse) ProtoMessage() {}
+
+func (x *ExecStreamResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecStreamResponse.ProtoReflect.Descriptor instead.
+func (*ExecStreamResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ExecStreamResponse) GetFrame() isExecStreamResponse_Frame {
+	if x != nil {
+		return x.Frame
+	}
+	return nil
+}
+
+func (x *ExecStreamResponse) GetStarted() *ExecStarted {
+	if x != nil {
+		if x, ok := x.Frame.(*ExecStreamResponse_Started); ok {
+			return x.Started
+		}
+	}
+	return nil
+}
+
+func (x *ExecStreamResponse) GetStdout() []byte {
+	if x != nil {
+		if x, ok := x.Frame.(*ExecStreamResponse_Stdout); ok {
+			return x.Stdout
+		}
+	}
+	return nil
+}
+
+func (x *ExecStreamResponse) GetStderr() []byte {
+	if x != nil {
+		if x, ok := x.Frame.(*ExecStreamResponse_Stderr); ok {
+			return x.Stderr
+		}
+	}
+	return nil
+}
+
+func (x *ExecStreamResponse) GetExit() *ExecExit {
+	if x != nil {
+		if x, ok := x.Frame.(*ExecStreamResponse_Exit); ok {
+			return x.Exit
+		}
+	}
+	return nil
+}
+
+type isExecStreamResponse_Frame interface {
+	isExecStreamResponse_Frame()
+}
+
+type ExecStreamResponse_Started struct {
+	Started *ExecStarted `protobuf:"bytes,1,opt,name=started,proto3,oneof"`
+}
+
+type ExecStreamResponse_Stdout struct {
+	Stdout []byte `protobuf:"bytes,2,opt,name=stdout,proto3,oneof"`
+}
+
+type ExecStreamResponse_Stderr struct {
+	Stderr []byte `protobuf:"bytes,3,opt,name=stderr,proto3,oneof"`
+}
+
+type ExecStreamResponse_Exit struct {
+	Exit *ExecExit `protobuf:"bytes,4,opt,name=exit,proto3,oneof"`
+}
+
+func (*ExecStreamResponse_Started) isExecStreamResponse_Frame() {}
+
+func (*ExecStreamResponse_Stdout) isExecStreamResponse_Frame() {}
+
+func (*ExecStreamResponse_Stderr) isExecStreamResponse_Frame() {}
+
+func (*ExecStreamResponse_Exit) isExecStreamResponse_Frame() {}
+
+// ExecStarted is the first response frame; exec_id is the handle Signal targets.
+type ExecStarted struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExecId        string                 `protobuf:"bytes,1,opt,name=exec_id,json=execId,proto3" json:"exec_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecStarted) Reset() {
+	*x = ExecStarted{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecStarted) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecStarted) ProtoMessage() {}
+
+func (x *ExecStarted) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecStarted.ProtoReflect.Descriptor instead.
+func (*ExecStarted) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ExecStarted) GetExecId() string {
+	if x != nil {
+		return x.ExecId
+	}
+	return ""
+}
+
+// ExecExit is the terminal response frame, emitted from guestd's own reap.
+type ExecExit struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// exit_code is meaningful when signal == 0.
+	ExitCode int32 `protobuf:"varint,1,opt,name=exit_code,json=exitCode,proto3" json:"exit_code,omitempty"`
+	// signal is non-zero when the child died by signal (e.g. SIGKILL on Kill).
+	Signal        int32 `protobuf:"varint,2,opt,name=signal,proto3" json:"signal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ExecExit) Reset() {
+	*x = ExecExit{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ExecExit) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ExecExit) ProtoMessage() {}
+
+func (x *ExecExit) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ExecExit.ProtoReflect.Descriptor instead.
+func (*ExecExit) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *ExecExit) GetExitCode() int32 {
+	if x != nil {
+		return x.ExitCode
+	}
+	return 0
+}
+
+func (x *ExecExit) GetSignal() int32 {
+	if x != nil {
+		return x.Signal
+	}
+	return 0
+}
+
+type SignalRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// exec_id targets a running exec; "" targets the guest itself (Stop).
+	ExecId string `protobuf:"bytes,1,opt,name=exec_id,json=execId,proto3" json:"exec_id,omitempty"`
+	// signal is the signal number: SIGKILL for a Kill, SIGTERM for Stop.
+	Signal        int32 `protobuf:"varint,2,opt,name=signal,proto3" json:"signal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignalRequest) Reset() {
+	*x = SignalRequest{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignalRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignalRequest) ProtoMessage() {}
+
+func (x *SignalRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignalRequest.ProtoReflect.Descriptor instead.
+func (*SignalRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *SignalRequest) GetExecId() string {
+	if x != nil {
+		return x.ExecId
+	}
+	return ""
+}
+
+func (x *SignalRequest) GetSignal() int32 {
+	if x != nil {
+		return x.Signal
+	}
+	return 0
+}
+
+type SignalResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SignalResponse) Reset() {
+	*x = SignalResponse{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SignalResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SignalResponse) ProtoMessage() {}
+
+func (x *SignalResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SignalResponse.ProtoReflect.Descriptor instead.
+func (*SignalResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{11}
+}
+
+type ProvisionRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// nft_script is the egress ruleset (V3, EgressPolicy.NftScript()); empty in
+	// V2b, where a non-empty value is unimplemented.
+	NftScript string `protobuf:"bytes,1,opt,name=nft_script,json=nftScript,proto3" json:"nft_script,omitempty"`
+	// default_exec_uid is the session's agent uid (ContainerSpec.UID), the
+	// default for an exec with no uid. Validated non-zero.
+	DefaultExecUid uint32 `protobuf:"varint,2,opt,name=default_exec_uid,json=defaultExecUid,proto3" json:"default_exec_uid,omitempty"`
+	// base_env is the base environment every exec inherits (ContainerSpec.Env).
+	BaseEnv       map[string]string `protobuf:"bytes,3,rep,name=base_env,json=baseEnv,proto3" json:"base_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProvisionRequest) Reset() {
+	*x = ProvisionRequest{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProvisionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProvisionRequest) ProtoMessage() {}
+
+func (x *ProvisionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProvisionRequest.ProtoReflect.Descriptor instead.
+func (*ProvisionRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ProvisionRequest) GetNftScript() string {
+	if x != nil {
+		return x.NftScript
+	}
+	return ""
+}
+
+func (x *ProvisionRequest) GetDefaultExecUid() uint32 {
+	if x != nil {
+		return x.DefaultExecUid
+	}
+	return 0
+}
+
+func (x *ProvisionRequest) GetBaseEnv() map[string]string {
+	if x != nil {
+		return x.BaseEnv
+	}
+	return nil
+}
+
+type ProvisionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProvisionResponse) Reset() {
+	*x = ProvisionResponse{}
+	mi := &file_compass_v1_guest_control_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProvisionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProvisionResponse) ProtoMessage() {}
+
+func (x *ProvisionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_guest_control_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProvisionResponse.ProtoReflect.Descriptor instead.
+func (*ProvisionResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_guest_control_proto_rawDescGZIP(), []int{13}
+}
+
 var File_compass_v1_guest_control_proto protoreflect.FileDescriptor
 
 const file_compass_v1_guest_control_proto_rawDesc = "" +
 	"\n" +
 	"\x1ecompass/v1/guest_control.proto\x12\n" +
 	"compass.v1\"\x0f\n" +
-	"\rHealthRequest\"\x8d\x01\n" +
+	"\rHealthRequest\"\xac\x01\n" +
 	"\x0eHealthResponse\x12%\n" +
 	"\x0eguestd_version\x18\x01 \x01(\tR\rguestdVersion\x12'\n" +
 	"\x0fnet_provisioned\x18\x02 \x01(\bR\x0enetProvisioned\x12+\n" +
-	"\x11workspace_mounted\x18\x03 \x01(\bR\x10workspaceMounted2O\n" +
+	"\x11workspace_mounted\x18\x03 \x01(\bR\x10workspaceMounted\x12\x1d\n" +
+	"\n" +
+	"boot_nonce\x18\x04 \x01(\fR\tbootNonce\"\xab\x02\n" +
+	"\vExecRequest\x12\x18\n" +
+	"\acommand\x18\x01 \x03(\tR\acommand\x12\x15\n" +
+	"\x03uid\x18\x02 \x01(\rH\x00R\x03uid\x88\x01\x01\x12\x1d\n" +
+	"\aworkdir\x18\x03 \x01(\tH\x01R\aworkdir\x88\x01\x01\x122\n" +
+	"\x03env\x18\x04 \x03(\v2 .compass.v1.ExecRequest.EnvEntryR\x03env\x12\x19\n" +
+	"\x05stdin\x18\x05 \x01(\fH\x02R\x05stdin\x88\x01\x01\x12'\n" +
+	"\x0ftimeout_seconds\x18\x06 \x01(\rR\x0etimeoutSeconds\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
+	"\x04_uidB\n" +
+	"\n" +
+	"\b_workdirB\b\n" +
+	"\x06_stdin\"[\n" +
+	"\fExecResponse\x12\x16\n" +
+	"\x06stdout\x18\x01 \x01(\fR\x06stdout\x12\x16\n" +
+	"\x06stderr\x18\x02 \x01(\fR\x06stderr\x12\x1b\n" +
+	"\texit_code\x18\x03 \x01(\x05R\bexitCode\"\x9e\x01\n" +
+	"\x11ExecStreamRequest\x12-\n" +
+	"\x05start\x18\x01 \x01(\v2\x15.compass.v1.StartExecH\x00R\x05start\x12\x16\n" +
+	"\x05stdin\x18\x02 \x01(\fH\x00R\x05stdin\x129\n" +
+	"\vstdin_close\x18\x03 \x01(\v2\x16.compass.v1.StdinCloseH\x00R\n" +
+	"stdinCloseB\a\n" +
+	"\x05frame\"\xd9\x01\n" +
+	"\tStartExec\x12\x18\n" +
+	"\acommand\x18\x01 \x03(\tR\acommand\x12\x15\n" +
+	"\x03uid\x18\x02 \x01(\rH\x00R\x03uid\x88\x01\x01\x12\x1d\n" +
+	"\aworkdir\x18\x03 \x01(\tH\x01R\aworkdir\x88\x01\x01\x120\n" +
+	"\x03env\x18\x04 \x03(\v2\x1e.compass.v1.StartExec.EnvEntryR\x03env\x1a6\n" +
+	"\bEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x06\n" +
+	"\x04_uidB\n" +
+	"\n" +
+	"\b_workdir\"\f\n" +
+	"\n" +
+	"StdinClose\"\xb2\x01\n" +
+	"\x12ExecStreamResponse\x123\n" +
+	"\astarted\x18\x01 \x01(\v2\x17.compass.v1.ExecStartedH\x00R\astarted\x12\x18\n" +
+	"\x06stdout\x18\x02 \x01(\fH\x00R\x06stdout\x12\x18\n" +
+	"\x06stderr\x18\x03 \x01(\fH\x00R\x06stderr\x12*\n" +
+	"\x04exit\x18\x04 \x01(\v2\x14.compass.v1.ExecExitH\x00R\x04exitB\a\n" +
+	"\x05frame\"&\n" +
+	"\vExecStarted\x12\x17\n" +
+	"\aexec_id\x18\x01 \x01(\tR\x06execId\"?\n" +
+	"\bExecExit\x12\x1b\n" +
+	"\texit_code\x18\x01 \x01(\x05R\bexitCode\x12\x16\n" +
+	"\x06signal\x18\x02 \x01(\x05R\x06signal\"@\n" +
+	"\rSignalRequest\x12\x17\n" +
+	"\aexec_id\x18\x01 \x01(\tR\x06execId\x12\x16\n" +
+	"\x06signal\x18\x02 \x01(\x05R\x06signal\"\x10\n" +
+	"\x0eSignalResponse\"\xdd\x01\n" +
+	"\x10ProvisionRequest\x12\x1d\n" +
+	"\n" +
+	"nft_script\x18\x01 \x01(\tR\tnftScript\x12(\n" +
+	"\x10default_exec_uid\x18\x02 \x01(\rR\x0edefaultExecUid\x12D\n" +
+	"\bbase_env\x18\x03 \x03(\v2).compass.v1.ProvisionRequest.BaseEnvEntryR\abaseEnv\x1a:\n" +
+	"\fBaseEnvEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x13\n" +
+	"\x11ProvisionResponse2\xe6\x02\n" +
 	"\fGuestControl\x12?\n" +
-	"\x06Health\x12\x19.compass.v1.HealthRequest\x1a\x1a.compass.v1.HealthResponseb\x06proto3"
+	"\x06Health\x12\x19.compass.v1.HealthRequest\x1a\x1a.compass.v1.HealthResponse\x129\n" +
+	"\x04Exec\x12\x17.compass.v1.ExecRequest\x1a\x18.compass.v1.ExecResponse\x12O\n" +
+	"\n" +
+	"ExecStream\x12\x1d.compass.v1.ExecStreamRequest\x1a\x1e.compass.v1.ExecStreamResponse(\x010\x01\x12?\n" +
+	"\x06Signal\x12\x19.compass.v1.SignalRequest\x1a\x1a.compass.v1.SignalResponse\x12H\n" +
+	"\tProvision\x12\x1c.compass.v1.ProvisionRequest\x1a\x1d.compass.v1.ProvisionResponseb\x06proto3"
 
 var (
 	file_compass_v1_guest_control_proto_rawDescOnce sync.Once
@@ -172,19 +1021,49 @@ func file_compass_v1_guest_control_proto_rawDescGZIP() []byte {
 	return file_compass_v1_guest_control_proto_rawDescData
 }
 
-var file_compass_v1_guest_control_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_compass_v1_guest_control_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_compass_v1_guest_control_proto_goTypes = []any{
-	(*HealthRequest)(nil),  // 0: compass.v1.HealthRequest
-	(*HealthResponse)(nil), // 1: compass.v1.HealthResponse
+	(*HealthRequest)(nil),      // 0: compass.v1.HealthRequest
+	(*HealthResponse)(nil),     // 1: compass.v1.HealthResponse
+	(*ExecRequest)(nil),        // 2: compass.v1.ExecRequest
+	(*ExecResponse)(nil),       // 3: compass.v1.ExecResponse
+	(*ExecStreamRequest)(nil),  // 4: compass.v1.ExecStreamRequest
+	(*StartExec)(nil),          // 5: compass.v1.StartExec
+	(*StdinClose)(nil),         // 6: compass.v1.StdinClose
+	(*ExecStreamResponse)(nil), // 7: compass.v1.ExecStreamResponse
+	(*ExecStarted)(nil),        // 8: compass.v1.ExecStarted
+	(*ExecExit)(nil),           // 9: compass.v1.ExecExit
+	(*SignalRequest)(nil),      // 10: compass.v1.SignalRequest
+	(*SignalResponse)(nil),     // 11: compass.v1.SignalResponse
+	(*ProvisionRequest)(nil),   // 12: compass.v1.ProvisionRequest
+	(*ProvisionResponse)(nil),  // 13: compass.v1.ProvisionResponse
+	nil,                        // 14: compass.v1.ExecRequest.EnvEntry
+	nil,                        // 15: compass.v1.StartExec.EnvEntry
+	nil,                        // 16: compass.v1.ProvisionRequest.BaseEnvEntry
 }
 var file_compass_v1_guest_control_proto_depIdxs = []int32{
-	0, // 0: compass.v1.GuestControl.Health:input_type -> compass.v1.HealthRequest
-	1, // 1: compass.v1.GuestControl.Health:output_type -> compass.v1.HealthResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	14, // 0: compass.v1.ExecRequest.env:type_name -> compass.v1.ExecRequest.EnvEntry
+	5,  // 1: compass.v1.ExecStreamRequest.start:type_name -> compass.v1.StartExec
+	6,  // 2: compass.v1.ExecStreamRequest.stdin_close:type_name -> compass.v1.StdinClose
+	15, // 3: compass.v1.StartExec.env:type_name -> compass.v1.StartExec.EnvEntry
+	8,  // 4: compass.v1.ExecStreamResponse.started:type_name -> compass.v1.ExecStarted
+	9,  // 5: compass.v1.ExecStreamResponse.exit:type_name -> compass.v1.ExecExit
+	16, // 6: compass.v1.ProvisionRequest.base_env:type_name -> compass.v1.ProvisionRequest.BaseEnvEntry
+	0,  // 7: compass.v1.GuestControl.Health:input_type -> compass.v1.HealthRequest
+	2,  // 8: compass.v1.GuestControl.Exec:input_type -> compass.v1.ExecRequest
+	4,  // 9: compass.v1.GuestControl.ExecStream:input_type -> compass.v1.ExecStreamRequest
+	10, // 10: compass.v1.GuestControl.Signal:input_type -> compass.v1.SignalRequest
+	12, // 11: compass.v1.GuestControl.Provision:input_type -> compass.v1.ProvisionRequest
+	1,  // 12: compass.v1.GuestControl.Health:output_type -> compass.v1.HealthResponse
+	3,  // 13: compass.v1.GuestControl.Exec:output_type -> compass.v1.ExecResponse
+	7,  // 14: compass.v1.GuestControl.ExecStream:output_type -> compass.v1.ExecStreamResponse
+	11, // 15: compass.v1.GuestControl.Signal:output_type -> compass.v1.SignalResponse
+	13, // 16: compass.v1.GuestControl.Provision:output_type -> compass.v1.ProvisionResponse
+	12, // [12:17] is the sub-list for method output_type
+	7,  // [7:12] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_guest_control_proto_init() }
@@ -192,13 +1071,26 @@ func file_compass_v1_guest_control_proto_init() {
 	if File_compass_v1_guest_control_proto != nil {
 		return
 	}
+	file_compass_v1_guest_control_proto_msgTypes[2].OneofWrappers = []any{}
+	file_compass_v1_guest_control_proto_msgTypes[4].OneofWrappers = []any{
+		(*ExecStreamRequest_Start)(nil),
+		(*ExecStreamRequest_Stdin)(nil),
+		(*ExecStreamRequest_StdinClose)(nil),
+	}
+	file_compass_v1_guest_control_proto_msgTypes[5].OneofWrappers = []any{}
+	file_compass_v1_guest_control_proto_msgTypes[7].OneofWrappers = []any{
+		(*ExecStreamResponse_Started)(nil),
+		(*ExecStreamResponse_Stdout)(nil),
+		(*ExecStreamResponse_Stderr)(nil),
+		(*ExecStreamResponse_Exit)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_guest_control_proto_rawDesc), len(file_compass_v1_guest_control_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
