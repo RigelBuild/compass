@@ -216,6 +216,13 @@ func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSu
 // ListEnabledForgeRepos reads every enabled target's repo, ascending — the board
 // reconciler's per-pass target enumeration across all coordinates. No rows is a
 // nil slice, not an error.
+//
+// Repo-only keyed (no provider/host), matching the frozen repo-keyed ingest
+// seam. In a github.com-only deployment repo is unambiguous; if multi-host is
+// ever enabled, two coordinates sharing a repo string (e.g. github.com and a GHE
+// host both carrying "a/b") would collapse to one entry here and to an ambiguous
+// watermark under the coordinate-keyed Load/Store methods — thread (provider,
+// host) through this seam before enabling multi-host.
 func (s *Store) ListEnabledForgeRepos(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT repo
@@ -244,7 +251,9 @@ func (s *Store) ListEnabledForgeRepos(ctx context.Context) ([]string, error) {
 
 // IsEnabledForgeRepo reports whether an enabled subscription exists for the repo
 // (the point membership check the webhook arm gates on). An empty repo ->
-// ErrInvalidArgument.
+// ErrInvalidArgument. Repo-only keyed like ListEnabledForgeRepos — returns true
+// if ANY coordinate's subscription for the repo is enabled; unambiguous in a
+// github.com-only deployment (see ListEnabledForgeRepos for the multi-host note).
 func (s *Store) IsEnabledForgeRepo(ctx context.Context, repo string) (bool, error) {
 	if repo == "" {
 		return false, fmt.Errorf("%w: repo is required", ErrInvalidArgument)
