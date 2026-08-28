@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -69,7 +70,7 @@ type child struct {
 	name    string
 	cmd     *exec.Cmd
 	logPath string
-	waited  bool // set once cmd.Wait has returned, so liveness probes and PSS skip a reaped process
+	waited  atomic.Bool // set once cmd.Wait has returned, so liveness probes and PSS skip a reaped process
 }
 
 // VM is a running (or partially-started, on the Launch error path) guest and
@@ -81,6 +82,12 @@ type VM struct {
 	vmm       *child // cloud-hypervisor
 	virtiofsd *child // nil under the net-only smoke (no --fs)
 	passt     *child
+
+	// vmmExited is closed by the sole VMM reaper (started in launch) once the
+	// cloud-hypervisor process has been Wait'd, so the caller can observe a
+	// prompt guest self-power-off instead of a zombie-blind Signal(0) poll. Nil
+	// only under the hermetic fail-closed path (no VMM on PATH).
+	vmmExited chan struct{}
 
 	consolePath string // --serial file: the guest serial console
 
@@ -215,6 +222,16 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	if startErr := startChild(vm.vmm); startErr != nil {
 		return nil, fmt.Errorf("microvm: starting cloud-hypervisor: %w", startErr)
 	}
+	// The sole VMM reaper owns the single cmd.Wait for cloud-hypervisor: it
+	// unblocks WaitVMMExit on a guest self-power-off and lets Shutdown observe
+	// the exit without a second Wait. The Wait error is deliberately discarded —
+	// a killed VMM yields an expected *exec.ExitError, mirroring waitResult.
+	vm.vmmExited = make(chan struct{})
+	go func() {
+		_ = vm.vmm.cmd.Wait() // discard: a killed VMM's *exec.ExitError is the expected teardown outcome (mirrors waitResult)
+		vm.vmm.waited.Store(true)
+		close(vm.vmmExited)
+	}()
 	if opts.withVsock {
 		vm.sockets = append(vm.sockets, cfg.VsockSocket)
 	}
@@ -333,14 +350,14 @@ func (vm *VM) Health(ctx context.Context) (*compassv1.HealthResponse, error) {
 func (vm *VM) Shutdown(ctx context.Context) error {
 	vm.shutdownOnce.Do(func() {
 		var errs []error
-		// VMM first: kill outright, then Wait to reap.
+		// VMM first: kill outright, then let the sole reaper's single Wait
+		// complete via vmmExited (Shutdown must not Wait the VMM itself — that
+		// would be a second Wait on the same process).
 		if vm.vmm != nil && vm.vmm.cmd.Process != nil {
 			if killErr := vm.vmm.cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 				errs = append(errs, fmt.Errorf("killing cloud-hypervisor: %w", killErr))
 			}
-			if waitErr := waitProcess(vm.vmm); waitErr != nil {
-				errs = append(errs, waitErr)
-			}
+			<-vm.vmmExited
 		}
 		// Then the auxiliary daemons: SIGTERM, bounded wait, SIGKILL.
 		for _, c := range []*child{vm.virtiofsd, vm.passt} {
@@ -378,24 +395,31 @@ func reap(c *child) error {
 	go func() { done <- c.cmd.Wait() }()
 	select {
 	case err := <-done:
-		c.waited = true
+		c.waited.Store(true)
 		return waitResult(c.name, err)
 	case <-time.After(reapGrace):
 		if killErr := c.cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 			return fmt.Errorf("SIGKILL %s: %w", c.name, killErr)
 		}
-		c.waited = true
+		c.waited.Store(true)
 		return waitResult(c.name, <-done)
 	}
 }
 
-// waitProcess Wait's a process that has already been signalled to die and
-// normalizes the "expected" exit (killed/exited non-zero) to nil — Shutdown
-// killed it on purpose, so a non-nil ExitError is not a Shutdown failure.
-func waitProcess(c *child) error {
-	err := c.cmd.Wait()
-	c.waited = true
-	return waitResult(c.name, err)
+// WaitVMMExit reports whether the VMM process exited within timeout, observed
+// via the reaper (not a zombie-blind Signal(0) poll): a guest that powers itself
+// off makes the reaper's Wait return and close vmmExited promptly, so the caller
+// sees the self-exit instead of burning the full grace window on a zombie.
+func (vm *VM) WaitVMMExit(timeout time.Duration) bool {
+	if vm.vmm == nil || vm.vmmExited == nil {
+		return true
+	}
+	select {
+	case <-vm.vmmExited:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // waitResult swallows the ExitError a deliberately-killed process yields (a
@@ -417,7 +441,7 @@ func waitResult(name string, err error) error {
 // is definitively gone; otherwise signal 0 probes liveness without affecting it.
 func (vm *VM) Running(name string) bool {
 	c := vm.childByName(name)
-	if c == nil || c.cmd.Process == nil || c.waited {
+	if c == nil || c.cmd.Process == nil || c.waited.Load() {
 		return false
 	}
 	return c.cmd.Process.Signal(syscall.Signal(0)) == nil
@@ -433,7 +457,7 @@ func (vm *VM) PSS() (map[string]int64, error) {
 	out := make(map[string]int64)
 	var errs []error
 	for _, c := range []*child{vm.vmm, vm.virtiofsd, vm.passt} {
-		if c == nil || c.cmd.Process == nil || c.waited {
+		if c == nil || c.cmd.Process == nil || c.waited.Load() {
 			continue
 		}
 		pss, err := readPSS(c.cmd.Process.Pid)

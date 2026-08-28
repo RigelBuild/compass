@@ -1,27 +1,27 @@
 package runtime
 
-// microvm.go is the microVM ContainerRuntime backend seam: a MicroVMRuntime
-// that satisfies the same ContainerRuntime interface as PodmanCLI, plus the
-// config-driven backend selection the Runner startup uses to choose between
-// them. Every runtime method is a typed-error stub here — the in-guest control
-// plane that boots a VMM, wires the virtiofs share, and speaks the agent
-// protocol over vsock lands later, behind these frozen signatures. Selecting
-// the microVM backend today therefore fails loudly at first use rather than
-// silently faking container behavior.
+// microvm.go is the microVM ContainerRuntime backend seam: the operator config,
+// the MicroVMRuntime type + its per-session state table, and the config-driven
+// backend selection the Runner startup uses to choose between the microVM and
+// podman backends. The lifecycle method bodies — which boot a VMM, wire the
+// virtiofs share, and speak the guest control plane over vsock — live in
+// microvm_lifecycle.go behind a //go:build unix tag, because the microvm
+// package they call (Launch/GuestExec/VM) is itself unix-only. This file holds
+// only what backend selection needs to type-check on any platform: the config
+// structs, the type declaration, and SelectBackend.
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"strings"
-	"time"
+	"sync"
 )
 
 // MicroVMConfig is the operator-supplied wiring for the microVM backend: the
-// paths to the VMM and virtiofs daemon binaries and to the guest kernel and
-// rootfs images. Empty fields are tolerated at construction — the values are
-// consumed when the in-guest control plane lands, and the V5 preflight names
-// any missing one at startup rather than deep in a launch.
+// paths to the VMM and virtiofs daemon binaries, the guest boot images, the
+// per-session runtime-dir root, and the default guest sizing. Empty fields are
+// tolerated at construction — the values are consumed when a session boots, and
+// the V5 preflight names any missing one at startup rather than deep in a
+// launch.
 type MicroVMConfig struct {
 	// VMMPath is the path to the virtual machine monitor binary.
 	VMMPath string
@@ -32,6 +32,21 @@ type MicroVMConfig struct {
 	KernelImage string
 	// RootfsImage is the path to the guest root filesystem image.
 	RootfsImage string
+	// InitrdImage is the path to the guest initramfs image. Load-bearing, not
+	// optional: the pinned generic kernel ships its virtio/erofs/overlay drivers
+	// as modules, so the initrd is what loads them and mounts the root before
+	// switch_root (microvm-v2a §(a)).
+	InitrdImage string
+	// RunRoot is the root under which each session's runtime dir is created
+	// (<RunRoot>/microvm/<session>/), holding that session's AF_UNIX sockets —
+	// the layout V7 formalizes with pidfiles.
+	RunRoot string
+	// DefaultCPUs is the vCPU count each session guest boots with (hotplug-grown
+	// later per D5). Zero leaves it to the VMM's own default.
+	DefaultCPUs int
+	// DefaultMemoryMB is the RAM each session guest boots with, in MiB
+	// (hotplug-grown later per D5). Zero leaves it to the VMM's own default.
+	DefaultMemoryMB int
 }
 
 // BackendConfig selects and configures the container runtime backend. Backend
@@ -45,74 +60,29 @@ type BackendConfig struct {
 	MicroVM MicroVMConfig
 }
 
-// ErrMicroVMNotImplemented is returned by every MicroVMRuntime method until the
-// in-guest control plane lands. The full ContainerRuntime surface is frozen on
-// the type now (so backend selection can choose it and no interface change
-// lands later); the VMM boot, virtiofs share, and vsock agent transport behind
-// each verb are still to come, so invoking one today is a programming error the
-// sentinel names explicitly rather than a silent no-op that would fake a
-// container operation that never happened.
-var ErrMicroVMNotImplemented = errors.New("runtime: MicroVMRuntime is not implemented until the in-guest control plane lands")
-
 // MicroVMRuntime is a ContainerRuntime that isolates each agent in its own
-// microVM instead of a rootless container. It holds the microVM wiring the
-// in-guest control plane will consume; its methods are typed-error stubs until
-// that lands.
+// microVM instead of a rootless container. It holds the operator wiring plus a
+// per-session state table (keyed by the ContainerID Create mints), guarded by
+// mu against concurrent lifecycle calls. Its method bodies live in
+// microvm_lifecycle.go (//go:build unix); the microvmSession type they operate
+// on is declared there too.
 type MicroVMRuntime struct {
 	config MicroVMConfig
+	mu     sync.Mutex
+	// sessions maps each live ContainerID to its session state. Every read and
+	// write is guarded by mu. Name lookups (Exists, duplicate-name refusal) scan
+	// this map for a matching spec.Name — a scan is cheap at one-VM-per-session
+	// scale and keeps a single source of truth.
+	sessions map[ContainerID]*microvmSession
 }
 
 // NewMicroVMRuntime builds a MicroVMRuntime from the supplied config, mirroring
-// NewPodmanCLI's shape.
+// NewPodmanCLI's shape, with an empty session table ready for Create.
 func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
-	return &MicroVMRuntime{config: cfg}
-}
-
-var _ ContainerRuntime = (*MicroVMRuntime)(nil)
-
-// Create is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) Create(_ context.Context, _ ContainerSpec) (ContainerID, error) {
-	return "", ErrMicroVMNotImplemented
-}
-
-// Start is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) Start(_ context.Context, _ ContainerID) error {
-	return ErrMicroVMNotImplemented
-}
-
-// Exec is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) Exec(_ context.Context, _ ContainerID, _ ExecSpec) (ExecOutput, error) {
-	return ExecOutput{}, ErrMicroVMNotImplemented
-}
-
-// ExecStreaming is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) ExecStreaming(_ context.Context, _ ContainerID, _ StreamingExecSpec) (*StreamingExec, error) {
-	return nil, ErrMicroVMNotImplemented
-}
-
-// Stop is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) Stop(_ context.Context, _ ContainerID, _ time.Duration) error {
-	return ErrMicroVMNotImplemented
-}
-
-// Remove is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) Remove(_ context.Context, _ ContainerID) error {
-	return ErrMicroVMNotImplemented
-}
-
-// Exists is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) Exists(_ context.Context, _ string) (bool, error) {
-	return false, ErrMicroVMNotImplemented
-}
-
-// MountLabel is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) MountLabel(_ context.Context, _ ContainerID) (string, error) {
-	return "", ErrMicroVMNotImplemented
-}
-
-// Resize is unimplemented until the in-guest control plane lands.
-func (m *MicroVMRuntime) Resize(_ context.Context, _ ContainerID, _ ResourceLimits) error {
-	return ErrMicroVMNotImplemented
+	return &MicroVMRuntime{
+		config:   cfg,
+		sessions: make(map[ContainerID]*microvmSession),
+	}
 }
 
 // SelectBackend chooses the container runtime backend from cfg. An empty or
