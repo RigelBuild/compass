@@ -1,11 +1,12 @@
-//go:build pgtest
+//go:build (pgtest || podman) && unix
 
-package pgtest
+package pgshare
 
 import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -195,4 +196,86 @@ func volumeExists(t *testing.T, cli, vol string) bool {
 	}
 	t.Fatalf("volume inspect %s: %v\n%s", vol, err, out)
 	return false
+}
+
+// TestStartSuitePostgresMainErrors covers the StartSuitePostgresMain failure
+// paths that must return a non-nil error (never panic, never fail a t) so a
+// TestMain caller can clean up and os.Exit(1). These are the pre-exec guards, so
+// they need no live Postgres and no container runtime.
+func TestStartSuitePostgresMainErrors(t *testing.T) {
+	t.Run("empty state dir errors", func(t *testing.T) {
+		dsn, stop, err := StartSuitePostgresMain("", t.TempDir(), 5432)
+		if err == nil {
+			t.Fatal("StartSuitePostgresMain with empty state dir: want error, got nil")
+		}
+		if stop != nil {
+			t.Errorf("want nil stop on error, got non-nil")
+		}
+		if dsn != "" {
+			t.Errorf("want empty dsn on error, got %q", dsn)
+		}
+	})
+
+	t.Run("binary not on PATH errors", func(t *testing.T) {
+		// Shadow PATH with a dir that holds no compass-postgres so LookPath fails
+		// deterministically regardless of what is installed on the box.
+		t.Setenv("PATH", t.TempDir())
+		dsn, stop, err := StartSuitePostgresMain(t.TempDir(), t.TempDir(), 5432)
+		if err == nil {
+			t.Fatal("StartSuitePostgresMain with no compass-postgres on PATH: want error, got nil")
+		}
+		if !errors.Is(err, exec.ErrNotFound) {
+			t.Errorf("want a not-found error wrapping exec.ErrNotFound, got %v", err)
+		}
+		if stop != nil {
+			t.Errorf("want nil stop on error, got non-nil")
+		}
+		if dsn != "" {
+			t.Errorf("want empty dsn on error, got %q", dsn)
+		}
+	})
+}
+
+// TestStartSuitePostgresMainChildExitShortCircuits proves waitSuiteReady's
+// child-exit short-circuit: when the wrapper exits before ever accepting a
+// connection, StartSuitePostgresMain must fail fast with the "exited before
+// accepting connections" error rather than polling out the full
+// suiteReadyBudget. A stub compass-postgres on PATH that exits immediately
+// exercises the done-channel path (and the goroutine's happens-before on
+// waitErr) without a real Postgres.
+func TestStartSuitePostgresMainChildExitShortCircuits(t *testing.T) {
+	// A stub `compass-postgres` that exits immediately: the reaper goroutine's
+	// cmd.Wait returns, close(done) fires, and waitSuiteReady's `case <-done`
+	// must return the exit error before the 30s budget elapses.
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "compass-postgres")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("write stub compass-postgres: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	start := time.Now()
+	dsn, stop, err := StartSuitePostgresMain(t.TempDir(), t.TempDir(), 5432)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("want error when compass-postgres exits before binding, got nil")
+	}
+	if !strings.Contains(err.Error(), "exited before accepting connections") {
+		t.Errorf("want 'exited before accepting connections' error, got %v", err)
+	}
+	if stop != nil {
+		t.Errorf("want nil stop on error, got non-nil")
+	}
+	if dsn != "" {
+		t.Errorf("want empty dsn on error, got %q", dsn)
+	}
+	// The short-circuit must fire off the child-exit signal, not the deadline.
+	// A bound well under suiteReadyBudget (30s) proves the select returned on
+	// `<-done` rather than the timeout, while tolerating poll-tick + reap
+	// latency. If the exit short-circuit were dropped, this would take the
+	// full ~30s and blow the bound.
+	if elapsed >= 10*time.Second {
+		t.Errorf("want fast fail via child-exit short-circuit (< 10s), took %s", elapsed)
+	}
 }
