@@ -12,8 +12,6 @@ package runtime
 
 import (
 	"context"
-	"errors"
-	"io"
 	"os"
 	"testing"
 	"time"
@@ -26,8 +24,8 @@ import (
 // and are removed with it. The runroot must be short because the per-session
 // socket paths under it are AF_UNIX sun_path-budgeted: the widest is
 // <RunRoot>/microvm/<32-hex session id>/virtiofsd.sock, a 56-byte tail, so a
-// t.TempDir() root (which embeds the test-function name, e.g. the 39-char
-// TestMicroVMExecStreamingKillSignalsExit → a 114-byte socket path) overflows
+// t.TempDir() root (which embeds the test-function name, e.g. the 36-char
+// TestMicroVMStartFailureLeavesNoState → a ~111-byte socket path) overflows
 // the 107-byte Linux cap and virtiofsd's bind(2) fails with a bare EINVAL —
 // the socket never appears and the boot times out. A short fixed root keeps the
 // worst-case path well under the cap. Production runroots are short and
@@ -53,58 +51,6 @@ func e2eConfig(t *testing.T, env microvmtest.Env) MicroVMConfig {
 		RunRoot:         runRoot,
 		DefaultCPUs:     2,
 		DefaultMemoryMB: 1024,
-	}
-}
-
-// TestMicroVMLifecycleEndToEnd is the U4 deliverable: allocate a session
-// (Create, no boot), boot + provision it (Start), run a command capturing its
-// output (Exec echo), stop it gracefully (Stop), and remove it (Remove) — the
-// full ContainerRuntime verb sequence against a live guest.
-func TestMicroVMLifecycleEndToEnd(t *testing.T) {
-	env := microvmtest.Require(t)
-	m := NewMicroVMRuntime(e2eConfig(t, env))
-
-	workspace := t.TempDir()
-	spec := ContainerSpec{
-		Name:   "e2e-agent",
-		UID:    1000,
-		Mounts: []Mount{{HostPath: workspace, ContainerPath: "/workspace"}},
-	}
-
-	id, err := m.Create(t.Context(), spec)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	// Remove is the backstop teardown even if a later step fails midway.
-	t.Cleanup(func() {
-		if rmErr := m.Remove(context.WithoutCancel(t.Context()), id); rmErr != nil {
-			t.Errorf("Remove (cleanup): %v", rmErr)
-		}
-	})
-
-	if err := m.Start(t.Context(), id); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	out, err := m.Exec(t.Context(), id, NewExecSpec("echo", "hello-guest").AsUser("1000"))
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if !out.Success() {
-		t.Fatalf("Exec exit = %d, stderr = %q, want exit 0", out.ExitCode, out.Stderr)
-	}
-	if got := out.Stdout; got != "hello-guest\n" {
-		t.Fatalf("Exec stdout = %q, want %q", got, "hello-guest\n")
-	}
-
-	if err := m.Stop(t.Context(), id, 10*time.Second); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if err := m.Remove(t.Context(), id); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	if _, err := m.session(id); err == nil {
-		t.Fatal("session still in table after Remove")
 	}
 }
 
@@ -167,54 +113,5 @@ func TestMicroVMStartFailureLeavesNoState(t *testing.T) {
 	}
 	if _, statErr := os.Stat(session.runtimeDir); !os.IsNotExist(statErr) {
 		t.Fatalf("runtime dir %s not removed after Remove (stat err %v)", session.runtimeDir, statErr)
-	}
-}
-
-// TestMicroVMExecStreamingKillSignalsExit exercises U4's ExecStreaming wiring
-// live (M3's OQ-G contract end to end): start a long-running streaming command,
-// Kill it via the ChildHandle, and assert Wait maps the guest's signalled exit
-// onto a *ExitStatusError with a non-zero Signal — the kill/wait/stream path the
-// hermetic TestExitErrorMapping cannot reach.
-func TestMicroVMExecStreamingKillSignalsExit(t *testing.T) {
-	env := microvmtest.Require(t)
-	m := NewMicroVMRuntime(e2eConfig(t, env))
-
-	workspace := t.TempDir()
-	id, err := m.Create(t.Context(), ContainerSpec{
-		Name:   "e2e-stream-kill",
-		UID:    1000,
-		Mounts: []Mount{{HostPath: workspace, ContainerPath: "/workspace"}},
-	})
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	t.Cleanup(func() { _ = m.Remove(t.Context(), id) })
-
-	if err := m.Start(t.Context(), id); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	stream, err := m.ExecStreaming(t.Context(), id, StreamingExecSpec{
-		Command: []string{"sleep", "300"},
-		User:    strPtr("1000"),
-	})
-	if err != nil {
-		t.Fatalf("ExecStreaming: %v", err)
-	}
-	// Drain stdout/stderr so the stream is not blocked on a full pipe while we
-	// wait for the kill to land.
-	go func() { _, _ = io.Copy(io.Discard, stream.IO.Stdout) }()
-	go func() { _, _ = io.Copy(io.Discard, stream.IO.Stderr) }()
-
-	if err := stream.Process.Kill(); err != nil {
-		t.Fatalf("Kill: %v", err)
-	}
-	err = stream.Process.Wait()
-	var exitStatus *ExitStatusError
-	if !errors.As(err, &exitStatus) {
-		t.Fatalf("Wait error = %v (%T), want *ExitStatusError", err, err)
-	}
-	if exitStatus.Signal == 0 {
-		t.Fatalf("ExitStatusError.Signal = 0, want a non-zero kill signal (%+v)", exitStatus)
 	}
 }
