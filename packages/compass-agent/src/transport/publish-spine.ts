@@ -49,10 +49,10 @@ import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
 import {
 	priorityBatchRetries,
 	priorityFramesLost,
-	priorityRetryDepth,
+	priorityRetryDepthGauge,
 	traceFramesLostFailedBatch,
 	traceFramesLostOverflow,
-	traceQueueDepth,
+	traceQueueDepthGauge,
 } from "./otel-metrics";
 import type { TransportRuntime } from "./runtime-channel";
 
@@ -112,10 +112,22 @@ export interface PublishSpine {
 // publish driver), the spine falls back to its OWN default runtime and disposes
 // it at the end of drain(). A borrowed runtime is NEVER disposed here — the
 // transport's close() owns that.
+//
+// A `metricNamespace` prefixes the two LEVEL gauges this spine sets
+// (trace_queue_depth, priority_retry_depth). It defaults to "" — production
+// yields the exact frozen metric names. A test passes a unique prefix so its
+// gauge reads hit a private registry entry, immune to the cross-file gauge race
+// the shared process-global registry keys structurally on the metric
+// name, so a bare gauge would be moved by a concurrent sibling test file between
+// this spine's Metric.set and the test's synchronous read. Counters take no
+// namespace — they are read as a before/after delta, robust to that movement.
 export function createPublishSpine(
 	publish: (stream: AsyncIterable<PublishFrameRequest>) => Promise<unknown>,
 	borrowedRuntime?: TransportRuntime,
+	metricNamespace = "",
 ): PublishSpine {
+	const traceQueueDepth = traceQueueDepthGauge(metricNamespace);
+	const priorityRetryDepth = priorityRetryDepthGauge(metricNamespace);
 	// Effect is confined module-private behind the spine: it backs the sliding
 	// trace queue, the wake latch, and the forked pump fiber. The default logger
 	// is removed on the fallback runtime so a handled pump-send failure does not

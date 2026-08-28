@@ -48,16 +48,29 @@ export const priorityBatchRetries = Metric.counter(
 	{ incremental: true },
 );
 
-// The pump-scoped consecutive retry budget as a LEVEL: set to the new retry
-// depth on each retry, reset to 0 on a successful send.
-export const priorityRetryDepth = Metric.gauge(
-	"compass_agent.transport.publish.priority_retry_depth",
-);
+// The two publish-spine LEVEL gauges, built through a namespace-prefix factory.
+// A gauge is an absolute last-writer-wins level, so a test reading one back must
+// not share its registry key with a concurrent writer in a sibling test file:
+// the shared process-global registry keys structurally on the metric NAME, and
+// bun runs test files concurrently in one process. The builders take an optional
+// namespace prefix — production passes none, yielding the exact frozen name; a
+// test passes a unique prefix, yielding a private registry entry immune to the
+// cross-file gauge race. Counters are unaffected: they are read as a
+// before/after DELTA, which concurrent movement cannot corrupt.
+export const priorityRetryDepthGauge = (
+	namespace = "",
+): Metric.Metric.Gauge<number> =>
+	// The pump-scoped consecutive retry budget as a LEVEL: set to the new retry
+	// depth on each retry, reset to 0 on a successful send.
+	Metric.gauge(
+		`${namespace}compass_agent.transport.publish.priority_retry_depth`,
+	);
 
-// Trace queue depth, sampled at each batch take.
-export const traceQueueDepth = Metric.gauge(
-	"compass_agent.transport.publish.trace_queue_depth",
-);
+export const traceQueueDepthGauge = (
+	namespace = "",
+): Metric.Metric.Gauge<number> =>
+	// Trace queue depth, sampled at each batch take.
+	Metric.gauge(`${namespace}compass_agent.transport.publish.trace_queue_depth`);
 
 // Every durable send attempt (initial + each retry) on the frame sink.
 export const durableAttempts = Metric.counter(
@@ -85,13 +98,17 @@ export const reconnects = Metric.counter(
 	{ incremental: true },
 );
 
-// The consecutive-no-progress level as a LEVEL: set to `noProgress` after each
-// drop's progress check (against CONTROL_RECONNECT_NO_PROGRESS_MAX), reset to 0
-// when a reconnect makes progress — a level, not a count, exactly like the
-// publish spine's priority_retry_depth gauge above.
-export const noProgressDepth = Metric.gauge(
-	"compass_agent.transport.control.no_progress_depth",
-);
+// The consecutive-no-progress LEVEL gauge, built through the same namespace
+// factory as the publish-spine gauges above and for the same reason (the
+// cross-file gauge race). Set to `noProgress` after each drop's
+// progress check (against CONTROL_RECONNECT_NO_PROGRESS_MAX), reset to 0 when a
+// reconnect makes progress — a level, not a count, exactly like the publish
+// spine's priority_retry_depth gauge. Production passes no namespace (frozen
+// name); a test passes a unique prefix for a private registry entry.
+export const noProgressDepthGauge = (
+	namespace = "",
+): Metric.Metric.Gauge<number> =>
+	Metric.gauge(`${namespace}compass_agent.transport.control.no_progress_depth`);
 
 // Every min-uptime flap reset of the backoff ladder — the reset-on-open
 // flap-detector zeroing `attempt` after a past-floor connection dropped
