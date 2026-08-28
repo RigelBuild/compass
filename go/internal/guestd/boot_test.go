@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"syscall"
 	"testing"
 )
 
@@ -59,8 +60,8 @@ func (f *fakeMount) Mount() error {
 // terminal step, exactly as production does. served holds the service serve was
 // handed, or nil if serve was never reached. cmdline is the kernel command line
 // the readCmdline step returns; cmdlineErr, when non-nil, makes that step fail.
-func newSteps(rec *recorder, apiErr, netErr, mountErr, cmdlineErr error, cmdline string) (bootSteps, **healthService, chan struct{}) {
-	served := new(*healthService)
+func newSteps(rec *recorder, apiErr, netErr, mountErr, cmdlineErr error, cmdline string) (bootSteps, **supervisor, chan struct{}) {
+	served := new(*supervisor)
 	reached := make(chan struct{})
 	steps := bootSteps{
 		mountAPIFilesystems: func() error {
@@ -73,12 +74,16 @@ func newSteps(rec *recorder, apiErr, netErr, mountErr, cmdlineErr error, cmdline
 		},
 		net:       &fakeNet{rec: rec, err: netErr},
 		workspace: &fakeMount{rec: rec, err: mountErr},
-		serve: func(ctx context.Context, _ uint32, svc *healthService) error {
+		serve: func(ctx context.Context, _ uint32, svc *supervisor) error {
 			rec.mark("serve")
 			*served = svc
 			close(reached)
 			<-ctx.Done()
 			return ctx.Err()
+		},
+		powerOff: func() error {
+			rec.mark("poweroff")
+			return nil
 		},
 	}
 	return steps, served, reached
@@ -277,5 +282,92 @@ func TestBootFailsClosedOnBadCmdline(t *testing.T) {
 	}
 	if *served != nil {
 		t.Fatal("a health service was constructed despite a bad cmdline")
+	}
+}
+
+// TestBootPowersOffOnRPCStop drives the full run() poweroff gate: a serve that
+// simulates an RPC Stop (flags rpcStop + cancels serving via initiateStop) then
+// drains clean must end in reboot(RB_POWER_OFF), since a bare PID-1 exit panics
+// the kernel (§(d)). Exercises the integration TestRPCStopCancels... asserts in
+// isolation.
+func TestBootPowersOffOnRPCStop(t *testing.T) {
+	rec := &recorder{}
+	steps := bootSteps{
+		mountAPIFilesystems: func() error { rec.mark("api"); return nil },
+		readCmdline:         func() ([]byte, error) { rec.mark("cmdline"); return []byte("compass.vsock_port=1024"), nil },
+		net:                 &fakeNet{rec: rec},
+		workspace:           &fakeMount{rec: rec},
+		serve: func(_ context.Context, _ uint32, svc *supervisor) error {
+			rec.mark("serve")
+			svc.initiateStop(syscall.SIGTERM) // RPC Stop: sets rpcStop, cancels serving
+			return nil                        // clean drain
+		},
+		powerOff: func() error { rec.mark("poweroff"); return nil },
+	}
+	if err := run(t.Context(), config{}, steps); err != nil {
+		t.Fatalf("run after a clean RPC stop = %v, want nil", err)
+	}
+	if !rec.ran("poweroff") {
+		t.Fatalf("power-off did not run after an RPC stop; order was %v", rec.steps)
+	}
+}
+
+// TestBootPowersOffOnRPCStopDespiteDrainError is the reliability contract: an
+// RPC Stop whose graceful drain overran (serve returns a non-nil error, e.g. a
+// child that ignored SIGTERM held Shutdown past its deadline) must STILL power
+// off, so the VMM observes a real guest shutdown within the host's timeout
+// instead of burning it to a hard kill. The poweroff is gated on rpcStop alone,
+// not on a clean serveErr.
+func TestBootPowersOffOnRPCStopDespiteDrainError(t *testing.T) {
+	rec := &recorder{}
+	drainErr := errors.New("shutdown deadline exceeded")
+	steps := bootSteps{
+		mountAPIFilesystems: func() error { rec.mark("api"); return nil },
+		readCmdline:         func() ([]byte, error) { rec.mark("cmdline"); return []byte("compass.vsock_port=1024"), nil },
+		net:                 &fakeNet{rec: rec},
+		workspace:           &fakeMount{rec: rec},
+		serve: func(_ context.Context, _ uint32, svc *supervisor) error {
+			rec.mark("serve")
+			svc.initiateStop(syscall.SIGTERM)
+			return drainErr // drain overran
+		},
+		powerOff: func() error { rec.mark("poweroff"); return nil },
+	}
+	// run returns powerOff()'s result (nil), NOT the drain error — the guest
+	// powered off, so main never falls through to a bare PID-1 exit.
+	if err := run(t.Context(), config{}, steps); err != nil {
+		t.Fatalf("run after an RPC stop with a drain error = %v, want nil (powered off)", err)
+	}
+	if !rec.ran("poweroff") {
+		t.Fatalf("power-off was skipped on a drain error during an RPC stop; order was %v", rec.steps)
+	}
+}
+
+// TestBootDoesNotPowerOffOnSignalCancel is the negative gate: a Unix-signal
+// shutdown (ctx cancelled, no RPC Stop) must NOT power off — rpcStop is false,
+// so run returns the serve error and lets main exit (the V2a path), and the
+// host observes the dial failure.
+func TestBootDoesNotPowerOffOnSignalCancel(t *testing.T) {
+	rec := &recorder{}
+	steps := bootSteps{
+		mountAPIFilesystems: func() error { rec.mark("api"); return nil },
+		readCmdline:         func() ([]byte, error) { rec.mark("cmdline"); return []byte("compass.vsock_port=1024"), nil },
+		net:                 &fakeNet{rec: rec},
+		workspace:           &fakeMount{rec: rec},
+		serve: func(ctx context.Context, _ uint32, _ *supervisor) error {
+			rec.mark("serve")
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		powerOff: func() error { rec.mark("poweroff"); return nil },
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel() // simulate a Unix-signal shutdown: serve returns on ctx, rpcStop false
+	err := run(ctx, config{}, steps)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("run after a signal cancel = %v, want context.Canceled", err)
+	}
+	if rec.ran("poweroff") {
+		t.Fatalf("power-off ran on a plain signal cancel (rpcStop false); order was %v", rec.steps)
 	}
 }

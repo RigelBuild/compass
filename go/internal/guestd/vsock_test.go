@@ -33,7 +33,7 @@ func TestServeHandshakeHealthOverH2C(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 
-	svc := &healthService{version: "v-test", netProvisioned: true, workspaceMounted: true}
+	svc := &supervisor{version: "v-test", netProvisioned: true, workspaceMounted: true, state: stateReady, execs: map[string]*childExec{}}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	serveErr := make(chan error, 1)
@@ -81,7 +81,7 @@ func TestServeHandshakeReportsServeFault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	svc := &healthService{version: "v", netProvisioned: true, workspaceMounted: true}
+	svc := &supervisor{version: "v", netProvisioned: true, workspaceMounted: true, state: stateReady, execs: map[string]*childExec{}}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- serveHandshake(t.Context(), ln, svc) }()

@@ -52,6 +52,10 @@ type workspaceMounter interface {
 // cmdline inside run(), after /proc is mounted (§(d) step 1).
 type config struct {
 	guestdVersion string
+	// log is the guestd logger, threaded to run() so its diagnostics match the
+	// handler Run configures rather than the package global. Optional: a nil log
+	// (boot tests) falls back to slog.Default().
+	log *slog.Logger
 }
 
 // bootSteps are the injectable seams the orchestrator (run) depends on. The
@@ -67,10 +71,16 @@ type bootSteps struct {
 	readCmdline func() ([]byte, error)
 	net         netProvisioner
 	workspace   workspaceMounter
-	// serve receives the fully-provisioned Health service and serves it until
-	// ctx is cancelled. It is the LAST step: reaching it is the proof that net
-	// and mount both succeeded.
-	serve func(ctx context.Context, port uint32, svc *healthService) error
+	// serve receives the fully-provisioned supervisor and serves it until ctx
+	// is cancelled. It is the LAST step: reaching it is the proof that net and
+	// mount both succeeded.
+	serve func(ctx context.Context, port uint32, svc *supervisor) error
+	// powerOff performs the PID-1-legal reboot(RB_POWER_OFF) that ends an
+	// RPC-driven Stop (§(d)): a bare PID-1 exit panics the kernel, which
+	// cloud-hypervisor never observes as a VMM exit, so guestd must power the
+	// guest off explicitly. Injectable so the hermetic boot tests assert the
+	// trigger without actually rebooting the test host.
+	powerOff func() error
 }
 
 // Run is the production entry point: it wires the real Linux boot steps and
@@ -83,19 +93,28 @@ func Run(ctx context.Context, log *slog.Logger) error {
 		net:                 &linuxNetProvisioner{iface: defaultNetIface, log: log},
 		workspace:           &virtioFSMounter{tag: workspaceTag, target: workspaceTarget},
 		serve:               serveVsock,
+		powerOff:            powerOff,
 	}
-	return run(ctx, config{guestdVersion: Version}, steps)
+	return run(ctx, config{guestdVersion: Version, log: log}, steps)
 }
 
 // run executes the fail-closed boot sequence in the exact order §(d) fixes:
-// (1) API filesystems, (2) read the vsock port from the now-readable kernel
-// cmdline, (3) networking, (4) virtio-fs workspace, (5) serve the vsock Health
-// handshake, (6) idle inside serve until ctx is cancelled. Any step error
-// aborts the sequence before the next one runs, so a failing provisioner never
-// reaches the mount and a failing mount never reaches the server — Health is
-// served only after net and mount both succeed. The cmdline read is inside the
-// sequence, after the API mount, because /proc is not readable before it.
+// (1) API filesystems, (2) read the vsock port + optional boot nonce from the
+// now-readable kernel cmdline, (3) networking, (4) virtio-fs workspace,
+// (5) serve the vsock GuestControl surface, (6) idle inside serve until ctx is
+// cancelled — by a Unix signal (V2a path) or an RPC Stop (§(d)). Any step error
+// aborts the sequence before the next one runs, so Health is served only after
+// net and mount both succeed. When serve returns because an RPC Stop cancelled
+// it, run ends in reboot(RB_POWER_OFF): a bare PID-1 exit panics the kernel,
+// which the VMM never observes as a guest exit.
 func run(ctx context.Context, cfg config, steps bootSteps) error {
+	// log is the guestd logger threaded from Run; a nil (test-constructed config)
+	// falls back to the default handler, which writes to os.Stderr (ttyS0) — the
+	// same sink the production logger uses, so a boot test needs no logger.
+	log := cfg.log
+	if log == nil {
+		log = slog.Default()
+	}
 	if err := steps.mountAPIFilesystems(); err != nil {
 		return fmt.Errorf("mounting API filesystems: %w", err)
 	}
@@ -109,7 +128,10 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 	if err != nil {
 		return err
 	}
-
+	bootNonce, err := parseBootNonce(string(cmdline))
+	if err != nil {
+		return err
+	}
 	if err := steps.net.Provision(ctx); err != nil {
 		return fmt.Errorf("provisioning network: %w", err)
 	}
@@ -118,12 +140,41 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 	}
 
 	// Both bringup steps passed, so the served state is unconditionally true —
-	// a successful handshake is the proof of that. If the sequence ever grew a
-	// step that could serve degraded state, these would reflect it.
-	svc := &healthService{
+	// a successful handshake is the proof of that. The supervisor starts in
+	// stateReady (Health answers, exec refused until Provision opens the gate).
+	serveCtx, stopServing := context.WithCancel(ctx)
+	defer stopServing()
+	svc := &supervisor{
 		version:          cfg.guestdVersion,
 		netProvisioned:   true,
 		workspaceMounted: true,
+		bootNonce:        bootNonce,
+		newCredential:    linuxCredential,
+		stopServing:      stopServing,
+		state:            stateReady,
+		execs:            make(map[string]*childExec),
 	}
-	return steps.serve(ctx, port, svc)
+	serveErr := steps.serve(serveCtx, port, svc)
+
+	// An RPC-driven Stop (Signal("", ...)) cancels serveCtx from inside the
+	// supervisor; ctx (the process signal context) is still live. In that case
+	// the guest is going down UNCONDITIONALLY, so guestd must power the guest
+	// off explicitly (§(d)) — a PID-1 exit would panic the kernel. The
+	// power-off is gated on rpcStop alone, NOT on a clean serveErr: a graceful
+	// drain that overran its deadline (e.g. a child that ignored SIGTERM)
+	// returns a non-nil Shutdown error, but the guest must STILL power off so
+	// the VMM observes a real shutdown within the host's timeout rather than
+	// burning the full timeout to a hard kill. A serve fault or a Unix-signal
+	// cancel (rpcStop false) returns as before, letting main exit and the host
+	// observe the dial failure.
+	svc.mu.Lock()
+	rpcStop := svc.rpcStop
+	svc.mu.Unlock()
+	if rpcStop {
+		if serveErr != nil {
+			log.Error("guest serve drain returned an error on RPC stop; powering off anyway", "error", serveErr)
+		}
+		return steps.powerOff()
+	}
+	return serveErr
 }
