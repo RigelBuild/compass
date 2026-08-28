@@ -12,6 +12,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -271,6 +272,148 @@ func TestListNewArtifactsPage1_304(t *testing.T) {
 	}
 	if !res.NotModified || rt.calls != 1 {
 		t.Errorf("NotModified=%v calls=%d, want true/1", res.NotModified, rt.calls)
+	}
+}
+
+// --- GitHub: ListUpdatedIssues contract points -------------------------------
+
+// TestListUpdatedIssuesStopsStrictlyBelowSince: a multi-page updated-order walk
+// stops when a page's oldest updated_at is strictly < since. A row whose
+// updated_at == since is RE-included (second-granularity dedup safety — a <=
+// stop would permanently drop a same-second issue).
+func TestListUpdatedIssuesStopsStrictlyBelowSince(t *testing.T) {
+	since := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	// Page 1 all >= since (newest-updated-first); its oldest (== since) is NOT
+	// below since, so the walk continues to page 2.
+	page1 := `[
+		{"number":50,"state":"open","html_url":"u50","updated_at":"2026-08-01T12:00:02Z"},
+		{"number":49,"state":"open","html_url":"u49","updated_at":"2026-08-01T12:00:00Z"}
+	]`
+	// Page 2's first row == since (re-included), its second is strictly below
+	// (dropped, and stops the walk).
+	page2 := `[
+		{"number":48,"state":"open","html_url":"u48","updated_at":"2026-08-01T12:00:00Z"},
+		{"number":40,"state":"open","html_url":"u40","updated_at":"2026-07-31T23:59:59Z"}
+	]`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: page1, headers: map[string]string{"ETag": `"n1"`, "Link": `<https://api.github.com/x?page=2>; rel="next"`}},
+		{status: 200, body: page2, headers: map[string]string{"Link": `<https://api.github.com/x?page=3>; rel="next"`}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	res, err := g.ListUpdatedIssues(context.Background(), "org/repo", since, "")
+	if err != nil {
+		t.Fatalf("ListUpdatedIssues: %v", err)
+	}
+	// 50,49 (page 1) + 48 (== since, re-included) = 3; 40 is strictly below and
+	// stops the walk before any page 3 is requested.
+	if len(res.V) != 3 {
+		t.Fatalf("kept %d (%+v), want 3 (50,49,48; 48 re-included at == since, 40 stops the walk)", len(res.V), res.V)
+	}
+	if res.V[2].Number != 48 {
+		t.Errorf("V[2].Number = %d, want 48 (the == since row is re-included)", res.V[2].Number)
+	}
+	if rt.calls != 2 {
+		t.Errorf("calls = %d, want 2 (the walk stopped once a page's oldest was strictly < since)", rt.calls)
+	}
+	if res.ETag != `"n1"` {
+		t.Errorf("ETag = %q, want page 1's %q (re-store)", res.ETag, `"n1"`)
+	}
+}
+
+// TestListUpdatedIssuesPage1_304: a 304 on page 1 short-circuits to NotModified
+// without walking (nothing updated since the last sweep).
+func TestListUpdatedIssuesPage1_304(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusNotModified, headers: map[string]string{"ETag": `"u0"`}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	res, err := g.ListUpdatedIssues(context.Background(), "org/repo", time.Time{}, `"u0"`)
+	if err != nil {
+		t.Fatalf("ListUpdatedIssues: %v", err)
+	}
+	if !res.NotModified || rt.calls != 1 {
+		t.Errorf("NotModified=%v calls=%d, want true/1", res.NotModified, rt.calls)
+	}
+}
+
+// TestListUpdatedIssuesZeroSinceWalksAll: a zero since (cold start) walks every
+// page to the last (no rel="next"), collecting all issue rows.
+func TestListUpdatedIssuesZeroSinceWalksAll(t *testing.T) {
+	page1 := `[{"number":50,"state":"open","html_url":"u50","updated_at":"2026-08-01T12:00:02Z"}]`
+	page2 := `[{"number":10,"state":"closed","html_url":"u10","updated_at":"2020-01-01T00:00:00Z"}]`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: page1, headers: map[string]string{"ETag": `"n1"`, "Link": `<https://api.github.com/x?page=2>; rel="next"`}},
+		{status: 200, body: page2},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	res, err := g.ListUpdatedIssues(context.Background(), "org/repo", time.Time{}, "")
+	if err != nil {
+		t.Fatalf("ListUpdatedIssues: %v", err)
+	}
+	// A zero since is never strictly greater than any updated_at, so nothing
+	// stops the walk short — both pages collected, walk ends at no rel="next".
+	if len(res.V) != 2 {
+		t.Fatalf("kept %d (%+v), want 2 (zero since walks to the last page)", len(res.V), res.V)
+	}
+	if rt.calls != 2 {
+		t.Errorf("calls = %d, want 2 (walk ended only at no rel=\"next\")", rt.calls)
+	}
+}
+
+// TestListUpdatedIssuesFiltersPRs: /repos/{repo}/issues interleaves PR rows
+// (pull_request marker); the updated-order walk drops them, keeping only
+// issue-shaped rows, on the updated-order endpoint.
+func TestListUpdatedIssuesFiltersPRs(t *testing.T) {
+	body := `[
+		{"number":45,"state":"open","html_url":"u45","updated_at":"2026-08-01T12:00:02Z","pull_request":{"url":"pr"}},
+		{"number":44,"state":"open","html_url":"u44","updated_at":"2026-08-01T12:00:01Z"}
+	]`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: body, headers: map[string]string{"ETag": `"n1"`}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	res, err := g.ListUpdatedIssues(context.Background(), "org/repo", time.Time{}, "")
+	if err != nil {
+		t.Fatalf("ListUpdatedIssues: %v", err)
+	}
+	if len(res.V) != 1 || res.V[0].Number != 44 {
+		t.Fatalf("kept %+v, want only issue #44 (PR #45 filtered)", res.V)
+	}
+	if got := rt.requests[0].URL.Path; got != "/repos/org/repo/issues" {
+		t.Errorf("path = %q, want the issues endpoint", got)
+	}
+	if q := rt.requests[0].URL.Query(); q.Get("sort") != "updated" || q.Get("direction") != "desc" {
+		t.Errorf("query sort=%q direction=%q, want updated/desc", q.Get("sort"), q.Get("direction"))
+	}
+}
+
+// TestListUpdatedIssuesBudgetErrorPropagates: an armed budget gate fails the
+// page-1 read fast with ErrBudgetExhausted, propagated to the caller.
+func TestListUpdatedIssuesBudgetErrorPropagates(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	// Page 1 arms the gate (remaining==0); page 2's read then fails fast.
+	page1 := `[{"number":50,"state":"open","html_url":"u50","updated_at":"2026-08-01T12:00:02Z"}]`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: page1, headers: map[string]string{
+			"ETag":                  `"n1"`,
+			"Link":                  `<https://api.github.com/x?page=2>; rel="next"`,
+			"x-ratelimit-remaining": "0",
+			"x-ratelimit-reset":     "9999999999",
+		}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	g.now = func() time.Time { return base }
+
+	_, err := g.ListUpdatedIssues(context.Background(), "org/repo", time.Time{}, "")
+	if !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("err = %v, want ErrBudgetExhausted (gate armed on page 1 fails page 2 fast)", err)
+	}
+	if rt.calls != 1 {
+		t.Errorf("calls = %d, want 1 (page 2 fails fast without a request)", rt.calls)
 	}
 }
 

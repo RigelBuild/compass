@@ -143,6 +143,12 @@ type ghIssue struct {
 	PullRequest *json.RawMessage `json:"pull_request"`
 }
 
+// jsonNull is the literal a *json.RawMessage holds when GitHub sends an explicit
+// `"pull_request": null` (a non-nil RawMessage wrapping the four bytes), as
+// opposed to omitting the key for a plain issue. The interleaved-PR guards test
+// against it so a null marker never drops a real issue.
+const jsonNull = "null"
+
 // ghError is the wire shape of a GitHub error body (the message field feeds
 // StatusError.Message).
 type ghError struct {
@@ -223,7 +229,7 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 		// OMITS the pull_request key for a plain issue, but a *json.RawMessage
 		// unmarshals an explicit "pull_request": null to a non-nil
 		// RawMessage("null") — guard that so a null never drops a real issue.
-		if raw := r.PullRequest; raw != nil && len(*raw) > 0 && string(*raw) != "null" {
+		if raw := r.PullRequest; raw != nil && len(*raw) > 0 && string(*raw) != jsonNull {
 			continue
 		}
 		issues = append(issues, r.toIssue())
