@@ -21,18 +21,26 @@ import (
 // even one structurally in the vantage's tree. Tree order (by account id) is
 // preserved.
 //
-// vantage defaults to the caller when agent_account_id is empty — an agent caller
-// is session-resolved to itself (actorFromContext), a human/UI caller names a
-// vantage explicitly.
+// vantage defaults to the caller when the vantage handle is empty — an agent
+// caller is session-resolved to itself (actorFromContext), a human/UI caller
+// names a vantage explicitly. A non-empty vantageHandle is a `@handle` the
+// server resolves via resolveAgentAccount: unknown → NOT_FOUND, and (roster's
+// DEFINED error posture, not inherited) a real-but-caller-invisible vantage maps
+// to the SAME NOT_FOUND an unknown handle gets — closing the
+// NOT_FOUND-vs-empty-success vantage-probe oracle.
 func (c *Comms) roster(
 	ctx context.Context,
 	caller store.AccountID,
-	vantageID string,
+	vantageHandle string,
 	scope compassv1.RosterScope,
 ) ([]*compassv1.RosterEntry, error) {
-	vantage := store.AccountID(vantageID)
-	if vantage == "" {
-		vantage = caller
+	vantage := caller
+	if vantageHandle != "" {
+		id, err := c.resolveVisibleAgentHandle(ctx, caller, vantageHandle)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		vantage = id
 	}
 
 	tree, err := c.treeForScope(ctx, vantage, scope)
@@ -172,7 +180,7 @@ func (c *Comms) RosterAsAccount(
 	if account == "" {
 		return nil, errNoActor
 	}
-	entries, err := c.roster(ctx, account, req.GetAgentAccountId(), req.GetScope())
+	entries, err := c.roster(ctx, account, req.GetVantageHandle(), req.GetScope())
 	if err != nil {
 		return nil, err
 	}

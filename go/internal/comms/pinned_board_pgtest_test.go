@@ -169,7 +169,7 @@ func TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsNotFound(t *testing.T) {
 
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberAccountIds: []string{string(other.ID)},
+		MemberHandles: []string{other.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
@@ -179,9 +179,9 @@ func TestUpdatePinnedBoardNonOwnerOnOwnerOnlyIsNotFound(t *testing.T) {
 	msg := pinnableMessage(t, st, store.ChannelID(chID), owner.ID, "target")
 
 	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
-		ChannelId:      chID,
-		PostPolicy:     compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
-		OwnerAccountId: string(owner.ID),
+		ChannelId:   chID,
+		PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+		OwnerHandle: owner.Handle,
 	})); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsNotFound(t *testing.T) {
 
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberAccountIds: []string{string(other.ID)},
+		MemberHandles: []string{other.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
@@ -350,9 +350,9 @@ func TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsNotFound(t *testing.T) {
 	msg := pinnableMessage(t, st, store.ChannelID(chID), owner.ID, "target")
 
 	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
-		ChannelId:      chID,
-		PostPolicy:     compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
-		OwnerAccountId: string(owner.ID),
+		ChannelId:   chID,
+		PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+		OwnerHandle: owner.Handle,
 	})); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}

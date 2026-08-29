@@ -85,7 +85,7 @@ func TestStopRetiresTheSessionsControlState(t *testing.T) {
 	h := newTransportFixture(t, &recordingRelay{})
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-1"})
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}

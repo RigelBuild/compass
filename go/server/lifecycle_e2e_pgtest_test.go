@@ -264,9 +264,7 @@ func e2eDespawnPeer(t *testing.T, w *e2eWire, peerID store.AccountID, peerContai
 	ctx := w.ctx
 	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
 		CallId: "despawn-call-1",
-		Call: &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{
-			AgentAccountId: string(peerID),
-		}},
+		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: string(peerID)}},
 	}))
 	if err != nil {
 		t.Fatalf("Lifecycle(despawn) over the socket = %v, want the round-trip result", err)
@@ -386,9 +384,7 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	// socket.
 	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
 		CallId: "foreign-despawn-1",
-		Call: &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{
-			AgentAccountId: string(peerBID),
-		}},
+		Call:   &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: string(peerBID)}},
 	}))
 	if err != nil {
 		t.Fatalf("Lifecycle(foreign despawn) over the socket = %v, want an in-band result", err)
@@ -414,9 +410,8 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	// same wire: both must return the SAME in-band not_found.
 	unknownResp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
 		CallId: "unknown-despawn-1",
-		Call: &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{
-			AgentAccountId: "ffffffffffffffffffffffffffffffff", // well-formed, never minted
-		}},
+		// well-formed, never minted:
+		Call: &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{AgentHandle: "ffffffffffffffffffffffffffffffff"}},
 	}))
 	if err != nil {
 		t.Fatalf("Lifecycle(unknown despawn) = %v, want an in-band result", err)
@@ -768,9 +763,7 @@ func provisionWhenSeamLiveE2E(t *testing.T, ctx context.Context, hub *runnerhub.
 	t.Helper()
 	deadline := time.After(e2eTimeout)
 	for {
-		resp, _, err := hub.Provision(ctx, "prov-supervisor", &compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: string(agentID),
-		})
+		resp, _, err := hub.Provision(ctx, "prov-supervisor", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(agentID)})
 		if err == nil {
 			name := resp.GetContainerName()
 			if name == "" {

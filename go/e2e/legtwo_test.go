@@ -135,7 +135,7 @@ func TestLegTwoRealTurn(t *testing.T) {
 	// AwaitTurnSettled waits on. The session-start sweep only redelivers
 	// messages left undelivered from a prior lifetime (relevant only to leg-5's
 	// post1), not this one.
-	acc, err := st.AgentByHandle(ctx, "leg2-realturn")
+	acc, err := adminAgentByHandle(ctx, st, "leg2-realturn")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
 	}

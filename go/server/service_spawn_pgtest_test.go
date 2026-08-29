@@ -37,10 +37,7 @@ func TestSpawnAgentRunsProvisionThenStart(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background()
 
-	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-happy",
-	}))
+	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-happy"}))
 	if err != nil {
 		t.Fatalf("SpawnAgent = %v, want success", err)
 	}
@@ -72,17 +69,11 @@ func TestSpawnAgentIsIdempotentOnRepeatedClientRequestId(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background()
 
-	first, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-dup",
-	}))
+	first, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-dup"}))
 	if err != nil {
 		t.Fatalf("first SpawnAgent = %v, want success", err)
 	}
-	second, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-dup",
-	}))
+	second, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-dup"}))
 	if err != nil {
 		t.Fatalf("retry SpawnAgent = %v, want idempotent success", err)
 	}
@@ -119,10 +110,7 @@ func TestSpawnAgentRejectsWhenAgentAlreadyLive(t *testing.T) {
 		AgentAccountId: string(f.agentID),
 	})
 
-	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-reject",
-	}))
+	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-reject"}))
 	if err == nil {
 		t.Fatal("SpawnAgent for a live agent = nil error, want CodeAlreadyExists")
 	}
@@ -155,10 +143,7 @@ func TestSpawnAgentFailedRetryReattempts(t *testing.T) {
 	ctx := context.Background()
 
 	f.runner.setFailStart(true) // the Runner refuses Start: the first spawn fails mid-chain.
-	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-reattempt",
-	}))
+	_, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-reattempt"}))
 	if err == nil {
 		t.Fatal("first SpawnAgent with a failing Start = nil error, want the failure surfaced")
 	}
@@ -166,10 +151,7 @@ func TestSpawnAgentFailedRetryReattempts(t *testing.T) {
 	// The Runner now accepts Start; a retry of the SAME id must re-attempt and
 	// succeed, proving the failed memo entry was dropped rather than replayed.
 	f.runner.setFailStart(false)
-	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-reattempt",
-	}))
+	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-reattempt"}))
 	if err != nil {
 		t.Fatalf("retry SpawnAgent after a failed first = %v, want re-attempt success (a retained failure would replay the error)", err)
 	}
@@ -214,19 +196,13 @@ func TestSpawnAgentCrossAccountSameCridIsDistinct(t *testing.T) {
 		t.Fatalf("CreateAgent(second): %v", err)
 	}
 
-	if _, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-shared",
-	})); err != nil {
+	if _, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-shared"})); err != nil {
 		t.Fatalf("first-account SpawnAgent = %v, want success", err)
 	}
 	// The second account reuses the SAME client_request_id. With correct
 	// (account, id) keying it does NOT join, so it drives its own Provision; the
 	// crid-alone bug would join and return the first's result with no Provision.
-	_, err = f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(other.ID),
-		ClientRequestId: "spawn-shared",
-	}))
+	_, err = f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(other.ID), ClientRequestId: "spawn-shared"}))
 	// A distinct spawn reaching Provision is the tooth; the fake's shared
 	// container name then trips a placement conflict, which is fine — a JOIN
 	// (the bug) would instead have returned nil error with no second Provision.
@@ -259,10 +235,7 @@ func TestSpawnAgentMemoEvictsSuccessAfterTTL(t *testing.T) {
 		return nil // the captured fn is fired by the test, not a real timer.
 	}
 
-	if _, err := f.svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "spawn-evict",
-	})); err != nil {
+	if _, err := f.svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{AgentHandle: string(f.agentID), ClientRequestId: "spawn-evict"})); err != nil {
 		t.Fatalf("SpawnAgent = %v, want success", err)
 	}
 

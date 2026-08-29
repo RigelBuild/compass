@@ -52,7 +52,7 @@ func TestSeedSettledBeforeFixtureReturns(t *testing.T) {
 	// return before the seed even created the supervisor.
 	hctx, hcancel := context.WithTimeout(ctx, rpcTimeout)
 	defer hcancel()
-	sup, err := st.AgentByHandle(hctx, rootSupervisorHandle)
+	sup, err := adminAgentByHandle(hctx, st, rootSupervisorHandle)
 	if err != nil {
 		t.Fatalf("root supervisor not resolvable after NewFixture returned: %v (the seed-settle gate did not hold)", err)
 	}

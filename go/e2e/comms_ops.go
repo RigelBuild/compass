@@ -33,7 +33,7 @@ func (f *Fixture) PostMessage(ctx context.Context, channelID, topicName, text st
 	return resp.Msg.GetMessage().GetId(), nil
 }
 
-// SubscribeMember adds accountID to channelID's membership AND marks it
+// SubscribeMember adds memberHandle to channelID's membership AND marks it
 // subscribed over CommsService.UpdateChannelMembers, so the account joins the
 // channel's DELIVER set. It is the leg-4 second-recipient join: the reused leg-3
 // spawner is subscribed-but-unmentioned onto the mentioned peer's home channel,
@@ -41,17 +41,17 @@ func (f *Fixture) PostMessage(ctx context.Context, channelID, topicName, text st
 // add and the subscribe lists are set in the one request because the deliver set
 // (store SubscribedAgents, delivery_reads.go) requires the member's subscribed
 // flag on a non-home, non-mandatory channel — a bare add inserts subscribed=FALSE
-// and the account is filtered out of the deliver set; subscribe_account_ids
+// and the account is filtered out of the deliver set; subscribe_handles
 // requires the account already be a current or added member (comms.proto:644-645),
 // so the two travel together. Returns an error rather than panicking so the
 // caller (a test) decides fatality; the per-call deadline is threaded from ctx.
-func (f *Fixture) SubscribeMember(ctx context.Context, channelID, accountID string) error {
+func (f *Fixture) SubscribeMember(ctx context.Context, channelID, memberHandle string) error {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	if _, err := f.Comms().UpdateChannelMembers(rctx, connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:           channelID,
-		AddMemberAccountIds: []string{accountID},
-		SubscribeAccountIds: []string{accountID},
+		ChannelId:        channelID,
+		AddMemberHandles: []string{memberHandle},
+		SubscribeHandles: []string{memberHandle},
 	})); err != nil {
 		return fmt.Errorf("UpdateChannelMembers RPC: %w", err)
 	}

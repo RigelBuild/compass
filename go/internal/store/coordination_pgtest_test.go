@@ -336,7 +336,7 @@ func TestCollisionUserOwnedSuffixes(t *testing.T) {
 		t.Fatalf("suffixed channel not manager-owned+mandatory: %+v", mgrCh.Policy)
 	}
 	// The parent-edge write still succeeded: the report account exists.
-	if _, err := s.AgentByHandle(ctx, "report"); err != nil {
+	if _, err := s.AgentByHandle(ctx, owner.ID, "report"); err != nil {
 		t.Fatalf("report account not created (parent-edge write wedged by collision): %v", err)
 	}
 }

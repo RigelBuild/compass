@@ -149,10 +149,10 @@ func (s *service) ProvisionAgentWorkspace(
 	// prompt or a role prompt. A non-agent account carries neither, but the
 	// client values are still cleared for the same reason. The Runner receives
 	// these on the same relayed req.Msg.
-	acc, err := s.store.GetAccount(ctx, store.AccountID(req.Msg.GetAgentAccountId()))
+	acc, err := s.store.GetAccount(ctx, store.AccountID(req.Msg.GetAgentHandle()))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no account with id %s", req.Msg.GetAgentAccountId()))
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no account with id %s", req.Msg.GetAgentHandle()))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("reading agent account for persona: %w", err))
 	}
@@ -182,7 +182,7 @@ func (s *service) ProvisionAgentWorkspace(
 	// Provision and Start left StartAgentSession unable to say whose session it
 	// was recording. It is also what SEA-1516 reattach recovery reads to name
 	// every agent stranded by a Runner restart.
-	if err := s.store.RecordAgentPlacement(ctx, store.AccountID(req.Msg.GetAgentAccountId()), runnerID, resp.GetContainerName()); err != nil {
+	if err := s.store.RecordAgentPlacement(ctx, store.AccountID(req.Msg.GetAgentHandle()), runnerID, resp.GetContainerName()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
 	}
 	return connect.NewResponse(resp), nil
@@ -417,7 +417,7 @@ func (s *service) IssueToken(
 	ctx context.Context,
 	req *connect.Request[compassv1.IssueTokenRequest],
 ) (*connect.Response[compassv1.IssueTokenResponse], error) {
-	id := store.AccountID(req.Msg.GetAccountId())
+	id := store.AccountID(req.Msg.GetAccountHandle())
 	if id == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("account_id is required"))

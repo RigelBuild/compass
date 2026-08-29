@@ -123,7 +123,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 			return
 		}
 		defer st.Close()
-		peer, err := st.AgentByHandle(ctx, peerHandle)
+		peer, err := adminAgentByHandle(ctx, st, peerHandle)
 		if err != nil {
 			return
 		}
@@ -159,7 +159,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// session-start sweep only redelivers messages left undelivered from a prior
 	// lifetime (relevant only to leg-5's post1), not this one. Must precede the
 	// settle wait.
-	spawner, err := st.AgentByHandle(ctx, "leg34-spawner")
+	spawner, err := adminAgentByHandle(ctx, st, "leg34-spawner")
 	if err != nil {
 		t.Fatalf("AgentByHandle(spawner): %v", err)
 	}
@@ -178,7 +178,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// ── Leg 3: fresh peer account (F2 ownership) + a second real container ──
 
 	// The spawn minted a fresh agent account resolvable by its handle.
-	peer, err := st.AgentByHandle(ctx, peerHandle)
+	peer, err := adminAgentByHandle(ctx, st, peerHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(%q): %v — the scripted spawn did not mint the peer account (RED until H3 registers the native spawn tool, design.md:655-659)", peerHandle, err)
 	}
@@ -283,7 +283,9 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 
 	// Subscribe the spawner onto the peer's home channel so it becomes a plain
 	// deliver target there (the second recipient, no new container).
-	if err := f.SubscribeMember(ctx, string(peer.Agent.HomeChannelID), spawnerID); err != nil {
+	// The spawner is a bare agent handle in the caller's own owner namespace
+	// (created via CreateAgent above); T3 resolves it to the spawner account.
+	if err := f.SubscribeMember(ctx, string(peer.Agent.HomeChannelID), "leg34-spawner"); err != nil {
 		t.Fatalf("SubscribeMember(spawner → peer home channel): %v", err)
 	}
 

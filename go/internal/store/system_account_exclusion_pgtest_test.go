@@ -132,7 +132,12 @@ func TestSystemAccountByHandleIsNotFound(t *testing.T) {
 		t.Fatalf("GetAccount(%s) after seed: %v; the account must exist for the ErrNotFound below to prove the IsAgent gate", sys.ID, err)
 	}
 
-	_, err = s.AgentByHandle(ctx, SystemAccountHandle)
+	// A system account carries a global (owner_user_id NULL) handle row, never an
+	// agent-namespace one, so an owner-qualified agent lookup misses regardless of
+	// the owner passed — the IsAgent gate's fail-closed, indistinguishable from
+	// unknown.
+	owner := mustUser(t, s, "owner")
+	_, err = s.AgentByHandle(ctx, owner.ID, SystemAccountHandle)
 	sentinelIs(t, err, ErrNotFound, "AgentByHandle on the reserved system handle")
 }
 
@@ -326,7 +331,8 @@ func TestLinearBridgeAccountByHandleIsNotFound(t *testing.T) {
 		t.Fatalf("GetAccount(%s) after seed: %v; the account must exist for the ErrNotFound below to prove the IsAgent gate", linear.ID, err)
 	}
 
-	_, err = s.AgentByHandle(ctx, LinearBridgeAccountHandle)
+	owner := mustUser(t, s, "owner")
+	_, err = s.AgentByHandle(ctx, owner.ID, LinearBridgeAccountHandle)
 	sentinelIs(t, err, ErrNotFound, "AgentByHandle on the reserved @linear handle")
 }
 

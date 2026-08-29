@@ -2,10 +2,31 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// insertAccountHandle records accountID's row in the account_handles resolution
+// index (RIG-2751 handle cutover). ownerUserID is empty for a user/system handle
+// (stored NULL, globally unique) and the owning user's id for an agent handle
+// (unique only within that owner). A duplicate handle in the applicable
+// namespace is ErrConflict, mirroring the former accounts.handle unique. Runs on
+// the caller's tx so the handle row commits atomically with the account insert.
+func insertAccountHandle(ctx context.Context, tx pgx.Tx, accountID, handle string, ownerUserID AccountID) error {
+	if _, err := tx.Exec(ctx,
+		"INSERT INTO account_handles (account_id, handle, owner_user_id) VALUES ($1, $2, NULLIF($3, ''))",
+		accountID, handle, string(ownerUserID),
+	); err != nil {
+		if pgErrIs(err, pgUniqueViolation) {
+			return fmt.Errorf("%w: handle %q already taken", ErrConflict, handle)
+		}
+		return fmt.Errorf("store: insert account_handle: %w", err)
+	}
+	return nil
+}
 
 // CreateUser inserts a human account (a regular member; admin elevation is a
 // separate path, comms.proto:39-42) and returns it with its server-assigned id.
@@ -29,15 +50,18 @@ func (s *Store) CreateUser(ctx context.Context, u NewUser) (Account, error) {
 		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
 		id, u.Handle, u.DisplayName,
 	); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			return Account{}, fmt.Errorf("%w: handle %q already taken", ErrConflict, u.Handle)
-		}
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		"INSERT INTO user_accounts (account_id, role) VALUES ($1, $2)", id, int32(UserRoleMember),
 	); err != nil {
 		return Account{}, fmt.Errorf("store: insert user_account: %w", err)
+	}
+	// The handle uniqueness now lives on account_handles (a user handle is
+	// globally unique, owner_user_id NULL), not accounts.handle: a duplicate
+	// surfaces here as ErrConflict.
+	if err := insertAccountHandle(ctx, tx, id, u.Handle, ""); err != nil {
+		return Account{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Account{}, fmt.Errorf("store: commit create user: %w", err)
@@ -81,16 +105,21 @@ func (s *Store) BootstrapAdmin(ctx context.Context, u NewUser) (Account, error) 
 		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
 		id, u.Handle, u.DisplayName,
 	); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			// Already bootstrapped (restart): fetch and return the existing admin.
-			return s.adminByHandle(ctx, u.Handle)
-		}
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		"INSERT INTO user_accounts (account_id, role) VALUES ($1, $2)", id, int32(UserRoleAdmin),
 	); err != nil {
 		return Account{}, fmt.Errorf("store: insert user_account: %w", err)
+	}
+	// Handle uniqueness lives on account_handles now; the restart's duplicate
+	// surfaces here (ErrConflict) rather than on the accounts insert. Already
+	// bootstrapped (restart): fetch and return the existing admin.
+	if err := insertAccountHandle(ctx, tx, id, u.Handle, ""); err != nil {
+		if errors.Is(err, ErrConflict) {
+			return s.adminByHandle(ctx, u.Handle)
+		}
+		return Account{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Account{}, fmt.Errorf("store: commit bootstrap admin: %w", err)
@@ -114,11 +143,12 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 		       u.role,
 		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
 		       sy.account_id
-		FROM accounts a
+		FROM account_handles ah
+		JOIN accounts a ON a.id = ah.account_id
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
 		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE a.handle = $1`
+		WHERE ah.owner_user_id IS NULL AND ah.handle = $1`
 	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
 	if err != nil {
 		return Account{}, err
@@ -175,16 +205,21 @@ func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayN
 		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
 		id, handle, displayName,
 	); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			// Already seeded (restart): fetch and return the existing system account.
-			return s.systemByHandle(ctx, handle)
-		}
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		"INSERT INTO system_accounts (account_id) VALUES ($1)", id,
 	); err != nil {
 		return Account{}, fmt.Errorf("store: insert system_account: %w", err)
+	}
+	// A system handle is globally unique (owner_user_id NULL) on account_handles;
+	// the restart's duplicate surfaces here. Already seeded (restart): fetch and
+	// return the existing system account.
+	if err := insertAccountHandle(ctx, tx, id, handle, ""); err != nil {
+		if errors.Is(err, ErrConflict) {
+			return s.systemByHandle(ctx, handle)
+		}
+		return Account{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Account{}, fmt.Errorf("store: commit ensure system account: %w", err)
@@ -209,11 +244,12 @@ func (s *Store) systemByHandle(ctx context.Context, handle string) (Account, err
 		       u.role,
 		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
 		       sy.account_id
-		FROM accounts a
+		FROM account_handles ah
+		JOIN accounts a ON a.id = ah.account_id
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
 		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE a.handle = $1`
+		WHERE ah.owner_user_id IS NULL AND ah.handle = $1`
 	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
 	if err != nil {
 		return Account{}, fmt.Errorf("store: resolve system account by handle: %w", err)
@@ -254,9 +290,6 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
 		accountID, a.Handle, a.DisplayName,
 	); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			return Account{}, fmt.Errorf("%w: handle %q already taken", ErrConflict, a.Handle)
-		}
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
@@ -275,6 +308,14 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 			return Account{}, fmt.Errorf("%w: unknown owner user %q", ErrInvalidArgument, ownerUserID)
 		}
 		return Account{}, fmt.Errorf("store: insert agent_account: %w", err)
+	}
+
+	// Record the agent handle in the resolution index, scoped to its owner
+	// (owner_user_id = ownerUserID), so it is unique only within that owner's
+	// namespace. Handle uniqueness moved off accounts.handle: a duplicate agent
+	// handle under the same owner surfaces here as ErrConflict.
+	if err := insertAccountHandle(ctx, tx, accountID, a.Handle, ownerUserID); err != nil {
+		return Account{}, err
 	}
 
 	// INVARIANT: every write of agent_accounts.parent_agent_id must invoke the
@@ -616,6 +657,12 @@ func validateNewParent(ctx context.Context, tx pgx.Tx, agentAccountID, newParent
 		return fmt.Errorf("store: resolve new parent owner: %w", err)
 	}
 	if AccountID(parentOwner) != agentOwner {
+		// Cross-owner reparent is rejected. On the ReparentAgent RPC path this
+		// clause is edge-shadowed: comms.ReparentAgent rejects a foreign parent
+		// at the service edge (naming the submitted handle, DL-269 oracle
+		// invariant) BEFORE calling the store, so this ErrPermissionDenied only
+		// surfaces to a direct store caller (independently tested) — it remains
+		// as store-layer defense-in-depth, not dead code.
 		return fmt.Errorf("%w: parent agent %q has a different owner", ErrPermissionDenied, newParentAgentID)
 	}
 
@@ -651,14 +698,59 @@ func validateNewParent(ctx context.Context, tx pgx.Tx, agentAccountID, newParent
 	return nil
 }
 
-// AgentByHandle returns the agent account with the given handle. The crash-
-// recovery resume path needs an owner-checkable handle lookup, and the private
-// adminByHandle cannot be reused because it asserts admin — this one never
-// asserts or elevates. It returns the full Account so the caller owner-checks the
-// result itself. A handle that is unknown, or that names a non-agent account, is
-// ErrNotFound: a user handle is deliberately indistinguishable from an unknown
-// one, so this fails closed and never resolves or elevates a non-agent.
-func (s *Store) AgentByHandle(ctx context.Context, handle string) (Account, error) {
+// AgentByHandle returns the agent account with the given handle in owner's agent
+// namespace (RIG-2751 handle cutover: agent handles are unique only per owner,
+// so resolution is owner-qualified over account_handles' agent index,
+// `UNIQUE(owner_user_id, handle) WHERE owner_user_id IS NOT NULL`). owner is the
+// owning user's account id — from a parsed `owner/` qualifier, or the caller's
+// own owner for a bare handle. It returns the full Account so the caller
+// owner-checks the result itself. A handle that is unknown in this owner's
+// namespace (or that resolves to a non-agent) is ErrNotFound: an unknown,
+// wrong-owner, or non-agent handle is deliberately indistinguishable, so this
+// fails closed and never resolves or elevates a non-agent.
+func (s *Store) AgentByHandle(ctx context.Context, owner AccountID, handle string) (Account, error) {
+	if handle == "" {
+		return Account{}, fmt.Errorf("%w: handle is required", ErrInvalidArgument)
+	}
+	if owner == "" {
+		// No owner namespace to resolve in: fail closed exactly like an unknown
+		// handle (indistinguishable from the wrong-owner miss below).
+		return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
+	}
+	const q = `
+		SELECT a.id, a.handle, a.display_name,
+		       u.role,
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id
+		FROM account_handles ah
+		JOIN accounts a ON a.id = ah.account_id
+		LEFT JOIN user_accounts u ON u.account_id = a.id
+		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id
+		WHERE ah.owner_user_id = $1 AND ah.handle = $2`
+	acc, err := scanAccount(s.pool.QueryRow(ctx, q, string(owner), handle))
+	if err != nil {
+		if noRows(err) {
+			return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
+		}
+		return Account{}, fmt.Errorf("store: resolve agent by handle: %w", err)
+	}
+	if !acc.IsAgent() {
+		// Identical wrapped text to the noRows branch above: a non-agent handle
+		// must be indistinguishable from an unknown one at the message-text level
+		// too, not just the sentinel. The distinguishing detail stays out of the
+		// client-visible error (the edge maps the store err verbatim).
+		return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
+	}
+	return acc, nil
+}
+
+// UserByHandle resolves a bare user/system handle in the global handle index
+// (`UNIQUE(handle) WHERE owner_user_id IS NULL`) to its full account. It is the
+// global-tier counterpart to the owner-qualified AgentByHandle, for a caller
+// that holds a bare user handle and needs the account (e.g. resolving an owner
+// namespace before an agent lookup). An unknown handle is ErrNotFound.
+func (s *Store) UserByHandle(ctx context.Context, handle string) (Account, error) {
 	if handle == "" {
 		return Account{}, fmt.Errorf("%w: handle is required", ErrInvalidArgument)
 	}
@@ -667,27 +759,188 @@ func (s *Store) AgentByHandle(ctx context.Context, handle string) (Account, erro
 		       u.role,
 		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
 		       sy.account_id
-		FROM accounts a
+		FROM account_handles ah
+		JOIN accounts a ON a.id = ah.account_id
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
 		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE a.handle = $1`
+		WHERE ah.owner_user_id IS NULL AND ah.handle = $1`
 	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
 	if err != nil {
 		if noRows(err) {
 			return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
 		}
-		return Account{}, fmt.Errorf("store: resolve agent by handle: %w", err)
-	}
-	if !acc.IsAgent() {
-		// Identical wrapped text to the noRows branch above: a user handle must
-		// be indistinguishable from an unknown one at the message-text level too,
-		// not just the sentinel — the reason this lookup never reuses the
-		// admin-asserting adminByHandle. The distinguishing detail stays out of
-		// the client-visible error (the edge maps the store err verbatim).
-		return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
+		return Account{}, fmt.Errorf("store: resolve user by handle: %w", err)
 	}
 	return acc, nil
+}
+
+// QualifiedHandle is a submitted account handle parsed into its owner qualifier
+// and bare handle. Owner is empty for a bare handle (`matt`, `compass-ux`),
+// non-empty for an owner-qualified agent handle (`matt/compass-ux` → Owner
+// "matt", Handle "compass-ux"). Raw preserves the exact submitted spelling so a
+// resolver error can name it back verbatim (the oracle-safe message contract).
+type QualifiedHandle struct {
+	Owner  string
+	Handle string
+	Raw    string
+}
+
+// ParseQualifiedHandle splits a submitted handle on the FIRST '/': everything
+// before it is the owner qualifier, everything after is the agent handle. No
+// '/' means a bare handle (Owner empty). It is a pure edge helper — the split
+// only; namespace resolution is AccountsByHandles' job.
+func ParseQualifiedHandle(raw string) QualifiedHandle {
+	if owner, handle, ok := strings.Cut(raw, "/"); ok {
+		return QualifiedHandle{Owner: owner, Handle: handle, Raw: raw}
+	}
+	return QualifiedHandle{Handle: raw, Raw: raw}
+}
+
+// AccountsByHandles resolves a batch of owner-qualified-or-bare handles to their
+// account ids over the account_handles resolution index (RIG-2751 handle
+// cutover), for the member/owner request fields that legitimately name users as
+// well as agents. Resolution per input (§"The storage contract"):
+//
+//   - owner-qualified (`matt/compass-ux`): resolve the owner segment bare in the
+//     user/system global index → its account_id is the owner_user_id → resolve
+//     the agent segment in that owner's agent index.
+//   - bare (`matt`, `compass-ux`): resolve EITHER as a user handle in the global
+//     index OR as an agent handle in the CALLER'S OWN owner namespace
+//     (callerOwner). The system account is never a member/owner target, so the
+//     global arm excludes system_accounts rows.
+//
+// Every arm is intersected with accountVisibleFromWhere keyed on viewer (OQ-6
+// SCOPED): a real-but-invisible handle misses exactly like an unknown one, so
+// resolution and the roster clip stay aligned by construction.
+//
+// ATOMIC (OQ-2): any handle that fails to resolve fails the whole call with
+// ErrNotFound naming EVERY unresolved handle in its submitted spelling (same
+// message template as AgentByHandle). On success the returned map is keyed by
+// each input's submitted spelling (QualifiedHandle.Raw) → resolved id, so the
+// caller gets the full hit set (the set-difference is free). Empty input is a
+// no-op (empty map, nil error).
+func (s *Store) AccountsByHandles(ctx context.Context, viewer, callerOwner AccountID, handles []QualifiedHandle) (map[string]AccountID, error) {
+	hits := make(map[string]AccountID, len(handles))
+	var missing []string
+	for _, qh := range handles {
+		id, err := s.resolveOneHandle(ctx, viewer, callerOwner, qh)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" {
+			missing = append(missing, qh.Raw)
+			continue
+		}
+		hits[qh.Raw] = id
+	}
+	if len(missing) > 0 {
+		// Name ALL unresolved handles in their submitted spelling, so the caller
+		// cannot probe which specific handle was the miss (oracle-safe), same
+		// wrapped-text template as AgentByHandle.
+		return nil, fmt.Errorf("%w: handle %q", ErrNotFound, strings.Join(missing, ", "))
+	}
+	return hits, nil
+}
+
+// resolveOneHandle resolves a single QualifiedHandle to a visible, non-system
+// account id, or returns ("", nil) for a clean miss (unknown, wrong-namespace,
+// or invisible — all indistinguishable). A real query fault is a non-nil error.
+func (s *Store) resolveOneHandle(ctx context.Context, viewer, callerOwner AccountID, qh QualifiedHandle) (AccountID, error) {
+	if qh.Handle == "" {
+		return "", nil
+	}
+	if qh.Owner != "" {
+		// owner-qualified: resolve the owner segment in the global user/system
+		// index (excluding system, which owns no agents), then the agent segment
+		// under it.
+		ownerID, err := s.globalHandleID(ctx, qh.Owner)
+		if err != nil {
+			return "", err
+		}
+		if ownerID == "" {
+			return "", nil
+		}
+		return s.visibleAgentHandleID(ctx, viewer, ownerID, qh.Handle)
+	}
+	// bare: a user/system-tier handle in the global index (visible, non-system),
+	// OR an agent handle in the caller's own owner namespace.
+	id, err := s.visibleGlobalHandleID(ctx, viewer, qh.Handle)
+	if err != nil {
+		return "", err
+	}
+	if id != "" {
+		return id, nil
+	}
+	return s.visibleAgentHandleID(ctx, viewer, callerOwner, qh.Handle)
+}
+
+// globalHandleID resolves a bare handle in the global user/system index
+// (owner_user_id IS NULL), excluding the system account, WITHOUT a visibility
+// clip — it backs the owner-qualifier lookup, whose owner is a namespace key,
+// not an addressed target. Empty id on a clean miss.
+func (s *Store) globalHandleID(ctx context.Context, handle string) (AccountID, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		SELECT ah.account_id
+		FROM account_handles ah
+		WHERE ah.owner_user_id IS NULL AND ah.handle = $1
+		  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)`,
+		handle,
+	).Scan(&id)
+	if err != nil {
+		if noRows(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("store: resolve global handle: %w", err)
+	}
+	return AccountID(id), nil
+}
+
+// visibleGlobalHandleID resolves a bare handle in the global user/system index,
+// excluding the system account AND intersecting the viewer's account-visible set
+// (accountVisibleFromWhere). Empty id on a clean miss (unknown or invisible).
+func (s *Store) visibleGlobalHandleID(ctx context.Context, viewer AccountID, handle string) (AccountID, error) {
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		SELECT ah.account_id
+		FROM account_handles ah
+		WHERE ah.owner_user_id IS NULL AND ah.handle = $2
+		  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)
+		  AND EXISTS (SELECT 1`+accountVisibleFromWhere+` AND a.id = ah.account_id)`,
+		string(viewer), handle,
+	).Scan(&id)
+	if err != nil {
+		if noRows(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("store: resolve visible global handle: %w", err)
+	}
+	return AccountID(id), nil
+}
+
+// visibleAgentHandleID resolves an agent handle in owner's agent namespace
+// (owner_user_id = owner), intersecting the viewer's account-visible set. An
+// empty owner (no caller namespace) or a clean miss returns an empty id.
+func (s *Store) visibleAgentHandleID(ctx context.Context, viewer, owner AccountID, handle string) (AccountID, error) {
+	if owner == "" {
+		return "", nil
+	}
+	var id string
+	err := s.pool.QueryRow(ctx, `
+		SELECT ah.account_id
+		FROM account_handles ah
+		WHERE ah.owner_user_id = $2 AND ah.handle = $3
+		  AND EXISTS (SELECT 1`+accountVisibleFromWhere+` AND a.id = ah.account_id)`,
+		string(viewer), string(owner), handle,
+	).Scan(&id)
+	if err != nil {
+		if noRows(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("store: resolve visible agent handle: %w", err)
+	}
+	return AccountID(id), nil
 }
 
 // accountVisibleFromWhere is the FROM + JOINs + visibility predicate shared by

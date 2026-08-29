@@ -154,7 +154,7 @@ func TestNetworkDoorProxyHeadersDoNotElevate(t *testing.T) {
 	forged := forgedProxyHeaders("admin")
 
 	t.Run("non-admin bearer + forged admin headers still PermissionDenied on adminOnly RPC", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)})
+		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
 		req.Header().Set("Authorization", "Bearer "+memberTok)
 		applyHeaders(req.Header(), forged)
 		if _, err := client.IssueToken(t.Context(), req); connect.CodeOf(err) != connect.CodePermissionDenied {
@@ -208,7 +208,7 @@ func TestNetworkDoorProxyHeadersAreInertForAdmin(t *testing.T) {
 	// handler and mints a token; the assertion is on success reaching the handler,
 	// identical with and without the forged headers.
 	issue := func(withForged bool) error {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)})
+		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
 		req.Header().Set("Authorization", "Bearer "+adminTok)
 		if withForged {
 			applyHeaders(req.Header(), forgedProxyHeaders("member"))
@@ -332,7 +332,7 @@ func TestNetworkDoorSmuggledSecondAuthorizationDoesNotElevate(t *testing.T) {
 	svc := newService("proxy-smuggle", bus, st, nil, nil, nil, nil)
 	client := networkDoorHandler(t, svc, st, admin)
 
-	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)})
+	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
 	req.Header().Set("Authorization", "Bearer "+memberTok)
 	req.Header().Add("Authorization", "Bearer "+adminTok)
 

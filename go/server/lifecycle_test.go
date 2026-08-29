@@ -31,9 +31,7 @@ func TestDespawnSelfIsRefusedBeforeAnyStoreCall(t *testing.T) {
 	lc := newLifecycleService(nil, nil) // nil store + hub: any store/hub call would panic
 	const self = store.AccountID("agent-self")
 
-	_, err := lc.DespawnAsAccount(context.Background(), self, &compassv1internal.DespawnPeerRequest{
-		AgentAccountId: string(self),
-	})
+	_, err := lc.DespawnAsAccount(context.Background(), self, &compassv1internal.DespawnPeerRequest{AgentHandle: string(self)})
 	if err == nil {
 		t.Fatal("DespawnAsAccount(self) = nil error, want CodeInvalidArgument (no self-despawn)")
 	}

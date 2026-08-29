@@ -2663,10 +2663,10 @@ func (x *AgentSessionFrame) GetState() AgentSessionState {
 // handle StartAgentSession then brings online (design: architecture-lineage).
 type ProvisionAgentWorkspaceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The owned agent account this workstream belongs to (the AgentAccount id
-	// from CommsService). Names whose credentials + home channel the container
-	// is provisioned for.
-	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
+	// The owned agent account this workstream belongs to. A `@handle`
+	// (owner-qualified, e.g. `matt/compass-ux`); the server resolves it to an
+	// account id; unknown → NOT_FOUND.
+	AgentHandle string `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"`
 	// Repo carriage removed (SEA-1527, Matt 2026-07-29): spawn/provision no longer
 	// clone a repo for the agent. The container is provisioned with a git
 	// credential + workspace and the agent self-clones whatever it needs after
@@ -2734,9 +2734,9 @@ func (*ProvisionAgentWorkspaceRequest) Descriptor() ([]byte, []int) {
 	return file_compass_v1_compass_proto_rawDescGZIP(), []int{33}
 }
 
-func (x *ProvisionAgentWorkspaceRequest) GetAgentAccountId() string {
+func (x *ProvisionAgentWorkspaceRequest) GetAgentHandle() string {
 	if x != nil {
-		return x.AgentAccountId
+		return x.AgentHandle
 	}
 	return ""
 }
@@ -3013,10 +3013,10 @@ func (x *StartAgentSessionResponse) GetSessionId() string {
 // client_request_id, the single call a UI makes to bring an agent online.
 type SpawnAgentRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The owned agent account to bring online (the AgentAccount id from
-	// CommsService). The container is provisioned for, and the session bound to,
-	// this account.
-	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
+	// The owned agent account to bring online. A `@handle` (owner-qualified,
+	// e.g. `matt/compass-ux`); the server resolves it to an account id; unknown
+	// → NOT_FOUND.
+	AgentHandle string `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"`
 	// End-to-end idempotency key. A retry with the same id returns the same
 	// session_id and provisions no second container: the server threads it across
 	// both the internal Provision and Start so the whole composite dedups, and
@@ -3058,9 +3058,9 @@ func (*SpawnAgentRequest) Descriptor() ([]byte, []int) {
 	return file_compass_v1_compass_proto_rawDescGZIP(), []int{39}
 }
 
-func (x *SpawnAgentRequest) GetAgentAccountId() string {
+func (x *SpawnAgentRequest) GetAgentHandle() string {
 	if x != nil {
-		return x.AgentAccountId
+		return x.AgentHandle
 	}
 	return ""
 }
@@ -3391,10 +3391,10 @@ func (x *GetAgentStatusResponse) GetStatuses() []*AgentSessionStatus {
 // IssueToken: the admin-only path to mint a bearer token for an account.
 type IssueTokenRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The account to mint a token for — the id of an Account created via
-	// CommsService. The caller's identity is the authenticated connection, never
-	// a field here.
-	AccountId     string `protobuf:"bytes,1,opt,name=account_id,json=accountId,proto3" json:"account_id,omitempty"`
+	// The account to mint a token for — a `@handle` naming a user or agent; the
+	// server resolves it to an account id; unknown → NOT_FOUND. The caller's
+	// identity is the authenticated connection, never a field here.
+	AccountHandle string `protobuf:"bytes,1,opt,name=account_handle,json=accountHandle,proto3" json:"account_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3429,9 +3429,9 @@ func (*IssueTokenRequest) Descriptor() ([]byte, []int) {
 	return file_compass_v1_compass_proto_rawDescGZIP(), []int{47}
 }
 
-func (x *IssueTokenRequest) GetAccountId() string {
+func (x *IssueTokenRequest) GetAccountHandle() string {
 	if x != nil {
-		return x.AccountId
+		return x.AccountHandle
 	}
 	return ""
 }
@@ -4944,9 +4944,9 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12.\n" +
 	"\x05event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\x05event\x123\n" +
-	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xa4\x01\n" +
-	"\x1eProvisionAgentWorkspaceRequest\x12(\n" +
-	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12*\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\x9d\x01\n" +
+	"\x1eProvisionAgentWorkspaceRequest\x12!\n" +
+	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\x12*\n" +
 	"\x11client_request_id\x18\x02 \x01(\tR\x0fclientRequestId\x12\x18\n" +
 	"\apersona\x18\x03 \x01(\tR\apersona\x12\x12\n" +
 	"\x04role\x18\x04 \x01(\tR\x04role\"H\n" +
@@ -4961,9 +4961,9 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x11resume_session_id\x18\x03 \x01(\tR\x0fresumeSessionIdJ\x04\b\x02\x10\x03R\x0einitial_prompt\":\n" +
 	"\x19StartAgentSessionResponse\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\x7f\n" +
-	"\x11SpawnAgentRequest\x12(\n" +
-	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12*\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"x\n" +
+	"\x11SpawnAgentRequest\x12!\n" +
+	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\x12*\n" +
 	"\x11client_request_id\x18\x03 \x01(\tR\x0fclientRequestIdJ\x04\b\x02\x10\x03R\x0einitial_prompt\"Z\n" +
 	"\x12SpawnAgentResponse\x12\x1d\n" +
 	"\n" +
@@ -4983,10 +4983,9 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"T\n" +
 	"\x16GetAgentStatusResponse\x12:\n" +
-	"\bstatuses\x18\x01 \x03(\v2\x1e.compass.v1.AgentSessionStatusR\bstatuses\"2\n" +
-	"\x11IssueTokenRequest\x12\x1d\n" +
-	"\n" +
-	"account_id\x18\x01 \x01(\tR\taccountId\"*\n" +
+	"\bstatuses\x18\x01 \x03(\v2\x1e.compass.v1.AgentSessionStatusR\bstatuses\":\n" +
+	"\x11IssueTokenRequest\x12%\n" +
+	"\x0eaccount_handle\x18\x01 \x01(\tR\raccountHandle\"*\n" +
 	"\x12IssueTokenResponse\x12\x14\n" +
 	"\x05token\x18\x01 \x01(\tR\x05token\"/\n" +
 	"\x12RevokeTokenRequest\x12\x19\n" +

@@ -175,7 +175,7 @@ func TestRelayLifecycleCallDespawnToolErrorIsInBand(t *testing.T) {
 	fake.despawnErr = connect.NewError(connect.CodeNotFound, errors.New("peer not found"))
 	bindLiveSession(hub)
 
-	resp, err := hub.RelayLifecycleCall(context.Background(), relayDespawn("sess-1", "lc-4b", &compassv1internal.DespawnPeerRequest{AgentAccountId: "acct-victim"}))
+	resp, err := hub.RelayLifecycleCall(context.Background(), relayDespawn("sess-1", "lc-4b", &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-victim"}))
 	if err != nil {
 		t.Fatalf("RelayLifecycleCall with a despawn tool error returned a Go error %v, want nil (in-band render)", err)
 	}
@@ -239,7 +239,7 @@ func TestRelayLifecycleCallDispatchesSpawnVsDespawn(t *testing.T) {
 		fake.despawnResp = &compassv1internal.DespawnPeerResponse{}
 		bindLiveSession(hub)
 
-		resp, err := hub.RelayLifecycleCall(context.Background(), relayDespawn("sess-1", "lc-6b", &compassv1internal.DespawnPeerRequest{AgentAccountId: "acct-victim"}))
+		resp, err := hub.RelayLifecycleCall(context.Background(), relayDespawn("sess-1", "lc-6b", &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-victim"}))
 		if err != nil {
 			t.Fatalf("RelayLifecycleCall(despawn) = %v, want success", err)
 		}

@@ -286,10 +286,7 @@ func TestProvisionAgentWorkspaceRecordsPlacementNamingServingRunner(t *testing.T
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 
-	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "prov-1",
-	}))
+	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID), ClientRequestId: "prov-1"}))
 	if err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
@@ -354,11 +351,8 @@ func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(personaAgent.ID),
-		ClientRequestId: "prov-persona",
-		Persona:         "CLIENT-INJECTED-EVIL",
-	})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(personaAgent.ID), ClientRequestId: "prov-persona",
+		Persona: "CLIENT-INJECTED-EVIL"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 
@@ -389,11 +383,8 @@ func TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount(t *testing.T) {
 	// persona-clear is still observable because the Provision command is recorded
 	// (persona cleared) before the placement write runs. The error is expected
 	// and not what this test pins, so it is deliberately discarded.
-	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(adminID),
-		ClientRequestId: "prov-nonagent",
-		Persona:         "CLIENT-INJECTED-EVIL",
-	}))
+	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent",
+		Persona: "CLIENT-INJECTED-EVIL"}))
 
 	if got := f.runner.provisionPersona(t); got != "" {
 		t.Fatalf("Runner received persona %q for a non-agent account, want empty (client value must be cleared)", got)
@@ -428,11 +419,8 @@ func TestProvisionAgentWorkspaceOverwritesRoleFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(roleAgent.ID),
-		ClientRequestId: "prov-role",
-		Role:            "client-injected-evil",
-	})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(roleAgent.ID), ClientRequestId: "prov-role",
+		Role: "client-injected-evil"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 
@@ -463,11 +451,8 @@ func TestProvisionAgentWorkspaceClearsRoleForNonAgentAccount(t *testing.T) {
 	// role-clear is still observable because the Provision command is recorded
 	// (role cleared) before the placement write runs. The error is expected and
 	// not what this test pins, so it is deliberately discarded.
-	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(adminID),
-		ClientRequestId: "prov-nonagent-role",
-		Role:            "client-injected-evil",
-	}))
+	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent-role",
+		Role: "client-injected-evil"}))
 
 	if got := f.runner.provisionRole(t); got != "" {
 		t.Fatalf("Runner received role %q for a non-agent account, want empty (client value must be cleared)", got)
@@ -481,11 +466,8 @@ func TestProvisionAgentWorkspaceUnknownAccountIsNotFound(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 
-	_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  "acct-does-not-exist",
-		ClientRequestId: "prov-unknown",
-		Persona:         "whatever",
-	}))
+	_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-does-not-exist", ClientRequestId: "prov-unknown",
+		Persona: "whatever"}))
 	if err == nil {
 		t.Fatalf("ProvisionAgentWorkspace = nil error, want CodeNotFound for an unknown account id")
 	}
@@ -658,6 +640,13 @@ type recordingRunner struct {
 	// logical session) gets distinct live ids. Empty falls back to answer()'s
 	// fixed fakeSessionID. Read/popped under mu.
 	startIDs []string
+	// containerNames, when non-empty, overrides the fixed answer() Provision
+	// container name one per Provision (FIFO) — so a test driving several
+	// distinct spawns (e.g. two owners spawning the same handle into separate
+	// namespaces) gets distinct container names instead of colliding on the one
+	// fakeContainer placement. Empty falls back to answer()'s fixed fakeContainer.
+	// Read/popped under mu.
+	containerNames []string
 	// statuses, when set, is what the loop answers a GetAgentStatus command with
 	// (the all-sessions scan the SpawnAgent reject-on-live check reads). Empty
 	// answers an empty set — no live session, so reject-on-live never fires.
@@ -740,6 +729,18 @@ func (r *recordingRunner) serve(
 				continue
 			}
 		}
+		if cmd.GetProvision() != nil {
+			if name, ok := r.nextContainerName(); ok {
+				if err := stream.Send(&compassv1internal.SessionsRequest{
+					RequestId: cmd.GetRequestId(),
+					Result:    &compassv1internal.SessionsRequest_Provision{Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: name}},
+				}); err != nil {
+					done <- err
+					return
+				}
+				continue
+			}
+		}
 		if cmd.GetStatus() != nil {
 			if err := stream.Send(&compassv1internal.SessionsRequest{
 				RequestId: cmd.GetRequestId(),
@@ -779,7 +780,7 @@ func (r *recordingRunner) commands() []string {
 	for _, c := range r.seen {
 		switch v := c.GetCommand().(type) {
 		case *compassv1internal.SessionsResponse_Provision:
-			out = append(out, "provision "+v.Provision.GetAgentAccountId())
+			out = append(out, "provision "+v.Provision.GetAgentHandle())
 		case *compassv1internal.SessionsResponse_Start:
 			out = append(out, "start "+v.Start.GetContainerName())
 		case *compassv1internal.SessionsResponse_Stop:
@@ -838,6 +839,28 @@ func (r *recordingRunner) setStartIDs(ids ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.startIDs = append([]string(nil), ids...)
+}
+
+// nextContainerName pops the next overriding Provision container name (FIFO),
+// returning ok=false once the queue is empty (the loop then falls back to
+// answer()'s fixed fakeContainer).
+func (r *recordingRunner) nextContainerName() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.containerNames) == 0 {
+		return "", false
+	}
+	name := r.containerNames[0]
+	r.containerNames = r.containerNames[1:]
+	return name, true
+}
+
+// setContainerNames queues the container names the loop answers successive
+// Provisions with. Set before the Provisions it should affect are driven.
+func (r *recordingRunner) setContainerNames(names ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.containerNames = append([]string(nil), names...)
 }
 
 // setStartGate installs a gate the serve loop blocks each Start on until the gate

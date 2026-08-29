@@ -60,7 +60,7 @@ func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.Pr
 	// Server's own record, keyed by the container name the Runner returned. This
 	// binding is the LIVE comms binding only, cleared on re-enroll; the DURABLE
 	// container/Runner placement is the caller's store write.
-	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentAccountId()))
+	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentHandle()))
 	return resp, runnerID, nil
 }
 
@@ -245,7 +245,7 @@ func provisionDedupID(clientRequestID string, req *compassv1.ProvisionAgentWorks
 	for _, field := range []string{
 		"compass.provision.v1", // domain separator
 		clientRequestID,
-		req.GetAgentAccountId(),
+		req.GetAgentHandle(),
 	} {
 		var lp [8]byte
 		binary.BigEndian.PutUint64(lp[:], uint64(len(field)))

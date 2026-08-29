@@ -85,7 +85,7 @@ func (f *fakeSessionHost) Provision(ctx context.Context, req *compassv1.Provisio
 	}
 	f.leaveProvision()
 	// Echo the account id back as the container name so the test can correlate.
-	return "cont-" + req.GetAgentAccountId(), nil
+	return "cont-" + req.GetAgentHandle(), nil
 }
 
 func (f *fakeSessionHost) Stop(context.Context, string) error {
@@ -211,7 +211,7 @@ func TestSlowProvisionDoesNotBlockConcurrentStop(t *testing.T) {
 	// Dispatch a Provision; it parks in the host.
 	provisionDone := make(chan error, 1)
 	go func() {
-		_, _, err := hub.Provision(context.Background(), "", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"})
+		_, _, err := hub.Provision(context.Background(), "", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "a"})
 		provisionDone <- err
 	}()
 	select {

@@ -147,7 +147,7 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatalf("store.Open (run2): %v", err)
 	}
 	defer st.Close()
-	persisted, err := st.AgentByHandle(ctx, handle)
+	persisted, err := adminAgentByHandle(ctx, st, handle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(%q) (run2): %v — the postgres cluster did not re-attach across the restart, so the account run1 minted did not survive and the deterministic-name collision premise is gone", handle, err)
 	}
