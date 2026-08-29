@@ -61,7 +61,7 @@ import { createUnixSocketTransport, type RunnerTransport } from "./index";
 import {
 	controlUnmapped,
 	flapResets,
-	noProgressDepth,
+	noProgressDepthGauge,
 	reconnects,
 } from "./otel-metrics";
 import type { PublishSpine } from "./publish-spine";
@@ -314,12 +314,15 @@ test("no_progress_depth tracks the consecutive-no-progress level", async () => {
 	// so `noProgress` climbs 1→2→3 and the gauge is set each drop; then a clean
 	// close (no drop, no set) leaves the gauge at its peak.
 	//
-	// The gauge is a process-global shared across tests, so seed it to a sentinel
-	// (99) this scenario cannot produce immediately before driving. That makes the
-	// site self-diagnostic: removing `Metric.set(noProgressDepth, noProgress)`
-	// leaves the gauge stuck at 99 (not 3) → red. (The reset-to-0 test below is the
-	// sibling guard for the same site on the progress path; the coupling is
-	// intentional, not accidental cross-test residue.)
+	// A UNIQUE metric namespace gives the gauge a private registry key, immune to
+	// the cross-file gauge race: a concurrent sibling test file can no
+	// longer move this absolute level between the source's set and the read. The
+	// sentinel (99) seeded on that SAME private key before driving keeps the site
+	// self-diagnostic: removing `Metric.set(noProgressDepth, noProgress)` leaves
+	// the gauge stuck at 99 (not 3) → red. (The reset-to-0 test below is the
+	// sibling guard for the same site on the progress path.)
+	const namespace = `${crypto.randomUUID()}.`;
+	const noProgressDepth = noProgressDepthGauge(namespace);
 	const rec = emptyRecorder();
 	let t = 0;
 	const socketPath = await serve(rec, {
@@ -333,7 +336,7 @@ test("no_progress_depth tracks the consecutive-no-progress level", async () => {
 			t += 6000;
 		}),
 		noopImmediate,
-		{ onUnmapped: () => {}, now: () => t },
+		{ onUnmapped: () => {}, now: () => t, metricNamespace: namespace },
 	);
 	Effect.runSync(Metric.set(noProgressDepth, 99));
 	const outcome = await drive(source);
@@ -348,6 +351,11 @@ test("a progress-making reconnect resets no_progress_depth to 0", async () => {
 	// progress and zeroes it; a clean close leaves the gauge at that reset. The
 	// two drops (reconnects delta 2) prove the source did climb-then-reset rather
 	// than never leaving 0. Mirrors O2's priority_retry_depth reset test.
+	// Unique namespace: the source sets this private gauge to 1 then resets it to
+	// 0; both writes land on the private key, so the mutation check stays
+	// non-vacuous and the read is immune to the cross-file race.
+	const namespace = `${crypto.randomUUID()}.`;
+	const noProgressDepth = noProgressDepthGauge(namespace);
 	const rec = emptyRecorder();
 	const gate = ackGate();
 	let t = 0;
@@ -370,7 +378,7 @@ test("a progress-making reconnect resets no_progress_depth to 0", async () => {
 			t += 6000;
 		}),
 		noopImmediate,
-		{ onUnmapped: () => {}, now: () => t },
+		{ onUnmapped: () => {}, now: () => t, metricNamespace: namespace },
 	);
 	const outcome = await drive(source);
 	expect(outcome.ended).toBe("cleanly");

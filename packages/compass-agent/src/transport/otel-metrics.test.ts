@@ -33,10 +33,10 @@ import {
 	durableGiveUps,
 	priorityBatchRetries,
 	priorityFramesLost,
-	priorityRetryDepth,
+	priorityRetryDepthGauge,
 	traceFramesLostFailedBatch,
 	traceFramesLostOverflow,
-	traceQueueDepth,
+	traceQueueDepthGauge,
 } from "./otel-metrics";
 import {
 	createPublishSpine,
@@ -140,13 +140,21 @@ test("trace_queue_depth samples the backlog at the take, before draining it", as
 	// A resolving publish so the pump drains and drain() joins it. A backlog that
 	// fits one batch (< PUBLISH_BATCH_MAX) is fully queued before the deferred
 	// first takeBatch runs, so the gauge — sampled BEFORE the take — reads the
-	// whole backlog, not the post-drain residual. Read synchronously right after
-	// drain() so no other fiber moves the shared gauge between set and read.
+	// whole backlog, not the post-drain residual. A UNIQUE metric namespace gives
+	// this gauge a private registry key, so a concurrent sibling test file writing
+	// the shared key cannot move the absolute value between set and read (the
+	// cross-file gauge race). The race-reproduction test below proves this
+	// isolation is load-bearing, not decorative.
+	const namespace = `${crypto.randomUUID()}.`;
 	const backlog = 100;
-	const spine = createPublishSpine(() => Promise.resolve(undefined));
+	const spine = createPublishSpine(
+		() => Promise.resolve(undefined),
+		undefined,
+		namespace,
+	);
 	for (let i = 0; i < backlog; i++) spine.enqueueTrace(traceFrame());
 	await spine.drain();
-	expect(gaugeValue(traceQueueDepth)).toBe(backlog);
+	expect(gaugeValue(traceQueueDepthGauge(namespace))).toBe(backlog);
 	// Mutation check: removing `Metric.set(traceQueueDepth, traceSize())` from
 	// takeBatch leaves the gauge at its prior value, not `backlog` → reddens.
 });
@@ -156,8 +164,14 @@ test("a priority give-up increments priority_frames_lost, additive to failedPrio
 	// ladder is exhausted the frame is a definitive never-drop loss.
 	const before = counterCount(priorityFramesLost);
 	const retriesBefore = counterCount(priorityBatchRetries);
-	const spine = createPublishSpine(() =>
-		Promise.reject(new Error("dead socket")),
+	// A unique namespace isolates the absolute retry-depth read from the shared
+	// registry key: only the gauge is namespaced; the counters stay on
+	// the shared key and are read as deltas, which are race-safe.
+	const namespace = `${crypto.randomUUID()}.`;
+	const spine = createPublishSpine(
+		() => Promise.reject(new Error("dead socket")),
+		undefined,
+		namespace,
 	);
 	spine.enqueuePriority(traceFrame());
 	await spine.drain();
@@ -172,28 +186,71 @@ test("a priority give-up increments priority_frames_lost, additive to failedPrio
 	expect(counterCount(priorityBatchRetries) - retriesBefore).toBe(
 		PRIORITY_BATCH_RETRY_MS.length,
 	);
-	expect(gaugeValue(priorityRetryDepth)).toBe(PRIORITY_BATCH_RETRY_MS.length);
+	expect(gaugeValue(priorityRetryDepthGauge(namespace))).toBe(
+		PRIORITY_BATCH_RETRY_MS.length,
+	);
 });
 
 test("a delivered priority batch resets priority_retry_depth to 0 after its retries", async () => {
 	// Fail once, then deliver: one bounded retry, then a successful send resets the
 	// pump-scoped depth level. Distinct from the give-up path — no frame is lost.
 	const retriesBefore = counterCount(priorityBatchRetries);
+	// Unique namespace: the retry path first sets the gauge to 1, then the
+	// successful send resets it to 0 — both writes land on this private key, so the
+	// mutation check (drop the reset → gauge stuck at 1) stays non-vacuous while
+	// the read is immune to the cross-file race.
+	const namespace = `${crypto.randomUUID()}.`;
 	let attempt = 0;
-	const spine = createPublishSpine(() => {
-		attempt++;
-		return attempt === 1
-			? Promise.reject(new Error("transient blip"))
-			: Promise.resolve(undefined);
-	});
+	const spine = createPublishSpine(
+		() => {
+			attempt++;
+			return attempt === 1
+				? Promise.reject(new Error("transient blip"))
+				: Promise.resolve(undefined);
+		},
+		undefined,
+		namespace,
+	);
 	spine.enqueuePriority(traceFrame());
 	await spine.drain();
 	expect(counterCount(priorityBatchRetries) - retriesBefore).toBe(1);
 	// Reset to 0 on the successful send; read synchronously after drain.
-	expect(gaugeValue(priorityRetryDepth)).toBe(0);
+	expect(gaugeValue(priorityRetryDepthGauge(namespace))).toBe(0);
 	expect(spine.failedPriorityCount()).toBe(0);
 	// Mutation check: removing `Metric.set(priorityRetryDepth, 0)` on the success
 	// arm leaves the gauge at 1 → the depth assertion reddens.
+});
+
+test("a namespaced gauge read survives a concurrent writer clobbering the shared key", async () => {
+	// The root cause of the gauge flake, reproduced deterministically. Under the concurrent
+	// full suite a sibling test file constructs its own spine and writes the SAME
+	// shared gauge key between this test's Metric.set and its synchronous read; a
+	// gauge is an absolute last-writer-wins level, so the read saw the wrong value.
+	// Here that hostile concurrent writer is made explicit: after the spine sets
+	// its depth gauge, we clobber the SHARED (un-namespaced) key with a wrong
+	// value, then read back. The namespaced read is unaffected — it hits a private
+	// registry entry — while a read of the shared key would return the clobbered
+	// value. This is the discriminating assertion the fix turns green: point the
+	// spine at the empty namespace (the pre-fix shared key) and the two reads
+	// collapse onto the same clobbered entry, reddening the inequality.
+	const namespace = `${crypto.randomUUID()}.`;
+	const spine = createPublishSpine(
+		() => Promise.reject(new Error("dead socket")),
+		undefined,
+		namespace,
+	);
+	spine.enqueuePriority(traceFrame());
+	await spine.drain();
+	// The spine set its private gauge to the exhausted ladder length.
+	const isolated = gaugeValue(priorityRetryDepthGauge(namespace));
+	expect(isolated).toBe(PRIORITY_BATCH_RETRY_MS.length);
+	// A hostile concurrent writer clobbers the SHARED key with a value the spine
+	// never wrote (the exact interleaving a sibling test file causes in CI).
+	const clobbered = PRIORITY_BATCH_RETRY_MS.length + 999;
+	Effect.runSync(Metric.set(priorityRetryDepthGauge(""), clobbered));
+	// The namespaced read is immune; a shared-key read now returns the clobber.
+	expect(gaugeValue(priorityRetryDepthGauge(namespace))).toBe(isolated);
+	expect(gaugeValue(priorityRetryDepthGauge(""))).toBe(clobbered);
 });
 
 test("a durable send counts one attempt per try and one give-up when the retry budget is exhausted", async () => {

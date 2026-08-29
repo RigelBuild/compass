@@ -73,7 +73,7 @@ import type { RunnerTransport } from "./index";
 import {
 	controlUnmapped,
 	flapResets,
-	noProgressDepth,
+	noProgressDepthGauge,
 	reconnects,
 } from "./otel-metrics";
 import { getTransportRuntime } from "./runtime-channel";
@@ -251,6 +251,19 @@ export interface SocketControlSourceOptions {
 	 * floor.
 	 */
 	readonly now?: () => number;
+	/**
+	 * Namespace prefix for the `no_progress_depth` LEVEL gauge this source sets.
+	 * A plain string (never an `effect` type) so this exported options bag stays
+	 * free of the `effect` package — `createSocketControlSource` is re-exported
+	 * from the package entry, and the export-surface guard forbids an `effect`
+	 * type on the public `.d.ts`. Defaults to "" — production yields the exact
+	 * frozen metric name. A test passes a unique prefix so its gauge read hits a
+	 * private registry entry, immune to the cross-file gauge race: the
+	 * shared process-global registry keys structurally on the metric name, and a
+	 * bare gauge would be moved by a concurrent sibling test file between this
+	 * source's Metric.set and the test's synchronous read.
+	 */
+	readonly metricNamespace?: string;
 }
 
 const defaultOnUnmapped = (u: UnmappedEvent): void =>
@@ -284,6 +297,7 @@ export function createSocketControlSource(
 ): ControlSource {
 	const onUnmapped = options.onUnmapped ?? defaultOnUnmapped;
 	const now = options.now ?? (() => performance.now());
+	const noProgressDepth = noProgressDepthGauge(options.metricNamespace ?? "");
 	const spine = transport.publishSpine();
 	const acks = new AckCursor(spine);
 	const buffer = new AsyncBuffer();
