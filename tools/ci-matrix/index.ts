@@ -68,9 +68,19 @@ const CI_GROUP_PREFIX = "ci-group.";
 const PGTEST_PROJECT = "compass-go";
 const GUEST_IMAGE_PROJECT = "compass-guest-image";
 
-/** forge trigger: changed path under go/internal/forge/ OR ci.yml itself. */
-const FORGE_PATH_RE =
-	/^(?:go\/internal\/forge\/|\.github\/workflows\/ci\.yml$)/;
+/**
+ * forge trigger (PR): a changed path under go/internal/forge/ — the forge
+ * CONTRACT SURFACE the live oracle re-verifies (client code AND its committed
+ * testdata fixtures). Deliberately NOT keyed on ci.yml: the live oracle is the
+ * expensive, third-party-dependent EXTRA verification on top of the untagged
+ * golden-replay battery (leg 1) that already asserts the client contract on
+ * every PR with zero network, so it should not fire on unrelated PRs that merely
+ * touch this workflow file (RIG-2909: a docs/CI-only PR editing ci.yml was
+ * running the whole live oracle and flaking on a Linear API blip). Oracle-wiring
+ * changes are still covered: every push to main and every schedule full-sweeps
+ * the oracle unconditionally (isFullSweep below).
+ */
+const FORGE_PATH_RE = /^go\/internal\/forge\//;
 /**
  * gtk4 trigger: any changed path under go/cmd/compass-app/, OR one of the
  * shared GTK closure inputs. The e2e lane is the ONLY CI lane that compiles the

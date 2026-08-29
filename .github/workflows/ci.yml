@@ -814,9 +814,10 @@ jobs:
     # own lane behind the rollup; the tri-event + same-repo-head guards stay
     # on the steps as defense-in-depth. The job-level `if:` ANDs the
     # dispatch-aware gate guard with the forge affected gate: on a PR the job
-    # runs only when setup found the forge surface affected (forge_affected —
-    # the go/internal/forge/** or ci.yml change), and always on push/schedule
-    # and on a base-re-point re-trigger. The
+    # runs only when setup found the forge contract surface affected
+    # (forge_affected — a go/internal/forge/** change, fixtures included; NOT a
+    # bare ci.yml edit, RIG-2909), and always on push/schedule and on a
+    # base-re-point re-trigger. The
     # in-step forge_affected detection + tri-event/same-repo-head guards stay as
     # defense-in-depth. No privileged container.
     if: >-
@@ -887,12 +888,18 @@ jobs:
         id: forge_affected
         working-directory: go
         # PRs only. The live-contract oracle below is expensive (it drives a real
-        # GitHub + Linear testbed over the network) and secret-bearing, so on a PR
-        # it runs ONLY when the PR actually changes the forge surface it guards —
-        # the same affected posture the one-job gate takes everywhere else. The
-        # surface is two path sets: the forge package the suite exercises
-        # (go/internal/forge/**) and this workflow file itself (a change to the
-        # oracle's own wiring must re-run the oracle to prove the wiring).
+        # GitHub + Linear testbed over the network) and secret-bearing, and it is
+        # the EXTRA verification layered on top of the untagged golden-replay
+        # battery (leg 1) that already asserts the client contract on every PR
+        # with zero network. So on a PR it runs ONLY when the PR changes the forge
+        # CONTRACT SURFACE it guards: the forge package the suite exercises,
+        # including its committed testdata fixtures (go/internal/forge/**).
+        # Deliberately NOT keyed on this workflow file: a docs/CI-only PR touching
+        # ci.yml must not run the whole live oracle (RIG-2909 — that over-trigger
+        # flaked unrelated PRs on a third-party API blip). Oracle-wiring changes
+        # are re-verified by the push/schedule full sweep, which runs it
+        # unconditionally. This mirrors the ci-matrix generator's FORGE_PATH_RE;
+        # the two must stay in step.
         #
         # GitHub exposes no changed-paths primitive to a step `if:`, so — exactly
         # as the dogfood job resolves image_affected into $GITHUB_OUTPUT for its
@@ -919,7 +926,7 @@ jobs:
           fi
           changed=$(git diff --name-only "$base...HEAD")
           if printf '%s\n' "$changed" \
-            | grep -qE '^(go/internal/forge/|\.github/workflows/ci\.yml$)'; then
+            | grep -qE '^go/internal/forge/'; then
             echo "forge_affected=true" >>"$GITHUB_OUTPUT"
           else
             echo "forge_affected=false" >>"$GITHUB_OUTPUT"
