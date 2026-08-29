@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
@@ -238,7 +239,7 @@ func (g *GitHub) ListNewArtifacts(ctx context.Context, repo string, kind compass
 				// Drop the PR rows GitHub interleaves into /issues (a *json.Raw
 				// unmarshals an explicit "pull_request": null to a non-nil
 				// RawMessage("null") — guard that, mirroring ListIssuesPage).
-				if raw := r.PullRequest; raw != nil && len(*raw) > 0 && string(*raw) != "null" {
+				if raw := r.PullRequest; raw != nil && len(*raw) > 0 && string(*raw) != jsonNull {
 					return Issue{}, false
 				}
 				return r.toIssue(), true
@@ -289,6 +290,69 @@ func ghWalkNewArtifacts[R any](ctx context.Context, g *GitHub, base string, sinc
 			if iss, ok := keep(r); ok {
 				out = append(out, iss)
 			}
+		}
+		if reachedOld || !hasNext {
+			break
+		}
+	}
+	return ConditionalResult[[]Issue]{V: out, ETag: pageETag}, nil
+}
+
+// ListUpdatedIssues walks /repos/{repo}/issues?state=all&sort=updated&
+// direction=desc newest-updated-first (page 1 conditioned on etag; a 304 =>
+// NotModified), collecting issue rows (PR rows dropped by the pull_request
+// marker, mirroring ListNewArtifacts) until a page's oldest updated_at is
+// strictly < since, or no rel="next" remains. Rows with updated_at == since are
+// RE-included: GitHub's updated_at is second-granularity, so a <= stop would
+// permanently exclude an issue updated in the same second as the stored
+// watermark after the sweep read it; the duplicates are free by coordinate
+// idempotency. A zero since walks ALL pages (cold start). It returns page 1's
+// ETag to re-store. This is the updated-order sibling of ListNewArtifacts
+// (created-order, number-keyed): the reconcile/backfill read cannot see updates
+// to existing issues via the created-order walk.
+func (g *GitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.Time, etag string) (ConditionalResult[[]Issue], error) {
+	base := g.apiBase() + "/repos/" + repo + "/issues?state=all&sort=updated&direction=desc"
+	var out []Issue
+	pageETag := ""
+	for page := 1; ; page++ {
+		u := base + "&per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
+		sendETag := ""
+		if page == 1 {
+			sendETag = etag
+		}
+		var rows []ghIssue
+		notMod, e, hasNext, err := g.getJSONCond(ctx, u, sendETag, &rows)
+		if err != nil {
+			return ConditionalResult[[]Issue]{}, fmt.Errorf("forge: github list updated issues %q: %w", repo, err)
+		}
+		if page == 1 {
+			if notMod {
+				return ConditionalResult[[]Issue]{NotModified: true}, nil
+			}
+			pageETag = e
+		}
+		reachedOld := false
+		for _, r := range rows {
+			iss := r.toIssue()
+			if !iss.UpdatedAt.IsZero() && iss.UpdatedAt.Before(since) {
+				// Newest-updated-first: strictly older than the watermark, so this
+				// and everything after it is old. A row == since is NOT Before it,
+				// so it is re-included (second-granularity dedup safety). A row
+				// whose updated_at failed to parse (zero time) is NOT a stop
+				// signal — treating it as one would let a single malformed row
+				// truncate the whole sweep persistently; skip it and keep walking.
+				reachedOld = true
+				continue
+			}
+			if iss.UpdatedAt.IsZero() {
+				continue
+			}
+			// Drop the PR rows GitHub interleaves into /issues (mirroring
+			// ListNewArtifacts / ListIssuesPage's pull_request-marker guard).
+			if raw := r.PullRequest; raw != nil && len(*raw) > 0 && string(*raw) != jsonNull {
+				continue
+			}
+			out = append(out, iss)
 		}
 		if reachedOld || !hasNext {
 			break
