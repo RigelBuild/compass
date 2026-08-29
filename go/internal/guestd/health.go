@@ -11,12 +11,18 @@ import (
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
-// healthService implements the generated GuestControlHandler's single RPC,
-// Health (§(e)). It is constructed only after net + mount both succeed, so its
-// fields are the completed boot state — a successful handshake IS the proof of
-// bringup (§(d) fail-closed invariant). The values are immutable once set at
+// healthService implements the generated GuestControlHandler's Health RPC
+// (§(e)). It is constructed only after net + mount both succeed, so its fields
+// are the completed boot state — a successful handshake IS the proof of bringup
+// (§(d) fail-closed invariant). The values are immutable once set at
 // construction, so Health is safe to serve concurrently with no locking.
+//
+// U1 grew GuestControl with the exec surface (Exec/ExecStream/Signal/Provision);
+// until U2 fills them in the real supervisor, healthService embeds
+// UnimplementedGuestControlHandler so those four RPCs answer CodeUnimplemented
+// and the V2a Health path is byte-unchanged. U2 replaces this type outright.
 type healthService struct {
+	compassv1internalconnect.UnimplementedGuestControlHandler
 	version          string
 	netProvisioned   bool
 	workspaceMounted bool
