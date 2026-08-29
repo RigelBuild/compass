@@ -233,13 +233,13 @@ func TestUnreadableOwedMentionClearedNotReswept(t *testing.T) {
 	startConsumer(t, c)
 
 	c.OnSessionStarted("sess-recip", recipient)
-	c.waitStartsDrained(t)
-
+	// The sweep's observable effect is the clear (owed -> 0); gate on it. A bare
+	// waitStartsDrained only proves the start edge was DEQUEUED, not that the
+	// sweep's ClearOwedMention ran (introspect_test.go), so asserting owedCount
+	// right after it races the async sweep and flakes red under CI load.
+	reads.waitForOwed(t, recipient, 0)
 	if got := disp.snapshot(); len(got) != 0 {
 		t.Fatalf("dispatches = %d, want 0 (an unreadable owed message is cleared, not dispatched)", len(got))
-	}
-	if n := reads.owedCount(recipient); n != 0 {
-		t.Fatalf("owed rows for recipient = %d, want 0 (the unreadable row must be cleared)", n)
 	}
 
 	// A second start edge finds nothing owed — the row was cleared, so no re-log loop.
