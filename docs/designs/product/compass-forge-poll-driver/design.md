@@ -1,8 +1,19 @@
 # Compass forge-poll driver (SEA-1810)
 
-Status: Active
+Status: Superseded by ../compass-forge-board-webhook-ingestion/design.md
 Lane: compass-server
 Tracker: SEA
+
+> **Superseded** by the board webhook-ingestion record
+> ([`../compass-forge-board-webhook-ingestion/design.md`](../compass-forge-board-webhook-ingestion/design.md),
+> DL-281 in [`../../DECISIONS.md`](../../DECISIONS.md)): board issue ingestion is
+> now webhook-driven, not polled. This record's board-ingestion poll driver
+> (DL-161) is retired; DL-162's `forge_repo_subscriptions` target table and the
+> `--forge-repos` seed survive verbatim as the webhook lane's subscribed-repo
+> set, and `forge_list_cursors` (DL-163) loses its only writer. The
+> `--forge-poll` / `--forge-poll-interval` flags and the
+> `$COMPASS_FORGE_POLL` / `$COMPASS_FORGE_POLL_INTERVAL` environment variables
+> are removed. Read the superseding record for the current design.
 
 OQ-A is RESOLVED — Matt ruled **Option 2** (2026-08-07): this driver is built
 ON the DL-053 forge-subscription machinery from day one, with the board as a
