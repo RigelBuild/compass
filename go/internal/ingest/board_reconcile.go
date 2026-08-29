@@ -34,7 +34,7 @@ import (
 )
 
 // BoardStore is the durable enabled-repo + watermark seam. The server adapts
-// *store.Store onto it at T5 (the forgePollStore pattern); this package owns
+// *store.Store onto it at T5 (the boardReconcileStore adapter); this package owns
 // only the narrow structural view.
 type BoardStore interface {
 	// ListEnabledRepos returns the repos with board ingestion enabled.

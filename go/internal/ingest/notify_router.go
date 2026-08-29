@@ -15,8 +15,8 @@ import (
 // The notify hot path (RIG-2732 T4, design.md:808-887): one normalized
 // forge.ForgeEvent in, notifications out, snapshot current. The store enters
 // through package-local structural seams (the no-store rule, design.md:538-541);
-// go/server binds the (provider, host) half onto *store.Store, the forgePollStore
-// pattern (serve.go:1082-1090). The router NEVER advances delivered_revision:
+// go/server binds the (provider, host) half onto *store.Store, the same
+// (provider, host)-binding store-adapter pattern. The router NEVER advances delivered_revision:
 // that rides the hub's ForgeNotificationAck arm (W3), never this path.
 
 // NotifySubscriber is one subscriber a change fans out to — the package-local

@@ -24,6 +24,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -285,11 +287,28 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 		},
 	}}
 
-	// Neither App secret declared -> the first validateForgeSecret fails with a
-	// not-declared error.
-	res := &fakeResolver{resolved: nil}
-	_, err := buildBoardIngestLane(ctx, cfg, st, brd, res, slog.Default())
-	if err == nil {
-		t.Fatal("buildBoardIngestLane with an undeclared App secret = nil, want a startup error")
-	}
+	// Neither App secret declared -> the FIRST validateForgeSecret (app key) fails.
+	t.Run("both undeclared fails on the app key", func(t *testing.T) {
+		res := &fakeResolver{resolved: nil}
+		_, err := buildBoardIngestLane(ctx, cfg, st, brd, res, slog.Default())
+		if err == nil {
+			t.Fatal("buildBoardIngestLane with no App secrets = nil, want a startup error")
+		}
+		if !strings.Contains(err.Error(), "APP_KEY") {
+			t.Fatalf("error = %q, want it to name the missing app key APP_KEY", err)
+		}
+	})
+
+	// App key declared but the webhook signing secret absent -> the SECOND
+	// validateForgeSecret must fail (both secrets required, checked separately).
+	t.Run("app key present but webhook secret undeclared fails on the webhook secret", func(t *testing.T) {
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "APP_KEY", Value: "pem"}}}
+		_, err := buildBoardIngestLane(ctx, cfg, st, brd, res, slog.Default())
+		if err == nil {
+			t.Fatal("buildBoardIngestLane with the webhook secret undeclared = nil, want a startup error")
+		}
+		if !strings.Contains(err.Error(), "APP_WEBHOOK") {
+			t.Fatalf("error = %q, want it to name the missing webhook secret APP_WEBHOOK", err)
+		}
+	})
 }

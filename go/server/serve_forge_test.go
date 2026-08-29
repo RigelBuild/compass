@@ -85,7 +85,7 @@ func TestForgeConfigEnableAndDefaults(t *testing.T) {
 // enablement contract (Matt's 2026-08-19 ruling): the reviewer secret name
 // defaults to defaultForgeReviewerSecretName, an explicit one survives, and the
 // write path is enabled iff BOTH the author and reviewer secrets are declared —
-// independent of the poll driver's forgePollingEnabled gate.
+// independent of the board lane's boardIngestionEnabled gate.
 func TestForgeReviewerSecretDefaultingAndWritesEnabled(t *testing.T) {
 	t.Run("reviewer secret defaulted to the F1 default name", func(t *testing.T) {
 		if got := (ForgeConfig{}).resolved().ReviewerSecretName; got != defaultForgeReviewerSecretName {
@@ -374,5 +374,69 @@ func TestNormalizeGitHubRepo(t *testing.T) {
 		if _, err := normalizeGitHubRepo(bad); err == nil {
 			t.Fatalf("normalizeGitHubRepo(%q) = nil error, want a validation error", bad)
 		}
+	}
+}
+
+// TestCachedWebhookSecretCachesUntilTTL pins the medium-severity fix: the
+// webhook-secret resolver runs on every request to the public, unauthenticated
+// /webhooks/github BEFORE the HMAC check, so it MUST NOT re-resolve (a full
+// secretspec provider Load) per request. Within the TTL a garbage flood costs at
+// most one resolve; a rotated secret still takes over after the TTL.
+func TestCachedWebhookSecretCachesUntilTTL(t *testing.T) {
+	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "WEBHOOK_SECRET", Value: "sec-1"}}}
+	c := &cachedWebhookSecret{base: newDeclaredSecretResolver(res, "WEBHOOK_SECRET"), ttl: time.Minute}
+	now := time.Unix(0, 0)
+	c.now = func() time.Time { return now }
+
+	ctx := context.Background() // test root
+	got, err := c.get(ctx)
+	if err != nil || string(got) != "sec-1" {
+		t.Fatalf("first get = %q, %v; want sec-1, nil", got, err)
+	}
+	if res.calls != 1 {
+		t.Fatalf("resolve calls = %d after first get, want 1", res.calls)
+	}
+
+	// Rotate the value; within the TTL the cache serves the OLD bytes and does
+	// NOT re-resolve — the amplification the fix closes.
+	res.resolved[0].Value = "sec-2"
+	now = now.Add(30 * time.Second)
+	got, err = c.get(ctx)
+	if err != nil || string(got) != "sec-1" {
+		t.Fatalf("within-TTL get = %q, %v; want cached sec-1, nil", got, err)
+	}
+	if res.calls != 1 {
+		t.Fatalf("resolve calls = %d within TTL, want still 1 (cache hit)", res.calls)
+	}
+
+	// Cross the TTL: the next get re-resolves and the rotated value takes over.
+	now = now.Add(time.Minute)
+	got, err = c.get(ctx)
+	if err != nil || string(got) != "sec-2" {
+		t.Fatalf("post-TTL get = %q, %v; want re-resolved sec-2, nil", got, err)
+	}
+	if res.calls != 2 {
+		t.Fatalf("resolve calls = %d post-TTL, want 2 (re-resolve)", res.calls)
+	}
+}
+
+// TestCachedWebhookSecretDoesNotCacheErrors pins fail-closed behavior: a resolve
+// fault is never cached, so the ingress 503s and the next request retries rather
+// than serving a stale/absent secret.
+func TestCachedWebhookSecretDoesNotCacheErrors(t *testing.T) {
+	res := &fakeResolver{err: errors.New("provider down")}
+	c := &cachedWebhookSecret{base: newDeclaredSecretResolver(res, "WEBHOOK_SECRET"), ttl: time.Hour, now: time.Now}
+
+	ctx := context.Background() // test root
+	if _, err := c.get(ctx); err == nil {
+		t.Fatal("get with a failing resolver = nil error, want the resolve fault")
+	}
+	// A second call within the (long) TTL must re-resolve, not serve a cached
+	// error — the error path leaves the cache invalid.
+	if _, err := c.get(ctx); err == nil {
+		t.Fatal("second get still failing = nil error, want the resolve fault")
+	}
+	if res.calls != 2 {
+		t.Fatalf("resolve calls = %d, want 2 (errors are never cached)", res.calls)
 	}
 }

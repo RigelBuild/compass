@@ -872,16 +872,17 @@ func buildBoardWebhookWiring(
 	resolver secrets.Resolver,
 	log *slog.Logger,
 ) (*boardIngestLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), error) {
+	rc := cfg.Forge.resolved()
 	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, resolver, log)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	if lane == nil {
-		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, cfg.Forge.resolved().Host, log)
+		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, rc.Host, log)
 		return nil, nil, nil, nil
 	}
 	sink := &fanoutSink{sinks: []ForgeEventSink{lane.sink}}
-	secret := newDeclaredSecretResolver(resolver, cfg.Forge.resolved().App.AppWebhookSecretName)
+	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
 	return lane, sink, secret, nil
 }
 
@@ -1022,6 +1023,57 @@ func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx 
 		}
 		return nil, fmt.Errorf("board webhook secret %q not declared", name)
 	}
+}
+
+// cachedWebhookSecret wraps newDeclaredSecretResolver in a TTL cache for the hot
+// path: the webhook-secret resolver is invoked on EVERY request to the
+// internet-facing, unauthenticated POST /webhooks/github, BEFORE the HMAC check
+// (github_webhook.go resolves the secret, then verifies the signature). An
+// uncached resolve there lets an attacker force one full secretspec provider
+// Load (registry read + manifest temp-file write + provider Load) per cheap
+// garbage POST — an asymmetric-cost amplification ahead of authentication. The
+// cache (same forgeTokenTTL and rotation semantics as forgeTokenSource) bounds
+// the per-request cost to a memcmp while a rotated signing secret still takes
+// effect within the TTL. A resolve fault is surfaced to the caller (a 503),
+// never cached. Unlike the App-key resolver (also newDeclaredSecretResolver but
+// cold — NewAppTokenSource caches the minted token and only reads the key on
+// mint), this one is on the request hot path, so it needs the cache.
+type cachedWebhookSecret struct {
+	base func(ctx context.Context) ([]byte, error)
+	ttl  time.Duration
+	now  func() time.Time
+
+	mu      sync.Mutex
+	value   []byte
+	expires time.Time
+	valid   bool
+}
+
+// newCachedWebhookSecret returns the door-consumable resolver method value over
+// a fresh cache with the default forgeTokenTTL and wall clock.
+func newCachedWebhookSecret(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	c := &cachedWebhookSecret{base: newDeclaredSecretResolver(resolver, name), ttl: forgeTokenTTL, now: time.Now}
+	return c.get
+}
+
+// get serves the cached secret while unexpired, else re-resolves through base. A
+// resolve fault drops validity and is returned (never cached), so the ingress
+// fails closed with a 503 and the next request retries.
+func (c *cachedWebhookSecret) get(ctx context.Context) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.valid && c.now().Before(c.expires) {
+		return c.value, nil
+	}
+	resolved, err := c.base(ctx)
+	if err != nil {
+		c.valid = false
+		return nil, err
+	}
+	c.value = resolved
+	c.expires = c.now().Add(c.ttl)
+	c.valid = true
+	return c.value, nil
 }
 
 // validateForgeSecret resolves the declared secret set once and asserts the
@@ -1239,7 +1291,7 @@ func (f *fanoutSink) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 // declared — a likely operator typo in one of the two env-var NAMES, which
 // otherwise silently fails every agent forge write closed (CodeUnavailable)
 // with nothing in the startup log to explain it. The intentional both-absent
-// OFF state stays silent. Mirrors warnDisabledForgePolling: diagnostic only,
+// OFF state stays silent. Mirrors warnDisabledBoardIngestion: diagnostic only,
 // never fail-fast, and logs secret NAMES (env-var identifiers) never values.
 func warnPartialForgeWriteSecrets(fc ForgeConfig, declared []secrets.ResolvedSecret, log *slog.Logger) {
 	haveAuthor, haveReviewer := fc.forgeWriteSecretsDeclared(declared)
