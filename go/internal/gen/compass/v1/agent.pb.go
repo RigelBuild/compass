@@ -688,7 +688,15 @@ type SteerControl struct {
 	// topic_name denorm rationale below. The comms Message carries only
 	// `author_account_id` (an id, not a handle), so the handle is denormalized
 	// here; the Server resolves it once when wrapping the AgentControl.
-	FromHandle    string `protobuf:"bytes,2,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
+	FromHandle string `protobuf:"bytes,2,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
+	// The W3C `traceparent` of the Server's active span when it wrapped this
+	// control, denormalized so the agent joins its turn to the message's
+	// server-side trace (creation → routing → delivery → turn → tool calls, one
+	// connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+	// flags>`; EMPTY when the Server had no active span (trace machinery never
+	// blocks or fails a delivery). Server-side stamping per
+	// docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+	Traceparent   string `protobuf:"bytes,3,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -733,6 +741,13 @@ func (x *SteerControl) GetMessage() *v1.Message {
 func (x *SteerControl) GetFromHandle() string {
 	if x != nil {
 		return x.FromHandle
+	}
+	return ""
+}
+
+func (x *SteerControl) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
 	}
 	return ""
 }
@@ -835,7 +850,15 @@ type DeliverControl struct {
 	// above. The comms Message carries only `author_account_id` (an id, not a
 	// handle), so the handle is denormalized here; the Server resolves it once
 	// when wrapping the AgentControl.
-	FromHandle    string `protobuf:"bytes,3,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
+	FromHandle string `protobuf:"bytes,3,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
+	// The W3C `traceparent` of the Server's active span when it wrapped this
+	// control, denormalized so the agent joins its turn to the message's
+	// server-side trace (creation → routing → delivery → turn → tool calls, one
+	// connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+	// flags>`; EMPTY when the Server had no active span (trace machinery never
+	// blocks or fails a delivery). Server-side stamping per
+	// docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+	Traceparent   string `protobuf:"bytes,4,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -887,6 +910,13 @@ func (x *DeliverControl) GetTopicName() string {
 func (x *DeliverControl) GetFromHandle() string {
 	if x != nil {
 		return x.FromHandle
+	}
+	return ""
+}
+
+func (x *DeliverControl) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
 	}
 	return ""
 }
@@ -1134,19 +1164,21 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\acontrol\"%\n" +
 	"\rPromptControl\x12\x14\n" +
 	"\x05input\x18\x01 \x01(\tR\x05input\"\x10\n" +
-	"\x0eReplayComplete\"^\n" +
+	"\x0eReplayComplete\"\x80\x01\n" +
 	"\fSteerControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1f\n" +
 	"\vfrom_handle\x18\x02 \x01(\tR\n" +
-	"fromHandle\"\x12\n" +
+	"fromHandle\x12 \n" +
+	"\vtraceparent\x18\x03 \x01(\tR\vtraceparent\"\x12\n" +
 	"\x10TranscriptReplay\"\x0f\n" +
-	"\rConfigControl\"\x7f\n" +
+	"\rConfigControl\"\xa1\x01\n" +
 	"\x0eDeliverControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1d\n" +
 	"\n" +
 	"topic_name\x18\x02 \x01(\tR\ttopicName\x12\x1f\n" +
 	"\vfrom_handle\x18\x03 \x01(\tR\n" +
-	"fromHandle\",\n" +
+	"fromHandle\x12 \n" +
+	"\vtraceparent\x18\x04 \x01(\tR\vtraceparent\",\n" +
 	"\vDeliveryAck\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\"[\n" +

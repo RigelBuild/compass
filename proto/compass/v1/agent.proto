@@ -203,6 +203,14 @@ message SteerControl {
   // `author_account_id` (an id, not a handle), so the handle is denormalized
   // here; the Server resolves it once when wrapping the AgentControl.
   string from_handle = 2;
+  // The W3C `traceparent` of the Server's active span when it wrapped this
+  // control, denormalized so the agent joins its turn to the message's
+  // server-side trace (creation → routing → delivery → turn → tool calls, one
+  // connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+  // flags>`; EMPTY when the Server had no active span (trace machinery never
+  // blocks or fails a delivery). Server-side stamping per
+  // docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+  string traceparent = 3;
 }
 
 // Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
@@ -233,6 +241,14 @@ message DeliverControl {
   // handle), so the handle is denormalized here; the Server resolves it once
   // when wrapping the AgentControl.
   string from_handle = 3;
+  // The W3C `traceparent` of the Server's active span when it wrapped this
+  // control, denormalized so the agent joins its turn to the message's
+  // server-side trace (creation → routing → delivery → turn → tool calls, one
+  // connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+  // flags>`; EMPTY when the Server had no active span (trace machinery never
+  // blocks or fails a delivery). Server-side stamping per
+  // docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+  string traceparent = 4;
 }
 
 // DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an

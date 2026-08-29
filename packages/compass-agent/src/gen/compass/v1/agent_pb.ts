@@ -35,7 +35,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent.proto.
  */
 export const file_compass_v1_agent: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIt0CCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SAASQgoWZm9yZ2Vfbm90aWZpY2F0aW9uX2FjaxgIIAEoCzIgLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25BY2tIAEIHCgVmcmFtZSJMCg9UcmFuc2NyaXB0RW50cnkSEgoKZW50cnlfanNvbhgBIAEoCRISCgpjaGVja3BvaW50GAIgASgIEhEKCWVudHJ5X3NlcRgDIAEoBCJrCgxTZXNzaW9uRnJhbWUSLAoFc3RhdGUYASABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlEi0KC3R5cGVkX2V2ZW50GAIgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRXZlbnQihgMKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIrCgZjb25maWcYBSABKAsyGS5jb21wYXNzLnYxLkNvbmZpZ0NvbnRyb2xIABIuCgZyZXBsYXkYBiABKAsyHC5jb21wYXNzLnYxLlRyYW5zY3JpcHRSZXBsYXlIABI1Cg9yZXBsYXlfY29tcGxldGUYByABKAsyGi5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlSAASOwoSZm9yZ2Vfbm90aWZpY2F0aW9uGAkgASgLMh0uY29tcGFzcy52MS5Gb3JnZU5vdGlmaWNhdGlvbkgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSIQCg5SZXBsYXlDb21wbGV0ZSJJCgxTdGVlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZRITCgtmcm9tX2hhbmRsZRgCIAEoCSISChBUcmFuc2NyaXB0UmVwbGF5Ig8KDUNvbmZpZ0NvbnRyb2wiXwoORGVsaXZlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZRISCgp0b3BpY19uYW1lGAIgASgJEhMKC2Zyb21faGFuZGxlGAMgASgJIiEKC0RlbGl2ZXJ5QWNrEhIKCm1lc3NhZ2VfaWQYASABKAkiQQoURm9yZ2VOb3RpZmljYXRpb25BY2sSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEhAKCHJldmlzaW9uGAIgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIjYKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
+  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIt0CCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SAASQgoWZm9yZ2Vfbm90aWZpY2F0aW9uX2FjaxgIIAEoCzIgLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25BY2tIAEIHCgVmcmFtZSJMCg9UcmFuc2NyaXB0RW50cnkSEgoKZW50cnlfanNvbhgBIAEoCRISCgpjaGVja3BvaW50GAIgASgIEhEKCWVudHJ5X3NlcRgDIAEoBCJrCgxTZXNzaW9uRnJhbWUSLAoFc3RhdGUYASABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlEi0KC3R5cGVkX2V2ZW50GAIgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRXZlbnQihgMKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIrCgZjb25maWcYBSABKAsyGS5jb21wYXNzLnYxLkNvbmZpZ0NvbnRyb2xIABIuCgZyZXBsYXkYBiABKAsyHC5jb21wYXNzLnYxLlRyYW5zY3JpcHRSZXBsYXlIABI1Cg9yZXBsYXlfY29tcGxldGUYByABKAsyGi5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlSAASOwoSZm9yZ2Vfbm90aWZpY2F0aW9uGAkgASgLMh0uY29tcGFzcy52MS5Gb3JnZU5vdGlmaWNhdGlvbkgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSIQCg5SZXBsYXlDb21wbGV0ZSJeCgxTdGVlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZRITCgtmcm9tX2hhbmRsZRgCIAEoCRITCgt0cmFjZXBhcmVudBgDIAEoCSISChBUcmFuc2NyaXB0UmVwbGF5Ig8KDUNvbmZpZ0NvbnRyb2widAoORGVsaXZlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZRISCgp0b3BpY19uYW1lGAIgASgJEhMKC2Zyb21faGFuZGxlGAMgASgJEhMKC3RyYWNlcGFyZW50GAQgASgJIiEKC0RlbGl2ZXJ5QWNrEhIKCm1lc3NhZ2VfaWQYASABKAkiQQoURm9yZ2VOb3RpZmljYXRpb25BY2sSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEhAKCHJldmlzaW9uGAIgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIjYKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
 
 /**
  * The agent's stdout envelope: one discriminated frame per newline-delimited
@@ -398,6 +398,19 @@ export type SteerControl = Message<"compass.v1.SteerControl"> & {
    * @generated from field: string from_handle = 2;
    */
   fromHandle: string;
+
+  /**
+   * The W3C `traceparent` of the Server's active span when it wrapped this
+   * control, denormalized so the agent joins its turn to the message's
+   * server-side trace (creation → routing → delivery → turn → tool calls, one
+   * connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+   * flags>`; EMPTY when the Server had no active span (trace machinery never
+   * blocks or fails a delivery). Server-side stamping per
+   * docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+   *
+   * @generated from field: string traceparent = 3;
+   */
+  traceparent: string;
 };
 
 /**
@@ -477,6 +490,19 @@ export type DeliverControl = Message<"compass.v1.DeliverControl"> & {
    * @generated from field: string from_handle = 3;
    */
   fromHandle: string;
+
+  /**
+   * The W3C `traceparent` of the Server's active span when it wrapped this
+   * control, denormalized so the agent joins its turn to the message's
+   * server-side trace (creation → routing → delivery → turn → tool calls, one
+   * connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+   * flags>`; EMPTY when the Server had no active span (trace machinery never
+   * blocks or fails a delivery). Server-side stamping per
+   * docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+   *
+   * @generated from field: string traceparent = 4;
+   */
+  traceparent: string;
 };
 
 /**
