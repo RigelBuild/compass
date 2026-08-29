@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/server"
 )
 
@@ -90,6 +91,39 @@ func run() error {
 	// so it fires only on a real signal, not when Serve returns on its own).
 	stopDrainLog := logOnDrainSignal()
 	defer stopDrainLog()
+
+	// OTel emission (T4b): endpoint-gated off the ENV-only knob. When
+	// OTEL_EXPORTER_OTLP_ENDPOINT is empty, Setup* install no provider and return
+	// no-op shutdowns, so this is zero-overhead on the shipped socket-only path.
+	otelCfg := otel.Config{
+		ServiceName:    "compass-server",
+		ServiceVersion: version,
+		Endpoint:       cfg.OtelEndpoint,
+	}
+	traceShutdown, err := otel.SetupTracerProvider(ctx, otelCfg)
+	if err != nil {
+		return fmt.Errorf("otel: tracer provider: %w", err)
+	}
+	// The drain ctx is already cancelled by the time these defers fire (the signal
+	// that ends Serve is the same one that cancels ctx), so a raw ctx.Shutdown
+	// would abort its final ForceFlush and drop the last batch. Sever the
+	// cancellation and bound the flush at 2s (design.md: mirror the agent's 2s
+	// shutdown bound), derived HERE at fire time so the deadline is not consumed
+	// by the process lifetime.
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = traceShutdown(sctx) // best-effort flush on drain; a collector error here is not actionable at exit
+	}()
+	meterShutdown, err := otel.SetupMeterProvider(ctx, otelCfg)
+	if err != nil {
+		return fmt.Errorf("otel: meter provider: %w", err)
+	}
+	defer func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = meterShutdown(sctx) // best-effort flush on drain; a collector error here is not actionable at exit
+	}()
 
 	return server.Serve(ctx, cfg)
 }
@@ -193,6 +227,9 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		AdminHandle:       *f.adminHandle,
 		CORSAllowedOrigin: *f.corsAllowedOrigin,
 		PublicURL:         firstNonEmpty(*f.publicURL, os.Getenv("COMPASS_PUBLIC_URL")),
+		// ENV-ONLY knob (Matt 2026-08-28): the OTLP exporter and the enable-gate
+		// read one source, so no --otel-endpoint flag. Empty = tracing off.
+		OtelEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	}, false, nil
 }
 

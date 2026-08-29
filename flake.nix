@@ -49,7 +49,7 @@
       # touched (guest-image/default.nix:82-87). vendorHash pins the fetched set —
       # the whole module graph, so it matches guestd's proxyVendor hash. Recompute
       # with lib.fakeHash on a go.mod/go.sum move.
-      vendorHash = "sha256-di6nYpDDZblu6TPpendW88l5LMRZNzSE2t2tiWfms9c=";
+      vendorHash = "sha256-GHZsEfvnu1tY6Bd7Fxg7SEWEI+HS0NlQuBbm6pz/UK4=";
     in
     {
       packages = forAllSystems (
