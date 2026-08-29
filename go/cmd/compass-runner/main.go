@@ -18,10 +18,12 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"connectrpc.com/connect"
 
 	"github.com/RigelBuild/compass/go/internal/agentuid"
+	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runner"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -37,7 +39,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() error { //nolint:funlen // flag registration + operator-input validation is the honest bulk; the env-only OTel setup call tips it 2 lines over — extracting the flags would scatter ~15 flag vars for no readability gain
 	runnerID := flag.String("runner-id", "",
 		"This Runner's stable id, cross-checked against the token subject. Defaults to $COMPASS_RUNNER_ID.")
 	serverAddr := flag.String("server", "",
@@ -158,6 +160,13 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// OTel emission (env-only, bounded flush on drain); see setupOtel.
+	otelShutdown, err := setupOtel(ctx)
+	if err != nil {
+		return err
+	}
+	defer otelShutdown()
+
 	return runner.Run(ctx, runner.RunnerConfig{
 		RunnerID:   id,
 		ServerAddr: addr,
@@ -167,6 +176,41 @@ func run() error {
 		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
 		HTTPClient: httpClient,
 	}, specs, log)
+}
+
+// setupOtel installs the tracer and meter providers off the env-only OTLP
+// endpoint, returning one shutdown that flushes both. When
+// OTEL_EXPORTER_OTLP_ENDPOINT is empty the providers are no-ops and the shutdown
+// is a no-op, so tracing is off with zero overhead. The export gate lives here in
+// the global-provider install — the runner's outbound otelconnect interceptor is
+// mounted unconditionally and is inert against the no-op global.
+func setupOtel(ctx context.Context) (shutdown func(), err error) {
+	cfg := otel.Config{
+		ServiceName:    "compass-runner",
+		ServiceVersion: version,
+		Endpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+	}
+	tracerShutdown, err := otel.SetupTracerProvider(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("otel: tracer provider: %w", err)
+	}
+	meterShutdown, err := otel.SetupMeterProvider(ctx, cfg)
+	if err != nil {
+		_ = tracerShutdown(ctx) // roll back the tracer provider we just installed; nothing actionable on its error here
+		return nil, fmt.Errorf("otel: meter provider: %w", err)
+	}
+	// The drain ctx is already cancelled by the time this fires (the signal that
+	// ends runner.Run is the same one that cancels ctx), so a raw ctx.Shutdown
+	// would abort its final ForceFlush and drop the last batch. Sever the
+	// cancellation and bound the flush at 2s (design.md: mirror the agent's 2s
+	// shutdown bound), derived at fire time so the deadline is not consumed by the
+	// process lifetime — matching the context.WithoutCancel precedent in run.go.
+	return func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = tracerShutdown(sctx) // best-effort flush on shutdown; export error not actionable at exit
+		_ = meterShutdown(sctx)  // best-effort flush on shutdown; export error not actionable at exit
+	}, nil
 }
 
 // backendFlags holds the runtime-backend selection flags, registered on the

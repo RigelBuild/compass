@@ -20,6 +20,7 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -103,9 +104,15 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	otelInterceptor, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return nil, fmt.Errorf("otel: connect interceptor: %w", err)
+	}
 	client := compassv1internalconnect.NewRunnerServiceClient(
 		httpClient, cfg.ServerAddr,
-		connect.WithInterceptors(&bearerToken{token: cfg.Token}),
+		// otelconnect goes first (outermost) so enroll/Sessions dials emit
+		// client spans; it is a no-op when no global provider is installed.
+		connect.WithInterceptors(otelInterceptor, &bearerToken{token: cfg.Token}),
 	)
 	resp, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{
 		RunnerId: cfg.RunnerID,
