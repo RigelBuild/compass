@@ -24,6 +24,9 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+
+	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
 )
 
@@ -180,6 +183,82 @@ func TestFullBoot(t *testing.T) {
 			t.Logf("PSS %s: unavailable (sandboxed or exited)", name)
 		}
 	}
+}
+
+// armRuleset is a minimal but representative in-guest egress arm: it creates the
+// inet table + a conntrack-stateful output rule, forcing exactly the netfilter
+// autoload chain the real base ruleset needs — the NETLINK_NETFILTER socket
+// (nfnetlink), the nf_tables subsystem, and the `ct state` expression
+// (nf_conntrack + nft_ct). It is `set -eu` so any nft failing aborts non-zero,
+// exactly as EgressPolicy.NftScript()'s base ruleset does. Kept as a local
+// literal, not a runtime.EgressPolicy call, because this package must not import
+// internal/runtime (config.go: no runtime dep, no cycle).
+const armRuleset = `set -eu
+nft add table inet compass_egress
+nft add chain inet compass_egress output '{ type filter hook output priority 0 ; policy drop ; }'
+nft add rule inet compass_egress output ct state established,related accept`
+
+// TestInGuestEgressArmAutoloadsNetfilter is the RIG-3028 proof: on a real guest
+// boot, Provision with a NON-EMPTY nft_script (the §(d) in-guest arm W1 landed)
+// must succeed. The arm runs `/bin/sh -c <script>` as guest root, and the first
+// `nft` opens a NETLINK_NETFILTER socket — which requires the guest kernel to
+// autoload nfnetlink/nf_tables on demand. The guest has no udev/systemd-modules-
+// load (guestd is PID 1), so that autoload rides ENTIRELY on the kernel
+// usermode-helper: /sbin/modprobe resolving modules from the shipped /lib/modules
+// tree (guest-image/default.nix). Before that helper was staged, this arm failed
+// with `mnl.c:66: Unable to initialize Netlink socket: Protocol not supported`
+// (EPROTONOSUPPORT) and §(e) always-arm reddened every microVM Start; this test
+// is the red-green guard for that fix. The arm script is `set -eu` and adds a
+// table, a chain, and a `ct state` rule, so Provision succeeding proves the
+// whole chain (nfnetlink, nf_tables, nf_conntrack, nft_ct) autoloaded — any
+// missing module aborts an `nft add` non-zero and surfaces as a Provision error.
+func TestInGuestEgressArmAutoloadsNetfilter(t *testing.T) {
+	env := microvmtest.Require(t)
+	cfg := bootConfig(t, env, 2, 1024)
+
+	vm, err := Launch(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Launch failed: %v", err)
+	}
+	t.Cleanup(func() {
+		if shutErr := vm.Shutdown(context.WithoutCancel(t.Context())); shutErr != nil {
+			t.Errorf("Shutdown: %v", shutErr)
+		}
+	})
+
+	// Wait for the guest to report ready (net + workspace), same gate as the
+	// full-boot test: Provision is only valid once guestd is serving.
+	ready := waitFor(t, fullBootDeadline, func() bool {
+		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+		defer cancel()
+		resp, healthErr := vm.Health(ctx)
+		if healthErr != nil {
+			return false
+		}
+		return resp.GetNetProvisioned() && resp.GetWorkspaceMounted()
+	})
+	if !ready {
+		t.Fatalf("guest did not reach Health{net_provisioned && workspace_mounted} within %s.\n%s",
+			fullBootDeadline, vm.Diagnostics())
+	}
+
+	client := GuestClient(vm.vsockSocket, vm.vsockPort)
+
+	// The load-bearing assertion: Provision with a non-empty nft_script arms
+	// egress in-guest. This is the exact path that failed EPROTONOSUPPORT before
+	// /sbin/modprobe was staged. A non-nil error here (especially one carrying
+	// mnl.c:66 / "Protocol not supported") means the netfilter autoload chain is
+	// broken again.
+	provCtx, provCancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer provCancel()
+	if _, provErr := client.Provision(provCtx, connect.NewRequest(&compassv1.ProvisionRequest{
+		NftScript:      armRuleset,
+		DefaultExecUid: 1000,
+	})); provErr != nil {
+		t.Fatalf("Provision with non-empty nft_script failed — in-guest netfilter "+
+			"autoload broken (RIG-3028): %v\n%s", provErr, vm.Diagnostics())
+	}
+	t.Logf("in-guest egress arm succeeded: nfnetlink/nf_tables/nf_conntrack autoloaded on demand")
 }
 
 // TestCorruptRootfsFailsClosed is the fail-closed negative: boot with a
