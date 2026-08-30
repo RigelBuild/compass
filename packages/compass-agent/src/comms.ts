@@ -50,8 +50,8 @@
 // `ask_answer` block on the deliver lane, rendered to the model on a subsequent
 // turn. See packages/compass-agent/AGENTS.md for the package contract.
 //
-// Five tools ship: post, post_ask, list, roster, and set_status; search is
-// deferred (OQ-3).
+// Seven tools ship: post, post_ask, list, roster, set_status, open_dm, and dm;
+// search is deferred (OQ-3).
 
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 // `arktype` is pinned exact in package.json to whatever the SDK resolves
@@ -73,6 +73,7 @@ import {
 	ListMessagesRequestSchema,
 	type Message,
 	MessageBlockSchema,
+	OpenDMRequestSchema,
 	PostMessageRequestSchema,
 	type RosterEntry,
 	RosterScope,
@@ -289,6 +290,36 @@ export const setStatusParameters = type({
 		),
 });
 
+/** Exported so a test can validate the wire contract the agent loop enforces. */
+export const openDmParameters = type({
+	peer_handle: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"The peer agent's handle to open a DM with; unknown or cross-owner is an error",
+		),
+});
+
+/** Exported so a test can validate the wire contract the agent loop enforces. */
+export const dmParameters = type({
+	peer_handle: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"The peer agent's handle to DM; unknown or cross-owner is an error",
+		),
+	text: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe("Markdown message body; must not be blank"),
+	topic: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
+		.describe(
+			"Named conversation within the DM; a name-miss is an error unless create_topic is true",
+		),
+	"create_topic?": type("boolean").describe(
+		"When true, an unknown topic name is created; when false (default) a topic name-miss is an error",
+	),
+});
+
 /**
  * The `Error` a non-matching `CommsCallResult` deserves — both shapes are tool
  * failures under the OMP contract ("throw an error when a tool fails"):
@@ -353,7 +384,7 @@ function presenceLabel(presence: AgentPresence): string {
 }
 
 /**
- * The native comms tool set. Five tools; never an ask-answering one.
+ * The native comms tool set. Seven tools; never an ask-answering one.
  *
  * Wired into the container entrypoint by `cli.ts main()` (RIG-1741): the tools
  * are merged into the session's `customTools` and so register as `#withNatives`
@@ -839,5 +870,124 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		},
 	};
 
-	return [postMessage, postAsk, listMessages, roster, setStatus];
+	const commsOpenDm: AgentTool<typeof openDmParameters> = {
+		name: "comms_open_dm",
+		label: "Open peer DM",
+		approval: "write",
+		description:
+			"Resolve-or-create a two-party DM channel with a peer by handle and " +
+			"return the DM channel name to post into. Idempotent: a DM that already " +
+			"exists is resumed, not duplicated.",
+		parameters: openDmParameters,
+		execute: async (toolCallId, params) => {
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "openDm",
+						value: create(OpenDMRequestSchema, {
+							peerHandle: params.peer_handle,
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "openDm")
+				throw commsFailure(result, "comms_open_dm", "open_dm");
+			const { channel, created } = result.result.value;
+			if (!channel)
+				throw new Error(
+					"comms_open_dm: protocol violation — open_dm result carried no channel",
+				);
+			// The DM name (dm--<lo>--<hi>) is id-shaped, interpolated into a plain
+			// confirmation line the model reads as authoritative output — attr-guarded
+			// exactly like the post return's ids.
+			const verb = created ? "Opened" : "Resumed";
+			return {
+				content: [
+					{ type: "text", text: `${verb} DM channel ${attr(channel.name)}.` },
+				],
+			};
+		},
+	};
+
+	const commsDm: AgentTool<typeof dmParameters> = {
+		name: "comms_dm",
+		label: "Direct-message a peer",
+		approval: "write",
+		description:
+			"Open (resolve-or-create) a peer DM by handle and post a markdown " +
+			"message to it in one call. topic names the conversation within the DM; " +
+			"a new topic needs create_topic: true (otherwise a topic name-miss is an " +
+			"error, not a silent create).",
+		parameters: dmParameters,
+		execute: async (toolCallId, params) => {
+			// Leg 1: resolve-or-create the DM channel. OpenDMRequest carries no
+			// client_request_id — only the post leg is a write that needs dedup.
+			const opened = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "openDm",
+						value: create(OpenDMRequestSchema, {
+							peerHandle: params.peer_handle,
+						}),
+					},
+				}),
+			);
+			if (opened.result.case !== "openDm")
+				throw commsFailure(opened, "comms_dm", "open_dm");
+			const channel = opened.result.value.channel;
+			if (!channel)
+				throw new Error(
+					"comms_dm: protocol violation — open_dm result carried no channel",
+				);
+			// Leg 2: post into the resolved DM by NAME (the comms edge resolves the
+			// name → id within the caller-visible set, exactly as comms_post_message).
+			// The idempotency key rides THIS leg (the write), broker-scoped.
+			const posted = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "post",
+						value: create(PostMessageRequestSchema, {
+							container: { case: "channelId", value: channel.name },
+							blocks: [
+								create(MessageBlockSchema, {
+									block: { case: "text", value: params.text },
+								}),
+							],
+							topic: { case: "topicName", value: params.topic },
+							createTopic: params.create_topic ?? false,
+							clientRequestId: broker.idempotencyKey(toolCallId),
+						}),
+					},
+				}),
+			);
+			if (posted.result.case !== "post")
+				throw commsFailure(posted, "comms_dm", "post");
+			const message = posted.result.value.message;
+			if (!message)
+				throw new Error(
+					"comms_dm: protocol violation — post result carried no message",
+				);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Posted message ${attr(message.id)} to DM ${attr(channel.name)} topic ${attr(message.topicId)}.`,
+					},
+				],
+			};
+		},
+	};
+
+	return [
+		postMessage,
+		postAsk,
+		listMessages,
+		roster,
+		setStatus,
+		commsOpenDm,
+		commsDm,
+	];
 }

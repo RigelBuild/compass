@@ -56,7 +56,10 @@ Pick the destination that puts the message in front of exactly who needs it:
   to a direct channel between them instead of spraying a shared channel. Fewer
   readers, less noise, no muted-topic guesswork. Use a DM for a two-party
   clarification; use the shared channel when the outcome is something the lane
-  should be able to read later.
+  should be able to read later. Agents heavily prefer DMs for two-party
+  coordination: open or resume a peer DM with `comms_open_dm{peer_handle}`, or
+  use `comms_dm{peer_handle, topic, text}` to open-and-post in one call. Like any
+  post it names a topic, and a new topic needs `create_topic: true`.
 - **Report UP, delegate DOWN.** Results and asks that need your parent go to the
   parent; work you hand to a report goes down to it. Keep a topic to one
   direction of flow where you can.

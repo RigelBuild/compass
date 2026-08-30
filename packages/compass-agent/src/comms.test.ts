@@ -17,7 +17,9 @@ import {
 	CommsBroker,
 	type CommsTransport,
 	createCommsTools,
+	dmParameters,
 	listParameters,
+	openDmParameters,
 	postAskParameters,
 	postParameters,
 } from "./comms";
@@ -26,6 +28,7 @@ import {
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
+	ChannelSchema,
 	CommsCallErrorSchema,
 	type CommsCallRequest,
 	CommsCallRequestSchema,
@@ -37,6 +40,7 @@ import {
 	type Message,
 	MessageBlockSchema,
 	MessageSchema,
+	OpenDMResponseSchema,
 	PostMessageResponseSchema,
 	type RosterEntry,
 	RosterEntrySchema,
@@ -53,6 +57,38 @@ class FakeTransport implements CommsTransport {
 		this.requests.push(req);
 		return this.result;
 	}
+}
+
+// The composite `comms_dm` issues two calls (open then post); this fake returns
+// canned results in call order and records every request, so ordering and the
+// per-leg wire shape are both assertable.
+class SequencedTransport implements CommsTransport {
+	readonly requests: CommsCallRequest[] = [];
+	#next = 0;
+	constructor(private readonly results: CommsCallResult[]) {}
+	async comms(req: CommsCallRequest): Promise<CommsCallResult> {
+		this.requests.push(req);
+		const r = this.results[this.#next++];
+		if (!r)
+			throw new Error("SequencedTransport: no canned result for this call");
+		return r;
+	}
+}
+
+function openDmResult(channelName: string, created: boolean): CommsCallResult {
+	return create(CommsCallResultSchema, {
+		callId: "call-1",
+		result: {
+			case: "openDm",
+			value: create(OpenDMResponseSchema, {
+				channel: create(ChannelSchema, {
+					id: `id-${channelName}`,
+					name: channelName,
+				}),
+				created,
+			}),
+		},
+	});
 }
 
 function postResult(id: string, topicId: string): CommsCallResult {
@@ -270,7 +306,7 @@ describe("CommsBroker", () => {
 });
 
 describe("createCommsTools", () => {
-	test("exposes exactly the five comms tools and never an ask-answering one", () => {
+	test("exposes exactly the seven comms tools and never an ask-answering one", () => {
 		const tools = createCommsTools(
 			new CommsBroker(new FakeTransport(postResult("m", "c"))),
 		);
@@ -280,6 +316,8 @@ describe("createCommsTools", () => {
 			"comms_list_messages",
 			"compass_roster",
 			"compass_set_status",
+			"comms_open_dm",
+			"comms_dm",
 		]);
 		expect(tools.every((t) => t.label.length > 0)).toBe(true);
 		// `approval` decides which modes auto-approve the call. A silent flip of
@@ -299,6 +337,10 @@ describe("createCommsTools", () => {
 		// only surface as a confusing validation failure at call time.
 		expect(byName("comms_post_message").parameters).toBe(postParameters);
 		expect(byName("comms_post_ask").parameters).toBe(postAskParameters);
+		expect(byName("comms_open_dm").approval).toBe("write");
+		expect(byName("comms_dm").approval).toBe("write");
+		expect(byName("comms_open_dm").parameters).toBe(openDmParameters);
+		expect(byName("comms_dm").parameters).toBe(dmParameters);
 	});
 });
 
@@ -461,6 +503,79 @@ describe("comms parameter schemas", () => {
 		expect(listParameters.get("limit").expression).toContain("<= 100");
 		expect(listParameters.get("limit").expression).toContain(">= 1");
 		expect(listParameters.get("limit").description).toContain("default 50");
+	});
+
+	// open_dm requires a non-blank peer_handle — the same `.narrow` idiom.
+	test("open_dm requires a non-blank peer_handle", () => {
+		expect(rejects(openDmParameters, {})).toBe(true);
+		expect(rejects(openDmParameters, { peer_handle: "" })).toBe(true);
+		expect(rejects(openDmParameters, { peer_handle: "  " })).toBe(true);
+		expect(rejects(openDmParameters, { peer_handle: "@bob" })).toBe(false);
+	});
+
+	// dm requires non-blank peer_handle, text, and topic; topic ≤120;
+	// create_topic optional boolean.
+	test("dm requires non-blank peer_handle, text, topic (≤120) and an optional create_topic boolean", () => {
+		expect(rejects(dmParameters, { topic: "t", text: "hi" })).toBe(true);
+		expect(rejects(dmParameters, { peer_handle: "@b", topic: "t" })).toBe(true);
+		expect(rejects(dmParameters, { peer_handle: "@b", text: "hi" })).toBe(true);
+		expect(
+			rejects(dmParameters, { peer_handle: " ", topic: "t", text: "hi" }),
+		).toBe(true);
+		expect(
+			rejects(dmParameters, { peer_handle: "@b", topic: " ", text: "hi" }),
+		).toBe(true);
+		expect(
+			rejects(dmParameters, { peer_handle: "@b", topic: "t", text: " " }),
+		).toBe(true);
+		expect(
+			rejects(dmParameters, {
+				peer_handle: "@b",
+				topic: "x".repeat(121),
+				text: "hi",
+			}),
+		).toBe(true);
+		expect(
+			rejects(dmParameters, {
+				peer_handle: "@b",
+				topic: "x".repeat(120),
+				text: "hi",
+			}),
+		).toBe(false);
+		expect(
+			rejects(dmParameters, {
+				peer_handle: "@b",
+				topic: "t",
+				text: "hi",
+				create_topic: "yes",
+			}),
+		).toBe(true);
+		expect(
+			rejects(dmParameters, {
+				peer_handle: "@b",
+				topic: "t",
+				text: "hi",
+				create_topic: true,
+			}),
+		).toBe(false);
+		expect(
+			rejects(dmParameters, { peer_handle: "@b", topic: "t", text: "hi" }),
+		).toBe(false);
+	});
+
+	// The DM tools' `.narrow` rules (non-blank, the create_topic gate) do not
+	// survive into the JSON Schema the model is shown, so the descriptions are
+	// the only place a caller reads them — asserted here so dropping the rule
+	// from a description reddens rather than silently blinding the model.
+	test("open_dm/dm descriptions carry the rules unrepresentable in JSON Schema", () => {
+		// peer_handle: the semantic miss rule (a blank/unknown/cross-owner handle
+		// is rejected) lives only here.
+		expect(openDmParameters.get("peer_handle").description).toContain("error");
+		expect(dmParameters.get("peer_handle").description).toContain("error");
+		// text: the non-blank rule the `.narrow` enforces but the schema cannot show.
+		expect(dmParameters.get("text").description).toContain("blank");
+		// topic: the create_topic gate that turns a name-miss from a mint into an error.
+		expect(dmParameters.get("topic").description).toContain("create_topic");
 	});
 });
 
@@ -731,6 +846,186 @@ describe("comms_post_message", () => {
 		await expect(
 			exec(post, "tc-4", { text: "hi", topic: "t", channel: "c" }),
 		).rejects.toThrow(/comms_post_message/);
+	});
+});
+
+describe("comms_open_dm", () => {
+	test("puts an open_dm call on the wire carrying the peer handle", async () => {
+		const transport = new FakeTransport(openDmResult("dm--alice--bob", true));
+		const open = tool(new CommsBroker(transport), "comms_open_dm");
+
+		await exec(open, "tc-1", { peer_handle: "@bob" });
+
+		const req = transport.requests[0];
+		expect(req?.callId).toBe("tc-1");
+		expect(req?.call.case).toBe("openDm");
+		if (req?.call.case !== "openDm") throw new Error("expected an openDm call");
+		expect(req.call.value.peerHandle).toBe("@bob");
+	});
+
+	test("renders Opened plus the DM channel name when created", async () => {
+		const transport = new FakeTransport(openDmResult("dm--alice--bob", true));
+		const open = tool(new CommsBroker(transport), "comms_open_dm");
+
+		const text = textOf(await exec(open, "tc-1", { peer_handle: "@bob" }));
+		expect(text).toContain("Opened");
+		expect(text).toContain("dm--alice--bob");
+	});
+
+	test("renders Resumed when the DM already existed", async () => {
+		const transport = new FakeTransport(openDmResult("dm--alice--bob", false));
+		const open = tool(new CommsBroker(transport), "comms_open_dm");
+
+		const text = textOf(await exec(open, "tc-1", { peer_handle: "@bob" }));
+		expect(text).toContain("Resumed");
+		expect(text).toContain("dm--alice--bob");
+	});
+
+	test("an error result throws carrying the code and the detail", async () => {
+		const transport = new FakeTransport(
+			errorResult("not_found", "no such peer"),
+		);
+		const open = tool(new CommsBroker(transport), "comms_open_dm");
+
+		const err = await exec(open, "tc-1", { peer_handle: "@ghost" }).then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(err).toBeInstanceOf(Error);
+		expect(err?.message).toContain("not_found");
+		expect(err?.message).toContain("no such peer");
+	});
+
+	test("a wrong result case is a protocol violation and throws", async () => {
+		const transport = new FakeTransport(postResult("m-1", "t-1"));
+		const open = tool(new CommsBroker(transport), "comms_open_dm");
+
+		await expect(exec(open, "tc-1", { peer_handle: "@bob" })).rejects.toThrow(
+			/comms_open_dm/,
+		);
+	});
+});
+
+describe("comms_dm", () => {
+	test("opens then posts, carrying the resolved DM name and topic on the post leg", async () => {
+		const transport = new SequencedTransport([
+			openDmResult("dm--a--b", true),
+			postResult("m-1", "t-1"),
+		]);
+		const dm = tool(new CommsBroker(transport), "comms_dm");
+
+		await exec(dm, "tc-1", {
+			peer_handle: "@b",
+			topic: "planning",
+			text: "hi",
+		});
+
+		expect(transport.requests).toHaveLength(2);
+		const open = transport.requests[0]?.call;
+		if (open?.case !== "openDm") throw new Error("expected an openDm call");
+		expect(open.value.peerHandle).toBe("@b");
+		const post = transport.requests[1]?.call;
+		if (post?.case !== "post") throw new Error("expected a post call");
+		expect(post.value.container).toEqual({
+			case: "channelId",
+			value: "dm--a--b",
+		});
+		expect(post.value.topic).toEqual({ case: "topicName", value: "planning" });
+		expect(post.value.blocks[0]?.block).toEqual({ case: "text", value: "hi" });
+	});
+
+	test("mints the idempotency key on the post leg only", async () => {
+		const transport = new SequencedTransport([
+			openDmResult("dm--a--b", true),
+			postResult("m-1", "t-1"),
+		]);
+		const broker = new CommsBroker(transport);
+		const dm = tool(broker, "comms_dm");
+
+		await exec(dm, "tc-9", { peer_handle: "@b", topic: "t", text: "hi" });
+
+		const post = transport.requests[1]?.call;
+		if (post?.case !== "post") throw new Error("expected a post call");
+		expect(post.value.clientRequestId).toBe(broker.idempotencyKey("tc-9"));
+		expect(post.value.clientRequestId).not.toBe("tc-9");
+	});
+
+	test("create_topic defaults false and passes through on the post leg", async () => {
+		const transport = new SequencedTransport([
+			openDmResult("dm--a--b", true),
+			postResult("m-1", "t-1"),
+		]);
+		const dm = tool(new CommsBroker(transport), "comms_dm");
+		await exec(dm, "tc-1", { peer_handle: "@b", topic: "t", text: "hi" });
+		const post0 = transport.requests[1]?.call;
+		if (post0?.case !== "post") throw new Error("expected a post call");
+		expect(post0.value.createTopic).toBe(false);
+
+		const transport2 = new SequencedTransport([
+			openDmResult("dm--a--b", true),
+			postResult("m-2", "t-2"),
+		]);
+		const dm2 = tool(new CommsBroker(transport2), "comms_dm");
+		await exec(dm2, "tc-2", {
+			peer_handle: "@b",
+			topic: "t",
+			text: "hi",
+			create_topic: true,
+		});
+		const post1 = transport2.requests[1]?.call;
+		if (post1?.case !== "post") throw new Error("expected a post call");
+		expect(post1.value.createTopic).toBe(true);
+	});
+
+	test("a first-leg failure short-circuits before the post leg", async () => {
+		const transport = new SequencedTransport([
+			errorResult("not_found", "no such peer"),
+		]);
+		const dm = tool(new CommsBroker(transport), "comms_dm");
+
+		const err = await exec(dm, "tc-1", {
+			peer_handle: "@ghost",
+			topic: "t",
+			text: "hi",
+		}).then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(err?.message).toContain("not_found");
+		expect(transport.requests).toHaveLength(1);
+	});
+
+	test("a second-leg failure renders in-band after the open leg", async () => {
+		const transport = new SequencedTransport([
+			openDmResult("dm--a--b", true),
+			errorResult("not_found", "no such topic"),
+		]);
+		const dm = tool(new CommsBroker(transport), "comms_dm");
+
+		const err = await exec(dm, "tc-1", {
+			peer_handle: "@b",
+			topic: "missing",
+			text: "hi",
+		}).then(
+			() => undefined,
+			(e: unknown) => e as Error,
+		);
+		expect(err?.message).toContain("not_found");
+		expect(transport.requests).toHaveLength(2);
+	});
+
+	test("the confirmation names the posted message id and the DM channel", async () => {
+		const transport = new SequencedTransport([
+			openDmResult("dm--a--b", true),
+			postResult("m-42", "t-1"),
+		]);
+		const dm = tool(new CommsBroker(transport), "comms_dm");
+
+		const text = textOf(
+			await exec(dm, "tc-1", { peer_handle: "@b", topic: "t", text: "hi" }),
+		);
+		expect(text).toContain("m-42");
+		expect(text).toContain("dm--a--b");
 	});
 });
 
