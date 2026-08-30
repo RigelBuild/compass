@@ -5,6 +5,7 @@ package guestd
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -111,14 +112,9 @@ func TestProvisionOpensGateAndRejectsRootAndNft(t *testing.T) {
 		t.Fatalf("Provision with uid 0 = %v, want InvalidArgument", err)
 	}
 
-	// Non-empty nft_script is unimplemented in V2b.
-	_, err = client.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
-		DefaultExecUid: 1000,
-		NftScript:      "table inet filter {}",
-	}))
-	if err == nil || connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Fatalf("Provision with nft_script = %v, want Unimplemented", err)
-	}
+	// A non-empty nft_script now arms egress via the injected armFunc, not a
+	// CodeUnimplemented refusal (V3). Detailed arm coverage lives in the tests
+	// below; here we only confirm the clean uid path still opens the gate.
 
 	// A clean Provision opens the gate.
 	_, err = client.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
@@ -133,6 +129,176 @@ func TestProvisionOpensGateAndRejectsRootAndNft(t *testing.T) {
 	svc.mu.Unlock()
 	if got != stateProvisioned {
 		t.Fatalf("state after Provision = %d, want provisioned", got)
+	}
+}
+
+// newArmSupervisor builds a stateReady supervisor with an injected armFunc for
+// the hermetic arm tests, mirroring the &supervisor{} literal pattern used
+// elsewhere in this suite. Provision is exercised by direct method call.
+func newArmSupervisor(arm func(ctx context.Context, script string) error) *supervisor {
+	return &supervisor{
+		version:       "v-test",
+		newCredential: testCredential,
+		armFunc:       arm,
+		state:         stateReady,
+		execs:         map[string]*childExec{},
+	}
+}
+
+func TestProvisionArmsNonEmptyScript(t *testing.T) {
+	const script = "table inet filter { chain c {} }"
+	var got string
+	var calls int
+	svc := newArmSupervisor(func(_ context.Context, s string) error {
+		calls++
+		got = s
+		return nil
+	})
+	_, err := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+		DefaultExecUid: 1000,
+		NftScript:      script,
+	}))
+	if err != nil {
+		t.Fatalf("Provision with arm: %v", err)
+	}
+	if calls != 1 || got != script {
+		t.Fatalf("armFunc calls=%d arg=%q, want 1 call with exact script %q", calls, got, script)
+	}
+	svc.mu.Lock()
+	state := svc.state
+	svc.mu.Unlock()
+	if state != stateProvisioned {
+		t.Fatalf("state after successful arm = %d, want provisioned", state)
+	}
+}
+
+func TestProvisionArmFailureLeavesGateClosed(t *testing.T) {
+	svc := newArmSupervisor(func(_ context.Context, _ string) error {
+		return errors.New("nft: exit status 1")
+	})
+	_, err := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+		DefaultExecUid: 1000,
+		NftScript:      "bad script",
+	}))
+	if err == nil || connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("Provision with failing arm = %v, want CodeInternal", err)
+	}
+	svc.mu.Lock()
+	state := svc.state
+	svc.mu.Unlock()
+	if state != stateReady {
+		t.Fatalf("state after failed arm = %d, want stateReady", state)
+	}
+	// The exec gate is still closed.
+	if gerr := svc.requireProvisioned(); gerr == nil {
+		t.Fatal("requireProvisioned after failed arm = nil, want refused")
+	}
+	// A retried Provision may run (state still stateReady).
+	svc.armFunc = func(_ context.Context, _ string) error { return nil }
+	if _, rerr := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+		DefaultExecUid: 1000,
+		NftScript:      "good script",
+	})); rerr != nil {
+		t.Fatalf("retried Provision after failed arm: %v", rerr)
+	}
+	svc.mu.Lock()
+	state = svc.state
+	svc.mu.Unlock()
+	if state != stateProvisioned {
+		t.Fatalf("state after retried arm = %d, want provisioned", state)
+	}
+}
+
+func TestProvisionEmptyScriptSkipsArm(t *testing.T) {
+	var calls int
+	svc := newArmSupervisor(func(_ context.Context, _ string) error {
+		calls++
+		return nil
+	})
+	_, err := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+		DefaultExecUid: 1000,
+	}))
+	if err != nil {
+		t.Fatalf("Provision with empty script: %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("armFunc called %d times for empty script, want 0", calls)
+	}
+	svc.mu.Lock()
+	state := svc.state
+	svc.mu.Unlock()
+	if state != stateProvisioned {
+		t.Fatalf("state after empty-script Provision = %d, want provisioned (gate open)", state)
+	}
+}
+
+func TestProvisionAlreadyProvisionedAfterArm(t *testing.T) {
+	var calls int
+	svc := newArmSupervisor(func(_ context.Context, _ string) error {
+		calls++
+		return nil
+	})
+	req := connect.NewRequest(&compassv1internal.ProvisionRequest{
+		DefaultExecUid: 1000,
+		NftScript:      "table inet filter {}",
+	})
+	if _, err := svc.Provision(t.Context(), req); err != nil {
+		t.Fatalf("first Provision: %v", err)
+	}
+	// A second Provision is refused before any re-arm (no wire re-arm surface).
+	_, err := svc.Provision(t.Context(), req)
+	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("re-Provision = %v, want FailedPrecondition", err)
+	}
+	if calls != 1 {
+		t.Fatalf("armFunc called %d times, want 1 (no re-arm)", calls)
+	}
+}
+
+func TestRunNftScriptCarriesExitStatus(t *testing.T) {
+	// This exercises the HOST /bin/sh only — it proves runNftScript surfaces a
+	// non-zero exit status without root or nft. The GUEST /bin/sh link is proven
+	// by the W3/KVM suite, not here.
+	svc := newArmSupervisor(runNftScript)
+	_, err := svc.Provision(t.Context(), connect.NewRequest(&compassv1internal.ProvisionRequest{
+		DefaultExecUid: 1000,
+		NftScript:      "exit 7",
+	}))
+	if err == nil || connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("Provision with failing real script = %v, want CodeInternal", err)
+	}
+	if !strings.Contains(err.Error(), "exit status 7") {
+		t.Fatalf("error %q does not carry exit status 7", err.Error())
+	}
+	svc.mu.Lock()
+	state := svc.state
+	svc.mu.Unlock()
+	if state != stateReady {
+		t.Fatalf("state after failed real arm = %d, want stateReady", state)
+	}
+}
+
+func TestRunNftScriptFloorsGuestPATH(t *testing.T) {
+	// The §(e) total-backend-outage regression: guestd is PID 1 with no PATH,
+	// and the arm is a spawn path SEPARATE from exec children, so it never
+	// inherits mergeEnv's PATH floor. Without an explicit floor the script's
+	// bare nft/getent/awk resolve against an empty PATH and fail
+	// "command not found", failing EVERY microVM Start. Prove the arm child
+	// runs with PATH == defaultGuestPATH: echo/redirection are shell builtins
+	// (no PATH needed), so the captured value reflects only the env the arm
+	// sets. With the bug the child inherits the test process's ambient PATH, so
+	// this mismatches (red); with the floor it matches (green).
+	dir := t.TempDir()
+	out := dir + "/path"
+	if err := runNftScript(t.Context(), `echo "$PATH" > `+out); err != nil {
+		t.Fatalf("runNftScript(capture PATH) = %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("reading captured PATH: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != defaultGuestPATH {
+		t.Fatalf("arm child PATH = %q, want %q", strings.TrimSpace(string(got)), defaultGuestPATH)
 	}
 }
 

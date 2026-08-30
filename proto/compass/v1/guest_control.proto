@@ -75,8 +75,10 @@ service GuestControl {
 
   // Provision transitions the supervisor ready -> provisioned: it records the
   // session's default exec uid and base env and, when nft_script is non-empty,
-  // arms egress (V3; a non-empty script is unimplemented in V2b). Exec and
-  // ExecStream are refused until Provision succeeds.
+  // arms egress in-guest (V3) — the script runs as guest root before the exec
+  // gate opens, and a failed arm fails Provision with the gate left closed. An
+  // empty nft_script skips the arm (a hermetic test seam). Exec and ExecStream
+  // are refused until Provision succeeds.
   rpc Provision(ProvisionRequest) returns (ProvisionResponse);
 }
 
@@ -175,8 +177,10 @@ message SignalRequest {
 message SignalResponse {}
 
 message ProvisionRequest {
-  // nft_script is the egress ruleset (V3, EgressPolicy.NftScript()); empty in
-  // V2b, where a non-empty value is unimplemented.
+  // nft_script is the egress ruleset (V3, EgressPolicy.NftScript()). A non-empty
+  // script is armed in-guest as root before the exec gate opens; an empty script
+  // skips the arm and is a hermetic test seam (the host production path always
+  // sends a non-empty default-deny ruleset).
   string nft_script = 1;
   // default_exec_uid is the session's agent uid (ContainerSpec.UID), the
   // default for an exec with no uid. Validated non-zero.

@@ -96,8 +96,10 @@ type GuestControlClient interface {
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 	// Provision transitions the supervisor ready -> provisioned: it records the
 	// session's default exec uid and base env and, when nft_script is non-empty,
-	// arms egress (V3; a non-empty script is unimplemented in V2b). Exec and
-	// ExecStream are refused until Provision succeeds.
+	// arms egress in-guest (V3) — the script runs as guest root before the exec
+	// gate opens, and a failed arm fails Provision with the gate left closed. An
+	// empty nft_script skips the arm (a hermetic test seam). Exec and ExecStream
+	// are refused until Provision succeeds.
 	Provision(context.Context, *connect.Request[v1.ProvisionRequest]) (*connect.Response[v1.ProvisionResponse], error)
 }
 
@@ -201,8 +203,10 @@ type GuestControlHandler interface {
 	Signal(context.Context, *connect.Request[v1.SignalRequest]) (*connect.Response[v1.SignalResponse], error)
 	// Provision transitions the supervisor ready -> provisioned: it records the
 	// session's default exec uid and base env and, when nft_script is non-empty,
-	// arms egress (V3; a non-empty script is unimplemented in V2b). Exec and
-	// ExecStream are refused until Provision succeeds.
+	// arms egress in-guest (V3) — the script runs as guest root before the exec
+	// gate opens, and a failed arm fails Provision with the gate left closed. An
+	// empty nft_script skips the arm (a hermetic test seam). Exec and ExecStream
+	// are refused until Provision succeeds.
 	Provision(context.Context, *connect.Request[v1.ProvisionRequest]) (*connect.Response[v1.ProvisionResponse], error)
 }
 

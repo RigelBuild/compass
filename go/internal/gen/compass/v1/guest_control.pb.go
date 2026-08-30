@@ -828,8 +828,10 @@ func (*SignalResponse) Descriptor() ([]byte, []int) {
 
 type ProvisionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// nft_script is the egress ruleset (V3, EgressPolicy.NftScript()); empty in
-	// V2b, where a non-empty value is unimplemented.
+	// nft_script is the egress ruleset (V3, EgressPolicy.NftScript()). A non-empty
+	// script is armed in-guest as root before the exec gate opens; an empty script
+	// skips the arm and is a hermetic test seam (the host production path always
+	// sends a non-empty default-deny ruleset).
 	NftScript string `protobuf:"bytes,1,opt,name=nft_script,json=nftScript,proto3" json:"nft_script,omitempty"`
 	// default_exec_uid is the session's agent uid (ContainerSpec.UID), the
 	// default for an exec with no uid. Validated non-zero.
