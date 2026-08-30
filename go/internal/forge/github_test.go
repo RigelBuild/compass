@@ -248,6 +248,90 @@ func TestBudgetGateRetryAfterSelfClears(t *testing.T) {
 	}
 }
 
+// item 3 (cont.): the rate-limit error carries the retry hint as a
+// *RateLimitError while remaining errors.Is(ErrBudgetExhausted)-compatible.
+// (a) live 403 + Retry-After: 60 -> RetryAfter == 60s; (b) live 403 with only a
+// zeroed remaining (no reset header) -> RetryAfter == 0 with the gate still
+// armed; (c) fail-fast after a partial clock advance -> RetryAfter == resetAt-now.
+func TestGitHubRateLimitHint(t *testing.T) {
+	t.Run("live 403 Retry-After carries hint", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 403, body: `{"message":"rate limited"}`, headers: map[string]string{"Retry-After": "60"}},
+		}}
+		g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+		base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+		g.now = func() time.Time { return base }
+
+		_, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, "")
+		if !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+		}
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("err = %v, want recoverable *RateLimitError", err)
+		}
+		if rle.RetryAfter != 60*time.Second {
+			t.Errorf("RetryAfter = %v, want 60s", rle.RetryAfter)
+		}
+	})
+
+	t.Run("live 403 no usable header -> 0 hint, gate armed", func(t *testing.T) {
+		base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+		clock := base
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 403, body: `{"message":"rate limited"}`, headers: map[string]string{"X-RateLimit-Remaining": "0"}},
+		}}
+		g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+		g.now = func() time.Time { return clock }
+
+		_, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, "")
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("err = %v, want *RateLimitError", err)
+		}
+		if rle.RetryAfter != 0 {
+			t.Errorf("RetryAfter = %v, want 0 (no usable reset header)", rle.RetryAfter)
+		}
+		// The gate still arms with defaultSkip: the next call fails fast.
+		clock = base.Add(time.Second)
+		_, err = g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 2, "")
+		if !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("gated call err = %v, want ErrBudgetExhausted", err)
+		}
+		if rt.calls != 1 {
+			t.Errorf("gate did not arm: calls = %d, want 1", rt.calls)
+		}
+	})
+
+	t.Run("fail-fast hint == resetAt - now", func(t *testing.T) {
+		base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+		clock := base
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 429, body: `{"message":"rate limited"}`, headers: map[string]string{"Retry-After": "60"}},
+		}}
+		g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+		g.now = func() time.Time { return clock }
+
+		// Call 1 arms the gate 60s out.
+		if _, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, ""); !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("call 1 err = %v, want ErrBudgetExhausted", err)
+		}
+		// Advance 59s: 1s remains of the window.
+		clock = base.Add(59 * time.Second)
+		_, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 2, "")
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("gated err = %v, want *RateLimitError", err)
+		}
+		if rle.RetryAfter != time.Second {
+			t.Errorf("fail-fast RetryAfter = %v, want 1s (resetAt-now)", rle.RetryAfter)
+		}
+		if rt.calls != 1 {
+			t.Errorf("gate issued a request: calls = %d, want 1", rt.calls)
+		}
+	})
+}
+
 // item 3 (cont.): the budget floor is `remaining <= reserve` (reserve=10). A 200
 // whose X-RateLimit-Remaining EQUALS the reserve arms the gate — this pins the
 // boundary so a regression flipping the comparison to `<` (arming only strictly

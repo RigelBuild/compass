@@ -330,6 +330,25 @@ func TestBoardSweepBudgetAbortStopsSweep(t *testing.T) {
 	}
 }
 
+// TestBoardSweepBudgetAbortRateLimitError (RIG-2255 T5 regression pin): a repo
+// whose list returns a *forge.RateLimitError — the TYPED rate-limit error, not
+// the bare ErrBudgetExhausted sentinel — still aborts the sweep (errors.Is walks
+// RateLimitError.Unwrap → sentinel), proving no sentinel consumer regressed when
+// the emission sites started carrying the retry hint.
+func TestBoardSweepBudgetAbortRateLimitError(t *testing.T) {
+	l := &fakeUpdatedLister{err: &forge.RateLimitError{RetryAfter: 60 * time.Second}}
+	st := newBoardStore("o/r", "o/r2")
+	sink := &recordingSink{}
+	newBoardHarness(t, l, st, sink).sweep(context.Background())
+
+	if l.calls.Load() != 1 {
+		t.Errorf("lister calls = %d, want 1 (sweep aborted on a typed RateLimitError)", l.calls.Load())
+	}
+	if len(st.storeCalls) != 0 {
+		t.Errorf("stored watermark %d times, want 0 (budget abort before any write)", len(st.storeCalls))
+	}
+}
+
 // TestBoardSweepPerRepoErrorIsolation: a repo whose list errors (non-budget) is
 // logged and skipped; the sweep continues to the next repo, which sinks.
 func TestBoardSweepPerRepoErrorIsolation(t *testing.T) {

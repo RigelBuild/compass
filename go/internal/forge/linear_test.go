@@ -400,6 +400,107 @@ func TestLinearGraphQLRateLimitedCodeOn400(t *testing.T) {
 	}
 }
 
+// item 6 (cont.): the Linear rate-limit error carries the retry hint as a
+// *RateLimitError while remaining errors.Is(ErrBudgetExhausted)-compatible.
+// (a) live 429 + Retry-After: 60 -> 60s; (b) the X-Ratelimit-Requests-Reset
+// epoch-ms fallback -> the epoch-derived duration; (c) a header-less RATELIMITED
+// GraphQL rejection -> 0 with the gate armed; (d) the gated fail-fast call ->
+// resetAt-now.
+func TestLinearRateLimitHint(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+
+	t.Run("live 429 Retry-After carries hint", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 429, body: `{"errors":[{"message":"rate limited"}]}`, headers: map[string]string{"Retry-After": "60"}},
+		}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		l.now = func() time.Time { return base }
+
+		_, err := l.GetIssue(context.Background(), "SEA", 7)
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("err = %v, want *RateLimitError", err)
+		}
+		if rle.RetryAfter != 60*time.Second {
+			t.Errorf("RetryAfter = %v, want 60s", rle.RetryAfter)
+		}
+		if !errors.Is(err, ErrBudgetExhausted) {
+			t.Error("err no longer matches ErrBudgetExhausted")
+		}
+	})
+
+	t.Run("epoch-ms reset fallback carries hint", func(t *testing.T) {
+		at := base.Add(90 * time.Second)
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 429, body: `{"errors":[{"message":"rate limited"}]}`, headers: map[string]string{
+				"X-Ratelimit-Requests-Reset": strconv.FormatInt(at.UnixMilli(), 10),
+			}},
+		}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		l.now = func() time.Time { return base }
+
+		_, err := l.GetIssue(context.Background(), "SEA", 7)
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("err = %v, want *RateLimitError", err)
+		}
+		if rle.RetryAfter != 90*time.Second {
+			t.Errorf("RetryAfter = %v, want 90s (epoch-ms fallback)", rle.RetryAfter)
+		}
+	})
+
+	t.Run("header-less RATELIMITED -> 0 hint, gate armed", func(t *testing.T) {
+		clock := base
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 400, body: `{"errors":[{"message":"complex","extensions":{"code":"RATELIMITED"}}]}`},
+		}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		l.now = func() time.Time { return clock }
+
+		_, err := l.GetIssue(context.Background(), "SEA", 7)
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("err = %v, want *RateLimitError", err)
+		}
+		if rle.RetryAfter != 0 {
+			t.Errorf("RetryAfter = %v, want 0 (no usable header)", rle.RetryAfter)
+		}
+		// The gate still arms with defaultSkip: the next call fails fast.
+		clock = base.Add(time.Second)
+		if _, err := l.GetIssue(context.Background(), "SEA", 8); !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("gated call err = %v, want ErrBudgetExhausted", err)
+		}
+		if rt.calls != 1 {
+			t.Errorf("gate did not arm: calls = %d, want 1", rt.calls)
+		}
+	})
+
+	t.Run("fail-fast hint == resetAt - now", func(t *testing.T) {
+		clock := base
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 429, body: `{"errors":[{"message":"rate limited"}]}`, headers: map[string]string{"Retry-After": "60"}},
+		}}
+		l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+		l.now = func() time.Time { return clock }
+
+		if _, err := l.GetIssue(context.Background(), "SEA", 7); !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("call 1 err = %v, want ErrBudgetExhausted", err)
+		}
+		clock = base.Add(59 * time.Second) // 1s remains of the window
+		_, err := l.GetIssue(context.Background(), "SEA", 8)
+		var rle *RateLimitError
+		if !errors.As(err, &rle) {
+			t.Fatalf("gated err = %v, want *RateLimitError", err)
+		}
+		if rle.RetryAfter != time.Second {
+			t.Errorf("fail-fast RetryAfter = %v, want 1s (resetAt-now)", rle.RetryAfter)
+		}
+		if rt.calls != 1 {
+			t.Errorf("gate issued a request: calls = %d, want 1", rt.calls)
+		}
+	})
+}
+
 // --- item 7: GraphQL errors on HTTP 200 -> *StatusError ----------------------
 
 func TestLinearGraphQLErrorsOn200(t *testing.T) {

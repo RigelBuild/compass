@@ -269,3 +269,20 @@ type StatusError struct {
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("forge: http %d: %s", e.Status, e.Message)
 }
+
+// RateLimitError is a rate-limit skip carrying the retry hint. It unwraps to
+// ErrBudgetExhausted, so every existing errors.Is site keeps matching while
+// errors.As recovers the hint at the forge-call chokepoint (mapForgeError).
+type RateLimitError struct {
+	// RetryAfter is how long until the budget gate re-opens, computed at error
+	// construction from the client's injectable clock. Zero means no hint.
+	RetryAfter time.Duration
+}
+
+// Error renders the stable rate-budget message. The retry hint is recovered via
+// errors.As, not the string, so the message stays fixed for diagnostics.
+func (e *RateLimitError) Error() string { return "forge: rate budget exhausted" }
+
+// Unwrap returns ErrBudgetExhausted so errors.Is walks to the sentinel and every
+// pre-existing skip-contract call site keeps matching unchanged.
+func (e *RateLimitError) Unwrap() error { return ErrBudgetExhausted }

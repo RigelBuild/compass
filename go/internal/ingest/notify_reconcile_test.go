@@ -294,6 +294,32 @@ func TestSweepBudgetAbortStopsSweep(t *testing.T) {
 	}
 }
 
+// TestSweepBudgetAbortRateLimitError (RIG-2255 T5 regression pin): a target
+// returning a *forge.RateLimitError — the TYPED rate-limit error, not the bare
+// ErrBudgetExhausted sentinel — still takes the budget-exhausted abort branch
+// (notify_reconcile.go, errors.Is walks RateLimitError.Unwrap → sentinel), so no
+// consumer of the sentinel regressed when the emission sites started carrying the
+// retry hint.
+func TestSweepBudgetAbortRateLimitError(t *testing.T) {
+	prior := ArtifactSnapshot{State: "open"}
+	st := &fakeNotifyStore{
+		targets: []NotifyTarget{
+			{Repo: "o/r", Kind: kindIssue, Number: 7, Cursor: snapWith(t, "o/r", 7, prior)},
+			{Repo: "o/r", Kind: kindIssue, Number: 8, Cursor: snapWith(t, "o/r", 8, prior)},
+		},
+	}
+	rd := &fakeReader{issueErr: &forge.RateLimitError{RetryAfter: 60 * time.Second}}
+	d := &fakeDispatcher{}
+	newReconciler(t, rd, st, d).sweep(context.Background())
+
+	if rd.calls != 1 {
+		t.Errorf("reader calls = %d, want 1 (sweep aborted on a typed RateLimitError)", rd.calls)
+	}
+	if len(st.upserts) != 0 {
+		t.Errorf("upserts = %d, want 0 (budget abort before any cursor write)", len(st.upserts))
+	}
+}
+
 // TestSweepPerTargetErrorIsolation: a target that errors (non-budget) is logged
 // and skipped; the sweep continues to the next target.
 func TestSweepPerTargetErrorIsolation(t *testing.T) {

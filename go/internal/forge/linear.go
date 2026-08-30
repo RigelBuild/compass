@@ -312,8 +312,8 @@ func (l *Linear) BodyLimit() int { return linearBodyLimit }
 // fail-fast gate, token auth, the JSON POST of {query, variables}, and response
 // classification. It decodes the `data` object into out on success.
 func (l *Linear) doGraphQL(ctx context.Context, query string, variables map[string]any, out any) error {
-	if l.gateBlocked() {
-		return fmt.Errorf("linear graphql: %w", ErrBudgetExhausted)
+	if hint, blocked := l.gateBlocked(); blocked {
+		return fmt.Errorf("linear graphql: %w", &RateLimitError{RetryAfter: hint})
 	}
 
 	token, err := l.token.Token(ctx)
@@ -364,10 +364,21 @@ func (l *Linear) handleResponse(resp *http.Response, body []byte, out any) error
 	// (HTTP 400 carrying extensions.code == "RATELIMITED"). Arms the gate; no
 	// token re-resolve.
 	if status == http.StatusTooManyRequests || (decodeErr == nil && hasErrorCode(gr.Errors, "RATELIMITED")) {
+		// Compute the reset instant once: it arms the gate AND (when a usable
+		// header gave a non-zero reset) yields the retry hint. No usable header
+		// -> a 0 hint ("no hint"), while armGate still self-arms with the bounded
+		// defaultSkip internally.
+		reset := l.rateLimitReset(resp)
 		l.mu.Lock()
-		l.armGate(l.rateLimitReset(resp))
+		l.armGate(reset)
 		l.mu.Unlock()
-		return fmt.Errorf("linear graphql http %d: %w", status, ErrBudgetExhausted)
+		var hint time.Duration
+		if !reset.IsZero() {
+			if d := reset.Sub(l.now()); d > 0 {
+				hint = d
+			}
+		}
+		return fmt.Errorf("linear graphql http %d: %w", status, &RateLimitError{RetryAfter: hint})
 	}
 
 	// Auth failure: a 401, or a GraphQL AUTHENTICATION_ERROR. Drop the cached
@@ -408,19 +419,22 @@ func (l *Linear) endpoint() string {
 	return l.host
 }
 
-// gateBlocked reports whether the fail-fast budget gate is armed, clearing a
-// gate whose reset instant has passed as a side effect. Guarded by mu.
-func (l *Linear) gateBlocked() bool {
+// gateBlocked reports whether the fail-fast budget gate is armed and, when
+// armed, the remaining wait until it re-opens (resetAt-now, clamped >= 0) so the
+// caller can surface the hint. It clears a gate whose reset instant has passed
+// as a side effect. Guarded by mu.
+func (l *Linear) gateBlocked() (time.Duration, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.resetAt.IsZero() {
-		return false
+		return 0, false
 	}
-	if l.now().Before(l.resetAt) {
-		return true
+	now := l.now()
+	if now.Before(l.resetAt) {
+		return l.resetAt.Sub(now), true
 	}
 	l.resetAt = time.Time{}
-	return false
+	return 0, false
 }
 
 // armGate sets the reset-time gate; a zero at falls back to a bounded skip so
