@@ -460,18 +460,23 @@ surface):
   (`design.md:860-869`). **The profile's `models` axis resolves THROUGH this
   gateway**: a profile names models; the gateway owns credentials and
   backend egress. Nothing in this record touches egress.
-- **RIG-2845 — Compass model roles + stable-name provider routing
-  (Backlog).** The policy layer above the gateway substrate: the Compass
-  role taxonomy, default model per role, and the stable-name→backend-order
+- **RIG-2845 — Compass stable-name provider routing (in design, PR
+  #725).** The routing policy above the gateway substrate: stable Compass
+  model names (e.g. `claude-opus-4-8`) and the stable-name→backend-order
   fallback chain, consuming RIG-1715 pool resolution and RIG-2562 evals (the
   gateway record forward-refs it: "a policy layer ABOVE this credential
   substrate — designed separately in RIG-2845",
-  `compass-server-llm-gateway/design.md:407-413`). **Boundary: this record
-  delivers per-Manager profile SELECTION + propagation; RIG-2845 owns the
-  role taxonomy and routing policy the profile's model fields reference.**
-  The profile is the delivery vehicle for RIG-2845's role→model policy — a
-  profile's `models.agents` keys and values are drawn from RIG-2845's
-  taxonomy once it lands; this record does not redesign it.
+  `compass-server-llm-gateway/design.md:407-413`). **Boundary (updated —
+  RIG-2845 narrowed to routing-only, 2026-08-30): this record owns model
+  SELECTION — a profile's `models.manager`/`models.agents` fields ARE which
+  model each agent uses — plus its per-Manager propagation; RIG-2845 owns
+  only the stable-name VOCABULARY + upstream ROUTING those model fields
+  reference.** The originally-scoped Compass role-taxonomy half of RIG-2845
+  was dropped in the narrowing: model selection is the profile's (this
+  record) and the fleet-global tier defaults are OMP's built-in `modelRoles`
+  — RIG-2845 defines no role→model policy layer. A profile's model-field
+  VALUES are drawn from RIG-2845's stable-name vocabulary once it lands;
+  this record does not redesign that vocabulary or its routing.
 - **RIG-1716 — embedded MCP gateway (Backlog).** One Server endpoint holding
   all tool auth. The profile's `extensions` axis (schema'd, consumption
   deferred) will reference a tool-set/ACL against THAT gateway, not
@@ -1234,10 +1239,15 @@ Rows applied to `docs/designs/DECISIONS.md` in this freeze PR (§Agent runtime
   TWO-LEVEL (Manager + direct children); grandchild events do not surface.
 - **DL-288:** The profile's model axis resolves through the RIG-1715 LLM
   gateway (single egress; agents hold no provider creds) and REFERENCES the
-  RIG-2845 role taxonomy + stable-name routing policy — this record
-  delivers per-Manager profile selection + propagation; RIG-2845 owns the
-  policy the model fields name; RIG-1716 is where the deferred extensions
-  axis will resolve.
+  RIG-2845 stable-name routing vocabulary — this record delivers per-Manager
+  profile SELECTION + propagation and owns model selection itself; RIG-2845
+  owns the stable-name vocabulary + upstream routing the model fields name;
+  RIG-1716 is where the deferred extensions axis will resolve. (Updated
+  2026-08-30: RIG-2845 narrowed to routing-only — its originally-scoped role
+  taxonomy was dropped, so RIG-2845 no longer "owns the policy the model
+  fields name" beyond the stable-name vocabulary; role→model selection is
+  this record's profile fields + OMP's built-in `modelRoles` tier defaults,
+  not a RIG-2845 policy layer.)
 - **DL-289:** The agent-facing spawn path may carry `profile` — a
   Manager may select its subtree's profile (RIG-2937 ruled YES,
   unconditional): no selectable-set policy, no cross-family conditioning
