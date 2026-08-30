@@ -95,9 +95,9 @@ export async function fetchSnapshot(
 ): Promise<CommsSnapshot> {
 	const opts = { signal };
 	// GetRoster joins the SAME failure domain as the other snapshot reads — NOT
-	// best-effort. It carries no agent_account_id: the server defaults the
-	// vantage to the caller and resolves a user caller to its own owned set (R6).
-	// GetRosterRequest carries only scope + agent_account_id (no snapshotSeq), so
+	// best-effort. It carries no vantage_handle: the server defaults the vantage
+	// to the caller and resolves a user caller to its own owned set (R6).
+	// GetRosterRequest carries only scope + vantage_handle (no snapshotSeq), so
 	// the presence seed is unversioned and converges via the seq'd tail replay.
 	// A rejection propagates (throws) exactly like the sibling reads, is caught
 	// in runCommsStream, and retries the whole snapshot with backoff — never a
