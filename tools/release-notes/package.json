@@ -1,0 +1,14 @@
+{
+	"name": "@compass/release-notes",
+	"private": true,
+	"type": "module",
+	"description": "Release-notes generator: emits the GitHub Release body (binaries + GHCR image-digest pointer, degrading to a recorded absence when unpublished) and the nix-outputs.json build-output identity manifest for the release lane.",
+	"module": "index.ts",
+	"bin": {
+		"release-notes": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
