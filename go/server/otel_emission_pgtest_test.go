@@ -213,7 +213,7 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	srv, err := buildNetworkServer(ctx, ServeConfig{
 		StateDir:          t.TempDir(),
 		CORSAllowedOrigin: corsOriginForTest,
-	}, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil)
+	}, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}

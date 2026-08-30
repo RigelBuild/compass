@@ -19,7 +19,7 @@ import (
 
 func TestResolveForgeMapping(t *testing.T) {
 	t.Run("disabled default: no repos, no App", func(t *testing.T) {
-		fc, err := resolveForge("", "", "", "", "", "", "")
+		fc, err := resolveForge("", "", "", "", "", "", "", "")
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
 		}
@@ -40,7 +40,7 @@ func TestResolveForgeMapping(t *testing.T) {
 
 	t.Run("full flag mapping", func(t *testing.T) {
 		fc, err := resolveForge("owner/repo, foo/bar", "MY_TOKEN", "ghe.example.com",
-			"12345", "678", "APP_KEY", "WEBHOOK_SECRET")
+			"12345", "678", "APP_KEY", "WEBHOOK_SECRET", "LINEAR_WEBHOOK_SECRET")
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
 		}
@@ -57,6 +57,9 @@ func TestResolveForgeMapping(t *testing.T) {
 			t.Fatalf("App secrets = %q/%q, want APP_KEY/WEBHOOK_SECRET",
 				fc.App.AppPrivateKeySecret, fc.App.AppWebhookSecretName)
 		}
+		if fc.LinearWebhookSecretName != "LINEAR_WEBHOOK_SECRET" {
+			t.Fatalf("LinearWebhookSecretName = %q, want LINEAR_WEBHOOK_SECRET", fc.LinearWebhookSecretName)
+		}
 		want := []string{"owner/repo", "foo/bar"}
 		if len(fc.SeedRepos) != len(want) {
 			t.Fatalf("SeedRepos = %v, want %v", fc.SeedRepos, want)
@@ -69,7 +72,7 @@ func TestResolveForgeMapping(t *testing.T) {
 	})
 
 	t.Run("case normalization: Owner/Name lowercases to one target", func(t *testing.T) {
-		fc, err := resolveForge("Owner/Name", "", "", "", "", "", "")
+		fc, err := resolveForge("Owner/Name", "", "", "", "", "", "", "")
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
 		}
@@ -91,7 +94,7 @@ func TestResolveForgeRejectsGarbage(t *testing.T) {
 	}
 	for _, tc := range garbage {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := resolveForge(tc.repos, "", "", "", "", "", "")
+			_, err := resolveForge(tc.repos, "", "", "", "", "", "", "")
 			if err == nil {
 				t.Fatalf("resolveForge(%q) = nil error, want a startup error", tc.repos)
 			}
@@ -110,7 +113,7 @@ func TestResolveForgeRejectsBadAppID(t *testing.T) {
 		{"non-numeric installation id", "123", "nope", "--forge-installation-id"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := resolveForge("owner/repo", "", "", tc.appID, tc.installID, "", "")
+			_, err := resolveForge("owner/repo", "", "", tc.appID, tc.installID, "", "", "")
 			if err == nil {
 				t.Fatalf("resolveForge = nil error, want a startup error")
 			}

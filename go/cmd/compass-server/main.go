@@ -382,6 +382,7 @@ type forgeFlags struct {
 	installationID *string
 	appKeySecret   *string
 	appWebhook     *string
+	linearWebhook  *string
 }
 
 // registerForgeFlags declares the forge flags on the given FlagSet and returns
@@ -414,6 +415,12 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 			"Declared server_only secret NAME holding the webhook signing secret the "+
 				"ingress verifies deliveries against. Defaults to "+
 				"$COMPASS_FORGE_APP_WEBHOOK_SECRET."),
+		linearWebhook: fs.String("forge-linear-webhook-secret", "",
+			"Declared server_only secret NAME holding the Linear webhook signing "+
+				"secret the shared POST /webhooks/linear ingress verifies deliveries "+
+				"against. Defaults to $COMPASS_FORGE_LINEAR_WEBHOOK_SECRET. The Linear "+
+				"data-change/session arm runs iff this is declared, independent of the "+
+				"GitHub App gate."),
 	}
 }
 
@@ -428,6 +435,7 @@ func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 		firstNonEmpty(*f.installationID, os.Getenv("COMPASS_FORGE_INSTALLATION_ID")),
 		firstNonEmpty(*f.appKeySecret, os.Getenv("COMPASS_FORGE_APP_KEY_SECRET")),
 		firstNonEmpty(*f.appWebhook, os.Getenv("COMPASS_FORGE_APP_WEBHOOK_SECRET")),
+		firstNonEmpty(*f.linearWebhook, os.Getenv("COMPASS_FORGE_LINEAR_WEBHOOK_SECRET")),
 	)
 }
 
@@ -438,7 +446,7 @@ func (f forgeFlags) resolve() (server.ForgeConfig, error) {
 // so Owner/Name and owner/name collapse to one target. appID/installationID are
 // parsed as int64 when set (garbage is a startup error); empty leaves them zero.
 // Empty host/secret/App-secret NAMEs default server-side.
-func resolveForge(repos, secret, host, appID, installationID, appKeySecret, appWebhook string) (server.ForgeConfig, error) {
+func resolveForge(repos, secret, host, appID, installationID, appKeySecret, appWebhook, linearWebhook string) (server.ForgeConfig, error) {
 	seed, err := parseForgeRepos(repos)
 	if err != nil {
 		return server.ForgeConfig{}, err
@@ -452,9 +460,10 @@ func resolveForge(repos, secret, host, appID, installationID, appKeySecret, appW
 		return server.ForgeConfig{}, err
 	}
 	return server.ForgeConfig{
-		Host:       host,
-		SeedRepos:  seed,
-		SecretName: secret,
+		Host:                    host,
+		SeedRepos:               seed,
+		SecretName:              secret,
+		LinearWebhookSecretName: linearWebhook,
 		App: server.ForgeAppConfig{
 			AppID:                id,
 			InstallationID:       instID,

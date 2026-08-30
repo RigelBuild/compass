@@ -73,7 +73,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
 	}
-	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil)
+	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
