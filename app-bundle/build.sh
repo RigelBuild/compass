@@ -44,9 +44,16 @@ CC_BIN="$CC_ENV/bin/cc"
 #        only inspects the LAST substitution, so folding the `cat` into the same
 #        line as the `git` substitution would silently swallow a missing file
 #        and leave an empty base.
-version_base="$(cat "$REPO_ROOT/version.txt")"
-[[ -n "$version_base" ]] || { err "version.txt missing or empty"; exit 1; }
-v="${version_base}+g$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+if [[ -n "${COMPASS_BUNDLE_VERSION:-}" ]]; then
+  # Release path (release.yml release-assets): the semver tag IS the identity
+  # (Global Constraint 1), stamped clean like the daemons — no +g<sha> suffix,
+  # no git rev-parse. Set by the release-assets job to the release version.
+  v="$COMPASS_BUNDLE_VERSION"
+else
+  version_base="$(cat "$REPO_ROOT/version.txt")"
+  [[ -n "$version_base" ]] || { err "version.txt missing or empty"; exit 1; }
+  v="${version_base}+g$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+fi
 log "Bundle version: $v"
 
 BUNDLE="compass-app-$v-linux-amd64"

@@ -5,6 +5,22 @@ Linear: RIG-2477 (client app per-OS matrix + install channels), RIG-2608
 (headless self-host stack distribution). Scope expansion of RIG-1746 ruled by
 Matt 2026-08-24.
 
+> **Rail erratum (2026-08-30, RIG-2752): the per-build prerelease lane is retired.**
+> This record was drafted against the release-bundling record's two-lane rail
+> (per-build `build-<sha12>` prereleases + a `v*` semver lane). Matt's unified
+> release-lane ruling superseded that shape
+> ([`compass-unified-release-lane.md`](compass-unified-release-lane.md);
+> `compass-release-bundling.md` Status: Fork 3 + OQ-3 superseded): releases are
+> now batched `vX.Y.Z` semver cuts via release-please, and the only per-push
+> artifact is the GHCR agent image. **Every reference below to a `build-<sha12>`
+> prerelease or per-push binary/tarball asset resolves to the semver `vX.Y.Z`
+> Release** — all client artifacts (the Linux tarball S1/T1, the macOS bundle
+> S1/T3) attach to that Release, folded into its `SHA256SUMS` by the
+> `release-assets` job (`.github/workflows/release.yml`). The bleeding-edge
+> client channel is the nix flake (RIG-2757, `github:RigelBuild/compass` tracks
+> `main`), exactly as OQ-6 recommends. GC2's "never a second Release mechanism"
+> is unchanged and now literal: there is one Release lane, the semver one.
+>
 > **Companion record, same PR — composes, never duplicates:**
 > [`../compass-release-bundling.md`](../compass-release-bundling.md) (the
 > binary/image Release lane — per-build `build-<sha12>` prereleases + the
