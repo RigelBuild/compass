@@ -112,6 +112,17 @@ message CommsCallRequest {
     SetAgentStatusRequest set_status = 5;
     UpdatePinnedBoardRequest pin = 6;
   }
+  // The W3C `traceparent` of the delivered message that triggered this outbound
+  // call, re-attached by the agent so the Server can LINK the reply's fresh
+  // trace back to its trigger — a trace terminates at the turn, and a reply is
+  // a new root causally linked to the message it answers, not a child span that
+  // would grow an unbounded conversation tree. W3C format
+  // `00-<32hex trace-id>-<16hex span-id>-<2hex flags>`; EMPTY on a human-seeded
+  // first turn (no triggering message). Field 10 leaves 7-9 for the in-flight
+  // org-management oneof arms (RIG-2673); numbers are frozen (DL-186/OQ-1b).
+  // Server-side link per
+  // docs/designs/platform/compass-server-runner-otel/design.md.
+  string trigger_traceparent = 10;
 }
 
 // The result of one comms call, correlated by `call_id`. A successful call sets

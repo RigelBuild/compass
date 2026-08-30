@@ -2495,7 +2495,15 @@ type SessionInjection struct {
 	// to its delivery receipt.
 	MessageId string `protobuf:"bytes,2,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
 	// The handle the message came from, when known (empty when unavailable).
-	FromHandle    string `protobuf:"bytes,3,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
+	FromHandle string `protobuf:"bytes,3,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
+	// The W3C `traceparent` of the Server's active span when it emitted this
+	// observation, denormalized so a subscriber joins the SessionInjection to the
+	// message's server-side trace (creation -> routing -> delivery -> turn, one
+	// connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+	// flags>`; EMPTY when the Server had no active span (trace machinery never
+	// blocks or fails a delivery). Server-side stamping per
+	// docs/designs/platform/compass-server-runner-otel/design.md.
+	Traceparent   string `protobuf:"bytes,4,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2547,6 +2555,13 @@ func (x *SessionInjection) GetMessageId() string {
 func (x *SessionInjection) GetFromHandle() string {
 	if x != nil {
 		return x.FromHandle
+	}
+	return ""
+}
+
+func (x *SessionInjection) GetTraceparent() string {
+	if x != nil {
+		return x.Traceparent
 	}
 	return ""
 }
@@ -4944,13 +4959,14 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\rSessionNotice\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x17\n" +
 	"\x04link\x18\x02 \x01(\tH\x00R\x04link\x88\x01\x01B\a\n" +
-	"\x05_link\"\x8d\x01\n" +
+	"\x05_link\"\xaf\x01\n" +
 	"\x10SessionInjection\x129\n" +
 	"\aop_kind\x18\x01 \x01(\x0e2 .compass.v1.SessionInjectionKindR\x06opKind\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x02 \x01(\tR\tmessageId\x12\x1f\n" +
 	"\vfrom_handle\x18\x03 \x01(\tR\n" +
-	"fromHandle\"=\n" +
+	"fromHandle\x12 \n" +
+	"\vtraceparent\x18\x04 \x01(\tR\vtraceparent\"=\n" +
 	"\x1cSubscribeAgentSessionRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"\x97\x01\n" +
