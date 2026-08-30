@@ -13,10 +13,13 @@
 package events
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"sync"
 	"time"
+
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
 // ringCapacity bounds replay memory; a subscriber that falls further behind
@@ -37,6 +40,11 @@ type Stamped[P any] struct {
 	AtUnixMS      int64
 	InstanceEpoch uint64
 	Payload       P
+	// Traceparent is the W3C trace-context of the span active when the payload
+	// was published (empty when published without an active span). It rides the
+	// envelope so the delivery consumer can re-link dispatch to the publisher's
+	// trace across the bus boundary.
+	Traceparent string
 }
 
 // Subscription is the outcome of Bus.Subscribe: drain Replay (oldest first),
@@ -163,6 +171,19 @@ func NewBus[P any]() *Bus[P] {
 // is full is marked lagged and dropped — the ring still retains the event, so a
 // re-subscribe within the ring window recovers it.
 func (b *Bus[P]) Publish(payload P) uint64 {
+	return b.publish("", payload)
+}
+
+// PublishCtx behaves exactly like Publish but stamps the W3C traceparent of
+// ctx's active span (empty when there is none) onto the enqueued Stamped, so
+// the publisher's trace can be re-linked to downstream dispatch across the bus.
+func (b *Bus[P]) PublishCtx(ctx context.Context, payload P) uint64 {
+	return b.publish(otelx.Traceparent(ctx), payload)
+}
+
+// publish is the shared body: it stamps the next seq, a wall-clock timestamp,
+// and the given traceparent onto payload, then fans out to live subscribers.
+func (b *Bus[P]) publish(traceparent string, payload P) uint64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -173,6 +194,7 @@ func (b *Bus[P]) Publish(payload P) uint64 {
 		AtUnixMS:      epochMS(),
 		InstanceEpoch: b.instanceEpoch,
 		Payload:       payload,
+		Traceparent:   traceparent,
 	}
 
 	if len(b.ring) == ringCapacity {

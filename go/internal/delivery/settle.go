@@ -7,8 +7,11 @@ import (
 
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
+	"go.opentelemetry.io/otel"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -160,6 +163,10 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 // unreadable pin (its message vanished) is logged and skipped so the rest of the
 // board still injects.
 func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, sessionID string) error {
+	// Root a per-pass span: the sweep runs on the settle/start drain ctx, which
+	// carries no live span, so the swept delivers link to this span's trace.
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.sweep.pins")
+	defer span.End()
 	channels, err := c.st.SweepChannels(ctx, agent)
 	if err != nil {
 		return err
@@ -184,7 +191,7 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 				continue
 			}
 			cn, tn := c.sourceNames(ctx, wire)
-			ops = append(ops, pinOp{op: deliverOp(wire, c.authorHandle(ctx, wire), cn, tn), messageID: entry.MessageID})
+			ops = append(ops, pinOp{op: deliverOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx)), messageID: entry.MessageID})
 		}
 	}
 	gate := c.gateFor(sessionID)
@@ -208,6 +215,9 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 // vanished message is undeliverable by construction, so its owed row is cleared
 // rather than re-logged on every start (an every-start re-log loop otherwise).
 func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID, sessionID string) error {
+	// Root a per-pass span (see sweepPins): the swept steers link to its trace.
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.sweep.owedMentions")
+	defer span.End()
 	owed, err := c.st.OwedMentions(ctx, agent)
 	if err != nil {
 		return err
@@ -232,7 +242,7 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 				continue
 			}
 			cn, tn := c.sourceNames(ctx, wire)
-			ops = append(ops, steerOpEntry{op: steerOp(wire, c.authorHandle(ctx, wire), cn, tn), messageID: m.ID})
+			ops = append(ops, steerOpEntry{op: steerOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx)), messageID: m.ID})
 		}
 	}
 	if len(ops) > 0 {
@@ -262,15 +272,20 @@ func (c *Consumer) fireHeld(ctx context.Context, authorSession string) {
 	delete(c.held, authorSession)
 	c.mu.Unlock()
 
-	for _, messageID := range held {
-		wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
+	for _, entry := range held {
+		wire, channel, author, err := c.storeMessageToWire(ctx, entry.messageID)
 		if err != nil {
 			// The message vanished between hold and fire (unexpected): skip it;
 			// the cursor never advanced, so the sweep still redelivers.
-			c.log.ErrorContext(ctx, "delivery: re-read held message", "error", err, "message_id", messageID)
+			c.log.ErrorContext(ctx, "delivery: re-read held message", "error", err, "message_id", entry.messageID)
 			continue
 		}
-		c.fanOut(ctx, channel, author, wire)
+		// Restamp the origin trace captured at hold onto this bare drain ctx (no
+		// live span here — the settle goroutine boundary), so the settled deliver
+		// re-links to the publisher's trace. Empty origin ⇒ ctx unchanged ⇒ empty
+		// on the wire (invariant holds).
+		mctx := otelx.ContextWithTraceparent(ctx, entry.traceparent)
+		c.fanOut(mctx, channel, author, wire)
 	}
 }
 
@@ -309,6 +324,9 @@ func (c *Consumer) sweepAllLive(ctx context.Context) {
 // drain after it (design.md:220-225), never interleaving ahead of the sweep's
 // ordered set.
 func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, sessionID string) {
+	// Root a per-pass span (see sweepPins): the swept delivers link to its trace.
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.sweep.session")
+	defer span.End()
 	owed, err := c.st.UndeliveredMessages(ctx, account)
 	if err != nil {
 		c.log.ErrorContext(ctx, "delivery: sweep undelivered", "error", err, "account", string(account))
@@ -321,7 +339,7 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 		for i := range msgs {
 			wire := comms.MessageToWire(msgs[i])
 			cn, tn := c.sourceNames(ctx, wire)
-			op := deliverOp(wire, c.authorHandle(ctx, wire), cn, tn)
+			op := deliverOp(wire, c.authorHandle(ctx, wire), cn, tn, otelx.Traceparent(ctx))
 			if err := c.dispatch.DispatchControl(ctx, sessionID, op); err != nil {
 				c.log.WarnContext(ctx, "delivery: sweep dispatch failed, leaving to next sweep",
 					"error", err, "session_id", sessionID, "message_id", string(msgs[i].ID))

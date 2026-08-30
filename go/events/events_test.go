@@ -10,8 +10,12 @@ package events
 // that would silently drift if the constant changed.
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // testTimeout bounds every live-channel wait so a broken handoff fails fast
@@ -726,5 +730,40 @@ func TestReplayLiveHandoffIsGapFreeUnderConcurrency(t *testing.T) {
 		default:
 			t.Fatalf("seq %d delivered %d times (duplicated across the handoff)", s, seen[s])
 		}
+	}
+}
+
+// TestPublishCtxStampsActiveSpanTraceparent pins Move 1's bus bridge: PublishCtx
+// stamps the active span's W3C traceparent onto the enqueued Stamped, while the
+// ctx-free Publish (and PublishCtx under a no-span ctx) leaves it empty
+// (empty-in ⇒ empty-out). This is the publish-point origin of the whole T5
+// propagation chain.
+func TestPublishCtxStampsActiveSpanTraceparent(t *testing.T) {
+	tp := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	ctx, span := tp.Tracer("test").Start(context.Background(), "publish")
+	defer span.End()
+	want := otelx.Traceparent(ctx)
+	if want == "" {
+		t.Fatal("precondition: active span produced an empty traceparent")
+	}
+
+	bus := NewBus[ev]()
+	bus.PublishCtx(ctx, ready())                  // under a span: stamps want
+	bus.PublishCtx(context.Background(), ready()) // no span: empty
+	bus.Publish(ready())                          // ctx-free: empty
+
+	sub, err := bus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("Subscribe(0,0): %v", err)
+	}
+	if got := sub.Replay[0].Traceparent; got != want {
+		t.Fatalf("PublishCtx(span) Traceparent = %q, want %q", got, want)
+	}
+	if got := sub.Replay[1].Traceparent; got != "" {
+		t.Fatalf("PublishCtx(no-span) Traceparent = %q, want empty", got)
+	}
+	if got := sub.Replay[2].Traceparent; got != "" {
+		t.Fatalf("Publish Traceparent = %q, want empty", got)
 	}
 }

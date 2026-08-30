@@ -86,22 +86,23 @@ type dispatchRecord struct {
 	fromHandle  string
 	channelName string
 	topicName   string
+	traceparent string
 }
 
 // classifyOp reports the op kind, carried message id, denormalized author
-// from_handle, and denormalized source channel+topic names of a dispatched
-// control, so the recorder can tell a steer from a deliver (both carry a
-// Message) and assert the RIG-2486 T1 from_handle and RIG-2956 T0 source names.
-func classifyOp(op *compassv1internal.AgentControl) (kind opKind, messageID, fromHandle, channelName, topicName string) {
+// from_handle, denormalized source channel+topic names, and traceparent of a
+// dispatched control, so the recorder can tell a steer from a deliver and assert
+// on the fields both ops carry.
+func classifyOp(op *compassv1internal.AgentControl) (kind opKind, messageID, fromHandle, channelName, topicName, traceparent string) {
 	switch {
 	case op.GetSteer() != nil:
 		s := op.GetSteer()
-		return opSteer, s.GetMessage().GetId(), s.GetFromHandle(), s.GetChannelName(), s.GetTopicName()
+		return opSteer, s.GetMessage().GetId(), s.GetFromHandle(), s.GetChannelName(), s.GetTopicName(), s.GetTraceparent()
 	case op.GetDeliver() != nil:
 		d := op.GetDeliver()
-		return opDeliver, d.GetMessage().GetId(), d.GetFromHandle(), d.GetChannelName(), d.GetTopicName()
+		return opDeliver, d.GetMessage().GetId(), d.GetFromHandle(), d.GetChannelName(), d.GetTopicName(), d.GetTraceparent()
 	default:
-		return opOther, "", "", "", ""
+		return opOther, "", "", "", "", ""
 	}
 }
 
@@ -151,8 +152,8 @@ func (d *fakeDispatcher) DispatchControl(_ context.Context, sessionID string, op
 		d.mu.Unlock()
 		return err
 	}
-	kind, messageID, fromHandle, channelName, topicName := classifyOp(op)
-	d.calls = append(d.calls, dispatchRecord{sessionID: sessionID, messageID: messageID, kind: kind, fromHandle: fromHandle, channelName: channelName, topicName: topicName})
+	kind, messageID, fromHandle, channelName, topicName, traceparent := classifyOp(op)
+	d.calls = append(d.calls, dispatchRecord{sessionID: sessionID, messageID: messageID, kind: kind, fromHandle: fromHandle, channelName: channelName, topicName: topicName, traceparent: traceparent})
 	d.mu.Unlock()
 	signalObserved(d.recorded)
 	return nil
