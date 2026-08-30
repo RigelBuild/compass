@@ -278,6 +278,30 @@ func TestRunNftScriptCarriesExitStatus(t *testing.T) {
 	}
 }
 
+func TestRunNftScriptFloorsGuestPATH(t *testing.T) {
+	// The §(e) total-backend-outage regression: guestd is PID 1 with no PATH,
+	// and the arm is a spawn path SEPARATE from exec children, so it never
+	// inherits mergeEnv's PATH floor. Without an explicit floor the script's
+	// bare nft/getent/awk resolve against an empty PATH and fail
+	// "command not found", failing EVERY microVM Start. Prove the arm child
+	// runs with PATH == defaultGuestPATH: echo/redirection are shell builtins
+	// (no PATH needed), so the captured value reflects only the env the arm
+	// sets. With the bug the child inherits the test process's ambient PATH, so
+	// this mismatches (red); with the floor it matches (green).
+	dir := t.TempDir()
+	out := dir + "/path"
+	if err := runNftScript(t.Context(), `echo "$PATH" > `+out); err != nil {
+		t.Fatalf("runNftScript(capture PATH) = %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("reading captured PATH: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != defaultGuestPATH {
+		t.Fatalf("arm child PATH = %q, want %q", strings.TrimSpace(string(got)), defaultGuestPATH)
+	}
+}
+
 func TestExecUIDZeroRefused(t *testing.T) {
 	client, _ := newTestSupervisor(t, true, 1000)
 	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{

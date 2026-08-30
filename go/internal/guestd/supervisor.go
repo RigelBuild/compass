@@ -77,7 +77,14 @@ const armStderrTail = 4 << 10
 func runNftScript(ctx context.Context, script string) error {
 	ctx, cancel := context.WithTimeout(ctx, armTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "/bin/sh", "-c", script).CombinedOutput() //nolint:gosec // script is the host-delivered egress ruleset run as guest root by design — this IS the arm surface (§(d))
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script) //nolint:gosec // script is the host-delivered egress ruleset run as guest root by design — this IS the arm surface (§(d))
+	// guestd is PID 1 with no PATH, and the arm is a spawn path SEPARATE from
+	// exec children (§(d)), so it never inherits mergeEnv's PATH floor. Set the
+	// guest rootfs PATH explicitly so the script's bare nft/getent/awk (linked
+	// under /bin, guest-image/default.nix) resolve; without it every microVM
+	// Start fails "nft: command not found" — the §(e) total-backend outage.
+	cmd.Env = []string{"PATH=" + defaultGuestPATH}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if len(out) > armStderrTail {
 			out = out[len(out)-armStderrTail:]
