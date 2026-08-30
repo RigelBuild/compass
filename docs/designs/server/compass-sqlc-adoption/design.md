@@ -1,0 +1,494 @@
+# Compass sqlc adoption — typed queries from SQL, and the inline-SQL ban
+
+Status: Draft
+
+> **Design record** for RIG-3034. Matt's ruling: "migration and sqlc. and then
+> also banning future inline sql." This record designs (1) adopting `sqlc`
+> (typed Go generated from `.sql` query files, validated against the schema)
+> for the compass store, and (2) the CI mechanism that fails a NEW raw SQL
+> string passed to pgx outside the generated path. Every file/line citation
+> below was grepped in this clone at the time of writing.
+
+## Problem / Intent
+
+Every compass DB query is a raw Go string literal handed to pgx at the call
+site: 25 non-test files in `go/internal/store/` carry ~198
+`.Query(ctx`/`.QueryRow(ctx`/`.Exec(ctx` call lines (24 domain files plus
+`store.go`, the migration runner that stays raw; per-file peak:
+`accounts.go` 33, `channels.go` 22, `messages.go`/`agent_transcripts.go` 16
+each). Nothing validates those strings against the schema before runtime —
+a typo'd column, a dropped join, or a scan-order drift ships silently and
+fails only when a pgtest suite (or production) executes that exact path.
+sqlc moves the queries into `.sql` files compiled against the schema
+(`go/internal/store/migrations/0001_init.sql`, 802 lines, the single squashed
+schema source), generating typed functions — and a CI gate then bans any new
+inline SQL from reappearing.
+
+Representative current sites:
+
+- `go/internal/store/accounts.go:19-21` —
+  `tx.Exec(ctx, "INSERT INTO account_handles (account_id, handle, owner_user_id) VALUES ($1, $2, NULLIF($3, ''))", …)`
+- `go/internal/store/agent_transcripts.go:126-129` — a multi-line
+  backtick `UPDATE agent_sessions SET base_entry_seq = COALESCE((SELECT MAX(entry_seq) …`
+- `go/internal/store/authz.go:23-25` —
+  `q.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2)", …)`
+
+All queries are `$1..$n` parameterized; no Go-side value interpolation exists.
+The pgx surface is confined: outside `go/internal/store/`, the only pgx users
+are `go/internal/pgshare/pgshare.go` (test-only schema-per-test harness, build
+tag `(pgtest || podman) && unix`, pgshare.go:27), `go/internal/comms/coordination.go`
+(passes `pgx.Tx` through to store methods — zero SQL of its own), and
+`go/internal/stack/adapters/dbprobe.go:37-47` (connect + `Ping`, no SQL).
+`go/go.mod` pins `github.com/jackc/pgx/v5 v5.10.0`; there is no sqlc or sqlx
+anywhere in the module today.
+
+## Approach
+
+Adopt **sqlc** (`engine: postgresql`, `gen.go.sql_package: "pgx/v5"`) with the
+existing single migration as the schema source, generate into a new
+`go/internal/store/db/` package, and **keep the hand-written `Store` methods
+as the domain layer** — their bodies are rewritten to call the generated
+queries, while error wrapping (`fmt.Errorf("store: …: %w", err)`), domain-type
+mapping (`Account`, `ChannelID`, …), the `WithTx` seam
+(`coordination.go:386-399`), and the advisory-lock helpers stay hand-written.
+The inline-SQL ban is a **grep-gate** (`tools/inline-sql-gate/`, precedent
+`tools/cx-token-gate/`) that fails CI on a string-literal SQL argument to a
+pgx `Query`/`QueryRow`/`Exec` call outside the generated dir and a small
+explicit allowlist, landed FIRST with the allowlist seeded to the current
+files and **ratcheted down** as each file migrates.
+
+### sqlc config
+
+`go/sqlc.yaml` (module root, so `sqlc generate`/`sqlc vet` run where `go.mod`
+lives and moon tasks inherit `runFromWorkspaceRoot: false` like every other
+go/ task in `go/moon.yml`):
+
+```yaml
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "internal/store/migrations"      # 0001_init.sql (+ future NNNN_*.sql, applied in order)
+    queries: "internal/store/queries"        # new dir, one .sql file per domain
+    gen:
+      go:
+        package: "db"
+        out: "internal/store/db"
+        sql_package: "pgx/v5"
+        emit_interface: true                  # Querier, for the store's tx/pool duality
+```
+
+- **Schema source**: sqlc reads a migrations *directory* and applies files in
+  lexical order, which is exactly the store's own convention
+  (`store.go:23 //go:embed migrations/*.sql`, applied sorted in `migrate`,
+  store.go:125-178). Today that is the one squashed file; a future
+  `0002_*.sql` is picked up by both sides with zero config change. sqlc also
+  understands squawk-era `-- migrate` annotations are absent here — plain DDL,
+  which sqlc parses directly.
+- **Queries**: `go/internal/store/queries/<domain>.sql`, one file per current
+  store file (`accounts.sql`, `channels.sql`, `messages.sql`, …), each query
+  carrying the standard `-- name: GetAccount :one` / `:many` / `:exec` /
+  `:execrows` annotation. `:execrows` covers the sites that branch on
+  `CommandTag.RowsAffected` (e.g. `channels.go:710-713` DELETE-and-check).
+- **Generated output**: `go/internal/store/db/` — checked in (like `go/gen/`),
+  regenerated by a moon task, drift-gated (below). The generated `Queries`
+  type takes a `DBTX` interface satisfied by both `*pgxpool.Pool` and
+  `pgx.Tx`, which replaces the store's hand-rolled `querier`/`execer`
+  interfaces (`store.go:64-74`) at migrated sites.
+
+### Store layering: wrap, don't replace
+
+`Store` keeps its exact exported API — ~80 methods and their signatures do not
+change, so **zero callers outside `go/internal/store` are touched** (comms,
+server handlers, tests all call `Store` methods). Internally each migrated
+method body becomes:
+
+```go
+func (s *Store) EnsureChannelMember(ctx context.Context, channelID ChannelID, accountID AccountID) error {
+    if err := s.q.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+        ChannelID: string(channelID), AccountID: string(accountID),
+    }); err != nil {
+        return fmt.Errorf("store: ensure channel member: %w", err)
+    }
+    return nil
+}
+```
+
+with `s.q = db.New(s.pool)` set in `Open`, and tx-scoped paths using
+`s.q.WithTx(tx)` (the generated `Queries.WithTx(DBTX)` rebind). The domain
+mapping (string(ID) casts, `scanAccount`-style projections becoming generated
+row structs mapped to `Account`) lives in the wrapper, so the public types
+never leak sqlc structs. This preserves the store's error-message convention
+and keeps the diff reviewable per-domain.
+
+### The inline-SQL ban: a grep-gate with a ratcheting allowlist
+
+`tools/inline-sql-gate/` — a bun/TypeScript CLI shaped exactly like
+`tools/cx-token-gate/` (`moon.yml` `check` task, `runFromWorkspaceRoot: true`,
+`cache: false`, wired into the project's `ci` aggregate so `moon run :ci`
+sweeps it automatically; `rule://scripts-ts-over-bash` makes TS the required
+implementation language). The rule it enforces:
+
+> A `.Query(` / `.QueryRow(` / `.Exec(` call whose first argument — tokenized
+> across newlines, since the store overwhelmingly puts the SQL literal on the
+> line *after* the call — is a Go string literal (backtick or quoted, including
+> `+`-concatenated literals)
+> containing a SQL keyword (`SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP`)
+> is banned in `go/**/*.go`, EXCEPT:
+>
+> 1. `go/internal/store/db/**` — the generated package (sqlc's own plumbing),
+> 2. `**/*_test.go` — tests legitimately poke raw SQL to build scenarios
+>    (e.g. `account_handles_pgtest_test.go:122-123` renames a handle directly),
+> 3. an explicit allowlist of file paths checked into the gate config.
+
+Why this shape wins (alternatives weighed in § Alternatives considered):
+
+- **No false positives on non-SQL `Exec`**: the repo is full of non-pgx
+  `Exec(ctx, …)` calls — `go/internal/runtime/agent.go:207`
+  (`r.runtime.Exec(ctx, handle.id, spec)`), `go/internal/compute/inplace.go:69`,
+  guestd, microvm. None passes a SQL-keyword string literal as the immediate
+  argument, so the literal+keyword predicate excludes them structurally.
+- **No false negatives from interface indirection**: a type-based linter must
+  resolve the receiver; the store deliberately queries through local
+  interfaces (`querier`/`execer`, `store.go:64-74`), and any future wrapper
+  would slip a type-matcher. The grep-gate keys on the call *shape*, which is
+  what Matt wants banned: SQL text at a Go call site.
+- **Ratchet**: the gate lands in the FIRST task with its allowlist seeded to
+  the 24 current store domain files (+ the two permanent entries below). Each
+  migration task deletes its file's entry. New inline SQL is therefore banned
+  repo-wide from day one, without blocking on the full migration. The gate
+  fails if an allowlist entry matches no finding (stale-entry check, same
+  fail-closed posture as `nolintlint`'s stale-directive flagging in
+  `go/.golangci.yml`).
+- **Residual risk, stated honestly**: SQL built into a variable and passed as
+  an identifier escapes a literal-at-callsite grep. The two current instances
+  of that shape are `agent_tree.go:26-27` (`queryAgents(ctx, what, sql, arg)`
+  — a const projection + per-caller WHERE, migrated to three full sqlc
+  queries) and the migration runner (below). Post-migration the gate also
+  bans the *helper* shape by flagging `pool.Query`/`tx.Query` calls whose SQL
+  arg is a bare identifier outside the allowlist — reported as advisory lines
+  first, promoted to gating once the migration is complete (see Open
+  Questions).
+
+### The permanent escape hatch (dynamic/advisory-lock sites)
+
+Enumerated by grep — every site that cannot or should not go through sqlc:
+
+| Site | SQL | Disposition |
+| --- | --- | --- |
+| `store.go:144,147` | `SELECT pg_advisory_lock($1)` / `pg_advisory_unlock($1)` | stays raw: the migration runner executes before/around the schema sqlc compiles against; chicken-and-egg |
+| `store.go` `ensureMigrationsTable`/`appliedVersions`/`applyMigration` + embedded `migrations/*.sql` | bootstrap DDL + `schema_migrations` bookkeeping | stays raw: `schema_migrations` is deliberately NOT in the schema (0001_init.sql header note), so sqlc cannot type it |
+| `accounts.go:557` | `SELECT pg_advisory_xact_lock(hashtext($1))` | **migrates to sqlc** — statically parseable, `:exec` |
+| `coordination.go:372` | `SELECT pg_advisory_xact_lock(hashtext('coordination:' \|\| $1))` | **migrates to sqlc** — the `\|\|` is SQL-side concat of a literal with `$1`, a static statement sqlc compiles fine |
+| `go/internal/pgshare/pgshare.go:161,173` | `"CREATE SCHEMA "+schema` / `"DROP SCHEMA "+schema+" CASCADE"` | stays raw: test-only harness (build-tagged), identifier interpolation of a self-generated `pgtest_<pid>_<seq>` name (pgshare.go:152,160) — inexpressible as a prepared statement |
+
+So the **permanent** allowlist is exactly two entries: `go/internal/store/store.go`
+(migration runner) and `go/internal/pgshare/pgshare.go`. The advisory-lock
+xact calls — the sites the brief flagged as possibly unmigratable — are in
+fact static SQL and migrate cleanly; no hand-written-SQL sidecar file is
+needed. (Confirmed against sqlc's model: it prepares each named query;
+`pg_advisory_xact_lock(hashtext('coordination:' || $1))` prepares as a
+one-parameter statement.)
+
+### `sqlc vet` + drift in CI
+
+Two additions to the `go/moon.yml` battery, both joining the `ci` aggregate
+(`go/moon.yml:213-219`):
+
+- **`sqlc-drift`** — run `sqlc generate` and fail on a dirty
+  `go/internal/store/db/` tree (byte-diff). Catches a query edit without
+  regeneration. Unlike the existing `drift` task — which is deliberately kept
+  OUT of `ci` (`go/moon.yml:216-218`) because it *delegates* to the
+  compass-proto schema pipeline and is scheduled through the gen tree —
+  `sqlc-drift` is fully local (no cross-project delegation, no DB), so it
+  belongs in `ci` directly. Pure-local, no DB needed.
+- **`sqlc-vet`** — `sqlc vet` with the `sqlc/db-prepare` builtin rule, which
+  PREPAREs every query against a live schema-loaded database — the strongest
+  check sqlc offers (catches what static analysis can't: operator/typecast
+  validity, missing indexes-referenced-by-hint, etc.). The CI Go job already
+  runs a `postgres:16-alpine` service with
+  `COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable`
+  (`.github/workflows/ci.yml:430-441,515`). sqlc.yaml gains:
+
+  ```yaml
+  database:
+    uri: "${SQLC_DATABASE_URL}"
+  rules:
+    - sqlc/db-prepare
+  ```
+
+  The vet task creates a throwaway database on the service, applies
+  `internal/store/migrations/*.sql` via `psql` (the `postgresql` nixpkgs
+  package is already in the devenv `packages` literal, devenv.nix:128, so
+  `psql` is on the CI PATH), exports `SQLC_DATABASE_URL`, runs `sqlc vet`,
+  drops the database. Where the env var is unset (a dev box without the
+  service), the task is skipped-with-notice rather than red — same posture as
+  the pgtest suites' DSN-gated skip (`ci.yml:554`). The `go/cmd/compass-postgres`
+  private-postgres wrapper is NOT reused here: it is the stack supervisor's
+  process-managed instance; the CI service DB is simpler and already
+  provisioned.
+
+- **devenv**: add bare `sqlc` to the parsed `packages = (with pkgs; [ … ])`
+  literal in `devenv.nix` (line 47ff) with a reason comment, alongside the Go
+  gate battery block (devenv.nix:73-81). Verified: the pinned nixpkgs
+  (`c946ff36bf19…`, devenv.lock:190) evaluates `sqlc.version = 1.31.1`
+  (`nix eval` run in this workspace).
+
+### Migration sequencing: gate-first, then per-domain, stacked
+
+1. **T1 lands the scaffold + the gate** — sqlc.yaml, empty queries dir, the
+   `inline-sql-gate` with the full seeded allowlist, devenv + moon wiring.
+   From this merge, new inline SQL anywhere in `go/` is banned even though
+   zero queries have migrated.
+2. **T2..T7 migrate per-domain**, roughly one store file (or a small cluster)
+   per task, in ascending risk order, each task: move the SQL to
+   `queries/<domain>.sql`, regenerate, rewrite the method bodies, delete the
+   file's allowlist entry, run that domain's pgtest suite. The existing
+   suites are the safety net — every store method is exercised by
+   `*_test.go`/`*_pgtest_test.go` files that do NOT change (they call the
+   public `Store` API).
+3. **The store is one Go package**, so "package-by-package" is really
+   file-by-file within `store`; runtime/comms/server never carried inline SQL
+   (verified above), so there is no cross-package tail.
+
+All-at-once was rejected: a single ~198-callsite rewrite is an unreviewable
+PR, and any scan-order regression inside it is needle-in-haystack. Per-domain
+stacking (jj-vine) keeps each diff at one reviewer-sized domain with its own
+green pgtest cycle, and the cross-lane collision window on the busy `store`
+package is per-file, not one long freeze.
+
+## Alternatives considered
+
+### Ban mechanism (a): golangci `forbidigo` with `analyze-types`
+
+`forbidigo` can match typed receivers
+(`^(\*pgxpool\.Pool|pgx\.Tx)\.(Query|QueryRow|Exec)$` with
+`analyze-types: true`), and the F1 config (`go/.golangci.yml:22` `default: all`)
+already carries a tuned forbidigo block (`.golangci.yml:125-131`). Rejected as
+the primary mechanism: (1) it bans the *call*, not the *inline SQL* — the
+generated `db` package and the two permanent escape-hatch files make the same
+calls legitimately, forcing path-scoped lint exclusions that F1 keeps
+deliberately minimal; (2) the store's own `querier`/`execer` interfaces
+(`store.go:64-74`) — and any future one — don't match a concrete-type pattern,
+so the ban silently under-covers exactly the indirection a determined author
+would use; (3) `//nolint:forbidigo` at any call site bypasses it with less
+visibility than a reviewed allowlist edit in the gate config. It also cannot
+express the ratchet.
+
+### Ban mechanism (c): depguard-style import ban
+
+`depguard` is currently disabled with a reason (`go/.golangci.yml:56` "no
+import-allowlist policy declared yet"). An import fence ("only
+`internal/store` and `internal/pgshare` may import `jackc/pgx/v5`") is a good
+*complement* — it stops a NEW package from acquiring a pgx handle at all — but
+it cannot see inline SQL inside the packages that legitimately import pgx,
+which is where all ~211 sites live. Not sufficient alone; noted as a candidate
+follow-up once the sibling depguard lane (RIG-3033) declares the fleet import
+policy, and deliberately NOT bundled into this design to avoid cross-lane
+config collision on `.golangci.yml`.
+
+### sqlx instead of sqlc
+
+sqlx is runtime struct-scanning sugar over the same hand-written SQL strings —
+it removes scan boilerplate but validates nothing against the schema and
+generates no types, so it solves neither of Matt's two asks (typed-from-SQL,
+ban inline SQL). Rejected.
+
+### sqlvet / static SQL-string analyzers
+
+sqlvet-style tools lint the SQL strings where they sit, which would validate
+today's inline literals without any migration — but that entrenches inline SQL
+as the sanctioned pattern, the exact opposite of the ruling, and such tools
+are far weaker than sqlc's compile-against-schema + `db-prepare`. Rejected.
+
+### Generated-only store (replace `Store` instead of wrapping)
+
+Exposing `db.Queries` directly to comms/server would delete the wrapper layer
+but breaks every caller's signature, loses the domain types
+(`AccountID`/`ChannelID` newtypes), the `store: …` error-wrapping convention,
+and the `WithTx`/advisory-lock seams — a vastly larger, riskier diff for
+negative architectural value. Rejected; wrap-and-delegate keeps the public
+contract byte-stable.
+
+## Global Constraints
+
+- **pgx/v5 stays the driver**: `sql_package: "pgx/v5"`; no `database/sql`
+  shim anywhere (go.mod pins `jackc/pgx/v5 v5.10.0`).
+- **Single schema source**: sqlc's `schema:` points at
+  `go/internal/store/migrations/` — the same embedded dir the runtime runner
+  applies (`store.go:23`). No parallel schema file, ever.
+- **F1 lint posture**: any `.golangci.yml` change carries a one-line reason
+  comment in the existing grouped-disable style; this design intentionally
+  makes NO golangci changes (the ban is a tools/ gate).
+- **Gate precedent**: `tools/inline-sql-gate` mirrors `tools/cx-token-gate`
+  exactly — bun/TS CLI, `moon.yml` `check` with `runFromWorkspaceRoot: true`
+  and `cache: false`, own `ci` aggregate; no `.github/workflows/` edits
+  (`moon run :ci` sweeps it).
+- **Toolchain**: `sqlc` enters `devenv.nix` as a bare nixpkgs attr inside the
+  parsed `packages = (with pkgs; [ … ])` literal with a reason comment
+  (toolchain-parity gate requirement). Pinned nixpkgs ships sqlc 1.31.1.
+- **Edit over create**: store method signatures and files are edited in
+  place; the only new Go tree is the generated `go/internal/store/db/` and
+  the `queries/` SQL dir.
+- **Public API frozen**: no `Store` method signature changes; comms/server/
+  test callers compile untouched in every task.
+- **Generated code is checked in and drift-gated**, matching the `go/gen/`
+  convention (never hand-edited; regenerated by a moon task).
+
+## Plan
+
+### T1 — sqlc scaffold + inline-sql-gate (ratchet armed)
+
+Add `go/sqlc.yaml` (config as in Approach), empty
+`go/internal/store/queries/` with a README stub query proving generation,
+generated `go/internal/store/db/` checked in, `sqlc` in the devenv packages
+literal, `go/moon.yml` tasks `sqlc-gen` + `sqlc-drift` (drift joins `ci`).
+Build `tools/inline-sql-gate/` (index.ts + index.test.ts + moon.yml per the
+cx-token-gate shape) with allowlist seeded to the 24 current store domain files +
+`go/internal/store/store.go` + `go/internal/pgshare/pgshare.go` (permanent),
+stale-entry check on. Wire its `ci` aggregate.
+
+Interfaces:
+
+- consumes: `devenv.nix` packages literal; `go/moon.yml` tasks map;
+  `tools/cx-token-gate/` as the copied shape.
+- produces: `go/sqlc.yaml`; `tools/inline-sql-gate/index.ts` exporting
+  `scan(root: string, config: GateConfig): Finding[]` where
+  `GateConfig = { allowlist: string[] }` and
+  `Finding = { file: string; line: number; snippet: string }`; the scanner
+  tokenizes the first argument after `.Query(`/`.QueryRow(`/`.Exec(` ACROSS
+  newlines (the dominant shape in this store is the literal on the following
+  line), not a line-scoped grep; gate exit 1 on findings ∨ stale allowlist
+  entries.
+- test cycle: `bun test tools/inline-sql-gate` (fixture-driven, incl. a
+  fixture proving runtime/compute `Exec(ctx, id, spec)` is NOT flagged, and a
+  fixture with the SQL literal on the line *after* the call — and a multi-line
+  backtick literal — proving the across-newline tokenizer catches the store's
+  dominant shape);
+  single targeted `sqlc generate` run proving config validity.
+
+### T2 — accounts + agent_tree domain
+
+Migrate `accounts.go` (33 sites, incl. the `pg_advisory_xact_lock(hashtext($1))`
+at accounts.go:557) and `agent_tree.go` (the `queryAgents` composition becomes
+3 full queries: neighborhood / subtree / ancestry) to
+`queries/accounts.sql` + `queries/agent_tree.sql`; rewrite method bodies to
+`db.Queries`; drop both allowlist entries.
+
+Interfaces:
+
+- consumes: generated `db.Querier`; existing `scanAccount` projection
+  contract (accounts/agent_tree row shape, agent_tree.go:14-22).
+- produces: unchanged `Store` API; `queries/accounts.sql`,
+  `queries/agent_tree.sql`.
+- test cycle: `go test -race ./internal/store/` (+ pgtest lane where DSN set).
+
+### T3 — channels + channel_pins + coordination
+
+Same recipe: `channels.go` (22), `channel_pins.go` (7), `coordination.go` (10,
+incl. the `pg_advisory_xact_lock(hashtext('coordination:' || $1))` at
+`coordination.go:372`; `WithTx` stays hand-written). Note `coordination.go:172`'s
+`fmt.Sprintf("%s-%d", …)` builds a channel *name value*, not SQL — no special
+handling. (There is no `dm.go`: direct-message queries live in `channels.go` /
+`messages.go`, migrated with their domains.)
+
+Interfaces: as T2; produces `queries/channels.sql`, `queries/channel_pins.sql`,
+`queries/coordination.sql`.
+
+### T4 — messages + topics + delivery
+
+`messages.go` (16), `topics.go` (9), `delivery_cursors.go` (15),
+`delivery_reads.go` (7), `presence_reads.go` (2). (`blocks.go` carries no
+inline SQL — it is Go-side JSONB marshaling only, and the message-blocks SQL
+lives in `messages.go`; it is not a migration target and has no allowlist
+entry.)
+
+Interfaces: as T2; produces the corresponding `queries/*.sql`; the
+`:execrows` annotation covers RowsAffected-branching sites
+(e.g. `delivery_cursors.go:165-168`).
+
+### T5 — agents: sessions, transcripts, activity, config, placements
+
+`agent_sessions.go` (3), `agent_transcripts.go` (16), `agent_activity.go` (2),
+`agent_config.go` (3), `agent_placements.go` (5).
+
+Interfaces: as T2.
+
+### T6 — remainder: authz, tokens, secrets, issues, forge_*, tenant, linear_sessions, objectstore
+
+`authz.go` (5), `tokens.go` (4), `secrets.go` (3), `issues.go` (4),
+`forge_authored.go` (4), `forge_cursors.go` (7), `forge_subscriptions.go` (9),
+`tenant.go` (2), `linear_sessions.go` (2), plus any residue. After this task
+the gate allowlist holds ONLY the two permanent entries.
+
+Interfaces: as T2.
+
+### T7 — sqlc vet against a live DB + advisory→gating promotion
+
+Add the `sqlc-vet` moon task (throwaway DB on the CI postgres service, apply
+migrations via psql, `sqlc vet` with `sqlc/db-prepare`, DSN-gated skip on dev
+boxes without the env), join the go `ci` aggregate. Promote the gate's
+identifier-passed-SQL advisory lines (the `queryAgents` shape) to gating now
+that zero legitimate instances remain.
+
+Interfaces:
+
+- consumes: `.github/workflows/ci.yml` postgres service DSN (ci.yml:515);
+  `psql` from the devenv `postgresql` package (devenv.nix:128).
+- produces: `go/moon.yml` `sqlc-vet` task; `database:`/`rules:` stanzas in
+  `go/sqlc.yaml`.
+- test cycle: single targeted `moon run compass-go:sqlc-vet` with the DSN
+  exported.
+
+## Tasks
+
+- [ ] T1 — sqlc scaffold (`go/sqlc.yaml`, `db/`, moon `sqlc-gen`/`sqlc-drift`,
+      devenv `sqlc`) + `tools/inline-sql-gate` with seeded ratchet allowlist
+- [ ] T2 — migrate accounts + agent_tree; shrink allowlist
+- [ ] T3 — migrate channels + pins + coordination; shrink allowlist
+- [ ] T4 — migrate messages + topics + delivery; shrink allowlist
+- [ ] T5 — migrate agent sessions/transcripts/activity/config/placements
+- [ ] T6 — migrate authz/tokens/secrets/issues/forge/tenant/linear remainder;
+      allowlist down to the two permanent entries
+- [ ] T7 — `sqlc vet` (db-prepare) in CI + promote advisory gate lines to
+      gating
+
+## Open Questions
+
+Load-bearing forks for Matt (each with the recommendation this record designs
+against):
+
+1. **Sequencing — gate-first stacked per-domain (recommended) vs all-at-once.**
+   This record designs the ratchet: the ban lands in T1 with an allowlist of
+   the 26 unmigrated files, and each domain task shrinks it. Alternative: one
+   big-bang PR migrating all ~211 sites, gate last. Recommendation: stacked —
+   reviewable diffs, per-domain pgtest cycles, no long freeze on the busy
+   `store` package. Cross-lane note: each T2–T6 task rewrites store file
+   *bodies*, so lanes touching `go/internal/store/` should sequence around the
+   active domain task.
+2. **Ban mechanism — grep-gate (recommended) vs typed forbidigo vs depguard.**
+   The grep-gate is chosen for the ratchet, the structural exclusion of
+   non-pgx `Exec` calls, and immunity to interface indirection; forbidigo and
+   depguard variants are documented in Alternatives. Depguard as a
+   *complementary* pgx-import fence is explicitly deferred to the RIG-3033
+   depguard lane to avoid `.golangci.yml` collision — confirm that split.
+3. **Escape-hatch shape — two-file permanent allowlist (recommended) vs
+   refactor.** The advisory-lock xact sites migrate cleanly into sqlc (they
+   are static SQL), leaving only `store.go` (migration runner, chicken-and-egg
+   with `schema_migrations`) and `pgshare.go` (test harness, identifier
+   interpolation) as permanent raw-SQL files. Alternative: a dedicated
+   `raw_sql.go` sidecar quarantining them. Recommendation: the two-entry
+   allowlist — the sites are already well-commented and moving the migration
+   runner is pure churn.
+4. **`sqlc vet` depth — db-prepare against the CI postgres service
+   (recommended) vs config-only vet.** db-prepare needs the
+   throwaway-DB-plus-psql step in the moon task; config-only vet is
+   zero-infra but much weaker. Recommendation: db-prepare, DSN-gated skip on
+   boxes without the service (mirrors the existing pgtest skip posture).
+5. **Record path** — this record sits at
+   `docs/designs/server/compass-sqlc-adoption/design.md`: the store/query
+   layer is the server-side domain model, which the bucket taxonomy
+   (`docs/designs/CONTRIBUTING.md` §6) assigns to `server/` ("server-side
+   domain model and write paths"). The `repo/` bucket governs build/dependency
+   tooling; the inline-sql-gate is a *component* of this design, not its
+   subject. Driver owns the final call; note `server/` has no sibling records
+   yet — this would be its first.
