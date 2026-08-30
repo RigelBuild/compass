@@ -302,7 +302,9 @@ func TestLinearWebhookHandler_BodyTooLarge(t *testing.T) {
 	// this unauthenticated endpoint has a regression test.
 	body := bytes.Repeat([]byte("a"), (1<<20)+1)
 
-	rec := linPost(h, linSign(secret, body), body)
+	// No signature needed: MaxBytesReader trips during io.ReadAll, before the
+	// HMAC verify is ever reached.
+	rec := linPost(h, "", body)
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("code = %d, want 413 (body over 1 MiB cap)", rec.Code)
 	}
@@ -324,7 +326,8 @@ func TestLinearWebhookHandler_SecretUnavailable(t *testing.T) {
 	lh.now = func() time.Time { return now }
 	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"u"}}`, freshTS(now))
 
-	rec := linPost(lh, linSign([]byte("shh"), body), body)
+	// No signature needed: the secret resolver faults before the HMAC verify.
+	rec := linPost(lh, "", body)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code = %d, want 503 (secret resolve fault)", rec.Code)
 	}
