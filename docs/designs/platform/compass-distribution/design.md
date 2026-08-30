@@ -9,7 +9,7 @@ Matt 2026-08-24.
 > This record was drafted against the release-bundling record's two-lane rail
 > (per-build `build-<sha12>` prereleases + a `v*` semver lane). Matt's unified
 > release-lane ruling superseded that shape
-> ([`compass-unified-release-lane.md`](compass-unified-release-lane.md);
+> ([`compass-unified-release-lane.md`](../compass-unified-release-lane.md);
 > `compass-release-bundling.md` Status: Fork 3 + OQ-3 superseded): releases are
 > now batched `vX.Y.Z` semver cuts via release-please, and the only per-push
 > artifact is the GHCR agent image. **Every reference below to a `build-<sha12>`
