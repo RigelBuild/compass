@@ -263,8 +263,9 @@ Distribution, three legs:
 > socket-only / `trust`-auth / byte-identical-DSN invariant:
 >
 > + **`POSTGRES_USER=<os-user>` is set in the container env** (the env list at
->   §S4 below names only `POSTGRES_DB=compass` and
->   `POSTGRES_HOST_AUTH_METHOD=trust`). Under `--userns=keep-id` the container
+>   §S4 below enumerates `POSTGRES_DB=compass`,
+>   `POSTGRES_HOST_AUTH_METHOD=trust`, and `PGDATA` — but no `POSTGRES_USER`).
+>   Under `--userns=keep-id` the container
 >   runs as the host OS user, and the frozen DSN is user-less
 >   (`host=<dir> port=<p> dbname=compass sslmode=disable` — no `user=`), which
 >   pgx resolves to that OS user. The stock `postgres:18` image otherwise
