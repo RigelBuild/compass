@@ -279,6 +279,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 			signal?.removeEventListener("abort", done);
 			resolve();
 		};
+		// biome-ignore lint/style/noRestrictedGlobals: production abort-aware delay (resolves early on signal), cleared on abort; not a test wait
 		const timer = setTimeout(done, ms);
 		signal?.addEventListener("abort", done, { once: true });
 	});

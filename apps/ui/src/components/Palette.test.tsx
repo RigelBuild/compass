@@ -42,6 +42,7 @@ afterEach(() => {
 // `settle` waits one macrotask then drains the microtask queue.
 async function settle(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
+	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield (setTimeout(0)) to observe Kobalte Search's 0ms-debounced onInputChange; not a timed wait
 	setTimeout(resolve, 0);
 	await promise;
 	await flush();

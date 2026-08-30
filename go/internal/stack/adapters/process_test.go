@@ -153,7 +153,7 @@ func waitReady(t *testing.T, readyPath string, proc stack.Process) {
 		if _, err := os.Stat(readyPath); err == nil {
 			return
 		}
-		time.Sleep(time.Millisecond)
+		time.Sleep(time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the child's ready file above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
 	_ = proc.Signal(stack.SignalTerm)
 	t.Fatalf("child never armed (ready file %s absent within deadline)", readyPath)

@@ -388,13 +388,13 @@ func waitForRecordedPid(t *testing.T, pidFile string) int {
 	for time.Now().Before(deadline) {
 		f, err := os.Open(pidFile)
 		if err != nil {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(5 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the recorded pidfile appearing above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 			continue
 		}
 		line, err := bufio.NewReader(f).ReadString('\n')
 		f.Close()
 		if err != nil { // file exists but the pid line isn't fully written yet.
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(5 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the pidfile's pid line being fully written above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 			continue
 		}
 		pid, err := strconv.Atoi(strings.TrimSpace(line))

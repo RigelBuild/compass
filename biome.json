@@ -27,6 +27,15 @@
 							}
 						]
 					}
+				},
+				"noRestrictedGlobals": {
+					"level": "error",
+					"options": {
+						"deniedGlobals": {
+							"setTimeout": "Fixed sleeps/timers are non-deterministic and flake tests (rule://go-no-sleep-in-test, same discipline in TS). Event-gate on the observed state; use Effect.sleep (TestClock-testable) in Effect code. A genuine timer (fetch-abort timeout, abortable backoff) justifies itself with `// biome-ignore lint/style/noRestrictedGlobals: <reason>`.",
+							"setInterval": "Polling on a wall-clock interval is non-deterministic and flakes tests. Event-gate on the observed state; or `// biome-ignore lint/style/noRestrictedGlobals: <reason>` for a genuine production interval."
+						}
+					}
 				}
 			}
 		}

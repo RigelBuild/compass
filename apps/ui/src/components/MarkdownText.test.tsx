@@ -63,6 +63,7 @@ function byHandle(): Map<string, Account> {
 // kickoff must let that window elapse first.
 const DEBOUNCE_FLUSH_MS = 200;
 const flushHighlightDebounce = () =>
+	// biome-ignore lint/style/noRestrictedGlobals: waits out the component's real HIGHLIGHT_DEBOUNCE_MS debounce; the debounce is a real setTimeout with no injectable clock here, and the suite uses no fake timers (fake-timer conversion tracked in RIG-3016)
 	new Promise((r) => setTimeout(r, DEBOUNCE_FLUSH_MS));
 
 // The async Shiki highlight (150ms debounce + async tokenize) is observed with
@@ -1146,7 +1147,10 @@ describe("MarkdownText — highlight failure is contained", () => {
 		// vacuous: it renders synchronously, before the rejection lands, so the
 		// assertion would pass against the crashing implementation too.
 		for (let i = 0; i < 20; i++) await Promise.resolve();
-		await new Promise((r) => setTimeout(r, 50));
+		const macrotask = Promise.withResolvers<void>();
+		// biome-ignore lint/style/noRestrictedGlobals: one macrotask hop (delay 0) after draining microtasks, to let the async highlight rejection propagate before asserting the degraded-to-plain fallback
+		setTimeout(macrotask.resolve, 0);
+		await macrotask.promise;
 		expect(container.querySelector("pre code")?.textContent).toContain(
 			"const x = 1;",
 		);

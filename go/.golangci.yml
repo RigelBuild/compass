@@ -112,6 +112,24 @@ linters:
       key-naming-case: snake
       static-msg: false
 
+    # F-ttsr: forbid `time.Sleep` — the CI teeth behind rule://go-no-sleep-in-test.
+    # A fixed sleep to wait for async work is a flaky race (too short → false red
+    # under load, too long → the suite crawls); event-gate on the observed state
+    # instead (channel receive, sync.WaitGroup, testing/synctest, or a bounded
+    # poll-until with a deadline). `forbid` REPLACES the linter's default set, so
+    # the built-in `fmt.Print*`/`print(ln)` bans are restated here or they drop.
+    # A genuinely irreducible sleep (a poll-until tick, a synctest virtual-clock
+    # advance, or a sleep that IS the timing behavior under test) justifies itself
+    # at the site with `//nolint:forbidigo // <reason>` — the same reason-required,
+    # stale-flagged machinery nolintlint enforces above.
+    forbidigo:
+      forbid:
+        - pattern: '^time\.Sleep$'
+          msg: "fixed sleeps are non-deterministic (rule://go-no-sleep-in-test); event-gate on the observed state, or //nolint:forbidigo // <reason> for an irreducible poll-tick / synctest advance / timing-under-test site"
+        # Restore forbidigo's default identifiers (dropped once `forbid` is set).
+        - pattern: '^(fmt\.Print(|f|ln)|print|println)$'
+          msg: "avoid debug prints in shipped code; use log/slog"
+
     # nolintlint governs the inline `//nolint` directives themselves — the
     # per-site suppression form this module uses for architectural false
     # positives (RIG-1287). Every directive must name its linter and carry a

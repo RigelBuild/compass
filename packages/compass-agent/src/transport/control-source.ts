@@ -236,6 +236,7 @@ function sleepOrAbort(ms: number, signal: AbortSignal): Promise<void> {
 			signal.removeEventListener("abort", onAbort);
 			resolve();
 		};
+		// biome-ignore lint/style/noRestrictedGlobals: production abort-aware backoff wait (sleepOrAbort, resolves early on signal), cleared on abort; not a test wait
 		const timer = setTimeout(() => {
 			signal.removeEventListener("abort", onAbort);
 			resolve();

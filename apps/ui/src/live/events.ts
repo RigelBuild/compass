@@ -78,6 +78,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 		resolve();
 		return promise;
 	}
+	// biome-ignore lint/style/noRestrictedGlobals: production abort-aware backoff delay (resolves early on signal), cleared on abort; not a test wait
 	const timer = setTimeout(() => {
 		signal?.removeEventListener("abort", onAbort);
 		resolve();

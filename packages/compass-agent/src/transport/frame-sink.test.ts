@@ -429,6 +429,7 @@ test("a durable send gives up after the retry budget, rejecting emitDurable", as
 		// One initial try + one per backoff delay = BACKOFF.length + 1 attempts.
 		expect(attempts).toBe(DURABLE_RETRY_BACKOFF_MS.length + 1);
 		// Let any stray microtask-scheduled rejection surface before asserting.
+		// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield (setTimeout(0)) to let a stray microtask rejection surface; not a timed wait
 		await new Promise((r) => setTimeout(r, 0));
 		expect(unhandled).toBe(false);
 	} finally {

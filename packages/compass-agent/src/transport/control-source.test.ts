@@ -355,6 +355,7 @@ function ackGate(): {
 			return new Promise<void>((resolve) => {
 				const tick = (): void => {
 					const at = cursor;
+					// biome-ignore lint/style/noRestrictedGlobals: poll-until-stalled on a real reconnect clock the test cannot inject (ts-no-test-timers exception); event-gated on the cursor, cleared on progress
 					setTimeout(() => {
 						if (waiters.length > 0 && cursor === at) resolve();
 						else tick();
@@ -1322,6 +1323,7 @@ test("a long apply survives >budget socket flaps — an op in flight is progress
 		new Promise<void>((resolve) => {
 			const tick = (): void => {
 				const at = rec.controlOpens;
+				// biome-ignore lint/style/noRestrictedGlobals: poll-until-stalled on the source's out-of-test reconnect clock (ts-no-test-timers exception); event-gated on controlOpens
 				setTimeout(() => {
 					if (
 						rec.controlOpens === at &&
@@ -1392,6 +1394,7 @@ test("F3: abandoning the for-await (iterator return()) aborts the pump AND cance
 	// convert a broken-abort HANG into a named assertion failure. It is cleared
 	// the moment the cancellation lands, so a passing run waits zero extra time.
 	const guard = new Promise<never>((_, reject) => {
+		// biome-ignore lint/style/noRestrictedGlobals: bounded timeout-as-assertion (ts-no-test-timers exception); converts a server-cancel hang into a named failure, cleared when the cancel lands
 		const t = setTimeout(
 			() =>
 				reject(
@@ -1762,6 +1765,7 @@ test("F6: return() is terminal and idempotent — before any pull, twice over, a
 	// exists solely to convert a WEDGED pull into a named assertion failure, and is
 	// cleared the moment the pull settles, so a passing run waits zero extra time.
 	const guard = new Promise<never>((_, reject) => {
+		// biome-ignore lint/style/noRestrictedGlobals: bounded timeout-as-assertion (ts-no-test-timers exception); converts a wedged pull into a named failure, cleared when the pull settles
 		const t = setTimeout(
 			() =>
 				reject(
@@ -1839,6 +1843,7 @@ test("F7: return() while the pump is parked in the deepest backoff wait tears th
 	const returned =
 		it.return?.() ?? Promise.resolve({ value: undefined, done: true });
 	const guard = new Promise<never>((_, reject) => {
+		// biome-ignore lint/style/noRestrictedGlobals: bounded timeout-as-assertion (ts-no-test-timers exception); converts a wedged teardown into a named failure, cleared when return() settles
 		const t = setTimeout(
 			() =>
 				reject(

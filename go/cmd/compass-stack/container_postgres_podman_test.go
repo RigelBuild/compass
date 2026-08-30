@@ -296,7 +296,7 @@ func waitDSNReachable(t *testing.T, dsn string, budget time.Duration) {
 		if time.Now().After(deadline) {
 			t.Fatalf("DSN %q not reachable within %s", dsn, budget)
 		}
-		time.Sleep(answerPollInterval) // bounded poll tick between reachability checks (event-gated by the deadline above; rule://go-no-sleep-in-test poll-until exemption)
+		time.Sleep(answerPollInterval) //nolint:forbidigo // bounded poll tick between reachability checks (event-gated by the deadline above; rule://go-no-sleep-in-test poll-until exemption)
 	}
 }
 
@@ -329,7 +329,7 @@ func waitContainerGone(t *testing.T, name string, budget time.Duration) {
 		if time.Now().After(deadline) {
 			t.Fatalf("container %q still present %s after down", name, budget)
 		}
-		time.Sleep(answerPollInterval) // bounded poll tick (event-gated by the deadline; rule://go-no-sleep-in-test poll-until exemption)
+		time.Sleep(answerPollInterval) //nolint:forbidigo // bounded poll tick (event-gated by the deadline; rule://go-no-sleep-in-test poll-until exemption)
 	}
 }
 

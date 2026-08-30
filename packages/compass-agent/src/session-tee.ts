@@ -207,6 +207,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 					err,
 				);
 				const { promise, resolve } = Promise.withResolvers<void>();
+				// biome-ignore lint/style/noRestrictedGlobals: production retry backoff between transcript-tee send attempts; not a test wait
 				setTimeout(resolve, this.#backoffMs[attempt]);
 				await promise;
 			}
