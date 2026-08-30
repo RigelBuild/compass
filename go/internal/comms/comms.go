@@ -698,7 +698,7 @@ func (c *Comms) OpenDM(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.emitDMCreated(ctx, channelID, created)
+	c.emitDMCreated(ch, created)
 	return connect.NewResponse(&compassv1.OpenDMResponse{
 		Channel: channelToWire(ch),
 		Created: created,

@@ -2,7 +2,6 @@ package comms
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 
@@ -12,12 +11,21 @@ import (
 // dmChannelName derives the deterministic sorted-handle pair name for a peer DM.
 // Handles are sorted lexicographically so open(a,b) and open(b,a) resolve the
 // same channel (store dm_pgtest_test.go proves reversed member order → same name).
+//
+// The separator is `:`, a byte the handle grammar (store handle.go handleRE
+// `^[a-z0-9][a-z0-9._-]*$`) excludes — so no handle can contain it and the split
+// is unambiguous. A hyphen delimiter would NOT be injective: handles may contain
+// `--` (the grammar permits consecutive hyphens), so `dm--a--b--c` is ambiguous
+// between the pairs {a, b--c} and {a--b, c}, which would resolve two distinct
+// logical DMs onto ONE channel and cross-add members (a same-owner private-DM
+// confidentiality break). `:` cannot appear in a handle, so `dm:<lo>:<hi>` maps
+// each unordered pair to exactly one name.
 func dmChannelName(h1, h2 string) string {
 	lo, hi := h1, h2
 	if lo > hi {
 		lo, hi = hi, lo
 	}
-	return "dm--" + lo + "--" + hi
+	return "dm:" + lo + ":" + hi
 }
 
 // openDMTx runs the whole peer-DM open for owner in ONE store transaction — the
@@ -57,17 +65,11 @@ func (c *Comms) openDMTx(ctx context.Context, owner store.AccountID, name string
 // emitDMCreated fans a best-effort ChannelChanged after a DM open COMMITTED and
 // only when the channel was created this call — the coordination hook's
 // post-commit emit posture (coordination.go:158-171): a resume (created=false)
-// is a no-op event-wise (nothing changed), and a re-read failure is logged and
-// swallowed, never propagated, since the channel already committed and the event
-// self-heals on the next open. NEVER call before the commit.
-func (c *Comms) emitDMCreated(ctx context.Context, channelID store.ChannelID, created bool) {
+// is a no-op event-wise (nothing changed). It takes the channel the caller
+// already read for the response, so the create path does not re-read the same row
+// a second time. NEVER call before the commit.
+func (c *Comms) emitDMCreated(ch store.Channel, created bool) {
 	if !created {
-		return
-	}
-	ch, err := c.store.GetChannel(ctx, channelID)
-	if err != nil {
-		slog.WarnContext(ctx, "comms: post-commit DM channel read for event failed; self-heals on next open",
-			"channel_id", string(channelID), "error", err.Error())
 		return
 	}
 	c.publishChannelChanged(ch, nil)

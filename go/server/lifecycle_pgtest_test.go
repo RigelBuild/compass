@@ -718,6 +718,66 @@ func TestSpawnIdempotentReturnsSameDMName(t *testing.T) {
 	}
 }
 
+// errDMOpener is a dmOpener that always fails — the R8 failure-injection seam.
+type errDMOpener struct{}
+
+func (errDMOpener) OpenDMAsAccount(context.Context, store.AccountID, *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error) {
+	return nil, errors.New("dm open failed")
+}
+
+// TestSpawnDMOpenFailureNeverRollsBackSpawn pins R8's headline safety guarantee
+// (design.md T3:758-761): a post-spawn DM-open FAILURE is logged and returns an
+// EMPTY dm_channel_name — it NEVER rolls back the spawn. The spawned peer is not
+// recoverable, but the DM is (next turn via comms_open_dm), so an open failure
+// must not un-place the peer. Two failure modes, both must succeed the spawn:
+//   - a failing opener (errDMOpener) → peer placed, dm_channel_name empty;
+//   - a nil opener (an instance that never wired one) → same.
+//
+// Mutation: propagating autoOpenSpawnDM's error out of SpawnAsAccount (instead of
+// swallowing it to an empty name) turns a recoverable DM miss into a spawn
+// rollback — this test reddens (err != nil, and the peer is gone).
+func TestSpawnDMOpenFailureNeverRollsBackSpawn(t *testing.T) {
+	t.Run("failing opener", func(t *testing.T) {
+		pf := newPlacementFixture(t)
+		pf.runner.forget()
+		lc := newLifecycleService(pf.store, pf.hub, errDMOpener{})
+
+		resp, err := lc.SpawnAsAccount(context.Background(), pf.agentID, &compassv1internal.SpawnPeerRequest{
+			Handle:          "peer-dm-fail",
+			ClientRequestId: "spawn-dm-fail-1",
+		})
+		if err != nil {
+			t.Fatalf("SpawnAsAccount = %v, want success despite the DM-open failure (never a rollback)", err)
+		}
+		if resp.GetAgentAccountId() == "" {
+			t.Fatal("agent_account_id = empty, want the placed peer (the spawn must not roll back on a DM-open failure)")
+		}
+		if resp.GetDmChannelName() != "" {
+			t.Fatalf("dm_channel_name = %q, want empty (a failed open returns no name)", resp.GetDmChannelName())
+		}
+	})
+
+	t.Run("nil opener", func(t *testing.T) {
+		pf := newPlacementFixture(t)
+		pf.runner.forget()
+		lc := newLifecycleService(pf.store, pf.hub, nil)
+
+		resp, err := lc.SpawnAsAccount(context.Background(), pf.agentID, &compassv1internal.SpawnPeerRequest{
+			Handle:          "peer-dm-nil",
+			ClientRequestId: "spawn-dm-nil-1",
+		})
+		if err != nil {
+			t.Fatalf("SpawnAsAccount = %v, want success with a nil DM opener", err)
+		}
+		if resp.GetAgentAccountId() == "" {
+			t.Fatal("agent_account_id = empty, want the placed peer")
+		}
+		if resp.GetDmChannelName() != "" {
+			t.Fatalf("dm_channel_name = %q, want empty (nil opener degrades to no name)", resp.GetDmChannelName())
+		}
+	})
+}
+
 // containsAccountID reports whether ids contains want.
 func containsAccountID(ids []store.AccountID, want store.AccountID) bool {
 	for _, id := range ids {
