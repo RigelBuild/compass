@@ -1,0 +1,14 @@
+{
+	"name": "@compass/sea-ref-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (RIG-2804): fail-closed check that the compass tree carries no retired SEA-NNN issue reference (the Linear team key is RIG, numbers preserved 1:1).",
+	"module": "index.ts",
+	"bin": {
+		"sea-ref-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

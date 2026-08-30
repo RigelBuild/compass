@@ -79,6 +79,12 @@ projects:
   # in the moon-driven CI sweep — unregistered, moon never discovers it and the
   # boundary re-rots uncaught.
   orion-ref-gate: 'tools/orion-ref-gate'
+  # The sea-ref-gate boundary gate (RIG-2804): fail-closed scan that the compass
+  # tree carries no retired SEA-NNN issue ref (the Linear team key is RIG,
+  # numbers preserved 1:1). Sibling to orion-ref-gate; registered here so its
+  # check + typecheck + unit test run in the moon-driven CI sweep — unregistered,
+  # moon never discovers it and the flipped boundary re-rots uncaught.
+  sea-ref-gate: 'tools/sea-ref-gate'
   # The cx-token consumption gate: scans apps/ui/src CSS for raw hex, --rigel-*
   # primitives, and literal duration/easing values banned outside tokens.css
   # (D2/D9 consumption rule; RIG-1812). Mirrors design-ledger-gate; the mark

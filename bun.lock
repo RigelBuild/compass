@@ -196,6 +196,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/sea-ref-gate": {
+      "name": "@compass/sea-ref-gate",
+      "bin": {
+        "sea-ref-gate": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/stamp-gate": {
       "name": "@compass/stamp-gate",
       "devDependencies": {
@@ -430,6 +440,8 @@
     "@compass/renovate": ["@compass/renovate@workspace:tools/renovate"],
 
     "@compass/renovate-preflight": ["@compass/renovate-preflight@workspace:tools/renovate-preflight"],
+
+    "@compass/sea-ref-gate": ["@compass/sea-ref-gate@workspace:tools/sea-ref-gate"],
 
     "@compass/stamp-gate": ["@compass/stamp-gate@workspace:tools/stamp-gate"],
 
