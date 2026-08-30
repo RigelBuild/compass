@@ -173,6 +173,10 @@ export {
 	AskQuestionAnswerSchema,
 	AskQuestionSchema,
 	AskSchema,
+	// The full channel message an `OpenDMResponse` wraps — the DM tools render
+	// its `name` (dm--<lo>--<hi>) and tests build fixtures from it.
+	type Channel,
+	ChannelSchema,
 	// The roster read payloads the agent's `compass_roster` tool constructs: the
 	// request names a `scope` (RosterScope) and, for an agent caller, omits the
 	// session-resolved `agentAccountId`; the response carries the RosterEntry
@@ -202,6 +206,13 @@ export {
 	MessageSchema,
 	type MessageUpdated,
 	MessageUpdatedSchema,
+	// The peer-DM open call payload pair (peer-DM record): OpenDMRequest names a
+	// peer by handle; OpenDMResponse carries the resolved DM `Channel` (above)
+	// plus a `created` flag distinguishing a mint from a resume.
+	type OpenDMRequest,
+	OpenDMRequestSchema,
+	type OpenDMResponse,
+	OpenDMResponseSchema,
 	type PostMessageRequest,
 	PostMessageRequestSchema,
 	type PostMessageResponse,

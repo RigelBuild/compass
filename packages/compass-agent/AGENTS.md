@@ -36,7 +36,7 @@ restatement of the role prompt.
 
 ## The comms toolset
 
-Five native comms tools ship (`src/comms.ts`), none of them ask-answering:
+Seven native comms tools ship (`src/comms.ts`), none of them ask-answering:
 
 - `comms_post_message` — post a markdown message to a channel topic.
 - `comms_post_ask` — raise a structured ask (async; the answer arrives on a
@@ -44,6 +44,8 @@ Five native comms tools ship (`src/comms.ts`), none of them ask-answering:
 - `comms_list_messages` — read a channel's recent messages.
 - `compass_roster` — list the agent's neighborhood/subtree/owner roster.
 - `compass_set_status` — set the agent's presence activity.
+- `comms_open_dm` — resolve-or-create a two-party DM channel with a peer by handle.
+- `comms_dm` — open (resolve-or-create) a peer DM and post a message to it in one call.
 
 `comms_post_ask` mints each `AskOption.id` as the option's zero-based index
 (a decimal string) — the native SDK ask option carries no id, and the id is the
