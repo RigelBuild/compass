@@ -25,8 +25,8 @@ import (
 // f.DSN()).
 //
 // It is PRESENT-BUT-SKIPPED (RED) on the bare stack today, exactly as
-// TestLegTwoRealTurn was on H2 and TestLegThreeFourSpawnAndMessaging is on H4:
-// resume-into-a-fresh-container needs the assembled agent image + the full
+// TestLegTwoRealTurn was on H2: resume-into-a-fresh-container needs the
+// assembled agent image + the full
 // agent-lane (#202 gaps 1+3), unmerged, so the resumed turn cannot settle on the
 // bare stack. podmanUsable() SKIPs it in a container-less sandbox. Every wait it
 // makes is ctx-bounded (AwaitTurnSettled) — no sleeps, no polling, no retries.
