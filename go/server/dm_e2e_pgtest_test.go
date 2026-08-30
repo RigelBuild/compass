@@ -309,7 +309,9 @@ func TestPeerDMTaskingLoopEndToEnd(t *testing.T) {
 	const sessB = "sess-dm-b-1"
 	w.consumer.OnSessionStarted(sessB, agentB.ID)
 
-	// Event-gate on the observed deliver to B — never a sleep.
+	// Event-gate on the observed deliver to B — never a sleep. The exact-count
+	// check below is airtight because B's only owed message is this single DM post
+	// (B's home channel is empty at start), so no second deliver can race in.
 	got := waitForControlDelivers(t, w.runner, sessB, 1)
 	if len(got) != 1 {
 		t.Fatalf("dispatches to B on start = %d, want exactly 1 (the cursor-swept DM message)", len(got))
@@ -424,7 +426,11 @@ func TestPeerDMSpawnPathDelivers(t *testing.T) {
 	// DELIVERY LEG: the manager posts into the auto-opened DM naming its channel +
 	// topic. The spawned peer is hub-live at the fake session id (the real
 	// Provision->Start binding), so the message reaches it via the live fan-out —
-	// event-gated on the recording runner, never a sleep.
+	// event-gated on the recording runner, never a sleep. The manager is
+	// intentionally NOT hub-live (seedAgent records a placement but never
+	// Provision->Starts it), so the post takes the offline-author path and fires
+	// the deliver immediately rather than holding it to the author's settle edge —
+	// a future change that makes the caller live would need to drive that edge.
 	const spawnTopic = "kickoff"
 	const spawnText = "manager: your first tasking, in our DM"
 	posted, err := w.comms.PostAsAccountByName(ctx, manager.ID, &compassv1.PostMessageRequest{
@@ -438,6 +444,8 @@ func TestPeerDMSpawnPathDelivers(t *testing.T) {
 	}
 	msgID := posted.GetMessage().GetId()
 
+	// got event-gates on the plain control record; dd re-snapshots the same
+	// recorded commands with the denorm-carrying source names for the assertion.
 	got := waitForControlDelivers(t, w.runner, fakeSessionID, 1)
 	if len(got) < 1 {
 		t.Fatalf("dispatches to the spawned peer = %d, want >= 1 (the DM tasking)", len(got))
