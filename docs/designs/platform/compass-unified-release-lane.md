@@ -480,15 +480,16 @@ a prerequisite for `release-pr` to open a CI-gated Release PR.
 ### Ledger delta (applied same-PR by the spawning agent)
 
 In `docs/designs/DECISIONS.md` (§Infrastructure & CI), append (next-free id
-verified at PR time = DL-298 (main advanced 283-297 while drafting):
+verified at PR time = DL-298; main advanced through 283-297 while drafting):
 
 - **DL-298:** One whole-product release lane driven by release-please
   (`release-type: simple`, root `version.txt` source of truth): a standing
   Release PR batches conventional commits; merging it (Matt's act) cuts
   `vX.Y.Z` + CHANGELOG, builds the 4-binary asset set stamped from
   `version.txt`, and mints the `:vX.Y.Z` image tag — superseding the
-  release-bundling record's Fork 3 two-lane split and OQ-7's
-  manual-now/automation-at-GA staging (its other clauses stay Active) →
+  release-bundling record's Fork 3 two-lane split, Fork 4 `v*`-controls, OQ-3
+  binary-only trigger, and OQ-7's manual-now/automation-at-GA staging (its
+  other clauses stay Active) →
   `platform/compass-unified-release-lane.md`.
 - **DL-299:** The `:vX.Y.Z` agent image is minted by digest re-tag
   (`skopeo copy`) of the already-published per-push `:git-<sha12>` artifact —
@@ -557,10 +558,12 @@ flip lands as record-header edits, not row-status flips):
   rail in this repo today; T5/T6 hand Matt the exact ruleset edit and App
   provisioning as runbook steps (rule://no-human-clicks escape hatch). Accept,
   or scope a follow-up to bring both under Pulumi's github provider?
-- **OQ-N4 (load-bearing, for Matt): release cadence expectation.** The
-  Release PR accumulates until merged — releases happen exactly when Matt
-  merges. Confirm no floor/ceiling cadence is wanted (e.g. auto-merge after
-  N days, or a reminder); the design assumes merge-when-Matt-chooses.
+- **OQ-N4 (non-load-bearing): release cadence floor/ceiling.** ASSUMED:
+  merge-when-Matt-chooses — the Release PR accumulates until Matt merges it,
+  releases happen exactly then. A cadence floor/ceiling (auto-merge after N
+  days, or a staleness reminder) is an additive follow-up, NOT part of this
+  lane's contract — the mechanism is identical under any answer, so this defers
+  cleanly and the merge ratifies the assumption.
 - **Cross-lane retire — RESOLVED, accepted by owner.** compass-managed keep
   their record and write the superseded-by amendment themselves while
   reviewing/landing this PR (steering 2026-08-25). Recorded here for the
