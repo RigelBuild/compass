@@ -503,7 +503,17 @@ func TestBrokenExecStreamReapsChild(t *testing.T) {
 	// only, and only while present — once reaped the pid is freed and the host
 	// can recycle it onto an unrelated process, so keying liveness on the raw
 	// pid after removal would flake. A short tick keeps the loop off a hot spin.
-	deadline := time.Now().Add(10 * time.Second)
+	//
+	// The ceiling is generous headroom for transport latency, NOT a reap SLA: the
+	// reap fires once the handler observes the client cancel — via either the
+	// broken-stream arm (the receive loop returning on a stream error) or the
+	// ctx.Done arm of the ExecStream select — and both wait on HTTP/2 RST_STREAM
+	// propagation over the loopback h2c transport plus goroutine scheduling. On a
+	// saturated CI runner that delivery can take several seconds; 30s catches a
+	// genuine never-reap hang while tolerating extreme load (a real hang blocks
+	// forever, so a wide ceiling costs nothing on the happy path — the exec_id
+	// leaves in ms).
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		svc.mu.Lock()
 		_, present := svc.execs[execID]
