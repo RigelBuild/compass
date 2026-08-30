@@ -217,12 +217,38 @@ type StreamingIO struct {
 type ChildHandle struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
+	// killFunc/waitFunc back a handle over a remote exec (the microVM
+	// GuestExec) rather than a local *exec.Cmd. When killFunc is non-nil this
+	// handle uses the funcs path; otherwise it drives cmd/cancel as before, so
+	// the podman path is untouched. See newChildHandleFuncs.
+	killFunc func() error
+	waitFunc func() error
+}
+
+// newChildHandleFuncs builds a ChildHandle over a kill/wait function pair
+// rather than a local *exec.Cmd — the adaptation for a remote streaming exec
+// (the microVM GuestExec, design §(c)), whose child lives in the guest and has
+// no host-side *exec.Cmd. The exported Kill/Wait/Terminate surface is
+// unchanged; only the backing differs.
+//
+// kill must not block the caller past a short internal deadline — the microVM
+// Kill issues a Signal RPC and the teardown path cannot stall on a wedged
+// transport (the VMM-kill escalation is the backstop), matching podman's Kill
+// being an instantaneous local cancel. wait blocks until the exec's exit is
+// observed (the demux goroutine sees the exit frame), returning nil on exit 0
+// and otherwise an error carrying the code/signal (a *runtime.ExitStatusError
+// for a signalled exit, so isDeliberateKill recognizes a deliberate kill).
+func newChildHandleFuncs(kill func() error, wait func() error) *ChildHandle {
+	return &ChildHandle{killFunc: kill, waitFunc: wait}
 }
 
 // Kill signals the exec (SIGKILL) via its context, without reaping — the reap
 // happens in Wait. The session manager kills a container's exec on a deliberate
 // stop/teardown; killing an already-exited process is not an error.
 func (h *ChildHandle) Kill() error {
+	if h.killFunc != nil {
+		return h.killFunc()
+	}
 	h.cancel()
 	return nil
 }
@@ -232,6 +258,9 @@ func (h *ChildHandle) Kill() error {
 // watches this to tell an unexpected agent exit (crash) from a deliberate
 // stop/teardown kill.
 func (h *ChildHandle) Wait() error {
+	if h.waitFunc != nil {
+		return h.waitFunc()
+	}
 	return h.cmd.Wait()
 }
 
@@ -243,6 +272,14 @@ func (h *ChildHandle) Wait() error {
 // observe the exit between the two — e.g. distinguishing a crash from a
 // deliberate teardown; Terminate is the safe default for the abandon path.
 func (h *ChildHandle) Terminate() error {
+	if h.killFunc != nil {
+		killErr := h.killFunc()
+		waitErr := h.waitFunc()
+		if waitErr != nil {
+			return waitErr
+		}
+		return killErr
+	}
 	h.cancel()
 	return h.cmd.Wait()
 }
