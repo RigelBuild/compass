@@ -13,7 +13,7 @@ package runnerhub
 // dispatches over the real mounted handler under -race, so a regression that
 // broke the single-sender invariant (e.g. a direct Send from a caller goroutine)
 // reddens here (WARNING: DATA RACE) rather than silently shipping corrupted
-// frames. See docs/designs/platform/compass-runnerhub-send-queue/design.md.
+// frames. See docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
 //
 // Unlike the router_test.go cases (a fake in-process send), this exercises the
 // real wire: the Runner-side loop drains every command the Server pushes and
