@@ -73,6 +73,8 @@ const (
 	// CommsServiceUpdateChannelMembersProcedure is the fully-qualified name of the CommsService's
 	// UpdateChannelMembers RPC.
 	CommsServiceUpdateChannelMembersProcedure = "/compass.v1.CommsService/UpdateChannelMembers"
+	// CommsServiceOpenDMProcedure is the fully-qualified name of the CommsService's OpenDM RPC.
+	CommsServiceOpenDMProcedure = "/compass.v1.CommsService/OpenDM"
 	// CommsServiceReparentAgentProcedure is the fully-qualified name of the CommsService's
 	// ReparentAgent RPC.
 	CommsServiceReparentAgentProcedure = "/compass.v1.CommsService/ReparentAgent"
@@ -133,8 +135,17 @@ type CommsServiceClient interface {
 	CreateChannel(context.Context, *connect.Request[v1.CreateChannelRequest]) (*connect.Response[v1.CreateChannelResponse], error)
 	// Add or remove channel members and flip a member's subscribe opt-in —
 	// caller-authorized against channel visibility. Emits ChannelChanged. One RPC
-	// covers join, subscribe-toggle, DM-expansion, and share-replacement.
+	// covers join, subscribe-toggle, DM-to-channel conversion (convert_channel_name),
+	// and share-replacement.
 	UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error)
+	// Open (or fetch) the two-party DM channel between the caller and a peer,
+	// addressed by the peer's owner-namespaced handle. Resolve-or-create and
+	// idempotent: the channel is minted on first open in the caller-owner's
+	// reserved DM group under a deterministic sorted-handle name, and returned
+	// on every subsequent open. Same-owner only — unknown and cross-owner both
+	// return NOT_FOUND; a self-open is INVALID_ARGUMENT. Emits ChannelChanged on
+	// create.
+	OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error)
 	// Re-parent an agent in the agent tree, or promote it to a root (empty
 	// new_parent_agent_id) — caller-authorized against the agent's owner. The
 	// server validates the move (caller authority, same-owner, no cycle) and
@@ -244,6 +255,12 @@ func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(commsServiceMethods.ByName("UpdateChannelMembers")),
 			connect.WithClientOptions(opts...),
 		),
+		openDM: connect.NewClient[v1.OpenDMRequest, v1.OpenDMResponse](
+			httpClient,
+			baseURL+CommsServiceOpenDMProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("OpenDM")),
+			connect.WithClientOptions(opts...),
+		),
 		reparentAgent: connect.NewClient[v1.ReparentAgentRequest, v1.ReparentAgentResponse](
 			httpClient,
 			baseURL+CommsServiceReparentAgentProcedure,
@@ -329,6 +346,7 @@ type commsServiceClient struct {
 	listChannels         *connect.Client[v1.ListChannelsRequest, v1.ListChannelsResponse]
 	createChannel        *connect.Client[v1.CreateChannelRequest, v1.CreateChannelResponse]
 	updateChannelMembers *connect.Client[v1.UpdateChannelMembersRequest, v1.UpdateChannelMembersResponse]
+	openDM               *connect.Client[v1.OpenDMRequest, v1.OpenDMResponse]
 	reparentAgent        *connect.Client[v1.ReparentAgentRequest, v1.ReparentAgentResponse]
 	openAgentWorkspace   *connect.Client[v1.OpenAgentWorkspaceRequest, v1.OpenAgentWorkspaceResponse]
 	listMessages         *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
@@ -381,6 +399,11 @@ func (c *commsServiceClient) CreateChannel(ctx context.Context, req *connect.Req
 // UpdateChannelMembers calls compass.v1.CommsService.UpdateChannelMembers.
 func (c *commsServiceClient) UpdateChannelMembers(ctx context.Context, req *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error) {
 	return c.updateChannelMembers.CallUnary(ctx, req)
+}
+
+// OpenDM calls compass.v1.CommsService.OpenDM.
+func (c *commsServiceClient) OpenDM(ctx context.Context, req *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error) {
+	return c.openDM.CallUnary(ctx, req)
 }
 
 // ReparentAgent calls compass.v1.CommsService.ReparentAgent.
@@ -467,8 +490,17 @@ type CommsServiceHandler interface {
 	CreateChannel(context.Context, *connect.Request[v1.CreateChannelRequest]) (*connect.Response[v1.CreateChannelResponse], error)
 	// Add or remove channel members and flip a member's subscribe opt-in —
 	// caller-authorized against channel visibility. Emits ChannelChanged. One RPC
-	// covers join, subscribe-toggle, DM-expansion, and share-replacement.
+	// covers join, subscribe-toggle, DM-to-channel conversion (convert_channel_name),
+	// and share-replacement.
 	UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error)
+	// Open (or fetch) the two-party DM channel between the caller and a peer,
+	// addressed by the peer's owner-namespaced handle. Resolve-or-create and
+	// idempotent: the channel is minted on first open in the caller-owner's
+	// reserved DM group under a deterministic sorted-handle name, and returned
+	// on every subsequent open. Same-owner only — unknown and cross-owner both
+	// return NOT_FOUND; a self-open is INVALID_ARGUMENT. Emits ChannelChanged on
+	// create.
+	OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error)
 	// Re-parent an agent in the agent tree, or promote it to a root (empty
 	// new_parent_agent_id) — caller-authorized against the agent's owner. The
 	// server validates the move (caller authority, same-owner, no cycle) and
@@ -574,6 +606,12 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(commsServiceMethods.ByName("UpdateChannelMembers")),
 		connect.WithHandlerOptions(opts...),
 	)
+	commsServiceOpenDMHandler := connect.NewUnaryHandler(
+		CommsServiceOpenDMProcedure,
+		svc.OpenDM,
+		connect.WithSchema(commsServiceMethods.ByName("OpenDM")),
+		connect.WithHandlerOptions(opts...),
+	)
 	commsServiceReparentAgentHandler := connect.NewUnaryHandler(
 		CommsServiceReparentAgentProcedure,
 		svc.ReparentAgent,
@@ -664,6 +702,8 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 			commsServiceCreateChannelHandler.ServeHTTP(w, r)
 		case CommsServiceUpdateChannelMembersProcedure:
 			commsServiceUpdateChannelMembersHandler.ServeHTTP(w, r)
+		case CommsServiceOpenDMProcedure:
+			commsServiceOpenDMHandler.ServeHTTP(w, r)
 		case CommsServiceReparentAgentProcedure:
 			commsServiceReparentAgentHandler.ServeHTTP(w, r)
 		case CommsServiceOpenAgentWorkspaceProcedure:
@@ -727,6 +767,10 @@ func (UnimplementedCommsServiceHandler) CreateChannel(context.Context, *connect.
 
 func (UnimplementedCommsServiceHandler) UpdateChannelMembers(context.Context, *connect.Request[v1.UpdateChannelMembersRequest]) (*connect.Response[v1.UpdateChannelMembersResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdateChannelMembers is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) OpenDM(context.Context, *connect.Request[v1.OpenDMRequest]) (*connect.Response[v1.OpenDMResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.OpenDM is not implemented"))
 }
 
 func (UnimplementedCommsServiceHandler) ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error) {

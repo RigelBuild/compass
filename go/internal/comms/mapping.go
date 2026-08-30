@@ -82,9 +82,9 @@ func channelKindToWire(k store.ChannelKind) compassv1.ChannelKind {
 	switch k {
 	case store.ChannelKindDM:
 		return compassv1.ChannelKind_CHANNEL_KIND_DM
-	case store.ChannelKindGroupDM:
-		return compassv1.ChannelKind_CHANNEL_KIND_GROUP_DM
 	default:
+		// GROUP_DM is retired (never produced; a DM converts to a named
+		// CHANNEL). A legacy kind=2 row renders as a plain channel.
 		return compassv1.ChannelKind_CHANNEL_KIND_CHANNEL
 	}
 }
@@ -256,9 +256,11 @@ func channelKindFromWire(k compassv1.ChannelKind) store.ChannelKind {
 	switch k {
 	case compassv1.ChannelKind_CHANNEL_KIND_DM:
 		return store.ChannelKindDM
-	case compassv1.ChannelKind_CHANNEL_KIND_GROUP_DM:
-		return store.ChannelKindGroupDM
 	default:
+		// GROUP_DM is retired: a wire GROUP_DM (only a legacy/hostile input,
+		// never freshly produced) maps to a plain channel. The collapse itself
+		// is the sole retirement mechanism at this edge — the retired kind can
+		// never round-trip into the store.
 		return store.ChannelKindChannel
 	}
 }
