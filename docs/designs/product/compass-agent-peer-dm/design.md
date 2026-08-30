@@ -852,37 +852,37 @@ Interfaces: none new — consumes T0-T3.
 
 ## Ledger delta
 
-Ledger-impact: applied at freeze (2026-08-30) as DL-283..289 in
+Ledger-impact: applied at freeze (2026-08-30) as DL-291..297 in
 `docs/designs/DECISIONS.md` §Comms & tools:
 
-- **DL-283 (name addressing):** Agents and client UIs address channels and
+- **DL-291 (name addressing):** Agents and client UIs address channels and
   topics by NAME; request-input channel/topic fields on the agent tool
   surface are name-typed, resolved viewer-scoped at the service edge
   (unknown ≡ invisible ≡ merged `not_found`; ambiguous errors, never
   auto-picks); response/stored/event fields stay id-typed. Extends
   DL-269/DL-270 from accounts to channels + topics.
-- **DL-284 (reply routing):** Steer/deliver control ops denormalize the
+- **DL-292 (reply routing):** Steer/deliver control ops denormalize the
   source channel name + topic name (server-resolved at wrap, the
   `from_handle` pattern); the agent renders both and must name both on every
   post — `comms_post_message` has NO home-channel default and never
   auto-picks a reply target.
-- **DL-285 (topic gate):** Creating a topic requires `create_topic: true`
+- **DL-293 (topic gate):** Creating a topic requires `create_topic: true`
   on the post, in every channel including DMs — amends the
   zulip-threading-model get-or-create ruling; a gated miss errors in-band,
   never mints and never drops the message. (Escape hatch per Matt: may be
   reverted for DMs only if it proves a blocker.)
-- **DL-286 (DM path):** Agent↔agent DMs are auto-created
+- **DL-294 (DM path):** Agent↔agent DMs are auto-created
   (resolve-if-exists) by a single server-side `OpenDM` op — deterministic
   name `dm--<handleLo>--<handleHi>` in a per-owner reserved DM group —
   exposed publicly on `CommsService`, to agents as `comms_open_dm` (by peer
   handle), as the `comms_dm` direct-send composite (open + post in one
   call), and auto-opened manager↔peer at spawn
   (`SpawnPeerResponse.dm_channel_name`).
-- **DL-287 (DM namespace defense):** The reserved DM group is
+- **DL-295 (DM namespace defense):** The reserved DM group is
   server-enforced: `CreateChannel` refuses any create targeting it (merged
   `not_found`) — only the OpenDM path writes there; the resume path
   additionally verify-reconciles DM invariants (belt-and-braces).
-- **DL-288 (DM shape):** A peer-DM is born `kind=DM`, exactly two agent
+- **DL-296 (DM shape):** A peer-DM is born `kind=DM`, exactly two agent
   parties, `post_policy=OPEN` (ownerless), `mandatory_subscription=true`,
   members = both agents + pulled-in owner(s); every member a delivery target
   from birth. A member ADD converts it — same tx — to a named `kind=CHANNEL`
@@ -890,7 +890,7 @@ Ledger-impact: applied at freeze (2026-08-30) as DL-283..289 in
   freeing the DM name for a fresh pair-DM). `CHANNEL_KIND_GROUP_DM` is
   retired reserve-not-delete: the enum number stays, deprecated, never
   produced. The only kinds are CHANNEL and DM.
-- **DL-289 (scope):** Peer-DM scope is same-owner for MVP (the F2
+- **DL-297 (scope):** Peer-DM scope is same-owner for MVP (the F2
   wave-shares-one-owner frame); a cross-owner handle is the merged in-band
   `not_found`. Cross-owner DMs are deferred.
 
@@ -903,7 +903,7 @@ red-team (OQ-1, 2, 4, 6, 7, 8, 9) is now a Matt-ruled decision recorded in
 ### OQ-3 (non-load-bearing, deferred) — Cross-owner DMs
 
 Different-owner agents cannot DM under this record (same-owner gate,
-DL-289). `expandOwnerMembership` would already pull both owners in, so the
+DL-297). `expandOwnerMembership` would already pull both owners in, so the
 mechanism generalizes — the missing piece is an authz policy for cross-owner
 contact (the bilateral owner-peering edge the handle-cutover record files as
 RIG-2796-class scope). Deferred; the record is correct without it
