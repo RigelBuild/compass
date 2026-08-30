@@ -62,7 +62,7 @@ type SessionEventSink interface {
 	Enqueue(ev *linearagent.SessionEvent) error
 }
 
-// linearWebhookHandler serves POST /webhooks.
+// linearWebhookHandler serves POST /webhooks/linear.
 type linearWebhookHandler struct {
 	secret      func(ctx context.Context) ([]byte, error)
 	dataSink    ForgeEventSink
@@ -73,8 +73,8 @@ type linearWebhookHandler struct {
 	log         *slog.Logger
 }
 
-// NewLinearWebhookHandler returns the POST /webhooks handler and the path it
-// mounts at. secret lazily resolves the Linear webhook secret (TTL-cached by the
+// NewLinearWebhookHandler returns the POST /webhooks/linear handler and the
+// path it mounts at. secret lazily resolves the Linear webhook secret (TTL-cached by the
 // caller); dataSink receives every accepted data-change event; sessionSink
 // receives session events (nil when the responder is unassembled — session
 // events are then logged-and-dropped). Mirrors NewGitHubWebhookHandler's

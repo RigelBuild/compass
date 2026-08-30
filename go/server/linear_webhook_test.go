@@ -8,10 +8,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -271,5 +273,79 @@ func TestLinearWebhookHandler_NilDataSink(t *testing.T) {
 	}
 	if session.count() != 0 {
 		t.Errorf("session enqueued = %d, want 0", session.count())
+	}
+}
+
+func TestLinearWebhookHandler_MethodNotAllowed(t *testing.T) {
+	secret := []byte("shh")
+	now := time.Unix(1_700_000_000, 0)
+	h, data, session := linHandler(t, secret, now, false)
+
+	req := httptest.NewRequest(http.MethodGet, linearWebhookPath, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("code = %d, want 405", rec.Code)
+	}
+	if data.count() != 0 || session.count() != 0 {
+		t.Errorf("enqueued data=%d session=%d, want 0/0 (non-POST rejected)", data.count(), session.count())
+	}
+}
+
+func TestLinearWebhookHandler_BodyTooLarge(t *testing.T) {
+	secret := []byte("shh")
+	now := time.Unix(1_700_000_000, 0)
+	h, data, session := linHandler(t, secret, now, false)
+	// A correctly-signed body just over the 1 MiB cap: MaxBytesReader must trip
+	// mid-read and 413 BEFORE any parse, so the memory-amplification guard on
+	// this unauthenticated endpoint has a regression test.
+	body := bytes.Repeat([]byte("a"), (1<<20)+1)
+
+	rec := linPost(h, linSign(secret, body), body)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("code = %d, want 413 (body over 1 MiB cap)", rec.Code)
+	}
+	if data.count() != 0 || session.count() != 0 {
+		t.Errorf("enqueued data=%d session=%d, want 0/0 (over-cap rejected)", data.count(), session.count())
+	}
+}
+
+func TestLinearWebhookHandler_SecretUnavailable(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	data := &recordingSink{}
+	session := &recordingSessionSink{}
+	// The secret resolver faults: fail-closed with a 503, never parsing the body.
+	_, h := NewLinearWebhookHandler(
+		func(context.Context) ([]byte, error) { return nil, errors.New("secretspec load failed") },
+		data, session, nil,
+	)
+	lh := h.(*linearWebhookHandler)
+	lh.now = func() time.Time { return now }
+	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"u"}}`, freshTS(now))
+
+	rec := linPost(lh, linSign([]byte("shh"), body), body)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 (secret resolve fault)", rec.Code)
+	}
+	if data.count() != 0 || session.count() != 0 {
+		t.Errorf("enqueued data=%d session=%d, want 0/0 (fail-closed on secret fault)", data.count(), session.count())
+	}
+}
+
+func TestLinearWebhookHandler_VerifiedUnparseable(t *testing.T) {
+	secret := []byte("shh")
+	now := time.Unix(1_700_000_000, 0)
+	h, data, session := linHandler(t, secret, now, false)
+	// A correctly-signed but non-JSON body: verified-but-unparseable envelope
+	// acks 200-and-drops (Linear should not retry a malformed-but-authentic body).
+	body := []byte("not json at all")
+
+	rec := linPost(h, linSign(secret, body), body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (verified-but-unparseable -> ack-and-drop)", rec.Code)
+	}
+	if data.count() != 0 || session.count() != 0 {
+		t.Errorf("enqueued data=%d session=%d, want 0/0 (unparseable drop)", data.count(), session.count())
 	}
 }
