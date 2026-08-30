@@ -1,6 +1,6 @@
 # Design: Server runnerhub — per-router bounded send queue (non-blocking dispatch)
 
-Status: Draft
+Status: Active
 
 Tracker: RIG-1611 — PR #75 review LOW #3, parked at review time ("no change for
 MVP, multi-Runner only"). Provenance: the parent product record
@@ -8,7 +8,8 @@ MVP, multi-Runner only"). Provenance: the parent product record
 ships the fan-out consumer whose head-of-line blocking motivates this record;
 that record is frozen (`Status: Active`) and is cited, never edited. This is
 the **SERVER-side counterpart** to the already-**MERGED** RUNNER-side work
-`compass-runner-concurrent-dispatch` (RIG-1575, commit 2ebdf09d on main —
+`docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md`
+(RIG-1575, commit 2ebdf09d on main —
 "feat(runner): concurrent per-command Sessions dispatch"; its record's
 `Status: Draft` header is stale, out of scope here): that change decoupled the
 Runner's serial Sessions *command-execution* loop
