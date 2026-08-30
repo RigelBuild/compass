@@ -338,6 +338,27 @@ func (c *Comms) CreateChannelGroupAsAccount(
 	return resp.Msg, nil
 }
 
+// OpenDMAsAccount executes one agent-initiated OpenDM as account, mirroring
+// UpdateChannelMembersAsAccount: WithActor + the shared OpenDM handler path, so
+// the peer resolve, the same-owner authz, the reserved-DM-group upsert, and the
+// post-commit ChannelChanged fan-out are identical to a human caller's. An
+// unknown, cross-owner, or self peer collapses to the same code a human gets. The
+// request names the peer by handle, so there is no home-channel defaulting here.
+func (c *Comms) OpenDMAsAccount(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.OpenDMRequest,
+) (*compassv1.OpenDMResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	resp, err := c.OpenDM(WithActor(ctx, account), connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // CommitAgentPost commits one relayed MessagePosted frame as a durable comms row
 // under account. It builds a PostMessageRequest from the frame's blocks and
 // delegates to PostAsAccount, so this is the SAME PostMessage handler path a

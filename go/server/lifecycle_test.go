@@ -28,7 +28,7 @@ import (
 // read) reddens this — a nil-store AgentOwner call panics rather than returning
 // the clean invalid_argument.
 func TestDespawnSelfIsRefusedBeforeAnyStoreCall(t *testing.T) {
-	lc := newLifecycleService(nil, nil) // nil store + hub: any store/hub call would panic
+	lc := newLifecycleService(nil, nil, nil) // nil store + hub + dm: any store/hub/dm call would panic
 	const self = store.AccountID("agent-self")
 
 	_, err := lc.DespawnAsAccount(context.Background(), self, &compassv1internal.DespawnPeerRequest{AgentHandle: string(self)})

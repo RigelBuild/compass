@@ -483,10 +483,18 @@ func (h *Hub) executeCall(
 		return &compassv1internal.CommsCallResult{
 			Result: &compassv1internal.CommsCallResult_CreateChannelGroup{CreateChannelGroup: resp},
 		}, nil
+	case *compassv1internal.CommsCallRequest_OpenDm:
+		resp, err := h.comms.OpenDMAsAccount(ctx, account, c.OpenDm)
+		if err != nil {
+			return nil, err
+		}
+		return &compassv1internal.CommsCallResult{
+			Result: &compassv1internal.CommsCallResult_OpenDm{OpenDm: resp},
+		}, nil
 	default:
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status/pin/create_channel/update_members/create_channel_group)"),
+			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)"),
 		)
 	}
 }

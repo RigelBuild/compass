@@ -637,18 +637,72 @@ func (c *Comms) UpdatePinnedBoard(
 }
 
 // OpenDM resolves-or-creates the two-party DM channel between the caller and a
-// peer, addressed by handle (RIG-2962). T1 lands the contract (proto + regen)
-// proto-first; the real handler — caller/peer resolve, same-owner authz, the
-// reserved-DM-group upsert, and the post-commit ChannelChanged emit — is the
-// T3 leg (compass-agent-peer-dm design.md T3), which replaces this stub. Until
-// then it returns CodeUnimplemented so *Comms satisfies the generated
-// CommsServiceHandler (asserted with no Unimplemented embed) without pretending
-// to serve a surface whose store legs (T2 dm.go) do not exist yet.
+// peer, addressed by handle (RIG-2962 T3, design.md T3:745-762). The caller is
+// the actor on the connection; the peer is resolved owner-namespaced (resolve.go
+// AgentByHandle), and both must share the caller's owner. Unknown, cross-owner,
+// and self-handle-that-resolves-to-the-caller all collapse oracle-safe: an
+// unknown OR cross-owner handle is the byte-identical merged NOT_FOUND naming the
+// submitted handle (a foreign peer's existence is never leaked), and a self-DM is
+// CodeInvalidArgument. The name is the deterministic sorted-handle pair, so
+// open(a,b) and open(b,a) resolve the same channel; the whole open runs in one
+// store tx (lock → ensure group → upsert) and a create fans a best-effort
+// post-commit ChannelChanged (a resume emits nothing).
 func (c *Comms) OpenDM(
-	_ context.Context,
-	_ *connect.Request[compassv1.OpenDMRequest],
+	ctx context.Context,
+	req *connect.Request[compassv1.OpenDMRequest],
 ) (*connect.Response[compassv1.OpenDMResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("comms: OpenDM not implemented until RIG-2962 T3"))
+	caller := c.actorFromContext(ctx)
+
+	// Resolve the peer owner-namespaced (bare → the caller's own owner). An
+	// unknown, wrong-owner, or non-agent handle is the merged NOT_FOUND naming
+	// the submitted handle.
+	peer, err := c.resolveAgentAccount(ctx, caller, req.Msg.GetPeerHandle())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+
+	// Self-DM guard: a handle that resolves to the caller itself is not a peer.
+	if peer.ID == caller {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: cannot open a DM with yourself"))
+	}
+
+	// Same-owner authz. resolveAgentAccount for a BARE handle already resolves in
+	// the caller's own owner namespace, so a bare peer is same-owner by
+	// construction; the check bites an owner-QUALIFIED handle naming another
+	// owner's agent. A cross-owner peer is byte-identical to an unknown one
+	// (oracle-safe, mirroring ReparentAgent's remap at comms.go:321-323) — the
+	// merged NOT_FOUND naming the submitted handle, never leaking the peer's
+	// existence.
+	owner, err := c.store.ResolveOwner(ctx, caller)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	if peer.Agent.OwnerUserID != owner {
+		return nil, edgeError(notFoundHandle(store.ErrNotFound, req.Msg.GetPeerHandle()))
+	}
+
+	// The deterministic name is keyed on the two HANDLES: the caller's own handle
+	// and the peer's, sorted lexicographically.
+	callerAcc, err := c.store.GetAccount(ctx, caller)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	name := dmChannelName(callerAcc.Handle, peer.Handle)
+
+	channelID, created, err := c.openDMTx(ctx, owner, name, []store.AccountID{caller, peer.ID})
+	if err != nil {
+		return nil, edgeError(err)
+	}
+
+	ch, err := c.store.GetChannel(ctx, channelID)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.emitDMCreated(ch, created)
+	return connect.NewResponse(&compassv1.OpenDMResponse{
+		Channel: channelToWire(ch),
+		Created: created,
+	}), nil
 }
 
 // applyBoardOp maps the request's op oneof to its store call: a plain pin

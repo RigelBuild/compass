@@ -7,7 +7,7 @@ package server
 // records every relayed command, so "a Start was pushed" / "no Start was pushed"
 // / "the resume body rode the internal envelope" are observed wire facts, not
 // mock expectations). WakeAgent is an INTERNAL seam (delivery.AgentWaker), not a
-// wire RPC, so these drive newLifecycleService(store, hub).WakeAgent directly
+// wire RPC, so these drive newLifecycleService(store, hub, nil).WakeAgent directly
 // under a resolved agent AccountID — the same way the delivery consumer's wake
 // seam calls it — rather than through the connect client.
 //
@@ -35,7 +35,7 @@ import (
 func newWakeFixture(t *testing.T) (placementFixture, *lifecycleService) {
 	t.Helper()
 	pf := newPlacementFixture(t)
-	return pf, newLifecycleService(pf.store, pf.hub)
+	return pf, newLifecycleService(pf.store, pf.hub, nil)
 }
 
 // TestWakeAgentLiveIsNoOp pins the not-live pre-check: an agent with a LIVE

@@ -15,7 +15,7 @@ package server
 // The wire the test stands up, inline, is production's:
 //
 //	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
-//	c.SetAgentWaker(newLifecycleService(st, hub))   // the REAL resume waker
+//	c.SetAgentWaker(newLifecycleService(st, hub, nil)) // the REAL resume waker
 //	hub.SetSettleSink(c); hub.SetSessionStartSink(c); hub.SetDeliveryStore(st)
 //	go c.Run(ctx)
 //
@@ -127,7 +127,7 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	// The production delivery wire (sinks.go:142-155), assembled inline with the
 	// REAL resume-based waker (newLifecycleService), not a fake.
 	c := delivery.NewConsumer(commsBus, st, hub, hub, slog.New(slog.DiscardHandler))
-	c.SetAgentWaker(newLifecycleService(st, hub))
+	c.SetAgentWaker(newLifecycleService(st, hub, nil))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)
 	hub.SetDeliveryStore(st)
