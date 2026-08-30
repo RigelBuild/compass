@@ -120,6 +120,22 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		}
 	}
 
+	// R3 primary defense: the manual create path is server-forbidden from
+	// targeting a reserved per-owner DM group. Only the OpenDM path may write
+	// there (UpsertDMChannelTx), so rejecting a create here makes squatting a
+	// deterministic dm--… name impossible — no in-advance existence check
+	// needed. The rejection is the merged ErrNotFound (never confirms the group
+	// exists, so a stranger cannot probe the reserved namespace).
+	if c.GroupID != "" {
+		reserved, err := isReservedDMGroupTx(ctx, tx, c.GroupID)
+		if err != nil {
+			return Channel{}, err
+		}
+		if reserved {
+			return Channel{}, fmt.Errorf("%w: group %q", ErrNotFound, c.GroupID)
+		}
+	}
+
 	if _, err := tx.Exec(ctx,
 		"INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) "+
 			"VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7)",
@@ -448,7 +464,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 // D9 write-authz is enforced here in the store: the actor must be a member of
 // the channel to mutate it, so an unknown channel and a non-member both return
 // ErrNotFound (the not-found/forbidden merge).
-func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, channelID ChannelID, updates []MemberUpdate) (Channel, []AccountID, error) {
+func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, channelID ChannelID, updates []MemberUpdate, opts MemberUpdatesOptions) (Channel, []AccountID, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Channel{}, nil, fmt.Errorf("store: begin update members: %w", err)
@@ -465,29 +481,34 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 		return Channel{}, nil, err
 	}
 
-	// T4: read the channel's mandatory_subscription flag once under the tx. It
-	// serves two purposes: (1) an explicit unsubscribe on a mandatory channel is
-	// refused with InvalidArgument (membership implies a non-togglable
-	// subscription there); (2) a plain add to a mandatory channel must seed the
-	// new member's delivery cursor (below), because a mandatory channel makes
-	// every member a delivery target regardless of the subscribed flag. The read
-	// is FOR UPDATE so it serializes against a concurrent SetChannelPolicy
-	// mandatory flip, which takes the same channels-row lock before seeding all
-	// current members. Without the lock a member added concurrently with a flip
-	// can be dropped by both writers — B's seed-all runs before A inserts M, and
-	// A reads the stale mandatory=false and skips M — leaving M an unseeded
-	// member of a mandatory channel (the absent cursor coalesces to live head,
-	// so M is permanently caught-up and silently receives nothing). The lock
-	// guarantees the seed-presence invariant: whichever writer commits first is
-	// observed by the second, so M is seeded by exactly one of them, never zero.
-	// owner_account_id/policy fields are server-set and never mutated through
-	// this path — UpdateChannelMembers only ever touches membership rows.
-	var mandatory bool
+	// T4/R4: read the channel's mandatory_subscription flag AND kind once under
+	// the tx. mandatory serves two purposes: (1) an explicit unsubscribe on a
+	// mandatory channel is refused; (2) a plain add to a mandatory channel must
+	// seed the new member's delivery cursor (else it mints an un-seeded delivery
+	// target, the fail-DANGEROUS D2 hazard). The read is FOR UPDATE so it
+	// serializes against a concurrent SetChannelPolicy mandatory flip (same
+	// channels-row lock), guaranteeing a member added concurrently with a flip is
+	// seeded by exactly one writer, never zero. kind drives the R4 DM guards: a
+	// genuine member ADD on a kind=DM channel is a conversion, and a remove may
+	// not strand a DM below two agent parties. policy/owner fields are server-set
+	// and never mutated through this path.
+	var (
+		mandatory bool
+		kindRaw   int32
+	)
 	if err := tx.QueryRow(ctx,
-		"SELECT mandatory_subscription FROM channels WHERE id = $1 FOR UPDATE", string(channelID),
-	).Scan(&mandatory); err != nil {
+		"SELECT mandatory_subscription, kind FROM channels WHERE id = $1 FOR UPDATE", string(channelID),
+	).Scan(&mandatory, &kindRaw); err != nil {
 		return Channel{}, nil, fmt.Errorf("store: read channel mandatory flag: %w", err)
 	}
+	kind := ChannelKind(kindRaw)
+	// The unsubscribe guard reads the PRE-convert mandatory state: a DM is
+	// born-mandatory, so an unsubscribe batched with a genuine convert-add is
+	// rejected here even though the post-convert channel is non-mandatory and
+	// would permit it. This mid-batch ambiguity is not reachable through the RPC
+	// surface (open_dm and member edits are distinct calls) and convert+unsubscribe
+	// is not a real use case; evaluating against the pre-convert state is the
+	// conservative choice.
 	for _, u := range updates {
 		if u.Unsubscribe {
 			if mandatory {
@@ -495,6 +516,25 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 			}
 			break
 		}
+	}
+
+	// R4 convert-on-add: a genuine member ADD (not a remove, not an unsubscribe,
+	// naming an account not already a member) on a kind=DM channel converts the
+	// two-party DM into a named CHANNEL before the add path runs. maybeConvertDM
+	// returns the channel's kind after any conversion (unchanged when no genuine
+	// add, or the channel was never a DM) and whether it converted this call. A
+	// convert clears mandatory_subscription in the DB (the result is a normal
+	// opt-in channel), so the caller's `mandatory` local — read pre-convert as
+	// TRUE for a born-mandatory DM — MUST be refreshed to FALSE, or the add loop
+	// below would seed the opt-in third member's delivery cursor as if the channel
+	// were still mandatory (a spurious seed: an unsubscribed add on a normal
+	// channel owes no cursor until it subscribes — the D2 seed-at-subscribe rule).
+	kind, converted, err := maybeConvertDM(ctx, tx, channelID, kind, updates, opts)
+	if err != nil {
+		return Channel{}, nil, err
+	}
+	if converted {
+		mandatory = false
 	}
 
 	var removed []AccountID
@@ -509,6 +549,11 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 			}
 			if deleted {
 				removed = append(removed, u.AccountID)
+			}
+			// R4: a DM is a fixed two-party surface — a remove may not strand it
+			// below two agent parties (teardown, not member surgery, ends a DM).
+			if err := requireDMTwoParties(ctx, tx, channelID, kind); err != nil {
+				return Channel{}, nil, err
 			}
 			continue
 		}
@@ -525,6 +570,121 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 		return Channel{}, nil, err
 	}
 	return ch, removed, nil
+}
+
+// maybeConvertDM applies the R4 DM-to-CHANNEL conversion when a genuine member
+// ADD targets a kind=DM channel, and returns the channel's kind afterward. A
+// genuine add on a DM MUST supply opts.ConvertChannelName (else
+// ErrInvalidArgument); with it, one tx converts the two-party DM into a normal
+// opt-in channel before the caller's add path runs:
+//
+//   - kind=CHANNEL, name=ConvertChannelName, group_id=NULL — leaving the reserved
+//     DM group frees the deterministic dm--a--b name so a future open_dm mints a
+//     FRESH pair DM.
+//   - mandatory_subscription=FALSE — the result is a genuine normal channel
+//     (opt-in), not a force-subscribe surface (Matt's ruling: a converted DM is a
+//     normal channel; a normal channel is opt-in). Without this the converted
+//     channel would keep the DM's born-mandatory flag and NO member could ever
+//     unsubscribe (the unsubscribe guard rejects it on mandatory channels).
+//   - the two original DM parties are flipped subscribed=TRUE. A DM member carries
+//     subscribed=FALSE (it was a delivery target only via the mandatory flag we
+//     just cleared), so without this they would SILENTLY stop receiving the very
+//     conversation they were mid-way through — and nothing notifies an agent it
+//     lost delivery (there is no add/drop notification; delivery is the only
+//     signal). Flipping the incumbents subscribed keeps them in the conversation;
+//     the newly-added third member joins opt-in (subscribed per its own update),
+//     the normal-channel default.
+//
+// When the channel is not a DM, or the batch has no genuine add (a pure
+// subscribe-flip/remove adds no party), the kind is returned unchanged and no
+// name is required.
+func maybeConvertDM(ctx context.Context, tx pgx.Tx, channelID ChannelID, kind ChannelKind, updates []MemberUpdate, opts MemberUpdatesOptions) (ChannelKind, bool, error) {
+	if kind != ChannelKindDM {
+		return kind, false, nil
+	}
+	genuineAdd, err := hasGenuineAdd(ctx, tx, channelID, updates)
+	if err != nil {
+		return kind, false, err
+	}
+	if !genuineAdd {
+		return kind, false, nil
+	}
+	if opts.ConvertChannelName == "" {
+		return kind, false, fmt.Errorf("%w: adding a third member converts a DM to a channel and requires a channel name", ErrInvalidArgument)
+	}
+	// The convert sets group_id=NULL, and the channel-name unique index is
+	// partial on group_id IS NOT NULL — an ungrouped channel is exempt, so this
+	// UPDATE cannot raise a (group_id, name) unique violation. Ungrouped channel
+	// names are deliberately not constrained (mirrors home-channel dup behavior).
+	if _, err := tx.Exec(ctx,
+		"UPDATE channels SET kind = $1, name = $2, group_id = NULL, mandatory_subscription = FALSE WHERE id = $3",
+		int32(ChannelKindChannel), opts.ConvertChannelName, string(channelID),
+	); err != nil {
+		return kind, false, fmt.Errorf("store: convert dm channel: %w", err)
+	}
+	// Keep the two incumbent DM parties in the conversation: flip every current
+	// AGENT member subscribed (a human owner member is left as-is — subscription
+	// is an agent-delivery concept). They already have a seeded delivery cursor
+	// from the DM's born-mandatory create, so no seed is owed here.
+	if _, err := tx.Exec(ctx,
+		"UPDATE channel_members cm SET subscribed = TRUE "+
+			"FROM agent_accounts aa WHERE aa.account_id = cm.account_id AND cm.channel_id = $1",
+		string(channelID),
+	); err != nil {
+		return kind, false, fmt.Errorf("store: subscribe converted dm parties: %w", err)
+	}
+	return ChannelKindChannel, true, nil
+}
+
+// hasGenuineAdd reports whether updates contain at least one genuine member ADD
+// against channelID: an update that is not a remove and not an unsubscribe,
+// naming an account not already a member. A subscribe-flip of an existing member
+// (or a re-add of a current member) is NOT a genuine add — it adds no party — so
+// it does not trigger the R4 DM conversion. The membership probe reads this tx's
+// snapshot, so a member added earlier in the same batch counts as present.
+func hasGenuineAdd(ctx context.Context, tx pgx.Tx, channelID ChannelID, updates []MemberUpdate) (bool, error) {
+	for _, u := range updates {
+		if u.Remove || u.Unsubscribe || u.AccountID == "" {
+			continue
+		}
+		var exists bool
+		if err := tx.QueryRow(ctx,
+			"SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2)",
+			string(channelID), string(u.AccountID),
+		).Scan(&exists); err != nil {
+			return false, fmt.Errorf("store: probe member presence: %w", err)
+		}
+		if !exists {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// requireDMTwoParties enforces the R4 two-party floor after a remove: on a
+// kind=DM channel it counts the AGENT members remaining in this tx's snapshot and
+// rejects the remove (ErrInvalidArgument, rolling it back) if fewer than two
+// remain — a one-party DM is not a thing; teardown, not member surgery, ends a
+// DM. Human owner members are excluded from the count: the DM's parties are its
+// two agents; their pulled-in owners are membership bookkeeping, not parties. A
+// non-DM channel has no such floor and returns nil immediately.
+func requireDMTwoParties(ctx context.Context, tx pgx.Tx, channelID ChannelID, kind ChannelKind) error {
+	if kind != ChannelKindDM {
+		return nil
+	}
+	var parties int
+	if err := tx.QueryRow(ctx,
+		"SELECT COUNT(*) FROM channel_members cm "+
+			"JOIN agent_accounts aa ON aa.account_id = cm.account_id "+
+			"WHERE cm.channel_id = $1",
+		string(channelID),
+	).Scan(&parties); err != nil {
+		return fmt.Errorf("store: count agent members: %w", err)
+	}
+	if parties < 2 {
+		return fmt.Errorf("%w: a DM must keep two agent parties; convert or tear it down instead", ErrInvalidArgument)
+	}
+	return nil
 }
 
 // removeMember deletes one member row, preserving transitive owner-membership

@@ -280,7 +280,7 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 		t.Fatalf("the agent cannot edit while still a member: %v", err)
 	}
 
-	if _, _, err := st.UpdateChannelMembers(ctx, owner.ID, ch.ID, []store.MemberUpdate{{AccountID: agent.ID, Remove: true}}); err != nil {
+	if _, _, err := st.UpdateChannelMembers(ctx, owner.ID, ch.ID, []store.MemberUpdate{{AccountID: agent.ID, Remove: true}}, store.MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(remove): %v", err)
 	}
 

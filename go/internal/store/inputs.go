@@ -78,3 +78,14 @@ type MemberUpdate struct {
 	// mandatory_subscription channel (T4) — a plain add is unaffected.
 	Unsubscribe bool
 }
+
+// MemberUpdatesOptions carries the non-per-member scalars for
+// UpdateChannelMembers. ConvertChannelName is the caller-supplied name a
+// DM-to-CHANNEL conversion (R4) takes: a genuine member ADD on a kind=DM channel
+// requires it (the third party converts the two-party DM into a named channel,
+// freeing the DM's deterministic name), and it is ignored for a non-DM channel
+// or a pure subscribe/remove. It is a separate scalar from the add/remove/
+// subscribe lists, so it rides here rather than in MemberUpdate.
+type MemberUpdatesOptions struct {
+	ConvertChannelName string
+}
