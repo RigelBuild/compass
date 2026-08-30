@@ -317,3 +317,394 @@ jobs:
             exit 1
           fi
           echo "verified: $ref:git-$sha12 resolves, linux/amd64, coherent with :latest"
+
+  release-assets:
+    name: release-assets
+    runs-on: ubuntu-latest
+    # Build the four released binaries at the release sha and attach them — plus
+    # SHA256SUMS and the nix-outputs manifest — to the GitHub Release
+    # release-please already created for this tag. Runs ONLY when the merged
+    # Release PR actually cut a release. The main-ref guard is kept on EVERY
+    # release job (§A5(2)): a workflow_dispatch from a feature branch must never
+    # mint release artifacts for unmerged code, even were release-please to emit
+    # releases_created there.
+    needs: release-pr
+    if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
+    # Least privilege: write the Release, nothing else. NOT packages:write — the
+    # release-notes generator reads the PUBLIC image digest anonymously, and this
+    # lane never writes a registry (Global Constraint 7).
+    permissions:
+      contents: write
+    # The nix toolchain resolve is the cost that sizes this timeout — the same
+    # ceiling ci.yml and publish-image use.
+    timeout-minutes: 90
+    steps:
+      # Check out the release sha — the Release PR's merge commit release-please
+      # tagged. Default depth: the assets build from that tree, and the
+      # release-notes digest pointer resolves from `git rev-parse HEAD`.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-pr.outputs.sha }}
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # nix-command + flakes for the RigelBuild forks' flakes. The two caches
+          # are declared HERE, not delegated via `accept-flake-config` — that
+          # setting makes nix trust the `nixConfig` of ANY flake it evaluates
+          # (the RigelBuild/devenv flake carries such a block), so a PR could add its
+          # own substituter AND trusted key and have CI run attacker-signed
+          # binaries. Naming the caches in this reviewed file keeps that trust
+          # reviewed.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # The pinned toolchain comes from nix, never `setup-go` (Global
+        # Constraint 8): gate-tools.nix's `langs` output resolves the identical
+        # derivations the dev shell does — go from the go-overlay applied to the
+        # devenv.lock-pinned nixpkgs — so this build runs the pinned go
+        # byte-for-byte. Copied verbatim from ci.yml:207-220 (phase one).
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Put the fork's patched skopeo on PATH
+        # The release-notes generator queries GHCR for the image config digest
+        # with a plain `skopeo` (the RigelBuild/nix2container fork's patched
+        # build). The langs bootstrap above carries only go/bun/node/moon, so
+        # skopeo must be provisioned here or the digest query — a core T2
+        # deliverable (Fork 2(ii)) — silently records the image absent on every
+        # release. Resolve it from the shared pinned helper
+        # tools/toolchain/skopeo-nix2container-env.nix and prepend its bin/, the
+        # same out-of-band `nix build` pattern publish-agent-image.yml:117-148
+        # uses. The image is public (Matt-ruled), so reading the digest needs no
+        # `skopeo login` / packages:read — this lane stays contents:write-only.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # `--print-out-paths` prints every output (skopeo ships a `-man` output
+          # too); take the one carrying bin/skopeo, not a fixed line.
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
+      - name: Build the release binaries
+        # The release version is the semver release-please cut, sourced from
+        # version.txt (Global Constraint 1: ONE version string across all
+        # binaries AND the image tag). Asset names carry the semver tag. #711's
+        # build step, re-based from the `build-<sha12>` prerelease shape to the
+        # semver `vX.Y.Z` tag. -trimpath + CGO_ENABLED=0: the three daemons/CLI
+        # are pure Go (cgo is needed only by the pgtest suites, not any build
+        # here), and the darwin-arm64 CLI cross-compiles cleanly from this ubuntu
+        # runner.
+        env:
+          TAG_NAME: ${{ needs.release-pr.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          sha12="$(git rev-parse --short=12 HEAD)"
+          version="$(cat version.txt)"
+          tag="$TAG_NAME"
+          echo "SHA12=$sha12" >>"$GITHUB_ENV"
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          echo "TAG=$tag" >>"$GITHUB_ENV"
+
+          ldflags="-X main.version=$version"
+
+          # Three linux-amd64 binaries (the deployable daemons + the CLI).
+          for name in compass compass-server compass-runner; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+              go -C go build -trimpath -ldflags "$ldflags" \
+              -o "../${name}_${tag}_linux-amd64" "./cmd/${name}"
+          done
+
+          # The CLI cross-built for darwin-arm64 (Matt's dev machines run the CLI
+          # against remote stacks; the daemons deploy on Linux only — Fork 2(i)).
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go -C go build -trimpath -ldflags "$ldflags" \
+            -o "../compass_${tag}_darwin-arm64" ./cmd/compass
+
+      - name: Generate SHA256SUMS over the built assets
+        run: |
+          set -euo pipefail
+          sha256sum \
+            "compass_${TAG}_linux-amd64" \
+            "compass-server_${TAG}_linux-amd64" \
+            "compass-runner_${TAG}_linux-amd64" \
+            "compass_${TAG}_darwin-arm64" \
+            > SHA256SUMS
+
+      - name: Generate the release body + nix-outputs manifest
+        # The T2 generator (a bun/TS tool with a pure, unit-tested core). It
+        # queries GHCR for the image digest at :git-<sha12> (DEGRADING to a
+        # recorded-absence line when the image lane has not published this sha)
+        # and runs `nix path-info` over the toolchain `langs` set, writing the
+        # two files the release upload consumes.
+        run: |
+          set -euo pipefail
+          bun run tools/release-notes/index.ts \
+            --sha "$SHA12" \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --asset "compass_${TAG}_linux-amd64" \
+            --asset "compass-server_${TAG}_linux-amd64" \
+            --asset "compass-runner_${TAG}_linux-amd64" \
+            --asset "compass_${TAG}_darwin-arm64" \
+            --asset "SHA256SUMS" \
+            --body-out RELEASE_BODY.md \
+            --manifest-out nix-outputs.json
+
+      - name: Upload assets and append the appendix to the Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The Release already EXISTS: release-please cut it (tag + generated
+        # changelog notes) on the merge commit. This lane never creates it — it
+        # attaches the built assets with --clobber (idempotent on re-run) and
+        # APPENDS the generator's binaries/image/nix-outputs appendix BELOW
+        # release-please's generated notes, preserving the changelog rather than
+        # overwriting it. Not `--prerelease`: this is a real release.
+        run: |
+          set -euo pipefail
+          assets=(
+            "compass_${TAG}_linux-amd64"
+            "compass-server_${TAG}_linux-amd64"
+            "compass-runner_${TAG}_linux-amd64"
+            "compass_${TAG}_darwin-arm64"
+            SHA256SUMS
+            # nix-outputs.json (below) is the generator's machine-readable
+            # manifest — regenerable output attached for consumers, deliberately
+            # not in SHA256SUMS, which checksums the downloadable binaries.
+            nix-outputs.json
+          )
+          gh release upload "$TAG" --clobber "${assets[@]}"
+
+          # Append the generator appendix below release-please's changelog,
+          # preserving the changelog rather than replacing it. Idempotent on
+          # re-run: strip any prior appendix (the sentinel comment onward, which
+          # includes the separator that follows it) and any CR from GitHub's
+          # CRLF-normalized body, then capture via `$(...)` so all trailing
+          # newlines collapse, and reconstruct with a fixed separator. Repeated
+          # "Re-run all jobs" runs produce byte-identical notes — not a stack of
+          # duplicate appendices, nor a single appendix atop a growing blank-line
+          # gap (the CR strip is what makes the fixpoint hold against the live
+          # API, which returns the body CRLF-terminated). The release-image
+          # remediation invites a re-run, so this path is real.
+          notes="$RUNNER_TEMP/release-notes.md"
+          changelog="$(gh release view "$TAG" --json body -q .body \
+            | sed '/<!-- release-notes-appendix -->/,$d' \
+            | sed 's/\r$//')"
+          {
+            printf '%s\n\n<!-- release-notes-appendix -->\n\n---\n\n' "$changelog"
+            cat RELEASE_BODY.md
+          } > "$notes"
+          gh release edit "$TAG" --notes-file "$notes"
+
+  release-image:
+    name: release-image
+    runs-on: ubuntu-latest
+    # Digest-re-tag the already-published per-push `:git-<sha12>` image to the
+    # semver `:vX.Y.Z`. NEVER a second build (the release sha's image content is
+    # byte-identical to the last closure-affecting sha's — §A4), NEVER touches
+    # `:latest` (owned exclusively by publish-image). Runs ONLY when the merged
+    # Release PR actually cut a release.
+    needs: release-pr
+    # Least privilege: read the tree, write the GHCR package, nothing else
+    # (Global Constraint 7).
+    permissions:
+      contents: read
+      packages: write
+    # The SAME group as publish-image: a non-superseding `:vX.Y.Z` release mint
+    # must serialize behind an in-flight `:latest` move WITHOUT being cancelled
+    # by a later per-push entrant claiming the single default pending slot.
+    # `queue: max` (the bare literal token — no numeric form; up to 100 pending)
+    # rather than the default single pending slot preserves the §A4 no-drop
+    # invariant; bare `cancel-in-progress: false` alone would drop it.
+    # Within a single release run this also queues behind that run's own
+    # publish-image job (same group) — intended serialization latency, not a
+    # hang; neither job `needs` the other.
+    concurrency:
+      group: publish-agent-image
+      cancel-in-progress: false
+      queue: max
+    # workflow_dispatch runs on any branch; guard so a dispatch from a feature
+    # branch can never mint a `:vX.Y.Z` for unmerged code. Main pushes satisfy
+    # this trivially (§A5(2), mirrors publish-image).
+    if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
+    timeout-minutes: 90
+    steps:
+      # Full history: the resolver walks first-parent ancestors of the release
+      # sha (§A4/Plan T3), so a shallow checkout would truncate the walk.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-pr.outputs.sha }}
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # nix-command + flakes for the RigelBuild forks' flakes. The two caches
+          # are declared HERE, not delegated via `accept-flake-config` — that
+          # setting makes nix trust the `nixConfig` of ANY flake it evaluates
+          # (the RigelBuild/devenv flake carries such a block), so a PR could add its
+          # own substituter AND trusted key and have CI run attacker-signed
+          # binaries. Naming the caches in this reviewed file keeps that trust
+          # reviewed.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the fork's patched skopeo on PATH
+        # The resolver probes and copies with a plain `skopeo` (the
+        # RigelBuild/nix2container fork's patched build). Resolve it from the
+        # shared pinned helper, tools/toolchain/skopeo-nix2container-env.nix, and
+        # prepend its bin/ to PATH — the same out-of-band `nix build` pattern
+        # publish-agent-image.yml:117-148 uses.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # `--print-out-paths` prints every output (skopeo ships a `-man` output
+          # too); take the one carrying bin/skopeo, not a fixed line.
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
+      - name: Pin the registry auth file
+        # LOAD-BEARING. `skopeo login` and the resolver's `skopeo copy` run as
+        # SEPARATE processes and must resolve the SAME creds file. The default
+        # location ($XDG_RUNTIME_DIR/containers/auth.json) is
+        # environment-dependent on GitHub-hosted runners — a mismatch greens the
+        # login step and then 401s the copy. Export an explicit path both honor.
+        run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the actor through env rather than interpolating ${{ }} into the
+          # shell — behavior-identical here (GitHub usernames carry no shell
+          # metacharacters), but keeps context values off the run: command line.
+          ACTOR: ${{ github.actor }}
+        # This job WRITES the registry (`skopeo copy` push to :vX.Y.Z), so it
+        # needs auth (packages:write authorizes it). The token is passed via env
+        # and `--password-stdin` only — never on a command line or in a log.
+        run: |
+          skopeo \
+            login ghcr.io -u "$ACTOR" --password-stdin \
+            --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
+
+      - name: Digest-re-tag the newest ancestor image to the semver tag
+        # The load-bearing §A4 resolver: registry-anchored, NOT path-based. A
+        # `git log -- <paths>` resolver was rejected (§A4:159-164) because the
+        # per-push lane keys its tag on the PUSH HEAD sha, not the last
+        # closure-touching commit, so a path resolver could assert a tag that was
+        # never published. Walk first-parent ancestors of the release sha
+        # newest-first and take the FIRST whose :git-<sha12> resolves on GHCR:
+        # that tag's tree provably contains every closure change at-or-before it,
+        # so its image is byte-identical to the release sha's content. Copy that
+        # digest manifest to :vX.Y.Z (a registry-side write, no build), then
+        # verify coherence. Never touches :latest; never builds.
+        env:
+          TAG_NAME: ${{ needs.release-pr.outputs.tag_name }}
+          RELEASE_SHA: ${{ needs.release-pr.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ref="docker://ghcr.io/rigelbuild/compass-agent"
+          tag="$TAG_NAME"
+          release_sha="$RELEASE_SHA"
+
+          # Bound the walk so a systemic publish outage fails fast with the
+          # remediation pointer rather than probing unboundedly. 50 first-parent
+          # ancestors comfortably spans any realistic gap between a release sha
+          # and the last closure-affecting publish.
+          max_walk=50
+
+          resolved_sha12=""
+          count=0
+          while IFS= read -r ancestor; do
+            [ -n "$ancestor" ] || continue
+            count=$((count + 1))
+            if [ "$count" -gt "$max_walk" ]; then
+              break
+            fi
+            sha12="$(git rev-parse --short=12 "$ancestor")"
+            # Distinguish a definitive not-found (walk on to the next ancestor)
+            # from a transient/ambiguous error (GHCR 5xx, throttle, auth blip).
+            # Swallowing the latter as "absent" would silently fall through to
+            # an OLDER published ancestor and re-tag a STALE image under
+            # :vX.Y.Z, breaking the §A4 newest-first byte-identity invariant
+            # (the final config-digest verify cannot catch that — it proves the
+            # copy landed, not that the right source was chosen). Hard-fail on
+            # ambiguity rather than retry (no-retries repo law).
+            if probe="$(skopeo inspect --authfile "$REGISTRY_AUTH_FILE" \
+              "$ref:git-$sha12" 2>&1)"; then
+              resolved_sha12="$sha12"
+              echo "resolved source image at ancestor $sha12 (walk position $count)"
+              break
+            fi
+            # A definitive absent manifest surfaces as "manifest unknown" or an
+            # HTTP "404"; the broad "not found" glob is a deliberate belt — safe
+            # here because this job runs after a successful login against a
+            # PUBLIC image, so a 401/403 auth message is not in play, and
+            # skopeo's transport failures phrase differently ("no such host",
+            # "503", "i/o timeout") and fall to the hard-fail arm. Erring toward
+            # continue-the-walk on this set (vs a stale re-tag) is the safe bias.
+            case "$probe" in
+              *"manifest unknown"* | *"not found"* | *"404"*) ;;
+              *)
+                echo "::error::ambiguous skopeo error probing :git-$sha12 (not a definitive 404); refusing to fall through to an older ancestor: $probe" >&2
+                exit 1
+                ;;
+            esac
+          done < <(git rev-list --first-parent "$release_sha")
+
+          if [ -z "$resolved_sha12" ]; then
+            echo "::error::no ancestor image :git-<sha12> resolved on GHCR within $max_walk first-parent ancestors of $release_sha. Remediation: workflow_dispatch the release workflow (publish-image) on the release sha to publish the per-push image, then re-run this release. NEVER rebuild here." >&2
+            exit 1
+          fi
+
+          # Registry-side manifest write: copy the resolved source tag's
+          # digest-resolved manifest to :vX.Y.Z. No nix build at all.
+          skopeo copy --authfile "$REGISTRY_AUTH_FILE" \
+            "$ref:git-$resolved_sha12" "$ref:$tag"
+
+          # Verify :vX.Y.Z resolves AND shares the source tag's config digest —
+          # the same coherence shape as publish-image's two-copy check
+          # (release.yml:311-318). Hard-fail on mismatch.
+          src_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$resolved_sha12" | jq -r .config.digest)"
+          tag_digest="$(skopeo inspect --raw --authfile "$REGISTRY_AUTH_FILE" "$ref:$tag" | jq -r .config.digest)"
+          if [ "$src_digest" != "$tag_digest" ]; then
+            echo "re-tag incoherent: :git-$resolved_sha12=$src_digest != :$tag=$tag_digest" >&2
+            exit 1
+          fi
+          echo "verified: $ref:$tag re-tagged from :git-$resolved_sha12, config digests coherent"
