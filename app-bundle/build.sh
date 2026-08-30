@@ -38,8 +38,15 @@ CC_ENV="$(readlink -f "$SCRIPT_DIR/result-cc")"
 PKG_CONFIG_PATH="$PC_ENV/lib/pkgconfig:$PC_ENV/share/pkgconfig"
 CC_BIN="$CC_ENV/bin/cc"
 
-# --- 2. Version: one string, every binary (§196-205).
-v="0.1.0+g$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+# --- 2. Version: one string, every binary (§196-205). Base from version.txt
+#        (release-please's source of truth), +g<shortsha> dev/bundle suffix.
+#        Read version.txt on its own line: in a composite assignment `set -e`
+#        only inspects the LAST substitution, so folding the `cat` into the same
+#        line as the `git` substitution would silently swallow a missing file
+#        and leave an empty base.
+version_base="$(cat "$REPO_ROOT/version.txt")"
+[[ -n "$version_base" ]] || { err "version.txt missing or empty"; exit 1; }
+v="${version_base}+g$(git -C "$REPO_ROOT" rev-parse --short HEAD)"
 log "Bundle version: $v"
 
 BUNDLE="compass-app-$v-linux-amd64"

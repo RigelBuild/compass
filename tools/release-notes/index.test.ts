@@ -17,6 +17,7 @@ import {
 	IMAGE_ABSENT_LINE,
 	type NixOutput,
 	parseArgs,
+	requireImageAtRelease,
 } from "./index.ts";
 
 const OUTPUTS: NixOutput[] = [
@@ -195,5 +196,30 @@ describe("classifyImageResult — the skopeo-result contract (crux of the skopeo
 		expect(
 			classifyImageResult({ exitCode: 0, stdout: "{}", stderr: "" }),
 		).toBeNull();
+	});
+});
+
+describe("requireImageAtRelease — a null image is a release-time failure, a dry-run degradation", () => {
+	const image = {
+		ref: "ghcr.io/rigelbuild/compass-agent@sha256:beef",
+		digest: "sha256:beef",
+	};
+
+	test("release + null image FAILS — returns the no-image error message", () => {
+		expect(requireImageAtRelease(null, false)).toContain(
+			"no resolvable container image",
+		);
+	});
+
+	test("release + present image is acceptable — returns null", () => {
+		expect(requireImageAtRelease(image, false)).toBeNull();
+	});
+
+	test("dry-run + null image preserves the degradation — returns null", () => {
+		expect(requireImageAtRelease(null, true)).toBeNull();
+	});
+
+	test("dry-run + present image is acceptable — returns null", () => {
+		expect(requireImageAtRelease(image, true)).toBeNull();
 	});
 });

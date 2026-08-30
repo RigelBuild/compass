@@ -123,13 +123,15 @@ Skipping what it cannot verify would make its green mean nothing.
 ## Publishing the agent image
 
 The `compass-agent` runtime image (the base every agent workstream runs in) is
-published to GHCR by a workflow separate from the gate above. For the full
-rationale see the design record
-`docs/designs/infra/ci/compass-agent-image-publish/design.md`; the durable operational
-shape is here.
+published to GHCR by the unified `release.yml` lane, separate from the gate
+above. For the full design see the frozen record
+`docs/designs/platform/compass-unified-release-lane.md` (the earlier
+`docs/designs/infra/ci/compass-agent-image-publish/design.md` records the
+original image-publish rationale); the durable operational shape is here.
 
 **Ref and tags.** The image is `ghcr.io/rigelbuild/compass-agent`. Every
-closure-affecting main build publishes two tags:
+closure-affecting push to main publishes two per-push tags, and a tagged release
+adds a third:
 
 - `:git-<sha12>` — the 12-hex short commit sha, **immutable**. This is the pin
   the native app bakes in and hands the runner via `--image` /
@@ -138,6 +140,10 @@ closure-affecting main build publishes two tags:
   after each push to assert the digest landed, so the tag is immutable by
   enforcement, not convention.
 - `:latest` — moving, documented **first-run fallback only**, never the default.
+- `:vX.Y.Z` — the semver release tag, **immutable**, minted only when a
+  `vX.Y.Z` release is cut. The release-gated `release-image` job digest-re-tags
+  the already-published `:git-<sha>` image (no rebuild — same digest, a new
+  pointer), so the released image is byte-identical to the per-push one.
 
 The git-sha tag is pushed before `:latest`, so the immutable pin always exists
 before the moving tag moves. Platform is `linux/amd64` single-arch (the dogfood
@@ -152,20 +158,35 @@ through the fork's `container build agent`. They diverge only in the skopeo
 destination (a registry ref versus `containers-storage:`), so what CI publishes
 is byte-for-byte what a developer loads locally.
 
-**A separate least-privilege workflow.** Publishing lives in
-`.github/workflows/publish-agent-image.yml`, **not** a step in the `CI` gate and
-**not** a required check. It runs main-only plus `workflow_dispatch`,
-path-filtered to the image's nix closure, with its own concurrency group set to
-`cancel-in-progress: false` (publishes serialize rather than tear a tag pair
-mid-push) and a `packages: write` token the gate job never gets. This is a
-principled exception to the [ONE-JOB doctrine](#ci): the doctrine exists to stop
-a second source of truth for *what the gate covers*, and this workflow
-enumerates no moon projects (`agent-image/` is a standalone devenv, not a moon
-project) — so it recreates none of the silent-staleness failure the doctrine
-guards against. A published tag is the source of truth; a missing one (paths
-filtered it out, or a superseding push skipped it under the serialized
-concurrency group) is **not** a failure — `workflow_dispatch` republishes any
-HEAD on demand.
+**The unified release lane.** Publishing lives in
+`.github/workflows/release.yml`, **not** a step in the `CI` gate and **not** a
+required check. Two jobs share it. The per-push `publish-image` job runs
+main-only plus `workflow_dispatch`, closure-gated in-job (an in-job changed-path
+check, not a trigger `paths:` filter — release-pr needs every commit),
+with its own concurrency group set to `cancel-in-progress: false` (publishes
+serialize rather than tear a tag pair mid-push) and a `packages: write` token
+the gate job never gets; it publishes `:git-<sha>` + `:latest`. The
+release-gated `release-image` job fires only when a `vX.Y.Z` release is cut and
+digest-re-tags that image to `:vX.Y.Z`. This is a principled exception to the
+[ONE-JOB doctrine](#ci): the doctrine exists to stop a second source of truth
+for *what the gate covers*, and this workflow enumerates no moon projects
+(`agent-image/` is a standalone devenv, not a moon project) — so it recreates
+none of the silent-staleness failure the doctrine guards against. A published
+tag is the source of truth; a missing per-push tag (paths filtered it out, or a
+superseding push skipped it under the serialized concurrency group) is **not** a
+failure — `workflow_dispatch` republishes any HEAD on demand.
+
+**The release-please cadence.** `release.yml` also runs release-please, which
+keeps a standing Release PR that batches conventional commits since the last
+release. Merging that PR is the release: it cuts the `vX.Y.Z` git tag, updates
+the CHANGELOG, and stamps the root `version.txt` to `X.Y.Z`. The tag then gates
+the release jobs — the four-binary asset set is built stamped from `version.txt`
+(so every released binary reports the same `X.Y.Z`), and `release-image` mints
+the `:vX.Y.Z` image tag. Dev/bundle builds off `app-bundle/build.sh` read the
+same `version.txt` base and append a `+g<shortsha>` suffix, so a local bundle
+reports the release base it descends from. The standalone
+`publish-agent-image.yml` predates this unification; its retirement is a
+separate follow-up.
 
 **Smoke.** On a runner host, pull the immutable tag and drive the consumer seam:
 
@@ -208,8 +229,10 @@ PR's *affected* projects only, and the task's `inputs` scope it to the image
 closure: the `agent-image/` tree, the two vendored forks, `packages/compass-agent/`,
 the root `package.json` and `bun.lock`, and `tools/toolchain/versions/bun.nix`.
 A PR that touches none of those never builds the image; every push to main runs
-it unconditionally in the full sweep. Its `inputs` mirror the publish workflow's
-`on.push.paths` — the reviewed source of truth for what changes the published
+it unconditionally in the full sweep. Its `inputs` mirror the closure set the
+`publish-image` job's in-job changed-path gate diffs over in `release.yml` (the
+trigger carries no `paths:` filter — release-pr needs every commit, so the job
+self-gates) — the reviewed source of truth for what changes the published
 artifact — including the bun pin file, since the image now builds bun from that
 pinned derivation, so a pin move there changes the output. As a project in the
 one-job gate it is a required check: a build break blocks merge, the same
