@@ -5,7 +5,7 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"os/exec"
+	"os/exec" //nolint:depguard // e2e teardown: exact-name `podman rm -f` container sweep (rule://process-safety)
 )
 
 // podmanRemoveForce force-removes a container by its EXACT name, tolerating a

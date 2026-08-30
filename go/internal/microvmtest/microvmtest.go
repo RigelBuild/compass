@@ -28,7 +28,7 @@ package microvmtest
 
 import (
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // microVM test harness: LookPath-resolved VMM/virtiofsd/passt binaries
 	"testing"
 )
 

@@ -23,7 +23,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // config materializer: the SELinux `chcon` relabel seam (G204 site justified below)
 	"path"
 	"path/filepath"
 	"regexp"

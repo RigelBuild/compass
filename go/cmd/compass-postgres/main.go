@@ -29,7 +29,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // embedded-postgres lifecycle seam: LookPath-resolved postgres/initdb/createdb subprocesses (the G204 sites below are the audited surface)
 	"os/signal"
 	"path/filepath"
 	"strings"

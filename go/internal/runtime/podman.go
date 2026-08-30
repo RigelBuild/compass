@@ -43,7 +43,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os/exec"
+	"os/exec" //nolint:depguard // podman runtime: *exec.Cmd/*exec.ExitError types for the container engine subprocess seam
 	"sort"
 	"strconv"
 	"strings"

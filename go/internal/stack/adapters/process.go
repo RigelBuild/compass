@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // process supervisor: LookPath-resolved deployment binaries for supervised stack children (G204 site justified below)
 	"sync/atomic"
 	"syscall"
 

@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // secrets write seam: spawns the operator-pinned secretspec CLI (G204 site justified below)
 	"sort"
 	"strings"
 

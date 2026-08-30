@@ -53,18 +53,49 @@ linters:
     - godoclint # pedantic godoc-shape checks; descriptive per-file package headers are fine
 
     # ── Class 3: needs an undeclared fleet policy ────────────────────────────
-    - depguard # no import-allowlist policy declared yet; it blocks every import by default
     - tagliatelle # struct-tag naming convention undeclared, and proto-generated tags would fight one
-    - gomodguard # module-allowlist policy undeclared (deprecated alias; gomodguard_v2 below)
-    - gomodguard_v2 # same: no declared module allow/block policy
     - importas # no import-alias convention declared
     - testpackage # no policy forbidding white-box test packages; the tests need unexported access
     - paralleltest # no fleet policy mandating t.Parallel() in every test
+    - gomodguard # deprecated v1 alias (superseded by gomodguard_v2, active in settings below); disabled so `all` does not re-enable it and emit a deprecation warning
 
     # ── Class 4: wrong for our workflow ──────────────────────────────────────
     - godox # we track TODOs with issue refs (Linear SEA-nnn), never forbid them
 
   settings:
+    # F1 import fence (RIG-3033): a DENYLIST (not an allowlist — an allowlist
+    # blocks every unlisted import). One `main` rule; each denied pkg carries the
+    # reason it is fenced. Deprecated/weak-crypto entries are 0-use clean
+    # ratchets; math/rand and os/exec have live sites justified per-site with
+    # //nolint:depguard (gosec-style reason) or exempted for test fixtures below.
+    depguard:
+      rules:
+        main:
+          deny:
+            - pkg: io/ioutil
+              desc: deprecated; use io or os (0 uses — clean ratchet)
+            - pkg: crypto/md5
+              desc: weak hash; use crypto/sha256 or better (0 uses — clean ratchet)
+            - pkg: crypto/sha1
+              desc: weak hash; use crypto/sha256 or better (0 uses — clean ratchet)
+            - pkg: math/rand
+              desc: non-crypto RNG; use crypto/rand for security-sensitive randomness (test fixtures exempt below)
+            - pkg: math/rand/v2
+              desc: non-crypto RNG; use crypto/rand for security-sensitive randomness (test fixtures exempt below)
+            - pkg: os/exec
+              desc: direct subprocess exec must be a justified seam; annotate the site //nolint:depguard // <reason>
+
+    # F1 module fence (RIG-3033): gomodguard v2 minimal block list — the value is
+    # the ratchet, not breadth. github.com/pkg/errors is blocked: stdlib errors
+    # with %w wrapping (F-oops) is the fleet error-handling path; the module is
+    # not a dependency today, so this is a clean forward-looking ratchet.
+    gomodguard_v2:
+      blocked:
+        - module: github.com/pkg/errors
+          recommendations:
+            - errors
+          reason: use stdlib errors with %w wrapping (F-oops); not a dependency today — clean ratchet
+
     # F3: complexity linters ON, at generous thresholds — they catch real sprawl
     # but must not manufacture refactors of correct dispatch code (long
     # switch-over-oneof handlers, the serve loop). Tuned above the current
@@ -177,6 +208,7 @@ linters:
           - containedctx # a case struct may carry its own context
           - errorlint # a direct != on an unwrapped local sentinel is fine in a test
           - predeclared # a test-local may shadow a builtin (e.g. a var named recover)
+          - depguard # tests freely use fenced imports (math/rand fixtures, os/exec harnesses for podman/microVM); the import fence is a production concern
       # staticcheck's SA-class real-bug checks stay ON for tests (a broken test is
       # load-bearing); only the QF* quickfix *suggestions* are advisory noise there.
       - path: _test\.go
