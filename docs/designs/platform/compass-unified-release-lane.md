@@ -1,6 +1,6 @@
 # Compass unified release lane (release-please + folded image publishing)
 
-Status: Draft
+Status: Active
 
 Linear:
 
@@ -542,11 +542,14 @@ flip lands as record-header edits, not row-status flips):
   `pull_request` CI (recursion guard), hollowing the merge gate; release-please
   authenticates with a scoped App token instead so CI fires and branch
   protection gates the merge (§A1, §A5(3), DL-301, T6).
-- **OQ-N1 — DECIDED (Matt, 2026-08-25): standard pre-1.0 damping.** Under the
-  intact `0.MINOR.PATCH` scheme (OQ-7): `feat:` → MINOR, `fix:` → PATCH,
-  breaking-change footer → MINOR (not 1.0.0) while 0.x
-  (`bump-minor-pre-major` + `bump-patch-for-minor-pre-major`); `v1.0.0` is a
-  deliberate manual `release-as: 1.0.0` at GA. Configured in T1.
+- **OQ-N1 — DECIDED (Matt, 2026-08-30, RIG-2997): both `feat:` and `fix:` bump
+  PATCH; a MINOR is a deliberate manual bump.** Under the intact `0.MINOR.PATCH`
+  scheme (OQ-7), `bump-patch-for-minor-pre-major` damps both `feat:` and `fix:`
+  to PATCH while 0.x — too many features land per release to cut a MINOR for
+  each. A deliberate MINOR is a manual `release-as: 0.N.0` in a separate PR; a
+  breaking-change footer still auto-bumps MINOR (not 1.0.0) via
+  `bump-minor-pre-major` while 0.x; `v1.0.0` is a manual `release-as: 1.0.0` at
+  GA. Configured in T1 (both flags set).
 - **OQ-N2 (non-load-bearing): stamp the eight `var version` fallbacks?**
   Whether release-please's generic updater should also bump the
   `var version = "0.1.0"` constants across `go/cmd/*` (via

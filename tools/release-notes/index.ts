@@ -179,6 +179,10 @@ export function parseArgs(argv: string[]): Args {
 				args.version = value;
 				break;
 			case "--tag":
+				// --tag is opaque passthrough: it now carries the semver `vX.Y.Z`
+				// (release) rather than the old `git-<sha>`/`build-<sha>`, but
+				// nothing parses or assumes its shape — assemble() only prints it
+				// — so no shape-specific handling is needed here.
 				args.tag = value;
 				break;
 			case "--asset":
@@ -239,6 +243,25 @@ export function classifyImageResult(result: {
 		return null;
 	}
 	return { ref: `${IMAGE_REPO}@${digest}`, digest };
+}
+
+/**
+ * At release time a null image is a hard failure, not a degradation: a
+ * published `vX.Y.Z` with no resolvable container image violates the
+ * one-version-spans-the-product invariant (§A2). The dry-run/preview path keeps
+ * the nullable contract — assemble() still degrades to IMAGE_ABSENT_LINE there.
+ * Kept pure and exported so the edge stays a thin caller and this posture is
+ * unit-tested. Returns the release-time error message, or null when the image
+ * is acceptable (present, or absent-but-dry-run).
+ */
+export function requireImageAtRelease(
+	image: ImageIdentity | null,
+	dryRun: boolean,
+): string | null {
+	if (dryRun || image !== null) {
+		return null;
+	}
+	return "release-notes: no resolvable container image for this release (:vX.Y.Z requires the per-push :git-<sha> image to have published; the release-image job digest-re-tags it). Refusing to generate release notes with a recorded-absence line for a real release.";
 }
 
 /**
@@ -309,6 +332,10 @@ async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 
 	const image = await gatherImage(args.sha);
+	const releaseError = requireImageAtRelease(image, args.dryRun);
+	if (releaseError !== null) {
+		throw new Error(releaseError);
+	}
 	const nixOutputs = await gatherNixOutputs();
 
 	const { body, manifest } = assemble({
