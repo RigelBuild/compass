@@ -170,6 +170,7 @@ func linearCommentRef(d dataPayload) *compassv1internal.CommentRef {
 	clean, author, ok := forge.StripOwner(d.Body)
 	ref := &compassv1internal.CommentRef{
 		Url:          d.Issue.URL,
+		CommentKey:   d.ID,
 		Body:         clean,
 		ForgeAccount: linearAccount(d.User),
 	}

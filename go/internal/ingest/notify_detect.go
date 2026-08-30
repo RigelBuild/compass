@@ -20,9 +20,11 @@ import (
 // forge.ForgeEvent currency (T2) carries, so both producers can reproduce it:
 //   - State: the forge state string, ALREADY canonicalized at parse time
 //     (closed+merged -> "merged" in both arms: gitHubPRState, mapLinearState).
-//   - Comments: the comment set keyed by canonical comment URL (forge comment
-//     ids are unreliable — Linear UUIDs, GitHub numeric — so URL is the stable
-//     cross-producer key; both providers populate Comment.URL, provider.go:64).
+//   - Comments: the comment set keyed by the stable comment key (forge comment
+//     URLs are unreliable — the Linear COMMENT webhook payload carries no comment
+//     URL, only the parent issue URL — so the provider-stable id is the
+//     cross-producer key; both producers populate it, provider.go Comment.Key /
+//     CommentRef.comment_key, RIG-2732 Fork 1).
 //   - Checks: the COMBINED CI/status roll-up (never one suite's conclusion;
 //     resolved via the ChecksRoller seam before apply).
 //   - HighWaterNumber: the container-scope high-water artifact number (OPENED).
@@ -42,11 +44,16 @@ type ArtifactSnapshot struct {
 	HighWaterNumber uint64                     `json:"highWaterNumber,omitempty"`
 }
 
-// SnapshotComment is one comment in the URL-keyed comment set. Body is the
-// header-stripped, author-attributed body (the ForgeEvent currency already
+// SnapshotComment is one comment in the key-keyed comment set. Key is the
+// forge's stable comment identity (GitHub numeric id as string, Linear UUID);
+// both producers carry it (webhook CommentRef.comment_key, sweep
+// forge.Comment.Key). The per-comment URL is deliberately NOT stored: the Linear
+// COMMENT webhook payload has no comment URL (only the parent issue URL), so a
+// URL in the digested value diverged across producers (RIG-2732 Fork 1). Body is
+// the header-stripped, author-attributed body (the ForgeEvent currency already
 // stripped it at normalize, design.md:554-557).
 type SnapshotComment struct {
-	URL          string `json:"url"`
+	Key          string `json:"key"`
 	Body         string `json:"body,omitempty"`
 	ForgeAccount string `json:"forgeAccount,omitempty"`
 }
@@ -70,10 +77,10 @@ type CheckSnapshot struct {
 // ApplyEvent applies one normalized event to the prior snapshot, returning the
 // next snapshot (pure — it never mutates prev; a nil prev is the never-observed
 // zero snapshot). Per-kind (design.md:850-866):
-//   - COMMENT: adds/overwrites the URL-keyed comment. Re-applying the SAME URL
-//     is idempotent on the snapshot (dedup is NOT content-based — a duplicate
-//     COMMENT leaves the snapshot unchanged but the router STILL notifies,
-//     at-least-once, design.md:878-880).
+//   - COMMENT: adds/overwrites the comment keyed by its stable comment key.
+//     Re-applying the SAME key is idempotent on the snapshot (dedup is NOT
+//     content-based — a duplicate COMMENT leaves the snapshot unchanged but the
+//     router STILL notifies, at-least-once, design.md:878-880).
 //   - STATE: overwrites the state half with ev.State (already canonicalized).
 //   - CHECKS: overwrites the checks half with ev.Checks (the COMBINED roll-up
 //     the router resolved via ChecksRoller — never a single suite).
@@ -94,12 +101,12 @@ func ApplyEvent(prev *ArtifactSnapshot, ev forge.ForgeEvent) ArtifactSnapshot {
 
 	switch ev.Change {
 	case compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_COMMENT:
-		if url := ev.Comment.GetUrl(); url != "" {
+		if key := ev.Comment.GetCommentKey(); key != "" {
 			if next.Comments == nil {
 				next.Comments = make(map[string]SnapshotComment, 1)
 			}
-			next.Comments[url] = SnapshotComment{
-				URL:          url,
+			next.Comments[key] = SnapshotComment{
+				Key:          key,
 				Body:         ev.Comment.GetBody(),
 				ForgeAccount: ev.Comment.GetForgeAccount(),
 			}
@@ -122,7 +129,7 @@ func ApplyEvent(prev *ArtifactSnapshot, ev forge.ForgeEvent) ArtifactSnapshot {
 
 // SnapshotRevision is the deterministic digest that keys a snapshot: sha256 over
 // its CANONICAL JSON (deterministic key order — encoding/json sorts map keys, so
-// the URL-keyed comment set is stable; the checks slice is sorted). Shared with
+// the comment-key-keyed comment set is stable; the checks slice is sorted). Shared with
 // T5: the same state MUST produce the same revision in both arms.
 func SnapshotRevision(snap *ArtifactSnapshot) string {
 	sum := sha256.Sum256(canonicalJSON(snap))
@@ -286,11 +293,11 @@ func detectArtifact(prev *ArtifactSnapshot, fetched FetchedArtifact) (ArtifactSn
 		next.Comments = make(map[string]SnapshotComment, len(fetched.Comments))
 	}
 	for _, c := range fetched.Comments {
-		if c.URL == "" {
+		if c.Key == "" {
 			continue
 		}
 		clean, _, _ := forge.StripOwner(c.Body) // strip the owner header, same as the webhook normalize (design.md:554-557)
-		next.Comments[c.URL] = SnapshotComment{URL: c.URL, Body: clean, ForgeAccount: c.ForgeAccount}
+		next.Comments[c.Key] = SnapshotComment{Key: c.Key, Body: clean, ForgeAccount: c.ForgeAccount}
 	}
 	if fetched.Checks != nil {
 		next.Checks = checksFromSummary(checksSummaryFromForge(*fetched.Checks))
@@ -304,17 +311,19 @@ func detectArtifact(prev *ArtifactSnapshot, fetched FetchedArtifact) (ArtifactSn
 	}
 
 	var changes []forge.ForgeEvent
-	// New comments: a URL in fetched not in prev (at-least-once; deletions are
-	// not in the event alphabet, so a dropped comment heals the snapshot silently).
+	// New comments: a stable comment key in fetched not in prev (at-least-once;
+	// deletions are not in the event alphabet, so a dropped comment heals the
+	// snapshot silently). The delivered event still carries the comment's own URL
+	// (the sweep observed it) plus the stable key.
 	for _, c := range fetched.Comments {
-		if c.URL == "" {
+		if c.Key == "" {
 			continue
 		}
-		if _, had := prev.Comments[c.URL]; had {
+		if _, had := prev.Comments[c.Key]; had {
 			continue
 		}
 		clean, author, ok := forge.StripOwner(c.Body)
-		ref := &compassv1internal.CommentRef{Url: c.URL, Body: clean, ForgeAccount: c.ForgeAccount}
+		ref := &compassv1internal.CommentRef{Url: c.URL, CommentKey: c.Key, Body: clean, ForgeAccount: c.ForgeAccount}
 		if ok {
 			ref.Agent = &compassv1.AgentAttribution{AgentHandle: author.AgentHandle}
 		}

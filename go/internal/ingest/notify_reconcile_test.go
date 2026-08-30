@@ -122,7 +122,7 @@ func TestSweepStartupHealsGap(t *testing.T) {
 	}
 	rd := &fakeReader{
 		issue:    map[uint64]forge.ConditionalResult[forge.Issue]{7: {V: forge.Issue{Number: 7, State: "open", URL: "u"}, ETag: `"i1"`}},
-		comments: map[uint64]forge.ConditionalResult[[]forge.Comment]{7: {V: []forge.Comment{{URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}}, ETag: `"c1"`}},
+		comments: map[uint64]forge.ConditionalResult[[]forge.Comment]{7: {V: []forge.Comment{{Key: "c1", URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}}, ETag: `"c1"`}},
 	}
 	d := &fakeDispatcher{}
 	newReconciler(t, rd, st, d).sweep(context.Background())
@@ -139,7 +139,7 @@ func TestSweepStartupHealsGap(t *testing.T) {
 // dispatch; the cursor is still re-upserted (polled_at/ETag refresh) but its
 // revision is unchanged.
 func TestSweepAll304NoDispatch(t *testing.T) {
-	prior := ArtifactSnapshot{State: "open", Comments: map[string]SnapshotComment{"https://gh/c1": {URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}}}
+	prior := ArtifactSnapshot{State: "open", Comments: map[string]SnapshotComment{"c1": {Key: "c1", Body: "hi", ForgeAccount: "octocat"}}}
 	cur := snapWith(t, "o/r", 7, prior)
 	cur.ETag, cur.CommentsETag = `"i0"`, `"c0"`
 	st := &fakeNotifyStore{
@@ -339,7 +339,7 @@ func TestSweepPerTargetErrorIsolation(t *testing.T) {
 	rd := &errByNumberReader{
 		errNumbers: map[uint64]error{7: errors.New("boom")},
 		delegate: &fakeReader{
-			comments: map[uint64]forge.ConditionalResult[[]forge.Comment]{8: {V: []forge.Comment{{URL: "https://gh/c8", Body: "b", ForgeAccount: "u"}}, ETag: `"c8"`}},
+			comments: map[uint64]forge.ConditionalResult[[]forge.Comment]{8: {V: []forge.Comment{{Key: "c8", URL: "https://gh/c8", Body: "b", ForgeAccount: "u"}}, ETag: `"c8"`}},
 		},
 	}
 	d := &fakeDispatcher{}
@@ -407,7 +407,7 @@ func TestRunImmediateSweepThenCancel(t *testing.T) {
 		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}},
 	}
 	rd := &fakeReader{
-		comments: map[uint64]forge.ConditionalResult[[]forge.Comment]{7: {V: []forge.Comment{{URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}}, ETag: `"c1"`}},
+		comments: map[uint64]forge.ConditionalResult[[]forge.Comment]{7: {V: []forge.Comment{{Key: "c1", URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}}, ETag: `"c1"`}},
 	}
 	d := &fakeDispatcher{}
 	synctest.Test(t, func(t *testing.T) {

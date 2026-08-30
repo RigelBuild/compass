@@ -147,6 +147,9 @@ func TestParseLinearDataEvent_Comment(t *testing.T) {
 	if ev.Comment.GetForgeAccount() != "Alice" {
 		t.Errorf("forge_account = %q, want Alice", ev.Comment.GetForgeAccount())
 	}
+	if ev.Comment.GetCommentKey() != "c1" {
+		t.Errorf("comment_key = %q, want c1 (the comment id from the payload)", ev.Comment.GetCommentKey())
+	}
 
 	// A non-create comment action is dropped.
 	if _, ok, _ := ParseLinearDataEvent([]byte(`{"type":"Comment","action":"update","data":{"id":"c1","issue":{"number":7}}}`)); ok {

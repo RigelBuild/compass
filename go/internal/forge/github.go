@@ -277,7 +277,7 @@ type ghComment struct {
 
 // toComment maps a decoded wire comment to the raw forge.Comment (body RAW).
 func (r ghComment) toComment() Comment {
-	return Comment{ID: r.ID, URL: r.HTMLURL, Body: r.Body, ForgeAccount: r.User.Login}
+	return Comment{ID: r.ID, Key: strconv.FormatUint(r.ID, 10), URL: r.HTMLURL, Body: r.Body, ForgeAccount: r.User.Login}
 }
 
 // ghPull is the wire shape of a GitHub pull request (the create response). Only

@@ -334,7 +334,7 @@ func commentsFromSnapshot(snap *ArtifactSnapshot) []forge.Comment {
 	}
 	out := make([]forge.Comment, 0, len(snap.Comments))
 	for _, c := range snap.Comments {
-		out = append(out, forge.Comment{URL: c.URL, Body: c.Body, ForgeAccount: c.ForgeAccount})
+		out = append(out, forge.Comment{Key: c.Key, Body: c.Body, ForgeAccount: c.ForgeAccount})
 	}
 	return out
 }

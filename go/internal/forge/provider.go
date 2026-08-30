@@ -67,8 +67,13 @@ type Issue struct {
 
 // Comment is a raw forge comment on an issue or pull request.
 type Comment struct {
-	// ID is the forge's own comment identifier.
+	// ID is the forge's own comment identifier (numeric; a write ack / comment_id).
 	ID uint64
+	// Key is the forge's stable comment identity as a string (GitHub numeric id
+	// rendered decimal; Linear UUID). It is the cross-producer snapshot key —
+	// stable across the webhook and sweep producers where the per-comment URL is
+	// not (Linear's comment webhook carries no comment URL).
+	Key string
 	// URL is the forge's canonical web URL for the comment.
 	URL string
 	// Body is the RAW comment body (owner header not stripped here).

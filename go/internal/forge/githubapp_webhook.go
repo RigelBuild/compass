@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -234,6 +235,7 @@ func parseGitHubReview(base ForgeEvent, wh whPayload) (ForgeEvent, bool, error) 
 	base.Comment = &compassv1internal.CommentRef{
 		Url:          wh.Review.HTMLURL,
 		CommentId:    wh.Review.ID,
+		CommentKey:   strconv.FormatUint(wh.Review.ID, 10),
 		ForgeAccount: wh.Review.User.Login,
 	}
 	base.Comment.Body, base.Comment.Agent = stripBodyToRef(wh.Review.Body)
@@ -260,6 +262,7 @@ func gitHubCommentRef(c *whComment) *compassv1internal.CommentRef {
 	ref := &compassv1internal.CommentRef{
 		Url:          c.HTMLURL,
 		CommentId:    c.ID,
+		CommentKey:   strconv.FormatUint(c.ID, 10),
 		ForgeAccount: c.User.Login,
 	}
 	ref.Body, ref.Agent = stripBodyToRef(c.Body)

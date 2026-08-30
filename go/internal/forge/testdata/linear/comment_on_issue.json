@@ -49,6 +49,7 @@
 		},
 		"want": {
 			"ID": 0,
+			"Key": "comment-uuid",
 			"URL": "https://linear.app/x/issue/RIG-7#comment-1",
 			"Body": "a reply",
 			"ForgeAccount": ""
