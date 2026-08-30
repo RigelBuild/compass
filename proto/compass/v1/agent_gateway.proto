@@ -114,6 +114,10 @@ message CommsCallRequest {
     CreateChannelRequest create_channel = 7;
     UpdateChannelMembersRequest update_members = 8;
     CreateChannelGroupRequest create_channel_group = 9;
+    // 10 is trigger_traceparent (message-level, below); open_dm takes the
+    // next-free arm above it (design Global Constraints: never renumber down
+    // into an org-management slot).
+    OpenDMRequest open_dm = 11;
   }
   // The W3C `traceparent` of the delivered message that triggered this outbound
   // call, re-attached by the agent so the Server can LINK the reply's fresh
@@ -131,7 +135,7 @@ message CommsCallRequest {
 // The result of one comms call, correlated by `call_id`. A successful call sets
 // the response arm matching the request's operation (`post`, `list`, `roster`,
 // `set_status`, `pin`, `create_channel`, `update_members`,
-// `create_channel_group`); an in-band failure (a tool error — non-member
+// `create_channel_group`, `open_dm`); an in-band failure (a tool error — non-member
 // channel, bad input) sets `error`, which is NOT a transport teardown. The same
 // message is the `RelayCommsCallResponse.result` payload on the Runner->Server
 // leg.
@@ -147,6 +151,7 @@ message CommsCallResult {
     CreateChannelResponse create_channel = 8;
     UpdateChannelMembersResponse update_members = 9;
     CreateChannelGroupResponse create_channel_group = 10;
+    OpenDMResponse open_dm = 11;
   }
 }
 
@@ -200,6 +205,10 @@ message SpawnPeerResponse {
   string agent_account_id = 1;
   string container_name = 2;
   string session_id = 3;
+  // The name of the manager↔peer DM channel auto-opened at spawn (R8). Set on
+  // both the fresh-spawn and resume paths; EMPTY when the post-spawn open
+  // failed (recoverable next turn via comms_open_dm — never a spawn rollback).
+  string dm_channel_name = 4;
 }
 
 // Despawn a peer: tear down its container and release its durable placement.

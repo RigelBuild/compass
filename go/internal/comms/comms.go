@@ -635,6 +635,21 @@ func (c *Comms) UpdatePinnedBoard(
 	return connect.NewResponse(&compassv1.UpdatePinnedBoardResponse{Channel: wire}), nil
 }
 
+// OpenDM resolves-or-creates the two-party DM channel between the caller and a
+// peer, addressed by handle (RIG-2962). T1 lands the contract (proto + regen)
+// proto-first; the real handler — caller/peer resolve, same-owner authz, the
+// reserved-DM-group upsert, and the post-commit ChannelChanged emit — is the
+// T3 leg (compass-agent-peer-dm design.md T3), which replaces this stub. Until
+// then it returns CodeUnimplemented so *Comms satisfies the generated
+// CommsServiceHandler (asserted with no Unimplemented embed) without pretending
+// to serve a surface whose store legs (T2 dm.go) do not exist yet.
+func (c *Comms) OpenDM(
+	_ context.Context,
+	_ *connect.Request[compassv1.OpenDMRequest],
+) (*connect.Response[compassv1.OpenDMResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("comms: OpenDM not implemented until RIG-2962 T3"))
+}
+
 // applyBoardOp maps the request's op oneof to its store call: a plain pin
 // (PinMessage, replace ""), a compare-and-swap repoint (PinMessage, replace set),
 // or an unpin (UnpinMessage). An unset oneof is a malformed request

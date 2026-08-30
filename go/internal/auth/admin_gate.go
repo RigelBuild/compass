@@ -109,6 +109,7 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CommsServiceSetChannelPolicyProcedure,
 		compassv1connect.CommsServiceGetRosterProcedure,
 		compassv1connect.CommsServiceUpdatePinnedBoardProcedure,
+		compassv1connect.CommsServiceOpenDMProcedure,
 		compassv1connect.CommsServiceSubscribeCommsProcedure:
 		return authenticatedOpen{}, true
 

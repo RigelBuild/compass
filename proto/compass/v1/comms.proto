@@ -61,8 +61,18 @@ service CommsService {
 
   // Add or remove channel members and flip a member's subscribe opt-in —
   // caller-authorized against channel visibility. Emits ChannelChanged. One RPC
-  // covers join, subscribe-toggle, DM-expansion, and share-replacement.
+  // covers join, subscribe-toggle, DM-to-channel conversion (convert_channel_name),
+  // and share-replacement.
   rpc UpdateChannelMembers(UpdateChannelMembersRequest) returns (UpdateChannelMembersResponse);
+
+  // Open (or fetch) the two-party DM channel between the caller and a peer,
+  // addressed by the peer's owner-namespaced handle. Resolve-or-create and
+  // idempotent: the channel is minted on first open in the caller-owner's
+  // reserved DM group under a deterministic sorted-handle name, and returned
+  // on every subsequent open. Same-owner only — unknown and cross-owner both
+  // return NOT_FOUND; a self-open is INVALID_ARGUMENT. Emits ChannelChanged on
+  // create.
+  rpc OpenDM(OpenDMRequest) returns (OpenDMResponse);
 
   // Re-parent an agent in the agent tree, or promote it to a root (empty
   // new_parent_agent_id) — caller-authorized against the agent's owner. The
@@ -271,12 +281,17 @@ message PinnedEntry {
 }
 
 // A channel's kind. A plain channel is the default; a DM is a direct
-// conversation (human↔human, human↔agent, or agent↔agent) that widens into a
-// GROUP_DM as members are added — an agent's primary surface is a channel/DM.
+// conversation (human↔human, human↔agent, or agent↔agent) between exactly two
+// parties — an agent's primary surface is a channel/DM. A DM never widens: a
+// third party converts it to a named CHANNEL (UpdateChannelMembers with
+// convert_channel_name), which frees the DM's deterministic name so a future
+// open_dm mints a fresh pair DM.
 enum ChannelKind {
   CHANNEL_KIND_CHANNEL = 0;
   CHANNEL_KIND_DM = 1;
-  CHANNEL_KIND_GROUP_DM = 2;
+  // Retired: never produced. A DM converts to a named CHANNEL on third-party
+  // add rather than widening. The number is not reusable.
+  CHANNEL_KIND_GROUP_DM = 2 [deprecated = true];
 }
 
 // ── Agent workspace (D5) ─────────────────────────────────────────────────────
@@ -668,10 +683,31 @@ message UpdateChannelMembersRequest {
   // Members to mark unsubscribed (read-only). Each is a `@handle`; the server
   // resolves it to an account id; unknown → NOT_FOUND.
   repeated string unsubscribe_handles = 5;
+  // Non-empty converts a two-party DM into a named CHANNEL as part of the same
+  // member update: required to add a third party to a kind=DM channel (a bare
+  // add on a DM is INVALID_ARGUMENT). The convert sets kind=CHANNEL, renames
+  // the channel to this value, and detaches it from the reserved DM group —
+  // freeing the DM's deterministic name so a future open_dm mints a fresh pair
+  // DM. Ignored (no-op) for non-DM channels.
+  string convert_channel_name = 6;
 }
 
 message UpdateChannelMembersResponse {
   Channel channel = 1;
+}
+
+message OpenDMRequest {
+  // The peer agent's handle (owner-namespaced per DL-271). The server resolves
+  // it and enforces same-owner; unknown and cross-owner both return NOT_FOUND.
+  // A self-handle is INVALID_ARGUMENT.
+  string peer_handle = 1;
+}
+
+message OpenDMResponse {
+  // The resolved DM channel; id-typed wire per DL-270, tools render its name.
+  Channel channel = 1;
+  // True when this call minted the channel; false on a resume.
+  bool created = 2;
 }
 
 message ReparentAgentRequest {

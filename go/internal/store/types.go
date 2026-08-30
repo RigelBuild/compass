@@ -77,7 +77,9 @@ const (
 	ChannelKindChannel ChannelKind = 0
 	// ChannelKindDM is a direct conversation between two accounts.
 	ChannelKindDM ChannelKind = 1
-	// ChannelKindGroupDM is a multi-party direct conversation.
+	// ChannelKindGroupDM is RETIRED: never produced (a DM converts to a named
+	// CHANNEL rather than widening). Kept as a tombstone — the number is not
+	// reusable; the wire mirror is deprecated in place (comms.proto ChannelKind).
 	ChannelKindGroupDM ChannelKind = 2
 )
 
