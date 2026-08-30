@@ -182,6 +182,10 @@ type commsCall struct {
 	roster    *compassv1.GetRosterRequest
 	setStatus string
 	pin       *compassv1.UpdatePinnedBoardRequest
+
+	createChannel      *compassv1.CreateChannelRequest
+	updateMembers      *compassv1.UpdateChannelMembersRequest
+	createChannelGroup *compassv1.CreateChannelGroupRequest
 }
 
 // fakeCommsCaller is a hand-written CommsCaller: it records every call (account
@@ -210,6 +214,15 @@ type fakeCommsCaller struct {
 	setStatusReturned   string
 	pinResp             *compassv1.UpdatePinnedBoardResponse
 	pinErr              error
+
+	createChannelResp *compassv1.CreateChannelResponse
+	createChannelErr  error
+
+	updateMembersResp *compassv1.UpdateChannelMembersResponse
+	updateMembersErr  error
+
+	createChannelGroupResp *compassv1.CreateChannelGroupResponse
+	createChannelGroupErr  error
 }
 
 func (f *fakeCommsCaller) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
@@ -283,6 +296,36 @@ func (f *fakeCommsCaller) UpdatePinnedBoardAsAccount(_ context.Context, account 
 		return nil, f.pinErr
 	}
 	return f.pinResp, nil
+}
+
+func (f *fakeCommsCaller) CreateChannelAsAccount(_ context.Context, account store.AccountID, req *compassv1.CreateChannelRequest) (*compassv1.CreateChannelResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, createChannel: req})
+	if f.createChannelErr != nil {
+		return nil, f.createChannelErr
+	}
+	return f.createChannelResp, nil
+}
+
+func (f *fakeCommsCaller) UpdateChannelMembersAsAccount(_ context.Context, account store.AccountID, req *compassv1.UpdateChannelMembersRequest) (*compassv1.UpdateChannelMembersResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, updateMembers: req})
+	if f.updateMembersErr != nil {
+		return nil, f.updateMembersErr
+	}
+	return f.updateMembersResp, nil
+}
+
+func (f *fakeCommsCaller) CreateChannelGroupAsAccount(_ context.Context, account store.AccountID, req *compassv1.CreateChannelGroupRequest) (*compassv1.CreateChannelGroupResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, createChannelGroup: req})
+	if f.createChannelGroupErr != nil {
+		return nil, f.createChannelGroupErr
+	}
+	return f.createChannelGroupResp, nil
 }
 
 func (f *fakeCommsCaller) snapshot() []commsCall {

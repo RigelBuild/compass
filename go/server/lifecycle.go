@@ -199,16 +199,18 @@ func (l *lifecycleService) SpawnAsAccount(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("checking handle for user shadow: %w", err))
 	}
 
-	// Persona and role are server-authoritative and empty on spawn
-	// (SpawnPeerRequest carries neither): the new account is created with no
-	// persona and no role, and the values threaded to the Runner come from the
-	// store account below, never the caller — a caller cannot inject a system
-	// prompt or a role prompt.
+	// Persona and role are set-at-creation from the spawn request (org-management
+	// Manager creation): under the D9 owner-acts model the caller's OWNER is the
+	// authority, so a Manager-creating spawn legitimately carries role+persona at
+	// creation. They are stored via CreateAgent (the source of record) and then
+	// threaded to the Runner from the CREATED store account below, never from the
+	// request directly — so an empty role+persona spawn is byte-identical to
+	// today's field-less spawn.
 	created, err := l.store.CreateAgent(ctx, callerOwner, store.NewAgent{
 		Handle:      req.GetHandle(),
 		DisplayName: req.GetDisplayName(),
-		Persona:     "",
-		Role:        "",
+		Persona:     req.GetPersona(),
+		Role:        req.GetRole(),
 		// Set-at-creation: the spawned peer's parent in the agent tree is its
 		// spawner (§T3). A new account has no descendants, so this edge cannot
 		// form a cycle — the cycle check lives only on the mutable ReparentAgent.

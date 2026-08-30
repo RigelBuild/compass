@@ -272,6 +272,72 @@ func (c *Comms) UpdatePinnedBoardAsAccount(
 	return resp.Msg, nil
 }
 
+// CreateChannelAsAccount executes one agent-initiated CreateChannel as account,
+// mirroring UpdatePinnedBoardAsAccount: WithActor + the shared CreateChannel
+// handler path, so channel authz, the store ops (including expandOwnerMembership,
+// which seats the actor as a founding member so the Manager can immediately post
+// to the channel it made), and the ChannelChanged fan-out are identical to a
+// human caller's. A group the agent cannot see collapses to the same code a human
+// gets. The request names no channel, so there is no home-channel defaulting.
+func (c *Comms) CreateChannelAsAccount(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.CreateChannelRequest,
+) (*compassv1.CreateChannelResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	resp, err := c.CreateChannel(WithActor(ctx, account), connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// UpdateChannelMembersAsAccount executes one agent-initiated UpdateChannelMembers
+// as account, mirroring UpdatePinnedBoardAsAccount: WithActor + the shared
+// UpdateChannelMembers handler path, so the membership authz, the store ops, and
+// the ChannelChanged fan-out are identical to a human caller's. A non-member or
+// invisible channel collapses to the same code a human gets. The request always
+// names its channel explicitly (channel_id), so there is no home-channel
+// defaulting here.
+func (c *Comms) UpdateChannelMembersAsAccount(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.UpdateChannelMembersRequest,
+) (*compassv1.UpdateChannelMembersResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	resp, err := c.UpdateChannelMembers(WithActor(ctx, account), connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// CreateChannelGroupAsAccount executes one agent-initiated CreateChannelGroup as
+// account, mirroring UpdatePinnedBoardAsAccount: WithActor + the shared
+// CreateChannelGroup handler path, so the group is created under the agent's
+// account (D9 owner-scoped by requireGroupCreateAuthz, resolved server-side from
+// the actor context) and the ChannelGroupChanged fan-out is identical to a human
+// caller's. The request names no channel (only an optional parent group), so
+// there is no home-channel defaulting here.
+func (c *Comms) CreateChannelGroupAsAccount(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.CreateChannelGroupRequest,
+) (*compassv1.CreateChannelGroupResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	resp, err := c.CreateChannelGroup(WithActor(ctx, account), connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // CommitAgentPost commits one relayed MessagePosted frame as a durable comms row
 // under account. It builds a PostMessageRequest from the frame's blocks and
 // delegates to PostAsAccount, so this is the SAME PostMessage handler path a
