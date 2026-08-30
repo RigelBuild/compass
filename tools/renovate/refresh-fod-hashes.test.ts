@@ -78,6 +78,16 @@ const GO_NIX_FIXTURE = `let
   };
 in guestd
 `;
+// The flake.nix mirror carries the SAME Go vendorHash marker; the script writes
+// the recomputed value here too (FodEntry.mirrorFiles). A distinct placeholder so
+// a missing-mirror regression is unmistakable (it would stay at this value).
+const PLACEHOLDER_GO_MIRROR = "sha256-PLACEHOLDERflakemirror00000000000000000=";
+const GO_MIRROR_FIXTURE = `let
+  compass-app = pkgs.buildGoModule {
+    ${GO_ENTRY.marker}${bodyOf(PLACEHOLDER_GO_MIRROR)}";
+  };
+in compass-app
+`;
 const BUN_NIX_FIXTURE = `let
   nodeModules = pkgs.stdenv.mkDerivation {
     ${BUN_ENTRY.marker}${bodyOf(PLACEHOLDER_BUN)}";
@@ -133,6 +143,12 @@ async function buildBaselineRepo(): Promise<string> {
 	// Pin files at the paths the TABLE declares.
 	await write(GO_ENTRY.file, GO_NIX_FIXTURE);
 	await write(BUN_ENTRY.file, BUN_NIX_FIXTURE);
+	// Mirror pin files the Go entry declares (same vendorHash, refreshed in
+	// lockstep — derived from the shipped table so a rebase that edits mirrorFiles
+	// keeps this honest with no second edit).
+	for (const mirror of GO_ENTRY.mirrorFiles ?? []) {
+		await write(mirror, GO_MIRROR_FIXTURE);
+	}
 	// Trigger manifests (content is irrelevant; only their diff-vs-base matters).
 	for (const trigger of [...GO_ENTRY.triggers, ...BUN_ENTRY.triggers]) {
 		await write(trigger, "baseline\n");
@@ -196,6 +212,28 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		expect(hashOnMarker(goNix, GO_ENTRY.marker)).toBe(
 			stubSriForFragment("go-modules"),
 		);
+	});
+
+	// RIG-2852 Gap 1: the SAME go/go.mod bump must refresh the flake.nix MIRROR to
+	// the identical value — not just guest-image/default.nix. Before this fix the
+	// mirror was never touched, so an auto-opened Go bump landed with flake.nix's
+	// vendorHash stale and `nix flake check` red. Assert every declared mirror got
+	// the go-modules SRI and none kept its distinct placeholder.
+	test("refreshes every flake.nix mirror to the same SRI on a go/go.mod bump", async () => {
+		await Bun.write(join(repo, "go/go.mod"), "bumped\n");
+
+		const res = await runRefresh(repo);
+		expect(res.exitCode).toBe(0);
+
+		const mirrors = GO_ENTRY.mirrorFiles ?? [];
+		expect(mirrors.length).toBeGreaterThan(0); // the Go entry declares flake.nix
+		for (const mirror of mirrors) {
+			const text = await readFile(join(repo, mirror), "utf8");
+			expect(hashOnMarker(text, GO_ENTRY.marker)).toBe(
+				stubSriForFragment("go-modules"),
+			);
+			expect(text).not.toContain(bodyOf(PLACEHOLDER_GO_MIRROR));
+		}
 	});
 
 	// A gomod-only bump refreshes the Go vendorHash and leaves the bun outputHash
