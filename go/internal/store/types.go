@@ -36,6 +36,10 @@ type (
 	WorkspaceID string
 	// MessageID identifies a message row.
 	MessageID string
+	// TenantID identifies a managed-service tenant — the isolation root an
+	// account (and everything reachable through it) belongs to. OSS
+	// single-tenant runs with one bootstrap tenant (BootstrapTenant).
+	TenantID string
 )
 
 // UserRole is a human account's permission role (comms.proto:127-130). The

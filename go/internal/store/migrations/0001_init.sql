@@ -4,8 +4,9 @@
 -- channels + membership + policy, topics and topic-scoped messages, the pinned
 -- board, agent workspaces, delivery cursors, session ownership + placement, the
 -- two-tier transcript store, the secrets names registry, the fleet config
--- bundle, board issues, the forge webhook-lane target machinery, and forge
--- authored-artifact ownership.
+-- bundle, board issues, the forge webhook-lane target machinery, forge
+-- authored-artifact ownership, and tenants — the isolation root every
+-- tenant-owned table hangs off (RIG-2861).
 --
 -- History note: this replaces the original sequential 0001..0016 migration
 -- chain PLUS the two migrations added after it (the forge authored-artifact
@@ -29,6 +30,20 @@
 -- that references it (accounts first, then its subtypes, then everything that
 -- hangs off them; topics before messages; messages before channel_pins).
 
+-- ── Tenants ─────────────────────────────────────────────────────────────────
+-- One row per managed-service tenant; the isolation root every tenant-owned
+-- table hangs off (RIG-2861 T1). slug is the stable idempotency key the
+-- bootstrap-tenant seed finds-or-creates on (BootstrapTenant), mirroring the
+-- unique-handle key BootstrapAdmin uses. created_at_unix_ms is BIGINT ms since
+-- epoch, matching the newer unix-ms columns in this schema (sessions,
+-- delivery), NOT a TIMESTAMPTZ. OSS single-tenant runs with exactly one row.
+CREATE TABLE tenants (
+    id                 TEXT PRIMARY KEY,
+    slug               TEXT NOT NULL UNIQUE,
+    display_name       TEXT NOT NULL,
+    created_at_unix_ms BIGINT NOT NULL
+);
+
 -- ── Accounts ────────────────────────────────────────────────────────────────
 -- One row per account; the user/agent split lives in the two subtype tables
 -- below, mirroring the compass.v1 Account `kind` oneof. handle is a display
@@ -41,8 +56,12 @@ CREATE TABLE accounts (
     id           TEXT PRIMARY KEY,
     handle       TEXT NOT NULL,
     display_name TEXT NOT NULL,
+    tenant_id    TEXT NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The "accounts of this tenant" lookup direction for tenant-scoped reads.
+CREATE INDEX accounts_tenant_idx ON accounts (tenant_id);
 
 -- Human accounts: a permission role (0 member, 1 admin). PK is also the FK to
 -- accounts, so a user row is exactly one account and cannot coexist with an

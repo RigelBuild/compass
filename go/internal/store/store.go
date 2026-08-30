@@ -51,6 +51,11 @@ type Store struct {
 	// No lock: set once before serving, so the write happens-before the first
 	// concurrent parent-edge write (mirrors hub.SetSettleSink).
 	coordinationHook CoordinationHook
+	// bootstrapTenantID is the single OSS tenant seeded at Open, the fallback
+	// tenant every write is stamped with when the request context carries no
+	// resolved tenant (resolveTenant). Set once in Open before the store serves;
+	// no lock, mirroring coordinationHook's set-once-before-serving discipline.
+	bootstrapTenantID TenantID
 }
 
 // querier is the read surface shared by the pool and a transaction, so a scan
@@ -90,6 +95,12 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		pool.Close()
 		return nil, err
 	}
+	bt, err := s.BootstrapTenant(ctx)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
+	s.bootstrapTenantID = bt
 	return s, nil
 }
 
