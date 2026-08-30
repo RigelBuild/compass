@@ -17,6 +17,7 @@ package compassv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -4019,6 +4020,12 @@ type Issue struct {
 	ForgeAccount string `protobuf:"bytes,10,opt,name=forge_account,json=forgeAccount,proto3" json:"forge_account,omitempty"` // the native forge account that authored the
 	// artifact (e.g. the GitHub login); always set
 	Labels []string `protobuf:"bytes,11,rep,name=labels,proto3" json:"labels,omitempty"`
+	// The forge's last-updated timestamp for the issue (translated from the LIST
+	// row's updated_at). The OQ-6(a) recency guard (RIG-2883 T4a) reads it to
+	// keep the board sink order-independent: a stale re-sink never overwrites a
+	// fresher row. Unset for a not-yet-threaded writer, in which case the guard
+	// is additive (the store-side NULL arms still let the write apply).
+	UpdatedAt *timestamppb.Timestamp `protobuf:"bytes,19,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
 	// ── Compass machinery (Compass-owned; none of this is on the forge) ──
 	State         IssueState     `protobuf:"varint,12,opt,name=state,proto3,enum=compass.v1.IssueState" json:"state,omitempty"` // the canonical lifecycle, server-authoritative
 	Priority      string         `protobuf:"bytes,13,opt,name=priority,proto3" json:"priority,omitempty"`                       // "urgent" | "high" | "medium" | "low"; string in v1
@@ -4134,6 +4141,13 @@ func (x *Issue) GetForgeAccount() string {
 func (x *Issue) GetLabels() []string {
 	if x != nil {
 		return x.Labels
+	}
+	return nil
+}
+
+func (x *Issue) GetUpdatedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.UpdatedAt
 	}
 	return nil
 }
@@ -4807,7 +4821,7 @@ var File_compass_v1_compass_proto protoreflect.FileDescriptor
 const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"\x18compass/v1/compass.proto\x12\n" +
-	"compass.v1\"\xd5\x01\n" +
+	"compass.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xd5\x01\n" +
 	"\x10SetSecretRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\x05value\x18\x02 \x01(\tB\x03\x80\x01\x01R\x05value\x126\n" +
@@ -5016,7 +5030,7 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\"U\n" +
 	"\bForgeRef\x125\n" +
 	"\bprovider\x18\x01 \x01(\x0e2\x19.compass.v1.ForgeProviderR\bprovider\x12\x12\n" +
-	"\x04host\x18\x02 \x01(\tR\x04host\"\xb2\x04\n" +
+	"\x04host\x18\x02 \x01(\tR\x04host\"\xed\x04\n" +
 	"\x05Issue\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12*\n" +
 	"\x05forge\x18\x02 \x01(\v2\x14.compass.v1.ForgeRefR\x05forge\x12\x12\n" +
@@ -5030,7 +5044,9 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x05agent\x18\t \x01(\v2\x1c.compass.v1.AgentAttributionR\x05agent\x12#\n" +
 	"\rforge_account\x18\n" +
 	" \x01(\tR\fforgeAccount\x12\x16\n" +
-	"\x06labels\x18\v \x03(\tR\x06labels\x12,\n" +
+	"\x06labels\x18\v \x03(\tR\x06labels\x129\n" +
+	"\n" +
+	"updated_at\x18\x13 \x01(\v2\x1a.google.protobuf.TimestampR\tupdatedAt\x12,\n" +
 	"\x05state\x18\f \x01(\x0e2\x16.compass.v1.IssueStateR\x05state\x12\x1a\n" +
 	"\bpriority\x18\r \x01(\tR\bpriority\x12\x1a\n" +
 	"\bassignee\x18\x0e \x01(\tR\bassignee\x12\x18\n" +
@@ -5258,6 +5274,7 @@ var file_compass_v1_compass_proto_goTypes = []any{
 	(*Review)(nil),                          // 74: compass.v1.Review
 	(*ReviewThread)(nil),                    // 75: compass.v1.ReviewThread
 	(*Comment)(nil),                         // 76: compass.v1.Comment
+	(*timestamppb.Timestamp)(nil),           // 77: google.protobuf.Timestamp
 }
 var file_compass_v1_compass_proto_depIdxs = []int32{
 	0,  // 0: compass.v1.SetSecretRequest.delivery:type_name -> compass.v1.SecretDelivery
@@ -5296,62 +5313,63 @@ var file_compass_v1_compass_proto_depIdxs = []int32{
 	8,  // 33: compass.v1.ForgeRef.provider:type_name -> compass.v1.ForgeProvider
 	67, // 34: compass.v1.Issue.forge:type_name -> compass.v1.ForgeRef
 	66, // 35: compass.v1.Issue.agent:type_name -> compass.v1.AgentAttribution
-	7,  // 36: compass.v1.Issue.state:type_name -> compass.v1.IssueState
-	69, // 37: compass.v1.Issue.prs:type_name -> compass.v1.PullRequest
-	73, // 38: compass.v1.Issue.tracker:type_name -> compass.v1.TrackerRef
-	67, // 39: compass.v1.PullRequest.forge:type_name -> compass.v1.ForgeRef
-	66, // 40: compass.v1.PullRequest.agent:type_name -> compass.v1.AgentAttribution
-	72, // 41: compass.v1.PullRequest.changed:type_name -> compass.v1.ChangedStats
-	70, // 42: compass.v1.PullRequest.checks:type_name -> compass.v1.ChecksSummary
-	74, // 43: compass.v1.PullRequest.reviews:type_name -> compass.v1.Review
-	75, // 44: compass.v1.PullRequest.threads:type_name -> compass.v1.ReviewThread
-	71, // 45: compass.v1.ChecksSummary.checks:type_name -> compass.v1.Check
-	76, // 46: compass.v1.ReviewThread.comments:type_name -> compass.v1.Comment
-	16, // 47: compass.v1.CompassService.GetServerInfo:input_type -> compass.v1.GetServerInfoRequest
-	18, // 48: compass.v1.CompassService.WhoAmI:input_type -> compass.v1.WhoAmIRequest
-	20, // 49: compass.v1.CompassService.SubscribeEvents:input_type -> compass.v1.SubscribeEventsRequest
-	22, // 50: compass.v1.CompassService.ListBoardIssues:input_type -> compass.v1.ListBoardIssuesRequest
-	42, // 51: compass.v1.CompassService.ProvisionAgentWorkspace:input_type -> compass.v1.ProvisionAgentWorkspaceRequest
-	46, // 52: compass.v1.CompassService.StartAgentSession:input_type -> compass.v1.StartAgentSessionRequest
-	48, // 53: compass.v1.CompassService.SpawnAgent:input_type -> compass.v1.SpawnAgentRequest
-	50, // 54: compass.v1.CompassService.StopAgentSession:input_type -> compass.v1.StopAgentSessionRequest
-	44, // 55: compass.v1.CompassService.RemoveAgentWorkspace:input_type -> compass.v1.RemoveAgentWorkspaceRequest
-	52, // 56: compass.v1.CompassService.ReloadAgentSession:input_type -> compass.v1.ReloadAgentSessionRequest
-	54, // 57: compass.v1.CompassService.GetAgentStatus:input_type -> compass.v1.GetAgentStatusRequest
-	40, // 58: compass.v1.CompassService.SubscribeAgentSession:input_type -> compass.v1.SubscribeAgentSessionRequest
-	56, // 59: compass.v1.CompassService.IssueToken:input_type -> compass.v1.IssueTokenRequest
-	58, // 60: compass.v1.CompassService.RevokeToken:input_type -> compass.v1.RevokeTokenRequest
-	60, // 61: compass.v1.CompassService.PutAgentConfig:input_type -> compass.v1.PutAgentConfigRequest
-	62, // 62: compass.v1.CompassService.GetAgentConfigInfo:input_type -> compass.v1.GetAgentConfigInfoRequest
-	64, // 63: compass.v1.CompassService.DeleteAgentConfig:input_type -> compass.v1.DeleteAgentConfigRequest
-	9,  // 64: compass.v1.SecretsService.SetSecret:input_type -> compass.v1.SetSecretRequest
-	11, // 65: compass.v1.SecretsService.ListSecrets:input_type -> compass.v1.ListSecretsRequest
-	14, // 66: compass.v1.SecretsService.DeleteSecret:input_type -> compass.v1.DeleteSecretRequest
-	17, // 67: compass.v1.CompassService.GetServerInfo:output_type -> compass.v1.GetServerInfoResponse
-	19, // 68: compass.v1.CompassService.WhoAmI:output_type -> compass.v1.WhoAmIResponse
-	21, // 69: compass.v1.CompassService.SubscribeEvents:output_type -> compass.v1.SubscribeEventsResponse
-	23, // 70: compass.v1.CompassService.ListBoardIssues:output_type -> compass.v1.ListBoardIssuesResponse
-	43, // 71: compass.v1.CompassService.ProvisionAgentWorkspace:output_type -> compass.v1.ProvisionAgentWorkspaceResponse
-	47, // 72: compass.v1.CompassService.StartAgentSession:output_type -> compass.v1.StartAgentSessionResponse
-	49, // 73: compass.v1.CompassService.SpawnAgent:output_type -> compass.v1.SpawnAgentResponse
-	51, // 74: compass.v1.CompassService.StopAgentSession:output_type -> compass.v1.StopAgentSessionResponse
-	45, // 75: compass.v1.CompassService.RemoveAgentWorkspace:output_type -> compass.v1.RemoveAgentWorkspaceResponse
-	53, // 76: compass.v1.CompassService.ReloadAgentSession:output_type -> compass.v1.ReloadAgentSessionResponse
-	55, // 77: compass.v1.CompassService.GetAgentStatus:output_type -> compass.v1.GetAgentStatusResponse
-	41, // 78: compass.v1.CompassService.SubscribeAgentSession:output_type -> compass.v1.AgentSessionFrame
-	57, // 79: compass.v1.CompassService.IssueToken:output_type -> compass.v1.IssueTokenResponse
-	59, // 80: compass.v1.CompassService.RevokeToken:output_type -> compass.v1.RevokeTokenResponse
-	61, // 81: compass.v1.CompassService.PutAgentConfig:output_type -> compass.v1.PutAgentConfigResponse
-	63, // 82: compass.v1.CompassService.GetAgentConfigInfo:output_type -> compass.v1.GetAgentConfigInfoResponse
-	65, // 83: compass.v1.CompassService.DeleteAgentConfig:output_type -> compass.v1.DeleteAgentConfigResponse
-	10, // 84: compass.v1.SecretsService.SetSecret:output_type -> compass.v1.SetSecretResponse
-	12, // 85: compass.v1.SecretsService.ListSecrets:output_type -> compass.v1.ListSecretsResponse
-	15, // 86: compass.v1.SecretsService.DeleteSecret:output_type -> compass.v1.DeleteSecretResponse
-	67, // [67:87] is the sub-list for method output_type
-	47, // [47:67] is the sub-list for method input_type
-	47, // [47:47] is the sub-list for extension type_name
-	47, // [47:47] is the sub-list for extension extendee
-	0,  // [0:47] is the sub-list for field type_name
+	77, // 36: compass.v1.Issue.updated_at:type_name -> google.protobuf.Timestamp
+	7,  // 37: compass.v1.Issue.state:type_name -> compass.v1.IssueState
+	69, // 38: compass.v1.Issue.prs:type_name -> compass.v1.PullRequest
+	73, // 39: compass.v1.Issue.tracker:type_name -> compass.v1.TrackerRef
+	67, // 40: compass.v1.PullRequest.forge:type_name -> compass.v1.ForgeRef
+	66, // 41: compass.v1.PullRequest.agent:type_name -> compass.v1.AgentAttribution
+	72, // 42: compass.v1.PullRequest.changed:type_name -> compass.v1.ChangedStats
+	70, // 43: compass.v1.PullRequest.checks:type_name -> compass.v1.ChecksSummary
+	74, // 44: compass.v1.PullRequest.reviews:type_name -> compass.v1.Review
+	75, // 45: compass.v1.PullRequest.threads:type_name -> compass.v1.ReviewThread
+	71, // 46: compass.v1.ChecksSummary.checks:type_name -> compass.v1.Check
+	76, // 47: compass.v1.ReviewThread.comments:type_name -> compass.v1.Comment
+	16, // 48: compass.v1.CompassService.GetServerInfo:input_type -> compass.v1.GetServerInfoRequest
+	18, // 49: compass.v1.CompassService.WhoAmI:input_type -> compass.v1.WhoAmIRequest
+	20, // 50: compass.v1.CompassService.SubscribeEvents:input_type -> compass.v1.SubscribeEventsRequest
+	22, // 51: compass.v1.CompassService.ListBoardIssues:input_type -> compass.v1.ListBoardIssuesRequest
+	42, // 52: compass.v1.CompassService.ProvisionAgentWorkspace:input_type -> compass.v1.ProvisionAgentWorkspaceRequest
+	46, // 53: compass.v1.CompassService.StartAgentSession:input_type -> compass.v1.StartAgentSessionRequest
+	48, // 54: compass.v1.CompassService.SpawnAgent:input_type -> compass.v1.SpawnAgentRequest
+	50, // 55: compass.v1.CompassService.StopAgentSession:input_type -> compass.v1.StopAgentSessionRequest
+	44, // 56: compass.v1.CompassService.RemoveAgentWorkspace:input_type -> compass.v1.RemoveAgentWorkspaceRequest
+	52, // 57: compass.v1.CompassService.ReloadAgentSession:input_type -> compass.v1.ReloadAgentSessionRequest
+	54, // 58: compass.v1.CompassService.GetAgentStatus:input_type -> compass.v1.GetAgentStatusRequest
+	40, // 59: compass.v1.CompassService.SubscribeAgentSession:input_type -> compass.v1.SubscribeAgentSessionRequest
+	56, // 60: compass.v1.CompassService.IssueToken:input_type -> compass.v1.IssueTokenRequest
+	58, // 61: compass.v1.CompassService.RevokeToken:input_type -> compass.v1.RevokeTokenRequest
+	60, // 62: compass.v1.CompassService.PutAgentConfig:input_type -> compass.v1.PutAgentConfigRequest
+	62, // 63: compass.v1.CompassService.GetAgentConfigInfo:input_type -> compass.v1.GetAgentConfigInfoRequest
+	64, // 64: compass.v1.CompassService.DeleteAgentConfig:input_type -> compass.v1.DeleteAgentConfigRequest
+	9,  // 65: compass.v1.SecretsService.SetSecret:input_type -> compass.v1.SetSecretRequest
+	11, // 66: compass.v1.SecretsService.ListSecrets:input_type -> compass.v1.ListSecretsRequest
+	14, // 67: compass.v1.SecretsService.DeleteSecret:input_type -> compass.v1.DeleteSecretRequest
+	17, // 68: compass.v1.CompassService.GetServerInfo:output_type -> compass.v1.GetServerInfoResponse
+	19, // 69: compass.v1.CompassService.WhoAmI:output_type -> compass.v1.WhoAmIResponse
+	21, // 70: compass.v1.CompassService.SubscribeEvents:output_type -> compass.v1.SubscribeEventsResponse
+	23, // 71: compass.v1.CompassService.ListBoardIssues:output_type -> compass.v1.ListBoardIssuesResponse
+	43, // 72: compass.v1.CompassService.ProvisionAgentWorkspace:output_type -> compass.v1.ProvisionAgentWorkspaceResponse
+	47, // 73: compass.v1.CompassService.StartAgentSession:output_type -> compass.v1.StartAgentSessionResponse
+	49, // 74: compass.v1.CompassService.SpawnAgent:output_type -> compass.v1.SpawnAgentResponse
+	51, // 75: compass.v1.CompassService.StopAgentSession:output_type -> compass.v1.StopAgentSessionResponse
+	45, // 76: compass.v1.CompassService.RemoveAgentWorkspace:output_type -> compass.v1.RemoveAgentWorkspaceResponse
+	53, // 77: compass.v1.CompassService.ReloadAgentSession:output_type -> compass.v1.ReloadAgentSessionResponse
+	55, // 78: compass.v1.CompassService.GetAgentStatus:output_type -> compass.v1.GetAgentStatusResponse
+	41, // 79: compass.v1.CompassService.SubscribeAgentSession:output_type -> compass.v1.AgentSessionFrame
+	57, // 80: compass.v1.CompassService.IssueToken:output_type -> compass.v1.IssueTokenResponse
+	59, // 81: compass.v1.CompassService.RevokeToken:output_type -> compass.v1.RevokeTokenResponse
+	61, // 82: compass.v1.CompassService.PutAgentConfig:output_type -> compass.v1.PutAgentConfigResponse
+	63, // 83: compass.v1.CompassService.GetAgentConfigInfo:output_type -> compass.v1.GetAgentConfigInfoResponse
+	65, // 84: compass.v1.CompassService.DeleteAgentConfig:output_type -> compass.v1.DeleteAgentConfigResponse
+	10, // 85: compass.v1.SecretsService.SetSecret:output_type -> compass.v1.SetSecretResponse
+	12, // 86: compass.v1.SecretsService.ListSecrets:output_type -> compass.v1.ListSecretsResponse
+	15, // 87: compass.v1.SecretsService.DeleteSecret:output_type -> compass.v1.DeleteSecretResponse
+	68, // [68:88] is the sub-list for method output_type
+	48, // [48:68] is the sub-list for method input_type
+	48, // [48:48] is the sub-list for extension type_name
+	48, // [48:48] is the sub-list for extension extendee
+	0,  // [0:48] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_compass_proto_init() }

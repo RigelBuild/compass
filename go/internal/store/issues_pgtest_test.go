@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // Issues store contracts (SEA-1728 part 3a): the forge coordinate is the
@@ -333,4 +334,164 @@ func TestLabelsRoundTrip(t *testing.T) {
 	if got2.Labels != nil {
 		t.Fatalf("empty labels = %v, want nil", got2.Labels)
 	}
+}
+
+// The OQ-6(a) recency guard (RIG-2883 T4a): once both the stored row and the
+// incoming write carry a forge_updated_at, the conditional ON CONFLICT keeps
+// the FRESHER timestamp's forge fields, regardless of arrival order — a stale
+// out-of-order re-sink never clobbers a fresher row. The distinct Title per
+// write is the observable proxy for "which write's forge fields won" (GetIssue
+// does not surface forge_updated_at; the write-path threading is what T4a
+// lands, not a new read column).
+func TestUpsertRecencyGuardFresherWinsBothOrders(t *testing.T) {
+	ctx := context.Background()
+
+	stale := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	fresh := stale.Add(time.Hour)
+
+	staleWrite := func(n uint32) IssueForgeFields {
+		in := forgeFields(n)
+		in.Title = "stale"
+		in.ForgeUpdatedAt = stale
+		return in
+	}
+	freshWrite := func(n uint32) IssueForgeFields {
+		in := forgeFields(n)
+		in.Title = "fresh"
+		in.ForgeUpdatedAt = fresh
+		return in
+	}
+
+	// stale-then-fresh: the later, fresher write applies.
+	t.Run("stale then fresh", func(t *testing.T) {
+		s := newTestStore(t)
+		id, err := s.UpsertIssueForgeFields(ctx, staleWrite(1))
+		if err != nil {
+			t.Fatalf("stale upsert: %v", err)
+		}
+		id2, err := s.UpsertIssueForgeFields(ctx, freshWrite(1))
+		if err != nil {
+			t.Fatalf("fresh upsert: %v", err)
+		}
+		if id2 != id {
+			t.Fatalf("id not stable: %q != %q", id2, id)
+		}
+		got, err := s.GetIssue(ctx, id)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		if got.Title != "fresh" {
+			t.Fatalf("title = %q, want fresh (fresher write must win)", got.Title)
+		}
+	})
+
+	// fresh-then-stale: the later, stale write is SKIPPED; the fresher row
+	// survives. The skipped write still returns the stable id (not an error).
+	t.Run("fresh then stale", func(t *testing.T) {
+		s := newTestStore(t)
+		id, err := s.UpsertIssueForgeFields(ctx, freshWrite(1))
+		if err != nil {
+			t.Fatalf("fresh upsert: %v", err)
+		}
+		id2, err := s.UpsertIssueForgeFields(ctx, staleWrite(1))
+		if err != nil {
+			t.Fatalf("stale re-sink must not error: %v", err)
+		}
+		if id2 != id {
+			t.Fatalf("skipped write returned id %q, want stable %q", id2, id)
+		}
+		got, err := s.GetIssue(ctx, id)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		if got.Title != "fresh" {
+			t.Fatalf("title = %q, want fresh (stale re-sink must not clobber)", got.Title)
+		}
+	})
+}
+
+// The guard is ADDITIVE: an equal-timestamp re-sink still applies (>= not >,
+// second-granularity), and a write with NO timestamp on either side always
+// applies — the two NULL arms of the ON CONFLICT predicate keep a not-yet-
+// threaded writer (and any row written before threading) from ever being gated.
+func TestUpsertRecencyGuardEqualAndNullAlwaysApply(t *testing.T) {
+	ctx := context.Background()
+
+	mark := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	// Equal timestamp: the re-sink applies (>= is inclusive).
+	t.Run("equal timestamp applies", func(t *testing.T) {
+		s := newTestStore(t)
+		first := forgeFields(1)
+		first.Title = "first"
+		first.ForgeUpdatedAt = mark
+		id, err := s.UpsertIssueForgeFields(ctx, first)
+		if err != nil {
+			t.Fatalf("first upsert: %v", err)
+		}
+		second := forgeFields(1)
+		second.Title = "second"
+		second.ForgeUpdatedAt = mark
+		if _, err := s.UpsertIssueForgeFields(ctx, second); err != nil {
+			t.Fatalf("equal-timestamp re-sink: %v", err)
+		}
+		got, err := s.GetIssue(ctx, id)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		if got.Title != "second" {
+			t.Fatalf("title = %q, want second (equal timestamp must still apply)", got.Title)
+		}
+	})
+
+	// A stored row with a timestamp, then a write with NO timestamp: the
+	// EXCLUDED.forge_updated_at IS NULL arm lets the unthreaded writer apply.
+	t.Run("null incoming applies over timestamped row", func(t *testing.T) {
+		s := newTestStore(t)
+		first := forgeFields(1)
+		first.Title = "timestamped"
+		first.ForgeUpdatedAt = mark
+		id, err := s.UpsertIssueForgeFields(ctx, first)
+		if err != nil {
+			t.Fatalf("first upsert: %v", err)
+		}
+		unthreaded := forgeFields(1)
+		unthreaded.Title = "unthreaded" // ForgeUpdatedAt left zero -> SQL NULL
+		if _, err := s.UpsertIssueForgeFields(ctx, unthreaded); err != nil {
+			t.Fatalf("unthreaded re-sink: %v", err)
+		}
+		got, err := s.GetIssue(ctx, id)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		if got.Title != "unthreaded" {
+			t.Fatalf("title = %q, want unthreaded (NULL-incoming arm must apply)", got.Title)
+		}
+	})
+
+	// A stored row with NO timestamp, then a write WITH one: the
+	// issues.forge_updated_at IS NULL arm lets the write apply (a row written
+	// before threading still updates).
+	t.Run("null stored applies under timestamped write", func(t *testing.T) {
+		s := newTestStore(t)
+		first := forgeFields(1)
+		first.Title = "pre-threading" // ForgeUpdatedAt left zero -> SQL NULL
+		id, err := s.UpsertIssueForgeFields(ctx, first)
+		if err != nil {
+			t.Fatalf("first upsert: %v", err)
+		}
+		threaded := forgeFields(1)
+		threaded.Title = "threaded"
+		threaded.ForgeUpdatedAt = mark
+		if _, err := s.UpsertIssueForgeFields(ctx, threaded); err != nil {
+			t.Fatalf("threaded re-sink: %v", err)
+		}
+		got, err := s.GetIssue(ctx, id)
+		if err != nil {
+			t.Fatalf("GetIssue: %v", err)
+		}
+		if got.Title != "threaded" {
+			t.Fatalf("title = %q, want threaded (NULL-stored arm must apply)", got.Title)
+		}
+	})
 }
