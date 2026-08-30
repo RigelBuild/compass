@@ -25,6 +25,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/linearagent"
+	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
 // recordingSessionSink records enqueued session events; enqErr (when set) is
@@ -350,5 +351,44 @@ func TestLinearWebhookHandler_VerifiedUnparseable(t *testing.T) {
 	}
 	if data.count() != 0 || session.count() != 0 {
 		t.Errorf("enqueued data=%d session=%d, want 0/0 (unparseable drop)", data.count(), session.count())
+	}
+}
+
+// TestBuildLinearWebhookWiring_DeliversToInjectedSink proves the RIG-2732 T7
+// wiring seam this slice adds: buildLinearWebhookWiring threads the notify lane's
+// dataSink all the way to the mounted handler, so a verified Issue event routes
+// to a NON-nil sink instead of the prior injected-nil ack-and-drop. The secret
+// is resolved via the real newCachedWebhookSecret path off a declared fakeResolver
+// secret, exactly as Serve wires it.
+func TestBuildLinearWebhookWiring_DeliversToInjectedSink(t *testing.T) {
+	ctx := context.Background() // test root
+	const secretName = "LINEAR_WEBHOOK_SECRET"
+	secret := []byte("shh")
+	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: secretName, Value: string(secret)}}}
+	cfg := ServeConfig{Forge: ForgeConfig{LinearWebhookSecretName: secretName}}
+	sink := &recordingSink{}
+
+	handler, err := buildLinearWebhookWiring(ctx, cfg, res, sink, nil)
+	if err != nil {
+		t.Fatalf("buildLinearWebhookWiring: %v", err)
+	}
+	if handler == nil {
+		t.Fatal("handler == nil with the webhook secret declared, want a mounted handler")
+	}
+	// Pin the handler's clock so the fresh timestamp check passes deterministically.
+	now := time.Unix(1_700_000_000, 0)
+	lh := handler.(*linearWebhookHandler)
+	lh.now = func() time.Time { return now }
+
+	body := fmt.Appendf(nil, `{"type":"Issue","action":"create","webhookTimestamp":%d,"data":{"number":7,"team":{"key":"RIG"},"url":"https://linear.app/i/7"}}`, freshTS(now))
+	rec := linPost(lh, linSign(secret, body), body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if sink.count() != 1 {
+		t.Fatalf("data enqueued = %d, want 1 (verified Issue routes to the injected sink)", sink.count())
+	}
+	if ev := sink.events[0]; ev.Provider != compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR {
+		t.Errorf("Provider = %v, want LINEAR", ev.Provider)
 	}
 }

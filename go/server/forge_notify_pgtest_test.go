@@ -303,3 +303,112 @@ func TestForgeNotifyNoLiveSessionIsNonFatal(t *testing.T) {
 		t.Fatalf("recorded notifications = %d after no-session, want 0", len(disp.sent))
 	}
 }
+
+// --- test: Linear routed OPENED fans out to the matching project only ---------
+
+// seedLinearContainerSub creates an agent + owning user and a Linear
+// container-scope subscription at (LINEAR, "linear.app", repo/team, ISSUE) bound
+// to project, returning the agent account id and subscription id. A Linear
+// container subscription REQUIRES a project (store enforces it,
+// forge_subscriptions.go:108-111).
+func seedLinearContainerSub(t *testing.T, st *store.Store, handle, repo, project string) (store.AccountID, string) {
+	t.Helper()
+	ctx := context.Background() // test root
+	owner, err := st.CreateUser(ctx, store.NewUser{Handle: handle + "-owner", DisplayName: "Owner"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	agent, err := st.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: handle, DisplayName: "Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	subID, err := st.EnsureAgentForgeSubscription(ctx, store.AgentForgeSubscription{
+		AgentAccountID: agent.ID,
+		Provider:       store.ForgeProviderLinear,
+		Host:           "linear.app",
+		Repo:           repo,
+		Kind:           store.ForgeArtifactKindIssue,
+		Scope:          store.ForgeSubscriptionScopeContainer,
+		Project:        project,
+	})
+	if err != nil {
+		t.Fatalf("EnsureAgentForgeSubscription: %v", err)
+	}
+	return agent.ID, subID
+}
+
+// linearOpenedEvent builds a Linear issue-OPENED ForgeEvent at the LINEAR
+// coordinate carrying a project — the container-fan-out trigger.
+func linearOpenedEvent(repo string, number uint64, project, url string) forge.ForgeEvent {
+	return forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
+		Host:     "linear.app",
+		Repo:     repo,
+		Kind:     compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE,
+		Number:   number,
+		Project:  project,
+		URL:      url,
+		Change:   compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED,
+	}
+}
+
+// TestLinearNotifyRoutedOpenedFansOutToProject drives the Linear notify lane's
+// assembled router over the REAL store adapters bound to (LINEAR, "linear.app"):
+// an OPENED Issue in project-alpha fans out to ONLY the alpha container
+// subscriber, never the beta one (W2 / DL-267: a Linear container is a PROJECT,
+// so an OPENED matches only its project's subscribers). The dispatcher + checks
+// roller are fakes; the store adapters + router are the real assembled seams. The
+// shared FETCH cursor advances (fetch-side truth); delivered_revision stays
+// unadvanced (W3). Runs in CI; compiles locally.
+func TestLinearNotifyRoutedOpenedFansOutToProject(t *testing.T) {
+	st := forgeTestStore(t)
+	ctx := context.Background() // test root
+	const (
+		repo   = "RIG"
+		host   = "linear.app"
+		number = uint64(42)
+		alpha  = "proj-alpha"
+		beta   = "proj-beta"
+		url    = "https://linear.app/rig/issue/RIG-42"
+	)
+	alphaAgent, alphaSub := seedLinearContainerSub(t, st, "lin-alpha", repo, alpha)
+	_, betaSub := seedLinearContainerSub(t, st, "lin-beta", repo, beta)
+
+	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderLinear, host: host}
+	disp := &recordingDispatcher{}
+	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: host}
+	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, forgeRef, nil)
+
+	if err := router.Route(ctx, linearOpenedEvent(repo, number, alpha, url)); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+
+	// Exactly the alpha subscriber is notified — never beta.
+	if len(disp.sent) != 1 {
+		t.Fatalf("dispatched notifications = %d, want 1 (alpha only)", len(disp.sent))
+	}
+	if disp.accounts[0] != string(alphaAgent) {
+		t.Errorf("notified account = %q, want the alpha agent %q", disp.accounts[0], alphaAgent)
+	}
+	n := disp.sent[0]
+	if n.GetSubscriptionId() != alphaSub {
+		t.Errorf("notification subscription_id = %q, want alpha %q (not beta %q)", n.GetSubscriptionId(), alphaSub, betaSub)
+	}
+	if n.GetForge().GetProvider() != compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR {
+		t.Errorf("notification provider = %v, want LINEAR", n.GetForge().GetProvider())
+	}
+	if n.GetChange() != compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED {
+		t.Errorf("notification change = %v, want OPENED", n.GetChange())
+	}
+
+	// The shared FETCH cursor advanced at the container coordinate (number=0 for
+	// a container OPENED is NOT how the router keys it — the event carries the
+	// artifact number, so the cursor lands at (repo, ISSUE, number)).
+	cur, err := st.LoadForgeArtifactCursor(ctx, store.ForgeProviderLinear, host, repo, store.ForgeArtifactKindIssue, number)
+	if err != nil {
+		t.Fatalf("LoadForgeArtifactCursor: %v", err)
+	}
+	if cur == nil || cur.Revision == "" {
+		t.Fatal("fetch cursor did not advance after the Linear OPENED route")
+	}
+}

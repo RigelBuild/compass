@@ -558,7 +558,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Assemble the three compass.v1 doors (shipped Unix socket, optional dev
-	// loopback, optional authenticated network). On a net-door build error the
+	// loopback, optional authenticated network) plus the Linear notify lane the
+	// net door's /webhooks/linear handler feeds. On a net-door build error the
 	// listeners this Serve bound are still ours to close.
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver,
 		devListener, netListener, netTLS, webhookSink, webhookSecret)
@@ -598,9 +599,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// each lane's webhook-arm drain and reconciler sweep join the SAME scoped
 	// group so they inherit the doors' lifecycle exactly — cancelled on
 	// SIGINT/SIGTERM via gctx, first-error-wins, drained with everything else.
-	// Both lanes are nil when the GitHub App is absent (they share the App gate),
-	// and a nil lane starts nothing. Both Runs return nil on ctx-cancel.
-	startForgeIngestLanes(gctx, g, lane, notifyLane)
+	// The board + GitHub notify lanes are nil when the GitHub App is absent (they
+	// share the App gate); the Linear notify lane is nil when LINEAR_FORGE_TOKEN
+	// is undeclared (its independent gate). A nil lane starts nothing. Every Run
+	// returns nil on ctx-cancel.
+	startForgeIngestLanes(gctx, g, lane, notifyLane, doors.linearNotify)
 	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
@@ -636,6 +639,10 @@ type serveDoors struct {
 	uds *http.Server
 	dev *http.Server
 	net *http.Server
+	// linearNotify is the Linear agent-notification lane (RIG-2732 T7), built
+	// beside the webhook handler it feeds; nil when LINEAR_FORGE_TOKEN is
+	// undeclared. Serve starts its arm + reconciler on the serve group.
+	linearNotify *forgeNotifyLane
 }
 
 // buildDoors assembles the three compass.v1 doors off the already-built service
@@ -736,18 +743,37 @@ func buildDoors(
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
+	// The Linear agent-notification lane (RIG-2732 T7): App-INDEPENDENT, gated on
+	// LINEAR_FORGE_TOKEN. Built here — beside the webhook handler it feeds — so a
+	// resolve fault fail-fasts door assembly, and its data-change sink threads
+	// straight into buildLinearWebhookWiring below, replacing the
+	// injected-and-nil-for-now sink so a verified /webhooks/linear Issue/Comment
+	// event routes to subscribers instead of ack-and-drop. Nil when the secret is
+	// undeclared (the handler's data branch then acks-and-drops). The lane is
+	// returned in serveDoors so Serve can start its arm + reconciler on the serve
+	// group.
+	linearNotifyLane, err := buildLinearNotifyLane(ctx, st, hub, resolver, slog.Default())
+	if err != nil {
+		return serveDoors{}, err
+	}
+	var linearDataSink ForgeEventSink
+	if linearNotifyLane != nil {
+		linearDataSink = linearNotifyLane.sink
+	}
+
 	// The Linear webhook ingress (RIG-2732 T7d / RIG-2717): a shared
 	// POST /webhooks/linear handler (DL-302) built iff the Linear webhook secret
 	// is declared — an App-INDEPENDENT gate (a deployment can run Linear
-	// notifications without a GitHub App). Its data-change arm's sink is
-	// injected-and-nil-for-now (DL-302): feeding the GitHub-coordinate fanout
-	// would mis-route Linear events, so the data branch acks-and-drops until a
-	// Linear-provider-bound notify lane injects a real sink. Its session arm is
-	// left unwired (nil sessionSink -> logged-drop) until the RIG-2717 responder
-	// assembly wires a *linearagent.Dispatcher here. Built here (not gated on the
-	// net door) so a resolve fault fail-fasts startup regardless of --listen; the
-	// handler is mounted only on the net door below, when one exists.
-	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, resolver, nil, slog.Default())
+	// notifications without a GitHub App). Its data-change arm's sink is the
+	// Linear-provider-bound notify lane's sink (linearDataSink), so a verified
+	// Issue/Comment event routes to subscribers at the LINEAR/linear.app
+	// coordinate; nil when the notify lane is off (LINEAR_FORGE_TOKEN undeclared),
+	// and the handler's data branch then acks-and-drops. The two gates are
+	// independent: the webhook secret gates the handler; LINEAR_FORGE_TOKEN gates
+	// the sink. Its session arm is left unwired (nil sessionSink -> logged-drop)
+	// until the RIG-2717 responder assembly wires a *linearagent.Dispatcher here.
+	// The handler is mounted only on the net door below, when one exists.
+	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, resolver, linearDataSink, slog.Default())
 	if err != nil {
 		return serveDoors{}, err
 	}
@@ -769,7 +795,7 @@ func buildDoors(
 		netServer = s
 	}
 
-	return serveDoors{uds: udsServer, dev: devServer, net: netServer}, nil
+	return serveDoors{uds: udsServer, dev: devServer, net: netServer, linearNotify: linearNotifyLane}, nil
 }
 
 // drainSet is the shutdown-side view of what Serve built: the two buses whose
@@ -1249,13 +1275,19 @@ func (d *forgeNotifyDispatcher) Notify(ctx context.Context, account string, n *c
 	})
 }
 
-// forgeNotifyChecksRoller adapts *forge.GitHub to ingest.ChecksRoller: the
-// combined checks roll-up a CHECKS event needs. GitHub's ChecksConditional has
-// the exact RollUp signature (notify_router.go:111-113), so this is a one-method
-// forwarding adapter rather than a method value, keeping the seam an explicit
-// named type.
+// forgeNotifyChecksRoller adapts a forge.NotifyReader to ingest.ChecksRoller: the
+// combined checks roll-up a CHECKS event needs. NotifyReader's ChecksConditional
+// has the exact RollUp signature (notify_router.go:111-113), so this is a
+// one-method forwarding adapter rather than a method value, keeping the seam an
+// explicit named type. It holds the NotifyReader interface (not a concrete
+// *forge.GitHub) so ONE adapter serves both the GitHub lane (client is a
+// *forge.GitHub) and the Linear lane (client is a *forge.Linear) — both satisfy
+// forge.NotifyReader (notify_reader.go:77,367). Linear's ChecksConditional
+// returns ErrUnsupported, but the router invokes RollUp only on a CHECKS-kind
+// event, which Linear (issues-only) never produces — so it is correct and
+// never-called (fail-closed if one somehow arrived).
 type forgeNotifyChecksRoller struct {
-	client *forge.GitHub
+	client forge.NotifyReader
 }
 
 // RollUp resolves the combined checks roll-up for the head SHA, forwarding to the
@@ -1321,6 +1353,58 @@ func buildForgeNotifyLane(
 	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, fc.Host, ingest.ReconcileConfig{
 			Backstop: fc.App.ReconcileBackstop,
+			Log:      log,
+		})
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm}, nil
+}
+
+// buildLinearNotifyLane assembles the Linear agent-notification lane (RIG-2732
+// T7), the Linear sibling of buildForgeNotifyLane. It gates App-INDEPENDENTLY on
+// the LINEAR_FORGE_TOKEN read credential (forgeSecretDeclared) — the same secret
+// the write path's Linear coordinate gates on (serve.go:1513-1517) — matching the
+// house pattern that every forge lane gates as a unit on its own credential. An
+// undeclared/absent secret returns (nil, nil), the off-state the caller reads as
+// "mount no Linear notify sink"; a resolve FAULT returns the error (fail-fast,
+// like forgeSecretDeclared elsewhere).
+//
+// Linear is issues-only and check-less (DL-051): its event alphabet is
+// Issue/Comment, so no CHECKS/REVIEW arms ever fire. The checks roller is still
+// wired (the router's ChecksRoller seam is non-optional) over the same
+// forgeNotifyChecksRoller adapter the GitHub lane uses — the Linear client's
+// ChecksConditional returns ErrUnsupported, but the router invokes RollUp only on
+// a CHECKS event Linear never produces (correct and never-called).
+func buildLinearNotifyLane(
+	ctx context.Context,
+	st *store.Store,
+	hub *runnerhub.Hub,
+	resolver secrets.Resolver,
+	log *slog.Logger,
+) (*forgeNotifyLane, error) {
+	declared, err := forgeSecretDeclared(ctx, resolver, defaultForgeLinearSecretName)
+	if err != nil {
+		return nil, err
+	}
+	if !declared {
+		return nil, nil //nolint:nilnil // an undeclared LINEAR_FORGE_TOKEN is a valid off-state: a nil lane is the signal (the caller guards `if lane != nil`), not an ambiguous nil-nil — a sentinel error would force the caller to distinguish it from a real fault.
+	}
+	const (
+		provider = store.ForgeProviderLinear
+		host     = "linear.app"
+	)
+	client := forge.NewLinear(forge.LinearConfig{Token: newForgeTokenSource(resolver, defaultForgeLinearSecretName), Log: log})
+
+	notifyStore := &forgeNotifyStore{st: st, provider: provider, host: host}
+	dispatcher := &forgeNotifyDispatcher{hub: hub}
+	checks := &forgeNotifyChecksRoller{client: client}
+	forgeRef := &compassv1.ForgeRef{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
+		Host:     host,
+	}
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, forgeRef, log)
+	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
+	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
+		compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host, ingest.ReconcileConfig{
+			Backstop: 0, // no App config carries a Linear backstop; 0 -> ingest's defaultBackstop.
 			Log:      log,
 		})
 	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm}, nil
