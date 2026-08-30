@@ -85,10 +85,11 @@ const execDefaultTimeout = 120 * time.Second
 // *microvm.VM so Start is hermetically testable behind a fake handle. Its method
 // set is NOT merely what Start calls — it retypes the shared microvmSession.vm
 // field, so it must cover EVERY method invoked on that field anywhere in the
-// package across ALL build tags: Health/Shutdown (Start/awaitHealthy and Stop,
-// launch.go), WaitVMMExit (Stop, microvm_lifecycle.go), and PSS (the Q-budget
-// contract test's session.vm.PSS(), contract_microvm_test.go, //go:build microvm
-// && unix). *microvm.VM satisfies all four as-is (design §W2 seams).
+// package across ALL build tags: Health (awaitHealthy's poll in Start),
+// Shutdown (Start's defer, Stop, and Remove), WaitVMMExit (Stop,
+// microvm_lifecycle.go), and PSS (the Q-budget contract test's session.vm.PSS(),
+// contract_microvm_test.go, //go:build microvm && unix). All in launch.go except
+// where noted. *microvm.VM satisfies all four as-is (design §W2 seams).
 type guestVM interface {
 	Health(ctx context.Context) (*compassv1.HealthResponse, error)
 	Shutdown(ctx context.Context) error

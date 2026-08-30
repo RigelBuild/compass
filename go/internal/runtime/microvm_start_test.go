@@ -162,7 +162,7 @@ func TestCreateRecordsDefaultDenyScript(t *testing.T) {
 // egress delivery contract (§(a)), hermetic with no real VMM or vsock dial.
 func TestStartDeliversScriptVerbatim(t *testing.T) {
 	spec := ContainerSpec{Name: "agent-1", UID: 1000, Egress: MustAllowEgress("github.com")}
-	m, id, _, client := seamStart(t, spec, nil)
+	m, id, vm, client := seamStart(t, spec, nil)
 
 	want := spec.Egress.NftScript()
 	if err := m.Start(t.Context(), id); err != nil {
@@ -177,6 +177,18 @@ func TestStartDeliversScriptVerbatim(t *testing.T) {
 	}
 	if req.GetDefaultExecUid() != 1000 {
 		t.Errorf("ProvisionRequest.DefaultExecUid = %d, want 1000", req.GetDefaultExecUid())
+	}
+	// The success path transfers handle ownership to the session and must NOT
+	// run the deferred teardown (mirror of the error-path teardown assertion).
+	session, err := m.session(id)
+	if err != nil {
+		t.Fatalf("session after successful Start: %v", err)
+	}
+	if session.vm == nil {
+		t.Error("a successful Start must store the booted VM handle on the session")
+	}
+	if vm.wasShutdown() {
+		t.Error("a successful Start must not tear the booted VM down")
 	}
 }
 
