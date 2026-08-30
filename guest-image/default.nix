@@ -361,8 +361,10 @@ let
     # metadata. This is the general mechanism (not a fixed preload), so it also
     # covers egress rulesets beyond the base one — a future user-defined rule
     # pulling a new nft expression module autoloads with no guest-image change.
-    # `ln -sf` pulls kmod into the rootfs closure via the reference.
-    ln -sf ${pkgs.kmod}/bin/modprobe $out/sbin/modprobe
+    # The ${pkgs.kmod} reference pulls kmod into the rootfs closure; the erofs
+    # packing below materializes it into the image. Plain `ln -s` (no -f): no
+    # prior modprobe name exists to overwrite, matching /sbin/init above.
+    ln -s ${pkgs.kmod}/bin/modprobe $out/sbin/modprobe
   '';
 
   # The store closure the rootfs symlink farm points into. Materialized into the

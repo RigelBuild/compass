@@ -186,12 +186,15 @@ func TestFullBoot(t *testing.T) {
 }
 
 // armRuleset is a minimal but representative in-guest egress arm: it creates the
-// inet table + a conntrack-stateful output rule, forcing exactly the netfilter
-// autoload chain the real base ruleset needs — the NETLINK_NETFILTER socket
-// (nfnetlink), the nf_tables subsystem, and the `ct state` expression
-// (nf_conntrack + nft_ct). It is `set -eu` so any nft failing aborts non-zero,
-// exactly as EgressPolicy.NftScript()'s base ruleset does. Kept as a local
-// literal, not a runtime.EgressPolicy call, because this package must not import
+// inet table + a conntrack-stateful output rule, forcing a representative slice
+// of the netfilter autoload chain — the NETLINK_NETFILTER socket (nfnetlink),
+// the nf_tables subsystem, and the `ct state` expression (nf_conntrack +
+// nft_ct). Once the usermode helper is staged, request_module resolves ANY
+// module from the full /lib/modules tree, so this slice proves the mechanism the
+// real base ruleset relies on (its interval sets and DNS rules pull further
+// modules the same way). It is `set -eu` so any nft failing aborts non-zero,
+// like EgressPolicy.NftScript()'s base ruleset. Kept as a local literal, not a
+// runtime.EgressPolicy call, because this package must not import
 // internal/runtime (config.go: no runtime dep, no cycle).
 const armRuleset = `set -eu
 nft add table inet compass_egress
@@ -249,6 +252,9 @@ func TestInGuestEgressArmAutoloadsNetfilter(t *testing.T) {
 	// /sbin/modprobe was staged. A non-nil error here (especially one carrying
 	// mnl.c:66 / "Protocol not supported") means the netfilter autoload chain is
 	// broken again.
+	// 30s is a deliberately generous CLIENT bound: the arm (module autoload + a
+	// few nft adds) is sub-second, and the real ceiling is the server's 120s
+	// armTimeout (guestd/supervisor.go), not this deadline.
 	provCtx, provCancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer provCancel()
 	if _, provErr := client.Provision(provCtx, connect.NewRequest(&compassv1.ProvisionRequest{
