@@ -30,6 +30,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/comms"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -44,8 +45,8 @@ type lifecycleFixture struct {
 }
 
 // newLifecycleFixture builds the placement fixture, constructs the lifecycleService
-// over its real store + hub, and resolves the fixture agent's owner for the
-// ownership assertions.
+// over its real store + hub + a real comms handler (the R8 spawn-DM opener), and
+// resolves the fixture agent's owner for the ownership assertions.
 func newLifecycleFixture(t *testing.T) lifecycleFixture {
 	t.Helper()
 	pf := newPlacementFixture(t)
@@ -55,9 +56,15 @@ func newLifecycleFixture(t *testing.T) lifecycleFixture {
 	if err != nil {
 		t.Fatalf("AgentOwner(fixture agent) = %v", err)
 	}
+	// A real comms handler is the R8 spawn-DM opener: SpawnAsAccount opens the
+	// manager<->peer DM through it. Its own bus (the socket-door admin fallback
+	// is unused — OpenDMAsAccount always sets the caller explicitly).
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	commsSvc := comms.NewComms(pf.store, commsBus, owner)
 	return lifecycleFixture{
 		placementFixture: pf,
-		lc:               newLifecycleService(pf.store, pf.hub),
+		lc:               newLifecycleService(pf.store, pf.hub, commsSvc),
 		ownerAdmin:       owner,
 	}
 }
@@ -627,4 +634,96 @@ func TestSpawnHandleCollidesWithSystemAccountIsAlreadyExists(t *testing.T) {
 	if !errors.Is(err, errHandleTaken) {
 		t.Fatalf("system-handle-collision spawn err = %v, want wrapping errHandleTaken", err)
 	}
+}
+
+// TestSpawnAutoOpensManagerPeerDM pins R8 (design.md T3:755-762): after the
+// spawn chain succeeds, SpawnAsAccount opens the manager<->new-peer DM and
+// returns a live dm_channel_name whose channel satisfies the full DM invariant
+// set — kind=DM, mandatory subscription, and BOTH the manager (caller) and the
+// new peer as members.
+//
+// Mutation: dropping the autoOpenSpawnDM call (or its assignment to
+// resp.DmChannelName) leaves dm_channel_name empty, reddening the "live name"
+// assertion; opening under the wrong caller drops the manager from the member set.
+func TestSpawnAutoOpensManagerPeerDM(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-dm",
+		DisplayName:     "Peer DM",
+		ClientRequestId: "spawn-dm-1",
+	})
+	if err != nil {
+		t.Fatalf("SpawnAsAccount = %v, want success", err)
+	}
+	dmName := resp.GetDmChannelName()
+	if dmName == "" {
+		t.Fatal("dm_channel_name = empty, want a live manager<->peer DM name (R8 auto-open)")
+	}
+	peerID := store.AccountID(resp.GetAgentAccountId())
+
+	// Read the DM back as the manager (a member) and assert the full invariant.
+	ch, err := f.store.ChannelByNameForViewer(ctx, f.agentID, dmName)
+	if err != nil {
+		t.Fatalf("ChannelByNameForViewer(manager, %q) = %v, want the DM", dmName, err)
+	}
+	if ch.Kind != store.ChannelKindDM {
+		t.Fatalf("DM kind = %d, want ChannelKindDM", ch.Kind)
+	}
+	if !ch.Policy.MandatorySubscription {
+		t.Fatalf("DM mandatory_subscription = false, want true (born-mandatory)")
+	}
+	if !containsAccountID(ch.MemberAccountIDs, f.agentID) {
+		t.Fatalf("DM members = %v, want the manager (caller) %s", ch.MemberAccountIDs, f.agentID)
+	}
+	if !containsAccountID(ch.MemberAccountIDs, peerID) {
+		t.Fatalf("DM members = %v, want the new peer %s", ch.MemberAccountIDs, peerID)
+	}
+}
+
+// TestSpawnIdempotentReturnsSameDMName pins the R8 idempotency (design.md
+// T3:773): a re-spawn of the same handle by the same owner (the already-placed
+// idempotent path) returns the SAME dm_channel_name — OpenDM is resolve-or-create
+// so every spawn path yields the same deterministic name.
+//
+// Mutation: computing the name from a non-deterministic source (or opening a new
+// channel per spawn) reddens the "same name" assertion.
+func TestSpawnIdempotentReturnsSameDMName(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	first, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-dm-idem",
+		ClientRequestId: "spawn-dm-idem-1",
+	})
+	if err != nil {
+		t.Fatalf("SpawnAsAccount(first) = %v, want success", err)
+	}
+	if first.GetDmChannelName() == "" {
+		t.Fatal("first spawn dm_channel_name = empty, want a live name")
+	}
+
+	// A second spawn of the same handle+owner is the idempotent already-placed
+	// path: it returns the same peer and MUST return the same DM name.
+	second, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-dm-idem",
+		ClientRequestId: "spawn-dm-idem-2",
+	})
+	if err != nil {
+		t.Fatalf("SpawnAsAccount(second) = %v, want success", err)
+	}
+	if second.GetDmChannelName() != first.GetDmChannelName() {
+		t.Fatalf("re-spawn dm_channel_name = %q, want the first spawn's %q (idempotent)", second.GetDmChannelName(), first.GetDmChannelName())
+	}
+}
+
+// containsAccountID reports whether ids contains want.
+func containsAccountID(ids []store.AccountID, want store.AccountID) bool {
+	for _, id := range ids {
+		if id == want {
+			return true
+		}
+	}
+	return false
 }

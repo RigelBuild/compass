@@ -42,13 +42,26 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
+// dmOpener opens the manager<->peer DM at spawn time (R8). A narrow seam so
+// lifecycleService does not pull the whole Comms handler in — satisfied by
+// *comms.Comms via OpenDMAsAccount. It takes the PUBLIC compassv1 OpenDM types
+// (the agent-caller adapter's signature).
+type dmOpener interface {
+	OpenDMAsAccount(ctx context.Context, account store.AccountID, req *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error)
+}
+
 // lifecycleService is the LifecycleCaller implementation. It holds the store (of
 // record for accounts + placements) and the hub (Provision/Start/Stop/Remove
 // relays to the owning Runner) — the same two dependencies the provision/start
-// handlers use, wired here as the agent-initiated door.
+// handlers use, wired here as the agent-initiated door — plus the dmOpener seam
+// that auto-opens the manager<->peer DM after a spawn (R8).
 type lifecycleService struct {
 	store *store.Store
 	hub   *runnerhub.Hub
+	// dm opens the manager<->new-peer DM at spawn time (R8). Nil for instances
+	// that never spawn (the waker, the store-free self-despawn test), in which
+	// case autoOpenSpawnDM returns an empty name.
+	dm dmOpener
 	// wakeGroup coalesces concurrent WakeAgent calls for the SAME agent onto one
 	// start (RIG-1641 T3 cost control, §Decisions OQ-2): a burst of messages at
 	// one offline agent produces exactly one resume/Start, not a start-storm. A
@@ -56,11 +69,12 @@ type lifecycleService struct {
 	wakeGroup singleflight.Group
 }
 
-// newLifecycleService constructs the lifecycle caller over the store and hub.
-// Wired at serve assembly with hub.SetLifecycleCaller after both exist, breaking
-// the hub<->lifecycleService construction cycle (serve.go).
-func newLifecycleService(st *store.Store, hub *runnerhub.Hub) *lifecycleService {
-	return &lifecycleService{store: st, hub: hub}
+// newLifecycleService constructs the lifecycle caller over the store, hub, and
+// the DM-opener seam. Wired at serve assembly with hub.SetLifecycleCaller after
+// all three exist, breaking the hub<->lifecycleService construction cycle
+// (serve.go).
+func newLifecycleService(st *store.Store, hub *runnerhub.Hub, dm dmOpener) *lifecycleService {
+	return &lifecycleService{store: st, hub: hub, dm: dm}
 }
 
 // Compile-time proof lifecycleService satisfies the seam the hub delegates into.
@@ -216,14 +230,31 @@ func (l *lifecycleService) SpawnAsAccount(
 		// form a cycle — the cycle check lives only on the mutable ReparentAgent.
 		ParentAgentID: caller,
 	})
+	var resp *compassv1internal.SpawnPeerResponse
 	switch {
 	case err == nil:
-		return l.provisionAndStart(ctx, created.ID, created.Agent.Persona, created.Agent.Role, req)
+		resp, err = l.provisionAndStart(ctx, created.ID, created.Agent.Persona, created.Agent.Role, req)
 	case errors.Is(err, store.ErrConflict):
-		return l.resumeOrReject(ctx, callerOwner, req)
+		resp, err = l.resumeOrReject(ctx, callerOwner, req)
 	default:
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("creating agent: %w", err))
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	// Spawn auto-open (R8, design.md T3:755-762): after the spawn chain succeeds,
+	// open the manager<->new-peer DM and set DmChannelName on the response. This
+	// covers the fresh, resume, AND idempotent already-placed paths from one site
+	// — OpenDM is resolve-or-create, so every path yields the SAME name
+	// idempotently (a re-spawn returns the same DM). An open FAILURE post-spawn
+	// is logged and returned with an EMPTY dm_channel_name, NEVER a spawn
+	// rollback: the DM is recoverable next turn via comms_open_dm, the spawned
+	// peer is not.
+	if resp != nil && resp.GetAgentAccountId() != "" {
+		resp.DmChannelName = l.autoOpenSpawnDM(ctx, caller, store.AccountID(resp.GetAgentAccountId()))
+	}
+	return resp, nil
 }
 
 // DespawnAsAccount tears down a peer's compute (container + session), NOT its
@@ -309,6 +340,32 @@ func (l *lifecycleService) DespawnAsAccount(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("releasing agent placement: %w", err))
 	}
 	return &compassv1internal.DespawnPeerResponse{}, nil
+}
+
+// autoOpenSpawnDM opens the manager<->new-peer DM (R8) and returns its channel
+// name, or "" on any failure. caller is the MANAGER (the spawn's caller); peerID
+// is the created/resolved peer's account id. OpenDM addresses the peer by HANDLE,
+// so the peer's handle is resolved from its account. On ANY error — a nil opener
+// (an unwired test), a handle resolve miss, or the open itself — it LOGS and
+// returns an empty name rather than failing the spawn: the DM is recoverable next
+// turn via comms_open_dm, never a spawn rollback (design.md T3:755-762).
+func (l *lifecycleService) autoOpenSpawnDM(ctx context.Context, caller, peerID store.AccountID) string {
+	if l.dm == nil {
+		return ""
+	}
+	peer, err := l.store.GetAccount(ctx, peerID)
+	if err != nil {
+		slog.WarnContext(ctx, "spawn: auto-open manager<->peer DM failed; recoverable via comms_open_dm",
+			"error", err.Error(), "peer", string(peerID))
+		return ""
+	}
+	resp, err := l.dm.OpenDMAsAccount(ctx, caller, &compassv1.OpenDMRequest{PeerHandle: peer.Handle})
+	if err != nil {
+		slog.WarnContext(ctx, "spawn: auto-open manager<->peer DM failed; recoverable via comms_open_dm",
+			"error", err.Error(), "peer", string(peerID))
+		return ""
+	}
+	return resp.GetChannel().GetName()
 }
 
 // resumeOrReject handles a spawn whose handle is already taken in the CALLER'S

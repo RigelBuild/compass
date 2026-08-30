@@ -234,7 +234,7 @@ type SessionTailSink interface {
 // is the safe Runner->Server leg: the account is resolved Server-side from the
 // hub's own binding, never asserted by the Runner (transport design Decision #3
 // / OQ-2, comms-tools design T2).
-type CommsCaller interface {
+type CommsCaller interface { //nolint:interfacebloat // one method per agent-comms arm (post/list/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm) — a dispatch seam, not a bloated abstraction; splitting it would fragment the single relay dispatch in executeCall
 	// PostAsAccount posts under account with an id-typed channel container — the
 	// internal id-holder path (relay transcript, seeds). PostAsAccountByName is
 	// the agent-tool path: it resolves the request's channel NAME to an id first
@@ -258,6 +258,11 @@ type CommsCaller interface {
 	CreateChannelAsAccount(ctx context.Context, account store.AccountID, req *compassv1.CreateChannelRequest) (*compassv1.CreateChannelResponse, error)
 	UpdateChannelMembersAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdateChannelMembersRequest) (*compassv1.UpdateChannelMembersResponse, error)
 	CreateChannelGroupAsAccount(ctx context.Context, account store.AccountID, req *compassv1.CreateChannelGroupRequest) (*compassv1.CreateChannelGroupResponse, error)
+	// OpenDMAsAccount resolves-or-creates the two-party peer DM between account
+	// and the request's peer handle (RIG-2962 T3), same-owner authz enforced
+	// Server-side. The request names the peer by handle, so there is no
+	// home-channel defaulting.
+	OpenDMAsAccount(ctx context.Context, account store.AccountID, req *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error)
 }
 
 // Hub is the Server-side seam: enrollment registry + command router + the

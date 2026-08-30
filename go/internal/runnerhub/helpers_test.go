@@ -186,6 +186,7 @@ type commsCall struct {
 	createChannel      *compassv1.CreateChannelRequest
 	updateMembers      *compassv1.UpdateChannelMembersRequest
 	createChannelGroup *compassv1.CreateChannelGroupRequest
+	openDM             *compassv1.OpenDMRequest
 }
 
 // fakeCommsCaller is a hand-written CommsCaller: it records every call (account
@@ -223,6 +224,9 @@ type fakeCommsCaller struct {
 
 	createChannelGroupResp *compassv1.CreateChannelGroupResponse
 	createChannelGroupErr  error
+
+	openDMResp *compassv1.OpenDMResponse
+	openDMErr  error
 }
 
 func (f *fakeCommsCaller) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
@@ -326,6 +330,16 @@ func (f *fakeCommsCaller) CreateChannelGroupAsAccount(_ context.Context, account
 		return nil, f.createChannelGroupErr
 	}
 	return f.createChannelGroupResp, nil
+}
+
+func (f *fakeCommsCaller) OpenDMAsAccount(_ context.Context, account store.AccountID, req *compassv1.OpenDMRequest) (*compassv1.OpenDMResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, openDM: req})
+	if f.openDMErr != nil {
+		return nil, f.openDMErr
+	}
+	return f.openDMResp, nil
 }
 
 func (f *fakeCommsCaller) snapshot() []commsCall {

@@ -537,7 +537,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 
 	// Wire the lifecycleService as the hub's LifecycleCaller — the serve.go:250
 	// pattern. Only package server can construct it (unexported) and set it.
-	lc := newLifecycleService(st, hub)
+	lc := newLifecycleService(st, hub, commsSvc)
 	hub.SetLifecycleCaller(lc)
 
 	// Mount the RunnerService door on an h2c server, accepting one Runner token.

@@ -94,7 +94,7 @@ var _ runnerhub.ForgeCaller = (*forgeService)(nil)
 // lifecycle T3-a, RelayBoardCall — the board caller executes against the store +
 // the issue projection). Called once at assembly before any RPC is served.
 func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store, issueBrd *board.IssueProjection) {
-	hub.SetLifecycleCaller(newLifecycleService(st, hub))
+	hub.SetLifecycleCaller(newLifecycleService(st, hub, commsSvc))
 	hub.SetBoardCaller(newBoardService(st, issueBrd))
 	// The roster read (RIG-1721 T2) joins the hub's in-memory presence enum; the
 	// hub in turn reads it from the T8 presence projection wired at
@@ -137,7 +137,9 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *ev
 	// WakeAgent, so a second instance's group IS the wake's coalescer — sharing
 	// the LifecycleCaller instance would buy nothing and couple two unrelated call
 	// sites. Same (st, hub) inputs, so it runs the identical resume/start chain.
-	c.SetAgentWaker(newLifecycleService(st, hub))
+	// nil dmOpener: the waker only drives WakeAgent, never SpawnAsAccount, so it
+	// never opens a DM.
+	c.SetAgentWaker(newLifecycleService(st, hub, nil))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)
 	hub.SetSessionReapSink(c)

@@ -35,7 +35,7 @@ import (
 func newWakeFixture(t *testing.T) (placementFixture, *lifecycleService) {
 	t.Helper()
 	pf := newPlacementFixture(t)
-	return pf, newLifecycleService(pf.store, pf.hub)
+	return pf, newLifecycleService(pf.store, pf.hub, nil)
 }
 
 // TestWakeAgentLiveIsNoOp pins the not-live pre-check: an agent with a LIVE

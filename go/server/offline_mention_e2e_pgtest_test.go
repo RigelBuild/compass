@@ -127,7 +127,7 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 	// The production delivery wire (sinks.go:142-155), assembled inline with the
 	// REAL resume-based waker (newLifecycleService), not a fake.
 	c := delivery.NewConsumer(commsBus, st, hub, hub, slog.New(slog.DiscardHandler))
-	c.SetAgentWaker(newLifecycleService(st, hub))
+	c.SetAgentWaker(newLifecycleService(st, hub, nil))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)
 	hub.SetDeliveryStore(st)
