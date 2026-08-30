@@ -2786,7 +2786,7 @@ place. Revisit when the guard is observed to be throttling in normal operation
 > agent is given a git credential + workspace and clones for itself after
 > launch. The frozen ruling below stands as the reasoning; only the "optional"
 > realization in (2) is superseded. Durable record: RIG-1527; the ledger row
-> DL-090 (authored by the design-ledger single-writer) lands via sealed#1019.
+> DL-090 (authored by the design-ledger single-writer) lands via RIG-1527.
 
 **Ruling: it never resolves, because it is always explicit. `repo` is REQUIRED
 on every forge call, and the Server does no inference of any kind.** The

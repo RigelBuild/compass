@@ -128,7 +128,7 @@ the `fetch`/command seam.
 - **Linux system libs gate every build task:** `webkit2gtk-4.1`, `libsoup-3`,
   `pkg-config` (plus Tauri's gtk build deps) must be present in **both**
   `devenv.nix` (the Linux-only `packages` block) **and** `ci/ci-toolchain.nix`, or
-  `moon run compass-shell:*` fails to link in the `sealed-ci` image. Land this
+  `moon run compass-shell:*` fails to link in the private CI image. Land this
   first.
 - **Thin shell invariant:** window + spawn/supervise + bridge only. Any
   `compass.v1` command logic in the shell is a bug (§7.1); contract access is only

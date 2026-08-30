@@ -162,7 +162,7 @@ origin/main `153a2a4` (RIG-1569 merged), hand-written Go/TS unchanged between
   container, arms egress as root, and installs scoped credentials over an
   exec'd `sh -s` with the payload on stdin (the stdin-payload exec pattern,
   `go/internal/runtime/agent.go:266-272` — the surviving provision-exec
-  precedent: sealed#1019 "SPAWN CARRIES NO REPO" deletes the server-side
+  precedent: DL-090 "SPAWN CARRIES NO REPO" deletes the server-side
   auto-clone, so the checkout may be empty at provision; the agent
   self-clones post-launch), all while the container's main process is
   `sleep infinity` and
@@ -226,7 +226,7 @@ Runner WRITES that body into the new container's
 session dir — HOME-relative, under the agent's scoped `$HOME`, mirroring the
 Runner-materialized auth-seed (`authSeedPath(home)`, `cli.ts:48-49`), so
 resume never depends on a populated checkout (HomeDir and CheckoutDir are
-distinct, `go/internal/runtime/workspace.go:75-79`; under sealed#1019's
+distinct, `go/internal/runtime/workspace.go:75-79`; under DL-090's
 no-auto-clone provision the checkout may be empty) — at PROVISION time, via
 the same provision-by-exec path that
 installs credentials today (`go/internal/runtime/agent.go:266-272`), BEFORE
@@ -786,7 +786,7 @@ upstream, wrapped in the SDK's `IndexedSessionStorage` and injected at the
   HOME-relative, under the agent's scoped `$HOME` — mirroring the auth-seed
   anchoring (`authSeedPath(home)`, `cli.ts:48-49`; `cli.ts:147-152` already
   throws if HOME is unset) — so the session dir never depends on a
-  populated checkout (sealed#1019: no auto-clone). Resume: when
+  populated checkout (DL-090: no auto-clone). Resume: when
   `COMPASS_RESUME_SESSION_FILE` is
   set (T8 exports it on the agent exec beside
   `COMPASS_WORKDIR`/`COMPASS_MODEL`, `go/internal/runner/agent_exec.go:59-67`),
@@ -883,7 +883,7 @@ tee tests that need a loaded-session fixture:
   starting at 1 (the server-rebase model, T4), and that the whole load is
   checkout-independent — the loader touches only the session dir under
   `$HOME`, and the fixture carries no populated repo checkout (consistent
-  with sealed#1019's no-auto-clone container).
+  with DL-090's no-auto-clone container).
 - A compaction round-trip: a fixture body whose file contains a superseded
   compaction loads with the SDK's own elision
   (`elideSupersededCompactionEntries`, `session-loader.ts:218`) — proving the
@@ -1287,7 +1287,7 @@ resume start the Runner:
    `go/internal/runtime/agent.go:214-216`), arms egress, and installs
    credentials via an exec'd `sh -s` with the payload on stdin
    (`go/internal/runtime/agent.go:266-272` — the surviving precedent:
-   sealed#1019 deletes the server-side auto-clone, and credentials install
+   DL-090 deletes the server-side auto-clone, and credentials install
    to the agent's HOME, which exists pre-clone — HomeDir and CheckoutDir
    are distinct, `go/internal/runtime/workspace.go:75-79`); a provision-time
    exec failure surfaces at provision

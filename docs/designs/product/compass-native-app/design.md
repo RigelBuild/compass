@@ -393,7 +393,7 @@ ruling cheap to apply and keeps a later reversal cheap.
   on Linux links the system WebKitGTK, so `webkit2gtk-4.1`, `libsoup-3`,
   `pkg-config` (plus Wails' gtk build deps) must be present in **both**
   `devenv.nix`'s Linux-only `packages` block and `ci/ci-toolchain.nix`, or the
-  shell's `moon` build fails to link in the `sealed-ci` image. Carried from
+  shell's `moon` build fails to link in the private CI image. Carried from
   DL-044 (`compass-tauri-shell.md:128-132`), which paid for this on the Rust
   shell; the WebKitGTK dependency is identical for the chosen Wails v3 shell
   (DL-110).

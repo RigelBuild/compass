@@ -708,7 +708,7 @@ export async function main(
 	// dir must complete before SessionManager.create so synchronous resume
 	// lookups see the keyspace). SESSION_DIR is the SDK-default HOME-relative dir
 	// for this cwd — checkout-independent (anchored on the agent's scoped $HOME,
-	// not a populated repo; sealed#1019 no-auto-clone), mirroring the auth-seed
+	// not a populated repo; DL-090 no-auto-clone), mirroring the auth-seed
 	// anchoring above.
 	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
 	// Resume (RIG-1570): T8 exports COMPASS_RESUME_SESSION_FILE on the agent exec.
