@@ -40,6 +40,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/forge"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
@@ -539,8 +540,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// built BEFORE the doors because the network door mounts the lane's webhook
 	// ingress (sink + secret resolver, threaded into buildDoors). Fails fast HERE
 	// on the same udsListener.Close()+listeners.close() cleanup path the Rehydrate
-	// fault above uses. Both returns are nil when the App is absent.
-	lane, webhookSink, webhookSecret, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, resolver, hubLog)
+	// fault above uses. All returns are nil when the App is absent. The notify
+	// lane (T7) rides the SAME ingress via webhookSink; Serve starts its arm +
+	// reconciler alongside the board lane's below.
+	lane, notifyLane, webhookSink, webhookSecret, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, hub, resolver, hubLog)
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()
@@ -584,15 +587,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return classifyServe(doors.net.ServeTLS(netListener, "", ""), "compass.v1 network door")
 		})
 	}
-	// The board webhook-ingestion lane (RIG-2883): the T1 webhook arm's drain
-	// and the T3 reconciler sweep, two more members of the same scoped group so
-	// they inherit exactly the doors' lifecycle — cancelled on SIGINT/SIGTERM
-	// via gctx, first-error-wins, drained with everything else. nil when the
-	// GitHub App is absent. Both Runs return nil on ctx-cancel (clean shutdown).
-	if lane != nil {
-		g.Go(func() error { return lane.arm.Run(gctx) })
-		g.Go(func() error { return lane.reconciler.Run(gctx) })
-	}
+	// The forge webhook-ingestion lanes (RIG-2883 board + RIG-2732 T7 notify):
+	// each lane's webhook-arm drain and reconciler sweep join the SAME scoped
+	// group so they inherit the doors' lifecycle exactly — cancelled on
+	// SIGINT/SIGTERM via gctx, first-error-wins, drained with everything else.
+	// Both lanes are nil when the GitHub App is absent (they share the App gate),
+	// and a nil lane starts nothing. Both Runs return nil on ctx-cancel.
+	startForgeIngestLanes(gctx, g, lane, notifyLane)
 	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
@@ -862,28 +863,41 @@ type boardIngestLane struct {
 // when enabled subscription rows exist and returns all-nil, which the network
 // door reads as "mount no ingress". A lane-build fault (a configured App with a
 // missing secret) is returned so Serve fails fast on its cleanup path. The
-// fanoutSink carries only the board arm this slice; the notify arm composes in
-// later (T7) without changing this seam.
+// fanoutSink carries BOTH forge arms: the board arm (RIG-2883) and — composed in
+// here via the reserved one-line seam (T7) — the notify arm, so each accepted
+// delivery fans out to both the board ingest and the agent-notification hot path
+// off the one /webhooks/github ingress. The returned notify lane is nil-or-set in
+// lockstep with the board lane (both share the App gate), and Serve starts its
+// arm + reconciler on the same errgroup as the board lane's.
 func buildBoardWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
 	st *store.Store,
 	issueBrd *board.IssueProjection,
+	hub *runnerhub.Hub,
 	resolver secrets.Resolver,
 	log *slog.Logger,
-) (*boardIngestLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), error) {
+) (*boardIngestLane, *forgeNotifyLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), error) {
 	rc := cfg.Forge.resolved()
 	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, resolver, log)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	if lane == nil {
 		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, rc.Host, log)
-		return nil, nil, nil, nil
+		return nil, nil, nil, nil, nil
 	}
-	sink := &fanoutSink{sinks: []ForgeEventSink{lane.sink}}
+	notifyLane, err := buildForgeNotifyLane(cfg, st, hub, resolver, log)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	sinks := []ForgeEventSink{lane.sink}
+	if notifyLane != nil {
+		sinks = append(sinks, notifyLane.sink)
+	}
+	sink := &fanoutSink{sinks: sinks}
 	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
-	return lane, sink, secret, nil
+	return lane, notifyLane, sink, secret, nil
 }
 
 // buildBoardIngestLane assembles the App-only board webhook-ingestion lane
@@ -1002,6 +1016,232 @@ func (a *boardReconcileStore) LoadRepoWatermark(ctx context.Context, repo string
 // coordinate after its rows sank (advance-after-sink).
 func (a *boardReconcileStore) StoreRepoWatermark(ctx context.Context, repo string, mark time.Time, etag string) error {
 	return a.st.StoreForgeRepoWatermark(ctx, a.provider, a.host, repo, mark, etag)
+}
+
+// forgeNotifyLane is the assembled GitHub agent-notification lane (RIG-2732 T7):
+// the notify webhook arm (whose Run drains the ingress queue and whose Enqueue is
+// the accepted-event sink) and the notify reconciler (whose Run sweeps the
+// backstop). It rides the SAME /webhooks/github ingress the board lane mounts —
+// the caller composes sink into the ingress fanoutSink and adds arm.Run +
+// reconciler.Run to the serve errgroup, exactly like the board lane.
+type forgeNotifyLane struct {
+	arm        *ingest.NotifyWebhookArm
+	reconciler *ingest.NotifyReconciler
+	sink       ForgeEventSink // the arm; the ingress fan-out registers it
+}
+
+// forgeNotifyStore adapts *store.Store to ingest.NotifyStore, binding the forge
+// coordinate half (provider, host) so the ingest-side seam stays coordinate-free
+// and this package holds the store dependency the ingest package's no-store rule
+// keeps out. The ingest ArtifactKind enum and the store ForgeArtifactKind enum
+// share the same underlying int32 values (both mirror the forge.proto kind), so
+// the (provider, host)-drop conversion is a direct cast, the established pattern
+// (ListForgeNotifyTargets, forge_subscriptions.go:401).
+type forgeNotifyStore struct {
+	st       *store.Store
+	provider store.ForgeProvider
+	host     string
+}
+
+// LoadArtifactCursor point-reads the coordinate's shared FETCH cursor, dropping
+// the bound (provider, host) — the ingest cursor is coordinate-bound. nil (never
+// observed) maps to nil.
+func (a *forgeNotifyStore) LoadArtifactCursor(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64) (*ingest.ArtifactCursor, error) {
+	cur, err := a.st.LoadForgeArtifactCursor(ctx, a.provider, a.host, repo, store.ForgeArtifactKind(kind), number)
+	if err != nil {
+		return nil, err
+	}
+	if cur == nil {
+		return nil, nil //nolint:nilnil // a never-observed coordinate is (nil, nil) by the seam contract (notify_router.go:79-81); the router guards nil.
+	}
+	return &ingest.ArtifactCursor{
+		Repo:         cur.Repo,
+		Kind:         compassv1internal.ForgeArtifactKind(cur.Kind),
+		Number:       cur.Number,
+		ETag:         cur.ETag,
+		CommentsETag: cur.CommentsETag,
+		ChecksETag:   cur.ChecksETag,
+		Revision:     cur.Revision,
+		Snapshot:     cur.Snapshot,
+	}, nil
+}
+
+// SubscribersForArtifact returns the subscribers a change fans out to for the
+// bound coordinate, converting the store subscriber rows to the ingest mirror.
+func (a *forgeNotifyStore) SubscribersForArtifact(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64, project string, opened bool) ([]ingest.NotifySubscriber, error) {
+	subs, err := a.st.SubscribersForArtifact(ctx, a.provider, a.host, repo, store.ForgeArtifactKind(kind), number, project, opened)
+	if err != nil {
+		return nil, err
+	}
+	return toIngestSubscribers(subs), nil
+}
+
+// ListNotifyTargets enumerates every subscribed coordinate + its cursor and
+// riding subscribers for the bound (provider, host) — the reconcile sweep's work
+// list.
+func (a *forgeNotifyStore) ListNotifyTargets(ctx context.Context) ([]ingest.NotifyTarget, error) {
+	targets, err := a.st.ListForgeNotifyTargets(ctx, a.provider, a.host)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ingest.NotifyTarget, 0, len(targets))
+	for _, t := range targets {
+		nt := ingest.NotifyTarget{
+			Repo:        t.Repo,
+			Kind:        compassv1internal.ForgeArtifactKind(t.Kind),
+			Number:      t.Number,
+			Subscribers: toIngestSubscribers(t.Subscribers),
+		}
+		if t.Cursor != nil {
+			nt.Cursor = &ingest.ArtifactCursor{
+				Repo:         t.Cursor.Repo,
+				Kind:         compassv1internal.ForgeArtifactKind(t.Cursor.Kind),
+				Number:       t.Cursor.Number,
+				ETag:         t.Cursor.ETag,
+				CommentsETag: t.Cursor.CommentsETag,
+				ChecksETag:   t.Cursor.ChecksETag,
+				Revision:     t.Cursor.Revision,
+				Snapshot:     t.Cursor.Snapshot,
+			}
+		}
+		out = append(out, nt)
+	}
+	return out, nil
+}
+
+// UpsertArtifactCursor writes the coordinate's shared FETCH cursor, re-binding
+// the (provider, host) the ingest type drops.
+func (a *forgeNotifyStore) UpsertArtifactCursor(ctx context.Context, cur ingest.ArtifactCursor) error {
+	return a.st.UpsertForgeArtifactCursor(ctx, store.ForgeArtifactCursor{
+		Provider:     a.provider,
+		Host:         a.host,
+		Repo:         cur.Repo,
+		Kind:         store.ForgeArtifactKind(cur.Kind),
+		Number:       cur.Number,
+		ETag:         cur.ETag,
+		CommentsETag: cur.CommentsETag,
+		ChecksETag:   cur.ChecksETag,
+		Revision:     cur.Revision,
+		Snapshot:     cur.Snapshot,
+	})
+}
+
+// toIngestSubscribers converts the store subscriber rows to the ingest mirror
+// (the no-store rule keeps the store type out of the ingest package).
+func toIngestSubscribers(subs []store.ForgeNotifySubscriber) []ingest.NotifySubscriber {
+	if len(subs) == 0 {
+		return nil
+	}
+	out := make([]ingest.NotifySubscriber, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, ingest.NotifySubscriber{
+			SubscriptionID:    s.SubscriptionID,
+			AgentAccountID:    string(s.AgentAccountID),
+			DeliveredRevision: s.DeliveredRevision,
+			Project:           s.Project,
+		})
+	}
+	return out
+}
+
+// errNoLiveSession is the sentinel forgeNotifyDispatcher.Notify returns when the
+// resolved subscriber has no live session: the router logs it and moves on, and
+// the reconcile sweep re-notifies from the durable gap (W3). It is DELIBERATELY
+// not a cursor advance — no cursor is touched on a no-session dispatch.
+var errNoLiveSession = errors.New("forge notify: no live session for account")
+
+// forgeNotifyDispatcher adapts the hub to ingest.NotifyDispatcher: resolve the
+// subscriber's account to its live session and DispatchControl the notification.
+// It NEVER advances delivered_revision (W3) — the hub's ForgeNotificationAck arm
+// owns that (already boot-wired via SetDeliveryStore).
+type forgeNotifyDispatcher struct {
+	hub *runnerhub.Hub
+}
+
+// Notify resolves account -> live session -> DispatchControl(ForgeNotification).
+// A missing live session returns errNoLiveSession (the router logs and moves on);
+// a live session dispatches the notification wrapped as an AgentControl and
+// returns the dispatch error.
+func (d *forgeNotifyDispatcher) Notify(ctx context.Context, account string, n *compassv1internal.ForgeNotification) error {
+	sessionID, ok := d.hub.SessionForAccount(store.AccountID(account))
+	if !ok {
+		return errNoLiveSession
+	}
+	return d.hub.DispatchControl(ctx, sessionID, &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_ForgeNotification{ForgeNotification: n},
+	})
+}
+
+// forgeNotifyChecksRoller adapts *forge.GitHub to ingest.ChecksRoller: the
+// combined checks roll-up a CHECKS event needs. GitHub's ChecksConditional has
+// the exact RollUp signature (notify_router.go:111-113), so this is a one-method
+// forwarding adapter rather than a method value, keeping the seam an explicit
+// named type.
+type forgeNotifyChecksRoller struct {
+	client *forge.GitHub
+}
+
+// RollUp resolves the combined checks roll-up for the head SHA, forwarding to the
+// client's conditional checks read.
+func (r *forgeNotifyChecksRoller) RollUp(ctx context.Context, repo string, number uint64, headSHA, etag string) (forge.ConditionalResult[forge.Checks], error) {
+	return r.client.ChecksConditional(ctx, repo, number, headSHA, etag)
+}
+
+// buildForgeNotifyLane assembles the App-only GitHub agent-notification lane
+// (RIG-2732 T7). It runs iff the GitHub App is configured (the SAME App gate as
+// the board lane — the notify lane shares the App credential, W1); an
+// unconfigured App returns (nil, nil) and the caller mounts no notify sink. The
+// board lane's warnDisabledBoardIngestion already covers the "App off → forge
+// lanes off" diagnostic (both lanes share the App gate), so this returns silently
+// to avoid a second boot Warn that double-logs the same fact.
+//
+// It builds its OWN forge.GitHub client via the same App TokenSource recipe the
+// board lane uses (a second client on the same App installation shares the same
+// rate budget, so W1's rate rationale holds; a single shared-client refactor
+// across both lanes is out of scope here). The two App secrets are validated by
+// the board lane's buildBoardIngestLane on the same boot, so this does not
+// re-validate — it assembles the pipeline: the (provider, host)-bound store
+// adapter, the hub-backed dispatcher, the checks roller over the client, the
+// router, the webhook arm, and the reconciler.
+func buildForgeNotifyLane(
+	cfg ServeConfig,
+	st *store.Store,
+	hub *runnerhub.Hub,
+	resolver secrets.Resolver,
+	log *slog.Logger,
+) (*forgeNotifyLane, error) {
+	if !cfg.Forge.boardIngestionEnabled() {
+		return nil, nil //nolint:nilnil // App absent is a valid non-error state: a nil lane is the signal (the caller guards `if lane != nil`), not an ambiguous nil-nil — a sentinel error would force the caller to distinguish it from a real fault.
+	}
+	fc := cfg.Forge.resolved()
+	const provider = store.ForgeProviderGitHub
+
+	tok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+		AppID:          fc.App.AppID,
+		InstallationID: fc.App.InstallationID,
+		PrivateKey:     newDeclaredSecretResolver(resolver, fc.App.AppPrivateKeySecret),
+		Host:           fc.Host,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("forge notify app token source: %w", err)
+	}
+	client := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: tok})
+
+	notifyStore := &forgeNotifyStore{st: st, provider: provider, host: fc.Host}
+	dispatcher := &forgeNotifyDispatcher{hub: hub}
+	checks := &forgeNotifyChecksRoller{client: client}
+	forgeRef := &compassv1.ForgeRef{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
+		Host:     fc.Host,
+	}
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, forgeRef, log)
+	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
+	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
+		compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, fc.Host, ingest.ReconcileConfig{
+			Backstop: fc.App.ReconcileBackstop,
+			Log:      log,
+		})
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm}, nil
 }
 
 // newDeclaredSecretResolver returns a func that resolves the declared server_only

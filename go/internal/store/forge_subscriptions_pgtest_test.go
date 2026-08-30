@@ -12,6 +12,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -746,5 +747,58 @@ func TestAdvanceForgeDeliveredRevision(t *testing.T) {
 	}
 	if got != "rev-9" {
 		t.Fatalf("delivered_revision after foreign advance = %q, want rev-9 (untouched)", got)
+	}
+}
+
+// ── T7a: LoadForgeArtifactCursor point-read ───────────────────────────────────
+
+// TestLoadForgeArtifactCursor: a written cursor round-trips through the
+// single-coordinate reader; a never-observed coordinate returns (nil, nil); an
+// invalid coordinate (zero kind) returns ErrInvalidArgument.
+func TestLoadForgeArtifactCursor(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	const (
+		host   = "github.com"
+		repo   = "a/b"
+		number = uint64(42)
+	)
+	provider := ForgeProviderGitHub
+	kind := ForgeArtifactKindIssue
+
+	if err := s.UpsertForgeArtifactCursor(ctx, ForgeArtifactCursor{
+		Provider: provider, Host: host, Repo: repo, Kind: kind, Number: number,
+		ETag: `"e1"`, CommentsETag: `"c1"`, ChecksETag: `"k1"`,
+		Revision: "rev-1", Snapshot: []byte(`{"x":1}`),
+	}); err != nil {
+		t.Fatalf("UpsertForgeArtifactCursor: %v", err)
+	}
+
+	// 1. Round-trip: the written cursor reads back with matching fields.
+	got, err := s.LoadForgeArtifactCursor(ctx, provider, host, repo, kind, number)
+	if err != nil {
+		t.Fatalf("LoadForgeArtifactCursor: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("cursor = nil, want non-nil round-trip")
+	}
+	if got.ETag != `"e1"` || got.CommentsETag != `"c1"` || got.ChecksETag != `"k1"` ||
+		got.Revision != "rev-1" || string(got.Snapshot) != `{"x":1}` {
+		t.Fatalf("cursor = %+v, want e1/c1/k1/rev-1/{\"x\":1}", got)
+	}
+
+	// 2. Never-observed coordinate → (nil, nil).
+	got, err = s.LoadForgeArtifactCursor(ctx, provider, host, repo, kind, 999)
+	if err != nil {
+		t.Fatalf("LoadForgeArtifactCursor (unseeded): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("cursor = %+v, want nil for never-observed coordinate", got)
+	}
+
+	// 3. Invalid coordinate (zero kind) → ErrInvalidArgument.
+	if _, err := s.LoadForgeArtifactCursor(ctx, provider, host, repo, ForgeArtifactKind(0), number); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("zero kind err = %v, want ErrInvalidArgument", err)
 	}
 }

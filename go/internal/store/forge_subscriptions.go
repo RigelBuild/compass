@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -473,6 +474,38 @@ func (s *Store) UpsertForgeArtifactCursor(ctx context.Context, cur ForgeArtifact
 		return fmt.Errorf("store: upsert forge artifact cursor: %w", err)
 	}
 	return nil
+}
+
+// LoadForgeArtifactCursor point-reads the shared per-artifact FETCH cursor at
+// the coordinate (provider, host, repo, kind, number), or (nil, nil) when the
+// coordinate has never been observed (no row). It is the single-coordinate
+// reader the notify router needs (LoadArtifactCursor on the ingest.NotifyStore
+// seam); ListForgeNotifyTargets is the bulk reconcile-sweep enumerate, not a
+// per-event point read. number == 0 is the legal container-scope reconcile
+// cursor row (the PK admits it). Zero provider / empty host/repo / a zero kind
+// -> ErrInvalidArgument.
+func (s *Store) LoadForgeArtifactCursor(ctx context.Context, provider ForgeProvider, host, repo string, kind ForgeArtifactKind, number uint64) (*ForgeArtifactCursor, error) {
+	if err := validCoordinate(provider, host, repo); err != nil {
+		return nil, err
+	}
+	if kind != ForgeArtifactKindIssue && kind != ForgeArtifactKindPullRequest {
+		return nil, fmt.Errorf("%w: artifact kind must be issue or pull_request", ErrInvalidArgument)
+	}
+	cur := ForgeArtifactCursor{Provider: provider, Host: host, Repo: repo, Kind: kind, Number: number}
+	err := s.pool.QueryRow(ctx,
+		`SELECT etag, comments_etag, checks_etag, revision, snapshot, polled_at
+		   FROM forge_artifact_cursors
+		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5`,
+		int32(provider), host, repo, int32(kind),
+		int64(number), //nolint:gosec // G115: canonical artifact number (or 0 container) in a BIGINT domain.
+	).Scan(&cur.ETag, &cur.CommentsETag, &cur.ChecksETag, &cur.Revision, &cur.Snapshot, &cur.PolledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil //nolint:nilnil // a never-observed cursor is (nil, nil) by the load contract: the caller (notify router via forgeNotifyStore, serve.go:1067) guards nil as "unobserved". A sentinel would force every reader to special-case it.
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: load forge artifact cursor: %w", err)
+	}
+	return &cur, nil
 }
 
 // AdvanceForgeDeliveredRevision advances one subscription's per-subscriber
