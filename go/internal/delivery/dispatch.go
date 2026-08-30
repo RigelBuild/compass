@@ -6,8 +6,14 @@ import (
 	"context"
 	"errors"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -72,16 +78,18 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 		c.fanOut(ctx, channel, author, wire)
 		return
 	}
-	c.hold(authorSession, messageID)
+	c.hold(authorSession, messageID, otelx.Traceparent(ctx))
 }
 
 // hold registers messageID under its author's session for later firing at the
 // author's settle edge (design.md:157-160). Kept in post order so a settle fires
-// the held set ascending.
-func (c *Consumer) hold(authorSession, messageID string) {
+// the held set ascending. traceparent is the origin trace captured at hold time
+// (the bus-extracted author ctx); it is restamped at fireHeld so the settled
+// deliver re-links to the publisher's trace across the settle goroutine boundary.
+func (c *Consumer) hold(authorSession, messageID, traceparent string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.held[authorSession] = append(c.held[authorSession], messageID)
+	c.held[authorSession] = append(c.held[authorSession], heldEntry{messageID: messageID, traceparent: traceparent})
 }
 
 // fanOut dispatches one settled message. It first routes any `@`-mentions to a
@@ -324,7 +332,7 @@ func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID
 // was never advanced on send, so the D2 sweep redelivers.
 func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compassv1.Message, fromHandle string) {
 	channelName, topicName := c.sourceNames(ctx, msg)
-	c.gatedDispatch(ctx, sessionID, deliverOp(msg, fromHandle, channelName, topicName), msg.GetId())
+	c.gatedDispatch(ctx, sessionID, deliverOp(msg, fromHandle, channelName, topicName, otelx.Traceparent(ctx)), msg.GetId())
 }
 
 // dispatchSteerTo relays one steer for msg to a mentioned recipient's session,
@@ -333,7 +341,7 @@ func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compas
 // exactly as a deliver does (design.md:546-548).
 func (c *Consumer) dispatchSteerTo(ctx context.Context, sessionID string, msg *compassv1.Message, fromHandle string) {
 	channelName, topicName := c.sourceNames(ctx, msg)
-	c.gatedDispatch(ctx, sessionID, steerOp(msg, fromHandle, channelName, topicName), msg.GetId())
+	c.gatedDispatch(ctx, sessionID, steerOp(msg, fromHandle, channelName, topicName, otelx.Traceparent(ctx)), msg.GetId())
 }
 
 // wake best-effort resumes an offline recipient via the AgentWaker seam (T3), so
@@ -352,6 +360,27 @@ func (c *Consumer) wake(ctx context.Context, agent store.AccountID) {
 // synchronous refusal (no live stream / immediate push failure) is treated as
 // "no live session": the cursor is unadvanced, so the D2 sweep redelivers.
 func (c *Consumer) gatedDispatch(ctx context.Context, sessionID string, op *compassv1internal.AgentControl, messageID string) {
+	// op kind (steer|deliver), read once from the op oneof, is the only attribute
+	// on both the hop span and the dispatch metric — never per-session/channel/
+	// message (cardinality).
+	opKind := "deliver"
+	if op.GetSteer() != nil {
+		opKind = "steer"
+	}
+	// One hop span per dispatch, re-linking to the publisher's trace carried on
+	// ctx (empty ctx ⇒ a root span; the trace machinery never blocks a delivery).
+	ctx, span := otel.Tracer(instrumentationScope).Start(ctx, "delivery.dispatch")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("compass.message.id", messageID),
+		attribute.String("compass.session.id", sessionID),
+		attribute.String("compass.op.kind", opKind),
+	)
+	// One dispatch counted per gatedDispatch, labelled only by op kind. Nil-guard:
+	// a failed counter construction disables the metric, never a delivery.
+	if c.dispatched != nil {
+		c.dispatched.Add(ctx, 1, metric.WithAttributes(attribute.String("compass.op.kind", opKind)))
+	}
 	gate := c.gateFor(sessionID)
 	if c.beforeGate != nil {
 		c.beforeGate(sessionID)
@@ -359,6 +388,7 @@ func (c *Consumer) gatedDispatch(ctx context.Context, sessionID string, op *comp
 	gate.Lock()
 	defer gate.Unlock()
 	if err := c.dispatch.DispatchControl(ctx, sessionID, op); err != nil {
+		span.SetStatus(codes.Error, "dispatch refused")
 		c.log.WarnContext(ctx, "delivery: dispatch to session failed, leaving to sweep",
 			"error", err, "session_id", sessionID, "message_id", messageID)
 	}

@@ -425,7 +425,7 @@ func (c *Comms) PostMessage(
 	// row unchanged (inserted=false), so re-fanning MessagePosted would emit a
 	// spurious live state-change for a row that did not change.
 	if inserted {
-		c.publishMessagePosted(msg)
+		c.publishMessagePosted(ctx, msg)
 	}
 	return connect.NewResponse(&compassv1.PostMessageResponse{Message: MessageToWire(msg)}), nil
 }
@@ -468,7 +468,7 @@ func (c *Comms) RespondToAsk(
 	// reconnecting asker gets the answer via the ack-gated cursor + resweep
 	// (RIG-2257: no bespoke ask wake).
 	c.publishMessageUpdated(askMsg)
-	c.publishMessagePosted(answerMsg)
+	c.publishMessagePosted(ctx, answerMsg)
 	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
 }
 

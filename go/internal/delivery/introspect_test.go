@@ -41,7 +41,9 @@ func (c *Consumer) waitHeld(t *testing.T, authorSession string, n int) { //nolin
 func (c *Consumer) isHeld(authorSession, messageID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.Contains(c.held[authorSession], messageID)
+	return slices.ContainsFunc(c.held[authorSession], func(e heldEntry) bool {
+		return e.messageID == messageID
+	})
 }
 
 // waitSettleDrained blocks until the settle queue is empty, or fails at the

@@ -61,7 +61,7 @@ func TestScanSkipsHeldMessage(t *testing.T) {
 	reads.members[ch] = []store.AccountID{agentA}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
 	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
-	c.hold("author-sess", "m1") // registered in c.held under its author session
+	c.hold("author-sess", "m1", "") // registered in c.held under its author session
 
 	c.scanMissedMentions(context.Background())
 

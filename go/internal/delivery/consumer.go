@@ -26,9 +26,13 @@ import (
 
 	comms "github.com/RigelBuild/compass/go/internal/comms"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -155,6 +159,20 @@ type startEvent struct {
 	account   store.AccountID
 }
 
+// instrumentationScope is the OTel instrumentation scope for this package's
+// spans AND metrics (the delivery tracer and meter both resolve from the global
+// providers T2/T3 install). Shared by every otel.Tracer / otel.Meter call here.
+const instrumentationScope = "github.com/RigelBuild/compass/go/internal/delivery"
+
+// heldEntry is one pending-deliver registry element: the held message id plus
+// the W3C traceparent captured at hold time (the author's live-dispatch ctx), so
+// the deliver fired when the author settles re-links to the publisher's trace
+// across the goroutine boundary. Empty traceparent ⇒ empty on the wire.
+type heldEntry struct {
+	messageID   string
+	traceparent string
+}
+
 // Consumer tails the comms bus and fans posted messages out to subscribed live
 // agent sessions. Safe for concurrent use: the pending-deliver registry, the
 // settle queue, and the per-session dispatch gates mutate under mu; the bus loop,
@@ -195,7 +213,7 @@ type Consumer struct {
 	// unaffected either way — only the reap (a leak bound, not the delivery
 	// guarantee) is best-effort: the recipient still receives the message via the
 	// reconnect cursor sweep, independent of this registry.
-	held map[string][]string
+	held map[string][]heldEntry
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
 	// (coalescing wakeups): the hook appends and signals without blocking Deliver.
@@ -227,6 +245,13 @@ type Consumer struct {
 	// live, so a post-sweep publish is guaranteed to land on the new tail rather
 	// than racing into the (deliberately un-drained) replay snapshot.
 	afterResubscribe func()
+
+	// dispatched counts control dispatches (deliver + steer), labelled only by
+	// op kind (compass.op.kind = steer|deliver). Created ONCE at NewConsumer from
+	// the global meter; nil when meter construction failed, in which case the
+	// increment is skipped (a metric miss never blocks a delivery). NEVER
+	// labelled per-session/channel/message — that is a cardinality hazard.
+	dispatched metric.Int64Counter
 }
 
 // NewConsumer constructs the fan-out consumer. It takes the hub as dispatch and
@@ -238,15 +263,27 @@ func NewConsumer(bus *events.Bus[*compassv1.SubscribeCommsResponse], st Delivery
 	if log == nil {
 		log = slog.Default()
 	}
+	// Create the dispatch counter once from the global meter (providers set by
+	// T2/T3). On error, leave it nil and log — a metric miss must never fail
+	// consumer construction or block a delivery.
+	dispatched, err := otel.Meter(instrumentationScope).Int64Counter(
+		"compass.delivery.dispatched",
+		metric.WithDescription("Count of live fan-out control dispatch attempts (deliver + steer), by op kind."),
+	)
+	if err != nil {
+		log.Warn("delivery: failed to create dispatch counter; delivery metrics disabled", "err", err)
+		dispatched = nil
+	}
 	return &Consumer{
-		bus:      bus,
-		st:       st,
-		dispatch: dispatch,
-		resolver: resolver,
-		log:      log,
-		held:     make(map[string][]string),
-		notify:   make(chan struct{}, 1),
-		gates:    make(map[string]*sync.Mutex),
+		bus:        bus,
+		st:         st,
+		dispatch:   dispatch,
+		resolver:   resolver,
+		log:        log,
+		held:       make(map[string][]heldEntry),
+		notify:     make(chan struct{}, 1),
+		gates:      make(map[string]*sync.Mutex),
+		dispatched: dispatched,
 	}
 }
 
@@ -299,7 +336,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return nil
 		default:
 		}
-		c.handleEvent(ctx, event.Payload)
+		c.handleEvent(otelx.ContextWithTraceparent(ctx, event.Traceparent), event.Payload)
 	}
 
 	for {
@@ -363,7 +400,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 				}
 				return nil
 			}
-			c.handleEvent(ctx, event.Payload)
+			c.handleEvent(otelx.ContextWithTraceparent(ctx, event.Traceparent), event.Payload)
 		}
 	}
 }
@@ -389,10 +426,10 @@ func (c *Consumer) handleEvent(ctx context.Context, resp *compassv1.SubscribeCom
 // topicName are the source channel+topic names denormalized the same way so the
 // agent renders "Channel <name> › topic <name>:" without a roster lookup
 // (RIG-2956 T0); each is empty on a resolve miss, which never blocks a delivery.
-func deliverOp(msg *compassv1.Message, fromHandle, channelName, topicName string) *compassv1internal.AgentControl {
+func deliverOp(msg *compassv1.Message, fromHandle, channelName, topicName, traceparent string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Deliver{
-			Deliver: &compassv1internal.DeliverControl{Message: msg, FromHandle: fromHandle, ChannelName: channelName, TopicName: topicName},
+			Deliver: &compassv1internal.DeliverControl{Message: msg, FromHandle: fromHandle, ChannelName: channelName, TopicName: topicName, Traceparent: traceparent},
 		},
 	}
 }
@@ -405,10 +442,10 @@ func deliverOp(msg *compassv1.Message, fromHandle, channelName, topicName string
 // as DeliverControl (DL-073), plus the same denormalized author from_handle
 // (RIG-2486 T1) and source channel+topic names (RIG-2956 T0) — each empty on a
 // resolve miss, which never blocks a delivery.
-func steerOp(msg *compassv1.Message, fromHandle, channelName, topicName string) *compassv1internal.AgentControl {
+func steerOp(msg *compassv1.Message, fromHandle, channelName, topicName, traceparent string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Steer{
-			Steer: &compassv1internal.SteerControl{Message: msg, FromHandle: fromHandle, ChannelName: channelName, TopicName: topicName},
+			Steer: &compassv1internal.SteerControl{Message: msg, FromHandle: fromHandle, ChannelName: channelName, TopicName: topicName, Traceparent: traceparent},
 		},
 	}
 }

@@ -4,7 +4,6 @@ package delivery
 
 import (
 	"context"
-	"slices"
 )
 
 // scanBatchLimit bounds one UnroutedMentionMessages read so a long-idle deploy
@@ -78,9 +77,11 @@ func (c *Consumer) scanMissedMentions(ctx context.Context) {
 func (c *Consumer) messageHeld(messageID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, ids := range c.held {
-		if slices.Contains(ids, messageID) {
-			return true
+	for _, entries := range c.held {
+		for _, e := range entries {
+			if e.messageID == messageID {
+				return true
+			}
 		}
 	}
 	return false

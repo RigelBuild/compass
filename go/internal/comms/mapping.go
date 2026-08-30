@@ -482,8 +482,8 @@ func (c *Comms) publishAgentWorkspaceChanged(w store.AgentWorkspace) {
 	})
 }
 
-func (c *Comms) publishMessagePosted(m store.Message) {
-	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+func (c *Comms) publishMessagePosted(ctx context.Context, m store.Message) {
+	c.bus.PublishCtx(ctx, &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
 			MessagePosted: &compassv1.MessagePosted{Message: MessageToWire(m)},
 		},
