@@ -1722,7 +1722,7 @@ jobs:
         # published `:latest` turns on one question — does this PR change the
         # image's inputs? — and the answer already lives in one place: the
         # `compass-agent-image` build task's `inputs` globs (agent-image/moon.yml),
-        # which mirror publish-agent-image.yml's on.push.paths (the reviewed
+        # which mirror release.yml's IMAGE_CLOSURE_PATHS (the reviewed
         # source of truth for what changes the published artifact).
         #
         # The discriminator is `moon query tasks --affected --project
