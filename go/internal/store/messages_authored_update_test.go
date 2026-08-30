@@ -147,7 +147,7 @@ func TestUpdateMessageBlocksAsAuthorRevokedMemberIsNotFound(t *testing.T) {
 		t.Fatalf("the author cannot edit while still a member: %v", err)
 	}
 
-	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{{AccountID: author.ID, Remove: true}}); err != nil {
+	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{{AccountID: author.ID, Remove: true}}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(remove): %v", err)
 	}
 

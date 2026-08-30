@@ -266,6 +266,7 @@ func (c *Comms) UpdateChannelMembers(
 		caller,
 		store.ChannelID(req.Msg.GetChannelId()),
 		updates,
+		store.MemberUpdatesOptions{ConvertChannelName: req.Msg.GetConvertChannelName()},
 	)
 	if err != nil {
 		return nil, edgeError(err)

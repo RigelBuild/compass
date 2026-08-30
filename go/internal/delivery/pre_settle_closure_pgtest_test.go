@@ -109,7 +109,7 @@ func mustRoomWithMembers(t *testing.T, ctx context.Context, s *store.Store, owne
 // member-update path (so it can post / receive live delivers).
 func subscribeMember(t *testing.T, ctx context.Context, s *store.Store, owner store.AccountID, ch store.ChannelID, agent store.AccountID) {
 	t.Helper()
-	if _, _, err := s.UpdateChannelMembers(ctx, owner, ch, []store.MemberUpdate{{AccountID: agent, Subscribed: true}}); err != nil {
+	if _, _, err := s.UpdateChannelMembers(ctx, owner, ch, []store.MemberUpdate{{AccountID: agent, Subscribed: true}}, store.MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(subscribe %s): %v", agent, err)
 	}
 }

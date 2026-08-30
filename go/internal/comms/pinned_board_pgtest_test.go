@@ -318,7 +318,7 @@ func TestUpdatePinnedBoardMembershipRevokedMidFlightIsNotFound(t *testing.T) {
 	// `other` is a member first — a pin would succeed. Now revoke and commit.
 	if _, _, err := st.UpdateChannelMembers(ctx, owner.ID, ch.ID, []store.MemberUpdate{
 		{AccountID: other.ID, Remove: true},
-	}); err != nil {
+	}, store.MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(remove other): %v", err)
 	}
 

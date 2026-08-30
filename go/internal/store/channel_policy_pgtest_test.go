@@ -89,7 +89,7 @@ func TestUpdateChannelMembersUnsubscribeRejectedOnMandatory(t *testing.T) {
 	// An explicit unsubscribe of member is refused.
 	_, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: member.ID, Unsubscribe: true},
-	})
+	}, MemberUpdatesOptions{})
 	sentinelIs(t, err, ErrInvalidArgument, "unsubscribe on mandatory channel")
 
 	// A plain add (not an unsubscribe) still works: the guard is scoped to the
@@ -97,7 +97,7 @@ func TestUpdateChannelMembersUnsubscribeRejectedOnMandatory(t *testing.T) {
 	newMember := mustUser(t, s, "newcomer")
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: newMember.ID},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("plain add on mandatory channel: %v", err)
 	}
 }
@@ -410,7 +410,7 @@ func TestUpdateChannelMembersSeedsUnsubscribedAddOnMandatory(t *testing.T) {
 	// Plain add (subscribed defaults false) of the agent to the mandatory channel.
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: late.ID},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(plain add on mandatory): %v", err)
 	}
 
@@ -548,7 +548,7 @@ func TestUpdateChannelMembersConcurrentFlipSeedsLateMember(t *testing.T) {
 	// under test. With the fix its FOR UPDATE read blocks on B's lock.
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{{AccountID: late.ID}})
+		_, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{{AccountID: late.ID}}, MemberUpdatesOptions{})
 		done <- err
 	}()
 

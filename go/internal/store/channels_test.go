@@ -372,7 +372,7 @@ func TestUpdateChannelMembersMutations(t *testing.T) {
 	// Add a member, subscribed.
 	updated, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: newcomer.ID, Subscribed: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(add): %v", err)
 	}
@@ -386,7 +386,7 @@ func TestUpdateChannelMembersMutations(t *testing.T) {
 	// Flip subscribed off.
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: newcomer.ID, Subscribed: false},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(unsubscribe): %v", err)
 	}
 	if memberSubscribed(t, s, ch.ID, newcomer.ID) {
@@ -396,7 +396,7 @@ func TestUpdateChannelMembersMutations(t *testing.T) {
 	// Remove the member.
 	afterRemove, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: newcomer.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(remove): %v", err)
 	}
@@ -424,7 +424,7 @@ func TestUpdateChannelMembersAddingAgentPullsOwner(t *testing.T) {
 	// Adding the agent must also pull its owner into the channel.
 	updated, _, err := s.UpdateChannelMembers(ctx, actor.ID, ch.ID, []MemberUpdate{
 		{AccountID: agent.ID},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(add agent): %v", err)
 	}
@@ -449,7 +449,7 @@ func TestUpdateChannelMembersPreservesOwnerSubscription(t *testing.T) {
 	}
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: owner.ID, Subscribed: true},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(subscribe owner): %v", err)
 	}
 	if !memberSubscribed(t, s, ch.ID, owner.ID) {
@@ -463,7 +463,7 @@ func TestUpdateChannelMembersPreservesOwnerSubscription(t *testing.T) {
 	// clobbered the already-subscribed owner to FALSE on the agent join.
 	updated, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: agent.ID},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(add agent): %v", err)
 	}
@@ -484,7 +484,7 @@ func TestUpdateChannelMembersUnknownChannelNotFound(t *testing.T) {
 	actor := mustUser(t, s, "actor")
 	_, _, err := s.UpdateChannelMembers(ctx, actor.ID, ChannelID("ghost"), []MemberUpdate{
 		{AccountID: actor.ID},
-	})
+	}, MemberUpdatesOptions{})
 	sentinelIs(t, err, ErrNotFound, "unknown channel")
 }
 
@@ -541,7 +541,7 @@ func TestUpdateChannelMembersRejectsOwnerRemovalWithAgentPresent(t *testing.T) {
 	}
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: agent.ID},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(add agent): %v", err)
 	}
 
@@ -551,7 +551,7 @@ func TestUpdateChannelMembersRejectsOwnerRemovalWithAgentPresent(t *testing.T) {
 	// a user can always read anything its agent is party to.
 	_, _, err = s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: owner.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	sentinelIs(t, err, ErrInvalidArgument, "remove owner while its agent remains")
 
 	// Positive companion, proving the invariant is about the DEPENDENT agent,
@@ -559,7 +559,7 @@ func TestUpdateChannelMembersRejectsOwnerRemovalWithAgentPresent(t *testing.T) {
 	// it, so this succeeds)...
 	afterAgent, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: agent.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(remove agent): %v", err)
 	}
@@ -571,7 +571,7 @@ func TestUpdateChannelMembersRejectsOwnerRemovalWithAgentPresent(t *testing.T) {
 	// the channel to depend on its membership.
 	afterOwner, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: owner.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(remove owner after agent gone): %v", err)
 	}
@@ -608,7 +608,7 @@ func TestUpdateChannelMembersRemovalScansAllOwnedAgents(t *testing.T) {
 		{AccountID: agent1.ID},
 		{AccountID: agent2.ID},
 		{AccountID: otherAgent.ID},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(add agents): %v", err)
 	}
@@ -621,7 +621,7 @@ func TestUpdateChannelMembersRemovalScansAllOwnedAgents(t *testing.T) {
 	// (a) Both owned agents remain: removing the owner is rejected.
 	_, _, err = s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: owner.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	sentinelIs(t, err, ErrInvalidArgument, "remove owner while both its agents remain")
 
 	// (b) Remove the FIRST-added owned agent. If the EXISTS scanned only the
@@ -629,7 +629,7 @@ func TestUpdateChannelMembersRemovalScansAllOwnedAgents(t *testing.T) {
 	// wrongly succeed. agent2 still remains, so removal must STILL be rejected.
 	afterAgent1, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: agent1.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(remove agent1): %v", err)
 	}
@@ -641,7 +641,7 @@ func TestUpdateChannelMembersRemovalScansAllOwnedAgents(t *testing.T) {
 	}
 	_, _, err = s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: owner.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	sentinelIs(t, err, ErrInvalidArgument, "remove owner while its second agent remains")
 
 	// (c) Remove the second owned agent. No agent the owner owns remains, so
@@ -649,7 +649,7 @@ func TestUpdateChannelMembersRemovalScansAllOwnedAgents(t *testing.T) {
 	// a channel member, confirming the gate is scoped to owner_user_id=$removed.
 	afterAgent2, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: agent2.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(remove agent2): %v", err)
 	}
@@ -661,7 +661,7 @@ func TestUpdateChannelMembersRemovalScansAllOwnedAgents(t *testing.T) {
 	}
 	afterOwner, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: owner.ID, Remove: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(remove owner after all its agents gone): %v", err)
 	}
@@ -728,7 +728,7 @@ func TestSubscriberAccountIDsToggle(t *testing.T) {
 	// Add a member subscribed: it appears in both member and subscriber sets.
 	subbed, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: newcomer.ID, Subscribed: true},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(add subscribed): %v", err)
 	}
@@ -743,7 +743,7 @@ func TestSubscriberAccountIDsToggle(t *testing.T) {
 	// subscriber set — the join/subscribe tier split.
 	unsubbed, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: newcomer.ID, Subscribed: false},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(unsubscribe): %v", err)
 	}

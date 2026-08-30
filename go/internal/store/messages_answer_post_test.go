@@ -47,7 +47,7 @@ func TestAnswerAskPostsAnswerMessage(t *testing.T) {
 	answerer := mustUser(t, s, "answerer")
 	ch := mustNamedChannel(t, s, agent.ID, "room")
 	// The answerer must be a member of the ask's channel to answer it.
-	if _, _, err := s.UpdateChannelMembers(ctx, agent.ID, ch.ID, []MemberUpdate{{AccountID: answerer.ID}}); err != nil {
+	if _, _, err := s.UpdateChannelMembers(ctx, agent.ID, ch.ID, []MemberUpdate{{AccountID: answerer.ID}}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("add answerer as member: %v", err)
 	}
 

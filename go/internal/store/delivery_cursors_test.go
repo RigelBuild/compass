@@ -68,7 +68,7 @@ func subscribeAgent(t *testing.T, s *Store, actor AccountID, ch ChannelID, agent
 	t.Helper()
 	if _, _, err := s.UpdateChannelMembers(context.Background(), actor, ch, []MemberUpdate{
 		{AccountID: agent, Subscribed: true},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(subscribe agent): %v", err)
 	}
 }
@@ -283,7 +283,7 @@ func TestSeedDeliveryCursorRidesMemberInsert(t *testing.T) {
 	newcomer := mustUser(t, s, "newcomer")
 	if _, _, err := s.UpdateChannelMembers(context.Background(), owner.ID, other.ID, []MemberUpdate{
 		{AccountID: newcomer.ID, Subscribed: true},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(subscribe user): %v", err)
 	}
 	if _, _, ok := readCursor(t, s, newcomer.ID, other.ID); ok {
@@ -443,7 +443,7 @@ func TestUndeliveredMessagesHomeChannelSweepsWhenUnsubscribed(t *testing.T) {
 	// UPDATE SET subscribed). The owner is a home-channel member and may mutate.
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch, []MemberUpdate{
 		{AccountID: agent.ID, Subscribed: false},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(unsubscribe agent home): %v", err)
 	}
 	if memberSubscribed(t, s, ch, agent.ID) {
@@ -625,7 +625,7 @@ func TestReSubscribeDoesNotResetCursor(t *testing.T) {
 	// Unsubscribe, post M2 during the unsubscribed window, then re-subscribe.
 	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch, []MemberUpdate{
 		{AccountID: agent.ID, Subscribed: false},
-	}); err != nil {
+	}, MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(unsubscribe): %v", err)
 	}
 	m2, _ := postAs(t, s, ch, owner.ID, "owed M2 during unsub")

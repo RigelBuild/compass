@@ -177,7 +177,7 @@ func (w *mentionE2EWire) seedAgentMember(t *testing.T, handle string, subscribed
 	}
 	if _, _, err := w.store.UpdateChannelMembers(w.ctx, w.adminID, w.channel, []store.MemberUpdate{
 		{AccountID: agent.ID, Subscribed: subscribed},
-	}); err != nil {
+	}, store.MemberUpdatesOptions{}); err != nil {
 		t.Fatalf("UpdateChannelMembers(add %q, subscribed=%v): %v", handle, subscribed, err)
 	}
 	if err := w.store.RecordAgentPlacement(w.ctx, agent.ID, fakeRunnerID, containerFor(handle)); err != nil {

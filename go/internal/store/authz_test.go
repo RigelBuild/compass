@@ -70,7 +70,7 @@ func TestUpdateChannelMembersNonMemberRefused(t *testing.T) {
 	// Self-add escalation by a non-member is refused.
 	_, _, err := s.UpdateChannelMembers(ctx, outsider.ID, ch.ID, []MemberUpdate{
 		{AccountID: outsider.ID},
-	})
+	}, MemberUpdatesOptions{})
 	sentinelIs(t, err, ErrNotFound, "non-member self-add")
 
 	// The outsider gained no membership: the refusal did not write.
@@ -85,7 +85,7 @@ func TestUpdateChannelMembersNonMemberRefused(t *testing.T) {
 	// The member (owner) still mutates: adding a newcomer succeeds.
 	updated, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: newcomer.ID},
-	})
+	}, MemberUpdatesOptions{})
 	if err != nil {
 		t.Fatalf("member UpdateChannelMembers: %v", err)
 	}
