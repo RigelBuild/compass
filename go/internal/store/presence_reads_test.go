@@ -30,7 +30,7 @@ func TestAgentHasOpenAskCatchesOmittedAnsweredField(t *testing.T) {
 	// Seed an unanswered (pending) ask authored by the agent. pendingAsk carries
 	// no Answered field, so the stored JSONB omits "answered" entirely — the
 	// exact shape the naive containment would miss.
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-open", false)}}, string(ch), TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-open", false)}}, string(ch), TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage(pending ask): %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestAgentHasOpenAskFalseOnceAnswered(t *testing.T) {
 	agent := mustAgent(t, s, owner.ID, "agent")
 	ch := mustNamedChannelWith(t, s, owner.ID, "room", agent.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch), TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch), TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestAgentHasOpenAskFalseWithNoAsks(t *testing.T) {
 	agent := mustAgent(t, s, owner.ID, "agent")
 	ch := mustNamedChannelWith(t, s, owner.ID, "room", agent.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{textBlock("just talking")}}, string(ch), TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{textBlock("just talking")}}, string(ch), TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 

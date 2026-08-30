@@ -315,32 +315,58 @@ describe("comms parameter schemas", () => {
 	// deliberately allowed rather than silently caught.
 	test("post rejects an empty or whitespace-only text", () => {
 		expect(rejects(postParameters, {})).toBe(true);
-		expect(rejects(postParameters, { text: "", topic: "t" })).toBe(true);
-		expect(rejects(postParameters, { text: " ", topic: "t" })).toBe(true);
-		expect(rejects(postParameters, { text: "\n", topic: "t" })).toBe(true);
-		expect(rejects(postParameters, { text: "\t\t", topic: "t" })).toBe(true);
+		expect(
+			rejects(postParameters, { text: "", topic: "t", channel: "c" }),
+		).toBe(true);
+		expect(
+			rejects(postParameters, { text: " ", topic: "t", channel: "c" }),
+		).toBe(true);
+		expect(
+			rejects(postParameters, { text: "\n", topic: "t", channel: "c" }),
+		).toBe(true);
+		expect(
+			rejects(postParameters, { text: "\t\t", topic: "t", channel: "c" }),
+		).toBe(true);
 		// Not whitespace to `trim()`, so it passes — asserted so the bound's
 		// real edge is recorded rather than assumed.
-		expect(rejects(postParameters, { text: "\u200b", topic: "t" })).toBe(false);
-		expect(rejects(postParameters, { text: "hi", topic: "t" })).toBe(false);
-		expect(rejects(postParameters, { text: "  hi  ", topic: "t" })).toBe(false);
+		expect(
+			rejects(postParameters, { text: "\u200b", topic: "t", channel: "c" }),
+		).toBe(false);
+		expect(
+			rejects(postParameters, { text: "hi", topic: "t", channel: "c" }),
+		).toBe(false);
+		expect(
+			rejects(postParameters, { text: "  hi  ", topic: "t", channel: "c" }),
+		).toBe(false);
 	});
 
 	// Topic is REQUIRED: a post with no topic is rejected (threading is
 	// topic-level, there is no `parent` fallback). Non-blank and ≤120 chars.
 	test("post requires a non-blank topic of at most 120 chars", () => {
-		expect(rejects(postParameters, { text: "hi" })).toBe(true);
-		expect(rejects(postParameters, { text: "hi", topic: "" })).toBe(true);
-		expect(rejects(postParameters, { text: "hi", topic: "   " })).toBe(true);
+		expect(rejects(postParameters, { text: "hi", channel: "c" })).toBe(true);
 		expect(
-			rejects(postParameters, { text: "hi", topic: "x".repeat(121) }),
+			rejects(postParameters, { text: "hi", topic: "", channel: "c" }),
 		).toBe(true);
 		expect(
-			rejects(postParameters, { text: "hi", topic: "x".repeat(120) }),
+			rejects(postParameters, { text: "hi", topic: "   ", channel: "c" }),
+		).toBe(true);
+		expect(
+			rejects(postParameters, {
+				text: "hi",
+				topic: "x".repeat(121),
+				channel: "c",
+			}),
+		).toBe(true);
+		expect(
+			rejects(postParameters, {
+				text: "hi",
+				topic: "x".repeat(120),
+				channel: "c",
+			}),
 		).toBe(false);
-		expect(rejects(postParameters, { text: "hi", topic: "planning" })).toBe(
-			false,
-		);
+		expect(
+			rejects(postParameters, { text: "hi", topic: "planning", channel: "c" }),
+		).toBe(false);
 	});
 
 	test("list bounds limit to 1-100 and leaves it optional", () => {
@@ -351,21 +377,49 @@ describe("comms parameter schemas", () => {
 		expect(rejects(listParameters, {})).toBe(false);
 	});
 
-	// `""` is not "omitted": both execute bodies gate on truthiness, so an empty
-	// channel id took the home-channel branch and a model whose channel lookup
-	// missed posted to its own channel instead of learning it was wrong. `text`
-	// was already guarded against exactly this; `channel_id` was not.
-	test("an empty channel_id is rejected rather than silently meaning home", () => {
+	// post/ask REQUIRE an explicit `channel` NAME (peer-DM record R1/R2/R5: the
+	// home default is dropped at the tool level). A blank name is rejected by the
+	// same `.narrow` idiom `text` uses. list is EXEMPT and keeps omit-=home, but a
+	// blank list channel is still a reject (an empty string is not "omitted").
+	test("post requires a non-blank channel name; a blank channel is rejected", () => {
+		// Omitting channel entirely is now a reject for post — the home default is
+		// gone; the agent must NAME its target channel.
+		expect(rejects(postParameters, { text: "hi", topic: "t" })).toBe(true);
 		expect(
-			rejects(postParameters, { text: "hi", topic: "t", channel_id: "" }),
+			rejects(postParameters, { text: "hi", topic: "t", channel: "" }),
 		).toBe(true);
 		expect(
-			rejects(postParameters, { text: "hi", topic: "t", channel_id: "   " }),
+			rejects(postParameters, { text: "hi", topic: "t", channel: "   " }),
 		).toBe(true);
-		expect(rejects(listParameters, { channel_id: "" })).toBe(true);
-		// Omission remains the documented way to mean the home channel.
-		expect(rejects(postParameters, { text: "hi", topic: "t" })).toBe(false);
+		// A named channel passes.
+		expect(
+			rejects(postParameters, { text: "hi", topic: "t", channel: "general" }),
+		).toBe(false);
+		// list keeps omit-=home; a blank list channel is still a reject.
+		expect(rejects(listParameters, { channel: "" })).toBe(true);
+		expect(rejects(listParameters, { channel: "   " })).toBe(true);
 		expect(rejects(listParameters, {})).toBe(false);
+		expect(rejects(listParameters, { channel: "general" })).toBe(false);
+	});
+
+	// create_topic is optional on post; when present it must be a boolean.
+	test("create_topic is an optional boolean on post", () => {
+		expect(
+			rejects(postParameters, {
+				text: "hi",
+				topic: "t",
+				channel: "c",
+				create_topic: true,
+			}),
+		).toBe(false);
+		expect(
+			rejects(postParameters, {
+				text: "hi",
+				topic: "t",
+				channel: "c",
+				create_topic: "yes",
+			}),
+		).toBe(true);
 	});
 
 	// The bound the model is SHOWN, not the one enforced behind it. A `.narrow`
@@ -392,16 +446,12 @@ describe("comms parameter schemas", () => {
 		// A bare string: the non-blank rule is GONE from what the model sees.
 		expect(postProps.text?.type).toBe("string");
 		expect(postProps.text?.minLength).toBeUndefined();
-		expect(postParameters.get("topic").description).toContain(
-			"creates the topic",
-		);
+		expect(postParameters.get("topic").description).toContain("create_topic");
 		expect(postProps.text?.pattern).toBeUndefined();
 		expect(postParameters.get("text").description).toContain("not be blank");
-		expect(postParameters.get("channel_id").description).toContain(
-			"empty string is rejected",
-		);
-		expect(listParameters.get("channel_id").description).toContain(
-			"empty string is rejected",
+		expect(postParameters.get("channel").description).toContain("required");
+		expect(listParameters.get("channel").description).toContain(
+			"omit entirely for your home channel",
 		);
 
 		// Contrast: an expressible bound survives as real schema, which is what
@@ -423,6 +473,7 @@ describe("comms_post_message", () => {
 		const result = await exec(post, "tc-42", {
 			text: "hello there",
 			topic: "planning",
+			channel: "eng",
 		});
 
 		const req = transport.requests[0];
@@ -446,26 +497,52 @@ describe("comms_post_message", () => {
 	// fallback). Asserted at the schema, since that is what the agent loop runs
 	// before `execute`, and the FakeTransport must never be touched.
 	test("a post without topic is rejected before any broker call", async () => {
-		expect(postParameters({ text: "hi" }) instanceof ArkErrors).toBe(true);
+		expect(
+			postParameters({ text: "hi", channel: "c" }) instanceof ArkErrors,
+		).toBe(true);
 
 		// The reject happens at the schema the agent loop runs before `execute`,
 		// so the broker is never reached: a fake transport handed to no call
 		// records nothing.
 		const transport = new FakeTransport(postResult("m-1", "t-1"));
-		expect(postParameters({ text: "hi", topic: "" }) instanceof ArkErrors).toBe(
-			true,
-		);
 		expect(
-			postParameters({ text: "hi", topic: "   " }) instanceof ArkErrors,
-		).toBe(true);
-		expect(
-			postParameters({ text: "hi", topic: "x".repeat(121) }) instanceof
+			postParameters({ text: "hi", topic: "", channel: "c" }) instanceof
 				ArkErrors,
 		).toBe(true);
 		expect(
-			postParameters({ text: "hi", topic: "x".repeat(120) }) instanceof
+			postParameters({ text: "hi", topic: "   ", channel: "c" }) instanceof
 				ArkErrors,
+		).toBe(true);
+		expect(
+			postParameters({
+				text: "hi",
+				topic: "x".repeat(121),
+				channel: "c",
+			}) instanceof ArkErrors,
+		).toBe(true);
+		expect(
+			postParameters({
+				text: "hi",
+				topic: "x".repeat(120),
+				channel: "c",
+			}) instanceof ArkErrors,
 		).toBe(false);
+		expect(transport.requests).toHaveLength(0);
+	});
+
+	// A post without `channel` must be a schema reject BEFORE any broker call —
+	// the home default is dropped (peer-DM R2), so an explicit channel NAME is
+	// mandatory. Asserted at the schema, since that is what the agent loop runs
+	// before `execute`, and the FakeTransport must never be touched.
+	test("a post without channel is rejected before any broker call", async () => {
+		const transport = new FakeTransport(postResult("m-1", "t-1"));
+		expect(
+			postParameters({ text: "hi", topic: "t" }) instanceof ArkErrors,
+		).toBe(true);
+		expect(
+			postParameters({ text: "hi", topic: "t", channel: "" }) instanceof
+				ArkErrors,
+		).toBe(true);
 		expect(transport.requests).toHaveLength(0);
 	});
 
@@ -475,7 +552,7 @@ describe("comms_post_message", () => {
 		const transport = new FakeTransport(postResult("m-9", "t-9"));
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
-		await exec(post, "tc-9", { text: "hi", topic: "deploys" });
+		await exec(post, "tc-9", { text: "hi", topic: "deploys", channel: "eng" });
 
 		const call = transport.requests[0]?.call;
 		if (call?.case !== "post") throw new Error("expected a post call");
@@ -485,24 +562,16 @@ describe("comms_post_message", () => {
 		});
 	});
 
-	test("omitted channel_id leaves the container oneof unset (home-channel default)", async () => {
-		const transport = new FakeTransport(postResult("m-1", "t-1"));
-		const post = tool(new CommsBroker(transport), "comms_post_message");
-
-		await exec(post, "tc-1", { text: "hi", topic: "general" });
-
-		const call = transport.requests[0]?.call;
-		if (call?.case !== "post") throw new Error("expected a post call");
-		expect(call.value.container.case).toBeUndefined();
-	});
-
-	test("channel_id threads through when supplied", async () => {
+	// The channel NAME rides the container's `channelId` arm (the proto field
+	// name is unchanged; the Go comms edge resolves the name → id). There is no
+	// home default at the tool level — every post names its channel.
+	test("the channel name rides the container channelId arm on the wire", async () => {
 		const transport = new FakeTransport(postResult("m-2", "t-2"));
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
 		await exec(post, "tc-2", {
 			text: "a reply",
-			channel_id: "chan-b",
+			channel: "eng",
 			topic: "general",
 		});
 
@@ -510,8 +579,33 @@ describe("comms_post_message", () => {
 		if (call?.case !== "post") throw new Error("expected a post call");
 		expect(call.value.container).toEqual({
 			case: "channelId",
-			value: "chan-b",
+			value: "eng",
 		});
+	});
+
+	// create_topic defaults to false on the wire and passes through when set —
+	// the gate that turns an unknown topic name from an error into a mint
+	// (peer-DM DL-293).
+	test("create_topic defaults false and passes through on the wire", async () => {
+		const transport = new FakeTransport(postResult("m-3", "t-3"));
+		const post = tool(new CommsBroker(transport), "comms_post_message");
+
+		await exec(post, "tc-ct0", { text: "hi", topic: "new", channel: "eng" });
+		const call0 = transport.requests[0]?.call;
+		if (call0?.case !== "post") throw new Error("expected a post call");
+		expect(call0.value.createTopic).toBe(false);
+
+		const transport2 = new FakeTransport(postResult("m-4", "t-4"));
+		const post2 = tool(new CommsBroker(transport2), "comms_post_message");
+		await exec(post2, "tc-ct1", {
+			text: "hi",
+			topic: "new",
+			channel: "eng",
+			create_topic: true,
+		});
+		const call1 = transport2.requests[0]?.call;
+		if (call1?.case !== "post") throw new Error("expected a post call");
+		expect(call1.value.createTopic).toBe(true);
 	});
 
 	test("an error result throws carrying the code and the detail", async () => {
@@ -520,7 +614,11 @@ describe("comms_post_message", () => {
 		);
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
-		const err = await exec(post, "tc-3", { text: "hi", topic: "t" }).then(
+		const err = await exec(post, "tc-3", {
+			text: "hi",
+			topic: "t",
+			channel: "c",
+		}).then(
 			() => undefined,
 			(e: unknown) => e as Error,
 		);
@@ -544,7 +642,9 @@ describe("comms_post_message", () => {
 		);
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
-		const text = textOf(await exec(post, "tc-5", { text: "hi", topic: "t" }));
+		const text = textOf(
+			await exec(post, "tc-5", { text: "hi", topic: "t", channel: "c" }),
+		);
 
 		expect(text.split("\n")).toHaveLength(1);
 		expect(text).not.toContain("escalation granted");
@@ -560,7 +660,9 @@ describe("comms_post_message", () => {
 		);
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
-		const text = textOf(await exec(post, "tc-6", { text: "hi", topic: "t" }));
+		const text = textOf(
+			await exec(post, "tc-6", { text: "hi", topic: "t", channel: "c" }),
+		);
 
 		expect(text.split("\n")).toHaveLength(1);
 		expect(text).toBe("Posted message m-1 to topic (malformed).");
@@ -586,7 +688,11 @@ describe("comms_post_message", () => {
 		);
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
-		const err = await exec(post, "tc-7", { text: "hi", topic: "t" }).then(
+		const err = await exec(post, "tc-7", {
+			text: "hi",
+			topic: "t",
+			channel: "c",
+		}).then(
 			() => undefined,
 			(e: unknown) => e as Error,
 		);
@@ -605,7 +711,11 @@ describe("comms_post_message", () => {
 		);
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
-		const err = await exec(post, "tc-8", { text: "hi", topic: "t" }).then(
+		const err = await exec(post, "tc-8", {
+			text: "hi",
+			topic: "t",
+			channel: "c",
+		}).then(
 			() => undefined,
 			(e: unknown) => e as Error,
 		);
@@ -619,7 +729,7 @@ describe("comms_post_message", () => {
 		const post = tool(new CommsBroker(transport), "comms_post_message");
 
 		await expect(
-			exec(post, "tc-4", { text: "hi", topic: "t" }),
+			exec(post, "tc-4", { text: "hi", topic: "t", channel: "c" }),
 		).rejects.toThrow(/comms_post_message/);
 	});
 });
@@ -630,7 +740,7 @@ describe("comms_list_messages", () => {
 		const list = tool(new CommsBroker(transport), "comms_list_messages");
 
 		await exec(list, "tc-5", {
-			channel_id: "chan-a",
+			channel: "chan-a",
 			limit: 10,
 			before_message_id: "m-9",
 		});
@@ -647,10 +757,11 @@ describe("comms_list_messages", () => {
 		expect(req.call.value.snapshotSeq).toBe(0n);
 	});
 
-	// An omitted channel_id is not "no channel" — it is the documented request
-	// for the agent's home channel, which the Server resolves. Sending an empty
-	// `channelId` instead would name a channel the agent was never given.
-	test("an omitted channel_id leaves the container oneof unset", async () => {
+	// An omitted channel is not "no channel" — it is the documented request for
+	// the agent's home channel, which the Server resolves (list is EXEMPT from the
+	// required-channel rule). Sending an empty `channelId` instead would name a
+	// channel the agent was never given.
+	test("an omitted channel leaves the container oneof unset", async () => {
 		const transport = new FakeTransport(listResult());
 		const list = tool(new CommsBroker(transport), "comms_list_messages");
 
@@ -1286,7 +1397,7 @@ describe("comms_list_messages", () => {
 					"comms_list_messages",
 				),
 				"tc-30",
-				{ channel_id: "c-1" },
+				{ channel: "c-1" },
 			),
 		);
 		const f = fenceOf(text);
@@ -1344,7 +1455,7 @@ describe("comms_list_messages", () => {
 					"comms_list_messages",
 				),
 				"tc-32",
-				{ channel_id: "c-1" },
+				{ channel: "c-1" },
 			),
 		);
 		const f = fenceOf(text);
@@ -1393,7 +1504,7 @@ describe("comms_list_messages", () => {
 					"comms_list_messages",
 				),
 				"tc-33",
-				{ channel_id: "c-1" },
+				{ channel: "c-1" },
 			),
 		);
 		const f = fenceOf(text);
@@ -1464,7 +1575,7 @@ describe("comms_list_messages", () => {
 					"comms_list_messages",
 				),
 				"tc-34",
-				{ channel_id: "c-1" },
+				{ channel: "c-1" },
 			),
 		);
 		const f = fenceOf(text);
@@ -1527,7 +1638,7 @@ describe("comms_list_messages", () => {
 					"comms_list_messages",
 				),
 				"tc-31",
-				{ channel_id: "c-1" },
+				{ channel: "c-1" },
 			),
 		);
 		const f = fenceOf(text);
@@ -1579,7 +1690,7 @@ describe("comms_list_messages", () => {
 					"comms_list_messages",
 				),
 				"tc-34",
-				{ channel_id: "c-1" },
+				{ channel: "c-1" },
 			),
 		);
 		const f = fenceOf(text);
@@ -1974,9 +2085,12 @@ describe("comms_post_ask parameter schema", () => {
 		postAskParameters(params) instanceof ArkErrors;
 
 	test("requires at least one question", () => {
-		expect(rejects({ questions: [] })).toBe(true);
+		expect(rejects({ questions: [], channel: "c" })).toBe(true);
 		expect(
-			rejects({ questions: [{ id: "q1", question: "ok?", options: [] }] }),
+			rejects({
+				questions: [{ id: "q1", question: "ok?", options: [] }],
+				channel: "c",
+			}),
 		).toBe(false);
 	});
 
@@ -1988,13 +2102,20 @@ describe("comms_post_ask parameter schema", () => {
 					{ id: "q1", question: "a?", options: [] },
 					{ id: "q1", question: "b?", options: [] },
 				],
+				channel: "c",
 			}),
 		).toBe(true);
 		expect(
-			rejects({ questions: [{ id: "", question: "a?", options: [] }] }),
+			rejects({
+				questions: [{ id: "", question: "a?", options: [] }],
+				channel: "c",
+			}),
 		).toBe(true);
 		expect(
-			rejects({ questions: [{ id: "   ", question: "a?", options: [] }] }),
+			rejects({
+				questions: [{ id: "   ", question: "a?", options: [] }],
+				channel: "c",
+			}),
 		).toBe(true);
 		expect(
 			rejects({
@@ -2002,6 +2123,7 @@ describe("comms_post_ask parameter schema", () => {
 					{ id: "q1", question: "a?", options: [] },
 					{ id: "q2", question: "b?", options: [] },
 				],
+				channel: "c",
 			}),
 		).toBe(false);
 	});
@@ -2010,33 +2132,50 @@ describe("comms_post_ask parameter schema", () => {
 	// rejected — the same idiom postParameters.topic uses.
 	test("topic is optional but rejects blank or overlong values", () => {
 		expect(
-			rejects({ questions: [{ id: "q1", question: "a?", options: [] }] }),
+			rejects({
+				questions: [{ id: "q1", question: "a?", options: [] }],
+				channel: "c",
+			}),
 		).toBe(false);
 		expect(
 			rejects({
 				questions: [{ id: "q1", question: "a?", options: [] }],
 				topic: "",
+				channel: "c",
 			}),
 		).toBe(true);
 		expect(
 			rejects({
 				questions: [{ id: "q1", question: "a?", options: [] }],
 				topic: "   ",
+				channel: "c",
 			}),
 		).toBe(true);
 		expect(
 			rejects({
 				questions: [{ id: "q1", question: "a?", options: [] }],
 				topic: "x".repeat(121),
+				channel: "c",
 			}),
 		).toBe(true);
 	});
 
-	test("an empty channel_id is rejected rather than silently meaning home", () => {
+	// channel is REQUIRED on ask (peer-DM R2: the home default is dropped). An
+	// omitted or blank channel is a reject.
+	test("ask requires a non-blank channel name", () => {
+		expect(
+			rejects({ questions: [{ id: "q1", question: "a?", options: [] }] }),
+		).toBe(true);
 		expect(
 			rejects({
 				questions: [{ id: "q1", question: "a?", options: [] }],
-				channel_id: "",
+				channel: "",
+			}),
+		).toBe(true);
+		expect(
+			rejects({
+				questions: [{ id: "q1", question: "a?", options: [] }],
+				channel: "   ",
 			}),
 		).toBe(true);
 	});
@@ -2080,6 +2219,7 @@ describe("comms_post_ask", () => {
 				},
 			],
 			topic: "deploys",
+			channel: "c",
 		});
 
 		expect(transport.requests).toHaveLength(1);
@@ -2117,6 +2257,7 @@ describe("comms_post_ask", () => {
 					options: [{ label: "a" }, { label: "b" }, { label: "c" }],
 				},
 			],
+			channel: "c",
 		});
 
 		const call = transport.requests[0]?.call;
@@ -2138,6 +2279,7 @@ describe("comms_post_ask", () => {
 
 		await exec(ask, "tc-x", {
 			questions: [{ id: "q1", question: "a?", options: [{ label: "a" }] }],
+			channel: "c",
 		});
 
 		const call = transport.requests[0]?.call;
@@ -2152,43 +2294,61 @@ describe("comms_post_ask", () => {
 		expect(q?.timedOut).toBe(false);
 	});
 
-	// (c) Home-channel default: omitted channel_id leaves the container unset.
-	test("omitted channel_id leaves the container oneof unset", async () => {
-		const transport = new FakeTransport(askPostResult("a-3", "t-a"));
-		const ask = askTool(new CommsBroker(transport));
-
-		await exec(ask, "tc-3", {
-			questions: [{ id: "q1", question: "a?", options: [] }],
-		});
-
-		const call = transport.requests[0]?.call;
-		if (call?.case !== "post") throw new Error("expected a post call");
-		expect(call.value.container.case).toBeUndefined();
-	});
-
-	test("channel_id threads through when supplied", async () => {
+	// The channel NAME rides the container's `channelId` arm (proto field name
+	// unchanged; the Go comms edge resolves name → id). No home default at the
+	// tool level — every ask names its channel.
+	test("the channel name rides the container channelId arm on the wire", async () => {
 		const transport = new FakeTransport(askPostResult("a-4", "t-a"));
 		const ask = askTool(new CommsBroker(transport));
 
 		await exec(ask, "tc-4", {
 			questions: [{ id: "q1", question: "a?", options: [] }],
-			channel_id: "chan-b",
+			channel: "eng",
 		});
 
 		const call = transport.requests[0]?.call;
 		if (call?.case !== "post") throw new Error("expected a post call");
 		expect(call.value.container).toEqual({
 			case: "channelId",
-			value: "chan-b",
+			value: "eng",
 		});
 	});
 
-	// An empty-string channel_id is a schema reject before any broker call.
-	test("an empty channel_id is rejected before any broker call", async () => {
+	// create_topic defaults false and passes through on the wire.
+	test("create_topic defaults false and passes through on the wire", async () => {
+		const transport = new FakeTransport(askPostResult("a-ct0", "t-a"));
+		const ask = askTool(new CommsBroker(transport));
+		await exec(ask, "tc-ct0", {
+			questions: [{ id: "q1", question: "a?", options: [] }],
+			channel: "eng",
+		});
+		const call0 = transport.requests[0]?.call;
+		if (call0?.case !== "post") throw new Error("expected a post call");
+		expect(call0.value.createTopic).toBe(false);
+
+		const transport2 = new FakeTransport(askPostResult("a-ct1", "t-a"));
+		const ask2 = askTool(new CommsBroker(transport2));
+		await exec(ask2, "tc-ct1", {
+			questions: [{ id: "q1", question: "a?", options: [] }],
+			channel: "eng",
+			create_topic: true,
+		});
+		const call1 = transport2.requests[0]?.call;
+		if (call1?.case !== "post") throw new Error("expected a post call");
+		expect(call1.value.createTopic).toBe(true);
+	});
+
+	// A missing or empty channel is a schema reject before any broker call.
+	test("a missing or empty channel is rejected before any broker call", async () => {
 		expect(
 			postAskParameters({
 				questions: [{ id: "q1", question: "a?", options: [] }],
-				channel_id: "",
+			}) instanceof ArkErrors,
+		).toBe(true);
+		expect(
+			postAskParameters({
+				questions: [{ id: "q1", question: "a?", options: [] }],
+				channel: "",
 			}) instanceof ArkErrors,
 		).toBe(true);
 
@@ -2201,6 +2361,7 @@ describe("comms_post_ask", () => {
 					{ id: "q1", question: "a?", options: [] },
 					{ id: "q1", question: "b?", options: [] },
 				],
+				channel: "c",
 			}) instanceof ArkErrors,
 		).toBe(true);
 		expect(transport.requests).toHaveLength(0);
@@ -2213,6 +2374,7 @@ describe("comms_post_ask", () => {
 
 		await exec(ask, "tc-6", {
 			questions: [{ id: "q1", question: "a?", options: [] }],
+			channel: "c",
 		});
 
 		const call = transport.requests[0]?.call;
@@ -2226,6 +2388,7 @@ describe("comms_post_ask", () => {
 
 		await exec(ask, "tc-7", {
 			questions: [{ id: "q1", question: "a?", options: [] }],
+			channel: "c",
 			topic: "planning",
 		});
 
@@ -2242,6 +2405,7 @@ describe("comms_post_ask", () => {
 
 		await exec(ask, "tc-8", {
 			questions: [{ id: "q1", question: "a?", options: [] }],
+			channel: "c",
 		});
 
 		const call = transport.requests[0]?.call;
@@ -2258,6 +2422,7 @@ describe("comms_post_ask", () => {
 
 		const result = await exec(ask, "tc-9", {
 			questions: [{ id: "q1", question: "a?", options: [] }],
+			channel: "c",
 		});
 
 		const text = textOf(result);
@@ -2288,6 +2453,7 @@ describe("comms_post_ask", () => {
 		const text = textOf(
 			await exec(ask, "tc-nl", {
 				questions: [{ id: "q1", question: "a?", options: [] }],
+				channel: "c",
 			}),
 		);
 		expect(text.split("\n")).toHaveLength(1);

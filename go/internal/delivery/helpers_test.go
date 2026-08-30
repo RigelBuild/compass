@@ -80,23 +80,28 @@ const (
 // the delivered message's id, and the op kind (deliver vs steer), each pulled
 // from the control op.
 type dispatchRecord struct {
-	sessionID  string
-	messageID  string
-	kind       opKind
-	fromHandle string
+	sessionID   string
+	messageID   string
+	kind        opKind
+	fromHandle  string
+	channelName string
+	topicName   string
 }
 
-// classifyOp reports the op kind, carried message id, and denormalized author
-// from_handle of a dispatched control, so the recorder can tell a steer from a
-// deliver (both carry a Message) and assert the RIG-2486 T1 from_handle.
-func classifyOp(op *compassv1internal.AgentControl) (opKind, string, string) {
+// classifyOp reports the op kind, carried message id, denormalized author
+// from_handle, and denormalized source channel+topic names of a dispatched
+// control, so the recorder can tell a steer from a deliver (both carry a
+// Message) and assert the RIG-2486 T1 from_handle and RIG-2956 T0 source names.
+func classifyOp(op *compassv1internal.AgentControl) (kind opKind, messageID, fromHandle, channelName, topicName string) {
 	switch {
 	case op.GetSteer() != nil:
-		return opSteer, op.GetSteer().GetMessage().GetId(), op.GetSteer().GetFromHandle()
+		s := op.GetSteer()
+		return opSteer, s.GetMessage().GetId(), s.GetFromHandle(), s.GetChannelName(), s.GetTopicName()
 	case op.GetDeliver() != nil:
-		return opDeliver, op.GetDeliver().GetMessage().GetId(), op.GetDeliver().GetFromHandle()
+		d := op.GetDeliver()
+		return opDeliver, d.GetMessage().GetId(), d.GetFromHandle(), d.GetChannelName(), d.GetTopicName()
 	default:
-		return opOther, "", ""
+		return opOther, "", "", "", ""
 	}
 }
 
@@ -146,8 +151,8 @@ func (d *fakeDispatcher) DispatchControl(_ context.Context, sessionID string, op
 		d.mu.Unlock()
 		return err
 	}
-	kind, messageID, fromHandle := classifyOp(op)
-	d.calls = append(d.calls, dispatchRecord{sessionID: sessionID, messageID: messageID, kind: kind, fromHandle: fromHandle})
+	kind, messageID, fromHandle, channelName, topicName := classifyOp(op)
+	d.calls = append(d.calls, dispatchRecord{sessionID: sessionID, messageID: messageID, kind: kind, fromHandle: fromHandle, channelName: channelName, topicName: topicName})
 	d.mu.Unlock()
 	signalObserved(d.recorded)
 	return nil
@@ -294,7 +299,12 @@ type fakeReads struct {
 	handles     map[string]store.Account          // lowercased handle -> resolved account (unknown -> ErrNotFound)
 	accounts    map[store.AccountID]store.Account // account id -> account (GetAccount; unknown -> ErrNotFound)
 	messages    map[string]store.Message
-	owed        map[store.AccountID]map[store.ChannelID][]store.Message
+	// topicNames resolves a topic id to its (channelName, topicName) — the source
+	// denorm the deliver/steer op carries (TopicChannelNames). Absent -> the fake
+	// returns store.ErrNotFound, so a test can exercise the log-and-empty name-miss
+	// path (a name miss never blocks a delivery).
+	topicNames map[string]struct{ channelName, topicName string }
+	owed       map[store.AccountID]map[store.ChannelID][]store.Message
 	// sweepChannels is the D1 disjunct channel set per agent the pin sweep
 	// enumerates (SweepChannels). A test seeds the channels a fresh session must
 	// visit for pins, independent of owed (which omits channels with no owed
@@ -351,6 +361,7 @@ func newFakeReads() *fakeReads {
 		handles:       map[string]store.Account{},
 		accounts:      map[store.AccountID]store.Account{},
 		messages:      map[string]store.Message{},
+		topicNames:    map[string]struct{ channelName, topicName string }{},
 		owed:          map[store.AccountID]map[store.ChannelID][]store.Message{},
 		sweepChannels: map[store.AccountID][]store.ChannelID{},
 		pins:          map[store.ChannelID][]store.PinnedEntry{},
@@ -603,6 +614,20 @@ func (f *fakeReads) MessageChannel(_ context.Context, messageID string) (store.C
 	return "chan-1", nil
 }
 
+// TopicChannelNames resolves a topic id to its seeded (topicName, channelName)
+// — the source denorm the deliver/steer op carries (RIG-2956 T0). An unseeded
+// topic id is store.ErrNotFound, mirroring the store's fail-closed lookup, so a
+// test can exercise the log-and-empty name-miss path.
+func (f *fakeReads) TopicChannelNames(_ context.Context, topicID string) (topicName, channelName string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	names, ok := f.topicNames[topicID]
+	if !ok {
+		return "", "", store.ErrNotFound
+	}
+	return names.topicName, names.channelName, nil
+}
+
 func (f *fakeReads) UndeliveredMessages(_ context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error) {
 	if f.beforeUndelivered != nil {
 		f.beforeUndelivered(agent)
@@ -610,6 +635,14 @@ func (f *fakeReads) UndeliveredMessages(_ context.Context, agent store.AccountID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.owed[agent], nil
+}
+
+// seedTopicNames registers a topic id's source channel+topic names the
+// deliver/steer op resolves through TopicChannelNames.
+func (f *fakeReads) seedTopicNames(topicID, channelName, topicName string) { //nolint:unparam // read-clarity signature: topicID names WHICH topic's source names to seed at each call site, though every current caller happens to seed the textMessage default "topic-1" — not dead code.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topicNames[topicID] = struct{ channelName, topicName string }{channelName: channelName, topicName: topicName}
 }
 
 // seedMessage registers a stored message a re-read (settle / sweep) resolves.
@@ -624,7 +657,7 @@ func (f *fakeReads) seedMessage(m store.Message) {
 // start-edge test can pre-seed an owed row independent of the routing arm. The
 // message itself must be seeded separately (seedMessage) for the sweep's re-read
 // to resolve it; omit it to model a permanently-unreadable owed row.
-func (f *fakeReads) seedOwedMention(agent store.AccountID, channel store.ChannelID, m store.Message) {
+func (f *fakeReads) seedOwedMention(agent store.AccountID, channel store.ChannelID, m store.Message) { //nolint:unparam // read-clarity signature: agent names WHICH recipient's owed row to seed at each call site, though every current caller happens to seed the same recipient — not dead code.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.owedMentions[agent] == nil {

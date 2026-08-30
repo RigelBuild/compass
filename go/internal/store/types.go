@@ -292,12 +292,22 @@ type Topic struct {
 }
 
 // TopicRef addresses the topic a message targets: exactly one of ID or Name is
-// set. A Name is get-or-created inside the append tx (agents address topics by
-// name, the unit they can produce without a lookup); an ID names an existing
-// topic, validated to live under the post's channel.
+// set. A Name is resolved inside the append tx (agents address topics by name,
+// the unit they can produce without a lookup); an ID names an existing topic,
+// validated to live under the post's channel.
+//
+// Create gates get-or-create of a Name-ref (peer-DM record R5, amending the
+// unconditional get-or-create of the zulip-threading model): when true, a Name
+// that names no existing topic in the channel is minted; when false (the
+// default), a name-miss is ErrNotFound rather than a silent create — the
+// tool-edge guard against accidental topic sprawl now that agents must always
+// name their topic. Ignored for an ID-ref. Internal producers that legitimately
+// mint (the Setup seed, the frame-relay transcript path, test helpers) set it
+// true; the external agent tool edge threads PostMessageRequest.create_topic.
 type TopicRef struct {
-	ID   string
-	Name string
+	ID     string
+	Name   string
+	Create bool
 }
 
 // Message is the persisted unit of the comms layer: the durable human↔agent

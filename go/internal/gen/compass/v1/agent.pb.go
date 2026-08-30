@@ -696,7 +696,16 @@ type SteerControl struct {
 	// flags>`; EMPTY when the Server had no active span (trace machinery never
 	// blocks or fails a delivery). Server-side stamping per
 	// docs/designs/platform/compass-agent-message-trace-continuity/design.md.
-	Traceparent   string `protobuf:"bytes,3,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	Traceparent string `protobuf:"bytes,3,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	// The names of the steer message's topic and channel, denormalized onto the
+	// steer op so the agent renders the mention's source — and can reply naming
+	// both — without a lookup per steer (mirrors from_handle above and
+	// DeliverControl's topic_name/channel_name; peer-DM record DL-292). The ids
+	// are carried transitively by the Message; only the names are denormalized
+	// here. A name-resolve miss degrades exactly as from_handle does — it never
+	// blocks a steer — so each is EMPTY on a resolve miss.
+	TopicName     string `protobuf:"bytes,4,opt,name=topic_name,json=topicName,proto3" json:"topic_name,omitempty"`
+	ChannelName   string `protobuf:"bytes,5,opt,name=channel_name,json=channelName,proto3" json:"channel_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -748,6 +757,20 @@ func (x *SteerControl) GetFromHandle() string {
 func (x *SteerControl) GetTraceparent() string {
 	if x != nil {
 		return x.Traceparent
+	}
+	return ""
+}
+
+func (x *SteerControl) GetTopicName() string {
+	if x != nil {
+		return x.TopicName
+	}
+	return ""
+}
+
+func (x *SteerControl) GetChannelName() string {
+	if x != nil {
+		return x.ChannelName
 	}
 	return ""
 }
@@ -858,7 +881,15 @@ type DeliverControl struct {
 	// flags>`; EMPTY when the Server had no active span (trace machinery never
 	// blocks or fails a delivery). Server-side stamping per
 	// docs/designs/platform/compass-agent-message-trace-continuity/design.md.
-	Traceparent   string `protobuf:"bytes,4,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	Traceparent string `protobuf:"bytes,4,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
+	// The name of the message's channel, denormalized onto the deliver op so the
+	// agent renders the delivery's source channel — and can reply naming it —
+	// without a channel lookup per delivery (mirrors the topic_name denorm
+	// rationale above; peer-DM record DL-292). The channel *id* is already
+	// carried transitively by `message.channel_id`; only the name is
+	// denormalized here. A name-resolve miss degrades exactly as from_handle
+	// does — it never blocks a delivery — so this is EMPTY on a resolve miss.
+	ChannelName   string `protobuf:"bytes,5,opt,name=channel_name,json=channelName,proto3" json:"channel_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -917,6 +948,13 @@ func (x *DeliverControl) GetFromHandle() string {
 func (x *DeliverControl) GetTraceparent() string {
 	if x != nil {
 		return x.Traceparent
+	}
+	return ""
+}
+
+func (x *DeliverControl) GetChannelName() string {
+	if x != nil {
+		return x.ChannelName
 	}
 	return ""
 }
@@ -1164,21 +1202,25 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\acontrol\"%\n" +
 	"\rPromptControl\x12\x14\n" +
 	"\x05input\x18\x01 \x01(\tR\x05input\"\x10\n" +
-	"\x0eReplayComplete\"\x80\x01\n" +
+	"\x0eReplayComplete\"\xc2\x01\n" +
 	"\fSteerControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1f\n" +
 	"\vfrom_handle\x18\x02 \x01(\tR\n" +
 	"fromHandle\x12 \n" +
-	"\vtraceparent\x18\x03 \x01(\tR\vtraceparent\"\x12\n" +
+	"\vtraceparent\x18\x03 \x01(\tR\vtraceparent\x12\x1d\n" +
+	"\n" +
+	"topic_name\x18\x04 \x01(\tR\ttopicName\x12!\n" +
+	"\fchannel_name\x18\x05 \x01(\tR\vchannelName\"\x12\n" +
 	"\x10TranscriptReplay\"\x0f\n" +
-	"\rConfigControl\"\xa1\x01\n" +
+	"\rConfigControl\"\xc4\x01\n" +
 	"\x0eDeliverControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1d\n" +
 	"\n" +
 	"topic_name\x18\x02 \x01(\tR\ttopicName\x12\x1f\n" +
 	"\vfrom_handle\x18\x03 \x01(\tR\n" +
 	"fromHandle\x12 \n" +
-	"\vtraceparent\x18\x04 \x01(\tR\vtraceparent\",\n" +
+	"\vtraceparent\x18\x04 \x01(\tR\vtraceparent\x12!\n" +
+	"\fchannel_name\x18\x05 \x01(\tR\vchannelName\",\n" +
 	"\vDeliveryAck\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\"[\n" +

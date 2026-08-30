@@ -25,7 +25,7 @@ func mustPinnableMessage(t *testing.T, s *Store, ch ChannelID, author AccountID,
 	t.Helper()
 	msg, _, err := s.AppendMessage(context.Background(),
 		Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(body)}},
-		string(ch), TopicRef{Name: "general"}, "")
+		string(ch), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%q): %v", body, err)
 	}

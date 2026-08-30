@@ -41,14 +41,21 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	// comms bus and cannot collide with the human trigger post.
 	const postTopic = "e2e-comms-leg"
 	const postBody = "comms leg: posting from the agent loop"
+	// The poster's handle. Its home channel is minted under the same name
+	// (store/accounts.go:337 names the home channel for the agent's handle), so
+	// this const doubles as the channel NAME the scripted post must target.
+	const posterHandle = "comms-leg-poster"
 	// The comms tool's arguments, serialized JSON (the OpenAI tool-call
 	// contract). Built from the consts above so the asserted values cannot drift
 	// from what the script issues. Field names are the postParameters wire schema
-	// (comms.ts): text, topic. channel_id is omitted so the post lands on the
-	// agent's home channel.
+	// (comms.ts): text, topic, channel, create_topic. As of the peer-DM cutover
+	// (record R2/R5) post has NO home default — `channel` is REQUIRED and carries
+	// the target channel NAME (here the poster's own home channel, whose name is
+	// its handle), and a name-miss topic needs create_topic:true (postTopic names
+	// no existing topic on the freshly-minted home channel, so it must mint).
 	postArgsJSON := fmt.Sprintf(
-		`{"text":%q,"topic":%q}`,
-		postBody, postTopic,
+		`{"text":%q,"topic":%q,"channel":%q,"create_topic":true}`,
+		postBody, postTopic, posterHandle,
 	)
 	// The assistant text the closing turn settles on after the tool result
 	// returns — a clean text settle, mirroring the sibling's settleReply. Unlike
@@ -70,7 +77,7 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 
 	// The poster agent: created, provisioned, and started exactly as the
 	// sibling's spawner. Its turn issues the comms post.
-	posterID, err := f.CreateAgent(ctx, "comms-leg-poster", "Comms Leg Poster")
+	posterID, err := f.CreateAgent(ctx, posterHandle, "Comms Leg Poster")
 	if err != nil {
 		t.Fatalf("CreateAgent (poster): %v", err)
 	}
@@ -110,9 +117,9 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	defer tail.Close()
 
 	// Resolve the poster to get its home channel id (the channel the trigger post
-	// lands on and the channel the agent's own post — channel_id omitted — fans
-	// onto).
-	poster, err := adminAgentByHandle(ctx, st, "comms-leg-poster")
+	// lands on and the channel the agent's own post — targeting its home channel
+	// by name — fans onto).
+	poster, err := adminAgentByHandle(ctx, st, posterHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(poster): %v", err)
 	}
@@ -160,9 +167,12 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	if got := posted.GetAuthorAccountId(); got != posterID {
 		t.Fatalf("posted message author = %q, want the poster agent's account id %q (the agent posted it, not the human trigger)", got, posterID)
 	}
-	// The 'omit channel_id => home channel' branch is not separately asserted:
-	// the returned Message carries no channel container (F9 removed it), and
-	// GetTopicId() is a server-minted id, not the scripted topic NAME, so there
-	// is nothing on the wire Message to compare against poster.Agent.HomeChannelID
-	// or postTopic. Body + author is the correct assertion ceiling here.
+	// The scripted post names its target channel explicitly (the poster's own
+	// home channel by name — post has no home default post-cutover) and mints the
+	// topic via create_topic. Neither the resolved channel nor the topic NAME is
+	// separately asserted off the wire Message: it carries no channel container
+	// (F9 removed it), and GetTopicId() is a server-minted id, not the scripted
+	// topic NAME, so there is nothing on the wire to compare against
+	// poster.Agent.HomeChannelID or postTopic. Body + author is the correct
+	// assertion ceiling here.
 }

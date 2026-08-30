@@ -14,8 +14,10 @@ import (
 // PostMessage posts one text block to a channel's topic over
 // CommsService.PostMessage and returns the server-assigned message id. It
 // addresses the channel by id (the PostMessageRequest.container oneof) and the
-// topic by name (the topic oneof — get-or-create by name), matching the
-// agent-initiated post shape the in-process suite exercises
+// topic by name (the topic oneof). It is a trusted internal minter, so it sets
+// CreateTopic — the first post to a freshly-minted home channel (no pre-seeded
+// topic) mints the topic — matching the agent-initiated post shape the
+// in-process suite exercises
 // (integration_pgtest_test.go:162-163). Returns an error rather than panicking
 // so the caller (a test) decides fatality; the per-call deadline is threaded
 // from ctx.
@@ -23,9 +25,10 @@ func (f *Fixture) PostMessage(ctx context.Context, channelID, topicName, text st
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	resp, err := f.Comms().PostMessage(rctx, connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: topicName},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: topicName},
+		CreateTopic: true,
+		Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
 	}))
 	if err != nil {
 		return "", fmt.Errorf("PostMessage RPC: %w", err)

@@ -36,7 +36,7 @@ func postAsk(t *testing.T, ctx context.Context, s *store.Store, ch store.Channel
 				Options: []store.AskOption{{ID: "opt-a", Label: "staging"}, {ID: "opt-b", Label: "prod"}},
 			}},
 		}}},
-	}, string(ch), store.TopicRef{Name: "general"}, ""); err != nil {
+	}, string(ch), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage(ask %q): %v", askID, err)
 	}
 }

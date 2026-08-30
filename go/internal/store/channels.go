@@ -391,6 +391,50 @@ func (s *Store) ChannelVisibleTo(ctx context.Context, actor AccountID, channelID
 	return visible, nil
 }
 
+// ChannelByNameForViewer resolves a channel NAME to its Channel within the set
+// visible to viewer — the viewer-scoped name→id resolve the agent tool edge runs
+// ahead of the id-typed store calls (peer-DM record R1). Channel names are not
+// globally unique — "Ungrouped channels (empty group) are not name-constrained"
+// and a name may recur across groups — so resolution is deliberately scoped to
+// the caller's visible set (channelVisiblePredicate, shared with ListChannels so
+// the resolve cannot drift from the read) and enforces uniqueness WITHIN it:
+//
+//   - no visible channel of that name (unknown, or real-but-invisible) →
+//     ErrNotFound, the two indistinguishable so a probe cannot enumerate names it
+//     lacks visibility for (the D9 not-found/forbidden merge);
+//   - exactly one → that channel;
+//   - two or more visible channels sharing the name → ErrInvalidArgument naming
+//     the collision, so the caller disambiguates rather than the server guessing
+//     (there is no ErrAmbiguous sentinel — invalid_argument is the R1 rule).
+//
+// Match is exact-case, mirroring the channels_group_name_key uniqueness the store
+// enforces on writes.
+func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, name string) (Channel, error) {
+	const q = effectiveVisibilityCTE + `
+		SELECT c.id, c.name, COALESCE(c.group_id, ''), c.kind, c.post_policy, COALESCE(c.owner_account_id, ''), c.mandatory_subscription
+		FROM channels c
+		WHERE c.name = $2 AND ` + channelVisiblePredicate + `
+		ORDER BY c.id`
+	rows, err := s.pool.Query(ctx, q, string(viewer), name)
+	if err != nil {
+		return Channel{}, fmt.Errorf("store: resolve channel by name: %w", err)
+	}
+	defer rows.Close()
+
+	channels, err := scanChannels(ctx, s.pool, rows)
+	if err != nil {
+		return Channel{}, err
+	}
+	switch len(channels) {
+	case 0:
+		return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, name)
+	case 1:
+		return channels[0], nil
+	default:
+		return Channel{}, fmt.Errorf("%w: channel name %q is ambiguous — it names %d visible channels; address it by id", ErrInvalidArgument, name, len(channels))
+	}
+}
+
 // UpdateChannelMembers applies a set of add/remove/subscribe mutations to a
 // channel (RT-1: the single membership-mutation carrier). Adds and
 // subscribe-flips upsert a member row; removes delete it. An add of an agent

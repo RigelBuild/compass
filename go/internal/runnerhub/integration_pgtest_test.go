@@ -158,7 +158,7 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "call-1",
 		Call: &compassv1internal.CommsCallRequest_Post{
-			Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(homeChannel)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: relayText}}}},
+			Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "atlas"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: relayText}}}},
 		},
 	}))
 	if err != nil {

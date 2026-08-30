@@ -314,6 +314,72 @@ func TestFromHandleMissDeliversWithEmptyHandle(t *testing.T) {
 	}
 }
 
+// RIG-2956 T0: the source channel name AND topic name are denormalized onto BOTH
+// the steer op (to a mentioned member) and the deliver op (to a plain
+// subscriber), resolved once server-side via TopicChannelNames from the
+// message's topic_id. The agent reads them off the control to render
+// "Channel <name> › topic <name>:" without a per-injection roster lookup, the
+// same denorm posture as from_handle. RED before the wrap sites populated
+// ChannelName/TopicName: both ops carried empty names.
+func TestDeliverAndSteerCarrySourceChannelAndTopicNames(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const human store.AccountID = "human-1"
+	const agentA, agentB store.AccountID = "agent-a", "agent-b"
+
+	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
+	reads.members[ch] = []store.AccountID{agentA, agentB}
+	reads.handles["aa"] = agentAccount(agentA, "aa")
+	reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
+	// The message's topic ("topic-1", the wireText default) resolves to its
+	// source channel+topic names.
+	reads.seedTopicNames("topic-1", "engineering", "general")
+	res.bind(agentA, "sess-a")
+	res.bind(agentB, "sess-b")
+	startConsumer(t, c)
+
+	// @aa steers agent-a; agent-b (subscribed, unmentioned) gets a plain deliver.
+	c.bus.Publish(postedResponse(wireText("m1", human, "hey @aa")))
+	disp.waitForDispatches(t, 2)
+
+	got := disp.snapshot()
+	a := recordsFor(got, "sess-a")
+	if len(a) != 1 || a[0].kind != opSteer || a[0].channelName != "engineering" || a[0].topicName != "general" {
+		t.Fatalf("sess-a records = %+v, want one steer with channel=engineering topic=general", a)
+	}
+	b := recordsFor(got, "sess-b")
+	if len(b) != 1 || b[0].kind != opDeliver || b[0].channelName != "engineering" || b[0].topicName != "general" {
+		t.Fatalf("sess-b records = %+v, want one deliver with channel=engineering topic=general", b)
+	}
+}
+
+// RIG-2956 T0: a source-name resolution MISS (the topic is not found) is logged
+// and yields EMPTY channel+topic names — it never blocks the delivery, exactly
+// as a from_handle miss degrades. The deliver still dispatches; only its source
+// names are empty.
+func TestSourceNameMissDeliversWithEmptyNames(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const human store.AccountID = "human-1"
+	const agentA store.AccountID = "agent-a"
+
+	reads.subscribers[ch] = []store.AccountID{agentA}
+	// No reads.seedTopicNames for "topic-1": TopicChannelNames is ErrNotFound.
+	res.bind(agentA, "sess-a")
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+	disp.waitForDispatches(t, 1)
+
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].kind != opDeliver || got[0].messageID != "m1" {
+		t.Fatalf("dispatch = %+v, want one deliver of m1", got)
+	}
+	if got[0].channelName != "" || got[0].topicName != "" {
+		t.Fatalf("source names = (%q, %q) on a store miss, want empty", got[0].channelName, got[0].topicName)
+	}
+}
+
 // Case 8 (design.md:853-855): a mention absent from the initial MessagePosted
 // block set but streamed in via a later store-grow still steers at the author's
 // settle edge. The message is HELD while the author streams (no mention yet); the

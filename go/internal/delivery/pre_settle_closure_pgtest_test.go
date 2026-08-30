@@ -123,7 +123,7 @@ func postThroughStore(t *testing.T, ctx context.Context, s *store.Store, ch stor
 	m, _, err := s.AppendMessage(ctx, store.Message{
 		AuthorAccountID: author,
 		Blocks:          []store.MessageBlock{{Text: &body}},
-	}, string(ch), store.TopicRef{Name: "general"}, "")
+	}, string(ch), store.TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%q): %v", body, err)
 	}

@@ -231,7 +231,7 @@ func e2ePeerPostsUnderOwnAccount(t *testing.T, w *e2eWire, peerID store.AccountI
 	client := w.dialPeer(t, peerContainer)
 	resp, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "peer-post-1",
-		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: peerPostText}}}}},
+		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "peer-1"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: peerPostText}}}}},
 	}))
 	if err != nil {
 		t.Fatalf("Comms(post) over the peer socket = %v, want the round-trip result", err)
@@ -325,7 +325,7 @@ func e2ePeerFailsClosedAfterDespawn(t *testing.T, w *e2eWire, peerID store.Accou
 	client := w.dialPeer(t, peerContainer)
 	_, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "peer-post-after-despawn",
-		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "should never commit"}}}}},
+		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "peer-1"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "should never commit"}}}}},
 	}))
 	if err == nil {
 		t.Fatal("peer comms post after despawn SUCCEEDED, want a fail-closed error (container + socket torn down)")
@@ -374,12 +374,6 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	}
 	peerBID := store.AccountID(peerBResp.GetAgentAccountId())
 	peerBContainer := peerBResp.GetContainerName()
-	peerBAcc, err := w.store.GetAccount(ctx, peerBID)
-	if err != nil {
-		t.Fatalf("GetAccount(peer B) = %v", err)
-	}
-	peerBHome := peerBAcc.Agent.HomeChannelID
-
 	// The supervisor (owner A's agent) despawns owner B's peer over its OWN
 	// socket.
 	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
@@ -444,7 +438,7 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	clientB := w.dialPeer(t, peerBContainer)
 	postResp, err := clientB.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "peer-b-post-1",
-		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerBHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "peer B still alive"}}}}},
+		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: "peer-b"}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "peer B still alive"}}}}},
 	}))
 	if err != nil {
 		t.Fatalf("Comms(post) over peer B socket after the foreign despawn = %v, want success (peer B untouched)", err)

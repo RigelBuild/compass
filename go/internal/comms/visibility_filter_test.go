@@ -187,11 +187,7 @@ func TestSubscribeCommsPrivateMessageLeakBlocked(t *testing.T) {
 	}
 
 	// A posts a plain message (MessagePosted) into a named topic ...
-	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}},
-	}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
@@ -258,11 +254,7 @@ func TestSubscribeCommsPrivateTopicUpsertedLeakBlocked(t *testing.T) {
 
 	// A posts a message into a named topic, creating the topic (no TopicUpserted
 	// yet — get-or-create does not emit one).
-	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}},
-	}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
@@ -535,14 +527,14 @@ func TestSubscribeCommsPrivateMessageLeakBlockedLiveTail(t *testing.T) {
 	outsiderEvents := firstEventAfterBoundary(t, h, outsiderB.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
 	// The private post: member entitled, non-member not.
-	privPosted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
+	privPosted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(private): %v", err)
 	}
 	privID := privPosted.Msg.GetMessage().GetId()
 
 	// The canary post into a channel the non-member CAN see: its high-water mark.
-	canaryPosted, err := h.svc.PostMessage(WithActor(ctx, outsiderB.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(canaryCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible canary"}}}}))
+	canaryPosted, err := h.svc.PostMessage(WithActor(ctx, outsiderB.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(canaryCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible canary"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(canary): %v", err)
 	}

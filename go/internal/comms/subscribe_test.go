@@ -206,7 +206,7 @@ func TestSubscribeCommsSnapshotBoundaryFirstFrame(t *testing.T) {
 		}
 		const k = 2
 		for i := range k {
-			if _, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "seeded"}}}})); err != nil {
+			if _, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "seeded"}}}})); err != nil {
 				t.Fatalf("PostMessage(%d): %v", i, err)
 			}
 		}
@@ -294,7 +294,7 @@ func TestSubscribeCommsPostDeliversMessagePosted(t *testing.T) {
 	// subscribe not block the post.
 	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello stream"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello stream"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestSubscribeCommsAgentPresenceSharedChannelScoping(t *testing.T) {
 	}
 	strangerEvents := firstEventAfterBoundary(t, h, stranger.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 	h.bus.Publish(presence)
-	posted, err := h.svc.PostMessage(WithActor(ctx, stranger.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(strangerCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible to me"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, stranger.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(strangerCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible to me"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(stranger): %v", err)
 	}
@@ -405,7 +405,7 @@ func TestPostMessageIdempotentRetrySuppressesDuplicatePublish(t *testing.T) {
 	// Live path: subscribe concurrently (half-duplex), then the first post
 	// delivers exactly one MessagePosted to the member.
 	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
-	first, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "only once"}}}, ClientRequestId: "req-dup"}))
+	first, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "only once"}}}, ClientRequestId: "req-dup"}))
 	if err != nil {
 		t.Fatalf("PostMessage(first): %v", err)
 	}
@@ -417,7 +417,7 @@ func TestPostMessageIdempotentRetrySuppressesDuplicatePublish(t *testing.T) {
 
 	// The retry with the SAME id returns the already-stored message (dedup), not
 	// a fresh one — the store deduped and the handler must not re-publish.
-	retry, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "different body, same id"}}}, ClientRequestId: "req-dup"}))
+	retry, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "different body, same id"}}}, ClientRequestId: "req-dup"}))
 	if err != nil {
 		t.Fatalf("PostMessage(retry): %v", err)
 	}
@@ -454,7 +454,7 @@ func TestPostMessageWriteThrough(t *testing.T) {
 
 	events := firstEventAfterBoundary(t, h, poster.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
-	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "durable and fanned"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "durable and fanned"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestSubscribeCommsStaleEpochResyncsAndRedelivers(t *testing.T) {
 	}
 
 	// Post one message so there is a real store row to re-snapshot.
-	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "before restart"}}}}))
+	posted, err := h.svc.PostMessage(WithActor(ctx, poster.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "before restart"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}

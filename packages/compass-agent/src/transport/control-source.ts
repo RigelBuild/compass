@@ -56,6 +56,7 @@
 
 import { create } from "@bufbuild/protobuf";
 import { Effect, Either, Fiber, Logger, ManagedRuntime, Metric } from "effect";
+import type { DeliverSourceNames } from "./../agent";
 import type { ForgeNotification, Message } from "./../compassv1";
 import type { AgentControl, ControlSource } from "./../control";
 import { ControlSubscribeRequestSchema } from "./../gen/compass/v1/agent_gateway_pb";
@@ -170,9 +171,22 @@ export interface ImmediateControl {
 	// control (RIG-2486 T1) — the value the CompassAgent emits on the
 	// SessionInjection observation without a per-injection roster lookup. Empty
 	// when the Server could not resolve the author handle (a handle miss is
-	// logged server-side, never a delivery block).
-	steer(msg: Message, fromHandle: string): void; // compass.v1.Message — .id intact
-	deliver(msg: Message, fromHandle: string): void; // compass.v1.Message — .id intact
+	// logged server-side, never a delivery block). The fourth arg carries the
+	// denormalized SOURCE channel + topic NAMES off the wire control (peer-DM
+	// record DL-292, `DeliverControl`/`SteerControl` `channel_name`/`topic_name`)
+	// — what the CompassAgent renders as the delivery's source and reply target
+	// without a per-delivery channel/topic lookup. Either is empty on a
+	// server-side resolve miss (a name miss never blocks a delivery).
+	steer(
+		msg: Message,
+		fromHandle: string,
+		sourceNames: DeliverSourceNames,
+	): void; // compass.v1.Message — .id intact
+	deliver(
+		msg: Message,
+		fromHandle: string,
+		sourceNames: DeliverSourceNames,
+	): void; // compass.v1.Message — .id intact
 	// RIG-2732 W3 forge notification arm. UNLIKE steer/deliver — which ack their
 	// control_seq at DECODE because they dispatch at decode — the forge arm
 	// enqueues on the CompassAgent's turn-end queue (RT-3 coalescing) and defers
@@ -433,9 +447,15 @@ export function createSocketControlSource(
 						"empty-shell steer/deliver — payload staged (RIG-1310)",
 					);
 				} else if (wire.control.case === "steer") {
-					immediate.steer(msg, wire.control.value.fromHandle);
+					immediate.steer(msg, wire.control.value.fromHandle, {
+						channelName: wire.control.value.channelName,
+						topicName: wire.control.value.topicName,
+					});
 				} else {
-					immediate.deliver(msg, wire.control.value.fromHandle);
+					immediate.deliver(msg, wire.control.value.fromHandle, {
+						channelName: wire.control.value.channelName,
+						topicName: wire.control.value.topicName,
+					});
 				}
 				// Applied (counted or dispatched) at decode → ack now, ahead of any
 				// queued iterator op (invariant 2 → applied_above).

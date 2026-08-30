@@ -222,6 +222,14 @@ func (f *fakeCommsCaller) PostAsAccount(_ context.Context, account store.Account
 	return f.postResp, nil
 }
 
+// PostAsAccountByName is the agent-tool entry. The fake records and responds
+// identically to PostAsAccount (the name→id resolve is the real Comms', proven
+// in the comms pgtests), so a relay test drives the same attribute→forward path
+// and asserts on the recorded post + canned response/error.
+func (f *fakeCommsCaller) PostAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
+	return f.PostAsAccount(ctx, account, req)
+}
+
 func (f *fakeCommsCaller) ListAsAccount(_ context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -230,6 +238,12 @@ func (f *fakeCommsCaller) ListAsAccount(_ context.Context, account store.Account
 		return nil, f.listErr
 	}
 	return f.listResp, nil
+}
+
+// ListAsAccountByName is the agent-tool list entry; records and responds
+// identically to ListAsAccount (see PostAsAccountByName).
+func (f *fakeCommsCaller) ListAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error) {
+	return f.ListAsAccount(ctx, account, req)
 }
 
 func (f *fakeCommsCaller) RosterAsAccount(_ context.Context, account store.AccountID, req *compassv1.GetRosterRequest) (*compassv1.GetRosterResponse, error) {

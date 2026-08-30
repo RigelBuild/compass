@@ -47,7 +47,7 @@ func TestPostMessageOwnerOnlyRejectsNonOwnerInBand(t *testing.T) {
 	// with the same not-found a non-member would get.
 	_, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: other.ID, Blocks: []MessageBlock{textBlock("not allowed")},
-	}, string(ch.ID), TopicRef{Name: "general"}, "")
+	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	sentinelIs(t, err, ErrNotFound, "non-owner post on OWNER_ONLY channel")
 }
 
@@ -64,7 +64,7 @@ func TestPostMessageOwnerOnlyOwnerPostLands(t *testing.T) {
 
 	m, inserted, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: owner.ID, Blocks: []MessageBlock{textBlock("owner speaks")},
-	}, string(ch.ID), TopicRef{Name: "general"}, "")
+	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(owner): %v", err)
 	}

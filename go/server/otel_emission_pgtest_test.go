@@ -111,11 +111,7 @@ func seedAdminChannel(t *testing.T, ctx context.Context) (dsn string, channelID 
 func postOverSocket(t *testing.T, ctx context.Context, socketPath, channelID string) (*connect.Response[compassv1.PostMessageResponse], string) {
 	t.Helper()
 	client := newUDSCommsClient(t, socketPath)
-	resp, err := client.PostMessage(ctx, connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello otel"}}},
-	}))
+	resp, err := client.PostMessage(ctx, connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hello otel"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage over socket: %v", err)
 	}

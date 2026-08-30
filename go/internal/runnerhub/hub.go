@@ -235,8 +235,17 @@ type SessionTailSink interface {
 // hub's own binding, never asserted by the Runner (transport design Decision #3
 // / OQ-2, comms-tools design T2).
 type CommsCaller interface {
+	// PostAsAccount posts under account with an id-typed channel container — the
+	// internal id-holder path (relay transcript, seeds). PostAsAccountByName is
+	// the agent-tool path: it resolves the request's channel NAME to an id first
+	// (peer-DM R1, no home default per R2), then delegates to PostAsAccount.
 	PostAsAccount(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error)
+	PostAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error)
+	// ListAsAccount lists under account with an id-typed channel container.
+	// ListAsAccountByName is the agent-tool path: it resolves a non-empty channel
+	// NAME to an id and KEEPS omit-=home (a read has no misroute hazard, R2).
 	ListAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
+	ListAsAccountByName(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
 	// RosterAsAccount executes an agent-initiated GetRoster under account (the
 	// caller AND, when the request names no vantage, the session-resolved
 	// vantage) — RIG-1721 T2.

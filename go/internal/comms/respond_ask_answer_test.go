@@ -74,7 +74,7 @@ func TestRespondToAskFansOutMessagePosted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: agent.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: agent.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -138,18 +138,14 @@ func TestPostMessageRejectsAskAnswerBlock(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = h.svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
-			Ask: &compassv1.Ask{
-				AskId:     "ask-1",
-				Answered:  true,
-				Questions: []*compassv1.AskQuestion{{QuestionId: "q1", Question: "?"}},
-			},
-			AskerAccountId: "agent",
-		}}}},
-	}))
+	_, err = h.svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
+		Ask: &compassv1.Ask{
+			AskId:     "ask-1",
+			Answered:  true,
+			Questions: []*compassv1.AskQuestion{{QuestionId: "q1", Question: "?"}},
+		},
+		AskerAccountId: "agent",
+	}}}}}))
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostMessage with an ask_answer block")
 }
 

@@ -211,6 +211,15 @@ message SteerControl {
   // blocks or fails a delivery). Server-side stamping per
   // docs/designs/platform/compass-agent-message-trace-continuity/design.md.
   string traceparent = 3;
+  // The names of the steer message's topic and channel, denormalized onto the
+  // steer op so the agent renders the mention's source — and can reply naming
+  // both — without a lookup per steer (mirrors from_handle above and
+  // DeliverControl's topic_name/channel_name; peer-DM record DL-292). The ids
+  // are carried transitively by the Message; only the names are denormalized
+  // here. A name-resolve miss degrades exactly as from_handle does — it never
+  // blocks a steer — so each is EMPTY on a resolve miss.
+  string topic_name = 4;
+  string channel_name = 5;
 }
 
 // Empty shells — payload fields parked (RIG-1310). Present so the AgentControl
@@ -249,6 +258,14 @@ message DeliverControl {
   // blocks or fails a delivery). Server-side stamping per
   // docs/designs/platform/compass-agent-message-trace-continuity/design.md.
   string traceparent = 4;
+  // The name of the message's channel, denormalized onto the deliver op so the
+  // agent renders the delivery's source channel — and can reply naming it —
+  // without a channel lookup per delivery (mirrors the topic_name denorm
+  // rationale above; peer-DM record DL-292). The channel *id* is already
+  // carried transitively by `message.channel_id`; only the name is
+  // denormalized here. A name-resolve miss degrades exactly as from_handle
+  // does — it never blocks a delivery — so this is EMPTY on a resolve miss.
+  string channel_name = 5;
 }
 
 // DeliveryAck — the agent's per-message delivery receipt (RIG-1569), an

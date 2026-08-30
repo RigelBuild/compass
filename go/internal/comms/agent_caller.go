@@ -176,6 +176,79 @@ func (c *Comms) ListAsAccount(
 	return resp.Msg, nil
 }
 
+// PostAsAccountByName is the AGENT TOOL entry for comms_post_message /
+// comms_post_ask: it resolves the request's channel NAME (carried in the
+// channel_id container arm — the TS tool sends a name there per peer-DM R1) to a
+// real channel id within account's visible set, then delegates to the id-typed
+// PostAsAccount. This is the ONLY caller that treats the container arm as a name;
+// PostAsAccount stays id-typed for its internal id-holder co-callers
+// (postSetupThread, CommitAgentPost, the offline-mention e2e), which the frozen
+// record's "resolve in PostAsAccount" wording predates.
+//
+// Per R2 there is NO home-channel default at the tool level: an empty channel
+// name is NOT filled from home (the agent must NAME its channel, even its own
+// home), so an empty name resolves to ErrNotFound like any other miss. An
+// unknown or invisible name collapses to CodeNotFound (the D9 merge); an
+// ambiguous name is CodeInvalidArgument naming the collision — both surfaced via
+// edgeError from ChannelByNameForViewer.
+func (c *Comms) PostAsAccountByName(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.PostMessageRequest,
+) (*compassv1.PostMessageResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	ch, err := c.store.ChannelByNameForViewer(ctx, account, req.GetChannelId())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	resolved := &compassv1.PostMessageRequest{
+		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+		Blocks:          req.GetBlocks(),
+		Topic:           req.GetTopic(),
+		ClientRequestId: req.GetClientRequestId(),
+		CreateTopic:     req.GetCreateTopic(),
+	}
+	// The delegated PostAsAccount runs defaultChannel again, but it is a no-op
+	// here: the channel id is already resolved-non-empty, so defaultChannel's
+	// empty→home fill never fires. R2 (no home default for post/ask) is enforced
+	// upstream by ChannelByNameForViewer rejecting an empty name above, NOT by
+	// this residual pass — a future refactor of PostAsAccount's home default must
+	// not reintroduce a post/ask home fallback here.
+	return c.PostAsAccount(ctx, account, resolved)
+}
+
+// ListAsAccountByName is the AGENT TOOL entry for comms_list_messages. It mirrors
+// PostAsAccountByName's name resolution but KEEPS omit-=home (a read has no
+// misroute hazard, peer-DM R2): an empty channel name defaults to the account's
+// home channel, a non-empty name resolves through ChannelByNameForViewer. The
+// resolved id-typed request is delegated to the unchanged ListAsAccount.
+func (c *Comms) ListAsAccountByName(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.ListMessagesRequest,
+) (*compassv1.ListMessagesResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	channelID := req.GetChannelId()
+	if channelID != "" {
+		ch, err := c.store.ChannelByNameForViewer(ctx, account, channelID)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		channelID = string(ch.ID)
+	}
+	resolved := &compassv1.ListMessagesRequest{
+		Container:       &compassv1.ListMessagesRequest_ChannelId{ChannelId: channelID},
+		Limit:           req.GetLimit(),
+		BeforeMessageId: req.GetBeforeMessageId(),
+		SnapshotSeq:     req.GetSnapshotSeq(),
+	}
+	return c.ListAsAccount(ctx, account, resolved)
+}
+
 // UpdatePinnedBoardAsAccount executes one agent-initiated UpdatePinnedBoard as
 // account, mirroring PostAsAccount: WithActor + the shared UpdatePinnedBoard
 // handler path, so the board authz (post_policy), the pure-pointer store ops,
@@ -230,8 +303,9 @@ func (c *Comms) CommitAgentPost(
 		// Container unset: routes to the agent's home channel (defaultChannel).
 		// Topic named: the store has no home-topic default, so the frame's
 		// conversation is addressed by topic name.
-		Topic:  &compassv1.PostMessageRequest_TopicName{TopicName: agentConversationTopic},
-		Blocks: posted.GetMessage().GetBlocks(),
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: agentConversationTopic},
+		CreateTopic: true,
+		Blocks:      posted.GetMessage().GetBlocks(),
 	})
 }
 
@@ -373,6 +447,7 @@ func (c *Comms) defaultChannel(
 		Blocks:          req.GetBlocks(),
 		Topic:           req.GetTopic(),
 		ClientRequestId: req.GetClientRequestId(),
+		CreateTopic:     req.GetCreateTopic(),
 	}, nil
 }
 

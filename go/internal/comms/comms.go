@@ -410,8 +410,9 @@ func (c *Comms) PostMessage(
 		AuthorAccountID: c.actorFromContext(ctx),
 		Blocks:          blocks,
 	}, req.Msg.GetChannelId(), store.TopicRef{
-		ID:   req.Msg.GetTopicId(),
-		Name: req.Msg.GetTopicName(),
+		ID:     req.Msg.GetTopicId(),
+		Name:   req.Msg.GetTopicName(),
+		Create: req.Msg.GetCreateTopic(),
 	}, req.Msg.GetClientRequestId())
 	if err != nil {
 		return nil, edgeError(err)

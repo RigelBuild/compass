@@ -39,7 +39,7 @@ func TestAppendMessageConcurrentGetOrCreateOneTopic(t *testing.T) {
 			<-start
 			_, _, errs[i] = s.AppendMessage(ctx, Message{
 				AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("racing post")},
-			}, string(ch.ID), TopicRef{Name: "retry policy"}, "")
+			}, string(ch.ID), TopicRef{Name: "retry policy", Create: true}, "")
 		}(i)
 	}
 	close(start)
@@ -78,7 +78,7 @@ func TestAppendMessageGetOrCreateRevivesArchivedTopic(t *testing.T) {
 	// Birth the topic, then archive it.
 	first, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hello")},
-	}, string(ch.ID), TopicRef{Name: "Retry Policy"}, "")
+	}, string(ch.ID), TopicRef{Name: "Retry Policy", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(first): %v", err)
 	}
@@ -91,7 +91,7 @@ func TestAppendMessageGetOrCreateRevivesArchivedTopic(t *testing.T) {
 	// topic (case-insensitive unique index) and clears the flag.
 	revived, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("back on this")},
-	}, string(ch.ID), TopicRef{Name: "retry policy"}, "")
+	}, string(ch.ID), TopicRef{Name: "retry policy", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(revive): %v", err)
 	}
@@ -122,7 +122,7 @@ func TestListTopicsChannelMembershipGated(t *testing.T) {
 
 	if _, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("hi")},
-	}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
+	}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestUpdateTopicRenameInPlace(t *testing.T) {
 
 	post, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hello")},
-	}, string(ch.ID), TopicRef{Name: "old name"}, "")
+	}, string(ch.ID), TopicRef{Name: "old name", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -196,13 +196,13 @@ func TestUpdateTopicRenameToExistingMerges(t *testing.T) {
 	// Two topics, each with a message. src is renamed INTO dst.
 	src, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("in source")},
-	}, string(ch.ID), TopicRef{Name: "source topic"}, "")
+	}, string(ch.ID), TopicRef{Name: "source topic", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(source): %v", err)
 	}
 	dst, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("in target")},
-	}, string(ch.ID), TopicRef{Name: "target topic"}, "")
+	}, string(ch.ID), TopicRef{Name: "target topic", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(target): %v", err)
 	}
@@ -257,7 +257,7 @@ func TestUpdateTopicUnknownOrNonMemberNotFound(t *testing.T) {
 
 	post, _, err := s.AppendMessage(ctx, Message{
 		AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("hi")},
-	}, string(ch.ID), TopicRef{Name: "general"}, "")
+	}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}

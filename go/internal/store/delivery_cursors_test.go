@@ -24,7 +24,7 @@ import (
 // and store-space seq. The author must already be a channel member.
 func postAs(t *testing.T, s *Store, ch ChannelID, author AccountID, body string) (string, int64) {
 	t.Helper()
-	m, _, err := s.AppendMessage(context.Background(), Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(body)}}, string(ch), TopicRef{Name: "general"}, "")
+	m, _, err := s.AppendMessage(context.Background(), Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(body)}}, string(ch), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%q): %v", body, err)
 	}
