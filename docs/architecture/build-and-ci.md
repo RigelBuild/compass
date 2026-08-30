@@ -185,8 +185,9 @@ the release jobs — the four-binary asset set is built stamped from `version.tx
 the `:vX.Y.Z` image tag. Dev/bundle builds off `app-bundle/build.sh` read the
 same `version.txt` base and append a `+g<shortsha>` suffix, so a local bundle
 reports the release base it descends from. The standalone
-`publish-agent-image.yml` predates this unification; its retirement is a
-separate follow-up.
+`publish-agent-image.yml` predated this unification; it has been retired
+(RIG-2994), its per-push publish duty relocated verbatim into `release.yml`'s
+`publish-image` job.
 
 **Smoke.** On a runner host, pull the immutable tag and drive the consumer seam:
 

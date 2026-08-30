@@ -137,7 +137,7 @@ export function assemble(input: AssembleInput): AssembleOutput {
 
 // ── The edge (impure) ──────────────────────────────────────────────────────
 
-/** The GHCR repo the agent image publishes to (publish-agent-image.yml:188). */
+/** The GHCR repo the agent image publishes to (release.yml publish-image). */
 const IMAGE_REPO = "ghcr.io/rigelbuild/compass-agent";
 
 type Args = {
@@ -266,7 +266,7 @@ export function requireImageAtRelease(
 
 /**
  * Query GHCR for the image config digest at :git-<sha12>, exactly as
- * publish-agent-image.yml:206 does (`skopeo inspect --raw … | jq -r
+ * release.yml's publish-image verify does (`skopeo inspect --raw … | jq -r
  * .config.digest`). Returns null when the tag is not published — the image lane
  * is paths-filtered independently, so a go-only push has no image for its sha.
  */

@@ -21,10 +21,12 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 > DL-298–301). That lane RELOCATES this lane's per-push publish DUTY verbatim —
 > the same `publish.sh` no-args call, the same closure-paths gate, the same
 > serialize / immutability / two-copy-coherence / least-privilege /
-> off-hot-path posture — into a `publish-image` job, and the standalone
-> workflow FILE retires in a two-PR staged delete (land the fold, observe one
-> green per-push run, then delete). Every OTHER decision here stays live and is
-> carried into that lane unchanged: the tag name/tag contract (`:git-<sha>`
+> off-hot-path posture — into a `publish-image` job. The standalone
+> `publish-agent-image.yml` workflow FILE has now been RETIRED (RIG-2994,
+> 2026-08-30) via the two-PR staged delete this note prescribed: the unified
+> lane's fold landed, one green per-push `publish-image` run was observed on
+> main, and the old file was then deleted. Every OTHER decision here stays live
+> and is carried into that lane unchanged: the tag name/tag contract (`:git-<sha>`
 > immutable pin + `:latest` fallback), the build-once/push-each-tag skopeo
 > mechanism, the `GITHUB_TOKEN` + `REGISTRY_AUTH_FILE` auth pin, the
 > `linux/amd64` single-arch platform contract, and the public-visibility
