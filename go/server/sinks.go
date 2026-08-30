@@ -173,20 +173,28 @@ func startCommsBusConsumers(gctx context.Context, g *errgroup.Group, commsBus *e
 }
 
 // startForgeIngestLanes starts the forge webhook-ingestion lanes' background
-// goroutines on the serve group: the board lane (RIG-2883) and the agent-
-// notification lane (RIG-2732 T7), each contributing its webhook-arm drain and
-// its reconciler sweep. Both share the App gate, so each lane is nil-or-set as a
-// unit; a nil lane starts nothing. Serve calls this one helper so the four
-// Run starts, which share the serve group + gctx, stay one statement at the call
-// site (mirroring startCommsBusConsumers). Both Runs return nil on ctx-cancel.
-func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, notify *forgeNotifyLane) {
+// goroutines on the serve group: the board lane (RIG-2883) and the two agent-
+// notification lanes (RIG-2732 T7) — the GitHub notify lane and the Linear notify
+// lane — each contributing its webhook-arm drain and its reconciler sweep. The
+// board and GitHub notify lanes share the App gate (nil-or-set together); the
+// Linear notify lane gates INDEPENDENTLY on LINEAR_FORGE_TOKEN, so it is nil-or-
+// set on its own. Every lane is nil-checked; a nil lane starts nothing. The
+// notify lanes are the same *forgeNotifyLane type, taken variadically so a new
+// notify lane is one more argument, not a new param. Serve calls this one helper
+// so the Run starts, which share the serve group + gctx, stay one statement at
+// the call site (mirroring startCommsBusConsumers). Every Run returns nil on
+// ctx-cancel.
+func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, notify ...*forgeNotifyLane) {
 	if board != nil {
 		g.Go(func() error { return board.arm.Run(gctx) })
 		g.Go(func() error { return board.reconciler.Run(gctx) })
 	}
-	if notify != nil {
-		g.Go(func() error { return notify.arm.Run(gctx) })
-		g.Go(func() error { return notify.reconciler.Run(gctx) })
+	for _, lane := range notify {
+		if lane == nil {
+			continue
+		}
+		g.Go(func() error { return lane.arm.Run(gctx) })
+		g.Go(func() error { return lane.reconciler.Run(gctx) })
 	}
 }
 

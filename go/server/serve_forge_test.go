@@ -149,6 +149,48 @@ func TestForgeReviewerSecretDefaultingAndWritesEnabled(t *testing.T) {
 	})
 }
 
+// TestBuildLinearNotifyLaneGate pins the RIG-2732 T7 Linear notify lane's
+// App-INDEPENDENT gate: buildLinearNotifyLane runs iff LINEAR_FORGE_TOKEN is
+// declared (the read credential the reconciler needs), NOT the GitHub App gate.
+// The gate short-circuits before any store/hub touch, so a nil store + nil hub
+// suffice; the declared path binds the Linear coordinate
+// (store.ForgeProviderLinear / "linear.app"). A resolve fault fails fast.
+func TestBuildLinearNotifyLaneGate(t *testing.T) {
+	ctx := context.Background() // test root
+	t.Run("undeclared LINEAR_FORGE_TOKEN -> nil lane (off-state)", func(t *testing.T) {
+		lane, err := buildLinearNotifyLane(ctx, nil, nil, &fakeResolver{}, nil)
+		if err != nil {
+			t.Fatalf("buildLinearNotifyLane (undeclared): %v", err)
+		}
+		if lane != nil {
+			t.Fatal("lane != nil with LINEAR_FORGE_TOKEN undeclared, want nil (lane off)")
+		}
+	})
+	t.Run("declared LINEAR_FORGE_TOKEN -> non-nil lane with a sink", func(t *testing.T) {
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: defaultForgeLinearSecretName, Value: "lin-tok"}}}
+		lane, err := buildLinearNotifyLane(ctx, nil, nil, res, nil)
+		if err != nil {
+			t.Fatalf("buildLinearNotifyLane (declared): %v", err)
+		}
+		if lane == nil {
+			t.Fatal("lane == nil with LINEAR_FORGE_TOKEN declared, want a non-nil lane")
+		}
+		if lane.arm == nil || lane.reconciler == nil || lane.sink == nil {
+			t.Fatalf("assembled lane has a nil member: %+v", lane)
+		}
+	})
+	t.Run("resolve fault -> error (fail-fast)", func(t *testing.T) {
+		res := &fakeResolver{err: errors.New("boom")}
+		lane, err := buildLinearNotifyLane(ctx, nil, nil, res, nil)
+		if err == nil {
+			t.Fatal("buildLinearNotifyLane returned nil error on a resolve fault, want fail-fast")
+		}
+		if lane != nil {
+			t.Fatalf("lane = %+v on a resolve fault, want nil", lane)
+		}
+	})
+}
+
 func TestForgeTokenSourceCachesUntilTTL(t *testing.T) {
 	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "GITHUB_FORGE_TOKEN", Value: "tok-1"}}}
 	ts := newForgeTokenSource(res, "GITHUB_FORGE_TOKEN")
