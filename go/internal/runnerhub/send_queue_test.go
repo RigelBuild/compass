@@ -8,7 +8,7 @@ package runnerhub
 // fail-fast), FIFO order preserved to the wire, and the leak-free
 // attach-spawns / detach-joins lifecycle with its per-class teardown of
 // queued-but-unsent frames. See
-// docs/designs/platform/compass-runnerhub-send-queue/design.md.
+// docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
 //
 // Every case is channel-gated — no sleeps, no retries. A parked Send blocks on
 // an explicit release channel the test controls, so "the caller returned while

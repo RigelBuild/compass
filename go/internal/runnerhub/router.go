@@ -29,7 +29,7 @@ import (
 // three classes share one FIFO — they share the wire, and a command gains
 // nothing by overtaking a deliver — but their full-queue and detach-time
 // semantics differ. See
-// docs/designs/platform/compass-runnerhub-send-queue/design.md.
+// docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
 type frameClass int
 
 const (
@@ -145,7 +145,7 @@ func (r *commandRouter) RefusedDelivers() uint64 {
 // the Runner opens its Sessions stream; detached when it closes. It builds a
 // fresh senderState (queue + done) and spawns runSender, the sole caller of send
 // for this attachment. See
-// docs/designs/platform/compass-runnerhub-send-queue/design.md.
+// docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
 func (r *commandRouter) attach(send func(*compassv1internal.SessionsResponse) error) {
 	s := &senderState{
 		queue: make(chan outFrame, sendQueueCap),
@@ -190,7 +190,7 @@ func (r *commandRouter) detach(cause error) {
 // defer router.detach tears down the rest (frames still queued then follow the
 // detach semantics — a command's pendingCall is failed by detach, a deliver's
 // cursor was never advanced, a signal is best-effort). See
-// docs/designs/platform/compass-runnerhub-send-queue/design.md.
+// docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
 func (r *commandRouter) runSender(s *senderState, send func(*compassv1internal.SessionsResponse) error) {
 	defer close(s.done)
 	for f := range s.queue {
@@ -338,7 +338,7 @@ func (r *commandRouter) push(cmd *compassv1internal.SessionsResponse) error {
 // error as "no live session" and leaves the cursor unadvanced for the D2 sweep.
 // On a full queue the refusal entry is removed (no frame will reach the Runner,
 // so no refusal can arrive for it). See
-// docs/designs/platform/compass-runnerhub-send-queue/design.md.
+// docs/designs/infra/runtime/compass-runnerhub-send-queue/design.md.
 func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 	id := cmd.GetRequestId()
 	if id == "" {
