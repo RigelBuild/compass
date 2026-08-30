@@ -172,6 +172,24 @@ func startCommsBusConsumers(gctx context.Context, g *errgroup.Group, commsBus *e
 	startPresencePublisher(gctx, g, commsBus, st, hub, log)
 }
 
+// startForgeIngestLanes starts the forge webhook-ingestion lanes' background
+// goroutines on the serve group: the board lane (RIG-2883) and the agent-
+// notification lane (RIG-2732 T7), each contributing its webhook-arm drain and
+// its reconciler sweep. Both share the App gate, so each lane is nil-or-set as a
+// unit; a nil lane starts nothing. Serve calls this one helper so the four
+// Run starts, which share the serve group + gctx, stay one statement at the call
+// site (mirroring startCommsBusConsumers). Both Runs return nil on ctx-cancel.
+func startForgeIngestLanes(gctx context.Context, g *errgroup.Group, board *boardIngestLane, notify *forgeNotifyLane) {
+	if board != nil {
+		g.Go(func() error { return board.arm.Run(gctx) })
+		g.Go(func() error { return board.reconciler.Run(gctx) })
+	}
+	if notify != nil {
+		g.Go(func() error { return notify.arm.Run(gctx) })
+		g.Go(func() error { return notify.reconciler.Run(gctx) })
+	}
+}
+
 // logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve
 // calls it on shutdown, so every run states plainly how many relayed frames
 // never reached their surface.

@@ -12,6 +12,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -29,6 +32,22 @@ func artifactCursorExists(t *testing.T, s *Store, provider ForgeProvider, host, 
 		t.Fatalf("count artifact cursor rows: %v", err)
 	}
 	return n > 0
+}
+
+// jsonSemanticEqual reports whether two JSON byte slices are semantically equal
+// (same parsed value), ignoring whitespace and key order. The forge_artifact_cursors
+// snapshot is a JSONB column, so a written value reads back Postgres-normalized —
+// a byte compare would be Postgres-version-fragile, a value compare is not.
+func jsonSemanticEqual(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		t.Fatalf("unmarshal snapshot a %q: %v", a, err)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		t.Fatalf("unmarshal snapshot b %q: %v", b, err)
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 // seedArtifactCursor inserts a bare forge_artifact_cursors row at the coordinate
@@ -746,5 +765,65 @@ func TestAdvanceForgeDeliveredRevision(t *testing.T) {
 	}
 	if got != "rev-9" {
 		t.Fatalf("delivered_revision after foreign advance = %q, want rev-9 (untouched)", got)
+	}
+}
+
+// ── T7a: LoadForgeArtifactCursor point-read ───────────────────────────────────
+
+// TestLoadForgeArtifactCursor: a written cursor round-trips through the
+// single-coordinate reader; a never-observed coordinate returns (nil, nil); an
+// invalid coordinate (zero kind) returns ErrInvalidArgument.
+func TestLoadForgeArtifactCursor(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	const (
+		host   = "github.com"
+		repo   = "a/b"
+		number = uint64(42)
+	)
+	provider := ForgeProviderGitHub
+	kind := ForgeArtifactKindIssue
+
+	if err := s.UpsertForgeArtifactCursor(ctx, ForgeArtifactCursor{
+		Provider: provider, Host: host, Repo: repo, Kind: kind, Number: number,
+		ETag: `"e1"`, CommentsETag: `"c1"`, ChecksETag: `"k1"`,
+		Revision: "rev-1", Snapshot: []byte(`{"x":1}`),
+	}); err != nil {
+		t.Fatalf("UpsertForgeArtifactCursor: %v", err)
+	}
+
+	// 1. Round-trip: the written cursor reads back with matching fields.
+	got, err := s.LoadForgeArtifactCursor(ctx, provider, host, repo, kind, number)
+	if err != nil {
+		t.Fatalf("LoadForgeArtifactCursor: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("cursor = nil, want non-nil round-trip")
+	}
+	if got.ETag != `"e1"` || got.CommentsETag != `"c1"` || got.ChecksETag != `"k1"` ||
+		got.Revision != "rev-1" {
+		t.Fatalf("cursor = %+v, want e1/c1/k1/rev-1", got)
+	}
+	// Snapshot is a JSONB column: Postgres normalizes the stored JSON (whitespace,
+	// key order), so the round-trip is semantically equal but NOT byte-identical
+	// to the written `{"x":1}` (it reads back `{"x": 1}`). Compare parsed values,
+	// never bytes — a byte compare here is Postgres-version-fragile.
+	if !jsonSemanticEqual(t, got.Snapshot, []byte(`{"x":1}`)) {
+		t.Fatalf("snapshot = %s, want JSON-equal to {\"x\":1}", got.Snapshot)
+	}
+
+	// 2. Never-observed coordinate → (nil, nil).
+	got, err = s.LoadForgeArtifactCursor(ctx, provider, host, repo, kind, 999)
+	if err != nil {
+		t.Fatalf("LoadForgeArtifactCursor (unseeded): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("cursor = %+v, want nil for never-observed coordinate", got)
+	}
+
+	// 3. Invalid coordinate (zero kind) → ErrInvalidArgument.
+	if _, err := s.LoadForgeArtifactCursor(ctx, provider, host, repo, ForgeArtifactKind(0), number); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("zero kind err = %v, want ErrInvalidArgument", err)
 	}
 }
