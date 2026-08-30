@@ -52,6 +52,23 @@ Seven native comms tools ship (`src/comms.ts`), none of them ask-answering:
 referent an answer's `chosen_option_ids` echoes back. Server-owned fields
 (`ask_id`, `answered`, and every answer field) are never set client-side.
 
+## The lifecycle toolset
+
+Two native lifecycle tools ship (`src/lifecycle.ts`):
+
+- `agents_spawn_peer` — spawn a standing peer Manager owned by your owner.
+  REQUIRED: `handle` (unique account handle), `role` (which
+  `config/prompts/<role>/SYSTEM.md` the peer boots on), and `persona` (its stable
+  working context). Optional: `display_name`.
+- `agents_despawn_peer` — tear a peer down by its `handle`. Idempotent:
+  despawning an already-absent peer succeeds.
+
+`persona` is the peer's stable working context — the repos, projects, and lanes
+it works out of — NOT churning per-issue detail. Both `role` and `persona` are
+set at creation only: a spawn onto an existing handle keeps the stored values.
+
+Both tools render names/handles only — never account, container, or session ids.
+
 ## The forge toolset
 
 Ten native forge tools ship (`src/forge.ts`), one per `ForgeCallRequest` arm,

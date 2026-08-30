@@ -65,10 +65,12 @@ already use.
 With the tree approved, prerequisites up, and config imported, spawn the
 first-level Managers and hand the workspace off.
 
-- Spawn each approved standing Manager with `agents_spawn_peer`, giving it a
-  function name (per Step 1), a handle, and an initial prompt that scopes its
-  lane. A standing Manager is a long-lived tree node; ephemeral implementation
-  work runs in subagents inside a Manager's own session, not as tree nodes.
+- Spawn each approved standing Manager with `agents_spawn_peer`, supplying its
+  `handle`, its `role` (which `config/prompts/<role>/SYSTEM.md` it boots on, per
+  Step 1), and its `persona` (its stable working context — the repos, projects,
+  and lanes it works out of, NOT per-issue detail). A standing Manager is a
+  long-lived tree node; ephemeral implementation work runs in subagents inside a
+  Manager's own session, not as tree nodes.
 - All nodes are owned by the human operator regardless of who spawned them.
 - Spawning a standing Manager requires operator approval first: ask, get a yes,
   then spawn. Until the approval gate is a tool-enforced primitive, this holds
