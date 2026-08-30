@@ -149,15 +149,17 @@ async function activeToolNames(
 }
 
 // The Manager session shape: Compass native tools ride `customTools`
-// (cli.ts:896). The subagent session shape: no `customTools` — the SDK's
-// subagent path sets `customTools` from `mcpProxyTools`, which is empty because
-// Compass passes no `mcpManager` (executor.ts:2394/:2489).
+// (cli.ts:896). The subagent session shape: a real in-process subagent
+// (`taskDepth: 1`) with no `customTools` — the SDK's subagent path sets
+// `customTools` from `mcpProxyTools`, which is empty because Compass passes no
+// `mcpManager` (executor.ts:2394/:2489), so a child inherits none of the
+// native tools the Manager holds.
 function managerActiveToolNames(cwd: string): Promise<string[]> {
 	return activeToolNames({ cwd, customTools: compassNativeTools() });
 }
 
 function subagentActiveToolNames(cwd: string): Promise<string[]> {
-	return activeToolNames({ cwd });
+	return activeToolNames({ cwd, taskDepth: 1 });
 }
 
 describe("subagent comms/IRC tool split (design §T7)", () => {
@@ -192,15 +194,13 @@ describe("subagent comms/IRC tool split (design §T7)", () => {
 		const cwd = scratch();
 		const active = new Set(await subagentActiveToolNames(cwd));
 
-		// `irc` is active on any spawn-capable session via the availability gate
-		// isIrcEnabled(settings, taskDepth) (tools/index.ts:628). This session is
-		// top-level (taskDepth 0), so irc rides the spawn-capability default —
-		// canSpawnAtDepth(task.maxRecursionDepth ?? 2, 0) = true (irc.ts:48-49) — a
-		// PROXY for the subagent guarantee: a real subagent gets irc via the
-		// `taskDepth > 0` short-circuit (irc.ts:45), and a tool-restricted subagent
-		// additionally force-includes it (executor.ts:2196-2197). The split removes
-		// Compass's channel tools but MUST leave the OMP-internal peer channel, or
-		// workers cannot reach the Manager at all.
+		// `irc` is active on this subagent via the availability gate
+		// isIrcEnabled(settings, taskDepth) (tools/index.ts:628): at taskDepth 1
+		// the `taskDepth > 0` short-circuit returns true (irc.ts:45). (A
+		// tool-restricted subagent additionally force-includes it at
+		// executor.ts:2196-2197.) The split removes Compass's channel tools but
+		// MUST leave the OMP-internal peer channel, or workers cannot reach the
+		// Manager at all.
 		expect(active.has("irc")).toBe(true);
 	});
 
