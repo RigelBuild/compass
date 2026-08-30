@@ -2,10 +2,15 @@
 	"$schema": "https://biomejs.dev/schemas/2.5.4/schema.json",
 	"root": true,
 	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
-	"files": { "includes": ["**", "!**/gen", "!forks/*"] },
+	"files": { "includes": ["**", "!**/gen", "!forks/*", "!**/*.grit"] },
 	"formatter": { "indentStyle": "tab" },
+	"plugins": ["tools/biome-plugins/no-fixed-sleep.grit"],
 	"linter": {
 		"enabled": true,
+		"domains": {
+			"test": "recommended",
+			"project": "recommended"
+		},
 		"rules": {
 			"style": {
 				"noRestrictedImports": {
@@ -37,6 +42,19 @@
 						}
 					}
 				}
+			},
+			"nursery": {
+				"noFloatingPromises": "error",
+				"noMisusedPromises": "error"
+			},
+			"correctness": {
+				"noUndeclaredDependencies": "error"
+			},
+			"suspicious": {
+				"noConsole": "error"
+			},
+			"complexity": {
+				"noExcessiveCognitiveComplexity": "warn"
 			}
 		}
 	},
@@ -61,6 +79,19 @@
 			"linter": {
 				"rules": {
 					"style": { "noRestrictedImports": "off" }
+				}
+			}
+		},
+		{
+			"includes": [
+				"**/tools/**",
+				"**/scripts/**",
+				"packages/compass-agent/src/cli.ts",
+				"**/*.test.{ts,tsx}"
+			],
+			"linter": {
+				"rules": {
+					"suspicious": { "noConsole": "off" }
 				}
 			}
 		}

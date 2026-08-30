@@ -269,7 +269,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 			// event through in between. Resolving with an error is how `reject`
 			// refuses: the throw lands here, ahead of the answered-once
 			// bookkeeping, exactly where `failNextAskResponse`'s does.
-			if (askHold) {
+			if (askHold !== undefined) {
 				const held = askHold;
 				askHold = undefined;
 				await held;

@@ -147,6 +147,7 @@ async function main(
 			// StopAgentSession (Runner-backed — `Unavailable` when the server has
 			// no RunnerHub attached) land here, so neither is swallowed.
 			onCommsError: (error) => {
+				// biome-ignore lint/suspicious/noConsole: top-level comms-error funnel in the app entrypoint
 				console.error(
 					"compass live error",
 					error instanceof Error ? error.message : String(error),

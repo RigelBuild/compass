@@ -204,6 +204,7 @@ export class CompassAgent {
 		this.#onUnmapped =
 			opts.onUnmapped ??
 			((u) =>
+				// biome-ignore lint/suspicious/noConsole: default unmapped-event sink surfaces protocol drift to the operator
 				console.error(
 					`[compass-agent] unmapped: ${u.eventType} — ${u.reason}`,
 				));

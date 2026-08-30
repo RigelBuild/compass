@@ -192,6 +192,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 									`transcript tee gave up delivering entry_seq=${seq}: ${String(err)}`,
 								);
 					this.#fatalError = fatal;
+					// biome-ignore lint/suspicious/noConsole: operator-facing fatal diagnostic on an undeliverable durable transcript write
 					console.error(
 						`[compass-agent] transcript tee FATAL: entry_seq=${seq} undeliverable after ${this.#backoffMs.length} retries — failing session`,
 						fatal,
@@ -201,6 +202,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 				// Escalate: warn on the earlier attempts, error on the last one
 				// before the cap, so an operator sees the severity climb.
 				const level =
+					// biome-ignore lint/suspicious/noConsole: operator-facing retry-escalation diagnostic (severity climbs warn→error)
 					attempt >= this.#backoffMs.length - 1 ? console.error : console.warn;
 				level(
 					`[compass-agent] transcript tee send failed (entry_seq=${seq}, attempt ${attempt + 1}/${this.#backoffMs.length}), retrying`,

@@ -21,6 +21,7 @@ export function createCommandRegistry(): CommandRegistry {
 	return {
 		register(cmd: Command): void {
 			if (import.meta.env?.DEV && commands.has(cmd.id)) {
+				// biome-ignore lint/suspicious/noConsole: DEV-only duplicate-command-id warning
 				console.warn(
 					`compass: duplicate command id "${cmd.id}" — last write wins`,
 				);

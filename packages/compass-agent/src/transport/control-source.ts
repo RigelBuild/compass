@@ -282,6 +282,7 @@ export interface SocketControlSourceOptions {
 }
 
 const defaultOnUnmapped = (u: UnmappedEvent): void =>
+	// biome-ignore lint/suspicious/noConsole: default unmapped-control sink surfaces protocol drift to the operator
 	console.error(
 		`[compass-agent] control unmapped: ${u.eventType} — ${u.reason}`,
 	);
