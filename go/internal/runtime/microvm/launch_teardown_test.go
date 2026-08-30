@@ -138,6 +138,6 @@ func readPidFile(t *testing.T, path string) int {
 		if time.Now().After(deadline) {
 			t.Fatalf("fake never wrote its pid to %s", path)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the fake writing its pidfile above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
 }

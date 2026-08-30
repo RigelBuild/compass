@@ -317,7 +317,7 @@ func TestExecCanceledReapsChild(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("child never started (marker file absent)")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the child's marker file above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
 	cancel()
 
@@ -526,7 +526,7 @@ func TestBrokenExecStreamReapsChild(t *testing.T) {
 			alive := syscall.Kill(pid, 0) == nil
 			t.Fatalf("child pid %d still present=%v alive=%v after stream break", pid, present, alive)
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the exec_id leaving the table above with a 30s deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
 }
 

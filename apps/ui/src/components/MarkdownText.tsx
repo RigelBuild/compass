@@ -168,6 +168,7 @@ function BlockCode(props: { code: string; codeClass?: string }) {
 				setSettled([nextCode, nextLang] as const);
 				return;
 			}
+			// biome-ignore lint/style/noRestrictedGlobals: production UI debounce (HIGHLIGHT_DEBOUNCE_MS), cleared on re-run; not a test wait
 			const t = setTimeout(
 				() => setSettled([nextCode, nextLang] as const),
 				HIGHLIGHT_DEBOUNCE_MS,

@@ -414,7 +414,7 @@ func TestBoardRunTickerSweepsAtBackstop(t *testing.T) {
 		if l.calls.Load() != 1 {
 			t.Fatalf("lister calls after startup = %d, want 1", l.calls.Load())
 		}
-		time.Sleep(30 * time.Minute) // virtual clock: advances to the first tick
+		time.Sleep(30 * time.Minute) //nolint:forbidigo // synctest virtual clock: advances the fake clock to the first tick, not a real wall-clock wait (rule://go-no-sleep-in-test synctest exemption)
 		synctest.Wait()
 		if l.calls.Load() != 2 {
 			t.Errorf("lister calls after one Backstop tick = %d, want 2", l.calls.Load())

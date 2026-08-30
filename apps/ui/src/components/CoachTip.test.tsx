@@ -24,6 +24,7 @@ const cmd = (id: string) => id as CommandId;
 // so a focus that opens the tooltip is observable only after one setTimeout(0).
 async function settle(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
+	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield (setTimeout(0)) to observe Kobalte's createPresence portal; not a timed wait
 	setTimeout(resolve, 0);
 	await promise;
 }

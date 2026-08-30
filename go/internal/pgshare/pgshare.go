@@ -299,7 +299,7 @@ func waitReady(t *testing.T, dsn string) {
 		if time.Now().After(deadline) {
 			t.Fatalf("pgtest: postgres not ready within deadline: %v", err)
 		}
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the postgres Ping above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
 }
 
@@ -426,6 +426,6 @@ func waitSuiteReady(dsn string, done <-chan struct{}, waitErr *error) error {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("pgshare: %s not ready within %s: %w", suitePGBinary, suiteReadyBudget, err)
 		}
-		time.Sleep(suiteReadyTick)
+		time.Sleep(suiteReadyTick) //nolint:forbidigo // bounded poll tick; event-gated on the suite postgres accepting connections above, with a deadline + done-channel (rule://go-no-sleep-in-test poll-until exemption)
 	}
 }

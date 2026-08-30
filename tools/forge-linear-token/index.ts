@@ -63,6 +63,7 @@ export async function mintAppToken(
 		"base64",
 	);
 	const controller = new AbortController();
+	// biome-ignore lint/style/noRestrictedGlobals: fetch-abort timeout (aborts a hung token request after 10s), cleared in finally; not a sleep
 	const timer = setTimeout(() => controller.abort(), 10_000);
 	let res: Response;
 	try {

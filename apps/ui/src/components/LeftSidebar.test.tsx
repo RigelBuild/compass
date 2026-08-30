@@ -358,6 +358,7 @@ describe("LeftSidebar (T5)", () => {
 // Kobalte portals its tooltip content on a macrotask.
 async function settle(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
+	// biome-ignore lint/style/noRestrictedGlobals: deterministic macrotask yield (setTimeout(0)) to observe Kobalte's portalled tooltip; not a timed wait
 	setTimeout(resolve, 0);
 	await promise;
 }

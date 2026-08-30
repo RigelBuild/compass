@@ -274,6 +274,7 @@ export function installKeymap(
 		if (!hasCommandModifier && !event.repeat && leaders.has(chord)) {
 			pending = {
 				leader: chord,
+				// biome-ignore lint/style/noRestrictedGlobals: production leader-key chord timeout (disarms a pending prefix), cleared on resolve; not a test wait
 				timer: setTimeout(disarm, LEADER_TIMEOUT_MS) as unknown as number,
 			};
 			event.preventDefault();

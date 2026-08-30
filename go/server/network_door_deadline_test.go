@@ -188,7 +188,7 @@ func TestNetworkDoorBodyReadDeadlineExemptPathCompletes(t *testing.T) {
 	}
 	// A slow client: pause longer than the deadline, then finish. On the exempt
 	// path no deadline is armed, so the read must survive the pause.
-	time.Sleep(pause)
+	time.Sleep(pause) //nolint:forbidigo // the pause IS the timing subject under test: a slow client that outlasts the deadline; on the exempt path no deadline is armed, so the read must survive it (rule://go-no-sleep-in-test timing-under-test exemption)
 	if _, err := pw.Write([]byte(want[1:])); err != nil {
 		t.Fatalf("drip remainder: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestNetworkDoorBodyDeadlineDoesNotCutServerStreamResponse(t *testing.T) {
 	// Wait well past the deadline, THEN publish. If the deadline had bounded the
 	// response half, the stream would already have errored and this Receive
 	// would fail instead of delivering the frame.
-	time.Sleep(postDeadlineWait)
+	time.Sleep(postDeadlineWait) //nolint:forbidigo // deliberately waits past the deadline to prove the response half is NOT deadline-bounded; the sleep IS the timing subject (rule://go-no-sleep-in-test timing-under-test exemption)
 	bus.Publish(statusEvent())
 
 	live := recvOne(t, stream)

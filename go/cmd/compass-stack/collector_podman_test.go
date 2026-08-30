@@ -213,7 +213,7 @@ func waitCollectorHealthy(t *testing.T, url string, budget time.Duration) {
 		if time.Now().After(deadline) {
 			t.Fatalf("collector health %q not 200 within %s", url, budget)
 		}
-		time.Sleep(answerPollInterval) // bounded poll tick, event-gated by the deadline above (rule://go-no-sleep-in-test poll-until exemption, mirroring waitDSNReachable)
+		time.Sleep(answerPollInterval) //nolint:forbidigo // bounded poll tick, event-gated by the deadline above (rule://go-no-sleep-in-test poll-until exemption, mirroring waitDSNReachable)
 	}
 }
 
