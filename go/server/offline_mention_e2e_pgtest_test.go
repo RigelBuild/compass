@@ -195,11 +195,7 @@ func containerFor(handle string) string { return "compass-agent-" + handle }
 // routes/delivers synchronously) into the shared channel and returns its id.
 func (w *mentionE2EWire) post(t *testing.T, body string) string {
 	t.Helper()
-	resp, err := w.comms.PostAsAccount(w.ctx, w.adminID, &compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(w.channel)},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
-	})
+	resp, err := w.comms.PostAsAccount(w.ctx, w.adminID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(w.channel)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}}})
 	if err != nil {
 		t.Fatalf("PostAsAccount(%q): %v", body, err)
 	}

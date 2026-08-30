@@ -171,6 +171,7 @@ func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, comp
 	if _, err := cm.PostAsAccount(ctx, compassID, &compassv1.PostMessageRequest{
 		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(homeChannelID)},
 		Topic:           &compassv1.PostMessageRequest_TopicName{TopicName: setupTopicName},
+		CreateTopic:     true,
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: setupThreadBody}}},
 		ClientRequestId: setupThreadClientRequestIDPrefix + "-" + string(supervisor.ID),
 	}); err != nil {

@@ -156,6 +156,25 @@ func (s *Store) MessageChannel(ctx context.Context, messageID string) (ChannelID
 	return ChannelID(channel), nil
 }
 
+// TopicChannelNames resolves a topic id to its topic name and the name of the
+// channel it lives in (topics.channel_id -> channels.name), the source-name
+// denormalization the delivery consumer stamps onto a deliver/steer control so
+// the recipient agent renders "Channel <name> › topic <name>:" without a
+// per-injection roster lookup (RIG-2956 T0) — the same denorm posture as the
+// author from_handle (GetAccount). An unknown topic id is ErrNotFound, which the
+// caller logs and treats as empty names: a name miss never blocks a delivery.
+func (s *Store) TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error) {
+	if err := s.pool.QueryRow(ctx,
+		`SELECT t.name, c.name FROM topics t JOIN channels c ON c.id = t.channel_id WHERE t.id = $1`, topicID,
+	).Scan(&topicName, &channelName); err != nil {
+		if noRows(err) {
+			return "", "", fmt.Errorf("%w: topic %q", ErrNotFound, topicID)
+		}
+		return "", "", fmt.Errorf("store: resolve topic channel names: %w", err)
+	}
+	return topicName, channelName, nil
+}
+
 // SweepChannels returns the D1 disjunct channel set an agent sweeps: every
 // channel the agent is subscribed to, PLUS its home channel (in the set
 // regardless of its channel_members.subscribed flag), PLUS any channel with

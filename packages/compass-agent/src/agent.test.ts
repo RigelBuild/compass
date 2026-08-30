@@ -820,6 +820,24 @@ describe("CompassAgent — RT-3 turn-end delivery (RIG-1310 §8 deliver arm)", (
 		await h.close();
 	});
 
+	// Peer-DM DL-292 (T0 step 2): the source channel + topic NAMES ride the
+	// deliver op and are plumbed per message to `formatDeliversForPrompt`, so the
+	// idle turn-start prompt names the reply target the agent must now address by
+	// name. Plumbed exactly the way `fromHandle` is (4th arg), keyed on Message.id.
+	test("an idle deliver renders the plumbed source channel and topic names", async () => {
+		const h = startDeliverAgent();
+		h.agent.deliver(deliverMsg("m1", "ship it", "t-1"), "@peer", "", {
+			channelName: "product",
+			topicName: "launch",
+		});
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain(
+			"Channel product › topic launch:",
+		);
+		expect(h.session.agent.prompts[0]).toContain("ship it");
+		await h.close();
+	});
+
 	test("one ack per injected message, carrying its message_id", async () => {
 		const h = startDeliverAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
@@ -1645,6 +1663,24 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 		await h.close();
 	});
 
+	// Peer-DM DL-292 (T0 step 2): a steer carries the source channel + topic
+	// NAMES on the wire (`SteerControl.channel_name`/`topic_name`), plumbed as the
+	// 4th arg exactly the way `fromHandle` is the 2nd. The idle-steer turn-start
+	// prompt renders them so the agent can reply naming its target.
+	test("an idle steer renders the plumbed source channel and topic names", async () => {
+		const h = startDeliverAgent();
+		h.agent.steer(deliverMsg("s1", "look here", "t-1"), "matt", "", {
+			channelName: "product",
+			topicName: "launch",
+		});
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain(
+			"Channel product › topic launch:",
+		);
+		expect(h.session.agent.prompts[0]).toContain("look here");
+		await h.close();
+	});
+
 	// Spin-up-window guard on the idle-steer arm (RIG-2488 review follow-up): the
 	// idle arm optimistically sets `#turnActive = true` BEFORE `prompt()`'s
 	// `agent_start` propagates (agent.ts:428), exactly as `#flushDelivers` does.
@@ -1908,19 +1944,32 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 	});
 });
 
-describe("formatDeliversForPrompt — coalescing format (RIG-1310 §8)", () => {
-	test("renders each message's text, in order, within its topic section", () => {
+describe("formatDeliversForPrompt — coalescing format (RIG-1310 §8 / peer-DM DL-292)", () => {
+	// A per-message source-name map, keyed on Message.id, mirroring the way
+	// `#deliverFromHandles` is plumbed. Empty entries exercise the resolve-miss
+	// fallback (topic → id, channel → "(unknown channel)").
+	const src = (
+		entries: Record<string, { channelName: string; topicName: string }>,
+	): Map<string, { channelName: string; topicName: string }> =>
+		new Map(Object.entries(entries));
+
+	test("renders each message's text, in order, within its (channel, topic) section", () => {
 		const batch = [
 			deliverMsg("m1", "first", "t-1"),
 			deliverMsg("m2", "second", "t-1"),
 		];
-		const out = formatDeliversForPrompt(batch);
+		const sources = src({
+			m1: { channelName: "eng", topicName: "deploys" },
+			m2: { channelName: "eng", topicName: "deploys" },
+		});
+		const out = formatDeliversForPrompt(batch, sources);
 		expect(out).toContain("first");
 		expect(out).toContain("second");
 		// Order is preserved: first appears before second.
 		expect(out.indexOf("first")).toBeLessThan(out.indexOf("second"));
-		// One topic, so one section header.
-		expect(out.match(/Topic /g)).toHaveLength(1);
+		// One (channel, topic) group, so one section header naming both names.
+		expect(out.match(/^Channel /gm)).toHaveLength(1);
+		expect(out).toContain("Channel eng › topic deploys:");
 	});
 
 	test("concatenates multiple text blocks and ignores ask blocks", () => {
@@ -1978,69 +2027,100 @@ describe("formatDeliversForPrompt — coalescing format (RIG-1310 §8)", () => {
 		expect(out).toContain("prod");
 	});
 
-	// Two delivers in different topics render as two distinct per-topic sections,
-	// first-seen topic order, message order preserved within a section (D4).
-	test("groups two topics into two distinct per-topic sections", () => {
+	// The source channel + topic NAMES ride the deliver op and are rendered in
+	// the section header + reply cue — the peer-DM cutover (DL-292): the agent
+	// must name its reply target, and the tool now requires an explicit channel
+	// name, so the delivery has to SHOW that name.
+	test("names the source channel and topic from the plumbed source names", () => {
+		const batch = [deliverMsg("m1", "hello", "t-9")];
+		const sources = src({
+			m1: { channelName: "product", topicName: "launch" },
+		});
+		const out = formatDeliversForPrompt(batch, sources);
+		expect(out).toContain("Channel product › topic launch:");
+		expect(out).toContain("hello");
+		// The reply cue names BOTH required post params.
+		const cueLine = out.split("\n\n").at(-1) ?? "";
+		expect(cueLine).toContain("channel");
+		expect(cueLine).toContain("topic");
+	});
+
+	// A server-side resolve miss leaves either name empty (a name miss never
+	// blocks a delivery); the renderer falls back — topic to its id, channel to a
+	// fixed placeholder — rather than printing a bare empty label.
+	test("falls back on a resolve miss: topic to id, channel to a placeholder", () => {
+		const batch = [deliverMsg("m1", "orphan", "t-42")];
+		// No source entry at all → both names missing.
+		const out = formatDeliversForPrompt(batch);
+		expect(out).toContain("Channel (unknown channel) › topic t-42:");
+		expect(out).toContain("orphan");
+	});
+
+	// Two delivers in different (channel, topic) groups render as two distinct
+	// sections, first-seen order, message order preserved within a section (D4).
+	test("groups two topics into two distinct sections", () => {
 		const batch = [
 			deliverMsg("m1", "alpha msg", "t-alpha"),
 			deliverMsg("m2", "beta msg", "t-beta"),
 		];
-		const out = formatDeliversForPrompt(batch);
+		const sources = src({
+			m1: { channelName: "eng", topicName: "alpha" },
+			m2: { channelName: "eng", topicName: "beta" },
+		});
+		const out = formatDeliversForPrompt(batch, sources);
 
-		expect(out).toContain("Topic t-alpha:");
-		expect(out).toContain("Topic t-beta:");
+		expect(out).toContain("Channel eng › topic alpha:");
+		expect(out).toContain("Channel eng › topic beta:");
 		// Two distinct sections.
-		expect(out.match(/^Topic /gm)).toHaveLength(2);
-		// First-seen order: t-alpha before t-beta.
-		expect(out.indexOf("Topic t-alpha:")).toBeLessThan(
-			out.indexOf("Topic t-beta:"),
+		expect(out.match(/^Channel /gm)).toHaveLength(2);
+		// First-seen order: alpha before beta.
+		expect(out.indexOf("topic alpha:")).toBeLessThan(
+			out.indexOf("topic beta:"),
 		);
 		expect(out.indexOf("alpha msg")).toBeLessThan(out.indexOf("beta msg"));
 	});
 
-	// Two delivers in the SAME topic stay in one section, message order kept.
+	// Two delivers in the SAME (channel, topic) stay in one section, order kept.
 	test("keeps same-topic delivers in one section, in order", () => {
 		const batch = [
 			deliverMsg("m1", "one", "t-1"),
 			deliverMsg("m2", "two", "t-1"),
 		];
-		const out = formatDeliversForPrompt(batch);
+		const sources = src({
+			m1: { channelName: "eng", topicName: "deploys" },
+			m2: { channelName: "eng", topicName: "deploys" },
+		});
+		const out = formatDeliversForPrompt(batch, sources);
 
-		expect(out.match(/^Topic /gm)).toHaveLength(1);
+		expect(out.match(/^Channel /gm)).toHaveLength(1);
 		expect(out.indexOf("one")).toBeLessThan(out.indexOf("two"));
 	});
 
-	// RIG-2664: the coalesced prompt carries ONE terse reply cue for the whole
-	// batch, pointing at comms_post so the model posts its answer back to the
-	// channel instead of only narrating it into its session. Terse by design: the
-	// load-bearing "why" lives once in the manager SYSTEM.md, not re-paid per
-	// delivered batch. The cue does NOT re-list topic ids — each id already prints
-	// in its `Topic <id>:` section header, so the list was pure duplication (Matt
-	// review, #583).
-	test("appends a single terse reply cue, id-free, pointing at comms_post", () => {
+	// RIG-2664 / DL-292: the coalesced prompt carries ONE terse reply cue for the
+	// whole batch, pointing at comms_post_message and naming the two required
+	// address params. Terse by design: the load-bearing "why" lives once in the
+	// manager SYSTEM.md, not re-paid per delivered batch.
+	test("appends a single terse reply cue naming channel and topic", () => {
 		const batch = [
 			deliverMsg("m1", "alpha msg", "t-alpha"),
 			deliverMsg("m2", "beta msg", "t-beta"),
 		];
-		const out = formatDeliversForPrompt(batch);
+		const sources = src({
+			m1: { channelName: "eng", topicName: "alpha" },
+			m2: { channelName: "eng", topicName: "beta" },
+		});
+		const out = formatDeliversForPrompt(batch, sources);
 
-		// The cue is the trailing section (topics render first, one cue last).
+		// The cue is the trailing section (sections render first, one cue last).
 		const cueLine = out.split("\n\n").at(-1) ?? "";
-		// Exact-shape lock: the durable guard. Any re-expansion of the cue (verbose
-		// "why", per-message repetition, a re-added id list) breaks this equality.
-		expect(cueLine).toBe("Reply via comms_post_message to the relevant topic.");
-		// Anti-regression: the cue names NO topic id — re-adding the id list (the
-		// unbounded 14-tok-per-id duplication this PR removed) reintroduces them.
-		expect(cueLine).not.toContain("t-alpha");
-		expect(cueLine).not.toContain("t-beta");
-		// The ids are NOT lost — each still prints once, in its section header.
-		expect(out).toContain("Topic t-alpha:");
-		expect(out).toContain("Topic t-beta:");
+		// Exact-shape lock: the durable guard. Any re-expansion of the cue breaks
+		// this equality.
+		expect(cueLine).toBe(
+			"Reply via comms_post_message, naming the channel and topic above.",
+		);
 		// Exactly one cue for the whole batch, not one per message/topic.
 		expect(out.match(/comms_post_message/g)).toHaveLength(1);
-		// Terse tripwire: the verbose block-0 "why" is NOT re-paid in the cue. Uses
-		// a phrase that actually appears in the block-0 "why" (SYSTEM.md), so a
-		// re-expansion that pastes that reasoning back into the cue trips it.
+		// Terse tripwire: the verbose block-0 "why" is NOT re-paid in the cue.
 		expect(out).not.toContain("session log");
 	});
 

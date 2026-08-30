@@ -69,6 +69,14 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// the fan-out resolves the channel it delivers to through this join (the
 	// frozen record's topic->channel resolution).
 	MessageChannel(ctx context.Context, messageID string) (store.ChannelID, error)
+	// TopicChannelNames resolves a message's topic id to its topic name and the
+	// name of the channel it lives in (topics.channel_id -> channels.name) — the
+	// source-name denormalization stamped onto the deliver/steer control so the
+	// recipient renders the source channel+topic without a roster lookup (RIG-2956
+	// T0). An unknown topic id is store.ErrNotFound, which the caller logs and
+	// treats as empty names — never a delivery block, exactly as GetAccount's
+	// from_handle miss degrades.
+	TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
 	// ChannelAgentMembers resolves every agent MEMBER of a channel (subscribe
 	// state irrelevant), author excluded — the mention→steer routing set (D5,
@@ -377,11 +385,14 @@ func (c *Consumer) handleEvent(ctx context.Context, resp *compassv1.SubscribeCom
 // handle denormalized onto the control so the agent emits the SessionInjection
 // observation's from_handle without a roster lookup on the injection path
 // (RIG-2486 T1); empty when the author handle could not be resolved (logged at
-// the resolve site — a handle miss never blocks a delivery).
-func deliverOp(msg *compassv1.Message, fromHandle string) *compassv1internal.AgentControl {
+// the resolve site — a handle miss never blocks a delivery). channelName and
+// topicName are the source channel+topic names denormalized the same way so the
+// agent renders "Channel <name> › topic <name>:" without a roster lookup
+// (RIG-2956 T0); each is empty on a resolve miss, which never blocks a delivery.
+func deliverOp(msg *compassv1.Message, fromHandle, channelName, topicName string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Deliver{
-			Deliver: &compassv1internal.DeliverControl{Message: msg, FromHandle: fromHandle},
+			Deliver: &compassv1internal.DeliverControl{Message: msg, FromHandle: fromHandle, ChannelName: channelName, TopicName: topicName},
 		},
 	}
 }
@@ -392,13 +403,35 @@ func deliverOp(msg *compassv1.Message, fromHandle string) *compassv1internal.Age
 // (turn-end coalesced) — the only deliver-vs-steer difference is recipient-side
 // (design.md:558-562). SteerControl carries the same single first-party Message
 // as DeliverControl (DL-073), plus the same denormalized author from_handle
-// (RIG-2486 T1).
-func steerOp(msg *compassv1.Message, fromHandle string) *compassv1internal.AgentControl {
+// (RIG-2486 T1) and source channel+topic names (RIG-2956 T0) — each empty on a
+// resolve miss, which never blocks a delivery.
+func steerOp(msg *compassv1.Message, fromHandle, channelName, topicName string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Steer{
-			Steer: &compassv1internal.SteerControl{Message: msg, FromHandle: fromHandle},
+			Steer: &compassv1internal.SteerControl{Message: msg, FromHandle: fromHandle, ChannelName: channelName, TopicName: topicName},
 		},
 	}
+}
+
+// sourceNames resolves a wire message's topic id to its source channel name and
+// topic name — the values denormalized onto the deliver/steer control so the
+// agent renders the source without a roster lookup (RIG-2956 T0). A missing
+// topic id or a store miss is logged and yields empty names: the names are a
+// render signal, never a delivery precondition, so a name miss must not block
+// the dispatch — the exact log-and-continue posture authorHandle applies to the
+// from_handle.
+func (c *Consumer) sourceNames(ctx context.Context, msg *compassv1.Message) (channelName, topicName string) {
+	topicID := msg.GetTopicId()
+	if topicID == "" {
+		return "", ""
+	}
+	topicName, channelName, err := c.st.TopicChannelNames(ctx, topicID)
+	if err != nil {
+		c.log.ErrorContext(ctx, "delivery: resolve source channel/topic names for injection",
+			"error", err, "message_id", msg.GetId(), "topic_id", topicID)
+		return "", ""
+	}
+	return channelName, topicName
 }
 
 // authorHandle resolves a wire message's author account id to its handle — the

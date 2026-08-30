@@ -80,11 +80,7 @@ func TestPostMessageOwnerOnlyNonOwnerIsNotFound(t *testing.T) {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
 
-	_, err = svc.PostMessage(WithActor(ctx, other.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}},
-	}))
+	_, err = svc.PostMessage(WithActor(ctx, other.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "blocked"}}}}))
 	connectCodeIs(t, err, connect.CodeNotFound, "non-owner post on OWNER_ONLY channel")
 }
 

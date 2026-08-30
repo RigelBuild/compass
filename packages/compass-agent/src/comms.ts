@@ -19,13 +19,18 @@
 // stream, and a test fakes one method instead of four.
 //
 // THE HOME-CHANNEL DEFAULT. Both requests carry a `container` oneof. Leaving it
-// unset is not "no channel" — it is the documented request for the acting
-// agent's `home_channel_id`, which the Server resolves from the session it
-// already owns (comms.proto:138-141; go/internal/comms/agent_caller.go
-// `defaultChannel`). That is why an omitted `channel_id` tool parameter must
-// leave `case: undefined` rather than send an empty string: the common case
-// ("reply in my own channel") needs no channel id plumbed into the container at
-// all, and the agent never names an account or a channel it was not given.
+// unset is the documented request for the acting agent's `home_channel_id`,
+// which the Server resolves from the session it already owns (comms.proto:138-141;
+// go/internal/comms/agent_caller.go `defaultChannel`). As of the peer-DM cutover
+// (record R2/R5) that default is DROPPED at the tool level for post/ask: those
+// tools require an explicit `channel` NAME — the agent must name its target
+// channel even for a self-post (its home channel name rides its prompt/roster).
+// `comms_list_messages` is EXEMPT and keeps omit-=home. The `channel` param now
+// carries a NAME, not an id: it is sent in the container's `channel_id` arm
+// (the proto field name is unchanged) and the Go comms edge resolves name → id
+// within the caller-visible set. An omitted list `channel` still leaves
+// `case: undefined` rather than sending an empty string, so the home branch is
+// reached with no container plumbed at all.
 //
 // IDENTITY. The agent presents no token and asserts no account: the Runner owns
 // which container (hence which session) a call arrived on, and the Server
@@ -138,18 +143,26 @@ export const postParameters = type({
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
 		.describe(
-			"Named conversation within the channel; an unknown name creates the topic",
+			"Named conversation within the channel; a name-miss is an error unless create_topic is true",
 		),
-	// An empty string is not "omitted": both execute bodies gate on truthiness,
-	// so `""` takes the home-channel branch and a model whose channel lookup
-	// missed posts to its own channel instead of being told it was wrong. Same
-	// bound as `text`, and repeated in the description for the same reason — the
-	// `.narrow` does not survive into the JSON Schema the model is shown.
-	"channel_id?": type("string")
+	// The target channel BY NAME. Required (peer-DM record R1+R2+R5): the home
+	// default is dropped at the tool level for post/ask — the agent must NAME its
+	// channel, even its own home (whose name is in its prompt/roster). The Go
+	// comms edge resolves this name → id within the caller-visible set. Non-blank
+	// via the same `.narrow` idiom `text` uses; the predicate does not survive
+	// into the JSON Schema the model is shown, so the rule is repeated here.
+	channel: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"Target channel; omit entirely for your home channel (an empty string is rejected)",
+			"Target channel by name (required); to post to your own channel, name it — there is no default",
 		),
+	// Gate get-or-create of an unknown `topic`: when true a name that names no
+	// existing topic MINTS it; when false (default), a name-miss is an error,
+	// not a silent create (peer-DM record DL-293). Optional; the wire default is
+	// false.
+	"create_topic?": type("boolean").describe(
+		"When true, an unknown topic name is created; when false (default) a topic name-miss is an error",
+	),
 });
 
 /**
@@ -211,21 +224,31 @@ export const postAskParameters = type({
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
 		.describe(
-			'Named conversation within the channel; an unknown name creates the topic (default "general")',
+			'Named conversation within the channel; a name-miss is an error unless create_topic is true (default "general")',
 		),
-	"channel_id?": type("string")
+	// The target channel BY NAME. Required, same rationale as
+	// `postParameters.channel`: the home default is dropped at the tool level and
+	// the Go comms edge resolves name → id within the caller-visible set.
+	channel: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"Target channel; omit entirely for your home channel (an empty string is rejected)",
+			"Target channel by name (required); to post to your own channel, name it — there is no default",
 		),
+	// Gate get-or-create of an unknown `topic`, mirroring `postParameters`.
+	"create_topic?": type("boolean").describe(
+		"When true, an unknown topic name is created; when false (default) a topic name-miss is an error",
+	),
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const listParameters = type({
-	"channel_id?": type("string")
+	// The target channel BY NAME. List is EXEMPT from the required-channel rule
+	// (peer-DM record R5): omit entirely for your home channel. Non-blank via the
+	// same `.narrow` idiom; the Go comms edge resolves the name → id.
+	"channel?": type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"Target channel; omit entirely for your home channel (an empty string is rejected)",
+			"Target channel by name; omit entirely for your home channel (an empty string is rejected)",
 		),
 	// The server resolves an omitted limit to 50 (`store/ids.go` defaultPageLimit);
 	// the model cannot see that number anywhere else, and a range alone does not
@@ -343,8 +366,10 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		approval: "write",
 		description:
 			"Post a markdown message to a Compass channel you are a member of. " +
-			"A topic names the conversation within the channel; an unknown name " +
-			"creates it. Omit channel_id to post to your home channel.",
+			"channel is required (a name) — name your target channel, even your " +
+			"own; there is no default. topic is required (a name); a new topic " +
+			"needs create_topic: true (otherwise a topic name-miss is an error, " +
+			"not a silent create).",
 		parameters: postParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
@@ -353,15 +378,14 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
-							container: params.channel_id
-								? { case: "channelId", value: params.channel_id }
-								: { case: undefined },
+							container: { case: "channelId", value: params.channel },
 							blocks: [
 								create(MessageBlockSchema, {
 									block: { case: "text", value: params.text },
 								}),
 							],
 							topic: { case: "topicName", value: params.topic },
+							createTopic: params.create_topic ?? false,
 							// Idempotency key, so that if a retry path is ever added on this
 							// leg a replayed post returns the stored message rather than
 							// duplicating it (comms.proto:566-570). Broker-scoped, never the
@@ -406,9 +430,11 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 			"Raise a structured question (an 'ask') on a Compass channel. The ask " +
 			"is posted as an async channel message: it returns immediately with a " +
 			"server-minted ask id, and the operator's answer arrives on a LATER " +
-			"turn — you do NOT wait for it here. A topic names the conversation " +
-			'within the channel (default "general"); omit channel_id to post to ' +
-			"your home channel.",
+			"turn — you do NOT wait for it here. channel is required (a name) — " +
+			"name your target channel, even your own; there is no default. A topic " +
+			'names the conversation within the channel (default "general"); a new ' +
+			"topic needs create_topic: true (otherwise a topic name-miss is an " +
+			"error, not a silent create).",
 		parameters: postAskParameters,
 		execute: async (toolCallId, params) => {
 			const topic = params.topic ?? "general";
@@ -448,11 +474,10 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
-							container: params.channel_id
-								? { case: "channelId", value: params.channel_id }
-								: { case: undefined },
+							container: { case: "channelId", value: params.channel },
 							blocks: [askBlock],
 							topic: { case: "topicName", value: topic },
+							createTopic: params.create_topic ?? false,
 							clientRequestId: broker.idempotencyKey(toolCallId),
 						}),
 					},
@@ -489,7 +514,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		description:
 			"Read a channel's recent messages in conversation order, oldest first. " +
 			"Each record carries its author, time, and topic. " +
-			"Omit channel_id for your home channel.",
+			"Omit channel for your home channel.",
 		parameters: listParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
@@ -498,8 +523,8 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					call: {
 						case: "list",
 						value: create(ListMessagesRequestSchema, {
-							container: params.channel_id
-								? { case: "channelId", value: params.channel_id }
+							container: params.channel
+								? { case: "channelId", value: params.channel }
 								: { case: undefined },
 							limit: params.limit ?? 0,
 							beforeMessageId: params.before_message_id ?? "",

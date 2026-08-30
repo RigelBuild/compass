@@ -4030,8 +4030,15 @@ type PostMessageRequest struct {
 	// store of record, D12), returning the already-stored message rather than
 	// posting a duplicate. Optional; empty disables dedup for this call.
 	ClientRequestId string `protobuf:"bytes,5,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Gates get-or-create of `topic_name`: when true, a name that names no
+	// existing topic in the channel MINTS it; when false (default), a
+	// name-miss is NOT_FOUND rather than a silent create. Guards accidental
+	// topic proliferation now that agents must always name their topic
+	// (peer-DM record DL-293; amends the get-or-create semantics of DL-098).
+	// Ignored when `topic_id` is set or `topic_name` is unset.
+	CreateTopic   bool `protobuf:"varint,6,opt,name=create_topic,json=createTopic,proto3" json:"create_topic,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PostMessageRequest) Reset() {
@@ -4117,6 +4124,13 @@ func (x *PostMessageRequest) GetClientRequestId() string {
 		return x.ClientRequestId
 	}
 	return ""
+}
+
+func (x *PostMessageRequest) GetCreateTopic() bool {
+	if x != nil {
+		return x.CreateTopic
+	}
+	return false
 }
 
 type isPostMessageRequest_Container interface {
@@ -4982,7 +4996,7 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\btopic_id\x18\x05 \x01(\tR\atopicIdB\v\n" +
 	"\tcontainer\"G\n" +
 	"\x14ListMessagesResponse\x12/\n" +
-	"\bmessages\x18\x01 \x03(\v2\x13.compass.v1.MessageR\bmessages\"\xe7\x01\n" +
+	"\bmessages\x18\x01 \x03(\v2\x13.compass.v1.MessageR\bmessages\"\x8a\x02\n" +
 	"\x12PostMessageRequest\x12\x1f\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tH\x00R\tchannelId\x120\n" +
@@ -4990,7 +5004,8 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\btopic_id\x18\x03 \x01(\tH\x01R\atopicId\x12\x1f\n" +
 	"\n" +
 	"topic_name\x18\x04 \x01(\tH\x01R\ttopicName\x12*\n" +
-	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestIdB\v\n" +
+	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestId\x12!\n" +
+	"\fcreate_topic\x18\x06 \x01(\bR\vcreateTopicB\v\n" +
 	"\tcontainerB\a\n" +
 	"\x05topic\"D\n" +
 	"\x13PostMessageResponse\x12-\n" +

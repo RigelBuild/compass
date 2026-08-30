@@ -169,3 +169,36 @@ func TestSweepPinsCarriesAuthorFromHandle(t *testing.T) {
 		t.Fatalf("from_handle = %q on pin deliver, want matt", got[0].fromHandle)
 	}
 }
+
+// RIG-2956 T0 (pin-sweep coverage): the pin sweep denormalizes the source
+// channel+topic names onto each re-delivered pin op (sweepPins, settle.go:
+// cn, tn := c.sourceNames(ctx, wire); deliverOp(wire, handle, cn, tn)). Reuses
+// TestSweepPinsCarriesAuthorFromHandle's harness; RED if the settle site drops
+// the names.
+func TestSweepPinsCarriesSourceChannelAndTopicNames(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const recipient store.AccountID = "agent-recip"
+
+	reads.owed[recipient] = map[store.ChannelID][]store.Message{}
+	reads.sweepChannels[recipient] = []store.ChannelID{ch}
+	reads.pins[ch] = []store.PinnedEntry{{MessageID: "pinned-1", Position: 0}}
+	reads.seedMessage(textMessage("pinned-1", author, "the pinned board"))
+	reads.seedTopicNames("topic-1", "engineering", "general")
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+
+	c.OnSessionStarted("sess-recip", recipient)
+	if !disp.waitForMessage(t, "pinned-1") {
+		t.Fatal("pinned-1 never dispatched: a fresh session must receive current pins")
+	}
+
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].kind != opDeliver || got[0].messageID != "pinned-1" {
+		t.Fatalf("dispatch = %+v, want one deliver of pinned-1", got)
+	}
+	if got[0].channelName != "engineering" || got[0].topicName != "general" {
+		t.Fatalf("pin deliver source names = (%q, %q), want (engineering, general)", got[0].channelName, got[0].topicName)
+	}
+}

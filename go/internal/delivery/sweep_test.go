@@ -243,3 +243,39 @@ func TestSweepSessionCarriesAuthorFromHandle(t *testing.T) {
 		t.Fatalf("from_handle = %q on swept deliver, want matt", got[0].fromHandle)
 	}
 }
+
+// RIG-2956 T0 (sweep coverage): the reconnect/start cursor sweep denormalizes the
+// source channel+topic names onto each redelivered deliver op (sweepSession,
+// settle.go: cn, tn := c.sourceNames(ctx, wire); deliverOp(wire, handle, cn, tn)).
+// Redelivery via the sweep is exactly where the source names are load-bearing —
+// an idle/reconnecting peer renders "Channel <name> › topic <name>:" off the
+// swept deliver, not the live fan-out. Seeds the message's topic names and
+// asserts the swept deliver carries them. Mirrors
+// TestDeliverAndSteerCarrySourceChannelAndTopicNames (mention_test.go) on the
+// sweep path; RED if the settle site drops the names (deliverOp(wire, handle, "", "")).
+func TestSweepSessionCarriesSourceChannelAndTopicNames(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const recipient store.AccountID = "agent-recip"
+
+	reads.owed[recipient] = map[store.ChannelID][]store.Message{
+		ch: {textMessage("owed-1", author, "first")},
+	}
+	// The message's topic ("topic-1", the textMessage default) resolves to its
+	// source channel+topic names.
+	reads.seedTopicNames("topic-1", "engineering", "general")
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+
+	c.OnSessionStarted("sess-recip", recipient)
+	disp.waitForDispatches(t, 1)
+
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].kind != opDeliver || got[0].messageID != "owed-1" {
+		t.Fatalf("dispatch = %+v, want one deliver of owed-1", got)
+	}
+	if got[0].channelName != "engineering" || got[0].topicName != "general" {
+		t.Fatalf("swept deliver source names = (%q, %q), want (engineering, general)", got[0].channelName, got[0].topicName)
+	}
+}

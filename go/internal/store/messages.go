@@ -181,11 +181,16 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 // under channelID: a topic in another channel — or an unknown id — is one
 // indistinguishable ErrInvalidArgument, so the existence of a foreign topic
 // never leaks (the same oracle-closing collapse the old same-channel-parent
-// check applied). A name-ref is get-or-created on (channel_id, lower(name)) via
-// ON CONFLICT DO NOTHING + re-SELECT, so two racing posts converge on one topic
-// row with neither surfacing a unique-violation; resolving to an archived topic
-// clears its archived flag in the same tx (archive is a tidiness flag, not a
-// lock — a post at a tidied-away name revives the conversation).
+// check applied).
+//
+// A name-ref resolves on (channel_id, lower(name)), gated by TopicRef.Create
+// (peer-DM record R5). When Create is set the name is get-or-created via ON
+// CONFLICT DO NOTHING + re-SELECT, so two racing posts converge on one topic row
+// with neither surfacing a unique-violation. When Create is UNSET a name that
+// resolves to no existing topic is ErrNotFound (in-band) rather than a silent
+// mint — the tool-edge guard against topic sprawl. Either way, resolving to an
+// archived topic clears its archived flag in the same tx (archive is a tidiness
+// flag, not a lock — a post at a tidied-away name revives the conversation).
 func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, topic TopicRef, author AccountID, atMS int64) (string, error) {
 	if topic.ID != "" {
 		var topicChannelID string
@@ -203,20 +208,24 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 		return topic.ID, nil
 	}
 
-	// Name get-or-create: settle a concurrent create by the unique index, never
-	// a naive SELECT-then-INSERT. A concurrent inserter's uncommitted row makes
-	// this INSERT block until it commits, after which DO NOTHING fires and the
-	// re-SELECT below reads the surviving row.
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms)
+	// Get-or-create is gated on Create (R5). When set, settle a concurrent
+	// create by the unique index, never a naive SELECT-then-INSERT: a concurrent
+	// inserter's uncommitted row makes this INSERT block until it commits, after
+	// which DO NOTHING fires and the re-SELECT below reads the surviving row.
+	// When unset, the mint is skipped entirely — a name that resolves to no row
+	// below is ErrNotFound.
+	if topic.Create {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms)
 		 VALUES ($1, $2, $3, $4, $5)
 		 ON CONFLICT (channel_id, lower(name)) DO NOTHING`,
-		newID(), channelID, topic.Name, string(author), atMS,
-	); err != nil {
-		if pgErrIs(err, pgForeignKeyViolation) {
-			return "", fmt.Errorf("%w: unknown channel %q or author %q", ErrInvalidArgument, channelID, author)
+			newID(), channelID, topic.Name, string(author), atMS,
+		); err != nil {
+			if pgErrIs(err, pgForeignKeyViolation) {
+				return "", fmt.Errorf("%w: unknown channel %q or author %q", ErrInvalidArgument, channelID, author)
+			}
+			return "", fmt.Errorf("store: get-or-create topic: %w", err)
 		}
-		return "", fmt.Errorf("store: get-or-create topic: %w", err)
 	}
 	var (
 		topicID  string
@@ -226,7 +235,13 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 		`SELECT id, archived FROM topics WHERE channel_id = $1 AND lower(name) = lower($2)`,
 		channelID, topic.Name,
 	).Scan(&topicID, &archived); err != nil {
-		return "", fmt.Errorf("store: resolve get-or-create topic: %w", err)
+		if noRows(err) {
+			// Create was unset (or a racing delete removed the row) and no topic
+			// carries this name: an in-band ErrNotFound, never a silent mint. The
+			// error names only the topic name, never whether the channel exists.
+			return "", fmt.Errorf("%w: topic %q", ErrNotFound, topic.Name)
+		}
+		return "", fmt.Errorf("store: resolve topic: %w", err)
 	}
 	if archived {
 		if _, err := tx.Exec(ctx,

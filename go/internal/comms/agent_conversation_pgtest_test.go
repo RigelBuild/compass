@@ -168,7 +168,7 @@ func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 	seed, _, err := h.store.AppendMessage(ctx, store.Message{
 		AuthorAccountID: agent.ID,
 		Blocks:          []store.MessageBlock{{Text: &seedText}},
-	}, string(agent.Agent.HomeChannelID), store.TopicRef{Name: "general"}, "")
+	}, string(agent.Agent.HomeChannelID), store.TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(seed): %v", err)
 	}
@@ -230,7 +230,7 @@ func TestCommitAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	postedA, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("agent A's words")})
+	postedA, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: textBlocks("agent A's words")})
 	if err != nil {
 		t.Fatalf("PostAsAccount(A): %v", err)
 	}
@@ -269,7 +269,7 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("posted while a member")})
+	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: textBlocks("posted while a member")})
 	if err != nil {
 		t.Fatalf("PostAsAccount: %v", err)
 	}
@@ -400,11 +400,7 @@ func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 	// The request shape CommitAgentPost builds (home-channel default via an
 	// unset Container), plus the key T2 will thread onto it.
 	post := func(text string) (*compassv1.PostMessageResponse, error) {
-		return svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
-			Topic:           &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-			Blocks:          textBlocks(text),
-			ClientRequestId: "relayed-frame-1",
-		})
+		return svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: textBlocks(text), ClientRequestId: "relayed-frame-1"})
 	}
 	first, err := post("the turn")
 	if err != nil {

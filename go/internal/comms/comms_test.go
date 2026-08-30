@@ -219,7 +219,7 @@ func TestSearchMessagesAuthorizationScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("peregrine falcon")}}}, string(chA.ID), store.TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("peregrine falcon")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestListMessagesVisibilityScopedAtEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("private plans")}}}, string(chA.ID), store.TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("private plans")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -362,12 +362,12 @@ func TestRespondToAskIsChannelScopedAcrossTopics(t *testing.T) {
 
 	// answerer establishes presence ONLY in topic B — never in the ask's topic A.
 	topicBText := "in topic B"
-	bMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: answerer.ID, Blocks: []store.MessageBlock{{Text: &topicBText}}}, string(ch.ID), store.TopicRef{Name: "topic-b"}, "")
+	bMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: answerer.ID, Blocks: []store.MessageBlock{{Text: &topicBText}}}, string(ch.ID), store.TopicRef{Name: "topic-b", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(topic-b): %v", err)
 	}
 	// asker posts the ask into topic A.
-	aMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: asker.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "topic-a"}, "")
+	aMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: asker.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "topic-a", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(topic-a): %v", err)
 	}
@@ -461,28 +461,24 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 	// Every field the server owns, set by the caller to a value it must not
 	// keep, alongside every content field, which it must.
 	recommended := int32(1)
-	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
-			AskId:    "forged-ask-id",
-			Answered: true,
-			Questions: []*compassv1.AskQuestion{{
-				QuestionId: "q1",
-				Question:   "Which environment?",
-				Header:     "Deploy target",
-				Options: []*compassv1.AskOption{
-					{Id: "opt-a", Label: "staging", Description: "the safe one", Preview: "staging.example"},
-					{Id: "opt-b", Label: "prod", Description: "the scary one", Preview: "prod.example"},
-				},
-				AllowMultiple:   true,
-				Recommended:     &recommended,
-				ChosenOptionIds: []string{"opt-a"},
-				CustomText:      "forged answer",
-				TimedOut:        true,
-			}},
-		}}}},
-	}))
+	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
+		AskId:    "forged-ask-id",
+		Answered: true,
+		Questions: []*compassv1.AskQuestion{{
+			QuestionId: "q1",
+			Question:   "Which environment?",
+			Header:     "Deploy target",
+			Options: []*compassv1.AskOption{
+				{Id: "opt-a", Label: "staging", Description: "the safe one", Preview: "staging.example"},
+				{Id: "opt-b", Label: "prod", Description: "the scary one", Preview: "prod.example"},
+			},
+			AllowMultiple:   true,
+			Recommended:     &recommended,
+			ChosenOptionIds: []string{"opt-a"},
+			CustomText:      "forged answer",
+			TimedOut:        true,
+		}},
+	}}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
@@ -579,7 +575,7 @@ func TestAskAnsweredFlagReachesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -637,11 +633,7 @@ func TestPostMessageRoutesTopicOverWire(t *testing.T) {
 	}
 
 	// A post naming a topic echoes the resolved topic id on the wire.
-	first, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "planning"},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "first"}}},
-	}))
+	first, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "planning"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "first"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(first): %v", err)
 	}
@@ -653,11 +645,7 @@ func TestPostMessageRoutesTopicOverWire(t *testing.T) {
 
 	// A second post to the SAME topic_name resolves to the same topic id
 	// (get-or-create), so the two messages share a topic.
-	second, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "planning"},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "second"}}},
-	}))
+	second, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "planning"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "second"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(second): %v", err)
 	}
@@ -717,11 +705,7 @@ func TestPostMessageStripsCallerAskID(t *testing.T) {
 
 	// postMinted posts one ask and returns the ask_id on the response Message.
 	postMinted := func(ctx string) string {
-		resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-			Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-			Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
-			Blocks:    []*compassv1.MessageBlock{forgedBlock()},
-		}))
+		resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, CreateTopic: true, Blocks: []*compassv1.MessageBlock{forgedBlock()}}))
 		if err != nil {
 			t.Fatalf("PostMessage(%s): %v", ctx, err)
 		}
@@ -786,7 +770,7 @@ func TestRespondToAskVisibilityCollapseNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-secret")}}, string(chA.ID), store.TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-secret")}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 

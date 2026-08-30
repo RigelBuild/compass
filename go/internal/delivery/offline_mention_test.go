@@ -183,6 +183,38 @@ func TestStartEdgeSweepsOwedMentionAsSteer(t *testing.T) {
 	}
 }
 
+// RIG-2956 T0 (owed-mention sweep coverage): the start-edge owed-mention sweep
+// denormalizes the source channel+topic names onto each re-steered op
+// (sweepOwedMentions, settle.go: cn, tn := c.sourceNames(ctx, wire);
+// steerOp(wire, handle, cn, tn)). Reuses TestStartEdgeSweepsOwedMentionAsSteer's
+// harness; RED if the settle site drops the names.
+func TestStartEdgeSweptOwedMentionCarriesSourceChannelAndTopicNames(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const recipient store.AccountID = "agent-recip"
+
+	reads.owed[recipient] = map[store.ChannelID][]store.Message{}
+	reads.seedMessage(textMessage("owed-1", author, "@recip you were paged"))
+	reads.seedOwedMention(recipient, ch, textMessage("owed-1", author, "@recip you were paged"))
+	reads.seedTopicNames("topic-1", "engineering", "general")
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+
+	c.OnSessionStarted("sess-recip", recipient)
+	if !disp.waitForMessage(t, "owed-1") {
+		t.Fatal("owed-1 never dispatched: sweepOwedMentions must dispatch an owed mention")
+	}
+
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].kind != opSteer || got[0].messageID != "owed-1" {
+		t.Fatalf("dispatch = %+v, want one steer of owed-1", got)
+	}
+	if got[0].channelName != "engineering" || got[0].topicName != "general" {
+		t.Fatalf("swept owed-mention steer source names = (%q, %q), want (engineering, general)", got[0].channelName, got[0].topicName)
+	}
+}
+
 // Case 6: an ack clears the owed row (T1), so a re-sweep after the ack dispatches
 // nothing. Modeled by clearing the owed row (the ack's effect) between two start
 // edges: the first sweeps the owed mention, the second sweeps nothing.

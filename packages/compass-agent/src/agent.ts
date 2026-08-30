@@ -134,6 +134,16 @@ export class CompassAgent {
 	// Populated at enqueue beside `#deliverQueue.push`, read + deleted per message
 	// at flush.
 	readonly #deliverTraceparents = new Map<string, string>();
+	// Peer-DM record DL-292 (T0 step 2): the denormalized SOURCE channel + topic
+	// NAMES per queued deliver, keyed on `Message.id`, EXACTLY mirroring
+	// `#deliverFromHandles`. A deliver coalesces into `#deliverQueue` and is
+	// rendered later at the turn-end flush, so its channel/topic names (carried
+	// on the wire deliver control, resolved server-side) must be stashed here to
+	// travel with the message to `formatDeliversForPrompt` at flush time. Either
+	// name is EMPTY on a server-side resolve miss — a name miss never blocks a
+	// delivery, and the renderer falls back to the id. Populated at enqueue
+	// beside `#deliverQueue.push`, read + deleted per message at flush.
+	readonly #deliverSourceNames = new Map<string, DeliverSourceNames>();
 	// Trace-continuity (design record §T2): the ids of every channel message that
 	// has fed the CURRENT turn span, in arrival order — the source for the
 	// `compass.message.ids` stamp. T1's `stampActiveTurn` OVERWRITES the
@@ -280,7 +290,12 @@ export class CompassAgent {
 	// The replay barrier is enforced UPSTREAM at the control source (a
 	// pre-ReplayComplete immediate op is refused-and-counted before it reaches
 	// this handle, control-source.ts), so this method does not re-check it.
-	deliver(msg: Message, fromHandle = "", traceparent = ""): void {
+	deliver(
+		msg: Message,
+		fromHandle = "",
+		traceparent = "",
+		sourceNames: DeliverSourceNames = { channelName: "", topicName: "" },
+	): void {
 		// A message with no id cannot be acked or deduped — fail-visible, never a
 		// silent drop (and never injected, since there would be no receipt for it).
 		if (msg.id === "") {
@@ -331,6 +346,7 @@ export class CompassAgent {
 		this.#deliverQueue.push(msg);
 		this.#deliverFromHandles.set(msg.id, fromHandle);
 		this.#deliverTraceparents.set(msg.id, traceparent);
+		this.#deliverSourceNames.set(msg.id, sourceNames);
 		// Idle deliver starts a turn immediately (frozen :799/:810); a mid-turn
 		// deliver waits for the `agent_end` flush. "Idle" consults BOTH the
 		// event-derived `#turnActive` AND the authoritative `#session.isStreaming`
@@ -412,7 +428,12 @@ export class CompassAgent {
 	// "injected", emitted at injection time (frozen :540-546, :283). The replay
 	// barrier is enforced UPSTREAM at the control source (control-source.ts), so
 	// this method does not re-check it — same as `deliver`.
-	steer(msg: Message, fromHandle = "", traceparent = ""): void {
+	steer(
+		msg: Message,
+		fromHandle = "",
+		traceparent = "",
+		sourceNames: DeliverSourceNames = { channelName: "", topicName: "" },
+	): void {
 		// A message with no id cannot be acked or deduped — fail-visible, never a
 		// silent drop (and never injected, since there would be no receipt for it).
 		// Mirrors deliver's empty-id guard.
@@ -454,8 +475,13 @@ export class CompassAgent {
 		this.#processedMessageIds.add(msg.id);
 		// The mention text, formatted once via the single deliver formatter (a
 		// single-element batch — no new formatter). Used as the mid-turn steering
-		// message's content AND as the idle turn-start prompt.
-		const content = formatDeliversForPrompt([msg]);
+		// message's content AND as the idle turn-start prompt. The source names
+		// ride the steer op (`SteerControl.channel_name`/`topic_name`), plumbed the
+		// same per-message way deliver plumbs them.
+		const content = formatDeliversForPrompt(
+			[msg],
+			new Map([[msg.id, sourceNames]]),
+		);
 		// Idle is computed exactly as deliver does: the event-derived `#turnActive`
 		// AND the authoritative `#session.isStreaming` (closes the control-prompt
 		// spin-up race the event flag alone cannot — see the deliver comment).
@@ -666,7 +692,10 @@ export class CompassAgent {
 		this.#forgeQueue = [];
 		if (delivers.length === 0 && forges.length === 0) return;
 		const sections: string[] = [];
-		if (delivers.length > 0) sections.push(formatDeliversForPrompt(delivers));
+		if (delivers.length > 0)
+			sections.push(
+				formatDeliversForPrompt(delivers, this.#deliverSourceNames),
+			);
 		if (forges.length > 0)
 			sections.push(
 				formatForgeNotifications(forges.map((e) => e.notification)),
@@ -717,6 +746,7 @@ export class CompassAgent {
 				this.#processedMessageIds.delete(msg.id);
 				this.#deliverFromHandles.delete(msg.id);
 				this.#deliverTraceparents.delete(msg.id);
+				this.#deliverSourceNames.delete(msg.id);
 			}
 			if (delivers.length > 0) {
 				this.#onUnmapped({
@@ -766,6 +796,7 @@ export class CompassAgent {
 				const fromHandle = this.#deliverFromHandles.get(msg.id) ?? "";
 				this.#deliverFromHandles.delete(msg.id);
 				this.#deliverTraceparents.delete(msg.id);
+				this.#deliverSourceNames.delete(msg.id);
 				this.#emitInjection(SessionInjectionKind.DELIVER, msg.id, fromHandle);
 			}
 			// FORGE acks: one ForgeNotificationAck frame (advances the Server's
@@ -890,6 +921,19 @@ export class CompassAgent {
 	}
 }
 
+/**
+ * The denormalized source NAMES for a delivered channel message (peer-DM record
+ * DL-292), carried on the wire `DeliverControl.channel_name`/`topic_name` and
+ * plumbed per message to `formatDeliversForPrompt` so the render names the
+ * source channel + topic and the reply cue names both required post params.
+ * Either is EMPTY on a server-side resolve miss (a name miss never blocks a
+ * delivery); the renderer falls back per label.
+ */
+export interface DeliverSourceNames {
+	readonly channelName: string;
+	readonly topicName: string;
+}
+
 // Coalesce a batch of delivered channel messages into ONE prompt input string
 // (RIG-1310 §8). Pure + exported so it is unit-testable. The batch is GROUPED
 // per topic (`msg.topicId`) at format time: a topic belongs to exactly one
@@ -905,24 +949,40 @@ export class CompassAgent {
 // ask is a separate surface. A blank text (a message with no rendered blocks)
 // still contributes its slot so a section is a faithful 1:1 with its group.
 //
-// RIG-2664: the coalesced prompt ends with ONE terse reply cue for the whole
-// batch, pointing at `comms_post_message`, closing the gap a bare
+// RIG-2664 / peer-DM DL-292: the coalesced prompt renders each delivery grouped
+// under a `Channel <name> › topic <name>:` header and ends with ONE terse reply
+// cue for the whole batch, pointing at `comms_post_message` and naming the two
+// required address params (channel + topic). This closes the gap a bare
 // `Topic <id>:\n<text>` digest left open (the model would otherwise narrate its
-// reply into its own turn, which the operator never reads). The cue does NOT
-// re-list the batch's topic ids — each id already prints in its `Topic <id>:`
-// section header one line up, so the model addresses the topic from the section
-// it is replying to; re-listing them only duplicated 32-char hex ids per batch
-// (~14 tokens each, unbounded in batch size) with no added addressing. Terse by
-// design: this cue rides EVERY delivered batch, so the load-bearing "why" — the
-// operator reads the channel, not your session log — lives once in the manager
-// block-0 SYSTEM.md and is not re-paid here per delivery.
-export function formatDeliversForPrompt(batch: readonly Message[]): string {
+// reply into its own turn, which the operator never reads — and could not
+// address a channel it was never shown the NAME of, now that the post tool
+// requires an explicit channel name). The SOURCE names ride the deliver op
+// (`DeliverControl.channel_name`/`topic_name`, resolved server-side) and are
+// plumbed here per message via `sources`, keyed on `Message.id`, exactly the way
+// `#deliverFromHandles` is plumbed. A name is EMPTY on a server-side resolve
+// miss (a name miss never blocks a delivery), so each label falls back: topic to
+// its id (`Message.topic_id`), channel to a fixed "(unknown channel)" placeholder
+// (the comms `Message` carries no channel id to fall back to). Terse by design:
+// this cue rides EVERY delivered batch, so the load-bearing "why" — the operator
+// reads the channel, not your session log — lives once in the manager block-0
+// SYSTEM.md and is not re-paid here per delivery.
+export function formatDeliversForPrompt(
+	batch: readonly Message[],
+	sources: ReadonlyMap<string, DeliverSourceNames> = new Map(),
+): string {
 	// An empty batch has nothing to reply to — return "" rather than a bare cue
 	// (both prod callers guard against this, but the exported pure fn's contract
 	// is pinned here regardless).
 	if (batch.length === 0) return "";
-	const groups = new Map<string, string[]>();
+	// Group by the rendered (channel, topic) header, first-seen order. The map
+	// value carries the label so the header is computed once per group.
+	const groups = new Map<string, { header: string; texts: string[] }>();
 	for (const msg of batch) {
+		const names = sources.get(msg.id);
+		const channelLabel = names?.channelName || "(unknown channel)";
+		const topicLabel = names?.topicName || msg.topicId;
+		const key = `${channelLabel}\u0000${topicLabel}`;
+		const header = `Channel ${channelLabel} › topic ${topicLabel}:`;
 		const text = msg.blocks
 			.flatMap((block) => {
 				if (block.block.case === "text") return [block.block.value];
@@ -933,15 +993,17 @@ export function formatDeliversForPrompt(batch: readonly Message[]): string {
 				return [];
 			})
 			.join("\n");
-		const existing = groups.get(msg.topicId);
-		if (existing) existing.push(text);
-		else groups.set(msg.topicId, [text]);
+		const existing = groups.get(key);
+		if (existing) existing.texts.push(text);
+		else groups.set(key, { header, texts: [text] });
 	}
 	const sections = Array.from(
-		groups,
-		([topicId, texts]) => `Topic ${topicId}:\n${texts.join("\n\n")}`,
+		groups.values(),
+		({ header, texts }) => `${header}\n${texts.join("\n\n")}`,
 	);
-	sections.push("Reply via comms_post_message to the relevant topic.");
+	sections.push(
+		"Reply via comms_post_message, naming the channel and topic above.",
+	);
 	return sections.join("\n\n");
 }
 

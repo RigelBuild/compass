@@ -30,14 +30,14 @@ func TestAppendMessageNonMemberRefusedNoRow(t *testing.T) {
 	ch := mustChannel(t, s, member.ID) // member is the sole founding member
 
 	// A non-member author is refused, and nothing is written.
-	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: outsider.ID, Blocks: []MessageBlock{textBlock("intrusion")}}, string(ch.ID), TopicRef{Name: "general"}, "")
+	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: outsider.ID, Blocks: []MessageBlock{textBlock("intrusion")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	sentinelIs(t, err, ErrNotFound, "non-member append")
 	if n := messageCount(t, ctx, s, ch.ID); n != 0 {
 		t.Fatalf("non-member append persisted %d rows, want 0 (refusal must not write)", n)
 	}
 
 	// The member author still succeeds — the gate admits the visible set.
-	posted, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("legitimate")}}, string(ch.ID), TopicRef{Name: "general"}, "")
+	posted, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("legitimate")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("member append: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestIsTopicChannelMember(t *testing.T) {
 
 	// Seed a message so a topic exists under the channel; its TopicID is the
 	// topic the gate resolves through.
-	posted, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("seed")}}, string(ch.ID), TopicRef{Name: "general"}, "")
+	posted, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("seed")}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(seed): %v", err)
 	}

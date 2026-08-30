@@ -39,8 +39,10 @@ func newMessageCmd() *cobra.Command {
 
 // newMessagePostCmd builds `message post --channel <id> --topic <name> [--mention
 // <handle>]`: post one message into a channel's topic, the body read from stdin.
-// --topic is a get-or-create-by-name (an unknown name creates the topic per the
-// PostMessage handler at internal/comms/comms.go:353). --mention prepends
+// --topic is a get-or-create-by-name: this operator surface is a trusted minter,
+// so it sets CreateTopic on the request and an unknown name mints the topic (the
+// get-or-create gate is store.resolveTopicForAppend, keyed on
+// PostMessageRequest.create_topic). --mention prepends
 // `@<handle> ` to the body; the server parses @-mentions from the raw text, so
 // there is no separate mention field on the wire (PostMessageRequest carries
 // only container/topic/blocks). The body is read from stdin, never a flag or
@@ -126,8 +128,9 @@ func runMessagePost(ctx context.Context, client compassv1connect.CommsServiceCli
 	// auto-retry), so the (author, client_request_id) idempotency lane is left
 	// unused deliberately rather than minting a per-invocation key.
 	resp, err := client.PostMessage(ctx, connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: args.channel},
-		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: args.topic},
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: args.channel},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: args.topic},
+		CreateTopic: true,
 		Blocks: []*compassv1.MessageBlock{
 			{Block: &compassv1.MessageBlock_Text{Text: body}},
 		},

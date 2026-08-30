@@ -413,7 +413,7 @@ func (h *Hub) executeCall(
 ) (*compassv1internal.CommsCallResult, error) {
 	switch c := call.GetCall().(type) {
 	case *compassv1internal.CommsCallRequest_Post:
-		resp, err := h.comms.PostAsAccount(ctx, account, c.Post)
+		resp, err := h.comms.PostAsAccountByName(ctx, account, c.Post)
 		if err != nil {
 			return nil, err
 		}
@@ -421,7 +421,7 @@ func (h *Hub) executeCall(
 			Result: &compassv1internal.CommsCallResult_Post{Post: resp},
 		}, nil
 	case *compassv1internal.CommsCallRequest_List:
-		resp, err := h.comms.ListAsAccount(ctx, account, c.List)
+		resp, err := h.comms.ListAsAccountByName(ctx, account, c.List)
 		if err != nil {
 			return nil, err
 		}

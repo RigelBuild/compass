@@ -52,7 +52,7 @@ func TestAnswerAskPostsAnswerMessage(t *testing.T) {
 	}
 
 	// The agent posts the ask.
-	askMsgIn, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general"}, "")
+	askMsgIn, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(ask): %v", err)
 	}
@@ -113,7 +113,7 @@ func TestAnswerAskSecondAnswerNoSecondMessage(t *testing.T) {
 	agent := mustUser(t, s, "agent")
 	ch := mustNamedChannel(t, s, agent.ID, "room")
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage(ask): %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestAnswerAskInvalidAnswerNoMessage(t *testing.T) {
 	agent := mustUser(t, s, "agent")
 	ch := mustNamedChannel(t, s, agent.ID, "room")
 
-	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: agent.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage(ask): %v", err)
 	}
 

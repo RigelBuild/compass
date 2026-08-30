@@ -32,7 +32,7 @@ func TestListMessagesSnapshotSeqBoundsPage(t *testing.T) {
 
 	append1 := func(body string) MessageID {
 		t.Helper()
-		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}
@@ -125,7 +125,7 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 
 	append1 := func(body string) MessageID {
 		t.Helper()
-		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}
@@ -186,7 +186,7 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for _, body := range []string{"c1", "c2", "c3", "c4"} {
-			if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
+			if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, ""); err != nil {
 				t.Errorf("concurrent AppendMessage(%s): %v", body, err)
 				close(written)
 				return
@@ -262,7 +262,7 @@ func TestSearchMessagesSnapshotSeqBoundsResults(t *testing.T) {
 
 	append1 := func(body string) MessageID {
 		t.Helper()
-		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general", Create: true}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}

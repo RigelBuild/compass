@@ -83,7 +83,7 @@ func TestRestartDurabilityReadsBackFullGraph(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	wantBlocks := sampleBlocks()
-	msg, _, err := s1.AppendMessage(ctx, Message{AuthorAccountID: user.ID, Blocks: wantBlocks}, string(channel.ID), TopicRef{Name: "general"}, "req-durable")
+	msg, _, err := s1.AppendMessage(ctx, Message{AuthorAccountID: user.ID, Blocks: wantBlocks}, string(channel.ID), TopicRef{Name: "general", Create: true}, "req-durable")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
