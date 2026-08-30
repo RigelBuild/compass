@@ -3,7 +3,7 @@
 Status: Draft
 
 > Freezes on merge; later changes supersede by citation, never rewrite.
-> Tracked as SEA-1732. Parent primitive-gaps: §3.5 of the source distillation
+> Tracked as RIG-1732. Parent primitive-gaps: §3.5 of the source distillation
 > (`manager-prompt-distillation.md`, Matt's ratified draft, §0.5 decisions
 > ratified 2026-08).
 >
@@ -13,9 +13,9 @@ Status: Draft
 > label, not a rename), **DL-132** (v0→target prompt versioning), **DL-133**
 > (layer split + the Dogfood first-skills set, incl. the name-by-function
 > tenet), **DL-134** (Dogfood implementers are in-process subagents briefed by
-> the Manager; non-subagent implementers gate on SEA-1717), **DL-135** (the
+> the Manager; non-subagent implementers gate on RIG-1717), **DL-135** (the
 > `task`-subagent prompt seam is ADDITIVE, so the Dogfood implementer def is a
-> thin ROLE delta and the full block-0 is the future SEA-1717 artifact).
+> thin ROLE delta and the full block-0 is the future RIG-1717 artifact).
 >
 > Grounding: all fork/agent mechanism claims below were re-verified firsthand
 > against the compass repo at **`origin/main = cf048ca`** (2026-08-04), per the
@@ -28,14 +28,14 @@ Status: Draft
 A freshly-spawned Compass agent comes up with **no role prompt** — it does not
 know it is a Manager (or a worker), what tree it sits in, that comms are
 async-only, or what its work loop is. The delivery machinery already exists
-(config-delivery, DL-078/079/080/081; SEA-1568/1674 Done — a spawn is
+(config-delivery, DL-078/079/080/081; RIG-1568/1674 Done — a spawn is
 provisioned with skills + extensions + MCP, and the entrypoint owns the
 system-prompt seam). This record freezes the **content**: the Manager block-0
 prompt, the block-0 REPLACE mechanism it rides, and the first skills a spawn
 needs to be self-directing; the implementer block-0 is an ACTIVE deliverable
 too (T2 — a Manager hands its in-process `task` subagents a thin ROLE delta via a
 mounted `config/agents/` def whose body splices INTO the default OMP block-0,
-MP-5/DL-134; the full standalone block-0 is kept as the future SEA-1717 artifact).
+MP-5/DL-134; the full standalone block-0 is kept as the future RIG-1717 artifact).
 Content + freeze, not plumbing.
 
 ## Approach
@@ -150,7 +150,7 @@ Under replace, OMP's block-0 prose is dropped for **every** role — nothing is
   never-block) to a line each. OMP's block 0 is the style/quality reference,
   never the source text.
 - **Implementer block-0: a THIN ROLE DELTA at Dogfood; the full copy-and-adapt is
-  the FUTURE SEA-1717 artifact** (both frozen in §Implementer block-0 below).
+  the FUTURE RIG-1717 artifact** (both frozen in §Implementer block-0 below).
   Because a Dogfood implementer is a `task` subagent, its def body is spliced INTO
   the full default OMP block-0, not swapped for it
   (`forks/oh-my-pi/packages/coding-agent/src/task/executor.ts:2808-2810`), so the
@@ -160,7 +160,7 @@ Under replace, OMP's block-0 prose is dropped for **every** role — nothing is
   tool, one-slice-then-yield, jj-stacking push, operator-not-user framing) and
   drops everything the default supplies. The full copy-and-adapt of OMP's block 0
   (`forks/oh-my-pi/packages/coding-agent/src/prompts/system/system-prompt.md`, 283
-  lines) is retained as the standalone-container artifact for SEA-1717, where a
+  lines) is retained as the standalone-container artifact for RIG-1717, where a
   Compass mechanism REPLACES the subagent default (a mechanism absent at
   `cf048ca`); it keeps the `[runtime-injected]` placeholders that future path's
   own injector fills, which is exactly why it is not a valid Dogfood def body
@@ -176,7 +176,7 @@ the ADDITIVE `task`-subagent splice (`executor.ts:2808-2810`) — OMP's full
 block-0 co-renders around the def body — so the implementer inherits that
 contract (the years-of-failure-modes prose an implementer needs) for free and
 the Dogfood def carries ONLY the Compass delta. The full standalone block-0 is
-authored for the day SEA-1717 gives the implementer a REPLACE path too.
+authored for the day RIG-1717 gives the implementer a REPLACE path too.
 
 Two delivery notes. First, the two prompts ship on DIFFERENT surfaces: the
 Manager block-0 rides `customSystemPrompt` (T10 wiring), while the implementer
@@ -184,7 +184,7 @@ block-0 ships as a mounted subagent def under `config/agents/` — the `task`
 tool + `discoverAgents` already consume it at `cf048ca` (MP-5), so it needs no
 `cli.ts` change (MP-5). At Dogfood, T1 ships the full Manager block-0 and T2
 ships the thin implementer delta; the full implementer block-0 is the future
-SEA-1717 artifact. Second, T3's always-apply rules are load-bearing for prompt
+RIG-1717 artifact. Second, T3's always-apply rules are load-bearing for prompt
 safety: the ~500-word Manager
 block compresses each invariant to a line precisely because the always-apply
 tier carries them full-text every turn (MP-1 evidence) — thinning T3 thins the
@@ -198,7 +198,7 @@ Ratified (Matt, 2026-08; distillation §5). Proto/Go/UI types stay
 hundreds of files including the shipped `parent_agent_id` field). "Manager"
 appears in prompts, docs, UI labels, and marketing. A Manager IS an Agent whose
 role is manager. The role *mechanism* (role field, per-role bundles, per-role
-model/thinking) is **SEA-1724 (Beta)** — forward-referenced, not designed here.
+model/thinking) is **RIG-1724 (Beta)** — forward-referenced, not designed here.
 
 ### Decision MP-4 — v0→target prompt versioning (DL-132)
 
@@ -215,7 +215,7 @@ exist (a Manager that calls a phantom tool wedges). So the record freezes a
 - The flip is prompt-content versioning, not delivery redesign: the updated
   prompt rides the existing bundle update path (DL-081 re-materialize + Reload).
   Per-role bundle *keying* stays the named post-MVP seam (DL-078) owned by
-  SEA-1724.
+  RIG-1724.
 
 **Primitives map — current, re-grounded at `cf048ca`** (supersedes the
 distillation §3.5 snapshot where marked ★):
@@ -224,15 +224,15 @@ distillation §3.5 snapshot where marked ★):
 | --- | --- | --- |
 | `comms_post_message` / `comms_list_messages` | DEFINED; not yet registered on a session — registered by T10 (live in v0) | defined at `packages/compass-agent/src/comms.ts:210,271`; the factory carries an explicit "NOT YET WIRED … registration leg tracked separately" header (`comms.ts:204-206` — its "no entrypoint in this repo" line is stale, `cli.ts` is the entrypoint now); the entrypoint passes `customTools: mcp.tools` ONLY (`cli.ts:633`) and imports neither factory (`cli.ts:31-68`) |
 | **Named topics** ★ | **EXISTS — merged** (#109/#129/#134/#139), further along than the distillation's "in flight" | post takes `topic` ("Named conversation within the channel; an unknown name creates the topic", `comms.ts:123-127`); list output is "GROUPED BY TOPIC. Field 2 (`topic_id`) replaced the removed per-message `parent_message_id`" (`comms.ts:381-385`); `rpc ListTopics` (`proto/compass/v1/comms.proto:89`) |
-| **Mid-turn @mention steer** ★ | **EXISTS — wired end-to-end**, contradicting the distillation's "payload UNWIRED (SEA-1310)" | server routes @-mentions as steer ops (`go/internal/delivery/consumer.go:289-296`, `Steer: &compassv1internal.SteerControl{Message: msg}`); agent decodes and dispatches: "As of SEA-1310 §8 the handle carries the full comms `Message` (`.id` intact) — no longer the empty shell of C4b" (`packages/compass-agent/src/transport/control-source.ts:155-158`); the steer arm injects mid-turn (`packages/compass-agent/src/agent.ts:247-251`) |
+| **Mid-turn @mention steer** ★ | **EXISTS — wired end-to-end**, contradicting the distillation's "payload UNWIRED (RIG-1310)" | server routes @-mentions as steer ops (`go/internal/delivery/consumer.go:289-296`, `Steer: &compassv1internal.SteerControl{Message: msg}`); agent decodes and dispatches: "As of RIG-1310 §8 the handle carries the full comms `Message` (`.id` intact) — no longer the empty shell of C4b" (`packages/compass-agent/src/transport/control-source.ts:155-158`); the steer arm injects mid-turn (`packages/compass-agent/src/agent.ts:247-251`) |
 | Spawn/despawn tools | DEFINED; not yet registered on a session — registered by T10, named only in the standing-child-Manager line | defined at `packages/compass-agent/src/lifecycle.ts:144,189`; same "NOT YET WIRED" header (`lifecycle.ts:137-140`); `cli.ts:633` (`customTools: mcp.tools` only). The distillation's "no agent tool wired" was and remains CORRECT at `cf048ca`. The server leg IS built end-to-end — `RunnerTransport.lifecycle` (`transport/index.ts:58`), Runner gateway (`go/internal/runner/gateway/lifecycle.go:54`), server relay + caller wired in production (`go/internal/runnerhub/relay_lifecycle.go:57`, `go/server/sinks.go:88`) — registration is the ONLY missing leg |
 | In-process subagent delegation (`task`) | EXISTS — live | `createAgentSession` is called with no tool-disabling option (`cli.ts:608-659`), so the SDK's default tool set — including `task` — is present; the config-passthrough probe queries "the SDK exactly as the `task` tool would" and finds mounted `agents/` defs (`config-passthrough-probe.ts:17-18,44-48`, `cli.config-passthrough.test.ts` §(g)) |
 | Spawn **operator-approval gate** | ABSENT (unchanged) | no approval construct in `lifecycle.ts` or the server lifecycle path; grep for an approval gate over spawn returns nothing |
 | `parent_agent_id` + `ReparentAgent` ★ | **EXIST in proto**, contradicting the distillation's "not yet in comms.proto" | `string parent_agent_id = 4;` (`proto/compass/v1/comms.proto:162`); `rpc ReparentAgent(...)` (`comms.proto:72`) |
 | `compass_tree` tool | ABSENT (unchanged) | no such tool; the only native agent tools DEFINED in the package are the two comms + two lifecycle tools above — and none is registered at `cf048ca` (grep `name: "` across `packages/compass-agent/src`; `cli.ts:633`) |
-| Roster/presence **query** | ABSENT (unchanged; event only) | no roster tool/RPC; presence rides the event stream (SEA-1721 files the query) |
-| Coordination-channel ACL + auto-subscribe | ABSENT (unchanged) | no restricted-post/auto-subscribe construct in `comms.proto` (grep empty; SEA-1722) |
-| Pinned board | ABSENT (unchanged) | no such primitive (SEA-1723; DL-096 sidebar-pins is unrelated UI) |
+| Roster/presence **query** | ABSENT (unchanged; event only) | no roster tool/RPC; presence rides the event stream (RIG-1721 files the query) |
+| Coordination-channel ACL + auto-subscribe | ABSENT (unchanged) | no restricted-post/auto-subscribe construct in `comms.proto` (grep empty; RIG-1722) |
+| Pinned board | ABSENT (unchanged) | no such primitive (RIG-1723; DL-096 sidebar-pins is unrelated UI) |
 
 **Consequence:** v0 is closer to target than the distillation assumed — but
 not because the native tools are live: at `cf048ca` a booted agent has ZERO
@@ -242,12 +242,12 @@ registers them). The v0 prompt names topics and mid-turn steers as live
 MP-5), and names the comms + lifecycle tools ONLY because T10 — in this same
 record's plan — registers them onto the session (GC-3 holds because the
 prompt line and the registration ship together). The remaining `[TODO]` lines
-are: `compass_tree` (tree epic), roster query (SEA-1721) — which also gates
+are: `compass_tree` (tree epic), roster query (RIG-1721) — which also gates
 the "read your parent fresh" line (see block-0), coordination-channel ACL
-(SEA-1722), pinned board (SEA-1723), the spawn **approval gate** (spawn
+(RIG-1722), pinned board (RIG-1723), the spawn **approval gate** (spawn
 epic) — until the gate lands, "ask the operator before spawning a child
 Manager" ships as a behavioral rule, not a tool-enforced one — and the
-issue/PR tools the work-loop's issue-ownership lines depend on (SEA-1734:
+issue/PR tools the work-loop's issue-ownership lines depend on (RIG-1734:
 they land pre-Dogfood as an operator-provisioned surface; the block-0 lines
 name the concrete tools once they land).
 
@@ -273,7 +273,7 @@ rules/skills (name + one-liner every turn, body on demand via
 **Name-by-function tenet (frozen):** a Manager is named for the team/department
 it is — CI Manager, Observability Manager, Payments Manager — never for the tool
 it uses (no `aws`/`grafana` agents). The function is stable; tools are an
-implementation detail. Composes with SEA-1724 roles: the role sets capability;
+implementation detail. Composes with RIG-1724 roles: the role sets capability;
 the name states the function.
 
 ### Decision MP-5 — Dogfood implementers are in-process subagents (DL-134)
@@ -296,10 +296,10 @@ would get heavy very fast."
 - **`agents_spawn_peer` / `agents_despawn_peer` are for standing PEER/CHILD
   MANAGERS** — containerized, long-lived tree nodes — never per-task
   implementers. They are registered onto the session by T10 (MP-4 table).
-- **The containerized-implementer model is SEA-1717 (Beta)**: the brain/hands
+- **The containerized-implementer model is RIG-1717 (Beta)**: the brain/hands
   split ("an agent needs a computer, not a container") separates the
   lightweight portable brain from on-demand heavy compute; per-implementer
-  containers become cheap only after that split. Distinct from SEA-1724, the
+  containers become cheap only after that split. Distinct from RIG-1724, the
   role-mechanism issue — two different Beta issues.
 - **Consequences in this record:** the implementer block-0 (T2) is an ACTIVE
   Dogfood deliverable — the consumer exists at `cf048ca`. A fleet-delivered
@@ -312,7 +312,7 @@ would get heavy very fast."
   (`executor.ts:2808-2810`), which co-renders around it — there is NO mechanism
   at `cf048ca` that replaces the subagent default. So the Dogfood def is a THIN
   ROLE DELTA — identity + the Compass divergences only — not a full block-0 (see
-  §Implementer block-0). What SEA-1717/SEA-1724 defer is the *containerized,
+  §Implementer block-0). What RIG-1717/RIG-1724 defer is the *containerized,
   non-subagent* implementer (a peer/child tree node with its own compute) AND its
   standalone-block-0 REPLACE path: the full authored block-0 kept in §Implementer
   block-0 is ready to serve THAT path when it lands. The Dogfood deliverable this
@@ -338,7 +338,7 @@ build software under a human operator's merge gate.
   implementation runs in SUBAGENTS inside your own session — briefed by you,
   ephemeral, never tree nodes. [TODO compass_tree: `compass_tree` shows the
   tree.] Your parent is recorded on your account. [TODO compass_tree /
-  SEA-1721: it can change (re-parenting) — read it fresh via the tree/roster
+  RIG-1721: it can change (re-parenting) — read it fresh via the tree/roster
   query when you act on it, never cache it.]
 - Report results UP to your parent; delegate work DOWN.
 - You are a COORDINATOR, not a typist. Implementation is done by SUBAGENTS you
@@ -371,7 +371,7 @@ build software under a human operator's merge gate.
 ## Your work loop
 - You are assigned ISSUES and own each end-to-end: move its state as the work
   moves; close it yourself when the ask is satisfied. Nothing closes an issue
-  for you. [TODO SEA-1734: the issue/PR tools land pre-Dogfood (operator-provisioned
+  for you. [TODO RIG-1734: the issue/PR tools land pre-Dogfood (operator-provisioned
   surface, like the Linear/GitHub tools the current wave uses); name the concrete
   tools + how state/close are performed once they land.]
 - Work continuously: while you hold open issues, drive them; if you have
@@ -391,8 +391,8 @@ The distillation was accurate for its session; three primitives have since
 merged past its snapshot (all evidence above): named topics (#109/#129/#134/#139
 — and `parent_message_id` reply-threading is REMOVED, so the distillation §1
 fallback "thread by replying under a message, `parent_message_id`" is no longer
-possible, topics are the only threading), the mid-turn steer payload (SEA-1310
-§8 / SEA-1569 T7 — wired, not parked), and `parent_agent_id`/`ReparentAgent`
+possible, topics are the only threading), the mid-turn steer payload (RIG-1310
+§8 / RIG-1569 T7 — wired, not parked), and `parent_agent_id`/`ReparentAgent`
 in proto. On the native comms and spawn/despawn TOOLS the distillation was and
 remains RIGHT: "no agent tool wired" holds at `cf048ca` — the four are
 defined, unregistered exports until T10 registers them (MP-4 table). The
@@ -497,10 +497,10 @@ from that default — do not restate it.
   If the brief names no push target, report back rather than guess.
 ```
 
-#### The full standalone block-0 — FUTURE SEA-1717 artifact (kept, not the Dogfood target)
+#### The full standalone block-0 — FUTURE RIG-1717 artifact (kept, not the Dogfood target)
 
 The full, standalone block-0 below is NOT shipped at Dogfood. It is kept here as
-the FUTURE artifact for the containerized, non-subagent implementer (SEA-1717's
+the FUTURE artifact for the containerized, non-subagent implementer (RIG-1717's
 brain/hands split): when that lands, a Compass mechanism REPLACES the subagent
 default block-0 for that implementer — a mechanism that does NOT exist at
 `cf048ca` (today every `task` subagent gets the additive splice above, with no
@@ -710,7 +710,7 @@ Before declaring blocked:
   OMP block-0 (`executor.ts:2808-2810`), so copying the full block into the def
   would DUPLICATE the co-rendered default on every implementer turn. At Dogfood
   the implementer INHERITS the default for free and the def carries only the
-  Compass delta. The full copy-and-adapt is retained for the future SEA-1717
+  Compass delta. The full copy-and-adapt is retained for the future RIG-1717
   REPLACE path (a standalone container implementer with no default block-0), where
   it becomes an owned file diverging where Compass differs (per MP-2); inheriting
   from upstream verbatim on THAT path would couple our contract to prompt churn at
@@ -718,9 +718,9 @@ Before declaring blocked:
   bumps (see Open Questions).
 - **Single-file record vs roles-parent cluster.** Distillation §11 recommends
   leading with a `compass-agent-roles/` parent record and this as its first
-  instance — but the roles mechanism is SEA-1724 (Beta) scope. Recommended:
+  instance — but the roles mechanism is RIG-1724 (Beta) scope. Recommended:
   this standalone `compass-manager-prompt/` record for the Dogfood cut,
-  forward-referencing SEA-1724; the roles record, when written, becomes the
+  forward-referencing RIG-1724; the roles record, when written, becomes the
   parent by citation (freeze discipline: supersede by citation, never rewrite).
 - **Deliver the role block via `COMPASS_PERSONA`.** Rejected: persona is an
   append overlay after the default prompt (`cli.ts:649-658`), so it inherits
@@ -729,7 +729,7 @@ Before declaring blocked:
 - **Containerize implementers now (one container per implementer).** Rejected
   for Dogfood: spinning up a container per subagent gets heavy fast (Matt,
   2026-08-04), and per-implementer containers become cheap only after the
-  SEA-1717 brain/hands split (Beta) separates the lightweight portable brain
+  RIG-1717 brain/hands split (Beta) separates the lightweight portable brain
   from on-demand heavy compute. Dogfood implementers stay in-process
   subagents the Manager briefs (MP-5/DL-134).
 
@@ -741,7 +741,7 @@ Every task below inherits these:
   mechanism is verified at `cf048ca` against the pinned fork.
 - **GC-2 — Manager block-0 ≈ one screen (~500 words).** The Dogfood implementer
   block-0 is a THIN ROLE delta (divergences only, atop the co-rendered default);
-  the full copy-adapt of OMP's block is the future SEA-1717 artifact.
+  the full copy-adapt of OMP's block is the future RIG-1717 artifact.
 - **GC-3 — Name only what exists.** A prompt/skill line may name a tool only if
   it exists at the commit the line ships against; every not-yet-shipped
   affordance is an explicit `[TODO <issue>]` line (MP-4). No line may
@@ -759,7 +759,7 @@ Every task below inherits these:
   `red-green-testing`): keep the invariant, re-ground the mechanics in Compass
   tools.
 - **GC-8 — No new delivery plumbing.** Content rides the frozen config-delivery
-  spine (DL-078/080/081); per-role bundle keying stays the named SEA-1724 seam.
+  spine (DL-078/080/081); per-role bundle keying stays the named RIG-1724 seam.
 
 ## Plan
 
@@ -772,9 +772,9 @@ order. Each task is one review cycle; all are prose-authoring
 tests). Skill/rule/prompt files land in the compass repo under the
 config-bundle authoring tree the operator publishes via `compass config put`
 (DL-078's recommended workflow); exact paths per task. One cross-task
-dependency: the block-0 work-loop's issue-ownership lines flip on **SEA-1734**
+dependency: the block-0 work-loop's issue-ownership lines flip on **RIG-1734**
 (the issue/PR tools, landing pre-Dogfood as an operator-provisioned surface) —
-tracked as a `[TODO SEA-1734]` in the frozen text (MP-4 flip discipline), the
+tracked as a `[TODO RIG-1734]` in the frozen text (MP-4 flip discipline), the
 same way T10's native-tool registration gates the comms/lifecycle lines.
 
 **T1 — Manager block-0 SYSTEM.md (v0).** Author the manager role's replace
@@ -803,12 +803,12 @@ proved. The def body is then SPLICED INTO the full default OMP block-0
 block-0 (delivered via `customSystemPrompt`, T10), it needs no `cli.ts` wiring:
 the `task` tool + the mounted `agents/` tree already consume it at `cf048ca`. The
 full standalone block-0 in that same section is NOT this deliverable — it is the
-FUTURE SEA-1717 artifact (the containerized, non-subagent implementer's REPLACE
+FUTURE RIG-1717 artifact (the containerized, non-subagent implementer's REPLACE
 path, which does not exist at `cf048ca`); it is authored and kept, not shipped at
 Dogfood. Frontmatter for the Dogfood cut: set `name`/`description` only — omit
 `tools:` and `model:` so the def inherits the SDK's default tool set and the
 session model, and set `spawns: ''` (the implementer is hands, not brains:
-re-delegation is the deferred SEA-1717 concern). `thinkingLevel` is left to the
+re-delegation is the deferred RIG-1717 concern). `thinkingLevel` is left to the
 SDK default. Interfaces: consumes §Implementer block-0 → thin ROLE delta;
 produces `config/agents/implementer.md`.
 
@@ -822,7 +822,7 @@ produces `config/rules/{never-block,own-your-issue,red-green-testing,never-merge
 **T4 — comms-playbook skill.** Channels/topics model, routing (DMs to cut
 readers, DM-the-owner-to-post), subscriptions, ping-vs-regular delivery
 semantics, @mention-steer behavior, ACL patterns. Names only live tools (GC-3):
-topic-scoped posting is live; restricted-post ACLs are `[TODO SEA-1722]`.
+topic-scoped posting is live; restricted-post ACLs are `[TODO RIG-1722]`.
 Interfaces: consumes §2 rows 3/4/6/8/9/12/18 + MP-4 table; produces
 `config/skills/comms-playbook/SKILL.md`.
 
@@ -846,8 +846,8 @@ Interfaces: consumes §7 of the distillation + T5's shapes; produces
 
 **T7 — supervisor-channel + manager-coordination-channel skills.** Supervisor:
 `#announcements`/`#incidents` discipline, restricted-post posture (`[TODO
-SEA-1722]`), first-contact + top-down posture relays, pinned-board usage
-(`[TODO SEA-1723]`). Manager: owning a coordination channel for reports,
+RIG-1722]`), first-contact + top-down posture relays, pinned-board usage
+(`[TODO RIG-1723]`). Manager: owning a coordination channel for reports,
 distinct from the home channel — same gated primitives.
 Interfaces: consumes §8 of the distillation + MP-4 table; produces
 `config/skills/supervisor-channel/SKILL.md` and
@@ -879,7 +879,7 @@ discipline.** The one code task, owning the only `cli.ts` delta at the
    exec-spec surface that carries `COMPASS_PERSONA`, whose VALUE is a
    server-authoritative persisted field, `go/internal/store/accounts.go:202`).
    Unset → today's behavior (no replace). Interim, operator-side only,
-   pre-SEA-1724 (OQ-2, resolved).
+   pre-RIG-1724 (OQ-2, resolved).
 2. **Native-tool registration** (the registration leg both "NOT YET WIRED"
    headers name, `comms.ts:204-206` / `lifecycle.ts:137-140`): construct
    `CommsBroker` + `LifecycleBroker` over the `RunnerTransport` the
@@ -902,7 +902,7 @@ Interfaces: consumes `packages/compass-agent/src/cli.ts:608-659`
 (createAgentSession call), `sdk.ts:378` (`customSystemPrompt`),
 `comms.ts:208` / `lifecycle.ts:142` (the tool factories), the bundle member
 from T1; produces the cli.ts delta + tests; reopens no delivery decision
-(GC-8) but notes DL-078's per-role seam for SEA-1724.
+(GC-8) but notes DL-078's per-role seam for RIG-1724.
 
 **Deferred (named, not Dogfood-blocking):** `compass-architecture` and
 `living-specs` reference skills (§2 rows 19/23) — read-on-demand references a
@@ -912,7 +912,7 @@ spawn does not need to be self-directing; filed as follow-ups after the freeze
 ## Tasks
 
 - [ ] T1 — Manager block-0 SYSTEM.md (v0 + gated target lines). Interfaces: §Manager block-0 + MP-4 → `config/prompts/manager/SYSTEM.md`.
-- [ ] T2 — Implementer block-0 thin ROLE delta subagent def (materialize the frozen §Implementer block-0 → thin ROLE delta; the full block-0 is the future SEA-1717 artifact, not shipped). **Active Dogfood deliverable** (MP-5; the `task` tool + mounted `agents/` consume it at `cf048ca`; the def body splices INTO the default block-0, `executor.ts:2808-2810`). Interfaces: §Implementer block-0 (thin delta) → `config/agents/implementer.md`.
+- [ ] T2 — Implementer block-0 thin ROLE delta subagent def (materialize the frozen §Implementer block-0 → thin ROLE delta; the full block-0 is the future RIG-1717 artifact, not shipped). **Active Dogfood deliverable** (MP-5; the `task` tool + mounted `agents/` consume it at `cf048ca`; the def body splices INTO the default block-0, `executor.ts:2808-2810`). Interfaces: §Implementer block-0 (thin delta) → `config/agents/implementer.md`.
 - [ ] T3 — Always-apply rules (3 adapted + 3 new one-liners). Interfaces: Matt's rulebook + §2 → `config/rules/*.md`.
 - [ ] T4 — comms-playbook skill. Interfaces: §2/§8 + MP-4 → `config/skills/comms-playbook/SKILL.md`.
 - [ ] T5 — management-trees skill (shapes + name-by-function + delegation mechanics). Interfaces: §9/§12 + GC-5 + MP-5 → `config/skills/management-trees/SKILL.md`.
@@ -932,11 +932,11 @@ is designed against the recommendation in each case.
 1. **Record home: standalone `compass-manager-prompt/` vs leading with a
    `compass-agent-roles/` parent (distillation §11).** Load-bearing (decides
    where this freeze lives). **Recommendation: standalone for the Dogfood cut**
-   — the roles mechanism is SEA-1724/Beta scope and designing its record now
+   — the roles mechanism is RIG-1724/Beta scope and designing its record now
    would violate this record's own non-goal; the future roles record becomes
    the parent by citation.
 
-2. **Interim role-selection mechanism (pre-SEA-1724) — RESOLVED by the MP-5
+2. **Interim role-selection mechanism (pre-RIG-1724) — RESOLVED by the MP-5
    reframe (Matt, 2026-08-04), no longer a fork.** Only OPERATOR-PROVISIONED
    STANDING MANAGERS get a container + a role block via `customSystemPrompt`;
    implementer subagents get their prompt from the briefing Manager, not from
@@ -948,9 +948,9 @@ is designed against the recommendation in each case.
    replace). NOT carried on `SpawnPeerRequest` (which has no role slot —
    `agent_gateway.proto:122-127`), NOT an `AgentAccount` field
    (`comms.proto:149-162` carries only owner, home channel, and parent),
-   requiring NO proto/account change. This holds the SEA-1724 boundary
+   requiring NO proto/account change. This holds the RIG-1724 boundary
    because Dogfood needs only the operator-set Manager path; per-agent role
-   as an account/proto datum stays SEA-1724 (Beta).
+   as an account/proto datum stays RIG-1724 (Beta).
 
 3. **v0 names the newly-merged primitives as live — CONDITIONAL.** Topics and
    the mid-turn steer are genuinely merged with tests, and the distillation's
@@ -976,8 +976,8 @@ is designed against the recommendation in each case.
    epic and needs no prompt change.**
 
 6. **Default channel set beyond #announcements/#incidents** (distillation §9
-   open question, tracked SEA-1722). Non-load-bearing here (T7 gates its ACL
-   prose on SEA-1722 anyway). **Recommendation: defer to SEA-1722.**
+   open question, tracked RIG-1722). Non-load-bearing here (T7 gates its ACL
+   prose on RIG-1722 anyway). **Recommendation: defer to RIG-1722.**
 
 7. **Implementer-prompt drift policy at fork bumps.** Two surfaces drift as OMP
    evolves: (a) the Dogfood thin delta assumes what the default OMP block-0

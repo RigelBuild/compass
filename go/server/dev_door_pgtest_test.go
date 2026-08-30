@@ -2,7 +2,7 @@
 
 package server
 
-// P1 dev-door regression test (SEA-1195 T3b, security-critical) — pins the
+// P1 dev-door regression test (RIG-1195 T3b, security-critical) — pins the
 // closed hole from the Greptile finding "Dev Door Can Mint Admin Tokens". The
 // dev-only loopback endpoint (--dev-http) mounts CompassService behind
 // auth.NewAdminGate with NO bearer interceptor, so there is never an

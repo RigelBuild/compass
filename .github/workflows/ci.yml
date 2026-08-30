@@ -1805,7 +1805,7 @@ jobs:
         #   otherwise → pull the published image. On a PR that leaves the image
         #   untouched (and on every push to main, where the detection step does
         #   not run and image_affected is unset), test the last-published
-        #   `:latest`. The image is public (SEA-1690; Matt-ruled public), so this
+        #   `:latest`. The image is public (RIG-1690; Matt-ruled public), so this
         #   pulls with no login, no credential, and no `packages: read`. The
         #   mutable `:latest` tag is intentional (Matt-ruled always-fresh) — do
         #   NOT "fix" it to a digest pin; the gate is meant to test whatever main

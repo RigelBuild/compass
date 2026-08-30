@@ -150,7 +150,7 @@ compass-ui = {
 never races the migrating store. The command matches the existing moon task
 (`apps/ui/moon.yml:11-12`: `dev: command: 'bunx vite'`) — one convention, two
 entry points. (The exec preamble above is grounded against current main;
-SEA-1983 removes proto — see Global Constraints GC-1 — so the preamble
+RIG-1983 removes proto — see Global Constraints GC-1 — so the preamble
 becomes a plain `exec bunx vite` after the cutover.)
 
 **Guard composition.** `processes` is one wholesale-guarded attrset today
@@ -362,7 +362,7 @@ OQ4, not a task.
 
 ## Global Constraints
 
-- **GC-1 — SEA-1983 sequencing (drop-proto).** SEA-1983's design froze
+- **GC-1 — RIG-1983 sequencing (drop-proto).** RIG-1983's design froze
   (#300, squash bab90139) and its implementation is in flight (T1 = PR #308
   nix pin files + toolchain-tools derivations; T2+T4 devenv cutover +
   toolchain-parity rework, atomic; T5 ci.yml two-phase). It reworks exactly
@@ -372,11 +372,11 @@ OQ4, not a task.
   (devenv.nix:243-244). This record grounds against CURRENT main (still
   .prototools: bun 1.3.13, node 24.18.0, moon 2.4.2, go 1.26.5 —
   .prototools:6-13) and does NOT guess the post-cutover shape.
-  **Implementation of T3/T4/T5 MUST be sequenced after the SEA-1983 cutover
+  **Implementation of T3/T4/T5 MUST be sequenced after the RIG-1983 cutover
   lands and rebased onto it** — the toolchain block, the Linux-only guards,
   and the exec preambles may all move.
   All devenv.nix line-number citations in this record (:218, :243-244,
-  :253, :260, :265, etc.) DIE at the SEA-1983 rebase — the implementing
+  :253, :260, :265, etc.) DIE at the RIG-1983 rebase — the implementing
   agent MUST re-ground T3/T4/T5 against the post-cutover file, never
   pattern-match stale line numbers.
 - **Tool pins (as of this record):** bun 1.3.13 / node 24.18.0 / moon 2.4.2 /
@@ -403,7 +403,7 @@ OQ4, not a task.
 
 Order: T1/T3 (UI-in-up — the compass-critical path), T2 (the direct-dial
 streaming smoke), then T4/T5/T6 (macOS), T7 (gate-hazard docs, small, can
-land any time). T3–T5 rebase onto SEA-1983 per GC-1.
+land any time). T3–T5 rebase onto RIG-1983 per GC-1.
 
 ### T1 — Wire the UI's base URL to the dev-http door  (owner: compass-repo)
 
@@ -450,7 +450,7 @@ subscribe).
   event never created) → green (running stack, frames arrive
   incrementally).
 
-**Resolved (SEA-2001) — OQ5 decided: a documented manual smoke, not a bun
+**Resolved (RIG-2001) — OQ5 decided: a documented manual smoke, not a bun
 test.** The hermetic-automated arm cannot faithfully cover this task's
 subject. A `SubscribeEvents` check against the *browser's own* direct-dial
 transport (`createCompassWebTransport` → gRPC-Web over real `fetch`,
@@ -511,7 +511,7 @@ bunx vite` from `cwd = ${config.devenv.root}/apps/ui`, env
 `VITE_COMPASS_BASE_URL=http://127.0.0.1:${ports.devhttp.value}` (direct-dial,
 decided), `after =
 ["devenv:processes:compass-server"]`. Update the `devenv up` chain comment
-(devenv.nix:174-196) to include the UI. **Rebase onto SEA-1983's cutover
+(devenv.nix:174-196) to include the UI. **Rebase onto RIG-1983's cutover
 (GC-1): the exec preamble shape follows whatever toolchain activation the
 cutover leaves.**
 
@@ -534,7 +534,7 @@ pkgs.stdenv.isLinux { ... }` (the devenv.nix:89/:127 env pattern). T4 moves
 the compass-server exec (including its `--listen` line) out of the guard
 UNCHANGED; T5 then adds the decided darwin variance to that same attr
 (§A2b's darwin `--listen` rebind) — the two tasks co-edit it. **Rebase
-onto SEA-1983 (GC-1).**
+onto RIG-1983 (GC-1).**
 
 - **Interfaces:** consumes the current guard structure (devenv.nix:211,
   :218, :346); produces `devenv up` on darwin = postgres, gen-cert, server,
@@ -635,10 +635,10 @@ zireael/jj-hp lane. No behavioral change in this repo.
 - [ ] T2 — streaming e2e smoke against the direct dev-door (compass-repo;
       documented manual smoke per OQ5, resolved)
 - [ ] T3 — `compass-ui` process in `devenv up`, after compass-server ready
-      (compass-repo; rebase on SEA-1983)
+      (compass-repo; rebase on RIG-1983)
 - [ ] T4 — relax Linux guards: postgres/server/UI/gen-cert/mint
       cross-platform; runner/agent-image/clean/PKG_CONFIG_PATH stay Linux
-      (platform; rebase on SEA-1983; co-edits `--listen` attr with T5)
+      (platform; rebase on RIG-1983; co-edits `--listen` attr with T5)
 - [ ] T5 — darwin `--listen` bind spike + `dogfood:vm-runner` (podman
       machine) + `compass-gen-cert --san` (compass-runner)
 - [ ] T6 — darwin Wails entrypoint (`darwin && shell` opt-in) + welded-trio
@@ -693,7 +693,7 @@ so OQ2 is intentionally absent — it was promoted to a decision, not dropped.
   devenv env the assertion is dead weight, and landing it now creates a
   compass-side change the harness fix immediately obsoletes. Revisit only if
   the zireael fix slips a month+.
-- **OQ5 (non-load-bearing) — T2 automation depth. RESOLVED (SEA-2001):
+- **OQ5 (non-load-bearing) — T2 automation depth. RESOLVED (RIG-2001):
   documented manual smoke, not a bun test** — the hermetic arm cannot cover
   the browser's real gRPC-Web-over-HTTP transport in-fence
   (`@connectrpc/connect-node` is fenced in `apps/ui`; the only in-fence fake,

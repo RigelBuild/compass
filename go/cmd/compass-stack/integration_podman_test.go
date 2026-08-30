@@ -3,7 +3,7 @@
 package main
 
 // End-to-end Linux integration proof for the T2 embedded stack supervisor
-// (SEA-1662 / SEA-1683, design.md:437-442). Every other T2 test stubs the
+// (RIG-1662 / RIG-1683, design.md:437-442). Every other T2 test stubs the
 // external effects; THIS one drives the real composition root — resolveConfig +
 // buildDeps wiring the six real adapters — against REAL initdb/postgres/podman/
 // compass-server/compass-runner, proving the whole embedded stack stands up.

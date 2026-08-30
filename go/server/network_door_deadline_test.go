@@ -2,7 +2,7 @@
 
 package server
 
-// SEA-1298 — the network door's slow-body (slowloris) read deadline.
+// RIG-1298 — the network door's slow-body (slowloris) read deadline.
 //
 // withBodyReadDeadline is the outermost network-door middleware: for every
 // request whose path is NOT in bodyDeadlineExempt it arms a per-request

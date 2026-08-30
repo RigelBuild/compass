@@ -105,7 +105,7 @@ export type AgentFrame = Message<"compass.v1.AgentFrame"> & {
   } | {
     /**
      *   delivery_ack — the agent's per-message delivery receipt for a
-     *     DeliverControl relayed down the session (SEA-1569). The success
+     *     DeliverControl relayed down the session (RIG-1569). The success
      *     receipt for a delivery rides this frame, not the Runner result
      *     stream (RT-3); the Server advances the delivery cursor on it.
      *
@@ -118,7 +118,7 @@ export type AgentFrame = Message<"compass.v1.AgentFrame"> & {
      *   transcript_entry — one committed SDK session entry, teed upstream on
      *     the DURABLE conversation-frame lane (PostConversationFrame →
      *     CommitConversationFrame), not the loss-tolerable Publish spine
-     *     (SEA-1570). The Server persists it; the agent's local copy is
+     *     (RIG-1570). The Server persists it; the agent's local copy is
      *     container-ephemeral. Reconstructed into a session-JSONL body on
      *     resume (T4/T5).
      *
@@ -151,7 +151,7 @@ export const AgentFrameSchema: GenMessage<AgentFrame> = /*@__PURE__*/
 /**
  * The `transcript_entry` variant's payload: one committed SDK session entry,
  * teed upstream by the agent's session-storage backend as a durable frame
- * (SEA-1570). `append` → a delta entry (checkpoint = false); `writeFull` (an
+ * (RIG-1570). `append` → a delta entry (checkpoint = false); `writeFull` (an
  * SDK compaction/title rewrite) → a checkpoint entry (checkpoint = true, the
  * full body as one payload). INTERNAL-only, like the rest of this file.
  *
@@ -253,10 +253,10 @@ export const SessionFrameSchema: GenMessage<SessionFrame> = /*@__PURE__*/
  * `AgentMessage` (a four-way union with an opaque provider payload) and a tool
  * set (whose SDK representation includes a non-serializable `execute` handle),
  * neither of which any existing compass.v1 message represents. That payload-
- * shape decision is parked (SEA-1310); the shells keep the oneof complete on
+ * shape decision is parked (RIG-1310); the shells keep the oneof complete on
  * the wire and are populated by a stacked PR once the shapes settle
  * (DeliverControl and the channel-borne SteerControl were so populated by
- * SEA-1569, each carrying a comms Message). Defining the empty shells now is
+ * RIG-1569, each carrying a comms Message). Defining the empty shells now is
  * additive and buf-breaking-safe (field additions to a proto3 message).
  *
  * @generated from message compass.v1.AgentControl
@@ -370,12 +370,12 @@ export const ReplayCompleteSchema: GenMessage<ReplayComplete> = /*@__PURE__*/
 
 /**
  * SteerControl carries a comms Message: a channel `@`-mention routed into the
- * agent's live session as a steer (SEA-1569), sourced from a channel
+ * agent's live session as a steer (RIG-1569), sourced from a channel
  * PostMessage, wrapped in an AgentControl and relayed via the runner control
  * seam (DispatchControl) — the same path DeliverControl rides, carrying the
  * same single first-party Message (DL-073; no seq, the id is in the Message).
  * The generic SDK-AgentMessage steer (Runner-originated, outside any channel)
- * stays parked under SEA-1310.
+ * stays parked under RIG-1310.
  *
  * @generated from message compass.v1.SteerControl
  */
@@ -421,7 +421,7 @@ export const SteerControlSchema: GenMessage<SteerControl> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent, 6);
 
 /**
- * Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
+ * Empty shells — payload fields parked (RIG-1310). Present so the AgentControl
  * oneof is complete on the wire; populated by a stacked PR.
  *   TranscriptReplay carries an inbound SDK AgentMessage;
  *   ConfigControl carries a tool set.
@@ -453,9 +453,9 @@ export const ConfigControlSchema: GenMessage<ConfigControl> = /*@__PURE__*/
 
 /**
  * DeliverControl carries a comms Message to deliver into the agent's live
- * session (SEA-1569): the Server wraps it in an AgentControl and relays it via
+ * session (RIG-1569): the Server wraps it in an AgentControl and relays it via
  * the runner control seam (DispatchControl); the Runner writes it down the
- * per-container socket. Populated from the SEA-1310 parked shell.
+ * per-container socket. Populated from the RIG-1310 parked shell.
  *
  * @generated from message compass.v1.DeliverControl
  */
@@ -513,7 +513,7 @@ export const DeliverControlSchema: GenMessage<DeliverControl> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent, 9);
 
 /**
- * DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an
+ * DeliveryAck — the agent's per-message delivery receipt (RIG-1569), an
  * AgentFrame oneof variant riding the Publish spine. Correlates to the
  * delivered message by id; on receipt the Server advances the delivery cursor
  * (the success receipt for a delivery, per RT-3 — not a Runner result).

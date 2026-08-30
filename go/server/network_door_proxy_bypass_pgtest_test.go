@@ -2,7 +2,7 @@
 
 package server
 
-// Auth-door COMPOSITION tests (SEA-1946): proof that the authenticated
+// Auth-door COMPOSITION tests (RIG-1946): proof that the authenticated
 // network door derives caller identity ONLY from the Authorization: Bearer
 // credential resolved against the store, and NEVER from any proxy-injected
 // header. The Compass Bridge will be fronted by `tailscale serve` (a reverse

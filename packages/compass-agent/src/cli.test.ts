@@ -161,7 +161,7 @@ describe("resolvePersona", () => {
 	});
 });
 
-// COMPASS_ROLE is the server-authoritative block-0 role selector (SEA-1732 T10).
+// COMPASS_ROLE is the server-authoritative block-0 role selector (RIG-1732 T10).
 // The entrypoint resolves the LABEL here (trimmed; blank → unset), then reads its
 // `prompts/<role>/SYSTEM.md` from the mount and injects it as customSystemPrompt.
 // Same unset/trim semantics as the model selector and persona.
@@ -244,7 +244,7 @@ describe("authSeedPath", () => {
 	});
 });
 
-// The env-file path is the frozen SEA-1327 T5 placement: a 0600
+// The env-file path is the frozen RIG-1327 T5 placement: a 0600
 // `$HOME/.compass/env` written by the Runner's materializer, beside the seed.
 describe("envFilePath", () => {
 	test("resolves under the supplied HOME", () => {
@@ -294,7 +294,7 @@ describe("parseEnvFile", () => {
 		expect(
 			parseEnvFile(
 				// The ratified four, plus a COMPASS_ control var the four-key list
-				// predated (COMPASS_RESUME_SESSION_FILE, SEA-1570 T8): the prefix
+				// predated (COMPASS_RESUME_SESSION_FILE, RIG-1570 T8): the prefix
 				// rule reserves it too, so a file can never hijack the resume path.
 				"HOME=/evil\nCOMPASS_MODEL=x\nCOMPASS_WORKDIR=y\nCOMPASS_PERSONA=z\nCOMPASS_RESUME_SESSION_FILE=/evil\nCOMPASS_FUTURE_VAR=nope\nOK=1",
 			),
@@ -507,11 +507,11 @@ function fakeCarrier(
 }
 
 // Like `deps`, but captures the tee-backed SessionManager `main` builds — the
-// surviving durable rider (SEA-1570) is a transcript frame, launched when a
+// surviving durable rider (RIG-1570) is a transcript frame, launched when a
 // session write teems onto the sink's durable lane. A test resolves the gate,
 // then drives an `appendMessage` through the captured manager to put a durable
 // TranscriptEntry send in flight (the way the removed conversation write-through
-// used to, before SEA-1708). The real tee storage is used (default
+// used to, before RIG-1708). The real tee storage is used (default
 // createSessionStorage), so the full sink → tee → durable-unary path runs.
 function depsCapturingManager(
 	session: FakeSession,
@@ -1290,7 +1290,7 @@ describe("main", () => {
 		}
 	});
 
-	// ── SEA-1570: the tee-storage composition + resume ────────────────────────
+	// ── RIG-1570: the tee-storage composition + resume ────────────────────────
 	//
 	// `main` builds the tee storage over the socket sink and injects the
 	// resulting IndexedSessionStorage into SessionManager.create, passed to
@@ -1373,7 +1373,7 @@ describe("main", () => {
 		expect(texts).toContain("resumed turn");
 	});
 
-	// The real Option-B shape (SEA-1570 T2): the Runner materializes the resume
+	// The real Option-B shape (RIG-1570 T2): the Runner materializes the resume
 	// file at an absolute path OUTSIDE the SDK default session dir. On the unfixed
 	// code loadIndex scans only sessionDir → the file is un-indexed → setSessionFile's
 	// statSync gate ENOENTs → silent fresh session → entriesAtCreate empty → RED.
@@ -1671,7 +1671,7 @@ describe("main", () => {
 
 // ── main(): sourcing $HOME/.compass/env into process.env ─────────────────────
 //
-// The materialized env-secret file (SEA-1327 T5) must reach `process.env` before
+// The materialized env-secret file (RIG-1327 T5) must reach `process.env` before
 // createAgentSession, so the session's extensions/MCP/tools inherit the secrets.
 // These run over the same composition seam as the `main` tests above, writing
 // the env file under the per-test scratch HOME (pinned in beforeEach). Every
@@ -2176,7 +2176,7 @@ function nextEventLoopTurn(): Promise<void> {
 	return promise;
 }
 
-// ── SEA-1570 session-JSONL fixtures ──────────────────────────────────────────
+// ── RIG-1570 session-JSONL fixtures ──────────────────────────────────────────
 //
 // Build a current-version (v3) session body the SDK loader accepts verbatim: a
 // 256-byte title slot, a session header, then one JSONL line per entry. Current
@@ -2491,7 +2491,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	});
 
 	test("the native comms + lifecycle tools reach customTools alongside the MCP tools", async () => {
-		// gap-1 (SEA-1741): main constructs the comms/lifecycle brokers from the
+		// gap-1 (RIG-1741): main constructs the comms/lifecycle brokers from the
 		// existing transport and merges their tools into customTools so the
 		// container agent can spawn/post. Derive the EXPECTED names at runtime from
 		// the same factories main uses (a rename reddens here, never silently
@@ -2542,13 +2542,13 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(names).toContain("agents_despawn_peer");
 		expect(names).toContain("forge_get_issue");
 		expect(names).toContain("forge_create_pull_request");
-		// Headless approval policy (SEA-1741): the entrypoint pins autoApprove so
+		// Headless approval policy (RIG-1741): the entrypoint pins autoApprove so
 		// the write-approval natives auto-execute with no human in the container.
 		expect(seen[0].autoApprove).toBe(true);
 	});
 
 	test("every native's execute keeps arity 2 — tripwire on the customToolToDefinition arg-shuffle", () => {
-		// SEA-1741 seam invariant. The natives are `AgentTool`s registered through
+		// RIG-1741 seam invariant. The natives are `AgentTool`s registered through
 		// `customTools`; the SDK classifies a marker-less AgentTool as a CustomTool
 		// and runs it through `customToolToDefinition`, which invokes `execute`
 		// with the CustomTool arg order (toolCallId, params, onUpdate, ctx, signal)
@@ -2618,7 +2618,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		expect(seen[0].disableExtensionDiscovery).toBe(true);
 		// No MCP tools (empty mount → empty connect), but the comms/lifecycle/forge
-		// natives are ALWAYS merged in (SEA-1741/RIG-2672) — so customTools carries
+		// natives are ALWAYS merged in (RIG-1741/RIG-2672) — so customTools carries
 		// exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
 		expect(seen[0].customTools).toHaveLength(17);
@@ -2651,13 +2651,13 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(skillNames(seen[0].skills)).toEqual(["only"]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		// No MCP tools from a skills-only mount, but the natives always merge in
-		// (SEA-1741/RIG-2672) — so customTools is exactly the comms/lifecycle/forge
+		// (RIG-1741/RIG-2672) — so customTools is exactly the comms/lifecycle/forge
 		// natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
 		expect(seen[0].customTools).toHaveLength(17);
 	});
 
-	// ── SEA-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──
+	// ── RIG-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──
 	//
 	// The role selector delivers a per-role block-0 as `customSystemPrompt` (which
 	// REPLACES OMP's default block-0), while persona STILL appends AFTER (record

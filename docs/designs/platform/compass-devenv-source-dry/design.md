@@ -234,7 +234,7 @@ delta is `devenv.yaml` + a relock (task T4).
   hazard is live, not hypothetical — ci.yml:1153's rev is only correct today by
   coincidence of the last manual sync, and the next `devenv update` in
   agent-image/ silently decouples the CI seed from the lock (the
-  SEA-1304/RIG-2245 regression class renovate.yml:106-108 names is exactly
+  RIG-1304/RIG-2245 regression class renovate.yml:106-108 names is exactly
   "silent divergence at a setup seam").
 - **(b) A shared bash script.** The resolve logic (JSON parse → validate →
   compose flakeref → build → locate bin, with loud failure on shape drift) is

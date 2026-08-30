@@ -1,7 +1,7 @@
 import { createServer } from "node:net";
 import { defineConfig, devices } from "@playwright/test";
 
-// The repo's first browser harness (SEA-2034 T1). Drives `vite dev` against the
+// The repo's first browser harness (RIG-2034 T1). Drives `vite dev` against the
 // in-memory stub store (the app boots fully on stub-data.ts — no daemon, no
 // Tauri IPC) and captures full-page screenshots of the core surfaces for Matt's
 // human review. This is a smoke harness: no pixel-diff gating, no computed-style

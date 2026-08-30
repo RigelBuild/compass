@@ -19,7 +19,7 @@ board fleet pane — with no rerouting. First-responder-wins is the sole
 settlement: the first answer locks the ask for everyone.
 
 First-responder-wins is the backend contract that landed with PR #810
-(SEA-1243, merged 2026-07-20): it reshapes
+(RIG-1243, merged 2026-07-20): it reshapes
 `Ask` into per-question `Ask{AskID, Questions[]}`, makes `RespondToAsk`
 take `[]AskQuestionAnswer` keyed by `question_id` (every question covered exactly
 once), and adds a PERSISTED `Ask.Answered` flag — settlement is
@@ -331,7 +331,7 @@ per-question decomposition lands in #821 as a behavior-preserving refactor,
 ahead of T1-T3; the #810 affordances
 that ride on top — free-text/`custom_text`, timeout, preview, and the atomic
 `[]AskQuestionAnswer` transport — stay Non-goals, deferred to the `@compass/client` swap
-where the seam signature widens (tracked in SEA-1330). The stub carries only
+where the seam signature widens (tracked in RIG-1330). The stub carries only
 single-question fixtures today, so per-question rendering is exercised but
 multi-question accumulation is not until the swap.
 

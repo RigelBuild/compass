@@ -1,4 +1,4 @@
-# Compass forge-poll driver (SEA-1810)
+# Compass forge-poll driver (RIG-1810)
 
 Status: Superseded by ../compass-forge-board-webhook-ingestion/design.md
 Lane: compass-server
@@ -95,7 +95,7 @@ no convergence refactor ever needed.
   (new, this record). A future reader maps `agent_forge_subscriptions` back
   to DL-053's `forge_subscriptions`. The rename is recorded in the ledger as
   DL-163 (rides THIS PR); the paired one-line forward annotation at the frozen
-  ownership-layer DDL is deferred to SEA-1883 (editing a frozen record needs
+  ownership-layer DDL is deferred to RIG-1883 (editing a frozen record needs
   Matt's call — see Open Questions → OQ-C).
 - **Provider domain `IN (1, 2, 3, 4)` on every 0015 table (OQ-D2, Matt
   2026-08-08):** the proto enum already declares all four providers —
@@ -190,7 +190,7 @@ DL-053's subscription model is **per-artifact**: "An agent subscribes to a
 *forge artifact*: an issue or a PR, named by `(provider, repo, kind, number)`"
 (`compass-server-ownership-layer/design.md:944-945`), and the FETCH cursor
 table is keyed the same way (`:1007-1019`, `PRIMARY KEY (provider, repo, kind,
-number)`). SEA-1810's board ingestion is **per-repo LIST**: fetch every issue
+number)`). RIG-1810's board ingestion is **per-repo LIST**: fetch every issue
 in a repo in one paginated `/issues?state=all` walk (`Ingester.Ingest`
 "fetches every issue for repo", `ingest.go:48`) and sink each. A list-page
 ETag is a caching fact about a URL (repo + filter + page), not about any one
@@ -1162,7 +1162,7 @@ adapter over the open
 Interfaces:
 
 ```go
-// server.ForgeConfig configures the board-ingestion poll driver (SEA-1810).
+// server.ForgeConfig configures the board-ingestion poll driver (RIG-1810).
 // All-optional: polling disabled (empty SeedRepos, Poll false) leaves the
 // driver off (today's behavior).
 type ForgeConfig struct {
@@ -1353,7 +1353,7 @@ Resolution, as applied through this record:
   `agent_forge_subscriptions`; see compass-forge-poll-driver" — so a reader
   entering from the frozen ownership-layer record who greps
   `forge_subscriptions` finds the mapping instead of nothing. Half (b) is
-  DEFERRED to SEA-1883, not folded here: it edits a frozen Active record,
+  DEFERRED to RIG-1883, not folded here: it edits a frozen Active record,
   which needs Matt's explicit call (flagged in OQ-C for his ratification at
   this design-PR review). This PR's ledger delta is DL-161/DL-162/DL-163 in
   DECISIONS.md.
@@ -1403,7 +1403,7 @@ no CHECK-widening migration on any of them. The `issues` table's own
 
 ### OQ-E (out of scope — the Linear-ingestion prerequisite; follow-up filed by the driver)
 
-SEA-1810's new tables are Linear-ready (their CHECKs admit 4), but actually
+RIG-1810's new tables are Linear-ready (their CHECKs admit 4), but actually
 INGESTING Linear issues has three prerequisites, ALL out of scope for this
 GitHub-read slice and belonging to the future Linear-ingestion slice:
 
@@ -1429,7 +1429,7 @@ Why the asymmetry (`issues` CHECK deferred in SQL, Go domain closed now) is
 deliberate: the Go constant `store.ForgeProviderLinear = 4` is required THIS
 slice because 0015's own store methods must be able to name domain value 4
 (the four new tables' CHECKs admit it), while the `issues` CHECK guards a
-table SEA-1810 never writes with provider=4 (the driver is bound to GITHUB;
+table RIG-1810 never writes with provider=4 (the driver is bound to GITHUB;
 no Linear producer exists in the tree) — and widening a guard ahead of its
 producer would weaken 0013's "every issue is forge-backed" documentation, so
 the widening correctly waits for the Linear producer. This deferral is
@@ -1440,6 +1440,6 @@ author-resolved pending Matt's review: he may tie-break to fold the
 
 Whether the dogfood demo shows LIVE GitHub issues — which would make this
 driver demo-critical and re-sequence its priority — is a later Matt scope
-call per the SEA-1810 issue body's own escalation trip-wire. Recorded as an
+call per the RIG-1810 issue body's own escalation trip-wire. Recorded as an
 explicitly non-load-bearing deferral: the design is correct regardless of the
 ruling; only scheduling changes.

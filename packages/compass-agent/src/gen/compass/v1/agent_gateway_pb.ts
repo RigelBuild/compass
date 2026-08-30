@@ -1,5 +1,5 @@
 // The compass.v1 agent->Runner call transport (design
-// docs/designs/product/compass-agent-runner-transport/design.md, SEA-1351 T1).
+// docs/designs/product/compass-agent-runner-transport/design.md, RIG-1351 T1).
 //
 // INTERNAL-ONLY surface. Unlike compass.proto / comms.proto — the public,
 // generated-client door between a UI and the Server — AgentGateway is the
@@ -1320,7 +1320,7 @@ export type PostConversationFrameRequest = Message<"compass.v1.PostConversationF
   /**
    * Agent-minted, stable across retries of the same logical frame; the Runner
    * commits at-most-once per key so a lost-response retry is not duplicated. An
-   * ENVELOPE field (dedup), not a payload field — SEA-1310's parked payload
+   * ENVELOPE field (dedup), not a payload field — RIG-1310's parked payload
    * decision is untouched.
    *
    * @generated from field: string idempotency_key = 2;

@@ -158,10 +158,10 @@ type AgentAccount struct {
 	OwnerUserID AccountID
 	// HomeChannelID is the agent's home channel, minted at creation (RT-2).
 	HomeChannelID ChannelID
-	// Persona is the agent's system-prompt text, baked at creation (SEA-1571);
+	// Persona is the agent's system-prompt text, baked at creation (RIG-1571);
 	// empty means no persona override.
 	Persona string
-	// Role is the agent's operator-set block-0 selector (SEA-1732 T10); empty
+	// Role is the agent's operator-set block-0 selector (RIG-1732 T10); empty
 	// means no role (default OMP block-0). Unlike Persona (an append overlay),
 	// the label selects config/prompts/<role>/SYSTEM.md, delivered as the
 	// container's customSystemPrompt.
@@ -395,7 +395,7 @@ type AskQuestion struct {
 	// pending or when the question was answered by option choice alone.
 	CustomText string
 	// TimedOut is true when the answer was recorded by timeout auto-selection
-	// rather than a participant (SEA-1310 owns whether the Compass answer path
+	// rather than a participant (RIG-1310 owns whether the Compass answer path
 	// times out; this is the audit carrier either way).
 	TimedOut bool
 }

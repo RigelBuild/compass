@@ -322,7 +322,7 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 	// registered coordination hook. The INSERT above just wrote it; invoke the
 	// hook on THIS tx for the new agent's PARENT (the manager that gains this
 	// report), so the coordination-channel reconcile commits atomically with the
-	// tree edge (SEA-1722 T5, design.md:550-551). Skipped when parent is empty: a
+	// tree edge (RIG-1722 T5, design.md:550-551). Skipped when parent is empty: a
 	// root agent has no manager, so there is no coordination channel to reconcile.
 	if a.ParentAgentID != "" {
 		if err := s.invokeCoordinationHook(ctx, tx, a.ParentAgentID); err != nil {
@@ -596,7 +596,7 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 
 	// INVARIANT: every write of agent_accounts.parent_agent_id must invoke the
 	// registered coordination hook. The UPDATE above rewrote it, so reconcile
-	// BOTH affected managers' coordination channels on THIS tx (SEA-1722 T5,
+	// BOTH affected managers' coordination channels on THIS tx (RIG-1722 T5,
 	// design.md:550-551,567): the NEW parent gains this report (reparent-in adds
 	// it) and the OLD parent loses it (reparent-out removes it). The reconcile is
 	// a per-manager membership resync (idempotent), so invoking it for each with

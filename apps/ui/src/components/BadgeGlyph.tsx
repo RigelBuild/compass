@@ -1,6 +1,6 @@
 import { type Component, For } from "solid-js";
 
-/** The axis+status badge (SEA-2117 / SEA-2121, design compass-badge-clarity
+/** The axis+status badge (RIG-2117 / RIG-2121, design compass-badge-clarity
  *  Option B): a fixed 2-char axis code (`CI` / `RV`) in the DS mono UI face,
  *  followed by a 9×9 1-bit pixel-art glyph carrying the status. Code and glyph
  *  share the status color — the wrapper's `data-axis`+`data-status` route
@@ -14,7 +14,7 @@ import { type Component, For } from "solid-js";
  *  `data-compact`).
  *
  *  Consumers (IssueCard / Bridge / DoneView) are flipped in a separate slice
- *  (SEA-2122); this component is the primitive they will adopt. */
+ *  (RIG-2122); this component is the primitive they will adopt. */
 
 type CiStatus = "success" | "pending" | "failure";
 type ReviewStatus = "approved" | "changes" | "commented";

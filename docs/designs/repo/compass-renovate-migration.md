@@ -52,10 +52,10 @@ with `osvVulnerabilityAlerts: true` replacing the coverage.
 - **Every postUpgradeTasks command in bot-config `allowedCommands`,
   `^…$`-anchored** — a repo config can't self-authorize a command; `config.test.ts`
   pins the two lists together (as the internal monorepo's does).
-- **TypeScript `<7` cap (SEA-1867)** — compass's catalog pins
+- **TypeScript `<7` cap (RIG-1867)** — compass's catalog pins
   `"typescript": "^6.0.3"` (`package.json:21`), so the Project Corsa cap applies:
   TS 7.0 ships no stable programmatic API (ported from the internal monorepo).
-- **Timezone/schedule alignment (SEA-1220)** — `timezone: "America/New_York"` in
+- **Timezone/schedule alignment (RIG-1220)** — `timezone: "America/New_York"` in
   the repo config, and the GHA cron (UTC) must land inside the `schedule:daily`
   before-4am-ET window WITH margin: GHA scheduled runs are best-effort and
   routinely start 5-30+ minutes late, so the cron must not sit near the window
@@ -148,9 +148,9 @@ here.
 
 Triggers: `on: schedule: - cron: "0 6 * * *"` (06:00 UTC = 02:00 EDT / 01:00
 EST — inside the before-4am-ET `schedule:daily` window with 2-3h margin per
-the SEA-1220 constraint; GHA cron is best-effort and routinely 5-30+ minutes
+the RIG-1220 constraint; GHA cron is best-effort and routinely 5-30+ minutes
 late, so a tighter cron like `0 7` — 60 min of EDT margin — risks a delayed
-start past 04:00 ET reproducing the SEA-1220 silent-zero-PR symptom) +
+start past 04:00 ET reproducing the RIG-1220 silent-zero-PR symptom) +
 `workflow_dispatch` for manual runs (the GHA analogue of the internal
 monorepo's Woodpecker `{event: manual}` trigger; it also revives the
 schedule if GHA auto-disables it after 60 days of repo inactivity — see T6).
@@ -315,7 +315,7 @@ Port from the internal monorepo, adapted:
   divergence from the internal monorepo's prior art gets a config comment), aligned with the
   `0 6 * * *` UTC cron inside the before-4am-ET window;
   `minimumReleaseAge: null` (a moving-branch digest never clears a
-  release-age window — the SEA-1220 silent-pending shape), branch-mode
+  release-age window — the RIG-1220 silent-pending shape), branch-mode
   postUpgradeTasks running the ported relock script with `fileFilters:
   ["devenv.lock", "package.json", "bun.lock"]`.
 - Catalog lockfile coupling: `matchDepTypes: ["workspaces.catalog"]`,
@@ -620,7 +620,7 @@ repo's standard runner label per `ci.yml`), steps:
    RENOVATE_TOKEN: ${{ steps.<mint>.outputs.token }}`
    → `bunx renovate@44.33.1` (exact pin per Approach; the self-pin
    customManager bumps it).
-Triggers: `schedule: [{cron: "0 6 * * *"}]` (margin per the SEA-1220
+Triggers: `schedule: [{cron: "0 6 * * *"}]` (margin per the RIG-1220
 constraint) + `workflow_dispatch`. Two GHA scheduled-workflow caveats, in a
 workflow comment: (a) cron is best-effort — starts are routinely 5-30+ minutes
 late, which the 06:00 UTC margin absorbs; (b) GHA auto-disables a scheduled

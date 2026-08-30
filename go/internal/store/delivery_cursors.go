@@ -301,7 +301,7 @@ func (s *Store) UnroutedMentionMessages(ctx context.Context, afterSeq int64, lim
 // between two owed seqs and currently stops the advance, so above_seqs can
 // accumulate acked seqs on a busy multi-channel deployment. Tightening this
 // advance to drain across cross-channel gaps without reintroducing commit-lag
-// loss is a parked design question (SEA-1569 review, PR #55 Open Questions) — do
+// loss is a parked design question (RIG-1569 review, PR #55 Open Questions) — do
 // not "fix" it by jumping the low-water past an un-acked lower owed seq, which
 // loses commit-lagged messages. A duplicate or reordered ack is a no-op.
 func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel ChannelID, messageID string) error {

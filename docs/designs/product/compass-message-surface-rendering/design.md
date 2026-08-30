@@ -1,9 +1,9 @@
-# Compass message surface — virtualized thread list + streaming markdown (SEA-1332)
+# Compass message surface — virtualized thread list + streaming markdown (RIG-1332)
 
 Status: Active
 
 Docs-only record; implementation is a separate follow-on lane that rebases onto
-franklin's SEA-1337 ChannelView restructure (seam stated in §Approach).
+franklin's RIG-1337 ChannelView restructure (seam stated in §Approach).
 
 ## Problem / Intent
 
@@ -64,7 +64,7 @@ grouping derivation, `MentionText`/`AskBlock` behavior is preserved, and the
 
 **Decision: `createVirtualizer` from `@tanstack/solid-virtual` in chat mode
 (`anchorTo: 'end'` + `followOnAppend`), variable-size over the THREAD list,
-with the scroll container being the post-SEA-1337 `.conv-stream`.**
+with the scroll container being the post-RIG-1337 `.conv-stream`.**
 
 *What is virtualized.* The list unit is a **thread**, not a message: the
 stream today is `<Index each={threads()}>` → `ThreadView` (`ChannelView.tsx:343-351`),
@@ -117,7 +117,7 @@ provides it natively and we adopt it rather than hand-rolling:
   `!isAtEnd()` is deliberately OUT of scope (non-goal creep; OQ-3 notes it as
   the natural follow-on).
 
-*Where it sits — the SEA-1337 seam (pending #841 merge).* SEA-1337
+*Where it sits — the RIG-1337 seam (pending #841 merge).* RIG-1337
 restructures the `ChannelView` wrapper into a flex-row; the scroller is
 designed against franklin's POST-restructure shape (his PR #841, live but
 unmerged — line numbers below are its head and shift on rebase):
@@ -307,13 +307,13 @@ override that renders link labels verbatim, so mentions never chip in link
 text. The
 **native side** (the Rust `tauri-plugin-opener` registration + the opener
 capability/permission in the Tauri shell's `capabilities`) lands with the
-compass Tauri shell lane (SEA-1022; no `src-tauri` crate exists on main yet,
+compass Tauri shell lane (RIG-1022; no `src-tauri` crate exists on main yet,
 verified) — this lane's T1/T5 own the JS dep + interception and the impl notes
 the native capability as a cross-lane dependency, so the no-navigation
 behavior is not falsely claimed deployable before the shell wires the
 permission. T4 pins that a message link does not navigate the app (the
 interception handler fires); the end-to-end external open is a shell-lane
-integration check. Until SEA-1022 wires the native opener capability, this
+integration check. Until RIG-1022 wires the native opener capability, this
 lane's merge delivers only the interception + no-navigation guarantee: an
 activated link neither navigates the app nor opens externally (`openUrl`
 rejects with no registered capability). T6 acceptance and the PR body must
@@ -507,7 +507,7 @@ Every task below inherits these; task briefs do not restate them.
   `/channel-(first|primary)/i` or `/design\s+compass-0\.6\b/i`
   (`design-citations.test.ts:38-48`).
 - **Rebase-onto-franklin:** implementation branches from franklin's landed
-  SEA-1337 ChannelView restructure (PR #841) and takes the
+  RIG-1337 ChannelView restructure (PR #841) and takes the
   `.conv-body-row`/`.conv-main` wrapper as found; no task edits the wrapper.
 - **Tests: `moon run compass-ui:ci`** = typecheck + build + test
   (`moon.yml:32-35`); test = `bun test --conditions browser
@@ -515,7 +515,7 @@ Every task below inherits these; task briefs do not restate them.
   load-bearing (Bun's default `node` condition pulls solid-js's SSR build,
   `moon.yml:25-28`). Red→green per `rule://red-green-testing`: tests first,
   watch them fail, then implement.
-- **No planning metadata in source** — SEA-1332 appears in commit subjects /
+- **No planning metadata in source** — RIG-1332 appears in commit subjects /
   PR body only, never in code comments.
 
 ### T1 — Dependencies
@@ -640,7 +640,7 @@ scope here rather than discovered mid-impl. **Link/image safety** per fork
 `@tauri-apps/plugin-opener` (never in-app navigation) and renders link labels
 from raw text value, so mentions never chip inside a link (no text-node
 ancestry check — the text hook has no ancestor pointer); images
-disallowed-or-transformed. Native opener capability is the SEA-1022 shell
+disallowed-or-transformed. Native opener capability is the RIG-1022 shell
 lane's (cross-lane dependency, not owned here); until it lands, an activated
 link neither navigates nor opens (`openUrl` rejects) — this lane ships the
 interception guarantee only.
@@ -672,19 +672,19 @@ follow-at-bottom, no-yank-when-scrolled-up, prepend-no-jump, and that
 
 **Link-open completion gate (cross-lane).** External link-opening is not
 "done" on this lane's merge. This lane delivers only the interception +
-no-navigation guarantee — `openUrl` rejects until the SEA-1022 shell lane
+no-navigation guarantee — `openUrl` rejects until the RIG-1022 shell lane
 registers `tauri_plugin_opener::init()` and grants the opener capability, so
 every rendered link is inert (intercepted, neither navigating nor opening)
 on an otherwise-green CI. The link-open feature is marked complete only when
-an SEA-1022-owned end-to-end integration check (real webview: activate a
+an RIG-1022-owned end-to-end integration check (real webview: activate a
 message link → external open, no in-app navigation) passes. That check is a
-required gate on the SEA-1022 shell lane and a named prerequisite dependency
+required gate on the RIG-1022 shell lane and a named prerequisite dependency
 of this record's link contract, tracked as a blocking cross-lane edge — not a
 box this lane's green CI can tick. The PR body states this explicitly so
 link-open is never reported done on the strength of this PR alone.
 
 Interfaces: consumes the `ci` task graph (`moon.yml:32-35`). Produces: the
-merge-ready implementation PR (SEA-1332 in subject/body only).
+merge-ready implementation PR (RIG-1332 in subject/body only).
 
 ## Tasks
 
@@ -740,7 +740,7 @@ load-bearing ones) were ratified by Matt on 2026-07-21, both as recommended**
   in code.
 - **OQ-2 (non-load-bearing; deferred-decision, not blocking impl order) —
   who owns the stale ACP comment rewrite.** The `Block` doc comment
-  (`ChannelView.tsx:150-152`) is stale ACP vocabulary; franklin's SEA-1337
+  (`ChannelView.tsx:150-152`) is stale ACP vocabulary; franklin's RIG-1337
   lane may run its own comment sweep. Recommendation: this lane rewrites it —
   T5 rewrites the surrounding code anyway, and a one-comment dependency on
   another lane's sweep is coordination overhead for nothing. If franklin's
@@ -752,7 +752,7 @@ load-bearing ones) were ratified by Matt on 2026-07-21, both as recommended**
   30-150 is defensible. Recommendation: ship 80, tune by hand once the
   virtualized surface is usable. Also parked here: a "jump to latest" pill
   driven by `!isAtEnd()` is the natural follow-on affordance but is scope
-  creep for SEA-1332 — recommend a follow-up ticket, not this lane.
+  creep for RIG-1332 — recommend a follow-up ticket, not this lane.
 - **OQ-4 (non-load-bearing; cosmetic, defaulted) — Shiki theme pair.**
   Recommendation: `github-dark-default` + `github-light-default` as the
   initial pair (neutral, maintained, matches the UI's palette direction);

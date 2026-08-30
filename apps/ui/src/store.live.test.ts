@@ -1118,7 +1118,7 @@ describe("store agents() live join (§T3)", () => {
 		});
 	});
 
-	// The SEA-1645 reactivity the store.ts:790-795 comment owed: `agentById`
+	// The RIG-1645 reactivity the store.ts:790-795 comment owed: `agentById`
 	// resolves through the reactive `agents()` memo, so a presence tick flips its
 	// answer. A tail AgentPresenceChanged upserts acc-idle's lifecycle and the
 	// seam re-resolves stopped→working with no accessor swap.
@@ -1152,7 +1152,7 @@ describe("store agents() live join (§T3)", () => {
 		});
 	});
 
-	// L3 (SEA-2100): a chat-message tail must NOT recompute the agents() join.
+	// L3 (RIG-2100): a chat-message tail must NOT recompute the agents() join.
 	// The memo depends only on accounts()/presence(); a MessagePosted touches
 	// messages() with structural sharing, so accounts/presence keep identity and
 	// agents() returns the SAME array reference. Reference equality is the point:

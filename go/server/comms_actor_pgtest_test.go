@@ -2,7 +2,7 @@
 
 package server
 
-// Comms-actor attribution over the authenticated network door (SEA-1195 T3b).
+// Comms-actor attribution over the authenticated network door (RIG-1195 T3b).
 // The isolated auth-package test (internal/auth/interceptor_pgtest_test.go's
 // TestBearerInterceptorSetsCommsActorNotAdminFallback) proves withCaller sets the
 // comms actor when driven through a hand-built BearerInterceptor; it cannot prove

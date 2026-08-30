@@ -423,7 +423,7 @@ const RepoBranchDropdown: Component = () => {
  *  conversation inline (asks answerable in place — first-responder-wins, per
  *  the ask-in-channel record), above a compact header control that opens the
  *  agent's full workspace via store.openAgent. Only rendered for a RESOLVABLE
- *  pin (SEA-1645 P2): the pane arm resolves reachability before choosing this
+ *  pin (RIG-1645 P2): the pane arm resolves reachability before choosing this
  *  vs the unreachable block, so there is no unresolved-agentId fallback here. */
 const FleetPane: Component<{ item: ActivityBarItem }> = (props) => {
 	const store = useStore();
@@ -454,7 +454,7 @@ const FleetPane: Component<{ item: ActivityBarItem }> = (props) => {
 	);
 };
 
-/** An unreachable pin's pane (SEA-1645 P2): the pinned agent no longer resolves
+/** An unreachable pin's pane (RIG-1645 P2): the pinned agent no longer resolves
  *  (dead / despawned / filtered out). Shows an empty-state message styled like
  *  the other `term-empty` panes and a WORKING unpin control — the only unpin
  *  affordance for an unreachable pin, whose left-tree row is gone (the tree
@@ -566,7 +566,7 @@ export const RightSidebar: Component = () => {
 		const active = store.activeRightTab();
 		return active === "status" || active.startsWith("agent:");
 	};
-	// The active tab's fleet pane item, for any `agent:`-prefixed pin (SEA-1645
+	// The active tab's fleet pane item, for any `agent:`-prefixed pin (RIG-1645
 	// P2). The P1 `rightTabGroups()` memo already emits an item for EVERY pin
 	// (marked unreachable or not) with the cached-handle title; read it out rather
 	// than resolving/rebuilding a second time — this is the SINGLE
@@ -603,7 +603,7 @@ export const RightSidebar: Component = () => {
 								)}
 							</Match>
 
-							{/* Defensive close (SEA-1645 P2): an `agent:` tab that matches no
+							{/* Defensive close (RIG-1645 P2): an `agent:` tab that matches no
 							    pin in rightTabGroups() lands on status rather than a blank
 							    pane. Unreachable via the current UI — setActiveRightTab is
 							    only ever called with a pinned bar-item id, "status", or an

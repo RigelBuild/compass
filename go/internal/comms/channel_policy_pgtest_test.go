@@ -2,7 +2,7 @@
 
 package comms
 
-// SetChannelPolicy handler + policy enforcement at the RPC edge (SEA-1722 T4):
+// SetChannelPolicy handler + policy enforcement at the RPC edge (RIG-1722 T4):
 // the handler sets the policy and echoes the updated channel; an OWNER_ONLY
 // non-owner post maps to CodeNotFound (the no-oracle in-band rejection); an
 // unsubscribe on a mandatory channel maps to CodeInvalidArgument. Driven

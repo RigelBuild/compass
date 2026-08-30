@@ -22,7 +22,7 @@ import { StateDot } from "./StateDot";
 
 /** An agent leaf row in the tree — the per-agent select button, plus a hover
  *  pin/unpin affordance on the right (Record A §T4). Renders the same StateDot /
- *  handle / non-worker role-pip (SEA-1623: pip left alone) for both a childless
+ *  handle / non-worker role-pip (RIG-1623: pip left alone) for both a childless
  *  leaf and a parent agent's own row. An optional descendant badge trails the
  *  row when the agent has children. The pin toggle sits as a sibling BUTTON
  *  outside the select button (a button can't nest a button), calling

@@ -176,7 +176,7 @@ function lifecycleFrame(state: AgentSessionState): OutboundFrame {
 }
 
 // A durable transcript frame — the surviving rider on the PostConversationFrame
-// unary (SEA-1570). `seq` disambiguates frames within a test.
+// unary (RIG-1570). `seq` disambiguates frames within a test.
 function transcriptFrame(seq: bigint): OutboundFrame {
 	return {
 		kind: "transcriptEntry",
@@ -560,7 +560,7 @@ test("STOPPED leads across cycled batches with a live consumer and loses no trac
 });
 
 test("a deliveryAck rides the Publish PRIORITY lane, not the durable unary", async () => {
-	// SEA-1310 §8: a per-message delivery receipt is a control-plane ack. Per the
+	// RIG-1310 §8: a per-message delivery receipt is a control-plane ack. Per the
 	// spine contract (publish-spine.ts:24-26,62) it rides the Publish spine's
 	// never-drop PRIORITY lane, NOT the durable PostConversationFrame unary — the
 	// Runner gateway's isConversationFrame guard REJECTS an ack on that unary, so
@@ -638,7 +638,7 @@ function spineTransport(spine: PublishSpine): RunnerTransport {
 }
 
 test("a deliveryAck rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
-	// SEA-1310 §8 (re-review MEDIUM): the socket-level test above pins
+	// RIG-1310 §8 (re-review MEDIUM): the socket-level test above pins
 	// Publish-not-durable but CANNOT distinguish enqueuePriority from
 	// enqueueTrace (both land on publishFrames). A future edit flipping emit()'s
 	// deliveryAck arm (frame-sink.ts:178) to enqueueTrace would compile and pass

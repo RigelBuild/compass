@@ -51,7 +51,7 @@ Each new arm therefore needs only the thin `…AsAccount` adapter following the 
 >
 > `go/server/lifecycle.go:345-357` (`provisionAndStart`): signature already carries `persona string, role string` and threads them to `ProvisionAgentWorkspaceRequest{ … Persona: persona, Role: role }`.
 >
-> `go/internal/store/inputs.go:27-32`: "Role is the agent's operator-set block-0 selector (SEA-1732 T10). Empty means no role (default OMP block-0) … Unlike Persona (an append overlay), the label selects `config/prompts/<role>/SYSTEM.md`, delivered as the container's customSystemPrompt."
+> `go/internal/store/inputs.go:27-32`: "Role is the agent's operator-set block-0 selector (RIG-1732 T10). Empty means no role (default OMP block-0) … Unlike Persona (an append overlay), the label selects `config/prompts/<role>/SYSTEM.md`, delivered as the container's customSystemPrompt."
 
 So the change is: add optional `role` + `persona` fields to `SpawnPeerRequest`, and in `SpawnAsAccount` replace the two hardcoded `""` with `req.GetRole()` / `req.GetPersona()`. compass-agent's existing `agents_spawn_peer` tool gains `role` and `persona` args — no new tool, no new arm, no new relay path.
 

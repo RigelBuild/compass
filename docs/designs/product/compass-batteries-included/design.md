@@ -3,7 +3,7 @@
 Status: Draft
 
 > Freezes on merge; later changes supersede by citation, never rewrite.
-> Tracked as SEA-1738. Fast-follow to the SEA-1732 Manager+implementer prompt
+> Tracked as RIG-1738. Fast-follow to the RIG-1732 Manager+implementer prompt
 > record ([compass-manager-prompt](../compass-manager-prompt/design.md), PR
 > #1089): #1089 freezes the two role prompts (Manager block-0 + implementer
 > block-0, MP-1..MP-5 / DL-129..DL-134); THIS record freezes the batteries
@@ -12,7 +12,7 @@ Status: Draft
 >
 > New named Decisions this record introduces (ledger rows DL-140..DL-147,
 > landed in DECISIONS.md in this same PR): **DL-140** (language-neutral default
-> bundle; Go pack deferred to SEA-1739/Beta), **DL-141**
+> bundle; Go pack deferred to RIG-1739/Beta), **DL-141**
 > (delegated-implementation folds into management-trees, no separate skill),
 > **DL-142** (version-control's three footguns fold into one Compass
 > always-apply rule), **DL-143** (the wave-specific exclusion set), **DL-144**
@@ -22,7 +22,7 @@ Status: Draft
 > always-apply — per-container isolation removes the shared-box clobber blast
 > radius), **DL-147** (the default batteries are stack-neutral, not merely
 > language-neutral — devenv/direnv is a kept product baseline, GitHub-Actions
-> specifics leave `ci-failure-triage` for SEA-1739 pack territory).
+> specifics leave `ci-failure-triage` for RIG-1739 pack territory).
 >
 > Grounding: every delivery-mechanism claim below was re-verified firsthand
 > against the compass repo at **`origin/main = cf048ca`** (read-only checkout,
@@ -34,7 +34,7 @@ Status: Draft
 
 ## Problem / Intent
 
-A freshly-spawned Compass agent gets the two role prompts (SEA-1732: Manager
+A freshly-spawned Compass agent gets the two role prompts (RIG-1732: Manager
 block-0 via `customSystemPrompt`, implementer block-0 as a mounted
 `config/agents/` subagent def) — but **no skills and no rules**. The prompt
 tells it *what it is*; the batteries tell it *how work is done here*: the jj
@@ -48,26 +48,26 @@ This record freezes the **default bundle manifest** for the Dogfood cut: per
 role (Manager, Implementer), which rules and skills ship, where each comes
 from (folded / adapted / authored new), and what is deliberately excluded and
 why. Scope boundaries, both Matt-ratified: the default is **language-neutral**
-(no Go pack — that is the SEA-1739 "packs" feature, Beta; for Dogfood,
+(no Go pack — that is the RIG-1739 "packs" feature, Beta; for Dogfood,
 Matt-as-user adds his Go skills via the normal user-skill path), and this is a
 **manifest + adaptation-decision record** — the skill/rule BODIES are authored
-in the impl children below, matching the SEA-1732 T4–T9 pattern.
+in the impl children below, matching the RIG-1732 T4–T9 pattern.
 
 ## Approach
 
 ### Decision BI-1 — two role bundles on one delivery surface
 
-Two roles, two bundles, matching the SEA-1732 cost split (MP-2/DL-130):
+Two roles, two bundles, matching the RIG-1732 cost split (MP-2/DL-130):
 
 - **Manager** — coordinator. Small always-on surface: the ~500-word block-0
-  (SEA-1732 T1) + always-apply rules (full text every turn) + on-demand
+  (RIG-1732 T1) + always-apply rules (full text every turn) + on-demand
   skills (name + one-liner every turn, body via `skill://`).
 - **Implementer** — hands, an in-process `task` subagent (MP-5/DL-134). Large
-  block-0 (SEA-1732 T2, `config/agents/implementer.md`) + domain rules
+  block-0 (RIG-1732 T2, `config/agents/implementer.md`) + domain rules
   (rulebook tier: loaded on demand by description match).
 
 **How the bundle is consumed — grounded at `cf048ca`.** The batteries ship as
-members of the config bundle SEA-1678's passthrough delivers (skills, rules,
+members of the config bundle RIG-1678's passthrough delivers (skills, rules,
 agents, AGENTS.md), and the compass entrypoint maps each member onto a
 `createAgentSession` seam:
 
@@ -137,18 +137,18 @@ is **fleet-flat** — one `config/rules/` dir, every rule visible to both roles,
 with the role split expressed as *tier* (always-apply = the Manager-facing
 invariants, which also inject into implementer subagents; rulebook/domain =
 loaded only when the description matches the work). Per-role bundle keying is
-the named SEA-1724 seam (DL-078), not this record's scope. See OQ-1.
+the named RIG-1724 seam (DL-078), not this record's scope. See OQ-1.
 
 ### Decision BI-2 — three sourcing modes, one per manifest row
 
 Every battery is one of:
 
 - **(a) Folded** — its content is absorbed into a role prompt or an existing
-  SEA-1732 task; no standalone artifact ships. Two folds are Matt-ratified; a
+  RIG-1732 task; no standalone artifact ships. Two folds are Matt-ratified; a
   third (`enumerate-pr-review-surfaces`) is added by this amendment to close a
   manifest gap the critique surfaced (it was unaccounted-for in
   shipped/folded/excluded):
-  - `delegated-implementation` → SEA-1732 **T5 management-trees** (DL-141).
+  - `delegated-implementation` → RIG-1732 **T5 management-trees** (DL-141).
     The stance is already in the Manager block-0 ("You are a COORDINATOR, not
     a typist … you never hand-write code"); the skill's unique value — the
     when-to-delegate litmus ("Delegate to an `implement` subagent when: the
@@ -183,7 +183,7 @@ Every battery is one of:
     skill carries stacking (the wave `jj` skill already folds stacking into
     its references, "Deeper jj-vine mechanics/stacking and recovery live in
     references/", `~/.agents/skills/jj/SKILL.md:3`), and T8 adapts it directly.
-  - `enumerate-pr-review-surfaces` (rule) → SEA-1732 **T9 review** skill; no
+  - `enumerate-pr-review-surfaces` (rule) → RIG-1732 **T9 review** skill; no
     standalone artifact. The wave rule is the review-status-reporting
     discipline — enumerate every PR feedback surface (inline threads, review
     summary bodies, top-level comments, CI, our own review findings) with
@@ -201,7 +201,7 @@ Every battery is one of:
     T9 as home, with the CI-bucket guard surfacing in B4.
 - **(b) Adapted-and-shipped** — the wave artifact ships under the same name
   with its invariant kept and its mechanics re-grounded in Compass (the GC-7
-  discipline SEA-1732 froze). The adapt-not-copy passes beyond T3/T8/T9's
+  discipline RIG-1732 froze). The adapt-not-copy passes beyond T3/T8/T9's
   already-planned adaptations:
   - `decision-authority` — the wave rule routes design forks to
     **Matt-via-`ask`, never the supervisor** ("Design/scope/approach forks
@@ -230,7 +230,7 @@ Every battery is one of:
     yours-vs-not-yours; classify code-vs-env/permission; verify in a
     reproducing env) as the CI-engine-NEUTRAL default; the GitHub-Actions
     tooling hooks (log-pull, check-decoding) leave the default for the
-    SEA-1739 CI pack seam, same shape as a language pack (DL-147). Moderate
+    RIG-1739 CI pack seam, same shape as a language pack (DL-147). Moderate
     revision, not verbatim.
   - The implementer domain rules `pre-finish-checks`, `no-retries`,
     `process-safety`, `planning-evidence` ship with invariants intact (each
@@ -244,9 +244,9 @@ Every battery is one of:
     `AGENTS.md:9-11` at `cf048ca`), which a spawn only benefits from if it
     knows to look. Pairs with T6 compass-setup.
   - `issue-lifecycle` — own an issue end-to-end (take, drive state, close)
-    plus the PR review loop on the Compass surface. **Gated on SEA-1734's
+    plus the PR review loop on the Compass surface. **Gated on RIG-1734's
     issue/PR tools** (the same gate the Manager block-0's issue-ownership
-    lines carry as `[TODO SEA-1734]`, MP-4): the skill names concrete tools,
+    lines carry as `[TODO RIG-1734]`, MP-4): the skill names concrete tools,
     so it cannot ship before they land.
 
 ### Decision BI-3 — language-neutral default; packs are Beta (DL-140)
@@ -255,7 +255,7 @@ The shipped default bundle contains **no language-specific content** — none of
 the wave's `go-*` rules or `golang-*` skills. Ratified rationale: for Dogfood,
 Matt-as-user adds the Go skills he wants via the normal user-skill path (they
 are his to add, not a Compass default); Beta ships the "packs" feature
-(**SEA-1739**: per-repo language → skill-pack selection) so the Go skills
+(**RIG-1739**: per-repo language → skill-pack selection) so the Go skills
 become easily usable by other users. The Beta boundary is a named seam, not a
 gap: nothing in this manifest needs reopening when packs land — a pack is
 additive bundle content on the same delivery surface (BI-1).
@@ -269,7 +269,7 @@ territory — "devenv is baked into the product" (Matt, 2026-08-05); B3 ships
 it as a default skill. (2) CI-engine specifics (GitHub-Actions log-pull,
 check-decoding) ARE pack territory — the default `ci-failure-triage` skill
 ships CI-engine-neutral (the 4-step classification discipline) and the
-GitHub-Actions hooks become an SEA-1739-shaped pack seam, same shape as a
+GitHub-Actions hooks become an RIG-1739-shaped pack seam, same shape as a
 language pack. See BC-4 and B4.
 
 ### Decision BI-4 — the exclusion set (DL-143)
@@ -289,21 +289,21 @@ what the no-revival posture governs.
 
 ## Global Constraints
 
-Every task below inherits these (extending SEA-1732's GC set, which T-level
+Every task below inherits these (extending RIG-1732's GC set, which T-level
 work under this record also inherits):
 
 - **BC-1 — Manifest-level record.** This record fixes names, sources, modes,
   tiers, and gates. Skill/rule BODIES are authored in the impl children; no
   body text is frozen here.
-- **BC-2 — Adapt, don't fork** (SEA-1732 GC-7): keep the invariant, re-ground
+- **BC-2 — Adapt, don't fork** (RIG-1732 GC-7): keep the invariant, re-ground
   the mechanics in Compass tools. Wave artifact names are kept unless the
   content's scope changed (see OQ-2).
-- **BC-3 — Name only what exists** (SEA-1732 GC-3/MP-4): a skill/rule line may
+- **BC-3 — Name only what exists** (RIG-1732 GC-3/MP-4): a skill/rule line may
   name a tool only if it exists at the commit it ships against; unshipped
   affordances are explicit `[TODO <issue>]` lines. This is what gates
-  `issue-lifecycle` on SEA-1734.
+  `issue-lifecycle` on RIG-1734.
 - **BC-4 — Language-neutral** (BI-3): no `go-*`/`golang-*` content in any
-  default battery; a task that finds itself needing one has hit the SEA-1739
+  default battery; a task that finds itself needing one has hit the RIG-1739
   boundary and stops.
 - **BC-5 — Tier by frontmatter.** Always-apply rules carry
   `alwaysApply: true`; domain rules carry `description:` (and globs/conditions
@@ -328,25 +328,25 @@ work under this record also inherits):
   role-invariant rule (`never-block`) needs no branch: its
   single behavior already applies to both. This is body-level self-scoping,
   the authored-body contract B2/B7 (and the cross-referenced T3 amendment to
-  `own-your-issue`) implement — NOT per-role delivery, which is the SEA-1724
+  `own-your-issue`) implement — NOT per-role delivery, which is the RIG-1724
   seam (OQ-1). (DL-144.)
 
 ## Plan
 
-The manifest, per role. "Source" names the wave artifact (or the SEA-1732
+The manifest, per role. "Source" names the wave artifact (or the RIG-1732
 task); "Mode" is BI-2's (a) fold / (b) adapt / (c) new, plus "T3/T4…" where
-SEA-1732 already owns the row and this record only confirms it in the bundle.
+RIG-1732 already owns the row and this record only confirms it in the bundle.
 
 ### Manager — always-apply rules (`config/rules/*.md`, `alwaysApply: true`)
 
 | Rule | Source | Mode | Adaptation note |
 | --- | --- | --- | --- |
-| `never-block` | wave rule | adapt (SEA-1732 T3) | re-ground in comms tools + turn-yield loop |
-| `own-your-issue` | wave rule | adapt (SEA-1732 T3) | re-ground in Compass issue surface (`[TODO SEA-1734]` on concrete tools); **role-aware body (BC-7)** — issue-state ownership is Manager-only; a hands subagent neither drives nor closes issues (cross-ref amendment to T3's brief) |
-| `red-green-testing` | wave rule | adapt (SEA-1732 T3) | invariant unchanged; examples re-grounded |
-| `never-merge` | new (SEA-1732 T3) | new one-liner | the human merges — already frozen in T3's set |
-| `design-first` | new (SEA-1732 T3) | new one-liner | already frozen in T3's set |
-| `compact-often` | new (SEA-1732 T3) | new one-liner | already frozen in T3's set |
+| `never-block` | wave rule | adapt (RIG-1732 T3) | re-ground in comms tools + turn-yield loop |
+| `own-your-issue` | wave rule | adapt (RIG-1732 T3) | re-ground in Compass issue surface (`[TODO RIG-1734]` on concrete tools); **role-aware body (BC-7)** — issue-state ownership is Manager-only; a hands subagent neither drives nor closes issues (cross-ref amendment to T3's brief) |
+| `red-green-testing` | wave rule | adapt (RIG-1732 T3) | invariant unchanged; examples re-grounded |
+| `never-merge` | new (RIG-1732 T3) | new one-liner | the human merges — already frozen in T3's set |
+| `design-first` | new (RIG-1732 T3) | new one-liner | already frozen in T3's set |
+| `compact-often` | new (RIG-1732 T3) | new one-liner | already frozen in T3's set |
 | `hold-your-lane` | wave rule | adapt (**this record**, B2) | merged-or-closed is done; re-ground review/CI/merge-gate references in T9's loop + the human merge gate; **role-aware body (BC-7)** — a hands subagent executes its slice and yields, it does not hold a lane |
 | `version-control` | wave rule (3 footguns) | fold (**this record**, B1 — DL-142) | keep jj model + auto-amend + additive-fixes + never-`git push`; keep jj-vine as the stacked-PR tool, push path = `jj-vine submit` retargeted to the Compass repo (push-guard mechanism T8's); **B1 ships with or after T8, never before (DL-145)** — no `[TODO T8]` placeholder in an always-apply rule |
 | `decision-authority` | wave rule | adapt (**this record**, B7) | Matt/`ask`/supervisor → operator (async, home channel) / parent Manager; **role-aware body (BC-7)** — a hands subagent cannot reach the home channel (comms tools are session `customTools`, not forwarded, executor.ts:2829), so its branch escalates forks to the parent Manager |
@@ -355,17 +355,17 @@ SEA-1732 already owns the row and this record only confirms it in the bundle.
 
 | Skill | Source | Mode | Gated on |
 | --- | --- | --- | --- |
-| `comms-playbook` | authored | SEA-1732 T4 | — (`[TODO SEA-1722]` lines inside) |
-| `management-trees` | authored **+ delegated-implementation fold** | SEA-1732 T5 + fold (B6 — DL-141) | — |
-| `compass-setup` | authored | SEA-1732 T6 | — |
-| `supervisor-channel` | authored | SEA-1732 T7 | — |
-| `manager-coordination-channel` | authored | SEA-1732 T7 | — |
-| `jj` | wave `jj` skill | adapt, SEA-1732 T8 | — |
-| `review` | wave `review` skill (+ `github-pr-review` **and `enumerate-pr-review-surfaces`** folded in) | adapt, SEA-1732 T9 | — |
-| `design` | wave `design` skill | adapt, SEA-1732 T9 | — |
+| `comms-playbook` | authored | RIG-1732 T4 | — (`[TODO RIG-1722]` lines inside) |
+| `management-trees` | authored **+ delegated-implementation fold** | RIG-1732 T5 + fold (B6 — DL-141) | — |
+| `compass-setup` | authored | RIG-1732 T6 | — |
+| `supervisor-channel` | authored | RIG-1732 T7 | — |
+| `manager-coordination-channel` | authored | RIG-1732 T7 | — |
+| `jj` | wave `jj` skill | adapt, RIG-1732 T8 | — |
+| `review` | wave `review` skill (+ `github-pr-review` **and `enumerate-pr-review-surfaces`** folded in) | adapt, RIG-1732 T9 | — |
+| `design` | wave `design` skill | adapt, RIG-1732 T9 | — |
 | `devenv` | none (new) | new (**this record**, B3) | — |
-| `ci-failure-triage` | wave skill | adapt (**this record**, B4) | ships **CI-engine-neutral** (the 4-step classification discipline); GitHub-Actions-specific hooks deferred to the SEA-1739 pack seam (DL-147) |
-| `issue-lifecycle` | none (new) | new (**this record**, B5) | **SEA-1734** issue/PR tools |
+| `ci-failure-triage` | wave skill | adapt (**this record**, B4) | ships **CI-engine-neutral** (the 4-step classification discipline); GitHub-Actions-specific hooks deferred to the RIG-1739 pack seam (DL-147) |
+| `issue-lifecycle` | none (new) | new (**this record**, B5) | **RIG-1734** issue/PR tools |
 
 ### Implementer — domain rules (`config/rules/*.md`, rulebook tier)
 
@@ -400,20 +400,20 @@ set (BI-1), and the skills above are deliberately role-neutral in body
 
 ### Gates and boundaries
 
-- **SEA-1734** — the issue/PR tools (pre-Dogfood, operator-provisioned
-  surface). Gates B5 (`issue-lifecycle`) entirely, and the `[TODO SEA-1734]`
+- **RIG-1734** — the issue/PR tools (pre-Dogfood, operator-provisioned
+  surface). Gates B5 (`issue-lifecycle`) entirely, and the `[TODO RIG-1734]`
   lines inside `own-your-issue`. B5 ships in the same PR that lands the tools
   or later, never before (BC-3).
-- **SEA-1739** — the language-pack mechanism (Beta). Boundary only: nothing in
+- **RIG-1739** — the language-pack mechanism (Beta). Boundary only: nothing in
   this record blocks on it, and no task may smuggle language content past it
   (BC-4).
-- **PR #1089** — the SEA-1732 record. The T3/T4–T9 rows above are owned there;
+- **PR #1089** — the RIG-1732 record. The T3/T4–T9 rows above are owned there;
   this record's tasks (B1–B8) are strictly additive to that set and B6 is an
   amendment to T5's brief, cross-referenced, not a rewrite.
 
 ## Tasks
 
-Impl children that author the skill/rule bodies (mirroring SEA-1732's T4–T9
+Impl children that author the skill/rule bodies (mirroring RIG-1732's T4–T9
 granularity: one artifact or one tight pair per review cycle). All are
 prose-authoring tasks; none touches entrypoint code.
 
@@ -426,7 +426,7 @@ prose-authoring tasks; none touches entrypoint code.
   is naming the one correct push path, so it cannot ship the `never git push`
   invariant with only a `[TODO T8]` placeholder where the submit verb goes —
   the `[TODO T8]` escape hatch is struck. Same BC-3 posture B5 takes with
-  SEA-1734 ("ships with or after the tools, never before"): T8 names the
+  RIG-1734 ("ships with or after the tools, never before"): T8 names the
   Compass submit path first, B1 then writes it in.
 - [ ] **B2 — `hold-your-lane` always-apply rule.** Interfaces: consumes wave
   `~/.agents/rules/hold-your-lane.md` + T9's review-loop vocabulary →
@@ -434,7 +434,7 @@ prose-authoring tasks; none touches entrypoint code.
   **Role-aware body (BC-7):** the rule forwards into every implementer
   subagent (executor.ts:2793), where "done means merged, hold your lane,
   don't pick up new work" contradicts the hands contract (execute one briefed
-  slice, report, then yield — SEA-1732 T2). The body MUST branch: "If you are
+  slice, report, then yield — RIG-1732 T2). The body MUST branch: "If you are
   a hands subagent: finish the briefed slice, report, and yield — you hold no
   lane. If you are the Manager: <the merged-or-closed invariant, re-grounded
   in T9's loop + the human merge gate>."
@@ -450,7 +450,7 @@ prose-authoring tasks; none touches entrypoint code.
   two-bucket false-green guard as a general principle. Do NOT hard-code
   GitHub-Actions log-pull or check-decoding as the default — those
   GHA-specific hooks are named as the Dogfood grounding that lives in the
-  SEA-1739 CI pack, not the default battery (same seam shape as a language
+  RIG-1739 CI pack, not the default battery (same seam shape as a language
   pack, BC-4). Interfaces: consumes wave
   `~/.agents/skills/ci-failure-triage/SKILL.md` → produces
   `config/skills/ci-failure-triage/SKILL.md`. **Cross-ref (BI-2(a) fold — do
@@ -459,14 +459,14 @@ prose-authoring tasks; none touches entrypoint code.
   independent reporting channel, and a red on one is invisible if you read
   only another, so triage MUST read every surface on the exact head SHA
   before reporting green (the GitHub-API commit-status-vs-check-runs split
-  that concretizes this on the Compass forge is SEA-1739 pack detail).
-- [ ] **B5 — `issue-lifecycle` skill (new, GATED SEA-1734).** Own an issue
+  that concretizes this on the Compass forge is RIG-1739 pack detail).
+- [ ] **B5 — `issue-lifecycle` skill (new, GATED RIG-1734).** Own an issue
   end-to-end + the PR review loop on the Compass surface, naming the concrete
-  SEA-1734 tools. Interfaces: consumes the SEA-1734 tool surface (as landed) +
+  RIG-1734 tools. Interfaces: consumes the RIG-1734 tool surface (as landed) +
   the Manager block-0 work-loop lines → produces
   `config/skills/issue-lifecycle/SKILL.md`. Ships with or after the tools,
   never before (BC-3).
-- [ ] **B6 — T5 management-trees fold (DL-141, cross-ref SEA-1732 T5).** Fold
+- [ ] **B6 — T5 management-trees fold (DL-141, cross-ref RIG-1732 T5).** Fold
   the when-to-delegate litmus, review-every-diff discipline, and brief
   contract into T5's delegation-mechanics section; strip OMP tier naming
   (`implement`/`implement-hard`/thinking levels → the `task` mechanism +
@@ -519,7 +519,7 @@ recommendation; the record is designed against the recommendation.
    two of these rules are not merely a token cost, they are actively WRONG on
    a subagent. `hold-your-lane` ("done means merged … hold your lane … don't
    pick up new work") contradicts the implementer's frozen hands contract
-   (execute one briefed slice, report, then yield — SEA-1732 T2);
+   (execute one briefed slice, report, then yield — RIG-1732 T2);
    `decision-authority` routes a design fork to the operator "on the home
    channel" — a channel the subagent mechanically CANNOT reach, because the
    comms native tools are session `customTools` and those are exactly what
@@ -528,7 +528,7 @@ recommendation; the record is designed against the recommendation.
    fork): every forwarded always-apply rule is authored ROLE-AWARE (BC-7) — its
    body is correct for both roles, branching explicitly where behavior differs,
    so an implementer reads the branch written for it. Per-role rule *bucketing*
-   (delivering different rule sets per role) remains the SEA-1724 seam and is
+   (delivering different rule sets per role) remains the RIG-1724 seam and is
    not built early; role-awareness lives in the authored body instead.**
 2. **Name of the footguns rule: keep `version-control` vs rename
    `version-control-footguns` — RESOLVED (Matt, 2026-08-05):** keep

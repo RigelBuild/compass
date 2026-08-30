@@ -1,5 +1,5 @@
 // Package secrets is the Server-side secret resolve surface for the agent
-// container runtime (SEA-1327 T3). It wraps SecretSpec resolution behind a
+// container runtime (RIG-1327 T3). It wraps SecretSpec resolution behind a
 // Resolver interface and owns the resolve-surface value types the Runner fetch
 // (T4) and materializer (T5) consume.
 //

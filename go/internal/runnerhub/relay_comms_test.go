@@ -427,7 +427,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	}
 }
 
-// FIX 2 (SEA-1569 T3 review): enroll() must clear the reverse accountSessions
+// FIX 2 (RIG-1569 T3 review): enroll() must clear the reverse accountSessions
 // map alongside sessionAccounts. The accountSessions doc (hub.go) states the
 // reverse map is "maintained wherever sessionAccounts is so the two never
 // drift: promoteSession adds, unbindSession removes, enroll clears" — the
@@ -459,7 +459,7 @@ func TestEnrollClearsReverseAccountSessions(t *testing.T) {
 	}
 }
 
-// M1 (SEA-1569 T8 review): unbindSession (the clean-Stop teardown path) fires
+// M1 (RIG-1569 T8 review): unbindSession (the clean-Stop teardown path) fires
 // exactly one terminal (DISCONNECTED → OFFLINE) presence edge for the account
 // whose live session was torn down. Pre-fix the hub fired the presence edge only
 // at deliverSession while the session was still bound, so a Stop left the
@@ -484,7 +484,7 @@ func TestUnbindSessionFiresTerminalPresenceEdge(t *testing.T) {
 	}
 }
 
-// M1 (SEA-1569 T8 review): unbindSession must NOT fire a terminal edge when the
+// M1 (RIG-1569 T8 review): unbindSession must NOT fire a terminal edge when the
 // account was already re-pointed to a NEWER session — the account is not offline,
 // its newer session is live. This binds acct-a to sess-old, re-points it to
 // sess-new via a second promoteSession, then unbinds the STALE sess-old; the
@@ -513,7 +513,7 @@ func TestUnbindStaleSessionFiresNoTerminalEdgeWhenRepointed(t *testing.T) {
 	}
 }
 
-// M1 (SEA-1569 T8 review): enroll (the Runner-reconnect teardown path) fires one
+// M1 (RIG-1569 T8 review): enroll (the Runner-reconnect teardown path) fires one
 // terminal (DISCONNECTED → OFFLINE) presence edge per PREVIOUSLY-bound account
 // before clearing every binding, and the maps are cleared. Pre-fix enroll emitted
 // no lifecycle frames at all, so a reconnect left every agent's presence stuck at
@@ -556,7 +556,7 @@ func TestEnrollFiresTerminalPresenceEdgePerBoundAccountAndClears(t *testing.T) {
 	}
 }
 
-// M1 (SEA-1569 T8 review): a first-ever enroll (no prior bindings) fires no
+// M1 (RIG-1569 T8 review): a first-ever enroll (no prior bindings) fires no
 // terminal presence edge — there is nothing bound to drive offline.
 func TestFirstEnrollFiresNoTerminalPresenceEdge(t *testing.T) {
 	hub := newHubOnly()

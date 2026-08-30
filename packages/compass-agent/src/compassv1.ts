@@ -102,7 +102,7 @@ export {
 	// ops plus a Runner-assigned `controlSeq` envelope field (retention cursor).
 	// The control source decodes one AgentControl per Control-stream message;
 	// the agent classifies each by the set oneof case. Payload fields for
-	// steer/deliver/replay/config stay empty shells (SEA-1310 parked).
+	// steer/deliver/replay/config stay empty shells (RIG-1310 parked).
 	type AgentControl,
 	AgentControlSchema,
 	// The stdout envelope (internal-only §T5): a oneof over the payload messages.
@@ -118,9 +118,9 @@ export {
 	ControlAckSchema,
 	type DeliverControl,
 	DeliverControlSchema,
-	// The agent's per-message delivery receipt (SEA-1569), an AgentFrame oneof
+	// The agent's per-message delivery receipt (RIG-1569), an AgentFrame oneof
 	// variant riding the Publish spine — correlates to the delivered message by
-	// id. Emitted by the CompassAgent at injection time (SEA-1310 §8 deliver arm).
+	// id. Emitted by the CompassAgent at injection time (RIG-1310 §8 deliver arm).
 	type DeliveryAck,
 	DeliveryAckSchema,
 	// The agent's per-notification forge delivery receipt (RIG-2732 W3), an
@@ -145,7 +145,7 @@ export {
 	SteerControlSchema,
 	// The `transcript_entry` variant's payload: one committed SDK session entry
 	// (entry_json + checkpoint + entry_seq) the tee backend commits locally and
-	// tees upstream as a durable frame (SEA-1570). Constructed with
+	// tees upstream as a durable frame (RIG-1570). Constructed with
 	// `create(TranscriptEntrySchema, …)` so the branded message satisfies the
 	// AgentFrame oneof.
 	type TranscriptEntry,

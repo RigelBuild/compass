@@ -314,7 +314,7 @@ the container).
 The gateway is the only runtime holder of upstream provider credentials at
 request time; the compass store is the durable source of truth. That needs a
 value-persisting store — and it is a NEW store, NOT an extension of the
-SEA-1327 declared-secrets registry, which is names-only by invariant: it
+RIG-1327 declared-secrets registry, which is names-only by invariant: it
 persists a secret's name/delivery/kind/provider but never its value ("Values
 live only in the provider and this process's memory during a resolve; they are
 never persisted by Compass", `go/internal/secrets/secrets.go:20-22`;

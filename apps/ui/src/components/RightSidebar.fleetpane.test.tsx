@@ -56,7 +56,7 @@ function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 // The two visible fixture agents whose home-DM the fleet pane renders. The fleet
 // tabs are CONFIGURABLE PINS keyed `agent:${accountId}` (Record A §T2), not a
 // hardcoded Supervisor · Cook pair. The pane arm reads the active tab's item
-// out of `rightTabGroups()` (SEA-1645 P2), which emits only PINNED agents, so a
+// out of `rightTabGroups()` (RIG-1645 P2), which emits only PINNED agents, so a
 // test must pin the agent before activating its tab. Both ids resolve in the
 // fixture, so once pinned the pane renders their home-DM inline.
 const FLEET_TABS = ["acc-supervisor", "acc-compass-ui"] as const;
@@ -191,7 +191,7 @@ describe("RightSidebar fleet pane", () => {
 	});
 
 	// A resolved fleet tab renders the live pane, not the unreachable block: the
-	// pane arm resolves reachability first (SEA-1645). Both real fleet tabs
+	// pane arm resolves reachability first (RIG-1645). Both real fleet tabs
 	// resolve, so this asserts the resolved tab renders a fleet-pane with no
 	// in-pane unpin control — the observable inverse that reddens if the arm ever
 	// stops resolving a live agent.
@@ -208,7 +208,7 @@ describe("RightSidebar fleet pane", () => {
 
 	// An active GHOST pin (an id resolving to no fixture agent) renders the "agent
 	// unreachable" pane — the message and a working in-pane unpin control — not
-	// FleetPane and not StatusPane (SEA-1645 P2/P6). The pin must exist for the
+	// FleetPane and not StatusPane (RIG-1645 P2/P6). The pin must exist for the
 	// pane arm to read its item out of rightTabGroups(), so pin then activate.
 	test("an active ghost pin renders the unreachable pane with a working unpin", () => {
 		const { store, container } = mountRightSidebar();

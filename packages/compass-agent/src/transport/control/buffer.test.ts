@@ -1,4 +1,4 @@
-// The AsyncBuffer single-consumer contract (SEA-1364 C4b follow-up hardening).
+// The AsyncBuffer single-consumer contract (RIG-1364 C4b follow-up hardening).
 //
 // AsyncBuffer is the queue behind the socket ControlSource's iterable, and it
 // holds AT MOST ONE parked consumer (`#waiting`). Before the guard, a second

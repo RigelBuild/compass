@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// Hub-level Provision idempotency (OQ6/SEA-1243): Hub.Provision derives the
+// Hub-level Provision idempotency (OQ6/RIG-1243): Hub.Provision derives the
 // command router's dedup id from the caller's client_request_id, scoped to the
 // workspace identity (agent account + repo + ref). Two Provisions with the SAME
 // id AND the same workspace must JOIN one in-flight command (a timeout-retry
@@ -180,7 +180,7 @@ func TestProvisionEmptyClientRequestIdDoesNotDedup(t *testing.T) {
 	})
 }
 
-// The security regression (SEA-1243): a client_request_id reused across DIFFERENT
+// The security regression (RIG-1243): a client_request_id reused across DIFFERENT
 // workspaces must NOT dedup. client_request_id is a client-chosen string; if it
 // were the sole dedup key, two provisions sharing one value for different agent
 // accounts would join — the second caller would be handed a container

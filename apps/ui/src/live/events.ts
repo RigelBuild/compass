@@ -2,7 +2,7 @@
 // server event stream (compass.v1 CompassService.SubscribeEvents) into a
 // sequence of domain Issue[] snapshots for the board.
 //
-// This is the READ half of SEA-1729. It mirrors the comms driver's
+// This is the READ half of RIG-1729. It mirrors the comms driver's
 // (./stream.ts runCommsStream) snapshot+tail shape: a cold-start subscription
 // pairs the durable board re-snapshot read (ListBoardIssues) with the live
 // SubscribeEvents tail, unioned into one board map and deduped by issue id

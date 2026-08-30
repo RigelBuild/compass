@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// The durable transcript lane (#24 / OQ-3, SEA-1667 T4): Hub.CommitConversationFrame
+// The durable transcript lane (#24 / OQ-3, RIG-1667 T4): Hub.CommitConversationFrame
 // resolves the relayed session to its bound agent account as the fail-closed
 // liveness gate (exactly as RelayCommsCall does), then writes the relayed
 // transcript_entry to the transcript store keyed at most once on the agent-minted

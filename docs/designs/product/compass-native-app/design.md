@@ -2,7 +2,7 @@
 
 Status: Draft
 Supersedes: DL-044 (compass-tauri-shell)
-Linear: SEA-1662
+Linear: RIG-1662
 
 > **Superseded in part by the client-only pivot
 > ([`../compass-native-client-only/design.md`](../compass-native-client-only/design.md),
@@ -36,7 +36,7 @@ Linear: SEA-1662
 ## Problem / Intent
 
 Compass today is a headless Go stack (`compass-server` + `compass-runner`) plus a
-browser-dev-only SolidJS UI; there is no installable native app. SEA-1662 requires
+browser-dev-only SolidJS UI; there is no installable native app. RIG-1662 requires
 ONE native binary with TWO modes: **embedded** (the app launches and supervises the
 whole single-user stack locally — server, runner, and their prerequisites) and
 **native-client** (the same app connects to an already-established remote server
@@ -291,7 +291,7 @@ stays blocked until both merge.
 ### Two binaries (a client app + a separate "server pack")
 
 Ship the native client alone and leave the embedded stack to a separate
-installer/systemd unit. Rejected: it forfeits the SEA-1662 charter ("a single
+installer/systemd unit. Rejected: it forfeits the RIG-1662 charter ("a single
 user runs the entire Compass stack as one native application with nothing else
 to stand up") — the single-user path would still require standing up a second
 artifact, and the two artifacts' version skew becomes a support surface. The
@@ -345,7 +345,7 @@ lifecycle simplifies to nothing. Raised with the compass-server owner as a seam.
 
 ### How the framework choice was isolated (now decided: Wails v3)
 
-SEA-1662 reserved the framework fork to Matt, so the record was held
+RIG-1662 reserved the framework fork to Matt, so the record was held
 framework-agnostic — the choice lands in just two files (the UI-side IPC shim,
 the shell project scaffold). Matt ruled it **Wails v3** (DL-110; the Tauri-vs-Wails
 tension and reasoning trail are in §Decisions/OQ1). The isolation kept that
@@ -628,7 +628,7 @@ the contract the executing lanes read.
   events rather than adapted from the existing file.
 - **Both share the webview risk.** WebKitGTK on Linux is the weak point for
   either (both use the system webview), so the Linux rendering story does not
-  differentiate them. A deferred native-path rendering endgame (SEA-1006)
+  differentiate them. A deferred native-path rendering endgame (RIG-1006)
   would replace the webview under either choice and slightly favors not
   over-investing in framework-specific surface.
 

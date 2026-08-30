@@ -1,6 +1,6 @@
 //go:build unix
 
-// The Server->Runner control-relay dispatch arm (SEA-1569 T3 §5). Unlike the
+// The Server->Runner control-relay dispatch arm (RIG-1569 T3 §5). Unlike the
 // client-facing session command relay (commands.go), a control deliver is
 // SEND-ONLY: a successful deliver returns NO synchronous result — success rides
 // a later AgentFrame.delivery_ack (Runner->Server), handled by the hub's ack
@@ -17,7 +17,7 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// DispatchControl relays a fully-formed control op (for SEA-1569, a message
+// DispatchControl relays a fully-formed control op (for RIG-1569, a message
 // deliver) down to sessionID over the owning Runner's Sessions stream, WITHOUT
 // blocking for a result — the ControlDispatcher the delivery consumer holds
 // (design.md:737-739). It wraps op in a DeliverControl/DispatchControl envelope,

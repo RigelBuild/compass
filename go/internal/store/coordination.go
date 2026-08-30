@@ -8,7 +8,7 @@ import (
 )
 
 // CoordinationHook is the manager-comms coordination-channel reconcile the comms
-// layer registers on the store (SEA-1722 T5, design.md:542-551). The two
+// layer registers on the store (RIG-1722 T5, design.md:542-551). The two
 // parent-edge writers (CreateAgent, ReparentAgent) invoke it on their OWN pgx.Tx
 // right after writing agent_accounts.parent_agent_id, so the reconcile runs in
 // the SAME transaction as the parent-edge write WITHOUT the store importing

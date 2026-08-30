@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
 import { BadgeGlyph } from "./BadgeGlyph";
 
-// BadgeGlyph's observable contract (SEA-2121 / SEA-2117 Option B): each badge is
+// BadgeGlyph's observable contract (RIG-2121 / RIG-2117 Option B): each badge is
 // a wrapper carrying the axis+status as data-attributes (the single source of
 // truth for color routing), a 2-char axis code, and a 9×9 crispEdges SVG glyph
 // whose lit `<rect>` count is the frozen glyph geometry. The tests pin the

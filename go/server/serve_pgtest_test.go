@@ -89,7 +89,7 @@ func TestServeShutdownIsClean(t *testing.T) {
 	//
 	// The drain-deadline-overrun path (a wedged slow-client stream) is not
 	// forced here: making it deterministic needs a handler stalled mid-replay,
-	// tracked separately in SEA-1263. Forcing a server self-exit error cleanly
+	// tracked separately in RIG-1263. Forcing a server self-exit error cleanly
 	// is likewise not deterministic from this harness (both servers exit only on
 	// ctx cancel or a bind fault that Serve rejects up front), so that sub-case
 	// is intentionally omitted rather than added as a flaky test.

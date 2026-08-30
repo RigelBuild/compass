@@ -4,7 +4,7 @@ Status: Active
 
 > Freezes on merge; later changes supersede by citation, never rewrite
 > (`../compass-0.5/design.md:10-12`, convention restated in
-> `../compass-0.6/design.md:1116-1118`). Tracked as SEA-1351.
+> `../compass-0.6/design.md:1116-1118`). Tracked as RIG-1351.
 
 ## Problem / Intent
 
@@ -210,7 +210,7 @@ path (OQ-3).
 - **Egress seal preserved.** The transport is a local Unix socket with no network
   path; it neither relies on nor perturbs the nft posture
   (`../compass-agent-container-runtime.md:206-217`).
-- **SEA-1267 gen-fence: internal protos only + extend the symbol list.** The
+- **RIG-1267 gen-fence: internal protos only + extend the symbol list.** The
   `AgentGateway` service and its messages are INTERNAL — new declarations in the
   owned `compass.v1` package, generated ONLY into the internal lanes
   (`go/internal/gen` via `buf.gen.internal-go.yaml`; `compass-agent/src/gen` via
@@ -590,4 +590,4 @@ here.
   it into a request/response transport buys nothing. Non-load-bearing; recorded so
   the boundary is deliberate, not accidental.
 
-*SEA-1351.*
+*RIG-1351.*

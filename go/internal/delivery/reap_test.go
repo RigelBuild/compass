@@ -2,7 +2,7 @@
 
 package delivery
 
-// SEA-1569 T3 — OnSessionsReaped (the hub's SessionReapSink) drops the
+// RIG-1569 T3 — OnSessionsReaped (the hub's SessionReapSink) drops the
 // held-deliver registry entries for sessions whose hub bindings were cleared at
 // a Runner (re-)enroll, so a no-frame author death's entry does not leak until
 // process restart (design.md:172-175). White-box (package delivery) so the test

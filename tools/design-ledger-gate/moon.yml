@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# design-ledger-gate (SEA-1187) — validate the Compass design-decision ledger
+# design-ledger-gate (RIG-1187) — validate the Compass design-decision ledger
 # (docs/designs/DECISIONS.md), the per-record `Status:` headers, and
 # dangling supersession/Record pointers. A bun/TypeScript CLI; a hoisted
 # root-workspace member (`bun` tag): install is inherited via
@@ -8,7 +8,7 @@
 # whole-repo tasks on the root project (/moon.yml), so this leaf has no own
 # bun.lock and never runs its own install.
 #
-# Migrated from the sealed repo (SEA-1794): the Compass design corpus + ledger
+# Migrated from the sealed repo (RIG-1794): the Compass design corpus + ledger
 # now live here, so the gate that governs them lives here too. Compass CI is a
 # single moon-driven `CI` job (.github/workflows/ci.yml runs `moon run :ci`),
 # so the `ci` aggregate below is swept automatically — no separate meta.ts

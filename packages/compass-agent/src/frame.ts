@@ -2,7 +2,7 @@
 // produces/consumes and the bytes on the stdio channel the Runner drives.
 //
 // The frame CONTRACT is frozen (design: architecture-lineage, spine-inversion;
-// extended by SEA-1570 with the transcript-tee lane):
+// extended by RIG-1570 with the transcript-tee lane):
 //   - stdout: `AgentFrame` — oneof frame {
 //         SessionFrame session; TranscriptEntry transcript_entry;
 //         DeliveryAck delivery_ack }
@@ -10,7 +10,7 @@
 //     field is the "unknown frame" the Runner logs + counts. The opaque
 //     OMP-native execution trace + board lifecycle ride the single `session`
 //     variant (SessionFrame) → the session-tail Publish spine. TRANSCRIPT
-//     (SEA-1570) rides the single `transcript_entry` variant (TranscriptEntry):
+//     (RIG-1570) rides the single `transcript_entry` variant (TranscriptEntry):
 //     one committed SDK session entry the tee backend commits locally and
 //     forwards on the DURABLE conversation-frame lane (never the droppable
 //     Publish spine) so the Server can reconstruct the session on resume.
@@ -45,11 +45,11 @@ import {
 // oneof field, and the reader a single field to classify on.
 export type OutboundFrame =
 	| { readonly kind: "session"; readonly value: SessionFrame }
-	// SEA-1570: one committed SDK session entry, teed upstream. `value` is a
+	// RIG-1570: one committed SDK session entry, teed upstream. `value` is a
 	// branded generated message (`create(TranscriptEntrySchema, …)`), and `kind`
 	// matches the generated oneof case name 1:1 like every other variant.
 	| { readonly kind: "transcriptEntry"; readonly value: TranscriptEntry }
-	// SEA-1310 §8: the agent's per-message delivery receipt for a turn-end
+	// RIG-1310 §8: the agent's per-message delivery receipt for a turn-end
 	// delivery. `value` is a branded generated message (`create(DeliveryAckSchema,
 	// …)`) and `kind` matches the generated oneof case name 1:1 like every other
 	// variant, so the sink stamps it generically (no ProtojsonLineSink change).
@@ -69,7 +69,7 @@ export type OutboundFrame =
 // entirely behind this interface.
 export interface FrameSink {
 	emit(frame: OutboundFrame): void;
-	// SEA-1570 transcript lane: send one frame on the DURABLE unary and AWAIT its
+	// RIG-1570 transcript lane: send one frame on the DURABLE unary and AWAIT its
 	// commit, REJECTING on definitive give-up (inner-retry exhaustion). Unlike
 	// `emit()` — which stays void + silent-give-up for the loss-tolerable
 	// conversation/session lanes — the tee backend awaits this inside the

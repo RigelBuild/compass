@@ -331,7 +331,7 @@ OQ-4 EXTEND, 2026-08-27) — inventory rows 14–16.
   every flipped field with its resolution semantics (mirror the
   `from_handle` comments, `agent.proto:194-199`).
 - **Pre-GA breaking allowance**: the buf breaking gate is removed pre-dogfood
-  (`proto/moon.yml:169` — "RE-ADD AT GA", SEA-1922/SEA-1951; RIG-2675). A
+  (`proto/moon.yml:169` — "RE-ADD AT GA", RIG-1922/RIG-1951; RIG-2675). A
   breaking rename is allowed and this record uses it; DL-186
   (`docs/designs/DECISIONS.md:203`, Active) rules rename-in-place keeping
   field numbers — renumber+reserve would re-add `reserved` markers DL-186

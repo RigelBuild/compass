@@ -23,7 +23,7 @@ func baseRunnerArgs(cfg Config, cert CertResult) []string {
 }
 
 // TestRunnerSpecForwardsOptionalFlagsConditionally is the load-bearing red→green
-// for the A4 Config plumbing (SEA-1785). It pins the hard invariant a wrong diff
+// for the A4 Config plumbing (RIG-1785). It pins the hard invariant a wrong diff
 // violates: the optional Config fields reach the runner's flags EXACTLY when set,
 // and NONE appears when they are zero — an embedded supervisor that leaves them
 // unset must get a byte-identical Args to today (forwarding `--agent-model ""`,

@@ -256,7 +256,7 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 // before visibility filtering, so a subscriber learns the instance-wide durable
 // message count (one integer, no content) even for channels it cannot see; this
 // count-metadata exposure is accepted as within the threat model, not a leak to
-// close by scoping the boundary — that would be a different token (SEA-1333 OQ4).
+// close by scoping the boundary — that would be a different token (RIG-1333 OQ4).
 func (s *Store) MessagesHeadSeq(ctx context.Context) (uint64, error) {
 	var head uint64
 	if err := s.pool.QueryRow(ctx,
@@ -307,7 +307,7 @@ func updateMessageBlocksExec(ctx context.Context, db execer, id MessageID, block
 // UpdateMessageBlocksAsAuthor replaces a message's block set UNDER an acting
 // account — the only update path safe for a message id that arrives from
 // outside the Server's own trust boundary (a relayed agent MessageUpdated
-// frame, SEA-1364 T3).
+// frame, RIG-1364 T3).
 //
 // Why it is a fork and not a flag on the shared core. updateMessageBlocksExec
 // addresses the row by a bare MessageID with NO membership and NO authorship
@@ -495,7 +495,7 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 	// lost update — the matching MessageUpdated also rides the live tail, so an
 	// id-deduping client converges to current content (last-write-wins).
 	// Freezing content too would need an update/change-seq and a larger schema
-	// change; membership-only is the ratified scope (SEA-1333 OQ5).
+	// change; membership-only is the ratified scope (RIG-1333 OQ5).
 	const query = `
 		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
 		FROM messages m
@@ -593,7 +593,7 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	// second commit clobbering the first's answer. The lock makes the second
 	// answer block until the first commits, then re-read the updated blocks
 	// (READ COMMITTED EvalPlanQual) and layer its own answer on top, so both
-	// survive (SEA-1226).
+	// survive (RIG-1226).
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: begin answer ask: %w", err)

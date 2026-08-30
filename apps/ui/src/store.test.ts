@@ -367,7 +367,7 @@ describe("openAgent", () => {
 	// `selectedChannelId` on either path — so a standalone channel opened in
 	// between can never bleed into the workspace, and re-opening the already-open
 	// agent (early-return path) restores the agent view without disturbing the
-	// standalone selection (PR #783 / SEA-1195).
+	// standalone selection (PR #783 / RIG-1195).
 	test("re-opening the agent-view agent shows its home DM while leaving the standalone selection intact", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui"); // agentViewAgentId = compass-ui
@@ -644,7 +644,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	});
 
 	// Write-through: pinning persists to the workspace-namespaced key as
-	// `{ id, handle }` pairs (SEA-1645 P0), so a fresh store on the same workspace
+	// `{ id, handle }` pairs (RIG-1645 P0), so a fresh store on the same workspace
 	// re-hydrates the pin with its cached handle.
 	test("writes pins through to localStorage on pin", () => {
 		clearStorage();
@@ -693,7 +693,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 	});
 
-	// SEA-1645: an ACTIVE agent tab whose id resolves to no visible agent (a ghost
+	// RIG-1645: an ACTIVE agent tab whose id resolves to no visible agent (a ghost
 	// pin, or a visibility fluctuation) is NOT coerced — the resolvability guard is
 	// retired. The tab stays put and the pane renders the unreachable state; only a
 	// deliberate unpin removes it.
@@ -746,7 +746,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 	});
 
-	// ── SEA-1645 unreachable pins (ghost pin: an id resolving to no fixture
+	// ── RIG-1645 unreachable pins (ghost pin: an id resolving to no fixture
 	//    agent) ──
 	// A ghost pin KEEPS its bar item, marked unreachable, in pin order, and its
 	// title is the handle cached at pin time — not filtered out.

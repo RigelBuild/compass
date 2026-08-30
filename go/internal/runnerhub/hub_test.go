@@ -180,7 +180,7 @@ func TestEnrollDuplicateReattaches(t *testing.T) {
 	}
 }
 
-// TestRunnerReadyHookFiresOnEachStreamAttach pins the SEA-1820 seam: a hook wired
+// TestRunnerReadyHookFiresOnEachStreamAttach pins the RIG-1820 seam: a hook wired
 // via SetRunnerReadyHook is invoked once per fireRunnerReady (the Sessions
 // handler calls it each time a Runner's command stream attaches), on its own
 // goroutine so a blocking seed cannot wedge the handler's receive loop. The

@@ -238,7 +238,7 @@ func (ChannelKind) EnumDescriptor() ([]byte, []int) {
 	return file_compass_v1_comms_proto_rawDescGZIP(), []int{3}
 }
 
-// The presence states a live agent projects (SEA-1569, OQ-1). MVP is four
+// The presence states a live agent projects (RIG-1569, OQ-1). MVP is four
 // states derived from the session lifecycle; PUBLIC, NOT gen-fenced.
 type AgentPresence int32
 
@@ -1459,7 +1459,7 @@ type AskQuestion struct {
 	// for allow_multiple, alongside) picking options.
 	CustomText string `protobuf:"bytes,8,opt,name=custom_text,json=customText,proto3" json:"custom_text,omitempty"`
 	// True when the answer was recorded by timeout auto-selection rather than a
-	// participant (SEA-1310 owns whether/when the Compass answer path can time
+	// participant (RIG-1310 owns whether/when the Compass answer path can time
 	// out; the field is the audit carrier either way).
 	TimedOut      bool `protobuf:"varint,9,opt,name=timed_out,json=timedOut,proto3" json:"timed_out,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1858,7 +1858,7 @@ type SubscribeCommsResponse_ResyncRequired struct {
 }
 
 type SubscribeCommsResponse_AgentPresenceChanged struct {
-	// A live agent's presence changed (SEA-1569). Derived from the session
+	// A live agent's presence changed (RIG-1569). Derived from the session
 	// lifecycle (not a heartbeat); PUBLIC — UI board state consumes it.
 	AgentPresenceChanged *AgentPresenceChanged `protobuf:"bytes,17,opt,name=agent_presence_changed,json=agentPresenceChanged,proto3,oneof"`
 }
@@ -2261,7 +2261,7 @@ func (*CommsResyncRequired) Descriptor() ([]byte, []int) {
 	return file_compass_v1_comms_proto_rawDescGZIP(), []int{23}
 }
 
-// A live agent's presence changed (SEA-1569). Presence is derived from the
+// A live agent's presence changed (RIG-1569). Presence is derived from the
 // session lifecycle (D4) — a projection of the session state and the Runner
 // link, not a heartbeat. PUBLIC (UI board state, comms presence, the
 // delivery-settle gate consume it); NOT gen-fenced.

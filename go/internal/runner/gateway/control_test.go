@@ -308,7 +308,7 @@ func TestControlSendsDeliver(t *testing.T) {
 }
 
 // TestControlSendsSteer pins the un-parking: a SteerControl op carries a defined
-// compass.v1.Message (SEA-1569/DL-073, the same shape DeliverControl rides), so
+// compass.v1.Message (RIG-1569/DL-073, the same shape DeliverControl rides), so
 // it is representable and Send stamps, retains and drains it to the
 // subscription — it must NOT be rejected as an empty variant. This is the
 // regression guard for the gap the leg-3/4 real-stack e2e surfaced: steerOp
@@ -1499,7 +1499,7 @@ func TestControlAckJumpDropsStrandedSeqs(t *testing.T) {
 }
 
 // TestControlServeRefusesRetiredSessionInResolveWindow covers the
-// serve()-vs-Retire() TOCTOU (SEA-1550): serve resolves the session under p.mu
+// serve()-vs-Retire() TOCTOU (RIG-1550): serve resolves the session under p.mu
 // and releases it, then takes s.mu ~13 lines later to bind. A full Retire that
 // lands in that window deletes the session, marks it dead, and closes its wake.
 // Without a re-check, serve then binds the DETACHED session: its own s.sub++
@@ -1533,7 +1533,7 @@ func TestControlServeRefusesRetiredSessionInResolveWindow(t *testing.T) {
 			t.Fatalf("serve on a session retired in the resolve window = %v (code %v), want CodeNotFound: a session torn down before the bind must be refused, not bound", err, connect.CodeOf(err))
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("serve did not return within 2s: it bound a session Retire had already detached and parked on a wake nothing will ever close — the stranded drainer SEA-1550 describes")
+		t.Fatal("serve did not return within 2s: it bound a session Retire had already detached and parked on a wake nothing will ever close — the stranded drainer RIG-1550 describes")
 	}
 
 	// No detached session may survive the retirement: binding on the torn-down

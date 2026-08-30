@@ -106,7 +106,7 @@ jobs:
       - name: Assert devenv is on PATH
         # Fail loud at setup if the shim is missing, rather than exit-127ing
         # silently on the first channel-bump branch and shipping a half-refreshed
-        # devenv.lock (the SEA-1304/RIG-2245 regression class).
+        # devenv.lock (the RIG-1304/RIG-2245 regression class).
         run: command -v devenv
 
       - name: Mint the Renovate App installation token

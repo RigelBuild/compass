@@ -21,7 +21,7 @@
 // transitions ride the same variant as `SessionFrame.state` (typed_event empty).
 //
 // The streaming conversation write-through (MessagePosted/MessageUpdated → comms)
-// is REMOVED (SEA-1708): a streamed assistant `text_delta` produces only a live
+// is REMOVED (RIG-1708): a streamed assistant `text_delta` produces only a live
 // session `assistant_text` chunk per delta; `text_end` settles no comms block.
 // Thinking is session-only (no comms counterpart).
 //
@@ -282,7 +282,7 @@ export class EventMapper {
 				return [this.#assistantText(inner.delta)];
 			}
 			case "text_end": {
-				// Comms surface removed (SEA-1708): the streaming conversation
+				// Comms surface removed (RIG-1708): the streaming conversation
 				// write-through is gone, so a settled block emits no frame. The live
 				// session `assistant_text` chunks (per delta) are the only text
 				// surface.

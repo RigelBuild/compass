@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// The presence component's read side (SEA-1569 T8, design record D4). Two pure
+// The presence component's read side (RIG-1569 T8, design record D4). Two pure
 // reads back the server-side presence projection: the unanswered-authored-ask
 // overlay (AgentHasOpenAsk) and the shared-channel visibility predicate the
 // SubscribeComms edge scopes an AgentPresenceChanged by (SharesVisibleChannel).

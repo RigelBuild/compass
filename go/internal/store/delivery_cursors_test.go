@@ -2,7 +2,7 @@
 
 package store
 
-// Delivery-cursor contracts (SEA-1569 T2, design record D2): the durable
+// Delivery-cursor contracts (RIG-1569 T2, design record D2): the durable
 // per-(agent, channel) low-water cursor. AckDelivery resolves a message id to a
 // seq (the overshoot clamp), records out-of-order acks in the above-set, and
 // drains the contiguous cursor across acked-or-self-authored seqs; a duplicate,

@@ -1881,14 +1881,14 @@ describe("compass_set_status", () => {
 		const transport = new FakeTransport(setStatusResult());
 		const setStatus = tool(new CommsBroker(transport), "compass_set_status");
 
-		await exec(setStatus, "tc-s1", { activity: "reviewing SEA-1721" });
+		await exec(setStatus, "tc-s1", { activity: "reviewing RIG-1721" });
 
 		const req = transport.requests[0];
 		expect(req?.callId).toBe("tc-s1");
 		expect(req?.call.case).toBe("setStatus");
 		if (req?.call.case !== "setStatus")
 			throw new Error("expected a setStatus call");
-		expect(req.call.value.activity).toBe("reviewing SEA-1721");
+		expect(req.call.value.activity).toBe("reviewing RIG-1721");
 		expect("clientRequestId" in req.call.value).toBe(false);
 	});
 

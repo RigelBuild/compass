@@ -74,7 +74,7 @@ type agentHost struct {
 	// only after the agent's Reload succeeds — so a swallowed Reload failure
 	// leaves it unmoved and the next signal retries that container.
 	// Keyed by container, not session: config lifecycle is container-scoped
-	// (SEA-1659 per-container roots), and it must survive a Reload (which reuses
+	// (RIG-1659 per-container roots), and it must survive a Reload (which reuses
 	// the session but keeps the container).
 	configVersions map[string]string
 	// containerLocks serializes the state-transitioning lifecycle ops per
@@ -86,7 +86,7 @@ type agentHost struct {
 	// could race a concurrent op that already resolved the same *sync.Mutex, so
 	// retaining it is what makes the resolve-then-lock protocol safe. Growth is
 	// bounded by distinct container names ever provisioned — the same retention
-	// class as handled/configVersions, and T9's bounded-eviction (SEA-1328)
+	// class as handled/configVersions, and T9's bounded-eviction (RIG-1328)
 	// covers them together. Status deliberately does NOT lock (it answers from
 	// the session set under h.mu), so it never queues behind a slow Provision.
 	// See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
@@ -153,7 +153,7 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 // per-container agent socket (before `podman run`, so the bind-mount source is
 // live), mounts it into the spec, and launches the isolated container through
 // the AgentRuntime façade, returning its stable container name. The socket is
-// the agent->Runner call transport (design SEA-1351 T5): it is served from
+// the agent->Runner call transport (design RIG-1351 T5): it is served from
 // Provision so a call arriving before Start binds a session fails closed rather
 // than finding no listener. Launch registers the handle so a later Start
 // resolves it by name. The dispatcher's request-id dedup makes a provision retry
@@ -291,7 +291,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// The per-container transition lock closes it: the second Start blocks here
 	// until the first records its session, then sees it and returns
 	// errAlreadyRunning. Concurrent dispatch (per-command goroutines) made this
-	// reachable; T9's in-process reattach (SEA-1328) consumes the same lock — do
+	// reachable; T9's in-process reattach (RIG-1328) consumes the same lock — do
 	// not reintroduce it. See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 	unlock := h.lockContainer(name)
 	defer unlock()
@@ -335,7 +335,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 
 	// Materialize the agent's secrets into the container BEFORE exec'ing the
 	// agent, so its first provider/gh/env read never races an empty seed
-	// (SEA-1327 T5: materialize before the agent runs). The fetch authorizes on
+	// (RIG-1327 T5: materialize before the agent runs). The fetch authorizes on
 	// the container→account binding the Server recorded at Provision — not the
 	// session, which is only being minted now — so it is FetchSecretsByContainer,
 	// keyed on the container name. The frozen record placed this in the
@@ -371,7 +371,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 
 	// On an authorized resume, materialize the server-reconstructed session
 	// file into the container BEFORE exec'ing the agent, so the agent's first
-	// read finds it (SEA-1570 T8). The absolute in-container path is exported to
+	// read finds it (RIG-1570 T8). The absolute in-container path is exported to
 	// the agent as COMPASS_RESUME_SESSION_FILE. A fresh (non-resume) start does
 	// nothing here. The discriminator is a non-empty resume_session_id.
 	env := h.agentEnv(handle)
@@ -443,7 +443,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// Lift the agent's replay barrier so the first idle-deliver that starts the
 	// agent's turn is dispatched rather than refused: the barrier defaults closed
 	// and only the arrival of replay_complete lifts it. Sent on EVERY served
-	// start, fresh AND file-based resume. A file-based resume (SEA-1570) loads
+	// start, fresh AND file-based resume. A file-based resume (RIG-1570) loads
 	// its transcript synchronously from COMPASS_RESUME_SESSION_FILE
 	// (cli.ts setSessionFile) BEFORE the agent subscribes to the control stream
 	// and runs, so replay_complete arriving on that stream is always processed

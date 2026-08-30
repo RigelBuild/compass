@@ -2,7 +2,7 @@
 // preview-URL comment. Invoked by the compass-eng-docs:deploy /
 // compass-eng-docs:deploy-preview moon tasks (CD, runInCI:false) — gated to
 // push:main / pull_request by the standalone .github/workflows/eng-docs-deploy.yml
-// GitHub Actions workflow (SEA-1765). The engineering docsite lives on
+// GitHub Actions workflow (RIG-1765). The engineering docsite lives on
 // Cloudflare Pages under the compass-eng-docs project.
 //
 // Adapted from sealed apps/docs/scripts/deploy.ts — they share the same

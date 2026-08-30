@@ -53,7 +53,7 @@ export type MapMessage = (wire: unknown) => Message;
  *  snapshot token and the stream tail cursor two SEPARATE counters — the client
  *  never conflates the point-in-time read boundary with the live tail position,
  *  so it stays gap-free whether the snapshot boundary resolves as bus-space or
- *  store-space (SEA-1333 amendment to the T2 contract). */
+ *  store-space (RIG-1333 amendment to the T2 contract). */
 export interface CommsState {
 	readonly accounts: readonly Account[];
 	readonly channelGroups: readonly ChannelGroup[];

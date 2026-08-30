@@ -387,7 +387,7 @@ describe("MessageStream scroll contract", () => {
 
 	// Case (10): the .conv-sizer carries the flex-shrink guard so the virtual
 	// scroll range survives .conv-stream being a flex column. REGRESSION for the
-	// P1 (SEA-1332 / PR #886): the scroller is `display: flex; flex-direction:
+	// P1 (RIG-1332 / PR #886): the scroller is `display: flex; flex-direction:
 	// column`, so an unpinned sizer flex-shrinks below its set getTotalSize()
 	// height once the content exceeds the viewport — collapsing scrollHeight to
 	// one screen and stranding every message past the first viewport.

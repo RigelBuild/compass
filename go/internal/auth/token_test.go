@@ -2,7 +2,7 @@
 
 package auth
 
-// Token issue/resolve contract tests (SEA-1195 T3, the S3 gate), transcribed
+// Token issue/resolve contract tests (RIG-1195 T3, the S3 gate), transcribed
 // from the authoritative Rust suite in crates/compass-daemon/src/auth.rs
 // (#[cfg(test)] mod tests). Intent is carried onto Go idioms; the Rust is the
 // spec, not a template.

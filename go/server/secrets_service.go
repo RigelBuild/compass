@@ -1,7 +1,7 @@
 //go:build unix
 
 // The SecretsService implementation — the account-facing side of the compass.v1
-// secrets contract (SEA-1327 T7). It sits beside CompassService/CommsService on
+// secrets contract (RIG-1327 T7). It sits beside CompassService/CommsService on
 // the same account doors (socket + dev + network), behind the bearer + admin-gate
 // interceptors that classify the three procedures authenticatedOpen (admin_gate.go):
 // the door admits any authenticated account and THIS handler enforces the fine

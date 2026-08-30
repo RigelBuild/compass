@@ -3,7 +3,7 @@
 package gateway
 
 // Hermetic suite for the Runner-side per-container agent socket listener
-// (SEA-1351 T2). White-box (package gateway) so it can drive the unexported
+// (RIG-1351 T2). White-box (package gateway) so it can drive the unexported
 // listenAgentSocket / reclaimStaleSocket and the runnerUID seam directly.
 //
 // The listener is a security boundary: the socket lives in an owner-only dir at

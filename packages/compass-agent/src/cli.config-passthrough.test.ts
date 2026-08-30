@@ -1,4 +1,4 @@
-// SEA-1678 T4 — the entrypoint's fleet-config passthrough (design
+// RIG-1678 T4 — the entrypoint's fleet-config passthrough (design
 // compass-agent-config-passthrough §CP-1/CP-2/CP-4), object-injection variant.
 //
 // Matt's pivot: the Runner-mounted bundle stays the delivery vehicle, but the
@@ -518,7 +518,7 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 	}, 20_000);
 });
 
-// ── SEA-1678 T6: the Reload RE-READ (the record's load-bearing acceptance) ─────
+// ── RIG-1678 T6: the Reload RE-READ (the record's load-bearing acceptance) ─────
 //
 // The record's acceptance is that the update path is proven on the agent's
 // OBSERVED value, not just a flipped symlink: after a ConfigVersion Reload the
@@ -569,7 +569,7 @@ async function runMainAcrossReload(
 	return { before, after };
 }
 
-describe("main re-reads the mount on a ConfigVersion Reload (SEA-1678 T6)", () => {
+describe("main re-reads the mount on a ConfigVersion Reload (RIG-1678 T6)", () => {
 	// The load-bearing acceptance: after a Reload the agent OBSERVES the updated
 	// settings value. Boot resolves the fleet overlay (222) over the project
 	// value (111); a version flip changes the fleet member to 333; the re-exec'd

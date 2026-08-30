@@ -4,11 +4,11 @@ Status: Draft
 
 Tracker: RIG-1611 — PR #75 review LOW #3, parked at review time ("no change for
 MVP, multi-Runner only"). Provenance: the parent product record
-`docs/designs/product/compass-notification-delivery/design.md` (SEA-1569 T3)
+`docs/designs/product/compass-notification-delivery/design.md` (RIG-1569 T3)
 ships the fan-out consumer whose head-of-line blocking motivates this record;
 that record is frozen (`Status: Active`) and is cited, never edited. This is
 the **SERVER-side counterpart** to the already-**MERGED** RUNNER-side work
-`compass-runner-concurrent-dispatch` (SEA-1575, commit 2ebdf09d on main —
+`compass-runner-concurrent-dispatch` (RIG-1575, commit 2ebdf09d on main —
 "feat(runner): concurrent per-command Sessions dispatch"; its record's
 `Status: Draft` header is stale, out of scope here): that change decoupled the
 Runner's serial Sessions *command-execution* loop
@@ -155,7 +155,7 @@ order to the wire).
   context.WithCancelCause(ctx)`; `:251-253`: `cancelCause(nil); d.wg.Wait()`).
 - **AGENTS.md comment rules.** Code comments cite this record by path, never
   issue IDs; this record cites tracker IDs as bare plain text (RIG-1611,
-  SEA-1569, SEA-1575, RIG-1610) per `docs/designs/CONTRIBUTING.md` rule 1.
+  RIG-1569, RIG-1575, RIG-1610) per `docs/designs/CONTRIBUTING.md` rule 1.
 
 ## Approach
 
@@ -571,7 +571,7 @@ Interfaces: none (docs only).
   wait cannot help. Residual: the bound VALUE only (below).
 - **OQ-3 — landing posture: land independently; the sibling is already
   MERGED.** The runner-side counterpart shipped as commit 2ebdf09d
-  ("feat(runner): concurrent per-command Sessions dispatch (SEA-1575)") on
+  ("feat(runner): concurrent per-command Sessions dispatch (RIG-1575)") on
   main. Nothing to gate on. (Aside, out of scope here: that record's
   `Status: Draft` header is stale — code merged, doc never flipped.)
 - **sendMu keep-vs-drop: DROP.** The single sender goroutine is the sole

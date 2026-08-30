@@ -19,7 +19,7 @@ import (
 	yaml "go.yaml.in/yaml/v3"
 )
 
-// The fleet CONFIG-BUNDLE store (SEA-1624 T1). One fleet-wide singleton bundle
+// The fleet CONFIG-BUNDLE store (RIG-1624 T1). One fleet-wide singleton bundle
 // row (agent_config_bundle, 0001_init.sql) holds the gzip-tarball of the
 // skills/, extensions/, and mcp/ material every agent materializes into its
 // scoped config dir (T3/T4). Unlike the secrets NAMES registry (secrets.go, a
@@ -42,7 +42,7 @@ const (
 )
 
 // Top-level regular-file members admitted by exact filename (not under a top
-// dir): the fleet context file and the fleet model config (SEA-1678 T1). Any
+// dir): the fleet context file and the fleet model config (RIG-1678 T1). Any
 // other top-level file stays rejected.
 const (
 	memberAgentsMD = "AGENTS.md"
@@ -112,7 +112,7 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 }
 
 // PutAgentConfig validates a fleet config bundle at the store door and, if it
-// passes, upserts it as the single current bundle (SEA-1624 T1). It returns the
+// passes, upserts it as the single current bundle (RIG-1624 T1). It returns the
 // bundle's canonical content version (the content hash computed by
 // validateAndHashConfigBundle): the sha256 over the DECOMPRESSED,
 // metadata-zeroed (path, bytes) content, so tar member
@@ -180,7 +180,7 @@ func (s *Store) CurrentAgentConfig(ctx context.Context) (version string, bundle 
 // singleton is already absent is a no-op success, not ErrNotFound — the caller's
 // intent (no bundle) already holds, so a repeated Delete or a Delete on a
 // never-configured fleet both succeed. This is the operator's explicit
-// return-to-unconfigured path (SEA-1625 T2), chosen over blessing an
+// return-to-unconfigured path (RIG-1625 T2), chosen over blessing an
 // empty-tarball push.
 func (s *Store) DeleteAgentConfig(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx,
@@ -193,7 +193,7 @@ func (s *Store) DeleteAgentConfig(ctx context.Context) error {
 
 // AgentConfigInfo reports the current bundle's version and the NAMES of its
 // declared members, bucketed by top dir (skills / extensions / mcp) — names
-// only, never content (SEA-1625 T2). Each bucket is deduplicated and sorted: a
+// only, never content (RIG-1625 T2). Each bucket is deduplicated and sorted: a
 // skill spreads many files under skills/<name>/, but the operator-facing view is
 // the set of declared <name>s. ErrNotFound when no bundle is declared (the
 // caller decides empty-is-ok, mirroring CurrentAgentConfig).
@@ -219,7 +219,7 @@ func (s *Store) AgentConfigInfo(ctx context.Context) (info AgentConfigInfoResult
 // AgentConfigInfoResult is the value-free member inventory of a config bundle:
 // version, the multi-member name buckets (skills/extensions/mcp + the CP-4
 // rules/subagents), and presence flags for the singleton members (settings,
-// AGENTS.md, models.yml). Names only, never content (SEA-1625 T2 / SEA-1678 T1).
+// AGENTS.md, models.yml). Names only, never content (RIG-1625 T2 / RIG-1678 T1).
 type AgentConfigInfoResult struct {
 	Version     string
 	Skills      []string

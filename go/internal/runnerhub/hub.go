@@ -52,7 +52,7 @@ type LifecycleSink interface {
 
 // SettleSink is notified of an agent session's lifecycle transition at the SAME
 // hub arm that extracts it for the LifecycleSink (deliverSession) — the direct,
-// non-bus edge the delivery consumer (SEA-1569 T3) subscribes to for the
+// non-bus edge the delivery consumer (RIG-1569 T3) subscribes to for the
 // author's turn-settle (design.md:155-160). The consumer holds agent-authored
 // messages until their author's session settles (WORKING->READY) or reaches a
 // terminal state, then fires the held delivers from the message's current
@@ -73,7 +73,7 @@ type SettleSink interface {
 
 // SessionStartSink is notified when the hub binds a live agent session at its
 // StartAgentSession promotion (promoteSession) — the direct, non-bus edge the
-// delivery consumer (SEA-1569 T6) subscribes to for the reconnect sweep. On a
+// delivery consumer (RIG-1569 T6) subscribes to for the reconnect sweep. On a
 // session start the consumer sweeps that session's owed messages
 // (UndeliveredMessages) and re-dispatches them ascending-seq through the
 // recipient's dispatch gate, so a message posted while the agent had no live
@@ -101,7 +101,7 @@ type SessionStartSink interface {
 // SessionReapSink is notified at enroll (the Runner-reconnect teardown) of the
 // set of session ids whose hub bindings were just cleared, so a consumer holding
 // soft per-session state keyed by session id can drop it. The delivery consumer
-// (SEA-1569 T3) subscribes to reap its held-deliver registry entries for a
+// (RIG-1569 T3) subscribes to reap its held-deliver registry entries for a
 // no-frame author death: such a death emits no terminal frame, so no settle edge
 // ever fires fireHeld to clear the entry, and it would otherwise persist until
 // process restart. The design specifies exactly this enroll-bounded reap
@@ -120,7 +120,7 @@ type SessionReapSink interface {
 	OnSessionsReaped(sessionIDs []string)
 }
 
-// PresenceSink is notified of the two hub-side edges the SEA-1569 T8 presence
+// PresenceSink is notified of the two hub-side edges the RIG-1569 T8 presence
 // projection (design record D4) is fed by: a session lifecycle transition at the
 // deliverSession arm (the SAME arm SettleSink rides, right after the
 // LifecycleSink publish) and a session promotion at promoteSession (the
@@ -146,7 +146,7 @@ type PresenceSink interface {
 }
 
 // DeliveryStore is the durable delivery-cursor surface the hub's ack arms need:
-// the comms delivery cursor (SEA-1569 T3 §6) — resolve a delivered message's
+// the comms delivery cursor (RIG-1569 T3 §6) — resolve a delivered message's
 // channel and advance the per-(agent, channel) cursor on the recipient's ack —
 // and the forge delivery cursor (RIG-2732 W3) — advance one subscription's
 // per-subscriber delivered_revision on the agent's forge_notification_ack.
@@ -172,7 +172,7 @@ type DeliveryStore interface {
 }
 
 // TranscriptStore is the durable transcript surface the hub's commit arm writes
-// a relayed transcript_entry frame to (SEA-1667 T4, the durable counterpart to
+// a relayed transcript_entry frame to (RIG-1667 T4, the durable counterpart to
 // the loss-tolerant Deliver path). *store.Store implements it; the hub depends
 // only on this narrow surface (pattern: DeliveryStore). Wired via
 // SetTranscriptStore after construction so no NewHub caller signature changes,
@@ -239,11 +239,11 @@ type CommsCaller interface {
 	ListAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
 	// RosterAsAccount executes an agent-initiated GetRoster under account (the
 	// caller AND, when the request names no vantage, the session-resolved
-	// vantage) — SEA-1721 T2.
+	// vantage) — RIG-1721 T2.
 	RosterAsAccount(ctx context.Context, account store.AccountID, req *compassv1.GetRosterRequest) (*compassv1.GetRosterResponse, error)
 	// SetStatusAsAccount write-throughs the durable activity for account,
 	// returning the server-truncated value that landed in the table — the write
-	// half of the set_status ordered write-then-publish (SEA-1721 T2 / T3).
+	// half of the set_status ordered write-then-publish (RIG-1721 T2 / T3).
 	SetStatusAsAccount(ctx context.Context, account store.AccountID, activity string) (string, error)
 	UpdatePinnedBoardAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdatePinnedBoardRequest) (*compassv1.UpdatePinnedBoardResponse, error)
 }
@@ -257,45 +257,45 @@ type Hub struct {
 	tail      SessionTailSink
 	comms     CommsCaller
 	log       *slog.Logger
-	// settle is the delivery consumer's settle-edge sink (SEA-1569 T3), notified
+	// settle is the delivery consumer's settle-edge sink (RIG-1569 T3), notified
 	// at deliverSession right after the LifecycleSink publish. Nil until
 	// SetSettleSink wires it (after both hub and consumer exist), and read under
 	// mu so the setter and the arm never race. Nil-safe: a hub with no settle
 	// sink is today's behavior.
 	settle SettleSink
-	// sessionStart is the delivery consumer's session-start-edge sink (SEA-1569
+	// sessionStart is the delivery consumer's session-start-edge sink (RIG-1569
 	// T6), notified at promoteSession right after the account->session binding is
 	// recorded. Nil until SetSessionStartSink wires it (after both hub and
 	// consumer exist), and read under mu so the setter and promoteSession never
 	// race. Nil-safe: a hub with no session-start sink is today's behavior.
 	sessionStart SessionStartSink
-	// reap is the delivery consumer's session-reap sink (SEA-1569 T3), notified
+	// reap is the delivery consumer's session-reap sink (RIG-1569 T3), notified
 	// at enroll with the session ids whose bindings were just cleared, so the
 	// consumer can drop any held-deliver entries a no-frame author death left
 	// behind. Nil until SetSessionReapSink wires it (after both hub and consumer
 	// exist), and read under mu so the setter and enroll never race. Nil-safe: a
 	// hub with no reap sink is today's behavior.
 	reap SessionReapSink
-	// presence is the SEA-1569 T8 presence projection's sink, notified at
+	// presence is the RIG-1569 T8 presence projection's sink, notified at
 	// deliverSession (lifecycle transition) and promoteSession (reconciliation).
 	// Nil until SetPresenceSink wires it (after both hub and the presence
 	// component exist), and read under mu so the setter and the arms never race.
 	// Nil-safe: a hub with no presence sink is today's behavior.
 	presence PresenceSink
 	// presenceSource is the T8 presence projection's READ + publish-hook edge the
-	// roster leg (SEA-1721 T2) consumes: PresenceFor snapshots the enum map,
+	// roster leg (RIG-1721 T2) consumes: PresenceFor snapshots the enum map,
 	// PublishActivity fires the set_status live event. Distinct from `presence`
 	// (the write edge the hub FEEDS). Nil until SetPresenceSource wires it (after
 	// both hub and the presence component exist), and read under mu so the setter
 	// and the reads never race. Nil-safe: a hub with none wired reports OFFLINE
 	// and drops the activity publish.
 	presenceSource presenceSource
-	// delivery is the durable delivery-cursor store the ack arm advances (SEA-1569
+	// delivery is the durable delivery-cursor store the ack arm advances (RIG-1569
 	// T3). Nil until SetDeliveryStore wires it; read under mu. Nil-safe: a hub
 	// with no delivery store drops delivery_ack frames.
 	delivery DeliveryStore
 	// transcripts is the durable transcript store the commit arm writes a relayed
-	// transcript_entry frame to (SEA-1667 T4). Nil until SetTranscriptStore wires
+	// transcript_entry frame to (RIG-1667 T4). Nil until SetTranscriptStore wires
 	// it; read under mu. Nil-safe: a hub with no transcript store fails a
 	// transcript commit closed CodeUnavailable.
 	transcripts TranscriptStore
@@ -360,7 +360,7 @@ type Hub struct {
 	// accountSessions is the REVERSE of sessionAccounts (account -> live
 	// session_id), maintained wherever sessionAccounts is so the two never drift:
 	// promoteSession adds, unbindSession removes, enroll clears. The delivery
-	// consumer (SEA-1569 T3) resolves a subscribed agent account to its live
+	// consumer (RIG-1569 T3) resolves a subscribed agent account to its live
 	// session to dispatch a deliver — the reverse direction RelayCommsCall never
 	// needs. Single-Runner MVP: an account has at most one live session, so this
 	// is a plain 1:1 map; a future multi-session-per-agent change would widen the
@@ -451,7 +451,7 @@ func (h *Hub) SetSessionReapSink(reap SessionReapSink) {
 	h.reap = reap
 }
 
-// SetPresenceSink wires the SEA-1569 T8 presence component as the hub's presence
+// SetPresenceSink wires the RIG-1569 T8 presence component as the hub's presence
 // sink, AFTER both exist — the post-construction setter that breaks the
 // component<->hub construction cycle (the component takes the hub as its Status
 // relay; the hub takes the component as its PresenceSink). Mirrors SetSettleSink.
@@ -487,7 +487,7 @@ func (h *Hub) SetDeliveryStore(delivery DeliveryStore) {
 }
 
 // SetTranscriptStore wires the durable transcript store the commit arm writes a
-// relayed transcript_entry frame to (SEA-1667 T4), after construction so no
+// relayed transcript_entry frame to (RIG-1667 T4), after construction so no
 // NewHub caller signature changes. Called once at server assembly; nil-safe (a
 // hub with no transcript store fails a transcript commit closed CodeUnavailable).
 // Wired under mu; read under mu.
@@ -498,7 +498,7 @@ func (h *Hub) SetTranscriptStore(transcripts TranscriptStore) {
 }
 
 // SetTranscriptReader wires the durable transcript READ store T5's resume-body
-// reconstructor reads through (SEA-1667), after construction so no NewHub caller
+// reconstructor reads through (RIG-1667), after construction so no NewHub caller
 // signature changes. Called once at server assembly; nil-safe (a hub with no
 // reader fails ReconstructSessionBody closed CodeUnavailable). Wired under mu;
 // read under mu — the exact posture SetTranscriptStore uses for the write seam.
@@ -683,7 +683,7 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 	h.lifecycle.PublishSessionStatus(status)
 	// Same arm, right after the lifecycle publish: notify the delivery consumer
 	// of the author's settle edge so it can fire any agent-authored messages held
-	// for this session (SEA-1569 T3 §2, design.md:155-160). Read the sink under
+	// for this session (RIG-1569 T3 §2, design.md:155-160). Read the sink under
 	// mu so the setter and this arm never race; nil-safe (a hub with no settle
 	// sink is today's behavior). The sink enqueues into the consumer's own loop
 	// and returns promptly — it does not block Deliver on store work.
@@ -694,7 +694,7 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 		settle.OnSessionSettled(sessionID, state)
 	}
 	// Same arm: notify the presence projection of the lifecycle transition so it
-	// recomputes + republishes-on-change the session's agent presence (SEA-1569
+	// recomputes + republishes-on-change the session's agent presence (RIG-1569
 	// T8, design.md:472-479). Reuse the account resolved above (same binding, one
 	// lookup) and pass it (the sink is per-account; accountForSession stays
 	// private). Read the sink under mu, nil-safe, exactly as the settle sink
@@ -711,7 +711,7 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 }
 
 // deliverAck advances the durable delivery cursor for a recipient's
-// delivery_ack (SEA-1569 T3 §6): the Runner->Server receipt that a relayed
+// delivery_ack (RIG-1569 T3 §6): the Runner->Server receipt that a relayed
 // deliver reached the session. It resolves session->agent from the hub's own
 // binding (the SAME binding RelayCommsCall resolves against), resolves the
 // acked message's channel through the delivery store (the ack carries only
@@ -876,7 +876,7 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	h.runner = &attachedRunner{id: id, subject: subject, router: router}
 	// Snapshot the live (account -> session) bindings BEFORE clearing them: each
 	// previously-bound account loses its live session on this re-enroll and must
-	// be driven to presence OFFLINE (SEA-1569 T8). enroll emits no lifecycle
+	// be driven to presence OFFLINE (RIG-1569 T8). enroll emits no lifecycle
 	// frames of its own, so without this a long-WORKING agent whose Runner
 	// reconnected would stay WORKING in the projection forever. A first-ever
 	// enroll (empty maps) snapshots nothing and fires nothing.
@@ -886,7 +886,7 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	}
 	// Snapshot the session ids whose bindings are about to be cleared, so the
 	// delivery consumer can reap any held-deliver registry entries a no-frame
-	// author death left behind (SEA-1569 T3, design.md:172-175). sessionAccounts
+	// author death left behind (RIG-1569 T3, design.md:172-175). sessionAccounts
 	// is keyed by session id, and Consumer.held is keyed by that same author
 	// session id, so these are exactly the keys to drop. A first-ever enroll
 	// (empty map) snapshots nothing.

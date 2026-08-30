@@ -2,7 +2,7 @@
 
 package runtime
 
-// SEA-1359 portability proof (SEA-1327 Decision 1): the REAL agent base image
+// RIG-1359 portability proof (RIG-1327 Decision 1): the REAL agent base image
 // carries a self-contained, single-user Nix store the agent owns and can
 // activate a devenv from — with NO host /nix mount, no overlay, and no
 // assumption the host has Nix. This is the "T8 agent-owns-/nix test" the
@@ -108,7 +108,7 @@ func requireRealImage(t *testing.T) string {
 	return ref
 }
 
-// TestRealImagePortability is the SEA-1359 acceptance proof. It drives the
+// TestRealImagePortability is the RIG-1359 acceptance proof. It drives the
 // production AgentRuntime.Launch against the REAL base image and, as the
 // unprivileged agent user over the production ExecAsAgent path, proves the
 // in-image store is agent-owned and self-sufficient and that direnv activates a

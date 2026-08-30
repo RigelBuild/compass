@@ -256,12 +256,12 @@ Repeatable rules applied by the migration task and binding on future records:
 2. **Private tracker links (SEA-####, linear.app).** *Keep the ID, strip the
    link.* ~50 distinct SEA IDs are load-bearing provenance (records cite each
    other through them); a dead `linear.app/rigelbuild/...` URL is worse
-   than no URL. Rewrite BOTH link forms to plain `SEA-1234`: the inline
-   `[SEA-1234](https://linear.app/…)` AND the reference-definition
-   `[SEA-1234]: https://linear.app/…` (`^\[.+\]:\s*https://linear\.app/`) —
+   than no URL. Rewrite BOTH link forms to plain `RIG-1234`: the inline
+   `[RIG-1234](https://linear.app/…)` AND the reference-definition
+   `[RIG-1234]: https://linear.app/…` (`^\[.+\]:\s*https://linear\.app/`) —
    the corpus's one live URL is the latter form
    (`compass-0.4/design.md:207`), which an inline-only regex would miss. Bare
-   `SEA-1234` mentions are untouched. Public readers see an opaque internal
+   `RIG-1234` mentions are untouched. Public readers see an opaque internal
    ticket ID — honest and harmless.
 3. **`oss/compass/**` path rewrite.** *Strip the prefix.* 19 records cite
    `oss/compass/<path>` paths from sealed's vendored era; the public repo's
@@ -417,7 +417,7 @@ Interfaces:
 - Consumes: Q4 ruling (below) — project `compass-eng-docs`, custom domain
   `eng.compass.rigel.build`, provisioned via sealed's Pulumi IaC lane.
 - Produces: the `compass-eng-docs` Pages project via sealed's Pulumi IaC (sealed
-  precedent: the docsite got "its OWN Pages:Edit-scoped token once SEA-1119
+  precedent: the docsite got "its OWN Pages:Edit-scoped token once RIG-1119
   provisions the project", `sealed/ci/pipeline.ts:334-336`); repo secrets
   `CLOUDFLARE_API_TOKEN` (Pages:Edit-scoped, least-privilege per
   `pipeline.ts:321-324`) + `CLOUDFLARE_ACCOUNT_ID` on `RigelBuild/compass`;
@@ -496,7 +496,7 @@ earlier. T5 and T7 execute against these rulings; T6 is dropped (Q5).
   provisions?** No compass Pages project exists (sealed's pipeline knows only
   `sealed-docs` + the marketing site, `sealed/ci/pipeline.ts:333-343`).
   **RULED (Matt):** provision a new `compass-eng-docs` project + a
-  Pages:Edit-scoped token via sealed's existing Pulumi IaC lane (the SEA-1119
+  Pages:Edit-scoped token via sealed's existing Pulumi IaC lane (the RIG-1119
   precedent, `pipeline.ts:334-336`), production branch `main`; custom domain
   `eng.compass.rigel.build` (Matt ruled). The `docs.compass` naming and
   `docs.compass.rigel.build` domain are deliberately RESERVED for the

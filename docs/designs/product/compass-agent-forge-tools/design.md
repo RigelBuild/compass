@@ -390,7 +390,7 @@ Every task below inherits these; they are not repeated per task.
 
 - **No new wire surface.** This record adds no proto, no gen, no RPC. The
   `Forge` RPC, its envelopes, and the TS gen exist; `buf` tasks and the
-  SEA-1267 gen-fence are untouched (the fence already covers the `ForgeCall*`
+  RIG-1267 gen-fence are untouched (the fence already covers the `ForgeCall*`
   family and `AgentGateway` — `proto/moon.yml` `gen-fence` script — and no
   public tree is regenerated here).
 - **Egress seal preserved.** The forge call rides the existing per-container

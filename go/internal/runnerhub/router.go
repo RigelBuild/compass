@@ -75,7 +75,7 @@ type commandRouter struct {
 	// dispatches (send1) still awaiting a possible async refusal. A successful
 	// deliver returns NO synchronous result and rides a later
 	// AgentFrame.delivery_ack, so send1 registers no pendingCall and does not
-	// block (SEA-1569 §5). A REFUSAL does ride the Sessions request stream as a
+	// block (RIG-1569 §5). A REFUSAL does ride the Sessions request stream as a
 	// RunnerError result correlated by request id, which complete() would
 	// otherwise drop as "unknown". This set makes such a refusal OBSERVABLE
 	// (logged + counted) instead of silently dropped.
@@ -318,7 +318,7 @@ func (r *commandRouter) push(cmd *compassv1internal.SessionsResponse) error {
 }
 
 // send1 enqueues a single send-only DELIVER command onto the outbound queue
-// WITHOUT registering a blocking pendingCall — the crux of SEA-1569 §5. A
+// WITHOUT registering a blocking pendingCall — the crux of RIG-1569 §5. A
 // successful deliver returns NO synchronous result (success rides a later
 // AgentFrame.delivery_ack), so reusing dispatch — which registers an inflight
 // call and blocks on waitCall for a result that never comes — would hang until
@@ -381,7 +381,7 @@ func waitCall(ctx context.Context, call *pendingCall) (*compassv1internal.Sessio
 //   - an inflight blocking call (dispatch): hand it the result and wake it.
 //   - a send-only deliver awaiting a possible async refusal (send1): the result
 //     is a RunnerError refusal — count + log it and clear the entry, so the
-//     refusal is observable and not dropped (SEA-1569 §5). The cursor was never
+//     refusal is observable and not dropped (RIG-1569 §5). The cursor was never
 //     advanced on send, so no rollback is needed; the D2 sweep redelivers.
 //   - a truly-unknown id (a duplicate result, or a reaped call): ignored, the
 //     original contract.

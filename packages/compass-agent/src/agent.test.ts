@@ -646,7 +646,7 @@ describe("CompassAgent — terminal status distinguishes failure from clean stop
 });
 
 // ---------------------------------------------------------------------------
-// SEA-1310 §8 — RT-3 turn-end delivery (DELIVER arm).
+// RIG-1310 §8 — RT-3 turn-end delivery (DELIVER arm).
 //
 // deliver() rides the immediate handle (not the control script), so these tests
 // construct CompassAgent directly and call `agent.deliver(msg)`, driving turn
@@ -795,7 +795,7 @@ async function tick(): Promise<void> {
 	await Promise.resolve();
 }
 
-describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", () => {
+describe("CompassAgent — RT-3 turn-end delivery (RIG-1310 §8 deliver arm)", () => {
 	test("mid-turn delivers coalesce into ONE turn-end prompt", async () => {
 		const h = startDeliverAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
@@ -908,7 +908,7 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		await h.close();
 	});
 
-	// The high-severity race (SEA-1310 §8): a control-driven prompt sets the inner
+	// The high-severity race (RIG-1310 §8): a control-driven prompt sets the inner
 	// agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072) but flips
 	// `#turnActive` only later, off the async `agent_start` event. A deliver that
 	// lands in that window must NOT be flushed — flushing would inject into a
@@ -937,7 +937,7 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		await h.close();
 	});
 
-	// Rejection-safety belt (SEA-1310 §8): if a flush's prompt is REFUSED (the
+	// Rejection-safety belt (RIG-1310 §8): if a flush's prompt is REFUSED (the
 	// only prompt-rejection shape — a not-injected batch), the batch must not be
 	// acked (no false receipt) and its ids must leave the processed set so the
 	// Server's redelivery re-injects them. Forced via the model-independent
@@ -1482,7 +1482,7 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 	});
 
 	test("a real tracked turn flushes on agent_end; the strand recovery does not double-flush", async () => {
-		// The spin-up race the isStreaming gate exists to close (RIG-2488/SEA-1310)
+		// The spin-up race the isStreaming gate exists to close (RIG-2488/RIG-1310)
 		// must stay closed: a deliver landing while a control-prompt has spun the
 		// inner agent streaming but agent_start has not yet propagated (#turnActive
 		// still false, isStreaming true) queues AND arms a recovery. When the REAL
@@ -1585,7 +1585,7 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 });
 
 // ---------------------------------------------------------------------------
-// SEA-1310 §8 — channel-borne steer arm.
+// RIG-1310 §8 — channel-borne steer arm.
 //
 // steer() rides the same immediate handle deliver does (not the control script),
 // so these tests reuse startDeliverAgent()/deliverMsg()/ackIds()/tick() and call
@@ -1593,7 +1593,7 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 // it injects via `session.agent.steer` (drained by the running loop, no turn
 // started); idle it STARTS A TURN with the mention as content via
 // `session.agent.prompt`, mirroring the idle-deliver path (design: architecture-lineage idle arm).
-describe("CompassAgent — channel-borne steer (SEA-1310 §8 steer arm)", () => {
+describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => {
 	test("a mid-turn steer injects via session.agent.steer and does NOT start a turn", async () => {
 		const h = startDeliverAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
@@ -1908,7 +1908,7 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 	});
 });
 
-describe("formatDeliversForPrompt — coalescing format (SEA-1310 §8)", () => {
+describe("formatDeliversForPrompt — coalescing format (RIG-1310 §8)", () => {
 	test("renders each message's text, in order, within its topic section", () => {
 		const batch = [
 			deliverMsg("m1", "first", "t-1"),

@@ -150,7 +150,7 @@ func (h *Hub) Status(ctx context.Context, requestID string, req *compassv1.GetAg
 }
 
 // SessionState resolves a live session's lifecycle state through the Runner
-// Status relay (GetAgentStatus) — the reconciliation input the SEA-1569 T8
+// Status relay (GetAgentStatus) — the reconciliation input the RIG-1569 T8
 // presence projection rebuilds from at a session promotion (design.md:494-503).
 // The Runner is authoritative for live session truth, so a restart reconstructs
 // presence from its answer rather than from any lost in-memory state. ok is

@@ -146,7 +146,7 @@ causality is in scope:
 - `SessionInjection` (`proto/compass/v1/compass.proto:524-533`; next-free after
   `op_kind = 1`, `message_id = 2`, `from_handle = 3`) → `traceparent` =
   **field 4** (PUBLIC observation surface; Matt ruled OQ2 = yes). A plain
-  `string` add does NOT touch the gen-fenced enum (`SEA-1267`,
+  `string` add does NOT touch the gen-fenced enum (`RIG-1267`,
   `compass.proto:535-539` fences `SessionInjectionKind`, not scalar fields), so
   it is a clean additive public-API field. The agent EMITS it on the injection
   observation from the `traceparent` it decoded (#649 T3), giving public
@@ -627,7 +627,7 @@ message SessionInjection {
   string from_handle = 3;
   // Trace the agent continued for this injection; lets a public
   // session-stream consumer join the observation to its trace. Scalar add —
-  // does not touch the SEA-1267 gen-fenced enum.
+  // does not touch the RIG-1267 gen-fenced enum.
   string traceparent = 4;
 }
 
@@ -844,7 +844,7 @@ Interfaces:
    (`proto/compass/v1/compass.proto:524-533`; next-free field 4 after
    `op_kind=1, message_id=2, from_handle=3`) is the public
    `SessionEvent`/`SubscribeAgentSession` payload. Adding a scalar `string
-   traceparent` does NOT touch the gen-fenced enum (`SEA-1267`,
+   traceparent` does NOT touch the gen-fenced enum (`RIG-1267`,
    `compass.proto:535-539`, fences `SessionInjectionKind`), so it is a clean
    additive public-API field. The agent emits it from the `traceparent` it
    decoded (#649 T3), giving public session-stream consumers a direct

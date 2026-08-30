@@ -3,7 +3,7 @@
 package store
 
 // Agent placement: the durable record of which Runner an agent is on and the
-// container name it runs under. Two things must hold for the SEA-1516 reattach
+// container name it runs under. Two things must hold for the RIG-1516 reattach
 // work that reads it — a placement is SINGULAR per agent (a re-provision
 // replaces it, never accumulates), and the container -> agent mapping it
 // exposes is exclusive. Both are database invariants (the PK and the unique

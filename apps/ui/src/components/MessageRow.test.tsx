@@ -6,7 +6,7 @@ import { MessageRow } from "./ChannelView";
 // The message row's author-style contract: a row's `.msg` element carries the
 // author's `kind` (`user`/`agent`/`system`) as a modifier class, so each sender
 // reads distinctly. The system arm is the reserved `@compass` platform sender
-// (SEA-1820 T5) — without its own class it would render styled as a plain user.
+// (RIG-1820 T5) — without its own class it would render styled as a plain user.
 // MessageRow is rendered directly (no virtualizer/store) so the assertion pins
 // the class mapping alone.
 

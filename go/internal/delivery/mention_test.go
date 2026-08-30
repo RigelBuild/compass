@@ -2,7 +2,7 @@
 
 package delivery
 
-// The mention→steer routing acceptance cases (SEA-1569 T7, design record D5,
+// The mention→steer routing acceptance cases (RIG-1569 T7, design record D5,
 // design.md:507-562, 848-855), RED-first. Each drives the consumer through the
 // real events bus + hand-written fakes and gates on the recorder's observed
 // dispatches (op-kind: steer vs deliver) — never a sleep, never a retry

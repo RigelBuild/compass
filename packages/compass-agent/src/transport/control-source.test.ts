@@ -187,7 +187,7 @@ function steerOp(seq: bigint): WireAgentControl {
 }
 
 // A populated steer op: a SteerControl carrying a comms Message with an id and
-// one text block (SEA-1310 §8 / SEA-1569 — the channel `@`-mention wire is no
+// one text block (RIG-1310 §8 / RIG-1569 — the channel `@`-mention wire is no
 // longer an empty shell). Mirrors deliverOp.
 function populatedSteerOp(
 	seq: bigint,
@@ -211,7 +211,7 @@ function populatedSteerOp(
 }
 
 // A populated deliver op: a DeliverControl carrying a comms Message with an id
-// and one text block (SEA-1310 §8 — the wire is no longer an empty shell).
+// and one text block (RIG-1310 §8 — the wire is no longer an empty shell).
 function deliverOp(
 	seq: bigint,
 	id: string,
@@ -432,7 +432,7 @@ test("an empty-shell steer is counted-unmapped, not yielded, and immediate.* is 
 	expect(steerUnmapped?.reason).toContain("payload staged");
 });
 
-test("a populated deliver decodes its Message and dispatches it through immediate.deliver (SEA-1310 §8)", async () => {
+test("a populated deliver decodes its Message and dispatches it through immediate.deliver (RIG-1310 §8)", async () => {
 	// Non-vacuity: if decodeImmediatePayload still returned undefined for a
 	// deliver, delivers would be empty and the op counted "payload staged" → red;
 	// if the deliver were yielded on the iterable instead of dispatched
@@ -468,7 +468,7 @@ test("a populated deliver decodes its Message and dispatches it through immediat
 	expect(staged).toBeUndefined();
 });
 
-test("a populated steer decodes its Message and dispatches it through immediate.steer (SEA-1310 §8)", async () => {
+test("a populated steer decodes its Message and dispatches it through immediate.steer (RIG-1310 §8)", async () => {
 	// Non-vacuity: if decodeImmediatePayload returned undefined for a steer,
 	// steers would be empty and the op counted "payload staged" → red; if the
 	// steer were yielded on the iterable instead of dispatched immediately, ops
@@ -1234,7 +1234,7 @@ test("F2(d): the SAME drop shape as F2(c) survives indefinitely once ops are APP
 	);
 }, 30000);
 
-test("a long apply survives >budget socket flaps — an op in flight is progress (SEA-1540)", async () => {
+test("a long apply survives >budget socket flaps — an op in flight is progress (RIG-1540)", async () => {
 	// The latent kill this fix closes. The source is apply-then-ack and its
 	// single consumer (CompassAgent's control loop) awaits the WHOLE turn before
 	// pulling the next op, so while a long turn applies op N the ack cursor
@@ -1253,7 +1253,7 @@ test("a long apply survives >budget socket flaps — an op in flight is progress
 	// nothing applied and the in-flight arm gone, `noProgress` climbs one per
 	// drop and the source `buffer.fail`s at open 10, so it never re-opens past
 	// the budget, `overBudget` never fires, and the opens-stalled detector wins
-	// the race → "failed". That reverted calc IS the SEA-1540 defect.
+	// the race → "failed". That reverted calc IS the RIG-1540 defect.
 	//
 	// Isolation: like F2(c)/F2(d) the reset-on-open line is the shared premise —
 	// every connection outlives the min-uptime floor (t += 6000 per header), so

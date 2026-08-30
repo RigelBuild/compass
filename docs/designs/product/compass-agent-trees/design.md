@@ -227,14 +227,14 @@ that" part. Per surface:
   here.
 - **User guidance (docs/onboarding).** See §How this informs usage below.
 - **Agent instructions.** See §How this informs agent instructions below.
-- **Channels (SEA-1622).** Channels currently form their *own* tree via
+- **Channels (RIG-1622).** Channels currently form their *own* tree via
   `ChannelGroup.parent_group_id` (`comms.proto:155-169`) — a parallel
   namespace hierarchy. Unifying them under the agent tree (an agent's
-  subtree implying its channel scope) is **SEA-1622, post-MVP**: this record
-  makes the agent tree the primitive SEA-1622 will fold channels into, and
+  subtree implying its channel scope) is **RIG-1622, post-MVP**: this record
+  makes the agent tree the primitive RIG-1622 will fold channels into, and
   deliberately does **not** do that folding — the two trees coexist until
-  SEA-1622 lands.
-- **Roles (SEA-1623).** Roles compose onto the tree: a role applied to an
+  RIG-1622 lands.
+- **Roles (RIG-1623).** Roles compose onto the tree: a role applied to an
   agent can scope to its subtree (everything under this parent inherits the
   posture). Referenced, not designed here.
 
@@ -295,7 +295,7 @@ curated taxonomy that drifts from it.
   `comms.proto:134-137`); empty string = root, mirroring
   `ChannelGroup.parent_group_id` (`comms.proto:160-161`).
 - **Scope fence**: channels stay on their own `ChannelGroup` tree until
-  SEA-1622; roles-on-subtrees is SEA-1623; board grouping/filter UI and pins
+  RIG-1622; roles-on-subtrees is RIG-1623; board grouping/filter UI and pins
   are separate downstream records. This record establishes the primitive
   and its contracts, nothing more.
 - **Re-parenting is first-class** (Matt, 2026-08-01): `parent_agent_id` is
@@ -445,7 +445,7 @@ record consumes.
     unchanged, but the comment narrates the retired moat convention on a
     surface this task lands in and must be rewritten to the issue-based
     reason. (The `AgentRole` vocabulary at `stub-data.ts:58` is roles, not
-    exclusion — SEA-1623, left alone.)
+    exclusion — RIG-1623, left alone.)
 
   The board Issues/PRs remodel record consumes these for its grouping and
   filter UI; no board UI changes in this task.
@@ -488,7 +488,7 @@ Appended to `docs/designs/product/DECISIONS.md` in the same PR that freezes
 this record (touch-coupling), under **Strategy & positioning** — this is a
 product-thesis decision, not a UI-shell detail:
 
-> | DL-095 | The agent tree is Compass's organizing primitive — Compass is a tool to build and manage agent trees: `AgentAccount` carries `parent_agent_id` (field 4; empty = root, set at creation — the spawning agent, or user choice — and editable thereafter via a `ReparentAgent` mutation, so users iterate hierarchy without teardown), the workspaces sidebar and board views derive from and filter by the tree, REPLACING the user-defined folder organization (replace, not coexist); channels (SEA-1622) and roles (SEA-1623) compose onto the tree later | Active (Matt, 2026-08-01) | [agent trees §Approach](compass-agent-trees/design.md#approach) |
+> | DL-095 | The agent tree is Compass's organizing primitive — Compass is a tool to build and manage agent trees: `AgentAccount` carries `parent_agent_id` (field 4; empty = root, set at creation — the spawning agent, or user choice — and editable thereafter via a `ReparentAgent` mutation, so users iterate hierarchy without teardown), the workspaces sidebar and board views derive from and filter by the tree, REPLACING the user-defined folder organization (replace, not coexist); channels (RIG-1622) and roles (RIG-1623) compose onto the tree later | Active (Matt, 2026-08-01) | [agent trees §Approach](compass-agent-trees/design.md#approach) |
 
 **No existing row is superseded — the call, stated:** the user-defined
 folder organization this record replaces was never a ledgered decision. A

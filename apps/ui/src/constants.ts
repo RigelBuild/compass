@@ -87,9 +87,9 @@ export interface ActivityBarItem {
 	group: RightTabGroup;
 	/** Fleet agent tabs: the agent whose `StateDot` badges the tab icon. On an
 	 *  unreachable pin this is the pinned id that resolves to no visible agent, so
-	 *  it carries no live `StateDot` (SEA-1645). */
+	 *  it carries no live `StateDot` (RIG-1645). */
 	agentId?: string;
-	/** Fleet agent tabs (SEA-1645): true when the pinned agent no longer resolves
+	/** Fleet agent tabs (RIG-1645): true when the pinned agent no longer resolves
 	 *  to a visible agent (dead / despawned / filtered out). Absent/false = live.
 	 *  The activity bar and the pane render the unreachable state for a marked
 	 *  item. */
@@ -124,7 +124,7 @@ export const RIGHT_SIDEBAR_ISSUE_ITEMS: readonly ActivityBarItem[] =
 	Object.values(RIGHT_SIDEBAR_TAB_BY_ID).filter((t) => t.group === "issue");
 
 /** Build the fleet activity-bar item for a RESOLVABLE pinned agent (Record A
- *  §T2; SEA-1645 P1). The tab id is the `agent:`-prefixed account id (the open
+ *  §T2; RIG-1645 P1). The tab id is the `agent:`-prefixed account id (the open
  *  arm of `RightSidebarTab`); the icon is the agent handle's initial (matching
  *  the UI's glyph-icon convention — a per-agent glyph, no hardcoded Supervisor
  *  ◆), and the title is the LIVE agent handle. The item is left
@@ -141,7 +141,7 @@ export function fleetItemForAgent(agent: Agent): ActivityBarItem {
 	};
 }
 
-/** Build the fleet activity-bar item for an UNRESOLVABLE pin (SEA-1645 P1): its
+/** Build the fleet activity-bar item for an UNRESOLVABLE pin (RIG-1645 P1): its
  *  agent no longer resolves to a visible agent (dead / despawned / filtered
  *  out). The label is the handle cached at pin time (P0), so the item shows the
  *  human name the user pinned rather than an opaque id (a legacy `{ id, handle:

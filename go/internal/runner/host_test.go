@@ -293,7 +293,7 @@ func (b *seqSpecBuilder) BuildSpec(*compassv1.ProvisionAgentWorkspaceRequest) (r
 
 // Two containers provisioned on ONE host must each get their OWN config root at
 // <RuntimeDir>/containers/<name>/config — never a shared tree. A shared root is
-// the SEA-1659 bug: every bind mount is :Z-relabeled into the container's
+// the RIG-1659 bug: every bind mount is :Z-relabeled into the container's
 // private SELinux MCS category, so a second container provisioning against a
 // shared root re-steals it from the first. This test reddens against the
 // pre-reshape shared-root code (both mounts resolve to the same
@@ -558,7 +558,7 @@ func TestRemoveClosesSocketWhenTeardownFails(t *testing.T) {
 	}
 }
 
-// SEA-1635: a Teardown that fails partway (engine Stop errors) must leave the
+// RIG-1635: a Teardown that fails partway (engine Stop errors) must leave the
 // container's registry handle RESOLVABLE, so a Remove retry re-runs Teardown
 // rather than answering a lying success over a leaked container. This pins the
 // deregister-LAST ordering: AgentRuntime.Teardown deregisters only after Stop

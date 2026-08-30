@@ -266,7 +266,7 @@ func attachStatusResponder(t *testing.T, hub *Hub, statuses []*compassv1.AgentSe
 	})
 }
 
-// L2 (SEA-1569 T8 review): SessionState adopts the SOLE status as this session's
+// L2 (RIG-1569 T8 review): SessionState adopts the SOLE status as this session's
 // state only when that status carries NO session id (the "Runner answered without
 // echoing the id" case). A sole status echoing an EMPTY id resolves ok=true.
 func TestSessionStateSoleStatusEmptyIDResolves(t *testing.T) {
@@ -284,7 +284,7 @@ func TestSessionStateSoleStatusEmptyIDResolves(t *testing.T) {
 	}
 }
 
-// L2 (SEA-1569 T8 review): a sole status echoing a NON-EMPTY MISMATCHED id is NOT
+// L2 (RIG-1569 T8 review): a sole status echoing a NON-EMPTY MISMATCHED id is NOT
 // this session's state — a Runner bug echoing a wrong id must not reconstruct a
 // wrong presence — so it is unresolved (ok=false → UNSPECIFIED). RED against
 // pre-fix: the pre-fix fallback adopted the sole status unconditionally, so this

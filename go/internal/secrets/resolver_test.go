@@ -220,7 +220,7 @@ func TestSetEmptyValueRejected(t *testing.T) {
 
 // TestSecretSpecVersionPin is a drift guard: the resolver's stdin/trim/empty-
 // reject write contract and the runtime FFI dlopen were verified against
-// secretspec-go v0.15.0 source (compass ruling SEA-1327 f63edea3). If a devenv
+// secretspec-go v0.15.0 source (compass ruling RIG-1327 f63edea3). If a devenv
 // fork-sync moves the pin, this fails loudly so the set() contract is re-checked
 // against the new source rather than silently drifting.
 func TestSecretSpecVersionPin(t *testing.T) {
@@ -246,7 +246,7 @@ func TestSecretSpecVersionPin(t *testing.T) {
 		t.Fatalf("%s not found in go.mod; expected it pinned at %s", modulePath, wantVersion)
 	}
 	if got != wantVersion {
-		t.Fatalf("secretspec-go pinned at %s, want %s — the write-path contract (stdin/trim/empty-reject) was verified against %s; re-verify set() semantics against the new source before moving the pin (SEA-1327 f63edea3)", got, wantVersion, wantVersion)
+		t.Fatalf("secretspec-go pinned at %s, want %s — the write-path contract (stdin/trim/empty-reject) was verified against %s; re-verify set() semantics against the new source before moving the pin (RIG-1327 f63edea3)", got, wantVersion, wantVersion)
 	}
 }
 

@@ -2,7 +2,7 @@
 
 package delivery
 
-// SEA-1569 T6 — the reconnect/start redelivery sweep, RED-first. A session-start
+// RIG-1569 T6 — the reconnect/start redelivery sweep, RED-first. A session-start
 // edge (OnSessionStarted, the hub's SessionStartSink hook fired at
 // promoteSession) enqueues into the consumer's ctx-rooted loop, which sweeps the
 // freshly-live session's owed messages (UndeliveredMessages) and re-dispatches

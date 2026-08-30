@@ -1,4 +1,4 @@
-// D7 stylelint guard (SEA-2034 T6) — the DS-token-cutover ratchet.
+// D7 stylelint guard (RIG-2034 T6) — the DS-token-cutover ratchet.
 //
 // Bans, at ERROR severity (stylelint's default; a violation exits non-zero and
 // fails `moon run compass-ui:stylelint` -> CI), the vocabulary the cutover
@@ -17,7 +17,7 @@
 // lane removes on migration (Matt ruling 2026-08-15) — the ratchet stays whole,
 // so any NEW raw motion reds CI.
 //
-// Refs SEA-2034; design: docs/designs/product/compass-ds-token-cutover/design.md (e)
+// Refs RIG-2034; design: docs/designs/product/compass-ds-token-cutover/design.md (e)
 module.exports = {
 	rules: {
 		// D7 ban 1a — raw hex color literals. Catches hex in properties stylelint

@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// The roster + set_status relay arms (SEA-1721 T2): RelayCommsCall dispatches a
+// The roster + set_status relay arms (RIG-1721 T2): RelayCommsCall dispatches a
 // roster call to RosterAsAccount and a set_status call to SetStatusAsAccount
 // under the bound account, wraps the matching result oneof, and — for set_status
 // — fires the best-effort PublishActivity carrying the SERVER-TRUNCATED value

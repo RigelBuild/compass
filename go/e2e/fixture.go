@@ -64,7 +64,7 @@ type Fixture struct {
 
 // fixtureConfig holds the optional knobs a caller flips through fixtureOption
 // before NewFixture stands the stack up. The zero value is the plain H1/H2
-// fixture (no canned model); WithCannedModel turns on the SEA-1787 H3 backend.
+// fixture (no canned model); WithCannedModel turns on the RIG-1787 H3 backend.
 type fixtureConfig struct {
 	canned       bool
 	cannedScript []CannedTurn
@@ -75,7 +75,7 @@ type fixtureConfig struct {
 	// only).
 	cannedMarkers []cannedMarker
 	// site, when non-nil, makes NewFixture reuse a persistent root/stateDir/ports
-	// (WithSite) instead of minting fresh ephemeral ones — the SEA-1790 H6
+	// (WithSite) instead of minting fresh ephemeral ones — the RIG-1790 H6
 	// cross-restart substrate. nil is the default ephemeral fixture.
 	site *fixtureSite
 }
@@ -86,7 +86,7 @@ type fixtureConfig struct {
 type fixtureOption func(*fixtureConfig)
 
 // WithCannedModel makes NewFixture stand up the deterministic canned model
-// backend (SEA-1787 H3) with a single pure-text turn: it starts the stub SSE
+// backend (RIG-1787 H3) with a single pure-text turn: it starts the stub SSE
 // server on the host's routable interface, writes a models.yml custom
 // openai-completions provider pointing at it (through the pasta host-gateway)
 // into a host dir bind-mounted at the agent's ~/.omp/agent, and pins the
@@ -102,7 +102,7 @@ func WithCannedModel(reply string) fixtureOption {
 }
 
 // WithCannedScript makes NewFixture stand up the canned model backend serving an
-// ordered multi-turn script (SEA-1788 H4): the agent settles request N on
+// ordered multi-turn script (RIG-1788 H4): the agent settles request N on
 // script[N], so a multi-round scenario (e.g. a tool-call turn then a closing
 // text turn) advances one scripted turn per model round-trip. It shares the same
 // underlying backend as WithCannedModel — the single-turn convenience is just a
@@ -129,7 +129,7 @@ func WithCannedMarkerReply(marker, reply string) fixtureOption {
 }
 
 // WithSite makes NewFixture reuse a persistent site (root/stateDir/ports) rather
-// than minting fresh ephemeral ones — the SEA-1790 H6 cross-restart substrate.
+// than minting fresh ephemeral ones — the RIG-1790 H6 cross-restart substrate.
 // Two NewFixture calls over the SAME site drive two stack lifecycles that share
 // the postgres data dir (under stateDir), so the second Up re-attaches the
 // persisted cluster and the same handle resolves to the same account. The site's
@@ -185,7 +185,7 @@ func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
 // present.
 //
 // opts default to none — NewFixture(ctx, t) is the plain H1/H2 fixture. Pass
-// WithCannedModel to stand up the SEA-1787 H3 deterministic model backend so a
+// WithCannedModel to stand up the RIG-1787 H3 deterministic model backend so a
 // real agent turn can settle with no live-model egress.
 func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixture {
 	t.Helper()
@@ -265,7 +265,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		ExternalOTLPEndpoint: "127.0.0.1:4317",
 	}
 
-	// Canned-model mode (SEA-1787 H3): stand up the deterministic stub, write a
+	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a
 	// models.yml pointing the agent's custom openai-completions provider at it,
 	// and pin the three A4 knobs so the agent resolves that provider and its
 	// default-deny egress permits exactly the stub. Overrides the illustrative
@@ -502,7 +502,7 @@ func shortRoot(t *testing.T, suffix string) string {
 // ports — that outlives a single NewFixture call so two Ups (WithSite) can share
 // it: the postgres data dir lives under stateDir, so the second Up re-attaches
 // the cluster the first initialized. Produced by newPersistentSite, consumed via
-// WithSite. The SEA-1790 H6 cross-restart leg is its only user.
+// WithSite. The RIG-1790 H6 cross-restart leg is its only user.
 type fixtureSite struct {
 	root       string
 	stateDir   string

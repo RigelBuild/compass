@@ -2,7 +2,7 @@
 
 package presence
 
-// PresenceFor + PublishActivity (SEA-1721 T2), driven through the publisher's
+// PresenceFor + PublishActivity (RIG-1721 T2), driven through the publisher's
 // real bus + fakes: the enum snapshot projects the last-published subset, and
 // PublishActivity emits an AgentPresenceChanged carrying the CURRENT presence
 // plus the activity string on the AgentPresenceChanged.activity field.

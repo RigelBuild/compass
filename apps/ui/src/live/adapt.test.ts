@@ -757,7 +757,7 @@ describe("adaptTopic", () => {
 	});
 });
 
-// ── Board (SEA-1729 read slice): adaptIssue / adaptPullRequest ───────────────
+// ── Board (RIG-1729 read slice): adaptIssue / adaptPullRequest ───────────────
 // These defend the wire→domain bridges the board read path depends on: the
 // total IssueState/ForgeProvider enum maps, the empty-string→null assignee seam,
 // the forge-truth string narrowing, and the nested PR/review/thread mapping.
@@ -879,7 +879,7 @@ describe("adaptIssue", () => {
 				title: "read slice",
 				body: "stripped",
 				forgeState: "open",
-				url: "https://linear.app/SEA-1729",
+				url: "https://linear.app/RIG-1729",
 				agent: { agentHandle: "cook" },
 				forgeAccount: "matt",
 				labels: ["p1", "ui"],
@@ -897,9 +897,9 @@ describe("adaptIssue", () => {
 				],
 				tracker: {
 					kind: "linear",
-					id: "SEA-1729",
+					id: "RIG-1729",
 					status: "In Progress",
-					url: "https://linear.app/SEA-1729",
+					url: "https://linear.app/RIG-1729",
 				},
 			}),
 		);
@@ -910,7 +910,7 @@ describe("adaptIssue", () => {
 		expect(r.title).toBe("read slice");
 		expect(r.body).toBe("stripped");
 		expect(r.forgeState).toBe("open");
-		expect(r.url).toBe("https://linear.app/SEA-1729");
+		expect(r.url).toBe("https://linear.app/RIG-1729");
 		expect(r.agent).toEqual({
 			agentHandle: "cook",
 			ownerHandle: "",
@@ -927,9 +927,9 @@ describe("adaptIssue", () => {
 		expect(r.prs[0].repo).toBe("SEA");
 		expect(r.tracker).toEqual({
 			kind: "linear",
-			id: "SEA-1729",
+			id: "RIG-1729",
 			status: "In Progress",
-			url: "https://linear.app/SEA-1729",
+			url: "https://linear.app/RIG-1729",
 		});
 	});
 

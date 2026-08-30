@@ -14,7 +14,7 @@ file), so every prompt riding the field is silently dropped and the agent
 idles forever. Matt has ruled the field out of existence: **remove
 `initial_prompt` from everything; an agent session always starts idle; its
 first turn arrives through its channel.** This record designs the removal and
-the channel-first-turn model, and is what unblocks SEA-1792 H8 / PR #256
+the channel-first-turn model, and is what unblocks RIG-1792 H8 / PR #256
 (dogfood e2e `TestLegTwoRealTurn` is red today precisely because its first
 turn rides the dropped field).
 
@@ -292,7 +292,7 @@ a **reserved `@compass` system-sender alias**. Rationale for the split:
   dependency on — and no blocker for — the `initial_prompt` removal: nothing
   boots a root manager through `initial_prompt` today, so removing the field
   strands no existing case-1 path.
-- Case 2 + the harness re-model unblock SEA-1792 H8 now; coupling them to the
+- Case 2 + the harness re-model unblock RIG-1792 H8 now; coupling them to the
   system-sender design would serialize an unrelated, larger decision in front
   of a red CI gate.
 
@@ -379,7 +379,7 @@ already live (`go/internal/runnerhub/dispatch_control.go:44-53`;
 
 `go/internal/runner/gateway/control.go:192-203` `representable()` currently
 returns `false` for `AgentControl_Deliver` and `AgentControl_Steer`. Both now
-carry a comms `Message` (SEA-1569 populated the parked shells), so they ARE
+carry a comms `Message` (RIG-1569 populated the parked shells), so they ARE
 representable — remove them from the reject set (leaving Replay/Config, still
 empty shells). Without this the send from T-R1 is dropped before it reaches the
 socket.
@@ -508,7 +508,7 @@ Interfaces:
   action directly with `SpawnSpec` (`{agentAccountId, workstreamId}`; spawn is
   already guarded by the DL-164/168 live-session predicate and idempotent under
   its request id). This amends DL-185's "Kept: `StartAgentDialog`" clause — the
-  one status-flip, ordered after #267/SEA-1932 merges (see below).
+  one status-flip, ordered after #267/RIG-1932 merges (see below).
 - `apps/ui/src/spawn.test.ts:24,38,60,65-67,177,183` — drop prompt fixtures;
   the two `bindingDotState` running-arm cases collapse to one (`running` →
   `"idle"`).
@@ -516,7 +516,7 @@ Interfaces:
   no-lifecycle-fields assert; update its comment (there is no prompt field
   anywhere anymore).
 
-### T6 — e2e harness re-model onto the channel first-turn seam (lane: implement-hard, Go e2e) — unblocks SEA-1792 H8 / PR #256
+### T6 — e2e harness re-model onto the channel first-turn seam (lane: implement-hard, Go e2e) — unblocks RIG-1792 H8 / PR #256
 
 Interfaces:
 
@@ -550,15 +550,15 @@ Interfaces:
 
 The driver lands the ledger rows below in the same PR
 (`design-ledger-gate`), sets this record's `Status:` header on merge. The
-case-1 follow-up is already tracked as **SEA-1820** ("Auto-seed root Manager
-'supervisor' on embedded first-launch (dogfood)", parent SEA-1681) — updated
+case-1 follow-up is already tracked as **RIG-1820** ("Auto-seed root Manager
+'supervisor' on embedded first-launch (dogfood)", parent RIG-1681) — updated
 with the thread+sender specifics (Compass-authored Setup thread in the root
 manager's home channel; `@compass` reserved-alias system sender; no
-`initial_prompt`). This record references SEA-1820 as the case-1 follow-up; it
+`initial_prompt`). This record references RIG-1820 as the case-1 follow-up; it
 files no new issue.
 
 Exact `docs/designs/product/DECISIONS.md` delta (append under a new
-`## First-turn delivery` section; DL-185 already landed on `main` (the SEA-1932
+`## First-turn delivery` section; DL-185 already landed on `main` (the RIG-1932
 add-surface drop), so the highest row is now DL-185 and these are DL-186..189):
 
 ```markdown
@@ -566,13 +566,13 @@ add-surface drop), so the highest row is now DL-185 and these are DL-186..189):
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-186 | `initial_prompt` is REMOVED from the whole contract (`StartAgentSessionRequest` field 2, `SpawnAgentRequest` field 2, `SpawnPeerRequest` field 3 — numbers AND names reserved; server/runner/SDK/UI/e2e consumers cut over atomically, no fallback): an agent session ALWAYS starts idle and its first turn arrives as a channel message over the SEA-1569 deliver path (`DeliverControl` → the idle-deliver arm starts a turn); a provisioned peer's brief is a post from its provisioning manager into their per-pair DM channel (home channel for human owners) | Active (Matt, 2026-08-10) | [first-turn delivery §Approach](compass-first-turn-delivery/design.md#approach) |
-| DL-187 | The `@compass` reserved alias is FROZEN as the system-sender mechanism for ANY system-level message sender (not just the root-manager Setup thread), requiring reserved-handle validation at account creation; case-1 root-manager boot (a Compass-authored initial Setup thread in the manager's home channel) uses it and is scoped OUT to follow-up SEA-1820, which owes only the sender representation + Setup flow; ratified in shape here so the interim can never revive a prompt field | Active (Matt, 2026-08-10) | [first-turn delivery §Case 1](compass-first-turn-delivery/design.md#case-1--root-manager-boot-scoped-out-to-a-follow-up-record) |
+| DL-186 | `initial_prompt` is REMOVED from the whole contract (`StartAgentSessionRequest` field 2, `SpawnAgentRequest` field 2, `SpawnPeerRequest` field 3 — numbers AND names reserved; server/runner/SDK/UI/e2e consumers cut over atomically, no fallback): an agent session ALWAYS starts idle and its first turn arrives as a channel message over the RIG-1569 deliver path (`DeliverControl` → the idle-deliver arm starts a turn); a provisioned peer's brief is a post from its provisioning manager into their per-pair DM channel (home channel for human owners) | Active (Matt, 2026-08-10) | [first-turn delivery §Approach](compass-first-turn-delivery/design.md#approach) |
+| DL-187 | The `@compass` reserved alias is FROZEN as the system-sender mechanism for ANY system-level message sender (not just the root-manager Setup thread), requiring reserved-handle validation at account creation; case-1 root-manager boot (a Compass-authored initial Setup thread in the manager's home channel) uses it and is scoped OUT to follow-up RIG-1820, which owes only the sender representation + Setup flow; ratified in shape here so the interim can never revive a prompt field | Active (Matt, 2026-08-10) | [first-turn delivery §Case 1](compass-first-turn-delivery/design.md#case-1--root-manager-boot-scoped-out-to-a-follow-up-record) |
 | DL-188 | Fresh-start barrier-lift: on a FRESH (non-resume) start the Runner sends `AgentControl{replay_complete}` as the first control op after Bind (seq 1, FIFO-first, drains before any deliver) — one mechanism symmetric with the resume path, no agent change; lifts the agent-side replay barrier so the first case-2 deliver is not refused-and-stranded (T-R3) | Active (Matt, 2026-08-10) | [first-turn delivery §the seam](compass-first-turn-delivery/design.md#the-seam-the-first-turn-rides-case-2--the-server--agent-halves-exist-the-runner-middle-leg-is-unbuilt) |
 | DL-189 | The case-2 brief carrier is a PER-PAIR manager↔peer DM channel (`ChannelKindDM`, 2 members: spawning manager + new peer, both owners carried by `expandOwnerMembership` so the operator retains visibility), auto-provisioned on the spawn edge (T-R0) — NOT the manager's coordination channel, which is a broadcast to all reports. Token-minimization: siblings do not receive briefs they don't need. UI channel-proliferation UX is a known deferred problem | Active (Matt, 2026-08-10) | [first-turn delivery §Approach](compass-first-turn-delivery/design.md#approach) |
 ```
 
-Note for the driver: DL-186's "first turn arrives over the SEA-1569 deliver
+Note for the driver: DL-186's "first turn arrives over the RIG-1569 deliver
 path" is a DECISION, but the path's Runner middle leg (and the T-R0 DM
 auto-provision) is unbuilt today — PR-A (T-R0/T-R1/T-R2/T-R3) builds it. Do NOT
 land DL-186 as "verified end-to-end": the Runner leg is PR-A, not yet exercised.
@@ -581,11 +581,11 @@ land DL-186 as "verified end-to-end": the Runner leg is PR-A, not yet exercised.
 `initial_prompt`, start-idle semantics, or first-turn carriage (verified:
 `DECISIONS.md` has no occurrence of "initial" or "prompt" in any Decision cell
 bearing on the prompt field; DL-166/DL-164 rule the composite-spawn and
-start-affordance shapes without it). **DL-185 (SEA-1932, Active) explicitly
+start-affordance shapes without it). **DL-185 (RIG-1932, Active) explicitly
 KEEPS `StartAgentDialog`** as the human's only start affordance — so T5's
 **deletion** of that dialog (OQ-1, Matt-ruled delete at this design-PR gate)
 amends DL-185's "Kept" clause. That amendment is NOT applied in this record: T5
-lands it in PR-B, ordered after #267/SEA-1932 merges so the "Kept" clause exists
+lands it in PR-B, ordered after #267/RIG-1932 merges so the "Kept" clause exists
 to be amended. The driver records the flip on DL-185 in the design-ledger-gate
 PR at that point, not here.
 
@@ -631,24 +631,24 @@ PR-B (atomic removal + harness re-model — greens leg-2, lands after PR-A):
 - [ ] T2 — server: drop `InitialPrompt` at `lifecycle.go:325` and `spawn.go:135` + pgtest fixtures (implement)
 - [ ] T3 — runner: compile against regenerated types; gateway fixture cleanup (no production change beyond PR-A's deliver-lane, which T-R1/T-R2 already landed) (implement)
 - [ ] T4 — agent SDK: spawn tool loses `initial_prompt?`; tests updated (drop the JSON key as hygiene; NO unknown-key reject assert — see arktype note) (implement)
-- [ ] T5 — UI: promptless `SpawnSpec`/binding, `running`→`idle` dot, delete `StartAgentDialog` + test (OQ-1 Matt-ruled delete; board start affordance calls the spawn action directly; amends DL-185's "Kept" clause after #267/SEA-1932 merges) (implement)
-- [ ] T6 — e2e harness re-model: promptless Start/Resume, home-channel `PostMessage` first turn, split into `OpenSessionTail`(before post) + `AwaitTurnSettled`(WORKING→READY), leg-2/leg-3-4 scenario updates (implement-hard; unblocks SEA-1792 H8 / PR #256)
-- [ ] T7 — ledger rows DL-186/DL-187/DL-188/DL-189 + `Status:` header; references case-1 follow-up SEA-1820 (no new issue filed) (driver)
+- [ ] T5 — UI: promptless `SpawnSpec`/binding, `running`→`idle` dot, delete `StartAgentDialog` + test (OQ-1 Matt-ruled delete; board start affordance calls the spawn action directly; amends DL-185's "Kept" clause after #267/RIG-1932 merges) (implement)
+- [ ] T6 — e2e harness re-model: promptless Start/Resume, home-channel `PostMessage` first turn, split into `OpenSessionTail`(before post) + `AwaitTurnSettled`(WORKING→READY), leg-2/leg-3-4 scenario updates (implement-hard; unblocks RIG-1792 H8 / PR #256)
+- [ ] T7 — ledger rows DL-186/DL-187/DL-188/DL-189 + `Status:` header; references case-1 follow-up RIG-1820 (no new issue filed) (driver)
 
 ## Open Questions
 
 All five design-fork OQs are resolved. The four load-bearing ones (case-1
 scope, deliver-lane carrier, barrier-lift mechanism, system-sender freeze) are
-Matt-ruled and folded above (DL-186..189 + SEA-1820). OQ-1 (`StartAgentDialog`
+Matt-ruled and folded above (DL-186..189 + RIG-1820). OQ-1 (`StartAgentDialog`
 disposition) is Matt-ruled at this design-PR gate:
 
 1. **`StartAgentDialog` disposition — RULED: delete (Matt, design-PR gate).**
    Removing `initial_prompt` empties this dialog (its only input was the prompt
-   textarea). DL-185 (SEA-1932, Active) explicitly KEEPS it, so this was a fork,
+   textarea). DL-185 (RIG-1932, Active) explicitly KEEPS it, so this was a fork,
    not a driver call. Matt ruled **delete**: the board start affordance invokes
    the spawn action directly with `{agentAccountId, workstreamId}` (spawn is
    already guarded by the DL-164/168 live-session predicate and idempotent under
-   its request id). T5 lands the deletion in PR-B, ordered after #267/SEA-1932
+   its request id). T5 lands the deletion in PR-B, ordered after #267/RIG-1932
    merges; it amends DL-185's "Kept" clause (the one status-flip above).
    (Ground check at ruling time: `StartAgentDialog.tsx` + `.test.tsx` still
    present on `main@origin`; no open PR removes them — the deletion is this

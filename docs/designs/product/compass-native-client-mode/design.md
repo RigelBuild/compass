@@ -1,4 +1,4 @@
-# Compass-native T5 — native-client mode end to end (SEA-1686)
+# Compass-native T5 — native-client mode end to end (RIG-1686)
 
 Status: Draft
 

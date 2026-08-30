@@ -313,7 +313,7 @@ func TestSubscribeCommsPostDeliversMessagePosted(t *testing.T) {
 	}
 }
 
-// TestSubscribeCommsAgentPresenceSharedChannelScoping is the SEA-1569 T8
+// TestSubscribeCommsAgentPresenceSharedChannelScoping is the RIG-1569 T8
 // visibility arm: an AgentPresenceChanged is delivered to an actor sharing a
 // visible channel with the agent and filtered from an actor sharing none — the
 // shared-channel rule the subscribe edge enforces (design.md:487-491). The

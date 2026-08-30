@@ -473,7 +473,7 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 			"number": 555,
 			"title": "live compass-xyz",
 			"description": "stamped body",
-			"url": "https://linear.app/x/issue/SEA-555",
+			"url": "https://linear.app/x/issue/RIG-555",
 			"state": { "name": "Todo", "type": "unstarted" },
 			"labels": { "nodes": [] },
 			"creator": { "displayName": "live-bot" },

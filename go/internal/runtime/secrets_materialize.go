@@ -35,7 +35,7 @@ const providerCredentialAPIKey = "api_key"
 
 // compassDirName is the per-agent config subdir under $HOME, and envFileName is
 // the aggregate env-secret file within it. Env-delivery secrets are written here
-// as KEY=VALUE lines (SEA-1327 T5) and sourced by the agent from its own
+// as KEY=VALUE lines (RIG-1327 T5) and sourced by the agent from its own
 // namespace at startup — never `-e KEY=VALUE` (host-process-list visible) nor
 // `podman exec --env-file` (podman resolves that path host-side, where this
 // container-internal file does not exist).
@@ -139,7 +139,7 @@ func (e SecretEnv) GoString() string { return e.String() }
 
 // SecretMaterializer installs a fetched secret set into a container over the
 // stdin-exec channel, routing each secret by Kind. It is the Runner-side half of
-// SEA-1327 T5, driven from the SecretsVersion dispatch hook (initial materialize
+// RIG-1327 T5, driven from the SecretsVersion dispatch hook (initial materialize
 // and rotation ride the same signal path).
 type SecretMaterializer struct {
 	runtime ContainerRuntime

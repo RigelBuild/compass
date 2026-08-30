@@ -84,7 +84,7 @@ plus the accent left rule, never a raised background.
   `--cx-text-xs`, `--cx-space-1/-2/-4/-5`, `--cx-radius-sm`,
   `--cx-motion-fast`, `--cx-ease-out`, `--cx-focus-ring`.
 
-### Axis badge — `.cx-axis-badge` (SEA-2117 / SEA-2121, shipped variant)
+### Axis badge — `.cx-axis-badge` (RIG-2117 / RIG-2121, shipped variant)
 
 - **Classes:** `.cx-axis-badge` · `data-axis` (`ci | review`) · `data-status`
   · `data-compact`; contains `.cx-axis-code` (the `CI` / `RV` mono label) and a
@@ -203,7 +203,7 @@ plus the accent left rule, never a raised background.
 The public `rigel.build` DS docs still show the earlier flat-dot badge form.
 Porting this axis-badge variant (the code + 9×9 glyph grids above) to that
 surface is tracked as a follow-up, out of scope for the Compass adoption
-(SEA-2117 Q5). Until then, the grids here are canonical.
+(RIG-2117 Q5). Until then, the grids here are canonical.
 
 ## State dot
 

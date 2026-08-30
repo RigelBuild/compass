@@ -405,7 +405,7 @@ A reattach within the window resumes the session; window expiry falls to
   reattach within the bounded window resumes it rather than ending it as
   `ERRORED`.
 
-> **Implementation status (SEA-1243 T4):** T4 ships the `DISCONNECTED` state on
+> **Implementation status (RIG-1243 T4):** T4 ships the `DISCONNECTED` state on
 > the contract and the disconnect *signal* — a lost Runner link fails the
 > session's in-flight commands. The server-side **reattach-window enforcement**
 > — the per-session registry that publishes `DISCONNECTED` on link loss, the
@@ -448,7 +448,7 @@ client hangs up, the session ends, or the subscriber falls too far behind its
 buffer. The pane carries no snapshot replay; a subscriber sees only frames from
 the point it joined.
 
-> **Implementation status (SEA-1342):** this increment ships the authorized live
+> **Implementation status (RIG-1342):** this increment ships the authorized live
 > tail only. A dropped-for-lag subscriber ends like any other clean stream end;
 > the reattach/resync machinery that would let a client recover the frames it
 > missed (the deferred daemon-lifecycle work) is not yet built, so lag recovery
@@ -684,7 +684,7 @@ resolution** (`@agents`/`@users`/`@everyone` expanding to a member set) — no p
 contract exists yet.
 
 The `snapshot_seq` **consistent point-in-time snapshot** across a paginated
-re-snapshot is **partially built**: the server half has landed (SEA-1333) — the
+re-snapshot is **partially built**: the server half has landed (RIG-1333) — the
 `SubscribeComms` `since_seq=0` response carries a leading `snapshot_seq` boundary
 frame and the message read RPCs enforce it as `seq <= snapshot_seq`. The
 normative Requirement (the boundary-frame contract + narrowing this reserved
@@ -711,7 +711,7 @@ rather than tearing it down and re-spawning.
 The workspaces sidebar derives its tree from `parent_agent_id` rather than a
 user-defined folder organization, and an agent reads its own parent off its
 account through `ListAccounts`. Composing channels or roles onto the tree is
-named for later (SEA-1622, SEA-1623) and is not yet built.
+named for later (RIG-1622, RIG-1623) and is not yet built.
 
 ### Requirement: An agent account carries a parent, forming the agent tree
 

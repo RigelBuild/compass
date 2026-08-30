@@ -1,4 +1,4 @@
-// Test-support driver for the SEA-1678 T4 acceptance (g) that requires a
+// Test-support driver for the RIG-1678 T4 acceptance (g) that requires a
 // launch-frozen $HOME (design compass-agent-config-passthrough §CP-4).
 //
 // After the object-injection pivot, only ONE fleet member still reaches the SDK

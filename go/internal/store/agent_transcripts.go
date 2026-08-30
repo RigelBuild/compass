@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The durable TWO-TIER transcript store (SEA-1667 T4). A Postgres HOT TAIL
+// The durable TWO-TIER transcript store (RIG-1667 T4). A Postgres HOT TAIL
 // (agent_session_transcript_entries) holds [latest checkpoint .. now] = the
 // normal resume set; superseded/evicted/ended history is flushed as verbatim
 // JSONL segments to an object store behind the ObjectStore seam and indexed by

@@ -18,7 +18,7 @@ import (
 // table; keeping the two apart is what stops the container hop 0003 introduced
 // from growing back into the security boundary. What placement is for is the
 // two reads below: StartAgentSession resolving the account that owns an incoming
-// container_name, and reattach recovery (SEA-1516) naming every agent stranded
+// container_name, and reattach recovery (RIG-1516) naming every agent stranded
 // by a Runner restart.
 
 // AgentPlacement is one agent's placement: the Runner it runs on and the
@@ -109,7 +109,7 @@ func (s *Store) AgentForContainer(ctx context.Context, containerName string) (Ac
 }
 
 // ListAgentPlacementsForRunner returns every agent placed on runnerID. This is
-// the reattach read (SEA-1516): after a Runner restart its surviving containers
+// the reattach read (RIG-1516): after a Runner restart its surviving containers
 // are orphaned, and the Server re-drives Provision for exactly this set — which
 // is why each row carries the container name and not just the account. Ordered
 // by agent account id so a recovery pass is deterministic and its logs diffable.
@@ -148,7 +148,7 @@ func (s *Store) ListAgentPlacementsForRunner(ctx context.Context, runnerID strin
 }
 
 // DeleteAgentPlacement releases the placement for containerName — the release
-// path RecordAgentPlacement's godoc flagged as missing. Despawn (SEA-1618) tears
+// path RecordAgentPlacement's godoc flagged as missing. Despawn (RIG-1618) tears
 // down a container and must free its placement so the unique container_name is
 // available again for a future spawn. It is IDEMPOTENT: a despawn may be retried,
 // and a second despawn of an already-removed container must succeed, so deleting

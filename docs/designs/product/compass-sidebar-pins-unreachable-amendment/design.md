@@ -2,9 +2,9 @@
 
 Status: Active
 
-Tracker: SEA-1645.
+Tracker: RIG-1645.
 
-Amends: `compass-sidebar-pins` (SEA-1632, DL-096) §T2/§T3.
+Amends: `compass-sidebar-pins` (RIG-1632, DL-096) §T2/§T3.
 
 Ledger: this record's PR appends DL-098 to
 `docs/designs/product/DECISIONS.md` in the same diff (see §Ledger delta).
@@ -14,7 +14,7 @@ ledger gate's touch-coupling leg is satisfied directly; no `Ledger-impact:`
 escape hatch is needed in the PR body.
 
 > **Amends `compass-sidebar-pins` (frozen).** This record is a sibling
-> amendment to `docs/designs/product/compass-sidebar-pins/design.md` (SEA-1632,
+> amendment to `docs/designs/product/compass-sidebar-pins/design.md` (RIG-1632,
 > DL-096). The merged record is frozen; per sealed convention a later change
 > ADDS a record. This amendment supersedes the frozen record's §T2
 > unresolvable-pin filtering and §T3 fluctuation-coercion clauses per Matt's
@@ -114,7 +114,7 @@ the new contract.
 
 Both superseded clauses live in the frozen
 `docs/designs/product/compass-sidebar-pins/design.md` (Status: Active,
-Tracker SEA-1632, ledger DL-096). Everything else in that record — the
+Tracker RIG-1632, ledger DL-096). Everything else in that record — the
 configurable pin layer, Supervisor/Warden removal, empty default set,
 per-workspace persistence, boot-on-first-resolvable-pin, the tree affordance
 — stands unchanged.

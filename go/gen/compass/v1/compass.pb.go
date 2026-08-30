@@ -191,7 +191,7 @@ func (ServerState) EnumDescriptor() ([]byte, []int) {
 // applies as written). OQ6, design docs/designs/platform/go-toolchain-default.md
 // :1378-1396.
 //
-// Scope: T4 (SEA-1243) ships the DISCONNECTED *signal* only. The server-side
+// Scope: T4 (RIG-1243) ships the DISCONNECTED *signal* only. The server-side
 // reattach-window enforcement — the per-session registry, the bounded timer,
 // the expiry→ERRORED transition, and GetAgentStatus reconciliation on reattach
 // — is T9 (go-toolchain-default.md:979). Until T9 lands, a dropped Runner link
@@ -372,7 +372,7 @@ func (AgentPlanEntryStatus) EnumDescriptor() ([]byte, []int) {
 // steer/deliver control discriminant (agent.proto), re-declared here on the
 // public surface because SessionEvent — the public SubscribeAgentSession payload
 // — cannot reference the fenced internal enum without breaching the gen-fence
-// (SEA-1267); see the steer/deliver-seam design record, OQ2.
+// (RIG-1267); see the steer/deliver-seam design record, OQ2.
 type SessionInjectionKind int32
 
 const (
@@ -2668,7 +2668,7 @@ type ProvisionAgentWorkspaceRequest struct {
 	// (owner-qualified, e.g. `matt/compass-ux`); the server resolves it to an
 	// account id; unknown → NOT_FOUND.
 	AgentHandle string `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"`
-	// Repo carriage removed (SEA-1527, Matt 2026-07-29): spawn/provision no longer
+	// Repo carriage removed (RIG-1527, Matt 2026-07-29): spawn/provision no longer
 	// clone a repo for the agent. The container is provisioned with a git
 	// credential + workspace and the agent self-clones whatever it needs after
 	// launch.
@@ -2914,7 +2914,7 @@ type StartAgentSessionRequest struct {
 	// logical session: the Server (subscriber-authz gated) reconstructs the
 	// stored transcript into a session-JSONL body the Runner materializes into
 	// the new container at provision. Empty = fresh. No storage locator ever
-	// rides any request — storage is Server-internal (SEA-1570).
+	// rides any request — storage is Server-internal (RIG-1570).
 	ResumeSessionId string `protobuf:"bytes,3,opt,name=resume_session_id,json=resumeSessionId,proto3" json:"resume_session_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -4557,7 +4557,7 @@ func (x *ChangedStats) GetDeletions() uint32 {
 type TrackerRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`     // "linear" | "jira" | "github" — the tracker family
-	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`         // the tracker's native issue id, e.g. "SEA-1042"
+	Id            string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`         // the tracker's native issue id, e.g. "RIG-1042"
 	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"` // the tracker's native status name in the user's org
 	Url           string                 `protobuf:"bytes,4,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields

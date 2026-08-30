@@ -1,6 +1,6 @@
 //go:build unix
 
-// Package presence is the Server-side agent-presence projection (SEA-1569 T8,
+// Package presence is the Server-side agent-presence projection (RIG-1569 T8,
 // design record D4). It publishes an AgentPresenceChanged onto the comms fan-out
 // bus whenever a live agent's presence changes, where presence is a 4-state
 // projection (WORKING / IDLE / WAITING / OFFLINE) of TWO sources: the agent

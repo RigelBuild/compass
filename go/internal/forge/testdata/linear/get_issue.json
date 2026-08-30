@@ -26,7 +26,7 @@
 							"number": 7,
 							"title": "a bug",
 							"description": "raw <!--owner--> body",
-							"url": "https://linear.app/x/issue/SEA-7",
+							"url": "https://linear.app/x/issue/RIG-7",
 							"state": { "name": "Todo", "type": "unstarted" },
 							"labels": { "nodes": [] },
 							"creator": null,
@@ -41,7 +41,7 @@
 			"Title": "a bug",
 			"Body": "raw <!--owner--> body",
 			"State": "open",
-			"URL": "https://linear.app/x/issue/SEA-7",
+			"URL": "https://linear.app/x/issue/RIG-7",
 			"ForgeAccount": "",
 			"Labels": [],
 			"UpdatedAt": "2026-08-01T12:30:00Z"

@@ -16,7 +16,7 @@
 //   - the provider credential from the 0600 `$HOME/.compass/auth-seed.json` the
 //     Runner's materializer writes (design §T5);
 //   - the materialized tool/MCP secrets from the 0600 `$HOME/.compass/env` the
-//     Runner's materializer writes as `KEY=VALUE` lines (SEA-1327 T5), sourced
+//     Runner's materializer writes as `KEY=VALUE` lines (RIG-1327 T5), sourced
 //     into the process environment before the session is built.
 //
 // It composes three things and runs them: an `AgentSession` from
@@ -93,7 +93,7 @@ export function authSeedPath(home: string): string {
 	return `${home}/.compass/auth-seed.json`;
 }
 
-/** The 0600 aggregate env-secret file the Runner materializes (SEA-1327 T5). */
+/** The 0600 aggregate env-secret file the Runner materializes (RIG-1327 T5). */
 export function envFilePath(home: string): string {
 	return `${home}/.compass/env`;
 }
@@ -548,7 +548,7 @@ export interface MainDeps {
 	/** Runner-socket carrier. Defaults to `createUnixSocketTransport`. */
 	createTransport?: (socketPath: string) => RunnerTransport;
 	/**
-	 * Tee-storage constructor (SEA-1570). Defaults to `createTeeSessionStorage`.
+	 * Tee-storage constructor (RIG-1570). Defaults to `createTeeSessionStorage`.
 	 * A seam for the same reason as the other two: the real one wraps the SDK's
 	 * `IndexedSessionStorage` over a filesystem backend and awaits `initialize()`
 	 * off disk, so a test composes `main` over a recording storage instead.
@@ -604,7 +604,7 @@ export async function main(
 		);
 	}
 
-	// Materialized tool/MCP secrets (SEA-1327 T5): the Runner writes a 0600
+	// Materialized tool/MCP secrets (RIG-1327 T5): the Runner writes a 0600
 	// aggregate KEY=VALUE file inside the container; source it into the process
 	// environment so createAgentSession's extensions/MCP/tools — and any
 	// subprocess they spawn — inherit the secrets. The merge target is
@@ -651,14 +651,14 @@ export async function main(
 	const cwd = env.COMPASS_WORKDIR?.trim() || process.cwd();
 
 	// The socket carrier + sink come FIRST: the tee storage backend teems every
-	// committed session write onto the sink's DURABLE lane (SEA-1570), so the
+	// committed session write onto the sink's DURABLE lane (RIG-1570), so the
 	// sink must exist before the storage that holds it.
 	const transport = (deps.createTransport ?? createUnixSocketTransport)(
 		AGENT_SOCKET_PATH,
 	);
 	const sink = createSocketFrameSink(transport);
 
-	// Native comms + lifecycle tools (SEA-1741 gap-1). The existing `transport`
+	// Native comms + lifecycle tools (RIG-1741 gap-1). The existing `transport`
 	// is reused directly: `RunnerTransport` structurally satisfies both
 	// `CommsTransport` and `LifecycleTransport` (each is a one-method subset —
 	// comms.ts:74 / lifecycle.ts), so the brokers wrap it with no adapter. Their
@@ -711,7 +711,7 @@ export async function main(
 	// not a populated repo; sealed#1019 no-auto-clone), mirroring the auth-seed
 	// anchoring above.
 	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
-	// Resume (SEA-1570): T8 exports COMPASS_RESUME_SESSION_FILE on the agent exec.
+	// Resume (RIG-1570): T8 exports COMPASS_RESUME_SESSION_FILE on the agent exec.
 	// Resolve it BEFORE the storage is built so it can be threaded into the tee
 	// backend and indexed at initialize()→loadIndex() — the resume file lives at
 	// an absolute path OUTSIDE sessionDir (Option B, T2), so setSessionFile's
@@ -747,7 +747,7 @@ export async function main(
 		console.error(`[compass-agent] config version: ${mounted.version}`);
 	}
 
-	// The role's block-0 prompt (SEA-1732 T10): when a role is set, read its
+	// The role's block-0 prompt (RIG-1732 T10): when a role is set, read its
 	// `prompts/<role>/SYSTEM.md` from the same mount and inject it below as
 	// `customSystemPrompt` — REPLACING OMP's default block-0. The read is
 	// tolerant (absent/empty file → undefined), so a set-but-unshipped role
@@ -762,7 +762,7 @@ export async function main(
 			)
 		: undefined;
 
-	// Fleet OMP config passthrough (SEA-1678, design compass-agent-config-passthrough
+	// Fleet OMP config passthrough (RIG-1678, design compass-agent-config-passthrough
 	// §CP-1/CP-2/CP-4), applied AFTER loadMountedConfig and BEFORE
 	// createAgentSession. Matt's pivot: the mount stays the delivery vehicle, but
 	// the agent CONSUMES it by OBJECT INJECTION wherever the runtime SDK (16.5.2)
@@ -890,12 +890,12 @@ export async function main(
 		additionalExtensionPaths: mounted.additionalExtensionPaths,
 		disableExtensionDiscovery: mounted.disableExtensionDiscovery,
 		// The connected MCP tools MERGED with the native comms/lifecycle tools
-		// (SEA-1741 gap-1, constructed above): all reach the session as natives via
+		// (RIG-1741 gap-1, constructed above): all reach the session as natives via
 		// the same customTools→state.tools→#withNatives path, so the container
 		// agent can spawn peers and post to channels.
 		customTools: [...mcp.tools, ...nativeTools],
 		enableMCP: false,
-		// Headless approval policy (SEA-1741, design compass-agent-comms-tools
+		// Headless approval policy (RIG-1741, design compass-agent-comms-tools
 		// §"the container runs headless with write-approval tools auto-executing"):
 		// the container has NO human to answer an approval prompt, and the native
 		// comms/lifecycle tools declare approval:"write" — so without auto-approve
@@ -907,7 +907,7 @@ export async function main(
 		// that ever changes, gate this on an explicit headless signal so the
 		// auto-approve posture fails safe outside a container.
 		autoApprove: true,
-		// Fleet config object injection (SEA-1678 pivot):
+		// Fleet config object injection (RIG-1678 pivot):
 		//   - `rules` (CP-4): the fleet rules COMPOSED with the checkout's
 		//     discovered rules (both load; fleet-first), computed above. Passed
 		//     unconditionally — empty fleet set still composes cleanly.
@@ -921,7 +921,7 @@ export async function main(
 		rules,
 		...(contextFiles ? { contextFiles } : {}),
 		...(fleetSettings ? { settingsManager: fleetSettings } : {}),
-		// Role (SEA-1732 T10) + persona compose INDEPENDENTLY, and BOTH apply:
+		// Role (RIG-1732 T10) + persona compose INDEPENDENTLY, and BOTH apply:
 		//   - `customSystemPrompt` (role): the role's block-0 text, routed through
 		//     the SDK's custom-system-prompt template (sdk.ts:2727) — REPLACES
 		//     OMP's default block-0 while the template STILL injects skills + rules
@@ -1020,7 +1020,7 @@ export async function main(
 	const sdkGetApiKey = session.agent.getApiKey?.bind(session.agent);
 	session.agent.getApiKey = createSeedApiKeyResolver(home, sdkGetApiKey);
 
-	// Construction cycle (SEA-1310 §8): createSocketControlSource needs the
+	// Construction cycle (RIG-1310 §8): createSocketControlSource needs the
 	// ImmediateControl handle at construction, but the handle must forward into
 	// the CompassAgent — which is constructed AFTER (it takes `control` as a ctor
 	// arg). A mutable holder resolves it: the handle closes over `agent` and the

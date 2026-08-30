@@ -1,4 +1,4 @@
-// TranscriptTeeBackend (SEA-1570 T2): the container-local FS backend that tees
+// TranscriptTeeBackend (RIG-1570 T2): the container-local FS backend that tees
 // every committed session write upstream as a durable TranscriptEntry frame.
 //
 // Each test defends a load-bearing contract over a RECORDING FrameSink (captures
@@ -255,7 +255,7 @@ describe("TranscriptTeeBackend reads", () => {
 		expect(index.map((e) => e.size)).toEqual([2, 4]);
 	});
 
-	// loadIndex ALSO indexes an explicit out-of-dir resumeFile (SEA-1570 T2,
+	// loadIndex ALSO indexes an explicit out-of-dir resumeFile (RIG-1570 T2,
 	// Option B): the Runner-materialized resume file lives outside sessionDir, so
 	// the SDK wrapper would ENOENT it unless the scan surfaces it. Non-vacuity: a
 	// backend that only scanned the dir would omit the B file → red.

@@ -2,7 +2,7 @@
 
 Status: Active
 
-Tracker: SEA-1632.
+Tracker: RIG-1632.
 
 Ledger: this record's PR appends DL-096 to
 `docs/designs/product/DECISIONS.md` in the same diff (see §Ledger delta) and
@@ -211,12 +211,12 @@ that is its own record.
   `parent_agent_id`, and are never a hole in the tree — a pinned agent is
   also in the tree (DL-095, frozen). No server model change ships in this
   record.
-- **Roles are SEA-1623.** The `supervisor`/`warden` *role* vocabulary
+- **Roles are RIG-1623.** The `supervisor`/`warden` *role* vocabulary
   survives this record untouched — e.g. the tree row's role pip
   (`LeftSidebar.tsx:52-55`: `<Show when={a().role !== "worker"}>` …
   `{a().role === "supervisor" ? "◆" : "🛡"}`) still keys glyphs off the
   role. That is a role-vocabulary echo, flagged here as downstream cleanup
-  for SEA-1623, not redesigned: this record removes the pin *hardcoding*,
+  for RIG-1623, not redesigned: this record removes the pin *hardcoding*,
   not the role concept.
 - **Board and tree surfaces** are Record C's and its downstream tasks';
   nothing here reorders lanes or filters trees.
@@ -261,7 +261,7 @@ common abstraction now is speculative generality with one real consumer.
   one activity bar, fleet group above the divider, issue group below;
   `status` and the issue tabs remain fixed tabs.
 - **Presentation only**: no proto/server change; the agent tree and
-  `parent_agent_id` are untouched (Record C owns them); roles are SEA-1623.
+  `parent_agent_id` are untouched (Record C owns them); roles are RIG-1623.
 - **Sequencing after Record C**: the code tasks (T2-T5) depend on Record
   C's every-agent tree derivation. Today's `STUB_TREE` excludes exactly
   the pair being de-special-cased ("The moat agents are not tree leaves:
@@ -371,7 +371,7 @@ sidebar's tree offers pin/unpin.
   row component (`AgentLeaf`, `LeftSidebar.tsx:34-61`) gains a pin toggle
   (hover affordance calling `pinAgent`/`unpinAgent`, state from
   `isPinned`). The role pip in the same row (`LeftSidebar.tsx:52-55`) is
-  explicitly left alone (SEA-1623).
+  explicitly left alone (RIG-1623).
 - Ordering: Record C's tree rebuild rewrites this same `AgentLeaf`
   component — C's tree derivation lands first, and this task adds the pin
   toggle onto the derived row (see §Global Constraints).

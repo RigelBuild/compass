@@ -18,7 +18,7 @@ import (
 // exactly the seq of the Kth message. The tests therefore assert on the stable,
 // exposed message IDs + counts rather than raw seq.
 
-// TestListMessagesSnapshotSeqBoundsPage is the SEA-1333 red-first regression:
+// TestListMessagesSnapshotSeqBoundsPage is the RIG-1333 red-first regression:
 // ListMessages must honor Page.SnapshotSeq as a point-in-time read boundary,
 // returning only messages with seq <= SnapshotSeq (comms.proto:353-368,
 // design.md:807-817). Today the field is accepted and ignored by the query, so
@@ -108,7 +108,7 @@ func TestListMessagesSnapshotSeqBoundsPage(t *testing.T) {
 // boundary at seq 4, rows seq 5..8 that are fully committed before the read
 // never appear on any page, every boundary row appears exactly once, and no id
 // spans two pages (design.md:807-817). The `written` handshake makes this
-// deterministic (SEA-1226 start-barrier + WaitGroup style, NO sleeps): the
+// deterministic (RIG-1226 start-barrier + WaitGroup style, NO sleeps): the
 // writer appends seq 5..8 and closes `written`, and the reader waits on it
 // before paging, so the store provably holds those later rows at read time —
 // a build ignoring the boundary provably leaks them. The handshake serializes
@@ -147,7 +147,7 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 	// Goroutine A pages the catch-up under the boundary (page size 2, two pages),
 	// unioning the ids it collects. Goroutine B appends new messages that get
 	// seq > 4 and must never appear in A's view. Both release off one start
-	// barrier (SEA-1226 style). For a deterministic RED with no sleeps, B closes
+	// barrier (RIG-1226 style). For a deterministic RED with no sleeps, B closes
 	// `written` once its appends have COMMITTED and A waits on it before paging:
 	// this guarantees the seq>4 rows exist in the store at read time, so a build
 	// that ignores the boundary provably leaks them, while the filtered build
@@ -248,7 +248,7 @@ func idsOfMsgs(ms []Message) []MessageID {
 	return out
 }
 
-// TestSearchMessagesSnapshotSeqBoundsResults is the SEA-1333 red-first
+// TestSearchMessagesSnapshotSeqBoundsResults is the RIG-1333 red-first
 // regression for SearchMessages: a bounded search returns only matches with
 // seq <= SnapshotSeq. SearchMessages orders by ts_rank then seq DESC, so the
 // assertion is on the id-SET membership + count, not strict order. RED until

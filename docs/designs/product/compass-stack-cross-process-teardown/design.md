@@ -27,8 +27,8 @@ across the process boundary. Live agent *containers* the runner hosts are NOT in
 that tree — conmon double-forks them out of the runner's process group — and are
 scoped OUT of this mechanism; see **Open Question 0** (parked for Matt).
 
-Trackers: parent **SEA-1685** (embedded native app T4); the teardown fork is
-**SEA-1880**; the container-teardown companion gap is **SEA-1884**.
+Trackers: parent **RIG-1685** (embedded native app T4); the teardown fork is
+**RIG-1880**; the container-teardown companion gap is **RIG-1884**.
 
 ## Problem / Intent
 
@@ -39,7 +39,7 @@ handles, so a fresh `down` is a silent no-op. This:
 
 1. makes the merged T4.2 embedded **"Quit and stop stack"** action a silent
    no-op that leaves the stack running,
-2. blocks the **T4.3 (SEA-1685) e2e gate** from proving teardown or
+2. blocks the **T4.3 (RIG-1685) e2e gate** from proving teardown or
    process-safely cleaning up the stack it starts, and
 3. contradicts the frozen design's `down`-SIGTERMs-the-tree claim.
 
@@ -51,7 +51,7 @@ process group, and the runner does not stop its containers on its own shutdown
 (`internal/runner/host.go:204-217`: `Close` drops only the per-container socket
 *listeners*; "every container lives until the Runner process ends" and teardown
 otherwise lives solely on the `Remove` RPC path). Stopping live containers is a
-distinct, runner-lane concern — **Open Question 0** and **SEA-1884**.
+distinct, runner-lane concern — **Open Question 0** and **RIG-1884**.
 
 ### Evidence (all re-verified in the current tree, this session)
 
@@ -420,7 +420,7 @@ under A's portable path, not replacing it.
    runner — never signal delivery, and never treating a just-SIGKILled but
    not-yet-reaped (zombie) group as a failure.
 6. **Scope**: the mechanism signals the three supervised stack children only.
-   Live agent containers are out of scope (Open Question 0 / SEA-1884); this
+   Live agent containers are out of scope (Open Question 0 / RIG-1884); this
    record does not silently claim to stop them.
 7. **No frozen contract changes**: `up` stays fire-and-return; linger stays the
    default; no proto changes; DL-108 stays Active.
@@ -450,7 +450,7 @@ mismatch detected).
   (`go/internal/stack/stack.go:171`) and the `Process` handle's pid
   (`go/internal/stack/adapters/process.go:78-79`, pid == pgid), exposed via a
   new `Pid() int` on the `stack.Process` seam plus a start-time reader.
-- **Lands under:** SEA-1880 (parent SEA-1685).
+- **Lands under:** RIG-1880 (parent RIG-1685).
 
 ### T2 — `down` reads the pgid file, refuses a live `up`, signals, confirms
 
@@ -479,7 +479,7 @@ behavior.
   (`go/internal/stack/lockfile.go:87`), `Deps.Prober`/`Deps.DBProber`
   (`stack.go:157`, `stack.go:264`); rewires `runDown`
   (`go/cmd/compass-stack/main.go:271-298`).
-- **Lands under:** SEA-1880 (parent SEA-1685).
+- **Lands under:** RIG-1880 (parent RIG-1685).
 
 ### T3 — Staleness / crash / recycling handling
 
@@ -498,7 +498,7 @@ half-spawned prefix).
   `matches(pgid int, startTime uint64) bool` identity predicate; consumes
   `lockHolderLive`'s pattern (`go/internal/stack/lockfile.go:62-66`) for the
   live-`up` refusal only; touches only `go/internal/stack/`.
-- **Lands under:** SEA-1880 (parent SEA-1685).
+- **Lands under:** RIG-1880 (parent RIG-1685).
 
 ### T4 — Wire the app quit path; correct the now-false comment
 
@@ -519,7 +519,7 @@ tests (`lifecycle_test.go`) for the overrun-reporting case.
   — `stackDownArgs`, `go/cmd/compass-app/embedded.go:207`); produces corrected
   comments + the overrun-report assertion in `go/cmd/compass-app/lifecycle.go`;
   no signature changes.
-- **Lands under:** SEA-1685 T4.2 follow-up, referenced from SEA-1880.
+- **Lands under:** RIG-1685 T4.2 follow-up, referenced from RIG-1880.
 
 ### T5 — T4.3 e2e down-assertion + scripted headless CI variant
 
@@ -544,15 +544,15 @@ scope and the record says the container assertion is deliberately absent.
   `go/cmd/compass-stack/integration_podman_test.go` (or a sibling
   `crossprocess_test.go`) + a CI script entry; test-only, no production
   signatures.
-- **Lands under:** SEA-1685 T4.3, referenced from SEA-1880.
+- **Lands under:** RIG-1685 T4.3, referenced from RIG-1880.
 
 ## Tasks
 
-- [ ] T1 — pgid record file (with start-time identity token): capture + persist at `up` (SEA-1880)
-- [ ] T2 — `DownDetached`: refuse live `up`, read, signal, escalate, confirm per component; rewire `runDown` (SEA-1880)
-- [ ] T3 — staleness/crash/recycling handling; partial-failure survivor rewrite (SEA-1880)
-- [ ] T4 — app quit path wiring + false-comment correction + overrun reporting (SEA-1685 T4.2 / SEA-1880)
-- [ ] T5 — T4.3 e2e down-assertion (three-children scope) + headless CI variant (SEA-1685 T4.3 / SEA-1880)
+- [ ] T1 — pgid record file (with start-time identity token): capture + persist at `up` (RIG-1880)
+- [ ] T2 — `DownDetached`: refuse live `up`, read, signal, escalate, confirm per component; rewire `runDown` (RIG-1880)
+- [ ] T3 — staleness/crash/recycling handling; partial-failure survivor rewrite (RIG-1880)
+- [ ] T4 — app quit path wiring + false-comment correction + overrun reporting (RIG-1685 T4.2 / RIG-1880)
+- [ ] T5 — T4.3 e2e down-assertion (three-children scope) + headless CI variant (RIG-1685 T4.3 / RIG-1880)
 
 ## Open Questions
 
@@ -571,7 +571,7 @@ scope and the record says the container assertion is deliberately absent.
      is scoped to the three supervised children (this record's default), and
      leaving containers running on quit is acceptable / handled elsewhere.
    - **(b) Yes, via a runner drain-on-SIGTERM contract** — the runner stops its
-     containers before exiting (a runner-lane change; SEA-1884).
+     containers before exiting (a runner-lane change; RIG-1884).
    - **(c) Yes, via engine-level teardown in `DownDetached`** — `podman stop` by
      a compass-owned *label* (process-safe: the label, never a pattern, selects
      the set). Adds a container-engine dependency to `down`.
@@ -582,12 +582,12 @@ scope and the record says the container assertion is deliberately absent.
    **Stated assumption this record designs against (overnight, pending Matt):
    (a)** — "the tree" = the three supervised stack children; live agent
    containers are OUT of Option A's scope and tracked as a distinct runner-lane
-   gap (**SEA-1884**). This is the conservative default: it keeps the teardown
+   gap (**RIG-1884**). This is the conservative default: it keeps the teardown
    fork self-contained in this lane (no cross-lane proto/runner change gating it),
    matches the literal frozen text (written about the stack, before containers
    were a teardown consideration), and treats the runner-not-stopping-its-own-
    containers gap as the separate bug it is. If Matt rules (b)/(c)/(d), the
-   companion mechanism lands under SEA-1884 (and, for (c), T2/T5 gain the
+   companion mechanism lands under RIG-1884 (and, for (c), T2/T5 gain the
    label-scoped `podman stop` + `podman ps` assertion); the assumption is a park
    point, not a silent decision.
 1. **[non-load-bearing] Absent pgid file + answering socket.** A live stack

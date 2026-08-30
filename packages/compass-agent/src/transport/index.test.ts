@@ -1,4 +1,4 @@
-// The T4 transport contract (SEA-1351): createUnixSocketTransport must dial a
+// The T4 transport contract (RIG-1351): createUnixSocketTransport must dial a
 // Runner-style Unix socket, speak h2c to the AgentGateway.Comms RPC, and return
 // the typed CommsCallResult. These tests stand up a real connect-node h2c server
 // bound to a Unix socket and drive an actual comms() call through it — proving

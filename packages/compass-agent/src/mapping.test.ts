@@ -246,7 +246,7 @@ describe("EventMapper — monotonic event_id across the stream", () => {
 
 describe("EventMapper — streamed text is session-only (live chunk, no comms settle)", () => {
 	// A text_delta emits ONE session assistant_text chunk (live trace); text_end
-	// settles NO frame (SEA-1708 removed the comms write-through). The session
+	// settles NO frame (RIG-1708 removed the comms write-through). The session
 	// chunk is the only text surface — a delta that stopped emitting, or a
 	// text_end that leaked any frame, reddens.
 	test("text_delta → one session assistantText chunk", () => {

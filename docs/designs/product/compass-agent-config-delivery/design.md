@@ -4,7 +4,7 @@ Status: Draft
 
 > Freezes on merge; later changes supersede by citation, never rewrite
 > (convention: `../compass-0.5/design.md:10-12`, restated
-> `../compass-0.6/design.md:1116-1118`). Tracked as SEA-1568.
+> `../compass-0.6/design.md:1116-1118`). Tracked as RIG-1568.
 >
 > **New named Decisions this record introduces (ledger rows DL-078..DL-081,
 > landed in DECISIONS.md in this same PR):**
@@ -18,20 +18,20 @@ Status: Draft
 >   `FetchAgentConfig` RPC on the Runner-dialed `RunnerService`, plus a
 >   `ConfigVersion` signal on the `Sessions` response stream —
 >   signal-then-pull over the frozen dial-out inversion, the exact pattern
->   SEA-1327's `FetchSecrets`/`SecretsVersion` set; the inversion gains no
+>   RIG-1327's `FetchSecrets`/`SecretsVersion` set; the inversion gains no
 >   inbound route.
 > - **CD-3** — Injection for skills/extensions/MCP-configs is a Runner-local,
 >   Runner-materialized **read-only bind mount** of the **parent** config dir
 >   at `/run/compass/agent-config` (the agent reads through `current/`),
 >   realizing the v0.6 D11 mount spine; the MVP **forbids credentials in MCP
->   configs** (SEA-1576 tracks the post-MVP credentialed path); env-vars are
->   delivered **exclusively** via SEA-1327's
+>   configs** (RIG-1576 tracks the post-MVP credentialed path); env-vars are
+>   delivered **exclusively** via RIG-1327's
 >   SecretMaterializer/`FetchSecrets` surface — this record builds no second
 >   env channel.
 > - **CD-4** — The MVP update path is re-materialize + **in-place agent
 >   Reload** (the exec-driven model), reserving the throwaway-container
 >   restart for image changes; live structured injection into the running
->   agent (the parked `ConfigControl`, SEA-1310) is the named future seam,
+>   agent (the parked `ConfigControl`, RIG-1310) is the named future seam,
 >   referenced and left unbuilt.
 
 ## Problem / Intent
@@ -46,7 +46,7 @@ declaration, carriage over the frozen Server↔Runner inversion, per-type
 injection into the container, and the update path. Per-agent
 differentiation is deliberately out of the MVP; post-MVP, config keys on a
 persona / agent-level role, never an individual agent id. Env-vars reuse
-SEA-1327's secret surface; the new machinery here covers only the bulk
+RIG-1327's secret surface; the new machinery here covers only the bulk
 config content (skills / extensions / MCP-server configs) that surface does
 not carry.
 
@@ -93,7 +93,7 @@ Every task below inherits these; they are constraints, not choices.
    (`proto/compass/v1/runner.proto:5-11`). Every `.proto` delta in
    this record is a **held-for-review contract delta** landing in its
    implementation PR after `compass.v1`-owner review — the same "named here,
-   not written" posture SEA-1327 T4 set
+   not written" posture RIG-1327 T4 set
    (`compass-agent-container-runtime.md:742-747`).
 3. **The container is immutable after create; the agent is exec-driven.**
    `createAndStart` sets `Command: []string{"sleep", "infinity"}` — "Keep the
@@ -109,7 +109,7 @@ Every task below inherits these; they are constraints, not choices.
    new version dir + a symlink flip) without touching the create-time mount
    set. A pinned `<version>/`-dir mount was rejected: a bind mount cannot
    see a later symlink flip.
-4. **Env-vars ride SEA-1327's surface — no second env channel.** The frozen
+4. **Env-vars ride RIG-1327's surface — no second env channel.** The frozen
    record `compass-agent-container-runtime.md` designs env/secret delivery
    end to end: `FetchSecrets` on RunnerService (its T4, `:750-754`), the
    `SecretMaterializer` with the file-vs-env `DeliveryKind` split and the
@@ -125,7 +125,7 @@ Every task below inherits these; they are constraints, not choices.
    on-disk contract the compass-agent (`packages/compass-agent`)
    reads — paths and formats — but builds no reader. The live-config control
    shell exists and is parked: "`ConfigControl` carries a tool set …
-   payload fields parked (SEA-1310)"
+   payload fields parked (RIG-1310)"
    (`proto/compass/v1/agent.proto:148-155`,
    `message ConfigControl {}`). Referenced, not built.
 6. **Go stack conventions.** All Runner/Server work is Go under
@@ -142,7 +142,7 @@ Every task below inherits these; they are constraints, not choices.
    bind mount (`go/internal/runtime/podman.go:62-66`,
    `type Mount struct { HostPath, ContainerPath string; ReadOnly bool }`).
    MCP-server configs are **credential-free by MVP rule** (CD-3), so nothing
-   in the config bundle is secret-bearing; secret values ride SEA-1327's
+   in the config bundle is secret-bearing; secret values ride RIG-1327's
    surface, which already takes this posture.
 8. **Fleet-config writes are operator-scoped.** Setting the fleet's config
    is an operator/admin action, not a per-tenant one: `PutAgentConfig` /
@@ -159,7 +159,7 @@ Every task below inherits these; they are constraints, not choices.
 
 ## Approach
 
-The seam mirrors, deliberately, the shape SEA-1327 already froze for secrets
+The seam mirrors, deliberately, the shape RIG-1327 already froze for secrets
 — its Decision 3: "Distribution + rotation ride the v0.6 config spine (Runner
 fetches; `Sessions` stream signals; stdin-`exec` injection; the file-vs-env
 delivery split)" (`compass-agent-container-runtime.md:31-36`) — because
@@ -168,7 +168,7 @@ spine that secrets ride ("the Runner pulls a hosted agent's config bundle
 over its existing gRPC connection and materializes it as a **Runner-local
 read-only bind mount** into the container",
 `compass-0.6/design.md:871-873`). One spine, two payload classes: secrets
-(SEA-1327, built/landing) and config bundles (this record).
+(RIG-1327, built/landing) and config bundles (this record).
 
 ### Decision CD-1 — declaration surface: a Server-side fleet-wide bundle store
 
@@ -240,7 +240,7 @@ aggregate 0600 env file each wrapped exec reads at spawn)"
 (`go/internal/store/secrets.go:20-22`). Non-secret env values
 ride the same rows (a plain value in the secret store is safe; a secret in a
 config bundle would not be), keeping exactly one env channel and one rotation
-semantics (SEA-1327 T6).
+semantics (RIG-1327 T6).
 
 ### Decision CD-2 — carriage: streaming Runner-fetch over the frozen inversion
 
@@ -259,11 +259,11 @@ the frozen dial-out shape is untouched:
   unpack) remain the guards, independent of transport. Additive to the
   service exactly as `RelayCommsCall` was ("A fourth RPC, additive to the
   frozen dial-out shape (the Runner still initiates; the Server gains no
-  inbound route)", `runner.proto:82-83`) and as SEA-1327's `FetchSecrets`
+  inbound route)", `runner.proto:82-83`) and as RIG-1327's `FetchSecrets`
   will be (`compass-agent-container-runtime.md:750-754`).
 - A `ConfigVersion { version }` variant on the `SessionsResponse` command
   oneof (`runner.proto:132-141`) — signal only, never bundle bytes;
-  fleet-wide, so it carries no agent key. The sibling of SEA-1327's
+  fleet-wide, so it carries no agent key. The sibling of RIG-1327's
   `SecretsVersion` signal (`compass-agent-container-runtime.md:763-767`)
   and the concrete cut of the v0.6 line "the Server signals 'config version
   N for agent X' over the `Sessions` bidi stream"
@@ -275,7 +275,7 @@ Runner-opened `Sessions` stream — "the Server's RESPONSE stream pushes
 session *commands* downward"
 (`proto/compass/v1/runner.proto:53-56`) — and the Runner then
 re-fetches. No new inbound Server→Runner RPC exists; the frozen dial-out
-inversion is untouched. This is exactly what SEA-1327 T6 wires for
+inversion is untouched. This is exactly what RIG-1327 T6 wires for
 `SecretsVersion` (`compass-agent-container-runtime.md:844-856`); env-var
 updates ride that same secrets path — this record adds no env mechanism.
 
@@ -290,8 +290,8 @@ newer than what it materialized re-fetches (T4/T6).
 | --- | --- | --- |
 | Skills | Runner-local dir, **read-only bind mount** at `/run/compass/agent-config` | Bulk file trees; mount is zero-copy into the container and tamper-proof from inside (`ReadOnly` mounts exist today: `go/internal/runtime/podman.go:62-66`) |
 | Extensions | Same mount, `extensions/` subtree | Same shape as skills |
-| MCP-server configs | Same mount, `mcp/` subtree — **credential-free by MVP rule**: an MCP config MUST NOT embed a credential; MCP servers read their tokens from the aggregate env file (a declared env secret), inheriting SEA-1327 rotation/deletion for free. The better post-MVP shape (`secret://` resolution with correct rotation) is tracked as SEA-1576 | Config bodies are non-secret and mount fine; a Runner-resolved credential copy would escape SEA-1327 T6's rotation/deletion — its removal scan covers only `$HOME/.compass/secrets/` and its regeneration set is {aggregate env file, provider seed, gh `hosts.yml`} (`compass-agent-container-runtime.md:868-887`) — so the MVP forbids it rather than forking rotation |
-| Env-vars | **SEA-1327's surface, unchanged**: declared-env secrets land in the 0600 aggregate `$HOME/.compass/env`, consumed via `podman exec --env-file` never `-e` (`compass-agent-container-runtime.md:819-836`) | One env channel, one rotation path; this record adds nothing here |
+| MCP-server configs | Same mount, `mcp/` subtree — **credential-free by MVP rule**: an MCP config MUST NOT embed a credential; MCP servers read their tokens from the aggregate env file (a declared env secret), inheriting RIG-1327 rotation/deletion for free. The better post-MVP shape (`secret://` resolution with correct rotation) is tracked as RIG-1576 | Config bodies are non-secret and mount fine; a Runner-resolved credential copy would escape RIG-1327 T6's rotation/deletion — its removal scan covers only `$HOME/.compass/secrets/` and its regeneration set is {aggregate env file, provider seed, gh `hosts.yml`} (`compass-agent-container-runtime.md:868-887`) — so the MVP forbids it rather than forking rotation |
+| Env-vars | **RIG-1327's surface, unchanged**: declared-env secrets land in the 0600 aggregate `$HOME/.compass/env`, consumed via `podman exec --env-file` never `-e` (`compass-agent-container-runtime.md:819-836`) | One env channel, one rotation path; this record adds nothing here |
 
 Concretely the Runner unpacks the fetched bundle into a versioned dir
 `<runner-state>/config/<version>/`, relabels it into the container's SELinux
@@ -337,12 +337,12 @@ re-fetchable and the host keeps only `current` (T4; the retention twin of
 CD-1's current-only server rule).
 
 **Env-vars are fleet-global for the MVP — settled, and consistent with the
-fleet-wide reshape:** SEA-1327's reused surface is store-global inject-all
+fleet-wide reshape:** RIG-1327's reused surface is store-global inject-all
 — "the MVP **injects the whole store into every agent**"
 (`compass-agent-container-runtime.md:29-30`), and `FetchSecrets` takes "no
 names filter, no grants" (`compass-agent-container-runtime.md:750-753`) —
 which matches this record's scope exactly: one fleet config, one fleet env,
-every agent. Per-agent/persona env scoping rides SEA-1327's named
+every agent. Per-agent/persona env scoping rides RIG-1327's named
 grants/filter seam post-MVP, not a second channel here.
 
 **The in-container contract (named, not built here):** the compass-agent
@@ -380,7 +380,7 @@ path) — never for config reload.
 
 Named future seam, explicitly unbuilt: live structured injection into the
 running agent over its control stream — the parked `ConfigControl` shell
-("`ConfigControl` carries a tool set … parked (SEA-1310)",
+("`ConfigControl` carries a tool set … parked (RIG-1310)",
 `proto/compass/v1/agent.proto:148-155`) realizing v0.6's
 "injected as structured state into the running first-party agent … the
 SDK's `setTools`/`setSystemPrompt`/`setModel` surface"
@@ -420,14 +420,14 @@ survives in this record.
 
 `ContainerSpec.Env` exists (`podman.go:85-86`) and setting it at `Create`
 would be easy — and wrong: env fixed at create cannot rotate, values ride
-`-e KEY=VALUE` into host-visible podman argv (the exposure SEA-1327 T5
+`-e KEY=VALUE` into host-visible podman argv (the exposure RIG-1327 T5
 eliminates, `compass-agent-container-runtime.md:828-833`), and it forks
 delivery from the already-landed `SecretDeliveryEnv` store split
 (`go/internal/store/secrets.go:20-22`). Rejected outright.
 
 ### Per-item declaration RPCs (DeclareSkill / DeclareMCPConfig)
 
-Mirror SEA-1327's per-item `DeclareSecret` shape instead of an opaque
+Mirror RIG-1327's per-item `DeclareSecret` shape instead of an opaque
 tarball: one RPC per skill / extension / MCP config. Weighed and rejected
 for MVP: skills and extensions are arbitrary file *trees* whose value is
 the verbatim-tree property — per-item RPCs would need their own tree
@@ -492,7 +492,7 @@ fleet, current-only retention.
     substitutes; the same caps are re-enforced
     at every Runner unpack, T4); `mcp/*.json` must parse as JSON. Rejected
     with a wrapped `%w` field error before a row is written (the
-    T3-of-SEA-1327 validate-at-the-door posture, `store/secrets.go:42-48`).
+    T3-of-RIG-1327 validate-at-the-door posture, `store/secrets.go:42-48`).
 - Consumes: `internal/store` migration harness. Produces: the resolve surface
   T2/T3 serve from.
 
@@ -509,7 +509,7 @@ Constraint 8):
   - `rpc GetAgentConfigInfo(GetAgentConfigInfoRequest) returns (GetAgentConfigInfoResponse)`
     — request `{}`; response
     `{ string version = 1; repeated string skills = 2; repeated string extensions = 3; repeated string mcp_servers = 4; }`
-    — names only, never content (mirrors SEA-1327 T7's value-free status
+    — names only, never content (mirrors RIG-1327 T7's value-free status
     view, `compass-agent-container-runtime.md:898-902`).
   - `rpc DeleteAgentConfig(DeleteAgentConfigRequest) returns (DeleteAgentConfigResponse)`
     — request `{}` — the explicit return-to-unconfigured path (chosen over
@@ -533,7 +533,7 @@ Constraint 8):
   - CLI: `compass agent-config push <dir>` (tars + gzips the dir
     client-side), `compass agent-config show`, and
     `compass agent-config delete` over the three RPCs — the same CLI lane
-    as SEA-1327's `compass secrets set/list/delete`
+    as RIG-1327's `compass secrets set/list/delete`
     (`compass-agent-container-runtime.md:931`).
 - Consumes: T1. Produces: the declaration surface operators drive.
 
@@ -566,9 +566,9 @@ The internal carriage (Global Constraint 1 shape; precedent
     the oneof text; this record designs the variant shape): the
     `SessionsResponse.command` oneof today uses only tags 2..6
     (`provision = 6`, `runner.proto:132-141`), so `9` is collision-free, and
-    it is sequenced with SEA-1327's not-yet-numbered `SecretsVersion` variant
+    it is sequenced with RIG-1327's not-yet-numbered `SecretsVersion` variant
     on the same oneof so the two additive deltas cannot collide.
-    Signal only, never bytes; sibling to SEA-1327's `SecretsVersion`
+    Signal only, never bytes; sibling to RIG-1327's `SecretsVersion`
     signal (`compass-agent-container-runtime.md:763-767`). Note:
     `ConfigVersion` is not `request_id`-correlated and has NO
     `SessionsRequest` result variant — it is a notification, not a
@@ -681,9 +681,9 @@ reshaping `AgentSpec`:
     `current` version against the Server via the version-only fetch
     (`FetchAgentConfigRequest.if_version`, T3 — on match the stream ends
     after the version frame, no chunks) and re-materializes + Reloads on
-    mismatch. SEA-1327's `SecretsVersion` has the identical latent gap; the
+    mismatch. RIG-1327's `SecretsVersion` has the identical latent gap; the
     pattern settles jointly.
-  - FUTURE seam (named, unbuilt): once SEA-1310 populates `ConfigControl`
+  - FUTURE seam (named, unbuilt): once RIG-1310 populates `ConfigControl`
     (`proto/compass/v1/agent.proto:148-155`), the same
     `ConfigVersion` handling swaps the Reload for a live control frame; the
     parent mount + symlink flip make that a drop-in (the agent need only
@@ -696,7 +696,7 @@ reshaping `AgentSpec`:
   the active version's `skills/<name>/…`, `extensions/<name>/…`,
   `mcp/<name>.json` (credential-free — the MVP forbids embedded
   credentials, CD-3), `version`.
-- `$HOME/.compass/env` (0600): SEA-1327's aggregate env file; consumed at
+- `$HOME/.compass/env` (0600): RIG-1327's aggregate env file; consumed at
   exec spawn via `--env-file`, not read by the agent. An MCP server needing
   auth reads its token from env (a declared env secret), never from its
   mounted config.
@@ -721,14 +721,14 @@ reshaping `AgentSpec`:
       read-only parent-dir mount
 - [ ] T6 — Update loop: `ConfigVersion` → coalesced re-materialize →
       in-place agent Reload; reconnect reconciliation via the version-only
-      fetch; live `ConfigControl` injection named as the SEA-1310 seam
+      fetch; live `ConfigControl` injection named as the RIG-1310 seam
 
 ## Open Questions
 
 The seven load-bearing questions this draft batched are all ruled (Matt,
 2026-07-30) and folded into the body above as decisions: fleet-wide bundle
 scope (CD-1), streaming transfer (CD-2), credential-free MCP configs for
-the MVP (CD-3; SEA-1576 tracks the post-MVP credentialed path),
+the MVP (CD-3; RIG-1576 tracks the post-MVP credentialed path),
 fleet-global env (CD-3), canonical content-hash versioning (CD-1/T1), the
 parent-dir mount target (CD-3), and reconnect reconciliation (T6). Two
 non-load-bearing deferrals remain; the record may merge with their

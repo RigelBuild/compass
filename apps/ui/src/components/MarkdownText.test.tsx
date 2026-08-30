@@ -37,7 +37,7 @@ afterEach(() => {
 
 // A byHandle map keyed lowercase, exactly as ChannelView builds it
 // (ChannelView.tsx:364-365). "cook" is a known account; "compass" is the known
-// system sender (SEA-1820 — resolves like any known account, NOT reserved);
+// system sender (RIG-1820 — resolves like any known account, NOT reserved);
 // "everyone" is reserved (comms-stub.ts:175); "ghost" is unknown (absent).
 function byHandle(): Map<string, Account> {
 	const cook: Account = {
@@ -137,7 +137,7 @@ describe("MarkdownText — mention composition", () => {
 	});
 
 	test("the @compass system sender chips as known — not reserved, not unknown", () => {
-		// SEA-1820: @compass resolves like any known account (accent chip), NOT a
+		// RIG-1820: @compass resolves like any known account (accent chip), NOT a
 		// reserved broadcast target. The `reserved` modifier is purple (mark-only
 		// per DL-155), so a system-sender mention must never carry it; and being a
 		// resolved account it is not `unknown` either.

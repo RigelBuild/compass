@@ -1,6 +1,6 @@
 # forks/
 
-> **Vendored into this repo (SEA-1512).** Two of these trees — `devenv/` and
+> **Vendored into this repo (RIG-1512).** Two of these trees — `devenv/` and
 > `nix2container/` — were copied byte-identically out of the sealed monorepo's
 > `oss/forks/` at `origin/main`, per Matt's ruling that Compass carries them as
 > its own trees rather than consuming them from a public spoke. They live at

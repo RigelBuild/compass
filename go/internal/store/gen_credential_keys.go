@@ -2,7 +2,7 @@
 
 // gen_credential_keys.go regenerates credential_keys_gen.go from the OMP SDK's
 // settings schema. It is the authoritative refresh step for the store door's
-// credential denylist (SEA-1678 T1, OQ-2 (c)): the door rejects a
+// credential denylist (RIG-1678 T1, OQ-2 (c)): the door rejects a
 // settings/config.yml that sets any SDK credential-marked path, and that path
 // set MUST track the SDK's own isCredential marker across fork bumps.
 //

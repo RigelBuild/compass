@@ -12,7 +12,7 @@ lint:
   # trades ENUM_ZERO_VALUE_SUFFIX on this one file; every other rule still
   # applies, and compass.proto keeps the suffix (a wire-compatibility-sensitive
   # change there would be a breaking edit).
-  # agent_gateway.proto (SEA-1351 T1) freezes three names the STANDARD lint would
+  # agent_gateway.proto (RIG-1351 T1) freezes three names the STANDARD lint would
   # rename, each a deliberate contract choice scoped to this one internal file:
   #   - SERVICE_SUFFIX: the service is `AgentGateway` (a Runner-side door for
   #     agent calls), not a public `*Service`. It is the internal opposite-
@@ -41,4 +41,4 @@ lint:
       - proto/compass/v1/agent_gateway.proto
     RPC_RESPONSE_STANDARD_NAME:
       - proto/compass/v1/agent_gateway.proto
-# buf breaking gate removed pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client (tracked: SEA-1951).
+# buf breaking gate removed pre-dogfood (RIG-1922); RE-ADD AT GA / first pinned client (tracked: RIG-1951).

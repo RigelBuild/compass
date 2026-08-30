@@ -274,7 +274,7 @@ confirmed by `AgentStateDot.test.ts`):
 | `error` | red dot (`bg-red-500`) | **crashed/failed session** — provider error, tool-failure loop, unrecoverable exception; the human restarts or investigates |
 
 **The agent dot is a UI projection over the daemon's `AgentSessionState`, not a
-parallel enum.** #443 (SEA-1023, at the merge gate) lands the authoritative
+parallel enum.** #443 (RIG-1023, at the merge gate) lands the authoritative
 agent-liveness contract in `compass.v1`
 (`crates/compass-proto/proto/compass/v1/compass.proto` on
 `livingstone-sea-1023-acp-impl`) — deliberately **coarse**, daemon-owned:
@@ -339,7 +339,7 @@ active board, since every column is per-agent) has no jump target.
 This record is overwhelmingly **UI/app-state** (the `AppStore` seam, the fixture,
 the SolidJS surfaces) and touches no wire contract on its own. Two seams cross
 into daemon territory and are governed explicitly so this design does not collide
-with the `compass.v1` owner's in-flight work (#443, SEA-1023):
+with the `compass.v1` owner's in-flight work (#443, RIG-1023):
 
 - **Agent liveness** is owned by `compass.v1` `AgentSessionState` (#443). The UI
   *consumes* it and derives the presentation dot (D9); it never redefines it. The
@@ -420,7 +420,7 @@ export interface Workstream {
   state: WorkstreamState;               // canonical Compass state
   tracker?: {                            // the linked tracker issue, if any
     kind: TrackerKind;
-    id: string;                          // e.g. "SEA-1042"
+    id: string;                          // e.g. "RIG-1042"
     status: string;                      // the tracker's native status name
     url: string;
   };
@@ -702,7 +702,7 @@ contract and adds no `### Requirement:` to `docs/specs/product/compass.md`. But
 the record has a **contract dependency and a decided future impact** that the
 implementing PRs will carry:
 
-- **Depends on #443 (SEA-1023).** #443 lands the `AgentSessionState` contract +
+- **Depends on #443 (RIG-1023).** #443 lands the `AgentSessionState` contract +
   agent-session payloads in `compass.v1` and updates `docs/specs/product/compass.md`
   in that PR. This UI *consumes* it and derives the agent dot (D9); it never
   modifies it. The agent-state seam is untouched by this record.

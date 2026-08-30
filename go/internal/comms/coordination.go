@@ -10,7 +10,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// The manager-comms coordination-channel reconcile (SEA-1722 T5, design.md:
+// The manager-comms coordination-channel reconcile (RIG-1722 T5, design.md:
 // 530-592). A manager's coordination channel is auto-provisioned from the agent
 // tree's parent edges: the store's two parent-edge writers (CreateAgent,
 // ReparentAgent) invoke a store-registered hook on their own tx right after
@@ -80,7 +80,7 @@ const coordinationChannelSuffix = "-coordination"
 
 // RegisterCoordinationHook registers this handler's in-tx coordination reconcile
 // as st's CoordinationHook, wired once at server assembly before serving
-// (SEA-1722 T5). It is the comms->store direction of the coordination wiring: the
+// (RIG-1722 T5). It is the comms->store direction of the coordination wiring: the
 // store invokes the closure on its own tx from the two parent-edge writers, so
 // the reconcile runs comms-owned logic without the store importing comms. The
 // hook does NOT install a coordChanges buffer itself — the parent-edge RPC

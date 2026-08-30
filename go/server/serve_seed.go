@@ -19,7 +19,7 @@ import (
 // The root Manager seeded on first launch. A fixed handle so the empty-tree gate
 // and CreateAgent's unique-handle constraint together make the seed idempotent;
 // role "manager" selects config/prompts/manager/SYSTEM.md as the container's
-// block-0 prompt (SEA-1732), which is what makes the seeded agent a real Manager
+// block-0 prompt (RIG-1732), which is what makes the seeded agent a real Manager
 // rather than a default agent.
 const (
 	rootSupervisorHandle      = "supervisor"
@@ -81,7 +81,7 @@ var setupThreadBody string
 // the Runner — even if the session actually died with a restarted Runner. Real
 // liveness-checked re-drive (consult the Runner's authoritative live set, spawn
 // under a fresh key when the cached session is gone) is tracked as a follow-up;
-// SEA-1820 covers first-launch seed and the never-started re-drive above.
+// RIG-1820 covers first-launch seed and the never-started re-drive above.
 //
 // A failure is logged, not fatal: the server stays up and the next Runner
 // reconnect re-fires the seed.

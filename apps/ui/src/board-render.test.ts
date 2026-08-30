@@ -146,12 +146,12 @@ describe("issueKey + isMultiForge", () => {
 		const linked = issue({
 			tracker: {
 				kind: "linear",
-				id: "SEA-1042",
+				id: "RIG-1042",
 				status: "In Progress",
 				url: "",
 			},
 		});
-		expect(issueKey(linked, true)).toBe("SEA-1042");
+		expect(issueKey(linked, true)).toBe("RIG-1042");
 	});
 
 	test("coordinate repo#number when no tracker and single-forge", () => {

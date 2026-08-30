@@ -1,4 +1,4 @@
-# Compass `@compass` system sender + root-supervisor first turn (SEA-1820 case-1)
+# Compass `@compass` system sender + root-supervisor first turn (RIG-1820 case-1)
 
 Status: Draft
 
@@ -28,7 +28,7 @@ parent already froze.
    sender (not just the root-manager Setup thread), requiring reserved-handle
    validation at account creation; case-1 root-manager boot (a Compass-authored
    initial Setup thread in the manager's home channel) uses it and is scoped
-   OUT to follow-up SEA-1820, which owes only the sender representation +
+   OUT to follow-up RIG-1820, which owes only the sender representation +
    Setup flow." This record inherits that verbatim.
 3. **No prompt field anywhere.** The `initial_prompt` removal is frozen by the
    parent record's DL-186-equivalent row (`compass-first-turn-delivery/`
@@ -325,7 +325,7 @@ This reuses the whole human/agent write path: D9 authz, idempotency,
 asset (`go/server/setup_thread.md`), versioned with the server binary. The
 root Manager's block-0 is already applied via its role
 (`serve_seed.go:19-21`: role `manager` "selects config/prompts/manager/
-SYSTEM.md as the container's block-0 prompt (SEA-1732)"), so the Setup thread
+SYSTEM.md as the container's block-0 prompt (RIG-1732)"), so the Setup thread
 is the first-TURN driver, not a system prompt: it opens the Setup flow Matt
 described verbatim (`compass-first-turn-delivery/design.md:30-38` — ask the
 user what repos/projects, set up the tree/devenv shells). Content changes
@@ -359,7 +359,7 @@ unadvanced and the message waits for the NEXT session-start edge
 (the T-BL barrier lift, Global Constraint 7) — that is the gating
 precondition, not this caveat.
 
-**Acceptance (SEA-1820 case-1).** The seeded supervisor starts idle; the
+**Acceptance (RIG-1820 case-1).** The seeded supervisor starts idle; the
 `@compass` Setup thread appears in its home channel; its first turn starts
 from that deliver; no prompt field is threaded anywhere.
 

@@ -253,7 +253,7 @@ describe("SessionTrace (T-U2)", () => {
 
 	// A notice whose link carries a dangerous scheme (javascript:/data:) must
 	// render NO navigable anchor. Once the live session-event stream feeds these
-	// links (SEA-1342), the link is untrusted agent input; an unhardened
+	// links (RIG-1342), the link is untrusted agent input; an unhardened
 	// `href={link}` would make it clickable (stored-XSS-adjacent). The scheme
 	// allow-list (safe-url.ts) gates the anchor. Pre-fix (`href={href()}` with no
 	// gate) the anchor renders → red.

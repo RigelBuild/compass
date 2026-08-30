@@ -2,7 +2,7 @@
 
 Status: Active
 
-Tracker: SEA-1633.
+Tracker: RIG-1633.
 
 Ledger: this record's PR appends DL-097 to
 `docs/designs/product/DECISIONS.md` in the same diff (see §Ledger delta) and

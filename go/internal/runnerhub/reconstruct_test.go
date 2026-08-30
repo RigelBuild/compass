@@ -2,7 +2,7 @@
 
 package runnerhub
 
-// T5 (SEA-1667): Hub.ReconstructSessionBody is the resume-body reconstructor —
+// T5 (RIG-1667): Hub.ReconstructSessionBody is the resume-body reconstructor —
 // a PURE read-and-concatenate over the two-tier transcript store. In NORMAL
 // operation it reads the PG hot-tail ONLY (SessionTranscript): the latest
 // checkpoint's EntryJSON is a full SDK file body (header-first), emitted

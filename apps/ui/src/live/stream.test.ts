@@ -21,7 +21,7 @@ import { fetchSnapshot, runCommsStream } from "./stream";
 // stream.ts is the SubscribeComms driver: it applies the established
 // snapshot+tail+resync protocol over a CommsClient, pushing each reduced state
 // to onState. It owns the TWO transport cursors kept out of the reducer
-// (SEA-1333): the read-RPC boundary `snapshotSeq` (an opaque token forwarded
+// (RIG-1333): the read-RPC boundary `snapshotSeq` (an opaque token forwarded
 // verbatim to every list call, NEVER a tail cursor) and the stream tail cursor,
 // which advances from `SubscribeCommsResponse.seq` (the stream's own counter).
 // These tests drive it against a hand-written fake client (no network, no
@@ -474,7 +474,7 @@ describe("runCommsStream — resync + reconnect", () => {
 		expect(calls.listAccountsSeqs).toEqual([100n, 200n]);
 	});
 
-	test("a clean stream drop resubscribes gap-free from the STREAM seq — never snapshotSeq, never 0 (SEA-1333 two-counter regression)", async () => {
+	test("a clean stream drop resubscribes gap-free from the STREAM seq — never snapshotSeq, never 0 (RIG-1333 two-counter regression)", async () => {
 		const controller = new AbortController();
 		// The regression fixture: the boundary snapshotSeq (500) and the tail seqs
 		// (1,2,3) are DIFFERENT number spaces on purpose. A driver that conflated

@@ -2,7 +2,7 @@
 
 Status: Active
 
-Tracking: SEA-1243 (Go-port wave follow-up flagged at PR #771 merge).
+Tracking: RIG-1243 (Go-port wave follow-up flagged at PR #771 merge).
 
 **This record supersedes design compass-0.5 D5's `Ask` shape by citation**
 (`docs/designs/product/compass-0.5/design.md:288`, "D5 — The UI pivots around
@@ -149,7 +149,7 @@ message AskQuestion {
   // for allow_multiple, alongside) picking options.
   string custom_text = 8;
   // True when the answer was recorded by timeout auto-selection rather than a
-  // participant (SEA-1310 owns whether/when the Compass answer path can time
+  // participant (RIG-1310 owns whether/when the Compass answer path can time
   // out; the field is the audit carrier either way).
   bool timed_out = 9;
 }
@@ -228,15 +228,15 @@ per-axis gap map in Alternatives shrinks to those two rather than to zero:
 | `OptionItem.label` / `.description?` (ask.ts:57-59) | `AskOption.label` / `.description` |
 | `OptionItem.preview?` (ask.ts:60) | `AskOption.preview` |
 | always-offered "Other (type your own)" → `QuestionResult.customInput` (ask.ts:48, 91) | free-text is always available at the contract level (no flag — mirrors the native tool, whose "Other" is unconditional, ask.ts:12 "Users will always be able to select \"Other\""); answer rides `AskQuestionAnswer.custom_text`, audit rides `AskQuestion.custom_text` |
-| `QuestionResult.selectedOptions` labels (ask.ts:90) | `AskQuestionAnswer.chosen_option_ids` (ids; label reconstruction is SEA-1310's, see Mapping) |
-| `QuestionResult.timedOut?` (ask.ts:94-95) | `AskQuestion.timed_out` (audit; SEA-1310 decides whether the Compass answer path times out at all) |
+| `QuestionResult.selectedOptions` labels (ask.ts:90) | `AskQuestionAnswer.chosen_option_ids` (ids; label reconstruction is RIG-1310's, see Mapping) |
+| `QuestionResult.timedOut?` (ask.ts:94-95) | `AskQuestion.timed_out` (audit; RIG-1310 decides whether the Compass answer path times out at all) |
 
 Deliberately dropped (no carrier), each an answer-side rich-dialog affordance
 with no Compass analogue in v1:
 
 - `QuestionResult.note` (ask.ts:92-93, "Optional note attached to the selected
   answer") — a free-form annotation beside the choice. Omitted now; `string
-  note = 4` on `AskQuestionAnswer` is a non-breaking addition if SEA-1310 finds
+  note = 4` on `AskQuestionAnswer` is a non-breaking addition if RIG-1310 finds
   it needed.
 - `AskToolDetails.chatRedirect` / the "Chat about this" reserved label
   (ask.ts:49, 110-112) — a native answer MODE that hands off to chat. Moot in
@@ -249,7 +249,7 @@ rather than asked — see Resolved decisions for the reasoning):
   one `Ask` block = one server-minted `ask_id`; the native tool awaits one
   `QuestionResult[]` for the whole call (the single results array is built and
   returned once per call, ask.ts:1073-1089; the `QuestionResult` interface is
-  ask.ts:84-96), so SEA-1310 needs
+  ask.ts:84-96), so RIG-1310 needs
   exactly one `toolCallId ↔ ask_id` key. Questions are addressed *within* the
   Ask by the agent-supplied `question_id` (native `QuestionItem.id`,
   ask.ts:64). The store's `mintAskIDs` (blocks.go:80-90) keeps its
@@ -268,11 +268,11 @@ rather than asked — see Resolved decisions for the reasoning):
   `chosen_option_ids`/`custom_text` — same pattern the frozen shape used for
   chosen ids ("kept for audit", comms.proto:286-287). Whether the Compass
   answer path ever *sets* it (native auto-selects on timeout,
-  `getAutoSelectionOnTimeout`, ask.ts:161-167) is SEA-1310's interception-seam
+  `getAutoSelectionOnTimeout`, ask.ts:161-167) is RIG-1310's interception-seam
   call; the carrier exists either way so the audit trail can distinguish a
   timeout from a participant choice. Carrier-now over omit-now (a `bool
   timed_out = 9` addition is non-breaking later) is chosen so the store/UI
-  mirror shape stays stable across SEA-1310's ruling rather than reshaping
+  mirror shape stays stable across RIG-1310's ruling rather than reshaping
   again when the answer path is designed.
 
 ### Server-side answer validation (contract semantics, not new code here)
@@ -318,15 +318,15 @@ a 1:1 map of the native call, never decomposed — appended via the existing
 | `questions[i].recommended?` | `questions[i].recommended` (absent → unset) |
 | `questions[i].options[j].label` / `.description?` / `.preview?` | `options[j].label` / `.description` / `.preview` |
 | — (options keyed by label, no id: ask.ts:57-61) | `options[j].id` — mapper-minted, deterministic: the zero-based option index as a decimal string (`"0"`, `"1"`, …) |
-| — | `chosen_option_ids` / `custom_text` / `timed_out` — empty/unset while pending (answer-side, SEA-1310) |
+| — | `chosen_option_ids` / `custom_text` / `timed_out` — empty/unset while pending (answer-side, RIG-1310) |
 
 Option-id minting: native options carry no id (ask.ts:57-61,
 `OptionItem = { label, description?, preview? }`), so the mapper mints
 index-string ids. Index ids are safer than label-derived ids (labels can
 collide; the reserved-label `.narrow()` only excludes the three runtime
-labels, ask.ts:70-76). SEA-1310 reconstructs the native label-keyed
+labels, ask.ts:70-76). RIG-1310 reconstructs the native label-keyed
 `QuestionResult.selectedOptions` (ask.ts:90) from `chosen_option_ids` as
-`questions[i].options[atoi(id)].label` — deterministic from state SEA-1310
+`questions[i].options[atoi(id)].label` — deterministic from state RIG-1310
 already holds (the in-flight tool-call args plus the `toolCallId ↔ ask_id` key;
 the answered `Ask` block also carries the full options list), so no separate
 retention machinery is required. The mapper does not bounds-check the
@@ -339,7 +339,7 @@ member shapes, non-object, OR a `questions` list carrying a duplicate or empty
 malformation — never a throw, never a silent `[]`. Because the map is 1:1 onto
 ONE atomic `Ask`, a single malformed member (question `k` of N) bounces the
 WHOLE ask as that one `UnmappedEvent` — there is no partial emission of the
-valid questions, so no mixed-validity block ever reaches the store or SEA-1310.
+valid questions, so no mixed-validity block ever reaches the store or RIG-1310.
 A zero-option question is NOT malformed (schema-valid natively, ask.ts:67); it
 maps as a free-text-only question (see Approach).
 
@@ -356,7 +356,7 @@ The ask block appends into the block set of the assistant message that
 requested the tool: `#blocks` resets only at `message_start` (mapping.ts:95)
 and tool executions run after that message, so the ask sits mingled with that
 message's settled text (ask is conversation continuity). Because the map is
-1:1, message-id ambiguity is harmless to SEA-1310: even two `ask` toolCalls in
+1:1, message-id ambiguity is harmless to RIG-1310: even two `ask` toolCalls in
 one assistant turn produce two distinct `Ask` blocks, each with its own
 server-minted `ask_id`, and the one `toolCallId ↔ ask_id` key suffices — no
 grouping/ordering/partial-completion problem (the problem Option B would have
@@ -365,9 +365,9 @@ created).
 Answer-side wiring (native `toolCallId ↔ ask_id` correlation, blocking the
 native tool on the Compass answer path instead of its own interactive prompt +
 timeout auto-select, and reconstructing `QuestionResult[]` from an answered
-`Ask`) is SEA-1310 scope — the `ask_answer` control arm is itself staged
+`Ask`) is RIG-1310 scope — the `ask_answer` control arm is itself staged
 awaiting that key (`packages/compass-agent/src/agent.ts:175-180`:
-"ask_answer delivery staged — awaiting SEA-1310 ask correlation key") — and
+"ask_answer delivery staged — awaiting RIG-1310 ask correlation key") — and
 stays out of this record, cited as the external dependency that makes the
 rendered ask live rather than decorative.
 
@@ -399,7 +399,7 @@ and the prior version of this record recommended it. **Matt declined it**: it
 has no atomic multi-question form — N independent asks and N `RespondToAsk`
 round-trips, with partial answering able to strand the native tool call
 (which awaits ONE `QuestionResult[]`, ask.ts:84-96) and no grouping key in
-the contract for SEA-1310 to gather N asks back into one result — and it
+the contract for RIG-1310 to gather N asks back into one result — and it
 drops the `customInput`/`recommended`/`header`/`preview`/`timedOut` axes
 outright, where Matt ruled free-text MUST survive.
 
@@ -428,8 +428,8 @@ no vestigial shape.
 ## Global Constraints
 
 - Baseline: `main` @ `06e9a170` (post-#771 merge:
-  `feat(compass): SEA-1243 T5 first-party agent package + internal proto gen
-  lane`). Tracking issue: SEA-1243.
+  `feat(compass): RIG-1243 T5 first-party agent package + internal proto gen
+  lane`). Tracking issue: RIG-1243.
 - **This record supersedes compass-0.5 D5's `Ask` shape by citation**
   (AGENTS.md freeze rule: a frozen record is never rewritten; a change ADDS a
   superseding record). D5's record file stays untouched; the reshaped contract
@@ -469,7 +469,7 @@ no vestigial shape.
   path. The eventual Runner MUST reconcile server-minted ids into subsequent
   update frames (runner owner's scope; a constraint this mapping shape
   creates regardless of the reshape).
-- **SEA-1310 owns the native-ask resolution seam + answer wiring**: the
+- **RIG-1310 owns the native-ask resolution seam + answer wiring**: the
   `toolCallId ↔ ask_id` correlation, intercepting the native tool's own
   prompt/timeout resolution (`getAutoSelectionOnTimeout`, ask.ts:161-167) to
   block it on the Compass answer path, delivering `ask_answer`
@@ -750,9 +750,9 @@ re-opens it:
 3. **Free-text `customInput` → MUST survive** (Matt): carried flagless
    (always available, mirroring native's unconditional "Other", ask.ts:12,
    48) via `AskQuestionAnswer.custom_text` + audit `AskQuestion.custom_text`.
-4. **Native-ask resolution seam → SEA-1310** (Matt): interception of the
+4. **Native-ask resolution seam → RIG-1310** (Matt): interception of the
    native prompt/timeout path, `toolCallId ↔ ask_id` correlation, and
-   `ask_answer` delivery are SEA-1310's scope; cited here as an external
+   `ask_answer` delivery are RIG-1310's scope; cited here as an external
    dependency.
 5. **Correlation is per-Ask** (resolved at source): the native tool awaits
    one `QuestionResult[]` per call (results built/returned once per call,
@@ -767,7 +767,7 @@ re-opens it:
 6. **Zero-option questions map** as free-text-only (schema-valid natively,
    ask.ts:67; answerable via `custom_text` exactly as natively via "Other").
 7. **`timed_out` rides `AskQuestion`** as answer-side audit state; whether
-   the Compass answer path ever sets it is SEA-1310's interception-seam
+   the Compass answer path ever sets it is RIG-1310's interception-seam
    call.
 8. **Message names `AskQuestion`/`AskQuestionAnswer`** (resolved at source):
    collision-free across all three `compass.v1` protos this run; extends the
@@ -782,7 +782,7 @@ re-opens it:
    (every `question_id` answered exactly once) and per-answer
    multiplicity/option-id checks still apply; an empty entry is a present
    answer, not a missing one. Sets the T7 rejection matrix and the
-   answer-side contract SEA-1310 reconstructs against.
+   answer-side contract RIG-1310 reconstructs against.
 
 ## Open Questions
 
@@ -791,8 +791,8 @@ re-opens it:
    set it via the reshaped RPC — a timeout auto-answer would have to arrive
    through some other write path (server-internal, or a privileged field
    added later). Whether Compass-side ask timeouts exist AT ALL is
-   SEA-1310's interception-seam design; if it rules "yes, and the runner
+   RIG-1310's interception-seam design; if it rules "yes, and the runner
    records them via RespondToAsk", the RPC needs an additive
    `timed_out`/actor field then (non-breaking addition). Left open because
-   it is decidable only inside SEA-1310's answer-path design, not at any
+   it is decidable only inside RIG-1310's answer-path design, not at any
    source verifiable this run.

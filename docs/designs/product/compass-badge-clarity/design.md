@@ -1,12 +1,12 @@
-# Compass badge clarity (SEA-2117)
+# Compass badge clarity (RIG-2117)
 
 Status: Active
 Owner lane: compass-ux (design) → compass-ui (execution)
-Refs: SEA-2117 (CI/review badges convey meaning by color alone, and the token tier maps
+Refs: RIG-2117 (CI/review badges convey meaning by color alone, and the token tier maps
 CI-pass ≡ review-approved and CI-fail ≡ review-changes to the same hues). Sibling to the
-SEA-2111 Bridge re-clothe (its T4 consumes whatever badge form this record freezes) and
-sequenced after the SEA-2034 DS-token cutover (merged, main `18e988b5`). State-dot glyph
-adoption is a separate lane (SEA-2118); this record is badges only.
+RIG-2111 Bridge re-clothe (its T4 consumes whatever badge form this record freezes) and
+sequenced after the RIG-2034 DS-token cutover (merged, main `18e988b5`). State-dot glyph
+adoption is a separate lane (RIG-2118); this record is badges only.
 
 ## Problem / Intent
 
@@ -293,7 +293,7 @@ render spec below — see the note on the emission precedent), 6 glyph grids add
   glyph (`components.md:93-95`) and the loader spinner (`loader.css:24-28`,
   `motion.md:81-86`) — note that both are documented specs, not shipped emitters
   (`StateDot.tsx` renders a color-only `<span class="state-dot" role="img">`; the state-dot
-  glyph SVG is the SEA-2118 lane), so `BadgeGlyph` is built from the grids below as spec,
+  glyph SVG is the RIG-2118 lane), so `BadgeGlyph` is built from the grids below as spec,
   not copied from a rendered artifact. Review twin: `.cx-review-glyph[data-verdict]`.
 - Box: 9×9 CSS px, `display: inline-block`, no background, no border.
 - Color: `color: var(--cx-ci-pass|--cx-ci-pending|--cx-ci-fail)` /
@@ -630,7 +630,7 @@ above). The rationale each proceeded on is kept below for the executor.
   Matt gives there should bind these glyphs too.
 - **Q5 (non-load-bearing): should the chosen option back-port to
   the internal monorepo's company-site board** (which has the same bare
-  squares)? Assumption: yes eventually, out of scope for SEA-2117.
+  squares)? Assumption: yes eventually, out of scope for RIG-2117.
 
 ## Plan / Tasks
 

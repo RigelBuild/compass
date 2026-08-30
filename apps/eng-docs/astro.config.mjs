@@ -4,7 +4,7 @@ import starlight from "@astrojs/starlight";
 import { defineConfig } from "astro/config";
 import { sidebar } from "./src/sidebar.generated.ts";
 
-// Public engineering docsite (SEA-1763). Renders the compass monorepo's
+// Public engineering docsite (RIG-1763). Renders the compass monorepo's
 // reviewed markdown — the docs/ tree gathered into src/content/docs/ by
 // scripts/gather.ts — to a public Cloudflare Pages site. This is PUBLIC: no
 // auth gate and no analytics. Shares the Rigel brand (Night Owl

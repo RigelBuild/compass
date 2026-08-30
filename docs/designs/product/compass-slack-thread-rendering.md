@@ -1,8 +1,8 @@
-# Compass Slack-model thread rendering (SEA-1352)
+# Compass Slack-model thread rendering (RIG-1352)
 
 Status: Active
 
-Tracking: SEA-1352. Parent (frozen):
+Tracking: RIG-1352. Parent (frozen):
 `docs/designs/product/compass-0.8-threading-and-session-renderer/design.md`.
 This record **supersedes by citation** that record's dual-render decision (see
 Problem); the frozen record itself is never rewritten.
@@ -48,7 +48,7 @@ Where the duplication lives today (all cites re-verified against `main`):
   MessageRow and `.thread-replies` so a posted reply appears in both the panel
   and the main stream".
 
-The dual render was **specified deliberately** in the frozen SEA-1337 record:
+The dual render was **specified deliberately** in the frozen RIG-1337 record:
 `design.md:110-112` ("`ThreadView` … renders root + replies under
 `.thread-replies`") and `design.md:372-374` ("composer posts a reply that
 appears in-panel AND indented in the stream"). This record supersedes exactly
@@ -123,7 +123,7 @@ transport / daemon. UI-only, fixture-backed walking skeleton.
 ## Alternatives considered
 
 - **Discord sub-channel model** (a thread as a navigable sub-channel with its
-  own view) — rejected: Matt ruled Slack model for SEA-1352. Also heavier: it
+  own view) — rejected: Matt ruled Slack model for RIG-1352. Also heavier: it
   needs routing/navigation state the walking skeleton doesn't have, vs. reusing
   the already-shipped `ThreadPanel` + `openThread` store seam unchanged.
 - **Keep the inline dual render** (status quo per frozen `design.md:372-374`) —

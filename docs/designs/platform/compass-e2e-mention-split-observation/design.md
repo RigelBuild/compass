@@ -22,7 +22,7 @@ the unmentioned one" (`docs/designs/platform/compass-dogfood-e2e/design.md:663-6
 The e2e test asserts everything else in H4 already; the split itself is an
 explicit deferral (`go/e2e/legthreefour_test.go:239-251`):
 
-> `TODO(SEA-1788): assert the steer-vs-deliver SPLIT on the recipient side —
+> `TODO(RIG-1788): assert the steer-vs-deliver SPLIT on the recipient side —
 > [...] This is unconfirmable from the e2e fixture as it stands: the
 > steer/deliver op-kind is an AgentControl the delivery consumer dispatches
 > over the Runner's per-session Control stream (agent-facing internal
@@ -278,7 +278,7 @@ and the receipt arm's green on BOTH recipients depends on this (the leg-3
 reachability).
 
 **Extend, not a new test.** The split assertions replace the
-`TODO(SEA-1788)` block inside `TestLegThreeFourSpawnAndMessaging`
+`TODO(RIG-1788)` block inside `TestLegThreeFourSpawnAndMessaging`
 (`legthreefour_test.go:239-255`) rather than standing up a new test: the
 frozen H4 green condition is "one ordered run" (frozen design.md:663), the
 spawner/peer/containers/tails the split needs are exactly the ones leg 3 built,
@@ -472,7 +472,7 @@ Green — the two additions.
 
 ### T6 — The split assertion in `TestLegThreeFourSpawnAndMessaging`
 
-Replace the `TODO(SEA-1788)` block (`legthreefour_test.go:239-255`) with the
+Replace the `TODO(RIG-1788)` block (`legthreefour_test.go:239-255`) with the
 ordered split assertions; arm the fixture with `WithDispatchTap()` and extend
 the canned script/routing.
 

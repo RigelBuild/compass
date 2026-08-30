@@ -2,7 +2,7 @@
 
 package runtime
 
-// Real-container substrate proof for config delivery (SEA-1675), against real
+// Real-container substrate proof for config delivery (RIG-1675), against real
 // rootless podman. This is the seam the config-in-place-update design rests on
 // and that no other test exercises against a real container:
 //

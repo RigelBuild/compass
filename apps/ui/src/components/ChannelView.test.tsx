@@ -387,7 +387,7 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 });
 
 // The @compass system-sender mention resolves as KNOWN through the REAL store,
-// end to end (SEA-1820 T5). The unit test in MarkdownText.test.tsx builds a
+// end to end (RIG-1820 T5). The unit test in MarkdownText.test.tsx builds a
 // local byHandle with a hardcoded compass entry, and identity.test.ts pins that
 // STUB_ACCOUNTS carries the system sender — this closes the loop between them:
 // it renders TopicView over the actual offline store (whose byHandle is built

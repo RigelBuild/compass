@@ -197,7 +197,7 @@ type RunnerServiceClient interface {
 	// Server gains no inbound route), same justification as RelayCommsCall.
 	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
 	// FetchSecrets (unary, Runner->Server): the Runner fetches the full resolved
-	// secret set for one session to materialize into the agent container (SEA-1327
+	// secret set for one session to materialize into the agent container (RIG-1327
 	// T4). Inject-all: no name filter, no per-agent grants (the filter is the
 	// named future per-agent-scoping seam). The response is no-log: a logging
 	// interceptor must never dump resolved values. Additive to the frozen dial-out
@@ -205,7 +205,7 @@ type RunnerServiceClient interface {
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision
-	// (SEA-1568 T3/T4). Server-streaming so the bundle is never bounded by the
+	// (RIG-1568 T3/T4). Server-streaming so the bundle is never bounded by the
 	// connect/gRPC unary recv cap: the first response frame carries the version,
 	// subsequent frames carry the tarball bytes in chunks. The security caps
 	// (decompressed size, file count) live at unpack (T1's door, re-enforced at
@@ -466,7 +466,7 @@ type RunnerServiceHandler interface {
 	// Server gains no inbound route), same justification as RelayCommsCall.
 	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
 	// FetchSecrets (unary, Runner->Server): the Runner fetches the full resolved
-	// secret set for one session to materialize into the agent container (SEA-1327
+	// secret set for one session to materialize into the agent container (RIG-1327
 	// T4). Inject-all: no name filter, no per-agent grants (the filter is the
 	// named future per-agent-scoping seam). The response is no-log: a logging
 	// interceptor must never dump resolved values. Additive to the frozen dial-out
@@ -474,7 +474,7 @@ type RunnerServiceHandler interface {
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
 	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
 	// fleet config bundle to materialize into the agent container at provision
-	// (SEA-1568 T3/T4). Server-streaming so the bundle is never bounded by the
+	// (RIG-1568 T3/T4). Server-streaming so the bundle is never bounded by the
 	// connect/gRPC unary recv cap: the first response frame carries the version,
 	// subsequent frames carry the tarball bytes in chunks. The security caps
 	// (decompressed size, file count) live at unpack (T1's door, re-enforced at

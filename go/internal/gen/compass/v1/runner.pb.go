@@ -63,7 +63,7 @@ const (
 	// Connect Internal.
 	RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL RunnerErrorCode = 3
 	// A delivery (deliver_control) was refused because the session's retention
-	// buffer is full (SEA-1569) -> Connect ResourceExhausted. Distinguishes a
+	// buffer is full (RIG-1569) -> Connect ResourceExhausted. Distinguishes a
 	// retention-full refusal in-band so the Server can leave the delivery cursor
 	// unadvanced and redeliver.
 	RunnerErrorCode_RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED RunnerErrorCode = 4
@@ -422,7 +422,7 @@ type SessionsResponse struct {
 	//	*SessionsResponse_Remove
 	Command isSessionsResponse_Command `protobuf_oneof:"command"`
 	// resume_body — the INTERNAL resume-body carrier, a TOP-LEVEL sibling of
-	// request_id OUTSIDE the command oneof (SEA-1570): the Server attaches it on
+	// request_id OUTSIDE the command oneof (RIG-1570): the Server attaches it on
 	// an authorized resume start beside the verbatim public `start` request,
 	// which itself carries only the authz-checked resume_session_id (no locator,
 	// = 8 and deliver_control = 11, and 12 is skipped (the design-abandoned
@@ -618,7 +618,7 @@ type SessionsResponse_SecretsVersion struct {
 type SessionsResponse_ConfigVersion struct {
 	// config_version (tag 9): the Server signals the fleet that the config
 	// bundle changed; the Runner re-fetches via FetchAgentConfig, re-materializes
-	// the new version dir, and Reloads live agents in place (SEA-1568 T3/T6).
+	// the new version dir, and Reloads live agents in place (RIG-1568 T3/T6).
 	// Fleet-wide, no per-account key. Signal-only — never carries bytes, and,
 	// like secrets_version, is NOT request_id-correlated and has NO
 	// SessionsRequest result variant: it is a notification, not a command, so the
@@ -628,7 +628,7 @@ type SessionsResponse_ConfigVersion struct {
 
 type SessionsResponse_DeliverControl struct {
 	// deliver_control (tag 11; 8 secrets_version / 9 config_version / 10 remove /
-	// 11 deliver_control landed): the Server relays a control op — for SEA-1569, a message
+	// 11 deliver_control landed): the Server relays a control op — for RIG-1569, a message
 	// delivery — down to the Runner, which writes it to the session's
 	// per-container socket. Carries the op as payload (DispatchControl). No
 	// SUCCESS result variant: the delivery receipt rides AgentFrame.delivery_ack
@@ -668,7 +668,7 @@ func (*SessionsResponse_DeliverControl) isSessionsResponse_Command() {}
 func (*SessionsResponse_Remove) isSessionsResponse_Command() {}
 
 // ResumeBody — the INTERNAL resume-body carrier attached to SessionsResponse on
-// an authorized resume (SEA-1570). Additive, INTERNAL-ONLY: rides the
+// an authorized resume (RIG-1570). Additive, INTERNAL-ONLY: rides the
 // path-filtered internal gen lane, never the public client surface. The Server
 // attaches it; no client can supply it, and the public `start` request is
 // relayed verbatim (T6).
@@ -719,7 +719,7 @@ func (x *ResumeBody) GetSessionBody() string {
 }
 
 // DispatchControl — the Server->Runner relay envelope for a control op
-// (SEA-1569). Carries the full AgentControl op (for a delivery,
+// (RIG-1569). Carries the full AgentControl op (for a delivery,
 // AgentControl{ deliver: DeliverControl{ message } }); the Runner relays op
 // down the addressed session's per-container socket. Payload-carrying, not
 // signal-only.
@@ -780,7 +780,7 @@ func (x *DispatchControl) GetOp() *AgentControl {
 // FetchSecrets request: which agent's secret set to resolve. Inject-all — no
 // name filter. The caller sets exactly one selector: a `container_name` for the
 // PROVISION-time initial materialize (the container→account binding exists from
-// Provision, before any session is minted — SEA-1327 T5 materializes before the
+// Provision, before any session is minted — RIG-1327 T5 materializes before the
 // agent is exec'd), or a `session_id` for the post-Start rotation re-fetch (the
 // SecretsVersion signal path, T6). The two are mutually exclusive by convention,
 // not a oneof: session_id kept tag 1 with its original flat cardinality so the
@@ -1861,7 +1861,7 @@ func (x *RelayBoardCallResponse) GetResult() *BoardCallResult {
 // (resolved to an account Server-side, fail-closed — see the RPC comment).
 // `frame` is constrained by the agent side to a conversation_posted /
 // conversation_updated / transcript_entry AgentFrame variant (the durable lane
-// carries the SEA-1570 transcript entry too; the same C4 constraint Publish
+// carries the RIG-1570 transcript entry too; the same C4 constraint Publish
 // telemetry frames are held to). `idempotency_key` is the agent-minted envelope
 // key reused verbatim from AgentGateway.PostConversationFrameRequest.
 type CommitConversationFrameRequest struct {
