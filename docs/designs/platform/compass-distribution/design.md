@@ -257,6 +257,35 @@ Distribution, three legs:
 
 ### S4 — Postgres-as-container (the DL-217 supersession)
 
+> **T8 errata (RIG-2759, PR #652) — additive; the frozen §S4 prose below is
+> intact.** T8's container-backed adapter ratified two contract-fidelity
+> deviations from the literal run contract below, both preserving the frozen
+> socket-only / `trust`-auth / byte-identical-DSN invariant:
+>
+> + **`POSTGRES_USER=<os-user>` is set in the container env** (the env list at
+>   §S4 below names only `POSTGRES_DB=compass` and
+>   `POSTGRES_HOST_AUTH_METHOD=trust`). Under `--userns=keep-id` the container
+>   runs as the host OS user, and the frozen DSN is user-less
+>   (`host=<dir> port=<p> dbname=compass sslmode=disable` — no `user=`), which
+>   pgx resolves to that OS user. The stock `postgres:18` image otherwise
+>   bootstraps `POSTGRES_USER=postgres`, so a user-less DSN would fail
+>   (`role "<osuser>" does not exist`); setting `POSTGRES_USER=<os-user>` makes
+>   the created superuser role match the DSN identity §S4 froze. Carries an
+>   in-code fork note at `go/internal/stack/adapters/postgres_container.go:43-52`
+>   (set at `runArgs`, `postgres_container.go:175`).
+> + **`unix_socket_directories` lists BOTH the image's compiled-in
+>   `/var/run/postgresql` AND the bind-mounted DSN socket dir**, where §S4 below
+>   points the server's socket dir at the DSN dir only. The stock image's
+>   entrypoint bootstrap (`docker_temp_server_start`) connects its setup psql
+>   over the compiled-in `/var/run/postgresql` with `PGHOST` unset; dropping
+>   that dir wedges the entrypoint's initdb/createdb before it ever binds the
+>   DSN socket. So the run contract lists both
+>   (`postgres_container.go:180`, `defaultSocketDir` at
+>   `postgres_container.go:34`); `compass-server` still opens only the DSN dir,
+>   bind-mounted host↔container at the identical path
+>   (`postgres_container.go:178`) — the frozen `host=<socket-dir>` DSN is
+>   unchanged.
+
 **Decision (Matt's ruling 2):** the simple path provisions postgres as a
 dedicated container image the stack runs out of the box; a user-supplied DSN
 opts out entirely.
