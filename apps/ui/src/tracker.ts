@@ -60,7 +60,7 @@ export const LINEAR_STATUS_MAPPING: TrackerStatusMapping = {
 /** The default tracker wiring — Linear, a placeholder handle, the Linear map. */
 export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
 	kind: "linear",
-	handle: "matt@sealed",
+	handle: "matt@rigelbuild",
 	mapping: LINEAR_STATUS_MAPPING,
 };
 

@@ -41,7 +41,7 @@ export const UsageBar: Component = () => (
 		</For>
 		<span class="usage-spacer" />
 		<span class="usage-git">
-			<span aria-hidden="true">⎇</span> sealed · main
+			<span aria-hidden="true">⎇</span> compass · main
 		</span>
 	</footer>
 );

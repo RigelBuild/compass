@@ -829,7 +829,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1022",
 			status: "In Review",
-			url: "https://linear.app/sealed/issue/RIG-1022",
+			url: "https://linear.app/rigelbuild/issue/RIG-1022",
 		},
 		commits: [
 			{
@@ -874,7 +874,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-965",
 			status: "In Progress",
-			url: "https://linear.app/sealed/issue/RIG-965",
+			url: "https://linear.app/rigelbuild/issue/RIG-965",
 		},
 		commits: [
 			{
@@ -938,7 +938,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1023",
 			status: "In Progress",
-			url: "https://linear.app/sealed/issue/RIG-1023",
+			url: "https://linear.app/rigelbuild/issue/RIG-1023",
 		},
 		commits: [
 			{
@@ -995,7 +995,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-864",
 			status: "Blocked",
-			url: "https://linear.app/sealed/issue/RIG-864",
+			url: "https://linear.app/rigelbuild/issue/RIG-864",
 		},
 	},
 	{
@@ -1045,7 +1045,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1085",
 			status: "In Review",
-			url: "https://linear.app/sealed/issue/RIG-1085",
+			url: "https://linear.app/rigelbuild/issue/RIG-1085",
 		},
 	},
 	{
@@ -1095,7 +1095,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-847",
 			status: "In Review",
-			url: "https://linear.app/sealed/issue/RIG-847",
+			url: "https://linear.app/rigelbuild/issue/RIG-847",
 		},
 	},
 	{
@@ -1141,7 +1141,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-888",
 			status: "In Progress",
-			url: "https://linear.app/sealed/issue/RIG-888",
+			url: "https://linear.app/rigelbuild/issue/RIG-888",
 		},
 	},
 	{
@@ -1166,7 +1166,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1128",
 			status: "Todo",
-			url: "https://linear.app/sealed/issue/RIG-1128",
+			url: "https://linear.app/rigelbuild/issue/RIG-1128",
 		},
 	},
 	{
@@ -1209,7 +1209,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1145",
 			status: "Done",
-			url: "https://linear.app/sealed/issue/RIG-1145",
+			url: "https://linear.app/rigelbuild/issue/RIG-1145",
 		},
 	},
 	{
@@ -1252,7 +1252,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1130",
 			status: "Done",
-			url: "https://linear.app/sealed/issue/RIG-1130",
+			url: "https://linear.app/rigelbuild/issue/RIG-1130",
 		},
 	},
 	{
@@ -1276,7 +1276,7 @@ export const STUB_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1146",
 			status: "Backlog",
-			url: "https://linear.app/sealed/issue/RIG-1146",
+			url: "https://linear.app/rigelbuild/issue/RIG-1146",
 		},
 	},
 ];
@@ -1297,7 +1297,7 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 		title: "Audit-log retention policy — design",
 		body: "",
 		forgeState: "open",
-		url: "https://linear.app/sealed/issue/RIG-1201",
+		url: "https://linear.app/rigelbuild/issue/RIG-1201",
 		forgeAccount: "matt",
 		labels: [],
 		state: "todo",
@@ -1310,7 +1310,7 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1201",
 			status: "Todo",
-			url: "https://linear.app/sealed/issue/RIG-1201",
+			url: "https://linear.app/rigelbuild/issue/RIG-1201",
 		},
 	},
 	{
@@ -1321,7 +1321,7 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 		title: "Compass daemon — graceful shutdown on SIGTERM",
 		body: "",
 		forgeState: "open",
-		url: "https://linear.app/sealed/issue/RIG-1180",
+		url: "https://linear.app/rigelbuild/issue/RIG-1180",
 		forgeAccount: "matt",
 		labels: [],
 		state: "backlog",
@@ -1334,7 +1334,7 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 			kind: "linear",
 			id: "RIG-1180",
 			status: "Backlog",
-			url: "https://linear.app/sealed/issue/RIG-1180",
+			url: "https://linear.app/rigelbuild/issue/RIG-1180",
 		},
 	},
 ];

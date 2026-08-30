@@ -171,7 +171,7 @@ transport / daemon. UI-only, fixture-backed walking skeleton.
 - **Existing thread tests stay green** except the two `ThreadPanel.test.tsx`
   legs this design deliberately changes (audited in T-2 below); those are
   updated in the same red→green cycle, never deleted.
-- TypeScript strict; `direnv exec ~/agents/workspaces/franklin/sealed moon run
+- TypeScript strict; `direnv exec ~/agents/workspaces/<codename>/compass moon run
   compass-ui:typecheck compass-ui:test` green; biome-clean.
 - SolidJS conventions: `ThreadView` stays a `Component`; derived values are
   accessors, not precomputed constants.
@@ -219,7 +219,7 @@ suite at `comms.test.ts:80-221`):
   covered);
 - root author appears in `participantIds` only if they also replied.
 
-Run: `direnv exec ~/agents/workspaces/franklin/sealed moon run
+Run: `direnv exec ~/agents/workspaces/<codename>/compass moon run
 compass-ui:test` (red first, then green), then `compass-ui:typecheck`.
 
 ### T-2 — `ThreadView` summary affordance + CSS + test migration
@@ -335,7 +335,7 @@ edit):
    fixture with ≥ 6 distinct reply authors.
 
 Test cycle: write 1-5 + the two migrations → run
-`direnv exec ~/agents/workspaces/franklin/sealed moon run compass-ui:test`
+`direnv exec ~/agents/workspaces/<codename>/compass moon run compass-ui:test`
 (observe the new legs red, the six untouched `ThreadPanel` legs green) →
 implement `ThreadView` + CSS → all green → `moon run compass-ui:typecheck` →
 `biome check` clean.

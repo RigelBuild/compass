@@ -292,7 +292,7 @@ Determinism inventory (verified):
   "Assigned to me" section (`BacklogView.tsx:109-113`, fed
   `store.assignedIssues()`) gates on the microtask; the fixture tracker seam
   returns non-empty `STUB_ASSIGNED_ISSUES` for the default handle
-  (`tracker.ts:99`, `DEFAULT_TRACKER_CONFIG.handle = "matt@sealed"`), so that
+  (`tracker.ts:99`, `DEFAULT_TRACKER_CONFIG.handle = "matt@rigelbuild"`), so that
   scoped row is guaranteed to appear once the query resolves.
 - Residual risk is CSS animation phase (e.g. a pulsing state dot mid-keyframe
   at capture) and raster-level drift (subpixel AA, late web-font swap).
