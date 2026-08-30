@@ -1,0 +1,75 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# sql-migration-gate (RIG-3031) — SQL migration lint for the first-party
+# migrations under go/internal/store/migrations/. Two linters, both nix-pinned in
+# devenv.nix (the SQL lint battery):
+#
+#   squawk  migration-SAFETY analysis — flags unsafe DDL (a NOT-NULL column with
+#           no default, a full-table rewrite, a non-CONCURRENT index on a live
+#           table). Config + accepted-rule rationale in /.squawk.toml.
+#   sqruff  SQL style/lint — structural + correctness rules kept, pure-layout
+#           reformatting rules excluded for this hand-authored schema. Config in
+#           /.sqruff.
+#
+# NOT a bun or go project: it execs two nix-provided binaries over a file glob,
+# so it inherits neither the tag-bun install nor the whole-repo biome lint/format
+# (excluded below). A nix-tool gate like its siblings (flake-gate, guest-image,
+# agent-image): `language: nix` + `tags: ['ci-group.nix']` (even though the work
+# is a shell exec, not a nix build — the sibling convention), so it rides the
+# same non-bun/non-go CI leg and `moon run :ci` sweeps it.
+#
+# Compass CI is a single moon-driven job (.github/workflows/ci.yml runs
+# `moon run :ci`), so the `ci` aggregate below is swept automatically.
+layer: 'tool'
+language: 'nix'
+tags: ['ci-group.nix']
+
+# Affected-detection walks the PROJECT GRAPH ONLY (moon query projects
+# --affected → downstream); it NEVER consults a project's cross-tree task
+# `inputs` globs (ci-matrix/index.ts generate() keys off affectedIds; see
+# flake-gate/moon.yml:31-46). The MIGRATION trigger surface
+# (go/internal/store/migrations/**) lives in compass-go's tree, so declaring
+# compass-go a dep lets `--downstream direct` pull the gate into the affected
+# set whenever the Go tree (which holds the migrations) is affected — the case
+# that matters. KNOWN GAP: the gate's OTHER inputs — its configs /.squawk.toml
+# and /.sqruff — live in the ROOT project's tree, and the gate has no graph
+# edge to `root`, so a PR editing ONLY a config file is NOT marked affected on
+# that PR; a config change (e.g. dropping an exclusion) is caught on the next
+# main-push full sweep and on local `moon ci`, not on the config-only PR
+# itself. Adding `dependsOn: ['root']` would close the gap but over-triggers
+# the gate on every repo-root file change (moon edges are project-level, not
+# file-level) — a deliberate tradeoff left to a follow-up, not taken here. The
+# `inputs:` globs on `check` remain the true closure for the main-sweep + local
+# `moon ci`.
+dependsOn:
+  - 'compass-go'
+
+workspace:
+  inheritedTasks:
+    exclude: ['install', 'lint', 'format']
+
+tasks:
+  check:
+    # Both linters over every first-party migration. Run from the workspace root
+    # so squawk/sqruff discover their repo-root configs (/.squawk.toml, /.sqruff)
+    # and the glob resolves repo-relative. squawk takes the files as args; sqruff
+    # takes `lint <files>`. Run BOTH unconditionally and OR their exit codes so a
+    # single push surfaces squawk-safety AND sqruff-style findings together (a
+    # plain `&&` would short-circuit and hide the sqruff half behind a squawk
+    # failure, costing a second red cycle). Fail-closed: non-zero from either.
+    command: 'bash -c "squawk go/internal/store/migrations/*.sql; rc=$?; sqruff lint go/internal/store/migrations/*.sql; rc2=$?; exit $(( rc | rc2 ))"'
+    options:
+      runFromWorkspaceRoot: true
+      # Never cache: a fail-closed lint gate must not ride a cached green from
+      # another checkout — the subject is the live migration tree.
+      cache: false
+      runInCI: true
+    inputs:
+      - '/go/internal/store/migrations/**/*.sql'
+      - '/.squawk.toml'
+      - '/.sqruff'
+  ci:
+    deps: ['check']
+    options:
+      cache: false
+      runInCI: true

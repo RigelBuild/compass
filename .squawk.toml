@@ -1,0 +1,49 @@
+# squawk — Postgres migration-safety linter for go/internal/store/migrations/.
+# Gate config for tools/sql-migration-gate/moon.yml.
+#
+# WHY THESE EXCLUSIONS: the sole migration (0001_init.sql) is a single collapsed
+# schema-bootstrap that runs ONCE against an empty, pre-live database inside a
+# transaction (see the migration runner + advisory lock). squawk's default rule
+# set is calibrated for INCREMENTAL migrations against a large LIVE production
+# table, where a full-table rewrite or a non-CONCURRENT index build takes a
+# blocking lock that stalls live traffic. On an empty pre-live DB that hazard
+# does not exist, so the rules below are accepted here. They stay OFF only for
+# this bootstrap posture — a future incremental migration against live data
+# would want them back (revisit this list when the first post-live migration
+# lands). The gate stays GREEN on the current file and RED on genuinely unsafe
+# NEW DDL (e.g. adding a NOT NULL column with no default), which these
+# exclusions do not silence.
+
+pg_version = "16.0"
+
+# The runner applies each migration inside one transaction (Begin / Exec(sql) /
+# Commit — go/internal/store/store.go:230-245), so lint statements with in-txn
+# semantics to match reality. Caveat: squawk cannot flag a runtime-fatal
+# CREATE INDEX CONCURRENTLY inside a txn from this flag (it only fires on an
+# explicit BEGIN;) — that failure is instead caught at apply time by the
+# runner's own transaction wrapper.
+assume_in_transaction = true
+
+excluded_rules = [
+  # CREATE INDEX (non-CONCURRENTLY) and the lock it takes only block writes on a
+  # populated table. Every index here is built on an empty pre-live table inside
+  # the bootstrap transaction; CONCURRENTLY is in fact illegal inside a txn.
+  "require-concurrent-index-creation",
+  # lock_timeout / statement_timeout guard against a slow blocking op stalling
+  # live traffic. There is no live traffic during a pre-live bootstrap; the whole
+  # migration runs under one advisory-locked transaction.
+  "require-timeout-settings",
+  # IF NOT EXISTS makes a migration re-runnable after a partial failure. This
+  # migration is transactional (all-or-nothing) and version-gated by the runner,
+  # so a partial-apply re-run cannot happen; bare CREATE keeps the schema DDL
+  # readable.
+  "prefer-robust-stmts",
+  # SMALLINT/INT width choices here are deliberate domain modeling (small enum
+  # roles, bounded counters), not oversights risking an int overflow on an
+  # ever-growing id column.
+  "prefer-bigint-over-smallint",
+  "prefer-bigint-over-int",
+  # PKs here are TEXT application-generated ids by design, not integer sequences,
+  # so the GENERATED-ALWAYS-AS-IDENTITY-over-serial advice does not apply.
+  "prefer-identity",
+]
