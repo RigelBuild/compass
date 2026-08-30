@@ -26,8 +26,9 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 > green per-push run, then delete). Every OTHER decision here stays live and is
 > carried into that lane unchanged: the tag name/tag contract (`:git-<sha>`
 > immutable pin + `:latest` fallback), the build-once/push-each-tag skopeo
-> mechanism, the `GITHUB_TOKEN` + `REGISTRY_AUTH_FILE` auth pin, and the
-> public-visibility ruling. This record therefore remains the cited authority
+> mechanism, the `GITHUB_TOKEN` + `REGISTRY_AUTH_FILE` auth pin, the
+> `linux/amd64` single-arch platform contract, and the public-visibility
+> ruling. This record therefore remains the cited authority
 > for the baked `:git-<sha>` pin.
 
 ## Problem / Intent
