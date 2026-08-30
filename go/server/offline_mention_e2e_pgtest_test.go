@@ -15,7 +15,7 @@ package server
 // The wire the test stands up, inline, is production's:
 //
 //	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
-//	c.SetAgentWaker(newLifecycleService(st, hub))   // the REAL resume waker
+//	c.SetAgentWaker(newLifecycleService(st, hub, nil)) // the REAL resume waker
 //	hub.SetSettleSink(c); hub.SetSessionStartSink(c); hub.SetDeliveryStore(st)
 //	go c.Run(ctx)
 //

@@ -4,7 +4,7 @@ package server
 
 // The lifecycleService orchestration seam, against a real Postgres AND a real
 // Runner door. lifecycleService is an INTERNAL seam (runnerhub.LifecycleCaller),
-// not a wire RPC, so these drive newLifecycleService(f.hub, f.store) DIRECTLY
+// not a wire RPC, so these drive newLifecycleService(f.store, f.hub, dm) DIRECTLY
 // under a resolved caller AccountID — the same way the hub's RelayLifecycleCall
 // delegates into it — rather than through the connect client. The RemoveAgentWorkspace
 // operator door IS a wire RPC, so that one test drives it through f.client.

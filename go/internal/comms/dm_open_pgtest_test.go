@@ -265,10 +265,10 @@ func TestOpenDMResumeEmitsNoChannelChanged(t *testing.T) {
 		t.Fatalf("OpenDM(resume): %v", err)
 	}
 
-	// Canary published last; drain alice's replay up to it and assert no
-	// ChannelChanged for the DM rode along (the create event is in the replay too,
-	// so scope the check to events AFTER the create — any SECOND ChannelChanged
-	// for dmID is the spurious resume emit).
+	// Canary published last; drain alice's replay up to it and count every
+	// ChannelChanged for the DM across the whole replay. The create contributes
+	// exactly 1, so a total >1 is a spurious per-resume re-publish (in-order
+	// per-subscriber delivery guarantees a resume event, if any, precedes the canary).
 	canary := mkCanary(t, h, "canary")
 	evts := drainReplayAsActor(t, h, alice.ID, canary)
 	var dmChannelChanges int
