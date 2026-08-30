@@ -313,14 +313,19 @@ let
       chmod -R u+w $out/etc
     fi
 
-    # The egress prerequisites (microvm-runner.md:446-449). Already present via
-    # the toolchain closure above (agent-image/toolchain.nix:144-147), linked
-    # again here explicitly so the guest's contract does not depend on the
+    # The egress prerequisites (microvm-runner.md:446-449) plus /bin/sh. Already
+    # present via the toolchain closure above (agent-image/toolchain.nix:144-147),
+    # linked again here explicitly so the guest's contract does not depend on the
     # toolchain's internal package list. `ln -sf` because the toolchain loop may
-    # already have created these names.
+    # already have created these names. /bin/sh is load-bearing under always-arm
+    # (record §(e)): every microVM Start spawns `/bin/sh -c <script>` to arm
+    # egress, so a missing /bin/sh is a total-backend outage, not egress-only.
+    # bashInteractive is already in the rootfs closure via the toolchain, so the
+    # link adds zero closure.
     ln -sf ${pkgs.nftables}/bin/nft $out/bin/nft
     ln -sf ${pkgs.getent}/bin/getent $out/bin/getent
     ln -sf ${pkgs.gawk}/bin/awk $out/bin/awk
+    ln -sf ${pkgs.bashInteractive}/bin/sh $out/bin/sh
 
     # The real guest init, reachable both as /sbin/init and by name on PATH.
     ln -s ${guestd}/bin/compass-guestd $out/sbin/init

@@ -60,6 +60,38 @@ func linuxCredential(uid uint32) *syscall.Credential {
 	return &syscall.Credential{Uid: uid, Gid: uid}
 }
 
+// armTimeout bounds the in-guest egress arm (§(d), OQ-5), mirroring podman's
+// per-command defaultCommandTimeout that bounds the same script on that backend.
+const armTimeout = 120 * time.Second
+
+// armStderrTail caps the bytes of the script's combined output carried in a
+// failed-arm error so a runaway script cannot balloon the RPC error.
+const armStderrTail = 4 << 10
+
+// runNftScript is the production armFunc (§(d)): it spawns the egress script as
+// guestd's own root — a spawn path deliberately SEPARATE from exec children,
+// with NO syscall.Credential (it never passes through resolveUID/newCredential)
+// and never entered in the exec table. The arm is bounded by armTimeout and the
+// caller's ctx. On a non-zero exit, timeout, or spawn failure it returns an
+// error carrying the exit status and a bounded tail of the combined output.
+func runNftScript(ctx context.Context, script string) error {
+	ctx, cancel := context.WithTimeout(ctx, armTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "/bin/sh", "-c", script).CombinedOutput() //nolint:gosec // script is the host-delivered egress ruleset run as guest root by design — this IS the arm surface (§(d))
+	if err != nil {
+		if len(out) > armStderrTail {
+			out = out[len(out)-armStderrTail:]
+		}
+		// Only append the output tail when there is one, so a silent failure
+		// (e.g. a bare non-zero exit) reads "exit status N", not "exit status N: ".
+		if tail := strings.TrimSpace(string(out)); tail != "" {
+			return fmt.Errorf("%w: %s", err, tail)
+		}
+		return err
+	}
+	return nil
+}
+
 // childExec is one running exec: a direct child of guestd (guest PID 1) in its
 // own process group. Signal targets the group; the reap that feeds the exit
 // frame is the owning ExecStream handler's cmd.Wait.
@@ -96,6 +128,12 @@ type supervisor struct {
 	// newCredential builds the per-child process credential; a seam so tests
 	// spawn as their own uid.
 	newCredential credentialFunc
+
+	// armFunc arms egress from a non-empty nft_script (§(d)); a seam so
+	// hermetic tests inject a fake arm. Production is runNftScript, which
+	// spawns the script as guestd's own root, a spawn path deliberately
+	// separate from exec children (never through resolveUID/newCredential).
+	armFunc func(ctx context.Context, script string) error
 
 	// stopServing cancels the serving context on an RPC-driven Stop
 	// (Signal("", ...)); run wires it and observes rpcStop to drive poweroff.
@@ -135,18 +173,18 @@ func (s *supervisor) Health(
 }
 
 // Provision transitions ready -> provisioned (§(b)): it records the session's
-// default exec uid (validated non-zero) and base env, opening the exec gate. A
-// non-empty nft_script is V3's egress arm — unimplemented in V2b, so it is a
-// hard error that leaves the gate closed (the host tears the VM down).
+// default exec uid (validated non-zero) and base env, opening the exec gate.
+// When nft_script is non-empty it arms egress in-guest (§(d)): the script runs
+// as guestd's own root via armFunc BEFORE the state transition, under s.mu, so
+// no exec is served until the arm succeeds. A failed arm returns CodeInternal
+// and leaves the gate closed at stateReady (the host tears the VM down). An
+// empty nft_script skips the arm (the §(e) hermetic test seam) and opens the
+// gate as before.
 func (s *supervisor) Provision(
-	_ context.Context,
+	ctx context.Context,
 	req *connect.Request[compassv1internal.ProvisionRequest],
 ) (*connect.Response[compassv1internal.ProvisionResponse], error) {
 	m := req.Msg
-	if m.GetNftScript() != "" {
-		return nil, connect.NewError(connect.CodeUnimplemented,
-			errors.New("nft egress arm is V3; a non-empty nft_script is not supported in V2b"))
-	}
 	if m.GetDefaultExecUid() == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("default_exec_uid must be non-zero: the guest supervisor never runs an exec as root"))
@@ -161,6 +199,15 @@ func (s *supervisor) Provision(
 	if s.state != stateReady {
 		return nil, connect.NewError(connect.CodeFailedPrecondition,
 			errors.New("not ready: net/mount bringup incomplete"))
+	}
+	// Arm egress before opening the gate (§(d), OQ-4: under s.mu). A non-empty
+	// script that fails to arm leaves the state at stateReady so requireProvisioned
+	// keeps refusing every exec; a retried Provision may run.
+	if script := m.GetNftScript(); script != "" {
+		if err := s.armFunc(ctx, script); err != nil {
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("arming nft egress: %w", err))
+		}
 	}
 	s.state = stateProvisioned
 	s.defaultExecUID = m.GetDefaultExecUid()

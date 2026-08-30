@@ -150,6 +150,7 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 		workspaceMounted: true,
 		bootNonce:        bootNonce,
 		newCredential:    linuxCredential,
+		armFunc:          runNftScript,
 		stopServing:      stopServing,
 		state:            stateReady,
 		execs:            make(map[string]*childExec),
