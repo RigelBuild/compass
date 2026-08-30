@@ -12,7 +12,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -30,6 +32,22 @@ func artifactCursorExists(t *testing.T, s *Store, provider ForgeProvider, host, 
 		t.Fatalf("count artifact cursor rows: %v", err)
 	}
 	return n > 0
+}
+
+// jsonSemanticEqual reports whether two JSON byte slices are semantically equal
+// (same parsed value), ignoring whitespace and key order. The forge_artifact_cursors
+// snapshot is a JSONB column, so a written value reads back Postgres-normalized —
+// a byte compare would be Postgres-version-fragile, a value compare is not.
+func jsonSemanticEqual(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		t.Fatalf("unmarshal snapshot a %q: %v", a, err)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		t.Fatalf("unmarshal snapshot b %q: %v", b, err)
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 // seedArtifactCursor inserts a bare forge_artifact_cursors row at the coordinate
@@ -784,8 +802,15 @@ func TestLoadForgeArtifactCursor(t *testing.T) {
 		t.Fatalf("cursor = nil, want non-nil round-trip")
 	}
 	if got.ETag != `"e1"` || got.CommentsETag != `"c1"` || got.ChecksETag != `"k1"` ||
-		got.Revision != "rev-1" || string(got.Snapshot) != `{"x":1}` {
-		t.Fatalf("cursor = %+v, want e1/c1/k1/rev-1/{\"x\":1}", got)
+		got.Revision != "rev-1" {
+		t.Fatalf("cursor = %+v, want e1/c1/k1/rev-1", got)
+	}
+	// Snapshot is a JSONB column: Postgres normalizes the stored JSON (whitespace,
+	// key order), so the round-trip is semantically equal but NOT byte-identical
+	// to the written `{"x":1}` (it reads back `{"x": 1}`). Compare parsed values,
+	// never bytes — a byte compare here is Postgres-version-fragile.
+	if !jsonSemanticEqual(t, got.Snapshot, []byte(`{"x":1}`)) {
+		t.Fatalf("snapshot = %s, want JSON-equal to {\"x\":1}", got.Snapshot)
 	}
 
 	// 2. Never-observed coordinate → (nil, nil).

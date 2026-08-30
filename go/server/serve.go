@@ -1054,16 +1054,7 @@ func (a *forgeNotifyStore) LoadArtifactCursor(ctx context.Context, repo string, 
 	if cur == nil {
 		return nil, nil //nolint:nilnil // a never-observed coordinate is (nil, nil) by the seam contract (notify_router.go:79-81); the router guards nil.
 	}
-	return &ingest.ArtifactCursor{
-		Repo:         cur.Repo,
-		Kind:         compassv1internal.ForgeArtifactKind(cur.Kind),
-		Number:       cur.Number,
-		ETag:         cur.ETag,
-		CommentsETag: cur.CommentsETag,
-		ChecksETag:   cur.ChecksETag,
-		Revision:     cur.Revision,
-		Snapshot:     cur.Snapshot,
-	}, nil
+	return toIngestCursor(cur), nil
 }
 
 // SubscribersForArtifact returns the subscribers a change fans out to for the
@@ -1092,18 +1083,7 @@ func (a *forgeNotifyStore) ListNotifyTargets(ctx context.Context) ([]ingest.Noti
 			Number:      t.Number,
 			Subscribers: toIngestSubscribers(t.Subscribers),
 		}
-		if t.Cursor != nil {
-			nt.Cursor = &ingest.ArtifactCursor{
-				Repo:         t.Cursor.Repo,
-				Kind:         compassv1internal.ForgeArtifactKind(t.Cursor.Kind),
-				Number:       t.Cursor.Number,
-				ETag:         t.Cursor.ETag,
-				CommentsETag: t.Cursor.CommentsETag,
-				ChecksETag:   t.Cursor.ChecksETag,
-				Revision:     t.Cursor.Revision,
-				Snapshot:     t.Cursor.Snapshot,
-			}
-		}
+		nt.Cursor = toIngestCursor(t.Cursor)
 		out = append(out, nt)
 	}
 	return out, nil
@@ -1144,18 +1124,49 @@ func toIngestSubscribers(subs []store.ForgeNotifySubscriber) []ingest.NotifySubs
 	return out
 }
 
+// toIngestCursor converts a store artifact cursor to the ingest mirror
+// (nil-in -> nil-out), the sibling of toIngestSubscribers. Both the point-read
+// (LoadArtifactCursor) and the sweep enumeration (ListNotifyTargets) share it so
+// the 8-field copy lives once and a new cursor field can't drift between them.
+func toIngestCursor(cur *store.ForgeArtifactCursor) *ingest.ArtifactCursor {
+	if cur == nil {
+		return nil
+	}
+	return &ingest.ArtifactCursor{
+		Repo:         cur.Repo,
+		Kind:         compassv1internal.ForgeArtifactKind(cur.Kind),
+		Number:       cur.Number,
+		ETag:         cur.ETag,
+		CommentsETag: cur.CommentsETag,
+		ChecksETag:   cur.ChecksETag,
+		Revision:     cur.Revision,
+		Snapshot:     cur.Snapshot,
+	}
+}
+
 // errNoLiveSession is the sentinel forgeNotifyDispatcher.Notify returns when the
 // resolved subscriber has no live session: the router logs it and moves on, and
 // the reconcile sweep re-notifies from the durable gap (W3). It is DELIBERATELY
 // not a cursor advance — no cursor is touched on a no-session dispatch.
 var errNoLiveSession = errors.New("forge notify: no live session for account")
 
+// notifySessionDispatcher is the hub surface forgeNotifyDispatcher drives:
+// resolve an account to its live session, then dispatch a control frame to it.
+// Both methods are on *runnerhub.Hub (the production impl); naming them as a
+// local interface lets a unit test inject a fake and exercise Notify's resolve/
+// miss branches and the AgentControl wrapping without a live hub or Postgres.
+// It mirrors the delivery package's SessionResolver + ControlDispatcher split.
+type notifySessionDispatcher interface {
+	SessionForAccount(account store.AccountID) (sessionID string, ok bool)
+	DispatchControl(ctx context.Context, sessionID string, op *compassv1internal.AgentControl) error
+}
+
 // forgeNotifyDispatcher adapts the hub to ingest.NotifyDispatcher: resolve the
 // subscriber's account to its live session and DispatchControl the notification.
 // It NEVER advances delivered_revision (W3) — the hub's ForgeNotificationAck arm
 // owns that (already boot-wired via SetDeliveryStore).
 type forgeNotifyDispatcher struct {
-	hub *runnerhub.Hub
+	hub notifySessionDispatcher
 }
 
 // Notify resolves account -> live session -> DispatchControl(ForgeNotification).
@@ -1196,9 +1207,14 @@ func (r *forgeNotifyChecksRoller) RollUp(ctx context.Context, repo string, numbe
 // to avoid a second boot Warn that double-logs the same fact.
 //
 // It builds its OWN forge.GitHub client via the same App TokenSource recipe the
-// board lane uses (a second client on the same App installation shares the same
-// rate budget, so W1's rate rationale holds; a single shared-client refactor
-// across both lanes is out of scope here). The two App secrets are validated by
+// board lane uses. The two clients share GitHub's SERVER-side per-installation
+// rate limit (one App installation, one server-side budget), but each keeps its
+// OWN client-side budget/resetAt accounting — the gate the reconciler's
+// ErrBudgetExhausted rides — so neither local gate sees the other's spend before
+// GitHub returns a 403/secondary-limit. That is acceptable per W1 (the notify
+// lane is low-volume and the server-side limit is the real ceiling); a single
+// shared-client refactor that unifies the client-side budget across both lanes
+// is deferred (RIG-2991). The two App secrets are validated by
 // the board lane's buildBoardIngestLane on the same boot, so this does not
 // re-validate — it assembles the pipeline: the (provider, host)-bound store
 // adapter, the hub-backed dispatcher, the checks roller over the client, the

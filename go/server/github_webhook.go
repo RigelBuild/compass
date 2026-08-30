@@ -47,6 +47,14 @@ const (
 type ForgeEventSink interface {
 	// Enqueue MUST NOT block: it hands the event off to the async drain loop
 	// and returns immediately, so the ack is never on its latency path.
+	//
+	// The event is READ-ONLY to every sink. One accepted delivery fans out to
+	// multiple sinks (the board arm and the notify arm via fanoutSink), which
+	// drain on independent goroutines; ev carries pointer fields (Comment,
+	// Checks) whose pointees are aliased across those goroutines. A sink MUST
+	// treat ev and everything it points at as immutable — mutating through
+	// ev.Comment/ev.Checks would be a cross-goroutine data race no test or the
+	// compiler catches. A sink that needs to mutate copies first.
 	Enqueue(ctx context.Context, ev forge.ForgeEvent)
 }
 
