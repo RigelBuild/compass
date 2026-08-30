@@ -4,6 +4,7 @@ package microvm
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -77,6 +78,48 @@ sleep 30`)
 		if pidAlive(pid) {
 			t.Errorf("%s (pid %d) still alive after fail-closed launch — teardown orphaned it", name, pid)
 		}
+	}
+}
+
+// TestWaitVMMExitObservesPromptSelfExit pins M2's prompt-exit contract: a VMM
+// that exits on its own (as the guest does on RB_POWER_OFF) is observed by
+// WaitVMMExit via the sole reaper WELL UNDER the grace window — it must NOT burn
+// the full timeout waiting on a zombie. It assembles a minimal VM with just a
+// fake vmm child plus a manually-started reaper mirroring launch's (the full
+// launch needs passt/virtiofsd), since the assertion is purely about the
+// reaper→vmmExited→WaitVMMExit path.
+func TestWaitVMMExitObservesPromptSelfExit(t *testing.T) {
+	dir := t.TempDir()
+	vm := &VM{
+		vmm: &child{
+			name:    "cloud-hypervisor",
+			logPath: filepath.Join(dir, "cloud-hypervisor.log"),
+			// A self-exiting VMM stand-in: sleep briefly, then exit 0.
+			cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c", "sleep 0.1; exit 0"),
+		},
+	}
+	if err := startChild(vm.vmm); err != nil {
+		t.Fatalf("startChild(vmm fake): %v", err)
+	}
+	// The sole reaper, mirroring launch: it owns the single Wait and closes
+	// vmmExited once the process has exited.
+	vm.vmmExited = make(chan struct{})
+	go func() {
+		_ = vm.vmm.cmd.Wait() // reaper mirror: a fake VMM's exit is the expected outcome
+		vm.vmm.waited.Store(true)
+		close(vm.vmmExited)
+	}()
+
+	// A generous grace window: the fake exits in ~100ms, so WaitVMMExit must
+	// return true well before this elapses. Measure to prove it did not burn
+	// the timeout on a zombie.
+	const grace = 10 * time.Second
+	start := time.Now()
+	if !vm.WaitVMMExit(grace) {
+		t.Fatalf("WaitVMMExit returned false: a self-exiting VMM was not observed within %v", grace)
+	}
+	if elapsed := time.Since(start); elapsed >= grace {
+		t.Fatalf("WaitVMMExit took %v (>= grace %v): the self-exit was not observed promptly", elapsed, grace)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -216,7 +217,8 @@ func setupOtel(ctx context.Context) (shutdown func(), err error) {
 // backendFlags holds the runtime-backend selection flags, registered on the
 // default flag set before flag.Parse and resolved into a runtime after it.
 type backendFlags struct {
-	backend, vmm, virtiofsd, kernel, rootfs *string
+	backend, vmm, virtiofsd, kernel, rootfs, initrd, runRoot *string
+	cpus, memoryMB                                           *int
 }
 
 // registerBackendFlags declares the backend-selection flags. Call before
@@ -234,19 +236,41 @@ func registerBackendFlags() backendFlags {
 			"Path to the guest kernel image (microvm backend). Defaults to $COMPASS_MICROVM_KERNEL."),
 		rootfs: flag.String("microvm-rootfs", "",
 			"Path to the guest rootfs image (microvm backend). Defaults to $COMPASS_MICROVM_ROOTFS."),
+		initrd: flag.String("microvm-initrd", "",
+			"Path to the guest initramfs image (microvm backend). Defaults to $COMPASS_MICROVM_INITRD."),
+		runRoot: flag.String("microvm-runroot", "",
+			"Root dir for per-session microVM runtime dirs (microvm backend). Defaults to $COMPASS_MICROVM_RUNROOT."),
+		cpus: flag.Int("microvm-cpus", 0,
+			"Default vCPU count per session guest (microvm backend); 0 leaves the VMM default. "+
+				"Defaults to $COMPASS_MICROVM_CPUS."),
+		memoryMB: flag.Int("microvm-memory-mb", 0,
+			"Default guest RAM in MiB per session (microvm backend); 0 leaves the VMM default. "+
+				"Defaults to $COMPASS_MICROVM_MEMORY_MB."),
 	}
 }
 
 // selectEngine resolves the configured runtime backend from the parsed flags
 // and their environment fallbacks.
 func (f backendFlags) selectEngine() (runtime.ContainerRuntime, error) {
+	cpus, err := intOrEnv(*f.cpus, "COMPASS_MICROVM_CPUS")
+	if err != nil {
+		return nil, err
+	}
+	memoryMB, err := intOrEnv(*f.memoryMB, "COMPASS_MICROVM_MEMORY_MB")
+	if err != nil {
+		return nil, err
+	}
 	return runtime.SelectBackend(runtime.BackendConfig{
 		Backend: orEnv(*f.backend, "COMPASS_RUNTIME_BACKEND"),
 		MicroVM: runtime.MicroVMConfig{
-			VMMPath:       orEnv(*f.vmm, "COMPASS_MICROVM_VMM"),
-			VirtiofsdPath: orEnv(*f.virtiofsd, "COMPASS_MICROVM_VIRTIOFSD"),
-			KernelImage:   orEnv(*f.kernel, "COMPASS_MICROVM_KERNEL"),
-			RootfsImage:   orEnv(*f.rootfs, "COMPASS_MICROVM_ROOTFS"),
+			VMMPath:         orEnv(*f.vmm, "COMPASS_MICROVM_VMM"),
+			VirtiofsdPath:   orEnv(*f.virtiofsd, "COMPASS_MICROVM_VIRTIOFSD"),
+			KernelImage:     orEnv(*f.kernel, "COMPASS_MICROVM_KERNEL"),
+			RootfsImage:     orEnv(*f.rootfs, "COMPASS_MICROVM_ROOTFS"),
+			InitrdImage:     orEnv(*f.initrd, "COMPASS_MICROVM_INITRD"),
+			RunRoot:         orEnv(*f.runRoot, "COMPASS_MICROVM_RUNROOT"),
+			DefaultCPUs:     cpus,
+			DefaultMemoryMB: memoryMB,
 		},
 	})
 }
@@ -257,6 +281,26 @@ func orEnv(flagVal, envKey string) string {
 		return flagVal
 	}
 	return os.Getenv(envKey)
+}
+
+// intOrEnv returns flagVal when non-zero, else the named environment variable
+// parsed as an int. An empty env var is 0 (unset — the config treats 0 as
+// "leave the VMM default"); a present-but-non-numeric env var is an error
+// naming the offending variable and value so a misconfiguration surfaces at
+// startup rather than as a zero silently swallowing a typo.
+func intOrEnv(flagVal int, envKey string) (int, error) {
+	if flagVal != 0 {
+		return flagVal, nil
+	}
+	raw := os.Getenv(envKey)
+	if raw == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("$%s=%q is not an integer: %w", envKey, raw, err)
+	}
+	return parsed, nil
 }
 
 // parseEgress parses the comma-separated allowlist into a validated EgressPolicy.
