@@ -269,6 +269,9 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Cont
 		// Keep the container alive so the Runner can exec into it; the agent is
 		// driven via exec, not as the container's main process.
 		Command: []string{"sleep", "infinity"},
+		// The microVM backend delivers this to guestd for an in-guest arm; the
+		// podman backend ignores it and arms via provision's armEgress exec.
+		Egress: spec.Egress,
 	}
 
 	id, err := r.runtime.Create(ctx, container)
@@ -285,11 +288,27 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Cont
 	return id, nil
 }
 
+// inGuestEgressArmer is a backend that arms the egress firewall itself, inside
+// its isolation boundary (as guest root, before the exec gate opens), so the
+// host-side armEgress exec must be skipped. It is a marker, deliberately NOT a
+// verb on the frozen ContainerRuntime interface (podman.go): AgentRuntime probes
+// for it and skips arming when a backend self-arms (design §(c)). Only
+// MicroVMRuntime implements it; PodmanCLI and the test fakes do not, so the
+// host-side arm runs byte-identically for them.
+type inGuestEgressArmer interface {
+	EgressArmedInGuest() bool
+}
+
 // provision runs the post-start steps, all inside the running container:
-// firewall (root), credentials (agent user), checkout dir (agent user).
+// firewall (root), credentials (agent user), checkout dir (agent user). A
+// backend that self-arms egress in-guest (inGuestEgressArmer, the microVM
+// backend) has already armed by Start, so the host-side armEgress exec — which
+// on that backend would run capability-less and fail — is skipped.
 func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec AgentSpec) error {
-	if err := r.armEgress(ctx, id, spec.Egress); err != nil {
-		return err
+	if armer, ok := r.runtime.(inGuestEgressArmer); !ok || !armer.EgressArmedInGuest() {
+		if err := r.armEgress(ctx, id, spec.Egress); err != nil {
+			return err
+		}
 	}
 	if err := r.installCredentials(ctx, id, spec.Workspace); err != nil {
 		return err

@@ -81,6 +81,47 @@ const healthPollInterval = 200 * time.Millisecond
 // timeout error, never block the calling task forever.
 const execDefaultTimeout = 120 * time.Second
 
+// guestVM is the running-guest handle MicroVMRuntime drives, an interface over
+// *microvm.VM so Start is hermetically testable behind a fake handle. Its method
+// set is NOT merely what Start calls — it retypes the shared microvmSession.vm
+// field, so it must cover EVERY method invoked on that field anywhere in the
+// package across ALL build tags: Health/Shutdown (Start/awaitHealthy and Stop,
+// launch.go), WaitVMMExit (Stop, microvm_lifecycle.go), and PSS (the Q-budget
+// contract test's session.vm.PSS(), contract_microvm_test.go, //go:build microvm
+// && unix). *microvm.VM satisfies all four as-is (design §W2 seams).
+type guestVM interface {
+	Health(ctx context.Context) (*compassv1.HealthResponse, error)
+	Shutdown(ctx context.Context) error
+	WaitVMMExit(timeout time.Duration) bool
+	PSS() (map[string]int64, error)
+}
+
+// guestLaunchFunc boots a session guest, returning it behind the guestVM seam.
+// It defaults to a thin adapter over microvm.Launch (installSeamDefaults) and is
+// overridden in hermetic Start tests so no real VMM boots.
+type guestLaunchFunc func(context.Context, microvm.BootConfig) (guestVM, error)
+
+// guestClientFunc dials the guest control plane, returning a GuestControlClient.
+// It defaults to microvm.GuestClient (installSeamDefaults) and is overridden in
+// hermetic Start tests so a fake client answers Provision with no real vsock
+// dial. It seams Start's Provision client ONLY; Stop's own dial stays direct.
+type guestClientFunc func(socket string, port uint32) compassv1internalconnect.GuestControlClient
+
+// installSeamDefaults wires the production launch + client implementations onto a
+// freshly constructed MicroVMRuntime. It is //go:build unix (like the microvm
+// package it names) and is called by NewMicroVMRuntime, so hermetic tests can
+// override the seams after construction.
+func (m *MicroVMRuntime) installSeamDefaults() {
+	m.launchFunc = func(ctx context.Context, cfg microvm.BootConfig) (guestVM, error) {
+		vm, err := microvm.Launch(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		return vm, nil
+	}
+	m.newGuestClient = microvm.GuestClient
+}
+
 // microvmSession is one allocated microVM session's state. Created by Create
 // (not yet booted), populated with the running VM handle and exec client by
 // Start, and dropped by Remove. All fields are read/written under
@@ -100,11 +141,20 @@ type microvmSession struct {
 	// nonce is the per-session boot nonce (raw bytes); its hex encoding rides
 	// the cmdline, and Start verifies guestd echoes it before opening the gate.
 	nonce []byte
+	// nftScript is the egress ruleset delivered to guestd on Start's Provision
+	// RPC (as ProvisionRequest.nft_script). Recorded at Create from
+	// spec.Egress.NftScript(); NEVER empty for a ContainerSpec-created session,
+	// since the zero-value EgressPolicy still emits the full default-deny base
+	// ruleset (design §(e), egress.go). guestd arms it as guest root before the
+	// exec gate opens.
+	nftScript string
 	// runtimeDir is <RunRoot>/microvm/<id>/, holding the session's sockets.
 	runtimeDir string
 	// vm and guestExec are nil until Start boots the guest; Start sets both
-	// under the lock once the boot + Provision succeed.
-	vm        *microvm.VM
+	// under the lock once the boot + Provision succeed. vm is typed as the
+	// unexported guestVM interface (not *microvm.VM directly) so Start is
+	// hermetically testable behind a fake handle (design §W2 seams).
+	vm        guestVM
 	guestExec *microvm.GuestExec
 }
 
@@ -162,12 +212,15 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec ContainerSpec) (Containe
 	}
 
 	session := &microvmSession{
-		id:         id,
-		name:       spec.Name,
-		cfg:        m.bootConfig(runtimeDir, nonce, shared),
-		uid:        spec.UID,
-		env:        spec.Env,
-		nonce:      nonce,
+		id:    id,
+		name:  spec.Name,
+		cfg:   m.bootConfig(runtimeDir, nonce, shared),
+		uid:   spec.UID,
+		env:   spec.Env,
+		nonce: nonce,
+		// Never empty: the zero-value EgressPolicy still emits the default-deny
+		// base ruleset, so every ContainerSpec-created session boots armed (§(e)).
+		nftScript:  spec.Egress.NftScript(),
 		runtimeDir: runtimeDir,
 	}
 
@@ -279,7 +332,7 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id ContainerID) error {
 		return err
 	}
 
-	vm, err := microvm.Launch(ctx, session.cfg)
+	vm, err := m.launchFunc(ctx, session.cfg)
 	if err != nil {
 		return fmt.Errorf("microvm: launching session %s: %w", id, err)
 	}
@@ -301,8 +354,9 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id ContainerID) error {
 	if session.uid == 0 {
 		return fmt.Errorf("microvm: session %s has a zero exec uid; Provision requires a non-zero default_exec_uid", id)
 	}
-	client := microvm.GuestClient(session.cfg.VsockSocket, session.cfg.VsockPort)
+	client := m.newGuestClient(session.cfg.VsockSocket, session.cfg.VsockPort)
 	if _, err := client.Provision(ctx, connect.NewRequest(&compassv1.ProvisionRequest{
+		NftScript:      session.nftScript,
 		DefaultExecUid: session.uid,
 		BaseEnv:        session.env,
 	})); err != nil {
@@ -326,12 +380,20 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id ContainerID) error {
 	return nil
 }
 
+// EgressArmedInGuest marks this backend as self-arming egress in-guest: the
+// Provision RPC Start issues carries nft_script, so guestd arms as guest root
+// before the exec gate opens (§(b)/(c)). AgentRuntime.provision probes for this
+// marker (the unexported inGuestEgressArmer, agent.go) and skips its host-side
+// armEgress exec — which on this backend would run capability-less and fail.
+// Deliberately NOT a verb on the frozen ContainerRuntime interface (podman.go).
+func (m *MicroVMRuntime) EgressArmedInGuest() bool { return true }
+
 // awaitHealthy polls the guest's Health until it reports net_provisioned &&
 // workspace_mounted (the V2a fail-closed readiness proof) within the boot
 // deadline, then verifies the echoed boot_nonce equals the minted nonce before
 // returning — a mismatch is an error (§(e) identity binding). The deadline
 // derives from ctx when it carries one, else bootDeadline.
-func (m *MicroVMRuntime) awaitHealthy(ctx context.Context, vm *microvm.VM, nonce []byte) error {
+func (m *MicroVMRuntime) awaitHealthy(ctx context.Context, vm guestVM, nonce []byte) error {
 	pollCtx, cancel := bootPollContext(ctx)
 	defer cancel()
 

@@ -74,15 +74,24 @@ type MicroVMRuntime struct {
 	// this map for a matching spec.Name — a scan is cheap at one-VM-per-session
 	// scale and keeps a single source of truth.
 	sessions map[ContainerID]*microvmSession
+	// launchFunc boots a session guest behind the guestVM seam; newGuestClient
+	// dials the guest control plane. Both default to the real microvm
+	// implementations (installSeamDefaults, //go:build unix) and are overridden
+	// in hermetic Start tests so no real VMM boots and no real vsock is dialed
+	// (design §W2 seams, mirroring the supervisor's newCredential seam).
+	launchFunc     guestLaunchFunc
+	newGuestClient guestClientFunc
 }
 
 // NewMicroVMRuntime builds a MicroVMRuntime from the supplied config, mirroring
 // NewPodmanCLI's shape, with an empty session table ready for Create.
 func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
-	return &MicroVMRuntime{
+	m := &MicroVMRuntime{
 		config:   cfg,
 		sessions: make(map[ContainerID]*microvmSession),
 	}
+	m.installSeamDefaults()
+	return m
 }
 
 // SelectBackend chooses the container runtime backend from cfg. An empty or
