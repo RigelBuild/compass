@@ -147,7 +147,7 @@ read-only route, not under `/webhooks`.
 
 ## Ledger-impact
 
-Ledger-impact: adds DL-299 to `docs/designs/DECISIONS.md` under the "Linear
+Ledger-impact: adds DL-302 to `docs/designs/DECISIONS.md` under the "Linear
 agent responder" section. DL-254 does NOT flip: its status cell stays `Active`
 and its frozen Decision-cell prose is untouched (rows are append-only,
 `tools/design-ledger-gate/index.ts:25-27`) — this amendment is its amending
