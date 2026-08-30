@@ -7,7 +7,10 @@ package guestd
 // the handshake without a valid non-zero vsock port, so every malformed cmdline
 // is an error and only a well-formed compass.vsock_port=<n> yields a port.
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
 func TestParseVsockPort(t *testing.T) {
 	tests := []struct {
@@ -103,6 +106,72 @@ func TestParseVsockPort(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("parseVsockPort(%q) = %d, want %d", tt.cmdline, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseBootNonce defends the boot-nonce contract (§(e)): the nonce is
+// OPTIONAL hardening, so an absent key is (nil, nil) and Health still answers;
+// a present key must be valid hex; an empty or non-hex value is a malformed
+// boot config and fail-closes.
+func TestParseBootNonce(t *testing.T) {
+	tests := []struct {
+		name    string
+		cmdline string
+		want    []byte
+		wantErr bool
+	}{
+		{
+			name:    "absent key echoes empty nonce",
+			cmdline: "console=ttyS0 compass.vsock_port=1024",
+			want:    nil,
+		},
+		{
+			name:    "valid hex nonce",
+			cmdline: "compass.vsock_port=1024 compass.boot_nonce=deadbeef",
+			want:    []byte{0xde, 0xad, 0xbe, 0xef},
+		},
+		{
+			name:    "trailing newline as /proc/cmdline yields",
+			cmdline: "compass.boot_nonce=00ff\n",
+			want:    []byte{0x00, 0xff},
+		},
+		{
+			name:    "last occurrence wins",
+			cmdline: "compass.boot_nonce=aa compass.boot_nonce=bb",
+			want:    []byte{0xbb},
+		},
+		{
+			name:    "empty value is an error",
+			cmdline: "compass.boot_nonce=",
+			wantErr: true,
+		},
+		{
+			name:    "non-hex value is an error",
+			cmdline: "compass.boot_nonce=zzzz",
+			wantErr: true,
+		},
+		{
+			name:    "odd-length hex is an error",
+			cmdline: "compass.boot_nonce=abc",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseBootNonce(tt.cmdline)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseBootNonce(%q) = %x, nil; want error", tt.cmdline, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseBootNonce(%q) unexpected error: %v", tt.cmdline, err)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("parseBootNonce(%q) = %x, want %x", tt.cmdline, got, tt.want)
 			}
 		})
 	}

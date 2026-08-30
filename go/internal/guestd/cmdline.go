@@ -3,6 +3,7 @@
 package guestd
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -57,4 +58,43 @@ func parseVsockPort(procCmdline string) (uint32, error) {
 		return 0, fmt.Errorf("kernel cmdline %s=%q is reserved (VMADDR_PORT_ANY)", vsockPortKey, raw)
 	}
 	return uint32(n), nil
+}
+
+// bootNonceKey is the kernel-cmdline parameter carrying the per-session boot
+// nonce (§(e)) — a random hex value the host generates per session, passes on
+// the cmdline beside compass.vsock_port, and expects guestd to echo in
+// HealthResponse.boot_nonce. It binds the guest answering the handshake to THIS
+// BootConfig (a liveness/identity check against a stale VMM on a recycled
+// socket), not an authentication secret. It is OPTIONAL: a V2a-style cmdline
+// carries no nonce, so an absent key echoes an empty nonce and Health still
+// answers. A present-but-malformed value is a boot-config bug and fail-closes.
+const bootNonceKey = "compass.boot_nonce"
+
+// parseBootNonce extracts compass.boot_nonce=<hex> from a /proc/cmdline string,
+// following the same last-occurrence-wins tokenisation as parseVsockPort. A
+// missing key returns (nil, nil) — the nonce is optional hardening, not a
+// fail-closed boot parameter. A present key with an empty or non-hex value is a
+// malformed boot config and returns an error.
+func parseBootNonce(procCmdline string) ([]byte, error) {
+	raw := ""
+	found := false
+	for tok := range strings.FieldsSeq(procCmdline) {
+		key, val, ok := strings.Cut(tok, "=")
+		if !ok || key != bootNonceKey {
+			continue
+		}
+		raw = val
+		found = true
+	}
+	if !found {
+		return nil, nil
+	}
+	if raw == "" {
+		return nil, fmt.Errorf("kernel cmdline %s has an empty value", bootNonceKey)
+	}
+	nonce, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("kernel cmdline %s=%q is not valid hex: %w", bootNonceKey, raw, err)
+	}
+	return nonce, nil
 }
