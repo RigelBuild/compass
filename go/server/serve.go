@@ -150,6 +150,13 @@ type ForgeConfig struct {
 	// (F1). The agent forge-WRITE path is enabled iff BOTH this and SecretName
 	// resolve to a declared secret (Matt's 2026-08-19 ruling).
 	ReviewerSecretName string
+	// LinearWebhookSecretName is the declared server_only secret NAME holding
+	// the Linear webhook signing secret the shared POST /webhooks ingress
+	// verifies deliveries against (the VALUE never crosses config or a flag).
+	// The Linear data-change arm runs iff this resolves to a declared secret —
+	// INDEPENDENT of the GitHub App gate (a deployment can run Linear
+	// notifications without a GitHub App and vice versa).
+	LinearWebhookSecretName string
 }
 
 // ForgeAppConfig is the GitHub App credential the board webhook-ingestion lane
@@ -729,6 +736,22 @@ func buildDoors(
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
+	// The Linear webhook ingress (RIG-2732 T7d / RIG-2717): a shared
+	// POST /webhooks/linear handler (DL-302) built iff the Linear webhook secret
+	// is declared — an App-INDEPENDENT gate (a deployment can run Linear
+	// notifications without a GitHub App). Its data-change arm's sink is
+	// injected-and-nil-for-now (DL-302): feeding the GitHub-coordinate fanout
+	// would mis-route Linear events, so the data branch acks-and-drops until a
+	// Linear-provider-bound notify lane injects a real sink. Its session arm is
+	// left unwired (nil sessionSink -> logged-drop) until the RIG-2717 responder
+	// assembly wires a *linearagent.Dispatcher here. Built here (not gated on the
+	// net door) so a resolve fault fail-fasts startup regardless of --listen; the
+	// handler is mounted only on the net door below, when one exists.
+	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, resolver, nil, slog.Default())
+	if err != nil {
+		return serveDoors{}, err
+	}
+
 	// Authenticated network door, built only when --listen is given. It mints and
 	// writes the bootstrap token 0600 under the state dir (so a socket-only start
 	// leaves none behind) and mounts the CompassService + CommsService behind the
@@ -739,7 +762,7 @@ func buildDoors(
 	// error the listeners this Serve bound are still ours to close.
 	var netServer *http.Server
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver, otelIC, webhookSink, webhookSecret)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver, otelIC, webhookSink, webhookSecret, linearWebhookHandler)
 		if err != nil {
 			return serveDoors{}, err
 		}
@@ -898,6 +921,49 @@ func buildBoardWebhookWiring(
 	sink := &fanoutSink{sinks: sinks}
 	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
 	return lane, notifyLane, sink, secret, nil
+}
+
+// buildLinearWebhookWiring builds the shared Linear POST /webhooks/linear
+// handler (DL-302) when the Linear webhook secret is declared — an
+// App-INDEPENDENT gate (a deployment can run Linear notifications without a
+// GitHub App, so this does NOT check boardIngestionEnabled). When the secret is
+// undeclared it returns a nil handler and buildNetworkServer mounts no
+// /webhooks/linear route. A resolve FAULT fails startup (the same fail-fast as
+// forgeSecretDeclared); an absent name is the clean off-state, not an error.
+//
+// dataSink is the data-change arm's sink, injected-and-nil-for-now by driver
+// decision (DL-302): feeding the GitHub-coordinate notify+board fanoutSink would
+// mis-route Linear events (Linear subs looked up under a GitHub coordinate), so
+// the handler's data branch acks-and-drops on a nil sink until a
+// Linear-provider-bound notify lane injects a real sink here. The session arm is
+// left unwired (nil sessionSink -> the handler logs-and-drops session events
+// with a 200): the RIG-2717 responder assembly, a separate in-flight lane, wires
+// a real *linearagent.Dispatcher once it assembles one in Serve. The secret is
+// TTL-cached (newCachedWebhookSecret): /webhooks/linear is an internet-facing,
+// unauthenticated endpoint whose secret is resolved on EVERY request BEFORE the
+// HMAC check, so an uncached resolve would let a garbage POST force a full
+// secretspec Load ahead of authentication.
+func buildLinearWebhookWiring(
+	ctx context.Context,
+	cfg ServeConfig,
+	resolver secrets.Resolver,
+	dataSink ForgeEventSink,
+	log *slog.Logger,
+) (http.Handler, error) {
+	name := cfg.Forge.LinearWebhookSecretName
+	if name == "" {
+		return nil, nil //nolint:nilnil // undeclared secret is a valid off-state: a nil handler is the signal buildNetworkServer guards on, not an ambiguous nil-nil.
+	}
+	declared, err := forgeSecretDeclared(ctx, resolver, name)
+	if err != nil {
+		return nil, err
+	}
+	if !declared {
+		return nil, nil //nolint:nilnil // a set-but-undeclared name is the operator's off-state; the write path's forgeSecretDeclared treats an absent optional name the same way.
+	}
+	secret := newCachedWebhookSecret(resolver, name)
+	_, handler := NewLinearWebhookHandler(secret, dataSink, nil, log)
+	return handler, nil
 }
 
 // buildBoardIngestLane assembles the App-only board webhook-ingestion lane

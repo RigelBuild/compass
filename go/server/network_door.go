@@ -246,6 +246,7 @@ func buildNetworkServer(
 	otelIC *otelconnect.Interceptor,
 	webhookSink ForgeEventSink,
 	webhookSecret func(ctx context.Context) ([]byte, error),
+	linearWebhookHandler http.Handler,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -322,6 +323,17 @@ func buildNetworkServer(
 	if webhookSink != nil {
 		webhookPath, webhookHandler := NewGitHubWebhookHandler(webhookSecret, webhookSink, slog.Default())
 		netMux.Handle(webhookPath, webhookHandler)
+	}
+
+	// The internet-facing Linear webhook ingress (RIG-2732 T7d / RIG-2717),
+	// mounted only when the Linear webhook secret is declared
+	// (linearWebhookHandler != nil) — an App-INDEPENDENT gate. Like the GitHub
+	// ingress it sits OUTSIDE the bearer + admin-gate interceptors: Linear signs
+	// each delivery with the webhook secret (Linear-Signature), not a bearer
+	// token, so the handler's own VerifySignature is its whole authentication. It
+	// inherits withBodyReadDeadline + ReadHeaderTimeout for free (same mux).
+	if linearWebhookHandler != nil {
+		netMux.Handle(linearWebhookPath, linearWebhookHandler)
 	}
 	var netRoot http.Handler = netMux
 	if cfg.CORSAllowedOrigin != "" {
