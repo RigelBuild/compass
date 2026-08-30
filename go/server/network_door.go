@@ -244,6 +244,8 @@ func buildNetworkServer(
 	netTLS *tls.Config,
 	resolver secrets.Resolver,
 	otelIC *otelconnect.Interceptor,
+	webhookSink ForgeEventSink,
+	webhookSecret func(ctx context.Context) ([]byte, error),
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -309,6 +311,18 @@ func buildNetworkServer(
 	// model provider, no skills — even with a bundle published to the store.
 	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st)
 	netMux.Handle(runnerPath, runnerHandler)
+
+	// The internet-facing GitHub App webhook ingress (RIG-2883 T5, OQ-7), mounted
+	// only when the board lane is on (webhookSink != nil). It sits on the TLS
+	// network door (a Runner/GitHub reaches the server over TLS, never the
+	// loopback socket) and OUTSIDE the bearer + admin-gate interceptors: GitHub
+	// signs each delivery with the webhook secret, not a bearer token, so the
+	// handler's own VerifyGitHubSignature is its whole authentication. The
+	// withBodyReadDeadline wrapper below still applies (it wraps the whole mux).
+	if webhookSink != nil {
+		webhookPath, webhookHandler := NewGitHubWebhookHandler(webhookSecret, webhookSink, slog.Default())
+		netMux.Handle(webhookPath, webhookHandler)
+	}
 	var netRoot http.Handler = netMux
 	if cfg.CORSAllowedOrigin != "" {
 		// Network door defaults closed: CORS only for the one explicit

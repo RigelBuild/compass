@@ -105,10 +105,11 @@ type ServeConfig struct {
 	// consumes Linear webhooks needs it non-empty, enforced by deepLinkFor's
 	// boot guard where the responder is assembled.
 	PublicURL string
-	// Forge is the board-ingestion poll driver config (SEA-1810). All-optional
-	// exactly like S3: forge polling disabled (empty SeedRepos, Poll false)
-	// leaves the driver off — today's behavior, zero new requirements on
-	// existing deployments. See ForgeConfig and forgePollingEnabled.
+	// Forge is the board webhook-ingestion lane + forge-write config (RIG-2883).
+	// All-optional exactly like S3: board ingestion is off (no GitHub App) and
+	// writes are off (no write secrets) unless the operator opts in — today's
+	// behavior, zero new requirements on existing deployments. See ForgeConfig,
+	// boardIngestionEnabled, and forgeWritesEnabled.
 	Forge ForgeConfig
 	// OtelEndpoint is the OTLP collector endpoint (OTEL_EXPORTER_OTLP_ENDPOINT);
 	// empty = tracing off. It gates OTel emission on both binaries: when unset,
@@ -117,12 +118,13 @@ type ServeConfig struct {
 	OtelEndpoint string
 }
 
-// ForgeConfig configures the board-ingestion poll driver (SEA-1810, DL-053).
-// All-optional: polling is disabled (empty SeedRepos and Poll false) unless the
-// operator opts in, leaving the driver off (today's behavior). The 0016 tables
-// exist but sit empty — a migration is not a behavior change.
+// ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
+// agent forge-WRITE path. All-optional: the board lane is off (no App config)
+// and writes are off (no write secrets) unless the operator opts in, leaving
+// today's behavior. The forge tables exist but sit empty — a migration is not a
+// behavior change.
 type ForgeConfig struct {
-	// Host is the forge host the driver binds (default "github.com"); the API
+	// Host is the forge host the lane binds (default "github.com"); the API
 	// base URL derives from it. Seed rows and the live target set are keyed
 	// under this host, so changing it between boots abandons (does not migrate)
 	// the prior host's rows.
@@ -132,9 +134,11 @@ type ForgeConfig struct {
 	// lowercased for GITHUB) — a declarative SEED, not the live target set. The
 	// live target set is always the table (WHERE enabled, read per pass).
 	SeedRepos []string
-	// Poll runs the driver even with an empty seed (targets already in the
-	// table). Polling is enabled iff Poll || len(SeedRepos) > 0.
-	Poll bool
+	// App is the GitHub App credential the board webhook lane runs on
+	// (RIG-2883, App-only cutover). The lane runs iff App.AppID != 0 AND both
+	// App secrets are declared; otherwise board ingestion is hard-off with a
+	// boot Warn. No PAT fallback on the read path (Constraint #3).
+	App ForgeAppConfig
 	// SecretName is the declared server_only secret NAME holding the forge token
 	// (default "GITHUB_FORGE_TOKEN"; the VALUE never crosses config or a flag).
 	SecretName string
@@ -143,11 +147,29 @@ type ForgeConfig struct {
 	// never crosses config or a flag). A distinct GitHub identity from the
 	// author token so an agent approving a PR it authored is a different account
 	// (F1). The agent forge-WRITE path is enabled iff BOTH this and SecretName
-	// resolve to a declared secret (Matt's 2026-08-19 ruling); it is independent
-	// of the poll driver's forgePollingEnabled gate.
+	// resolve to a declared secret (Matt's 2026-08-19 ruling).
 	ReviewerSecretName string
-	// PollInterval is the poll cadence (default time.Minute).
-	PollInterval time.Duration
+}
+
+// ForgeAppConfig is the GitHub App credential the board webhook-ingestion lane
+// runs on (RIG-2883, frozen surface at
+// docs/designs/product/compass-forge-agent-notification/design.md:1035-1048).
+// The lane runs iff AppID != 0 AND both AppPrivateKeySecret and
+// AppWebhookSecretName are declared (mirrors validateForgeSecret's fail-fast);
+// no App -> board ingestion hard-off with a boot Warn (Constraint #3).
+type ForgeAppConfig struct {
+	// AppID is the GitHub App id (numeric). Zero means the board lane is off.
+	AppID int64
+	// InstallationID is the App installation id the token is minted for.
+	InstallationID int64
+	// AppPrivateKeySecret is the declared server_only secret NAME holding the
+	// App PEM private key (the VALUE never crosses config or a flag).
+	AppPrivateKeySecret string
+	// AppWebhookSecretName is the declared server_only secret NAME holding the
+	// webhook signing secret the ingress verifies deliveries against.
+	AppWebhookSecretName string
+	// ReconcileBackstop is the board reconciler's sweep cadence (default 30m).
+	ReconcileBackstop time.Duration
 }
 
 // Forge config defaults, applied by resolveForge when a field is zero.
@@ -163,7 +185,10 @@ const (
 	// when this secret is declared; otherwise the write path is GitHub-only. A
 	// secret NAME, not a value.
 	defaultForgeLinearSecretName = "LINEAR_FORGE_TOKEN" //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
-	defaultForgePollInterval     = time.Minute
+	// defaultReconcileBackstop is the board reconciler's default sweep cadence
+	// (OQ-5): startup sweep + a 30-min ticker (a 304 page-1 GET per enabled repo
+	// is ≈ free, notify_reader.go:12-13; a cold-start zero watermark walks once).
+	defaultReconcileBackstop = 30 * time.Minute
 	// forgeTokenTTL is the TTL the driver's TokenSource caches a resolved token
 	// for: a resolve reads the whole declared-secret registry, writes a manifest
 	// temp file, and drives a full secretspec provider Load (resolver.go:135-165),
@@ -174,15 +199,17 @@ const (
 	forgeTokenTTL = 5 * time.Minute
 )
 
-// forgePollingEnabled reports whether the forge poll driver runs: iff --forge-poll
-// is set OR the seed list is non-empty (design §T4). Only then are the driver,
-// the startup secret resolve, and the seed reconcile built.
-func (c ForgeConfig) forgePollingEnabled() bool {
-	return c.Poll || len(c.SeedRepos) > 0
+// boardIngestionEnabled reports whether the board webhook lane runs: iff the
+// GitHub App is configured (AppID != 0). The two App secrets are additionally
+// required and fail fast in buildBoardIngestLane; this predicate is the cheap
+// AppID gate the caller checks before resolving anything (Constraint #3).
+func (c ForgeConfig) boardIngestionEnabled() bool {
+	return c.App.AppID != 0
 }
 
 // resolved returns the config with its zero fields defaulted (Host, SecretName,
-// ReviewerSecretName, PollInterval). SeedRepos and Poll are taken verbatim.
+// ReviewerSecretName, App.ReconcileBackstop). SeedRepos and App ids are taken
+// verbatim.
 func (c ForgeConfig) resolved() ForgeConfig {
 	if c.Host == "" {
 		c.Host = defaultForgeHost
@@ -193,8 +220,8 @@ func (c ForgeConfig) resolved() ForgeConfig {
 	if c.ReviewerSecretName == "" {
 		c.ReviewerSecretName = defaultForgeReviewerSecretName
 	}
-	if c.PollInterval <= 0 {
-		c.PollInterval = defaultForgePollInterval
+	if c.App.ReconcileBackstop <= 0 {
+		c.App.ReconcileBackstop = defaultReconcileBackstop
 	}
 	return c
 }
@@ -202,7 +229,7 @@ func (c ForgeConfig) resolved() ForgeConfig {
 // forgeWritesEnabled reports whether the agent forge-WRITE path is enabled: iff
 // BOTH the author secret (SecretName) and the reviewer secret
 // (ReviewerSecretName) resolve to a name present in declared (Matt's 2026-08-19
-// ruling — independent of forgePollingEnabled, both secrets required). It is a
+// ruling — independent of boardIngestionEnabled, both secrets required). It is a
 // pure predicate over the resolved declared-secret set so the "enabled = both
 // declared" rule is unit-testable without a running Serve; buildForgeWriteService
 // re-validates each name through validateForgeSecret to fail fast with the two
@@ -508,28 +535,31 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// notifies live sessions to re-fetch); it shares the one resolver with FetchSecrets.
 	secretsSvc := newSecretsService(st, resolver, hub)
 
-	// Assemble the three compass.v1 doors (shipped Unix socket, optional dev
-	// loopback, optional authenticated network). On a net-door build error the
-	// listeners this Serve bound are still ours to close.
-	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver,
-		devListener, netListener, netTLS)
+	// The board webhook-ingestion lane (RIG-2883) and its webhook ingress wiring,
+	// built BEFORE the doors because the network door mounts the lane's webhook
+	// ingress (sink + secret resolver, threaded into buildDoors). Fails fast HERE
+	// on the same udsListener.Close()+listeners.close() cleanup path the Rehydrate
+	// fault above uses. Both returns are nil when the App is absent.
+	lane, webhookSink, webhookSecret, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, resolver, hubLog)
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()
 		return err
 	}
 
-	// The board-ingestion poll driver (SEA-1810, DL-053) and the agent forge-WRITE
-	// path (T8) are the two forge startup phases; see wireForgePollDriver and
-	// wireForgeWriteCaller. Both fail fast HERE, on the same udsListener.Close()+
-	// listeners.close() cleanup path the Rehydrate fault above uses.
-	forgeDriver, err := wireForgePollDriver(ctx, cfg, st, issueBrd, resolver, hubLog, udsListener, listeners)
+	// Assemble the three compass.v1 doors (shipped Unix socket, optional dev
+	// loopback, optional authenticated network). On a net-door build error the
+	// listeners this Serve bound are still ours to close.
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver,
+		devListener, netListener, netTLS, webhookSink, webhookSecret)
 	if err != nil {
+		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+		listeners.close()
 		return err
 	}
 
-	// The forge-WRITE caller is independent of the poll driver (Matt's 2026-08-19
-	// ruling): enabled iff BOTH write secrets are declared.
+	// The forge-WRITE caller is independent of the board ingest lane (Matt's
+	// 2026-08-19 ruling): enabled iff BOTH write secrets are declared.
 	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, resolver, hub, hubLog, udsListener, listeners); err != nil {
 		return err
 	}
@@ -554,12 +584,14 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return classifyServe(doors.net.ServeTLS(netListener, "", ""), "compass.v1 network door")
 		})
 	}
-	// The forge poll driver (SEA-1810), one more member of the same scoped group
-	// so it inherits exactly the doors' lifecycle: cancelled on SIGINT/SIGTERM
-	// via gctx, first-error-wins, drained with everything else. nil when forge
-	// polling is disabled. Run returns nil on ctx-cancel (clean shutdown).
-	if forgeDriver != nil {
-		g.Go(func() error { return forgeDriver.Run(gctx) })
+	// The board webhook-ingestion lane (RIG-2883): the T1 webhook arm's drain
+	// and the T3 reconciler sweep, two more members of the same scoped group so
+	// they inherit exactly the doors' lifecycle — cancelled on SIGINT/SIGTERM
+	// via gctx, first-error-wins, drained with everything else. nil when the
+	// GitHub App is absent. Both Runs return nil on ctx-cancel (clean shutdown).
+	if lane != nil {
+		g.Go(func() error { return lane.arm.Run(gctx) })
+		g.Go(func() error { return lane.reconciler.Run(gctx) })
 	}
 	// The comms-bus consumers (SEA-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
@@ -617,6 +649,8 @@ func buildDoors(
 	devListener net.Listener,
 	netListener net.Listener,
 	netTLS *tls.Config,
+	webhookSink ForgeEventSink,
+	webhookSecret func(ctx context.Context) ([]byte, error),
 ) (serveDoors, error) {
 	// otelconnect produces the server RPC span (and, once a MeterProvider is
 	// installed, RPC duration/count metrics); NewTraceResponseInterceptor stamps
@@ -698,11 +732,13 @@ func buildDoors(
 	// writes the bootstrap token 0600 under the state dir (so a socket-only start
 	// leaves none behind) and mounts the CompassService + CommsService behind the
 	// bearer + admin-gate interceptors, plus the internal RunnerService door a
-	// Runner enrolls over (Runner-subject bearer, separate from the account door).
-	// On a build error the listeners this Serve bound are still ours to close.
+	// Runner enrolls over (Runner-subject bearer, separate from the account door)
+	// and — when the board lane is on (webhookSink != nil) — the internet-facing
+	// POST /webhooks/github ingress OUTSIDE the bearer/admin gate. On a build
+	// error the listeners this Serve bound are still ours to close.
 	var netServer *http.Server
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver, otelIC)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver, otelIC, webhookSink, webhookSecret)
 		if err != nil {
 			return serveDoors{}, err
 		}
@@ -807,90 +843,237 @@ func classifyServe(err error, ctx string) error {
 	return fmt.Errorf("%s terminated with an error: %w", ctx, err)
 }
 
-// buildForgeDriver wires the SEA-1810 board-ingestion poll driver into boot. The
-// caller builds it ONLY when forge polling is enabled (the disabled path — one
-// Warn if enabled rows exist — is handled in Serve), so this always returns a
-// live driver or a startup error. In order it: (1) resolves the forge secret
-// ONCE at startup so a misconfiguration fails fast (two distinct error texts —
-// undeclared name vs a resolve that errors), (2) reconciles the seed repos into
-// forge_repo_subscriptions (bootstrap-only insert, ON CONFLICT DO NOTHING,
-// lowercased for GITHUB) so the seed rows are visible BEFORE the first pass,
-// then (3) assembles the GitHub client (over a TTL-caching TokenSource), the
-// Ingester (sharing issueBrd), the poll-store adapter, and the driver. The
-// returned driver's Run is added to the serve errgroup by the caller.
-func buildForgeDriver(
+// boardIngestLane is the assembled board webhook-ingestion lane (RIG-2883): the
+// T1 webhook arm (whose Run drains the ingress queue and whose Enqueue is the
+// accepted-event sink) and the T3 reconciler (whose Run sweeps the backstop).
+// The caller composes sink into the ingress fanoutSink and adds arm.Run +
+// reconciler.Run to the serve errgroup.
+type boardIngestLane struct {
+	arm        *ingest.BoardWebhookArm
+	reconciler *ingest.BoardReconciler
+	sink       ForgeEventSink // the arm; the ingress fan-out registers it
+}
+
+// buildBoardWebhookWiring builds the board ingest lane and derives the network
+// door's webhook ingress wiring from it: the lane itself (whose arm + reconciler
+// Serve starts under the door errgroup), the fan-out sink each accepted delivery
+// is enqueued onto, and the lazy resolver for the delivery-signing secret. When
+// the App is absent the lane is nil — board ingestion is hard-off, so it Warns
+// when enabled subscription rows exist and returns all-nil, which the network
+// door reads as "mount no ingress". A lane-build fault (a configured App with a
+// missing secret) is returned so Serve fails fast on its cleanup path. The
+// fanoutSink carries only the board arm this slice; the notify arm composes in
+// later (T7) without changing this seam.
+func buildBoardWebhookWiring(
 	ctx context.Context,
 	cfg ServeConfig,
 	st *store.Store,
 	issueBrd *board.IssueProjection,
 	resolver secrets.Resolver,
 	log *slog.Logger,
-) (*ingest.Driver, error) {
+) (*boardIngestLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), error) {
+	rc := cfg.Forge.resolved()
+	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, resolver, log)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if lane == nil {
+		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, rc.Host, log)
+		return nil, nil, nil, nil
+	}
+	sink := &fanoutSink{sinks: []ForgeEventSink{lane.sink}}
+	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
+	return lane, sink, secret, nil
+}
+
+// buildBoardIngestLane assembles the App-only board webhook-ingestion lane
+// (RIG-2883 T5). It runs iff the GitHub App is configured (AppID != 0) AND both
+// App secrets — the PEM private key and the webhook signing secret — are
+// declared (Constraint #3, mirroring validateForgeSecret's fail-fast); a
+// configured App with a missing secret is a startup error (a likely operator
+// typo), while an unconfigured App returns (nil, nil) and the caller Warns via
+// warnDisabledBoardIngestion when enabled subscription rows exist.
+//
+// In order it: (1) gates on AppID and validates both App secrets ONCE at
+// startup so a misconfig fails fast; (2) reconciles the seed repos into
+// forge_repo_subscriptions (bootstrap-only insert, ON CONFLICT DO NOTHING,
+// lowercased for GITHUB) so the target rows are visible before the first sweep;
+// (3) assembles the App TokenSource -> ONE shared forge.GitHub client (the
+// hydrator + the updated-order lister) -> the Ingester (sharing issueBrd) ->
+// the T1 webhook arm (over the store's IsEnabledForgeRepo target check) and the
+// T3 reconciler (over the store's enabled-repo + watermark seam). Both ingest
+// seams are adapted onto *store.Store binding (provider, host) — the ingest
+// package owns no store type, so go/server supplies these thin adapters.
+func buildBoardIngestLane(
+	ctx context.Context,
+	cfg ServeConfig,
+	st *store.Store,
+	issueBrd *board.IssueProjection,
+	resolver secrets.Resolver,
+	log *slog.Logger,
+) (*boardIngestLane, error) {
+	if !cfg.Forge.boardIngestionEnabled() {
+		return nil, nil //nolint:nilnil // App absent is a valid non-error state: a nil lane is the signal (the caller guards `if lane != nil` and Warns), not an ambiguous nil-nil — a sentinel error would force the caller to distinguish it from a real fault.
+	}
 	fc := cfg.Forge.resolved()
-	// The board driver ships a GitHub client only this slice (Global
-	// Constraints); the bound provider is GITHUB.
+	// The board lane ships a GitHub client only this slice (Global Constraints);
+	// the bound provider is GITHUB.
 	const provider = store.ForgeProviderGitHub
 
-	// (1) Startup secret resolve: fail fast with distinct texts so a permanent
-	// misconfig (undeclared name) is not confused with a transient outage (a
-	// resolve that errors). The TokenSource re-resolves later on TTL/Invalidate.
-	if err := validateForgeSecret(ctx, resolver, "forge poll", fc.SecretName); err != nil {
+	// (1) Validate both App secrets ONCE at startup so a configured App with a
+	// missing secret fails fast (distinct texts via validateForgeSecret).
+	if err := validateForgeSecret(ctx, resolver, "board webhook app key", fc.App.AppPrivateKeySecret); err != nil {
+		return nil, err
+	}
+	if err := validateForgeSecret(ctx, resolver, "board webhook secret", fc.App.AppWebhookSecretName); err != nil {
 		return nil, err
 	}
 
-	// (2) Seed reconcile BEFORE the first pass: each seed repo lowercased (for
+	// (2) Seed reconcile BEFORE the first sweep: each seed repo lowercased (for
 	// GITHUB) and inserted enabled under ON CONFLICT DO NOTHING — additive, never
 	// destructive, never re-enabling. Bad repo format fails startup.
 	if err := reconcileForgeSeed(ctx, st, provider, fc.Host, cfg.Forge.SeedRepos); err != nil {
 		return nil, err
 	}
 
-	// (3) Assemble the pipeline: a TTL-caching TokenSource over the resolver, the
-	// GitHub client, the Ingester (sharing the existing issue projection), the
-	// poll-store adapter binding (provider, host), and the driver.
-	tok := newForgeTokenSource(resolver, fc.SecretName)
+	// (3) Assemble the pipeline: the App TokenSource, the shared GitHub client,
+	// the Ingester (sharing the existing issue projection), and the two arms over
+	// store adapters binding (provider, host).
+	tok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+		AppID:          fc.App.AppID,
+		InstallationID: fc.App.InstallationID,
+		PrivateKey:     newDeclaredSecretResolver(resolver, fc.App.AppPrivateKeySecret),
+		Host:           fc.Host,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("board webhook app token source: %w", err)
+	}
 	client := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: tok})
 	ing := ingest.NewIngester(client, issueBrd, &compassv1.ForgeRef{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 		Host:     fc.Host,
 	})
-	adapter := &forgePollStore{st: st, provider: provider, host: fc.Host}
-	return ingest.NewDriver(client, ing, adapter, ingest.DriverConfig{
-		Interval: fc.PollInterval,
+	arm := ingest.NewBoardWebhookArm(client, ing, &boardTargetStore{st: st}, ingest.BoardArmConfig{Log: log})
+	reconciler := ingest.NewBoardReconciler(client, ing, &boardReconcileStore{st: st, provider: provider, host: fc.Host}, ingest.BoardReconcileConfig{
+		Backstop: fc.App.ReconcileBackstop,
 		Log:      log,
-	}), nil
+	})
+	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm}, nil
 }
 
-// wireForgePollDriver builds the board-ingestion poll driver (SEA-1810, DL-053)
-// when forge polling is enabled (Poll || a non-empty seed), else returns a nil
-// driver after emitting one Warn if the table already holds enabled rows for the
-// bound (provider, host). Its startup secret resolve and seed reconcile fail
-// fast, unwinding the caller-bound listeners (udsListener + listeners) before
-// returning — the same teardown path the write caller and Rehydrate faults use.
-// The seed rows are visible in the table BEFORE the driver's first pass (the
-// driver enumerates WHERE enabled per pass); the returned driver's Run is added
-// to the serve errgroup by the caller.
-func wireForgePollDriver(
-	ctx context.Context,
-	cfg ServeConfig,
-	st *store.Store,
-	issueBrd *board.IssueProjection,
-	resolver secrets.Resolver,
-	log *slog.Logger,
-	udsListener net.Listener,
-	listeners boundListeners,
-) (*ingest.Driver, error) {
-	if !cfg.Forge.forgePollingEnabled() {
-		warnDisabledForgePolling(ctx, st, store.ForgeProviderGitHub, cfg.Forge.resolved().Host, log)
-		return nil, nil //nolint:nilnil // polling disabled is a valid non-error state: a nil driver is the signal (the caller guards `if forgeDriver != nil`), not an ambiguous nil-nil — a sentinel error would force the caller to distinguish it from a real fault.
+// boardTargetStore adapts *store.Store to ingest.TargetChecker: the point
+// membership check the webhook arm gates each event on. IsEnabledForgeRepo is
+// repo-only keyed (unambiguous in a github.com-only deployment), so this adapter
+// binds no coordinate — it delegates directly.
+type boardTargetStore struct {
+	st *store.Store
+}
+
+// IsEnabledRepo reports whether an enabled subscription exists for repo.
+func (a *boardTargetStore) IsEnabledRepo(ctx context.Context, repo string) (bool, error) {
+	return a.st.IsEnabledForgeRepo(ctx, repo)
+}
+
+// boardReconcileStore adapts *store.Store to ingest.BoardStore, binding the
+// forge coordinate half (provider, host) so the ingest-side seam stays
+// repo-keyed and this package holds the store dependency the ingest package's
+// no-store rule keeps out. ListEnabledRepos is repo-only keyed (the T4 seam),
+// so the bound coordinate is used only for the coordinate-keyed watermark
+// load/store.
+type boardReconcileStore struct {
+	st       *store.Store
+	provider store.ForgeProvider
+	host     string
+}
+
+// ListEnabledRepos returns every enabled target's repo across coordinates (the
+// reconciler's per-sweep target enumeration).
+func (a *boardReconcileStore) ListEnabledRepos(ctx context.Context) ([]string, error) {
+	return a.st.ListEnabledForgeRepos(ctx)
+}
+
+// LoadRepoWatermark returns the repo's swept-updated-at watermark + list ETag
+// for the bound coordinate (zero values on a never-swept repo).
+func (a *boardReconcileStore) LoadRepoWatermark(ctx context.Context, repo string) (time.Time, string, error) {
+	return a.st.LoadForgeRepoWatermark(ctx, a.provider, a.host, repo)
+}
+
+// StoreRepoWatermark persists the repo's watermark + ETag for the bound
+// coordinate after its rows sank (advance-after-sink).
+func (a *boardReconcileStore) StoreRepoWatermark(ctx context.Context, repo string, mark time.Time, etag string) error {
+	return a.st.StoreForgeRepoWatermark(ctx, a.provider, a.host, repo, mark, etag)
+}
+
+// newDeclaredSecretResolver returns a func that resolves the declared server_only
+// secret NAME to its raw value bytes on each call — the lazy PEM/webhook-secret
+// seam the App token source and the webhook ingress consume. A resolve fault or
+// an absent name is an error the caller surfaces (a per-mint auth failure for the
+// token source; a 503 for the ingress). It threads the caller's ctx into the
+// resolve, never re-rooting.
+func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	return func(ctx context.Context) ([]byte, error) {
+		resolved, err := resolver.Resolve(ctx, "board webhook")
+		if err != nil {
+			return nil, fmt.Errorf("board webhook secret resolve: %w", err)
+		}
+		for _, s := range resolved {
+			if s.Name == name {
+				return []byte(s.Value), nil
+			}
+		}
+		return nil, fmt.Errorf("board webhook secret %q not declared", name)
 	}
-	driver, err := buildForgeDriver(ctx, cfg, st, issueBrd, resolver, log)
+}
+
+// cachedWebhookSecret wraps newDeclaredSecretResolver in a TTL cache for the hot
+// path: the webhook-secret resolver is invoked on EVERY request to the
+// internet-facing, unauthenticated POST /webhooks/github, BEFORE the HMAC check
+// (github_webhook.go resolves the secret, then verifies the signature). An
+// uncached resolve there lets an attacker force one full secretspec provider
+// Load (registry read + manifest temp-file write + provider Load) per cheap
+// garbage POST — an asymmetric-cost amplification ahead of authentication. The
+// cache (same forgeTokenTTL and rotation semantics as forgeTokenSource) bounds
+// the per-request cost to a memcmp while a rotated signing secret still takes
+// effect within the TTL. A resolve fault is surfaced to the caller (a 503),
+// never cached. Unlike the App-key resolver (also newDeclaredSecretResolver but
+// cold — NewAppTokenSource caches the minted token and only reads the key on
+// mint), this one is on the request hot path, so it needs the cache.
+type cachedWebhookSecret struct {
+	base func(ctx context.Context) ([]byte, error)
+	ttl  time.Duration
+	now  func() time.Time
+
+	mu      sync.Mutex
+	value   []byte
+	expires time.Time
+	valid   bool
+}
+
+// newCachedWebhookSecret returns the door-consumable resolver method value over
+// a fresh cache with the default forgeTokenTTL and wall clock.
+func newCachedWebhookSecret(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	c := &cachedWebhookSecret{base: newDeclaredSecretResolver(resolver, name), ttl: forgeTokenTTL, now: time.Now}
+	return c.get
+}
+
+// get serves the cached secret while unexpired, else re-resolves through base. A
+// resolve fault drops validity and is returned (never cached), so the ingress
+// fails closed with a 503 and the next request retries.
+func (c *cachedWebhookSecret) get(ctx context.Context) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.valid && c.now().Before(c.expires) {
+		return c.value, nil
+	}
+	resolved, err := c.base(ctx)
 	if err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
+		c.valid = false
 		return nil, err
 	}
-	return driver, nil
+	c.value = resolved
+	c.expires = c.now().Add(c.ttl)
+	c.valid = true
+	return c.value, nil
 }
 
 // validateForgeSecret resolves the declared secret set once and asserts the
@@ -953,12 +1136,12 @@ func wireForgeWriteCaller(
 }
 
 // buildForgeWriteService assembles the agent forge-WRITE chokepoint (the
-// runnerhub.ForgeCaller) per Matt's 2026-08-19 ruling: independent of the poll
-// driver, enabled iff BOTH forge write secrets are declared. In order it: (1)
+// runnerhub.ForgeCaller) per Matt's 2026-08-19 ruling: independent of the board
+// ingest lane, enabled iff BOTH forge write secrets are declared. In order it: (1)
 // validates BOTH the author and reviewer secrets ONCE at startup so a
 // misconfiguration fails fast with the two distinct texts (undeclared name vs a
-// resolve that errors, via validateForgeSecret — exactly buildForgeDriver's
-// fail-fast), (2) builds the provider registry, registering the GitHub
+// resolve that errors, via validateForgeSecret — the same fail-fast the board
+// lane's App-secret validation uses), (2) builds the provider registry, registering the GitHub
 // coordinate (author+reviewer, F1) and — when its secret is declared — a Linear
 // coordinate, and (3) returns the forgeService the caller mounts with
 // hub.SetForgeCaller. The caller gates the whole call on forgeWritesEnabled, so
@@ -1070,22 +1253,37 @@ func reconcileForgeSeed(ctx context.Context, st *store.Store, provider store.For
 	return nil
 }
 
-// warnDisabledForgePolling emits exactly one slog.Warn when polling is disabled
-// but the table already holds enabled rows for the bound (provider, host) — a
-// deployment that landed a manual row (or a prior --forge-repos) without the
-// flag. Never fail-fast: it keeps today's no-driver behavior. No Warn when no
+// warnDisabledBoardIngestion emits exactly one slog.Warn when the board webhook
+// lane is off (no GitHub App configured) but the table already holds enabled
+// subscription rows for the bound (provider, host) — a deployment that landed a
+// manual row (or a prior --forge-repos seed) without wiring the App. Never
+// fail-fast: it keeps board ingestion hard-off (Constraint #3). No Warn when no
 // enabled rows exist. The count covers ONLY the bound coordinate.
-func warnDisabledForgePolling(ctx context.Context, st *store.Store, provider store.ForgeProvider, host string, log *slog.Logger) {
+func warnDisabledBoardIngestion(ctx context.Context, st *store.Store, provider store.ForgeProvider, host string, log *slog.Logger) {
 	enabled, err := st.ListEnabledForgeRepoSubscriptions(ctx, provider, host)
 	if err != nil {
-		log.Error("forge poll: list enabled targets at boot", "err", err)
+		log.Error("board ingestion: list enabled targets at boot", "err", err)
 		return
 	}
 	if len(enabled) == 0 {
 		return
 	}
-	log.Warn("forge polling disabled but enabled targets exist; set --forge-poll",
+	log.Warn("board ingestion disabled (no GitHub App configured) but enabled targets exist; set --forge-app-id and the App secrets",
 		"targets", len(enabled), "forge_host", host)
+}
+
+// fanoutSink fans one accepted webhook event to every registered sink; it
+// satisfies server.ForgeEventSink (github_webhook.go:47). Board-first this is a
+// single-element fan-out over the board arm; the notify arm composes in later
+// via T7 through the one-line registration seam (OQ-7). Enqueue MUST NOT block:
+// it just forwards to each sink's non-blocking Enqueue, adding no blocking work.
+type fanoutSink struct{ sinks []ForgeEventSink }
+
+// Enqueue forwards the event to every registered sink.
+func (f *fanoutSink) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
+	for _, s := range f.sinks {
+		s.Enqueue(ctx, ev)
+	}
 }
 
 // warnPartialForgeWriteSecrets emits exactly one slog.Warn when the forge-WRITE
@@ -1093,7 +1291,7 @@ func warnDisabledForgePolling(ctx context.Context, st *store.Store, provider sto
 // declared — a likely operator typo in one of the two env-var NAMES, which
 // otherwise silently fails every agent forge write closed (CodeUnavailable)
 // with nothing in the startup log to explain it. The intentional both-absent
-// OFF state stays silent. Mirrors warnDisabledForgePolling: diagnostic only,
+// OFF state stays silent. Mirrors warnDisabledBoardIngestion: diagnostic only,
 // never fail-fast, and logs secret NAMES (env-var identifiers) never values.
 func warnPartialForgeWriteSecrets(fc ForgeConfig, declared []secrets.ResolvedSecret, log *slog.Logger) {
 	haveAuthor, haveReviewer := fc.forgeWriteSecretsDeclared(declared)
@@ -1120,63 +1318,6 @@ func normalizeGitHubRepo(raw string) (string, error) {
 		return "", fmt.Errorf("invalid forge repo %q: want \"owner/name\"", raw)
 	}
 	return strings.ToLower(trimmed), nil
-}
-
-// forgePollStore adapts *store.Store to ingest.PollStore, binding the driver's
-// forge coordinate half (provider, host) so the ingest-side seam stays
-// repo-keyed and this package holds the store dependency the ingest package's
-// no-store rule keeps out (Global Constraints). It delegates every method to the
-// T2 store methods with the bound coordinate.
-type forgePollStore struct {
-	st       *store.Store
-	provider store.ForgeProvider
-	host     string
-}
-
-// ListEnabledRepos maps the enabled subscription rows for the bound coordinate
-// to their repo strings — the driver's per-pass target enumeration.
-func (a *forgePollStore) ListEnabledRepos(ctx context.Context) ([]string, error) {
-	subs, err := a.st.ListEnabledForgeRepoSubscriptions(ctx, a.provider, a.host)
-	if err != nil {
-		return nil, err
-	}
-	repos := make([]string, len(subs))
-	for i, s := range subs {
-		repos[i] = s.Repo
-	}
-	return repos, nil
-}
-
-// ListCursor maps the stored page rows for repo to the driver's page-cursor view.
-func (a *forgePollStore) ListCursor(ctx context.Context, repo string) ([]ingest.ListPageCursor, error) {
-	rows, err := a.st.ForgeListCursor(ctx, a.provider, a.host, repo)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]ingest.ListPageCursor, len(rows))
-	for i, r := range rows {
-		out[i] = ingest.ListPageCursor{Page: int(r.Page), ETag: r.ETag, HasNext: r.HasNext}
-	}
-	return out, nil
-}
-
-// UpsertListCursorPage maps the driver's page-cursor view back to a store row
-// for the bound coordinate and repo.
-func (a *forgePollStore) UpsertListCursorPage(ctx context.Context, repo string, cur ingest.ListPageCursor) error {
-	return a.st.UpsertForgeListCursorPage(ctx, store.ForgeListPageCursor{
-		Provider: a.provider,
-		Host:     a.host,
-		Repo:     repo,
-		Page:     int32(cur.Page), //nolint:gosec // G115: page is a 1-based walk index the driver increments from 1; a repo never has 2^31 pages, so it is always within the int32 domain
-		ETag:     cur.ETag,
-		HasNext:  cur.HasNext,
-	})
-}
-
-// PruneListCursorPages deletes page rows past maxPage for the bound coordinate
-// and repo (a repo whose walk shrank).
-func (a *forgePollStore) PruneListCursorPages(ctx context.Context, repo string, maxPage int) error {
-	return a.st.PruneForgeListCursorPages(ctx, a.provider, a.host, repo, int32(maxPage)) //nolint:gosec // G115: maxPage is the driver's last-walked page index (from 1); a repo never has 2^31 pages, so it is always within the int32 domain
 }
 
 // forgeTokenSource is the driver's forge.TokenSource: a TTL cache over the one
