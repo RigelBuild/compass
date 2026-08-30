@@ -164,8 +164,8 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 	// Gate check: an armed gate blocks until the injected clock passes resetAt,
 	// then re-opens so the next call issues a real request (whose response
 	// re-records the budget). A zero resetAt means the gate is open.
-	if g.gateBlocked() {
-		return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, ErrBudgetExhausted)
+	if hint, blocked := g.gateBlocked(); blocked {
+		return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, &RateLimitError{RetryAfter: hint})
 	}
 
 	token, err := g.token.Token(ctx)
@@ -648,8 +648,8 @@ func (g *GitHub) BodyLimit() int { return 65536 }
 func (g *GitHub) getJSON(ctx context.Context, url string, out any) (bool, error) {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
-	if g.gateBlocked() {
-		return false, fmt.Errorf("GET %s: %w", url, ErrBudgetExhausted)
+	if hint, blocked := g.gateBlocked(); blocked {
+		return false, fmt.Errorf("GET %s: %w", url, &RateLimitError{RetryAfter: hint})
 	}
 
 	token, err := g.token.Token(ctx)
@@ -834,21 +834,23 @@ func rollupChecksState(checks []Check) string {
 	return checkStateSuccess
 }
 
-// gateBlocked reports whether the fail-fast budget gate is currently armed,
-// clearing a gate whose reset instant has passed (re-opening it) as a side
-// effect. Guarded by mu — the gate is shared between the poll driver and the
-// write-RPC goroutines (OQ-6).
-func (g *GitHub) gateBlocked() bool {
+// gateBlocked reports whether the fail-fast budget gate is currently armed and,
+// when armed, the remaining wait until it re-opens (resetAt-now, clamped >= 0)
+// so the caller can surface the hint. It clears a gate whose reset instant has
+// passed (re-opening it) as a side effect. Guarded by mu — the gate is shared
+// between the poll driver and the write-RPC goroutines (OQ-6).
+func (g *GitHub) gateBlocked() (time.Duration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.resetAt.IsZero() {
-		return false
+		return 0, false
 	}
-	if g.now().Before(g.resetAt) {
-		return true
+	now := g.now()
+	if now.Before(g.resetAt) {
+		return g.resetAt.Sub(now), true
 	}
 	g.resetAt = time.Time{}
-	return false
+	return 0, false
 }
 
 // doJSON carries the write-path plumbing once for all four write methods: the
@@ -860,8 +862,8 @@ func (g *GitHub) gateBlocked() bool {
 func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
-	if g.gateBlocked() {
-		return fmt.Errorf("POST %s: %w", url, ErrBudgetExhausted)
+	if hint, blocked := g.gateBlocked(); blocked {
+		return fmt.Errorf("POST %s: %w", url, &RateLimitError{RetryAfter: hint})
 	}
 
 	token, err := g.token.Token(ctx)
@@ -1039,10 +1041,21 @@ func (g *GitHub) mapErrorResponse(resp *http.Response) error {
 	status := resp.StatusCode
 	if status == http.StatusForbidden || status == http.StatusTooManyRequests {
 		if isRateLimited(resp) {
+			// Compute the reset instant once: it arms the gate AND (when a usable
+			// header gave a non-zero reset) yields the retry hint. No usable
+			// header -> a 0 hint ("no hint"), while armGate still self-arms with
+			// the bounded defaultSkip internally.
+			reset := g.rateLimitReset(resp)
 			g.mu.Lock()
-			g.armGate(g.rateLimitReset(resp))
+			g.armGate(reset)
 			g.mu.Unlock()
-			return fmt.Errorf("forge: github http %d: %w", status, ErrBudgetExhausted)
+			var hint time.Duration
+			if !reset.IsZero() {
+				if d := reset.Sub(g.now()); d > 0 {
+					hint = d
+				}
+			}
+			return fmt.Errorf("forge: github http %d: %w", status, &RateLimitError{RetryAfter: hint})
 		}
 	}
 

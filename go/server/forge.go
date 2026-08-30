@@ -664,12 +664,14 @@ type forgeOp struct {
 // forge's, so 403 and 404 are indistinguishable); *StatusError{422} →
 // invalid_argument carrying the forge's validation message; ErrUnsupported →
 // unimplemented naming provider+op; ErrBudgetExhausted / *StatusError{429} →
-// resource_exhausted; everything else → internal. NOTE: ForgeCallError.RetryAfterMs
-// is currently always 0 — neither forge.ErrBudgetExhausted (a bare sentinel) nor
-// forge.StatusError (only {Status, Message}) surfaces the forge's Retry-After /
-// reset hint, so there is nothing to populate it from yet (cross-slice follow-up:
-// the provider error surface must carry the reset value before retry_after_ms can
-// be honored).
+// resource_exhausted; everything else → internal. ForgeCallError.RetryAfterMs
+// carries "time until a retry stops fail-fasting": a *forge.RateLimitError
+// (RIG-2255) recovered via errors.As on the budget-exhausted arm supplies its
+// RetryAfter, clamped to [0, math.MaxUint32] ms; a value of 0 means no hint (a
+// bare ErrBudgetExhausted sentinel, a header-less live rate limit, or a
+// *StatusError{429} that isRateLimited did not classify as a skip). The value is
+// a superset of provider-stated Retry-After hints — an armed fail-fast gate
+// yields a truthful reset instant even when the provider gave no header.
 func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 	switch {
 	case errors.Is(err, forge.ErrBodyTooLarge):
@@ -679,7 +681,22 @@ func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 	case errors.Is(err, forge.ErrUnsupported):
 		return forgeErr(connect.CodeUnimplemented, fmt.Sprintf("forge: operation %q is unsupported by provider %q", op.op, op.provider))
 	case errors.Is(err, forge.ErrBudgetExhausted):
-		return &compassv1internal.ForgeCallError{Code: connect.CodeResourceExhausted.String(), Message: err.Error()}
+		fe := &compassv1internal.ForgeCallError{Code: connect.CodeResourceExhausted.String(), Message: err.Error()}
+		var rle *forge.RateLimitError
+		if errors.As(err, &rle) {
+			// Clamp to [0, math.MaxUint32] BEFORE the uint32 cast: a negative
+			// hint (clock skew / stale gate) becomes 0 ("no hint") and an
+			// oversized one saturates rather than silently wrapping.
+			ms := rle.RetryAfter.Milliseconds()
+			switch {
+			case ms < 0:
+				ms = 0
+			case ms > math.MaxUint32:
+				ms = math.MaxUint32
+			}
+			fe.RetryAfterMs = uint32(ms)
+		}
+		return fe
 	}
 	var se *forge.StatusError
 	if errors.As(err, &se) {

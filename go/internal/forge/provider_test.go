@@ -7,7 +7,9 @@ package forge
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 )
 
 func TestErrUnsupportedIsSentinel(t *testing.T) {
@@ -35,5 +37,34 @@ func TestStatusError(t *testing.T) {
 	}
 	if se.Status != 403 {
 		t.Errorf("recovered status = %d, want 403", se.Status)
+	}
+}
+
+func TestRateLimitError(t *testing.T) {
+	// Error() renders the stable message.
+	rle := &RateLimitError{RetryAfter: 60 * time.Second}
+	if got, want := rle.Error(), "forge: rate budget exhausted"; got != want {
+		t.Errorf("Error() = %q, want %q", got, want)
+	}
+
+	// Unwrap keeps every existing errors.Is(ErrBudgetExhausted) site matching,
+	// even through an fmt.Errorf("...: %w", ...) wrap.
+	wrapped := fmt.Errorf("forge: github http 403: %w", rle)
+	if !errors.Is(wrapped, ErrBudgetExhausted) {
+		t.Error("RateLimitError not recoverable via errors.Is(ErrBudgetExhausted) after wrapping")
+	}
+
+	// errors.As recovers the hint through the same wrap.
+	var got *RateLimitError
+	if !errors.As(wrapped, &got) {
+		t.Fatal("RateLimitError not recoverable via errors.As")
+	}
+	if got.RetryAfter != 60*time.Second {
+		t.Errorf("recovered RetryAfter = %v, want 60s", got.RetryAfter)
+	}
+
+	// A zero-hint value still unwraps to the sentinel.
+	if !errors.Is(&RateLimitError{}, ErrBudgetExhausted) {
+		t.Error("zero-hint RateLimitError not recoverable via errors.Is(ErrBudgetExhausted)")
 	}
 }

@@ -83,8 +83,8 @@ var _ NotifyReader = (*GitHub)(nil)
 // is present. On error it owns the budget decision via mapErrorResponse (no
 // budget record on error — the ListIssuesPage/getJSON rule).
 func (g *GitHub) getJSONCond(ctx context.Context, url, etag string, out any) (notModified bool, newETag string, hasNext bool, err error) {
-	if g.gateBlocked() {
-		return false, "", false, fmt.Errorf("GET %s: %w", url, ErrBudgetExhausted)
+	if hint, blocked := g.gateBlocked(); blocked {
+		return false, "", false, fmt.Errorf("GET %s: %w", url, &RateLimitError{RetryAfter: hint})
 	}
 	token, terr := g.token.Token(ctx)
 	if terr != nil {

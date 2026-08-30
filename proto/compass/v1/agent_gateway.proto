@@ -302,7 +302,7 @@ message ForgeCallResult {
 message ForgeCallError {
   string code = 1;            // Connect status token, e.g. "not_found", "resource_exhausted"
   string message = 2;
-  uint32 retry_after_ms = 3;  // 0 when the forge gave no hint
+  uint32 retry_after_ms = 3;  // time until a retry stops fail-fasting; 0 = no hint
 }
 
 // The seven forge operation requests. Every field is a scalar — no forge domain

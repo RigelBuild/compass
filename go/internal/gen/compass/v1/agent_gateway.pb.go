@@ -1660,7 +1660,7 @@ type ForgeCallError struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"` // Connect status token, e.g. "not_found", "resource_exhausted"
 	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
-	RetryAfterMs  uint32                 `protobuf:"varint,3,opt,name=retry_after_ms,json=retryAfterMs,proto3" json:"retry_after_ms,omitempty"` // 0 when the forge gave no hint
+	RetryAfterMs  uint32                 `protobuf:"varint,3,opt,name=retry_after_ms,json=retryAfterMs,proto3" json:"retry_after_ms,omitempty"` // time until a retry stops fail-fasting; 0 = no hint
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }

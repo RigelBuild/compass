@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -740,7 +741,10 @@ func TestForgeCommentArmsStampBodies(t *testing.T) {
 
 // TestForgeBudgetExhaustedAnd429MapToResourceExhausted pins the rate-limit arm
 // of the single error-mapping function: both the ErrBudgetExhausted sentinel and
-// a *StatusError{429} flatten to an in-band resource_exhausted.
+// a *StatusError{429} flatten to an in-band resource_exhausted. It also pins the
+// retry_after_ms population: a *forge.RateLimitError carries its clamped hint
+// through to RetryAfterMs (an oversized hint saturates at math.MaxUint32), while
+// the bare sentinel, a zero/negative hint, and a *StatusError{429} stay at 0.
 func TestForgeBudgetExhaustedAnd429MapToResourceExhausted(t *testing.T) {
 	run := func(scripted error) *compassv1internal.ForgeCallError {
 		author := forge.NewFakeProvider("gh-author")
@@ -750,16 +754,24 @@ func TestForgeBudgetExhaustedAnd429MapToResourceExhausted(t *testing.T) {
 		return svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "")).GetError()
 	}
 	for _, tc := range []struct {
-		name string
-		err  error
+		name        string
+		err         error
+		wantRetryMs uint32
 	}{
-		{"budget_sentinel", forge.ErrBudgetExhausted},
-		{"status_429", &forge.StatusError{Status: 429, Message: "rate limited"}},
+		{"budget_sentinel", forge.ErrBudgetExhausted, 0},
+		{"status_429", &forge.StatusError{Status: 429, Message: "rate limited"}, 0},
+		{"ratelimit_hint", fmt.Errorf("x: %w", &forge.RateLimitError{RetryAfter: 90 * time.Second}), 90000},
+		{"ratelimit_zero_hint", &forge.RateLimitError{RetryAfter: 0}, 0},
+		{"ratelimit_negative_hint", &forge.RateLimitError{RetryAfter: -5 * time.Second}, 0},
+		{"ratelimit_oversized_hint", &forge.RateLimitError{RetryAfter: (math.MaxUint32 + 1) * time.Millisecond}, math.MaxUint32},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fe := run(tc.err)
 			if fe == nil || fe.GetCode() != "resource_exhausted" {
 				t.Fatalf("%s error = %v, want resource_exhausted", tc.name, fe)
+			}
+			if fe.GetRetryAfterMs() != tc.wantRetryMs {
+				t.Errorf("%s RetryAfterMs = %d, want %d", tc.name, fe.GetRetryAfterMs(), tc.wantRetryMs)
 			}
 		})
 	}

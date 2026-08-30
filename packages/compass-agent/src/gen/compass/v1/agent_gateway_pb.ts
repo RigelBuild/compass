@@ -766,7 +766,7 @@ export type ForgeCallError = Message<"compass.v1.ForgeCallError"> & {
   message: string;
 
   /**
-   * 0 when the forge gave no hint
+   * time until a retry stops fail-fasting; 0 = no hint
    *
    * @generated from field: uint32 retry_after_ms = 3;
    */
