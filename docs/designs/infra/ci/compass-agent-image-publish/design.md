@@ -12,6 +12,23 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 > sealed design corpus (`docs/designs/infra/ci/`) because that is where the wave's design
 > records freeze; the `docs/designs/product/*` cross-references (e.g. DL-112)
 > are paths in this (sealed) corpus.
+>
+> **Superseded in part** (RIG-1746, Matt 2026-08-25): the *CI-placement*
+> decision below — a separate `.github/workflows/publish-agent-image.yml`
+> workflow (§"CI placement — a separate least-privilege workflow, a principled
+> exception to ONE-JOB") — is superseded by the unified release lane
+> ([`compass-unified-release-lane.md`](../../../platform/compass-unified-release-lane.md),
+> DL-298–301). That lane RELOCATES this lane's per-push publish DUTY verbatim —
+> the same `publish.sh` no-args call, the same closure-paths gate, the same
+> serialize / immutability / two-copy-coherence / least-privilege /
+> off-hot-path posture — into a `publish-image` job, and the standalone
+> workflow FILE retires in a two-PR staged delete (land the fold, observe one
+> green per-push run, then delete). Every OTHER decision here stays live and is
+> carried into that lane unchanged: the tag name/tag contract (`:git-<sha>`
+> immutable pin + `:latest` fallback), the build-once/push-each-tag skopeo
+> mechanism, the `GITHUB_TOKEN` + `REGISTRY_AUTH_FILE` auth pin, and the
+> public-visibility ruling. This record therefore remains the cited authority
+> for the baked `:git-<sha>` pin.
 
 ## Problem / Intent
 
