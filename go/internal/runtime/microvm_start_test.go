@@ -17,6 +17,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -214,5 +215,37 @@ func TestStartProvisionErrorFailsAndTearsDown(t *testing.T) {
 	}
 	if session.vm != nil {
 		t.Error("a failed Start must not store the VM handle on the session")
+	}
+}
+
+// TestStartNilGuestHandleFailsClosed pins the fail-closed guard: a launchFunc
+// that returns (nil, nil) — a mis-written seam — makes Start return a clear
+// error instead of nil-derefing the guestVM handle in the teardown defer or
+// awaitHealthy. The production microvm.Launch adapter never returns (nil, nil),
+// so this guards only against a broken test seam, but it must fail loud.
+func TestStartNilGuestHandleFailsClosed(t *testing.T) {
+	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
+	id, err := m.Create(t.Context(), ContainerSpec{Name: "agent-1", UID: 1000})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// The (nil, nil) return is the exact mis-written-seam input the guard defends
+	// against; nilnil is right in general but this test needs the pathological pair.
+	m.launchFunc = func(context.Context, microvm.BootConfig) (guestVM, error) { return nil, nil } //nolint:nilnil // intentional: exercises the fail-closed nil-handle guard
+
+	err = m.Start(t.Context(), id)
+	if err == nil {
+		t.Fatal("Start must fail when launchFunc returns a nil guest handle with no error")
+	}
+	if !strings.Contains(err.Error(), "nil guest") {
+		t.Errorf("Start error = %q, want it to name the nil guest handle condition", err.Error())
+	}
+	// A nil handle must not be stored on the session.
+	session, sessErr := m.session(id)
+	if sessErr != nil {
+		t.Fatalf("session after failed Start: %v", sessErr)
+	}
+	if session.vm != nil {
+		t.Error("a failed Start must not store a VM handle on the session")
 	}
 }

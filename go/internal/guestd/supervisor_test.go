@@ -670,16 +670,23 @@ func TestBrokenExecStreamReapsChild(t *testing.T) {
 	// can recycle it onto an unrelated process, so keying liveness on the raw
 	// pid after removal would flake. A short tick keeps the loop off a hot spin.
 	//
-	// The ceiling is generous headroom for transport latency, NOT a reap SLA: the
-	// reap fires once the handler observes the client cancel — via either the
-	// broken-stream arm (the receive loop returning on a stream error) or the
-	// ctx.Done arm of the ExecStream select — and both wait on HTTP/2 RST_STREAM
-	// propagation over the loopback h2c transport plus goroutine scheduling. On a
-	// saturated CI runner that delivery can take several seconds; 30s catches a
-	// genuine never-reap hang while tolerating extreme load (a real hang blocks
-	// forever, so a wide ceiling costs nothing on the happy path — the exec_id
-	// leaves in ms).
-	deadline := time.Now().Add(30 * time.Second)
+	// The wait is bounded by the TEST's own deadline, not an invented per-test
+	// threshold: the reap latency is a transport-scheduling property (client
+	// cancel → HTTP/2 RST_STREAM → the handler's receive loop observing it over
+	// the loopback h2c transport), which on a saturated CI runner can exceed any
+	// fixed few-second ceiling while the reap ITSELF is correct and completes in
+	// ms unloaded. A fixed 30s ceiling therefore false-fails under load. Gating
+	// on t.Deadline() makes the outcome deterministic: a correct-but-slow reap
+	// always passes (reap latency is at most transport scheduling, never
+	// minutes), and ONLY a genuine never-reap hang fails — reported here with the
+	// pid diagnostic just before the suite -timeout would kill the run with a
+	// less actionable panic. A short tick keeps the loop off a hot spin.
+	waitCeiling := time.Now().Add(2 * time.Minute) // fallback when -timeout=0 disables the deadline
+	if d, ok := t.Deadline(); ok {
+		// Leave margin so THIS test fails with its diagnostic before the whole
+		// package -timeout fires an opaque panic.
+		waitCeiling = d.Add(-5 * time.Second)
+	}
 	for {
 		svc.mu.Lock()
 		_, present := svc.execs[execID]
@@ -688,11 +695,11 @@ func TestBrokenExecStreamReapsChild(t *testing.T) {
 			// Reaped and unregistered: the deterministic terminal state.
 			return
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(waitCeiling) {
 			alive := syscall.Kill(pid, 0) == nil
 			t.Fatalf("child pid %d still present=%v alive=%v after stream break", pid, present, alive)
 		}
-		time.Sleep(5 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the exec_id leaving the table above with a 30s deadline (rule://go-no-sleep-in-test poll-until exemption)
+		time.Sleep(5 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the exec_id leaving the table above, ceiling = the test's own deadline (rule://go-no-sleep-in-test poll-until exemption)
 	}
 }
 
