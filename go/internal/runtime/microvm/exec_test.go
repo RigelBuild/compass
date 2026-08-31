@@ -346,10 +346,17 @@ func TestGuestExec_Stream_CtxCancelBreaksStream(t *testing.T) {
 	cancel()
 
 	// Wait unblocks on the broken stream and reports SIGKILL (deliberate
-	// teardown reaps the guest child).
-	got := gs.Wait()
-	if got.Signal != int(sigKill) {
-		t.Fatalf("exit status = %+v, want Signal SIGKILL after ctx cancel", got)
+	// teardown reaps the guest child). Bounded so a reap regression fails in
+	// testTimeout rather than hanging to the package -timeout (RIG-3036).
+	waited := make(chan ExitStatus, 1)
+	go func() { waited <- gs.Wait() }()
+	select {
+	case got := <-waited:
+		if got.Signal != int(sigKill) {
+			t.Fatalf("exit status = %+v, want Signal SIGKILL after ctx cancel", got)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("Wait did not return after ctx cancel; the streaming child was not reaped")
 	}
 	select {
 	case <-streamBroke:
@@ -448,5 +455,73 @@ func TestGuestExec_Stream_FirstFrameNotStartedIsError(t *testing.T) {
 	}
 	if gs != nil {
 		t.Fatalf("ExecStream returned a non-nil stream (%+v) alongside an error", gs)
+	}
+}
+
+// blockingBidiStream is a fake bidiStream whose Receive returns one ExecStarted
+// frame and then blocks until CloseResponse is called. It models the reap-hang
+// preconditions exactly: a guest child that emits nothing (so no exit frame
+// ever arrives) and a transport that will NOT unblock a blocked Receive on its
+// own. The only thing that can end the blocked Receive is an explicit
+// CloseResponse — which is precisely what watchCancel must issue on ctx cancel.
+type blockingBidiStream struct {
+	// started is written by the first (caller-goroutine) Receive and read by the
+	// pump goroutine; the `go pumpResponses` statement is the happens-before edge,
+	// so the two Receives never overlap — do not call Receive concurrently.
+	started   bool
+	closeResp chan struct{}
+	closeOnce sync.Once
+}
+
+func (b *blockingBidiStream) Send(*compassv1.ExecStreamRequest) error { return nil }
+
+func (b *blockingBidiStream) Receive() (*compassv1.ExecStreamResponse, error) {
+	if !b.started {
+		b.started = true
+		return &compassv1.ExecStreamResponse{
+			Frame: &compassv1.ExecStreamResponse_Started{Started: &compassv1.ExecStarted{ExecId: "exec-block"}},
+		}, nil
+	}
+	<-b.closeResp
+	return nil, errors.New("receive side closed")
+}
+
+func (b *blockingBidiStream) CloseRequest() error { return nil }
+
+func (b *blockingBidiStream) CloseResponse() error {
+	b.closeOnce.Do(func() { close(b.closeResp) })
+	return nil
+}
+
+func TestGuestExec_Stream_CtxCancelForcesReap(t *testing.T) {
+	// Deterministic regression for the ctx-cancel reap hang (RIG-3036).
+	// pumpResponses blocks synchronously in Receive and cannot select on ctx,
+	// so a deliberate teardown reaps ONLY if watchCancel forces the receive side
+	// down (CloseResponse) when the stream ctx is cancelled. The fake's Receive
+	// blocks until CloseResponse, so without the watcher Wait would block
+	// forever (the bug: a 15m package-timeout panic); with it, Wait returns
+	// promptly reporting the deliberate SIGKILL. No transport, no sleep, no
+	// timing heuristic — the reap is proven by Wait returning at all.
+	fake := &blockingBidiStream{closeResp: make(chan struct{})}
+	ge := &GuestExec{openStream: func(context.Context) bidiStream { return fake }}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	gs, err := ge.ExecStream(ctx, StreamCall{Command: []string{"sleep"}})
+	if err != nil {
+		cancel()
+		t.Fatalf("ExecStream: %v", err)
+	}
+
+	cancel()
+
+	done := make(chan ExitStatus, 1)
+	go func() { done <- gs.Wait() }()
+	select {
+	case got := <-done:
+		if got.Signal != int(sigKill) {
+			t.Fatalf("exit status = %+v, want Signal SIGKILL after ctx cancel", got)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("Wait did not return after ctx cancel; watchCancel did not force the receive side down (reap hang)")
 	}
 }

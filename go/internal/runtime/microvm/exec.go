@@ -104,9 +104,25 @@ type ExitStatus struct {
 	Signal int
 }
 
+// bidiStream is the subset of *connect.BidiStreamForClient the exec pumps use.
+// It exists so a hermetic test can inject a stream whose Receive blocks until
+// CloseResponse — proving the ctx-cancel watcher forces the receive side down —
+// since the concrete connect stream is unfakeable. *connect.BidiStreamForClient
+// satisfies it.
+type bidiStream interface {
+	Send(req *compassv1.ExecStreamRequest) error
+	Receive() (*compassv1.ExecStreamResponse, error)
+	CloseRequest() error
+	CloseResponse() error
+}
+
 // GuestExec is the host-side exec layer over a GuestControl client.
 type GuestExec struct {
 	client compassv1internalconnect.GuestControlClient
+	// openStream opens the bidi ExecStream. Nil in production (openBidi falls
+	// back to client.ExecStream); a hermetic test injects a fake stream through
+	// it to drive the ctx-cancel reap deterministically.
+	openStream func(ctx context.Context) bidiStream
 }
 
 // NewGuestExec wraps a GuestControl client (dial.go GuestClient) in the exec
@@ -166,7 +182,7 @@ func isDeadline(err error) bool {
 // response frames are demuxed onto the read pipes, which close when the
 // ExecExit frame arrives.
 func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestStream, retErr error) {
-	stream := g.client.ExecStream(ctx)
+	stream := g.openBidi(ctx)
 	// Until the pumps below take ownership of the stream, any early-error return
 	// must reap both halves itself — the bidi stream is already open, so a bare
 	// `return nil, err` leaks its response-body reader / makeRequest goroutine
@@ -223,7 +239,17 @@ func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestSt
 	}
 	go gs.pumpStdin()
 	go gs.pumpResponses()
+	go gs.watchCancel()
 	return gs, nil
+}
+
+// openBidi opens the bidi ExecStream, honoring an injected openStream (tests)
+// and otherwise dialing the real GuestControl client.
+func (g *GuestExec) openBidi(ctx context.Context) bidiStream {
+	if g.openStream != nil {
+		return g.openStream(ctx)
+	}
+	return g.client.ExecStream(ctx)
 }
 
 // GuestStream is a live streaming exec: its stdio pipes plus a kill/wait
@@ -237,7 +263,7 @@ type GuestStream struct {
 	//nolint:containedctx // stream-lifetime scope for Kill's Signal RPC + teardown detection; a per-request ctx cannot carry it (see field doc)
 	ctx    context.Context
 	client compassv1internalconnect.GuestControlClient
-	stream *connect.BidiStreamForClient[compassv1.ExecStreamRequest, compassv1.ExecStreamResponse]
+	stream bidiStream
 	execID string
 
 	// Stdin/Stdout/Stderr are the caller's pipe ends.
@@ -378,6 +404,24 @@ func (s *GuestStream) pumpResponses() {
 			// A duplicate started frame or an unknown frame: ignore and keep
 			// reading toward the terminal exit frame.
 		}
+	}
+}
+
+// watchCancel forces the receive side down when the stream ctx is cancelled so
+// a deliberate teardown reaps promptly. pumpResponses blocks synchronously in
+// stream.Receive() and cannot itself select on ctx; the h2c transport's
+// propagation of a request-ctx cancel to a blocked Receive is unbounded
+// (observed >30s under CI load, and indefinite in-process), so this watcher
+// calls CloseResponse — a local response-body close that aborts the blocked
+// Receive at once and RST_STREAMs the server, whose bound child guestd then
+// SIGKILL-reaps. On a normal terminal exit (done closed first) it returns
+// without touching the stream, so it never closes a still-live receive half;
+// CloseResponse is idempotent, so racing reapStdinPump's own call is safe.
+func (s *GuestStream) watchCancel() {
+	select {
+	case <-s.ctx.Done():
+		_ = s.stream.CloseResponse()
+	case <-s.done:
 	}
 }
 
