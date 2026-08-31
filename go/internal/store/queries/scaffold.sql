@@ -1,0 +1,12 @@
+-- Scaffold-only query proving sqlc generation works end to end (T1).
+--
+-- This is NOT a real store query: the per-domain query files land in T2..T6 as
+-- each store file migrates. It exists so `sqlc generate` produces a non-empty
+-- db/ package on current main and the drift gate has something to diff. It
+-- selects a genuinely existing column from a genuinely existing table
+-- (tenants, 0001_init.sql), so sqlc compiles it against the real schema.
+
+-- name: ScaffoldGetTenant :one
+SELECT id, slug, display_name, created_at_unix_ms
+FROM tenants
+WHERE id = $1;

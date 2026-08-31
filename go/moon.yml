@@ -210,12 +210,48 @@ tasks:
       cache: false
     inputs: *go_sources
 
+  sqlc-gen:
+    # Regenerate the typed Go in internal/store/db from the .sql query files,
+    # compiled against internal/store/migrations. The checked-in output is the
+    # source of truth; sqlc-drift (below) gates that it stays in sync. sqlc is
+    # on PATH from the devenv packages literal (devenv.nix). Local convenience
+    # task, not a gate — runInCI:false so a bare `moon run :ci` never rewrites
+    # the tree; drift is what CI enforces.
+    command: 'sqlc generate'
+    options:
+      runFromWorkspaceRoot: false
+      runInCI: false
+    inputs: &sqlc_sources
+      - 'sqlc.yaml'
+      - 'internal/store/queries/**/*.sql'
+      - 'internal/store/migrations/**/*.sql'
+      - 'internal/store/db/**/*.go'
+
+  sqlc-drift:
+    # Fail if the checked-in internal/store/db tree is stale vs the query +
+    # schema sources: snapshot the committed tree, regenerate in place, and fail
+    # on any byte diff (a query edit committed without regeneration). Unlike
+    # `drift` above — which delegates to the compass-proto schema pipeline and is
+    # scheduled through the gen tree, so it is deliberately kept OUT of `ci` —
+    # sqlc-drift is fully local (no cross-project delegation, no DB), so it joins
+    # `ci` directly. `git diff --no-index` compares raw file trees (reads no
+    # index/worktree state, and git is always on PATH — unlike `diff`), so it
+    # runs identically in CI and in a secondary jj workspace; a `git status`
+    # check would false-green where the workspace is not a git checkout. sqlc has
+    # no output-redirect flag, so the regenerate is in place and idempotent (a
+    # no-drift run leaves the byte-identical tree).
+    script: 'tmp=$(mktemp -d); trap ''rm -rf "$tmp"'' EXIT; cp -R internal/store/db "$tmp/db-committed"; sqlc generate; if ! git diff --no-index --quiet "$tmp/db-committed" internal/store/db; then echo "sqlc drift: internal/store/db is stale — run \`moon run compass-go:sqlc-gen\` and commit:"; git diff --no-index "$tmp/db-committed" internal/store/db; exit 1; fi'
+    options:
+      runFromWorkspaceRoot: false
+    inputs: *sqlc_sources
+
   ci:
-    # The whole Go gate battery, one aggregate the pipeline schedules when the
     # module is affected: format, vet, lint (incl. exhaustiveness), -race test,
-    # build, and the supply-chain fence. `drift` is NOT a dep here — it belongs
-    # to the schema pipeline (compass-proto) and is scheduled through the gen
-    # tree, matching compass-proto/moon.yml's own `ci` composition.
-    deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses']
+    # build, the supply-chain fence, and the sqlc drift gate. `drift` is NOT a
+    # dep here — it belongs to the schema pipeline (compass-proto) and is
+    # scheduled through the gen tree, matching compass-proto/moon.yml's own
+    # `ci` composition. `sqlc-drift` IS a dep: it is fully local (no
+    # cross-project delegation, no DB), so it belongs in ci directly.
+    deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses', 'sqlc-drift']
     options:
       cache: false

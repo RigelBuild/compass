@@ -1,0 +1,11 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "internal/store/migrations"      # 0001_init.sql (+ future NNNN_*.sql, applied in order)
+    queries: "internal/store/queries"        # new dir, one .sql file per domain
+    gen:
+      go:
+        package: "db"
+        out: "internal/store/db"
+        sql_package: "pgx/v5"
+        emit_interface: true                  # Querier, for the store's tx/pool duality

@@ -106,6 +106,15 @@ projects:
   # unregistered, moon never sees it (projects come only from this map) and the
   # gate is silently inert. See tools/sql-migration-gate/moon.yml.
   sql-migration-gate: 'tools/sql-migration-gate'
+  # The inline-SQL ban gate (sqlc adoption T1): scans go/**/*.go for a Go string
+  # literal containing a SQL keyword passed to a pgx .Query/.QueryRow/.Exec call
+  # (tokenized across newlines), banned outside the sqlc-generated
+  # go/internal/store/db/ package, *_test.go files, and a ratcheting allowlist
+  # that shrinks as each store domain migrates to sqlc. Registered here so moon
+  # discovers it and its `ci` aggregate rides the moon-driven CI sweep —
+  # unregistered, moon never sees it (projects come only from this map) and the
+  # gate is silently inert. See tools/inline-sql-gate/moon.yml.
+  inline-sql-gate: 'tools/inline-sql-gate'
   # Self-hosted Renovate (RIG-2432): the repo config + bot config + lockstep
   # postUpgradeTask scripts + the config guard suite. Ported from the internal
   # monorepo's renovate config. Registered here so config.test.ts runs under the

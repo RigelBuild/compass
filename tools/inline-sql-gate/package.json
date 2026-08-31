@@ -1,0 +1,14 @@
+{
+	"name": "@compass/inline-sql-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (sqlc adoption T1): ban inline SQL string literals passed to pgx .Query/.QueryRow/.Exec in go/**/*.go outside the generated db/ package, tests, and a ratcheting allowlist that shrinks as each store domain migrates to sqlc.",
+	"module": "index.ts",
+	"bin": {
+		"inline-sql-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
