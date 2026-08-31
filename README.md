@@ -16,12 +16,12 @@ Compass is a long-lived **server** plus a thin desktop **shell** and a **web
 UI**, all speaking one typed contract:
 
 ```text
-┌─────────────────────────────────────────────┐
-│ Desktop shell (Tauri) + web UI (SolidJS)     │
-│   renders the board, agent panes, terminals  │
-└───────────────────────┬─────────────────────┘
+┌──────────────────────────────────────────────┐
+│ Desktop shell (Wails v3) + web UI (SolidJS)  │
+│   renders the board and agent panes          │
+└───────────────────────┬──────────────────────┘
                         │ compass.v1 (Connect / gRPC-Web)
-┌───────────────────────▼─────────────────────┐
+┌───────────────────────▼──────────────────────┐
 │ compass-server (Go)                          │
 │   owns agent processes, PTYs, VCS, security  │
 │   serves compass.v1 over a local transport   │
@@ -72,7 +72,7 @@ design holds to. That model lives under
 [`docs/concepts/`](./docs/concepts/README.md):
 
 - [Handles, accounts, and attribution](./docs/concepts/handle-vs-account.md) —
-  a handle names one agent; `mintaka` is the shared forge account they bill
+  a handle names one agent; agents share one forge account to bill
   through.
 - [The persona convention](./docs/concepts/persona.md) — role vs persona; a
   persona is the agent's stable working context.

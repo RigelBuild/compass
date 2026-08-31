@@ -24,8 +24,8 @@ What is built today is the contract seam and the server's transport:
 `compass-server` serves the `compass.v1` service over a Unix domain socket, and
 a generated client is the only sanctioned way to reach it. The agent runtime
 (a first-party in-container agent built on the Oh My Pi SDK, emitting
-`compass.v1` natively, hosted on a per-workstream **Runner**), the Cotal
-coordination substrate, and the Bridge UI are designed but not yet fully built;
+`compass.v1` natively, hosted on a per-workstream **Runner**) and the Bridge UI
+are designed but not yet fully built;
 the server
 currently reports its liveness, provisions agent workstreams, and pushes a
 server-status event stream, and the web UI is a walking skeleton. The sections
@@ -411,7 +411,7 @@ A reattach within the window resumes the session; window expiry falls to
 > — the per-session registry that publishes `DISCONNECTED` on link loss, the
 > bounded timer, the expiry→`ERRORED` transition, and `GetAgentStatus`
 > reconciliation to the Runner's set on reattach — is **T9**
-> (`docs/designs/platform/go-toolchain-default.md`:979). Until T9 lands, the
+> (RIG-1328). Until T9 lands, the
 > window/expiry state machine in this Requirement is not yet enforced.
 
 ### Requirement: Relayed agent events publish onto the event stream, Runner-sequenced
@@ -912,7 +912,7 @@ are out of scope for this spec until they land:
   Dispatcher MCP endpoint into a named seam, but its logic is a separate issue;
   the board and audit event payloads are likewise unbuilt. The Bridge UI that
   consumes the agent event stream is out of scope.
-- **Desktop shell (Tauri)** — a thin shell bridging the UI webview to the
+- **Desktop shell (Wails v3)** — a thin shell bridging the UI webview to the
   server's Unix socket over its own IPC (a browser cannot dial a Unix socket),
   streaming gRPC-Web responses back as ordered byte frames with no localhost TCP
   port. Designed in the records; the shell is not built in the current backend.

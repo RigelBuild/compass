@@ -21,7 +21,7 @@ concept; the tool and prompt material carry the detail, these carry the model.
 ## The org model
 
 - **[Handles, accounts, and attribution](./handle-vs-account.md)** — a handle
-  names one running agent; `mintaka` is the shared forge *account* all agents
+  names one running agent; agents share one forge *account* they all
   bill through, not a handle. How work is attributed to an agent without a
   per-agent forge seat.
 - **[The persona convention](./persona.md)** — role vs persona; a persona is the
