@@ -750,7 +750,8 @@ func mapLinearState(stateType string) string {
 }
 
 // linearComment is the wire shape of a Linear comment. Its id is a UUID, which
-// forge.Comment.ID (uint64) cannot carry — see toComment.
+// forge.Comment.ID (uint64) cannot carry — it travels in Comment.Key instead
+// (see toComment).
 type linearComment struct {
 	ID   string `json:"id"`
 	URL  string `json:"url"`
@@ -761,14 +762,14 @@ type linearComment struct {
 }
 
 // toComment maps a decoded Linear comment to forge.Comment. Linear comment IDs
-// are UUIDs, so ID stays zero and identity travels via URL (see the T6 summary
-// flag: forge.Comment.ID is uint64 and cannot hold a Linear UUID).
+// are UUIDs, so ID (uint64) stays zero and the stable identity travels via Key
+// (the cross-producer snapshot key; the webhook producer carries the same UUID).
 func (r linearComment) toComment() Comment {
 	account := ""
 	if r.User != nil {
 		account = r.User.DisplayName
 	}
-	return Comment{URL: r.URL, Body: r.Body, ForgeAccount: account}
+	return Comment{Key: r.ID, URL: r.URL, Body: r.Body, ForgeAccount: account}
 }
 
 // teamIssueFilter builds the Linear IssueFilter for a team's issues, narrowed by

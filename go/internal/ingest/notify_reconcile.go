@@ -179,7 +179,8 @@ func (rc *NotifyReconciler) reconcileTarget(ctx context.Context, tgt NotifyTarge
 
 	// Route each detected change as a synthetic event through the SHARED router
 	// (it re-loads the just-upserted cursor, re-applies idempotently — the
-	// comment set is URL-keyed, state/checks overwrite, OPENED is max — so every
+	// comment set is keyed by the stable comment key, state/checks overwrite,
+	// OPENED is max — so every
 	// notification carries the same final revision).
 	for _, ev := range changes {
 		if err := rc.router.Route(ctx, ev); err != nil {
@@ -334,7 +335,7 @@ func commentsFromSnapshot(snap *ArtifactSnapshot) []forge.Comment {
 	}
 	out := make([]forge.Comment, 0, len(snap.Comments))
 	for _, c := range snap.Comments {
-		out = append(out, forge.Comment{URL: c.URL, Body: c.Body, ForgeAccount: c.ForgeAccount})
+		out = append(out, forge.Comment{Key: c.Key, Body: c.Body, ForgeAccount: c.ForgeAccount})
 	}
 	return out
 }

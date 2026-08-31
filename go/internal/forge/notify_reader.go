@@ -383,8 +383,9 @@ func (l *Linear) GetPullRequestConditional(_ context.Context, _ string, _ uint64
 }
 
 // ListComments reads an issue's comment set (no PRs on Linear). No ETags, so
-// this is a 200-equivalent with an empty ETag; comment identity is URL-keyed
-// (Linear comment ids are UUIDs, toComment leaves ID zero). Paginated.
+// this is a 200-equivalent with an empty ETag; comment identity is Key-keyed
+// (Linear comment ids are UUIDs, toComment sets Comment.Key, leaves ID zero).
+// Paginated.
 func (l *Linear) ListComments(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64, _ string) (ConditionalResult[[]Comment], error) {
 	if kind == compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST {
 		return ConditionalResult[[]Comment]{}, ErrUnsupported

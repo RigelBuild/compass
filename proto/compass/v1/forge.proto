@@ -51,6 +51,7 @@ message CommentRef {
   string body = 3;                       // the comment text; unset on a write ack
   string forge_account = 4;              // the commenter's forge login; always set on a notification
   compass.v1.AgentAttribution agent = 5; // set only when the commenter is a Compass agent; unset for a human
+  string comment_key = 6;                // a provider-stable comment identity for snapshot keying (GitHub numeric id as string; Linear UUID). Internal notify-path use; unset on a write ack.
 }
 
 // A reference to a submitted PR review — the write ack for submit_review.

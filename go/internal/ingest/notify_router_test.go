@@ -134,7 +134,7 @@ const (
 )
 
 func ghComment(url, body, account string) *compassv1internal.CommentRef {
-	return &compassv1internal.CommentRef{Url: url, Body: body, ForgeAccount: account}
+	return &compassv1internal.CommentRef{Url: url, CommentKey: url, Body: body, ForgeAccount: account}
 }
 
 // commentEvent is one GitHub issue COMMENT event on o/r#7.
@@ -250,7 +250,7 @@ func TestRoutePerArtifactExactCoordinateOnly(t *testing.T) {
 	}
 }
 
-// TestApplyCommentGrowsKeySet: COMMENT adds a URL-keyed comment.
+// TestApplyCommentGrowsKeySet: COMMENT adds a comment keyed by its stable comment key.
 func TestApplyCommentGrowsKeySet(t *testing.T) {
 	s0 := ApplyEvent(nil, commentEvent("https://gh/c1"))
 	if len(s0.Comments) != 1 {
@@ -490,7 +490,7 @@ func TestMeetingPointInvariant(t *testing.T) {
 			fetched: FetchedArtifact{
 				Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com",
 				Repo: "o/r", Kind: kindIssue, Number: 7,
-				Comments: []forge.Comment{{URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}},
+				Comments: []forge.Comment{{Key: "https://gh/c1", URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}},
 			},
 		},
 		{
@@ -552,6 +552,53 @@ func TestMeetingPointInvariant(t *testing.T) {
 				t.Errorf("baseline rebuild diverged from applied: base=%s applied=%s", baseRev, SnapshotRevision(&applied))
 			}
 		})
+	}
+}
+
+// TestCrossProducerLinearCommentNoPhantomDiff is the Fork 1 regression
+// (RIG-2732): a Linear COMMENT webhook keys its snapshot comment by the stable
+// comment key (the UUID both producers carry), NOT the delivered issue URL — so
+// the reconcile sweep, which observes the same comment via its OWN comment URL,
+// detects NO change and rebuilds a byte-identical revision. Before the key fix
+// the webhook keyed by the parent issue URL (Linear's comment payload has no
+// comment URL) and the sweep keyed by the comment URL, a phantom-diff heartbeat
+// every sweep.
+func TestCrossProducerLinearCommentNoPhantomDiff(t *testing.T) {
+	const (
+		issueURL   = "https://linear.app/acme/issue/RIG-7"
+		commentURL = "https://linear.app/acme/issue/RIG-7#comment-abc"
+		commentKey = "c-uuid-1"
+		body       = "hi"
+		account    = "Alice"
+	)
+	// Webhook arm: the delivered link is the parent ISSUE url (Linear's comment
+	// payload carries no comment URL); the stable key is the comment UUID.
+	ev := forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
+		Host:     "linear.app", Repo: "RIG", Kind: kindIssue, Number: 7,
+		URL:    issueURL,
+		Change: chComment,
+		Comment: &compassv1internal.CommentRef{
+			Url: issueURL, CommentKey: commentKey, Body: body, ForgeAccount: account,
+		},
+	}
+	applied := ApplyEvent(nil, ev)
+
+	// Sweep arm: the SAME comment state, observed with the comment's OWN url.
+	fetched := FetchedArtifact{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
+		Host:     "linear.app", Repo: "RIG", Kind: kindIssue, Number: 7,
+		Comments: []forge.Comment{{Key: commentKey, URL: commentURL, Body: body, ForgeAccount: account}},
+	}
+	changes, rebuilt, revision := DetectChanges(&applied, fetched)
+	if len(changes) != 0 {
+		t.Errorf("cross-producer sweep produced %d changes, want 0 (phantom-diff heartbeat)", len(changes))
+	}
+	if string(canonicalJSON(&applied)) != string(canonicalJSON(&rebuilt)) {
+		t.Errorf("canonical diff nonempty:\n webhook = %s\n sweep   = %s", canonicalJSON(&applied), canonicalJSON(&rebuilt))
+	}
+	if revision != SnapshotRevision(&applied) {
+		t.Errorf("revision mismatch: webhook=%s sweep=%s", SnapshotRevision(&applied), revision)
 	}
 }
 

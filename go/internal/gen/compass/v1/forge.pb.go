@@ -186,6 +186,7 @@ type CommentRef struct {
 	Body          string                 `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`                                     // the comment text; unset on a write ack
 	ForgeAccount  string                 `protobuf:"bytes,4,opt,name=forge_account,json=forgeAccount,proto3" json:"forge_account,omitempty"` // the commenter's forge login; always set on a notification
 	Agent         *v1.AgentAttribution   `protobuf:"bytes,5,opt,name=agent,proto3" json:"agent,omitempty"`                                   // set only when the commenter is a Compass agent; unset for a human
+	CommentKey    string                 `protobuf:"bytes,6,opt,name=comment_key,json=commentKey,proto3" json:"comment_key,omitempty"`       // a provider-stable comment identity for snapshot keying (GitHub numeric id as string; Linear UUID). Internal notify-path use; unset on a write ack.
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -253,6 +254,13 @@ func (x *CommentRef) GetAgent() *v1.AgentAttribution {
 		return x.Agent
 	}
 	return nil
+}
+
+func (x *CommentRef) GetCommentKey() string {
+	if x != nil {
+		return x.CommentKey
+	}
+	return ""
 }
 
 // A reference to a submitted PR review — the write ack for submit_review.
@@ -459,7 +467,7 @@ var File_compass_v1_forge_proto protoreflect.FileDescriptor
 const file_compass_v1_forge_proto_rawDesc = "" +
 	"\n" +
 	"\x16compass/v1/forge.proto\x12\n" +
-	"compass.v1\x1a\x18compass/v1/compass.proto\"\xaa\x01\n" +
+	"compass.v1\x1a\x18compass/v1/compass.proto\"\xcb\x01\n" +
 	"\n" +
 	"CommentRef\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1d\n" +
@@ -467,7 +475,9 @@ const file_compass_v1_forge_proto_rawDesc = "" +
 	"comment_id\x18\x02 \x01(\x04R\tcommentId\x12\x12\n" +
 	"\x04body\x18\x03 \x01(\tR\x04body\x12#\n" +
 	"\rforge_account\x18\x04 \x01(\tR\fforgeAccount\x122\n" +
-	"\x05agent\x18\x05 \x01(\v2\x1c.compass.v1.AgentAttributionR\x05agent\"T\n" +
+	"\x05agent\x18\x05 \x01(\v2\x1c.compass.v1.AgentAttributionR\x05agent\x12\x1f\n" +
+	"\vcomment_key\x18\x06 \x01(\tR\n" +
+	"commentKey\"T\n" +
 	"\tReviewRef\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1b\n" +
 	"\treview_id\x18\x02 \x01(\x04R\breviewId\x12\x18\n" +
