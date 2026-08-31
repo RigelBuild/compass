@@ -1,11 +1,12 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
 # compass-agent-image (agent-image/): the compass-agent runtime image. A
-# standalone nix devenv, not a bun package — the build is
-# `nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent`, the same
-# fork-pinned derivation the publish lane ships (agent-image/publish.sh) and the
-# local `dogfood:agent-image` load produce. A green build here is proof the
-# exact artifact that publishes still builds.
+# standalone nix devenv, not a bun package — the build resolves the devenv fork
+# rev from agent-image/devenv.lock (via tools/toolchain/devenv-cli) and runs
+# `nix run "$src" -- container build agent`, the same derivation the publish lane
+# ships (agent-image/publish.sh) and the local `dogfood:agent-image` load
+# produce. A green build here is proof the exact artifact that publishes still
+# builds.
 #
 # WHY THIS IS A MOON PROJECT. Registering it in .moon/workspace.yml is what puts
 # the image build in the gate: on a PR `moon ci :ci` runs this project's `ci`
@@ -34,19 +35,26 @@ workspace:
 tasks:
   build:
     # Realise the image exactly as the publish lane and the dogfood load do —
-    # the same fork-pinned derivation, so a green build here proves the exact
-    # artifact that publishes builds. Runs from agent-image/ (moon's default
-    # project-dir cwd) so `devenv container build` resolves this image's
+    # the same derivation, so a green build here proves the exact artifact that
+    # publishes builds. The devenv fork rev is resolved from
+    # agent-image/devenv.lock at runtime (never hand-pinned) via
+    # tools/toolchain/devenv-cli, matching ci.yml's seed step. moon `command:`
+    # is a single command with no shell to compose the `$(…)` resolve, so this is
+    # a `script:` running the two-step resolve-then-run. Runs from the workspace
+    # root (runFromWorkspaceRoot below) so the tool path and lock are the same
+    # repo-root-relative strings ci.yml uses; the `cd agent-image` then puts the
+    # nix run in agent-image/ so `devenv container build` resolves this image's
     # devenv.yaml/devenv.lock, matching publish.sh. The substituters the build
     # fetches from are named in ci.yml's install-nix-action config, the reviewed
     # trust surface for this gate.
     #
-    # cache:false — nix owns its store-path caching; moon must not false-green a
-    # build it did not re-run (the same posture the fork builds take).
-    command: 'nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent'
+    # cache:false — nix owns its store-path caching, so moon must not false-green
+    # a build it did not re-run (the same posture the fork builds take).
+    script: 'src=$(bun tools/toolchain/devenv-cli/index.ts --lock agent-image/devenv.lock --mode flakeref); cd agent-image && nix run "$src" -- container build agent'
     options:
       cache: false
       runInCI: true
+      runFromWorkspaceRoot: true
     # The image's build closure. MIRRORS publish-agent-image.yml's
     # on.push.paths — the reviewed source of truth for what changes the
     # published artifact — so affected-detection schedules this build on exactly

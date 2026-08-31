@@ -530,13 +530,14 @@ in
     # targets the Linux dev box.
     # agent-image: build AND load the agent base image into
     # containers-storage:compass-agent:latest (the ref the runner resolves with
-    # no pull). `container copy` builds then copies; the invocation is pinned to
-    # the shared RigelBuild/devenv fork's own CLI, pinned by rev
-    # (`nix run github:RigelBuild/devenv/<rev>#devenv`) so it cannot diverge
-    # from the fork source the agent-image module set is pinned to. Opt-in (per
-    # D5): NOT wired `after` into up — the image closure is large and rebuilding
-    # it on every `up` would violate the never-heavy-on-up constraint. The runner
-    # starts fine without the image; it only resolves it at Provision time.
+    # no pull). `container copy` builds then copies; the devenv fork rev is
+    # resolved from agent-image/devenv.lock at runtime (via
+    # tools/toolchain/devenv-cli, `nix run "$src" -- …`) so it names exactly the
+    # fork source the agent-image module set is pinned to — the same source
+    # ci.yml's seed step resolves. Opt-in (per D5): NOT wired `after` into up —
+    # the image closure is large and rebuilding it on every `up` would violate
+    # the never-heavy-on-up constraint. The runner starts fine without the image;
+    # it only resolves it at Provision time.
     "dogfood:agent-image" = {
       exec = ''
         set -euo pipefail
@@ -549,7 +550,8 @@ in
         # Removing it first makes the bare ref resolve to the image we just built.
         # `podman rmi` exits non-zero when the tag is absent, so tolerate that.
         podman rmi -f localhost/compass-agent:latest 2>/dev/null || true
-        nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container copy agent
+        src=$(bun "${config.devenv.root}/tools/toolchain/devenv-cli/index.ts" --lock "${config.devenv.root}/agent-image/devenv.lock" --mode flakeref)
+        nix run "$src" -- container copy agent
       '';
       cwd = "${config.devenv.root}/agent-image";
     };
