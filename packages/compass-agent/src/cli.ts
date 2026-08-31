@@ -761,6 +761,16 @@ export async function main(
 				role,
 			)
 		: undefined;
+	if (role && rolePrompt === undefined) {
+		// A role was selected but its prompt did not materialize (absent, empty, or
+		// unreadable file). The boot still degrades gracefully to the default
+		// block-0 above, but a role-without-shipped-prompt is an operator config
+		// gap the server-side taxonomy cannot catch (it validates the label, never
+		// the bundle), so surface it loudly rather than silently.
+		console.error(
+			`[compass-agent] role ${role} is set but no prompt was found at prompts/${role}/SYSTEM.md — falling back to the default block-0`,
+		);
+	}
 
 	// Fleet OMP config passthrough (RIG-1678, design compass-agent-config-passthrough
 	// §CP-1/CP-2/CP-4), applied AFTER loadMountedConfig and BEFORE
