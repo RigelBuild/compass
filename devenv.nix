@@ -95,6 +95,14 @@ in
     # workflow linting resolves the same pinned binary everywhere.
     actionlint
 
+    # SQL migration lint battery (tools/sql-migration-gate/moon.yml): squawk
+    # (migration-safety analysis — full-table rewrites, unsafe DDL, missing
+    # CONCURRENTLY) + sqruff (SQL style/lint). Bare nixpkgs attrs so they live
+    # in this parsed literal where the toolchain-parity gate resolves them, one
+    # pin giving CI and every dev box the identical binary + version.
+    squawk
+    sqruff
+
     # curl: the compass-server readiness probe (processes below) POSTs to
     # GetServerInfo over the loopback dev-http door to gate readiness on a real
     # serving handler. Pin it here (referenced via `lib.getExe` in the probe)

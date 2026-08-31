@@ -99,6 +99,13 @@ projects:
   # image realises; this proves it is correct. Runs on the same image-closure
   # affected-detection.
   agent-image-env-gate: 'tools/agent-image-env-gate'
+  # The SQL migration lint gate (RIG-3031): squawk (migration-safety) + sqruff
+  # (SQL style) over the first-party migrations under
+  # go/internal/store/migrations/. A shell-exec nix-tool gate; registered here so
+  # moon discovers it and its `ci` aggregate rides the moon-driven CI sweep —
+  # unregistered, moon never sees it (projects come only from this map) and the
+  # gate is silently inert. See tools/sql-migration-gate/moon.yml.
+  sql-migration-gate: 'tools/sql-migration-gate'
   # Self-hosted Renovate (RIG-2432): the repo config + bot config + lockstep
   # postUpgradeTask scripts + the config guard suite. Ported from the internal
   # monorepo's renovate config. Registered here so config.test.ts runs under the

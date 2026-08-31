@@ -1,0 +1,31 @@
+# sqruff — SQL style/lint for go/internal/store/migrations/.
+# Gate config for tools/sql-migration-gate/moon.yml.
+#
+# Posture: keep sqruff's HIGH-VALUE structural/correctness rules (ambiguous
+# column refs, aliasing, references, convention, structure — the classes that
+# catch real query defects squawk does not) and disable only the pure-layout /
+# capitalisation reformatting rules that fight this migration's deliberate,
+# reviewed hand-formatting. The migration is a checked-in, human-authored schema
+# doc, not machine-generated SQL: its column-aligned type declarations and its
+# long explanatory comment blocks are intentional and reviewed. A style
+# auto-formatter is the wrong tool for it; a linter that flags a genuine
+# structural hazard is the right one, so those stay on.
+
+[sqruff]
+dialect = postgres
+# Only the layout + capitalisation rules are excluded (see per-rule notes); every
+# other default rule stays enabled.
+exclude_rules = LT01,LT02,LT05,CP02
+
+# LT01 (layout.spacing): the schema aligns column types into readable columns
+#   (id  TEXT PRIMARY KEY / slug  TEXT NOT NULL). Multi-space alignment is
+#   intentional; single-space collapse would destroy the reviewed alignment.
+# LT02 (layout.indent): continuation-line indentation on multi-line CREATE
+#   INDEX / constraint statements is hand-set for readability and does not match
+#   sqruff's fixed indent model.
+# LT05 (layout.long_lines): the file's value is its dense inline design-rationale
+#   comments (with design.md / RIG-NNNN cross-refs); an 80-col cap would force
+#   mechanical, meaning-fragmenting rewraps of prose, not SQL.
+# CP02 (capitalisation.identifiers): the file uses uppercase SQL keywords and
+#   access-method names (USING GIN); CP02 misreads GIN as an identifier that must
+#   be lowercased, fighting the consistent uppercase-keyword style.
