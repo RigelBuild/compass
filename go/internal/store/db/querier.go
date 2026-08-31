@@ -13,7 +13,9 @@ import (
 type Querier interface {
 	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
 	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
+	ActivityFor(ctx context.Context, dollar_1 []string) ([]AgentActivity, error)
 	AdvanceDeliveryCursor(ctx context.Context, arg AdvanceDeliveryCursorParams) error
+	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the
 	// inline-sql-gate allowlist — the gate is literal-at-callsite scoped and this
@@ -35,6 +37,20 @@ type Querier interface {
 	AgentOwnersByIDs(ctx context.Context, dollar_1 []string) ([]string, error)
 	AgentSubtree(ctx context.Context, accountID string) ([]AgentSubtreeRow, error)
 	AgentsByOwner(ctx context.Context, ownerUserID string) ([]AgentsByOwnerRow, error)
+	// Agent-transcript queries (sqlc adoption T5, RIG-3034). These replace the
+	// inline SQL literals in internal/store/agent_transcripts.go; the hand-written
+	// Store methods keep their exact signatures and own the two-tier flush
+	// orchestration (PUT-before-prune, the RepeatableRead/ReadOnly resume snapshot
+	// tx, the safety-valve cut-point loop) plus the uint64<->int64 seq narrowing
+	// (toInt64/toUint64). They map generated rows into TranscriptEntryRow and
+	// ArchiveSegmentRow (via the transcriptRowsFromDB/segmentRowsFromDB helpers).
+	//
+	// COALESCE(MAX/SUM(...), 0) sites carry an explicit ::BIGINT cast so sqlc types
+	// them int64 rather than interface{} (mirrors messages.sql MessagesHeadSeq). The
+	// SessionTranscript and SafetyValveSegments reads are each issued on BOTH the
+	// pool (the eponymous method) and a snapshot tx (SessionResumeSnapshot, via
+	// WithTx), so one generated query backs both call sites.
+	BindLifetime(ctx context.Context, sessionID string) (int64, error)
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]string, error)
 	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
@@ -43,12 +59,16 @@ type Querier interface {
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
+	CollectSegment(ctx context.Context, arg CollectSegmentParams) ([]CollectSegmentRow, error)
 	ConvertDMChannel(ctx context.Context, arg ConvertDMChannelParams) error
 	CoordinationReports(ctx context.Context, parentAgentID pgtype.Text) ([]string, error)
 	CountAgentMembers(ctx context.Context, channelID string) (int64, error)
 	CountChannelPins(ctx context.Context, channelID string) (CountChannelPinsRow, error)
 	CountOwedMentions(ctx context.Context) (int64, error)
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
+	CurrentAgentConfig(ctx context.Context) (CurrentAgentConfigRow, error)
+	DeleteAgentConfig(ctx context.Context) error
+	DeleteAgentPlacement(ctx context.Context, containerName string) error
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
 	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
@@ -90,6 +110,8 @@ type Querier interface {
 	GetTopicChannel(ctx context.Context, id string) (string, error)
 	GetVisibleAgentHandleID(ctx context.Context, arg GetVisibleAgentHandleIDParams) (string, error)
 	GetVisibleGlobalHandleID(ctx context.Context, arg GetVisibleGlobalHandleIDParams) (string, error)
+	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)
+	HotTailSizes(ctx context.Context, arg HotTailSizesParams) ([]HotTailSizesRow, error)
 	InSweepSet(ctx context.Context, arg InSweepSetParams) (bool, error)
 	// Account-domain queries (sqlc adoption T2, RIG-3034). These replace the inline
 	// SQL literals that lived in internal/store/accounts.go; the hand-written Store
@@ -108,7 +130,15 @@ type Querier interface {
 	InsertAccount(ctx context.Context, arg InsertAccountParams) error
 	InsertAccountHandle(ctx context.Context, arg InsertAccountHandleParams) error
 	InsertAgentAccount(ctx context.Context, arg InsertAgentAccountParams) error
+	// Agent-session queries (sqlc adoption T5, RIG-3034). These replace the inline
+	// SQL literals that lived in internal/store/agent_sessions.go; the hand-written
+	// Store methods keep their exact signatures and wrap these generated calls,
+	// mapping AccountID newtypes and the not-found/forbidden merge (D9) by hand. No
+	// domain xFromRow mapper — the session reads project scalar columns the methods
+	// return directly.
+	InsertAgentSession(ctx context.Context, arg InsertAgentSessionParams) error
 	InsertAgentWorkspaceIgnore(ctx context.Context, arg InsertAgentWorkspaceIgnoreParams) error
+	InsertArchiveSegment(ctx context.Context, arg InsertArchiveSegmentParams) error
 	InsertChannel(ctx context.Context, arg InsertChannelParams) error
 	// Channel-domain queries (sqlc adoption T3, RIG-3034). These replace the inline
 	// SQL literals that lived in internal/store/channels.go; the hand-written Store
@@ -130,8 +160,12 @@ type Querier interface {
 	InsertMessage(ctx context.Context, arg InsertMessageParams) (InsertMessageRow, error)
 	InsertSystemAccount(ctx context.Context, accountID string) error
 	InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) error
+	InsertTranscriptEntry(ctx context.Context, arg InsertTranscriptEntryParams) (int64, error)
 	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
 	IsAgentAccount(ctx context.Context, accountID string) (bool, error)
+	LatestCheckpointSeq(ctx context.Context, sessionID string) (int64, error)
+	LatestSessionForAccount(ctx context.Context, agentAccountID string) (string, error)
+	ListAgentPlacementsForRunner(ctx context.Context, runnerID string) ([]ListAgentPlacementsForRunnerRow, error)
 	ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error)
 	ListChannels(ctx context.Context, accountID string) ([]ListChannelsRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
@@ -162,14 +196,30 @@ type Querier interface {
 	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
+	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
+	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) error
+	// Agent config-bundle queries (sqlc adoption T5, RIG-3034). These replace the
+	// inline SQL literals in internal/store/agent_config.go; the hand-written Store
+	// methods keep their signatures and own the bundle validation/hash and the
+	// tar-walk member inventory (Go-side, over the returned BYTEA). The config
+	// bundle is a fleet-wide singleton row (singleton = TRUE).
+	PutAgentConfig(ctx context.Context, arg PutAgentConfigParams) error
+	// Agent-placement queries (sqlc adoption T5, RIG-3034). These replace the inline
+	// SQL literals in internal/store/agent_placements.go; the hand-written Store
+	// methods keep their signatures and map the placement rows into the
+	// AgentPlacement domain struct (AccountID newtype done inline in the Go).
+	RecordAgentPlacement(ctx context.Context, arg RecordAgentPlacementParams) error
 	RecordOwedMention(ctx context.Context, arg RecordOwedMentionParams) error
+	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
+	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)
 	ResolveAckMessage(ctx context.Context, arg ResolveAckMessageParams) (int64, error)
 	ResolveCoordinationManager(ctx context.Context, id string) (ResolveCoordinationManagerRow, error)
 	ResolveOwner(ctx context.Context, accountID string) (string, error)
 	ResolveTopicForUpdate(ctx context.Context, arg ResolveTopicForUpdateParams) (string, error)
 	ResolveTopicRenameTarget(ctx context.Context, arg ResolveTopicRenameTargetParams) (string, error)
 	ReviveTopic(ctx context.Context, id string) error
+	SafetyValveSegments(ctx context.Context, arg SafetyValveSegmentsParams) ([]SafetyValveSegmentsRow, error)
 	// Scaffold-only query proving sqlc generation works end to end (T1).
 	//
 	// This is NOT a real store query: the per-domain query files land in T2..T6 as
@@ -190,6 +240,15 @@ type Querier interface {
 	SeedDeliveryCursor(ctx context.Context, arg SeedDeliveryCursorParams) error
 	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
 	SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error)
+	SessionBase(ctx context.Context, sessionID string) (int64, error)
+	SessionMaxEntrySeq(ctx context.Context, sessionID string) (int64, error)
+	SessionTranscript(ctx context.Context, sessionID string) ([]SessionTranscriptRow, error)
+	// Agent-activity queries (sqlc adoption T5, RIG-3034). These replace the inline
+	// SQL literals in internal/store/agent_activity.go; the hand-written Store
+	// methods keep their signatures and map the ActivityFor rows into the
+	// AgentActivity domain struct (agentActivityFromRow-equivalent, done inline in
+	// the Go — absent-from-table means absent-from-map).
+	SetActivity(ctx context.Context, arg SetActivityParams) error
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
 	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error

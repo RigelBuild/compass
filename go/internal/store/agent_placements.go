@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // Agent placement: the durable record of WHERE each agent runs — which Runner,
@@ -62,15 +64,11 @@ func (s *Store) RecordAgentPlacement(ctx context.Context, agentAccountID Account
 	if containerName == "" {
 		return fmt.Errorf("%w: container name is required", ErrInvalidArgument)
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO agent_placements (agent_account_id, runner_id, container_name)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (agent_account_id) DO UPDATE
-		    SET runner_id      = EXCLUDED.runner_id,
-		        container_name = EXCLUDED.container_name,
-		        updated_at     = now()`,
-		string(agentAccountID), runnerID, containerName,
-	); err != nil {
+	if err := s.q.RecordAgentPlacement(ctx, db.RecordAgentPlacementParams{
+		AgentAccountID: string(agentAccountID),
+		RunnerID:       runnerID,
+		ContainerName:  containerName,
+	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, agentAccountID)
 		}
@@ -95,11 +93,8 @@ func (s *Store) AgentForContainer(ctx context.Context, containerName string) (Ac
 	if containerName == "" {
 		return "", fmt.Errorf("%w: container name is required", ErrInvalidArgument)
 	}
-	var accountID string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT agent_account_id FROM agent_placements WHERE container_name = $1`,
-		containerName,
-	).Scan(&accountID); err != nil {
+	accountID, err := s.q.AgentForContainer(ctx, containerName)
+	if err != nil {
 		if noRows(err) {
 			return "", fmt.Errorf("%w: container %q is not placed", ErrNotFound, containerName)
 		}
@@ -119,30 +114,17 @@ func (s *Store) ListAgentPlacementsForRunner(ctx context.Context, runnerID strin
 	if runnerID == "" {
 		return nil, fmt.Errorf("%w: runner id is required", ErrInvalidArgument)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT agent_account_id, runner_id, container_name
-		   FROM agent_placements
-		  WHERE runner_id = $1
-		  ORDER BY agent_account_id`,
-		runnerID,
-	)
+	rows, err := s.q.ListAgentPlacementsForRunner(ctx, runnerID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list agent placements: %w", err)
 	}
-	defer rows.Close()
-
-	placements := []AgentPlacement{}
-	for rows.Next() {
-		var p AgentPlacement
-		var accountID string
-		if err := rows.Scan(&accountID, &p.RunnerID, &p.ContainerName); err != nil {
-			return nil, fmt.Errorf("store: scan agent placement: %w", err)
-		}
-		p.AgentAccountID = AccountID(accountID)
-		placements = append(placements, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate agent placements: %w", err)
+	placements := make([]AgentPlacement, 0, len(rows))
+	for _, row := range rows {
+		placements = append(placements, AgentPlacement{
+			AgentAccountID: AccountID(row.AgentAccountID),
+			RunnerID:       row.RunnerID,
+			ContainerName:  row.ContainerName,
+		})
 	}
 	return placements, nil
 }
@@ -158,10 +140,7 @@ func (s *Store) DeleteAgentPlacement(ctx context.Context, containerName string) 
 	if containerName == "" {
 		return fmt.Errorf("%w: container name is required", ErrInvalidArgument)
 	}
-	if _, err := s.pool.Exec(ctx,
-		`DELETE FROM agent_placements WHERE container_name = $1`,
-		containerName,
-	); err != nil {
+	if err := s.q.DeleteAgentPlacement(ctx, containerName); err != nil {
 		return fmt.Errorf("store: delete agent placement: %w", err)
 	}
 	return nil
@@ -177,14 +156,12 @@ func (s *Store) PlacementForAgent(ctx context.Context, agentAccountID AccountID)
 	if agentAccountID == "" {
 		return "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	if err := s.pool.QueryRow(ctx,
-		`SELECT runner_id, container_name FROM agent_placements WHERE agent_account_id = $1`,
-		string(agentAccountID),
-	).Scan(&runnerID, &containerName); err != nil {
+	row, err := s.q.PlacementForAgent(ctx, string(agentAccountID))
+	if err != nil {
 		if noRows(err) {
 			return "", "", fmt.Errorf("%w: agent %q is not placed", ErrNotFound, agentAccountID)
 		}
 		return "", "", fmt.Errorf("store: resolve placement for agent: %w", err)
 	}
-	return runnerID, containerName, nil
+	return row.RunnerID, row.ContainerName, nil
 }

@@ -88,11 +88,6 @@ export const ALLOWLIST: string[] = [
 	// messages/topics/delivery_cursors/delivery_reads in T4 (RIG-3034).
 	// agent_tree.go + presence_reads.go were never seeded here (const-hoisted SQL,
 	// so the literal-scoped gate produced no finding).
-	"go/internal/store/agent_sessions.go",
-	"go/internal/store/agent_transcripts.go",
-	"go/internal/store/agent_activity.go",
-	"go/internal/store/agent_config.go",
-	"go/internal/store/agent_placements.go",
 	"go/internal/store/authz.go",
 	"go/internal/store/tokens.go",
 	"go/internal/store/secrets.go",
