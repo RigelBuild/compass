@@ -50,7 +50,11 @@ tasks:
     #
     # cache:false — nix owns its store-path caching, so moon must not false-green
     # a build it did not re-run (the same posture the fork builds take).
-    script: 'src=$(bun tools/toolchain/devenv-cli/index.ts --lock agent-image/devenv.lock --mode flakeref); cd agent-image && nix run "$src" -- container build agent'
+    # `&&` between resolve and run — moon's `script:` shell carries no `set -e`,
+    # so chaining fail-fast keeps a failed resolve from falling through to
+    # `nix run ""` (matching the `set -euo pipefail` / `bash -e` guards the
+    # devenv.nix and ci.yml sibling sites wrap the identical resolve in).
+    script: 'src=$(bun tools/toolchain/devenv-cli/index.ts --lock agent-image/devenv.lock --mode flakeref) && cd agent-image && nix run "$src" -- container build agent'
     options:
       cache: false
       runInCI: true

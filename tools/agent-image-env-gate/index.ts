@@ -101,9 +101,16 @@ if (import.meta.main) {
 	// is resolved from agent-image/devenv.lock at runtime (never hand-pinned), so
 	// this gate builds the exact derivation the lock names — the same source
 	// ci.yml's seed step resolves.
-	const ref = flakeref(
-		devenvSource(await Bun.file(join(agentImageDir, "devenv.lock")).text()),
-	);
+	let ref: string;
+	try {
+		ref = flakeref(
+			devenvSource(await Bun.file(join(agentImageDir, "devenv.lock")).text()),
+		);
+	} catch (cause) {
+		fail(
+			`could not resolve devenv source from agent-image/devenv.lock: ${String(cause)}`,
+		);
+	}
 	let buildOut: string;
 	try {
 		buildOut = await $`nix run ${ref} -- container build agent`
