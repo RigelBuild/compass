@@ -384,16 +384,28 @@ func (s *GuestStream) pumpResponses() {
 		case *compassv1.ExecStreamResponse_Stdout:
 			// A write error means the caller's read end is gone; the guest child
 			// is still reaped on stream teardown, so stop pumping this pipe.
+			if frame == nil {
+				continue
+			}
 			if _, werr := s.stdoutW.Write(frame.Stdout); werr != nil {
 				s.closePipes(werr)
 				return
 			}
 		case *compassv1.ExecStreamResponse_Stderr:
+			if frame == nil {
+				continue
+			}
 			if _, werr := s.stderrW.Write(frame.Stderr); werr != nil {
 				s.closePipes(werr)
 				return
 			}
 		case *compassv1.ExecStreamResponse_Exit:
+			if frame == nil {
+				continue
+			}
+			// A malformed Exit frame with a nil Exit body still terminates: the
+			// generated GetExitCode()/GetSignal() getters are nil-safe (return 0),
+			// matching the pre-guard terminate-on-Exit behavior.
 			s.status = ExitStatus{
 				Code:   int(frame.Exit.GetExitCode()),
 				Signal: int(frame.Exit.GetSignal()),
