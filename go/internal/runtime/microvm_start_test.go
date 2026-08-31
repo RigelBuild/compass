@@ -17,6 +17,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -121,7 +122,7 @@ var _ compassv1internalconnect.GuestControlClient = (*fakeGuestClient)(nil)
 // which Start must then deliver verbatim.
 func seamStart(t *testing.T, spec ContainerSpec, provErr error) (*MicroVMRuntime, ContainerID, *fakeGuestVM, *fakeGuestClient) {
 	t.Helper()
-	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
+	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: shortRunRoot(t)})
 	id, err := m.Create(t.Context(), spec)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -137,11 +138,32 @@ func seamStart(t *testing.T, spec ContainerSpec, provErr error) (*MicroVMRuntime
 	return m, id, vm, client
 }
 
+// shortRunRoot returns a fresh, SHORT runroot outside the test-name-embedding
+// t.TempDir() tree, so the per-session suffixed sockets (widest:
+// <root>/microvm/<32-hex>/vsock.sock_1025) stay under the AF_UNIX sun_path
+// budget Create now guards pre-boot (§(e)). A t.TempDir() root embeds the long
+// test-function name and overflows the 107-byte cap — the very failure the
+// guard reports. Mirrors e2eConfig's short-root rationale.
+func shortRunRoot(t *testing.T) string {
+	t.Helper()
+	//nolint:usetesting // t.TempDir embeds the long test name, overflowing the AF_UNIX sun_path budget the pre-boot gateway-path guard enforces — the very failure a short fixed root prevents.
+	root, err := os.MkdirTemp("", "cvm")
+	if err != nil {
+		t.Fatalf("creating short microvm runroot: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(root); err != nil {
+			t.Errorf("removing microvm runroot %s: %v", root, err)
+		}
+	})
+	return root
+}
+
 // TestCreateRecordsDefaultDenyScript pins §(e): Create records the zero-value
 // EgressPolicy's full default-deny base ruleset on the session (never empty), so
 // every ContainerSpec-created session boots armed even with no allowlist set.
 func TestCreateRecordsDefaultDenyScript(t *testing.T) {
-	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
+	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: shortRunRoot(t)})
 	id, err := m.Create(t.Context(), ContainerSpec{Name: "agent-1", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -224,7 +246,7 @@ func TestStartProvisionErrorFailsAndTearsDown(t *testing.T) {
 // awaitHealthy. The production microvm.Launch adapter never returns (nil, nil),
 // so this guards only against a broken test seam, but it must fail loud.
 func TestStartNilGuestHandleFailsClosed(t *testing.T) {
-	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
+	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: shortRunRoot(t)})
 	id, err := m.Create(t.Context(), ContainerSpec{Name: "agent-1", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)

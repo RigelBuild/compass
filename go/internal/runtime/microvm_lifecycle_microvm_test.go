@@ -23,10 +23,10 @@ import (
 // runroot, so every session's sockets live inside the test's own scratch tree
 // and are removed with it. The runroot must be short because the per-session
 // socket paths under it are AF_UNIX sun_path-budgeted: the widest is
-// <RunRoot>/microvm/<32-hex session id>/virtiofsd.sock, a 56-byte tail, so a
+// <RunRoot>/microvm/<32-hex session id>/vsock.sock_1025, a 57-byte tail, so a
 // t.TempDir() root (which embeds the test-function name, e.g. the 36-char
-// TestMicroVMStartFailureLeavesNoState → a ~111-byte socket path) overflows
-// the 107-byte Linux cap and virtiofsd's bind(2) fails with a bare EINVAL —
+// TestMicroVMStartFailureLeavesNoState → a ~112-byte socket path) overflows
+// the 107-byte Linux cap and the bind(2) fails with a bare EINVAL —
 // the socket never appears and the boot times out. A short fixed root keeps the
 // worst-case path well under the cap. Production runroots are short and
 // startup-budget-checked (run.go validateRuntimeDir); this mirrors that.

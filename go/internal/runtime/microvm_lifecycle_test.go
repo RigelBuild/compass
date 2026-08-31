@@ -15,6 +15,8 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -54,6 +56,9 @@ func TestBootConfigAssembly(t *testing.T) {
 	}
 	if cfg.VsockCID != guestVsockCID || cfg.VsockPort != guestVsockPort {
 		t.Fatalf("CID/port = %d/%d, want %d/%d", cfg.VsockCID, cfg.VsockPort, guestVsockCID, guestVsockPort)
+	}
+	if cfg.GatewayPort != agentGatewayVsockPort {
+		t.Fatalf("GatewayPort = %d, want %d", cfg.GatewayPort, agentGatewayVsockPort)
 	}
 	if cfg.CPUs != 4 || cfg.MemoryMB != 2048 {
 		t.Fatalf("sizing = %d cpus / %d MB, want 4 / 2048", cfg.CPUs, cfg.MemoryMB)
@@ -370,6 +375,105 @@ func TestExitErrorMapping(t *testing.T) {
 	// (c) clean exit → nil.
 	if err := exitError(microvm.ExitStatus{}); err != nil {
 		t.Fatalf("clean exit err = %v, want nil", err)
+	}
+}
+
+// TestAgentGatewayEndpoint: a created session resolves to its suffixed host-side
+// gateway path (GatewaySocketPath over the session's own vsock base and the
+// fixed gateway port), and an unknown name returns ("", false) — the probe shape
+// agentHost's vsock leg relies on (record §(b)/§(c)/§(e)).
+func TestAgentGatewayEndpoint(t *testing.T) {
+	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
+	id, err := m.Create(context.Background(), ContainerSpec{Name: "agent-1", UID: 1000})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	session, err := m.session(id)
+	if err != nil {
+		t.Fatalf("session %s not in table: %v", id, err)
+	}
+	want := microvm.GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort)
+	got, ok := m.AgentGatewayEndpoint("agent-1")
+	if !ok {
+		t.Fatal("AgentGatewayEndpoint(created session) ok = false, want true")
+	}
+	if got != want {
+		t.Fatalf("AgentGatewayEndpoint = %q, want the suffixed path %q", got, want)
+	}
+	if !strings.HasSuffix(got, "/vsock.sock_1025") {
+		t.Fatalf("endpoint %q does not carry the fixed gateway port suffix", got)
+	}
+	if _, ok := m.AgentGatewayEndpoint("no-such-session"); ok {
+		t.Fatal("AgentGatewayEndpoint(unknown) ok = true, want false")
+	}
+}
+
+// TestCreateRejectsOverLongGatewaySocketPath pins the pre-boot sun_path guard
+// (record §(e)) at its exact off-by-one boundary: the fully-suffixed gateway
+// path (<RunRoot>/microvm/<32-hex>/vsock.sock_1025) at exactly sunPathMax bytes
+// must be ACCEPTED (the 108-byte sun_path holds sunPathMax chars + NUL), at
+// sunPathMax+1 must be REJECTED before any VM boots, and far-over stays
+// rejected. A '>' vs '>=' confusion in the guard would pass the boundary case
+// but fail here. A refused Create leaves no session in the table.
+func TestCreateRejectsOverLongGatewaySocketPath(t *testing.T) {
+	// The suffixed path is <RunRoot>/microvm/<32-hex id>/vsock.sock_1025. The
+	// id is 16 random bytes hex-encoded (32 chars, mintSessionID), so the tail
+	// past RunRoot is a fixed length; derive it from the same constants Create
+	// uses so the boundary is pinned, not guessed.
+	const idLen = 2 * 16 // mintSessionID: hex of 16 bytes
+	suffixed := microvm.GatewaySocketPath("/microvm/"+strings.Repeat("a", idLen)+"/vsock.sock", agentGatewayVsockPort)
+	tailLen := len(suffixed) // bytes the path adds past RunRoot
+
+	tests := []struct {
+		name       string
+		total      int
+		wantReject bool
+	}{
+		{name: "at budget accepted", total: sunPathMax, wantReject: false},
+		{name: "one over budget rejected", total: sunPathMax + 1, wantReject: true},
+		{name: "far over budget rejected", total: sunPathMax + 40, wantReject: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The accepted case must actually create dirs, and the fully-suffixed
+			// path must land at exactly tt.total bytes, so root the RunRoot under
+			// a SHORT /tmp base (t.TempDir embeds the long test-function name and
+			// would overflow the target) and pad the tail to hit the byte count.
+			//nolint:usetesting // t.TempDir()'s path embeds the long test name, overflowing the sunPathMax-byte target this test pins; a short /tmp base is required.
+			base, err := os.MkdirTemp("", "mvb-")
+			if err != nil {
+				t.Fatalf("creating temp base: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(base) })
+			want := tt.total - tailLen - len(base) - len("/")
+			if want < 1 {
+				t.Fatalf("temp base %q (%d bytes) too long to build a %d-byte total path", base, len(base), tt.total)
+			}
+			runRoot := filepath.Join(base, strings.Repeat("r", want))
+			if err := os.MkdirAll(runRoot, 0o700); err != nil {
+				t.Fatalf("creating runroot: %v", err)
+			}
+			m := NewMicroVMRuntime(MicroVMConfig{RunRoot: runRoot})
+			_, createErr := m.Create(context.Background(), ContainerSpec{Name: "agent-1", UID: 1000})
+			if tt.wantReject {
+				if createErr == nil {
+					t.Fatal("Create succeeded; want the pre-boot budget error")
+				}
+				if !strings.Contains(createErr.Error(), "AF_UNIX limit") {
+					t.Fatalf("Create err = %v, want the operator-actionable AF_UNIX budget error", createErr)
+				}
+				if ok, _ := m.Exists(context.Background(), "agent-1"); ok {
+					t.Fatal("a refused Create left a session in the table; it must leave nothing behind")
+				}
+				return
+			}
+			if createErr != nil {
+				t.Fatalf("Create at the budget boundary = %v, want success (path fits sun_path exactly)", createErr)
+			}
+			if ok, _ := m.Exists(context.Background(), "agent-1"); !ok {
+				t.Fatal("an accepted Create left no session in the table")
+			}
+		})
 	}
 }
 

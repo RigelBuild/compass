@@ -7,6 +7,8 @@
 // there introduces no cycle.
 package microvm
 
+import "strconv"
+
 // NetConfig wires the userspace net backend (D6: passt) to the VMM.
 type NetConfig struct {
 	// VhostUserSocket is the AF_UNIX path passt serves with --vhost-user
@@ -23,6 +25,7 @@ type BootConfig struct {
 	Initrd      string // initramfs path (compass-guest-initrd) — new vs the sketch: required because the pinned kernel's virtio drivers are modules ((a))
 	Rootfs      string // erofs image path (compass-guest-rootfs)
 	Cmdline     string // kernel cmdline; Launch appends the vsock-port + console parameters
+	GatewayPort uint32 // fixed guest port the host serves the AgentGateway on over the suffixed vsock socket; zero ⇒ Launch omits the compass.gateway_port cmdline parameter (harness compatibility, record §(b)/§(d))
 	VsockCID    uint32 // guest CID (>= 3)
 	VsockPort   uint32 // guest port guestd listens on
 	VsockSocket string // host AF_UNIX path for --vsock socket=… (the hybrid endpoint the host dials)
@@ -32,4 +35,14 @@ type BootConfig struct {
 	CPUs        int
 	MemoryMB    int // always launched with shared=on ((c))
 	Net         NetConfig
+}
+
+// GatewaySocketPath is the host-side AF_UNIX listener path a guest reaches by
+// dialing AF_VSOCK (CID 2, port): cloud-hypervisor's hybrid vsock connects the
+// guest's dial to the launch-time --vsock socket path with an appended "_" and
+// the guest-side port (record §(a), CH docs/vsock.md "Connecting from Guest to
+// Host"). It is the one V4-specific derivation on the host serving path; the
+// listener itself is a plain AF_UNIX socket gateway.Serve binds unchanged.
+func GatewaySocketPath(vsockSocket string, port uint32) string {
+	return vsockSocket + "_" + strconv.FormatUint(uint64(port), 10)
 }
