@@ -5,6 +5,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // CoordinationHook is the manager-comms coordination-channel reconcile the comms
@@ -104,11 +107,13 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 	// discriminated SELECT would wrongly adopt.
 	const coordinationGroupName = "__coordination__"
 
-	var existing string
-	switch err := tx.QueryRow(ctx,
-		`SELECT id FROM channel_groups WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL AND visibility = $3`,
-		string(ownerUserID), coordinationGroupName, int32(VisibilityOwner),
-	).Scan(&existing); {
+	qtx := db.New(tx)
+	existing, err := qtx.GetCoordinationGroup(ctx, db.GetCoordinationGroupParams{
+		OwnerUserID: string(ownerUserID),
+		Name:        coordinationGroupName,
+		Visibility:  int16(VisibilityOwner),
+	})
+	switch {
 	case err == nil:
 		return ChannelGroupID(existing), nil
 	case !noRows(err):
@@ -116,10 +121,12 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 	}
 
 	id := newID()
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1, $2, NULL, $3, $4)`,
-		id, coordinationGroupName, string(ownerUserID), int32(VisibilityOwner),
-	); err != nil {
+	if err := qtx.InsertCoordinationGroup(ctx, db.InsertCoordinationGroupParams{
+		ID:          id,
+		Name:        coordinationGroupName,
+		OwnerUserID: string(ownerUserID),
+		Visibility:  int16(VisibilityOwner),
+	}); err != nil {
 		return "", fmt.Errorf("store: insert coordination group: %w", err)
 	}
 	return ChannelGroupID(id), nil
@@ -166,26 +173,24 @@ func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec
 		return "", fmt.Errorf("%w: coordination channel name is required", ErrInvalidArgument)
 	}
 
+	qtx := db.New(tx)
 	for suffix := 1; ; suffix++ {
 		name := spec.BaseName
 		if suffix > 1 {
 			name = fmt.Sprintf("%s-%d", spec.BaseName, suffix)
 		}
 
-		var (
-			existingID    string
-			existingOwner string
-		)
-		switch err := tx.QueryRow(ctx,
-			`SELECT id, COALESCE(owner_account_id, '') FROM channels WHERE group_id = $1 AND name = $2`,
-			string(spec.GroupID), name,
-		).Scan(&existingID, &existingOwner); {
+		existing, err := qtx.GetCoordinationChannelByName(ctx, db.GetCoordinationChannelByNameParams{
+			GroupID: pgtype.Text{String: string(spec.GroupID), Valid: true},
+			Name:    name,
+		})
+		switch {
 		case err == nil:
 			// A channel with this name already exists. Resume only when the
 			// manager owns it; otherwise it is a user's channel we must never
 			// adopt — advance to the next suffix.
-			if AccountID(existingOwner) == spec.OwnerAccountID {
-				return ChannelID(existingID), nil
+			if AccountID(existing.OwnerAccountID) == spec.OwnerAccountID {
+				return ChannelID(existing.ID), nil
 			}
 			continue
 		case !noRows(err):
@@ -201,16 +206,18 @@ func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec
 		// row. On that no-row case we loop back to the SELECT, which now sees the
 		// concurrently-committed row and resumes-or-suffixes it.
 		id := newID()
-		switch err := tx.QueryRow(ctx,
-			`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) `+
-				`VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7) `+
-				`ON CONFLICT (group_id, name) WHERE group_id IS NOT NULL DO NOTHING `+
-				`RETURNING id`,
-			id, name, string(spec.GroupID), int32(ChannelKindChannel),
-			int32(spec.Policy.PostPolicy), string(spec.Policy.OwnerAccountID), spec.Policy.MandatorySubscription,
-		).Scan(&id); {
+		insertedID, err := qtx.InsertCoordinationChannel(ctx, db.InsertCoordinationChannelParams{
+			ID:                    id,
+			Name:                  name,
+			GroupID:               pgtype.Text{String: string(spec.GroupID), Valid: true},
+			Kind:                  int16(ChannelKindChannel),
+			PostPolicy:            int16(spec.Policy.PostPolicy), //nolint:gosec // G115: ChannelPostPolicy is a CHECK-constrained 0/1 enum (channels.post_policy), always within int16
+			Column6:               string(spec.Policy.OwnerAccountID),
+			MandatorySubscription: spec.Policy.MandatorySubscription,
+		})
+		switch {
 		case err == nil:
-			return ChannelID(id), nil
+			return ChannelID(insertedID), nil
 		case noRows(err):
 			// A concurrent writer won the (group, name) race between our SELECT
 			// and this INSERT. Re-resolve the SAME name (undo the loop's suffix
@@ -243,23 +250,14 @@ func (s *Store) SetCoordinationMembersTx(ctx context.Context, tx pgx.Tx, channel
 		wantSet[m] = true
 	}
 
-	rows, err := tx.Query(ctx,
-		`SELECT account_id FROM channel_members WHERE channel_id = $1`, string(channelID))
+	qtx := db.New(tx)
+	memberIDs, err := qtx.ChannelMemberIDs(ctx, string(channelID))
 	if err != nil {
 		return nil, fmt.Errorf("store: list coordination members: %w", err)
 	}
-	current := make(map[AccountID]bool)
-	for rows.Next() {
-		var m string
-		if err := rows.Scan(&m); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("store: scan coordination member: %w", err)
-		}
+	current := make(map[AccountID]bool, len(memberIDs))
+	for _, m := range memberIDs {
 		current[AccountID(m)] = true
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate coordination members: %w", err)
 	}
 
 	// Add every wanted member missing a row, seeding its delivery cursor in this
@@ -270,11 +268,10 @@ func (s *Store) SetCoordinationMembersTx(ctx context.Context, tx pgx.Tx, channel
 		if current[m] {
 			continue
 		}
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) `+
-				`ON CONFLICT (channel_id, account_id) DO NOTHING`,
-			string(channelID), string(m),
-		); err != nil {
+		if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+			ChannelID: string(channelID),
+			AccountID: string(m),
+		}); err != nil {
 			if pgErrIs(err, pgForeignKeyViolation) {
 				return nil, fmt.Errorf("%w: unknown coordination member %q", ErrInvalidArgument, m)
 			}
@@ -293,10 +290,10 @@ func (s *Store) SetCoordinationMembersTx(ctx context.Context, tx pgx.Tx, channel
 		if wantSet[m] {
 			continue
 		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM channel_members WHERE channel_id = $1 AND account_id = $2`,
-			string(channelID), string(m),
-		); err != nil {
+		if _, err := qtx.DeleteChannelMember(ctx, db.DeleteChannelMemberParams{
+			ChannelID: string(channelID),
+			AccountID: string(m),
+		}); err != nil {
 			return nil, fmt.Errorf("store: remove coordination member: %w", err)
 		}
 		removed = append(removed, m)
@@ -312,23 +309,14 @@ func (s *Store) SetCoordinationMembersTx(ctx context.Context, tx pgx.Tx, channel
 // a stable set. Runs on the passed tx so it reads the tree state the parent-edge
 // write just committed within this same transaction.
 func (s *Store) CoordinationReports(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) ([]AccountID, error) {
-	rows, err := tx.Query(ctx,
-		`SELECT account_id FROM agent_accounts WHERE parent_agent_id = $1 ORDER BY account_id`,
-		string(managerAgentID))
+	reports, err := db.New(tx).CoordinationReports(ctx, pgtype.Text{String: string(managerAgentID), Valid: true})
 	if err != nil {
 		return nil, fmt.Errorf("store: list coordination reports: %w", err)
 	}
-	defer rows.Close()
-	members := []AccountID{managerAgentID}
-	for rows.Next() {
-		var m string
-		if err := rows.Scan(&m); err != nil {
-			return nil, fmt.Errorf("store: scan coordination report: %w", err)
-		}
+	members := make([]AccountID, 0, len(reports)+1)
+	members = append(members, managerAgentID)
+	for _, m := range reports {
 		members = append(members, AccountID(m))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate coordination reports: %w", err)
 	}
 	return members, nil
 }
@@ -338,16 +326,10 @@ func (s *Store) CoordinationReports(ctx context.Context, tx pgx.Tx, managerAgent
 // name derives from the handle; the group from the owner). An id that names no
 // agent account is ErrNotFound. Runs on the passed tx (mid-parent-edge-write).
 func (s *Store) ResolveCoordinationManagerTx(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) (handle string, ownerUserID AccountID, err error) {
-	var owner string
-	switch scanErr := tx.QueryRow(ctx,
-		`SELECT a.handle, ag.owner_user_id
-		   FROM accounts a
-		   JOIN agent_accounts ag ON ag.account_id = a.id
-		  WHERE a.id = $1`,
-		string(managerAgentID),
-	).Scan(&handle, &owner); {
+	row, scanErr := db.New(tx).ResolveCoordinationManager(ctx, string(managerAgentID))
+	switch {
 	case scanErr == nil:
-		return handle, AccountID(owner), nil
+		return row.Handle, AccountID(row.OwnerUserID), nil
 	case noRows(scanErr):
 		return "", "", fmt.Errorf("%w: coordination manager %q", ErrNotFound, managerAgentID)
 	default:
@@ -369,7 +351,7 @@ func LockOwnerCoordinationTx(ctx context.Context, tx pgx.Tx, ownerUserID Account
 	// reconcile runs INSIDE a parent-edge write that may itself hold the tree
 	// lock, and a distinct key avoids a self-deadlock-adjacent double-take while
 	// still serializing coordination reconciles against each other.
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('coordination:' || $1))`, string(ownerUserID)); err != nil {
+	if err := db.New(tx).LockOwnerCoordination(ctx, pgtype.Text{String: string(ownerUserID), Valid: true}); err != nil {
 		return fmt.Errorf("store: lock owner coordination: %w", err)
 	}
 	return nil

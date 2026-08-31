@@ -25,15 +25,40 @@ type Querier interface {
 	// Agent subtype set. The two `role` columns are aliased (user_role / agent_role)
 	// so the generated row fields do not collide.
 	AgentNeighborhood(ctx context.Context, id string) ([]AgentNeighborhoodRow, error)
+	AgentOwnersByIDs(ctx context.Context, dollar_1 []string) ([]string, error)
 	AgentSubtree(ctx context.Context, accountID string) ([]AgentSubtreeRow, error)
 	AgentsByOwner(ctx context.Context, ownerUserID string) ([]AgentsByOwnerRow, error)
+	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
+	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
+	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
+	ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMember, error)
+	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
+	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
+	ConvertDMChannel(ctx context.Context, arg ConvertDMChannelParams) error
+	CoordinationReports(ctx context.Context, parentAgentID pgtype.Text) ([]string, error)
+	CountAgentMembers(ctx context.Context, channelID string) (int64, error)
+	CountChannelPins(ctx context.Context, channelID string) (CountChannelPinsRow, error)
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
+	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
+	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
+	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
 	EnsureChannelMember(ctx context.Context, arg EnsureChannelMemberParams) error
 	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
 	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
 	GetAgentOwner(ctx context.Context, accountID string) (string, error)
 	GetAgentParent(ctx context.Context, accountID string) (pgtype.Text, error)
+	GetAgentWorkspaceID(ctx context.Context, agentAccountID string) (string, error)
+	GetChannel(ctx context.Context, id string) (GetChannelRow, error)
+	GetChannelGroupVisibility(ctx context.Context, id string) (int16, error)
+	GetCoordinationChannelByName(ctx context.Context, arg GetCoordinationChannelByNameParams) (GetCoordinationChannelByNameRow, error)
+	// Coordination-store queries (sqlc adoption T3, RIG-3034). These replace the
+	// inline SQL literals in internal/store/coordination.go; the hand-written Store
+	// methods keep their signatures, the per-owner advisory-lock discipline, the
+	// suffix-search resolution loop, and the WithTx seam (which stays hand-written).
+	// The member INSERT/DELETE reuse EnsureChannelMember (accounts.sql) and
+	// DeleteChannelMember (channels.sql) — the statements are identical.
+	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
 	GetGlobalHandleID(ctx context.Context, handle string) (string, error)
 	GetVisibleAgentHandleID(ctx context.Context, arg GetVisibleAgentHandleIDParams) (string, error)
 	GetVisibleGlobalHandleID(ctx context.Context, arg GetVisibleGlobalHandleIDParams) (string, error)
@@ -54,10 +79,42 @@ type Querier interface {
 	InsertAccount(ctx context.Context, arg InsertAccountParams) error
 	InsertAccountHandle(ctx context.Context, arg InsertAccountHandleParams) error
 	InsertAgentAccount(ctx context.Context, arg InsertAgentAccountParams) error
+	InsertAgentWorkspaceIgnore(ctx context.Context, arg InsertAgentWorkspaceIgnoreParams) error
+	InsertChannel(ctx context.Context, arg InsertChannelParams) error
+	// Channel-domain queries (sqlc adoption T3, RIG-3034). These replace the inline
+	// SQL literals that lived in internal/store/channels.go; the hand-written Store
+	// methods keep their exact signatures and wrap these generated calls, mapping
+	// the generated row structs back to the domain Channel / ChannelGroup.
+	//
+	// The channel-visibility CTE (effective(id, eff_vis)) and the channel/group
+	// visibility predicates are repeated per read because sqlc has no query-fragment
+	// composition — they replace the former channels.go const fragments
+	// (effectiveVisibilityCTE / viewerCTE / channelVisiblePredicate /
+	// groupVisiblePredicate). The copies MUST stay textually identical so the stream
+	// edge's single-id visibility check cannot drift from the list read (the
+	// anti-drift guarantee the frozen record requires).
+	InsertChannelGroup(ctx context.Context, arg InsertChannelGroupParams) error
+	InsertChannelPin(ctx context.Context, arg InsertChannelPinParams) error
+	InsertCoordinationChannel(ctx context.Context, arg InsertCoordinationChannelParams) (string, error)
+	InsertCoordinationGroup(ctx context.Context, arg InsertCoordinationGroupParams) error
 	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
 	InsertSystemAccount(ctx context.Context, accountID string) error
 	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
+	ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error)
+	ListChannels(ctx context.Context, accountID string) ([]ListChannelsRow, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
+	// Channel-pins (pinned board) queries (sqlc adoption T3, RIG-3034). These
+	// replace the inline SQL literals in internal/store/channel_pins.go; the
+	// hand-written Store methods and the in-tx FOR UPDATE lock / cap-check control
+	// flow stay exactly as they were and wrap these generated calls.
+	LockChannelForPins(ctx context.Context, id string) (LockChannelForPinsRow, error)
+	LockChannelMandatoryKind(ctx context.Context, id string) (LockChannelMandatoryKindRow, error)
+	LockChannelPolicy(ctx context.Context, id string) (LockChannelPolicyRow, error)
+	LockOwnerCoordination(ctx context.Context, dollar_1 pgtype.Text) error
+	MessageInChannel(ctx context.Context, arg MessageInChannelParams) (int32, error)
+	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
+	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
+	ResolveCoordinationManager(ctx context.Context, id string) (ResolveCoordinationManagerRow, error)
 	ResolveOwner(ctx context.Context, accountID string) (string, error)
 	// Scaffold-only query proving sqlc generation works end to end (T1).
 	//
@@ -68,7 +125,10 @@ type Querier interface {
 	// (tenants, 0001_init.sql), so sqlc compiles it against the real schema.
 	ScaffoldGetTenant(ctx context.Context, id string) (Tenant, error)
 	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
+	SubscribeConvertedDMParties(ctx context.Context, channelID string) error
 	UpdateAgentParent(ctx context.Context, arg UpdateAgentParentParams) error
+	UpdateChannelPolicy(ctx context.Context, arg UpdateChannelPolicyParams) error
+	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error
 }
 
 var _ Querier = (*Queries)(nil)

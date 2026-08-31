@@ -6,6 +6,8 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // CreateChannelGroup inserts a namespace group owned by ownerUserID. When a
@@ -37,25 +39,26 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 		if err := requireGroupCreateAuthz(ctx, tx, ownerUserID, g.ParentGroupID); err != nil {
 			return ChannelGroup{}, err
 		}
-		var parentVis int32
-		if err := tx.QueryRow(ctx,
-			"SELECT visibility FROM channel_groups WHERE id = $1", string(g.ParentGroupID),
-		).Scan(&parentVis); err != nil {
+		parentVis, err := s.q.WithTx(tx).GetChannelGroupVisibility(ctx, string(g.ParentGroupID))
+		if err != nil {
 			return ChannelGroup{}, fmt.Errorf("store: read parent group: %w", err)
 		}
 		// A higher enum value is more open (OWNER=0 < SHARED=1), so the child's
 		// value must not exceed the parent's.
-		if int32(g.Visibility) > parentVis {
+		if int32(g.Visibility) > int32(parentVis) {
 			return ChannelGroup{}, fmt.Errorf(
 				"%w: group visibility %d wider than parent %d", ErrInvalidArgument, g.Visibility, parentVis)
 		}
 	}
 
 	id := newID()
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1, $2, NULLIF($3, ''), $4, $5)",
-		id, g.Name, string(g.ParentGroupID), string(ownerUserID), int32(g.Visibility),
-	); err != nil {
+	if err := s.q.WithTx(tx).InsertChannelGroup(ctx, db.InsertChannelGroupParams{
+		ID:          id,
+		Name:        g.Name,
+		Column3:     string(g.ParentGroupID),
+		OwnerUserID: string(ownerUserID),
+		Visibility:  int16(g.Visibility), //nolint:gosec // G115: ChannelGroupVisibility is a CHECK-constrained 0/1 enum (channel_groups.visibility), always within int16
+	}); err != nil {
 		return ChannelGroup{}, fmt.Errorf("store: insert channel group: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -136,12 +139,15 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		}
 	}
 
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) "+
-			"VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7)",
-		id, c.Name, string(c.GroupID), int32(c.Kind),
-		int32(c.Policy.PostPolicy), string(c.Policy.OwnerAccountID), c.Policy.MandatorySubscription,
-	); err != nil {
+	if err := s.q.WithTx(tx).InsertChannel(ctx, db.InsertChannelParams{
+		ID:                    id,
+		Name:                  c.Name,
+		Column3:               string(c.GroupID),
+		Kind:                  int16(c.Kind), //nolint:gosec // G115: ChannelKind is a CHECK-constrained 0/1/2 enum (channels.kind), always within int16
+		PostPolicy:            int16(c.Policy.PostPolicy),
+		Column6:               string(c.Policy.OwnerAccountID),
+		MandatorySubscription: c.Policy.MandatorySubscription,
+	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return Channel{}, fmt.Errorf("%w: channel %q already exists in group %q", ErrConflict, c.Name, c.GroupID)
 		}
@@ -164,12 +170,12 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	if c.Policy.OwnerAccountID != "" && !slices.Contains(members, c.Policy.OwnerAccountID) {
 		return Channel{}, fmt.Errorf("%w: owner account %q must be a channel member", ErrInvalidArgument, c.Policy.OwnerAccountID)
 	}
+	qtx := s.q.WithTx(tx)
 	for _, m := range members {
-		if _, err := tx.Exec(ctx,
-			"INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) "+
-				"ON CONFLICT (channel_id, account_id) DO NOTHING",
-			id, string(m),
-		); err != nil {
+		if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+			ChannelID: id,
+			AccountID: string(m),
+		}); err != nil {
 			if pgErrIs(err, pgForeignKeyViolation) {
 				return Channel{}, fmt.Errorf("%w: unknown member account %q", ErrInvalidArgument, m)
 			}
@@ -231,121 +237,32 @@ func expandOwnerMembership(ctx context.Context, tx pgx.Tx, actor AccountID, requ
 	for _, m := range ordered {
 		ids = append(ids, string(m))
 	}
-	rows, err := tx.Query(ctx,
-		"SELECT owner_user_id FROM agent_accounts WHERE account_id = ANY($1)", ids,
-	)
+	owners, err := db.New(tx).AgentOwnersByIDs(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve agent owners: %w", err)
 	}
-	defer rows.Close()
-
-	var owners []AccountID
-	for rows.Next() {
-		var owner string
-		if err := rows.Scan(&owner); err != nil {
-			return nil, fmt.Errorf("store: scan agent owner: %w", err)
-		}
-		owners = append(owners, AccountID(owner))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate agent owners: %w", err)
-	}
 	for _, o := range owners {
-		add(o)
+		add(AccountID(o))
 	}
 	return ordered, nil
 }
 
-// effectiveVisibilityCTE computes each channel group's effective visibility —
-// the most restrictive value on its path to the root (D9) — by walking the
-// parent chain. Every read and stream-filter predicate that gates on group
-// visibility opens with this identical CTE so they compute `effective(id,
-// eff_vis)` the same way and cannot drift. eff_vis = 1 is SHARED.
-const effectiveVisibilityCTE = `
-	WITH RECURSIVE ancestry AS (
-		SELECT id, parent_group_id, visibility AS min_vis
-		FROM channel_groups
-		UNION ALL
-		SELECT a.id, g.parent_group_id, LEAST(a.min_vis, g.visibility)
-		FROM ancestry a
-		JOIN channel_groups g ON g.id = a.parent_group_id
-	),
-	effective AS (
-		SELECT id, MIN(min_vis) AS eff_vis
-		FROM ancestry
-		GROUP BY id
-	)`
-
-// viewerCTE resolves the set of user ids a caller ($1) views as: itself, plus —
-// for an agent caller — its owning user, so an agent sees its owner's groups.
-// Appended after effectiveVisibilityCTE (hence the leading comma). Referenced by
-// the group predicate's owner check.
-const viewerCTE = `,
-	viewer AS (
-		SELECT owner_user_id AS uid FROM agent_accounts WHERE account_id = $1
-		UNION ALL
-		SELECT $1 AS uid
-	)`
-
-// channelVisiblePredicate is the ListChannels visibility rule as a reusable
-// boolean over a channel row aliased `c` and the `effective` CTE, viewer $1: the
-// caller is a member (which governs DM/GROUP_DM directly, design.md:235-243), or
-// it is a plain grouped channel (kind=0) whose group's effective visibility is
-// SHARED. An ungrouped channel is owner-scoped, visible only through membership.
-// Shared by ListChannels and ChannelVisibleTo so the stream edge cannot drift
-// from the read.
-const channelVisiblePredicate = `(
-		EXISTS (
-		    SELECT 1 FROM channel_members cm
-		    WHERE cm.channel_id = c.id AND cm.account_id = $1
-		)
-		OR (
-		    c.kind = 0 AND c.group_id IS NOT NULL AND EXISTS (
-		        SELECT 1 FROM effective e WHERE e.id = c.group_id AND e.eff_vis = 1
-		    )
-		)
-	)`
-
-// groupVisiblePredicate is the ListChannelGroups visibility rule as a reusable
-// boolean over a group row aliased `g`, the `effective` CTE and `viewer` CTE: the
-// group's effective visibility is SHARED, or the caller (or its owning user)
-// owns it. Shared by ListChannelGroups and ChannelGroupVisibleTo.
-const groupVisiblePredicate = `(e.eff_vis = 1 OR g.owner_user_id IN (SELECT uid FROM viewer))`
-
 // ListChannelGroups returns the channel groups visible to visibleTo (see
 // groupVisiblePredicate / effectiveVisibilityCTE for the rule).
 func (s *Store) ListChannelGroups(ctx context.Context, visibleTo AccountID) ([]ChannelGroup, error) {
-	const q = effectiveVisibilityCTE + viewerCTE + `
-		SELECT g.id, g.name, COALESCE(g.parent_group_id, ''), g.owner_user_id, g.visibility
-		FROM channel_groups g
-		JOIN effective e ON e.id = g.id
-		WHERE ` + groupVisiblePredicate + `
-		ORDER BY g.name`
-	rows, err := s.pool.Query(ctx, q, string(visibleTo))
+	rows, err := s.q.ListChannelGroups(ctx, string(visibleTo))
 	if err != nil {
 		return nil, fmt.Errorf("store: list channel groups: %w", err)
 	}
-	defer rows.Close()
-
 	var groups []ChannelGroup
-	for rows.Next() {
-		var (
-			g                       ChannelGroup
-			id, name, parent, owner string
-			visibility              int32
-		)
-		if err := rows.Scan(&id, &name, &parent, &owner, &visibility); err != nil {
-			return nil, fmt.Errorf("store: scan channel group: %w", err)
-		}
-		g.ID = ChannelGroupID(id)
-		g.Name = name
-		g.ParentGroupID = ChannelGroupID(parent)
-		g.OwnerUserID = AccountID(owner)
-		g.Visibility = ChannelGroupVisibility(visibility)
-		groups = append(groups, g)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate channel groups: %w", err)
+	for _, row := range rows {
+		groups = append(groups, ChannelGroup{
+			ID:            ChannelGroupID(row.ID),
+			Name:          row.Name,
+			ParentGroupID: ChannelGroupID(row.ParentGroupID),
+			OwnerUserID:   AccountID(row.OwnerUserID),
+			Visibility:    ChannelGroupVisibility(row.Visibility),
+		})
 	}
 	return groups, nil
 }
@@ -355,14 +272,11 @@ func (s *Store) ListChannelGroups(ctx context.Context, visibleTo AccountID) ([]C
 // edge to filter ChannelGroupChanged at read-parity. Shares the CTEs + predicate
 // with the list read so the two cannot drift.
 func (s *Store) ChannelGroupVisibleTo(ctx context.Context, actor AccountID, groupID ChannelGroupID) (bool, error) {
-	const q = effectiveVisibilityCTE + viewerCTE + `
-		SELECT EXISTS (
-			SELECT 1 FROM channel_groups g
-			JOIN effective e ON e.id = g.id
-			WHERE g.id = $2 AND ` + groupVisiblePredicate + `
-		)`
-	var visible bool
-	if err := s.pool.QueryRow(ctx, q, string(actor), string(groupID)).Scan(&visible); err != nil {
+	visible, err := s.q.ChannelGroupVisibleTo(ctx, db.ChannelGroupVisibleToParams{
+		AccountID: string(actor),
+		ID:        string(groupID),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check group visibility: %w", err)
 	}
 	return visible, nil
@@ -371,19 +285,15 @@ func (s *Store) ChannelGroupVisibleTo(ctx context.Context, actor AccountID, grou
 // ListChannels returns the channels visible to visibleTo (see
 // channelVisiblePredicate / effectiveVisibilityCTE for the rule).
 func (s *Store) ListChannels(ctx context.Context, visibleTo AccountID) ([]Channel, error) {
-	const q = effectiveVisibilityCTE + `
-		SELECT c.id, c.name, COALESCE(c.group_id, ''), c.kind, c.post_policy, COALESCE(c.owner_account_id, ''), c.mandatory_subscription
-		FROM channels c
-		WHERE ` + channelVisiblePredicate + `
-		ORDER BY c.name`
-	rows, err := s.pool.Query(ctx, q, string(visibleTo))
+	rows, err := s.q.ListChannels(ctx, string(visibleTo))
 	if err != nil {
 		return nil, fmt.Errorf("store: list channels: %w", err)
 	}
-	defer rows.Close()
-
-	channels, err := scanChannels(ctx, s.pool, rows)
-	if err != nil {
+	var channels []Channel
+	for _, row := range rows {
+		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
+	}
+	if err := loadChannelMembers(ctx, s.pool, channels); err != nil {
 		return nil, err
 	}
 	return channels, nil
@@ -395,13 +305,11 @@ func (s *Store) ListChannels(ctx context.Context, visibleTo AccountID) ([]Channe
 // non-member viewer (which bare membership would wrongly drop) while a private
 // channel's does not. Shares the CTE + predicate with the list read.
 func (s *Store) ChannelVisibleTo(ctx context.Context, actor AccountID, channelID ChannelID) (bool, error) {
-	const q = effectiveVisibilityCTE + `
-		SELECT EXISTS (
-			SELECT 1 FROM channels c
-			WHERE c.id = $2 AND ` + channelVisiblePredicate + `
-		)`
-	var visible bool
-	if err := s.pool.QueryRow(ctx, q, string(actor), string(channelID)).Scan(&visible); err != nil {
+	visible, err := s.q.ChannelVisibleTo(ctx, db.ChannelVisibleToParams{
+		AccountID: string(actor),
+		ID:        string(channelID),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check channel visibility: %w", err)
 	}
 	return visible, nil
@@ -426,19 +334,18 @@ func (s *Store) ChannelVisibleTo(ctx context.Context, actor AccountID, channelID
 // Match is exact-case, mirroring the channels_group_name_key uniqueness the store
 // enforces on writes.
 func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, name string) (Channel, error) {
-	const q = effectiveVisibilityCTE + `
-		SELECT c.id, c.name, COALESCE(c.group_id, ''), c.kind, c.post_policy, COALESCE(c.owner_account_id, ''), c.mandatory_subscription
-		FROM channels c
-		WHERE c.name = $2 AND ` + channelVisiblePredicate + `
-		ORDER BY c.id`
-	rows, err := s.pool.Query(ctx, q, string(viewer), name)
+	rows, err := s.q.ChannelsByNameForViewer(ctx, db.ChannelsByNameForViewerParams{
+		AccountID: string(viewer),
+		Name:      name,
+	})
 	if err != nil {
 		return Channel{}, fmt.Errorf("store: resolve channel by name: %w", err)
 	}
-	defer rows.Close()
-
-	channels, err := scanChannels(ctx, s.pool, rows)
-	if err != nil {
+	var channels []Channel
+	for _, row := range rows {
+		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
+	}
+	if err := loadChannelMembers(ctx, s.pool, channels); err != nil {
 		return Channel{}, err
 	}
 	switch len(channels) {
@@ -492,16 +399,12 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 	// genuine member ADD on a kind=DM channel is a conversion, and a remove may
 	// not strand a DM below two agent parties. policy/owner fields are server-set
 	// and never mutated through this path.
-	var (
-		mandatory bool
-		kindRaw   int32
-	)
-	if err := tx.QueryRow(ctx,
-		"SELECT mandatory_subscription, kind FROM channels WHERE id = $1 FOR UPDATE", string(channelID),
-	).Scan(&mandatory, &kindRaw); err != nil {
+	lock, err := s.q.WithTx(tx).LockChannelMandatoryKind(ctx, string(channelID))
+	if err != nil {
 		return Channel{}, nil, fmt.Errorf("store: read channel mandatory flag: %w", err)
 	}
-	kind := ChannelKind(kindRaw)
+	mandatory := lock.MandatorySubscription
+	kind := ChannelKind(lock.Kind)
 	// The unsubscribe guard reads the PRE-convert mandatory state: a DM is
 	// born-mandatory, so an unsubscribe batched with a genuine convert-add is
 	// rejected here even though the post-convert channel is non-mandatory and
@@ -616,21 +519,18 @@ func maybeConvertDM(ctx context.Context, tx pgx.Tx, channelID ChannelID, kind Ch
 	// partial on group_id IS NOT NULL — an ungrouped channel is exempt, so this
 	// UPDATE cannot raise a (group_id, name) unique violation. Ungrouped channel
 	// names are deliberately not constrained (mirrors home-channel dup behavior).
-	if _, err := tx.Exec(ctx,
-		"UPDATE channels SET kind = $1, name = $2, group_id = NULL, mandatory_subscription = FALSE WHERE id = $3",
-		int32(ChannelKindChannel), opts.ConvertChannelName, string(channelID),
-	); err != nil {
+	if err := db.New(tx).ConvertDMChannel(ctx, db.ConvertDMChannelParams{
+		Kind: int16(ChannelKindChannel),
+		Name: opts.ConvertChannelName,
+		ID:   string(channelID),
+	}); err != nil {
 		return kind, false, fmt.Errorf("store: convert dm channel: %w", err)
 	}
 	// Keep the two incumbent DM parties in the conversation: flip every current
 	// AGENT member subscribed (a human owner member is left as-is — subscription
 	// is an agent-delivery concept). They already have a seeded delivery cursor
 	// from the DM's born-mandatory create, so no seed is owed here.
-	if _, err := tx.Exec(ctx,
-		"UPDATE channel_members cm SET subscribed = TRUE "+
-			"FROM agent_accounts aa WHERE aa.account_id = cm.account_id AND cm.channel_id = $1",
-		string(channelID),
-	); err != nil {
+	if err := db.New(tx).SubscribeConvertedDMParties(ctx, string(channelID)); err != nil {
 		return kind, false, fmt.Errorf("store: subscribe converted dm parties: %w", err)
 	}
 	return ChannelKindChannel, true, nil
@@ -647,11 +547,11 @@ func hasGenuineAdd(ctx context.Context, tx pgx.Tx, channelID ChannelID, updates 
 		if u.Remove || u.Unsubscribe || u.AccountID == "" {
 			continue
 		}
-		var exists bool
-		if err := tx.QueryRow(ctx,
-			"SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2)",
-			string(channelID), string(u.AccountID),
-		).Scan(&exists); err != nil {
+		exists, err := db.New(tx).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
+			ChannelID: string(channelID),
+			AccountID: string(u.AccountID),
+		})
+		if err != nil {
 			return false, fmt.Errorf("store: probe member presence: %w", err)
 		}
 		if !exists {
@@ -672,13 +572,8 @@ func requireDMTwoParties(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 	if kind != ChannelKindDM {
 		return nil
 	}
-	var parties int
-	if err := tx.QueryRow(ctx,
-		"SELECT COUNT(*) FROM channel_members cm "+
-			"JOIN agent_accounts aa ON aa.account_id = cm.account_id "+
-			"WHERE cm.channel_id = $1",
-		string(channelID),
-	).Scan(&parties); err != nil {
+	parties, err := db.New(tx).CountAgentMembers(ctx, string(channelID))
+	if err != nil {
 		return fmt.Errorf("store: count agent members: %w", err)
 	}
 	if parties < 2 {
@@ -694,27 +589,25 @@ func requireDMTwoParties(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 // read. Reports whether a row was actually deleted — removing an account that
 // was not a member is a no-op that owes no ChannelChanged to anyone.
 func removeMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, accountID AccountID) (bool, error) {
-	var ownsPresentAgent bool
-	if err := tx.QueryRow(ctx,
-		"SELECT EXISTS ("+
-			"SELECT 1 FROM agent_accounts aa "+
-			"JOIN channel_members cm ON cm.account_id = aa.account_id "+
-			"WHERE aa.owner_user_id = $1 AND cm.channel_id = $2 AND aa.account_id <> $1)",
-		string(accountID), string(channelID),
-	).Scan(&ownsPresentAgent); err != nil {
+	qtx := db.New(tx)
+	ownsPresentAgent, err := qtx.OwnerHasPresentAgent(ctx, db.OwnerHasPresentAgentParams{
+		OwnerUserID: string(accountID),
+		ChannelID:   string(channelID),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check dependent agents: %w", err)
 	}
 	if ownsPresentAgent {
 		return false, fmt.Errorf("%w: cannot remove %q while an agent it owns remains in the channel", ErrInvalidArgument, accountID)
 	}
-	tag, err := tx.Exec(ctx,
-		"DELETE FROM channel_members WHERE channel_id = $1 AND account_id = $2",
-		string(channelID), string(accountID),
-	)
+	rowsAffected, err := qtx.DeleteChannelMember(ctx, db.DeleteChannelMemberParams{
+		ChannelID: string(channelID),
+		AccountID: string(accountID),
+	})
 	if err != nil {
 		return false, fmt.Errorf("store: remove member: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return rowsAffected > 0, nil
 }
 
 // addOrUpdateMember adds (or subscribe-flips) the directly-named member, then
@@ -735,13 +628,14 @@ func addOrUpdateMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, u Me
 	if err != nil {
 		return err
 	}
+	qtx := db.New(tx)
 	for i, m := range toAdd {
 		if i == 0 {
-			if _, err := tx.Exec(ctx,
-				"INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, $3) "+
-					"ON CONFLICT (channel_id, account_id) DO UPDATE SET subscribed = EXCLUDED.subscribed",
-				string(channelID), string(m), u.Subscribed,
-			); err != nil {
+			if err := qtx.UpsertChannelMember(ctx, db.UpsertChannelMemberParams{
+				ChannelID:  string(channelID),
+				AccountID:  string(m),
+				Subscribed: u.Subscribed,
+			}); err != nil {
 				return upsertMemberErr(err, m)
 			}
 			// Seed this member's delivery cursor in the SAME txn as the member
@@ -757,11 +651,10 @@ func addOrUpdateMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, u Me
 			}
 			continue
 		}
-		if _, err := tx.Exec(ctx,
-			"INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) "+
-				"ON CONFLICT (channel_id, account_id) DO NOTHING",
-			string(channelID), string(m),
-		); err != nil {
+		if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+			ChannelID: string(channelID),
+			AccountID: string(m),
+		}); err != nil {
 			return upsertMemberErr(err, m)
 		}
 	}
@@ -816,14 +709,8 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	// lock so both the newly-mandatory transition and the owner-authz gate are
 	// computed against the committed state, serialized against a concurrent
 	// policy change on the same channel.
-	var (
-		wasMandatory bool
-		currentOwner string
-	)
-	if err := tx.QueryRow(ctx,
-		"SELECT mandatory_subscription, COALESCE(owner_account_id, '') FROM channels WHERE id = $1 FOR UPDATE",
-		string(channelID),
-	).Scan(&wasMandatory, &currentOwner); err != nil {
+	lock, err := s.q.WithTx(tx).LockChannelPolicy(ctx, string(channelID))
+	if err != nil {
 		// Defensive/unreachable: requireChannelMember above already proved the
 		// channel exists (a nonexistent channel has no members), so this
 		// FOR UPDATE cannot return no-rows. Kept for symmetry with messages.go.
@@ -832,6 +719,8 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 		}
 		return Channel{}, fmt.Errorf("store: lock channel for policy: %w", err)
 	}
+	wasMandatory := lock.MandatorySubscription
+	currentOwner := lock.OwnerAccountID
 
 	// T4 owner-only policy gate. SetChannelPolicy is create-or-update of policy:
 	// an ownerless channel (empty owner, the only legal state when OPEN) has no
@@ -873,11 +762,11 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	// existing owner) reaches this after the owner gate, so the membership EXISTS
 	// reveals nothing an authorized caller should not already know.
 	if p.OwnerAccountID != "" {
-		var ownerIsMember bool
-		if err := tx.QueryRow(ctx,
-			"SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2)",
-			string(channelID), string(p.OwnerAccountID),
-		).Scan(&ownerIsMember); err != nil {
+		ownerIsMember, err := s.q.WithTx(tx).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
+			ChannelID: string(channelID),
+			AccountID: string(p.OwnerAccountID),
+		})
+		if err != nil {
 			return Channel{}, fmt.Errorf("store: check owner membership: %w", err)
 		}
 		if !ownerIsMember {
@@ -885,10 +774,12 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 		}
 	}
 
-	if _, err := tx.Exec(ctx,
-		"UPDATE channels SET post_policy = $2, owner_account_id = NULLIF($3, ''), mandatory_subscription = $4 WHERE id = $1",
-		string(channelID), int32(p.PostPolicy), string(p.OwnerAccountID), p.MandatorySubscription,
-	); err != nil {
+	if err := s.q.WithTx(tx).UpdateChannelPolicy(ctx, db.UpdateChannelPolicyParams{
+		ID:                    string(channelID),
+		PostPolicy:            int16(p.PostPolicy), //nolint:gosec // G115: ChannelPostPolicy is a CHECK-constrained 0/1 enum (channels.post_policy), always within int16
+		Column3:               string(p.OwnerAccountID),
+		MandatorySubscription: p.MandatorySubscription,
+	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return Channel{}, fmt.Errorf("%w: unknown owner account %q", ErrInvalidArgument, p.OwnerAccountID)
 		}
@@ -927,18 +818,16 @@ func (s *Store) GetChannel(ctx context.Context, id ChannelID) (Channel, error) {
 
 // getChannel loads one channel with its member set, or ErrNotFound.
 func (s *Store) getChannel(ctx context.Context, id ChannelID) (Channel, error) {
-	rows, err := s.pool.Query(ctx,
-		"SELECT id, name, COALESCE(group_id, ''), kind, post_policy, COALESCE(owner_account_id, ''), mandatory_subscription FROM channels WHERE id = $1", string(id))
+	row, err := s.q.GetChannel(ctx, string(id))
 	if err != nil {
+		if noRows(err) {
+			return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, id)
+		}
 		return Channel{}, fmt.Errorf("store: get channel: %w", err)
 	}
-	defer rows.Close()
-	channels, err := scanChannels(ctx, s.pool, rows)
-	if err != nil {
+	channels := []Channel{channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription)}
+	if err := loadChannelMembers(ctx, s.pool, channels); err != nil {
 		return Channel{}, err
-	}
-	if len(channels) == 0 {
-		return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, id)
 	}
 	return channels[0], nil
 }
@@ -946,70 +835,73 @@ func (s *Store) getChannel(ctx context.Context, id ChannelID) (Channel, error) {
 // scanChannels reads channel rows and populates each channel's member set with
 // one follow-up query over the whole id set, so member loading is O(1)
 // round-trips rather than one per channel.
-func scanChannels(ctx context.Context, q querier, rows pgx.Rows) ([]Channel, error) {
-	var (
-		channels []Channel
-		ids      []string
-	)
-	byID := make(map[ChannelID]int)
+func scanChannels(ctx context.Context, q db.DBTX, rows pgx.Rows) ([]Channel, error) { //nolint:unused // called by the pgtest-tagged test helper coordChannels (coordination_pgtest_test.go); the untagged lint build excludes that file and reads this as dead
+	var channels []Channel
 	for rows.Next() {
 		var (
-			c                     Channel
 			id, name, groupID     string
-			kind                  int32
-			postPolicy            int32
+			kind                  int16
+			postPolicy            int16
 			ownerAccountID        string
 			mandatorySubscription bool
 		)
 		if err := rows.Scan(&id, &name, &groupID, &kind, &postPolicy, &ownerAccountID, &mandatorySubscription); err != nil {
 			return nil, fmt.Errorf("store: scan channel: %w", err)
 		}
-		c.ID = ChannelID(id)
-		c.Name = name
-		c.GroupID = ChannelGroupID(groupID)
-		c.Kind = ChannelKind(kind)
-		c.Policy = ChannelPolicy{
-			PostPolicy:            ChannelPostPolicy(postPolicy),
-			OwnerAccountID:        AccountID(ownerAccountID),
-			MandatorySubscription: mandatorySubscription,
-		}
-		byID[c.ID] = len(channels)
-		channels = append(channels, c)
-		ids = append(ids, id)
+		channels = append(channels, channelFromRow(id, name, groupID, kind, postPolicy, ownerAccountID, mandatorySubscription))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate channels: %w", err)
 	}
-	if len(channels) == 0 {
-		return channels, nil
-	}
-
-	memRows, err := q.Query(ctx,
-		"SELECT channel_id, account_id, subscribed FROM channel_members WHERE channel_id = ANY($1) ORDER BY account_id",
-		ids,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: load channel members: %w", err)
-	}
-	defer memRows.Close()
-	for memRows.Next() {
-		var (
-			channelID, accountID string
-			subscribed           bool
-		)
-		if err := memRows.Scan(&channelID, &accountID, &subscribed); err != nil {
-			return nil, fmt.Errorf("store: scan channel member: %w", err)
-		}
-		idx := byID[ChannelID(channelID)]
-		channels[idx].MemberAccountIDs = append(channels[idx].MemberAccountIDs, AccountID(accountID))
-		if subscribed {
-			channels[idx].SubscriberAccountIDs = append(channels[idx].SubscriberAccountIDs, AccountID(accountID))
-		}
-	}
-	if err := memRows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate channel members: %w", err)
+	if err := loadChannelMembers(ctx, q, channels); err != nil {
+		return nil, err
 	}
 	return channels, nil
+}
+
+// channelFromRow builds the base Channel (id, name, group, kind, policy) from
+// the shared seven-column channel projection every channel read selects; the
+// caller populates the member/subscriber sets with loadChannelMembers.
+func channelFromRow(id, name, groupID string, kind, postPolicy int16, ownerAccountID string, mandatorySubscription bool) Channel {
+	return Channel{
+		ID:      ChannelID(id),
+		Name:    name,
+		GroupID: ChannelGroupID(groupID),
+		Kind:    ChannelKind(kind),
+		Policy: ChannelPolicy{
+			PostPolicy:            ChannelPostPolicy(postPolicy),
+			OwnerAccountID:        AccountID(ownerAccountID),
+			MandatorySubscription: mandatorySubscription,
+		},
+	}
+}
+
+// loadChannelMembers populates each channel's member and subscriber sets with
+// one follow-up query over the whole id set, so member loading is O(1)
+// round-trips rather than one per channel. Runs against the pool or a tx (any
+// db.DBTX), mirroring the former scanChannels member follow-up.
+func loadChannelMembers(ctx context.Context, q db.DBTX, channels []Channel) error {
+	if len(channels) == 0 {
+		return nil
+	}
+	byID := make(map[ChannelID]int, len(channels))
+	ids := make([]string, len(channels))
+	for i := range channels {
+		byID[channels[i].ID] = i
+		ids[i] = string(channels[i].ID)
+	}
+	members, err := db.New(q).ChannelMembersByChannelIDs(ctx, ids)
+	if err != nil {
+		return fmt.Errorf("store: load channel members: %w", err)
+	}
+	for _, m := range members {
+		idx := byID[ChannelID(m.ChannelID)]
+		channels[idx].MemberAccountIDs = append(channels[idx].MemberAccountIDs, AccountID(m.AccountID))
+		if m.Subscribed {
+			channels[idx].SubscriberAccountIDs = append(channels[idx].SubscriberAccountIDs, AccountID(m.AccountID))
+		}
+	}
+	return nil
 }
 
 // OpenAgentWorkspace returns the agent's observation-pane workspace, creating it
@@ -1047,21 +939,19 @@ func (s *Store) OpenAgentWorkspace(ctx context.Context, actor AccountID, agentAc
 	// Insert-or-return: create the workspace on first open, else return the
 	// existing row. ON CONFLICT DO NOTHING then a read covers the concurrent
 	// case without a unique-violation surfacing to the caller.
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO agent_workspaces (id, agent_account_id) VALUES ($1, $2) "+
-			"ON CONFLICT (agent_account_id) DO NOTHING",
-		id, string(agentAccountID),
-	); err != nil {
+	qtx := s.q.WithTx(tx)
+	if err := qtx.InsertAgentWorkspaceIgnore(ctx, db.InsertAgentWorkspaceIgnoreParams{
+		ID:             id,
+		AgentAccountID: string(agentAccountID),
+	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return AgentWorkspace{}, fmt.Errorf("%w: unknown agent %q", ErrInvalidArgument, agentAccountID)
 		}
 		return AgentWorkspace{}, fmt.Errorf("store: open workspace: %w", err)
 	}
 
-	var wsID string
-	if err := tx.QueryRow(ctx,
-		"SELECT id FROM agent_workspaces WHERE agent_account_id = $1", string(agentAccountID),
-	).Scan(&wsID); err != nil {
+	wsID, err := qtx.GetAgentWorkspaceID(ctx, string(agentAccountID))
+	if err != nil {
 		return AgentWorkspace{}, fmt.Errorf("store: read workspace: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // maxChannelPins is the per-channel cap on the pinned board: at most this many
@@ -126,10 +128,10 @@ func (s *Store) UnpinMessage(ctx context.Context, ch ChannelID, msg MessageID, b
 	if err := requireBoardMutator(ctx, tx, ch, by, postPolicy, ownerAcct); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM channel_pins WHERE channel_id = $1 AND message_id = $2`,
-		string(ch), string(msg),
-	); err != nil {
+	if err := db.New(tx).DeleteChannelPin(ctx, db.DeleteChannelPinParams{
+		ChannelID: string(ch),
+		MessageID: string(msg),
+	}); err != nil {
 		return nil, fmt.Errorf("store: delete channel pin: %w", err)
 	}
 
@@ -156,17 +158,14 @@ func (s *Store) PinnedEntries(ctx context.Context, ch ChannelID) ([]PinnedEntry,
 // post_policy and owner so the caller can gate the mutator under the lock without
 // a second query. An unknown channel matches zero rows and is ErrNotFound.
 func lockChannelForPins(ctx context.Context, tx pgx.Tx, ch ChannelID) (postPolicy int32, ownerAcct string, err error) {
-	err = tx.QueryRow(ctx,
-		`SELECT post_policy, COALESCE(owner_account_id, '') FROM channels WHERE id = $1 FOR UPDATE`,
-		string(ch),
-	).Scan(&postPolicy, &ownerAcct)
+	row, err := db.New(tx).LockChannelForPins(ctx, string(ch))
 	if err != nil {
 		if noRows(err) {
 			return 0, "", fmt.Errorf("%w: channel %q", ErrNotFound, ch)
 		}
 		return 0, "", fmt.Errorf("store: lock channel for pins: %w", err)
 	}
-	return postPolicy, ownerAcct, nil
+	return int32(row.PostPolicy), row.OwnerAccountID, nil
 }
 
 // requireBoardMutator enforces board-mutation authz for `by` under the caller's
@@ -193,12 +192,10 @@ func requireBoardMutator(ctx context.Context, tx pgx.Tx, ch ChannelID, by Accoun
 // another channel or no message at all is ErrNotFound (the not-found/forbidden
 // merge).
 func requireMessageInChannel(ctx context.Context, tx pgx.Tx, ch ChannelID, msg MessageID) error {
-	var one int
-	err := tx.QueryRow(ctx,
-		`SELECT 1 FROM messages m JOIN topics t ON t.id = m.topic_id
-		 WHERE m.id = $1 AND t.channel_id = $2`,
-		string(msg), string(ch),
-	).Scan(&one)
+	_, err := db.New(tx).MessageInChannel(ctx, db.MessageInChannelParams{
+		ID:        string(msg),
+		ChannelID: string(ch),
+	})
 	if err != nil {
 		if noRows(err) {
 			return fmt.Errorf("%w: message %q not in channel %q", ErrNotFound, msg, ch)
@@ -215,14 +212,12 @@ func requireMessageInChannel(ctx context.Context, tx pgx.Tx, ch ChannelID, msg M
 func pinFresh(ctx context.Context, tx pgx.Tx, ch ChannelID, msg MessageID, by AccountID) error {
 	// Count and next-position under the lock: the lock makes this read-modify
 	// -write race-free, so the cap cannot be exceeded by a concurrent pin.
-	var count int
-	var nextPos int32
-	if err := tx.QueryRow(ctx,
-		`SELECT count(*), COALESCE(MAX(position), -1) + 1 FROM channel_pins WHERE channel_id = $1`,
-		string(ch),
-	).Scan(&count, &nextPos); err != nil {
+	counts, err := db.New(tx).CountChannelPins(ctx, string(ch))
+	if err != nil {
 		return fmt.Errorf("store: count channel pins: %w", err)
 	}
+	count := counts.Count
+	nextPos := counts.NextPosition
 	if count >= maxChannelPins {
 		return fmt.Errorf("%w: channel %q already has the maximum of %d pins", ErrFailedPrecondition, ch, maxChannelPins)
 	}
@@ -239,11 +234,10 @@ func pinFresh(ctx context.Context, tx pgx.Tx, ch ChannelID, msg MessageID, by Ac
 func pinRepoint(ctx context.Context, tx pgx.Tx, ch ChannelID, msg, replace MessageID, by AccountID) error {
 	// Delete the replaced entry and capture its position in one statement; zero
 	// rows means replace was not pinned — the CAS is lost.
-	var pos int32
-	err := tx.QueryRow(ctx,
-		`DELETE FROM channel_pins WHERE channel_id = $1 AND message_id = $2 RETURNING position`,
-		string(ch), string(replace),
-	).Scan(&pos)
+	pos, err := db.New(tx).DeleteChannelPinReturningPosition(ctx, db.DeleteChannelPinReturningPositionParams{
+		ChannelID: string(ch),
+		MessageID: string(replace),
+	})
 	if err != nil {
 		if noRows(err) {
 			return fmt.Errorf("%w: pin %q is no longer on channel %q's board, re-read", ErrConflict, replace, ch)
@@ -259,11 +253,13 @@ func pinRepoint(ctx context.Context, tx pgx.Tx, ch ChannelID, msg, replace Messa
 // insertPin writes one channel_pins pointer, mapping a primary-key conflict (the
 // message already pinned in ch) to ErrConflict.
 func insertPin(ctx context.Context, tx pgx.Tx, ch ChannelID, msg MessageID, pos int32, by AccountID) error {
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO channel_pins (channel_id, message_id, position, pinned_at_unix_ms, pinned_by_account_id)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		string(ch), string(msg), pos, time.Now().UTC().UnixMilli(), string(by),
-	); err != nil {
+	if err := db.New(tx).InsertChannelPin(ctx, db.InsertChannelPinParams{
+		ChannelID:         string(ch),
+		MessageID:         string(msg),
+		Position:          pos,
+		PinnedAtUnixMs:    time.Now().UTC().UnixMilli(),
+		PinnedByAccountID: string(by),
+	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: message %q is already pinned in channel %q", ErrConflict, msg, ch)
 		}
@@ -274,30 +270,19 @@ func insertPin(ctx context.Context, tx pgx.Tx, ch ChannelID, msg MessageID, pos 
 
 // pinnedEntriesTx reads ch's board ordered by position from any querier (the pool
 // for the read-only PinnedEntries, or the open tx for the mutating returns).
-func pinnedEntriesTx(ctx context.Context, q querier, ch ChannelID) ([]PinnedEntry, error) {
-	rows, err := q.Query(ctx,
-		`SELECT message_id, position, pinned_at_unix_ms, pinned_by_account_id
-		 FROM channel_pins WHERE channel_id = $1 ORDER BY position`,
-		string(ch),
-	)
+func pinnedEntriesTx(ctx context.Context, q db.DBTX, ch ChannelID) ([]PinnedEntry, error) {
+	rows, err := db.New(q).PinnedEntries(ctx, string(ch))
 	if err != nil {
 		return nil, fmt.Errorf("store: query channel pins: %w", err)
 	}
-	defer rows.Close()
-
-	var entries []PinnedEntry
-	for rows.Next() {
-		var e PinnedEntry
-		var msgID, by string
-		if err := rows.Scan(&msgID, &e.Position, &e.PinnedAtUnixMs, &by); err != nil {
-			return nil, fmt.Errorf("store: scan channel pin: %w", err)
-		}
-		e.MessageID = MessageID(msgID)
-		e.PinnedByAccountID = AccountID(by)
-		entries = append(entries, e)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate channel pins: %w", err)
+	entries := make([]PinnedEntry, 0, len(rows))
+	for _, row := range rows {
+		entries = append(entries, PinnedEntry{
+			MessageID:         MessageID(row.MessageID),
+			Position:          row.Position,
+			PinnedAtUnixMs:    row.PinnedAtUnixMs,
+			PinnedByAccountID: AccountID(row.PinnedByAccountID),
+		})
 	}
 	return entries, nil
 }
