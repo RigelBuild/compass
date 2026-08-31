@@ -554,6 +554,9 @@ func (c *Comms) SetChannelPolicy(
 		if err != nil {
 			return nil, edgeError(err)
 		}
+		if len(ids) == 0 {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("comms SetChannelPolicy: owner handle resolved to no account"))
+		}
 		ownerID = ids[0]
 	}
 	ch, err := c.store.SetChannelPolicy(
@@ -718,6 +721,9 @@ func (c *Comms) applyBoardOp(
 ) ([]store.PinnedEntry, error) {
 	switch op := msg.GetOp().(type) {
 	case *compassv1.UpdatePinnedBoardRequest_Pin:
+		if op == nil || op.Pin == nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: UpdatePinnedBoard pin op missing pin body"))
+		}
 		entries, err := c.store.PinMessage(
 			ctx,
 			channelID,
@@ -730,6 +736,9 @@ func (c *Comms) applyBoardOp(
 		}
 		return entries, nil
 	case *compassv1.UpdatePinnedBoardRequest_UnpinMessageId:
+		if op == nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: UpdatePinnedBoard unpin op missing message id"))
+		}
 		entries, err := c.store.UnpinMessage(ctx, channelID, store.MessageID(op.UnpinMessageId), actor)
 		if err != nil {
 			return nil, edgeError(err)
