@@ -118,11 +118,12 @@ func TestLegTwoRealTurn(t *testing.T) {
 	defer st.Close()
 
 	// Open the session tail BEFORE the post drives the turn: OpenSessionTail
-	// subscribes to the frame stream so it is already tailing when the turn
-	// fans. SubscribeAgentSession is live-fan (no replay ring), so were the tail
-	// opened AFTER the post a fast canned turn could fan its WORKING/READY edges
-	// into the post→subscribe gap and AwaitTurnSettled would hang. Must precede
-	// the post.
+	// subscribes to the frame stream and returns on the leading registration-ack,
+	// so the subscription is provably live server-side before the post — a
+	// server-guaranteed happens-before. SubscribeAgentSession is live-fan (no
+	// replay ring), so were the tail opened AFTER the post a fast canned turn
+	// could fan its WORKING/READY edges into the post→subscribe gap and
+	// AwaitTurnSettled would hang. Must precede the post.
 	tail, err := f.OpenSessionTail(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail: %v", err)

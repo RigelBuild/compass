@@ -516,11 +516,15 @@ func (s *service) SubscribeEvents(
 // agent_account_id -> home_channel_id) and checks the caller's membership on
 // that home channel, returning the SAME not-found for an unknown session and a
 // non-member so neither can probe session existence. Only past
-// that gate does it subscribe to the session's live tail and
-// forward frames until the client disconnects, the session ends, or the
-// subscriber lags past its buffer. No snapshot replay: the observation pane is a
-// live tail (the deferred daemon-lifecycle reattach/resync machinery is not in
-// this increment).
+// that gate does it subscribe to the session's live tail. It then sends one
+// leading registration-ack frame (session_id only, no event, no transition)
+// the instant the subscriber is registered server-side — mirroring
+// SubscribeEvents' snapshotBoundary / SubscribeComms' commsSnapshotBoundary —
+// so a caller's OpenSessionTail RoundTrip unblocks on REGISTRATION, before any
+// relayed frame. This is still a live tail, not a snapshot: the ack carries no
+// history (no replay/resync/reattach; the deferred daemon-lifecycle machinery
+// is not in this increment). After the ack it forwards frames until the client
+// disconnects, the session ends, or the subscriber lags past its buffer.
 func (s *service) SubscribeAgentSession(
 	ctx context.Context,
 	req *connect.Request[compassv1.SubscribeAgentSessionRequest],
@@ -549,6 +553,17 @@ func (s *service) SubscribeAgentSession(
 	// lag-drop). Safe after the tail has already closed the channel on a
 	// lag-drop — unsubscribe is a no-op once the sub is gone.
 	defer s.tail.unsubscribe(sessionID, sub)
+	// Leading registration-ack: the subscriber is now registered server-side, so
+	// flush one zero-payload frame (session_id only; no event, no transition) to
+	// unblock the client's OpenSessionTail RoundTrip on REGISTRATION rather than on
+	// the first relayed frame. This makes "open the tail before the post" a true
+	// happens-before for every caller — closing the idle-session drop where a driven
+	// injection races subscribe() and fans to zero subscribers (no replay ring). It
+	// mirrors SubscribeEvents' snapshotBoundary / SubscribeComms' commsSnapshotBoundary.
+	// A client hang-up here is a clean end, exactly like the recv loop's send error.
+	if err := stream.Send(&compassv1.AgentSessionFrame{SessionId: sessionID}); err != nil {
+		return nil
+	}
 	for {
 		select {
 		case <-ctx.Done():

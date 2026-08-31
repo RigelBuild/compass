@@ -253,6 +253,25 @@ dogfood-e2e record documents that seam as a primitive
   record's own flag that `AwaitSessionSettled` is "the ONE primitive with no
   grounded wire contract today" (`compass-dogfood-e2e/design.md:223`) — the
   contract is now WORKING→READY on `SubscribeAgentSession`.
+
+  > **Amendment (RIG-3044, 2026-08-31) — the open-before-post ordering is now a
+  > server-guaranteed happens-before, not a wall-clock assumption.** The re-spec
+  > above fixed the settle-wait race by ORDERING (open the tail before the post),
+  > but the ordering it relied on was still a timing assumption: `OpenSessionTail`
+  > returned only on the FIRST fanned frame, so on a stone-idle session the client's
+  > `SubscribeAgentSession` RoundTrip blocked until the driving post produced a
+  > frame — the open could not actually complete before the post it was meant to
+  > precede, and a driven injection could fan to zero subscribers before `subscribe()`
+  > registered (the RIG-3044 e2e flake, `TestLegThreeFourSpawnAndMessaging`, which
+  > wedged ~157s to the 2m `settleTimeout` red). The fix: `SubscribeAgentSession` now sends a leading
+  > zero-payload **registration-ack** frame (the existing `AgentSessionFrame`,
+  > `session_id` only, nil event, `AGENT_SESSION_STATE_UNSPECIFIED`) the instant
+  > `subscribe()` registers the subscriber — mirroring `SubscribeEvents`'
+  > `snapshotBoundary` and `SubscribeComms`' `commsSnapshotBoundary`. `OpenSessionTail`
+  > therefore returns on REGISTRATION, so a synchronous open-before-post is now a true
+  > happens-before: once the open returns, the subscription is provably live and the
+  > post's injections cannot be raced away. This is still a live tail, NOT a replay
+  > ring / resync / reattach — the ack carries no history (see DL-310).
 - `legthreefour_test.go:59-61` drops `"initial_prompt"` from the canned spawn
   tool-call JSON. This is HYGIENE, not a wire guard: ArkType KEEPS/ignores
   undeclared keys by default (`spawnParameters` sets no `"+": "reject"`), so a

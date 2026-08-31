@@ -98,9 +98,11 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	}
 	homeChannelID := string(acc.Agent.HomeChannelID)
 	// Open the tail on the ORIGINAL session BEFORE post1 drives the turn: the
-	// frame stream is live-fan with no replay ring, so opening it first keeps a
-	// fast canned turn's WORKING/READY edges from fanning into the post→subscribe
-	// gap. Its own defer Close bounds this lifetime's tail.
+	// frame stream is live-fan with no replay ring, but OpenSessionTail returns on
+	// the leading registration-ack, so the subscription is provably live before
+	// the post — a server-guaranteed happens-before that keeps a fast canned
+	// turn's WORKING/READY edges from fanning into the post→subscribe gap. Its own
+	// defer Close bounds this lifetime's tail.
 	tail1, err := f.OpenSessionTail(ctx, originalSessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail (original): %v", err)
@@ -172,9 +174,10 @@ func TestLegFivePersistAndResume(t *testing.T) {
 
 	// Open the tail on the RESUMED session BEFORE post2 drives the turn. The
 	// frame stream keys on the live id, which on resume equals the logical id
-	// (resumedSessionID == originalSessionID), and the tail opens BEFORE the
-	// post, so a fast canned turn cannot fan its edges into the post→subscribe
-	// gap.
+	// (resumedSessionID == originalSessionID), and OpenSessionTail returns on the
+	// leading registration-ack — so the subscription is provably live before the
+	// post (a server-guaranteed happens-before) and a fast canned turn cannot fan
+	// its edges into the post→subscribe gap.
 	tail2, err := f.OpenSessionTail(ctx, resumedSessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail (resumed): %v", err)
