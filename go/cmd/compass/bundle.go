@@ -133,7 +133,7 @@ func buildBundle(dir string) ([]byte, error) {
 		return nil, walkErr
 	}
 	if fileCount == 0 {
-		return nil, fmt.Errorf("bundle directory %q contains no members under skills/, extensions/, mcp/, settings/, rules/, or agents/ and no top-level %s or %s; use `agent-config delete` to clear the fleet config", dir, memberAgentsMD, memberModels)
+		return nil, fmt.Errorf("bundle directory %q contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/ and no top-level %s or %s; use `agent-config delete` to clear the fleet config", dir, memberAgentsMD, memberModels)
 	}
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("finalizing tar: %w", err)
@@ -180,7 +180,7 @@ func validateDirMember(name string) error {
 // neither under a whitelisted top dir nor one of the two top-level singletons
 // (store door: configMemberParts).
 func errNotWhitelisted(name string) error {
-	return fmt.Errorf("bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, or agents/ and is not a top-level %s or %s", name, memberAgentsMD, memberModels)
+	return fmt.Errorf("bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/ and is not a top-level %s or %s", name, memberAgentsMD, memberModels)
 }
 
 // addRegularMember validates a regular file against the door grammar and writes

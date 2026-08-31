@@ -192,7 +192,7 @@ func TestBuildBundleEmpty(t *testing.T) {
 		if err == nil {
 			t.Fatal("buildBundle(empty dir) = nil error, want rejection")
 		}
-		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, or agents/") {
+		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/") {
 			t.Errorf("buildBundle(empty) error %q does not name the no-members condition", err)
 		}
 	})
@@ -206,7 +206,7 @@ func TestBuildBundleEmpty(t *testing.T) {
 		if err == nil {
 			t.Fatal("buildBundle(only empty subdir) = nil error, want rejection")
 		}
-		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, or agents/") {
+		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/") {
 			t.Errorf("buildBundle(empty subdir) error %q does not name the no-members condition", err)
 		}
 	})

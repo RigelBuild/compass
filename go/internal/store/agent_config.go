@@ -504,7 +504,7 @@ func configMemberParts(name string) ([]string, error) {
 		return parts, nil
 	}
 	if !configBundleTopDirs[parts[0]] {
-		return nil, fmt.Errorf("%w: bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, or agents/ and is not a top-level %s or %s", ErrInvalidArgument, name, memberAgentsMD, memberModels)
+		return nil, fmt.Errorf("%w: bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/ and is not a top-level %s or %s", ErrInvalidArgument, name, memberAgentsMD, memberModels)
 	}
 	return parts, nil
 }

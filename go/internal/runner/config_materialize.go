@@ -486,7 +486,7 @@ func validateMemberPath(name string, typeflag byte) (string, error) {
 		return validateTopLevelMember(name, clean, top, typeflag)
 	}
 	if _, ok := configTopDirs[top]; !ok {
-		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, or agents/", name)
+		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/", name)
 	}
 	return validateNestedMember(name, clean, top, parts, typeflag)
 }

@@ -684,6 +684,7 @@ func TestConfigMaterializeRejectsNewMemberStructure(t *testing.T) {
 		"prompts wrong filename": buildConfigTarball(t, map[string][]byte{"prompts/supervisor/other.md": []byte("x")}),
 		"prompts too deep":       buildConfigTarball(t, map[string][]byte{"prompts/supervisor/sub/SYSTEM.md": []byte("x")}),
 		"prompts too shallow":    buildConfigTarball(t, map[string][]byte{"prompts/SYSTEM.md": []byte("x")}),
+		"prompts bad role name":  buildConfigTarball(t, map[string][]byte{"prompts/bad name/SYSTEM.md": []byte("x")}),
 	}
 	for name, tarball := range cases {
 		t.Run(name, func(t *testing.T) {
