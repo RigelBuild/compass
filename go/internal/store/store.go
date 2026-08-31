@@ -73,13 +73,6 @@ type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// execer is the write surface shared by the pool and a transaction, so a write
-// helper (updateMessageBlocksExec) can run against either. Both *pgxpool.Pool
-// and pgx.Tx satisfy it.
-type execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
 // Open connects to Postgres at dsn (a pgx pool), applies any pending embedded
 // migrations under an advisory lock, and verifies the resulting schema version
 // matches what this binary expects — refusing to serve on a failed migration

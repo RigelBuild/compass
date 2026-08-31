@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // AppendMessage stores a new message under a topic in channelID, assigning the
@@ -63,21 +65,15 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	// not-found/forbidden merge), so the policy leaks no oracle: a member who
 	// may not post is indistinguishable from a non-member. Checked in this same
 	// tx as the membership gate and the insert, under the committed policy.
-	var (
-		postPolicy int32
-		ownerAcct  string
-	)
-	if err := tx.QueryRow(ctx,
-		"SELECT post_policy, COALESCE(owner_account_id, '') FROM channels WHERE id = $1",
-		channelID,
-	).Scan(&postPolicy, &ownerAcct); err != nil {
+	policy, err := db.New(tx).GetChannelPostPolicy(ctx, channelID)
+	if err != nil {
 		if noRows(err) {
 			return Message{}, false, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 		}
 		return Message{}, false, fmt.Errorf("store: read channel post policy: %w", err)
 	}
-	if ChannelPostPolicy(postPolicy) == ChannelPostPolicyOwnerOnly &&
-		string(m.AuthorAccountID) != ownerAcct {
+	if ChannelPostPolicy(policy.PostPolicy) == ChannelPostPolicyOwnerOnly &&
+		string(m.AuthorAccountID) != policy.OwnerAccountID {
 		return Message{}, false, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 	}
 
@@ -138,21 +134,16 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 	}
 	id := newID()
 	at := time.Now().UTC()
-	const q = `
-		INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
-		DO NOTHING
-		RETURNING id, at_unix_ms, seq`
-	var (
-		storedID string
-		atMS     int64
-		seq      int64
-	)
-	err = tx.QueryRow(ctx, q,
-		id, topicID, string(m.AuthorAccountID),
-		at.UnixMilli(), blocksJSON, textContent(m.Blocks), clientRequestID,
-	).Scan(&storedID, &atMS, &seq)
+	q := db.New(tx)
+	row, err := q.InsertMessage(ctx, db.InsertMessageParams{
+		ID:              id,
+		TopicID:         topicID,
+		AuthorAccountID: string(m.AuthorAccountID),
+		AtUnixMs:        at.UnixMilli(),
+		Blocks:          blocksJSON,
+		TextContent:     textContent(m.Blocks),
+		ClientRequestID: clientRequestID,
+	})
 	switch {
 	case noRows(err):
 		return Message{}, errMessageInsertConflict
@@ -163,16 +154,13 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 	// Maintain the topic's denormalized activity marker in the same tx. GREATEST
 	// so two concurrent appends to one topic converge on the higher seq
 	// regardless of commit order (the row-lock serializes the two updates).
-	if _, err := tx.Exec(ctx,
-		`UPDATE topics SET last_seq = GREATEST(last_seq, $2) WHERE id = $1`,
-		topicID, seq,
-	); err != nil {
+	if err := q.UpdateTopicLastSeq(ctx, db.UpdateTopicLastSeqParams{ID: topicID, LastSeq: row.Seq}); err != nil {
 		return Message{}, fmt.Errorf("store: update topic last_seq: %w", err)
 	}
 
-	m.ID = MessageID(storedID)
+	m.ID = MessageID(row.ID)
 	m.TopicID = topicID
-	m.At = time.UnixMilli(atMS).UTC()
+	m.At = time.UnixMilli(row.AtUnixMs).UTC()
 	return m, nil
 }
 
@@ -192,11 +180,10 @@ func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, 
 // archived topic clears its archived flag in the same tx (archive is a tidiness
 // flag, not a lock — a post at a tidied-away name revives the conversation).
 func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, topic TopicRef, author AccountID, atMS int64) (string, error) {
+	q := db.New(tx)
 	if topic.ID != "" {
-		var topicChannelID string
-		switch err := tx.QueryRow(ctx,
-			`SELECT channel_id FROM topics WHERE id = $1`, topic.ID,
-		).Scan(&topicChannelID); {
+		topicChannelID, err := q.GetTopicChannel(ctx, topic.ID)
+		switch {
 		case noRows(err):
 			return "", fmt.Errorf("%w: topic %q is not in this channel", ErrInvalidArgument, topic.ID)
 		case err != nil:
@@ -215,26 +202,21 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 	// When unset, the mint is skipped entirely — a name that resolves to no row
 	// below is ErrNotFound.
 	if topic.Create {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (channel_id, lower(name)) DO NOTHING`,
-			newID(), channelID, topic.Name, string(author), atMS,
-		); err != nil {
+		if err := q.InsertTopicIgnore(ctx, db.InsertTopicIgnoreParams{
+			ID:                 newID(),
+			ChannelID:          channelID,
+			Name:               topic.Name,
+			CreatedByAccountID: string(author),
+			CreatedAtUnixMs:    atMS,
+		}); err != nil {
 			if pgErrIs(err, pgForeignKeyViolation) {
 				return "", fmt.Errorf("%w: unknown channel %q or author %q", ErrInvalidArgument, channelID, author)
 			}
 			return "", fmt.Errorf("store: get-or-create topic: %w", err)
 		}
 	}
-	var (
-		topicID  string
-		archived bool
-	)
-	if err := tx.QueryRow(ctx,
-		`SELECT id, archived FROM topics WHERE channel_id = $1 AND lower(name) = lower($2)`,
-		channelID, topic.Name,
-	).Scan(&topicID, &archived); err != nil {
+	row, err := q.GetTopicByName(ctx, db.GetTopicByNameParams{ChannelID: channelID, Lower: topic.Name})
+	if err != nil {
 		if noRows(err) {
 			// Create was unset (or a racing delete removed the row) and no topic
 			// carries this name: an in-band ErrNotFound, never a silent mint. The
@@ -243,14 +225,12 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 		}
 		return "", fmt.Errorf("store: resolve topic: %w", err)
 	}
-	if archived {
-		if _, err := tx.Exec(ctx,
-			`UPDATE topics SET archived = FALSE WHERE id = $1`, topicID,
-		); err != nil {
+	if row.Archived {
+		if err := q.ReviveTopic(ctx, row.ID); err != nil {
 			return "", fmt.Errorf("store: revive archived topic: %w", err)
 		}
 	}
-	return topicID, nil
+	return row.ID, nil
 }
 
 // MessagesHeadSeq returns the current head of the message sequence — the
@@ -273,13 +253,11 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 // count-metadata exposure is accepted as within the threat model, not a leak to
 // close by scoping the boundary — that would be a different token (RIG-1333 OQ4).
 func (s *Store) MessagesHeadSeq(ctx context.Context) (uint64, error) {
-	var head uint64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(MAX(seq), 0) FROM messages`,
-	).Scan(&head); err != nil {
+	head, err := s.q.MessagesHeadSeq(ctx)
+	if err != nil {
 		return 0, fmt.Errorf("store: read messages head seq: %w", err)
 	}
-	return head, nil
+	return uint64(head), nil //nolint:gosec // G115: head is COALESCE(MAX(seq), 0), always >= 0
 }
 
 // updateMessageBlocksExec is the shared block-write core, run against
@@ -293,7 +271,7 @@ func (s *Store) MessagesHeadSeq(ctx context.Context) (uint64, error) {
 //
 // It performs NO membership or authorship check, so it is deliberately
 // unexported: every exported write path must authorize before reaching it.
-func updateMessageBlocksExec(ctx context.Context, db execer, id MessageID, blocks []MessageBlock) error {
+func updateMessageBlocksExec(ctx context.Context, dbtx db.DBTX, id MessageID, blocks []MessageBlock) error {
 	if len(blocks) == 0 {
 		return fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
 	}
@@ -306,14 +284,15 @@ func updateMessageBlocksExec(ctx context.Context, db execer, id MessageID, block
 	if err != nil {
 		return err
 	}
-	tag, err := db.Exec(ctx,
-		"UPDATE messages SET blocks = $1, text_content = $2 WHERE id = $3",
-		blocksJSON, textContent(blocks), string(id),
-	)
+	affected, err := db.New(dbtx).UpdateMessageBlocks(ctx, db.UpdateMessageBlocksParams{
+		Blocks:      blocksJSON,
+		TextContent: textContent(blocks),
+		ID:          string(id),
+	})
 	if err != nil {
 		return fmt.Errorf("store: update message blocks: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		return fmt.Errorf("%w: message %q", ErrNotFound, id)
 	}
 	return nil
@@ -382,33 +361,21 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 	// matches no row) or after it, never between a separate check and the write.
 	// The EXISTS subquery is the membership half and the author_account_id
 	// equality the authorship half; both must hold for the row to match.
-	const q = `
-		UPDATE messages m
-		SET blocks = $1, text_content = $2
-		FROM topics t
-		WHERE m.id = $3
-		  AND t.id = m.topic_id
-		  AND m.author_account_id = $4
-		  AND EXISTS (
-		    SELECT 1 FROM channel_members cm
-		    WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
-		  )
-		RETURNING m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks`
-	rows, err := s.pool.Query(ctx, q, blocksJSON, textContent(blocks), string(id), string(actor))
+	row, err := s.q.UpdateMessageBlocksAsAuthor(ctx, db.UpdateMessageBlocksAsAuthorParams{
+		Blocks:          blocksJSON,
+		TextContent:     textContent(blocks),
+		ID:              string(id),
+		AuthorAccountID: string(actor),
+	})
 	if err != nil {
+		if noRows(err) {
+			// Unknown id, not the author, or no longer a member — one answer for
+			// all three, so a refusal enumerates nothing.
+			return Message{}, fmt.Errorf("%w: message %q", ErrNotFound, id)
+		}
 		return Message{}, fmt.Errorf("store: update message blocks as author: %w", err)
 	}
-	defer rows.Close()
-	msgs, err := scanMessages(rows)
-	if err != nil {
-		return Message{}, err
-	}
-	if len(msgs) == 0 {
-		// Unknown id, not the author, or no longer a member — one answer for all
-		// three, so a refusal enumerates nothing.
-		return Message{}, fmt.Errorf("%w: message %q", ErrNotFound, id)
-	}
-	return msgs[0], nil
+	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AtUnixMs, row.Blocks)
 }
 
 // MessageAskIDs returns the ask_id of every ask block on the message, in block
@@ -429,10 +396,8 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 // single-statement UpdateMessageBlocksAsAuthor that follows, and its result is
 // never derived from what this read returned.
 func (s *Store) MessageAskIDs(ctx context.Context, id MessageID) ([]string, error) {
-	var blocksJSON []byte
-	if err := s.pool.QueryRow(ctx,
-		`SELECT blocks FROM messages WHERE id = $1`, string(id),
-	).Scan(&blocksJSON); err != nil {
+	blocksJSON, err := s.q.GetMessageBlocks(ctx, string(id))
+	if err != nil {
 		if noRows(err) {
 			return nil, nil
 		}
@@ -480,19 +445,18 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 		// visibility boundary (the D9 not-found/forbidden merge the main query and
 		// AnswerAsk also apply). The channel is the cursor message's topic's
 		// channel.
-		err := s.pool.QueryRow(ctx,
-			`SELECT m.seq FROM messages m
-			 JOIN topics t ON t.id = m.topic_id
-			 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
-			 WHERE m.id = $2 AND t.channel_id = $3`,
-			string(q.Actor), string(q.Page.BeforeMessageID), string(q.ChannelID),
-		).Scan(&beforeSeq)
+		seq, err := s.q.GetPageCursorSeq(ctx, db.GetPageCursorSeqParams{
+			AccountID: string(q.Actor),
+			ID:        string(q.Page.BeforeMessageID),
+			ChannelID: string(q.ChannelID),
+		})
 		if err != nil {
 			if noRows(err) {
 				return nil, fmt.Errorf("%w: before-cursor %q not in channel", ErrInvalidArgument, q.Page.BeforeMessageID)
 			}
 			return nil, fmt.Errorf("store: resolve page cursor: %w", err)
 		}
+		beforeSeq = seq
 	}
 
 	// A zero beforeSeq (no cursor) reads the newest page; a positive one pages
@@ -511,26 +475,22 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 	// id-deduping client converges to current content (last-write-wins).
 	// Freezing content too would need an update/change-seq and a larger schema
 	// change; membership-only is the ratified scope (RIG-1333 OQ5).
-	const query = `
-		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
-		FROM messages m
-		JOIN topics t ON t.id = m.topic_id
-		JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
-		WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
-		  AND ($6 = '' OR m.topic_id = $6)
-		ORDER BY m.seq DESC
-		LIMIT $4`
-	// seq is BIGSERIAL (the int64 domain) and SnapshotSeq is a server-issued
-	// boundary the client echoes back, so the value is in range by construction;
-	// an out-of-range client value degrades to an empty page (m.seq <= a negative
-	// bound matches nothing), never a fault.
-	snap := int64(q.Page.SnapshotSeq) //nolint:gosec // G115: see the note above — server-issued seq, int64 domain
-	rows, err := s.pool.Query(ctx, query, string(q.Actor), string(q.ChannelID), beforeSeq, int64(limit), snap, q.TopicID)
+	// SnapshotSeq is a server-issued boundary the client echoes back, so the
+	// value is in range by construction; an out-of-range client value degrades
+	// to an empty page (m.seq <= a negative bound matches nothing), never a fault.
+	snap := int64(q.Page.SnapshotSeq) //nolint:gosec // G115: server-issued seq, int64 domain
+	rows, err := s.q.ListMessages(ctx, db.ListMessagesParams{
+		AccountID: string(q.Actor),
+		ChannelID: string(q.ChannelID),
+		Column3:   beforeSeq,
+		Limit:     int32(limit), //nolint:gosec // G115: clampLimit bounds this to maxPageLimit (200)
+		Column5:   snap,
+		Column6:   q.TopicID,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list messages: %w", err)
 	}
-	defer rows.Close()
-	return scanMessages(rows)
+	return messagesFromListRows(rows)
 }
 
 // SearchMessages runs a Postgres full-text search over message text, scoped to
@@ -551,24 +511,19 @@ func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope Searc
 	// rows rather than erroring. Visibility: the message's channel (resolved
 	// through the topic join) must be one the actor is a member of; the optional
 	// scope narrows within that set.
-	const q = `
-		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
-		FROM messages m
-		JOIN topics t ON t.id = m.topic_id
-		JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
-		WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
-		  AND ($3 = '' OR t.channel_id = $3)
-		  AND ($5 = 0 OR m.seq <= $5)
-		ORDER BY ts_rank(m.search_tsv, websearch_to_tsquery('english', $2)) DESC, m.seq DESC
-		LIMIT $4`
 	// SnapshotSeq is int64-safe by construction; see ListMessages.
 	snap := int64(page.SnapshotSeq) //nolint:gosec // G115: server-issued seq, int64 domain (see ListMessages)
-	rows, err := s.pool.Query(ctx, q, string(actor), query, string(scope.ChannelID), int64(limit), snap)
+	rows, err := s.q.SearchMessages(ctx, db.SearchMessagesParams{
+		AccountID:          string(actor),
+		WebsearchToTsquery: query,
+		Column3:            string(scope.ChannelID),
+		Limit:              int32(limit), //nolint:gosec // G115: clampLimit bounds this to maxPageLimit (200)
+		Column5:            snap,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: search messages: %w", err)
 	}
-	defer rows.Close()
-	return scanMessages(rows)
+	return messagesFromSearchRows(rows)
 }
 
 // AnswerAsk records a participant's atomic answer to a pending structured ask
@@ -620,33 +575,24 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	// Zero rows -> ErrNotFound (never a distinct not-authorized), so ask
 	// existence cannot leak across a membership boundary. FOR UPDATE OF m locks
 	// the message row (not the membership row) for the transaction's duration.
-	const q = `
-		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
-		FROM messages m
-		JOIN topics t ON t.id = m.topic_id
-		JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
-		WHERE m.blocks @> $2::jsonb
-		FOR UPDATE OF m`
 	filter, err := askIDContainmentFilter(askID)
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: marshal ask filter: %w", err)
 	}
-	rows, err := tx.Query(ctx, q, string(actor), filter)
+	found, err := db.New(tx).FindAskMessage(ctx, db.FindAskMessageParams{
+		AccountID: string(actor),
+		Column2:   filter,
+	})
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: find ask: %w", err)
 	}
-	defer rows.Close()
-	msgs, err := scanMessages(rows)
+	if len(found) == 0 {
+		return Message{}, Message{}, fmt.Errorf("%w: ask %q", ErrNotFound, askID)
+	}
+	msg, err := messageFromParts(found[0].ID, found[0].TopicID, found[0].AuthorAccountID, found[0].AtUnixMs, found[0].Blocks)
 	if err != nil {
 		return Message{}, Message{}, err
 	}
-	if len(msgs) == 0 {
-		return Message{}, Message{}, fmt.Errorf("%w: ask %q", ErrNotFound, askID)
-	}
-	msg := msgs[0]
-	// rows must be closed before issuing further queries on the same tx (pgx
-	// serializes a connection: an open rows cursor blocks the answer insert).
-	rows.Close()
 
 	// Locate the ask block and validate the answers cover its questions exactly,
 	// each answer against its question's offered options and arity, then record
@@ -723,6 +669,9 @@ func findAsk(blocks []MessageBlock, askID string) *Ask {
 // ErrInvalidArgument. ask_id is immutable (preserved by the update write path),
 // so recording an answer never re-mints it.
 func applyAskAnswer(msg *Message, askID string, answers []AskAnswer) error {
+	if msg == nil {
+		return errors.New("store: apply ask answer: nil message")
+	}
 	for i := range msg.Blocks {
 		ask := msg.Blocks[i].Ask
 		if ask == nil || ask.AskID != askID {
@@ -811,52 +760,68 @@ func validateQuestionAnswer(q *AskQuestion, a AskAnswer, askID string) error {
 // getMessageByRequestID returns the message stored under an author's idempotency
 // key — the dedup path for a retried AppendMessage.
 func (s *Store) getMessageByRequestID(ctx context.Context, author AccountID, clientRequestID string) (Message, error) {
-	const q = `
-		SELECT id, topic_id, author_account_id, at_unix_ms, blocks
-		FROM messages
-		WHERE author_account_id = $1 AND client_request_id = $2`
-	rows, err := s.pool.Query(ctx, q, string(author), clientRequestID)
+	rows, err := s.q.GetMessageByRequestID(ctx, db.GetMessageByRequestIDParams{
+		AuthorAccountID: string(author),
+		ClientRequestID: clientRequestID,
+	})
 	if err != nil {
 		return Message{}, fmt.Errorf("store: read deduped message: %w", err)
 	}
-	defer rows.Close()
-	msgs, err := scanMessages(rows)
+	if len(rows) == 0 {
+		return Message{}, fmt.Errorf("%w: deduped message for key %q", ErrNotFound, clientRequestID)
+	}
+	return messageFromParts(rows[0].ID, rows[0].TopicID, rows[0].AuthorAccountID, rows[0].AtUnixMs, rows[0].Blocks)
+}
+
+// messageFromParts reconstructs a domain Message from the shared five-column
+// projection (id, topic_id, author_account_id, at_unix_ms, blocks) every message
+// read returns, decoding the JSONB block set. It replaces the former scanMessages
+// helper now that sqlc emits a typed row per query rather than a pgx.Rows cursor.
+func messageFromParts(id, topicID, author string, atMS int64, blocksJSON []byte) (Message, error) {
+	blocks, err := unmarshalBlocks(blocksJSON)
 	if err != nil {
 		return Message{}, err
 	}
-	if len(msgs) == 0 {
-		return Message{}, fmt.Errorf("%w: deduped message for key %q", ErrNotFound, clientRequestID)
-	}
-	return msgs[0], nil
+	return Message{
+		ID:              MessageID(id),
+		TopicID:         topicID,
+		AuthorAccountID: AccountID(author),
+		At:              time.UnixMilli(atMS).UTC(),
+		Blocks:          blocks,
+	}, nil
 }
 
-// scanMessages reads message rows into Messages, decoding the JSONB block set on
-// each. Shared by the list, search, and dedup reads.
-func scanMessages(rows pgx.Rows) ([]Message, error) {
-	var msgs []Message
-	for rows.Next() {
-		var (
-			id, topicID, author string
-			atMS                int64
-			blocksJSON          []byte
-		)
-		if err := rows.Scan(&id, &topicID, &author, &atMS, &blocksJSON); err != nil {
-			return nil, fmt.Errorf("store: scan message: %w", err)
-		}
-		blocks, err := unmarshalBlocks(blocksJSON)
+// messagesFromListRows / messagesFromSearchRows map the generated per-query rows
+// (structurally identical, but distinct Go types) through messageFromParts. A
+// decode failure on any row is propagated (fail-loud), matching the former
+// scanMessages: a malformed block set is a store invariant violation, never a
+// silently-dropped row.
+func messagesFromListRows(rows []db.ListMessagesRow) ([]Message, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	out := make([]Message, 0, len(rows))
+	for _, r := range rows {
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AtUnixMs, r.Blocks)
 		if err != nil {
 			return nil, err
 		}
-		msgs = append(msgs, Message{
-			ID:              MessageID(id),
-			TopicID:         topicID,
-			AuthorAccountID: AccountID(author),
-			At:              time.UnixMilli(atMS).UTC(),
-			Blocks:          blocks,
-		})
+		out = append(out, m)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate messages: %w", err)
+	return out, nil
+}
+
+func messagesFromSearchRows(rows []db.SearchMessagesRow) ([]Message, error) {
+	if len(rows) == 0 {
+		return nil, nil
 	}
-	return msgs, nil
+	out := make([]Message, 0, len(rows))
+	for _, r := range rows {
+		m, err := messageFromParts(r.ID, r.TopicID, r.AuthorAccountID, r.AtUnixMs, r.Blocks)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }

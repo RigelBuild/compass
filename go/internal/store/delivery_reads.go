@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The delivery consumer's read side (RIG-1569 T3, design record D1). These live
@@ -27,33 +29,14 @@ import (
 // and is excluded, so a deliver is only ever dispatched to an agent session. $1
 // is the channel, $2 the author account excluded from the result.
 func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author AccountID) ([]AccountID, error) {
-	const q = `
-		SELECT aa.account_id
-		FROM channel_members cm
-		JOIN agent_accounts aa ON aa.account_id = cm.account_id
-		JOIN channels ch ON ch.id = cm.channel_id
-		WHERE cm.channel_id = $1
-		  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
-		  AND cm.account_id <> $2
-		ORDER BY aa.account_id`
-	rows, err := s.pool.Query(ctx, q, string(channel), string(author))
+	rows, err := s.q.SubscribedAgents(ctx, db.SubscribedAgentsParams{
+		ChannelID: string(channel),
+		AccountID: string(author),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve subscribed agents: %w", err)
 	}
-	defer rows.Close()
-
-	var agents []AccountID
-	for rows.Next() {
-		var acct string
-		if err := rows.Scan(&acct); err != nil {
-			return nil, fmt.Errorf("store: scan subscribed agent: %w", err)
-		}
-		agents = append(agents, AccountID(acct))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate subscribed agents: %w", err)
-	}
-	return agents, nil
+	return accountIDs(rows), nil
 }
 
 // ChannelAgentMembers resolves every AGENT member of a channel, author excluded,
@@ -65,31 +48,14 @@ func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author 
 // members (a human member has no agent_accounts row); $1 is the channel, $2 the
 // author excluded (an agent's own `@agents` / self-mention never steers itself).
 func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, author AccountID) ([]AccountID, error) {
-	const q = `
-		SELECT aa.account_id
-		FROM channel_members cm
-		JOIN agent_accounts aa ON aa.account_id = cm.account_id
-		WHERE cm.channel_id = $1
-		  AND cm.account_id <> $2
-		ORDER BY aa.account_id`
-	rows, err := s.pool.Query(ctx, q, string(channel), string(author))
+	rows, err := s.q.ChannelAgentMembers(ctx, db.ChannelAgentMembersParams{
+		ChannelID: string(channel),
+		AccountID: string(author),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve channel agent members: %w", err)
 	}
-	defer rows.Close()
-
-	var agents []AccountID
-	for rows.Next() {
-		var acct string
-		if err := rows.Scan(&acct); err != nil {
-			return nil, fmt.Errorf("store: scan channel agent member: %w", err)
-		}
-		agents = append(agents, AccountID(acct))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate channel agent members: %w", err)
-	}
-	return agents, nil
+	return accountIDs(rows), nil
 }
 
 // IsAgentAccount reports whether account is an owned agent (has an agent_accounts
@@ -100,11 +66,8 @@ func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, auth
 // caller (the consumer, resolving a message's author) treats "not an agent" and
 // "unknown" identically: deliver at post.
 func (s *Store) IsAgentAccount(ctx context.Context, account AccountID) (bool, error) {
-	var exists bool
-	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM agent_accounts WHERE account_id = $1)`,
-		string(account),
-	).Scan(&exists); err != nil {
+	exists, err := s.q.IsAgentAccount(ctx, string(account))
+	if err != nil {
 		return false, fmt.Errorf("store: check agent account: %w", err)
 	}
 	return exists, nil
@@ -116,23 +79,14 @@ func (s *Store) IsAgentAccount(ctx context.Context, account AccountID) (bool, er
 // stale in-memory copy — the commit-lag-safe read the settle gate rides. An
 // unknown id is ErrNotFound.
 func (s *Store) MessageByID(ctx context.Context, messageID string) (Message, error) {
-	const q = `
-		SELECT id, topic_id, author_account_id, at_unix_ms, blocks
-		FROM messages
-		WHERE id = $1`
-	rows, err := s.pool.Query(ctx, q, messageID)
+	row, err := s.q.MessageByID(ctx, messageID)
 	if err != nil {
+		if noRows(err) {
+			return Message{}, fmt.Errorf("%w: message %q", ErrNotFound, messageID)
+		}
 		return Message{}, fmt.Errorf("store: read message by id: %w", err)
 	}
-	defer rows.Close()
-	msgs, err := scanMessages(rows)
-	if err != nil {
-		return Message{}, err
-	}
-	if len(msgs) == 0 {
-		return Message{}, fmt.Errorf("%w: message %q", ErrNotFound, messageID)
-	}
-	return msgs[0], nil
+	return messageFromParts(row.ID, row.TopicID, row.AuthorAccountID, row.AtUnixMs, row.Blocks)
 }
 
 // MessageChannel resolves a message id to its channel — the ack arm's channel
@@ -144,10 +98,8 @@ func (s *Store) MessageByID(ctx context.Context, messageID string) (Message, err
 // ErrNotFound, which the ack arm treats as a fail-closed no-op (a foreign or
 // fabricated ack never advances a cursor).
 func (s *Store) MessageChannel(ctx context.Context, messageID string) (ChannelID, error) {
-	var channel string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT t.channel_id FROM messages m JOIN topics t ON t.id = m.topic_id WHERE m.id = $1`, messageID,
-	).Scan(&channel); err != nil {
+	channel, err := s.q.MessageChannel(ctx, messageID)
+	if err != nil {
 		if noRows(err) {
 			return "", fmt.Errorf("%w: message %q", ErrNotFound, messageID)
 		}
@@ -164,15 +116,14 @@ func (s *Store) MessageChannel(ctx context.Context, messageID string) (ChannelID
 // author from_handle (GetAccount). An unknown topic id is ErrNotFound, which the
 // caller logs and treats as empty names: a name miss never blocks a delivery.
 func (s *Store) TopicChannelNames(ctx context.Context, topicID string) (topicName, channelName string, err error) {
-	if err := s.pool.QueryRow(ctx,
-		`SELECT t.name, c.name FROM topics t JOIN channels c ON c.id = t.channel_id WHERE t.id = $1`, topicID,
-	).Scan(&topicName, &channelName); err != nil {
+	row, err := s.q.TopicChannelNames(ctx, topicID)
+	if err != nil {
 		if noRows(err) {
 			return "", "", fmt.Errorf("%w: topic %q", ErrNotFound, topicID)
 		}
 		return "", "", fmt.Errorf("store: resolve topic channel names: %w", err)
 	}
-	return topicName, channelName, nil
+	return row.TopicName, row.ChannelName, nil
 }
 
 // SweepChannels returns the D1 disjunct channel set an agent sweeps: every
@@ -188,30 +139,29 @@ func (s *Store) TopicChannelNames(ctx context.Context, topicID string) (topicNam
 // the cursor sweep's cannot drift. $1 is always an agent, so the JOIN to
 // agent_accounts matches exactly one row and yields its home_channel_id.
 func (s *Store) SweepChannels(ctx context.Context, agent AccountID) ([]ChannelID, error) {
-	const q = `
-		SELECT cm.channel_id
-		FROM channel_members cm
-		JOIN agent_accounts aa ON aa.account_id = cm.account_id
-		JOIN channels ch ON ch.id = cm.channel_id
-		WHERE cm.account_id = $1
-		  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
-		ORDER BY cm.channel_id`
-	rows, err := s.pool.Query(ctx, q, string(agent))
+	rows, err := s.q.SweepChannels(ctx, string(agent))
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve sweep channels: %w", err)
 	}
-	defer rows.Close()
-
-	var channels []ChannelID
-	for rows.Next() {
-		var ch string
-		if err := rows.Scan(&ch); err != nil {
-			return nil, fmt.Errorf("store: scan sweep channel: %w", err)
-		}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	channels := make([]ChannelID, 0, len(rows))
+	for _, ch := range rows {
 		channels = append(channels, ChannelID(ch))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate sweep channels: %w", err)
-	}
 	return channels, nil
+}
+
+// accountIDs maps a generated string-column read to the domain AccountID slice,
+// preserving the former nil-on-empty result the pgx scan loops returned.
+func accountIDs(rows []string) []AccountID {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]AccountID, 0, len(rows))
+	for _, a := range rows {
+		out = append(out, AccountID(a))
+	}
+	return out
 }

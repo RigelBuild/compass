@@ -84,12 +84,10 @@ export const ALLOWLIST: string[] = [
 	// shape this gate flags): the record's 24-file list minus agent_tree.go +
 	// presence_reads.go (const-hoisted, not literal-at-callsite — see above),
 	// plus dm.go (added post-record). Each drops as its domain migrates.
-	// accounts.go migrated in T2 (RIG-3034); agent_tree.go was never seeded here
-	// (its SQL was const-hoisted, so the literal-scoped gate produced no finding).
-	"go/internal/store/messages.go",
-	"go/internal/store/topics.go",
-	"go/internal/store/delivery_cursors.go",
-	"go/internal/store/delivery_reads.go",
+	// accounts.go migrated in T2; channels/channel_pins/coordination in T3;
+	// messages/topics/delivery_cursors/delivery_reads in T4 (RIG-3034).
+	// agent_tree.go + presence_reads.go were never seeded here (const-hoisted SQL,
+	// so the literal-scoped gate produced no finding).
 	"go/internal/store/agent_sessions.go",
 	"go/internal/store/agent_transcripts.go",
 	"go/internal/store/agent_activity.go",

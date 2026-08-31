@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The presence component's read side (RIG-1569 T8, design record D4). Two pure
@@ -32,14 +34,8 @@ import (
 // An agent with no authored asks, or only answered asks, is false — never an
 // error for the ordinary "no open ask" case.
 func (s *Store) AgentHasOpenAsk(ctx context.Context, agent AccountID) (bool, error) {
-	const q = `
-		SELECT EXISTS (
-			SELECT 1 FROM messages
-			WHERE author_account_id = $1
-			  AND blocks @? '$[*] ? (@.kind == "ask" && (!exists(@.ask.answered) || @.ask.answered == false))'
-		)`
-	var open bool
-	if err := s.pool.QueryRow(ctx, q, string(agent)).Scan(&open); err != nil {
+	open, err := s.q.AgentHasOpenAsk(ctx, string(agent))
+	if err != nil {
 		return false, fmt.Errorf("store: check agent open ask: %w", err)
 	}
 	return open, nil
@@ -60,16 +56,11 @@ func (s *Store) AgentHasOpenAsk(ctx context.Context, agent AccountID) (bool, err
 // co-inhabits a channel with) and is the MVP the brief pins, with the broader
 // visibility nuance parked for the driver.
 func (s *Store) SharesVisibleChannel(ctx context.Context, actor AccountID, agent AccountID) (bool, error) {
-	const q = `
-		SELECT EXISTS (
-			SELECT 1
-			FROM channel_members cm1
-			JOIN channel_members cm2 ON cm2.channel_id = cm1.channel_id
-			WHERE cm1.account_id = $1
-			  AND cm2.account_id = $2
-		)`
-	var shares bool
-	if err := s.pool.QueryRow(ctx, q, string(actor), string(agent)).Scan(&shares); err != nil {
+	shares, err := s.q.SharesVisibleChannel(ctx, db.SharesVisibleChannelParams{
+		AccountID:   string(actor),
+		AccountID_2: string(agent),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check shared visible channel: %w", err)
 	}
 	return shares, nil
