@@ -132,6 +132,10 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 	if err != nil {
 		return err
 	}
+	gatewayPort, _, err := parseGatewayPort(string(cmdline))
+	if err != nil {
+		return err
+	}
 	if err := steps.net.Provision(ctx); err != nil {
 		return fmt.Errorf("provisioning network: %w", err)
 	}
@@ -151,7 +155,11 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 		bootNonce:        bootNonce,
 		newCredential:    linuxCredential,
 		armFunc:          runNftScript,
+		dialGateway:      realDialGateway,
+		chownSocket:      chownAgentSocket,
+		gatewayPort:      gatewayPort,
 		stopServing:      stopServing,
+		serveCtx:         serveCtx,
 		state:            stateReady,
 		execs:            make(map[string]*childExec),
 	}
