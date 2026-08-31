@@ -48,6 +48,10 @@
 
 import { readFileSync } from "node:fs";
 import { $ } from "bun";
+// The flake-parity gate's own rev extractor — reused here so step 6 keys its
+// re-lock off flake.lock's ACTUAL recorded rev (the exact value the gate
+// compares), not merely off flake.nix's text having changed.
+import { nixpkgsLockedRev } from "../toolchain/flake-parity-core.ts";
 import {
 	BIOME_CATALOG_KEY,
 	channelNixpkgsRev,
@@ -64,6 +68,7 @@ const PACKAGE_JSON = "package.json";
 // devenv-nixpkgs channel rev. flake.lock records the same rev; the flake-parity
 // gate (tools/toolchain/flake-parity.ts) reds CI when it skews from devenv.lock.
 const FLAKE_NIX = "flake.nix";
+const FLAKE_LOCK = "flake.lock";
 
 // The nixpkgs system the dev shell bakes for; eval the same attr set the baked
 // derivations come from.
@@ -173,24 +178,37 @@ async function main(): Promise<number> {
 	// it independently — so without this the flake-parity gate
 	// (flake-gate:flake-parity) reds on the skew. Rewrite the URL rev to the new
 	// channel rev, then re-lock flake.lock to match. `nix flake update nixpkgs`
-	// re-locks only the nixpkgs input (no build). Idempotent: a channel bump that
-	// somehow left the rev unchanged rewrites nothing and the flake update is a
-	// no-op. Fail loud — a half-aligned flake ships a red parity gate.
+	// re-locks only the nixpkgs input (no build).
+	//
+	// The re-lock is gated on flake.lock's ACTUAL recorded rev, not merely on
+	// flake.nix's text changing: a half-aligned state (flake.nix already at the
+	// new rev but flake.lock stale — a prior run that rewrote+committed flake.nix
+	// then failed the update, re-driven on a rebase) must still re-lock. So we
+	// run the update whenever EITHER flake.nix was just rewritten OR flake.lock's
+	// rev != the channel rev. Idempotent: a fully-aligned flake rewrites nothing
+	// and skips the update. Fail loud — a half-aligned flake ships a red gate.
 	const channelRev = channelNixpkgsRev(readFileSync(DEVENV_LOCK, "utf8"));
 	const flakeBefore = readFileSync(FLAKE_NIX, "utf8");
 	const flakeAfter = rewriteFlakeNixpkgsUrl(flakeBefore, channelRev);
-	if (flakeAfter !== flakeBefore) {
+	const flakeNixRewritten = flakeAfter !== flakeBefore;
+	if (flakeNixRewritten) {
 		await Bun.write(FLAKE_NIX, flakeAfter);
 		console.log(
 			`refresh-devenv-nixpkgs: rewrote flake.nix nixpkgs pin to channel rev ${channelRev}.`,
 		);
+	}
+	// flake.lock's recorded rev — null if the lock is absent/misshapen, which we
+	// treat as "needs a re-lock" (the update will (re)create it) rather than a
+	// silent skip.
+	const flakeLockRev = nixpkgsLockedRev(readFileSync(FLAKE_LOCK, "utf8"));
+	if (flakeNixRewritten || flakeLockRev !== channelRev) {
 		console.log(
 			"refresh-devenv-nixpkgs: re-locking flake.lock (nix flake update nixpkgs) ...",
 		);
 		await $`nix flake update nixpkgs --extra-experimental-features ${"nix-command flakes"}`;
 	} else {
 		console.log(
-			"refresh-devenv-nixpkgs: flake.nix nixpkgs pin already at the channel rev; no rewrite.",
+			"refresh-devenv-nixpkgs: flake.nix + flake.lock already at the channel rev; no flake re-lock.",
 		);
 	}
 

@@ -496,8 +496,10 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 		expect(devenvRule?.minimumReleaseAge).toBeNull();
 	});
 
-	// Branch-mode lockstep task over exactly the three files the script writes
-	// (compass has NO committed inner-rev guard file, unlike the internal monorepo's fourth entry).
+	// Branch-mode lockstep task over exactly the five files the script writes:
+	// devenv.lock + package.json (biome catalog pin) + bun.lock (steps 2/4/5),
+	// and flake.nix + flake.lock (step 6's flake-parity lockstep). compass has NO
+	// committed inner-rev guard file, unlike the internal monorepo's guard entry.
 	//
 	// The `every(... refresh-devenv-nixpkgs ...)` assertion also PINS the verified
 	// FOD-refresh exemption: this branch rewrites bun.lock + the biome catalog pin,
@@ -514,7 +516,17 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 			"devenv.lock",
 			"package.json",
 			"bun.lock",
+			"flake.nix",
+			"flake.lock",
 		]);
+		// Silent-drop guard (mirrors the top-level rule's flake.nix guard): step 6
+		// writes flake.nix + flake.lock, and fileFilters is an INCLUDE allowlist —
+		// Renovate commits ONLY listed files. Drop either from the filter and a
+		// channel bump ships with the flake skewed from devenv.lock → flake-parity
+		// reds on every bump while the script's own tests stay green. These two
+		// asserts turn that silent drop into a red test.
+		expect(task?.fileFilters).toContain("flake.nix");
+		expect(task?.fileFilters).toContain("flake.lock");
 		expect(task?.commands?.length).toBeGreaterThan(0);
 		expect(
 			task?.commands?.every((c) =>

@@ -522,11 +522,17 @@
       // dev-shell baked==catalog parity holds in one PR. `executionMode: "branch"`
       // runs it once after the digest update is applied; safe here because this dep
       // never shares a branch (its own groupName above), so it owns the single
-      // branch-mode task slot Renovate builds per branch. Rule-level
       // postUpgradeTasks REPLACE the top-level one for matching branches; the
       // evicted top-level toolchain task self-gates on the versions/*.nix pins and
-      // would be a no-op here anyway. fileFilters cover exactly the files the script
-      // writes (compass has no committed inner-rev guard file, so no such entry).
+      // would be a no-op here anyway. fileFilters is an INCLUDE allowlist —
+      // Renovate commits ONLY files matching it — so it must name every file the
+      // script writes: devenv.lock + package.json (biome catalog pin) + bun.lock
+      // (steps 2/4/5), and flake.nix + flake.lock (step 6's flake lockstep). Omit
+      // the flake pair and Renovate would run the re-lock but silently DROP it
+      // from the commit, shipping a channel bump with the flake still skewed →
+      // flake-parity red on every bump (the same silent-drop mode the FOD guard
+      // in config.test.ts documents). compass has no committed inner-rev guard
+      // file, so no such entry.
       //
       // FOD-REFRESH IS INTENTIONALLY ABSENT here, though this branch rewrites
       // bun.lock + a workspace manifest (the biome catalog pin) — the two inputs
@@ -547,7 +553,13 @@
       // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
       postUpgradeTasks: {
         commands: ["bun tools/renovate/refresh-devenv-nixpkgs.ts"],
-        fileFilters: ["devenv.lock", "package.json", "bun.lock"],
+        fileFilters: [
+          "devenv.lock",
+          "package.json",
+          "bun.lock",
+          "flake.nix",
+          "flake.lock",
+        ],
         executionMode: "branch",
       },
     },
