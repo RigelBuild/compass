@@ -15,7 +15,7 @@ the Server↔Runner topology, and the NATS eventing substrate are the live
 example (the RIG-2861 record,
 `docs/designs/infra/runtime/compass-managed-multitenancy/design.md`). Without
 a stated convention, agents do not know what belongs in the public
-`RigelBuild/compass` core versus the private managed monorepo, and public
+`RigelBuild/compass` core versus the private monorepo, and public
 records risk "managed-service" framing for what is really core capability.
 
 ## Approach
@@ -41,7 +41,7 @@ monorepo) is designed here."
 - **Yes** → OSS core (`RigelBuild/compass`, records under `docs/designs/`
   here).
 - **No, because it needs cloud infrastructure, billing, or
-  tenant-provisioning orchestration** → the private managed monorepo (never
+  tenant-provisioning orchestration** → the private monorepo (never
   mirrored public).
 
 ### Examples

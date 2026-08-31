@@ -457,7 +457,7 @@ virtualization level). Our agent workload is largely I/O-bound waiting on LLM
 calls, so the real overhead is likely under the rule-of-thumb and is worth
 measuring on the actual workload before treating 10% as a planning fact.
 Because that fork spans this record's topology and RIG-2485/RIG-2394-D2's box
-lifecycle, its home is the private managed monorepo's AWS-EKS substrate
+lifecycle, its home is the private monorepo's AWS-EKS substrate
 design (RIG-2878), not this record; it gates only the box layer *beneath*
 this substrate-agnostic topology.
 
