@@ -46,7 +46,9 @@ type OwnershipIndex interface {
 // ManagerResolver walks a recorded authoring agent (possibly a peer) to its
 // owning Manager and returns that Manager's account id and home channel id.
 // It is its own narrow seam because no single store method spans the tree walk
-// (up parent_agent_id to a role="manager" agent) AND the home-channel read; the
+// (up parent_agent_id to the nearest tree ancestor — any Manager-class role,
+// not a role=="manager" filter, since every tree node is now Manager-class and
+// an owner parent must not be skipped) AND the home-channel read; the
 // driver backs it with the store's agent-tree + account reads at assembly.
 // store.ErrNotFound when the agent (or a walk ancestor) does not resolve.
 type ManagerResolver interface {
