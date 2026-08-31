@@ -4,8 +4,8 @@
 # (docs/designs/platform/go-toolchain-default.md T10 +
 # go-idioms-and-libraries.md L1/L2): gofmt + go vet + golangci-lint (with the
 # gochecksumtype/exhaustive exhaustiveness gate on), a CGO -race test lane, go
-# build, and the supply-chain fence (govulncheck + go-licenses). An advisory
-# (non-gating) nilaway lane rides alongside until its baseline is clean.
+# build, the supply-chain fence (govulncheck + go-licenses), and nilaway
+# nil-flow analysis (gating, zero baseline — see the nilaway task below).
 #
 # Tagged `oss` for the import boundary (may only depend on other oss/ projects),
 # NOT `bun` — it is a Go module. go/gofmt/golangci-lint/govulncheck/go-licenses/
@@ -115,8 +115,15 @@ tasks:
 
   nilaway:
     # nilaway: cross-function nil-flow analysis — the closest Go gets to Rust's
-    # no-null guarantee (F2). ADVISORY: `|| true` means findings print but never
-    # fail the pipeline, so promoting this lane to gating means dropping it.
+    # no-null guarantee (F2). GATING: the baseline is zero, so a new nil flow a
+    # PR's diff introduces fails `compass-go:ci` here (this task is a `ci` dep).
+    # The prescribed response to a finding is a guard at the deref, never a
+    # suppression: nilaway ignores `//nolint` (GC2) and its only opt-out is
+    # file-granular, so a real finding is fixed by failing toward the existing
+    # error path with a wire-contract message (GC3), and a believed false
+    # positive with no guardable shape escalates to Matt — never a file opt-out
+    # or a scope-narrowing of this command (GC1). See
+    # docs/designs/repo/compass-nilaway-gating/design.md.
     # `-include-pkgs` scopes it to first-party code, not deps/stdlib; the two
     # exclusions pair with .golangci.yml so both tools agree on what is out of
     # scope. `-exclude-errors-in-files` drops the checked-in protoc/connect
@@ -127,14 +134,14 @@ tasks:
     # still covers the whole generated tree, since a shorter one could also
     # swallow first-party code such as a future `generator/` package. It is
     # version-pinned, so a `compass/v2` tree must be added here or its findings
-    # return. `-test=false` covers
+    # return — the one sanctioned exclusion edit. `-test=false` covers
     # golangci's `path: _test\.go` class but is coarser — golangci relaxes named
     # linters on tests, while nilaway has no per-linter dial, so this also drops
     # flows whose source is a test caller even when the deref is in shipped code.
     # There is no per-site alternative: run standalone rather than under
     # golangci-lint, nilaway ignores `//nolint`, and its docstring opt-out
     # silences a whole file.
-    script: 'nilaway -include-pkgs=github.com/RigelBuild/compass/go -test=false -exclude-errors-in-files="gen/compass/v1/,internal/gen/compass/v1/" ./... || true'
+    script: 'nilaway -include-pkgs=github.com/RigelBuild/compass/go -test=false -exclude-errors-in-files="gen/compass/v1/,internal/gen/compass/v1/" ./...'
     options:
       runFromWorkspaceRoot: false
     inputs: *go_sources
