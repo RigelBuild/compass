@@ -34,6 +34,7 @@ const (
 	topDirRules      = "rules"
 	topDirAgents     = "agents"
 	topDirPrompts    = "prompts"
+	topDirProfiles   = "profiles"
 )
 
 // Top-level regular-file members admitted by exact filename, not under a top dir
@@ -46,6 +47,9 @@ const (
 	// memberSystemMD is the only filename admitted under prompts/<role>/
 	// (store door: RIG-3075 T2).
 	memberSystemMD = "SYSTEM.md"
+	// memberProfileYML is the only filename admitted under profiles/<name>/
+	// (store door: RIG-2968 T1).
+	memberProfileYML = "profile.yml"
 )
 
 // maxBundleFileCount and maxBundleContentBytes are a fail-fast client-side check
@@ -72,6 +76,7 @@ var bundleTopDirs = map[string]bool{
 	topDirRules:      true,
 	topDirAgents:     true,
 	topDirPrompts:    true,
+	topDirProfiles:   true,
 }
 
 // bundleNamePattern is the grammar for a member's <name> segment (store door:
@@ -133,7 +138,7 @@ func buildBundle(dir string) ([]byte, error) {
 		return nil, walkErr
 	}
 	if fileCount == 0 {
-		return nil, fmt.Errorf("bundle directory %q contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/ and no top-level %s or %s; use `agent-config delete` to clear the fleet config", dir, memberAgentsMD, memberModels)
+		return nil, fmt.Errorf("bundle directory %q contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/ and no top-level %s or %s; use `agent-config delete` to clear the fleet config", dir, memberAgentsMD, memberModels)
 	}
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("finalizing tar: %w", err)
@@ -170,7 +175,7 @@ func validateDirMember(name string) error {
 	if !bundleTopDirs[parts[0]] {
 		return errNotWhitelisted(name)
 	}
-	if (parts[0] == topDirSkills || parts[0] == topDirExtensions || parts[0] == topDirPrompts) && len(parts) >= 2 && !bundleNamePattern.MatchString(parts[1]) {
+	if (parts[0] == topDirSkills || parts[0] == topDirExtensions || parts[0] == topDirPrompts || parts[0] == topDirProfiles) && len(parts) >= 2 && !bundleNamePattern.MatchString(parts[1]) {
 		return fmt.Errorf("bundle member name %q must match %s", parts[1], bundleNamePattern.String())
 	}
 	return nil
@@ -180,7 +185,7 @@ func validateDirMember(name string) error {
 // neither under a whitelisted top dir nor one of the two top-level singletons
 // (store door: configMemberParts).
 func errNotWhitelisted(name string) error {
-	return fmt.Errorf("bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/ and is not a top-level %s or %s", name, memberAgentsMD, memberModels)
+	return fmt.Errorf("bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/ and is not a top-level %s or %s", name, memberAgentsMD, memberModels)
 }
 
 // addRegularMember validates a regular file against the door grammar and writes
@@ -292,6 +297,20 @@ func validateMemberGrammar(parts []string, name string, content []byte) error {
 			return fmt.Errorf("prompts role name %q must match %s", parts[1], bundleNamePattern.String())
 		}
 		return nil
+	case topDirProfiles:
+		// Exactly profiles/<name>/profile.yml — three components, grammar-valid
+		// <name>, filename exactly profile.yml, and a YAML-mapping body (the
+		// cheap shape check, twin of settings/models). The superset-key closure
+		// and cross-member models.agents frontmatter-name lint are the store
+		// door's authoritative checks, NOT replicated client-side (store door:
+		// RIG-2968 T1).
+		if len(parts) != 3 || parts[2] != memberProfileYML {
+			return fmt.Errorf("profiles member %q must be profiles/<name>/%s", name, memberProfileYML)
+		}
+		if !bundleNamePattern.MatchString(parts[1]) {
+			return fmt.Errorf("profiles name %q must match %s", parts[1], bundleNamePattern.String())
+		}
+		return validateYAMLMapping(name, content)
 	default:
 		// skills/ or extensions/: the <name> second component must match.
 		if len(parts) < 2 {

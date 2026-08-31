@@ -103,6 +103,11 @@ func TestBuildBundleRejects(t *testing.T) {
 		{"prompts too deep", map[string]string{"prompts/supervisor/sub/SYSTEM.md": "x"}, "must be prompts/<role>/SYSTEM.md"},
 		{"prompts too shallow", map[string]string{"prompts/SYSTEM.md": "x"}, "must be prompts/<role>/SYSTEM.md"},
 		{"prompts bad role name", map[string]string{"prompts/bad name/SYSTEM.md": "x"}, "must match"},
+		{"profiles wrong filename", map[string]string{"profiles/candidate/other.yml": "models: {}\n"}, "must be profiles/<name>/profile.yml"},
+		{"profiles too deep", map[string]string{"profiles/candidate/sub/profile.yml": "models: {}\n"}, "must be profiles/<name>/profile.yml"},
+		{"profiles too shallow", map[string]string{"profiles/profile.yml": "models: {}\n"}, "must be profiles/<name>/profile.yml"},
+		{"profiles bad name", map[string]string{"profiles/bad name/profile.yml": "models: {}\n"}, "must match"},
+		{"profiles non-mapping", map[string]string{"profiles/candidate/profile.yml": "- a\n- b\n"}, "must be a YAML mapping"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -192,7 +197,7 @@ func TestBuildBundleEmpty(t *testing.T) {
 		if err == nil {
 			t.Fatal("buildBundle(empty dir) = nil error, want rejection")
 		}
-		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/") {
+		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/") {
 			t.Errorf("buildBundle(empty) error %q does not name the no-members condition", err)
 		}
 	})
@@ -206,7 +211,7 @@ func TestBuildBundleEmpty(t *testing.T) {
 		if err == nil {
 			t.Fatal("buildBundle(only empty subdir) = nil error, want rejection")
 		}
-		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/") {
+		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/") {
 			t.Errorf("buildBundle(empty subdir) error %q does not name the no-members condition", err)
 		}
 	})
@@ -248,6 +253,7 @@ func TestBuildBundleDoorParity(t *testing.T) {
 		"agents/zeta.md":               "# zeta agent",
 		"AGENTS.md":                    "# fleet context",
 		"prompts/supervisor/SYSTEM.md": "# supervisor prompt",
+		"profiles/default/profile.yml": "models:\n  manager: litellm/claude-opus:high\n  agents: {}\n",
 		"models.yml":                   "models:\n  main: anthropic/claude\n",
 	})
 	bundle, err := buildBundle(root)
@@ -274,6 +280,7 @@ func TestBuildBundleDoorParity(t *testing.T) {
 		"extensions/beta/main.go",
 		"mcp/gamma.json",
 		"models.yml",
+		"profiles/default/profile.yml",
 		"prompts/supervisor/SYSTEM.md",
 		"rules/delta.md",
 		"rules/epsilon.mdc",

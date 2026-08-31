@@ -66,6 +66,7 @@ const (
 	topDirRules      = "rules"
 	topDirAgents     = "agents"
 	topDirPrompts    = "prompts"
+	topDirProfiles   = "profiles"
 )
 
 // configTopDirs are the only permitted top-level directories in a config bundle.
@@ -77,6 +78,7 @@ var configTopDirs = map[string]struct{}{
 	topDirRules:      {},
 	topDirAgents:     {},
 	topDirPrompts:    {},
+	topDirProfiles:   {},
 }
 
 // Top-level regular-file members admitted by exact filename (RIG-1678 T2), and
@@ -90,6 +92,9 @@ const (
 	// memberSystemMD is the only filename admitted under prompts/<role>/
 	// (RIG-3075 T2); structural twin of the store door.
 	memberSystemMD = "SYSTEM.md"
+	// memberProfileYML is the only filename admitted under profiles/<name>/
+	// (RIG-2968 T1); structural twin of the store door.
+	memberProfileYML = "profile.yml"
 )
 
 // configFetcher is the T3 fetch seam the materializer pulls through. *ServerLink
@@ -486,7 +491,7 @@ func validateMemberPath(name string, typeflag byte) (string, error) {
 		return validateTopLevelMember(name, clean, top, typeflag)
 	}
 	if _, ok := configTopDirs[top]; !ok {
-		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/", name)
+		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/", name)
 	}
 	return validateNestedMember(name, clean, top, parts, typeflag)
 }
@@ -515,51 +520,75 @@ func validateTopLevelMember(name, clean, top string, typeflag byte) (string, err
 // carry per-dir grammar.
 func validateNestedMember(name, clean, top string, parts []string, typeflag byte) (string, error) {
 	if typeflag == tar.TypeReg {
-		switch top {
-		case topDirSettings:
-			// Exactly settings/config.yml — yml-only (OQ-1).
-			if clean != settingsMember {
-				return "", fmt.Errorf("config bundle settings member %q must be exactly %s", name, settingsMember)
-			}
-			return clean, nil
-		case topDirRules:
-			if err := validateFlatRunnerMember(topDirRules, name, parts, ".md", ".mdc"); err != nil {
-				return "", err
-			}
-			return clean, nil
-		case topDirAgents:
-			if err := validateFlatRunnerMember(topDirAgents, name, parts, ".md"); err != nil {
-				return "", err
-			}
-			return clean, nil
-		case topDirMCP:
-			// mcp/<name>.json — safe base name, required .json suffix.
-			entry := parts[1]
-			base, ok := strings.CutSuffix(entry, ".json")
-			if !ok {
-				return "", fmt.Errorf("config bundle mcp member %q must have a .json suffix", name)
-			}
-			if !configTopLevelName.MatchString(base) {
-				return "", fmt.Errorf("config bundle mcp member name %q is not a safe name", entry)
-			}
-			return clean, nil
-		case topDirPrompts:
-			// Exactly prompts/<role>/SYSTEM.md — three components, safe <role>,
-			// filename exactly SYSTEM.md (RIG-3075 T2). Stricter than
-			// skills/extensions, so it needs its own arm, not the fall-through.
-			if len(parts) != 3 || parts[2] != memberSystemMD {
-				return "", fmt.Errorf("config bundle prompts member %q must be prompts/<role>/%s", name, memberSystemMD)
-			}
-			if !configTopLevelName.MatchString(parts[1]) {
-				return "", fmt.Errorf("config bundle prompts role name %q is not a safe name", parts[1])
-			}
-			return clean, nil
-		}
+		return validateNestedRegularMember(name, clean, top, parts)
 	}
+	// Directory entries under any top dir: only the first-level name must be
+	// safe; deeper segments rely on the traversal + containment guards.
+	if !configTopLevelName.MatchString(parts[1]) {
+		return "", fmt.Errorf("config bundle member name %q is not a safe name", parts[1])
+	}
+	return clean, nil
+}
 
-	// skills/ or extensions/ (and directory entries under any top dir): the
-	// first-level name must be safe; deeper segments rely on the traversal +
-	// containment guards.
+// validateNestedRegularMember validates a regular-file member (two or more path
+// components) under a whitelisted top dir. settings/rules/agents/mcp/prompts/
+// profiles carry per-dir grammar; a regular file under skills/ or extensions/
+// requires only a safe first-level name.
+func validateNestedRegularMember(name, clean, top string, parts []string) (string, error) {
+	switch top {
+	case topDirSettings:
+		// Exactly settings/config.yml — yml-only (OQ-1).
+		if clean != settingsMember {
+			return "", fmt.Errorf("config bundle settings member %q must be exactly %s", name, settingsMember)
+		}
+		return clean, nil
+	case topDirRules:
+		if err := validateFlatRunnerMember(topDirRules, name, parts, ".md", ".mdc"); err != nil {
+			return "", err
+		}
+		return clean, nil
+	case topDirAgents:
+		if err := validateFlatRunnerMember(topDirAgents, name, parts, ".md"); err != nil {
+			return "", err
+		}
+		return clean, nil
+	case topDirMCP:
+		// mcp/<name>.json — safe base name, required .json suffix.
+		entry := parts[1]
+		base, ok := strings.CutSuffix(entry, ".json")
+		if !ok {
+			return "", fmt.Errorf("config bundle mcp member %q must have a .json suffix", name)
+		}
+		if !configTopLevelName.MatchString(base) {
+			return "", fmt.Errorf("config bundle mcp member name %q is not a safe name", entry)
+		}
+		return clean, nil
+	case topDirPrompts:
+		// Exactly prompts/<role>/SYSTEM.md — three components, safe <role>,
+		// filename exactly SYSTEM.md (RIG-3075 T2).
+		if len(parts) != 3 || parts[2] != memberSystemMD {
+			return "", fmt.Errorf("config bundle prompts member %q must be prompts/<role>/%s", name, memberSystemMD)
+		}
+		if !configTopLevelName.MatchString(parts[1]) {
+			return "", fmt.Errorf("config bundle prompts role name %q is not a safe name", parts[1])
+		}
+		return clean, nil
+	case topDirProfiles:
+		// Exactly profiles/<name>/profile.yml — three components, safe <name>,
+		// filename exactly profile.yml (RIG-2968 T1). The store door carries the
+		// profile SCHEMA validation (superset-key closure + models.agents
+		// frontmatter-name lint); the runner is the structural twin — layout
+		// only, no content schema (mirrors the settings/models asymmetry).
+		if len(parts) != 3 || parts[2] != memberProfileYML {
+			return "", fmt.Errorf("config bundle profiles member %q must be profiles/<name>/%s", name, memberProfileYML)
+		}
+		if !configTopLevelName.MatchString(parts[1]) {
+			return "", fmt.Errorf("config bundle profiles name %q is not a safe name", parts[1])
+		}
+		return clean, nil
+	}
+	// skills/ or extensions/: first-level name must be safe; deeper segments
+	// rely on the traversal + containment guards.
 	if !configTopLevelName.MatchString(parts[1]) {
 		return "", fmt.Errorf("config bundle member name %q is not a safe name", parts[1])
 	}

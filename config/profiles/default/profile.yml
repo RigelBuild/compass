@@ -1,0 +1,29 @@
+# profiles/default/profile.yml — the committed fleet config IS the `default`
+# profile (RIG-2968 T1). Every Compass Manager without an explicit profile
+# resolves to this one, so it must always exist and pass the store door.
+#
+# v1 consumes ONLY the `models` axis; corpus/extensions/settings are schema'd
+# but their consumption is deferred (their shapes are provisional until first
+# consumption — see the design's Resolved decisions). They are declared here as
+# empty/null so `default` documents the full superset.
+models:
+  # The Manager's own model selector. Mirrors the committed fleet manager model
+  # (the seeded root supervisor's model): the fleet runs on litellm/claude-opus,
+  # and the design's own superset example pins the manager at :high.
+  manager: litellm/claude-opus:high
+  # Per-subagent-role models, keyed by the FRONTMATTER name: of a shipped
+  # agents/*.md def. The fleet ships config/agents/implementer.md
+  # (frontmatter name: implementer); left empty here so `default` pins no
+  # per-role override — subagents inherit the Manager's model.
+  agents: {}
+corpus:
+  # System-prompt corpus selection. SCHEMA'd, consumption DEFERRED.
+  prompts: null
+  skills: []
+  rules: []
+extensions:
+  # Extension/MCP tool-set selection. SCHEMA'd, consumption DEFERRED.
+  mcp: null
+settings:
+  # Session-settings overlay. SCHEMA'd, consumption DEFERRED.
+  {}

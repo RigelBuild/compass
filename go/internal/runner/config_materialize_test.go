@@ -621,13 +621,14 @@ var yamlMap = []byte("compaction:\n  enabled: true\n")
 func TestConfigMaterializeLandsNewMembers(t *testing.T) {
 	root := t.TempDir()
 	tarball := buildConfigTarball(t, map[string][]byte{
-		"settings/config.yml":          yamlMap,
-		"AGENTS.md":                    []byte("# fleet conventions\n"),
-		"models.yml":                   []byte("providers:\n  x:\n    baseUrl: https://y\n"),
-		"rules/red-green.md":           []byte("# red-green\n"),
-		"rules/hold-lane.mdc":          []byte("# hold lane\n"),
-		"agents/design.md":             []byte("# design agent\n"),
-		"prompts/supervisor/SYSTEM.md": []byte("# supervisor prompt\n"),
+		"settings/config.yml":            yamlMap,
+		"AGENTS.md":                      []byte("# fleet conventions\n"),
+		"models.yml":                     []byte("providers:\n  x:\n    baseUrl: https://y\n"),
+		"rules/red-green.md":             []byte("# red-green\n"),
+		"rules/hold-lane.mdc":            []byte("# hold lane\n"),
+		"agents/design.md":               []byte("# design agent\n"),
+		"prompts/supervisor/SYSTEM.md":   []byte("# supervisor prompt\n"),
+		"profiles/candidate/profile.yml": []byte("models:\n  agents: {}\n"),
 	})
 	f := &fakeConfigFetcher{bundle: AgentConfigBundle{Version: "v1", Tarball: tarball}}
 	m := NewConfigMaterializer(root, f, nil)
@@ -637,13 +638,14 @@ func TestConfigMaterializeLandsNewMembers(t *testing.T) {
 	versionDir := filepath.Join(root, "v1")
 
 	files := map[string]string{
-		filepath.Join("settings", "config.yml"):             string(yamlMap),
-		"AGENTS.md":                                         "# fleet conventions\n",
-		"models.yml":                                        "providers:\n  x:\n    baseUrl: https://y\n",
-		filepath.Join("rules", "red-green.md"):              "# red-green\n",
-		filepath.Join("rules", "hold-lane.mdc"):             "# hold lane\n",
-		filepath.Join("agents", "design.md"):                "# design agent\n",
-		filepath.Join("prompts", "supervisor", "SYSTEM.md"): "# supervisor prompt\n",
+		filepath.Join("settings", "config.yml"):               string(yamlMap),
+		"AGENTS.md":                                           "# fleet conventions\n",
+		"models.yml":                                          "providers:\n  x:\n    baseUrl: https://y\n",
+		filepath.Join("rules", "red-green.md"):                "# red-green\n",
+		filepath.Join("rules", "hold-lane.mdc"):               "# hold lane\n",
+		filepath.Join("agents", "design.md"):                  "# design agent\n",
+		filepath.Join("prompts", "supervisor", "SYSTEM.md"):   "# supervisor prompt\n",
+		filepath.Join("profiles", "candidate", "profile.yml"): "models:\n  agents: {}\n",
 	}
 	for rel, want := range files {
 		p := filepath.Join(versionDir, rel)
@@ -656,7 +658,7 @@ func TestConfigMaterializeLandsNewMembers(t *testing.T) {
 			t.Fatalf("%s mode = %v err=%v, want 0644", rel, fi.Mode().Perm(), err)
 		}
 	}
-	for _, dir := range []string{"settings", "rules", "agents", "prompts"} {
+	for _, dir := range []string{"settings", "rules", "agents", "prompts", "profiles"} {
 		di, err := os.Stat(filepath.Join(versionDir, dir))
 		if err != nil || di.Mode().Perm() != 0o755 {
 			t.Fatalf("%s dir mode = %v err=%v, want 0755", dir, di.Mode().Perm(), err)
@@ -670,21 +672,25 @@ func TestConfigMaterializeLandsNewMembers(t *testing.T) {
 // no current symlink.
 func TestConfigMaterializeRejectsNewMemberStructure(t *testing.T) {
 	cases := map[string][]byte{
-		"settings .yaml variant": buildConfigTarball(t, map[string][]byte{"settings/config.yaml": yamlMap}),
-		"settings .json variant": buildConfigTarball(t, map[string][]byte{"settings/config.json": []byte("{}")}),
-		"settings other name":    buildConfigTarball(t, map[string][]byte{"settings/other.yml": yamlMap}),
-		"settings nested":        buildConfigTarball(t, map[string][]byte{"settings/a/b.yml": yamlMap}),
-		"settings non-mapping":   buildConfigTarball(t, map[string][]byte{"settings/config.yml": []byte("- a\n- b\n")}),
-		"rules nested":           buildConfigTarball(t, map[string][]byte{"rules/nested/a.md": []byte("x")}),
-		"rules wrong ext":        buildConfigTarball(t, map[string][]byte{"rules/a.txt": []byte("x")}),
-		"agents non-md":          buildConfigTarball(t, map[string][]byte{"agents/a.txt": []byte("x")}),
-		"agents nested":          buildConfigTarball(t, map[string][]byte{"agents/sub/a.md": []byte("x")}),
-		"top-level other file":   buildConfigTarball(t, map[string][]byte{"README.md": []byte("x")}),
-		"models non-mapping":     buildConfigTarball(t, map[string][]byte{"models.yml": []byte("- a\n")}),
-		"prompts wrong filename": buildConfigTarball(t, map[string][]byte{"prompts/supervisor/other.md": []byte("x")}),
-		"prompts too deep":       buildConfigTarball(t, map[string][]byte{"prompts/supervisor/sub/SYSTEM.md": []byte("x")}),
-		"prompts too shallow":    buildConfigTarball(t, map[string][]byte{"prompts/SYSTEM.md": []byte("x")}),
-		"prompts bad role name":  buildConfigTarball(t, map[string][]byte{"prompts/bad name/SYSTEM.md": []byte("x")}),
+		"settings .yaml variant":  buildConfigTarball(t, map[string][]byte{"settings/config.yaml": yamlMap}),
+		"settings .json variant":  buildConfigTarball(t, map[string][]byte{"settings/config.json": []byte("{}")}),
+		"settings other name":     buildConfigTarball(t, map[string][]byte{"settings/other.yml": yamlMap}),
+		"settings nested":         buildConfigTarball(t, map[string][]byte{"settings/a/b.yml": yamlMap}),
+		"settings non-mapping":    buildConfigTarball(t, map[string][]byte{"settings/config.yml": []byte("- a\n- b\n")}),
+		"rules nested":            buildConfigTarball(t, map[string][]byte{"rules/nested/a.md": []byte("x")}),
+		"rules wrong ext":         buildConfigTarball(t, map[string][]byte{"rules/a.txt": []byte("x")}),
+		"agents non-md":           buildConfigTarball(t, map[string][]byte{"agents/a.txt": []byte("x")}),
+		"agents nested":           buildConfigTarball(t, map[string][]byte{"agents/sub/a.md": []byte("x")}),
+		"top-level other file":    buildConfigTarball(t, map[string][]byte{"README.md": []byte("x")}),
+		"models non-mapping":      buildConfigTarball(t, map[string][]byte{"models.yml": []byte("- a\n")}),
+		"prompts wrong filename":  buildConfigTarball(t, map[string][]byte{"prompts/supervisor/other.md": []byte("x")}),
+		"prompts too deep":        buildConfigTarball(t, map[string][]byte{"prompts/supervisor/sub/SYSTEM.md": []byte("x")}),
+		"prompts too shallow":     buildConfigTarball(t, map[string][]byte{"prompts/SYSTEM.md": []byte("x")}),
+		"prompts bad role name":   buildConfigTarball(t, map[string][]byte{"prompts/bad name/SYSTEM.md": []byte("x")}),
+		"profiles wrong filename": buildConfigTarball(t, map[string][]byte{"profiles/candidate/other.yml": []byte("models: {}\n")}),
+		"profiles too deep":       buildConfigTarball(t, map[string][]byte{"profiles/candidate/sub/profile.yml": []byte("models: {}\n")}),
+		"profiles too shallow":    buildConfigTarball(t, map[string][]byte{"profiles/profile.yml": []byte("models: {}\n")}),
+		"profiles bad name":       buildConfigTarball(t, map[string][]byte{"profiles/bad name/profile.yml": []byte("models: {}\n")}),
 	}
 	for name, tarball := range cases {
 		t.Run(name, func(t *testing.T) {
