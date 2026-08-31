@@ -318,6 +318,108 @@ jobs:
           fi
           echo "verified: $ref:git-$sha12 resolves, linux/amd64, coherent with :latest"
 
+  release-assets-macos:
+    name: release-assets-macos
+    runs-on: macos-14
+    # Build the macOS .app/.dmg client bundle at the release sha on a macos-14
+    # (arm64) runner and hand it to release-assets as a workflow artifact
+    # (compass-distribution T3 / RIG-2754). It runs on macos-14 because the shell
+    # links the SYSTEM WebKit framework and the bundle edge (codesign/hdiutil) is
+    # mac-only (Global Constraint 5) — the dmg CANNOT be produced on the ubuntu
+    # release-assets runner. The SINGLE SHA256SUMS stays owned by release-assets
+    # (design §18): this job PRODUCES the dmg, release-assets FOLDS it in. Same
+    # release-gating `if:` + main-ref guard + release-pr dependency as
+    # release-assets.
+    needs: release-pr
+    if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
+    # Least privilege: read the tree, produce an artifact. NOT contents:write —
+    # this job never touches the Release; release-assets attaches the folded set.
+    permissions:
+      contents: read
+    timeout-minutes: 90
+    steps:
+      # Check out the release sha — the Release PR's merge commit release-please
+      # tagged (same ref release-assets builds from).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-pr.outputs.sha }}
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # nix-command + flakes; the toolchain (Go + bun) is built from nix
+          # (Global Constraint 3), never `setup-go`. The two caches are declared
+          # HERE, not delegated via `accept-flake-config` — that setting makes nix
+          # trust the `nixConfig` of ANY flake it evaluates, so a PR could add its
+          # own substituter AND trusted key. Naming the caches keeps that trust
+          # reviewed.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # The pinned toolchain comes from nix, never `setup-go` (Global Constraint
+        # 3): gate-tools.nix's `langs` output resolves the identical derivations
+        # the dev shell does — go from the go-overlay applied to the
+        # devenv.lock-pinned nixpkgs — so this build runs the pinned go
+        # byte-for-byte. Copied verbatim from release-assets (phase one).
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Build and stage the macOS client bundle
+        # The release version is the semver release-please cut, sourced from
+        # version.txt (Global Constraint 1: ONE version string across all
+        # binaries — the darwin shell carries the SAME clean semver ldflags stamp
+        # as the daemons). The shell compiles with cgo against the system WebKit
+        # framework (no build tag — T2 restructured the tags so a bare `go build
+        # ./cmd/compass-app` compiles on darwin), then the macos-bundle tool
+        # stages + ad-hoc signs the .app and wraps the .dmg under the release
+        # asset grammar.
+        env:
+          TAG_NAME: ${{ needs.release-pr.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          version="$(cat version.txt)"
+          tag="$TAG_NAME"
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          echo "TAG=$tag" >>"$GITHUB_ENV"
+
+          CGO_ENABLED=1 go -C go build -trimpath \
+            -ldflags "-X main.version=$version" \
+            -o /tmp/compass-app ./cmd/compass-app
+
+          moon run compass-ui:build
+
+          bun run tools/macos-bundle/index.ts \
+            --binary /tmp/compass-app \
+            --dist apps/ui/dist \
+            --version "$version" \
+            --out "compass-app_${tag}_darwin-arm64.dmg"
+
+      - name: Upload the macOS dmg for release-assets to fold in
+        # release-assets (ubuntu) downloads this artifact and folds the dmg into
+        # the single SHA256SUMS + the release-notes --asset list + the upload
+        # array. upload-artifact and download-artifact are independent actions
+        # with independent version numbers; this upload (v7) and the consumer's
+        # download (v8) interoperate on the shared v4+ artifact backend.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: compass-app-darwin-arm64-dmg
+          path: compass-app_${{ env.TAG }}_darwin-arm64.dmg
+          if-no-files-found: error
+
   release-assets:
     name: release-assets
     runs-on: ubuntu-latest
@@ -328,7 +430,7 @@ jobs:
     # release job (§A5(2)): a workflow_dispatch from a feature branch must never
     # mint release artifacts for unmerged code, even were release-please to emit
     # releases_created there.
-    needs: release-pr
+    needs: [release-pr, release-assets-macos]
     if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
     # Least privilege: write the Release, nothing else. NOT packages:write — the
     # release-notes generator reads the PUBLIC image digest anonymously, and this
@@ -462,6 +564,19 @@ jobs:
           mv "app-bundle/compass-app-${COMPASS_BUNDLE_VERSION}-linux-amd64.tar.gz" \
              "compass-app_${TAG}_linux-amd64.tar.gz"
 
+      - name: Download the macOS dmg from the release-assets-macos producer
+        # The dmg is built on macos-14 (release-assets-macos) because the shell
+        # links the SYSTEM WebKit framework and codesign/hdiutil are mac-only
+        # (Global Constraint 5). Fetch it to repo root BEFORE the SHA256SUMS step
+        # so it folds into the single checksum file + the notes + the upload set
+        # alongside the linux assets (design §18). This download (v8) and the
+        # producer's upload (v7) interoperate on the shared v4+ artifact backend
+        # (the two actions version independently).
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: compass-app-darwin-arm64-dmg
+          path: .
+
       - name: Generate SHA256SUMS over the built assets
         run: |
           set -euo pipefail
@@ -470,6 +585,7 @@ jobs:
             "compass-server_${TAG}_linux-amd64" \
             "compass-runner_${TAG}_linux-amd64" \
             "compass_${TAG}_darwin-arm64" \
+            "compass-app_${TAG}_darwin-arm64.dmg" \
             "compass-app_${TAG}_linux-amd64.tar.gz" \
             > SHA256SUMS
 
@@ -490,6 +606,7 @@ jobs:
             --asset "compass-runner_${TAG}_linux-amd64" \
             --asset "compass_${TAG}_darwin-arm64" \
             --asset "compass-app_${TAG}_linux-amd64.tar.gz" \
+            --asset "compass-app_${TAG}_darwin-arm64.dmg" \
             --asset "SHA256SUMS" \
             --body-out RELEASE_BODY.md \
             --manifest-out nix-outputs.json
@@ -511,6 +628,7 @@ jobs:
             "compass-runner_${TAG}_linux-amd64"
             "compass_${TAG}_darwin-arm64"
             "compass-app_${TAG}_linux-amd64.tar.gz"
+            "compass-app_${TAG}_darwin-arm64.dmg"
             SHA256SUMS
             # nix-outputs.json (below) is the generator's machine-readable
             # manifest — regenerable output attached for consumers, deliberately

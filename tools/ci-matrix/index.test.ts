@@ -331,7 +331,63 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(false);
 	});
 
-	test("push: forge + gtk4 unconditionally true, changedPaths ignored", () => {
+	test("darwinAffected on any go/cmd/compass-app/ path (same shell as gtk4)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["go/cmd/compass-app/main.go"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+		expect(
+			generate(
+				prInput({ affectedIds: [], changedPaths: ["go/cmd/other/main.go"] }),
+			).darwinAffected,
+		).toBe(false);
+	});
+
+	test("darwinAffected on a shared GTK closure input (mac lane compiles the same shell)", () => {
+		// The macos-14 lane compiles the SAME native shell the gtk4 lane does, so
+		// a closure-only PR must trigger it too (mirror gtk4's surface).
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["tools/toolchain/gtk-closure.nix"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
+
+	test("darwinAffected on a tools/macos-bundle/ change (the bundler the lane exercises)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["tools/macos-bundle/index.ts"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
+
+	test("darwinAffected false when the PR touches neither the shell nor the bundler", () => {
+		expect(
+			generate(prInput({ affectedIds: [], changedPaths: ["docs/readme.md"] }))
+				.darwinAffected,
+		).toBe(false);
+		// A different toolchain nix file must NOT trigger it.
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["tools/toolchain/gate-tools.nix"],
+				}),
+			).darwinAffected,
+		).toBe(false);
+	});
+
+	test("push: forge + gtk4 + darwin unconditionally true, changedPaths ignored", () => {
 		const out = generate({
 			projects: workspace(),
 			affectedIds: workspace().map((p) => p.id),
@@ -340,9 +396,10 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		});
 		expect(out.forgeAffected).toBe(true);
 		expect(out.gtk4Affected).toBe(true);
+		expect(out.darwinAffected).toBe(true);
 	});
 
-	test("schedule: forge + gtk4 unconditionally true", () => {
+	test("schedule: forge + gtk4 + darwin unconditionally true", () => {
 		const out = generate({
 			projects: workspace(),
 			affectedIds: workspace().map((p) => p.id),
@@ -351,6 +408,7 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		});
 		expect(out.forgeAffected).toBe(true);
 		expect(out.gtk4Affected).toBe(true);
+		expect(out.darwinAffected).toBe(true);
 	});
 
 	test("push: every non-empty group runs (full sweep)", () => {
@@ -416,5 +474,6 @@ describe("empty affected closure — matrix still non-empty (fromJSON safe)", ()
 		expect(out.microvmAffected).toBe(false);
 		expect(out.forgeAffected).toBe(false);
 		expect(out.gtk4Affected).toBe(false);
+		expect(out.darwinAffected).toBe(false);
 	});
 });

@@ -148,6 +148,14 @@ projects:
   # query projects`, or the generator's zero-untagged assertion never covers the
   # very tool that enforces it.
   ci-matrix: 'tools/ci-matrix'
+  # The macOS .app/.dmg bundler (compass-distribution T3): templates Info.plist,
+  # stages Compass.app/Contents/{MacOS,Resources}, ad-hoc signs (codesign
+  # --sign -, GC6/DL-261) and wraps a UDZO .dmg via hdiutil. Registered so its
+  # own typecheck + unit tests (over the pure Info.plist/arg core) ride the
+  # moon-driven CI sweep — since moon discovers projects only from this explicit
+  # map, an unregistered tool is silently inert and ships untested. Its mac-only
+  # edge (codesign/hdiutil) runs in the darwin macos-14 CI job, not the battery.
+  macos-bundle: 'tools/macos-bundle'
   # Vendored upstream fork subtrees (forks/<name>, RIG-1512). Each carries its
   # own nix-driven build as functional CI — so a fork-only change is gated by
   # the fork's own suite — while its tree stays exempt from the style gates

@@ -169,6 +169,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/macos-bundle": {
+      "name": "@compass/macos-bundle",
+      "bin": {
+        "macos-bundle": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/microvm-boot-test": {
       "name": "@compass/microvm-boot-test",
       "bin": {
@@ -454,6 +464,8 @@
     "@compass/forge-linear-token": ["@compass/forge-linear-token@workspace:tools/forge-linear-token"],
 
     "@compass/inline-sql-gate": ["@compass/inline-sql-gate@workspace:tools/inline-sql-gate"],
+
+    "@compass/macos-bundle": ["@compass/macos-bundle@workspace:tools/macos-bundle"],
 
     "@compass/microvm-boot-test": ["@compass/microvm-boot-test@workspace:tools/microvm-boot-test"],
 
