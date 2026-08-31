@@ -18,14 +18,12 @@ package runtime
 // isolation; this proves the whole path end-to-end at the runtime API the
 // Runner calls, with real agent-uid execs hitting the armed ruleset.
 //
-// Probe mechanism (grounded on hardware): the guest ships bash + sh + nft +
-// coreutils only — no wget/curl/nc/ip — so a reachability probe rides bash's
-// /dev/tcp against a RAW IP (never a DNS name: getent over the harness resolver
-// stalls to the 120s exec timeout and destabilizes the guest). A default-drop
-// nft policy silently drops the SYN, so a blocked connect hangs until a
-// guest-side `timeout` fires (exit 124); an allowed connect completes (exit 0,
-// "connected"). This mirrors the podman lifecycle proof's raw-IPv4 allow/deny
-// (lifecycle_test.go:137-166) inside the guest.
+// Probe mechanism: reachability rides a bash `/dev/tcp` connect to a RAW IP
+// (the guest ships bash+sh+nft+coreutils only — no wget/curl — and a DNS name
+// stalls the harness resolver), bounded by a guest-side `timeout`; see
+// canReachIPv4 and the const block for the full dropped-SYN → exit-124 rationale
+// and the timeout ordering it depends on. Mirrors the podman lifecycle proof's
+// raw-IPv4 allow/deny (lifecycle_test.go:137-166), inside the guest netns.
 //
 // IPv6 / dual-stack: the microVM guest network (passt) and the CI runners
 // provide NO IPv6 route, so a live v6 connect fails ENETUNREACH regardless of
@@ -57,10 +55,13 @@ const (
 	// ctx). It must exceed the guest-side `timeout` below so the guest's own
 	// bounded connect reports (exit 124) rather than the host ctx firing first.
 	egressProbeTimeout = 25 * time.Second
-	// guestConnectTimeout is the guest-side `timeout N` wrapping the /dev/tcp
-	// connect: a dropped SYN hangs, so this is what turns a blocked host into a
-	// bounded exit-124 rather than an indefinite hang.
-	guestConnectTimeout = 10
+	// guestConnectTimeout is the guest-side `timeout N` (seconds, as a string for
+	// direct interpolation into the probe script) wrapping the /dev/tcp connect:
+	// a dropped SYN hangs, so this is what turns a blocked host into a bounded
+	// exit-124 rather than an indefinite hang. It MUST be less than
+	// egressProbeTimeout so the guest's own timeout fires first (a blocked host
+	// then reports exit-124, not a host-ctx DeadlineExceeded read as a fault).
+	guestConnectTimeout = "10"
 	// allowedIP is the raw IPv4 the firewall must let through; deniedIP is a
 	// different globally-reachable raw IPv4 the default-deny policy must block.
 	// Both are stable anycast hosts reachable from CI when NOT firewalled, so a
@@ -120,7 +121,7 @@ func canReachIPv4(t *testing.T, m *MicroVMRuntime, id ContainerID, ip string) bo
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), egressProbeTimeout)
 	defer cancel()
-	script := "timeout " + itoa(guestConnectTimeout) +
+	script := "timeout " + guestConnectTimeout +
 		" bash -c 'exec 3<>/dev/tcp/" + ip + "/443 && echo connected'"
 	out, err := m.Exec(ctx, id, NewExecSpec("sh", "-c", script).AsUser("1000"))
 	if err != nil {
@@ -149,10 +150,12 @@ func TestInGuestEgressAllowlistAndDeny(t *testing.T) {
 
 // TestInGuestEgressAgentCannotAlterRuleset is W3(3) (and the V8 row-(8) re-arm
 // half): after the arm, an agent-uid exec cannot tear down or alter the ruleset
-// — `nft flush ruleset` fails (the agent runs with an empty capability set,
-// guestd never runs an exec as root, supervisor.go resolveUID), and the
-// allow/deny behavior still holds afterward. A regression that ran the agent
-// privileged, or armed with a flushable ruleset, fails here.
+// — `nft flush ruleset` fails because a non-root exec runs with an empty
+// capability set (guestd builds the child credential via linuxCredential(uid),
+// supervisor.go:59-61, dropping caps for a non-zero uid), and guestd never runs
+// an exec as root (resolveUID refuses uid 0). The allow/deny behavior still
+// holds afterward. A regression that ran the agent privileged, or armed with a
+// flushable ruleset, fails here.
 func TestInGuestEgressAgentCannotAlterRuleset(t *testing.T) {
 	m, id := startEgressSession(t, MustAllowEgress(allowedIP), "w3-integrity")
 
@@ -190,7 +193,11 @@ func TestInGuestEgressAgentCannotAlterRuleset(t *testing.T) {
 // proven live. A regression that skipped the arm on an empty policy (a silent
 // open-egress VM) fails here: the deniedIP would become reachable.
 func TestInGuestEgressAlwaysArmedDefaultDeny(t *testing.T) {
-	// Zero-value EgressPolicy: no allowlist, pure default-deny.
+	// Zero-value EgressPolicy: no allowlist, pure default-deny. The positive
+	// control for this test is its sibling TestInGuestEgressAllowlistAndDeny
+	// (where allowedIP DOES connect on an armed guest): together they prove the
+	// block here is the firewall, not dead guest networking. This test alone is
+	// not self-validating (both-blocked would also pass if all egress were down).
 	m, id := startEgressSession(t, EgressPolicy{}, "w3-defaultdeny")
 
 	if canReachIPv4(t, m, id, allowedIP) {
@@ -199,18 +206,4 @@ func TestInGuestEgressAlwaysArmedDefaultDeny(t *testing.T) {
 	if canReachIPv4(t, m, id, deniedIP) {
 		t.Errorf("default-deny session must block %s: an always-armed empty policy allows no external egress", deniedIP)
 	}
-}
-
-// itoa renders a small non-negative int without pulling strconv into this test
-// file's imports for a single call.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b []byte
-	for n > 0 {
-		b = append([]byte{byte('0' + n%10)}, b...)
-		n /= 10
-	}
-	return string(b)
 }
