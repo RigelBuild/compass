@@ -719,6 +719,151 @@ describe("tools/renovate wails/v3 floor cap (RIG-2852, GTK4 migration)", () => {
 	});
 });
 
+describe("tools/renovate postgres-stack digest manager (RIG-2774, DL-260)", () => {
+	// DefaultPostgresImage (go/internal/stack/postgres_image.go) is a standalone Go
+	// const the native managers can't see; a custom.regex manager surfaces it as a
+	// docker dep so upstream postgres:18 rebuilds (same major, new digest) flow
+	// through a reviewable PR. DL-260 freezes the major at 18, so the paired
+	// packageRule pins allowedVersions to /^18$/ — the digest moves, an 18->19
+	// major never auto-opens. Find both by behavior, not index.
+	const pgManager = cfg.customManagers?.find((m) =>
+		m.managerFilePatterns?.some((p) => p.includes("postgres_image")),
+	);
+	const pgRule = cfg.packageRules.find(
+		(r) =>
+			r.matchManagers?.includes("custom.regex") &&
+			r.matchDepNames?.includes("postgres-stack"),
+	);
+
+	test("a docker custom.regex manager surfaces the pin (postgres-stack, docker versioning)", () => {
+		expect(pgManager).toBeDefined();
+		expect(pgManager?.customType).toBe("regex");
+		expect(pgManager?.datasourceTemplate).toBe("docker");
+		expect(pgManager?.depNameTemplate).toBe("postgres-stack");
+		expect(pgManager?.packageNameTemplate).toBe("docker.io/library/postgres");
+		// Explicit docker versioning: a custom.regex manager defaults to
+		// semver-coerced regardless of datasource, which mishandles a
+		// <tag>@<digest> docker reference.
+		expect(pgManager?.versioningTemplate).toBe("docker");
+	});
+
+	test("its regex extracts the tag + digest from the real postgres_image.go", () => {
+		const src = readFileSync(
+			join(repoRoot, "go", "internal", "stack", "postgres_image.go"),
+			"utf8",
+		);
+		const pattern = pgManager?.matchStrings?.[0];
+		expect(pattern).toBeDefined();
+		// Exactly one qualifying pin: use matchAll (not exec) so a second
+		// accidental postgres:NN@sha256 string in the Go file — which Renovate
+		// would silently extract as a second dep — fails this build closed.
+		const matches = [...src.matchAll(new RegExp(pattern as string, "g"))];
+		expect(matches).toHaveLength(1);
+		expect(matches[0]?.groups?.currentValue).toBe("18");
+		expect(matches[0]?.groups?.currentDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+	});
+
+	test("the digest-only-within-18 rule exists (postgres-stack, allowedVersions /^18$/)", () => {
+		expect(pgRule).toBeDefined();
+		const allowedVersions = pgRule?.allowedVersions ?? "";
+		expect(allowedVersions).toBe("/^18$/");
+		expect(pgRule?.matchDepNames).toEqual(["postgres-stack"]);
+		// No matchUpdateTypes: the version filter must apply to ALL update types so
+		// an 18->19 major candidate is filtered too — scoping to `digest` would
+		// leave a major unfiltered.
+		expect(pgRule?.matchUpdateTypes).toBeUndefined();
+		// Semantic teeth: derive the matcher from the configured value (strip the
+		// /.../ delimiters) and assert it accepts 18 while rejecting a 19 major —
+		// so a fat-fingered allowedVersions (e.g. /^1[89]$/) that still admits 19
+		// fails here, not just a changed literal.
+		const versionMatcher = new RegExp(allowedVersions.slice(1, -1));
+		expect(versionMatcher.test("18")).toBe(true);
+		expect(versionMatcher.test("19")).toBe(false);
+	});
+
+	// Load-bearing behavioral guard: the CI-service disable fence
+	// (matchDepNames ["postgres"], enabled false) is unscoped by manager/file, so a
+	// `postgres` depName here would inherit the disable and open ZERO PRs. Replay
+	// Renovate's last-match-wins packageRule semantics (mirroring resolveGroupName's
+	// gates) for a synthetic postgres-stack docker dep and confirm it resolves
+	// ENABLED — this fails closed if the fence (or any future unscoped rule) ever
+	// swallows postgres-stack, silently defeating the automation.
+	const resolveEnabled = (dep: SyntheticDep): boolean => {
+		let enabled = true;
+		for (const rule of cfg.packageRules) {
+			if (rule.matchManagers && !rule.matchManagers.includes(dep.manager)) {
+				continue;
+			}
+			if (
+				rule.matchUpdateTypes &&
+				!(dep.updateType && rule.matchUpdateTypes.includes(dep.updateType))
+			) {
+				continue;
+			}
+			if (
+				rule.matchDepTypes &&
+				!(dep.depType && rule.matchDepTypes.includes(dep.depType))
+			) {
+				continue;
+			}
+			if (
+				rule.matchDepNames &&
+				!(dep.depName && rule.matchDepNames.includes(dep.depName))
+			) {
+				continue;
+			}
+			if (
+				rule.matchPackageNames &&
+				!(dep.packageName && rule.matchPackageNames.includes(dep.packageName))
+			) {
+				continue;
+			}
+			if (
+				rule.matchFileNames &&
+				!(
+					dep.fileName &&
+					rule.matchFileNames.some((g) =>
+						globToRegExp(g).test(dep.fileName as string),
+					)
+				)
+			) {
+				continue;
+			}
+			if (
+				rule.excludeDepNames &&
+				dep.depName &&
+				rule.excludeDepNames.includes(dep.depName)
+			) {
+				continue;
+			}
+			if (typeof rule.enabled === "boolean") enabled = rule.enabled;
+		}
+		return enabled;
+	};
+
+	test("a postgres-stack docker dep resolves ENABLED (fence independence)", () => {
+		expect(
+			resolveEnabled({
+				manager: "custom.regex",
+				depName: "postgres-stack",
+				packageName: "docker.io/library/postgres",
+				fileName: "go/internal/stack/postgres_image.go",
+				updateType: "digest",
+			}),
+		).toBe(true);
+		// And the original `postgres` CI-service dep stays DISABLED — the two pins
+		// remain independently governed.
+		expect(
+			resolveEnabled({
+				manager: "github-actions",
+				depName: "postgres",
+				fileName: ".github/workflows/ci.yml",
+				updateType: "digest",
+			}),
+		).toBe(false);
+	});
+});
+
 describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 	// The catalog-scoped soak-exemption packageRule governs ONLY catalog deps
 	// (matchManagers custom.regex + matchDepTypes workspaces.catalog), so its
