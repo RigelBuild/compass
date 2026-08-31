@@ -335,12 +335,36 @@ let
     # the guest's net bringup can rewrite it through the tmpfs overlay at boot.
     install -Dm644 ${resolvConf} $out/etc/resolv.conf
 
-    # The kernel's FULL /lib/modules tree (record §(a)): so guestd's
-    # virtio_net/virtiofs/vsock transport and V3's in-guest netfilter arm
-    # autoload on demand post-switch_root. Already in the closure (the kernel is
-    # substituted) — zero extra build. A symlink into the modules output; the
-    # erofs packing below dereferences it into the image.
+    # The kernel's FULL /lib/modules tree (record §(a)), depmod metadata and
+    # all: guestd's virtio_net/virtiofs/vsock transport and V3's in-guest
+    # netfilter arm resolve their modules from here. Already in the closure (the
+    # kernel is substituted) — zero extra build. A symlink into the modules
+    # output; the erofs packing below dereferences it into the image.
     ln -s ${kernel.modules}/lib/modules $out/lib/modules
+
+    # The kernel module-autoload usermode helper. The guest has no
+    # udev/systemd-modules-load (guestd is PID 1, §(d)), so post-switch_root the
+    # ONLY on-demand module loader is the kernel's request_module() path: when
+    # in-kernel code needs an unloaded module it execs the binary named by
+    # /proc/sys/kernel/modprobe (CONFIG_MODPROBE_PATH is unset in the pinned
+    # kernel, so this defaults to /sbin/modprobe). Nothing staged that binary,
+    # so request_module was a silent no-op and the /lib/modules tree above was
+    # necessary but NOT sufficient (the false OQ-3 assumption, RIG-3028): the
+    # first `nft` of the egress arm opened a NETLINK_NETFILTER socket, the
+    # kernel fired request_module("net-pf-16-proto-12") -> nfnetlink, found no
+    # helper, and nf_tables never registered -> EPROTONOSUPPORT (mnl.c:66), so
+    # §(e) always-arm failed EVERY microVM Start. Staging kmod's modprobe here
+    # (NOT busybox's: modules are .ko.xz and CONFIG_MODULE_DECOMPRESS is unset,
+    # so the helper must decompress in userspace — the same reason the initrd
+    # uses kmod at line 244) closes that: any module the guest asks for
+    # autoloads on demand from the shipped tree via its depmod alias/dep
+    # metadata. This is the general mechanism (not a fixed preload), so it also
+    # covers egress rulesets beyond the base one — a future user-defined rule
+    # pulling a new nft expression module autoloads with no guest-image change.
+    # The ${pkgs.kmod} reference pulls kmod into the rootfs closure; the erofs
+    # packing below materializes it into the image. Plain `ln -s` (no -f): no
+    # prior modprobe name exists to overwrite, matching /sbin/init above.
+    ln -s ${pkgs.kmod}/bin/modprobe $out/sbin/modprobe
   '';
 
   # The store closure the rootfs symlink farm points into. Materialized into the
