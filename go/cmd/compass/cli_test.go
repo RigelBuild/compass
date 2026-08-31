@@ -385,6 +385,7 @@ func TestRenderConfigInfoAllBuckets(t *testing.T) {
 			McpServers:  []string{"gamma"},
 			Rules:       []string{"delta", "epsilon"},
 			Subagents:   []string{"zeta"},
+			Prompts:     []string{"supervisor"},
 			HasSettings: true,
 			HasAgentsMd: true,
 			HasModels:   true,
@@ -393,7 +394,7 @@ func TestRenderConfigInfoAllBuckets(t *testing.T) {
 		if err := renderConfigInfo(&out, msg); err != nil {
 			t.Fatalf("renderConfigInfo: %v", err)
 		}
-		for _, want := range []string{"v9", "alpha", "beta", "gamma", "delta", "epsilon", "zeta"} {
+		for _, want := range []string{"v9", "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "supervisor"} {
 			if !strings.Contains(out.String(), want) {
 				t.Errorf("render output %q missing %q", out.String(), want)
 			}

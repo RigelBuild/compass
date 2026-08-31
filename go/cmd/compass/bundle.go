@@ -33,6 +33,7 @@ const (
 	topDirSettings   = "settings"
 	topDirRules      = "rules"
 	topDirAgents     = "agents"
+	topDirPrompts    = "prompts"
 )
 
 // Top-level regular-file members admitted by exact filename, not under a top dir
@@ -42,6 +43,9 @@ const (
 	memberAgentsMD = "AGENTS.md"
 	memberModels   = "models.yml"
 	settingsMember = "settings/config.yml"
+	// memberSystemMD is the only filename admitted under prompts/<role>/
+	// (store door: RIG-3075 T2).
+	memberSystemMD = "SYSTEM.md"
 )
 
 // maxBundleFileCount and maxBundleContentBytes are a fail-fast client-side check
@@ -67,6 +71,7 @@ var bundleTopDirs = map[string]bool{
 	topDirSettings:   true,
 	topDirRules:      true,
 	topDirAgents:     true,
+	topDirPrompts:    true,
 }
 
 // bundleNamePattern is the grammar for a member's <name> segment (store door:
@@ -165,7 +170,7 @@ func validateDirMember(name string) error {
 	if !bundleTopDirs[parts[0]] {
 		return errNotWhitelisted(name)
 	}
-	if (parts[0] == topDirSkills || parts[0] == topDirExtensions) && len(parts) >= 2 && !bundleNamePattern.MatchString(parts[1]) {
+	if (parts[0] == topDirSkills || parts[0] == topDirExtensions || parts[0] == topDirPrompts) && len(parts) >= 2 && !bundleNamePattern.MatchString(parts[1]) {
 		return fmt.Errorf("bundle member name %q must match %s", parts[1], bundleNamePattern.String())
 	}
 	return nil
@@ -277,6 +282,16 @@ func validateMemberGrammar(parts []string, name string, content []byte) error {
 			return fmt.Errorf("agents member %q must be flat agents/<name>.md", name)
 		}
 		return validateFlatNamedMember(topDirAgents, parts[1], name, ".md")
+	case topDirPrompts:
+		// Exactly prompts/<role>/SYSTEM.md — three components, grammar-valid
+		// <role>, filename exactly SYSTEM.md (store door: RIG-3075 T2).
+		if len(parts) != 3 || parts[2] != memberSystemMD {
+			return fmt.Errorf("prompts member %q must be prompts/<role>/%s", name, memberSystemMD)
+		}
+		if !bundleNamePattern.MatchString(parts[1]) {
+			return fmt.Errorf("prompts role name %q must match %s", parts[1], bundleNamePattern.String())
+		}
+		return nil
 	default:
 		// skills/ or extensions/: the <name> second component must match.
 		if len(parts) < 2 {

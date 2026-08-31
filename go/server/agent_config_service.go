@@ -120,6 +120,7 @@ func (s *service) GetAgentConfigInfo(
 		Rules:       info.Rules,
 		Subagents:   info.Subagents,
 		HasModels:   info.HasModels,
+		Prompts:     info.Prompts,
 	}), nil
 }
 

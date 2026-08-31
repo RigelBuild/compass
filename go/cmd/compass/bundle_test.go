@@ -99,6 +99,10 @@ func TestBuildBundleRejects(t *testing.T) {
 		{"bad agents ext", map[string]string{"agents/foo.txt": "x"}, "must end in one of .md"},
 		{"bad agents name", map[string]string{"agents/bad name.md": "x"}, "must match"},
 		{"nested agents", map[string]string{"agents/sub/foo.md": "x"}, "must be flat"},
+		{"prompts wrong filename", map[string]string{"prompts/supervisor/other.md": "x"}, "must be prompts/<role>/SYSTEM.md"},
+		{"prompts too deep", map[string]string{"prompts/supervisor/sub/SYSTEM.md": "x"}, "must be prompts/<role>/SYSTEM.md"},
+		{"prompts too shallow", map[string]string{"prompts/SYSTEM.md": "x"}, "must be prompts/<role>/SYSTEM.md"},
+		{"prompts bad role name", map[string]string{"prompts/bad name/SYSTEM.md": "x"}, "must match"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,16 +238,17 @@ func TestBundleCaps(t *testing.T) {
 // between the builder's output and the door's grammar is caught here.
 func TestBuildBundleDoorParity(t *testing.T) {
 	root := writeBundleDir(t, map[string]string{
-		"skills/alpha/SKILL.md":     "# alpha",
-		"skills/alpha/ref/notes.md": "notes",
-		"extensions/beta/main.go":   "package beta",
-		"mcp/gamma.json":            `{"ok":true}`,
-		"settings/config.yml":       "autoCompact: true\n",
-		"rules/delta.md":            "# delta rule",
-		"rules/epsilon.mdc":         "# epsilon rule",
-		"agents/zeta.md":            "# zeta agent",
-		"AGENTS.md":                 "# fleet context",
-		"models.yml":                "models:\n  main: anthropic/claude\n",
+		"skills/alpha/SKILL.md":        "# alpha",
+		"skills/alpha/ref/notes.md":    "notes",
+		"extensions/beta/main.go":      "package beta",
+		"mcp/gamma.json":               `{"ok":true}`,
+		"settings/config.yml":          "autoCompact: true\n",
+		"rules/delta.md":               "# delta rule",
+		"rules/epsilon.mdc":            "# epsilon rule",
+		"agents/zeta.md":               "# zeta agent",
+		"AGENTS.md":                    "# fleet context",
+		"prompts/supervisor/SYSTEM.md": "# supervisor prompt",
+		"models.yml":                   "models:\n  main: anthropic/claude\n",
 	})
 	bundle, err := buildBundle(root)
 	if err != nil {
@@ -269,6 +274,7 @@ func TestBuildBundleDoorParity(t *testing.T) {
 		"extensions/beta/main.go",
 		"mcp/gamma.json",
 		"models.yml",
+		"prompts/supervisor/SYSTEM.md",
 		"rules/delta.md",
 		"rules/epsilon.mdc",
 		"settings/config.yml",

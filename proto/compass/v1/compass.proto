@@ -774,6 +774,10 @@ message GetAgentConfigInfoResponse {
   repeated string subagents = 8;
   // Whether the bundle carries a fleet models.yml.
   bool has_models = 9;
+  // The declared role-prompt names (the <role> in prompts/<role>/SYSTEM.md),
+  // names only. Lets the operator verify a shipped role prompt before the seed
+  // flips the root to that role (RIG-3075 T2).
+  repeated string prompts = 10;
 }
 
 message DeleteAgentConfigRequest {}
