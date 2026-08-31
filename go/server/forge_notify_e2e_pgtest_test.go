@@ -334,6 +334,16 @@ func (r *recordingRunner) forgeNotificationsForSession(sessionID string) []*comp
 // waitForNForgeNotifications event-gates until at least n ForgeNotification
 // frames are recorded on sessionID, then returns that session's slice — never a
 // sleep. Bounded by testTimeout so a wedged arm/dispatch fails fast.
+//
+// Gating a session to N frames is also the ORDERED-DRAIN BARRIER the scope cells
+// use to make an out-of-scope zero-read load-bearing: Route() enqueues every
+// per-subscriber dispatch of one event onto the single sender-goroutine FIFO
+// before returning, and the arm drains events one at a time on that goroutine,
+// so once a LATER in-scope frame is recorded, every frame an EARLIER event
+// enqueued — including any erroneous out-of-scope over-delivery — is already on
+// the wire. SubscribersForArtifact has no ORDER BY, so without this barrier a
+// fan-out over-delivery regression could hide behind poll timing; with it, the
+// subsequent zero-read on the out-of-scope session is race-proof.
 func waitForNForgeNotifications(t *testing.T, r *recordingRunner, sessionID string, n int) []*compassv1internal.ForgeNotification {
 	t.Helper()
 	deadline := timeAfter()
@@ -408,15 +418,9 @@ func TestForgeNotifyE2E_GitHubComment(t *testing.T) {
 		if n.GetComment().GetCommentKey() == "" {
 			t.Error("Comment.CommentKey = empty, want the stable comment key (snapshot keying lost)")
 		}
-		// Ordered-drain barrier: post a SECOND in-scope comment on the same
-		// subscribed issue and gate the in-scope session to 2 frames. Route()
-		// enqueues every per-subscriber dispatch of the FIRST event onto the one
-		// sender-goroutine FIFO before returning, and the arm drains events one
-		// at a time on that single goroutine — so once the second event's frame
-		// is recorded, everything the first event enqueued is already flushed.
-		// That makes the out-of-scope zero-read load-bearing (no ORDER BY in
-		// SubscribersForArtifact, so a fan-out over-delivery regression cannot
-		// hide behind poll timing).
+		// Ordered-drain barrier (see waitForNForgeNotifications): a SECOND
+		// in-scope comment on the same subscribed issue, gated to 2 frames,
+		// flushes the first event's fan-out before the out-of-scope zero-read.
 		w.postGitHub(t, gh.commentOnIssue(t, 11, "https://gh/octo/repo/issues/11#c2", "second", "octocat"))
 		waitForNForgeNotifications(t, w.runner, inSession, 2)
 		if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
@@ -686,12 +690,9 @@ func TestForgeNotifyE2E_GitHubRepoContainer(t *testing.T) {
 	if got[0].GetNumber() != 42 {
 		t.Errorf("Number = %d, want 42", got[0].GetNumber())
 	}
-	// Ordered-drain barrier: a SECOND OPENED issue still fans to the Number=0
-	// container sub, so gate the in-scope session to 2 frames. The single-arm +
-	// single-sender FIFO guarantees everything the first event enqueued is
-	// flushed and recorded before this second frame arrives, making the
-	// out-of-scope zero-read load-bearing (SubscribersForArtifact has no ORDER
-	// BY, so an over-delivery regression cannot hide behind poll timing).
+	// Ordered-drain barrier (see waitForNForgeNotifications): a SECOND OPENED
+	// issue still fans to the Number=0 container sub, gated to 2 frames, so the
+	// out-of-scope zero-read is load-bearing.
 	w.postGitHub(t, gh.openIssue(t, 43, "https://gh/octo/repo/issues/43"))
 	waitForNForgeNotifications(t, w.runner, inSession, 2)
 	if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
@@ -751,12 +752,9 @@ func TestForgeNotifyE2E_LinearComment(t *testing.T) {
 	if n.GetComment().GetForgeAccount() != "matt" {
 		t.Errorf("Comment.ForgeAccount = %q, want matt (the commenter attribution dropped)", n.GetComment().GetForgeAccount())
 	}
-	// Ordered-drain barrier: post a SECOND in-scope comment on the same
-	// subscribed issue and gate the in-scope session to 2 frames. The single-arm
-	// + single-sender FIFO guarantees everything the first event enqueued is
-	// flushed and recorded before this second frame arrives, making the
-	// out-of-scope zero-read load-bearing (SubscribersForArtifact has no ORDER
-	// BY, so an over-delivery regression cannot hide behind poll timing).
+	// Ordered-drain barrier (see waitForNForgeNotifications): a SECOND in-scope
+	// comment on the same subscribed issue, gated to 2 frames, flushes the first
+	// event's fan-out before the out-of-scope zero-read.
 	w.postLinear(t, ln.commentOnIssue(t, 5, "https://linear.app/rigel/RIG-5", "second", "matt"))
 	waitForNForgeNotifications(t, w.runner, inSession, 2)
 	if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
@@ -876,12 +874,9 @@ func TestForgeNotifyE2E_LinearProjectContainer(t *testing.T) {
 	if got[0].GetChange() != mxOpened {
 		t.Errorf("Change = %v, want OPENED", got[0].GetChange())
 	}
-	// Ordered-drain barrier: a SECOND OPENED issue still fans to the matching
-	// project container sub, so gate the in-scope session to 2 frames. The
-	// single-arm + single-sender FIFO guarantees everything the first event
-	// enqueued is flushed and recorded before this second frame arrives, making
-	// the out-of-scope zero-read load-bearing (SubscribersForArtifact has no
-	// ORDER BY, so an over-delivery regression cannot hide behind poll timing).
+	// Ordered-drain barrier (see waitForNForgeNotifications): a SECOND OPENED
+	// issue still fans to the matching-project container sub, gated to 2 frames,
+	// so the out-of-scope zero-read is load-bearing.
 	w.postLinear(t, ln.openIssue(t, 9, "https://linear.app/rigel/RIG-9"))
 	waitForNForgeNotifications(t, w.runner, inSession, 2)
 	if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
