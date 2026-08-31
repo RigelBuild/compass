@@ -13,6 +13,13 @@ import (
 type Querier interface {
 	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
 	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
+	AdvanceDeliveryCursor(ctx context.Context, arg AdvanceDeliveryCursorParams) error
+	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
+	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the
+	// inline-sql-gate allowlist — the gate is literal-at-callsite scoped and this
+	// file passed its SQL as a const identifier). The hand-written Store methods keep
+	// their signatures and error mapping.
+	AgentHasOpenAsk(ctx context.Context, authorAccountID string) (bool, error)
 	// Agent-tree queries (sqlc adoption T2, RIG-3034). These replace the
 	// const-hoisted `agentTreeProjection` + per-caller WHERE composition that lived
 	// in internal/store/agent_tree.go and was run through the `queryAgents` helper —
@@ -28,21 +35,26 @@ type Querier interface {
 	AgentOwnersByIDs(ctx context.Context, dollar_1 []string) ([]string, error)
 	AgentSubtree(ctx context.Context, accountID string) ([]AgentSubtreeRow, error)
 	AgentsByOwner(ctx context.Context, ownerUserID string) ([]AgentsByOwnerRow, error)
+	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]string, error)
 	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
 	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
 	ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMember, error)
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
+	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
 	ConvertDMChannel(ctx context.Context, arg ConvertDMChannelParams) error
 	CoordinationReports(ctx context.Context, parentAgentID pgtype.Text) ([]string, error)
 	CountAgentMembers(ctx context.Context, channelID string) (int64, error)
 	CountChannelPins(ctx context.Context, channelID string) (CountChannelPinsRow, error)
+	CountOwedMentions(ctx context.Context) (int64, error)
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
 	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
+	DeleteTopic(ctx context.Context, id string) error
 	EnsureChannelMember(ctx context.Context, arg EnsureChannelMemberParams) error
+	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
 	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
 	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
@@ -51,6 +63,16 @@ type Querier interface {
 	GetAgentWorkspaceID(ctx context.Context, agentAccountID string) (string, error)
 	GetChannel(ctx context.Context, id string) (GetChannelRow, error)
 	GetChannelGroupVisibility(ctx context.Context, id string) (int16, error)
+	// Message-domain queries (sqlc adoption T4, RIG-3034). These replace the inline
+	// SQL literals in internal/store/messages.go; the hand-written Store methods keep
+	// their exact signatures, their tx orchestration (AppendMessage/AnswerAsk begin
+	// and commit their own txns), the ON CONFLICT idempotency signalling
+	// (errMessageInsertConflict), the JSONB block (de)serialization, and the D9
+	// not-found/forbidden error mapping — all hand-written around these generated
+	// calls. Every message read shares the id/topic_id/author_account_id/at_unix_ms/
+	// blocks projection (the former scanMessages order) so the Go maps each row the
+	// same way via messageFromParts.
+	GetChannelPostPolicy(ctx context.Context, id string) (GetChannelPostPolicyRow, error)
 	GetCoordinationChannelByName(ctx context.Context, arg GetCoordinationChannelByNameParams) (GetCoordinationChannelByNameRow, error)
 	// Coordination-store queries (sqlc adoption T3, RIG-3034). These replace the
 	// inline SQL literals in internal/store/coordination.go; the hand-written Store
@@ -60,8 +82,15 @@ type Querier interface {
 	// DeleteChannelMember (channels.sql) — the statements are identical.
 	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
 	GetGlobalHandleID(ctx context.Context, handle string) (string, error)
+	GetMessageBlocks(ctx context.Context, id string) ([]byte, error)
+	GetMessageByRequestID(ctx context.Context, arg GetMessageByRequestIDParams) ([]GetMessageByRequestIDRow, error)
+	GetPageCursorSeq(ctx context.Context, arg GetPageCursorSeqParams) (int64, error)
+	GetTopic(ctx context.Context, id string) (Topic, error)
+	GetTopicByName(ctx context.Context, arg GetTopicByNameParams) (GetTopicByNameRow, error)
+	GetTopicChannel(ctx context.Context, id string) (string, error)
 	GetVisibleAgentHandleID(ctx context.Context, arg GetVisibleAgentHandleIDParams) (string, error)
 	GetVisibleGlobalHandleID(ctx context.Context, arg GetVisibleGlobalHandleIDParams) (string, error)
+	InSweepSet(ctx context.Context, arg InSweepSetParams) (bool, error)
 	// Account-domain queries (sqlc adoption T2, RIG-3034). These replace the inline
 	// SQL literals that lived in internal/store/accounts.go; the hand-written Store
 	// methods keep their exact signatures and wrap these generated calls, mapping the
@@ -98,11 +127,23 @@ type Querier interface {
 	InsertCoordinationChannel(ctx context.Context, arg InsertCoordinationChannelParams) (string, error)
 	InsertCoordinationGroup(ctx context.Context, arg InsertCoordinationGroupParams) error
 	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
+	InsertMessage(ctx context.Context, arg InsertMessageParams) (InsertMessageRow, error)
 	InsertSystemAccount(ctx context.Context, accountID string) error
+	InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) error
 	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
+	IsAgentAccount(ctx context.Context, accountID string) (bool, error)
 	ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error)
 	ListChannels(ctx context.Context, accountID string) ([]ListChannelsRow, error)
+	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
+	// Topic-domain queries (sqlc adoption T4, RIG-3034). These replace the inline
+	// SQL literals in internal/store/topics.go; the hand-written Store methods keep
+	// their signatures, the UpdateTopic tx orchestration, the rename/merge resolution
+	// loop, and the D9 not-found/forbidden error mapping. The topic projection
+	// (id, channel_id, name, created_by_account_id, created_at_unix_ms, archived,
+	// last_seq) matches the former scanTopics order so the Go maps each row to Topic.
+	ListTopics(ctx context.Context, arg ListTopicsParams) ([]Topic, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
+	LoadDeliveryCursor(ctx context.Context, arg LoadDeliveryCursorParams) (LoadDeliveryCursorRow, error)
 	// Channel-pins (pinned board) queries (sqlc adoption T3, RIG-3034). These
 	// replace the inline SQL literals in internal/store/channel_pins.go; the
 	// hand-written Store methods and the in-tx FOR UPDATE lock / cap-check control
@@ -111,11 +152,24 @@ type Querier interface {
 	LockChannelMandatoryKind(ctx context.Context, id string) (LockChannelMandatoryKindRow, error)
 	LockChannelPolicy(ctx context.Context, id string) (LockChannelPolicyRow, error)
 	LockOwnerCoordination(ctx context.Context, dollar_1 pgtype.Text) error
+	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
+	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
+	MessageByID(ctx context.Context, id string) (MessageByIDRow, error)
+	MessageChannel(ctx context.Context, id string) (string, error)
 	MessageInChannel(ctx context.Context, arg MessageInChannelParams) (int32, error)
+	MessagesHeadSeq(ctx context.Context) (int64, error)
+	MoveMessagesToTopic(ctx context.Context, arg MoveMessagesToTopicParams) error
+	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
+	RecordOwedMention(ctx context.Context, arg RecordOwedMentionParams) error
+	RenameTopic(ctx context.Context, arg RenameTopicParams) error
+	ResolveAckMessage(ctx context.Context, arg ResolveAckMessageParams) (int64, error)
 	ResolveCoordinationManager(ctx context.Context, id string) (ResolveCoordinationManagerRow, error)
 	ResolveOwner(ctx context.Context, accountID string) (string, error)
+	ResolveTopicForUpdate(ctx context.Context, arg ResolveTopicForUpdateParams) (string, error)
+	ResolveTopicRenameTarget(ctx context.Context, arg ResolveTopicRenameTargetParams) (string, error)
+	ReviveTopic(ctx context.Context, id string) error
 	// Scaffold-only query proving sqlc generation works end to end (T1).
 	//
 	// This is NOT a real store query: the per-domain query files land in T2..T6 as
@@ -124,10 +178,37 @@ type Querier interface {
 	// selects a genuinely existing column from a genuinely existing table
 	// (tenants, 0001_init.sql), so sqlc compiles it against the real schema.
 	ScaffoldGetTenant(ctx context.Context, id string) (Tenant, error)
+	SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error)
+	SeedChannelDeliveryCursors(ctx context.Context, channelID string) error
+	// Delivery-cursor queries (sqlc adoption T4, RIG-3034). These replace the inline
+	// SQL literals in internal/store/delivery_cursors.go; the hand-written Store
+	// methods keep their signatures, the AckDelivery tx orchestration (the owed-clear
+	// FIRST, the commit-if-cleared arm, the contiguous-advance loop in Go), and the
+	// D2 seed self-guard/idempotency contract. The two message-fanout reads
+	// (OwedMentions, UndeliveredMessages) share the per-channel projection the Go
+	// drains with an inline loop calling messageFromParts.
+	SeedDeliveryCursor(ctx context.Context, arg SeedDeliveryCursorParams) error
 	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
+	SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error)
+	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
+	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error
+	// Delivery-consumer read queries (sqlc adoption T4, RIG-3034). These replace the
+	// inline SQL literals in internal/store/delivery_reads.go; the hand-written Store
+	// methods keep their signatures, the D1 sweep-set disjunct (kept textually in
+	// sync with delivery_cursors.sql UndeliveredMessages/InSweepSet), and the D9
+	// error mapping. MessageByID shares the message projection the Go drains via
+	// messageFromParts.
+	SubscribedAgents(ctx context.Context, arg SubscribedAgentsParams) ([]string, error)
+	SweepChannels(ctx context.Context, accountID string) ([]string, error)
+	TopicChannelNames(ctx context.Context, id string) (TopicChannelNamesRow, error)
+	UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error)
+	UnroutedMentionMessages(ctx context.Context, arg UnroutedMentionMessagesParams) ([]UnroutedMentionMessagesRow, error)
 	UpdateAgentParent(ctx context.Context, arg UpdateAgentParentParams) error
 	UpdateChannelPolicy(ctx context.Context, arg UpdateChannelPolicyParams) error
+	UpdateMessageBlocks(ctx context.Context, arg UpdateMessageBlocksParams) (int64, error)
+	UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMessageBlocksAsAuthorParams) (UpdateMessageBlocksAsAuthorRow, error)
+	UpdateTopicLastSeq(ctx context.Context, arg UpdateTopicLastSeqParams) error
 	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error
 }
 

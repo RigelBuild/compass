@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // ListTopics returns the topics in channelID, newest-activity-first (last_seq
@@ -28,17 +30,11 @@ func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID strin
 		return nil, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 	}
 
-	const q = `
-		SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq
-		FROM topics
-		WHERE channel_id = $1 AND ($2 OR NOT archived)
-		ORDER BY last_seq DESC, created_at_unix_ms DESC, id`
-	rows, err := s.pool.Query(ctx, q, channelID, includeArchived)
+	rows, err := s.q.ListTopics(ctx, db.ListTopicsParams{ChannelID: channelID, Column2: includeArchived})
 	if err != nil {
 		return nil, fmt.Errorf("store: list topics: %w", err)
 	}
-	defer rows.Close()
-	return scanTopics(rows)
+	return topicsFromRows(rows), nil
 }
 
 // UpdateTopic renames and/or archives a topic under an acting account, or —
@@ -71,14 +67,12 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 	// member of the topic's channel. Zero rows (unknown topic OR non-member) ->
 	// ErrNotFound. FOR UPDATE OF t locks the source topic row for the tx so a
 	// concurrent rename/merge serializes.
-	var channelID string
-	switch err := tx.QueryRow(ctx,
-		`SELECT t.channel_id FROM topics t
-		 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
-		 WHERE t.id = $2
-		 FOR UPDATE OF t`,
-		callerAccountID, topicID,
-	).Scan(&channelID); {
+	q := db.New(tx)
+	channelID, err := q.ResolveTopicForUpdate(ctx, db.ResolveTopicForUpdateParams{
+		AccountID: callerAccountID,
+		ID:        topicID,
+	})
+	switch {
 	case noRows(err):
 		return Topic{}, fmt.Errorf("%w: topic %q", ErrNotFound, topicID)
 	case err != nil:
@@ -97,25 +91,20 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 	}
 
 	if archived != nil {
-		if _, err := tx.Exec(ctx,
-			`UPDATE topics SET archived = $2 WHERE id = $1`, surviving, *archived,
-		); err != nil {
+		if err := q.SetTopicArchived(ctx, db.SetTopicArchivedParams{ID: surviving, Archived: *archived}); err != nil {
 			return Topic{}, fmt.Errorf("store: set topic archived: %w", err)
 		}
 	}
 
-	var topic Topic
-	if err := tx.QueryRow(ctx,
-		`SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq
-		 FROM topics WHERE id = $1`, surviving,
-	).Scan(&topic.ID, &topic.ChannelID, &topic.Name, &topic.CreatedByAccountID, &topic.CreatedAtUnixMS, &topic.Archived, &topic.LastSeq); err != nil {
+	topic, err := q.GetTopic(ctx, surviving)
+	if err != nil {
 		return Topic{}, fmt.Errorf("store: read updated topic: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return Topic{}, fmt.Errorf("store: commit update topic: %w", err)
 	}
-	return topic, nil
+	return topicFromRow(topic), nil
 }
 
 // applyTopicRename renames topic topicID (in channelID) to newName, or merges it
@@ -126,21 +115,19 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 func (s *Store) applyTopicRename(ctx context.Context, tx pgx.Tx, channelID, topicID, newName string) (string, error) {
 	// A same-channel topic already holding the target name (excluding the source
 	// itself) is a merge target.
-	var targetID string
-	switch err := tx.QueryRow(ctx,
-		`SELECT id FROM topics
-		 WHERE channel_id = $1 AND lower(name) = lower($2) AND id <> $3
-		 FOR UPDATE`,
-		channelID, newName, topicID,
-	).Scan(&targetID); {
+	q := db.New(tx)
+	targetID, err := q.ResolveTopicRenameTarget(ctx, db.ResolveTopicRenameTargetParams{
+		ChannelID: channelID,
+		Lower:     newName,
+		ID:        topicID,
+	})
+	switch {
 	case noRows(err):
 		// No collision: rename in place. The unique index still guards a race
 		// with a concurrent create of the same name (that transaction holds its
 		// own row lock); such a rename fails the constraint and surfaces as a
 		// conflict rather than corrupting the index.
-		if _, err := tx.Exec(ctx,
-			`UPDATE topics SET name = $2 WHERE id = $1`, topicID, newName,
-		); err != nil {
+		if err := q.RenameTopic(ctx, db.RenameTopicParams{ID: topicID, Name: newName}); err != nil {
 			if pgErrIs(err, pgUniqueViolation) {
 				return "", fmt.Errorf("%w: topic name %q already exists in this channel", ErrConflict, newName)
 			}
@@ -154,36 +141,40 @@ func (s *Store) applyTopicRename(ctx context.Context, tx pgx.Tx, channelID, topi
 	// Collision: merge the source into the target. Every source message carries
 	// the target's topic_id, the target absorbs the source's activity marker,
 	// and the emptied source row is deleted — all in this tx.
-	if _, err := tx.Exec(ctx,
-		`UPDATE messages SET topic_id = $1 WHERE topic_id = $2`, targetID, topicID,
-	); err != nil {
+	if err := q.MoveMessagesToTopic(ctx, db.MoveMessagesToTopicParams{TopicID: targetID, TopicID_2: topicID}); err != nil {
 		return "", fmt.Errorf("store: move messages on topic merge: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE topics dst SET last_seq = GREATEST(dst.last_seq, src.last_seq)
-		 FROM topics src WHERE dst.id = $1 AND src.id = $2`,
-		targetID, topicID,
-	); err != nil {
+	if err := q.MergeTopicLastSeq(ctx, db.MergeTopicLastSeqParams{ID: targetID, ID_2: topicID}); err != nil {
 		return "", fmt.Errorf("store: merge topic last_seq: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `DELETE FROM topics WHERE id = $1`, topicID); err != nil {
+	if err := q.DeleteTopic(ctx, topicID); err != nil {
 		return "", fmt.Errorf("store: delete merged topic: %w", err)
 	}
 	return targetID, nil
 }
 
-// scanTopics reads topic rows into Topics.
-func scanTopics(rows pgx.Rows) ([]Topic, error) {
-	var topics []Topic
-	for rows.Next() {
-		var t Topic
-		if err := rows.Scan(&t.ID, &t.ChannelID, &t.Name, &t.CreatedByAccountID, &t.CreatedAtUnixMS, &t.Archived, &t.LastSeq); err != nil {
-			return nil, fmt.Errorf("store: scan topic: %w", err)
-		}
-		topics = append(topics, t)
+// topicFromRow maps the generated db.Topic (the shared topic projection) to the
+// domain Topic; topicsFromRows applies it across a list read. They replace the
+// former scanTopics pgx.Rows helper.
+func topicFromRow(t db.Topic) Topic {
+	return Topic{
+		ID:                 t.ID,
+		ChannelID:          t.ChannelID,
+		Name:               t.Name,
+		CreatedByAccountID: t.CreatedByAccountID,
+		CreatedAtUnixMS:    t.CreatedAtUnixMs,
+		Archived:           t.Archived,
+		LastSeq:            t.LastSeq,
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate topics: %w", err)
+}
+
+func topicsFromRows(rows []db.Topic) []Topic {
+	if len(rows) == 0 {
+		return nil
 	}
-	return topics, nil
+	out := make([]Topic, 0, len(rows))
+	for _, t := range rows {
+		out = append(out, topicFromRow(t))
+	}
+	return out
 }
