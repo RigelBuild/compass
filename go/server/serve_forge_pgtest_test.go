@@ -14,9 +14,9 @@ package server
 //   - a signed fake `issues` webhook POSTed through the mounted /webhooks/github
 //     handler -> the board arm hydrates the coordinate and sinks the issue, which
 //     lands durably in the store at its forge coordinate;
-//   - App-config-ABSENT boot: buildBoardIngestLane returns a nil lane, and
-//     warnDisabledBoardIngestion Warns when enabled subscription rows exist (no
-//     webhook mounted, no panic).
+//   - App-config-ABSENT boot: buildBoardWebhookWiring returns all-nil (both
+//     lanes off), and warnDisabledBoardIngestion Warns when enabled subscription
+//     rows exist (no webhook mounted, no panic).
 //
 // These pgtests only need to COMPILE locally; the CI gate runs them against
 // suite Postgres.
@@ -209,32 +209,36 @@ func TestBoardWebhookIngressSinksHydratedIssue(t *testing.T) {
 	}
 }
 
-// --- test: App-config-absent boot leaves the lane off + Warns on enabled rows --
+// --- test: App-config-absent boot leaves both lanes off + Warns on enabled rows
 
-// TestBoardIngestionDisabledWarnsOnEnabledRows proves the App-absent posture:
-// buildBoardIngestLane returns a nil lane (no App configured), and
-// warnDisabledBoardIngestion Warns exactly once when the table holds enabled
-// subscription rows for the bound coordinate — no webhook mounted, no panic.
+// TestBoardIngestionDisabledWarnsOnEnabledRows proves the App-absent posture at
+// the shared wiring site (RIG-2991): buildBoardWebhookWiring returns all-nil (no
+// App configured), and it Warns exactly once through warnDisabledBoardIngestion
+// when the table holds enabled subscription rows for the bound coordinate — no
+// webhook mounted, no panic. The App gate + the boot Warn now live on the shared
+// wiring (the single site that builds the one client both lanes ride), not on
+// buildBoardIngestLane. issueBrd is nil-safe: the gate short-circuits before any
+// lane assembly.
 func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
 	const host = forgeTestHost
+	cfg := ServeConfig{Forge: ForgeConfig{Host: host}}
 
-	// App absent -> nil lane, no error.
-	bus := events.NewBus[busPayload]()
-	t.Cleanup(bus.Close)
-	brd := board.NewIssueProjection(bus, st)
-	lane, err := buildBoardIngestLane(ctx, ServeConfig{Forge: ForgeConfig{Host: host}}, st, brd, &fakeResolver{}, slog.Default())
-	if err != nil {
-		t.Fatalf("buildBoardIngestLane (App absent): %v", err)
-	}
-	if lane != nil {
-		t.Fatal("lane != nil with no App configured, want nil (board ingestion hard-off)")
+	assertAllNil := func(t *testing.T, lane *boardIngestLane, notify *forgeNotifyLane, sink ForgeEventSink, secret func(context.Context) ([]byte, error), err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("buildBoardWebhookWiring (App absent): %v", err)
+		}
+		if lane != nil || notify != nil || sink != nil || secret != nil {
+			t.Fatalf("wiring not all-nil with no App configured: lane==nil? %t notify==nil? %t sink==nil? %t secret==nil? %t", lane == nil, notify == nil, sink == nil, secret == nil)
+		}
 	}
 
 	t.Run("no Warn when no enabled rows exist", func(t *testing.T) {
 		h := &capHandler{}
-		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, host, slog.New(h))
+		lane, notify, sink, secret, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, &fakeResolver{}, slog.New(h))
+		assertAllNil(t, lane, notify, sink, secret, err)
 		if n := warnCount(h.recs); n != 0 {
 			t.Fatalf("Warn count with no enabled rows = %d, want 0", n)
 		}
@@ -248,7 +252,8 @@ func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 
 	t.Run("exactly one Warn when enabled rows exist for the bound coordinate", func(t *testing.T) {
 		h := &capHandler{}
-		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, host, slog.New(h))
+		lane, notify, sink, secret, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, &fakeResolver{}, slog.New(h))
+		assertAllNil(t, lane, notify, sink, secret, err)
 		if n := warnCount(h.recs); n != 1 {
 			t.Fatalf("Warn count with an enabled row = %d, want exactly 1", n)
 		}
@@ -256,7 +261,9 @@ func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 
 	t.Run("no Warn for a different bound host (abandoned rows give no false comfort)", func(t *testing.T) {
 		h := &capHandler{}
-		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, "other.example.com", slog.New(h))
+		otherCfg := ServeConfig{Forge: ForgeConfig{Host: "other.example.com"}}
+		lane, notify, sink, secret, err := buildBoardWebhookWiring(ctx, otherCfg, st, nil, nil, &fakeResolver{}, slog.New(h))
+		assertAllNil(t, lane, notify, sink, secret, err)
 		if n := warnCount(h.recs); n != 0 {
 			t.Fatalf("Warn count for a different host = %d, want 0 (count is bound-coordinate only)", n)
 		}
@@ -267,16 +274,15 @@ func TestBoardIngestionDisabledWarnsOnEnabledRows(t *testing.T) {
 
 // TestBoardIngestLaneFailsFastOnMissingAppSecret pins Constraint #3's fail-fast:
 // a configured App (AppID != 0) with an undeclared App secret is a startup error
-// (a likely operator typo), not a silent degrade. The resolver is a fake; the
-// store is real because buildBoardIngestLane reconciles the seed after a
-// successful resolve.
+// (a likely operator typo), not a silent degrade. The two App-secret validations
+// now live on the shared wiring (buildBoardWebhookWiring, RIG-2991), so this
+// drives them there — before either lane is built. The resolver is a fake; the
+// store is real (the wiring reconciles the seed only after a successful resolve,
+// which this never reaches).
 func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
 
-	bus := events.NewBus[busPayload]()
-	t.Cleanup(bus.Close)
-	brd := board.NewIssueProjection(bus, st)
 	cfg := ServeConfig{Forge: ForgeConfig{
 		Host: forgeTestHost,
 		App: ForgeAppConfig{
@@ -290,9 +296,9 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	// Neither App secret declared -> the FIRST validateForgeSecret (app key) fails.
 	t.Run("both undeclared fails on the app key", func(t *testing.T) {
 		res := &fakeResolver{resolved: nil}
-		_, err := buildBoardIngestLane(ctx, cfg, st, brd, res, slog.Default())
+		_, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
 		if err == nil {
-			t.Fatal("buildBoardIngestLane with no App secrets = nil, want a startup error")
+			t.Fatal("buildBoardWebhookWiring with no App secrets = nil, want a startup error")
 		}
 		if !strings.Contains(err.Error(), "APP_KEY") {
 			t.Fatalf("error = %q, want it to name the missing app key APP_KEY", err)
@@ -303,9 +309,9 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	// validateForgeSecret must fail (both secrets required, checked separately).
 	t.Run("app key present but webhook secret undeclared fails on the webhook secret", func(t *testing.T) {
 		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "APP_KEY", Value: "pem"}}}
-		_, err := buildBoardIngestLane(ctx, cfg, st, brd, res, slog.Default())
+		_, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
 		if err == nil {
-			t.Fatal("buildBoardIngestLane with the webhook secret undeclared = nil, want a startup error")
+			t.Fatal("buildBoardWebhookWiring with the webhook secret undeclared = nil, want a startup error")
 		}
 		if !strings.Contains(err.Error(), "APP_WEBHOOK") {
 			t.Fatalf("error = %q, want it to name the missing webhook secret APP_WEBHOOK", err)
