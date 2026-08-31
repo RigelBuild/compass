@@ -9,3 +9,9 @@ sql:
         out: "internal/store/db"
         sql_package: "pgx/v5"
         emit_interface: true                  # Querier, for the store's tx/pool duality
+    database:
+      uri: "${SQLC_DATABASE_URL}"    # sqlc vet's db-prepare target (CI throwaway DB); see moon sqlc-vet
+    analyzer:
+      database: false                 # keep `generate`/`sqlc-drift` DB-free; db-prepare (vet) still uses database.uri
+    rules:
+      - sqlc/db-prepare                # PREPARE every query against the live schema — the strongest vet

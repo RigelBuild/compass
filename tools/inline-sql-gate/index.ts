@@ -3,22 +3,34 @@
 //
 // The rule (design record § "The inline-SQL ban"):
 //
-//   A `.Query(` / `.QueryRow(` / `.Exec(` call whose SQL argument — the first
-//   string-literal argument, TOKENIZED ACROSS NEWLINES because the store
-//   overwhelmingly puts the literal on the line AFTER the call — is a Go string
-//   literal (backtick or double-quoted, including `+`-concatenated literals)
-//   containing a SQL keyword (SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP) is
-//   banned in go/**/*.go, EXCEPT:
+//   A `.Query(` / `.QueryRow(` / `.Exec(` call carries banned inline SQL in
+//   its SQL slot (the first argument after `ctx`) when EITHER:
+//     (a) that argument is a Go string literal (backtick or double-quoted,
+//         including `+`-concatenated literals), TOKENIZED ACROSS NEWLINES
+//         because the store overwhelmingly puts the literal on the line AFTER
+//         the call, containing a SQL keyword
+//         (SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP) — flagged at ANY
+//         receiver, or
+//     (b) the call's RECEIVER is a pgx pool/tx/conn handle and that argument is
+//         a bare identifier or simple selector (`q`, `ddl`, `m.sql`) — SQL
+//         hoisted into a const/var and passed by name (the `queryAgents` shape).
+//   Banned in go/**/*.go, EXCEPT:
 //     1. go/internal/store/db/** — the sqlc-generated package,
 //     2. **/*_test.go        — tests legitimately poke raw SQL,
 //     3. an explicit, checked-in allowlist of file paths (ALLOWLIST below).
 //
 // The tokenizer is load-bearing. A line-scoped grep would MISS the dominant
 // store shape — `s.pool.Exec(ctx,\n\t"INSERT …")` — where the literal sits on
-// the line after the call. It also must NOT flag a non-pgx `Exec(ctx, id, spec)`
-// (runtime/compute), whose immediate arguments are identifiers, not a SQL
-// literal — so the discriminator is "the argument STARTS with a string
-// delimiter", which an identifier or an expression never does.
+// the line after the call.
+//
+// Two guards keep the identifier rule (b) from firing on non-pgx calls. First,
+// it is RECEIVER-SCOPED: only a pgx handle (last receiver segment in
+// {pool, tx, conn, c}) has a SQL slot, so a runtime/compute
+// `r.runtime.Exec(ctx, id, spec)` / `g.client.Exec(ctx, req)` — whose receiver
+// is not a pgx handle — is never a query no matter what its args look like.
+// Second, only the SQL slot (arg after `ctx`) is tested, never the params, and
+// only a bare identifier/selector qualifies (a call/composite/concatenation is
+// not a hoisted-SQL name).
 //
 // The ratchet: the allowlist is seeded to every store file that carries inline
 // SQL today, so the gate is GREEN on current main while banning any NEW inline
@@ -26,12 +38,11 @@
 // the stale-entry check (fail-closed) then fails the gate if an allowlist entry
 // no longer matches any finding, so a migrated file cannot be left allowlisted.
 //
-// Known gap (deferred to T7, per the record's residual-risk note): SQL hoisted
-// into a `const`/variable and passed as an identifier (`queryAgents(ctx, sql,
-// arg)`, `QueryRow(ctx, q, …)`) escapes a literal-at-callsite scan. Those files
-// therefore produce NO finding here and are NOT allowlisted in T1; the record
-// promotes the identifier-passed shape to gating once the migration is
-// complete.
+// Identifier-passed SQL is GATED (T7): once every store domain migrated, the
+// only remaining identifier-passed sites are the migration runner's
+// `conn.Exec(ctx, ddl)` / `tx.Exec(ctx, m.sql)` in the PERMANENTLY-allowlisted
+// go/internal/store/store.go, so promoting rule (b) leaves the gate green while
+// banning any NEW const-hoisted SQL at a pgx call site.
 //
 // Inputs (env):
 //   GATE_ROOT - directory to scan (default: git toplevel).
@@ -53,6 +64,23 @@ export const GO_GLOB = "go/**/*.go";
 const SQL_KEYWORD_RE = /\b(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|DROP)\b/i;
 /** pgx query methods. QueryRow before Query so the longer name wins. */
 const CALL_RE = /\.(?:QueryRow|Query|Exec)\(/g;
+/**
+ * The last receiver segment names that ARE a pgx pool/tx/conn handle in this
+ * codebase: `s.pool`→pool, `tx`, `conn`, `c` (a *pgx.Conn). Only these carry a
+ * SQL slot, so a bare-identifier SQL arg (`q`, `ddl`, `m.sql`) is flagged ONLY
+ * at these receivers — the structural exclusion of runtime/compute
+ * `r.runtime.Exec(ctx, id, spec)` / `g.client.Exec(ctx, req)` (receivers
+ * runtime/client/engine), whose identifier args are not SQL. sqlc's own
+ * `s.q.GetFoo(…)` never matches CALL_RE (not Query/QueryRow/Exec).
+ */
+const PGX_RECEIVERS: Record<string, true> = {
+	pool: true,
+	tx: true,
+	conn: true,
+	c: true,
+};
+/** A bare identifier or dotted selector — `q`, `ddl`, `m.sql`, `query`. */
+const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*/;
 
 /**
  * The ratcheting allowlist: files permitted to carry inline SQL today. Seeded
@@ -67,17 +95,14 @@ const CALL_RE = /\.(?:QueryRow|Query|Exec)\(/g;
  *   - go/internal/pgshare/pgshare.go — the build-tagged test harness; CREATE/
  *     DROP SCHEMA with an interpolated, self-generated identifier.
  *
- * NOTE (T1): agent_tree.go and presence_reads.go carry inline SQL only as
- * const-hoisted identifiers passed to the call (not literals at the call site),
- * so this literal-scoped gate produces no finding for them and they are
- * deliberately omitted — seeding them would trip the fail-closed stale-entry
- * check. They are covered by the record's T7 identifier-passed-SQL promotion.
- *
- * NOTE (T1): dm.go was added to the store AFTER the design record froze (§T3
- * states "There is no dm.go" and predates it); it is a genuine store domain
- * file carrying inline-SQL literals, so the invariant "every currently
- * inline-SQL store file is allowlisted so the gate is green on main" requires
- * seeding it. It migrates (and its entry drops) in a per-domain task like the rest.
+ * NOTE (T7): the migration is complete — every store domain file's inline SQL
+ * moved to sqlc, so the allowlist is down to the two PERMANENT entries below.
+ * The identifier-passed-SQL promotion (rule (b) above) is now LIVE: the only
+ * remaining bare-identifier SQL at a pgx receiver is the migration runner's
+ * `conn.Exec(ctx, ddl)` / `tx.Exec(ctx, m.sql)` in store.go, which is
+ * permanently allowlisted — so the gate stays green while banning any NEW
+ * const-hoisted SQL (the former `agent_tree.go`/`presence_reads.go` shape)
+ * anywhere else in go/.
  */
 export const ALLOWLIST: string[] = [
 	// Every store domain file's inline SQL has migrated to sqlc (T2..T6,
@@ -362,6 +387,38 @@ function sourceLine(text: string, line: number, starts: number[]): string {
 }
 
 /**
+ * The last receiver segment of a `.Query|.QueryRow|.Exec` call — the token
+ * immediately before the `.` at `dot`. For `s.pool.Exec(` returns "pool"; for
+ * `tx.Exec(` returns "tx"; for `r.runtime.Exec(` returns "runtime". Returns ""
+ * when no identifier immediately precedes the dot (e.g. a `).Exec(` chained off
+ * a call result), which is never a pgx handle.
+ */
+function receiverSegment(text: string, dot: number): string {
+	let i = dot - 1;
+	while (i >= 0 && /[A-Za-z0-9_]/.test(text.charAt(i))) i--;
+	return text.slice(i + 1, dot);
+}
+
+/**
+ * If `s` begins with a bare identifier or dotted selector (`q`, `ddl`, `m.sql`)
+ * and nothing else follows it but trivia/comma/close, return that identifier's
+ * leading segment; otherwise null. A trailing `(` (call), `[` (index), `+`
+ * (concat), or `{` (composite) disqualifies it — those are expressions, not a
+ * hoisted-SQL name.
+ */
+function bareIdentifier(s: string): string | null {
+	const m = IDENT_RE.exec(s);
+	if (m === null) return null;
+	const rest = s.slice(m[0].length);
+	const nextMeaningful = firstMeaningfulIndex(rest);
+	if (nextMeaningful >= 0) {
+		const c = rest.charAt(nextMeaningful);
+		if (c !== "," && c !== ")") return null;
+	}
+	return m[0].split(".")[0] ?? m[0];
+}
+
+/**
  * Scan ONE Go file's text for inline-SQL findings. Pure: no I/O, no allowlist,
  * no exit — returns every raw finding so callers can apply the allowlist and
  * the stale-entry check on top.
@@ -375,23 +432,46 @@ export function scanText(file: string, text: string): Finding[] {
 		if (dot === undefined || mask[dot] !== 1) continue;
 		const open = dot + m[0].length - 1;
 		const args = parseArgs(text, open);
-		// The SQL slot is the first STRING-LITERAL argument (an identifier or an
-		// expression — ctx, handle.id, spec, q, sql — never starts with a
-		// delimiter, which is the structural exclusion of non-pgx Exec calls).
-		for (const arg of args) {
-			const fm = firstMeaningfulIndex(arg.text);
-			if (fm < 0) continue;
-			const lead = arg.text.charAt(fm);
-			if (lead !== '"' && lead !== "`") continue;
-			if (!SQL_KEYWORD_RE.test(stringContents(arg.text))) break;
-			const line = lineOf(arg.start + fm, starts);
+		const push = (index: number) => {
+			const line = lineOf(index, starts);
 			findings.push({
 				file,
 				line,
 				snippet: sourceLine(text, line, starts).trim(),
 			});
+		};
+
+		// Rule (a): the first STRING-LITERAL argument is the SQL slot (an
+		// identifier or expression — ctx, handle.id, spec — never starts with a
+		// delimiter). Flag it iff it carries a SQL keyword. Fires at ANY receiver.
+		let flagged = false;
+		for (const arg of args) {
+			const fm = firstMeaningfulIndex(arg.text);
+			if (fm < 0) continue;
+			const lead = arg.text.charAt(fm);
+			if (lead !== '"' && lead !== "`") continue;
+			if (SQL_KEYWORD_RE.test(stringContents(arg.text))) {
+				push(arg.start + fm);
+				flagged = true;
+			}
 			break;
 		}
+		if (flagged) continue;
+
+		// Rule (b, T7): SQL hoisted into a const/var and passed by name. Fires
+		// ONLY at a pgx pool/tx/conn receiver — the load-bearing guard against
+		// runtime/compute `r.runtime.Exec(ctx, id, spec)` false positives — and
+		// ONLY on the SQL slot (the arg after ctx), never a param. A bare
+		// identifier/selector (`q`, `ddl`, `m.sql`) there is banned; a call or
+		// composite expression is not a hoisted-SQL name and is left alone.
+		if (!PGX_RECEIVERS[receiverSegment(text, dot)]) continue;
+		const slot = args[1];
+		if (slot === undefined) continue;
+		const fm = firstMeaningfulIndex(slot.text);
+		if (fm < 0) continue;
+		const ident = bareIdentifier(slot.text.slice(fm));
+		if (ident === null || ident === "ctx") continue;
+		push(slot.start + fm);
 	}
 	return findings;
 }
