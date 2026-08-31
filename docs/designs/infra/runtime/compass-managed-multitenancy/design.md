@@ -908,8 +908,9 @@ This section is the verbatim delta the same-PR flip landed in
   one bootstrap tenant row" — Record: this record, §Q1.
 - **N2 (Topology & tiers):** "Servers are stateless L7-load-balanced
   instances (any Server handles any client request); Runners are
-  individually subject-addressable over a message-bus fabric (one connection
-  per party), never single-Server-owns-Runners and never an N×M
+  individually subject-addressable over a message-bus fabric (one FABRIC
+  connection per party — plus the reduced Connect authn/RPC edge per N6),
+  never single-Server-owns-Runners and never an N×M
   direct-stream mesh; delivery to a live client routes over a per-connection
   subject to the one Server holding the socket; session→Runner routing truth
   stays durable in Postgres (`agent_placements` + session bindings), and the
