@@ -254,6 +254,13 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 func vmmArgs(cfg BootConfig, consolePath string, opts launchOptions) []string {
 	cmdline := strings.TrimSpace(cfg.Cmdline +
 		" console=ttyS0 net.ifnames=0 compass.vsock_port=" + strconv.FormatUint(uint64(cfg.VsockPort), 10))
+	// compass.gateway_port carries the host-served AgentGateway port to guestd's
+	// unix→vsock forwarder (record §(b)/§(d)); a zero port (a V2a-era boot or a
+	// hermetic harness that starts no gateway) is omitted so the guest starts no
+	// proxy and the V2b/V3 suites keep booting unchanged.
+	if cfg.GatewayPort != 0 {
+		cmdline += " compass.gateway_port=" + strconv.FormatUint(uint64(cfg.GatewayPort), 10)
+	}
 	args := []string{
 		"--kernel", cfg.Kernel,
 		"--initramfs", cfg.Initrd,

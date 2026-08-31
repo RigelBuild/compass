@@ -47,6 +47,18 @@ type SpecBuilder interface {
 	BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error)
 }
 
+// vsockGatewayEngine is the unexported backend probe the microVM runtime
+// satisfies (MicroVMRuntime.AgentGatewayEndpoint): a session's AgentGateway is
+// served host-side over a per-session vsock AF_UNIX path resolved AFTER Launch,
+// not the pre-Launch bind-mounted socket the podman path uses. Provision and
+// RefreshConfig type-assert h.engine against it to gate the microVM-specific
+// serving/refresh legs; podman and every test fake lack the method, so their
+// paths stay byte-identical (record §(c), Global Constraints — never a verb on
+// the frozen ContainerRuntime interface).
+type vsockGatewayEngine interface {
+	AgentGatewayEndpoint(name string) (endpoint string, ok bool)
+}
+
 // agentHost is the production SessionHost. It owns the live session set and
 // drives the container lifecycle through the AgentRuntime registry + the relay.
 type agentHost struct {
@@ -170,6 +182,15 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	// name (the stable lifecycle key).
 	unlock := h.lockContainer(spec.Name)
 	defer unlock()
+	// The microVM backend serves the AgentGateway over a per-session vsock path
+	// that is not knowable until Launch mints the session runtime dir, so its
+	// provision order inverts: Launch first, then serve — and it refuses the
+	// socket + config bind mounts entirely (the socket is replaced by vsock; the
+	// config mount is deferred, record §(c)/§(f)). Probe absent (podman, every
+	// fake) keeps today's body byte-identical.
+	if vsockEngine, ok := h.engine.(vsockGatewayEngine); ok {
+		return h.provisionVsockGateway(ctx, spec, vsockEngine)
+	}
 	listener, err := h.serveSocket(ctx, spec.Name)
 	if err != nil {
 		return "", err
@@ -773,6 +794,59 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	return nil
 }
 
+// provisionVsockGateway is Provision's microVM leg: it launches the container
+// with NO agent-socket mount and NO config mount (record §(c)/§(f)), resolves
+// the per-session host-side gateway path the backend serves the AgentGateway on,
+// and serves the SAME generated handler there (gateway.Serve reused verbatim,
+// record §(b)) — recording the listener in the same h.sockets map keyed by
+// container name. A Serve failure after a successful Launch tears the launched
+// session down through the runtime Teardown path (the exact call Remove uses),
+// so no VM outlives a session whose gateway never came up. The config-version
+// seed is deliberately skipped — no config is materialized on this path — so
+// RefreshConfig's own probe gate must skip the session too (record §(f)).
+func (h *agentHost) provisionVsockGateway(ctx context.Context, spec runtime.AgentSpec, engine vsockGatewayEngine) (string, error) {
+	handle, err := h.runtime.Launch(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	name := handle.Name()
+	endpoint, ok := engine.AgentGatewayEndpoint(name)
+	if !ok {
+		h.teardownContainer(ctx, name)
+		return "", fmt.Errorf("resolving vsock gateway endpoint for container %q: backend reports no session", name)
+	}
+	deps := gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client}
+	h.log.InfoContext(ctx, "serving agent gateway over vsock path",
+		slog.String("container", name), slog.String("path", endpoint))
+	listener, err := gateway.Serve(ctx, endpoint, name, deps)
+	if err != nil {
+		// The gateway never came up; tear the launched session down so no VM
+		// outlives a session with no reachable Runner.
+		h.teardownContainer(ctx, name)
+		return "", fmt.Errorf("serving agent gateway for container %q at %q: %w", name, endpoint, err)
+	}
+	h.mu.Lock()
+	h.sockets[name] = listener
+	h.mu.Unlock()
+	return name, nil
+}
+
+// teardownContainer tears a just-launched container down through the runtime
+// Teardown (stop + remove + deregister) — the exact leg Remove uses — for the
+// provision-failure cleanup on the vsock path. A resolve miss or teardown error
+// is logged, not returned: the provision error the caller returns is the outcome
+// it acts on, and a best-effort teardown matches Remove's posture.
+func (h *agentHost) teardownContainer(ctx context.Context, containerName string) {
+	handle, ok := h.registry.Resolve(containerName)
+	if !ok || handle == nil {
+		return
+	}
+	if err := h.runtime.Teardown(ctx, handle); err != nil {
+		h.log.Warn("tearing down container after failed vsock gateway provision",
+			slog.String("container", containerName), slog.Any("error", err))
+	}
+}
+
 // refreshOneContainer runs one container's config-update leg under its transition
 // lock: read the live MCS label, re-materialize, and reloadLocked the agent iff
 // the bundle version moved. A per-container fault (MountLabel, Materialize,
@@ -783,6 +857,16 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containerName string, containerID runtime.ContainerID, lastVersion string) error {
 	unlock := h.lockContainer(containerName)
 	defer unlock()
+
+	// A vsock-gateway backend serves config into the guest through no mount this
+	// refresh can touch: Provision skipped the config materialize+mount (record
+	// §(f)), so h.configVersions was never seeded and every pass would see a
+	// version change and Stop+StartAgent-churn the session mid-turn while
+	// delivering nothing. Skip it until the config-delivery slice gives the
+	// refresh something real to deliver (record §(f), OQ-3).
+	if _, ok := h.engine.(vsockGatewayEngine); ok {
+		return nil
+	}
 
 	mcsLabel, err := h.engine.MountLabel(ctx, containerID)
 	if err != nil {

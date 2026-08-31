@@ -51,6 +51,21 @@ const guestVsockCID uint32 = 3
 // matches the value the V2a boot harness tests boot guestd on (testVsockPort).
 const guestVsockPort uint32 = 1024
 
+// agentGatewayVsockPort is the fixed guest port the host serves the per-session
+// AgentGateway on, mirroring guestVsockPort's identity model: per-session
+// uniqueness rides the suffixed AF_UNIX path under the runtime dir
+// (microvm.GatewaySocketPath), never the port, so every VM boots with the same
+// value (record §(e), OQ-4). Distinct from guestVsockPort (1024, the control
+// plane) so the two guest-initiated channels never share a suffix base.
+const agentGatewayVsockPort uint32 = 1025
+
+// sunPathMax is the longest AF_UNIX path the kernel accepts: sockaddr_un's
+// sun_path holds the path plus a NUL terminator. It mirrors the runner
+// gateway's own budget check (gateway/socket.go); Create uses it to reject an
+// over-long suffixed gateway socket path BEFORE booting a VM, rather than at
+// the post-Launch gateway.Serve bind after a full ~60s boot (record §(e)).
+const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
+
 // workspaceFSTag is the virtio-fs tag the single read-write workspace share is
 // exported under — the tag guestd mounts at /workspace (config.go FSTag).
 const workspaceFSTag = "workspace"
@@ -225,6 +240,21 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec ContainerSpec) (Containe
 		runtimeDir: runtimeDir,
 	}
 
+	// Reject an over-long suffixed gateway socket path before boot: the host
+	// serves the AgentGateway at GatewaySocketPath(VsockSocket, gateway port)
+	// post-Launch, and its bind is sun_path-budgeted. Failing here — one length
+	// comparison, before any VM boots — turns an over-long RunRoot into an
+	// operator-actionable error instead of a post-boot Serve failure the caller
+	// then has to tear down (record §(e)). Drop the runtime dir Create just made
+	// so a refused Create leaves nothing behind, mirroring the duplicate-name leg.
+	if gatewayPath := microvm.GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort); len(gatewayPath) > sunPathMax {
+		err := fmt.Errorf("microvm: gateway socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --run-root", gatewayPath, len(gatewayPath), sunPathMax)
+		if rmErr := os.RemoveAll(runtimeDir); rmErr != nil {
+			return "", errors.Join(err, fmt.Errorf("microvm: cleaning up refused session dir %s: %w", runtimeDir, rmErr))
+		}
+		return "", err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	// Refuse a duplicate name under the same lock that inserts, so two
@@ -256,6 +286,7 @@ func (m *MicroVMRuntime) bootConfig(runtimeDir string, nonce []byte, shared Moun
 		Kernel:      m.config.KernelImage,
 		Initrd:      m.config.InitrdImage,
 		Rootfs:      m.config.RootfsImage,
+		GatewayPort: agentGatewayVsockPort,
 		Cmdline:     "compass.boot_nonce=" + hex.EncodeToString(nonce),
 		VsockCID:    guestVsockCID,
 		VsockPort:   guestVsockPort,
@@ -658,6 +689,25 @@ func (m *MicroVMRuntime) Exists(_ context.Context, name string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// AgentGatewayEndpoint resolves the named session and returns the host-side
+// AF_UNIX path the Runner serves its AgentGateway on — GatewaySocketPath over
+// the session's own vsock socket base and the fixed gateway port (record
+// §(b)/§(c)/§(e)). An unknown name returns ("", false). It keys on spec.Name
+// like Exists, so the Runner's stable handle resolves. Deliberately NOT a verb
+// on the frozen ContainerRuntime interface: agentHost probes for it via an
+// unexported single-method assertion, so the podman backend (which lacks it) is
+// unaffected (record §(c), Global Constraints).
+func (m *MicroVMRuntime) AgentGatewayEndpoint(name string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.name == name {
+			return microvm.GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort), true
+		}
+	}
+	return "", false
 }
 
 // MountLabel returns the empty label unconditionally: the microVM backend has
