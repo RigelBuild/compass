@@ -474,7 +474,10 @@ func (p *controlProducer) existingSession(sessionID string) (*controlSession, bo
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s, ok := p.sessions[sessionID]
-	return s, ok
+	if !ok || s == nil {
+		return nil, false
+	}
+	return s, true
 }
 
 // cycleHook reads the test seam under the lock, so a drainer captures it once
@@ -617,6 +620,49 @@ func absorbJump(from uint64, above map[uint64]struct{}) uint64 {
 	return absorbContiguous(from, above)
 }
 
+// collectBatch walks the retention window for one drain cycle and returns the
+// ops owed to the subscription: everything in s.ops with seq > sent that the
+// barrier does not hold and `above` has not already delivered. The caller MUST
+// hold s.mu. A retired session tombstones s.ops to nil (Retire); a serve that
+// resolved the session before that delete drains nothing rather than slicing a
+// nil field. Extracted from serve so serve stays under the cognitive-complexity
+// gate.
+//
+// Binary-search the prefix rather than walking it. s.ops is ascending by seq and
+// pruned only from the front, so every entry at or below `sent` is a contiguous
+// prefix — and retention only shrinks on ack, which the agent is under no
+// obligation to do promptly. Walking it would cost O(len(s.ops)) per cycle under
+// the session mutex, so an agent that receives without acking makes delivering n
+// ops O(n²) and stalls every concurrent Send behind the scan.
+func (p *controlProducer) collectBatch(s *controlSession, sent uint64, above map[uint64]struct{}) []retained {
+	if s.ops == nil {
+		return nil
+	}
+	first, _ := slices.BinarySearchFunc(s.ops, sent, func(r retained, target uint64) int {
+		return cmp.Compare(r.seq, target)
+	})
+	var batch []retained
+	for _, r := range s.ops[first:] {
+		if r.seq <= sent {
+			continue // BinarySearch lands ON an equal seq when one is present
+		}
+		if _, done := above[r.seq]; done {
+			continue
+		}
+		// The barrier holds LIVE ops only. Replay-path ops must pass it: the
+		// release is the agent's ack of replay_complete, so holding that op holds
+		// its own release. A live op arriving mid-replay sits at a lower seq than
+		// the replay frames behind it, so this SKIPS rather than stops —
+		// otherwise one held live op wedges the whole replay sequence and the
+		// barrier never lifts.
+		if s.held && !replayPath(r.op) {
+			continue
+		}
+		batch = append(batch, r)
+	}
+	return batch
+}
+
 // serve binds a subscription and drains the session's retained ops to it until
 // the context ends or a takeover displaces it.
 //
@@ -717,37 +763,10 @@ func (p *controlProducer) serve(ctx context.Context, sessionID string, sink cont
 		if sent < s.cursor {
 			sent = absorbJump(s.cursor, above)
 		}
-		// Binary-search the prefix rather than walking it. s.ops is ascending
-		// by seq and pruned only from the front, so every entry at or below
-		// `sent` is a contiguous prefix — and retention only shrinks on ack,
-		// which the agent is under no obligation to do promptly. Walking it
-		// would cost O(len(s.ops)) per cycle under the session mutex, so an
-		// agent that receives without acking makes delivering n ops O(n²) and
-		// stalls every concurrent Send behind the scan. That is the same rule
-		// absorbJump's doc states one screen up: the untrusted side must not be
-		// able to make a per-op cost scale.
-		first, _ := slices.BinarySearchFunc(s.ops, sent, func(r retained, target uint64) int {
-			return cmp.Compare(r.seq, target)
-		})
-		var batch []retained
-		for _, r := range s.ops[first:] {
-			if r.seq <= sent {
-				continue // BinarySearch lands ON an equal seq when one is present
-			}
-			if _, done := above[r.seq]; done {
-				continue
-			}
-			// The barrier holds LIVE ops only. Replay-path ops must pass it:
-			// the release is the agent's ack of replay_complete, so holding
-			// that op holds its own release. A live op arriving mid-replay
-			// sits at a lower seq than the replay frames behind it, so this
-			// SKIPS rather than stops — otherwise one held live op wedges the
-			// whole replay sequence and the barrier never lifts.
-			if s.held && !replayPath(r.op) {
-				continue
-			}
-			batch = append(batch, r)
-		}
+		// collectBatch does the retention-window walk (binary-searched, ops>sent,
+		// barrier-filtered) under the lock we already hold; extracted so serve's
+		// cognitive complexity stays under the gate.
+		batch := p.collectBatch(s, sent, above)
 		s.mu.Unlock()
 
 		// Send OUTSIDE the lock, deliberately: sink.Send is network I/O, and

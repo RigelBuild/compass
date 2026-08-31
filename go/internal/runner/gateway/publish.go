@@ -59,7 +59,15 @@ func (g *Gateway) Publish(
 			g.control.ReleaseReplayBarrier(sessionID)
 			continue
 		case *compassv1internal.AgentFrame_ControlAck:
+			if f == nil {
+				continue
+			}
 			ack := f.ControlAck
+			if ack == nil {
+				// A ControlAck wrapper with no ack payload — a frame contract
+				// skew; skip it like an empty frame rather than tear the stream.
+				continue
+			}
 			g.control.AckControl(sessionID, ack.GetAckedSeq(), ack.GetAppliedAbove())
 			continue
 		}

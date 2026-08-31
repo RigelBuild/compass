@@ -67,7 +67,13 @@ func (l *ServerLink) FetchAgentConfig(ctx context.Context, ifVersion string) (Ag
 		gotVersion bool
 	)
 	for stream.Receive() {
-		switch frame := stream.Msg().GetFrame().(type) {
+		frameVariant := stream.Msg().GetFrame()
+		if frameVariant == nil {
+			// A frame with no variant set — the same contract skew as an
+			// unrecognized variant; reject it identically.
+			return AgentConfigBundle{}, errors.New("FetchAgentConfig stream sent an unrecognized frame variant")
+		}
+		switch frame := frameVariant.(type) {
 		case *compassv1internal.FetchAgentConfigResponse_Version:
 			if gotVersion {
 				return AgentConfigBundle{}, errors.New("FetchAgentConfig stream sent a second version frame")

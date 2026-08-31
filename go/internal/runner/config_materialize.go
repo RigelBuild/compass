@@ -553,6 +553,9 @@ func validateNestedMember(name, clean, top string, parts []string, typeflag byte
 // validateFlatRunnerMember enforces a flat top/<name><ext> member: exactly two
 // path components, and <name> (with an allowed <ext> stripped) is a safe name.
 func validateFlatRunnerMember(top, name string, parts []string, exts ...string) error {
+	if len(exts) == 0 {
+		return fmt.Errorf("config bundle %s member %q: no allowed extensions configured", top, name)
+	}
 	if len(parts) != 2 {
 		return fmt.Errorf("config bundle %s member %q must be flat %s/<name>%s", top, name, top, exts[0])
 	}
