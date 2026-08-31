@@ -406,7 +406,7 @@ export type SteerControl = Message<"compass.v1.SteerControl"> & {
    * connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
    * flags>`; EMPTY when the Server had no active span (trace machinery never
    * blocks or fails a delivery). Server-side stamping per
-   * docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+   * docs/designs/observability/compass-agent-message-trace-continuity/design.md.
    *
    * @generated from field: string traceparent = 3;
    */
@@ -516,7 +516,7 @@ export type DeliverControl = Message<"compass.v1.DeliverControl"> & {
    * connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
    * flags>`; EMPTY when the Server had no active span (trace machinery never
    * blocks or fails a delivery). Server-side stamping per
-   * docs/designs/platform/compass-agent-message-trace-continuity/design.md.
+   * docs/designs/observability/compass-agent-message-trace-continuity/design.md.
    *
    * @generated from field: string traceparent = 4;
    */

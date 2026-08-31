@@ -9,7 +9,7 @@ selector grammar this record adopts; its cross-lane contract is the
 rows DL-062/063/064). RIG-2937 (subtree composition authority) — RULED YES,
 unconditional; see Resolved decisions. Composes with: RIG-1715 / PR #671 (the
 LLM gateway, merged — frozen record
-`docs/designs/platform/compass-server-llm-gateway/design.md` — the single LLM
+`docs/designs/server/compass-server-llm-gateway/design.md` — the single LLM
 egress the profile's model axis resolves through), RIG-2845 (Compass model
 roles + stable-name provider routing — the policy layer the profile's model
 fields reference), RIG-1716 (embedded MCP gateway — where the deferred
@@ -451,7 +451,7 @@ surface):
 ### Adjacency: compose, do not duplicate
 
 - **RIG-1715 / PR #671 — the LLM gateway (merged).** The frozen record at
-  `docs/designs/platform/compass-server-llm-gateway/design.md` is truth (the
+  `docs/designs/server/compass-server-llm-gateway/design.md` is truth (the
   PR body is stale): the OMP fork's auth-gateway runs directly as a
   standalone supervised process, Compass builds adapters only, Go re-port
   demoted to RIG-2843 (`design.md:38-47`). It is the single LLM egress —

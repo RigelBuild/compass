@@ -68,7 +68,7 @@ export interface CompassAgentOptions {
 	// dropped. Defaults to a no-op counter-less logger via console.
 	readonly onUnmapped?: (u: UnmappedEvent) => void;
 	// Optional trace-continuity tracer (design record:
-	// docs/designs/platform/compass-agent-message-trace-continuity/design.md §T2).
+	// docs/designs/observability/compass-agent-message-trace-continuity/design.md §T2).
 	// The NARROW, OTel-type-free `TurnTracer` facet only, so this exported option
 	// stays fence-clean. `undefined` (telemetry off) ⇒ every trace call below
 	// no-ops via optional chaining, so frames stay bit-identical to today.

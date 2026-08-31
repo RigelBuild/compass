@@ -1903,7 +1903,7 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 
 // ── main(): loop OpenTelemetry activation ────────────────────────────────────
 //
-// design docs/designs/platform/compass-agent-loop-otel/design.md T1. These run
+// design docs/designs/observability/compass-agent-loop-otel/design.md T1. These run
 // over the MainDeps composition seam with a RECORDING telemetry seam — NEVER the
 // real `initTelemetryExport`, which registers a live global TracerProvider + a
 // real OTLP exporter with no teardown and would poison every later test in this

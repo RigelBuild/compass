@@ -1,7 +1,8 @@
 # Design: Activate OMP's native loop OpenTelemetry in compass-agent
 
-Status: Draft (freezes on merge). OQ1 RULED by Matt 2026-08-23 → (b) two
-independent providers to one collector; the (b) plan below is the one to build.
+Status: Draft
+OQ1 RULED by Matt 2026-08-23 → (b) two independent providers to one collector;
+the (b) plan below is the one to build.
 Linear: RIG-2508 (Refs RIG-2384; spun out of RIG-2426 OQ4).
 Sibling record: `docs/designs/repo/compass-agent-effect-otel/design.md`
 (RIG-2426/RIG-2518 — the transport OTel, MERGED; its Decision 3 egress posture
@@ -409,7 +410,7 @@ froze. The global-provider path needs no new surface anywhere.
   or the transport's `Tracer.layerGlobal` captures the no-op global provider.
 - Commit identity per repo convention (mintaka author, Matt co-author
   trailer); code comments cite this record by path
-  (`docs/designs/platform/compass-agent-loop-otel/design.md`), no issue-id in
+  (`docs/designs/observability/compass-agent-loop-otel/design.md`), no issue-id in
   code.
 - **Ledger note (main agent flips it, not this record's author):** target
   surface is `docs/designs/platform/DECISIONS.md`. NOTE: that file does not

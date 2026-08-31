@@ -135,7 +135,7 @@ type CommsCallRequest struct {
 	// first turn (no triggering message). Field 10 leaves 7-9 for the in-flight
 	// org-management oneof arms (RIG-2673); numbers are frozen (DL-186/OQ-1b).
 	// Server-side link per
-	// docs/designs/platform/compass-server-runner-otel/design.md.
+	// docs/designs/observability/compass-server-runner-otel/design.md.
 	TriggerTraceparent string `protobuf:"bytes,10,opt,name=trigger_traceparent,json=triggerTraceparent,proto3" json:"trigger_traceparent,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache

@@ -55,6 +55,7 @@ export const GOVERNED_ROOTS: readonly string[] = [
 	"server",
 	"meta",
 	"infra",
+	"observability",
 	"repo",
 	"product",
 ];

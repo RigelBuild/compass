@@ -2,7 +2,7 @@
 // turn it drives, so a message span and its turn span share one trace.
 //
 // Design record (frozen contract):
-// docs/designs/platform/compass-agent-message-trace-continuity/design.md (### T1).
+// docs/designs/observability/compass-agent-message-trace-continuity/design.md (### T1).
 //
 // The bridge is ONE object internally, but its type is SPLIT by consumer: the
 // agent sees only the OTel-type-free `TurnTracer`; `cli.ts` alone holds the full

@@ -74,7 +74,7 @@ health/quota signal.
 
 This doc is the *model*. The store, contracts, and planes that implement it are
 the observability and in-product-data design record,
-[`compass-observability-architecture`](../designs/platform/compass-observability-architecture/design.md):
+[`compass-observability-architecture`](../designs/observability/compass-observability-architecture/design.md):
 the gateway-recorded usage lands in the core's own store behind a store-swap
 seam (Decision D1), the append-only event log is the durable billing-grade
 contract with derived rollups (Decision D5), and the managed plane builds the

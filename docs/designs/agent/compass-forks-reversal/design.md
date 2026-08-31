@@ -1,10 +1,11 @@
 # Compass forks reversal — pinned GitHub imports (RIG-2336)
 
+Status: Draft
+Owner: compass-repo
+
 > **Design record.** Reverses compass's `forks/` vendoring: each fork returns to its
 > public `RigelBuild/*` repo and compass pins it as an ordinary `github:` nix flake
 > input, removing the vendored subtrees and their machinery.
-
-Status: proposed. Owner: compass-repo.
 
 ## Problem / Intent
 

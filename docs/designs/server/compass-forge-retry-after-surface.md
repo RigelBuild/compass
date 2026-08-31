@@ -1,5 +1,7 @@
 # Design: Forge retry-after surface (RIG-2255)
 
+Status: Draft
+
 Ledger: DL-276 (this PR), Comms & tools. Freezes on merge; no rows superseded.
 
 ## Problem / Intent

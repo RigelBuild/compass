@@ -1,9 +1,7 @@
 # Compass observability & in-product data architecture
 
-Status: Draft (freezes on merge). Directory-form record under
-`docs/designs/platform/` (ungoverned root — no `DECISIONS.md` ledger row;
-`tools/design-ledger-gate/index.ts:52-60` lists the governed buckets as
-`ui/agent/server/meta/infra/repo/product`, `platform` is not among them).
+Status: Draft
+Directory-form record under `docs/designs/observability/`.
 Products framing: [`docs/concepts/self-host-and-managed.md`](../../../concepts/self-host-and-managed.md)
 (two products, one core) — referenced throughout, not restated.
 
@@ -102,7 +100,7 @@ for the reasons resolved in Decision D1.
 ### Plane B — OTLP ops export + fan-in
 
 **Already shipped (emission).** The agent side emits OTLP today: RIG-2508 loop
-OTel (`docs/designs/platform/compass-agent-loop-otel/design.md`) and
+OTel (`docs/designs/observability/compass-agent-loop-otel/design.md`) and
 RIG-2426/RIG-2518 transport OTel
 (`docs/designs/repo/compass-agent-effect-otel/design.md`). OTLP/http-protobuf,
 endpoint operator-supplied via `OTEL_EXPORTER_OTLP_ENDPOINT`, OFF by default.
@@ -135,7 +133,7 @@ not claim four emitters in the present tense.
 **Bundle-with-opt-out, on the S4 pattern.** The collector ships as a second
 supervised stack component, following the distribution record's
 postgres-as-container pattern
-(`docs/designs/platform/compass-distribution/design.md:258-273`, S4;
+(`docs/designs/infra/release/compass-distribution/design.md:258-273`, S4;
 DL-260/DL-262 at `design.md:752,754`). It reuses the generic
 container-teardown seam (`go/internal/stack/deps.go:142-154`, name-keyed) as-is,
 but the spawn chain (`go/internal/stack/stack.go:193-263`) is a hard-coded
@@ -239,7 +237,7 @@ we can swap out on the managed service for a bigger dep."** So:
   the seam on the managed plane (next bullet) — never bundled into the core.
   Reasons the core stays Postgres: the S4 anti-standup-pain posture (never bundle
   a heavy OLAP into self-host —
-  `docs/designs/platform/compass-distribution/design.md:258-273`); the
+  `docs/designs/infra/release/compass-distribution/design.md:258-273`); the
   vendor-neutrality hard rule ("Every primitive must be self-hostable:
   rootless podman, git, nftables, Postgres, an S3-compatible object store,
   our own agent loop" —
@@ -366,7 +364,7 @@ Also want full end to end tracing thru the system."** So:
   (server → runner → agent → bundled gateway) so one user request/turn is a
   single connected trace, not a per-surface island. This extends the agent-side
   work scoped in the in-flight message-trace-continuity design (RIG-2508,
-  PR #649 — `docs/designs/platform/compass-agent-message-trace-continuity/design.md`
+  PR #649 — `docs/designs/observability/compass-agent-message-trace-continuity/design.md`
   once merged) outward to the Go surfaces. That record introduces the agent-side
   W3C `traceparent` seam but leaves its own **OQ1** open (server-side origination):
   only under its fork (b), server-side `traceparent` stamping, does a single

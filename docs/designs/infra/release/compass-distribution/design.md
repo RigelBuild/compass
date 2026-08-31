@@ -9,7 +9,7 @@ Matt 2026-08-24.
 > This record was drafted against the release-bundling record's two-lane rail
 > (per-build `build-<sha12>` prereleases + a `v*` semver lane). Matt's unified
 > release-lane ruling superseded that shape
-> ([`compass-unified-release-lane.md`](../compass-unified-release-lane.md);
+> ([`compass-unified-release-lane`](../compass-unified-release-lane/design.md);
 > `compass-release-bundling.md` Status: Fork 3 + OQ-3 superseded): releases are
 > now batched `vX.Y.Z` semver cuts via release-please, and the only per-push
 > artifact is the GHCR agent image. **Every reference below to a `build-<sha12>`
@@ -22,7 +22,7 @@ Matt 2026-08-24.
 > is unchanged and now literal: there is one Release lane, the semver one.
 >
 > **Companion record, same PR — composes, never duplicates:**
-> [`../compass-release-bundling.md`](../compass-release-bundling.md) (the
+> [`../compass-release-bundling/design.md`](../compass-release-bundling/design.md) (the
 > binary/image Release lane — per-build `build-<sha12>` prereleases + the
 > reserved `v*` semver lane on compass GHA, per-arch binary assets, GHCR image
 > by digest, nix-outputs manifest). The two records ship and freeze together

@@ -55,7 +55,7 @@ built on top of it, out of tree.
   self-hosted stack bundles its postgres by default and exposes
   `--database-external`; the managed tier supplies its own. Future bundled deps
   follow the same "bundle-by-default, opt-out for managed" shape — see
-  [`compass-distribution`](../designs/platform/compass-distribution/design.md).
+  [`compass-distribution`](../designs/infra/release/compass-distribution/design.md).
 
 ## Canonical statement
 

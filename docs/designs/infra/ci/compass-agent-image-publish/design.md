@@ -17,7 +17,7 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 > decision below — a separate `.github/workflows/publish-agent-image.yml`
 > workflow (§"CI placement — a separate least-privilege workflow, a principled
 > exception to ONE-JOB") — is superseded by the unified release lane
-> ([`compass-unified-release-lane.md`](../../../platform/compass-unified-release-lane.md),
+> ([`compass-unified-release-lane`](../../release/compass-unified-release-lane/design.md),
 > DL-298–301). That lane RELOCATES this lane's per-push publish DUTY verbatim —
 > the same `publish.sh` no-args call, the same closure-paths gate, the same
 > serialize / immutability / two-copy-coherence / least-privilege /

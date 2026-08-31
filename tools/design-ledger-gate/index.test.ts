@@ -119,6 +119,11 @@ describe("touchesRecord", () => {
 	test("a record under a second governed root (agent) is a record", () => {
 		expect(touchesRecord("docs/designs/agent/compass-x/design.md")).toBe(true);
 	});
+	test("a record under the observability governed root is a record", () => {
+		expect(
+			touchesRecord("docs/designs/observability/compass-x/design.md"),
+		).toBe(true);
+	});
 	test("a flat <name>.md at a second governed root is a record", () => {
 		expect(touchesRecord("docs/designs/repo/compass-drop-proto.md")).toBe(true);
 	});
