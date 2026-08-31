@@ -2502,7 +2502,7 @@ type SessionInjection struct {
 	// connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
 	// flags>`; EMPTY when the Server had no active span (trace machinery never
 	// blocks or fails a delivery). Server-side stamping per
-	// docs/designs/platform/compass-server-runner-otel/design.md.
+	// docs/designs/observability/compass-server-runner-otel/design.md.
 	Traceparent   string `protobuf:"bytes,4,opt,name=traceparent,proto3" json:"traceparent,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

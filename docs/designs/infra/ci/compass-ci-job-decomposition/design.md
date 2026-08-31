@@ -106,7 +106,7 @@ exists.** These are one fact, not two: the vendored forks build through nix
 (devenv's Rust crates via its flake's fenix pin), which is both the "dominant
 cost" the ci.yml header names (ci.yml:26–27) and the worst case the `gates`
 job's `timeout-minutes: 90` was sized for (ci.yml:118–120). The frozen forks
-reversal (`docs/designs/platform/compass-forks-reversal/design.md`) removes
+reversal (`docs/designs/agent/compass-forks-reversal/design.md`) removes
 all three vendored forks; when `oh-my-pi-fork` is deleted, its
 `ci-group.forks` tag vanishes with its `moon.yml`, and the group empties
 cleanly — no untagged project is left behind, so the zero-untagged and

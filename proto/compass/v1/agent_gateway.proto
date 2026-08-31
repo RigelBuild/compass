@@ -128,7 +128,7 @@ message CommsCallRequest {
   // first turn (no triggering message). Field 10 leaves 7-9 for the in-flight
   // org-management oneof arms (RIG-2673); numbers are frozen (DL-186/OQ-1b).
   // Server-side link per
-  // docs/designs/platform/compass-server-runner-otel/design.md.
+  // docs/designs/observability/compass-server-runner-otel/design.md.
   string trigger_traceparent = 10;
 }
 

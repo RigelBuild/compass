@@ -2247,7 +2247,7 @@ describe("formatForgeNotifications — per-kind render (RIG-2732 W3)", () => {
 // ---------------------------------------------------------------------------
 // T2 — trace continuity: thread the TurnTracer through the three injection
 // shapes (design record
-// docs/designs/platform/compass-agent-message-trace-continuity/design.md §T2).
+// docs/designs/observability/compass-agent-message-trace-continuity/design.md §T2).
 //
 // These tests exercise the REAL bridge (createTraceBridge) against a real
 // in-memory OTel provider — the same house recipe trace-bridge.test.ts uses (a

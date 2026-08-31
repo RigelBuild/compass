@@ -1,11 +1,11 @@
 # Compass Server LLM Gateway (RIG-1715)
 
-Status: Draft (freezes on merge). Directory-form record under
-`docs/designs/platform/`. Companion / downstream of
-`docs/designs/platform/compass-observability-architecture/design.md` (#656),
+Status: Draft
+Directory-form record under `docs/designs/server/`. Companion / downstream of
+`docs/designs/observability/compass-observability-architecture/design.md` (#656),
 whose Plane-A tasks T1–T3 name this record as their upstream prerequisite
 ("bundling the OMP gateway into the Server ... Its design record must land
-first", `compass-observability-architecture/design.md:507-509`).
+first", `../../observability/compass-observability-architecture/design.md:507-509`).
 
 Authorship note: this record is authored by the compass-obs lane per Matt's
 ruling (2026-08-27); the driver owns commit/push/PR (commit carries

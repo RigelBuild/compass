@@ -216,7 +216,7 @@ export function deriveLitellmMcpUrl(
 /**
  * Whether an OTLP trace endpoint is configured — the pre-registration gate for
  * the loop's OpenTelemetry activation (design
- * docs/designs/platform/compass-agent-loop-otel/design.md T1). Mirrors the
+ * docs/designs/observability/compass-agent-loop-otel/design.md T1). Mirrors the
  * predicate `initTelemetryExport` applies before it registers a provider
  * (`telemetry-export.ts`): an endpoint present via
  * `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (falling back to the base
@@ -580,7 +580,7 @@ export interface MainDeps {
 	connectMcp?: (cwd: string, mcp: MountedMcp) => Promise<ConnectedMcp>;
 	/**
 	 * Loop-OpenTelemetry activation hooks (design
-	 * docs/designs/platform/compass-agent-loop-otel/design.md T1). Defaults to the
+	 * docs/designs/observability/compass-agent-loop-otel/design.md T1). Defaults to the
 	 * reused telemetry-export module. Injectable ONLY so a test asserts the
 	 * gating/env logic without the real `initTelemetryExport` — it registers a
 	 * live global provider + OTLP exporter with no teardown (F3), so it must never
@@ -824,7 +824,7 @@ export async function main(
 	const rules = [...mounted.rules, ...discoveredRules];
 
 	// Loop OpenTelemetry activation (design
-	// docs/designs/platform/compass-agent-loop-otel/design.md T1). Gated HARD on
+	// docs/designs/observability/compass-agent-loop-otel/design.md T1). Gated HARD on
 	// an OTLP endpoint being configured: with none set this block is skipped
 	// whole, so process.env is UNMUTATED and the createAgentSession path below is
 	// bit-identical to a no-telemetry build (Global Constraints, "Off by default";
@@ -847,7 +847,7 @@ export async function main(
 	}
 
 	// Trace-continuity bridge (design
-	// docs/designs/platform/compass-agent-message-trace-continuity/design.md §T2):
+	// docs/designs/observability/compass-agent-message-trace-continuity/design.md §T2):
 	// built ONLY on the same enabled path that registered the loop provider +
 	// context manager above — the parentage the bridge installs presupposes that
 	// registration. When telemetry is off, `undefined` flows to both the session
@@ -946,7 +946,7 @@ export async function main(
 					],
 				}
 			: {}),
-		// Loop telemetry (design docs/designs/platform/compass-agent-loop-otel/
+		// Loop telemetry (design docs/designs/observability/compass-agent-loop-otel/
 		// design.md T1) + trace continuity (message-trace-continuity §T2): the
 		// enabled path installs the bridge's capture hooks INTO the telemetry
 		// config, so the bridge sees each `invoke_agent` span start/end and can

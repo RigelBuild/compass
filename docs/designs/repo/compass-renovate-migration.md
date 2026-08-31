@@ -120,7 +120,7 @@ builds that same fork (the flake exports the CLI as
 onto PATH. This is FORCED by the frozen fork posture, not a fresh choice: the
 image pipeline pins to "the vendored fork's own CLI … so it cannot diverge
 from the fork source" (`devenv.nix:450-453`;
-`docs/designs/platform/compass-forks-reversal/design.md:125-134` — "The
+`docs/designs/agent/compass-forks-reversal/design.md:125-134` — "The
 fork's own CLI is invoked by path everywhere the image is built"). A nixpkgs
 devenv doing the relock would be a SECOND, divergent devenv — the exact thing
 the fork posture eliminates (see Alternatives §D). Nix's store caching plus
@@ -437,7 +437,7 @@ divergent from the vendored fork whose CLI compass pins by path everywhere
 devenv runs ("pinned to the vendored fork's own CLI … so it cannot diverge
 from the fork source", `devenv.nix:450-453`; "The fork's own CLI is invoked
 by path everywhere the image is built",
-`docs/designs/platform/compass-forks-reversal/design.md:125-134`) — exactly
+`docs/designs/agent/compass-forks-reversal/design.md:125-134`) — exactly
 the divergence the frozen fork posture exists to eliminate. The vendored-fork
 shim in B costs one `nix build` (cache-bounded) and keeps a single devenv.
 

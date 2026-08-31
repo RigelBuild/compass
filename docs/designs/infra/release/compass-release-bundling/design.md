@@ -1,5 +1,7 @@
 # Bundle nix outputs, images, and binaries as GitHub Releases
 
+Status: Active
+
 > **Design record.** Citations name paths in `compass` = RigelBuild/compass at
 > `c25ce94f` (this repo, main at authoring). Line numbers drift as code evolves;
 > resolve against that revision. This is a public repo: the internal CD monorepo
@@ -7,18 +9,18 @@
 > or quoted source.
 >
 > **Companion record, same PR:**
-> [`compass-distribution/design.md`](compass-distribution/design.md) (the
+> [`../compass-distribution/design.md`](../compass-distribution/design.md) (the
 > install/distribution surface — per-OS client matrix, install channels, the
 > headless self-host stack). This record designs the Release *mechanism*; the
 > distribution record consumes it as its publishing rail. The two are tightly
 > coupled and ship + freeze together in one PR.
 
-Status: Active (partially superseded) — the load-bearing forks (OQ-1/2/3, ruled
+Supersession: the load-bearing forks (OQ-1/2/3, ruled
 2026-08-22) and the whole-product semver policy (OQ-7, ruled 2026-08-24) were
 ruled by Matt; freezes on merge as the contract T1–T5 execute against. Fork 3
 (two-lane split), Fork 4 (`v*`-tag controls), OQ-3 (binary-only trigger), and
 OQ-7's bump-mechanism clause (manual-now/automation-at-GA) are SUPERSEDED by
-[`compass-unified-release-lane.md`](compass-unified-release-lane.md) (Matt,
+[`../compass-unified-release-lane/design.md`](../compass-unified-release-lane/design.md) (Matt,
 2026-08-25, DL-298/299/300/301); all other rulings of this record remain Active.
 Tracking: RIG-1746 (whole-product semver + GitHub Releases). RIG-2103 is
 retargeted onto T4 (OQ-2); the OQ-1 desktop deferral is RIG-2477.

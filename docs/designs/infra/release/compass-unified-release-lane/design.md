@@ -11,7 +11,7 @@ Linear:
 > PR #711 workspace). Line numbers drift as code evolves.
 >
 > **Supersedes (partially):**
-> [`compass-release-bundling.md`](compass-release-bundling.md) — Fork 3
+> [`compass-release-bundling`](../compass-release-bundling/design.md) — Fork 3
 > (two-lane split, §192-235), Fork 4 (`v*`-tag controls, §275-315), OQ-3
 > (binary-only trigger breadth, §481-491), and OQ-7's *bump mechanism* clause
 > ("manual now, release-please at GA", §499-503). Every OTHER ruling of that
@@ -19,7 +19,7 @@ Linear:
 > `v1.0.0` at GA, the ONE-whole-product-version attach-check architecture, and
 > the post-1.0 MAJOR rule (§495-516). It also proposes retiring
 > `.github/workflows/publish-agent-image.yml`, whose design record
-> [`compass-agent-image-publish`](../infra/ci/compass-agent-image-publish/design.md)
+> [`compass-agent-image-publish`](../../ci/compass-agent-image-publish/design.md)
 > is compass-managed's zone — the zone owner has ACCEPTED the retire and will
 > write their own superseded-by amendment (see §Cross-lane coordination).
 
@@ -490,29 +490,29 @@ verified at PR time = DL-298; main advanced through 283-297 while drafting):
   release-bundling record's Fork 3 two-lane split, Fork 4 `v*`-controls, OQ-3
   binary-only trigger, and OQ-7's manual-now/automation-at-GA staging (its
   other clauses stay Active) →
-  `platform/compass-unified-release-lane.md`.
+  `infra/release/compass-unified-release-lane/design.md`.
 - **DL-299:** The `:vX.Y.Z` agent image is minted by digest re-tag
   (`skopeo copy`) of the already-published per-push `:git-<sha12>` artifact —
   never a second closure build; `:latest` stays owned exclusively by the
   per-push publish job; the mint shares the `publish-agent-image` concurrency
-  group → `platform/compass-unified-release-lane.md`.
+  group → `infra/release/compass-unified-release-lane/design.md`.
 - **DL-300:** `publish-agent-image.yml` retires as a FILE with its DUTY
   relocated into the unified lane's per-push `publish-image` job (verbatim
   `publish.sh`, same paths gate, same serialize/immutability/coherence/
   least-privilege/off-hot-path posture) — accepted by the agent-image zone
   owner, who amend their record with a superseded-by pointer →
-  `platform/compass-unified-release-lane.md`.
+  `infra/release/compass-unified-release-lane/design.md`.
 - **DL-301:** release-please authenticates with a scoped GitHub App
   installation token (contents + pull-requests, installation-scoped, per-run)
   so the Release PR receives `pull_request` CI and branch protection is a real
   merge gate — a bare `GITHUB_TOKEN`-opened PR gets none under the recursion
-  guard (Matt-ruled 2026-08-25) → `platform/compass-unified-release-lane.md`.
+  guard (Matt-ruled 2026-08-25) → `infra/release/compass-unified-release-lane/design.md`.
 
 Flips (the bundling record's decisions live in its prose, not as existing DL
 rows — none found for Fork 3/OQ-3/OQ-7 in the ledger at authoring — so the
 flip lands as record-header edits, not row-status flips):
 
-- `docs/designs/platform/compass-release-bundling.md` `Status:` line gains:
+- `docs/designs/infra/release/compass-release-bundling/design.md` `Status:` line gains:
   "Fork 3, Fork 4, OQ-3, and OQ-7's bump-mechanism clause superseded by
   `compass-unified-release-lane.md` (Matt, 2026-08-25); all other rulings
   remain Active."

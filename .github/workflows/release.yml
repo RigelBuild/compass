@@ -23,7 +23,7 @@
 # The release-assets + release-image jobs (gated on
 # needs.release-pr.outputs.releases_created) are T3 (RIG-2915) and are NOT here.
 #
-# See docs/designs/platform/compass-unified-release-lane.md (§A1, §A2, §A4, §A5)
+# See docs/designs/infra/release/compass-unified-release-lane/design.md (§A1, §A2, §A4, §A5)
 # and docs/architecture/build-and-ci.md.
 
 name: release

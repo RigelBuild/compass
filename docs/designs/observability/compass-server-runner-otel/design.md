@@ -1,5 +1,7 @@
 # Design: compass-server + compass-runner OTel emission and end-to-end trace continuity (T4b, RIG-2685)
 
+Status: Draft
+
 Sibling record of the frozen observability-architecture design
 ([`../compass-observability-architecture/design.md`](../compass-observability-architecture/design.md),
 §T4b at `design.md:635-660`), which permits T4b "in a sibling doc under this

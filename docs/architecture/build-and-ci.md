@@ -125,7 +125,7 @@ Skipping what it cannot verify would make its green mean nothing.
 The `compass-agent` runtime image (the base every agent workstream runs in) is
 published to GHCR by the unified `release.yml` lane, separate from the gate
 above. For the full design see the frozen record
-`docs/designs/platform/compass-unified-release-lane.md` (the earlier
+`docs/designs/infra/release/compass-unified-release-lane/design.md` (the earlier
 `docs/designs/infra/ci/compass-agent-image-publish/design.md` records the
 original image-publish rationale); the durable operational shape is here.
 

@@ -1,8 +1,9 @@
 # Consolidate the Go test-harness tiers (RIG-2742)
 
-Status: Draft (freezes on merge). Directory-form record under
-`docs/designs/platform/`. All file:line citations are grounded against
-`main@origin` `0c75fe91` (post-#668, the L1 TestMain build-once merge).
+Status: Draft
+Directory-form record under `docs/designs/infra/ci/`. All file:line citations
+are grounded against `main@origin` `0c75fe91` (post-#668, the L1 TestMain
+build-once merge).
 
 ## Problem / Intent
 

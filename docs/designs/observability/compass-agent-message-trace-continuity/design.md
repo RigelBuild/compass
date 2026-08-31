@@ -1,8 +1,8 @@
 # Design: End-to-end trace continuity — inbound message → turn → tool calls
 
-Status: Draft (freezes on merge).
+Status: Draft
 Linear: RIG-2508 (follow-on; the sibling record deferred this).
-Sibling record: `docs/designs/platform/compass-agent-loop-otel/design.md`
+Sibling record: `docs/designs/observability/compass-agent-loop-otel/design.md`
 (FROZEN; merged in PR #561 at `2740d2d3`). This record does NOT reopen its OQ1
 ruling (b): two independent providers to one collector.
 
@@ -342,7 +342,7 @@ Plan).
   string = no context.
 - Commit identity: mintaka author + Matt co-author trailer; code comments
   cite this record by path
-  (`docs/designs/platform/compass-agent-message-trace-continuity/design.md`),
+  (`docs/designs/observability/compass-agent-message-trace-continuity/design.md`),
   never an issue id.
 - **Ledger note (driver flips it, never this record):** target is
   `docs/designs/platform/DECISIONS.md`, which does NOT exist at drafting time
