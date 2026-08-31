@@ -237,7 +237,7 @@ eng-docs record documents only that repo-tooling records live under
 Matt ruled the taxonomy fork on 2026-08-23 (§Resolved decisions). The end state,
 the gate expansion it forces, and the migration strategy:
 
-1. **The frozen end-state taxonomy.** Six top-level buckets; `product/` and
+1. **The frozen end-state taxonomy.** Seven top-level buckets; `product/` and
    `platform/` both dissolve as names:
 
    - `ui/` — the product's visible surfaces: shell, board, sidebar, keyboard,
@@ -250,9 +250,15 @@ the gate expansion it forces, and the migration strategy:
      engineering posture: architecture lineage, the design ledger itself, test
      strategy, scope gates.
    - `infra/` — runtime and CI/testing infrastructure, sub-grouped immediately
-     as `infra/runtime/` and `infra/ci/`.
+     as `infra/runtime/`, `infra/ci/`, and `infra/release/`.
+   - `observability/` — agent + server OTel emission, trace continuity, and the
+     in-product observability/data architecture.
    - `repo/` — the existing bucket, absorbing the dependency/library tooling
      records (Matt's OQ-3: no `tooling/` bucket).
+
+   The `observability/` bucket and the `infra/release/` sub-group were ruled by
+   Matt on 2026-08-31 for the post-freeze records (§Resolved decisions, RIG-2577
+   roster refresh); the original 2026-08-23 ruling stands unchanged for the rest.
 
    The four product-derived buckets sit at the TOP level (not under a surviving
    `product/`) per Matt's rationale: "ultimately the product design docs are
@@ -308,7 +314,7 @@ the gate expansion it forces, and the migration strategy:
      (its dominant product surface is the vendored agent harness `oh-my-pi`,
      `forks/README.md:12,26` — the grounded agent-vs-ui call the ruling
      delegated).
-   - `server/` (11): `compass-server-ownership-layer/`,
+   - `server/` (13 = 11 frozen + 2 post-freeze): `compass-server-ownership-layer/`,
      `compass-server-ownership-layer-amendment/`, `compass-forge-write-path/`,
      `compass-forge-poll-driver/`, `compass-forge-integration-testing/`,
      `compass-notification-delivery/` ("the server-side push into the agent's
@@ -317,24 +323,45 @@ the gate expansion it forces, and the migration strategy:
      `compass-issue-model/`, `compass-zulip-threading-model/` (the threading
      domain model — server-side semantics, distinct from
      `compass-threading-ui/`), `compass-attribution-simplification/` (amends
-     the issue model's DL-068).
+     the issue model's DL-068), plus two post-freeze arrivals (landed in
+     `platform/` after the 2026-08-23 freeze, assigned per Matt's 2026-08-31
+     roster-refresh ruling): `compass-server-llm-gateway/` and
+     `compass-forge-retry-after-surface.md`.
    - `meta/` (4): `compass-architecture-lineage/`, `compass-design-ledger/`,
      `compass-test-strategy/`, `compass-tier3-scope-gate/`.
    - `infra/runtime/` (4): `compass-elastic-session-runtime/` (whole directory;
      file set re-enumerated at execution time — live lane, hot-lane check),
      `compass-runner-gateway-error-sentinels/`,
      `compass-runner-concurrent-dispatch/`, `compass-runner-arbitrary-uid/`.
-   - `infra/ci/` (6): `compass-dogfood-e2e/`, `compass-dogfood-loop/`,
+   - `infra/ci/` (9 = 6 frozen + 3 post-freeze): `compass-dogfood-e2e/`, `compass-dogfood-loop/`,
      `compass-dogfood-e2e-steer-deliver-seam/`, `compass-pr-validation/`,
      `compass-local-dev/`, `compass-agent-image-publish.md` (converts to
      `compass-agent-image-publish/design.md` — a flat `.md` inside a subgroup
-     would fall out of governance, per the flat-file rule).
+     would fall out of governance, per the flat-file rule), plus three
+     post-freeze arrivals (assigned per Matt's 2026-08-31 roster-refresh
+     ruling): `compass-devenv-source-dry/`, `compass-test-harness-tiers/`,
+     `compass-e2e-mention-split-observation/`.
+   - `infra/release/` (3): the release/distribution family, a new `infra/`
+     sub-group ruled by Matt on 2026-08-31 (post-freeze arrivals):
+     `compass-distribution/`, `compass-release-bundling.md`,
+     `compass-unified-release-lane.md`.
+   - `observability/` (4): a new top-level bucket ruled by Matt on 2026-08-31
+     for the post-freeze observability family: `compass-agent-loop-otel/`
+     (OMP's native loop OTel activated in compass-agent),
+     `compass-agent-message-trace-continuity/` (inbound message → turn → tool
+     trace continuity), `compass-server-runner-otel/` (compass-server +
+     compass-runner OTel emission), `compass-observability-architecture/` (the
+     in-product observability & data architecture — the cross-cutting posture).
    - `repo/` fold (5 join the existing 2): `compass-renovate-migration.md`,
      `compass-effect-adoption-decision.md`, `compass-agent-effect-adoption/`,
      `compass-agent-effect-otel/`, `compass-drop-proto.md`.
 
-   Total: 31 + 21 + 11 + 4 = 67 product-derived (65 product + 2 strays);
-   4 + 6 = 10 infra; 5 into repo/ — all 17 platform records accounted for.
+   Total (product-derived): 31 + 21 + 11 + 4 = 67 (65 product + 2 strays);
+   4 + 6 = 10 infra (frozen 2026-08-23 roster). Platform/ accounting (refreshed
+   2026-08-31 for the 14 records live in `platform/` today): 2 agent/ strays
+   (`compass-forks-reversal/`, `compass-initial-prompt-removal.md`, already in
+   the `agent/` block above), 4 observability/, 3 infra/release/, 3 infra/ci/,
+   and 2 server/, summing to 14 — all 14 current platform records accounted for.
 
 3. **The design-ledger-gate expands to a governed-roots list (Matt's OQ-2 b) —
    a required code change, not an option.** `product/` is the gate's sole root
@@ -376,7 +403,15 @@ the gate expansion it forces, and the migration strategy:
    named "a bucket list / all of docs/designs/"; this design implements the
    bucket-list mechanism and populates it with all buckets, so governance
    currently equals all of `docs/designs/` while adding a future bucket stays
-   an explicit one-line gate edit. Grounding for all-buckets over
+   an explicit one-line gate edit. **Post-freeze update (Matt, 2026-08-31):**
+   the new top-level `observability/` bucket is itself a governed root and must
+   be added to `GOVERNED_ROOTS` alongside the others (`[ui, agent, server,
+   meta, infra, observability, repo]`) — the enumeration in T2's landed code
+   does not yet include it, so the observability-move task adds it as its own
+   one-line gate edit, exactly as documented here. `infra/release/` needs NO
+   separate governed-root entry: it is a sub-group of the already-governed
+   `infra/` root, and sub-groups inherit governance (the any-depth `/design.md`
+   membership test, §Approach 3). Grounding for all-buckets over
    only-the-four: (a) the governed/ungoverned seam is exactly what made
    `platform/` a policy island (the effect-otel ruling, §Recon 1) — reproducing
    it at `infra/`/`repo/` re-creates the problem this reorg exists to kill;
@@ -633,10 +668,16 @@ Update citations: `.github/workflows/publish-agent-image.yml:40`,
 (`compass-dogfood-e2e-steer-deliver-seam/design.md:6` links
 `../compass-dogfood-e2e/design.md` — both move together, survives; verify).
 
+Also drain the three post-freeze `infra/ci/` arrivals (landed in `platform/`
+after the 2026-08-23 freeze, assigned per Matt's 2026-08-31 roster-refresh
+ruling): move `docs/designs/platform/{compass-devenv-source-dry,compass-test-harness-tiers,compass-e2e-mention-split-observation}` →
+`docs/designs/infra/ci/`, normalizing each Status header to the gate grammar
+and re-pointing citations per the grep sweep.
+
 Interfaces:
 
 - Consumes: T2 merged.
-- Produces: `docs/designs/infra/ci/**` (6 records, one converted to dir
+- Produces: `docs/designs/infra/ci/**` (9 records, one converted to dir
   layout); Status normalizations; citation edits per grep sweep.
 - Test cycle: `moon run design-ledger-gate:gate` + `moon run :ci` green.
 - Depends on: T1, T2 (parallel with T3, T5).
@@ -664,6 +705,66 @@ Interfaces:
 - Test cycle: `moon run design-ledger-gate:gate` + `moon run :ci` green.
 - Depends on: T1, T2 (parallel with T3, T4).
 
+### T5a — observability/ move (new bucket, post-freeze family)
+
+Add `observability` to `GOVERNED_ROOTS` in `tools/design-ledger-gate/index.ts`
+(the T2-landed enumeration does not include it — §Approach 4), then move
+`docs/designs/platform/{compass-agent-loop-otel,compass-agent-message-trace-continuity,compass-server-runner-otel,compass-observability-architecture}` →
+`docs/designs/observability/`. These 4 landed in `platform/` after the
+2026-08-23 freeze and are assigned per Matt's 2026-08-31 roster-refresh ruling.
+Normalize each Status header to the gate grammar; re-point any `DECISIONS.md`
+`Record` cells and intra-corpus links in the same commit; sweep the code/config
+citation surface per moved record. PR body:
+`Ledger-impact: records relocated into governance, no decision changed`.
+
+Interfaces:
+
+- Consumes: T2 merged.
+- Produces: `observability` added to `GOVERNED_ROOTS`;
+  `docs/designs/observability/**` (4 records); Status normalization; citation
+  edits per grep sweep.
+- Test cycle: `moon run design-ledger-gate:gate` + `moon run :ci` green.
+- Depends on: T1, T2 (parallel with T3, T4, T5, T5b, T5c).
+
+### T5b — infra/release/ move (new infra subgroup, post-freeze family)
+
+Move `docs/designs/platform/{compass-distribution,compass-release-bundling.md,compass-unified-release-lane.md}` →
+`docs/designs/infra/release/` (a new sub-group under the already-governed
+`infra/` root — no `GOVERNED_ROOTS` change needed, sub-groups inherit;
+§Approach 4). Flat records convert to `<name>/design.md` layout inside the
+subgroup (a flat `.md` inside a subgroup falls out of governance, per the
+flat-file rule — §Approach 2): `compass-release-bundling.md` →
+`infra/release/compass-release-bundling/design.md`,
+`compass-unified-release-lane.md` → `infra/release/compass-unified-release-lane/design.md`.
+These 3 landed post-freeze and are assigned per Matt's 2026-08-31 ruling.
+Normalize Status headers; re-point cells and citations in the same commit. PR
+body: `Ledger-impact: records relocated into governance, no decision changed`.
+
+Interfaces:
+
+- Consumes: T2 merged.
+- Produces: `docs/designs/infra/release/**` (3 records, two converted to dir
+  layout); Status normalization; citation edits.
+- Test cycle: `moon run design-ledger-gate:gate` + `moon run :ci` green.
+- Depends on: T1, T2 (parallel with T3, T4, T5, T5a, T5c).
+
+### T5c — server/ post-freeze strays
+
+Move the two post-freeze `server/` arrivals →
+`docs/designs/server/`: `compass-server-llm-gateway/` and
+`compass-forge-retry-after-surface.md` (flat, stays flat at the governed
+`server/` root). Assigned per Matt's 2026-08-31 roster-refresh ruling. Normalize
+Status headers; re-point cells and citations in the same commit. PR body:
+`Ledger-impact: records relocated into governance, no decision changed`.
+
+Interfaces:
+
+- Consumes: T2 merged.
+- Produces: 2 records under `docs/designs/server/`; Status normalization;
+  citation edits.
+- Test cycle: `moon run design-ledger-gate:gate` + `moon run :ci` green.
+- Depends on: T1, T2 (parallel with T3, T4, T5, T5a, T5b).
+
 ### T6 — Product-behavior strays → agent/; platform/ deleted
 
 Move `docs/designs/platform/compass-initial-prompt-removal.md` and
@@ -679,12 +780,14 @@ directory disappears.
 
 Interfaces:
 
-- Consumes: T2-T5 merged (so `platform/` empties exactly here).
+- Consumes: T2-T5c merged (so `platform/` empties exactly here — this drains
+  the last 2 of the 14 live platform records, after T5a/T5b/T5c drain the 9
+  post-freeze arrivals).
 - Produces: 2 records under `docs/designs/agent/`; `Status:` normalization;
   citation edits (`go/cmd/compass-runner/main.go`, `forks/README.md`, grep
   sweep); PR-body `Ledger-impact:` line.
 - Test cycle: `moon run design-ledger-gate:gate` + `moon run :ci` green.
-- Depends on: T1, T2, T3, T4, T5.
+- Depends on: T1, T2, T3, T4, T5, T5a, T5b, T5c.
 
 ### T7 — Document the taxonomy (CONTRIBUTING §6 + design skill)
 
@@ -793,10 +896,13 @@ Interfaces:
 ## Tasks
 
 - [x] T1 — Matt ruled OQ-1/OQ-2/OQ-3 (ask, 2026-08-23); taxonomy frozen into this record.
-- [ ] T2 — gate cutover: `GOVERNED_ROOTS` (+ transitional `product`) + `DECISIONS.md` → `docs/designs/DECISIONS.md` + 214-cell `product/` re-base + fixtures, one atomic PR; gate green.
+- [x] T2 — gate cutover: `GOVERNED_ROOTS` (+ transitional `product`) + `DECISIONS.md` → `docs/designs/DECISIONS.md` + 214-cell `product/` re-base + fixtures, one atomic PR; gate green. Landed on main (commit `9e6e273068e8`, PR #576). NOTE: the landed `GOVERNED_ROOTS` predates the 2026-08-31 ruling, so it does NOT yet include `observability` — T5a adds it.
 - [ ] T3 — `infra/runtime/` move (4 records) + hot-lane check + Status normalization + citations; CI green.
-- [ ] T4 — `infra/ci/` move (6 records, `compass-agent-image-publish` flat→dir) + Status normalizations + citations; CI green.
+- [ ] T4 — `infra/ci/` move (9 records: 6 frozen + 3 post-freeze, `compass-agent-image-publish` flat→dir) + Status normalizations + citations; CI green.
 - [ ] T5 — `repo/` fold (5 dependency/tooling records) + Status normalization + citations; CI green.
+- [ ] T5a — `observability/` move (new bucket: add to `GOVERNED_ROOTS` + 4 post-freeze records) + Status normalization + citations; CI green.
+- [ ] T5b — `infra/release/` move (new infra subgroup, 3 post-freeze records, 2 flat→dir) + Status normalization + citations; CI green.
+- [ ] T5c — `server/` post-freeze strays (2 records) + Status normalization + citations; CI green.
 - [ ] T6 — strays → `agent/` + `Status:` normalization; `platform/` deleted; gate green.
 - [ ] T7 — CONTRIBUTING §6 taxonomy + design-skill domain list updated.
 - [ ] T8 — `product/` dissolved into `ui/ agent/ server/ meta/` (per-bucket PRs; native family + tauri-shell deferred to T10); ledger cells re-pointed; gate green.
@@ -835,3 +941,26 @@ Interfaces:
   protects them) and let CONTRIBUTING §6 carry the current truth. The sole
   exceptions are the two metadata edits in §Approach 9. This deferral is
   cosmetic either way and blocks nothing.
+- **RIG-2577 roster refresh (Matt, 2026-08-31):** 12 records landed in
+  `platform/` after the original 2026-08-23 freeze, so the frozen 17-record
+  roster went stale — a migration against it would orphan them in a `platform/`
+  meant to be deleted. Matt re-fired RIG-2577 and ruled: a new top-level
+  `observability/` bucket (a governed root) holds the 4-record observability
+  family (`compass-agent-loop-otel/`,
+  `compass-agent-message-trace-continuity/`, `compass-server-runner-otel/`,
+  `compass-observability-architecture/`); a new `infra/release/` sub-group
+  (mirroring `infra/runtime/` + `infra/ci/`, no separate governed-root entry —
+  sub-groups inherit) holds the 3-record release family
+  (`compass-distribution/`, `compass-release-bundling.md`,
+  `compass-unified-release-lane.md`); and the other 5 post-freeze records fold
+  into existing buckets — `server/` ×2 (`compass-server-llm-gateway/`,
+  `compass-forge-retry-after-surface.md`) and `infra/ci/` ×3
+  (`compass-devenv-source-dry/`, `compass-test-harness-tiers/`,
+  `compass-e2e-mention-split-observation/`). The 2 original strays
+  (`compass-forks-reversal/`, `compass-initial-prompt-removal.md` → `agent/`)
+  are unchanged. This refresh keeps the migration's promise that `platform/`
+  ends empty: 2 agent + 4 observability + 3 infra/release + 3 infra/ci + 2
+  server = the 14 records live in `platform/` today. It is a link-integrity /
+  plan refresh of this frozen record, not a decision-content rewrite (the
+  §Approach 9 freeze carve-out): roster entries and buckets were added, no
+  ruling rewritten.
