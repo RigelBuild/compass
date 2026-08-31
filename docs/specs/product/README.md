@@ -8,7 +8,7 @@ Available specs:
 
 - [`compass.md`](compass.md) — how **Compass** currently behaves: the
   `compass.v1` UI/backend contract (the owned door, generated-client-only
-  access, contract-drift gate), the `compassd` local transport (UDS
+  access, contract-drift gate), the `compass-server` local transport (UDS
   dual-protocol, no-TCP posture, single-instance startup, serving lifecycle,
   dev endpoint), and the event-stream resubscribe semantics.
 
