@@ -1,0 +1,14 @@
+{
+	"name": "@compass/compass-app-dev",
+	"private": true,
+	"type": "module",
+	"description": "Local dogfood loop for the Compass native shell: build (and launch) go/cmd/compass-app from the checkout against a remote compass-server, serving apps/ui/dist in place via COMPASS_ASSETS_DIR — no .app/.dmg/tarball staging.",
+	"module": "index.ts",
+	"bin": {
+		"compass-app-dev": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

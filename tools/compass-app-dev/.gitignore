@@ -1,0 +1,3 @@
+# The dev binary compiled by `moon run compass-app-dev:build` (index.ts builds
+# go/cmd/compass-app to here). A build artifact, never committed.
+/compass-app

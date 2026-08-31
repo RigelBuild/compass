@@ -156,6 +156,14 @@ projects:
   # map, an unregistered tool is silently inert and ships untested. Its mac-only
   # edge (codesign/hdiutil) runs in the darwin macos-14 CI job, not the battery.
   macos-bundle: 'tools/macos-bundle'
+  # The local dogfood loop for the native shell (compass-app-dev): build (and
+  # launch) go/cmd/compass-app from the checkout against a remote compass-server,
+  # serving apps/ui/dist in place via COMPASS_ASSETS_DIR — no .app/.dmg/tarball
+  # staging. Registered so its typecheck + unit tests (over the pure argv/env
+  # core) ride the moon-driven CI sweep; the build/run tasks are dev-only
+  # (runInCI:false) — the shell compile itself is covered by the gtk4 e2e +
+  # darwin CI lanes.
+  compass-app-dev: 'tools/compass-app-dev'
   # Vendored upstream fork subtrees (forks/<name>, RIG-1512). Each carries its
   # own nix-driven build as functional CI — so a fork-only change is gated by
   # the fork's own suite — while its tree stays exempt from the style gates
