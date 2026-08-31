@@ -111,6 +111,14 @@ type ContainerSpec struct {
 	// $HOME as (the T1/T2 baked-agent-uid invariant; see
 	// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md).
 	UID uint32
+	// Egress is the default-deny egress policy for this container. The podman
+	// backend IGNORES this field: createArgs is untouched (the podman argv stays
+	// byte-identical) and the podman path arms via AgentRuntime.armEgress's
+	// post-start exec. The microVM backend delivers it to guestd instead —
+	// MicroVMRuntime.Create records spec.Egress.NftScript() and Start's
+	// Provision RPC carries it, so the guest arms in-VM before the exec gate
+	// opens (design §(a)/(c)).
+	Egress EgressPolicy
 }
 
 // ExecSpec is how to run a command inside a container.
@@ -387,6 +395,15 @@ type ContainerRuntime interface {
 	// no caller invokes it yet, so the existing session path is unchanged.
 	Resize(ctx context.Context, id ContainerID, limits ResourceLimits) error
 }
+
+// ContainerRuntime is frozen (the Resize reservation above): a backend that
+// self-arms egress does NOT grow a verb here. Instead MicroVMRuntime carries an
+// off-interface marker method, EgressArmedInGuest(), and AgentRuntime.provision
+// type-asserts the unexported inGuestEgressArmer (agent.go) to skip armEgress on
+// such a backend (design §(c)). A future backend — or any ContainerRuntime
+// decorator, which would otherwise swallow the marker and silently re-enable
+// armEgress on the microVM backend — must re-expose EgressArmedInGuest to keep
+// the probe working.
 
 // defaultCommandTimeout is the default per-command wall-clock cap. A hung podman
 // (stalled pull, wedged userns/cgroup setup, hung exec) must surface as an

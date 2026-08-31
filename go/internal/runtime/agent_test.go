@@ -294,3 +294,61 @@ func TestTeardownStopsThenRemoves(t *testing.T) {
 		t.Errorf("stop (%d) must precede remove (%d)", stop, remove)
 	}
 }
+
+// inGuestArmingFakeRuntime is a fakeRuntime that self-arms egress in-guest: it
+// implements the inGuestEgressArmer marker (EgressArmedInGuest), so
+// AgentRuntime.provision must skip the host-side armEgress exec — mirroring the
+// microVM backend without booting a VM.
+type inGuestArmingFakeRuntime struct {
+	*fakeRuntime
+}
+
+func (f *inGuestArmingFakeRuntime) EgressArmedInGuest() bool { return true }
+
+// TestInGuestArmerSkipsHostArmEgress: a backend that self-arms in-guest receives
+// NO nft exec, and provision still proceeds to credentials + checkout dir. This
+// is the (c) probe-and-skip contract — the microVM path arms inside Start, so
+// the host-side capability-less arm exec must not run.
+func TestInGuestArmerSkipsHostArmEgress(t *testing.T) {
+	fake := &inGuestArmingFakeRuntime{fakeRuntime: newFakeRuntime(t)}
+	rt := NewAgentRuntime(fake)
+
+	if _, err := rt.Launch(t.Context(), specWithCreds(true)); err != nil {
+		t.Fatalf("Launch error = %v", err)
+	}
+
+	// No exec may carry the egress ruleset: the backend armed in-guest.
+	for _, e := range fake.execsSnapshot() {
+		if slices.ContainsFunc(e.Command, func(tok string) bool { return strings.Contains(tok, "compass_egress") }) {
+			t.Errorf("a self-arming backend must not run the host armEgress exec; command = %v", e.Command)
+		}
+	}
+	// Provision still proceeds: credentials install + checkout dir are made.
+	calls := fake.callsSnapshot()
+	mkdir := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "mkdir") })
+	if mkdir < 0 {
+		t.Errorf("provision must still create the checkout dir after skipping the arm; calls = %v", calls)
+	}
+	creds := slices.ContainsFunc(fake.execsSnapshot(), func(e ExecSpec) bool {
+		return e.Stdin != nil && strings.Contains(*e.Stdin, "git-credentials")
+	})
+	if !creds {
+		t.Errorf("provision must still install credentials after skipping the arm; execs = %v", fake.execsSnapshot())
+	}
+}
+
+// TestCreateArgsIgnoresEgress pins the podman byte-identical constraint: setting
+// ContainerSpec.Egress must not change the `podman create` argv at all. The
+// podman backend arms via AgentRuntime.armEgress, never from the spec field, so
+// createArgs output for a spec with Egress set equals its output without.
+func TestCreateArgsIgnoresEgress(t *testing.T) {
+	base := ContainerSpec{Name: "c", Image: "img", UID: 1000, CapAdd: []string{capNetAdmin}}
+	withEgress := base
+	withEgress.Egress = MustAllowEgress("github.com", "example.com")
+
+	got := createArgs(withEgress)
+	want := createArgs(base)
+	if !slices.Equal(got, want) {
+		t.Errorf("createArgs changed when Egress was set:\n with = %q\n without = %q", got, want)
+	}
+}
