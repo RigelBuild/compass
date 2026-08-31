@@ -14,9 +14,13 @@
   # that does, failing CI on skew (moon task flake-gate:flake-parity).
   description = "Compass — binaries, native app, and microVM stack-env";
 
-  # Pinned to the exact rev devenv.lock's nixpkgs node records
-  # (c946ff36bf193309589932c371bd5ae6653c912e). flake.lock will record this rev;
-  # the parity gate asserts flake.lock's rev == devenv.lock's rev.
+  # Pinned to the exact rev devenv.lock's nixpkgs node records (the URL below is
+  # the single source of the concrete rev — this comment names no literal, so an
+  # automated devenv-nixpkgs bump that rewrites the URL leaves nothing stale
+  # here). flake.lock records the same rev; the parity gate
+  # (tools/toolchain/flake-parity.ts) asserts flake.lock's rev == devenv.lock's.
+  # The refresh-devenv-nixpkgs.ts postUpgradeTask keeps this URL + flake.lock in
+  # lockstep on a channel bump.
   inputs.nixpkgs.url = "github:cachix/devenv-nixpkgs/c946ff36bf193309589932c371bd5ae6653c912e";
 
   outputs =

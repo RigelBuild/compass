@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	BIOME_CATALOG_KEY,
+	channelNixpkgsRev,
 	innerNixpkgsRev,
 	rewriteCatalogPin,
+	rewriteFlakeNixpkgsUrl,
 } from "./refresh-devenv-nixpkgs.core.ts";
 
 // Unit tests for the pure transform core of refresh-devenv-nixpkgs.ts
@@ -128,5 +130,111 @@ describe("rewriteCatalogPin", () => {
 		expect(() =>
 			rewriteCatalogPin('{"name":"x"}', BIOME_CATALOG_KEY, "1.0.0"),
 		).toThrow(/no "catalog" block/);
+	});
+});
+
+describe("channelNixpkgsRev", () => {
+	// The channel rev (outer nixpkgs node) is what flake.nix pins and the
+	// flake-parity gate compares — DISTINCT from innerNixpkgsRev. A lock-shape
+	// change fails HERE, loudly, instead of aligning flake.nix to a wrong rev.
+	test("recovers the outer nixpkgs channel rev from the real devenv.lock", () => {
+		const lock = readFileSync(join(repoRoot, "devenv.lock"), "utf8");
+		const rev = channelNixpkgsRev(lock);
+		expect(rev).toMatch(/^[a-f0-9]{40}$/);
+		expect(rev).toBe(JSON.parse(lock).nodes.nixpkgs.locked.rev);
+	});
+
+	// The counterpart to innerNixpkgsRev's mirror test: this reads the OUTER
+	// channel node, not the inner src node. Assert they differ and we return the
+	// outer — the flake pins the channel rev, so grabbing the inner would align
+	// flake.nix to the wrong tree and leave the parity gate red.
+	test("returns the outer channel rev, not the inner src rev", () => {
+		const lock = readFileSync(join(repoRoot, "devenv.lock"), "utf8");
+		const parsed = JSON.parse(lock);
+		const outer = parsed.nodes.nixpkgs.locked.rev;
+		const inner = parsed.nodes["nixpkgs-src"].locked.rev;
+		expect(outer).not.toBe(inner);
+		expect(channelNixpkgsRev(lock)).toBe(outer);
+	});
+
+	test("throws on invalid JSON", () => {
+		expect(() => channelNixpkgsRev("{not json")).toThrow(/not valid JSON/);
+	});
+
+	test("throws when the outer nixpkgs node is absent", () => {
+		const noNode = JSON.stringify({
+			nodes: { "nixpkgs-src": { locked: { rev: "x" } } },
+		});
+		expect(() => channelNixpkgsRev(noNode)).toThrow(/nixpkgs rev/);
+	});
+
+	test("throws on a non-40-hex rev (shape drift)", () => {
+		const shortRev = JSON.stringify({
+			nodes: { nixpkgs: { locked: { rev: "abc123" } } },
+		});
+		expect(() => channelNixpkgsRev(shortRev)).toThrow(/nixpkgs rev/);
+	});
+});
+
+describe("rewriteFlakeNixpkgsUrl", () => {
+	const flake = () => readFileSync(join(repoRoot, "flake.nix"), "utf8");
+	const NEW_REV = "0123456789abcdef0123456789abcdef01234567";
+
+	// Read the channel rev the flake currently pins straight from the live
+	// flake.nix, so the idempotency + change assertions track whatever is pinned
+	// today rather than a hardcoded literal a routine devenv-nixpkgs bump would
+	// silently invalidate into a red gate.
+	const currentFlakeRev = (): string => {
+		const rev = /github:cachix\/devenv-nixpkgs\/([a-f0-9]{40})/.exec(
+			flake(),
+		)?.[1];
+		if (rev === undefined)
+			throw new Error("no devenv-nixpkgs pin in flake.nix");
+		return rev;
+	};
+
+	test("rewrites the flake.nix nixpkgs pin to the new rev", () => {
+		const out = rewriteFlakeNixpkgsUrl(flake(), NEW_REV);
+		expect(out).toContain(`github:cachix/devenv-nixpkgs/${NEW_REV}`);
+		// The OLD pin URL is gone (the bare rev still appears in the PIN
+		// DISCIPLINE comment prose, so assert on the URL, not the rev alone).
+		expect(out).not.toContain(
+			`github:cachix/devenv-nixpkgs/${currentFlakeRev()}`,
+		);
+	});
+
+	// Only the one URL rev changes — nothing else in the flake is touched.
+	test("changes exactly the pinned rev, one line", () => {
+		const before = flake();
+		const out = rewriteFlakeNixpkgsUrl(before, NEW_REV);
+		const changed = out
+			.split("\n")
+			.filter((line, i) => line !== before.split("\n")[i]);
+		expect(changed).toEqual([
+			`  inputs.nixpkgs.url = "github:cachix/devenv-nixpkgs/${NEW_REV}";`,
+		]);
+	});
+
+	// A channel bump landing on the same rev (or a re-run) yields byte-identical
+	// text, so the entry point's no-op branch — skip write + skip flake update —
+	// fires correctly.
+	test("is idempotent: rewrite to current rev yields identical text", () => {
+		const before = flake();
+		expect(rewriteFlakeNixpkgsUrl(before, currentFlakeRev())).toBe(before);
+	});
+
+	test("throws on a non-40-hex rev (fail loud)", () => {
+		expect(() => rewriteFlakeNixpkgsUrl(flake(), "abc123")).toThrow(
+			/non-40-hex rev/,
+		);
+	});
+
+	test("throws when the flake has no devenv-nixpkgs pin", () => {
+		expect(() =>
+			rewriteFlakeNixpkgsUrl(
+				'{ inputs.nixpkgs.url = "github:NixOS/nixpkgs"; }',
+				NEW_REV,
+			),
+		).toThrow(/no github:cachix\/devenv-nixpkgs/);
 	});
 });

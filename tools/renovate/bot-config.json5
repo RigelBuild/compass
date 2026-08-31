@@ -66,8 +66,10 @@
   //      the branch. Drop this entry and Renovate refuses the command, silently
   //      restoring the stale-lock failure.
   //   3. the devenv-nixpkgs lockstep, which re-locks devenv.lock at a new channel
-  //      rev and rewrites the biome catalog pin to the version that rev bakes,
-  //      keeping dev-shell baked==catalog parity.
+  //      rev, rewrites the biome catalog pin to the version that rev bakes
+  //      (keeping dev-shell baked==catalog parity), and re-aligns the repo-root
+  //      flake (flake.nix inputs.nixpkgs.url + flake.lock) to the same channel
+  //      rev so the flake-parity gate does not red on the skew.
   //   4. the FOD-hash refresh, which recomputes the pinned Nix fixed-output-
   //      derivation hashes a dep bump invalidates — the Go `vendorHash`
   //      (guest-image/default.nix) on a gomod bump, the bun `outputHash`

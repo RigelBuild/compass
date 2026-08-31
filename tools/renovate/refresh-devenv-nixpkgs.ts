@@ -28,6 +28,10 @@
 //      same channel, but it carries no catalog pin, so only biome is rewritten.
 //   5. `bun install --lockfile-only` — re-resolve bun.lock so the fail-closed
 //      `bun install --frozen-lockfile` root-check passes.
+//   6. Lockstep the repo-root flake: rewrite flake.nix's inputs.nixpkgs.url to
+//      the new devenv.lock channel rev and `nix flake update nixpkgs` to
+//      re-lock flake.lock, so the flake-parity gate (flake-gate:flake-parity)
+//      does not red on the skew a channel bump otherwise leaves behind.
 //
 // Design: docs/designs/repo/compass-renovate-migration.md
 //
@@ -46,14 +50,20 @@ import { readFileSync } from "node:fs";
 import { $ } from "bun";
 import {
 	BIOME_CATALOG_KEY,
+	channelNixpkgsRev,
 	innerNixpkgsRev,
 	rewriteCatalogPin,
+	rewriteFlakeNixpkgsUrl,
 } from "./refresh-devenv-nixpkgs.core.ts";
 
 // The devenv channel lock + the root manifest whose catalog pin mirrors the
 // baked biome. Repo-root-relative (the runner cwd = repo root).
 const DEVENV_LOCK = "devenv.lock";
 const PACKAGE_JSON = "package.json";
+// The repo-root distribution flake, whose inputs.nixpkgs.url hard-codes the
+// devenv-nixpkgs channel rev. flake.lock records the same rev; the flake-parity
+// gate (tools/toolchain/flake-parity.ts) reds CI when it skews from devenv.lock.
+const FLAKE_NIX = "flake.nix";
 
 // The nixpkgs system the dev shell bakes for; eval the same attr set the baked
 // derivations come from.
@@ -155,6 +165,33 @@ async function main(): Promise<number> {
 	if (after !== before) {
 		console.log("refresh-devenv-nixpkgs: bun install --lockfile-only ...");
 		await $`bun install --lockfile-only`;
+	}
+
+	// ── Step 6: lockstep the repo-root flake to the new channel rev. ──
+	// The re-lock in step 2 moved devenv.lock's outer nixpkgs (channel) rev, but
+	// flake.nix hard-codes that rev in inputs.nixpkgs.url and flake.lock records
+	// it independently — so without this the flake-parity gate
+	// (flake-gate:flake-parity) reds on the skew. Rewrite the URL rev to the new
+	// channel rev, then re-lock flake.lock to match. `nix flake update nixpkgs`
+	// re-locks only the nixpkgs input (no build). Idempotent: a channel bump that
+	// somehow left the rev unchanged rewrites nothing and the flake update is a
+	// no-op. Fail loud — a half-aligned flake ships a red parity gate.
+	const channelRev = channelNixpkgsRev(readFileSync(DEVENV_LOCK, "utf8"));
+	const flakeBefore = readFileSync(FLAKE_NIX, "utf8");
+	const flakeAfter = rewriteFlakeNixpkgsUrl(flakeBefore, channelRev);
+	if (flakeAfter !== flakeBefore) {
+		await Bun.write(FLAKE_NIX, flakeAfter);
+		console.log(
+			`refresh-devenv-nixpkgs: rewrote flake.nix nixpkgs pin to channel rev ${channelRev}.`,
+		);
+		console.log(
+			"refresh-devenv-nixpkgs: re-locking flake.lock (nix flake update nixpkgs) ...",
+		);
+		await $`nix flake update nixpkgs --extra-experimental-features ${"nix-command flakes"}`;
+	} else {
+		console.log(
+			"refresh-devenv-nixpkgs: flake.nix nixpkgs pin already at the channel rev; no rewrite.",
+		);
 	}
 
 	console.log("refresh-devenv-nixpkgs: done.");
