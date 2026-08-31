@@ -147,12 +147,14 @@ Linear app against our verify path.
 **Two GitHub Apps total, clean PAT cutover, tests and webhook validation on
 the real App path.**
 
-### Topology: 2 Apps (recommended; OQ-3 is the confirming fork)
+### Topology: 2 Apps (DECIDED — Matt, 2026-08-31; DEC-1/DEC-3, DL-305)
 
 - **Primary App** (the existing `ForgeConfig.App` — `serve.go:138-142`):
-  serves ALL reads (board ingest + notify, unified onto one client per
-  RIG-2991) AND the author write client. One bot identity authors every
-  Compass PR/comment/issue.
+  serves EVERYTHING except reviews — ALL reads (board ingest + notify,
+  unified onto one client per RIG-2991) AND all author writes AND board AND
+  webhooks. One bot identity authors every Compass PR/comment/issue. Matt:
+  "the primary one for everything, except for the single side App that does
+  reviewers to get around the github limitation."
 - **Reviewer App**: a second App definition (own `AppID` + private key + one
   installation on the same org/repos), serving ONLY the `submit_review` arm's
   reviewer client. A second App *definition* — not a second install of the
@@ -161,21 +163,22 @@ the real App path.**
   the PR author's account).
 
 This is the fewest identities satisfying F1, and it composes with what exists:
-the reads already share the primary App (`serve.go:1048-1057`, 1333-1342). But
-author-writes joining the primary App is a genuine tradeoff, not a pure
-extension of RIG-2991: unifying the two READ lanes removes blind double-burn
-of a budget they already share server-side, while folding writes in makes
-background reads and interactive writes share ONE client-side fail-fast gate
-(`resetAt`, `github.go:83-92` — every write POST checks it via `gateBlocked`,
-`github.go:837-854`, in `doJSON`, `github.go:862-866`) AND one server-side
-installation budget, where today the author PAT is a separate user-account
-5,000/hr pool. A board-reconcile sweep that drives remaining under `reserve`
-(= 10, `github.go:99-102`) arms the gate, and every interactive agent write
-then fails fast with `ErrBudgetExhausted` until the window resets. OQ-3
-carries this fork with the arithmetic; the recommendation stays 2 Apps. The
+the reads already share the primary App (`serve.go:1048-1057`, 1333-1342).
+The read/write rate-budget coupling is ACCEPTED as part of this ruling:
+background board-reconcile sweeps + notify reads and interactive agent writes
+share ONE client-side fail-fast gate (`resetAt`, `github.go:83-92` — every
+write POST checks it via `gateBlocked`, `github.go:837-854`, in `doJSON`,
+`github.go:862-866`) AND one server-side installation budget, where the
+author PAT was a separate user-account 5,000/hr pool. A board-reconcile sweep
+that drives remaining under `reserve` (= 10, `github.go:99-102`) arms the
+gate, and interactive writes then fail fast with `ErrBudgetExhausted` until
+the window resets. One App, one budget — the freeze note should still state
+the budget arithmetic (measured read volume — board poll + notify + 30-min
+reconcile backstop cadence — vs the 5,000/hr installation budget on the
+current repo set), but this is a documentation item, not an open fork. The
 reviewer's traffic (review POSTs) is tiny and isolated on its own App budget.
 
-### Cutover: clean, no PAT fallback
+### Cutover: clean, no PAT fallback (DECIDED — Matt, 2026-08-31; DEC-4)
 
 Production drops `newForgeTokenSource` usage for GitHub writes entirely, along
 with the `GITHUB_FORGE_TOKEN`/`GITHUB_FORGE_REVIEWER_TOKEN` secret names and
@@ -190,7 +193,7 @@ responder already implements (`linearagent.NewTokenSource`,
 stays, but it guards only the attribution channel, not the mint path; T4
 pairs it with a boot-time mint check (see T4).
 
-### Tests and validation ride the real path
+### Tests and validation ride the real path (DECIDED — Matt, 2026-08-31; DEC-5/DEC-6)
 
 The `livegithub` oracle's GitHub legs switch from PAT env vars to App
 credentials (App id + installation id + PEM), minting installation tokens
@@ -198,27 +201,30 @@ through the SAME `forge.NewAppTokenSource` production uses — the oracle then
 proves the production credential path, not a lookalike. Linear keeps exactly
 one USER credential in the live tier: the delegation setup step, because the
 app-actor cannot be assigned work (thread 6). Real-App webhook validation is
-a live-tier capture-and-replay: one genuinely-signed delivery per provider
-committed as a fixture — pulled via the GitHub App deliveries API under
-`-update` (the oracle's existing regeneration lane,
-`livegithub_test.go:55-58`); copied manually from the Linear webhook UI (no
-deliveries API; the fork is OQ-6) — and asserted through
-`VerifyGitHubSignature`/`linearagent.VerifySignature`, plus a one-time App
-webhook-registration runbook (skill://human-action-handoff) since delivery
-needs a public ingress the CI runner lacks.
+a LIVE TUNNEL ROUND-TRIP (DEC-6): the livegithub tier stands up a
+smee.io-style tunnel receiver as the public ingress the CI runner lacks,
+registers the real GitHub App / real Linear app webhooks against the tunnel
+URL, and asserts that ONE real delivery per provider flows end to end through
+the mounted handlers (`NewGitHubWebhookHandler`, `NewLinearWebhookHandler`)
+and verifies (`VerifyGitHubSignature`,
+`linearagent.VerifySignature`+`CheckTimestamp`) — proving live ingress and
+signature verify together, not just signature format. Matt chose this
+higher-fidelity option over capture-and-replay, accepting that the tunnel
+adds live-ingress machinery to CI. A one-time App webhook-registration
+runbook (skill://human-action-handoff) still covers production registration
+and PEM rotation.
 
 ### Alternatives considered
 
 - **3 Apps (read App ≠ author-write App ≠ reviewer App).** Two real arguments
   for it: blast radius (a leaked write key can't read-scope, and vice versa)
-  and — the stronger one — QoS rate-isolation: a separate write App keeps
-  interactive author writes off the installation budget and client-side gate
-  that background reads arm (`github.go:83-92`, `837-854`). Cost: a third
-  identity, third key, third installation to rotate; the primary App's read
-  permissions are a subset of what a write App needs anyway on the same
-  repos. Not chosen, but not rejected on blast-radius grounds alone either —
-  the rate-isolation tradeoff is surfaced with its arithmetic in OQ-3 for
-  Matt to rule on.
+  and QoS rate-isolation: a separate write App keeps interactive author
+  writes off the installation budget and client-side gate that background
+  reads arm (`github.go:83-92`, `837-854`). Cost: a third identity, third
+  key, third installation to rotate; the primary App's read permissions are
+  a subset of what a write App needs anyway on the same repos. REJECTED by
+  Matt's DEC-1/DEC-3 ruling: 2 Apps, primary does everything — the
+  rate-budget coupling is accepted with it.
 - **One App, two installations.** Fails F1: both installations mint tokens for
   the SAME App bot login, so reviewer APPROVE on an author-authored PR still
   422s ("GitHub rejects APPROVE and REQUEST_CHANGES from the PR's own author",
@@ -228,13 +234,13 @@ needs a public ingress the CI runner lacks.
   write wiring behind the App path for a release. Rejected: it doubles the
   gate matrix (`forgeWritesEnabled` would need a 2×2 of App-vs-PAT states),
   contradicts the house default-clean-cutover, and the read path already
-  demonstrated the clean cut is operationally fine (RIG-2883). Surfaced in
-  OQ-4 since the drop is production-visible.
+  demonstrated the clean cut is operationally fine (RIG-2883). Matt confirmed
+  the clean cutover (DEC-4).
 - **Per-role App-config map** (`map[role]ForgeAppConfig`). More general than
   two named blocks, but nothing needs a third role, and the existing shape is
   a named struct field (`ForgeConfig.App`, `serve.go:142`); a map would be a
-  second configuration convention beside it. Rejected; OQ-2 carries the
-  config-shape fork.
+  second configuration convention beside it. Rejected; Matt ruled the named
+  `ReviewerApp` block (DEC-2).
 
 ## Global Constraints
 
@@ -334,24 +340,26 @@ off until configured.
 Add a `ReviewerApp ForgeAppConfig` field to `ForgeConfig` (mirroring `App`,
 `serve.go:138-142`) with its own `--forge-reviewer-app-id`,
 `--forge-reviewer-app-installation-id` flags and
-`FORGE_REVIEWER_APP_PRIVATE_KEY` declared-secret name (webhook-secret field
-unused: the reviewer App registers NO webhook — reads/webhooks stay on the
-primary App per the 2-App topology). Build a second `appTokenSource` over it;
-the reviewer client in `registerGitHubForgeCoordinate` rides it.
+`FORGE_REVIEWER_APP_PRIVATE_KEY` declared-secret name (the ruled config
+shape, DEC-2; webhook-secret field unused: the reviewer App registers NO
+webhook — reads/webhooks stay on the primary App per the 2-App topology).
+Build a second `appTokenSource` over it; the reviewer client in
+`registerGitHubForgeCoordinate` rides it.
 
-One deployment shape is knowingly lost here. Today writes-without-a-GitHub-App
-is expressible: `forgeWritesEnabled` (`serve.go:245-248`) is independent of
+One deployment shape is knowingly retired here — DECIDED (Matt, 2026-08-31,
+DEC-1/DEC-3). Today writes-without-a-GitHub-App is expressible:
+`forgeWritesEnabled` (`serve.go:245-248`) is independent of
 `boardIngestionEnabled` (`serve.go:214-216`) — Matt's 2026-08-19 ruling,
 referenced in the field comment (`serve.go:150-151`; the Linear-gate comment
 states the lane independence outright, `serve.go:156-158`). After T2/T3,
 configuring writes requires configuring the primary App, which flips
 `boardIngestionEnabled` true, which makes `buildBoardIngestLane` demand
 `AppWebhookSecretName` and start the ingest+notify lanes
-(`serve.go:1031-1036`). This record recommends ACCEPTING the coupling —
-enabling writes force-enables board ingestion — with a ledger note amending
-the 2026-08-19 independent-gates ruling at freeze; the alternative (gate
-separately: App + webhook-secret ⇒ ingestion, App alone ⇒ writes) is
-preserved as a sub-point of OQ-3 for Matt to veto.
+(`serve.go:1031-1036`). Matt explicitly WANTS this unified shape ("you just
+setup the two apps so everything (reads/writes/board/webhooks etc) just
+works") and rejected keeping the gates separate — enabling writes
+force-enables board ingestion, as an amendment to the 2026-08-19
+independent-gates ruling (recorded in DL-305).
 
 Interfaces:
 
@@ -486,8 +494,8 @@ literals if the gating env set changes (`liveSkipMessage` contract,
 Fidelity note: the oracle authenticates each identity with its own standalone
 token source, so the production 2-App topology's riskiest property — board
 reads and author writes sharing one client-side gate + installation budget
-(OQ-3) — is never exercised live; T1's cross-lane `ErrBudgetExhausted` unit
-test is the only coverage.
+(accepted in DEC-1/DEC-3) — is never exercised live; T1's cross-lane
+`ErrBudgetExhausted` unit test is the only coverage.
 
 T5 goes green only after two HUMAN actions no code task performs: the two
 testbed App registrations on `compass-forge-testbed` (author + reviewer test
@@ -506,31 +514,35 @@ Interfaces:
 - Tests: the oracle itself is the test; the skip-guard step must still derive
   its greps from source.
 
-### T6 — Real-App webhook validation + registration runbook
+### T6 — Real-App webhook validation: live tunnel round-trip + registration runbook
 
 Owner: compass-forge lane; the public-ingress piece touches deployment
 (compass-server/core historically).
 
-Two halves. (a) **Live-tier signed-delivery fixtures:** capture ONE real
-delivery per provider — a GitHub delivery signed by the primary App's webhook
-secret, a Linear delivery signed by the workspace webhook secret — as
-committed fixtures (raw body + signature header), then a replay test asserting
-`forge.VerifyGitHubSignature(secret, body, header)` (`githubapp_webhook.go:23`)
-and `linearagent.VerifySignature(secret, body, headerHex)` +
-`CheckTimestamp` (`webhook.go:65-84`) accept them. Capture differs per
-provider because a webhook delivery is a PUSH and the oracle's CI runner has
-no ingress: the GitHub fixture is fetched as a PULL via the App deliveries
-API (`GET /app/hook/deliveries` + `GET /app/hook/deliveries/{id}`, which
-returns the delivered payload and headers including `X-Hub-Signature-256`)
-under `-update` like the oracle's regeneration lane (`liveUpdateSkipMessage`,
-`livegithub_test.go:55-58`); the Linear fixture has no deliveries-API
-equivalent and is captured MANUALLY — a human copies one delivery (raw body +
-signature header) from the Linear webhook UI, a named runbook step (the
-mechanism fork is OQ-6). The fixture secret is the capture-time secret stored
-alongside (rotated test-tier secret, never the production one). Replay proves
-the signature format, not ongoing ingress reachability — OQ-6 recommends a
-webhook-delivery freshness metric/alert on the ingest lane as the standing
-liveness signal. (b) **Runbook:** a one-time App registration runbook per
+Two halves. (a) **Live-tier tunnel round-trip (DEC-6 — Matt, 2026-08-31):**
+a `livegithub`-tier leg proves a delivery signed by the REAL GitHub App and
+the REAL Linear app flows end to end through our mounted handlers and
+verifies. A webhook delivery is a PUSH and the oracle's CI runner has no
+ingress, so the leg stands up a smee.io-style tunnel receiver as the public
+ingress: the test opens a tunnel channel, the real App webhooks are
+registered pointing at the tunnel URL (the testbed Apps' webhook URLs, a
+one-time runbook step; the tunnel channel itself is stable so registration
+is not per-run), the test triggers one real event per provider (e.g. an
+issue comment on `compass-forge-testbed`, a Linear issue change on the test
+team), receives the forwarded delivery through the tunnel, and feeds it —
+raw body + signature headers — through the mounted production handlers
+(`NewGitHubWebhookHandler`, `go/server/github_webhook.go:118-121`;
+`NewLinearWebhookHandler`, `go/server/linear_webhook.go:82-85`), asserting
+the fail-closed verify passes (`forge.VerifyGitHubSignature`,
+`githubapp_webhook.go:23`; `linearagent.VerifySignature` + `CheckTimestamp`,
+`webhook.go:65-84`) and the event reaches the handler's sink. This proves
+live ingress + signature verify TOGETHER — the higher-fidelity option Matt
+chose over capture-and-replay, accepting that the tunnel adds live-ingress
+machinery to CI. The tunnel secret tier is the testbed webhook secret,
+never the production one. Additionally: a cheap ongoing liveness signal (a
+webhook-delivery freshness metric/alert on the ingest lane) so
+post-registration breakage is loud instead of masked by the 30-min
+reconcile backstop. (b) **Runbook:** a one-time App registration runbook per
 skill://human-action-handoff — filed as a Linear issue when the time comes,
 never console-clicked ad hoc — covering, in sections:
 
@@ -539,10 +551,12 @@ never console-clicked ad hoc — covering, in sections:
   webhook (`POST /webhooks/linear`, DL-302, `linear_webhook.go:76-91`);
   reviewer-App creation + installation (no webhook). The registration half is
   EXECUTED at the T3.5 gate, before any PAT drops.
-- **Testbed provisioning (T5's precondition):** create + install the two
+- **Testbed provisioning (T5 + T6 precondition):** create + install the two
   testbed Apps on `compass-forge-testbed` and provision the six
   `LIVEGITHUB_{AUTHOR,REVIEWER}_APP_{ID,INSTALLATION_ID,KEY}` Actions secrets
-  (coordinated with compass-server/core per T5).
+  (coordinated with compass-server/core per T5); register the testbed App +
+  Linear test-team webhooks against the T6 tunnel channel URL and provision
+  the tunnel channel + webhook-secret env for the oracle.
 - **PEM rotation:** post-cutover the fleet holds four App private keys
   (primary, reviewer, two testbed) — the one long-lived App credential, in a
   record whose motivation argues Apps beat PATs partly on credential
@@ -553,11 +567,16 @@ never console-clicked ad hoc — covering, in sections:
 
 Interfaces:
 
-- Consumes: `VerifyGitHubSignature`, `linearagent.VerifySignature`,
-  `CheckTimestamp`; the `-update` fixture-regeneration convention.
-- Produces: `go/internal/forge/testdata/` (+ linearagent testdata) signed
-  fixtures; a `TestLiveWebhookSignature*` pair in the livegithub tier; the
-  runbook doc (location per the fork in OQ-6).
+- Consumes: `NewGitHubWebhookHandler(secret func(ctx) ([]byte, error), sink
+  ForgeEventSink, log *slog.Logger)` (`github_webhook.go:118-121`);
+  `NewLinearWebhookHandler(secret, dataSink, sessionSink, …)`
+  (`linear_webhook.go:82-85`); `VerifyGitHubSignature`,
+  `linearagent.VerifySignature`, `CheckTimestamp`; a smee.io-style tunnel
+  client (receiver only).
+- Produces: a `TestLiveWebhook*` round-trip pair in the livegithub tier
+  (tunnel receiver + real-delivery assertion per provider); tunnel-channel +
+  webhook-secret env additions to the oracle env contract and `ci.yml` env
+  block; the runbook doc.
 
 ## Tasks
 
@@ -576,126 +595,77 @@ Interfaces:
 - [ ] T5 — `livegithub` oracle GitHub legs onto real App token sources; one
       Linear USER cred retained for delegation setup; CI env + skip guards
       updated.
-- [ ] T6 — Real-App signed-delivery fixtures + replay tests (both providers);
-      one-time webhook-registration runbook.
+- [ ] T6 — Live tunnel round-trip webhook validation (real GitHub App + real
+      Linear app deliveries through the mounted handlers, livegithub tier);
+      one-time webhook-registration + PEM-rotation runbook.
 
-## Open Questions
+## Resolved decisions
 
-For Matt to rule (batched `ask` by the spawning agent). Recommendations are
-the designer's, grounded; none is ruled here.
+All six Open Questions were ruled by Matt on 2026-08-31 (batched `ask` relay
+by the spawning agent). Recorded here as the decided outcomes; ledger rows
+DL-305..DL-309.
 
-- **OQ-1 — Reviewer as a second App definition vs. two installs of one App.**
-  An App is a bot identity; author≠reviewer needs two identities (DL-201/F1 —
-  GitHub 422s APPROVE/REQUEST_CHANGES from the PR's own author,
-  `compass-forge-write-path/design.md:277-278`). Two separate App
-  *definitions* (each its own `AppID`+key) gives a genuinely distinct reviewer
-  login; a single App with two installations does NOT (same bot login), so it
-  cannot satisfy F1. **Recommend: two App definitions.** Confirm — and confirm
-  whether the reviewer App also serves any read lane or is write-only (the
-  record assumes write-only, no webhook).
-- **OQ-2 — Config shape for the write Apps.** Today writes gate on two PAT
-  secret NAMEs (`serve.go:245-248`); the read lanes gate on one
-  `ForgeAppConfig{AppID, InstallationID, AppPrivateKeySecret,
-  AppWebhookSecretName}` (`serve.go:168-181`). Options: (a) a second
-  `ForgeConfig.ReviewerApp ForgeAppConfig` block, the existing `App` block
-  extended to serve author writes; (b) a per-role App-config map.
-  **Recommend (a)** — explicit author-App + reviewer-App blocks mirroring the
-  existing single-App shape; exact additions: `ForgeConfig.ReviewerApp
-  ForgeAppConfig`, flags `--forge-reviewer-app-id` /
+- **DEC-1 (was OQ-1): the reviewer identity is a second App DEFINITION,
+  write-only** — Matt, 2026-08-31. Two separate App definitions (each its own
+  `AppID`+key) because installs of one App share the App's single bot login
+  and cannot satisfy F1 (GitHub 422s APPROVE/REQUEST_CHANGES from the PR's
+  own author, `compass-forge-write-path/design.md:277-278`). The reviewer App
+  serves ONLY the `submit_review` arm — no read lane, no webhook.
+- **DEC-2 (was OQ-2): the write-App config is a second
+  `ForgeConfig.ReviewerApp ForgeAppConfig` block** mirroring the existing
+  `App` shape (`serve.go:138-142`) — Matt, 2026-08-31. Exact additions:
+  `ForgeConfig.ReviewerApp ForgeAppConfig`, flags `--forge-reviewer-app-id` /
   `--forge-reviewer-app-installation-id`, declared-secret name
-  `FORGE_REVIEWER_APP_PRIVATE_KEY` (T3). Tradeoff: (b) is more general but
-  nothing needs a third role and it would sit beside the existing named-field
-  convention as a second shape.
-- **OQ-3 — Do the unified read App and the author write App collapse to ONE
-  App (2 total) or stay separate (3 total)?** The load-bearing structural
-  fork — and it is a RATE-ISOLATION fork, not only a blast-radius one.
-  Moving author writes onto the read App means background board-reconcile
-  sweeps + notify reads and interactive agent writes share ONE client-side
-  fail-fast gate (`resetAt`, `github.go:83-92`; every write POST checks
-  `gateBlocked`, `github.go:837-854`, in `doJSON`, `github.go:862-866`) AND
-  one server-side installation budget, where today the author PAT is its own
-  5,000/hr pool: a reconcile sweep that drives remaining under `reserve`
-  (= 10, `github.go:99-102`) arms the gate and every interactive write fails
-  fast with `ErrBudgetExhausted` until the window resets — background reads
-  throttling user-facing writes — and two server-side budget pools become
-  one. Sub-options:
-  - **(a) 3 Apps** — read / author-write / reviewer: write QoS insulated
-    from read bursts, at the cost of a third identity/key/installation to
-    rotate.
-  - **(b) 2 Apps + a priority/partitioned client gate** — writes bypass a
-    read-armed gate down to a lower reserve; keeps two identities but
-    reintroduces gate complexity into `forge.GitHub`.
-  - **(c) 2 Apps, accept the coupling with the arithmetic shown** — measured
-    read volume (board poll + notify + 30-min reconcile backstop cadence) vs
-    the 5,000/hr installation budget on the current repo set, the bound
-    stated in the freeze note.
-  **Recommend (c), i.e. 2 Apps total** — fewest identities satisfying F1;
-  reads already share the primary App (`serve.go:1048-1057`, `1333-1342`) —
-  but rule SEEING the write-throttling coupling, not just blast radius.
-  Sub-point (from T3): 2 Apps also deletes the currently-expressible
-  writes-without-webhooks deployment shape — enabling writes force-enables
-  board ingestion, amending the 2026-08-19 independent-gates ruling
-  (`serve.go:150-151`). The record recommends accepting that with a ledger
-  note; say if you want the gates kept separate instead (App +
-  webhook-secret ⇒ ingestion, App alone ⇒ writes).
-- **OQ-4 — PAT-drop scope + timeline.** Reads are already PAT-free. Dropping
-  the write PATs is a hard cutover: remove the write `newForgeTokenSource`
-  usage, the `GITHUB_FORGE_TOKEN`/`GITHUB_FORGE_REVIEWER_TOKEN` names
-  (`serve.go:186-190`), the flags. Clean cutover vs. deprecation window.
-  **Recommend: clean cutover for production** (AGENTS.md default; the RIG-2883
-  read cutover set the precedent), no PAT fallback — live-test carve-out per
-  OQ-5. Confirm Linear: dropping `LINEAR_FORGE_TOKEN` as a *member PAT* means
-  the write path uses the DL-204 OAuth actor=app token — i.e. this is
-  FINISHING DL-204, not a new decision. The record treats it so.
-- **OQ-5 — Live-test credential model after the PAT drop.** Production goes
-  App-only, but the `livegithub` oracle uses author/reviewer PATs today
-  (`livegithub_test.go:63-64`). Options: (a) live tests mint real App
-  installation tokens against the testbed repo's App installs — highest
-  fidelity, validates the production mint path; (b) tests keep PATs as a
-  test-only carve-out. **Recommend (a) for GitHub** — the point of thread 4 is
-  that tests exercise the App path — **and explicitly (b) for Linear's
-  delegation setup**: keep ONE Linear USER credential
-  (`LINEAR_FORGE_USER_TOKEN`, new) used only to perform the human→app
-  delegation the app-actor cannot self-assign; the Linear write/notify legs
-  stay on the already-minted app token (`ci.yml:1001-1003`). Tradeoff of (a):
-  two more testbed App registrations + three env vars per identity instead of
-  one PAT.
-- **OQ-6 — Real-App webhook validation mechanism.** How do we prove a
-  delivery signed by the real GitHub App / real Linear app passes our verify
-  path, given a webhook delivery is a PUSH needing a public ingress the
-  oracle's CI runner does not have? The two providers have materially
-  different feasibility — the fork is really about the Linear half:
-  - **GitHub — specified, automatable:** capture is a PULL via the App
-    deliveries API (`GET /app/hook/deliveries` +
-    `GET /app/hook/deliveries/{id}` returns the delivered payload and
-    headers including `X-Hub-Signature-256`), so a `livegithub`-tier
-    `-update` run (the oracle's existing regeneration convention,
-    `livegithub_test.go:55-58`) fetches one real signed delivery and commits
-    it as the replay fixture with no ingress at all. **Recommend exactly
-    this.**
-  - **Linear — the real fork:** no deliveries-API equivalent exists in-tree;
-    capture is either (i) a human copying one delivery (raw body + signature
-    header) out of the Linear webhook UI into the fixture — honest, manual,
-    once — or (ii) a temporary tunnel (smee.io-style) receiving one live
-    delivery. **Recommend (i)**, named as a manual step in the T6 runbook.
-  Caveat either way: capture-replay proves the signature FORMAT against our
-  verify path (`VerifyGitHubSignature`,
-  `linearagent.VerifySignature`+`CheckTimestamp`), not live-ingress
-  reachability — that is proven exactly once, manually, at registration.
-  Recommend additionally a cheap ongoing liveness signal (a webhook-delivery
-  freshness metric/alert on the ingest lane) so post-registration breakage
-  is loud instead of masked by the 30-min reconcile backstop.
+  `FORGE_REVIEWER_APP_PRIVATE_KEY` (T3). A per-role App-config map was
+  rejected: nothing needs a third role and it would sit beside the existing
+  named-field convention as a second shape.
+- **DEC-3 (was OQ-3): 2 Apps total — the primary App does EVERYTHING except
+  reviews** — Matt, 2026-08-31: "2 apps. you just setup the two apps so
+  everything (reads/writes/board/webhooks etc) just works." Reads + author
+  writes + board + webhooks all ride the primary App; the 3-App
+  rate-isolation alternative and the priority-gate variant are rejected. The
+  read/write coupling is accepted with it: one client-side fail-fast gate
+  (`resetAt`, `github.go:83-92`) and one 5,000/hr installation budget for
+  background reads and interactive writes; the freeze note should state the
+  budget arithmetic (read volume vs the installation budget), as
+  documentation, not a fork. Matt also explicitly rejected keeping the
+  write/ingestion gates separate: enabling writes force-enables board
+  ingestion, amending the 2026-08-19 independent-gates ruling
+  (`serve.go:150-151`) — recorded in DL-305.
+- **DEC-4 (was OQ-4): clean cutover, no PAT fallback** — Matt, 2026-08-31.
+  The write `newForgeTokenSource` usage, the
+  `GITHUB_FORGE_TOKEN`/`GITHUB_FORGE_REVIEWER_TOKEN` names
+  (`serve.go:186-190`), and their flags are deleted with no deprecation
+  window. Linear: dropping `LINEAR_FORGE_TOKEN` as a member PAT moves the
+  write path onto the DL-204 OAuth actor=app token — finishing DL-204, not a
+  new decision.
+- **DEC-5 (was OQ-5): live tests mint real GitHub App installation tokens;
+  Linear keeps ONE user credential** — Matt, 2026-08-31. The `livegithub`
+  oracle's GitHub legs build real `forge.NewAppTokenSource` sources against
+  the testbed repo's App installs, validating the production mint path. The
+  one retained Linear USER credential (`LINEAR_FORGE_USER_TOKEN`, new) is
+  used only for the human→app delegation setup the app-actor cannot
+  self-assign; the Linear write/notify legs stay on the already-minted app
+  token (`ci.yml:1001-1003`).
+- **DEC-6 (was OQ-6): real-App webhook validation is a LIVE TUNNEL
+  ROUND-TRIP in the livegithub tier** — Matt, 2026-08-31. A smee.io-style
+  tunnel receiver gives the oracle a public ingress; the real GitHub App and
+  real Linear app deliver one real event each end to end through the mounted
+  handlers (`NewGitHubWebhookHandler`, `go/server/github_webhook.go:118`;
+  `NewLinearWebhookHandler`, `go/server/linear_webhook.go:82`), proving live
+  ingress + fail-closed signature verify together. Matt chose this
+  higher-fidelity option over capture-and-replay (deliveries-API pull /
+  manual Linear UI copy), accepting the live-ingress machinery the tunnel
+  adds to CI. The one-time webhook-registration and PEM-rotation runbook
+  stays (T6b).
 
 ---
 
-Ledger-impact: intended DL rows at freeze (the spawning agent lands them):
-one row per ruled OQ — the App topology (OQ-1/OQ-3 likely merge into one
-"two GitHub Apps: primary read+author-write, reviewer write-only" row), the
-write-App config shape (OQ-2), the PAT clean-cutover incl. Linear actor=app
-finish amending DL-204's implementation status (OQ-4), the live-test
-credential model incl. the one-Linear-user-cred carve-out (OQ-5), and the
-real-App webhook validation mechanism (OQ-6) — plus, if OQ-3's coupling
-sub-point is accepted, a note amending Matt's 2026-08-19 independent-gates
-ruling (`serve.go:150-151`): configuring writes now implies board ingestion
-(T3). Ledger: `docs/designs/DECISIONS.md` (the one ledger in-tree; no
-`docs/designs/product/DECISIONS.md` exists).
+Ledger-impact: LANDED rows DL-305..DL-309 in `docs/designs/DECISIONS.md`
+(the one ledger in-tree; no `docs/designs/product/DECISIONS.md` exists) —
+DL-305 two-App topology incl. the writes⇒board-ingestion amendment to the
+2026-08-19 independent-gates ruling (`serve.go:150-151`); DL-306 the
+`ReviewerApp` config shape; DL-307 the clean PAT cutover + the Linear
+actor=app finish of DL-204; DL-308 the live-test credential model incl. the
+one-Linear-user-cred carve-out; DL-309 the live-tunnel real-App webhook
+validation.
