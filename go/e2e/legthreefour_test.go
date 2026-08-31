@@ -382,7 +382,9 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// goroutines. Each injection is buffered in its own stream (tailBuffer=256),
 	// so reading the peer's STEER first and the spawner's DELIVER second cannot
 	// drop either. Each read returns on its positive match (or fails at its
-	// derived settleTimeout).
+	// derived settleTimeout). The two settleTimeouts are additive on the failure
+	// path — a wedged run reds at up to 2x settleTimeout — but go test's own
+	// timeout still bounds it, and the happy path returns in milliseconds.
 	peerOpKind, err := f.AwaitControlDispatchOn(ctx, peerStream, recordAndMatch(peerLog, "STEER", &splitMsgID))
 	if err != nil {
 		t.Fatalf("AwaitControlDispatchOn(peer, want STEER): %v", err)

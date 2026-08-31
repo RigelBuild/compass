@@ -262,8 +262,8 @@ dogfood-e2e record documents that seam as a primitive
   > `SubscribeAgentSession` RoundTrip blocked until the driving post produced a
   > frame — the open could not actually complete before the post it was meant to
   > precede, and a driven injection could fan to zero subscribers before `subscribe()`
-  > registered (the RIG-3044 e2e flake, `TestLegThreeFourSpawnAndMessaging` → 157s
-  > `settleTimeout`). The fix: `SubscribeAgentSession` now sends a leading
+  > registered (the RIG-3044 e2e flake, `TestLegThreeFourSpawnAndMessaging`, which
+  > wedged ~157s to the 2m `settleTimeout` red). The fix: `SubscribeAgentSession` now sends a leading
   > zero-payload **registration-ack** frame (the existing `AgentSessionFrame`,
   > `session_id` only, nil event, `AGENT_SESSION_STATE_UNSPECIFIED`) the instant
   > `subscribe()` registers the subscriber — mirroring `SubscribeEvents`'
