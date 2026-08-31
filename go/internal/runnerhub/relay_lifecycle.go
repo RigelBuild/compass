@@ -102,7 +102,14 @@ func (h *Hub) executeLifecycleCall(
 	account store.AccountID,
 	call *compassv1internal.LifecycleCallRequest,
 ) (*compassv1internal.LifecycleCallResult, error) {
-	switch c := call.GetCall().(type) {
+	oneof := call.GetCall()
+	if oneof == nil {
+		return nil, connect.NewError(
+			connect.CodeInvalidArgument,
+			errors.New("runnerhub: lifecycle call has no spawn/despawn variant set"),
+		)
+	}
+	switch c := oneof.(type) {
 	case *compassv1internal.LifecycleCallRequest_Spawn:
 		resp, err := caller.SpawnAsAccount(ctx, account, c.Spawn)
 		if err != nil {

@@ -364,7 +364,14 @@ func (h *Hub) commitFrame(
 	frame *compassv1internal.AgentFrame,
 	idempotencyKey string,
 ) error {
-	switch f := frame.GetFrame().(type) {
+	oneof := frame.GetFrame()
+	if oneof == nil {
+		return connect.NewError(
+			connect.CodeInvalidArgument,
+			errors.New("runnerhub: durable frame has no transcript_entry variant set"),
+		)
+	}
+	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_TranscriptEntry:
 		te := f.TranscriptEntry
 		if err := transcripts.AppendTranscriptEntry(
@@ -411,7 +418,14 @@ func (h *Hub) executeCall(
 	account store.AccountID,
 	call *compassv1internal.CommsCallRequest,
 ) (*compassv1internal.CommsCallResult, error) {
-	switch c := call.GetCall().(type) {
+	oneof := call.GetCall()
+	if oneof == nil {
+		return nil, connect.NewError(
+			connect.CodeInvalidArgument,
+			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status/pin/create_channel/update_members/create_channel_group/open_dm)"),
+		)
+	}
+	switch c := oneof.(type) {
 	case *compassv1internal.CommsCallRequest_Post:
 		resp, err := h.comms.PostAsAccountByName(ctx, account, c.Post)
 		if err != nil {
