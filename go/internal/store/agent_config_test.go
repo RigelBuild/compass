@@ -461,6 +461,10 @@ func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 		{"profiles unknown top-level key", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models: {}\nbogus: 1\n"}}},
 		{"profiles models.manager non-string", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  manager:\n    nested: 1\n"}}},
 		{"profiles models.agents value non-string", []tarEntry{{name: "agents/impl.md", content: "---\nname: impl\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    impl:\n      k: v\n"}}},
+		{"profiles models.agents non-string key (numeric)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    123: sel\n"}}},
+		{"profiles models.agents non-string key (bareword bool)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    on: sel\n"}}},
+		{"profiles models non-string sibling key bypasses manager", []tarEntry{{name: "profiles/x/profile.yml", content: "models:\n  manager: litellm/x\n  0: y\n"}}},
+		{"profiles settings credential key", []tarEntry{{name: "profiles/x/profile.yml", content: "settings:\n  auth:\n    broker:\n      token: sekret\n"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -617,6 +621,21 @@ func TestValidateConfigBundleProfileAgentKeyLint(t *testing.T) {
 		)
 		if _, err := validateAndHashConfigBundle(b); !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("want ErrInvalidArgument for a key matching no def, got %v", err)
+		}
+	})
+
+	// F2: a def whose SIBLING frontmatter field (description) is a YAML-ambiguous
+	// scalar (bare colon) must still have its name recovered so a profile keying
+	// that name is ACCEPTED — the door must be at least as permissive as the SDK
+	// loader. Reds before the agentDefFrontmatterName line-scan fallback (name
+	// parses to "" -> lint rejects), greens after.
+	t.Run("colon-bearing sibling field name recovered ACCEPTED", func(t *testing.T) {
+		b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+			tarEntry{name: "agents/impl.md", content: "---\nname: implementer\ndescription: A thing: with a colon\n---\nROLE\n"},
+			tarEntry{name: "profiles/x/profile.yml", content: "models:\n  agents:\n    implementer: sel\n"},
+		)
+		if _, err := validateAndHashConfigBundle(b); err != nil {
+			t.Fatalf("profile keying a name from a def with a colon-bearing sibling field rejected: %v", err)
 		}
 	})
 }

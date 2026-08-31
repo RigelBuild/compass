@@ -82,6 +82,12 @@ var configBundleTopDirs = map[string]bool{
 // secretNamePattern posture).
 var configNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// frontmatterNamePattern matches a `name:` line in an agents/*.md frontmatter
+// block for the tolerant line-scan fallback in agentDefFrontmatterName, used
+// when a strict whole-block YAML parse fails because a SIBLING field is a
+// YAML-ambiguous scalar. Anchored; the first match wins.
+var frontmatterNamePattern = regexp.MustCompile(`^name:\s*(.*)$`)
+
 const (
 	// maxDecompressedBytes caps the total DECOMPRESSED size of a config bundle,
 	// enforced DURING gunzip (cappedReader) so a gzip bomb — a few KiB that
@@ -726,7 +732,32 @@ func validateProfileMember(parts []string, joined string, r io.Reader) ([]byte, 
 	if err := validateProfileModelSelectors(mapping, joined); err != nil {
 		return nil, err
 	}
+	// The profile settings sub-mapping shares the settings/config.yml credential
+	// axis, so reuse the same denylist here (F3). The extensions/corpus axes'
+	// credential surfaces are deferred with their consumption task — not now.
+	if settingsRaw, present := mapping["settings"]; present && settingsRaw != nil {
+		if err := rejectNonStringKeys(settingsRaw, joined, "settings"); err != nil {
+			return nil, err
+		}
+		if settingsMap, ok := settingsRaw.(map[string]any); ok {
+			if err := rejectCredentialSettings(settingsMap, joined); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return content, nil
+}
+
+// rejectNonStringKeys rejects a YAML value that is a mapping with any non-string
+// key. yaml.v3 decodes such a mapping as map[any]any (not map[string]any), so a
+// v.(map[string]any) assertion on it fails OPEN, silently skipping every
+// key-level check below. A non-mapping value (scalar/list/absent) is not this
+// class and passes through for the caller's own shape handling.
+func rejectNonStringKeys(v any, joined, path string) error {
+	if _, ok := v.(map[any]any); ok {
+		return fmt.Errorf("%w: profile member %q %s must be a string-keyed mapping", ErrInvalidArgument, joined, path)
+	}
+	return nil
 }
 
 // validateProfileModelSelectors enforces the models.* selector SHAPE: a model
@@ -735,12 +766,22 @@ func validateProfileMember(parts []string, joined string, r io.Reader) ([]byte, 
 // value under models.agents, where present, must be a string. An absent or null
 // axis is fine (deferred/empty). Non-string selectors are rejected so a
 // mis-shaped profile fails closed at the door rather than silently at render.
+// A models (or models.agents) mapping with any non-string key is rejected up
+// front: yaml.v3 decodes it as map[any]any, so a naive map[string]any assertion
+// would fail OPEN and skip every selector check below.
 func validateProfileModelSelectors(mapping map[string]any, joined string) error {
-	models, ok := mapping["models"].(map[string]any)
+	modelsRaw, present := mapping["models"]
+	if !present || modelsRaw == nil {
+		return nil
+	}
+	if err := rejectNonStringKeys(modelsRaw, joined, "models"); err != nil {
+		return err
+	}
+	models, ok := modelsRaw.(map[string]any)
 	if !ok {
-		// Absent, null, or a non-mapping models axis: nothing selector-shaped to
-		// check here. A non-mapping models value is a deferred-shape concern, not
-		// a v1 door failure (v1 consumes models but tolerates an empty axis).
+		// A non-mapping models value (scalar/list) is a deferred-shape concern,
+		// not a v1 door failure (v1 consumes models but tolerates an empty axis).
+		// The map[any]any case was already rejected above.
 		return nil
 	}
 	if v, present := models["manager"]; present && v != nil {
@@ -748,7 +789,14 @@ func validateProfileModelSelectors(mapping map[string]any, joined string) error 
 			return fmt.Errorf("%w: profile member %q models.manager must be a string selector", ErrInvalidArgument, joined)
 		}
 	}
-	agents, ok := models["agents"].(map[string]any)
+	agentsRaw, present := models["agents"]
+	if !present || agentsRaw == nil {
+		return nil
+	}
+	if err := rejectNonStringKeys(agentsRaw, joined, "models.agents"); err != nil {
+		return err
+	}
+	agents, ok := agentsRaw.(map[string]any)
 	if !ok {
 		return nil
 	}
@@ -780,6 +828,11 @@ func lintProfileAgentKeys(profileBodies map[string][]byte, agentDefNames map[str
 			// here would be a logic error, but fail closed regardless.
 			return err
 		}
+		// The per-member validateProfileModelSelectors pass runs and aborts the
+		// bundle before this cross-member lint, and it already rejected any
+		// non-string-keyed models mapping (yaml.v3's map[any]any). So no such
+		// mapping reaches here: these map[string]any assertions cannot fail-open
+		// on that class, and a miss below is a genuine non-mapping value.
 		models, ok := mapping["models"].(map[string]any)
 		if !ok {
 			continue
@@ -798,11 +851,14 @@ func lintProfileAgentKeys(profileBodies map[string][]byte, agentDefNames map[str
 }
 
 // agentDefFrontmatterName parses an agents/*.md def's leading YAML frontmatter
-// and returns its name: field, or "" if there is no frontmatter or no name. The
-// frontmatter is a `---`-delimited YAML block at the very top of the file (the
-// SDK's parseAgentFields contract); the lint keys on this parsed name, NOT the
-// filename stem, so a def whose frontmatter name diverges from its stem lints
-// correctly.
+// and returns its name: field, or "" if there is no frontmatter or no name. It
+// recovers the name even when a SIBLING frontmatter field is a YAML-ambiguous
+// scalar (e.g. `description: A thing: with a colon`) that would fail a strict
+// whole-block parse, matching the SDK loader's permissiveness: it first tries a
+// full YAML parse, then falls back to a tolerant `name:` line-scan (mirroring
+// the SDK's parseFrontmatter line-parser cascade for the name field). The lint
+// keys on this parsed name, NOT the filename stem, so a def whose frontmatter
+// name diverges from its stem lints correctly.
 func agentDefFrontmatterName(content []byte) string {
 	fm, ok := extractFrontmatter(content)
 	if !ok {
@@ -811,10 +867,25 @@ func agentDefFrontmatterName(content []byte) string {
 	var doc struct {
 		Name string `yaml:"name"`
 	}
-	if err := yaml.Unmarshal(fm, &doc); err != nil {
-		return ""
+	if err := yaml.Unmarshal(fm, &doc); err == nil && doc.Name != "" {
+		return doc.Name
 	}
-	return doc.Name
+	// Whole-block parse failed or yielded no name: a sibling field may be a
+	// YAML-ambiguous scalar. Fall back to a tolerant line-scan for the name
+	// field alone, mirroring the SDK's parseFrontmatter line-parser fallback.
+	for line := range strings.SplitSeq(string(fm), "\n") {
+		m := frontmatterNamePattern.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		raw := strings.TrimSpace(m[1])
+		var scalar string
+		if err := yaml.Unmarshal([]byte(raw), &scalar); err == nil && scalar != "" {
+			return scalar
+		}
+		return raw
+	}
+	return ""
 }
 
 // extractFrontmatter returns the YAML frontmatter block bytes between a leading
