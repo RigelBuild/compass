@@ -39,6 +39,7 @@ const (
 	topDirSettings   = "settings"
 	topDirRules      = "rules"
 	topDirAgents     = "agents"
+	topDirPrompts    = "prompts"
 )
 
 // Top-level regular-file members admitted by exact filename (not under a top
@@ -50,6 +51,9 @@ const (
 	// settingsMember is the ONLY file admitted under settings/ — yml-only per
 	// OQ-1 (no .yaml/.json variant, no other name).
 	settingsMember = "settings/config.yml"
+	// memberSystemMD is the ONLY filename admitted under prompts/<role>/ — the
+	// role prompt is exactly prompts/<role>/SYSTEM.md (RIG-3075 T2).
+	memberSystemMD = "SYSTEM.md"
 )
 
 // configBundleTopDirs is the whitelist as a set, for the O(1) membership check in
@@ -61,6 +65,7 @@ var configBundleTopDirs = map[string]bool{
 	topDirSettings:   true,
 	topDirRules:      true,
 	topDirAgents:     true,
+	topDirPrompts:    true,
 }
 
 // configNamePattern is the grammar for a config entry's <name> segment —
@@ -227,6 +232,7 @@ type AgentConfigInfoResult struct {
 	McpServers  []string
 	Rules       []string
 	Subagents   []string
+	Prompts     []string
 	HasSettings bool
 	HasAgentsMD bool
 	HasModels   bool
@@ -254,6 +260,7 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	mcpSet := make(map[string]bool)
 	ruleSet := make(map[string]bool)
 	agentSet := make(map[string]bool)
+	promptSet := make(map[string]bool)
 	var info AgentConfigInfoResult
 
 	tr := tar.NewReader(&cappedReader{r: gz})
@@ -299,6 +306,12 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 			ruleSet[trimAnySuffix(parts[1], ".md", ".mdc")] = true
 		case topDirAgents:
 			agentSet[strings.TrimSuffix(parts[1], ".md")] = true
+		case topDirPrompts:
+			// A role prompt is exactly prompts/<role>/SYSTEM.md; count the
+			// <role> name, matching the door grammar (validateRegularMember).
+			if len(parts) == 3 && parts[2] == memberSystemMD {
+				promptSet[parts[1]] = true
+			}
 		}
 	}
 	info.Skills = sortedKeys(skillSet)
@@ -306,6 +319,7 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	info.McpServers = sortedKeys(mcpSet)
 	info.Rules = sortedKeys(ruleSet)
 	info.Subagents = sortedKeys(agentSet)
+	info.Prompts = sortedKeys(promptSet)
 	return info, nil
 }
 
@@ -490,7 +504,7 @@ func configMemberParts(name string) ([]string, error) {
 		return parts, nil
 	}
 	if !configBundleTopDirs[parts[0]] {
-		return nil, fmt.Errorf("%w: bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, or agents/ and is not a top-level %s or %s", ErrInvalidArgument, name, memberAgentsMD, memberModels)
+		return nil, fmt.Errorf("%w: bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/ and is not a top-level %s or %s", ErrInvalidArgument, name, memberAgentsMD, memberModels)
 	}
 	return parts, nil
 }
@@ -504,6 +518,8 @@ func configMemberParts(name string) ([]string, error) {
 //     parses as a YAML mapping and sets no credential-denylisted key.
 //   - rules/<name>.md|.mdc — flat, grammar-valid <name>; prose, no content check.
 //   - agents/<name>.md — flat, grammar-valid <name>; prose, no content check.
+//   - prompts/<role>/SYSTEM.md — grammar-valid <role>, filename exactly
+//     SYSTEM.md; prose, no content check (RIG-3075 T2).
 //   - top-level AGENTS.md — prose, no content check beyond the read.
 //   - top-level models.yml — content parses as a YAML mapping and sets no
 //     credentialed provider surface (apiKey, or a headers.* literal secret).
@@ -531,6 +547,18 @@ func validateRegularMember(parts []string, r io.Reader) ([]byte, error) {
 		}
 		if err := validateFlatNamedMember("agents", parts[1], joined, ".md"); err != nil {
 			return nil, err
+		}
+		return io.ReadAll(r)
+	case topDirPrompts:
+		// Exactly prompts/<role>/SYSTEM.md: three components, grammar-valid
+		// <role>, filename exactly SYSTEM.md. Stricter than skills/extensions
+		// (which admit arbitrary depth under <name>), so it needs its own case
+		// rather than the fall-through below.
+		if len(parts) != 3 || parts[2] != memberSystemMD {
+			return nil, fmt.Errorf("%w: prompts member %q must be prompts/<role>/%s", ErrInvalidArgument, joined, memberSystemMD)
+		}
+		if !configNamePattern.MatchString(parts[1]) {
+			return nil, fmt.Errorf("%w: prompts role name %q must match %s", ErrInvalidArgument, parts[1], configNamePattern.String())
 		}
 		return io.ReadAll(r)
 	}

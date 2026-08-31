@@ -3742,7 +3742,11 @@ type GetAgentConfigInfoResponse struct {
 	// Names of the bundle's subagent definitions (agents/<name>.md), names only.
 	Subagents []string `protobuf:"bytes,8,rep,name=subagents,proto3" json:"subagents,omitempty"`
 	// Whether the bundle carries a fleet models.yml.
-	HasModels     bool `protobuf:"varint,9,opt,name=has_models,json=hasModels,proto3" json:"has_models,omitempty"`
+	HasModels bool `protobuf:"varint,9,opt,name=has_models,json=hasModels,proto3" json:"has_models,omitempty"`
+	// The declared role-prompt names (the <role> in prompts/<role>/SYSTEM.md),
+	// names only. Lets the operator verify a shipped role prompt before the seed
+	// flips the root to that role (RIG-3075 T2).
+	Prompts       []string `protobuf:"bytes,10,rep,name=prompts,proto3" json:"prompts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3838,6 +3842,13 @@ func (x *GetAgentConfigInfoResponse) GetHasModels() bool {
 		return x.HasModels
 	}
 	return false
+}
+
+func (x *GetAgentConfigInfoResponse) GetPrompts() []string {
+	if x != nil {
+		return x.Prompts
+	}
+	return nil
 }
 
 type DeleteAgentConfigRequest struct {
@@ -5031,7 +5042,7 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x06bundle\x18\x01 \x01(\fR\x06bundle\"2\n" +
 	"\x16PutAgentConfigResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\"\x1b\n" +
-	"\x19GetAgentConfigInfoRequest\"\xa9\x02\n" +
+	"\x19GetAgentConfigInfoRequest\"\xc3\x02\n" +
 	"\x1aGetAgentConfigInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06skills\x18\x02 \x03(\tR\x06skills\x12\x1e\n" +
@@ -5045,7 +5056,9 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x05rules\x18\a \x03(\tR\x05rules\x12\x1c\n" +
 	"\tsubagents\x18\b \x03(\tR\tsubagents\x12\x1d\n" +
 	"\n" +
-	"has_models\x18\t \x01(\bR\thasModels\"\x1a\n" +
+	"has_models\x18\t \x01(\bR\thasModels\x12\x18\n" +
+	"\aprompts\x18\n" +
+	" \x03(\tR\aprompts\"\x1a\n" +
 	"\x18DeleteAgentConfigRequest\"\x1b\n" +
 	"\x19DeleteAgentConfigResponse\"5\n" +
 	"\x10AgentAttribution\x12!\n" +

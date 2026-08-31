@@ -143,6 +143,7 @@ func renderConfigInfo(out io.Writer, msg *compassv1.GetAgentConfigInfoResponse) 
 		{"mcp", msg.GetMcpServers()},
 		{"rules", msg.GetRules()},
 		{"subagents", msg.GetSubagents()},
+		{"prompts", msg.GetPrompts()},
 	}
 	for _, b := range buckets {
 		if _, err := fmt.Fprintf(out, "%s (%d):\n", b.label, len(b.names)); err != nil {

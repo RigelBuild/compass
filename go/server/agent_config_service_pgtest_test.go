@@ -238,10 +238,12 @@ func TestGetAgentConfigInfoUnconfiguredIsEmpty(t *testing.T) {
 func TestGetAgentConfigInfoReturnsBucketedNames(t *testing.T) {
 	f := newConfigFixture(t)
 	bundle := mkConfigBundle(t, map[string]string{
-		"skills/review/SKILL.md":   "# review",
-		"skills/triage/SKILL.md":   "# triage",
-		"extensions/cotal/main.js": "x",
-		"mcp/linear.json":          `{"a":1}`,
+		"skills/review/SKILL.md":       "# review",
+		"skills/triage/SKILL.md":       "# triage",
+		"extensions/cotal/main.js":     "x",
+		"mcp/linear.json":              `{"a":1}`,
+		"prompts/supervisor/SYSTEM.md": "# supervisor",
+		"prompts/owner/SYSTEM.md":      "# owner",
 	})
 	put, err := f.client.PutAgentConfig(context.Background(),
 		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle}))
@@ -265,6 +267,9 @@ func TestGetAgentConfigInfoReturnsBucketedNames(t *testing.T) {
 	}
 	if got := join(resp.Msg.GetMcpServers()); got != "linear" {
 		t.Errorf("mcp_servers = %q, want linear", got)
+	}
+	if got := join(resp.Msg.GetPrompts()); got != "owner,supervisor" {
+		t.Errorf("prompts = %q, want owner,supervisor", got)
 	}
 }
 

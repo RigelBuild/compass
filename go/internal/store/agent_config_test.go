@@ -370,7 +370,7 @@ func TestConfigBundleMemberNamesEmpty(t *testing.T) {
 		t.Fatalf("configBundleMemberNames(empty): %v", err)
 	}
 	if len(info.Skills) != 0 || len(info.Extensions) != 0 || len(info.McpServers) != 0 ||
-		len(info.Rules) != 0 || len(info.Subagents) != 0 {
+		len(info.Rules) != 0 || len(info.Subagents) != 0 || len(info.Prompts) != 0 {
 		t.Fatalf("empty bundle names = %+v, want all empty", info)
 	}
 	if info.HasSettings || info.HasAgentsMD || info.HasModels {
@@ -408,6 +408,7 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 		{"rules .md", []tarEntry{{name: "rules/a.md", content: "# rule a"}}},
 		{"rules .mdc", []tarEntry{{name: "rules/b.mdc", content: "# rule b"}}},
 		{"agents .md", []tarEntry{{name: "agents/design.md", content: "# design agent"}}},
+		{"prompts/<role>/SYSTEM.md", []tarEntry{{name: "prompts/supervisor/SYSTEM.md", content: "# supervisor"}}},
 		{"top-level AGENTS.md", []tarEntry{{name: "AGENTS.md", content: "# fleet conventions"}}},
 		{"top-level models.yml mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: https://y\n"}}},
 		{"models.yml headers env reference", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Org: MY_ORG_ENV\n"}}},
@@ -443,6 +444,10 @@ func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 		{"agents nested", []tarEntry{{name: "agents/sub/a.md", content: "x"}}},
 		{"top-level other file", []tarEntry{{name: "README.md", content: "x"}}},
 		{"models non-mapping", []tarEntry{{name: "models.yml", content: "- a\n"}}},
+		{"prompts wrong filename", []tarEntry{{name: "prompts/supervisor/other.md", content: "x"}}},
+		{"prompts nested too deep", []tarEntry{{name: "prompts/supervisor/sub/SYSTEM.md", content: "x"}}},
+		{"prompts flat too shallow", []tarEntry{{name: "prompts/SYSTEM.md", content: "x"}}},
+		{"prompts bad role name", []tarEntry{{name: "prompts/bad name/SYSTEM.md", content: "x"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -531,6 +536,8 @@ func TestConfigBundleMemberNamesNewMembers(t *testing.T) {
 		tarEntry{name: "rules/hold-lane.mdc", content: "x"},
 		tarEntry{name: "agents/design.md", content: "x"},
 		tarEntry{name: "agents/review.md", content: "x"},
+		tarEntry{name: "prompts/supervisor/SYSTEM.md", content: "# sup"},
+		tarEntry{name: "prompts/owner/SYSTEM.md", content: "# own"},
 	)
 	info, err := configBundleMemberNames(b)
 	if err != nil {
@@ -544,5 +551,8 @@ func TestConfigBundleMemberNamesNewMembers(t *testing.T) {
 	}
 	if got, want := strings.Join(info.Subagents, ","), "design,review"; got != want {
 		t.Errorf("subagents = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(info.Prompts, ","), "owner,supervisor"; got != want {
+		t.Errorf("prompts = %q, want %q", got, want)
 	}
 }

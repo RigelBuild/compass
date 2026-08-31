@@ -65,6 +65,7 @@ const (
 	topDirSettings   = "settings"
 	topDirRules      = "rules"
 	topDirAgents     = "agents"
+	topDirPrompts    = "prompts"
 )
 
 // configTopDirs are the only permitted top-level directories in a config bundle.
@@ -75,6 +76,7 @@ var configTopDirs = map[string]struct{}{
 	topDirSettings:   {},
 	topDirRules:      {},
 	topDirAgents:     {},
+	topDirPrompts:    {},
 }
 
 // Top-level regular-file members admitted by exact filename (RIG-1678 T2), and
@@ -85,6 +87,9 @@ const (
 	memberAgentsMD = "AGENTS.md"
 	memberModels   = "models.yml"
 	settingsMember = "settings/config.yml"
+	// memberSystemMD is the only filename admitted under prompts/<role>/
+	// (RIG-3075 T2); structural twin of the store door.
+	memberSystemMD = "SYSTEM.md"
 )
 
 // configFetcher is the T3 fetch seam the materializer pulls through. *ServerLink
@@ -481,7 +486,7 @@ func validateMemberPath(name string, typeflag byte) (string, error) {
 		return validateTopLevelMember(name, clean, top, typeflag)
 	}
 	if _, ok := configTopDirs[top]; !ok {
-		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, or agents/", name)
+		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/", name)
 	}
 	return validateNestedMember(name, clean, top, parts, typeflag)
 }
@@ -536,6 +541,17 @@ func validateNestedMember(name, clean, top string, parts []string, typeflag byte
 			}
 			if !configTopLevelName.MatchString(base) {
 				return "", fmt.Errorf("config bundle mcp member name %q is not a safe name", entry)
+			}
+			return clean, nil
+		case topDirPrompts:
+			// Exactly prompts/<role>/SYSTEM.md — three components, safe <role>,
+			// filename exactly SYSTEM.md (RIG-3075 T2). Stricter than
+			// skills/extensions, so it needs its own arm, not the fall-through.
+			if len(parts) != 3 || parts[2] != memberSystemMD {
+				return "", fmt.Errorf("config bundle prompts member %q must be prompts/<role>/%s", name, memberSystemMD)
+			}
+			if !configTopLevelName.MatchString(parts[1]) {
+				return "", fmt.Errorf("config bundle prompts role name %q is not a safe name", parts[1])
 			}
 			return clean, nil
 		}
