@@ -16,12 +16,12 @@ Compass is a long-lived **server** plus a thin desktop **shell** and a **web
 UI**, all speaking one typed contract:
 
 ```text
-┌─────────────────────────────────────────────┐
+┌──────────────────────────────────────────────┐
 │ Desktop shell (Wails v3) + web UI (SolidJS)  │
 │   renders the board and agent panes          │
-└───────────────────────┬─────────────────────┘
+└───────────────────────┬──────────────────────┘
                         │ compass.v1 (Connect / gRPC-Web)
-┌───────────────────────▼─────────────────────┐
+┌───────────────────────▼──────────────────────┐
 │ compass-server (Go)                          │
 │   owns agent processes, PTYs, VCS, security  │
 │   serves compass.v1 over a local transport   │
