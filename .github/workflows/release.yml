@@ -446,6 +446,22 @@ jobs:
             go -C go build -trimpath -ldflags "$ldflags" \
             -o "../compass_${tag}_darwin-arm64" ./cmd/compass
 
+      - name: Build and stage the Linux client bundle
+        # The thin client app tarball (gtk4 shell + UI dist + desktop + LICENSE)
+        # joins the semver Release asset set (RIG-2752 / compass-distribution T1).
+        # COMPASS_BUNDLE_VERSION pins the clean semver so the app binary carries
+        # the same one version as the daemons (Global Constraint 1); moon's
+        # compass-app-bundle:build deps-edge builds the UI dist first. Rename the
+        # produced tarball to the Release asset grammar and stage it at repo root
+        # beside the binaries the SHA256SUMS / upload steps consume.
+        env:
+          COMPASS_BUNDLE_VERSION: ${{ env.VERSION }}
+        run: |
+          set -euo pipefail
+          moon run compass-app-bundle:build
+          mv "app-bundle/compass-app-${COMPASS_BUNDLE_VERSION}-linux-amd64.tar.gz" \
+             "compass-app_${TAG}_linux-amd64.tar.gz"
+
       - name: Generate SHA256SUMS over the built assets
         run: |
           set -euo pipefail
@@ -454,6 +470,7 @@ jobs:
             "compass-server_${TAG}_linux-amd64" \
             "compass-runner_${TAG}_linux-amd64" \
             "compass_${TAG}_darwin-arm64" \
+            "compass-app_${TAG}_linux-amd64.tar.gz" \
             > SHA256SUMS
 
       - name: Generate the release body + nix-outputs manifest
@@ -472,6 +489,7 @@ jobs:
             --asset "compass-server_${TAG}_linux-amd64" \
             --asset "compass-runner_${TAG}_linux-amd64" \
             --asset "compass_${TAG}_darwin-arm64" \
+            --asset "compass-app_${TAG}_linux-amd64.tar.gz" \
             --asset "SHA256SUMS" \
             --body-out RELEASE_BODY.md \
             --manifest-out nix-outputs.json
@@ -492,6 +510,7 @@ jobs:
             "compass-server_${TAG}_linux-amd64"
             "compass-runner_${TAG}_linux-amd64"
             "compass_${TAG}_darwin-arm64"
+            "compass-app_${TAG}_linux-amd64.tar.gz"
             SHA256SUMS
             # nix-outputs.json (below) is the generator's machine-readable
             # manifest — regenerable output attached for consumers, deliberately
