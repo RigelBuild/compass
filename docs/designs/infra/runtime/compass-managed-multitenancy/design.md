@@ -274,32 +274,29 @@ agent), and commands for it route to that Runner's subject. Affinity is a
 *routing lookup*, not a *connection ownership*; failover changes a row and a
 subject, never a stream topology.
 
-### Q3 — the eventing substrate: one NATS `EventFabric`, embedded or clustered; JetStream as the delivery transport
+### Q3 — the eventing substrate: one NATS `EventFabric`, a standalone stack service; JetStream as the delivery transport
 
-**One implementation.** There is exactly one eventing substrate: NATS, behind
-one `EventFabric`. The NATS server is a Go **library**
-(`github.com/nats-io/nats-server/v2/server`), not only an external daemon, so
-the single-binary / dev / OSS-default case does not need a bespoke in-process
-fabric — it embeds the real NATS server in-process:
+**One implementation, one deployment shape.** There is exactly one eventing
+substrate: NATS, behind one `EventFabric`, and it runs the same way in every
+deployment — as its own service in the stack, alongside Postgres and the OTel
+collector (`go/internal/stack/postgres_container.go`,
+`go/internal/stack/collector_container.go`), reached over `nats://`. There is
+no embedded/in-process mode and no phased transport: the application always
+connects to an external NATS, so there is one client, one code path, and one
+set of semantics to test. Scaling NATS from a single node to a replicated
+cluster is an ops concern (a connection string plus a NATS-cluster deployment,
+exactly as single vs HA Postgres is), never an application mode and never a
+code change.
 
-```go
-opts := &server.Options{DontListen: true, JetStream: true}
-ns, _ := server.NewServer(opts)
-go ns.Start()
-ns.ReadyForConnections(10 * time.Second)
-nc, _ := nats.Connect(ns.ClientURL(), nats.InProcessServer(ns))
-```
-
-`DontListen: true` plus `nats.InProcessServer(ns)` yields a fully in-process
-NATS — zero network sockets, zero sidecar process, zero extra dependency to
-distribute, compiled into the Server binary — **including in-process
-JetStream**. The multi-instance / HA case connects the same client to a
-clustered external NATS. **Application code is identical across both modes**:
-same client, same subjects, same queue groups; the only difference is one
-configuration value (embed vs connect-to-cluster). One implementation, one
-code path, one set of semantics to test — and the embedded mode is the
-"runs with no external services" OSS default, backed by real NATS instead of
-a bespoke channel fabric.
+Running NATS as a stack service — not embedded in the Server binary — is the
+simpler invariant. The Runner is always an external process, so the fabric
+must be reachable over a socket the moment there is more than one participant;
+a socketless in-process NATS could serve only the Server's own goroutines and
+would force the Runner edge onto a second transport until some "clustered"
+phase. Standing NATS up like Postgres removes that split entirely — every
+participant (Server, Runner) connects to the same NATS from day one — and the
+"one binary, zero companion services" story was already retired the moment
+Postgres and the collector became stack containers.
 
 **What NATS is for here — and what it is not.** NATS is the eventing
 substrate UNDER the async layer. It does not replace Connect at the
@@ -307,7 +304,7 @@ synchronous RPC edges: Client↔Server RPC stays Connect/gRPC, and the
 Server↔Runner typed request/reply legs (enrollment, the unary `Relay*Call`s /
 `CommitConversationFrame` / `FetchSecrets`, and the bulk `FetchAgentConfig`
 pull) stay on the reduced Connect/gRPC edge too — only the async
-command/event traffic rides NATS (the two-plane split, DL-309). It does not
+command/event traffic rides NATS (the two-plane split, DL-316). It does not
 touch the agent↔Runner vsock hop (RIG-2394), and it never becomes a second
 store — Postgres remains the durability source of truth, preserving the
 DL-019/DL-020 spirit ("the ring is never a second store; losing it loses no
@@ -349,22 +346,22 @@ committed state",
   edge is two-plane: the async command-push and Runner event fan-in ride NATS
   (per-Runner command subjects + queue-group event fan-in — `Sessions` and
   `PublishEvents` reshaped to pub/sub, which is what satisfies the Q2
-  non-sticky-wake fabric, landing with clustered NATS at Phase 1), while the
-  typed request/reply legs (enrollment, the unary `RelayCommsCall` /
-  `CommitConversationFrame` / `FetchSecrets`, and the bulk `FetchAgentConfig`
-  pull) stay on the reduced Connect/gRPC edge — they are NOT reshaped onto
-  core-NATS request/reply, which would drop deadline propagation, typed proto
-  errors, and generated stubs. At Phase 0 the entire edge stays on today's
-  Connect transport (the embedded single-binary server takes no network
-  sockets, `DontListen`); `RunnerFabric`'s Phase-0 implementation wraps the
-  existing command router.
+  non-sticky-wake fabric), while the typed request/reply legs (enrollment, the
+  unary `RelayCommsCall` / `CommitConversationFrame` / `FetchSecrets`, and the
+  bulk `FetchAgentConfig` pull) stay on the reduced Connect/gRPC edge — they
+  are NOT reshaped onto core-NATS request/reply, which would drop deadline
+  propagation, typed proto errors, and generated stubs. The Runner connects to
+  NATS from day one (the fabric is a stack service, not embedded), so the async
+  plane is subject-addressable across any number of Servers with no transport
+  phase; a single-Server deployment is just the degenerate one-publisher case
+  of the same fabric.
 
 **JetStream configuration is part of the design, not an ops detail.** The
 defaults trade durability for throughput and can lose acknowledged writes
 under power failure (the December 2025 Jepsen analysis of NATS documented
 ~14% acknowledged-write loss under default settings). The delivery stream
 runs with: `sync_interval: 100ms` (bounded fsync window), file storage with
-R3 replication in the clustered mode (the embedded single-node mode is R1 by
+R3 replication when NATS runs clustered (a single-node NATS is R1 by
 construction — Postgres is the recovery truth either way), explicit
 per-message acks, and `max_deliver` with a dead-letter subject so a
 poison message parks instead of redelivering forever.
@@ -377,14 +374,14 @@ audit/search substrate rationale behind DL-021,
 that survives this record intact: JetStream carries delivery, Postgres keeps
 the message).
 
-**Recommendation.** Adopt NATS as the **single eventing substrate**: embedded
-in-process (with in-process JetStream) for the single-binary/OSS default,
-clustered for multi-instance; JetStream as the durable comms-delivery
-transport; core NATS pub/sub for routing/binding invalidation; queue groups
-for delivery workers; per-Runner subjects for the Q2 topology. Postgres
-remains the sole durability source of truth. Adoption is staged (see Staged
-adoption path) so a single-instance deployment — including the OSS core —
-never operates an external broker.
+**Recommendation.** Adopt NATS as the **single eventing substrate**, run as a
+standalone stack service (alongside Postgres and the OTel collector) in every
+deployment: JetStream as the durable comms-delivery transport; core NATS
+pub/sub for routing/binding invalidation; queue groups for delivery workers;
+per-Runner subjects for the Q2 topology. Postgres remains the sole durability
+source of truth. A single-node NATS serves the small/self-hosted case and a
+replicated cluster serves the HA case — the difference is NATS deployment plus
+a connection string, never application code.
 
 ## Scope boundary with RIG-2485
 
@@ -398,7 +395,7 @@ scheduling, telemetry fan-in") overlaps this record; the lane decision is to
 - the Server↔Runner **connection topology** — who drives whom,
   message-bus-vs-N²-gRPC (Q2);
 - the NATS/eventing substrate — placement, subject/contract shapes, and the
-  staged adoption path (Q3).
+  NATS deployment shape (Q3).
 
 **RIG-2485 owns box lifecycle mechanics:** provisioning/deprovisioning KVM
 hosts, bin-packing, drain/cordon, dead-box reaping, and the durable-volume
@@ -499,24 +496,24 @@ connections.
 
 ### Two `EventFabric` implementations — in-process channels beside NATS (Q3)
 
-An earlier draft of this record kept the in-process `events.Bus` ring
-(`go/events/events.go:1-13`) as a first `EventFabric` implementation for the
-single-binary case, with NATS as a second implementation swapped in at
-multi-instance scale. Rejected: the NATS server embeds in-process
-(`server.Options{DontListen: true}` + `nats.InProcessServer`), which gives
-the zero-external-dependency property with **one** implementation — so a
-second bespoke channel fabric is pure cost: two code paths to test, two
-semantics to keep aligned, and an implementation swap at exactly the moment
-a deployment is under scaling pressure. One implementation, one config value.
+An earlier draft kept the in-process `events.Bus` ring
+(`go/events/events.go:1-13`) as a first `EventFabric` implementation for a
+single-binary case, with NATS swapped in at multi-instance scale. Rejected:
+there is no single-binary special case — NATS runs as a stack service in every
+deployment (alongside Postgres and the collector), so a second bespoke channel
+fabric is pure cost: two code paths to test, two semantics to keep aligned, and
+an implementation swap at exactly the moment a deployment is under scaling
+pressure. One implementation, one transport, every deployment.
 
 ### Postgres LISTEN/NOTIFY as the fabric (Q3)
 
 Rejected: payloads are capped at 8KB, notifications are dropped for
 disconnected listeners, there are no queue groups or subject hierarchies, and
 every notification is a round-trip on the same cluster the tenancy model
-already asks to carry all durable truth. Embedded NATS removes its one
-argument — zero new infrastructure — because in-process NATS is also zero
-new infrastructure, with real subjects and queue groups.
+already asks to carry all durable truth. NATS runs as a stack service anyway
+(alongside Postgres and the collector), so its subjects, queue groups, and
+JetStream durability cost one more stack container, not a new infrastructure
+class — while LISTEN/NOTIFY offers none of them.
 
 ### JetStream as the comms-delivery layer — reversal record (Q3)
 
@@ -527,8 +524,9 @@ that the Postgres delivery cursor advanced on recipient ack
 guarantee, and a JetStream consumer cursor beside it would be a second
 delivery-truth store (the DL-020 dual-store failure mode). That rejection is
 **reversed** — JetStream is now the comms-delivery transport (Q3) — because
-two things changed: embedded NATS makes JetStream a zero-external-dependency
-option even in the OSS single-binary default, and the roles are cleanly
+two things hold: NATS runs as a stack service in every deployment, so
+JetStream adds no new infrastructure class over the NATS already operated, and
+the roles are cleanly
 separable — JetStream is the delivery *transport* (durable at-least-once
 fan-out with bounded replay), while the Postgres message row + delivery
 cursor remain the *recovery truth* every reconciliation terminates in. The
@@ -580,50 +578,37 @@ regardless) → proxyless xDS — and the two-plane split keeps that pressure lo
 by construction: the RPC plane carries only bounded request/reply legs while
 the high-fan-out command/event traffic rides the bus.
 
-## Staged adoption path
+## Deployment shape
 
-Operational cost is paid when earned. NATS is the fabric in every phase; the
-phase boundary changes only where the NATS server runs. The OSS core ships
-Phase 0 as its permanent default.
+NATS runs as a standalone stack service in every deployment — a stack
+container alongside Postgres and the OTel collector
+(`go/internal/stack/postgres_container.go`,
+`go/internal/stack/collector_container.go`), reached over `nats://`. There is
+no embedded mode and no transport phase: every participant (Server, Runner)
+connects to the same external NATS from day one, so the same code, subjects,
+queue groups, and JetStream configuration run whether the deployment has one
+Server or many.
 
-### Phase 0 — single binary, embedded NATS (the OSS permanent default)
+Scaling is ops, not an application mode. A small/self-hosted deployment runs a
+single-node NATS (R1 storage — Postgres is the recovery truth) with a single
+Server; growing to HA adds Server replicas against the same NATS + Postgres and
+promotes NATS to a replicated cluster (R3 file storage). The application is
+identical across both — a connection string and a NATS-cluster deployment
+change, never a code change. Multi-Server operation is where the cross-Server
+command-ordering invariant (Global Constraints) becomes observable; with one
+Server it is the degenerate one-publisher case, but the code path is uniform,
+so T5's multi-instance suite proves it directly rather than after a transport
+swap.
 
-One Server binary embeds the NATS server in-process
-(`server.Options{DontListen: true, JetStream: true}` +
-`nats.Connect(ns.ClientURL(), nats.InProcessServer(ns))`): zero network
-sockets for the fabric, zero sidecar, zero external services — and
-in-process JetStream backing durable comms delivery. The Phase-0 work in
-this record is the tenancy schema (T1/T2), the `EventFabric` / `RunnerFabric`
-seams (T3) — `EventFabric` on the embedded-NATS implementation, `RunnerFabric`
-keeping the Runner on today's Connect transport (the Runner is external and
-the embedded server takes no network sockets, so the Runner↔Server hop stays
-Connect until clustered NATS lands at Phase 1, per OQ-5) — and durable
-session bindings (T4 — a Server restart resolves a pre-restart session, which
-fails today). Queue groups and JetStream-durable comms delivery are
-Server-internal and present in the code from Phase 0, exercised by the one
-instance; per-Runner NATS command subjects come online at Phase 1 with the
-clustered server.
+The signal to scale out — add a Server replica — is surfaced through the
+Server's OTel collector (the bundled OTLP fan-in endpoint,
+`go/internal/stack/collector_container.go:22-32`): delivery-consumer dispatch
+backlog depth (`go/internal/delivery/consumer.go:255`) and Server saturation
+metrics, emitted as gate-instrumentation work in T3.
 
-**Gate to Phase 1:** a second Server instance is actually needed — an HA
-requirement or a vertical-scaling ceiling — not before. The gate signal is
-surfaced through the Server's OTel collector (the bundled OTLP fan-in
-endpoint, `go/internal/stack/collector_container.go:22-32`): the delivery
-consumer's dispatch backlog depth (the consumer is one ctx-rooted `Run` loop
-today, `go/internal/delivery/consumer.go:255`) and Server saturation metrics,
-with the emitter added as gate-instrumentation work in T3.
-
-### Phase 1 — multi-instance / HA, clustered NATS
-
-Flip the NATS connection from embedded to a clustered external NATS — one
-configuration value; no code change, no implementation swap. Queue groups now
-balance delivery work across instances, per-Runner subjects route commands
-from any Server, JetStream delivery is cluster-replicated (R3 file storage),
-and binding invalidation fans out across instances — all semantics the code
-already carries from Phase 0, now backed by the cluster.
-
-Postgres remains the durability source of truth throughout; the fabric
-carries delivery and routing, and anything the fabric drops is recovered by
-the existing cursor sweeps (`go/internal/delivery/consumer.go:3-9`).
+Postgres remains the durability source of truth throughout; the fabric carries
+delivery and routing, and anything the fabric drops is recovered by the
+existing cursor sweeps (`go/internal/delivery/consumer.go:3-9`).
 
 ### JetStream telemetry/scheduling streams (gated, with RIG-2485)
 
@@ -648,9 +633,8 @@ holder of state the product cannot regenerate.
   two-tier transcript archive (DL-093, `docs/designs/DECISIONS.md:95`)
   remain their durability owners.
 - **One eventing path — NATS only.** No parallel in-process channel fabric;
-  the single-binary default embeds the NATS server in-process
-  (`DontListen: true` + in-process JetStream). Application code is identical
-  across embedded and clustered modes.
+  NATS runs as a standalone stack service in every deployment, and application
+  code is identical whether NATS is a single node or a cluster.
 - **Fail-closed identity everywhere.** Tenant and account resolution follow
   the existing posture: identity is never a request field, always resolved
   server-side from the authenticated connection
@@ -659,14 +643,14 @@ holder of state the product cannot regenerate.
   (`go/internal/runnerhub/relay_comms.go:7-15`).
 - **The OSS core stays single-tenant-degenerate.** No `if multiTenant`
   behavioral forks; single-tenant runs the same schema with one bootstrap
-  tenant row and the embedded-NATS fabric. No external services are required
-  to run the OSS core.
+  tenant row against the same stack — Postgres, the OTel collector, and a
+  single-node NATS.
 - **The agent↔Runner hop is frozen.** vsock through the attribution boundary
   (RIG-2394); no task exposes NATS to the in-VM side.
 - **Seams before swaps.** Every fabric consumer lands behind an interface
-  (the hub's own posture, `go/internal/runnerhub/hub.go:10-14`). The
-  embedded↔clustered switch is a configuration value behind the same NATS
-  implementation — a deployment change, never an implementation swap.
+  (the hub's own posture, `go/internal/runnerhub/hub.go:10-14`). Single-node
+  vs clustered NATS is a NATS deployment change behind the same client — never
+  an application implementation swap.
 - **Migrations stay embedded-and-ordered** (`go/internal/store/store.go:18-31`);
   tenancy DDL rides the same mechanism.
 - **Cross-Server command ordering on one Runner subject must be safe.**
@@ -768,46 +752,45 @@ definition, not follow-ups:
   SECURITY` is in effect (the migration-applying role cannot read
   cross-tenant).
 
-### T3 — fabric seams: embedded-NATS `EventFabric`, Connect `RunnerFabric` (Phase 0 default)
+### T3 — fabric seams: NATS `EventFabric` + NATS `RunnerFabric`
 
-The fabric seams and their Phase-0 implementations. `EventFabric` (comms and
-delivery publish through it) runs on embedded in-process NATS by default.
-`RunnerFabric` (the hub's command router lands behind it) keeps the Runner on
-today's Connect transport at Phase 0 — the Runner is an external box and the
-embedded server takes no network sockets — so its Phase-0 implementation wraps
-the existing command router (`go/internal/runnerhub/hub.go:925-938`);
-per-Runner NATS command subjects land with clustered NATS at T5.
+The fabric seams and their implementations, all on the standalone NATS stack
+service. `EventFabric` (comms and delivery publish through it) and
+`RunnerFabric` (the hub's command router lands behind it) both run on NATS
+from day one — the Runner connects to the same external NATS as every Server
+(no embedded mode, no Connect-command-router interim), so per-Runner NATS
+command subjects are present from the first deployment. The typed
+request/reply legs stay on the reduced Connect/gRPC edge (OQ-5 Variant B); only
+the async command-push and event fan-in ride `RunnerFabric`.
 
 - **Interfaces:** consumes the comms write-through publish sites
   (`go/internal/comms/doc.go:9-12`), the delivery consumer seams
   (`ControlDispatcher` / `SessionResolver` / `DeliveryReads`,
   `go/internal/delivery/consumer.go:42-63`), the hub's command router
   (`go/internal/runnerhub/hub.go:925-938`), and
-  `github.com/nats-io/nats-server/v2/server` +
   `github.com/nats-io/nats.go`. Produces:
   `package fabric` with
   `type EventFabric interface { Publish(ctx context.Context, subject string, ref EventRef) error; Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error) }`
   where `EventRef` is a compact reference (event kind + row id + tenant),
   never a payload copy — subscribers re-read Postgres;
   `type RunnerFabric interface { SendCommand(ctx context.Context, runnerID string, cmd *compassv1internal.SessionsResponse) error; Events(ctx context.Context) (<-chan RunnerEvent, error) }`;
-  `fabric.New(cfg Config) (*Fabric, error)` where `Config` selects embedded
-  (`server.Options{DontListen: true, JetStream: true}` + `nats.Connect(ns.ClientURL(), nats.InProcessServer(ns))`)
-  or clustered (`nats.Connect(url, opts...)`) — one implementation, one
-  config value. The `RunnerFabric` Phase-0 implementation drives the Runner
-  over today's Connect command router (the Runner is external; embedded NATS
-  has no listening socket), and per-Runner NATS command subjects land at T5.
+  `fabric.New(cfg Config) (*Fabric, error)` where `Config` carries the NATS
+  connection (`nats.Connect(url, opts...)`) — one implementation, one client,
+  single-node or clustered NATS selected by the connection string. The
+  `RunnerFabric` implementation drives the Runner over per-Runner NATS command
+  subjects from day one (the Runner connects to the same stack NATS).
   Also produces: the JetStream delivery stream (durable at-least-once
   fan-out, `sync_interval: 100ms`, explicit acks, `max_deliver` + DLQ
   subject); and the subject-naming doc
   (`compass.<tenant>.comms.<kind>`, `compass.runner.<runner_id>.cmd`,
   `compass.runner.events` queue-grouped, `client.<sessionID>` per-connection
   delivery) as a supporting file beside this record. Gate instrumentation:
-  the delivery-backlog OTel emitter (Phase-1 gate signal) rides this task.
-- **Test cycle:** comms + delivery behavior unchanged under the embedded
-  fabric (existing suites green — no external NATS process in CI); a
-  two-fabric-instance test (two embedded servers clustered, or one test
-  server with two clients) proves a publish crosses instances; JetStream
-  redelivery on unacked messages; DLQ parking after `max_deliver`.
+  the delivery-backlog OTel emitter (scale-out gate signal) rides this task.
+- **Test cycle:** comms + delivery behavior unchanged under the NATS fabric
+  (existing suites green — a NATS stack container in CI, or a test-scoped
+  in-process NATS for hermeticity); a two-instance test (two Servers against
+  one NATS, or a two-node test cluster) proves a publish crosses instances;
+  JetStream redelivery on unacked messages; DLQ parking after `max_deliver`.
 
 ### T4 — durable session bindings
 
@@ -830,24 +813,26 @@ invalidated over the `EventFabric`.
   `go/internal/runnerhub/relay_comms.go:242-249` specifies; a binding change
   invalidates the cache on a second fabric instance.
 
-### T5 — clustered-NATS deployment mode (Phase 1)
+### T5 — multi-Server operation + NATS clustering
 
-The config-flip to a clustered external NATS, and everything that must be
-proven correct only under multiple instances: queue-group delivery
-partitioning, per-Runner command subjects driven from any Server for the
-async command/event plane (the typed request/reply legs stay on the reduced
-Connect/gRPC edge per OQ-5 Variant B, preserving their status-code contracts,
-`go/internal/runnerhub/relay_comms.go:242-320` — not moved to NATS
+Everything that must be proven correct only under multiple Server instances,
+plus promoting NATS from single-node to a replicated cluster: queue-group
+delivery partitioning, per-Runner command subjects driven from any Server for
+the async command/event plane (the typed request/reply legs stay on the
+reduced Connect/gRPC edge per OQ-5 Variant B, preserving their status-code
+contracts, `go/internal/runnerhub/relay_comms.go:242-320` — not moved to NATS
 request/reply), JetStream R3 file-storage replication, and the cross-Server
-ordering invariant. This is a deployment mode plus its multi-instance test
-surface — not an implementation swap; T3's fabric code is unchanged.
+ordering invariant. This is added Server replicas plus a NATS-cluster
+deployment and its multi-instance test surface — the fabric code from T3 is
+unchanged (the transport was NATS from day one; only the NATS deployment and
+the Server count change).
 
-- **Interfaces:** consumes T3's fabric (`fabric.Config` clustered mode) and
-  T4's durable bindings; a NATS cluster (deployment owned by infra;
-  connection config via server flags/env). Produces: the clustered `Config`
-  wiring + JetStream R3 stream configuration; tenant-scoped subject prefixes
-  (per-tenant NATS accounts/permissions is the recommended, non-normative
-  example — OQ-3 finalizes the fabric-isolation mechanism); the
+- **Interfaces:** consumes T3's fabric (the same `fabric.Config`, now pointed
+  at a clustered NATS) and T4's durable bindings; a NATS cluster (deployment
+  owned by infra; connection config via server flags/env). Produces: the
+  clustered `Config` wiring + JetStream R3 stream configuration; tenant-scoped
+  subject prefixes (per-tenant NATS accounts/permissions is the recommended,
+  non-normative example — OQ-3 finalizes the fabric-isolation mechanism); the
   multi-instance integration suite. **Ordering invariant (Global
   Constraints):** a per-Runner command subject with multiple Server
   publishers gives only per-publisher ordering in NATS, where today's
@@ -864,7 +849,7 @@ surface — not an implementation swap; T3's fabric code is unchanged.
 
 ### T6 — JetStream telemetry/scheduling streams (gated)
 
-Only after the telemetry/scheduling gate (Staged adoption path): JetStream
+Only after the telemetry/scheduling gate (Deployment shape): JetStream
 streams for Runner telemetry fan-in and scheduling events, consumed by
 RIG-2485.
 
@@ -882,13 +867,14 @@ RIG-2485.
 - [ ] **T2** — RLS enforcement + per-transaction tenant scoping, pooler-aware
       (scalar-subquery policies, transaction-mode-pooler verification;
       depends: T1)
-- [ ] **T3** — fabric seams: embedded-NATS `EventFabric` (`DontListen` +
-      in-process JetStream, JetStream-durable comms delivery) + Connect
-      `RunnerFabric` (Runner stays on Connect until Phase 1); Phase 0 default
+- [ ] **T3** — fabric seams: NATS `EventFabric` + NATS `RunnerFabric` (Runner
+      on per-Runner NATS command subjects from day one, JetStream-durable comms
+      delivery); depends: T1
 - [ ] **T4** — durable session bindings (depends: T3)
-- [ ] **T5** — clustered-NATS deployment mode: config flip, queue groups,
-      per-Runner subjects, JetStream R3, cross-Server ordering invariant
-      test (Phase 1; depends: T3, T4, and the Phase-1 gate)
+- [ ] **T5** — multi-Server operation + NATS clustering: Server replicas,
+      queue groups, per-Runner subjects proven across instances, JetStream R3,
+      cross-Server ordering invariant test (depends: T3, T4, and the scale-out
+      gate)
 - [ ] **T6** — JetStream telemetry/scheduling streams (gated; depends: T3,
       the telemetry/scheduling gate, and RIG-2485 payload contracts)
 
@@ -916,20 +902,22 @@ This section is the verbatim delta the same-PR flip landed in
   stays durable in Postgres (`agent_placements` + session bindings), and the
   Runner remains a pure forwarder with Server-side fail-closed account
   resolution" — Record: this record, §Q2.
-- **N3 (Transport):** "NATS is the single eventing substrate — embedded
-  in-process (`DontListen` + in-process JetStream) for the
-  single-binary/OSS default, clustered for multi-instance, identical
-  application code across both. JetStream is the durable comms-delivery
-  transport (at-least-once fan-out with bounded replay); Postgres keeps the
-  message row and the per-(agent, channel) delivery cursor as the recovery
-  truth. Core NATS carries routing/binding invalidation; queue groups
-  partition delivery work. The Server↔Runner edge is two-plane (OQ-5 / N6):
-  the async command-push and event fan-in ride per-Runner NATS subjects and
-  queue groups, while the typed request/reply legs stay on the reduced
-  Connect/gRPC edge — NATS does not carry them. Client↔Server stays Connect
-  and the agent↔Runner hop stays vsock (RIG-2394). No LISTEN/NOTIFY phase
-  exists" — Record: this record, §Q3 + §Staged adoption path + §Resolved
-  decisions (OQ-5). Supersedes DL-014 and DL-021.
+- **N3 (Transport):** "NATS is the single eventing substrate — run as a
+  standalone stack service (alongside Postgres and the OTel collector) in
+  every deployment, reached over `nats://`, with no embedded/in-process mode
+  and no transport phase; a single-node NATS serves the small/self-hosted case
+  and a replicated cluster serves HA, selected by connection string, never by
+  application code. JetStream is the durable comms-delivery transport
+  (at-least-once fan-out with bounded replay); Postgres keeps the message row
+  and the per-(agent, channel) delivery cursor as the recovery truth. Core
+  NATS carries routing/binding invalidation; queue groups partition delivery
+  work. The Server↔Runner edge is two-plane (OQ-5 / N6): the async
+  command-push and event fan-in ride per-Runner NATS subjects and queue groups
+  (the Runner connects to NATS from day one), while the typed request/reply
+  legs stay on the reduced Connect/gRPC edge — NATS does not carry them.
+  Client↔Server stays Connect and the agent↔Runner hop stays vsock (RIG-2394).
+  No LISTEN/NOTIFY phase exists" — Record: this record, §Q3 + §Deployment
+  shape + §Resolved decisions (OQ-5). Supersedes DL-014 and DL-021.
 - **N4 (Storage):** "Postgres remains the sole durability source of truth
   for committed comms/routing/session-binding state: JetStream is an
   at-least-once delivery TRANSPORT whose consumer state is disposable, never
@@ -1052,7 +1040,7 @@ considered above:
   pull) stays on the reduced Connect/gRPC edge, keeping deadline propagation,
   typed proto errors, and generated stubs that core-NATS request/reply would
   drop. This reverses the record's earlier intent (Q3/T5) to move those RPC
-  legs onto NATS request/reply at Phase 1. DL-013's per-Runner provisioned
+  legs onto NATS request/reply. DL-013's per-Runner provisioned
   token is retained as the out-of-band seed and bridged to NATS credentials
   via auth-callout, so DL-013 is amended, not retired. Two grounding
   corrections fold with it: (a) core NATS has neither retry nor backpressure
@@ -1078,11 +1066,11 @@ considered above:
 
 ### OQ-3 (non-load-bearing, deferred) — NATS deployment shape
 
-The primary axis — embedded in-process vs clustered external — is decided
-(Q3): embedded is the single-binary/OSS default, clustered is the
-multi-instance mode, and the switch is one configuration value. What remains
-deferred: cluster sizing, placement (co-located with Servers vs dedicated),
-and whether per-tenant fabric isolation uses NATS accounts or
+The deployment mode — NATS runs as a standalone stack service in every
+deployment, single-node or clustered by connection string (Q3, §Deployment
+shape) — is decided. What remains deferred: cluster sizing, placement
+(co-located with Servers vs dedicated), and whether per-tenant fabric
+isolation uses NATS accounts or
 subject-permission scoping alone. Deferred with rationale: the `EventRef`
 carries references only (event kind + row id + tenant — the compact-reference
 envelope defined in T3's `EventFabric`), and the durable
