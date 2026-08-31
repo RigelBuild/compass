@@ -128,7 +128,7 @@ The record's central call. Three candidates:
 - **Option C (rejected): serve from the `runtime` layer** (the backend owns
   the VM, so let `MicroVMRuntime` serve the gateway beside it). Violates
   layering: the Gateway's `Deps` are Runner-layer objects — the `ServerLink`
-  client satisfying `CommsRelay`/`LifecycleRelay`/… (`host.go:913`) — and
+  client satisfying `CommsRelay`/`LifecycleRelay`/… (`host.go:922`) — and
   `go/internal/runtime` cannot import `go/internal/runner`. The runtime layer
   exposes the *endpoint*; the runner serves on it, exactly as it does for
   podman paths today.
@@ -165,7 +165,7 @@ string(id))`", `microvm_lifecycle.go:159-161`), so it is not knowable
 pre-Launch, and restructuring to expose it early would buy no security — the
 window is already fail-closed. Nor does the vsock arm need `serveSocket`'s
 idempotent-reuse check ("`if listener, served := h.sockets[containerName];
-served { … return listener, nil }`", `host.go:905-910`): a provision retry of
+served { … return listener, nil }`", `host.go:916-920`): a provision retry of
 a live name never reaches `Serve`, because `Create` refuses the duplicate
 first ("Refuse a duplicate name under the same lock that inserts …
 `return "", &DuplicateNameError{Name: spec.Name}`",
@@ -189,7 +189,7 @@ microvm-v3-egress-in-guest.md:138-163):
     calls `h.runtime.Launch`, resolves the endpoint by the returned handle
     name, and then serves `gateway.Serve(ctx, suffixedPath, name, deps)` —
     recording the listener in the **same** `h.sockets` map keyed by container
-    name (`host.go:143-144,917-919`).
+    name (`host.go:143-144,927`).
 - Failure symmetry: a `Serve` failure after a successful Launch tears the
   launched session down with the exact call Remove's teardown leg uses —
   resolve the handle and `h.runtime.Teardown(ctx, handle)` ("if handle, ok :=
@@ -246,7 +246,7 @@ takes no per-session socket configuration, so this constant IS the rendezvous"
   `compass.vsock_port=<n>` today (`microvm/launch.go:255-256`); V4 appends
   `compass.gateway_port=<n>` beside it from a new `BootConfig.GatewayPort`
   field, and guestd parses it with a sibling of `parseVsockPort`
-  (`guestd/cmdline.go:12-19,21-60` — same uint32/zero/`VMADDR_PORT_ANY`
+  (`guestd/cmdline.go:12-19,21-61` — same uint32/zero/`VMADDR_PORT_ANY`
   validation). The parameter is **optional**: absent (a V2a-era cmdline, a
   hermetic harness) means no proxy is started — the V2b/V3 suites keep
   booting unchanged — and `Launch` always appends it in production.
@@ -348,7 +348,7 @@ compare. Because the vsock-gateway Provision skips the materialize block that
 seeds the version map ("`h.configVersions[spec.Name] = mount.Version`",
 `host.go:205-207`), `lastVersion` is `""` for every microVM session, the
 compare always sees a change, and the leg runs `reloadLocked` — "the slow
-Stop + StartAgent" (`host.go:838-845`) — restarting **every live microVM
+Stop + StartAgent" (`host.go:848`) — restarting **every live microVM
 agent mid-session on the first fleet ConfigVersion publish**, delivering
 nothing, and again on every subsequent bump. So the refresh path is
 probe-gated in W2 with the same (c) probe: a session whose engine passes the
@@ -418,7 +418,7 @@ socket forwarder during a successful `Provision`.
   - `gatewayPortKey = "compass.gateway_port"` and
     `parseGatewayPort(cmdline string) (uint32, bool, error)` in
     `go/internal/guestd/cmdline.go` — same tokenizing/validation as
-    `parseVsockPort` (`cmdline.go:21-60`: last occurrence wins, reject 0 /
+    `parseVsockPort` (`cmdline.go:21-61`: last occurrence wins, reject 0 /
     `VMADDR_PORT_ANY` / overflow), but **optional**: an absent key returns
     `(0, false, nil)` (no proxy; hermetic/V2a-era cmdlines stay valid), while
     a present-but-malformed value is an error (fail-closed boot, the
@@ -482,7 +482,7 @@ byte-identical.
     materialize+mount ((f)), `Launch`, resolve
     `AgentGatewayEndpoint(handle.Name())`, then
     `gateway.Serve(ctx, suffixedPath, handle.Name(), deps)` with the same
-    `Deps` literal as `serveSocket` (`host.go:913`), recording the listener
+    `Deps` literal as `serveSocket` (`host.go:922`), recording the listener
     in `h.sockets[handle.Name()]` under `h.mu`; a Serve failure tears the
     launched session down via the Remove teardown path before returning;
   - the refresh gate ((f)): `RefreshConfig`'s fan-out (or
