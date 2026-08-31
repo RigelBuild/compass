@@ -176,3 +176,116 @@ func TestParseBootNonce(t *testing.T) {
 		})
 	}
 }
+
+// TestParseGatewayPort defends the §(d) gateway-port contract: the parameter is
+// OPTIONAL (an absent key ⇒ (0, false, nil), no forwarder), but a
+// present-but-malformed value fail-closes the boot with the parseVsockPort
+// validation (non-zero uint32, VMADDR_PORT_ANY reserved, non-numeric/overflow).
+func TestParseGatewayPort(t *testing.T) {
+	tests := []struct {
+		name      string
+		cmdline   string
+		want      uint32
+		wantFound bool
+		wantErr   bool
+	}{
+		{
+			name:      "absent key is (0, false, nil)",
+			cmdline:   "console=ttyS0 compass.vsock_port=1024 ro",
+			want:      0,
+			wantFound: false,
+		},
+		{
+			name:      "empty cmdline is (0, false, nil)",
+			cmdline:   "",
+			want:      0,
+			wantFound: false,
+		},
+		{
+			name:      "valid port among others",
+			cmdline:   "console=ttyS0 compass.gateway_port=1025 ro",
+			want:      1025,
+			wantFound: true,
+		},
+		{
+			name:      "only param",
+			cmdline:   "compass.gateway_port=5000",
+			want:      5000,
+			wantFound: true,
+		},
+		{
+			name:      "trailing newline (as /proc/cmdline yields)",
+			cmdline:   "compass.gateway_port=42\n",
+			want:      42,
+			wantFound: true,
+		},
+		{
+			name:      "max valid port (just below VMADDR_PORT_ANY)",
+			cmdline:   "compass.gateway_port=4294967294",
+			want:      4294967294,
+			wantFound: true,
+		},
+		{
+			name:      "last occurrence wins",
+			cmdline:   "compass.gateway_port=1 compass.gateway_port=2",
+			want:      2,
+			wantFound: true,
+		},
+		{
+			name:    "present-but-empty value is an error",
+			cmdline: "compass.gateway_port=",
+			wantErr: true,
+		},
+		{
+			name:    "non-numeric value is an error",
+			cmdline: "compass.gateway_port=abc",
+			wantErr: true,
+		},
+		{
+			name:    "zero is not a valid port",
+			cmdline: "compass.gateway_port=0",
+			wantErr: true,
+		},
+		{
+			name:    "VMADDR_PORT_ANY sentinel is reserved",
+			cmdline: "compass.gateway_port=4294967295",
+			wantErr: true,
+		},
+		{
+			name:    "overflows uint32",
+			cmdline: "compass.gateway_port=4294967296",
+			wantErr: true,
+		},
+		{
+			name:    "negative value is an error",
+			cmdline: "compass.gateway_port=-1",
+			wantErr: true,
+		},
+		{
+			// A bare "compass.gateway_port" token (no '=') is not the key=value
+			// form, so it is skipped like any non-matching token — for an OPTIONAL
+			// key that means "absent", (0, false, nil), NOT an error.
+			name:      "key without value token is treated as absent",
+			cmdline:   "compass.gateway_port ro",
+			want:      0,
+			wantFound: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found, err := parseGatewayPort(tt.cmdline)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("parseGatewayPort(%q) = %d, %v, nil; want error", tt.cmdline, got, found)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseGatewayPort(%q) unexpected error: %v", tt.cmdline, err)
+			}
+			if got != tt.want || found != tt.wantFound {
+				t.Fatalf("parseGatewayPort(%q) = %d, %v; want %d, %v", tt.cmdline, got, found, tt.want, tt.wantFound)
+			}
+		})
+	}
+}

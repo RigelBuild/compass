@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"os"
 	"os/exec" //nolint:depguard // guest supervisor: this package IS the in-guest exec surface (§(b)) — spawning agent children and the egress arm script
 	"path/filepath"
@@ -142,17 +143,54 @@ type supervisor struct {
 	// separate from exec children (never through resolveUID/newCredential).
 	armFunc func(ctx context.Context, script string) error
 
+	// dialGateway dials the host AgentGateway over vsock for the unix→vsock
+	// forwarder (§(d)); a seam beside armFunc so the forward loop is hermetically
+	// testable with no AF_VSOCK. Production is realDialGateway, which dials
+	// (CID 2, gatewayPort) via mdlayher/vsock.
+	dialGateway func(port uint32) (net.Conn, error)
+
+	// chownSocket chowns the bound forwarder socket to the exec uid; a seam
+	// beside newCredential so a hermetic test (which runs non-root and cannot
+	// chown to a foreign uid, exactly why testCredential exists) injects a no-op.
+	// Nil means the production os.Chown.
+	chownSocket func(path string, uid uint32) error
+
+	// gatewayPort is the host AgentGateway vsock port parsed from the kernel
+	// cmdline (compass.gateway_port, §(d)). Zero means the key was absent — no
+	// forwarder is started and Provision is otherwise unchanged. Immutable after
+	// construction, so it is read lock-free in Provision.
+	gatewayPort uint32
+
+	// gatewaySocketPath overrides the AF_UNIX rendezvous the forwarder binds;
+	// empty means the fixed production agentSocketPath (/run/compass/agent.sock).
+	// A hermetic test points it at a tempdir so Provision's proxy binds without
+	// needing /run/compass. Immutable after construction.
+	gatewaySocketPath string
+
 	// stopServing cancels the serving context on an RPC-driven Stop
 	// (Signal("", ...)); run wires it and observes rpcStop to drive poweroff.
 	stopServing context.CancelFunc
-	stopOnce    sync.Once
+	// serveCtx is the long-lived guest serve context (cancelled on shutdown).
+	// The gateway forwarder is bound to it, NOT to a per-request Provision ctx,
+	// so the forwarder outlives the Provision RPC and is torn down only when the
+	// guest goes down. run wires it; a hermetic test injects its own.
+	serveCtx context.Context //nolint:containedctx // serve-lifetime scope for the gateway forwarder (§(d)); the per-request Provision ctx is the wrong lifetime (see field doc)
+	stopOnce sync.Once
 
-	mu             sync.Mutex
-	state          execState
-	defaultExecUID uint32
-	baseEnv        map[string]string
-	execs          map[string]*childExec
-	nextID         uint64
+	mu    sync.Mutex
+	state execState
+	// gatewayProxyCloser holds the running unix→vsock forwarder started by
+	// Provision (§(d)); it is nil when no gateway port was configured. Written
+	// once under mu at Provision. Production teardown is serveCtx-cancellation-
+	// driven — run cancels serveCtx on shutdown and the forwarder's accept loop
+	// and per-conn splices tear down via their ctx AfterFuncs — so run never
+	// calls Close; the closer is retained as an ownership handle whose
+	// deterministic <-done drain is exercised by tests.
+	gatewayProxyCloser io.Closer
+	defaultExecUID     uint32
+	baseEnv            map[string]string
+	execs              map[string]*childExec
+	nextID             uint64
 	// captureLimit overrides the one-shot Exec per-stream capture cap; zero
 	// means maxCapture. It exists so a hermetic test can drive the overflow
 	// branch (OQ-E) with a tiny cap instead of emitting 8 MiB. Read under mu.
@@ -215,6 +253,31 @@ func (s *supervisor) Provision(
 			return nil, connect.NewError(connect.CodeInternal,
 				fmt.Errorf("arming nft egress: %w", err))
 		}
+	}
+	// Start the unix→vsock forwarder before opening the gate (§(d)): after the
+	// V3 arm, before the stateProvisioned transition, under s.mu. A configured
+	// gateway port binds /run/compass/agent.sock and forwards it to the host
+	// gateway; a listen/chown failure returns CodeInternal and leaves the state
+	// at stateReady (exec refused, the V3 fail-closed shape). A zero port (the
+	// cmdline key was absent) starts no proxy and Provision is otherwise
+	// unchanged. The forwarder is bound to serveCtx, not the per-request ctx, so
+	// it outlives this RPC.
+	if s.gatewayPort != 0 {
+		if s.serveCtx == nil {
+			return nil, connect.NewError(connect.CodeInternal,
+				errors.New("gateway port configured but serve context is nil: the forwarder must bind the serve-lifetime context, not the per-request Provision context"))
+		}
+		proxyCtx := s.serveCtx
+		socketPath := s.gatewaySocketPath
+		if socketPath == "" {
+			socketPath = agentSocketPath
+		}
+		closer, err := s.startGatewayProxy(proxyCtx, socketPath, m.GetDefaultExecUid(), s.gatewayPort) //nolint:contextcheck // deliberate: the forwarder is bound to the serve-lifetime ctx (proxyCtx=s.serveCtx), not the per-request Provision ctx, so it outlives this RPC (§(d))
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal,
+				fmt.Errorf("starting agent gateway proxy: %w", err))
+		}
+		s.gatewayProxyCloser = closer
 	}
 	s.state = stateProvisioned
 	s.defaultExecUID = m.GetDefaultExecUid()
