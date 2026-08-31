@@ -402,6 +402,68 @@ func TestOverrunClosesLiveAndLatchesLagged(t *testing.T) {
 	}
 }
 
+// A drop in the MIDDLE of a multi-subscriber set retains the surrounding
+// subscribers in their original order and allocates a compacted slice with no
+// nil tail. Pins publish()'s seed-then-append compaction: the fast path leaves
+// the slice untouched, and the first drop rebuilds it from the prefix already
+// kept plus the survivors that follow.
+func TestOverrunMiddleSubscriberCompactsAndRetainsOrder(t *testing.T) {
+	bus := NewBus[ev]()
+	first, err := bus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("Subscribe first: %v", err)
+	}
+	middle, err := bus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("Subscribe middle: %v", err)
+	}
+	last, err := bus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("Subscribe last: %v", err)
+	}
+	if got := len(bus.subscribers); got != 3 {
+		t.Fatalf("subscribers = %d after three Subscribe, want 3", got)
+	}
+
+	// Fill every buffer to capacity: each non-blocking send still lands, so no
+	// subscriber is dropped yet.
+	for i := range liveBufferCapacity {
+		bus.Publish(ev{n: i})
+	}
+	// Drain the outer two so their buffers have room again; leave the middle
+	// buffer full.
+	for range liveBufferCapacity {
+		if _, ok := recvWithin(t, first.Live); !ok {
+			t.Fatal("first.Live closed while draining, want open")
+		}
+		if _, ok := recvWithin(t, last.Live); !ok {
+			t.Fatal("last.Live closed while draining, want open")
+		}
+	}
+
+	// One more publish: the middle buffer is full, so only it overruns and is
+	// dropped from the fan-out set; the outer two accept the event.
+	bus.Publish(ev{n: liveBufferCapacity})
+
+	if got := len(bus.subscribers); got != 2 {
+		t.Fatalf("subscribers = %d after middle overrun, want 2 (middle dropped)", got)
+	}
+	// Subscription.lagged is the same *lagFlag the bus stores on its subscriber
+	// (same package, white-box), so it identifies which slot survived.
+	if bus.subscribers[0].lagged != first.lagged {
+		t.Fatal("subscribers[0] is not the first subscriber: retain order broken")
+	}
+	if bus.subscribers[1].lagged != last.lagged {
+		t.Fatal("subscribers[1] is not the last subscriber: retain order broken")
+	}
+	if !middle.Lagged() {
+		t.Fatal("middle.Lagged() = false after overrun, want true")
+	}
+	if first.Lagged() || last.Lagged() {
+		t.Fatal("an outer subscriber latched lagged, want only the middle dropped")
+	}
+}
+
 // Close ends every open subscriber's Live channel WITHOUT the lag latch: a
 // silent drain, not a resync. This is the discriminator the stream edge uses to
 // end cleanly vs emit a terminal ResyncRequired.
