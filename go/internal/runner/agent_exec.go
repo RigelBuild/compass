@@ -16,7 +16,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // runner exec: *exec.Cmd/*exec.ExitError types for the container agent stream lifecycle
 	"strconv"
 	"sync"
 	"sync/atomic"

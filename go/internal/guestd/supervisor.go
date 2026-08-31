@@ -10,7 +10,7 @@ import (
 	"io"
 	"maps"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // guest supervisor: this package IS the in-guest exec surface (§(b)) — spawning agent children and the egress arm script
 	"path/filepath"
 	"slices"
 	"strings"

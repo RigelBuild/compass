@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // microVM launcher: LookPath-resolved VMM/virtiofsd/passt guest-support processes (G204 sites justified below)
 	"path/filepath"
 	"runtime"
 	"strconv"

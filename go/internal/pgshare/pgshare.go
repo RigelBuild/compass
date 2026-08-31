@@ -32,7 +32,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // postgres test harness: LookPath + container-CLI (podman/docker) subprocess management
 	"strconv"
 	"strings"
 	"sync/atomic"

@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // postgres container adapter: the podman CLI seam (G204 sites justified below)
 	"os/user"
 	"strconv"
 	"strings"

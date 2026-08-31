@@ -6,7 +6,7 @@ import (
 	"context"
 	"net"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // e2e harness: LookPath-resolved stack child binaries + podman image probe
 	"path/filepath"
 	"strconv"
 	"strings"

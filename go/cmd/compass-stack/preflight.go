@@ -6,7 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/exec" //nolint:depguard // podman/microVM preflight probe: LookPath + fixed-arg version/info subprocesses
 	"regexp"
 	"strconv"
 	"strings"
