@@ -102,6 +102,9 @@ func (s *service) SpawnAgent(
 	if crid != "" {
 		key := spawnKey{account: req.Msg.GetAgentHandle(), crid: crid}
 		call, joined := s.joinOrBeginSpawn(key)
+		if call == nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("spawn: join returned no memo entry"))
+		}
 		if joined {
 			// Joined an in-flight or completed spawn: wait for it to settle and
 			// return its result — never a second Provision, never reject-on-live.

@@ -187,7 +187,11 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: caller account is required"))
 	}
 
-	switch c := call.GetCall().(type) {
+	variant := call.GetCall()
+	if variant == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: call has no operation variant set"))
+	}
+	switch c := variant.(type) {
 	case *compassv1internal.ForgeCallRequest_CreateIssue:
 		return s.createIssue(ctx, caller, sessionID, call, c.CreateIssue), nil
 	case *compassv1internal.ForgeCallRequest_CommentOnIssue:
