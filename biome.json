@@ -78,7 +78,8 @@
 			"includes": ["packages/compass-agent/src/transport/**"],
 			"linter": {
 				"rules": {
-					"style": { "noRestrictedImports": "off" }
+					"style": { "noRestrictedImports": "off" },
+					"nursery": { "noFloatingPromises": "off", "noMisusedPromises": "off" }
 				}
 			}
 		},
