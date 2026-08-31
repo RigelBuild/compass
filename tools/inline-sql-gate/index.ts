@@ -80,24 +80,8 @@ const CALL_RE = /\.(?:QueryRow|Query|Exec)\(/g;
  * seeding it. It migrates (and its entry drops) in a per-domain task like the rest.
  */
 export const ALLOWLIST: string[] = [
-	// Store domain files carrying inline-SQL literals AT the call site (the
-	// shape this gate flags): the record's 24-file list minus agent_tree.go +
-	// presence_reads.go (const-hoisted, not literal-at-callsite — see above),
-	// plus dm.go (added post-record). Each drops as its domain migrates.
-	// accounts.go migrated in T2; channels/channel_pins/coordination in T3;
-	// messages/topics/delivery_cursors/delivery_reads in T4 (RIG-3034).
-	// agent_tree.go + presence_reads.go were never seeded here (const-hoisted SQL,
-	// so the literal-scoped gate produced no finding).
-	"go/internal/store/authz.go",
-	"go/internal/store/tokens.go",
-	"go/internal/store/secrets.go",
-	"go/internal/store/issues.go",
-	"go/internal/store/forge_authored.go",
-	"go/internal/store/forge_cursors.go",
-	"go/internal/store/forge_subscriptions.go",
-	"go/internal/store/tenant.go",
-	"go/internal/store/linear_sessions.go",
-	"go/internal/store/dm.go",
+	// Every store domain file's inline SQL has migrated to sqlc (T2..T6,
+	// RIG-3034); the two PERMANENT raw-SQL files below are all that remain.
 	// Permanent raw-SQL files.
 	"go/internal/store/store.go",
 	"go/internal/pgshare/pgshare.go",

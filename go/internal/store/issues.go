@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // IssueState mirrors compass.v1 IssueState (UNSPECIFIED=0 .. ARCHIVED=8). A
@@ -130,39 +134,26 @@ func (s *Store) UpsertIssueForgeFields(ctx context.Context, in IssueForgeFields)
 	}
 	// A zero time stores SQL NULL so the recency guard's NULL arm keeps the
 	// write additive; a set time drives the >= comparison in ON CONFLICT.
-	var forgeUpdatedAt *time.Time
+	var forgeUpdatedAt pgtype.Timestamptz
 	if !in.ForgeUpdatedAt.IsZero() {
-		forgeUpdatedAt = &in.ForgeUpdatedAt
+		forgeUpdatedAt = pgtype.Timestamptz{Time: in.ForgeUpdatedAt, Valid: true}
 	}
-	var id string
-	if err := s.pool.QueryRow(ctx,
-		`WITH up AS (
-		     INSERT INTO issues
-		         (id, forge_provider, forge_host, repo, number,
-		          title, body, forge_state, url, forge_account, labels, agent_handle,
-		          forge_updated_at)
-		     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		     ON CONFLICT (forge_provider, forge_host, repo, number) DO UPDATE
-		        SET title = EXCLUDED.title, body = EXCLUDED.body,
-		            forge_state = EXCLUDED.forge_state, url = EXCLUDED.url,
-		            forge_account = EXCLUDED.forge_account, labels = EXCLUDED.labels,
-		            agent_handle = EXCLUDED.agent_handle,
-		            forge_updated_at = EXCLUDED.forge_updated_at
-		      WHERE issues.forge_updated_at IS NULL
-		         OR EXCLUDED.forge_updated_at IS NULL
-		         OR EXCLUDED.forge_updated_at >= issues.forge_updated_at
-		     RETURNING id
-		 )
-		 SELECT id FROM up
-		 UNION ALL
-		 SELECT id FROM issues
-		  WHERE NOT EXISTS (SELECT 1 FROM up)
-		    AND forge_provider = $2 AND forge_host = $3 AND repo = $4 AND number = $5
-		 LIMIT 1`,
-		newID(), int32(in.ForgeProvider), in.ForgeHost, in.Repo, int64(in.Number),
-		in.Title, in.Body, in.ForgeState, in.URL, in.ForgeAccount, labels, in.AgentHandle,
-		forgeUpdatedAt,
-	).Scan(&id); err != nil {
+	id, err := s.q.UpsertIssueForgeFields(ctx, db.UpsertIssueForgeFieldsParams{
+		ID:             newID(),
+		ForgeProvider:  int16(in.ForgeProvider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum (issues.forge_provider), always within int16
+		ForgeHost:      in.ForgeHost,
+		Repo:           in.Repo,
+		Number:         int64(in.Number),
+		Title:          in.Title,
+		Body:           in.Body,
+		ForgeState:     in.ForgeState,
+		Url:            in.URL,
+		ForgeAccount:   in.ForgeAccount,
+		Labels:         labels,
+		AgentHandle:    in.AgentHandle,
+		ForgeUpdatedAt: forgeUpdatedAt,
+	})
+	if err != nil {
 		return "", fmt.Errorf("store: upsert issue forge fields: %w", err)
 	}
 	return id, nil
@@ -177,14 +168,14 @@ func (s *Store) SetIssueState(ctx context.Context, id string, state IssueState) 
 	if id == "" {
 		return fmt.Errorf("%w: id is required", ErrInvalidArgument)
 	}
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE issues SET state = $2 WHERE id = $1`,
-		id, int32(state),
-	)
+	affected, err := s.q.SetIssueState(ctx, db.SetIssueStateParams{
+		ID:    id,
+		State: int16(state), //nolint:gosec // G115: IssueState is a CHECK-constrained 1..8 enum (issues.state), always within int16
+	})
 	if err != nil {
 		return fmt.Errorf("store: set issue state: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		return fmt.Errorf("%w: issue %q does not exist", ErrNotFound, id)
 	}
 	return nil
@@ -197,82 +188,78 @@ func (s *Store) GetIssue(ctx context.Context, id string) (Issue, error) {
 	if id == "" {
 		return Issue{}, fmt.Errorf("%w: id is required", ErrInvalidArgument)
 	}
-	row := s.pool.QueryRow(ctx,
-		`SELECT id, forge_provider, forge_host, repo, number,
-		        title, body, forge_state, url, forge_account, labels, agent_handle,
-		        state, priority, assignee, summary, branch
-		   FROM issues
-		  WHERE id = $1`,
-		id,
-	)
-	iss, err := scanIssue(row)
+	row, err := s.q.GetIssue(ctx, id)
 	if err != nil {
 		if noRows(err) {
 			return Issue{}, fmt.Errorf("%w: issue %q does not exist", ErrNotFound, id)
 		}
 		return Issue{}, fmt.Errorf("store: get issue: %w", err)
 	}
-	return iss, nil
+	return issueFromGetRow(row), nil
 }
 
 // ListIssues reads every issue, ordered by id for a deterministic result (like
 // ListAgentPlacementsForRunner). It is the projection's rehydrate read (part
 // 4). An empty table yields a non-nil empty slice, not an error.
 func (s *Store) ListIssues(ctx context.Context) ([]Issue, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, forge_provider, forge_host, repo, number,
-		        title, body, forge_state, url, forge_account, labels, agent_handle,
-		        state, priority, assignee, summary, branch
-		   FROM issues
-		  ORDER BY id`,
-	)
+	rows, err := s.q.ListIssues(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: list issues: %w", err)
 	}
-	defer rows.Close()
-
-	issues := []Issue{}
-	for rows.Next() {
-		iss, err := scanIssue(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan issue: %w", err)
-		}
-		issues = append(issues, iss)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate issues: %w", err)
+	issues := make([]Issue, 0, len(rows))
+	for _, r := range rows {
+		issues = append(issues, issueFromListRow(r))
 	}
 	return issues, nil
 }
 
-// scanRow is the subset of pgx.Row/pgx.Rows scanIssue needs, so it serves both
-// the single-row GetIssue and the ListIssues loop.
-type scanRow interface {
-	Scan(dest ...any) error
+// issueFromGetRow maps a generated GetIssue row into a domain Issue. The
+// forge_provider/state int16 columns convert to their named types; number is a
+// BIGINT written only from a canonical uint32; an empty labels array normalizes
+// to nil to match the module's empty→nil contract.
+func issueFromGetRow(r db.GetIssueRow) Issue {
+	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
+		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
+		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
 }
 
-// scanIssue scans one issues row into an Issue. forge_provider/state are scanned
-// through int32 then converted to their named types; an empty labels array is
-// normalized to nil to match the module's empty→nil contract.
-func scanIssue(row scanRow) (Issue, error) {
-	var (
-		iss           Issue
-		forgeProvider int32
-		number        int64
-		state         int32
-	)
-	if err := row.Scan(
-		&iss.ID, &forgeProvider, &iss.ForgeHost, &iss.Repo, &number,
-		&iss.Title, &iss.Body, &iss.ForgeState, &iss.URL, &iss.ForgeAccount, &iss.Labels, &iss.AgentHandle,
-		&state, &iss.Priority, &iss.Assignee, &iss.Summary, &iss.Branch,
-	); err != nil {
-		return Issue{}, err
+// issueFromListRow maps a generated ListIssues row into a domain Issue (identical
+// column set to GetIssue; sqlc emits a distinct row type per query).
+func issueFromListRow(r db.ListIssuesRow) Issue {
+	return issueFromColumns(r.ID, r.ForgeProvider, r.ForgeHost, r.Repo, r.Number,
+		r.Title, r.Body, r.ForgeState, r.Url, r.ForgeAccount, r.Labels, r.AgentHandle,
+		r.State, r.Priority, r.Assignee, r.Summary, r.Branch)
+}
+
+// issueFromColumns builds an Issue from the shared issue projection both reads
+// select, folding the int16→named-type conversions, the uint32 number narrowing,
+// and the empty-labels→nil normalization into one place.
+func issueFromColumns(
+	id string, forgeProvider int16, forgeHost, repo string, number int64,
+	title, body, forgeState, url, forgeAccount string, labels []string, agentHandle string,
+	state int16, priority, assignee, summary, branch string,
+) Issue {
+	iss := Issue{
+		ID:            id,
+		ForgeProvider: ForgeProvider(forgeProvider),
+		ForgeHost:     forgeHost,
+		Repo:          repo,
+		Number:        uint32(number), //nolint:gosec // G115: number is a BIGINT written only from a canonical uint32 (UpsertIssueForgeFields narrows in.Number), so it is always within the uint32 domain
+		Title:         title,
+		Body:          body,
+		ForgeState:    forgeState,
+		URL:           url,
+		ForgeAccount:  forgeAccount,
+		Labels:        labels,
+		AgentHandle:   agentHandle,
+		State:         IssueState(state),
+		Priority:      priority,
+		Assignee:      assignee,
+		Summary:       summary,
+		Branch:        branch,
 	}
-	iss.ForgeProvider = ForgeProvider(forgeProvider)
-	iss.Number = uint32(number) //nolint:gosec // G115: number is a BIGINT written only from a canonical uint32 (UpsertIssueForgeFields narrows in.Number), so it is always within the uint32 domain
-	iss.State = IssueState(state)
 	if len(iss.Labels) == 0 {
 		iss.Labels = nil
 	}
-	return iss, nil
+	return iss
 }

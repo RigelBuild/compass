@@ -2,11 +2,12 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The board arm's durable state (RIG-2883): the per-REPO poll targets and their
@@ -51,24 +52,21 @@ func (s *Store) LoadForgeRepoWatermark(ctx context.Context, provider ForgeProvid
 	if err := validCoordinate(provider, host, repo); err != nil {
 		return time.Time{}, "", err
 	}
-	var swept *time.Time
-	var etag string
-	err := s.pool.QueryRow(ctx,
-		`SELECT swept_updated_at, list_etag
-		   FROM forge_repo_subscriptions
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3`,
-		int32(provider), host, repo,
-	).Scan(&swept, &etag)
-	if errors.Is(err, pgx.ErrNoRows) {
+	row, err := s.q.LoadForgeRepoWatermark(ctx, db.LoadForgeRepoWatermarkParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum (forge_repo_subscriptions.forge_provider), always within int16
+		ForgeHost:     host,
+		Repo:          repo,
+	})
+	if noRows(err) {
 		return time.Time{}, "", nil
 	}
 	if err != nil {
 		return time.Time{}, "", fmt.Errorf("store: load forge repo watermark: %w", err)
 	}
-	if swept == nil {
-		return time.Time{}, etag, nil
+	if !row.SweptUpdatedAt.Valid {
+		return time.Time{}, row.ListEtag, nil
 	}
-	return *swept, etag, nil
+	return row.SweptUpdatedAt.Time, row.ListEtag, nil
 }
 
 // StoreForgeRepoWatermark writes the repo's swept_updated_at watermark and
@@ -79,20 +77,21 @@ func (s *Store) StoreForgeRepoWatermark(ctx context.Context, provider ForgeProvi
 	if err := validCoordinate(provider, host, repo); err != nil {
 		return err
 	}
-	var swept *time.Time
+	var swept pgtype.Timestamptz
 	if !mark.IsZero() {
-		swept = &mark
+		swept = pgtype.Timestamptz{Time: mark, Valid: true}
 	}
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE forge_repo_subscriptions
-		    SET swept_updated_at = $4, list_etag = $5, updated_at = now()
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3`,
-		int32(provider), host, repo, swept, etag,
-	)
+	affected, err := s.q.StoreForgeRepoWatermark(ctx, db.StoreForgeRepoWatermarkParams{
+		ForgeProvider:  int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:      host,
+		Repo:           repo,
+		SweptUpdatedAt: swept,
+		ListEtag:       etag,
+	})
 	if err != nil {
 		return fmt.Errorf("store: store forge repo watermark: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		return fmt.Errorf("%w: forge repo subscription (%d, %q, %q)", ErrNotFound, provider, host, repo)
 	}
 	return nil
@@ -106,12 +105,12 @@ func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSu
 	if err := validCoordinate(sub.Provider, sub.Host, sub.Repo); err != nil {
 		return err
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO forge_repo_subscriptions (forge_provider, forge_host, repo, enabled)
-		 VALUES ($1, $2, $3, $4)
-		 ON CONFLICT (forge_provider, forge_host, repo) DO NOTHING`,
-		int32(sub.Provider), sub.Host, sub.Repo, sub.Enabled,
-	); err != nil {
+	if err := s.q.EnsureForgeRepoSubscription(ctx, db.EnsureForgeRepoSubscriptionParams{
+		ForgeProvider: int16(sub.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     sub.Host,
+		Repo:          sub.Repo,
+		Enabled:       sub.Enabled,
+	}); err != nil {
 		return fmt.Errorf("store: ensure forge repo subscription: %w", err)
 	}
 	return nil
@@ -128,29 +127,11 @@ func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSu
 // watermark under the coordinate-keyed Load/Store methods — thread (provider,
 // host) through this seam before enabling multi-host.
 func (s *Store) ListEnabledForgeRepos(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT repo
-		   FROM forge_repo_subscriptions
-		  WHERE enabled = TRUE
-		  ORDER BY repo ASC`,
-	)
+	repos, err := s.q.ListEnabledForgeRepos(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: list enabled forge repos: %w", err)
 	}
-	defer rows.Close()
-
-	var out []string
-	for rows.Next() {
-		var repo string
-		if err := rows.Scan(&repo); err != nil {
-			return nil, fmt.Errorf("store: scan forge repo: %w", err)
-		}
-		out = append(out, repo)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate forge repos: %w", err)
-	}
-	return out, nil
+	return repos, nil
 }
 
 // IsEnabledForgeRepo reports whether an enabled subscription exists for the repo
@@ -162,13 +143,8 @@ func (s *Store) IsEnabledForgeRepo(ctx context.Context, repo string) (bool, erro
 	if repo == "" {
 		return false, fmt.Errorf("%w: repo is required", ErrInvalidArgument)
 	}
-	var exists bool
-	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (
-		   SELECT 1 FROM forge_repo_subscriptions
-		    WHERE repo = $1 AND enabled = TRUE)`,
-		repo,
-	).Scan(&exists); err != nil {
+	exists, err := s.q.IsEnabledForgeRepo(ctx, repo)
+	if err != nil {
 		return false, fmt.Errorf("store: is enabled forge repo: %w", err)
 	}
 	return exists, nil
@@ -184,30 +160,21 @@ func (s *Store) ListEnabledForgeRepoSubscriptions(ctx context.Context, provider 
 	if host == "" {
 		return nil, fmt.Errorf("%w: forge host is required", ErrInvalidArgument)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT forge_provider, forge_host, repo, enabled
-		   FROM forge_repo_subscriptions
-		  WHERE forge_provider = $1 AND forge_host = $2 AND enabled = TRUE
-		  ORDER BY repo ASC`,
-		int32(provider), host,
-	)
+	rows, err := s.q.ListEnabledForgeRepoSubscriptions(ctx, db.ListEnabledForgeRepoSubscriptionsParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list enabled forge repo subscriptions: %w", err)
 	}
-	defer rows.Close()
-
 	var out []ForgeRepoSubscription
-	for rows.Next() {
-		var sub ForgeRepoSubscription
-		var p int32
-		if err := rows.Scan(&p, &sub.Host, &sub.Repo, &sub.Enabled); err != nil {
-			return nil, fmt.Errorf("store: scan forge repo subscription: %w", err)
-		}
-		sub.Provider = ForgeProvider(p)
-		out = append(out, sub)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate forge repo subscriptions: %w", err)
+	for _, r := range rows {
+		out = append(out, ForgeRepoSubscription{
+			Provider: ForgeProvider(r.ForgeProvider),
+			Host:     r.ForgeHost,
+			Repo:     r.Repo,
+			Enabled:  r.Enabled,
+		})
 	}
 	return out, nil
 }
@@ -221,16 +188,16 @@ func (s *Store) SetForgeRepoSubscriptionEnabled(ctx context.Context, provider Fo
 	if err := validCoordinate(provider, host, repo); err != nil {
 		return err
 	}
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE forge_repo_subscriptions
-		    SET enabled = $4, updated_at = now()
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3`,
-		int32(provider), host, repo, enabled,
-	)
+	affected, err := s.q.SetForgeRepoSubscriptionEnabled(ctx, db.SetForgeRepoSubscriptionEnabledParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+		Repo:          repo,
+		Enabled:       enabled,
+	})
 	if err != nil {
 		return fmt.Errorf("store: set forge repo subscription enabled: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		return fmt.Errorf("%w: forge repo subscription (%d, %q, %q)", ErrNotFound, provider, host, repo)
 	}
 	return nil
