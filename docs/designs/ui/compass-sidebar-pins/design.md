@@ -277,7 +277,7 @@ common abstraction now is speculative generality with one real consumer.
 
 ### T1 — this record + ledger row (this PR, docs-only)
 
-Freeze this record at `docs/designs/product/compass-sidebar-pins/design.md`
+Freeze this record at `docs/designs/ui/compass-sidebar-pins/design.md`
 and append DL-096 to `docs/designs/product/DECISIONS.md` in the same diff
 (§Ledger delta). No code changes.
 

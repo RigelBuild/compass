@@ -48,7 +48,7 @@ citing `packages/compass-agent/src/mapping.ts:16-19`:
 > not opaque bytes, and explicitly **not ACP**."
 
 The sibling record even flags the comment as stale
-(`docs/designs/product/compass-message-surface-rendering/design.md:448-451`:
+(`docs/designs/ui/compass-message-surface-rendering/design.md:448-451`:
 "Compass-0.8 ruled the trace 'not opaque bytes, and explicitly **not ACP**'
 … the comment's vintage is stale") — but no surface an agent reads *first*
 carried the supersession. Supersession churn is real and concentrated:

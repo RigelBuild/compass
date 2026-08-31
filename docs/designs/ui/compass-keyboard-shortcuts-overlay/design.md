@@ -544,7 +544,7 @@ independently of RIG-2529's schedule.
 ### Merge coordination with RIG-2483 (command palette)
 
 This record and the palette record
-(`docs/designs/product/compass-command-palette/design.md`, RIG-2483) rewrite
+(`docs/designs/ui/compass-command-palette/design.md`, RIG-2483) rewrite
 the SAME four regions: the `createKeyboardSpine` deps object + signature
 (`spine.ts:66-68`), the one-line spine creation call (`store.ts:1896`), the
 `App.tsx:4-8` import run plus a shell-root `<Show>`, and the

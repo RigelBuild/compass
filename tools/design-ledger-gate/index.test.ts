@@ -840,13 +840,13 @@ describe("evaluate — record-level Superseded pointer", () => {
 				[],
 				[
 					header({
-						path: "docs/designs/product/compass-ade-shell/design.md",
+						path: "docs/designs/ui/compass-ade-shell/design.md",
 						statusLine:
 							"Status: Superseded by ../compass-dock-in-sidebar/design.md",
 					}),
 				],
 				noChange,
-				onlyExists("product/compass-dock-in-sidebar/design.md"),
+				onlyExists("ui/compass-dock-in-sidebar/design.md"),
 			),
 		).toEqual([]);
 	});
@@ -872,18 +872,18 @@ describe("evaluate — record-level Superseded pointer", () => {
 	test("a designs-root-relative form does NOT resolve from a nested record (base is locked)", () => {
 		// Writing the pointer bucket-qualified (`compass-dock-in-sidebar/design.md`)
 		// from inside a nested record is wrong: it resolves record-relative to
-		// `product/compass-ade-shell/compass-dock-in-sidebar/design.md`, which the
+		// `ui/compass-ade-shell/compass-dock-in-sidebar/design.md`, which the
 		// resolver rejects.
 		const vs = evaluate(
 			[],
 			[
 				header({
-					path: "docs/designs/product/compass-ade-shell/design.md",
+					path: "docs/designs/ui/compass-ade-shell/design.md",
 					statusLine: "Status: Superseded by compass-dock-in-sidebar/design.md",
 				}),
 			],
 			noChange,
-			onlyExists("product/compass-dock-in-sidebar/design.md"),
+			onlyExists("ui/compass-dock-in-sidebar/design.md"),
 		);
 		expect(vs.length).toBe(1);
 		expect(vs[0]?.message).toContain("does not resolve");

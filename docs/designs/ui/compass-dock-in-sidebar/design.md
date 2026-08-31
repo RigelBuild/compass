@@ -573,7 +573,7 @@ living-spec check: `docs/specs/product/compass.md` contains no dock references
 
 - **The frozen record's reasoning is never rewritten.** This record supersedes
   ADE-shell D7, amends ADE-shell D5, and reverses ADE-shell resolved decision 7.
-  The only edit to `docs/designs/product/compass-ade-shell/design.md` is the
+  The only edit to `docs/designs/ui/compass-ade-shell/design.md` is the
   bidirectional supersede/amend **pointer** the house convention requires — a
   one-blockquote note atop D7 and D5 pointing forward to this record, so a
   reader of the frozen decision in isolation learns it was overridden (the

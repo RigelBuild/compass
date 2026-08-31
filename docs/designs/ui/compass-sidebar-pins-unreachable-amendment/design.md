@@ -14,7 +14,7 @@ ledger gate's touch-coupling leg is satisfied directly; no `Ledger-impact:`
 escape hatch is needed in the PR body.
 
 > **Amends `compass-sidebar-pins` (frozen).** This record is a sibling
-> amendment to `docs/designs/product/compass-sidebar-pins/design.md` (RIG-1632,
+> amendment to `docs/designs/ui/compass-sidebar-pins/design.md` (RIG-1632,
 > DL-096). The merged record is frozen; per sealed convention a later change
 > ADDS a record. This amendment supersedes the frozen record's §T2
 > unresolvable-pin filtering and §T3 fluctuation-coercion clauses per Matt's
@@ -113,7 +113,7 @@ the new contract.
 ## What this amendment supersedes
 
 Both superseded clauses live in the frozen
-`docs/designs/product/compass-sidebar-pins/design.md` (Status: Active,
+`docs/designs/ui/compass-sidebar-pins/design.md` (Status: Active,
 Tracker RIG-1632, ledger DL-096). Everything else in that record — the
 configurable pin layer, Supervisor/Warden removal, empty default set,
 per-workspace persistence, boot-on-first-resolvable-pin, the tree affordance

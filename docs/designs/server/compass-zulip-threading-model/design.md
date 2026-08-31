@@ -14,8 +14,8 @@ Status: Active
 > (store + comms), compass-agent (tools), compass-ui, compass-runner (gateway).
 > **Supersedes by citation** (never rewrites the merged records):
 > `compass-0.8-threading-and-session-renderer` (retired, RIG-2453),
-> [compass-threading-ui](../../product/compass-threading-ui/design.md),
-> [compass-slack-thread-rendering](../../product/compass-slack-thread-rendering.md),
+> [compass-threading-ui](../../ui/compass-threading-ui/design.md),
+> [compass-slack-thread-rendering](../../ui/compass-slack-thread-rendering.md),
 > ledger rows **DL-040** and **DL-041**, and **RIG-1364 T3's conversation
 > write-through** (the streamed-turn → comms auto-post path — D7/T7);
 > **clarifies** DL-037, DL-029, DL-028, DL-072. The ledger delta ships in this

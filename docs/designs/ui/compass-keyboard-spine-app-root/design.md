@@ -4,7 +4,7 @@ Status: Draft
 
 Realization design for the slice the parent record froze and RIG-2130
 deferred: the parent record
-`docs/designs/product/compass-bridge-keyboard-nav/design.md` T1 (§352-416)
+`docs/designs/ui/compass-bridge-keyboard-nav/design.md` T1 (§352-416)
 froze the WHAT — install the keymap dispatcher **once at the App root**
 ("install at the App root (`App.tsx:35-42`, where the store's router seam
 already binds)", §403-405) and register `view.bridge → store.showBridge()` as
