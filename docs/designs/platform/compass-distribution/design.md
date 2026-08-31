@@ -36,6 +36,32 @@ Matt 2026-08-24.
 > lands here, not in `compass-native-packaging/design.md`.)
 > Where this record extends a release-bundling decision (the release asset-set
 > boundary, Fork 2(i)), it says so explicitly.
+>
+> **Layout erratum (2026-08-30, RIG-2754): the macOS `.app` stages the UI dist**
+> **at `Contents/Resources/dist`; the shell resolver was taught that layout.**
+> S1 macOS below prescribes `Compass.app/Contents/Resources/dist` AND calls it
+> "the same beside-the-executable dist resolution the shell already does" — the
+> two are inconsistent. The binary lands at `Contents/MacOS/compass-app`, so
+> `dist` *beside the executable* is `Contents/MacOS/dist`, not `Resources/dist`;
+> a Finder launch passes no `--assets` flag and sets no `$COMPASS_ASSETS_DIR`,
+> so it falls to that default and finds no UI. Ruled (Matt, RIG-2754): keep the
+> macOS-idiomatic `Contents/Resources/dist` layout and teach the resolver.
+> `resolveAssetsDir` (`go/cmd/compass-app/main.go`) now delegates to
+> `distDirForExecutable`, which returns `../Resources/dist` when the executable
+> sits in a `Contents/MacOS` directory and `dist` beside the executable for
+> every other layout (the Linux thin client's `bin/dist`, dev builds). An
+> additive, unit-tested control-flow branch on the shared shell entrypoint — not
+> a layout change to this record.
+>
+> **Tool-path erratum (2026-08-30, RIG-2754): the bundler ships at**
+> **`tools/macos-bundle/` as a registered moon project, not `scripts/macos-bundle.ts`.**
+> T3 below (§585) names `scripts/macos-bundle.ts`, but the repo has no `scripts/`
+> tree and a logic-bearing TypeScript file must be a registered `tools/<name>/`
+> moon project (own `moon.yml`/`package.json`/`tsconfig.json`) or moon never
+> discovers it and its unit tests never run. The bundler ships at
+> `tools/macos-bundle/index.ts` (pure Info.plist/arg core + `import.meta.main`
+> edge), so its typecheck + tests ride the moon-driven CI sweep (GC10, "tests
+> not optional").
 
 ## Problem / Intent
 

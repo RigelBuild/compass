@@ -1,0 +1,14 @@
+{
+	"name": "@compass/macos-bundle",
+	"private": true,
+	"type": "module",
+	"description": "macOS .app/.dmg bundler: templates Info.plist, stages Compass.app/Contents/{MacOS,Resources}, ad-hoc signs and wraps a UDZO .dmg via hdiutil.",
+	"module": "index.ts",
+	"bin": {
+		"macos-bundle": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

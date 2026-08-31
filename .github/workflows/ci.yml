@@ -157,6 +157,7 @@ jobs:
       microvm_affected: ${{ steps.gen.outputs.microvm_affected }}
       forge_affected: ${{ steps.gen.outputs.forge_affected }}
       gtk4_affected: ${{ steps.gen.outputs.gtk4_affected }}
+      darwin_affected: ${{ steps.gen.outputs.darwin_affected }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1382,6 +1383,194 @@ jobs:
             exit 1
           fi
 
+  darwin:
+    name: darwin
+    runs-on: macos-14
+    needs: setup
+    # The macOS compile + bundle gate (compass-distribution T3 / DL-263). The
+    # native shell links the SYSTEM WebKit framework, so it cannot cross-compile
+    # from ubuntu (Global Constraint 5) — this lane runs on a macos-14 (arm64)
+    # runner with cgo against the system frameworks (NO gtk closure on darwin).
+    # It compiles the SAME shell the gtk4-e2e lane does, then stages + ad-hoc
+    # signs the .app and wraps the .dmg via the macos-bundle tool, asserting the
+    # bundle is complete + mountable. The job-level `if:` ANDs the dispatch-aware
+    # gate guard with the darwin affected gate: on a PR it runs only when setup
+    # found the shell surface (go/cmd/compass-app/ or a GTK closure input) or the
+    # macos-bundle tool changed (darwin_affected), and always on push/schedule
+    # and on a base-re-point re-trigger (DL-263 cadence — full sweep on main +
+    # nightly ALWAYS, plus affected-on-PR). The in-step affected guard stays as
+    # defense-in-depth.
+    if: >-
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.darwin_affected == 'true')
+    timeout-minutes: 30
+    env:
+      TMPDIR: /tmp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The darwin affected `git -C ..` diff needs the base branch history.
+          fetch-depth: 0
+          # Base-re-point re-trigger checks out the recomputed merge ref; empty
+          # on every other event (see setup's checkout).
+          ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The whole toolchain — Go + bun — is built from nix (Global Constraint
+          # 3), never a `setup-go` drift. nix runs on macos-14. The two caches
+          # are declared HERE, not delegated via `accept-flake-config` — that
+          # setting makes nix trust the `nixConfig` of ANY flake it evaluates, so
+          # a PR could add its own substituter AND trusted key. Naming the caches
+          # in this reviewed file keeps that trust reviewed.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # Phase one bootstrap: the language runtimes (bun/node/moon/go) come from
+        # nix, not `setup-*` actions (Global Constraint 3) — gate-tools.nix's
+        # `langs` output resolves the identical derivations the dev shell does, so
+        # CI runs the pinned versions byte-for-byte. `langs` is a closed set, so
+        # it needs no `--arg attrs`. Copied verbatim from the gtk4-e2e job.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: macOS compile + bundle gate
+        # The ONE CI lane that compiles the native shell on darwin + exercises
+        # the macos-bundle tool end to end (compass-distribution T3). It is a
+        # DEDICATED step, not a moon-battery task: the compile links the SYSTEM
+        # WebKit framework via cgo (Global Constraint 5 — no gtk closure on
+        # darwin), and the bundle edge (codesign/hdiutil) is mac-only. This is a
+        # COMPILE gate, not a release, so any dev version is fine — the binary
+        # carries a version.txt + `+g<sha>` dev suffix (mirror app-bundle/build.sh
+        # dev-version logic).
+        #
+        # AFFECTED-GUARDED to match the one-job affected posture (DL-263): on a PR
+        # it runs only when go/cmd/compass-app/, a shared GTK closure input, or
+        # the macos-bundle tool actually changed. push-to-main and the nightly
+        # schedule always run it (the full-sweep backstop); a base-re-point
+        # re-trigger (workflow_dispatch) also runs it full. The in-step guard
+        # mirrors the darwinAffected trigger in tools/ci-matrix/index.ts.
+        if: success()
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          # Decide whether this event must run the gate.
+          run_it=1
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            base="origin/${GITHUB_BASE_REF}"
+            # fetch-depth:0 (job checkout) gives the base ref for the diff. Fail
+            # LOUD if it does not resolve rather than swallowing the error as
+            # "not affected": an unresolvable base must red the gate, never skip
+            # it green. No `|| true` on the diff for the same reason.
+            if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+              echo "::error::darwin affected gate: base ref $base does not resolve — cannot compute the affected set"
+              exit 1
+            fi
+            # The darwin lane compiles the SAME shell the gtk4 lane does, so a
+            # closure-only PR must trigger it too; plus a macos-bundle tool change
+            # (the bundler this lane exercises). Mirrors the darwinAffected
+            # trigger in tools/ci-matrix/index.ts.
+            changed=$(git diff --name-only "$base"...HEAD -- \
+              go/cmd/compass-app/ \
+              tools/toolchain/gtk-closure.nix \
+              tools/toolchain/gtk-e2e-env.nix \
+              tools/macos-bundle/)
+            if [ -z "$changed" ]; then
+              run_it=0
+            fi
+          fi
+          if [ "$run_it" = 0 ]; then
+            echo "darwin: PR does not touch the shell surface or the macos-bundle tool — skipping (affected gate)"
+            exit 0
+          fi
+
+          set -euo pipefail
+
+          # Dev compile version: version.txt base + `+g<shortsha>` suffix (mirror
+          # app-bundle/build.sh §41-56). This is a compile gate, not a release,
+          # so the dev suffix is correct — the release lane stamps clean semver.
+          version_base="$(cat version.txt)"
+          [ -n "$version_base" ] || { echo "::error::version.txt missing or empty"; exit 1; }
+          dev="${version_base}+g$(git rev-parse --short HEAD)"
+          echo "darwin: dev bundle version $dev"
+
+          # Compile the darwin shell (cgo against the system WebKit framework, no
+          # build tag — T2 restructured the tags so a bare `go build ./cmd/
+          # compass-app` compiles on darwin).
+          CGO_ENABLED=1 go -C go build -trimpath \
+            -ldflags "-X main.version=$dev" \
+            -o /tmp/compass-app ./cmd/compass-app
+
+          # Run the darwin-tagged unit suite for the shell entrypoint — this is
+          # the ONLY lane that executes it. The moon `compass-go:test` lane runs
+          # untagged (`go test ./...`), which compiles the non-gtk4 stub and
+          # excludes main_test.go; the gtk4-e2e lane compiles the gtk4 build but
+          # `-run E2E`-filters, so it never executes TestDistDirForExecutable.
+          # That test defends the .app dist-resolution contract (the resolver
+          # returns Contents/Resources/dist under a Contents/MacOS executable,
+          # else dist beside it), which is exactly the behavioral change this
+          # lane ships — so its regression guard lives here or nowhere.
+          # `-run` alone exits 0 when it matches nothing (a rename → false
+          # green), so require the test's own PASS line — a rename or skip reds.
+          CGO_ENABLED=1 go -C go test -trimpath \
+            -run 'TestDistDirForExecutable' -count=1 -v \
+            ./cmd/compass-app/ | tee /tmp/darwin-unit.log
+          grep -q '^--- PASS: TestDistDirForExecutable' /tmp/darwin-unit.log || {
+            echo "::error::darwin: TestDistDirForExecutable did not run+pass (renamed or skipped?)"
+            exit 1
+          }
+
+          # The UI dist the .app stages into Contents/Resources/dist.
+          moon run compass-ui:build
+
+          # Stage + ad-hoc sign the .app and wrap the .dmg.
+          out=/tmp/compass-app-darwin-arm64.dmg
+          bun run tools/macos-bundle/index.ts \
+            --binary /tmp/compass-app \
+            --dist apps/ui/dist \
+            --version "$dev" \
+            --out "$out"
+
+          # Assert the dmg exists, mounts, and carries a complete .app.
+          if [ ! -f "$out" ]; then
+            echo "::error::darwin: bundle tool did not produce $out"
+            exit 1
+          fi
+          mnt="$(mktemp -d)"
+          hdiutil attach "$out" -mountpoint "$mnt" -nobrowse -readonly
+          rc=0
+          for want in \
+            "$mnt/Compass.app/Contents/MacOS/compass-app" \
+            "$mnt/Compass.app/Contents/Info.plist" \
+            "$mnt/Compass.app/Contents/Resources/dist/index.html"; do
+            if [ ! -f "$want" ]; then
+              echo "::error::darwin: mounted bundle missing $want"
+              rc=1
+            fi
+          done
+          hdiutil detach "$mnt" || hdiutil detach "$mnt" -force || true
+          if [ "$rc" != 0 ]; then
+            exit 1
+          fi
+          echo "darwin: .app + .dmg complete and mountable"
+
   e2e:
     name: e2e
     runs-on: ubuntu-latest
@@ -1944,7 +2133,7 @@ jobs:
     # `!cancelled()` must be parenthesized against the dispatch OR group: `&&`
     # binds tighter than `||`, so without the parens the trailing
     # `|| inputs.pr != ''` would detach from the AND.
-    needs: [setup, moon, e2e, pgtest, microvm, forge-oracle, gtk4-e2e]
+    needs: [setup, moon, e2e, pgtest, microvm, forge-oracle, gtk4-e2e, darwin]
     if: >-
       !cancelled() &&
       (github.event_name != 'workflow_dispatch' ||
@@ -1981,12 +2170,14 @@ jobs:
           microvm='${{ needs.microvm.result }}'
           forge='${{ needs.forge-oracle.result }}'
           gtk4='${{ needs.gtk4-e2e.result }}'
+          darwin='${{ needs.darwin.result }}'
           pgtest_flag='${{ needs.setup.outputs.pgtest_affected }}'
           microvm_flag='${{ needs.setup.outputs.microvm_affected }}'
           forge_flag='${{ needs.setup.outputs.forge_affected }}'
           gtk4_flag='${{ needs.setup.outputs.gtk4_affected }}'
-          echo "setup=$setup moon=$moon e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4"
-          echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag"
+          darwin_flag='${{ needs.setup.outputs.darwin_affected }}'
+          echo "setup=$setup moon=$moon e2e=$e2e pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk4-e2e=$gtk4 darwin=$darwin"
+          echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk4=$gtk4_flag darwin=$darwin_flag"
           rc=0
           # setup and moon must plainly succeed.
           if [ "$setup" != "success" ]; then
@@ -2020,6 +2211,7 @@ jobs:
           require_gated microvm "$microvm" "$microvm_flag"
           require_gated forge-oracle "$forge" "$forge_flag"
           require_gated gtk4-e2e "$gtk4" "$gtk4_flag"
+          require_gated darwin "$darwin" "$darwin_flag"
           if [ "$rc" != 0 ]; then
             exit 1
           fi

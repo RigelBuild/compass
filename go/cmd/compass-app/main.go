@@ -47,7 +47,8 @@ func run() error {
 
 	assetsFlag := flag.String("assets", "",
 		"Directory of the prebuilt apps/ui dist to serve. Defaults to "+
-			"$COMPASS_ASSETS_DIR, then a 'dist' directory beside the executable.")
+			"$COMPASS_ASSETS_DIR, then the dist for the executable's layout: "+
+			"a .app's Contents/Resources/dist, else a 'dist' beside the executable.")
 	stateDirFlag := flag.String("state-dir", "",
 		"App state directory (the client tokenstore lives here). Defaults to "+
 			"$COMPASS_STATE_DIR, then $XDG_STATE_HOME/compass, then $HOME/.compass.")
@@ -220,8 +221,8 @@ func shellStartupJS(serverURL string) (string, error) {
 }
 
 // resolveAssetsDir picks the dist directory to serve: the --assets flag, else
-// $COMPASS_ASSETS_DIR, else a 'dist' directory beside the executable (where a
-// packaged build stages apps/ui dist). See DE-RISK #1: the dist is outside this
+// $COMPASS_ASSETS_DIR, else the dist directory for the running executable's
+// layout (distDirForExecutable). See DE-RISK #1: the dist is outside this
 // package's tree, so it is served from a runtime-resolved directory rather than
 // embedded.
 func resolveAssetsDir(flagValue string) string {
@@ -232,7 +233,22 @@ func resolveAssetsDir(flagValue string) string {
 		return env
 	}
 	if exe, err := os.Executable(); err == nil {
-		return filepath.Join(filepath.Dir(exe), "dist")
+		return distDirForExecutable(exe)
 	}
 	return "dist"
+}
+
+// distDirForExecutable resolves the dist directory for a given executable path.
+// A macOS .app stages the binary at Contents/MacOS/compass-app and the UI dist
+// at Contents/Resources/dist (the macos-bundle tool, compass-distribution T3),
+// so when the executable sits in a Contents/MacOS directory the dist is one
+// level up at Contents/Resources/dist. Every other packaging — the Linux thin
+// client's bin/compass-app + bin/dist, or a dev build beside the module — stages
+// dist beside the executable.
+func distDirForExecutable(exe string) string {
+	dir := filepath.Dir(exe)
+	if filepath.Base(dir) == "MacOS" && filepath.Base(filepath.Dir(dir)) == "Contents" {
+		return filepath.Join(filepath.Dir(dir), "Resources", "dist")
+	}
+	return filepath.Join(dir, "dist")
 }

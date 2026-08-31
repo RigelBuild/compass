@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# macos-bundle (compass-distribution T3) — the macOS .app/.dmg bundler. Templates
+# Info.plist, stages Compass.app/Contents/{MacOS,Resources}, ad-hoc signs
+# (`codesign --sign -`, GC6/DL-261) and wraps a UDZO .dmg via hdiutil. A
+# bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag): install is
+# inherited via .moon/tasks/tag-bun.yml (the shared root install), so this leaf
+# has no own bun.lock and never runs its own install. Its ci-group.bun tag keeps
+# the ci-matrix generator's zero-untagged assertion satisfied. The edge (codesign
+# /hdiutil) is mac-only and never runs in the moon battery — only its pure core
+# is unit-tested here; the darwin macos-14 CI job exercises the full bundle.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

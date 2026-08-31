@@ -57,6 +57,8 @@ export type GenOutput = {
 	forgeAffected: boolean;
 	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/ or a shared GTK closure input */
 	gtk4Affected: boolean;
+	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell) or the macos-bundle tool */
+	darwinAffected: boolean;
 };
 
 // ── Pure-core constants ────────────────────────────────────────────────────
@@ -92,6 +94,14 @@ const GTK4_CLOSURE_PATHS = [
 	"tools/toolchain/gtk-closure.nix",
 	"tools/toolchain/gtk-e2e-env.nix",
 ];
+/**
+ * darwin trigger: the macos-14 lane compiles the SAME native shell the gtk4 lane
+ * does, so it must fire on any go/cmd/compass-app/ change OR a shared GTK closure
+ * input (mirror gtk4's surface), PLUS a change to the macos-bundle tool itself
+ * (the bundler the lane exercises). Per compass-distribution DL-263: affected on
+ * PR, full-sweep on push/schedule (isFullSweep below).
+ */
+const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
 
 // ── Pure core ──────────────────────────────────────────────────────────────
 
@@ -194,6 +204,14 @@ export function generate(input: GenInput): GenOutput {
 		input.changedPaths.some(
 			(p) => p.startsWith(GTK4_PATH_PREFIX) || GTK4_CLOSURE_PATHS.includes(p),
 		);
+	const darwinAffected =
+		isFullSweep ||
+		input.changedPaths.some(
+			(p) =>
+				p.startsWith(GTK4_PATH_PREFIX) ||
+				GTK4_CLOSURE_PATHS.includes(p) ||
+				p.startsWith(MACOS_BUNDLE_PATH_PREFIX),
+		);
 
 	return {
 		matrix,
@@ -201,6 +219,7 @@ export function generate(input: GenInput): GenOutput {
 		microvmAffected,
 		forgeAffected,
 		gtk4Affected,
+		darwinAffected,
 	};
 }
 
@@ -279,6 +298,7 @@ async function main(): Promise<void> {
 			`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
 			`forge_affected=${out.forgeAffected ? "true" : "false"}`,
 			`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
+			`darwin_affected=${out.darwinAffected ? "true" : "false"}`,
 		];
 
 		const githubOutput = process.env.GITHUB_OUTPUT;
@@ -302,7 +322,7 @@ async function main(): Promise<void> {
 			);
 		}
 		console.log(
-			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected}`,
+			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected} darwin=${out.darwinAffected}`,
 		);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
