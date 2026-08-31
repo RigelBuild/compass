@@ -82,6 +82,20 @@ export const spawnParameters = type({
 	handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe("The new peer's account handle (unique); must not be blank"),
+	role: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"The block-0 prompt selector for the spawned peer — selects " +
+				"config/prompts/<role>/SYSTEM.md. Required; must not be blank. Set at " +
+				"creation only (a spawn onto an existing handle keeps the stored role).",
+		),
+	persona: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"The peer's stable working context (the repos/projects/lanes it works " +
+				"out of — NOT churning per-issue detail), applied as a system-prompt " +
+				"append-overlay. Required; must not be blank. Set at creation only.",
+		),
 	"display_name?": type("string").describe(
 		"Human-readable display name for the new peer",
 	),
@@ -139,8 +153,8 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 		label: "Spawn peer agent",
 		approval: "write",
 		description:
-			"Spawn a new peer agent owned by your owner. Provide a unique handle; " +
-			"optionally a display name.",
+			"Spawn a new peer agent owned by your owner. Provide a unique handle, " +
+			"a role, and a persona; optionally a display name.",
 		parameters: spawnParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
@@ -151,6 +165,8 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 						value: create(SpawnPeerRequestSchema, {
 							handle: params.handle,
 							displayName: params.display_name ?? "",
+							role: params.role,
+							persona: params.persona,
 							// Idempotency key, so a replayed spawn (an agent-turn/model
 							// retry of the same tool call) dedupes at the lifecycle handler
 							// rather than double-spawning. Broker-scoped, never the bare
@@ -164,14 +180,22 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 			if (result.result.case !== "spawn")
 				throw lifecycleFailure(result, "agents_spawn_peer", "spawn");
 			const spawned = result.result.value;
-			// Server values interpolated into text the model reads as authoritative
-			// harness output — a newline in any turns one line into two, the second
-			// unattributed. Each passes through the shared `attr`.
+			// Names-only rendering: `handle` is caller-supplied, `dmChannelName` is a
+			// server value — both interpolate into text the model reads as
+			// authoritative harness output, so each passes through the shared `attr`
+			// (a newline would forge a second, unattributed line). No account /
+			// container / session id is ever rendered. An empty `dmChannelName` means
+			// the post-spawn DM open was deferred (recoverable next turn via
+			// comms_open_dm) — not a failure, so it renders its own guidance line.
+			const text =
+				spawned.dmChannelName === ""
+					? `Spawned peer ${attr(params.handle)}. (DM channel not yet open — use comms_open_dm to reach it.)`
+					: `Spawned peer ${attr(params.handle)}; DM channel ${attr(spawned.dmChannelName)}.`;
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Spawned peer ${attr(spawned.agentAccountId)} (container ${attr(spawned.containerName)}, session ${attr(spawned.sessionId)}).`,
+						text,
 					},
 				],
 			};

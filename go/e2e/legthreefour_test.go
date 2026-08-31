@@ -41,14 +41,12 @@ const mentionMarker = "please take a look"
 // registered before the settling wait, and store-side assertions via
 // store.Open(ctx, f.DSN()).
 //
-// It is PRESENT-BUT-SKIPPED (RED) on the bare stack today, exactly as
-// TestLegTwoRealTurn was on H2: the full H3 agent-lane (native tool
-// registration + the headless approval policy, #202 gaps 1+3, plus the agent
-// image) is unmerged, so the scripted spawn tool-call resolves to "unknown
-// tool" and the peer never comes up (design.md:655-659). That is the intended
-// RED state; podmanUsable() SKIPs it in a container-less sandbox. Every wait it
-// makes is ctx-bounded (AwaitTurnSettled / AwaitDelivery) — no sleeps, no
-// polling, no retries.
+// It runs GREEN on the real stack: the H3 agent-lane (native tool registration
+// + the headless approval policy, plus the agent image) is merged, so the
+// scripted spawn tool-call resolves to the registered agents_spawn_peer and the
+// peer comes up (design.md:655-659). podmanUsable() SKIPs it only in a
+// container-less sandbox. Every wait it makes is ctx-bounded (AwaitTurnSettled /
+// AwaitDelivery) — no sleeps, no polling, no retries.
 func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
@@ -62,13 +60,22 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// it simply provisions and idles, like the leg-2 primitives path).
 	const peerHandle = "leg34-peer"
 	const peerDisplayName = "Leg Three-Four Peer"
+	// The peer's role and persona: agents_spawn_peer requires both (non-blank),
+	// so the scripted spawn must carry them or the tool rejects the call before
+	// the agent loop runs Lifecycle(Spawn). Both are server-authoritative and
+	// tolerant on the agent side — an unconfigured role prompt falls back to the
+	// default block-0 (readMountedRolePrompt), so "manager" needs no materialized
+	// prompt here; persona is free-text.
+	const peerRole = "manager"
+	const peerPersona = "Leg-3/4 e2e peer: idle standby, no lane."
 	// The spawn tool's arguments, serialized JSON (the OpenAI tool-call
 	// contract). Built from the consts above so the minted handle/display name
 	// cannot drift from what the leg-3 assertions resolve. Field names are the
-	// spawnParameters wire schema (lifecycle.ts): handle, display_name.
+	// spawnParameters wire schema (lifecycle.ts): handle, role, persona,
+	// display_name.
 	spawnArgsJSON := fmt.Sprintf(
-		`{"handle":%q,"display_name":%q}`,
-		peerHandle, peerDisplayName,
+		`{"handle":%q,"role":%q,"persona":%q,"display_name":%q}`,
+		peerHandle, peerRole, peerPersona, peerDisplayName,
 	)
 	// The assistant text the closing turn settles on, asserted present in the
 	// spawner's transcript (the same transcript-contains-canned-reply proof as
@@ -116,7 +123,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// outlives stack Down the same way, so reap it by that exact name. Registered
 	// now (before the turn) so it is torn down even if an assertion below
 	// t.Fatals. Best-effort — the peer account id is resolved inside, and if the
-	// spawn never happened (the RED path) there is simply nothing to remove.
+	// spawn did not mint a peer there is simply nothing to remove.
 	t.Cleanup(func() {
 		st, err := store.Open(ctx, f.DSN())
 		if err != nil {
@@ -180,7 +187,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// The spawn minted a fresh agent account resolvable by its handle.
 	peer, err := adminAgentByHandle(ctx, st, peerHandle)
 	if err != nil {
-		t.Fatalf("AgentByHandle(%q): %v — the scripted spawn did not mint the peer account (RED until H3 registers the native spawn tool, design.md:655-659)", peerHandle, err)
+		t.Fatalf("AgentByHandle(%q): %v — the scripted spawn did not mint the peer account (design.md:655-659)", peerHandle, err)
 	}
 	if !peer.IsAgent() {
 		t.Fatalf("resolved account %q is not an agent", peerHandle)
@@ -215,7 +222,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// "account minted, container never started" — the name derivation asserted
 	// above cannot distinguish those.
 	if exec.Command("podman", "container", "exists", peerContainer).Run() != nil {
-		t.Fatalf("peer container %q is not present in podman's runtime set — the scripted spawn minted the account but its container did not come up (RED until H3's agent image carries the native lane, design.md:655-659)", peerContainer)
+		t.Fatalf("peer container %q is not present in podman's runtime set — the scripted spawn minted the account but its container did not come up (design.md:655-659)", peerContainer)
 	}
 
 	// ── Leg 4: post an @mention → mentioned member steers, subscriber delivers ─

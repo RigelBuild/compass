@@ -42,10 +42,14 @@ class FakeTransport implements LifecycleTransport {
 	}
 }
 
+// agentAccountId/containerName/sessionId are present on the wire response but are
+// intentionally never rendered (names-only contract) — only dmChannelName is
+// consumed by the render, so the ids here model the real shape, not live output.
 function spawnResult(
 	agentAccountId: string,
 	containerName: string,
 	sessionId: string,
+	dmChannelName: string,
 ): LifecycleCallResult {
 	return create(LifecycleCallResultSchema, {
 		callId: "call-1",
@@ -55,6 +59,7 @@ function spawnResult(
 				agentAccountId,
 				containerName,
 				sessionId,
+				dmChannelName,
 			}),
 		},
 	});
@@ -105,7 +110,12 @@ function textOf(result: AgentToolResult): string {
 
 describe("LifecycleBroker", () => {
 	test("delegates the call verbatim to the transport and returns its result", async () => {
-		const result = spawnResult("acct-1", "cont-1", "sess-1");
+		const result = spawnResult(
+			"acct-1",
+			"cont-1",
+			"sess-1",
+			"dm--acct-1--acct-9",
+		);
 		const transport = new FakeTransport(result);
 		const broker = new LifecycleBroker(transport);
 		const req: LifecycleCallRequest = create(LifecycleCallRequestSchema, {
@@ -120,7 +130,7 @@ describe("LifecycleBroker", () => {
 	// outlives the session, so two brokers must never mint the same key for the
 	// same tool-call id — a collision is silently swallowed by the dedup join.
 	test("two brokers mint different idempotency keys for the same tool call id", () => {
-		const transport = new FakeTransport(spawnResult("a", "c", "s"));
+		const transport = new FakeTransport(spawnResult("a", "c", "s", "dm-a-b"));
 		const a = new LifecycleBroker(transport).idempotencyKey("tc-1");
 		const b = new LifecycleBroker(transport).idempotencyKey("tc-1");
 
@@ -168,7 +178,7 @@ describe("createLifecycleTools", () => {
 describe("agents_spawn_peer", () => {
 	test("puts the exact SpawnPeerRequest on the wire incl. a minted clientRequestId", async () => {
 		const transport = new FakeTransport(
-			spawnResult("acct-9", "cont-9", "sess-9"),
+			spawnResult("acct-9", "cont-9", "sess-9", "dm--acct-1--acct-9"),
 		);
 		const broker = new LifecycleBroker(transport);
 		const t = tool(broker, "agents_spawn_peer");
@@ -176,6 +186,8 @@ describe("agents_spawn_peer", () => {
 		await exec(t, "tc-42", {
 			handle: "worker-a",
 			display_name: "Worker A",
+			role: "manager",
+			persona: "runs out of the compass-agent repo",
 		});
 
 		expect(transport.requests).toHaveLength(1);
@@ -186,6 +198,8 @@ describe("agents_spawn_peer", () => {
 		const spawn = req.call.value;
 		expect(spawn.handle).toBe("worker-a");
 		expect(spawn.displayName).toBe("Worker A");
+		expect(spawn.role).toBe("manager");
+		expect(spawn.persona).toBe("runs out of the compass-agent repo");
 		expect(spawn.clientRequestId.length).toBeGreaterThan(0);
 		expect(spawn.clientRequestId).toEndWith(":tc-42");
 		expect(spawn.clientRequestId).toBe(broker.idempotencyKey("tc-42"));
@@ -193,70 +207,89 @@ describe("agents_spawn_peer", () => {
 
 	test("defaults optional params to empty strings on the wire", async () => {
 		const transport = new FakeTransport(
-			spawnResult("acct-9", "cont-9", "sess-9"),
+			spawnResult("acct-9", "cont-9", "sess-9", "dm--acct-1--acct-9"),
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		await exec(t, "tc-1", { handle: "worker-a" });
+		await exec(t, "tc-1", {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		});
 
 		const req = transport.requests[0];
 		if (req.call.case !== "spawn") throw new Error("expected spawn case");
 		expect(req.call.value.displayName).toBe("");
 	});
 
-	test("renders the spawned peer's server values as a text block", async () => {
+	test("renders the peer handle and DM channel name, never an id", async () => {
 		const transport = new FakeTransport(
-			spawnResult("acct-9", "cont-9", "sess-9"),
+			spawnResult("acct-9", "cont-9", "sess-9", "dm--acct-1--acct-9"),
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		const result = await exec(t, "tc-1", { handle: "worker-a" });
+		const result = await exec(t, "tc-1", {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		});
 
 		expect(textOf(result)).toBe(
-			"Spawned peer acct-9 (container cont-9, session sess-9).",
+			"Spawned peer worker-a; DM channel dm--acct-1--acct-9.",
 		);
 	});
 
-	test("a malformed server value degrades rather than forging output", async () => {
+	test("an empty dmChannelName renders the recoverable deferral line", async () => {
 		const transport = new FakeTransport(
-			spawnResult('acct"9\ninjected', "cont-9", "sess-9"),
+			spawnResult("acct-9", "cont-9", "sess-9", ""),
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		const result = await exec(t, "tc-1", { handle: "worker-a" });
+		const result = await exec(t, "tc-1", {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		});
 
 		expect(textOf(result)).toBe(
-			"Spawned peer (malformed) (container cont-9, session sess-9).",
+			"Spawned peer worker-a. (DM channel not yet open — use comms_open_dm to reach it.)",
 		);
 	});
 
-	// The spawn render interpolates THREE server-minted values through `attr`
-	// (agentAccountId, containerName, sessionId). One malformed case on the first
-	// field cannot catch a guard dropped from either of the other two — the exact
-	// class of drift the shared render-guard exists to stop. Cover each site.
-	test("a malformed container name degrades without touching the others", async () => {
+	// The spawn render interpolates two values through `attr` — the caller-supplied
+	// `handle` and the server-minted `dmChannelName`. One malformed case on one
+	// field cannot catch a guard dropped from the other, so cover each site.
+	test("a malformed handle degrades rather than forging output", async () => {
 		const transport = new FakeTransport(
-			spawnResult("acct-9", 'cont"9\ninjected', "sess-9"),
+			spawnResult("acct-9", "cont-9", "sess-9", "dm--acct-1--acct-9"),
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		const result = await exec(t, "tc-1", { handle: "worker-a" });
+		const result = await exec(t, "tc-1", {
+			handle: 'worker"a\ninjected',
+			role: "manager",
+			persona: "compass-agent lane",
+		});
 
 		expect(textOf(result)).toBe(
-			"Spawned peer acct-9 (container (malformed), session sess-9).",
+			"Spawned peer (malformed); DM channel dm--acct-1--acct-9.",
 		);
 	});
 
-	test("a malformed session id degrades without touching the others", async () => {
+	test("a malformed dmChannelName degrades without touching the handle", async () => {
 		const transport = new FakeTransport(
-			spawnResult("acct-9", "cont-9", 'sess"9\ninjected'),
+			spawnResult("acct-9", "cont-9", "sess-9", 'dm"9\ninjected'),
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		const result = await exec(t, "tc-1", { handle: "worker-a" });
+		const result = await exec(t, "tc-1", {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		});
 
 		expect(textOf(result)).toBe(
-			"Spawned peer acct-9 (container cont-9, session (malformed)).",
+			"Spawned peer worker-a; DM channel (malformed).",
 		);
 	});
 
@@ -266,9 +299,13 @@ describe("agents_spawn_peer", () => {
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		await expect(exec(t, "tc-1", { handle: "worker-a" })).rejects.toThrow(
-			"agents_spawn_peer failed: not_found: no such owner",
-		);
+		await expect(
+			exec(t, "tc-1", {
+				handle: "worker-a",
+				role: "manager",
+				persona: "compass-agent lane",
+			}),
+		).rejects.toThrow("agents_spawn_peer failed: not_found: no such owner");
 	});
 
 	// The thrown failure text is shared by both tools (`lifecycleFailure`) and
@@ -281,7 +318,11 @@ describe("agents_spawn_peer", () => {
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		const err = await exec(t, "tc-8", { handle: "worker-a" }).then(
+		const err = await exec(t, "tc-8", {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		}).then(
 			() => undefined,
 			(e: unknown) => e as Error,
 		);
@@ -303,7 +344,11 @@ describe("agents_spawn_peer", () => {
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		const err = await exec(t, "tc-7", { handle: "worker-a" }).then(
+		const err = await exec(t, "tc-7", {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		}).then(
 			() => undefined,
 			(e: unknown) => e as Error,
 		);
@@ -319,7 +364,13 @@ describe("agents_spawn_peer", () => {
 		const transport = new FakeTransport(despawnResult());
 		const t = tool(new LifecycleBroker(transport), "agents_spawn_peer");
 
-		await expect(exec(t, "tc-1", { handle: "worker-a" })).rejects.toThrow(
+		await expect(
+			exec(t, "tc-1", {
+				handle: "worker-a",
+				role: "manager",
+				persona: "compass-agent lane",
+			}),
+		).rejects.toThrow(
 			"agents_spawn_peer: protocol violation — expected a spawn result, got despawn",
 		);
 	});
@@ -379,7 +430,7 @@ describe("agents_despawn_peer", () => {
 	});
 
 	test("a wrong result case throws a protocol violation", async () => {
-		const transport = new FakeTransport(spawnResult("a", "c", "s"));
+		const transport = new FakeTransport(spawnResult("a", "c", "s", "dm-a-b"));
 		const t = tool(new LifecycleBroker(transport), "agents_despawn_peer");
 
 		await expect(exec(t, "tc-1", { agent_handle: "acct-3" })).rejects.toThrow(
@@ -393,10 +444,51 @@ describe("lifecycle parameter schemas", () => {
 		schema(params) instanceof ArkErrors;
 
 	test("spawn rejects an empty or whitespace-only handle", () => {
+		const valid = {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		};
 		expect(rejects(spawnParameters, {})).toBe(true);
-		expect(rejects(spawnParameters, { handle: "" })).toBe(true);
-		expect(rejects(spawnParameters, { handle: "  " })).toBe(true);
-		expect(rejects(spawnParameters, { handle: "worker-a" })).toBe(false);
+		expect(rejects(spawnParameters, { ...valid, handle: "" })).toBe(true);
+		expect(rejects(spawnParameters, { ...valid, handle: "  " })).toBe(true);
+		expect(rejects(spawnParameters, valid)).toBe(false);
+	});
+
+	test("spawn rejects a missing, empty, or whitespace-only role", () => {
+		const valid = {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		};
+		expect(rejects(spawnParameters, { handle: "worker-a", persona: "x" })).toBe(
+			true,
+		);
+		expect(rejects(spawnParameters, { ...valid, role: "" })).toBe(true);
+		expect(rejects(spawnParameters, { ...valid, role: "  " })).toBe(true);
+	});
+
+	test("spawn rejects a missing, empty, or whitespace-only persona", () => {
+		const valid = {
+			handle: "worker-a",
+			role: "manager",
+			persona: "compass-agent lane",
+		};
+		expect(
+			rejects(spawnParameters, { handle: "worker-a", role: "manager" }),
+		).toBe(true);
+		expect(rejects(spawnParameters, { ...valid, persona: "" })).toBe(true);
+		expect(rejects(spawnParameters, { ...valid, persona: "  " })).toBe(true);
+	});
+
+	// The `.narrow` non-blank rules do not survive into the JSON Schema the model
+	// is shown, so the descriptions are the only place a caller reads them —
+	// asserted here so dropping the rule from a description reddens rather than
+	// silently re-blinding the model while the runtime narrow still rejects.
+	test("spawn descriptions carry the non-blank rule unrepresentable in JSON Schema", () => {
+		expect(spawnParameters.get("handle").description).toContain("blank");
+		expect(spawnParameters.get("role").description).toContain("blank");
+		expect(spawnParameters.get("persona").description).toContain("blank");
 	});
 
 	test("despawn rejects an empty or whitespace-only agent_handle", () => {
