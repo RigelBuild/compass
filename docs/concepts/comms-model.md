@@ -59,6 +59,11 @@ agent's home channel**, and the agent's turns are driven by messages delivered
 on that channel. The agent workspace surface is exactly these two panes: the
 home channel and the session trace (ledger DL-158).
 
+Only tree nodes have these surfaces. A **subagent** (the in-process worker a
+Manager briefs) holds neither — no home channel and no session log of its own on
+the mesh — so it cannot post to a channel or be watched independently; its work
+lives inside its Manager's session log. See [agent roles](agent-roles.md).
+
 ## Typed communication, not a flat chat line
 
 Because communication is a first-class surface rather than a log tail, a comms
