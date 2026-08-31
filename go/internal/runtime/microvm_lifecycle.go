@@ -337,6 +337,9 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id ContainerID) error {
 	if err != nil {
 		return fmt.Errorf("microvm: launching session %s: %w", id, err)
 	}
+	if vm == nil {
+		return fmt.Errorf("microvm: launching session %s: launch returned a nil guest with no error", id)
+	}
 	// From here any failure must tear down the booted VM before returning:
 	// booted is cleared once ownership transfers to the session table.
 	booted := true
