@@ -303,8 +303,12 @@ a bespoke channel fabric.
 
 **What NATS is for here — and what it is not.** NATS is the eventing
 substrate UNDER the async layer. It does not replace Connect at the
-synchronous RPC edges (Client↔Server RPC stays Connect/gRPC, DL-013), it does
-not touch the agent↔Runner vsock hop (RIG-2394), and it never becomes a second
+synchronous RPC edges: Client↔Server RPC stays Connect/gRPC, and the
+Server↔Runner typed request/reply legs (enrollment, the unary `Relay*Call`s /
+`CommitConversationFrame` / `FetchSecrets`, and the bulk `FetchAgentConfig`
+pull) stay on the reduced Connect/gRPC edge too — only the async
+command/event traffic rides NATS (the two-plane split, DL-309). It does not
+touch the agent↔Runner vsock hop (RIG-2394), and it never becomes a second
 store — Postgres remains the durability source of truth, preserving the
 DL-019/DL-020 spirit ("the ring is never a second store; losing it loses no
 committed state",
@@ -890,11 +894,11 @@ RIG-2485.
 
 ## Ledger impact
 
-The driver flips `docs/designs/DECISIONS.md`; this section is the verbatim
-delta. New rows take the next free `DL-<n>` IDs at flip time (append-only);
-they are named N1-N4 here only for cross-reference.
+This section is the verbatim delta the same-PR flip landed in
+`docs/designs/DECISIONS.md`; the rows took the next free `DL-<n>` IDs
+(append-only) and are named N1-N7 here only for cross-reference.
 
-### Proposed row adds
+### Row adds
 
 - **N1 (Storage):** "Multi-tenant isolation is one shared Postgres
   database with a `tenant_id` column and row-level security enforced per
@@ -974,7 +978,7 @@ they are named N1-N4 here only for cross-reference.
   lane, folded into this record's T1/T2 tenant-scoping where they reach that
   table" — Record: this record, §Resolved decisions (RIG-2921).
 
-### Proposed supersessions of Matt-ruled Active rows (the supersession call is Matt's at freeze — see OQ-1)
+### Supersessions of Matt-ruled Active rows (ruled at freeze — see Resolved decisions, OQ-1)
 
 - **DL-014** ("NATS/JetStream is not a Client/Runner-facing transport; it is
   comms-internal only", `docs/designs/DECISIONS.md:66`) → Superseded by N3.
