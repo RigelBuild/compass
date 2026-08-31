@@ -12,7 +12,7 @@ import (
 )
 
 // The DL-053 agent-notification subscription writer (RIG-2732 Piece 1, design
-// docs/designs/product/compass-notification-delivery/design.md): the Server-side
+// docs/designs/server/compass-notification-delivery/design.md): the Server-side
 // Postgres row that records an agent's standing interest in one forge artifact.
 // agent_forge_subscriptions is the per-subscriber DELIVERY-cursor table
 // (delivered_revision/delivered_at); forge_artifact_cursors is the shared

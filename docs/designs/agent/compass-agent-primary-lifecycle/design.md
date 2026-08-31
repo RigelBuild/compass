@@ -4,7 +4,7 @@ Status: Active
 Tracker: SEA
 
 > **Amends frozen contract (#1018, DL-091 / DL-032).** This record is a
-> sibling amendment to `docs/designs/product/compass-issue-model/design.md`
+> sibling amendment to `docs/designs/server/compass-issue-model/design.md`
 > (merged in #1018) and composes with the DL-070 server projection it froze.
 > It ratifies Matt's 2026-08-04 ruling that the board lifecycle is
 > **agent-primary**: "i'm not sure we should even have the UI move cards? i

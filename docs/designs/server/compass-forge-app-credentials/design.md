@@ -41,7 +41,7 @@ Six threads:
    app-actor is a delegation endpoint that cannot be *assigned* work
    (responder record: "a delegation is routed to the right stable Compass
    Manager … the Linear session is a doorway, not a home",
-   `docs/designs/product/compass-linear-agent-responder/design.md:42-45`), so
+   `docs/designs/server/compass-linear-agent-responder/design.md:42-45`), so
    a live end-to-end delegation needs a user identity to perform the
    human→app handoff.
 

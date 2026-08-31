@@ -4,7 +4,7 @@ Status: Active
 Tracker: SEA
 
 > **Amends frozen contract (#1018, DL-068).** This record is a sibling
-> amendment to `docs/designs/product/compass-issue-model/design.md` (merged in
+> amendment to `docs/designs/server/compass-issue-model/design.md` (merged in
 > #1018): the merged record is frozen, so a later change ADDS a record. It
 > ratifies Matt's 2026-08-01 ruling that agent attribution is a plain display
 > fact — not a trust claim — reversing DL-068's hedge-unless-verified board
@@ -135,7 +135,7 @@ Author this record; add DL-094 (the display-fact contract); flip DL-068 to
 supersede is warranted (see §Ledger delta for the DL-092 judgment).
 
 `Interfaces:` consumes the frozen records cited above; produces
-`docs/designs/product/compass-attribution-simplification/design.md` and the
+`docs/designs/server/compass-attribution-simplification/design.md` and the
 `DECISIONS.md` delta (DL-094 + the DL-068 flip). Gate: `design-ledger-gate`.
 
 ### T2 — proto: slim `AgentAttribution` (compass repo; NOT this PR)

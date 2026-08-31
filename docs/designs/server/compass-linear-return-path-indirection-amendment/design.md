@@ -4,7 +4,7 @@ Status: Active
 Tracker: RIG-2794
 
 > **Extends #625 (frozen).** This record is a sibling amendment to
-> `docs/designs/product/compass-linear-agent-responder/design.md` (merged in
+> `docs/designs/server/compass-linear-agent-responder/design.md` (merged in
 > #625). The merged record is frozen; per house convention a later change ADDS
 > a record. This amendment changes ONE thing in that record's Part 3 return
 > path: WHERE the session's `externalUrls` link points — a stable

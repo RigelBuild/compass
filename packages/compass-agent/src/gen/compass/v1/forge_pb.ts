@@ -1,5 +1,5 @@
 // The compass.v1 forge notification + shared carrier leaf (RIG-1731 A1, design
-// docs/designs/product/compass-server-ownership-layer-amendment/design.md §A1).
+// docs/designs/server/compass-server-ownership-layer-amendment/design.md §A1).
 //
 // INTERNAL-ONLY surface. Like agent.proto / agent_gateway.proto / runner.proto,
 // and unlike compass.proto / comms.proto (the public generated-client door

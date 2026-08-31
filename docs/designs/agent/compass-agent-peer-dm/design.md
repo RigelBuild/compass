@@ -53,7 +53,7 @@ owner-pull. No new delivery rail, no new authz model.
 
 Matt: ids are a leak; client UIs and agents address channels and topics only
 by their actual name. The precedent is the merged handle-addressing cutover
-(`docs/designs/product/compass-handle-addressing-cutover/design.md`, PR #698,
+(`docs/designs/server/compass-handle-addressing-cutover/design.md`, PR #698,
 RIG-2880), whose pattern this record mirrors exactly:
 
 - **Request-INPUT** fields carry the name, resolved to an id at the service

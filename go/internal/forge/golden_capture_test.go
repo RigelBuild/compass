@@ -2,7 +2,7 @@ package forge
 
 // Wire canonicalization + fixture derivation for the -update live-capture path
 // (leg 2 of the forge integration-testing record,
-// docs/designs/product/compass-forge-integration-testing/design.md §T2; RIG-2229).
+// docs/designs/server/compass-forge-integration-testing/design.md §T2; RIG-2229).
 //
 // This file is UNTAGGED on purpose: the canonicalization logic and its
 // invariants run in the normal credential-free `go test ./internal/forge/`

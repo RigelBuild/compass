@@ -4,7 +4,7 @@ Status: Active
 Tracker: RIG-2717
 
 > **Extends #625 (frozen).** This record is a sibling amendment to
-> `docs/designs/product/compass-linear-agent-responder/design.md` (merged in
+> `docs/designs/server/compass-linear-agent-responder/design.md` (merged in
 > #625). The merged record is frozen; per house convention a later change ADDS
 > a record. This amendment changes two things about the frozen record's Part 1 /
 > T7 webhook receiver: (1) the mount **path** moves from bare `/webhooks` to

@@ -4,11 +4,11 @@ Status: Active
 Tracker: SEA
 
 > **Extends #995 (frozen).** This record is a sibling amendment to
-> `docs/designs/product/compass-server-ownership-layer/design.md` (merged in
+> `docs/designs/server/compass-server-ownership-layer/design.md` (merged in
 > #995). The merged record is frozen; per sealed convention a later change ADDS
 > a record. This amendment reconciles #995's forge-shaped proto type family to
 > the single canonical `compass.v1` family frozen by
-> `docs/designs/product/compass-issue-model/design.md` (#1018).
+> `docs/designs/server/compass-issue-model/design.md` (#1018).
 
 ## Problem / Intent
 
