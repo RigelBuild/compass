@@ -230,7 +230,7 @@ fixture from this record. This record does not edit the dogfood-e2e record.
 
 ### A5 — Record placement: standalone product record
 
-`docs/designs/product/compass-test-strategy/design.md` — cross-cutting over
+`docs/designs/meta/compass-test-strategy/design.md` — cross-cutting over
 the verticals and the gate contract, directory-form like its siblings.
 Records freeze on merge; this one supersedes-by-citation and rewrites none.
 It supersedes its own ancestor record in the two amended decisions (D-A1,

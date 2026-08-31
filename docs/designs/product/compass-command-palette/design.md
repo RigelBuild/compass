@@ -9,7 +9,7 @@ parallel — the palette is the *do-an-action* surface, the overlay the
 *reference sheet*; the shared substrate is the App-root dispatcher and
 registry both consume, plus the shared commands-as-inventory rule OWNED by
 the RIG-2529 tier-3 scope-gate record
-(`docs/designs/product/compass-tier3-scope-gate/design.md`) — an external
+(`docs/designs/meta/compass-tier3-scope-gate/design.md`) — an external
 frozen dependency both records cite, never redefine (see A3/D6). No other
 cross-dependency is designed here, but at IMPL time the palette and overlay
 PRs touch the same four App-root wiring lines (`spine.ts` deps + signature,
@@ -244,7 +244,7 @@ expose — OQ-4.
 
 **The shared commands-as-inventory rule** (stated identically in the RIG-2482
 overlay record; OWNED by the RIG-2529 tier-3 scope-gate record,
-`docs/designs/product/compass-tier3-scope-gate/design.md`): *register =
+`docs/designs/meta/compass-tier3-scope-gate/design.md`): *register =
 actionable-from-anywhere; a dispatching surface (this palette's action mode)
 reads the registry, a display surface (the overlay) reads the keymap; a
 command is registered beside its behavior, never purely for discoverability —

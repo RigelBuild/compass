@@ -1,7 +1,7 @@
 // Source-hygiene gate: no retired-milestone design citations survive in shipped
 // UI source. The early Compass milestone records (v0.3 through v0.8) were
 // retired (RIG-2453); their still-true rationale was consolidated into
-// `docs/designs/product/compass-architecture-lineage/design.md` and every
+// `docs/designs/meta/compass-architecture-lineage/design.md` and every
 // shipped citation re-pointed there.
 //
 // A vintage provenance tag naming a retired milestone — `design compass-0.6`,
@@ -73,7 +73,7 @@ describe("design-citation hygiene (no retired-milestone design refs)", () => {
 		expect(
 			violations,
 			violations.length > 0
-				? `Retired-milestone design citations found in shipped source — re-point to the architecture-lineage record (docs/designs/product/compass-architecture-lineage/design.md):\n${report}`
+				? `Retired-milestone design citations found in shipped source — re-point to the architecture-lineage record (docs/designs/meta/compass-architecture-lineage/design.md):\n${report}`
 				: "",
 		).toEqual([]);
 	});
