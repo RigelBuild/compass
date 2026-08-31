@@ -209,24 +209,37 @@ func (b *Bus[P]) publish(traceparent string, payload P) uint64 {
 	// behind, so latch it lagged and close its channel (the reader sees the
 	// closed channel + the lag flag and emits a terminal resync). Retain only the
 	// still-live subscribers.
-	live := b.subscribers[:0]
-	for _, sub := range b.subscribers {
-		if sub.lagged.get() {
-			continue
+	//
+	// Fast path: no subscriber lags, so b.subscribers is left untouched and
+	// nothing is allocated — the steady state on every publish. Only when a
+	// subscriber is actually dropped do we rebuild the slice into a fresh,
+	// compacted copy (no nil tail, so the old in-place [:0] compaction's
+	// tail-nil-out — which nilaway reads as storing nil into the field — is gone;
+	// the discarded backing array takes the dropped pointers with it, no leak).
+	var live []*subscriber[P] // nil until the first drop forces a rebuild
+	for i, sub := range b.subscribers {
+		drop := sub.lagged.get()
+		if !drop {
+			select {
+			case sub.ch <- event:
+			default:
+				sub.lagged.set()
+				sub.close()
+				drop = true
+			}
 		}
-		select {
-		case sub.ch <- event:
+		switch {
+		case drop && live == nil:
+			// First drop: seed the replacement with everyone kept so far.
+			live = make([]*subscriber[P], 0, len(b.subscribers))
+			live = append(live, b.subscribers[:i]...)
+		case !drop && live != nil:
 			live = append(live, sub)
-		default:
-			sub.lagged.set()
-			sub.close()
 		}
 	}
-	// Zero out the dropped tail so retained-but-moved pointers don't leak.
-	for i := len(live); i < len(b.subscribers); i++ {
-		b.subscribers[i] = nil
+	if live != nil {
+		b.subscribers = live
 	}
-	b.subscribers = live
 
 	return seq
 }

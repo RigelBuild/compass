@@ -602,7 +602,7 @@ func resolveProgram(file string, env []string) (string, error) {
 // isExecutable reports whether path is a regular file with an execute bit set.
 func isExecutable(path string) bool {
 	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+	return err == nil && info != nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 // initiateStop is the RPC-driven shutdown trigger (§(d)): it SIGTERMs every
