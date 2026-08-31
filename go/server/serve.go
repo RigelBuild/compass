@@ -903,6 +903,12 @@ type boardIngestLane struct {
 	arm        *ingest.BoardWebhookArm
 	reconciler *ingest.BoardReconciler
 	sink       ForgeEventSink // the arm; the ingress fan-out registers it
+	// client is the shared GitHub App client this lane's arm + reconciler ride
+	// (the SAME object buildForgeNotifyLane is handed). Recorded here as
+	// test-observable state so the RIG-2991 one-budget-gate unit test can assert
+	// both lanes ride ONE client — a builder that minted its own would record a
+	// different pointer and flip that assertion red. Production reads it never.
+	client *forge.GitHub
 }
 
 // buildBoardWebhookWiring builds BOTH forge lanes (board ingestion + agent
@@ -1063,7 +1069,7 @@ func buildBoardIngestLane(
 		Backstop: fc.App.ReconcileBackstop,
 		Log:      log,
 	})
-	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm}, nil
+	return &boardIngestLane{arm: arm, reconciler: reconciler, sink: arm, client: client}, nil
 }
 
 // boardTargetStore adapts *store.Store to ingest.TargetChecker: the point
@@ -1119,6 +1125,14 @@ type forgeNotifyLane struct {
 	arm        *ingest.NotifyWebhookArm
 	reconciler *ingest.NotifyReconciler
 	sink       ForgeEventSink // the arm; the ingress fan-out registers it
+	// reader is the notify-read client this lane's reconciler + checks roller
+	// ride. For the GitHub lane it is the SAME *forge.GitHub buildBoardIngestLane
+	// is handed (the shared App client); the Linear lane records its own
+	// *forge.Linear. Recorded here as test-observable state so the RIG-2991
+	// one-budget-gate unit test can assert the GitHub board + notify lanes ride
+	// ONE client — a builder that minted its own would record a different pointer.
+	// Production reads it never.
+	reader forge.NotifyReader
 }
 
 // forgeNotifyStore adapts *store.Store to ingest.NotifyStore, binding the forge
@@ -1332,7 +1346,7 @@ func buildForgeNotifyLane(
 			Backstop: fc.App.ReconcileBackstop,
 			Log:      log,
 		})
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm}
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client}
 }
 
 // buildLinearNotifyLane assembles the Linear agent-notification lane (RIG-2732
@@ -1384,7 +1398,7 @@ func buildLinearNotifyLane(
 			Backstop: 0, // no App config carries a Linear backstop; 0 -> ingest's defaultBackstop.
 			Log:      log,
 		})
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm}, nil
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client}, nil
 }
 
 // newDeclaredSecretResolver returns a func that resolves the declared server_only

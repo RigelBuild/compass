@@ -9,10 +9,16 @@ package server
 // leave the second lane's gate unarmed, so its read would issue a live request
 // instead of fast-failing; this test asserts the opposite.
 //
+// The proof is LANE-dependent, not client-dependent: it reads the client each
+// lane actually recorded (boardLane.client, notifyLane.reader — the exact object
+// each builder threaded into its arm/reconciler) and drives the gate through
+// those, never through a client handle the test holds directly. So a builder that
+// ACCEPTED the shared client but minted its own for its arm would record a
+// different pointer, and both the identity assertion and the fast-fail would fail.
+//
 // No Postgres: buildBoardIngestLane/buildForgeNotifyLane touch the store only via
 // reconcileForgeSeed (a no-op on an empty seed) and adapters they hold but this
-// test never sweeps, so a nil *store.Store is safe here. The proof drives the
-// exact *forge.GitHub the two builders were handed.
+// test never sweeps, so a nil *store.Store is safe here.
 
 import (
 	"context"
@@ -64,17 +70,20 @@ type staticTokenSource struct{}
 func (staticTokenSource) Token(context.Context) (string, error) { return "t", nil }
 func (staticTokenSource) Invalidate()                           {}
 
-// TestForgeLanesShareOneBudgetGate proves the two forge lane builders take, and
-// build over, ONE shared forge.GitHub — so the client-side budget gate they ride
-// is a single gate. It builds one forge.GitHub over a scripted transport, hands
-// it to BOTH buildBoardIngestLane and buildForgeNotifyLane (each now takes the
-// client as its only forge input — neither can construct a second client), then
-// on that one client arms the gate through the board lane's read surface
-// (ListUpdatedIssues) and asserts the notify lane's read surface
+// TestForgeLanesShareOneBudgetGate proves the board-ingest lane and the
+// agent-notification lane ride ONE shared forge.GitHub — so the client-side
+// budget gate they ride is a single gate. It builds one forge.GitHub over a
+// scripted transport, hands it to BOTH buildBoardIngestLane and
+// buildForgeNotifyLane, then reads the client EACH LANE RECORDED
+// (boardLane.client, notifyLane.reader — the exact object each builder threaded
+// into its arm/reconciler) and (1) asserts both are the one client passed in,
+// (2) arms the gate through the board lane's recorded client
+// (ListUpdatedIssues), and (3) asserts the notify lane's recorded reader
 // (ListNewArtifacts) fast-fails with ErrBudgetExhausted and issues NO second
 // request. The pre-RIG-2991 shape — each builder minting its own client — would
-// give the notify surface an independent, unarmed gate whose read would issue a
-// live request; the shared client makes the second read fast-fail instead.
+// record a different pointer per lane: the identity assertion would fail, and the
+// notify reader's independent, unarmed gate would issue a live request instead of
+// fast-failing.
 func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 	ctx := context.Background() // test root
 	const host = "github.com"
@@ -110,26 +119,35 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 		t.Fatal("buildForgeNotifyLane returned nil, want an assembled lane")
 	}
 
-	// Arm the gate through the board lane's read surface: a 403 + Retry-After
-	// arms the shared client's resetAt.
-	if _, err := client.ListUpdatedIssues(ctx, "owner/repo", time.Time{}, ""); err == nil {
-		t.Fatal("first read (board lane surface): err = nil, want the 403 rate-limit signal to arm the gate")
+	// (1) Each lane recorded the ONE client it was handed: a builder that minted
+	// its own would record a different pointer here.
+	if boardLane.client != client {
+		t.Fatal("board lane recorded a different *forge.GitHub than the one passed in")
+	}
+	if notifyLane.reader != forge.NotifyReader(client) {
+		t.Fatal("notify lane recorded a different client than the one passed in")
+	}
+
+	// (2) Arm the gate through the BOARD LANE's recorded client: a 403 +
+	// Retry-After arms that client's resetAt.
+	if _, err := boardLane.client.ListUpdatedIssues(ctx, "owner/repo", time.Time{}, ""); err == nil {
+		t.Fatal("first read (board lane's client): err = nil, want the 403 rate-limit signal to arm the gate")
 	}
 	if rt.calls != 1 {
 		t.Fatalf("after arming: transport calls = %d, want 1 (the single 403)", rt.calls)
 	}
 
-	// The notify lane's read surface now rides the SAME armed gate: it must
-	// fast-fail with ErrBudgetExhausted and issue NO request.
-	_, err = client.ListNewArtifacts(ctx, "owner/repo", compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 0, "")
+	// (3) The NOTIFY LANE's recorded reader now rides the SAME armed gate: it
+	// must fast-fail with ErrBudgetExhausted and issue NO request.
+	_, err = notifyLane.reader.ListNewArtifacts(ctx, "owner/repo", compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 0, "")
 	if err == nil {
-		t.Fatal("notify-lane read after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
+		t.Fatal("notify lane's reader after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
 	}
 	if !errors.Is(err, forge.ErrBudgetExhausted) {
-		t.Fatalf("notify-lane read err = %v, want ErrBudgetExhausted", err)
+		t.Fatalf("notify lane's reader err = %v, want ErrBudgetExhausted", err)
 	}
 	if rt.calls != 1 {
-		t.Fatalf("notify-lane read issued a request through an armed shared gate: transport calls = %d, want 1 "+
+		t.Fatalf("notify lane's reader issued a request through an armed shared gate: transport calls = %d, want 1 "+
 			"(two independent gates would let it through as call 2)", rt.calls)
 	}
 }
