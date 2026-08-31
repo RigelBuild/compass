@@ -331,24 +331,31 @@ func (r *recordingRunner) forgeNotificationsForSession(sessionID string) []*comp
 	return out
 }
 
-// waitForForgeNotification event-gates until at least one ForgeNotification is
-// recorded on sessionID, then returns that session's slice — never a sleep.
-// Bounded by testTimeout so a wedged arm/dispatch fails fast.
-func waitForForgeNotification(t *testing.T, r *recordingRunner, sessionID string) []*compassv1internal.ForgeNotification {
+// waitForNForgeNotifications event-gates until at least n ForgeNotification
+// frames are recorded on sessionID, then returns that session's slice — never a
+// sleep. Bounded by testTimeout so a wedged arm/dispatch fails fast.
+func waitForNForgeNotifications(t *testing.T, r *recordingRunner, sessionID string, n int) []*compassv1internal.ForgeNotification {
 	t.Helper()
 	deadline := timeAfter()
 	for {
 		got := r.forgeNotificationsForSession(sessionID)
-		if len(got) >= 1 {
+		if len(got) >= n {
 			return got
 		}
 		select {
 		case <-deadline:
-			t.Fatalf("no forge notification on session %q within %s (total frames seen: %d)", sessionID, testTimeout, len(r.forgeNotifications()))
+			t.Fatalf("fewer than %d forge notifications on session %q within %s (session frames: %d, total frames: %d)", n, sessionID, testTimeout, len(got), len(r.forgeNotifications()))
 		default:
 		}
 		runtime.Gosched()
 	}
+}
+
+// waitForForgeNotification event-gates until at least one ForgeNotification is
+// recorded on sessionID, then returns that session's slice — never a sleep.
+func waitForForgeNotification(t *testing.T, r *recordingRunner, sessionID string) []*compassv1internal.ForgeNotification {
+	t.Helper()
+	return waitForNForgeNotifications(t, r, sessionID, 1)
 }
 
 // --- GitHub cells ------------------------------------------------------------
@@ -401,8 +408,17 @@ func TestForgeNotifyE2E_GitHubComment(t *testing.T) {
 		if n.GetComment().GetCommentKey() == "" {
 			t.Error("Comment.CommentKey = empty, want the stable comment key (snapshot keying lost)")
 		}
-		// The out-of-scope subscriber's session got nothing: gate satisfied above,
-		// so the router ran to completion for this event.
+		// Ordered-drain barrier: post a SECOND in-scope comment on the same
+		// subscribed issue and gate the in-scope session to 2 frames. Route()
+		// enqueues every per-subscriber dispatch of the FIRST event onto the one
+		// sender-goroutine FIFO before returning, and the arm drains events one
+		// at a time on that single goroutine — so once the second event's frame
+		// is recorded, everything the first event enqueued is already flushed.
+		// That makes the out-of-scope zero-read load-bearing (no ORDER BY in
+		// SubscribersForArtifact, so a fan-out over-delivery regression cannot
+		// hide behind poll timing).
+		w.postGitHub(t, gh.commentOnIssue(t, 11, "https://gh/octo/repo/issues/11#c2", "second", "octocat"))
+		waitForNForgeNotifications(t, w.runner, inSession, 2)
 		if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
 			t.Errorf("out-of-scope frames = %d, want 0 (a different-number subscriber must not receive)", len(out))
 		}
@@ -454,6 +470,12 @@ func TestForgeNotifyE2E_GitHubComment(t *testing.T) {
 	})
 }
 
+// TestForgeNotifyE2E_GitHubState covers close/merge/reopen STATE deliveries.
+// PR draft<->ready actions (ready_for_review / converted_to_draft) are
+// deliberately absent: they are unmapped in gitHubStateOrUpdateKind
+// (forge/githubapp_webhook.go) — falling to default -> ok=false and
+// counted-and-dropped at parse time — so by design they have no e2e delivery
+// cell, mirroring the documented CHECKS gap above.
 func TestForgeNotifyE2E_GitHubState(t *testing.T) {
 	const inSession = "sess-gh-state-in"
 	cases := []struct {
@@ -506,6 +528,36 @@ func TestForgeNotifyE2E_GitHubState(t *testing.T) {
 				t.Errorf("Number = %d, want %d", n.GetNumber(), tc.number)
 			}
 		})
+	}
+}
+
+// TestForgeNotifyE2E_GitHubReview covers the REVIEW kind: a
+// pull_request_review.submitted webhook delivers a REVIEW notification carrying
+// the reviewer's verdict. parseGitHubReview sets base.Change=REVIEW and
+// base.State=wh.Review.State (forge/githubapp_webhook.go:233-234), so the
+// verdict must survive onto the wire.
+func TestForgeNotifyE2E_GitHubReview(t *testing.T) {
+	const inSession = "sess-gh-review-in"
+	w := newNotifyE2EWire(t)
+	gh := newFakeGitHubForge(w.secret, notifyE2EGitHubRepo)
+	inAcct := w.seedAgent(t, "sub-in")
+	w.subscribe(t, store.AgentForgeSubscription{
+		AgentAccountID: inAcct, Provider: store.ForgeProviderGitHub, Host: "github.com",
+		Repo: notifyE2EGitHubRepo, Kind: store.ForgeArtifactKindPullRequest, Number: 12,
+		Scope: store.ForgeSubscriptionScopeArtifact,
+	})
+	w.goLive(t, inAcct, "compass-agent-gh-review", inSession)
+	w.runner.forget()
+
+	w.postGitHub(t, gh.reviewPR(t, 12, "https://gh/octo/repo/pull/12#pullrequestreview-7", "looks good", "approved", "octocat"))
+
+	got := waitForForgeNotification(t, w.runner, inSession)
+	n := got[0]
+	if n.GetChange() != mxReview {
+		t.Errorf("Change = %v, want REVIEW (a pull_request_review.submitted mis-normalized)", n.GetChange())
+	}
+	if n.GetState() != "approved" {
+		t.Errorf("State = %q, want approved (the review verdict dropped on the wire)", n.GetState())
 	}
 }
 
@@ -634,6 +686,14 @@ func TestForgeNotifyE2E_GitHubRepoContainer(t *testing.T) {
 	if got[0].GetNumber() != 42 {
 		t.Errorf("Number = %d, want 42", got[0].GetNumber())
 	}
+	// Ordered-drain barrier: a SECOND OPENED issue still fans to the Number=0
+	// container sub, so gate the in-scope session to 2 frames. The single-arm +
+	// single-sender FIFO guarantees everything the first event enqueued is
+	// flushed and recorded before this second frame arrives, making the
+	// out-of-scope zero-read load-bearing (SubscribersForArtifact has no ORDER
+	// BY, so an over-delivery regression cannot hide behind poll timing).
+	w.postGitHub(t, gh.openIssue(t, 43, "https://gh/octo/repo/issues/43"))
+	waitForNForgeNotifications(t, w.runner, inSession, 2)
 	if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
 		t.Errorf("other-repo container frames = %d, want 0 (a different-repo container must not fan in)", len(out))
 	}
@@ -691,6 +751,14 @@ func TestForgeNotifyE2E_LinearComment(t *testing.T) {
 	if n.GetComment().GetForgeAccount() != "matt" {
 		t.Errorf("Comment.ForgeAccount = %q, want matt (the commenter attribution dropped)", n.GetComment().GetForgeAccount())
 	}
+	// Ordered-drain barrier: post a SECOND in-scope comment on the same
+	// subscribed issue and gate the in-scope session to 2 frames. The single-arm
+	// + single-sender FIFO guarantees everything the first event enqueued is
+	// flushed and recorded before this second frame arrives, making the
+	// out-of-scope zero-read load-bearing (SubscribersForArtifact has no ORDER
+	// BY, so an over-delivery regression cannot hide behind poll timing).
+	w.postLinear(t, ln.commentOnIssue(t, 5, "https://linear.app/rigel/RIG-5", "second", "matt"))
+	waitForNForgeNotifications(t, w.runner, inSession, 2)
 	if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
 		t.Errorf("out-of-scope frames = %d, want 0 (a different-number subscriber must not receive)", len(out))
 	}
@@ -728,12 +796,15 @@ func TestForgeNotifyE2E_LinearState(t *testing.T) {
 		w := newNotifyE2EWire(t)
 		ln := newFakeLinearForge(w.secret, notifyE2ELinearTeam, notifyE2EProject)
 		inAcct := w.seedAgent(t, "sub-in")
-		// An OPENED event reaches container-scope subscribers; an artifact-scope
-		// subscriber on the same number also matches (opened OR exact-number).
+		// An OPENED event on an exact-number ARTIFACT-scope sub matches the
+		// SubscribersForArtifact `scope = 1 AND number = $5` branch
+		// (store/forge_subscriptions.go:304) — OPENED delivers to an exact-number
+		// artifact sub, not only to containers. Number 6 matches the posted
+		// issue 6 (SubscribersForArtifact requires number != 0, line 296).
 		w.subscribe(t, store.AgentForgeSubscription{
 			AgentAccountID: inAcct, Provider: store.ForgeProviderLinear, Host: "linear.app",
-			Repo: notifyE2ELinearTeam, Kind: store.ForgeArtifactKindIssue,
-			Scope: store.ForgeSubscriptionScopeContainer, Project: notifyE2EProject,
+			Repo: notifyE2ELinearTeam, Kind: store.ForgeArtifactKindIssue, Number: 6,
+			Scope: store.ForgeSubscriptionScopeArtifact,
 		})
 		w.goLive(t, inAcct, "compass-agent-ln-opened", inSession)
 		w.runner.forget()
@@ -805,6 +876,14 @@ func TestForgeNotifyE2E_LinearProjectContainer(t *testing.T) {
 	if got[0].GetChange() != mxOpened {
 		t.Errorf("Change = %v, want OPENED", got[0].GetChange())
 	}
+	// Ordered-drain barrier: a SECOND OPENED issue still fans to the matching
+	// project container sub, so gate the in-scope session to 2 frames. The
+	// single-arm + single-sender FIFO guarantees everything the first event
+	// enqueued is flushed and recorded before this second frame arrives, making
+	// the out-of-scope zero-read load-bearing (SubscribersForArtifact has no
+	// ORDER BY, so an over-delivery regression cannot hide behind poll timing).
+	w.postLinear(t, ln.openIssue(t, 9, "https://linear.app/rigel/RIG-9"))
+	waitForNForgeNotifications(t, w.runner, inSession, 2)
 	if out := w.runner.forgeNotificationsForSession(outSession); len(out) != 0 {
 		t.Errorf("other-project container frames = %d, want 0 (a different-project container must not match)", len(out))
 	}
