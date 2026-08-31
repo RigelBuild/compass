@@ -56,7 +56,7 @@ type PinnedEntry struct {
 // A repoint whose msg is already pinned (a duplicate board entry) surfaces the
 // primary-key conflict as ErrConflict.
 func (s *Store) PinMessage(ctx context.Context, ch ChannelID, msg MessageID, replace MessageID, by AccountID) ([]PinnedEntry, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: begin pin message: %w", err)
 	}
@@ -111,7 +111,7 @@ func (s *Store) PinMessage(ctx context.Context, ch ChannelID, msg MessageID, rep
 // a no-op: the delete affects zero rows and the unchanged board is returned
 // (never an error), so a duplicate or racing unpin is benign.
 func (s *Store) UnpinMessage(ctx context.Context, ch ChannelID, msg MessageID, by AccountID) ([]PinnedEntry, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: begin unpin message: %w", err)
 	}
@@ -149,7 +149,7 @@ func (s *Store) UnpinMessage(ctx context.Context, ch ChannelID, msg MessageID, b
 // view and takes no lock — a snapshot of the board as committed, safe to run
 // against the pool directly.
 func (s *Store) PinnedEntries(ctx context.Context, ch ChannelID) ([]PinnedEntry, error) {
-	return pinnedEntriesTx(ctx, s.pool, ch)
+	return pinnedEntriesTx(ctx, s.scopedPool(), ch)
 }
 
 // lockChannelForPins takes the channels-row FOR UPDATE lock that serializes every

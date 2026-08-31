@@ -13,7 +13,7 @@ import (
 type Querier interface {
 	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
 	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
-	ActivityFor(ctx context.Context, dollar_1 []string) ([]AgentActivity, error)
+	ActivityFor(ctx context.Context, dollar_1 []string) ([]ActivityForRow, error)
 	AdvanceDeliveryCursor(ctx context.Context, arg AdvanceDeliveryCursorParams) error
 	AdvanceForgeDeliveredRevision(ctx context.Context, arg AdvanceForgeDeliveredRevisionParams) (int64, error)
 	AgentForContainer(ctx context.Context, containerName string) (string, error)
@@ -60,7 +60,7 @@ type Querier interface {
 	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
 	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
-	ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMember, error)
+	ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMembersByChannelIDsRow, error)
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
@@ -73,7 +73,7 @@ type Querier interface {
 	CountOwedMentions(ctx context.Context) (int64, error)
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
 	CurrentAgentConfig(ctx context.Context) (CurrentAgentConfigRow, error)
-	DeclaredSecrets(ctx context.Context) ([]Secret, error)
+	DeclaredSecrets(ctx context.Context) ([]DeclaredSecretsRow, error)
 	DeleteAgentConfig(ctx context.Context) error
 	// Scoped to the calling agent (id AND agent). RETURNING the coordinate drives the
 	// one-tx GC of the artifact cursor when this was the last subscription.
@@ -236,7 +236,7 @@ type Querier interface {
 	IsEnabledForgeRepo(ctx context.Context, repo string) (bool, error)
 	LatestCheckpointSeq(ctx context.Context, sessionID string) (int64, error)
 	LatestSessionForAccount(ctx context.Context, agentAccountID string) (string, error)
-	LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSession, error)
+	LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSessionRow, error)
 	ListAgentPlacementsForRunner(ctx context.Context, runnerID string) ([]ListAgentPlacementsForRunnerRow, error)
 	ListAuthoredArtifactsByAgent(ctx context.Context, agentAccountID string) ([]ForgeAuthoredArtifact, error)
 	ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error)

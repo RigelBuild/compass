@@ -22,8 +22,8 @@ WHERE cm.channel_id = $1
 ON CONFLICT (agent_account_id, channel_id) DO NOTHING;
 
 -- name: RecordOwedMention :exec
-INSERT INTO owed_mentions (agent_account_id, message_id, channel_id, recorded_at_unix_ms)
-VALUES ($1, $2, $3, $4)
+INSERT INTO owed_mentions (agent_account_id, message_id, channel_id, recorded_at_unix_ms, tenant_id)
+SELECT $1, $2, $3, $4, a.tenant_id FROM accounts a WHERE a.id = $1
 ON CONFLICT (agent_account_id, message_id) DO NOTHING;
 
 -- name: OwedMentions :many

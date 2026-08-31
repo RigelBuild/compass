@@ -76,7 +76,7 @@ ORDER BY s.repo, s.kind, coord_number;
 INSERT INTO forge_artifact_cursors
     (forge_provider, forge_host, repo, kind, number, etag, comments_etag, checks_etag, revision, snapshot, polled_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-ON CONFLICT (forge_provider, forge_host, repo, kind, number) DO UPDATE
+ON CONFLICT (tenant_id, forge_provider, forge_host, repo, kind, number) DO UPDATE
    SET etag = EXCLUDED.etag,
        comments_etag = EXCLUDED.comments_etag,
        checks_etag = EXCLUDED.checks_etag,

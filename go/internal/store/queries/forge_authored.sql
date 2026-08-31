@@ -20,19 +20,19 @@ ON CONFLICT (forge_provider, forge_host, repo, kind, number) DO UPDATE
 
 -- name: AuthoredArtifactByRequestID :one
 SELECT forge_provider, forge_host, repo, kind, number,
-       agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms
+       agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms, tenant_id
 FROM forge_authored_artifacts
 WHERE agent_account_id = $1 AND client_request_id = $2;
 
 -- name: AuthoredArtifactByCoordinate :one
 SELECT forge_provider, forge_host, repo, kind, number,
-       agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms
+       agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms, tenant_id
 FROM forge_authored_artifacts
 WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5;
 
 -- name: ListAuthoredArtifactsByAgent :many
 SELECT forge_provider, forge_host, repo, kind, number,
-       agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms
+       agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms, tenant_id
 FROM forge_authored_artifacts
 WHERE agent_account_id = $1
 ORDER BY created_at_unix_ms ASC, forge_provider ASC, forge_host ASC, repo ASC, kind ASC, number ASC;

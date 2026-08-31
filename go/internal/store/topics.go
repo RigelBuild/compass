@@ -20,7 +20,7 @@ func (s *Store) ListTopics(ctx context.Context, callerAccountID, channelID strin
 	if channelID == "" {
 		return nil, fmt.Errorf("%w: list topics channel is required", ErrInvalidArgument)
 	}
-	member, err := isChannelMember(ctx, s.pool, AccountID(callerAccountID), ChannelID(channelID))
+	member, err := isChannelMember(ctx, s.scopedPool(), AccountID(callerAccountID), ChannelID(channelID))
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ func (s *Store) UpdateTopic(ctx context.Context, callerAccountID, topicID string
 		return Topic{}, fmt.Errorf("%w: topic id is required", ErrInvalidArgument)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Topic{}, fmt.Errorf("store: begin update topic: %w", err)
 	}
