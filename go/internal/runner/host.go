@@ -570,6 +570,9 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 	// deregister). A container the registry no longer resolves is already gone —
 	// an idempotent no-op; its socket is still closed by the deferred close above.
 	if handle, ok := h.registry.Resolve(containerName); ok {
+		if handle == nil {
+			return fmt.Errorf("tearing down container %q: registry resolved a nil handle", containerName)
+		}
 		if err := h.runtime.Teardown(ctx, handle); err != nil {
 			return fmt.Errorf("tearing down container %q: %w", containerName, err)
 		}
@@ -681,6 +684,9 @@ func (h *agentHost) RefreshSecrets(ctx context.Context, sessionID string) error 
 	// which the best-effort dispatch hook logs and recovers on the next signal.
 	handle, ok := h.registry.Resolve(s.containerName)
 	if !ok {
+		return errSessionUnknown
+	}
+	if handle == nil {
 		return errSessionUnknown
 	}
 	resolved, err := h.link.FetchSecrets(ctx, sessionID)
@@ -856,6 +862,9 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	// agent left behind a session the live set still reports READY.
 	handle, ok := h.registry.Resolve(s.containerName)
 	if !ok {
+		return errSessionUnknown
+	}
+	if handle == nil {
 		return errSessionUnknown
 	}
 	if err := s.stream.Stop(); err != nil {
