@@ -141,6 +141,84 @@ func f() {}`;
 });
 
 // ---------------------------------------------------------------------------
+// Identifier-passed SQL at a pgx receiver — the T7 promotion (rule b).
+// ---------------------------------------------------------------------------
+
+describe("identifier-passed SQL at a pgx receiver is flagged (T7)", () => {
+	test("pool.Query with a bare-identifier SQL arg is flagged", () => {
+		const src = `func f() {
+	rows, err := pool.Query(ctx, q, arg)
+	_ = rows
+	_ = err
+}`;
+		const fs = scanText(STORE, src);
+		expect(fs.length).toBe(1);
+		expect(fs[0]?.snippet).toContain("pool.Query(ctx, q, arg)");
+	});
+
+	test("conn.Exec(ctx, ddl) — the store.go migration-runner shape — is flagged", () => {
+		const src = `func f() {
+	if _, err := conn.Exec(ctx, ddl); err != nil {
+		return err
+	}
+}`;
+		const fs = scanText(STORE, src);
+		expect(fs.length).toBe(1);
+		expect(fs[0]?.snippet).toContain("conn.Exec(ctx, ddl)");
+	});
+
+	test("tx.Exec(ctx, m.sql) — a dotted selector SQL arg — is flagged", () => {
+		const src = `func f() {
+	if _, err := tx.Exec(ctx, m.sql); err != nil {
+		return err
+	}
+}`;
+		const fs = scanText(STORE, src);
+		expect(fs.length).toBe(1);
+		expect(fs[0]?.snippet).toContain("tx.Exec(ctx, m.sql)");
+	});
+
+	test("s.pool.QueryRow with a bare-identifier SQL arg is flagged", () => {
+		const src = `func f() {
+	err := s.pool.QueryRow(ctx, query, id).Scan(&v)
+	_ = err
+}`;
+		const fs = scanText(STORE, src);
+		expect(fs.length).toBe(1);
+		expect(fs[0]?.snippet).toContain("s.pool.QueryRow(ctx, query, id)");
+	});
+
+	test("a non-pgx runtime.Exec(ctx, id, spec) with an identifier SQL slot is NOT flagged", () => {
+		// The receiver `runtime` is not a pgx handle, so the identifier `id` in
+		// the slot is a container id, not hoisted SQL — the false-positive guard.
+		const src = `func f() {
+	out, err := r.runtime.Exec(ctx, id, spec)
+	_ = out
+	_ = err
+}`;
+		expect(scanText("go/internal/runtime/agent.go", src)).toEqual([]);
+	});
+
+	test("a pgx call whose SQL slot is itself a call is NOT flagged (not a hoisted name)", () => {
+		const src = `func f() {
+	_, err := pool.Exec(ctx, buildQuery(t), arg)
+	_ = err
+}`;
+		expect(scanText(STORE, src)).toEqual([]);
+	});
+
+	test("only the SQL slot is tested, never the params (a bare-identifier 2nd param does not double-flag)", () => {
+		const src = `func f() {
+	_, err := pool.Exec(ctx, q, someIdentParam)
+	_ = err
+}`;
+		const fs = scanText(STORE, src);
+		expect(fs.length).toBe(1);
+		expect(fs[0]?.snippet).toContain("pool.Exec(ctx, q, someIdentParam)");
+	});
+});
+
+// ---------------------------------------------------------------------------
 // isExcludedPath — generated package + test files.
 // ---------------------------------------------------------------------------
 

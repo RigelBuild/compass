@@ -65,14 +65,6 @@ type Store struct {
 	bootstrapTenantID TenantID
 }
 
-// querier is the read surface shared by the pool and a transaction, so a scan
-// helper (scanChannels) or an authorization probe (requireChannelMember) can
-// run against either. Both *pgxpool.Pool and pgx.Tx satisfy it.
-type querier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // Open connects to Postgres at dsn (a pgx pool), applies any pending embedded
 // migrations under an advisory lock, and verifies the resulting schema version
 // matches what this binary expects — refusing to serve on a failed migration

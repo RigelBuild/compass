@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // AgentActivity is an agent's durable activity: the free-text string it last
@@ -24,14 +26,11 @@ type AgentActivity struct {
 // presence/activity split (DL-074) — presence lives in memory, but the activity
 // survives a restart because it lands here.
 func (s *Store) SetActivity(ctx context.Context, agentAccountID AccountID, activity string, atUnixMs int64) error {
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO agent_activity (agent_account_id, activity, activity_at_unix_ms)
-		 VALUES ($1, $2, $3)
-		 ON CONFLICT (agent_account_id)
-		 DO UPDATE SET activity = EXCLUDED.activity,
-		               activity_at_unix_ms = EXCLUDED.activity_at_unix_ms`,
-		string(agentAccountID), activity, atUnixMs,
-	); err != nil {
+	if err := s.q.SetActivity(ctx, db.SetActivityParams{
+		AgentAccountID:   string(agentAccountID),
+		Activity:         activity,
+		ActivityAtUnixMs: atUnixMs,
+	}); err != nil {
 		return fmt.Errorf("store: set agent activity: %w", err)
 	}
 	return nil
@@ -54,30 +53,15 @@ func (s *Store) ActivityFor(ctx context.Context, accountIDs []AccountID) (map[Ac
 		ids[i] = string(id)
 	}
 
-	rows, err := s.pool.Query(ctx,
-		`SELECT agent_account_id, activity, activity_at_unix_ms
-		 FROM agent_activity
-		 WHERE agent_account_id = ANY($1)`,
-		ids,
-	)
+	rows, err := s.q.ActivityFor(ctx, ids)
 	if err != nil {
 		return nil, fmt.Errorf("store: read agent activity: %w", err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			id       string
-			activity string
-			atMs     int64
-		)
-		if err := rows.Scan(&id, &activity, &atMs); err != nil {
-			return nil, fmt.Errorf("store: scan agent activity: %w", err)
+	for _, row := range rows {
+		out[AccountID(row.AgentAccountID)] = AgentActivity{
+			Activity:         row.Activity,
+			ActivityAtUnixMs: row.ActivityAtUnixMs,
 		}
-		out[AccountID(id)] = AgentActivity{Activity: activity, ActivityAtUnixMs: atMs}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate agent activity: %w", err)
 	}
 	return out, nil
 }

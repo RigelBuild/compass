@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The DL-055 forge ownership index (design
@@ -84,19 +86,18 @@ func (s *Store) RecordAuthoredArtifact(ctx context.Context, a AuthoredArtifact) 
 	if err := a.valid(); err != nil {
 		return err
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO forge_authored_artifacts
-		     (forge_provider, forge_host, repo, kind, number,
-		      agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		 ON CONFLICT (forge_provider, forge_host, repo, kind, number) DO UPDATE
-		    SET session_id         = EXCLUDED.session_id,
-		        client_request_id  = EXCLUDED.client_request_id,
-		        created_at_unix_ms = EXCLUDED.created_at_unix_ms`,
-		int32(a.Provider), a.Host, a.Repo, int32(a.Kind), int64(a.Number), //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number) written to a BIGINT, always well within the int64 domain — never near the uint64 ceiling.
-		string(a.AgentAccountID), string(a.OwnerUserID), a.SessionID,
-		nullIfEmpty(a.ClientRequestID), a.CreatedAtUnixMS,
-	); err != nil {
+	if err := s.q.RecordAuthoredArtifact(ctx, db.RecordAuthoredArtifactParams{
+		ForgeProvider:   int16(a.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum (forge_authored_artifacts.forge_provider), always within int16
+		ForgeHost:       a.Host,
+		Repo:            a.Repo,
+		Kind:            int16(a.Kind),   //nolint:gosec // G115: ForgeArtifactKind is a CHECK-constrained 1/2 enum (forge_authored_artifacts.kind), always within int16
+		Number:          int64(a.Number), //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number) written to a BIGINT, always well within the int64 domain — never near the uint64 ceiling.
+		AgentAccountID:  string(a.AgentAccountID),
+		OwnerUserID:     string(a.OwnerUserID),
+		SessionID:       a.SessionID,
+		ClientRequestID: textOrNull(a.ClientRequestID),
+		CreatedAtUnixMs: a.CreatedAtUnixMS,
+	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: client request id %q already authored for agent %q", ErrConflict, a.ClientRequestID, a.AgentAccountID)
 		}
@@ -120,21 +121,17 @@ func (s *Store) AuthoredArtifactByRequestID(ctx context.Context, agent AccountID
 	if clientRequestID == "" {
 		return AuthoredArtifact{}, false, nil
 	}
-	row := s.pool.QueryRow(ctx,
-		`SELECT forge_provider, forge_host, repo, kind, number,
-		        agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms
-		   FROM forge_authored_artifacts
-		  WHERE agent_account_id = $1 AND client_request_id = $2`,
-		string(agent), clientRequestID,
-	)
-	a, err := scanAuthoredArtifact(row)
+	row, err := s.q.AuthoredArtifactByRequestID(ctx, db.AuthoredArtifactByRequestIDParams{
+		AgentAccountID:  string(agent),
+		ClientRequestID: pgtype.Text{String: clientRequestID, Valid: true},
+	})
 	if err != nil {
 		if noRows(err) {
 			return AuthoredArtifact{}, false, nil
 		}
 		return AuthoredArtifact{}, false, fmt.Errorf("store: read authored artifact by request id: %w", err)
 	}
-	return a, true, nil
+	return authoredArtifactFromRow(row), true, nil
 }
 
 // AuthoredArtifactByCoordinate reads the ownership row at a forge coordinate —
@@ -151,21 +148,20 @@ func (s *Store) AuthoredArtifactByCoordinate(ctx context.Context, provider Forge
 	if kind == ForgeArtifactKindUnspecified {
 		return AuthoredArtifact{}, fmt.Errorf("%w: artifact kind is required", ErrInvalidArgument)
 	}
-	row := s.pool.QueryRow(ctx,
-		`SELECT forge_provider, forge_host, repo, kind, number,
-		        agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms
-		   FROM forge_authored_artifacts
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5`,
-		int32(provider), host, repo, int32(kind), int64(number), //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number) written to a BIGINT, always well within the int64 domain.
-	)
-	a, err := scanAuthoredArtifact(row)
+	row, err := s.q.AuthoredArtifactByCoordinate(ctx, db.AuthoredArtifactByCoordinateParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+		Repo:          repo,
+		Kind:          int16(kind),   //nolint:gosec // G115: ForgeArtifactKind is a CHECK-constrained 1/2 enum, always within int16
+		Number:        int64(number), //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number) written to a BIGINT, always well within the int64 domain.
+	})
 	if err != nil {
 		if noRows(err) {
 			return AuthoredArtifact{}, fmt.Errorf("%w: authored artifact at coordinate %d/%s/%s kind %d number %d", ErrNotFound, provider, host, repo, kind, number)
 		}
 		return AuthoredArtifact{}, fmt.Errorf("store: read authored artifact by coordinate: %w", err)
 	}
-	return a, nil
+	return authoredArtifactFromRow(row), nil
 }
 
 // ListAuthoredArtifactsByAgent reads every artifact the agent authored, ordered
@@ -175,66 +171,46 @@ func (s *Store) ListAuthoredArtifactsByAgent(ctx context.Context, agent AccountI
 	if agent == "" {
 		return nil, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT forge_provider, forge_host, repo, kind, number,
-		        agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms
-		   FROM forge_authored_artifacts
-		  WHERE agent_account_id = $1
-		  ORDER BY created_at_unix_ms ASC, forge_provider ASC, forge_host ASC, repo ASC, kind ASC, number ASC`,
-		string(agent),
-	)
+	rows, err := s.q.ListAuthoredArtifactsByAgent(ctx, string(agent))
 	if err != nil {
 		return nil, fmt.Errorf("store: list authored artifacts by agent: %w", err)
 	}
-	defer rows.Close()
-
 	var out []AuthoredArtifact
-	for rows.Next() {
-		a, err := scanAuthoredArtifact(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan authored artifact: %w", err)
-		}
-		out = append(out, a)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate authored artifacts: %w", err)
+	for _, r := range rows {
+		out = append(out, authoredArtifactFromRow(r))
 	}
 	return out, nil
 }
 
-// scanAuthoredArtifact scans one row into an AuthoredArtifact, mapping the
-// nullable client_request_id column to "" (no key) via a pgx-native scan.
-func scanAuthoredArtifact(row pgx.Row) (AuthoredArtifact, error) {
-	var (
-		a        AuthoredArtifact
-		provider int32
-		kind     int32
-		number   int64
-		agent    string
-		owner    string
-		reqID    *string
-	)
-	if err := row.Scan(&provider, &a.Host, &a.Repo, &kind, &number,
-		&agent, &owner, &a.SessionID, &reqID, &a.CreatedAtUnixMS); err != nil {
-		return AuthoredArtifact{}, err
+// authoredArtifactFromRow maps a generated forge_authored_artifacts row into an
+// AuthoredArtifact, mapping the nullable client_request_id column to "" (no key)
+// and the int16/BIGINT columns back to their named/uint types.
+func authoredArtifactFromRow(r db.ForgeAuthoredArtifact) AuthoredArtifact {
+	a := AuthoredArtifact{
+		Provider:        ForgeProvider(r.ForgeProvider),
+		Host:            r.ForgeHost,
+		Repo:            r.Repo,
+		Kind:            ForgeArtifactKind(r.Kind),
+		Number:          uint64(r.Number), //nolint:gosec // G115: number is a BIGINT written only from a canonical uint64 artifact number, so the stored value is always within the uint64 domain.
+		AgentAccountID:  AccountID(r.AgentAccountID),
+		OwnerUserID:     AccountID(r.OwnerUserID),
+		SessionID:       r.SessionID,
+		CreatedAtUnixMS: r.CreatedAtUnixMs,
 	}
-	a.Provider = ForgeProvider(provider)
-	a.Kind = ForgeArtifactKind(kind)
-	a.Number = uint64(number) //nolint:gosec // G115: number is a BIGINT written only from a canonical uint64 artifact number (RecordAuthoredArtifact narrows nothing), so the stored value is always within the uint64 domain.
-	a.AgentAccountID = AccountID(agent)
-	a.OwnerUserID = AccountID(owner)
-	if reqID != nil {
-		a.ClientRequestID = *reqID
+	if r.ClientRequestID.Valid {
+		a.ClientRequestID = r.ClientRequestID.String
 	}
-	return a, nil
+	return a
 }
 
-// nullIfEmpty maps the empty client_request_id (no key supplied) to a typed nil
-// so it stores as SQL NULL — the partial unique memo index only constrains
-// non-NULL keys, so null-key rows never collide.
-func nullIfEmpty(s string) *string {
+// textOrNull maps an empty string (no value supplied) to an invalid pgtype.Text
+// so it stores as SQL NULL. Used where a generated query parameter is a
+// pgtype.Text: client_request_id (the partial unique memo index constrains only
+// non-NULL keys, so null-key rows never collide) and linear_issue_id (plain
+// nullable provenance, no unique index — NULL is faithful "none" storage).
+func textOrNull(s string) pgtype.Text {
 	if s == "" {
-		return nil
+		return pgtype.Text{}
 	}
-	return &s
+	return pgtype.Text{String: s, Valid: true}
 }

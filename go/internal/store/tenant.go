@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 const (
@@ -20,10 +22,12 @@ const (
 // serves.
 func (s *Store) BootstrapTenant(ctx context.Context) (TenantID, error) {
 	id := newID()
-	if _, err := s.pool.Exec(ctx,
-		"INSERT INTO tenants (id, slug, display_name, created_at_unix_ms) VALUES ($1, $2, $3, $4)",
-		id, bootstrapTenantSlug, bootstrapTenantDisplayName, time.Now().UnixMilli(),
-	); err != nil {
+	if err := s.q.InsertTenant(ctx, db.InsertTenantParams{
+		ID:              id,
+		Slug:            bootstrapTenantSlug,
+		DisplayName:     bootstrapTenantDisplayName,
+		CreatedAtUnixMs: time.Now().UnixMilli(),
+	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return s.tenantIDBySlug(ctx, bootstrapTenantSlug)
 		}
@@ -35,8 +39,8 @@ func (s *Store) BootstrapTenant(ctx context.Context) (TenantID, error) {
 // tenantIDBySlug fetches an existing tenant id by slug, backing
 // BootstrapTenant's idempotent restart path.
 func (s *Store) tenantIDBySlug(ctx context.Context, slug string) (TenantID, error) {
-	var id string
-	if err := s.pool.QueryRow(ctx, "SELECT id FROM tenants WHERE slug = $1", slug).Scan(&id); err != nil {
+	id, err := s.q.TenantIDBySlug(ctx, slug)
+	if err != nil {
 		return "", fmt.Errorf("store: resolve tenant by slug: %w", err)
 	}
 	return TenantID(id), nil

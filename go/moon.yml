@@ -252,13 +252,67 @@ tasks:
       runFromWorkspaceRoot: false
     inputs: *sqlc_sources
 
+  sqlc-vet:
+    # `sqlc vet` with the sqlc/db-prepare rule PREPAREs every generated query
+    # against a live, schema-loaded Postgres — the strongest check sqlc offers
+    # (operator/typecast validity, column existence, index-referenced-by-hint)
+    # beyond what static analysis sees. It needs a real database, so unlike
+    # sqlc-drift (pure-local, no DB, in `ci` deps) this task is NOT in the moon
+    # `ci` battery: the moon job realizes no service (ci.yml:27-28). It is invoked
+    # instead by the env-bearing `pgtest` CI job — which already runs the
+    # postgres:16-alpine service and exports COMPASS_TEST_DATABASE_DSN — via
+    # `moon run compass-go:sqlc-vet`, the same peel-into-a-service-job pattern as
+    # pgtest/microvm/forge/gtk4. The task provisions its own throwaway DB:
+    #   1. DSN-gated skip. On a dev box with no Postgres the task echoes a notice
+    #      and exits 0 — the same posture as the pgtest suites' DSN-gated skip
+    #      (COMPASS_TEST_DATABASE_DSN drives the real-Postgres lane; absent it,
+    #      skip rather than red). Either COMPASS_TEST_DATABASE_DSN (the CI service
+    #      DSN) or SQLC_DATABASE_URL satisfies the gate; the task derives its own
+    #      per-run URL, so the pgtest job needs no extra env beyond the DSN it
+    #      already exports.
+    #   2. Throwaway DB. With a DSN present it creates a uniquely-named
+    #      (sqlcvet_$$) database on that server, applies
+    #      internal/store/migrations/*.sql in order via psql, points
+    #      SQLC_DATABASE_URL at it, runs the vet, and drops the database on exit
+    #      (trap, mirroring sqlc-drift's cleanup trap). The throwaway isolates
+    #      db-prepare from whatever else shares the service DB and leaves no
+    #      residue. `set -e` + psql ON_ERROR_STOP make any create/migrate/vet
+    #      failure fail the task.
+    # go/cmd/compass-postgres (the private-postgres wrapper) is deliberately NOT
+    # reused: that is the stack supervisor's process-managed instance, whereas the
+    # CI postgres service is simpler and already provisioned — vet only needs a
+    # bare server to PREPARE against, not a managed lifecycle. psql is on PATH
+    # from the devenv `postgresql` package.
+    script: |
+      set -e
+      dsn="${COMPASS_TEST_DATABASE_DSN:-${SQLC_DATABASE_URL:-}}"
+      if [ -z "$dsn" ]; then
+        echo "sqlc-vet: no COMPASS_TEST_DATABASE_DSN/SQLC_DATABASE_URL — skipping db-prepare vet (dev box without the CI Postgres service)"
+        exit 0
+      fi
+      db="sqlcvet_$$"
+      trap 'psql "$dsn" -c "DROP DATABASE IF EXISTS $db" >/dev/null 2>&1 || true' EXIT
+      psql "$dsn" -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE $db"
+      vet_url=$(printf '%s' "$dsn" | sed -E "s#/[^/?]+(\?|\$)#/${db}\1#")
+      for f in internal/store/migrations/*.sql; do
+        psql "$vet_url" -v ON_ERROR_STOP=1 -q -f "$f"
+      done
+      SQLC_DATABASE_URL="$vet_url" sqlc vet
+    options:
+      runFromWorkspaceRoot: false
+    inputs: *sqlc_sources
+
   ci:
     # module is affected: format, vet, lint (incl. exhaustiveness), -race test,
     # build, the supply-chain fence, and the sqlc drift gate. `drift` is NOT a
     # dep here — it belongs to the schema pipeline (compass-proto) and is
     # scheduled through the gen tree, matching compass-proto/moon.yml's own
     # `ci` composition. `sqlc-drift` IS a dep: it is fully local (no
-    # cross-project delegation, no DB), so it belongs in ci directly.
+    # cross-project delegation, no DB), so it belongs in ci directly. `sqlc-vet`
+    # is deliberately NOT a dep: it needs a live Postgres, which the moon battery
+    # has no business realizing (ci.yml has no service on the moon job); it is
+    # invoked instead by the env-bearing `pgtest` CI job, the same way pgtest/
+    # microvm/forge/gtk4 are peeled into their own service-carrying peer jobs.
     deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses', 'sqlc-drift']
     options:
       cache: false

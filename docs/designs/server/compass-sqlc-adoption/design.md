@@ -449,7 +449,7 @@ Interfaces:
 - [ ] T5 — migrate agent sessions/transcripts/activity/config/placements
 - [ ] T6 — migrate authz/tokens/secrets/issues/forge/tenant/linear remainder;
       allowlist down to the two permanent entries
-- [ ] T7 — `sqlc vet` (db-prepare) in CI + promote advisory gate lines to
+- [x] T7 — `sqlc vet` (db-prepare) in CI + promote advisory gate lines to
       gating
 
 ## Open Questions

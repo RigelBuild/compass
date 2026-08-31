@@ -450,10 +450,15 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      # checkout: pgtest runs NO git diff (its guard greps files via `grep -rl`),
-      # so a default shallow checkout suffices — no `fetch-depth: 0` needed.
+      # checkout: the Real-Postgres suites run no git diff (their guard greps
+      # files via `grep -rl`), but the sqlc-vet step below invokes `moon run`,
+      # which resolves the PR base ("main") to compute its changed-files set
+      # before running the task. A shallow checkout lacks that ref and moon dies
+      # `git exit 128: ambiguous argument 'main'` — so this job needs full
+      # history, the same `fetch-depth: 0` every other moon-invoking job uses.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           # Base-re-point re-trigger checks out the recomputed merge ref; empty
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
@@ -578,6 +583,41 @@ jobs:
           done
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
+
+      - name: Put the dev shell's nixpkgs tools on PATH (for sqlc vet)
+        # The Real-Postgres suite above needs only `go`, so this job skips the
+        # moon battery's phase-two bootstrap by default. sqlc-vet (next step)
+        # DOES need two nixpkgs tools from the dev shell — `psql` (apply the
+        # migrations into the throwaway DB) and `sqlc` (run the vet) — so resolve
+        # them here, the same way the moon job's phase two does: the attribute
+        # list is the parity script's own parse of devenv.nix, so what CI installs
+        # and what the gate expects cannot disagree. Run at the repo root (no
+        # working-directory): parity.ts reads the workspace-root devenv.nix, and
+        # bun is already on PATH from the language-toolchains step above.
+        run: |
+          attrs=$(bun tools/toolchain/parity.ts --print-nix-attrs)
+          out=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
+          echo "$out/bin" >>"$GITHUB_PATH"
+
+      - name: sqlc vet (db-prepare against the service Postgres)
+        env:
+          # Same service DSN the Real-Postgres suite uses. The sqlc-vet moon task
+          # derives its own throwaway-DB URL from this (creates sqlcvet_$$, applies
+          # the migrations, points SQLC_DATABASE_URL at it, drops it on exit), so
+          # the job needs no extra env beyond the DSN. This is where db-prepare
+          # actually runs against a live schema — the moon `ci` battery has no
+          # Postgres service, so sqlc-vet is peeled into this env-bearing job
+          # (ci.yml header: the moon battery realizes no environment), the same
+          # pattern as the Real-Postgres suite itself.
+          COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable
+        # `--force` so the vet always runs here regardless of what the PR diff
+        # touched: moon would otherwise cache-hit or affected-skip the task when
+        # no sqlc input changed, but db-prepare against the live service is the
+        # whole point of peeling it into this job. (The VCS-base resolution moon
+        # does before running is satisfied by this job's `fetch-depth: 0`
+        # checkout above — `--force` alone does not skip it in moon 2.5.3.)
+        run: moon run compass-go:sqlc-vet --force
 
   microvm:
     name: microvm

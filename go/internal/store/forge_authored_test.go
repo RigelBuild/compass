@@ -62,15 +62,15 @@ func TestAuthoredArtifactByRequestIDEmptyKeyMiss(t *testing.T) {
 	}
 }
 
-// TestNullIfEmpty pins the NULL client_request_id mapping: "" becomes a typed
-// nil (SQL NULL, so null-key rows never collide under the partial unique memo
-// index), a non-empty key is passed through by value.
-func TestNullIfEmpty(t *testing.T) {
-	if got := nullIfEmpty(""); got != nil {
-		t.Fatalf("nullIfEmpty(\"\") = %v, want nil (SQL NULL)", *got)
+// TestTextOrNull pins the NULL client_request_id/linear_issue_id mapping: ""
+// becomes an invalid pgtype.Text (SQL NULL, so null-key rows never collide under
+// the partial unique memo index), a non-empty key is passed through by value.
+func TestTextOrNull(t *testing.T) {
+	if got := textOrNull(""); got.Valid {
+		t.Fatalf("textOrNull(\"\") = %+v, want invalid (SQL NULL)", got)
 	}
-	got := nullIfEmpty("req-1")
-	if got == nil || *got != "req-1" {
-		t.Fatalf("nullIfEmpty(%q) = %v, want a pointer to it", "req-1", got)
+	got := textOrNull("req-1")
+	if !got.Valid || got.String != "req-1" {
+		t.Fatalf("textOrNull(%q) = %+v, want {String:%q, Valid:true}", "req-1", got, "req-1")
 	}
 }

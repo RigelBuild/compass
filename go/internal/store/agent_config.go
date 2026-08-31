@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/RigelBuild/compass/go/internal/store/db"
 	yaml "go.yaml.in/yaml/v3"
 )
 
@@ -141,13 +142,10 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO agent_config_bundle (singleton, version, bundle)
-		 VALUES (TRUE, $1, $2)
-		 ON CONFLICT (singleton)
-		 DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle, updated_at = now()`,
-		version, bundle,
-	); err != nil {
+	if err := s.q.PutAgentConfig(ctx, db.PutAgentConfigParams{
+		Version: version,
+		Bundle:  bundle,
+	}); err != nil {
 		return "", fmt.Errorf("store: put agent config: %w", err)
 	}
 	return version, nil
@@ -168,15 +166,14 @@ func ValidateConfigBundle(bundle []byte) (version string, err error) {
 // downstream (the fetch path then materializes an empty config dir), but the
 // store still reports the absence; the caller decides empty-is-ok.
 func (s *Store) CurrentAgentConfig(ctx context.Context) (version string, bundle []byte, err error) {
-	if err := s.pool.QueryRow(ctx,
-		`SELECT version, bundle FROM agent_config_bundle WHERE singleton = TRUE`,
-	).Scan(&version, &bundle); err != nil {
+	row, err := s.q.CurrentAgentConfig(ctx)
+	if err != nil {
 		if noRows(err) {
 			return "", nil, fmt.Errorf("%w: no agent config bundle declared", ErrNotFound)
 		}
 		return "", nil, fmt.Errorf("store: read agent config: %w", err)
 	}
-	return version, bundle, nil
+	return row.Version, row.Bundle, nil
 }
 
 // DeleteAgentConfig clears the fleet config bundle, returning the store to the
@@ -188,9 +185,7 @@ func (s *Store) CurrentAgentConfig(ctx context.Context) (version string, bundle 
 // return-to-unconfigured path (RIG-1625 T2), chosen over blessing an
 // empty-tarball push.
 func (s *Store) DeleteAgentConfig(ctx context.Context) error {
-	if _, err := s.pool.Exec(ctx,
-		`DELETE FROM agent_config_bundle WHERE singleton = TRUE`,
-	); err != nil {
+	if err := s.q.DeleteAgentConfig(ctx); err != nil {
 		return fmt.Errorf("store: delete agent config: %w", err)
 	}
 	return nil

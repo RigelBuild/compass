@@ -5,6 +5,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // dmGroupName is the fixed reserved name of the per-owner DM group — the
@@ -48,11 +51,12 @@ func (s *Store) EnsureOwnerDMGroupTx(ctx context.Context, tx pgx.Tx, ownerUserID
 		return "", fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)
 	}
 
-	var existing string
-	switch err := tx.QueryRow(ctx,
-		`SELECT id FROM channel_groups WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL AND visibility = $3`,
-		string(ownerUserID), dmGroupName, int32(VisibilityOwner),
-	).Scan(&existing); {
+	qtx := db.New(tx)
+	switch existing, err := qtx.GetOwnerDMGroup(ctx, db.GetOwnerDMGroupParams{
+		OwnerUserID: string(ownerUserID),
+		Name:        dmGroupName,
+		Visibility:  int16(VisibilityOwner),
+	}); {
 	case err == nil:
 		return ChannelGroupID(existing), nil
 	case !noRows(err):
@@ -60,10 +64,12 @@ func (s *Store) EnsureOwnerDMGroupTx(ctx context.Context, tx pgx.Tx, ownerUserID
 	}
 
 	id := newID()
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1, $2, NULL, $3, $4)`,
-		id, dmGroupName, string(ownerUserID), int32(VisibilityOwner),
-	); err != nil {
+	if err := qtx.InsertOwnerDMGroup(ctx, db.InsertOwnerDMGroupParams{
+		ID:          id,
+		Name:        dmGroupName,
+		OwnerUserID: string(ownerUserID),
+		Visibility:  int16(VisibilityOwner),
+	}); err != nil {
 		return "", fmt.Errorf("store: insert dm group: %w", err)
 	}
 	return ChannelGroupID(id), nil
@@ -109,22 +115,20 @@ func (s *Store) UpsertDMChannelTx(ctx context.Context, tx pgx.Tx, spec DMChannel
 		return "", false, err
 	}
 
+	qtx := db.New(tx)
+	groupID := pgtype.Text{String: string(spec.GroupID), Valid: true}
 	for {
-		var (
-			existingID   string
-			existingKind int32
-		)
-		switch err := tx.QueryRow(ctx,
-			`SELECT id, kind FROM channels WHERE group_id = $1 AND name = $2`,
-			string(spec.GroupID), spec.Name,
-		).Scan(&existingID, &existingKind); {
+		switch existing, err := qtx.GetDMChannelByName(ctx, db.GetDMChannelByNameParams{
+			GroupID: groupID,
+			Name:    spec.Name,
+		}); {
 		case err == nil:
 			// Resume: the R3 belt verifies + reconciles the resolved row before
 			// adopting it, and returns ErrNotFound on a wrong-kind squat.
-			if err := verifyReconcileDMTx(ctx, tx, ChannelID(existingID), ChannelKind(existingKind), members); err != nil {
+			if err := verifyReconcileDMTx(ctx, tx, ChannelID(existing.ID), ChannelKind(existing.Kind), members); err != nil {
 				return "", false, err
 			}
-			return ChannelID(existingID), false, nil
+			return ChannelID(existing.ID), false, nil
 		case !noRows(err):
 			return "", false, fmt.Errorf("store: resolve dm channel: %w", err)
 		}
@@ -135,21 +139,20 @@ func (s *Store) UpsertDMChannelTx(ctx context.Context, tx pgx.Tx, spec DMChannel
 		// rows returned rather than a raised unique-violation — so the tx is
 		// never poisoned; we loop and resume the committed row.
 		id := newID()
-		switch err := tx.QueryRow(ctx,
-			`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) `+
-				`VALUES ($1, $2, $3, $4, $5, NULL, $6) `+
-				`ON CONFLICT (group_id, name) WHERE group_id IS NOT NULL DO NOTHING `+
-				`RETURNING id`,
-			id, spec.Name, string(spec.GroupID), int32(ChannelKindDM),
-			int32(ChannelPostPolicyOpen), true,
-		).Scan(&id); {
+		switch insertedID, err := qtx.InsertDMChannel(ctx, db.InsertDMChannelParams{
+			ID:                    id,
+			Name:                  spec.Name,
+			GroupID:               groupID,
+			Kind:                  int16(ChannelKindDM),
+			PostPolicy:            int16(ChannelPostPolicyOpen),
+			MandatorySubscription: true,
+		}); {
 		case err == nil:
 			for _, m := range members {
-				if _, err := tx.Exec(ctx,
-					`INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) `+
-						`ON CONFLICT (channel_id, account_id) DO NOTHING`,
-					id, string(m),
-				); err != nil {
+				if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+					ChannelID: insertedID,
+					AccountID: string(m),
+				}); err != nil {
 					return "", false, upsertMemberErr(err, m)
 				}
 			}
@@ -158,10 +161,10 @@ func (s *Store) UpsertDMChannelTx(ctx context.Context, tx pgx.Tx, spec DMChannel
 			// delivery cursor MUST be seeded in this same tx — an un-seeded
 			// delivery target is the fail-DANGEROUS D2 hazard. Self-guarding
 			// (agent-only) and idempotent, so human members are a no-op.
-			if err := seedChannelDeliveryCursors(ctx, tx, ChannelID(id)); err != nil {
+			if err := seedChannelDeliveryCursors(ctx, tx, ChannelID(insertedID)); err != nil {
 				return "", false, err
 			}
-			return ChannelID(id), true, nil
+			return ChannelID(insertedID), true, nil
 		case noRows(err):
 			// A concurrent open won the (group, name) race. Re-SELECT resolves it
 			// as a resume on the next iteration.
@@ -180,7 +183,7 @@ func (s *Store) UpsertDMChannelTx(ctx context.Context, tx pgx.Tx, spec DMChannel
 // the advisory lock takes; a hash collision across two owners is a benign
 // redundant wait, never a wrong result.
 func LockOwnerDMTx(ctx context.Context, tx pgx.Tx, ownerUserID AccountID) error {
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('dm:' || $1))`, string(ownerUserID)); err != nil {
+	if err := db.New(tx).LockOwnerDM(ctx, pgtype.Text{String: string(ownerUserID), Valid: true}); err != nil {
 		return fmt.Errorf("store: lock owner dm: %w", err)
 	}
 	return nil
@@ -206,10 +209,8 @@ func verifyReconcileDMTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 	if kind != ChannelKindDM {
 		return fmt.Errorf("%w: dm channel %q", ErrNotFound, channelID)
 	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE channels SET mandatory_subscription = TRUE WHERE id = $1 AND mandatory_subscription = FALSE`,
-		string(channelID),
-	); err != nil {
+	qtx := db.New(tx)
+	if err := qtx.ReassertDMMandatory(ctx, string(channelID)); err != nil {
 		return fmt.Errorf("store: reassert dm mandatory: %w", err)
 	}
 	// Seed EVERY current agent member's delivery cursor (not only re-added ones),
@@ -222,11 +223,10 @@ func verifyReconcileDMTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 		return err
 	}
 	for _, m := range wanted {
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) `+
-				`ON CONFLICT (channel_id, account_id) DO NOTHING`,
-			string(channelID), string(m),
-		); err != nil {
+		if err := qtx.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+			ChannelID: string(channelID),
+			AccountID: string(m),
+		}); err != nil {
 			return upsertMemberErr(err, m)
 		}
 	}
@@ -248,16 +248,9 @@ func verifyReconcileDMTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 // matches, guarding CreateChannel against it makes squatting a dm--… name
 // impossible with no in-advance existence check.
 func isReservedDMGroupTx(ctx context.Context, tx pgx.Tx, groupID ChannelGroupID) (bool, error) {
-	var (
-		name string
-		vis  int32
-	)
-	switch err := tx.QueryRow(ctx,
-		`SELECT name, visibility FROM channel_groups WHERE id = $1`,
-		string(groupID),
-	).Scan(&name, &vis); {
+	switch row, err := db.New(tx).GetGroupNameVisibility(ctx, string(groupID)); {
 	case err == nil:
-		return name == dmGroupName && ChannelGroupVisibility(vis) == VisibilityOwner, nil
+		return row.Name == dmGroupName && ChannelGroupVisibility(row.Visibility) == VisibilityOwner, nil
 	case noRows(err):
 		return false, nil
 	default:
