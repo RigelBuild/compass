@@ -756,6 +756,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// (run outside vite, import.meta.env.DEV undefined) drive this path by
 		// design and stay quiet.
 		if (import.meta.env?.DEV) {
+			// biome-ignore lint/suspicious/noConsole: DEV-only pre-bindRouter navigation warning
 			console.warn(
 				`compass: navigate("${path}") before bindRouter — the URL will not ` +
 					"update until App wires the router",

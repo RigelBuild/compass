@@ -1,0 +1,8 @@
+or {
+  `Bun.sleep($_)` as $c where {
+    register_diagnostic(span=$c, message="Fixed sleeps are non-deterministic and flake tests (rule://go-no-sleep-in-test, same discipline in TS). Event-gate on observed state; use Effect.sleep (TestClock-testable) in Effect code. // biome-ignore lint/plugin: <reason> for a genuine timer.")
+  },
+  `Bun.sleepSync($_)` as $c where {
+    register_diagnostic(span=$c, message="Fixed sleeps are non-deterministic and flake tests (rule://go-no-sleep-in-test, same discipline in TS). Event-gate on observed state; use Effect.sleep (TestClock-testable) in Effect code. // biome-ignore lint/plugin: <reason> for a genuine timer.")
+  }
+}
