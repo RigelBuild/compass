@@ -80,6 +80,13 @@ in
     go-licenses
     nilaway
 
+    # sqlc: generates typed Go from the .sql query files in
+    # go/internal/store/queries, compiled against the migrations schema
+    # (go/moon.yml sqlc-gen/sqlc-drift). Bare nixpkgs attr so it lives in this
+    # parsed literal where the toolchain-parity gate resolves it; the pin ships
+    # sqlc 1.31.1.
+    sqlc
+
     # Lint gate. biome + markdownlint-cli2 are nixpkgs derivations here, not
     # `bunx` — one nixpkgs pin means `moon run root:lint` / `root:markdownlint`
     # resolve the identical binary and version for everyone, with no drift
