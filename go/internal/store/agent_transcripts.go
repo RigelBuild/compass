@@ -504,10 +504,8 @@ func (s *Store) maybeSafetyValve(ctx context.Context, sessionID string) error {
 		seq   uint64
 		bytes int
 	}
-	var (
-		entries []sized
-		total   int
-	)
+	entries := make([]sized, 0)
+	var total int
 	for rows.Next() {
 		var (
 			seq   int64
