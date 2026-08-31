@@ -58,8 +58,7 @@ below are cheap to build in now and expensive to retrofit later:
 
 This record answers three coupled questions — tenant data isolation,
 Server↔Runner connection topology, and the eventing substrate — each with
-options, tradeoffs, and a recommendation, plus a staged adoption path so
-operational cost is paid when it is earned.
+options, tradeoffs, and a recommendation, plus the NATS deployment shape (Q3).
 
 ## Approach
 
@@ -203,8 +202,9 @@ never balanced.
    `go/internal/runnerhub/relay_comms.go:170-184`) does not survive this
    shape: the binding must become shared state anyway, at which point the N×M
    stream mesh is pure overhead.
-3. **A message-bus fabric (recommended).** Each Runner holds ONE connection —
-   to the fabric — and each Server holds ONE. Session commands are published
+3. **A message-bus fabric (recommended).** Each Runner holds ONE fabric
+   connection — plus the reduced Connect authn/RPC edge (DL-316/Q3) — and each
+   Server likewise. Session commands are published
    to per-Runner subjects; Runner events fan in on queue-group subjects. Any
    Server drives any Runner by publishing; Runner failover is a resubscribe,
    Server failover is invisible to Runners. The session→Runner routing truth
@@ -935,7 +935,7 @@ This section is the verbatim delta the same-PR flip landed in
   background workers and NEVER on the request path; every request-path query
   stays fail-closed under RLS. The auditable surface is a named role with a
   named consumer list (OQ-4, Matt-ruled option 1)" — Record: this record,
-  §Q1 (Correctness) + §Resolved decisions (OQ-4).
+  §Resolved decisions (OQ-4) + §Q1 (the RLS model OQ-4 exempts).
 - **N6 (Transport):** "Server↔Runner transport is TWO-PLANE (amends DL-013's
   Runner↔Server clause — OQ-5 Variant B): the async command-push and Runner
   event fan-in ride NATS (per-Runner command subjects + queue-group event
