@@ -284,7 +284,12 @@ func visibleToActor(
 	actor store.AccountID,
 	resp *compassv1.SubscribeCommsResponse,
 ) (bool, error) {
-	switch p := resp.GetPayload().(type) {
+	payload := resp.GetPayload()
+	if payload == nil {
+		// An unset payload is a control frame with no private content.
+		return true, nil
+	}
+	switch p := payload.(type) {
 	case *compassv1.SubscribeCommsResponse_MessagePosted:
 		return vis.IsTopicChannelMember(ctx, actor, p.MessagePosted.GetMessage().GetTopicId())
 	case *compassv1.SubscribeCommsResponse_MessageUpdated:

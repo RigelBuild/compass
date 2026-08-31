@@ -33,6 +33,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -144,6 +145,9 @@ func (c *Comms) PostAsAccount(
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms PostAsAccount: PostMessage returned nil response"))
+	}
 	return resp.Msg, nil
 }
 
@@ -172,6 +176,9 @@ func (c *Comms) ListAsAccount(
 	resp, err := c.ListMessages(WithActor(ctx, account), connect.NewRequest(listReq))
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms ListAsAccount: ListMessages returned nil response"))
 	}
 	return resp.Msg, nil
 }
@@ -269,6 +276,9 @@ func (c *Comms) UpdatePinnedBoardAsAccount(
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms UpdatePinnedBoardAsAccount: UpdatePinnedBoard returned nil response"))
+	}
 	return resp.Msg, nil
 }
 
@@ -290,6 +300,9 @@ func (c *Comms) CreateChannelAsAccount(
 	resp, err := c.CreateChannel(WithActor(ctx, account), connect.NewRequest(req))
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms CreateChannelAsAccount: CreateChannel returned nil response"))
 	}
 	return resp.Msg, nil
 }
@@ -313,6 +326,9 @@ func (c *Comms) UpdateChannelMembersAsAccount(
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms UpdateChannelMembersAsAccount: UpdateChannelMembers returned nil response"))
+	}
 	return resp.Msg, nil
 }
 
@@ -335,6 +351,9 @@ func (c *Comms) CreateChannelGroupAsAccount(
 	if err != nil {
 		return nil, err
 	}
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms CreateChannelGroupAsAccount: CreateChannelGroup returned nil response"))
+	}
 	return resp.Msg, nil
 }
 
@@ -355,6 +374,9 @@ func (c *Comms) OpenDMAsAccount(
 	resp, err := c.OpenDM(WithActor(ctx, account), connect.NewRequest(req))
 	if err != nil {
 		return nil, err
+	}
+	if resp == nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("comms OpenDMAsAccount: OpenDM returned nil response"))
 	}
 	return resp.Msg, nil
 }

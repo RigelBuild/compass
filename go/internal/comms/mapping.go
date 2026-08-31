@@ -336,7 +336,11 @@ func (c *Comms) memberUpdatesFromWire(ctx context.Context, caller store.AccountI
 
 	out := make([]store.MemberUpdate, len(order))
 	for i, id := range order {
-		out[i] = *byID[id]
+		u, ok := byID[id]
+		if !ok || u == nil {
+			return nil, connect.NewError(connect.CodeInternal, errMissingMemberUpdate)
+		}
+		out[i] = *u
 	}
 	return out, nil
 }
@@ -349,9 +353,15 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 	for _, b := range blocks {
 		switch body := b.GetBlock().(type) {
 		case *compassv1.MessageBlock_Text:
+			if body == nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+			}
 			text := body.Text
 			out = append(out, store.MessageBlock{Text: &text})
 		case *compassv1.MessageBlock_Ask:
+			if body == nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+			}
 			out = append(out, store.MessageBlock{Ask: askFromWire(body.Ask)})
 		case *compassv1.MessageBlock_AskAnswer:
 			// ask_answer is server-owned: constructed only by RespondToAsk. An
@@ -380,9 +390,15 @@ func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBloc
 	for _, b := range blocks {
 		switch body := b.GetBlock().(type) {
 		case *compassv1.MessageBlock_Text:
+			if body == nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+			}
 			text := body.Text
 			out = append(out, store.MessageBlock{Text: &text})
 		case *compassv1.MessageBlock_Ask:
+			if body == nil {
+				return nil, connect.NewError(connect.CodeInvalidArgument, errEmptyBlock)
+			}
 			out = append(out, store.MessageBlock{Ask: askFromWireForUpdate(body.Ask)})
 		case *compassv1.MessageBlock_AskAnswer:
 			// ask_answer is server-owned: an inbound one on the agent update

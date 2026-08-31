@@ -43,6 +43,11 @@ var errEmptyBlock = errors.New("message block has neither text nor ask set")
 // identity (RIG-2257).
 var errServerOwnedBlock = errors.New("ask_answer blocks are server-owned")
 
+// errMissingMemberUpdate is the internal-error cause when a member id recorded in
+// the ordered list has no accumulated update in the byID map — an impossible
+// state (touch populates both together), guarded rather than dereferenced blind.
+var errMissingMemberUpdate = errors.New("member update missing for ordered account id")
+
 // edgeError maps a store error onto the connect status code the wire contract
 // expects, at the service edge. The store's sentinel errors (errors.go) are the
 // vocabulary; anything unrecognized is an internal error, never leaked verbatim.
