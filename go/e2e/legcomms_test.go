@@ -107,9 +107,10 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	defer st.Close()
 
 	// Open the poster session tail BEFORE the post drives the turn: the frame
-	// stream is live-fan with no replay ring, so opening it first guarantees it is
-	// already tailing when the turn fans, rather than losing a fast canned turn's
-	// WORKING/READY edges into the post→subscribe gap.
+	// stream is live-fan with no replay ring, but OpenSessionTail returns on the
+	// leading registration-ack, so the subscription is provably live before the
+	// post — a server-guaranteed happens-before that keeps a fast canned turn's
+	// WORKING/READY edges from being lost into the post→subscribe gap.
 	tail, err := f.OpenSessionTail(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("OpenSessionTail (poster): %v", err)

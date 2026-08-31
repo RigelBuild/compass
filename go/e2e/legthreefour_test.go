@@ -275,11 +275,12 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	// non-mandatory member must carry the subscribed flag to be a deliver target).
 	// The post's author is the fixture human admin, so neither agent is excluded.
 	//
-	// This drives its OWN @-mention post (a second one), because the observation
-	// tails must be opened BEFORE the post that drives the dispatch: the frame
-	// stream is live-fan with no replay ring (AwaitControlDispatch doc,
-	// legthreefour_test.go OpenSessionTail note), so a post-first order would race
-	// the injection frame and only fail at settleTimeout.
+	// This drives its OWN @-mention post (a second one). The observation tails are
+	// opened BEFORE the post that drives the dispatch: the frame stream is
+	// live-fan with no replay ring, but OpenSessionTail returns on the leading
+	// registration-ack (AwaitControlDispatchOn doc, OpenSessionTail note), so
+	// open-before-post is a server-guaranteed happens-before — the injection
+	// cannot be raced away, and a post-first order is unnecessary.
 
 	// mentionMarker (routed off the canned script) must be a substring of the
 	// mention body, else the mention-driven turns would draw the positional
@@ -309,10 +310,10 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	}
 
 	// injectionLog accumulates every (opKind, messageID) a recipient's tail is
-	// offered, under a mutex because match runs on AwaitControlDispatch's pump
+	// offered, under a mutex because match runs on AwaitControlDispatchOn's pump
 	// goroutine. It is BOTH the positive-match predicate and the window-scoped
 	// exclusion retention hook: the window closes at the positive match (when
-	// AwaitControlDispatch returns), and after the call the accumulated frames are
+	// AwaitControlDispatchOn returns), and after the call the accumulated frames are
 	// inspected to assert the excluded op-kind never appeared for the target id
 	// within that window. Exclusion is deliberately window-scoped, NOT absolute: a
 	// steered-but-unacked message can be sweep-redelivered as a plain deliver
@@ -336,45 +337,34 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 		}
 	}
 
-	// splitMsgID is set AFTER the post returns the message id, but the tails must
-	// be observing BEFORE the post — so the match closures read it via an atomic
-	// pointer that is nil until the post lands. A frame that arrives before the id
-	// is known cannot match (want == nil), which is correct: the driven injection
-	// for this post cannot precede the post.
+	// splitMsgID is set AFTER the post returns the message id; the match closures
+	// read it via an atomic pointer so a frame offered before the id is known
+	// cannot match (want == nil) — correct, since the driven injection for this
+	// post cannot precede the post. The tails are opened before the post but read
+	// after it, so by the time AwaitControlDispatchOn runs the id is already set.
 	var splitMsgID atomic.Pointer[string]
 	peerLog := &injectionLog{}
 	spawnerLog := &injectionLog{}
 
-	type dispatchResult struct {
-		opKind string
-		err    error
+	// Open BOTH observation tails SYNCHRONOUSLY, BEFORE the post. Each
+	// OpenSessionTail returns on the leading registration-ack — the subscriber is
+	// provably registered server-side before the call returns — so open-before-
+	// post is now a server-guaranteed happens-before, not the old concurrent-with-
+	// the-post gamble. The spawner is idle here (settled after leg-3), but the ack
+	// (not a driven frame) is what unblocks its open, so the synchronous open no
+	// longer self-deadlocks the way it would have before the ack existed; the peer
+	// likewise. Once both opens return, both subscriptions are provably live, so
+	// the post's driven injections cannot fan to zero subscribers and be raced away.
+	peerStream, err := f.OpenSessionTail(ctx, peerSessionID)
+	if err != nil {
+		t.Fatalf("OpenSessionTail(peer): %v", err)
 	}
-	peerResult := make(chan dispatchResult, 1)
-	spawnerResult := make(chan dispatchResult, 1)
-
-	// Open BOTH observations (each opens its own tail internally via
-	// AwaitControlDispatch) from goroutines, launched BEFORE the post. This is
-	// concurrent-with-the-post by necessity, not a launch-and-hope: the tail is a
-	// live fan with no replay ring (AwaitControlDispatch doc, sessiontail.go), and
-	// OpenSessionTail's client call blocks in its first round-trip until the
-	// server flushes a frame. The peer wakes on the mention, but the SPAWNER is
-	// idle here (settled after leg-3) and flushes nothing until the post drives
-	// its DELIVER — so its tail open cannot complete BEFORE the post; the post is
-	// what unblocks it. Opening synchronously on this goroutine before the post
-	// would therefore self-deadlock (the frame that unblocks the open is sequenced
-	// after it). Running the opens concurrently with the post is the correct gate:
-	// each open returns on a server frame, which the server emits only after
-	// registering the subscription, so the driven injection is observed, not raced
-	// away. A genuinely missed frame is a fail-safe settleTimeout red (the excluded
-	// -kind assertion only weakens if frames are missed — there is no false-green).
-	go func() {
-		kind, err := f.AwaitControlDispatch(ctx, peerSessionID, recordAndMatch(peerLog, "STEER", &splitMsgID))
-		peerResult <- dispatchResult{kind, err}
-	}()
-	go func() {
-		kind, err := f.AwaitControlDispatch(ctx, sessionID, recordAndMatch(spawnerLog, "DELIVER", &splitMsgID))
-		spawnerResult <- dispatchResult{kind, err}
-	}()
+	defer peerStream.Close()
+	spawnerStream, err := f.OpenSessionTail(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("OpenSessionTail(spawner): %v", err)
+	}
+	defer spawnerStream.Close()
 
 	// Now post the @-mention into the peer's home channel. The mention steers the
 	// peer and delivers to the subscribed spawner. Its body carries mentionMarker,
@@ -388,23 +378,26 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	}
 	splitMsgID.Store(&splitMessageID)
 
-	// Join both observations. Each returns on its positive match (or fails at its
+	// Read each injection SEQUENTIALLY off its own already-open stream — no
+	// goroutines. Each injection is buffered in its own stream (tailBuffer=256),
+	// so reading the peer's STEER first and the spawner's DELIVER second cannot
+	// drop either. Each read returns on its positive match (or fails at its
 	// derived settleTimeout).
-	peerDispatch := <-peerResult
-	if peerDispatch.err != nil {
-		t.Fatalf("AwaitControlDispatch(peer, want STEER): %v", peerDispatch.err)
+	peerOpKind, err := f.AwaitControlDispatchOn(ctx, peerStream, recordAndMatch(peerLog, "STEER", &splitMsgID))
+	if err != nil {
+		t.Fatalf("AwaitControlDispatchOn(peer, want STEER): %v", err)
 	}
-	spawnerDispatch := <-spawnerResult
-	if spawnerDispatch.err != nil {
-		t.Fatalf("AwaitControlDispatch(spawner, want DELIVER): %v", spawnerDispatch.err)
+	spawnerOpKind, err := f.AwaitControlDispatchOn(ctx, spawnerStream, recordAndMatch(spawnerLog, "DELIVER", &splitMsgID))
+	if err != nil {
+		t.Fatalf("AwaitControlDispatchOn(spawner, want DELIVER): %v", err)
 	}
 
 	// Positive: peer steered, spawner delivered, same message id.
-	if !strings.Contains(peerDispatch.opKind, "STEER") {
-		t.Fatalf("peer op-kind = %q, want a STEER for the mentioned peer", peerDispatch.opKind)
+	if !strings.Contains(peerOpKind, "STEER") {
+		t.Fatalf("peer op-kind = %q, want a STEER for the mentioned peer", peerOpKind)
 	}
-	if !strings.Contains(spawnerDispatch.opKind, "DELIVER") {
-		t.Fatalf("spawner op-kind = %q, want a DELIVER for the unmentioned subscriber", spawnerDispatch.opKind)
+	if !strings.Contains(spawnerOpKind, "DELIVER") {
+		t.Fatalf("spawner op-kind = %q, want a DELIVER for the unmentioned subscriber", spawnerOpKind)
 	}
 
 	// Window-scoped exclusion: within each recipient's observation window (up to

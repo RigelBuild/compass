@@ -208,12 +208,14 @@ func TestSubscribeAgentSessionNotFoundParity(t *testing.T) {
 
 // TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember pins branch 4
 // (service.go:302-318) and branch 5 (service.go:307-310 + the defer at :306): an
-// authorized home-channel member subscribes, a frame relayed AFTER the
-// subscription is live reaches the client stream faithfully repackaged, and
-// cancelling the client context ends the handler cleanly and frees the fan-out
-// slot. Deterministic: delivery is event-gated on the tail registering the
-// subscriber (no relay before a subscriber exists — that would be a silent
-// no-op), and the clean-exit half is gated on the slot count returning to zero.
+// authorized home-channel member subscribes, receives the leading
+// registration-ack first (the FIRST frame is always the ack — session_id only,
+// nil event, UNSPECIFIED state), then a frame relayed AFTER the subscription is
+// live reaches the client stream faithfully repackaged, and cancelling the
+// client context ends the handler cleanly and frees the fan-out slot.
+// Deterministic: delivery is event-gated on the tail registering the subscriber
+// (no relay before a subscriber exists — that would be a silent no-op), and the
+// clean-exit half is gated on the slot count returning to zero.
 func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) {
 	f := newAgentSessionFixture(t)
 
@@ -239,9 +241,31 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 		t.Fatalf("authorized owner SubscribeAgentSession: %v", err)
 	}
 
+	// First frame is ALWAYS the leading registration-ack: session_id stamped, no
+	// event, UNSPECIFIED state. It carries no history — a pure happens-before
+	// marker — so consume and assert it before the relayed trace frame.
 	if !recvAgentFrameOrTimeout(t, stream) {
 		cancel()
-		t.Fatalf("authorized subscribe delivered no frame: first Receive = false, err = %v", stream.Err())
+		t.Fatalf("authorized subscribe delivered no leading ack: first Receive = false, err = %v", stream.Err())
+	}
+	ack := stream.Msg()
+	if ack.GetSessionId() != f.sessionID {
+		cancel()
+		t.Fatalf("ack session_id = %q, want %q (stamped from the routing key)", ack.GetSessionId(), f.sessionID)
+	}
+	if ack.GetEvent() != nil {
+		cancel()
+		t.Fatalf("ack carries an event %v, want nil (the ack is a zero-payload registration marker)", ack.GetEvent())
+	}
+	if st := ack.GetState(); st != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+		cancel()
+		t.Fatalf("ack state = %v, want UNSPECIFIED (the ack carries no transition)", st)
+	}
+
+	// Second frame is the relayed live trace, faithfully repackaged.
+	if !recvAgentFrameOrTimeout(t, stream) {
+		cancel()
+		t.Fatalf("authorized subscribe delivered no relayed frame: second Receive = false, err = %v", stream.Err())
 	}
 	got := stream.Msg()
 	if got.GetSessionId() != f.sessionID {
@@ -260,4 +284,41 @@ func TestSubscribeAgentSessionDeliversLiveFrameToAuthorizedMember(t *testing.T) 
 	cancel()
 	_ = stream.Close()
 	waitTailSubscribers(t, f.tail, f.sessionID, 0)
+}
+
+// TestSubscribeAgentSessionSendsLeadingRegistrationAck is the deterministic
+// regression guard for the RIG-3044 fix: an authorized home-channel member
+// subscribes and the FIRST frame it receives is the leading registration-ack
+// (session_id stamped, nil event, UNSPECIFIED state) — sent the instant the
+// subscriber registers, with NO RelaySessionFrame call at all. This defends the
+// happens-before contract directly: OpenSessionTail must return on registration,
+// not on a driven frame, so a synchronous open-before-post cannot self-deadlock
+// on an idle session. RED without the Change-1 ack Send: the first Receive blocks
+// (nothing is ever relayed) and recvAgentFrameOrTimeout reddens on its deadline.
+func TestSubscribeAgentSessionSendsLeadingRegistrationAck(t *testing.T) {
+	f := newAgentSessionFixture(t)
+
+	req := connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{SessionId: f.sessionID})
+	req.Header().Set("Authorization", "Bearer "+f.ownerToken)
+	stream, err := f.client.SubscribeAgentSession(t.Context(), req)
+	if err != nil {
+		t.Fatalf("authorized owner SubscribeAgentSession: %v", err)
+	}
+	defer func() { _ = stream.Close() }() // test cleanup; Close error not actionable
+
+	// No relay is ever issued: the ONLY frame that can arrive is the leading ack.
+	// A handler without the ack Send blocks here forever → deadline red.
+	if !recvAgentFrameOrTimeout(t, stream) {
+		t.Fatalf("no leading registration-ack: first Receive = false, err = %v", stream.Err())
+	}
+	ack := stream.Msg()
+	if ack.GetSessionId() != f.sessionID {
+		t.Fatalf("ack session_id = %q, want %q (stamped from the routing key)", ack.GetSessionId(), f.sessionID)
+	}
+	if ack.GetEvent() != nil {
+		t.Fatalf("ack carries an event %v, want nil (the ack is a zero-payload registration marker)", ack.GetEvent())
+	}
+	if st := ack.GetState(); st != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+		t.Fatalf("ack state = %v, want UNSPECIFIED (the ack carries no transition)", st)
+	}
 }

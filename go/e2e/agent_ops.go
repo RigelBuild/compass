@@ -83,13 +83,14 @@ func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID str
 
 // OpenSessionTail opens the session frame stream (SubscribeAgentSession) and
 // returns it for the caller to consume and Close. It is the OPEN half of the
-// settle-wait, split out from the READ half (AwaitTurnSettled) so the tail can
-// be opened BEFORE the PostMessage that drives the turn: SubscribeAgentSession
-// is live-fan with no replay ring, so a turn that starts AND settles in the
-// post→subscribe window would fan its WORKING/READY edges to zero subscribers
-// and the wait would hang. Opening here first guarantees the stream is already
-// subscribed when the turn fans (mirroring the deliver-side precedent at
-// legthreefour_test.go:190-198, "Open one subscription before the post").
+// be opened BEFORE the PostMessage that drives the turn. SubscribeAgentSession
+// is live-fan with no replay ring, but it now sends a leading registration-ack
+// frame the instant the subscriber is registered server-side, so this OPEN
+// returns on REGISTRATION (not on the first relayed frame). That makes
+// open-before-post a SERVER-GUARANTEED happens-before: once OpenSessionTail
+// returns, the subscription is provably live, so a turn driven afterwards
+// cannot fan its edges to zero subscribers (mirroring the deliver-side
+// precedent at legthreefour_test.go, "Open one subscription before the post").
 //
 // It derives NO deadline: the stream's lifetime spans the whole post+settle, so
 // the ctx the caller passes governs (the caller Closes the returned stream and
@@ -162,39 +163,33 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 	}
 }
 
-// AwaitControlDispatch opens its own session-tail stream for sessionID and
-// blocks until a SessionInjection observation frame whose (opKind, messageID)
-// satisfies match fans onto it, returning the matched op-kind in its string
-// form (SessionInjectionKind.String(), e.g. "SESSION_INJECTION_KIND_STEER").
-// It is the control-plane observation counterpart to AwaitDelivery's deliver
-// side: the split-observation seam lets a scenario assert WHICH control op
-// (steer vs deliver) a session dispatched for a given message, read off the
-// public SessionInjection frames on SubscribeAgentSession.
+// AwaitControlDispatchOn reads an ALREADY-OPEN session-tail stream (from
+// OpenSessionTail) and blocks until a SessionInjection observation frame whose
+// (opKind, messageID) satisfies match fans onto it, returning the matched
+// op-kind in its string form (SessionInjectionKind.String(), e.g.
+// "SESSION_INJECTION_KIND_STEER"). It is the control-plane observation
+// counterpart to AwaitDelivery's deliver side: the split-observation seam lets
+// a scenario assert WHICH control op (steer vs deliver) a session dispatched
+// for a given message, read off the public SessionInjection frames on
+// SubscribeAgentSession.
 //
-// Unlike AwaitTurnSettled (which reads an already-open stream), this opens its
-// own tail from sessionID via OpenSessionTail so a caller passes just a session
-// id; it owns Close on that stream. SessionInjection carries no session id, so
-// the session scoping is done entirely by which session's stream is opened.
+// It is the READ half, split from the OPEN half (OpenSessionTail) so a caller
+// opens the tail SYNCHRONOUSLY before the post that drives the dispatch. That
+// ordering is a SERVER-GUARANTEED happens-before: OpenSessionTail returns on the
+// leading registration-ack (the subscriber is provably live server-side before
+// it returns), so a synchronous open-before-post can no longer self-deadlock on
+// an idle session — the ack, not the driven injection, unblocks the open. The
+// injection cannot be raced away: the subscription registered before the post
+// fanned it. (This corrects the old bundled AwaitControlDispatch, which opened
+// its own tail from a goroutine concurrent-with-the-post because it wrongly
+// assumed the open could only unblock on the injection itself and relied on the
+// cross-container relay being slower than the local subscribe — that wall-clock
+// assumption WAS the RIG-3044 flake.)
 //
-// Because that tail is a live fan with no replay ring (see sessiontail.go), the
-// subscribe must be live BEFORE the injection fans: call this — from a goroutine,
-// since it blocks — before the post/action that drives the dispatch. Post first
-// and the frame is lost, and the call fails only at settleTimeout (a hang-then-
-// red, not a fast clear failure). This is the same open-before-post constraint
-// OpenSessionTail documents; AwaitControlDispatch just performs the open itself.
-//
-// The "from a goroutine" is load-bearing, not stylistic: OpenSessionTail's client
-// call blocks in its initial round-trip until the server flushes this session's
-// first frame, and an IDLE session (one settled with nothing owed) flushes
-// nothing until the driving post produces its injection. So the open cannot be
-// sequenced synchronously before the post — the frame that unblocks it is the
-// post's own dispatch. Run this concurrently with the post: the post unblocks the
-// open, whose returned first frame the pump then matches. That the open returns
-// on a server frame at all means the subscription was registered server-side
-// before that frame, so the driven injection is not raced away — and the
-// injection's cross-container relay chain is far slower than the local subscribe,
-// so a genuinely lost frame would be a fail-safe settleTimeout red, never a false
-// green.
+// SessionInjection carries no session id, so session scoping is done entirely by
+// which session's stream the caller opened. The leading registration-ack (nil
+// event) is skipped by the GetSessionInjection()==nil guard below, exactly like
+// any non-injection frame.
 //
 // It is FULLY EVENT-GATED: a goroutine pumps stream.Receive() and the select
 // races each frame against ctx — no sleeps, no polling, no retry loops. The
@@ -215,13 +210,7 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 // exclusion — a later sweep-redelivered deliver (settle.go builds a deliverOp for
 // every owed message) is out of window and legitimately unobserved. The method
 // keeps no internal retention; the surface stays exactly this one signature.
-func (f *Fixture) AwaitControlDispatch(ctx context.Context, sessionID string, match func(opKind, messageID string) bool) (opKind string, err error) {
-	stream, err := f.OpenSessionTail(ctx, sessionID)
-	if err != nil {
-		return "", fmt.Errorf("opening session tail for control dispatch: %w", err)
-	}
-	defer stream.Close()
-
+func (f *Fixture) AwaitControlDispatchOn(ctx context.Context, stream *connect.ServerStreamForClient[compassv1.AgentSessionFrame], match func(opKind, messageID string) bool) (opKind string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
 	defer cancel()
 
@@ -231,7 +220,7 @@ func (f *Fixture) AwaitControlDispatch(ctx context.Context, sessionID string, ma
 	}
 	// Buffered so the pump goroutine never blocks writing its terminal result
 	// after this method has already returned on the ctx deadline — it sends
-	// once and exits, no leak past the deferred Close.
+	// once and exits, no leak past the caller's Close.
 	out := make(chan received, 1)
 	go func() {
 		for stream.Receive() {
