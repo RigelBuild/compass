@@ -12,7 +12,8 @@ package server
 // isolated-schema store (forgeTestStore, sibling serve_forge_pgtest_test.go).
 //
 // The observable contracts (design.md:1080-1087), scoped to what this slice wires:
-//   - App-gated: buildForgeNotifyLane with no App configured returns a nil lane.
+//   - App-gated: buildBoardWebhookWiring with no App configured returns all-nil,
+//     so no notify lane is built (the gate moved to the shared site, RIG-2991).
 //   - Routed notify: an event fed through the assembled lane's sink dispatches a
 //     ForgeNotification to the seeded subscriber AND advances the shared FETCH
 //     cursor — but NEVER advances the subscriber's delivered_revision (W3).
@@ -24,6 +25,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -129,21 +131,29 @@ func notifyCommentEvent(repo string, number uint64, url string) forge.ForgeEvent
 	}
 }
 
-// --- test: App-config-absent boot leaves the notify lane off ------------------
+// --- test: App-config-absent boot leaves both forge lanes off -----------------
 
-// TestForgeNotifyLaneDisabledWithoutApp proves the App gate: buildForgeNotifyLane
-// with no App configured returns (nil, nil) — the notify lane is hard-off, so
-// the caller composes no notify sink onto the ingress. No hub is needed on this
-// path (the gate short-circuits before any assembly), so a nil hub is passed.
+// TestForgeNotifyLaneDisabledWithoutApp proves the App gate at the shared wiring
+// site (RIG-2991): buildBoardWebhookWiring with no App configured returns all-nil
+// — both the board lane and the notify lane are hard-off, so the caller composes
+// no notify sink onto the ingress. The App gate now lives on the shared wiring
+// (which builds the one client both lanes ride), not on buildForgeNotifyLane. A
+// nil hub is fine: the gate short-circuits before any lane assembly.
 func TestForgeNotifyLaneDisabledWithoutApp(t *testing.T) {
 	st := forgeTestStore(t)
+	ctx := context.Background() // test root
 
-	lane, err := buildForgeNotifyLane(ServeConfig{Forge: ForgeConfig{Host: forgeTestHost}}, st, nil, &fakeResolver{}, nil)
+	// issueBrd is nil-safe here: the App-absent gate short-circuits before any
+	// lane assembly, so the projection is never dereferenced.
+	lane, notifyLane, sink, secret, err := buildBoardWebhookWiring(ctx, ServeConfig{Forge: ForgeConfig{Host: forgeTestHost}}, st, nil, nil, &fakeResolver{}, slog.Default())
 	if err != nil {
-		t.Fatalf("buildForgeNotifyLane (App absent): %v", err)
+		t.Fatalf("buildBoardWebhookWiring (App absent): %v", err)
 	}
-	if lane != nil {
-		t.Fatal("lane != nil with no App configured, want nil (notify lane hard-off)")
+	if notifyLane != nil {
+		t.Fatal("notifyLane != nil with no App configured, want nil (notify lane hard-off)")
+	}
+	if lane != nil || sink != nil || secret != nil {
+		t.Fatalf("wiring not all-nil with no App configured: lane==nil? %t sink==nil? %t secret==nil? %t", lane == nil, sink == nil, secret == nil)
 	}
 }
 
