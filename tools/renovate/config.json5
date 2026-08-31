@@ -522,6 +522,7 @@
       // dev-shell baked==catalog parity holds in one PR. `executionMode: "branch"`
       // runs it once after the digest update is applied; safe here because this dep
       // never shares a branch (its own groupName above), so it owns the single
+      // branch-mode task slot Renovate builds per branch. Rule-level
       // postUpgradeTasks REPLACE the top-level one for matching branches; the
       // evicted top-level toolchain task self-gates on the versions/*.nix pins and
       // would be a no-op here anyway. fileFilters is an INCLUDE allowlist —

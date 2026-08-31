@@ -367,6 +367,14 @@ describe("tools/renovate/refresh-devenv-nixpkgs.ts lockstep (RIG-2432)", () => {
 		expect(res.stdout.toString()).toContain("already match");
 		// Lockfile re-resolve skipped (no pin change).
 		expect(await Bun.file(join(repo, ".bun-install-ran")).exists()).toBe(false);
+		// ...but step 6 STILL fired: the flake lockstep is decoupled from the
+		// biome-pin rewrite (its whole reason to be a separate step). The channel
+		// moved, so flake.nix's URL rev + flake.lock's locked rev must both track
+		// it even though package.json/bun.lock stayed put.
+		const flake = await readFile(join(repo, "flake.nix"), "utf8");
+		expect(flake).toContain(`github:cachix/devenv-nixpkgs/${OUTER_REV_BUMP}`);
+		const flakeLockText = await readFile(join(repo, "flake.lock"), "utf8");
+		expect(nixpkgsLockedRev(flakeLockText)).toBe(OUTER_REV_BUMP);
 	});
 
 	// Fail-loud: if the version eval yields a non-version string (a broken rev,
