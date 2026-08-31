@@ -6,20 +6,64 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
+
+// accountFromRow reconstructs a domain Account from the shared ten-column account
+// projection (id, handle, display_name, the user role, the five agent columns,
+// and the system account id) that every account read selects. It replaces the
+// former hand-written scanAccount helper: sqlc emits the same columns as typed
+// nullables, so the subtype discriminator is identical — a non-null user role is
+// a user account, else a non-null owner id is an agent account, else a non-null
+// system id is the system account. The system column is scanned last, matching
+// the projection order every account query shares. Callers whose generated row
+// carries the agent columns as non-nullable strings (the tree reads, INNER-joined
+// to agent_accounts) wrap them into a valid pgtype.Text before calling.
+func accountFromRow(
+	id, handle, displayName string,
+	userRole pgtype.Int2,
+	ownerUserID, homeChannelID, persona, agentRole, parentAgentID, systemAccountID pgtype.Text,
+) Account {
+	acc := Account{ID: AccountID(id), Handle: handle, DisplayName: displayName}
+	switch {
+	case userRole.Valid:
+		acc.User = &UserAccount{Role: UserRole(userRole.Int16)}
+	case ownerUserID.Valid:
+		agent := &AgentAccount{OwnerUserID: AccountID(ownerUserID.String)}
+		if homeChannelID.Valid {
+			agent.HomeChannelID = ChannelID(homeChannelID.String)
+		}
+		if persona.Valid {
+			agent.Persona = persona.String
+		}
+		if agentRole.Valid {
+			agent.Role = agentRole.String
+		}
+		if parentAgentID.Valid {
+			agent.ParentAgentID = AccountID(parentAgentID.String)
+		}
+		acc.Agent = agent
+	case systemAccountID.Valid:
+		acc.System = &SystemAccount{}
+	}
+	return acc
+}
 
 // insertAccountHandle records accountID's row in the account_handles resolution
 // index (RIG-2751 handle cutover). ownerUserID is empty for a user/system handle
 // (stored NULL, globally unique) and the owning user's id for an agent handle
 // (unique only within that owner). A duplicate handle in the applicable
 // namespace is ErrConflict, mirroring the former accounts.handle unique. Runs on
-// the caller's tx so the handle row commits atomically with the account insert.
-func insertAccountHandle(ctx context.Context, tx pgx.Tx, accountID, handle string, ownerUserID AccountID) error {
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO account_handles (account_id, handle, owner_user_id) VALUES ($1, $2, NULLIF($3, ''))",
-		accountID, handle, string(ownerUserID),
-	); err != nil {
+// the caller's tx-scoped queries so the handle row commits atomically with the
+// account insert.
+func insertAccountHandle(ctx context.Context, q *db.Queries, accountID, handle string, ownerUserID AccountID) error {
+	if err := q.InsertAccountHandle(ctx, db.InsertAccountHandleParams{
+		AccountID: accountID,
+		Handle:    handle,
+		Column3:   string(ownerUserID),
+	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: handle %q already taken", ErrConflict, handle)
 		}
@@ -45,22 +89,26 @@ func (s *Store) CreateUser(ctx context.Context, u NewUser) (Account, error) {
 		return Account{}, fmt.Errorf("store: begin create user: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
 
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
-		id, u.Handle, u.DisplayName, string(s.resolveTenant(ctx)),
-	); err != nil {
+	if err := qtx.InsertAccount(ctx, db.InsertAccountParams{
+		ID:          id,
+		Handle:      u.Handle,
+		DisplayName: u.DisplayName,
+		TenantID:    string(s.resolveTenant(ctx)),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO user_accounts (account_id, role) VALUES ($1, $2)", id, int32(UserRoleMember),
-	); err != nil {
+	if err := qtx.InsertUserAccount(ctx, db.InsertUserAccountParams{
+		AccountID: id,
+		Role:      int16(UserRoleMember),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: insert user_account: %w", err)
 	}
 	// The handle uniqueness now lives on account_handles (a user handle is
 	// globally unique, owner_user_id NULL), not accounts.handle: a duplicate
 	// surfaces here as ErrConflict.
-	if err := insertAccountHandle(ctx, tx, id, u.Handle, ""); err != nil {
+	if err := insertAccountHandle(ctx, qtx, id, u.Handle, ""); err != nil {
 		return Account{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -100,22 +148,26 @@ func (s *Store) BootstrapAdmin(ctx context.Context, u NewUser) (Account, error) 
 		return Account{}, fmt.Errorf("store: begin bootstrap admin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
 
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
-		id, u.Handle, u.DisplayName, string(s.resolveTenant(ctx)),
-	); err != nil {
+	if err := qtx.InsertAccount(ctx, db.InsertAccountParams{
+		ID:          id,
+		Handle:      u.Handle,
+		DisplayName: u.DisplayName,
+		TenantID:    string(s.resolveTenant(ctx)),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO user_accounts (account_id, role) VALUES ($1, $2)", id, int32(UserRoleAdmin),
-	); err != nil {
+	if err := qtx.InsertUserAccount(ctx, db.InsertUserAccountParams{
+		AccountID: id,
+		Role:      int16(UserRoleAdmin),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: insert user_account: %w", err)
 	}
 	// Handle uniqueness lives on account_handles now; the restart's duplicate
 	// surfaces here (ErrConflict) rather than on the accounts insert. Already
 	// bootstrapped (restart): fetch and return the existing admin.
-	if err := insertAccountHandle(ctx, tx, id, u.Handle, ""); err != nil {
+	if err := insertAccountHandle(ctx, qtx, id, u.Handle, ""); err != nil {
 		if errors.Is(err, ErrConflict) {
 			return s.adminByHandle(ctx, u.Handle)
 		}
@@ -138,21 +190,12 @@ func (s *Store) BootstrapAdmin(ctx context.Context, u NewUser) (Account, error) 
 // as a non-admin (or as an agent) is a misconfiguration: ErrConflict, never a
 // silent elevation.
 func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, error) {
-	const q = `
-		SELECT a.id, a.handle, a.display_name,
-		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
-		       sy.account_id
-		FROM account_handles ah
-		JOIN accounts a ON a.id = ah.account_id
-		LEFT JOIN user_accounts u ON u.account_id = a.id
-		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE ah.owner_user_id IS NULL AND ah.handle = $1`
-	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
+	row, err := s.q.GetAccountByGlobalHandle(ctx, handle)
 	if err != nil {
 		return Account{}, err
 	}
+	acc := accountFromRow(row.ID, row.Handle, row.DisplayName, row.UserRole,
+		row.OwnerUserID, row.HomeChannelID, row.Persona, row.AgentRole, row.ParentAgentID, row.SystemAccountID)
 	if acc.User == nil || acc.User.Role != UserRoleAdmin {
 		return Account{}, fmt.Errorf("%w: handle %q exists but is not an admin", ErrConflict, handle)
 	}
@@ -200,22 +243,23 @@ func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayN
 		return Account{}, fmt.Errorf("store: begin ensure system account: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after a successful commit; safe on every non-commit path.
+	qtx := s.q.WithTx(tx)
 
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
-		id, handle, displayName, string(s.resolveTenant(ctx)),
-	); err != nil {
+	if err := qtx.InsertAccount(ctx, db.InsertAccountParams{
+		ID:          id,
+		Handle:      handle,
+		DisplayName: displayName,
+		TenantID:    string(s.resolveTenant(ctx)),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO system_accounts (account_id) VALUES ($1)", id,
-	); err != nil {
+	if err := qtx.InsertSystemAccount(ctx, id); err != nil {
 		return Account{}, fmt.Errorf("store: insert system_account: %w", err)
 	}
 	// A system handle is globally unique (owner_user_id NULL) on account_handles;
 	// the restart's duplicate surfaces here. Already seeded (restart): fetch and
 	// return the existing system account.
-	if err := insertAccountHandle(ctx, tx, id, handle, ""); err != nil {
+	if err := insertAccountHandle(ctx, qtx, id, handle, ""); err != nil {
 		if errors.Is(err, ErrConflict) {
 			return s.systemByHandle(ctx, handle)
 		}
@@ -239,21 +283,12 @@ func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayN
 // pre-guard database) is a misconfiguration: ErrConflict, never a silent
 // adoption of a foreign row as the privileged system sender.
 func (s *Store) systemByHandle(ctx context.Context, handle string) (Account, error) {
-	const q = `
-		SELECT a.id, a.handle, a.display_name,
-		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
-		       sy.account_id
-		FROM account_handles ah
-		JOIN accounts a ON a.id = ah.account_id
-		LEFT JOIN user_accounts u ON u.account_id = a.id
-		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE ah.owner_user_id IS NULL AND ah.handle = $1`
-	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
+	row, err := s.q.GetAccountByGlobalHandle(ctx, handle)
 	if err != nil {
 		return Account{}, fmt.Errorf("store: resolve system account by handle: %w", err)
 	}
+	acc := accountFromRow(row.ID, row.Handle, row.DisplayName, row.UserRole,
+		row.OwnerUserID, row.HomeChannelID, row.Persona, row.AgentRole, row.ParentAgentID, row.SystemAccountID)
 	if acc.System == nil {
 		return Account{}, fmt.Errorf("%w: handle %q exists but is not the system account", ErrConflict, handle)
 	}
@@ -285,17 +320,24 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		return Account{}, fmt.Errorf("store: begin create agent: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
 
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO accounts (id, handle, display_name, tenant_id) VALUES ($1, $2, $3, $4)",
-		accountID, a.Handle, a.DisplayName, string(s.resolveTenant(ctx)),
-	); err != nil {
+	if err := qtx.InsertAccount(ctx, db.InsertAccountParams{
+		ID:          accountID,
+		Handle:      a.Handle,
+		DisplayName: a.DisplayName,
+		TenantID:    string(s.resolveTenant(ctx)),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id, persona, role, parent_agent_id) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))",
-		accountID, string(ownerUserID), channelID, a.Persona, a.Role, string(a.ParentAgentID),
-	); err != nil {
+	if err := qtx.InsertAgentAccount(ctx, db.InsertAgentAccountParams{
+		AccountID:     accountID,
+		OwnerUserID:   string(ownerUserID),
+		HomeChannelID: pgtype.Text{String: channelID, Valid: true},
+		Persona:       a.Persona,
+		Role:          a.Role,
+		Column6:       string(a.ParentAgentID),
+	}); err != nil {
 		// Both FKs on agent_accounts land here: parent_agent_id (a supplied
 		// parent that does not resolve to an agent) and owner_user_id (an
 		// unknown owner). ConstraintName tells them apart — the parent FK is a
@@ -314,7 +356,7 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 	// (owner_user_id = ownerUserID), so it is unique only within that owner's
 	// namespace. Handle uniqueness moved off accounts.handle: a duplicate agent
 	// handle under the same owner surfaces here as ErrConflict.
-	if err := insertAccountHandle(ctx, tx, accountID, a.Handle, ownerUserID); err != nil {
+	if err := insertAccountHandle(ctx, qtx, accountID, a.Handle, ownerUserID); err != nil {
 		return Account{}, err
 	}
 
@@ -332,16 +374,18 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 
 	// Mint the home channel: named for the agent, ungrouped (owner-scoped), with
 	// the owner and the agent as members and the agent always-subscribed.
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO channels (id, name, group_id, kind) VALUES ($1, $2, NULL, $3)",
-		channelID, a.Handle, int32(ChannelKindChannel),
-	); err != nil {
+	if err := qtx.InsertHomeChannel(ctx, db.InsertHomeChannelParams{
+		ID:   channelID,
+		Name: a.Handle,
+		Kind: int16(ChannelKindChannel),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: insert home channel: %w", err)
 	}
-	if _, err := tx.Exec(ctx,
-		"INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE), ($1, $3, TRUE)",
-		channelID, string(ownerUserID), accountID,
-	); err != nil {
+	if err := qtx.SeedHomeChannelMembers(ctx, db.SeedHomeChannelMembersParams{
+		ChannelID:   channelID,
+		AccountID:   string(ownerUserID),
+		AccountID_2: accountID,
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: seed home channel members: %w", err)
 	}
 	if err := seedDeliveryCursor(ctx, tx, AccountID(accountID), ChannelID(channelID)); err != nil {
@@ -373,14 +417,11 @@ func (s *Store) CountRootAgents(ctx context.Context, ownerUserID AccountID) (int
 	if ownerUserID == "" {
 		return 0, fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)
 	}
-	var n int
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM agent_accounts WHERE owner_user_id = $1 AND parent_agent_id IS NULL`,
-		string(ownerUserID),
-	).Scan(&n); err != nil {
+	n, err := s.q.CountRootAgents(ctx, string(ownerUserID))
+	if err != nil {
 		return 0, fmt.Errorf("store: count root agents: %w", err)
 	}
-	return n, nil
+	return int(n), nil
 }
 
 // EnsureChannelMember idempotently adds account to channelID as an UNSUBSCRIBED
@@ -398,11 +439,10 @@ func (s *Store) CountRootAgents(ctx context.Context, ownerUserID AccountID) (int
 // never receives. ON CONFLICT DO NOTHING makes a re-fire a no-op. An unknown
 // channel or account is ErrInvalidArgument (the FK violation), never a store fault.
 func (s *Store) EnsureChannelMember(ctx context.Context, channelID ChannelID, accountID AccountID) error {
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) `+
-			`ON CONFLICT (channel_id, account_id) DO NOTHING`,
-		string(channelID), string(accountID),
-	); err != nil {
+	if err := s.q.EnsureChannelMember(ctx, db.EnsureChannelMemberParams{
+		ChannelID: string(channelID),
+		AccountID: string(accountID),
+	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return fmt.Errorf("%w: unknown channel %q or account %q", ErrInvalidArgument, channelID, accountID)
 		}
@@ -416,24 +456,15 @@ func (s *Store) EnsureChannelMember(ctx context.Context, channelID ChannelID, ac
 // and the auth layer; caller-facing visibility scoping is applied by
 // ListAccounts and the per-container reads, not here.
 func (s *Store) GetAccount(ctx context.Context, id AccountID) (Account, error) {
-	const q = `
-		SELECT a.id, a.handle, a.display_name,
-		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
-		       sy.account_id
-		FROM accounts a
-		LEFT JOIN user_accounts u ON u.account_id = a.id
-		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE a.id = $1`
-	acc, err := scanAccount(s.pool.QueryRow(ctx, q, string(id)))
+	row, err := s.q.GetAccount(ctx, string(id))
 	if err != nil {
 		if noRows(err) {
 			return Account{}, fmt.Errorf("%w: account %q", ErrNotFound, id)
 		}
 		return Account{}, fmt.Errorf("store: get account: %w", err)
 	}
-	return acc, nil
+	return accountFromRow(row.ID, row.Handle, row.DisplayName, row.UserRole,
+		row.OwnerUserID, row.HomeChannelID, row.Persona, row.AgentRole, row.ParentAgentID, row.SystemAccountID), nil
 }
 
 // AgentOwner returns the owning user of an agent account. It is a thin
@@ -447,11 +478,8 @@ func (s *Store) AgentOwner(ctx context.Context, agentAccountID AccountID) (Accou
 	if agentAccountID == "" {
 		return "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	var ownerUserID string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT owner_user_id FROM agent_accounts WHERE account_id = $1`,
-		string(agentAccountID),
-	).Scan(&ownerUserID); err != nil {
+	ownerUserID, err := s.q.GetAgentOwner(ctx, string(agentAccountID))
+	if err != nil {
 		if noRows(err) {
 			return "", fmt.Errorf("%w: agent %q", ErrNotFound, agentAccountID)
 		}
@@ -474,11 +502,8 @@ func (s *Store) ResolveOwner(ctx context.Context, caller AccountID) (AccountID, 
 	if caller == "" {
 		return "", fmt.Errorf("%w: caller is required", ErrInvalidArgument)
 	}
-	var owner string
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)`,
-		string(caller),
-	).Scan(&owner); err != nil {
+	owner, err := s.q.ResolveOwner(ctx, string(caller))
+	if err != nil {
 		return "", fmt.Errorf("store: resolve owner: %w", err)
 	}
 	return AccountID(owner), nil
@@ -524,16 +549,14 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 	// Rolled back on every path that does not commit; a rollback after a
 	// successful commit is a no-op the driver ignores, so the discard is safe.
 	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
 
 	// Resolve the moved agent's owner. Missing row = the id is unknown or names a
 	// non-agent; either way clause 0 cannot hold, so it is folded into the
 	// authority failure below rather than surfaced as a distinct existence error.
-	var agentOwner string
 	agentExists := true
-	if err := tx.QueryRow(ctx,
-		`SELECT owner_user_id FROM agent_accounts WHERE account_id = $1`,
-		string(agentAccountID),
-	).Scan(&agentOwner); err != nil {
+	agentOwner, err := qtx.GetAgentOwner(ctx, string(agentAccountID))
+	if err != nil {
 		if noRows(err) {
 			agentExists = false
 		} else {
@@ -554,43 +577,37 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 	if !agentExists {
 		lockKey = string(agentAccountID)
 	}
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+	if err := qtx.AcquireOwnerTreeLock(ctx, lockKey); err != nil {
 		return Account{}, fmt.Errorf("store: lock owner tree: %w", err)
 	}
 
 	// (0) Caller authority: the caller's resolved owner (its owner_user_id if it
 	// is an agent, else itself) must equal the moved agent's owner.
-	var callerOwner string
-	if err := tx.QueryRow(ctx,
-		`SELECT COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)`,
-		string(caller),
-	).Scan(&callerOwner); err != nil {
+	callerOwner, err := qtx.ResolveOwner(ctx, string(caller))
+	if err != nil {
 		return Account{}, fmt.Errorf("store: resolve caller owner: %w", err)
 	}
 	if !agentExists || callerOwner != agentOwner {
 		return Account{}, fmt.Errorf("%w: caller may not re-parent agent %q", ErrPermissionDenied, agentAccountID)
 	}
 
-	if err := validateNewParent(ctx, tx, agentAccountID, newParentAgentID, AccountID(agentOwner)); err != nil {
+	if err := validateNewParent(ctx, qtx, agentAccountID, newParentAgentID, AccountID(agentOwner)); err != nil {
 		return Account{}, err
 	}
 
 	// Capture the CURRENT parent before the UPDATE overwrites it: reparent-out
 	// must reconcile the OLD manager's coordination channel too (its report set
 	// loses this agent), per design.md:567 "reparent-out removes it". NULL parent
-	// (a root) scans to empty — no old manager to reconcile.
-	var oldParent *string
-	if err := tx.QueryRow(ctx,
-		`SELECT parent_agent_id FROM agent_accounts WHERE account_id = $1`,
-		string(agentAccountID),
-	).Scan(&oldParent); err != nil {
+	// (a root) reads as an invalid pgtype.Text — no old manager to reconcile.
+	oldParent, err := qtx.GetAgentParent(ctx, string(agentAccountID))
+	if err != nil {
 		return Account{}, fmt.Errorf("store: resolve old parent: %w", err)
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE agent_accounts SET parent_agent_id = NULLIF($2, '') WHERE account_id = $1`,
-		string(agentAccountID), string(newParentAgentID),
-	); err != nil {
+	if err := qtx.UpdateAgentParent(ctx, db.UpdateAgentParentParams{
+		AccountID: string(agentAccountID),
+		Column2:   string(newParentAgentID),
+	}); err != nil {
 		return Account{}, fmt.Errorf("store: update parent: %w", err)
 	}
 
@@ -609,26 +626,18 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 			return Account{}, err
 		}
 	}
-	if oldParent != nil && *oldParent != "" && AccountID(*oldParent) != newParentAgentID {
-		if err := s.invokeCoordinationHook(ctx, tx, AccountID(*oldParent)); err != nil {
+	if oldParent.Valid && oldParent.String != "" && AccountID(oldParent.String) != newParentAgentID {
+		if err := s.invokeCoordinationHook(ctx, tx, AccountID(oldParent.String)); err != nil {
 			return Account{}, err
 		}
 	}
 
-	const q = `
-		SELECT a.id, a.handle, a.display_name,
-		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
-		       sy.account_id
-		FROM accounts a
-		LEFT JOIN user_accounts u ON u.account_id = a.id
-		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE a.id = $1`
-	acc, err := scanAccount(tx.QueryRow(ctx, q, string(agentAccountID)))
+	row, err := qtx.GetAccount(ctx, string(agentAccountID))
 	if err != nil {
 		return Account{}, fmt.Errorf("store: re-read reparented account: %w", err)
 	}
+	acc := accountFromRow(row.ID, row.Handle, row.DisplayName, row.UserRole,
+		row.OwnerUserID, row.HomeChannelID, row.Persona, row.AgentRole, row.ParentAgentID, row.SystemAccountID)
 	if err := tx.Commit(ctx); err != nil {
 		return Account{}, fmt.Errorf("store: commit reparent agent: %w", err)
 	}
@@ -639,18 +648,16 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 // proposed non-empty parent, inside the caller's transaction (which already
 // holds the per-owner-tree lock). An empty newParentAgentID is a promote-to-root
 // with no parent to check, so it returns nil immediately. agentOwner is the
-// moved agent's already-resolved owner.
-func validateNewParent(ctx context.Context, tx pgx.Tx, agentAccountID, newParentAgentID, agentOwner AccountID) error {
+// moved agent's already-resolved owner. It reads through the caller's tx-scoped
+// queries so every probe sees the serialized tree.
+func validateNewParent(ctx context.Context, q *db.Queries, agentAccountID, newParentAgentID, agentOwner AccountID) error {
 	if newParentAgentID == "" {
 		return nil
 	}
 
 	// (1)+(3) existence and same-owner for the proposed parent.
-	var parentOwner string
-	if err := tx.QueryRow(ctx,
-		`SELECT owner_user_id FROM agent_accounts WHERE account_id = $1`,
-		string(newParentAgentID),
-	).Scan(&parentOwner); err != nil {
+	parentOwner, err := q.GetAgentOwner(ctx, string(newParentAgentID))
+	if err != nil {
 		if noRows(err) {
 			return fmt.Errorf("%w: parent agent %q", ErrNotFound, newParentAgentID)
 		}
@@ -680,20 +687,17 @@ func validateNewParent(ctx context.Context, tx pgx.Tx, agentAccountID, newParent
 			break
 		}
 		visited[cur] = true
-		var next *string
-		if err := tx.QueryRow(ctx,
-			`SELECT parent_agent_id FROM agent_accounts WHERE account_id = $1`,
-			string(cur),
-		).Scan(&next); err != nil {
+		next, err := q.GetAgentParent(ctx, string(cur))
+		if err != nil {
 			if noRows(err) {
 				break
 			}
 			return fmt.Errorf("store: walk parent chain: %w", err)
 		}
-		if next == nil {
+		if !next.Valid {
 			break
 		}
-		cur = AccountID(*next)
+		cur = AccountID(next.String)
 	}
 	return nil
 }
@@ -717,24 +721,18 @@ func (s *Store) AgentByHandle(ctx context.Context, owner AccountID, handle strin
 		// handle (indistinguishable from the wrong-owner miss below).
 		return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
 	}
-	const q = `
-		SELECT a.id, a.handle, a.display_name,
-		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
-		       sy.account_id
-		FROM account_handles ah
-		JOIN accounts a ON a.id = ah.account_id
-		LEFT JOIN user_accounts u ON u.account_id = a.id
-		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE ah.owner_user_id = $1 AND ah.handle = $2`
-	acc, err := scanAccount(s.pool.QueryRow(ctx, q, string(owner), handle))
+	row, err := s.q.GetAccountByOwnerHandle(ctx, db.GetAccountByOwnerHandleParams{
+		OwnerUserID: pgtype.Text{String: string(owner), Valid: true},
+		Handle:      handle,
+	})
 	if err != nil {
 		if noRows(err) {
 			return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
 		}
 		return Account{}, fmt.Errorf("store: resolve agent by handle: %w", err)
 	}
+	acc := accountFromRow(row.ID, row.Handle, row.DisplayName, row.UserRole,
+		row.OwnerUserID, row.HomeChannelID, row.Persona, row.AgentRole, row.ParentAgentID, row.SystemAccountID)
 	if !acc.IsAgent() {
 		// Identical wrapped text to the noRows branch above: a non-agent handle
 		// must be indistinguishable from an unknown one at the message-text level
@@ -754,25 +752,15 @@ func (s *Store) UserByHandle(ctx context.Context, handle string) (Account, error
 	if handle == "" {
 		return Account{}, fmt.Errorf("%w: handle is required", ErrInvalidArgument)
 	}
-	const q = `
-		SELECT a.id, a.handle, a.display_name,
-		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
-		       sy.account_id
-		FROM account_handles ah
-		JOIN accounts a ON a.id = ah.account_id
-		LEFT JOIN user_accounts u ON u.account_id = a.id
-		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE ah.owner_user_id IS NULL AND ah.handle = $1`
-	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
+	row, err := s.q.GetAccountByGlobalHandle(ctx, handle)
 	if err != nil {
 		if noRows(err) {
 			return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
 		}
 		return Account{}, fmt.Errorf("store: resolve user by handle: %w", err)
 	}
-	return acc, nil
+	return accountFromRow(row.ID, row.Handle, row.DisplayName, row.UserRole,
+		row.OwnerUserID, row.HomeChannelID, row.Persona, row.AgentRole, row.ParentAgentID, row.SystemAccountID), nil
 }
 
 // QualifiedHandle is a submitted account handle parsed into its owner qualifier
@@ -810,9 +798,9 @@ func ParseQualifiedHandle(raw string) QualifiedHandle {
 //     (callerOwner). The system account is never a member/owner target, so the
 //     global arm excludes system_accounts rows.
 //
-// Every arm is intersected with accountVisibleFromWhere keyed on viewer (OQ-6
-// SCOPED): a real-but-invisible handle misses exactly like an unknown one, so
-// resolution and the roster clip stay aligned by construction.
+// Every arm is intersected with the account-visibility predicate keyed on viewer
+// (OQ-6 SCOPED): a real-but-invisible handle misses exactly like an unknown one,
+// so resolution and the roster clip stay aligned by construction.
 //
 // ATOMIC (OQ-2): any handle that fails to resolve fails the whole call with
 // ErrNotFound naming EVERY unresolved handle in its submitted spelling (same
@@ -880,14 +868,7 @@ func (s *Store) resolveOneHandle(ctx context.Context, viewer, callerOwner Accoun
 // clip — it backs the owner-qualifier lookup, whose owner is a namespace key,
 // not an addressed target. Empty id on a clean miss.
 func (s *Store) globalHandleID(ctx context.Context, handle string) (AccountID, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, `
-		SELECT ah.account_id
-		FROM account_handles ah
-		WHERE ah.owner_user_id IS NULL AND ah.handle = $1
-		  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)`,
-		handle,
-	).Scan(&id)
+	id, err := s.q.GetGlobalHandleID(ctx, handle)
 	if err != nil {
 		if noRows(err) {
 			return "", nil
@@ -899,17 +880,13 @@ func (s *Store) globalHandleID(ctx context.Context, handle string) (AccountID, e
 
 // visibleGlobalHandleID resolves a bare handle in the global user/system index,
 // excluding the system account AND intersecting the viewer's account-visible set
-// (accountVisibleFromWhere). Empty id on a clean miss (unknown or invisible).
+// (the shared visibility predicate). Empty id on a clean miss (unknown or
+// invisible).
 func (s *Store) visibleGlobalHandleID(ctx context.Context, viewer AccountID, handle string) (AccountID, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, `
-		SELECT ah.account_id
-		FROM account_handles ah
-		WHERE ah.owner_user_id IS NULL AND ah.handle = $2
-		  AND NOT EXISTS (SELECT 1 FROM system_accounts sy WHERE sy.account_id = ah.account_id)
-		  AND EXISTS (SELECT 1`+accountVisibleFromWhere+` AND a.id = ah.account_id)`,
-		string(viewer), handle,
-	).Scan(&id)
+	id, err := s.q.GetVisibleGlobalHandleID(ctx, db.GetVisibleGlobalHandleIDParams{
+		ID:     string(viewer),
+		Handle: handle,
+	})
 	if err != nil {
 		if noRows(err) {
 			return "", nil
@@ -926,14 +903,11 @@ func (s *Store) visibleAgentHandleID(ctx context.Context, viewer, owner AccountI
 	if owner == "" {
 		return "", nil
 	}
-	var id string
-	err := s.pool.QueryRow(ctx, `
-		SELECT ah.account_id
-		FROM account_handles ah
-		WHERE ah.owner_user_id = $2 AND ah.handle = $3
-		  AND EXISTS (SELECT 1`+accountVisibleFromWhere+` AND a.id = ah.account_id)`,
-		string(viewer), string(owner), handle,
-	).Scan(&id)
+	id, err := s.q.GetVisibleAgentHandleID(ctx, db.GetVisibleAgentHandleIDParams{
+		ID:          string(viewer),
+		OwnerUserID: pgtype.Text{String: string(owner), Valid: true},
+		Handle:      handle,
+	})
 	if err != nil {
 		if noRows(err) {
 			return "", nil
@@ -943,62 +917,27 @@ func (s *Store) visibleAgentHandleID(ctx context.Context, viewer, owner AccountI
 	return AccountID(id), nil
 }
 
-// accountVisibleFromWhere is the FROM + JOINs + visibility predicate shared by
-// ListAccounts and AccountVisibleTo, so the stream edge's per-event account
-// filter cannot drift from the ListAccounts read (the anti-drift guarantee the
-// frozen "store is the D9 source of truth" requires). $1 is the viewer; the
-// predicate is parenthesized so a caller may AND a row selector onto it.
-//
-// Visibility rule (D9, owner-gated access — the frozen record pins DM/channel
-// visibility precisely but delegates account-listing scope to "the accounts
-// visible to the caller", comms.proto:48-49; this is the store's conservative
-// realization, flagged for review): the caller always sees itself and every user
-// account (the first-class member directory the management hierarchy needs), and
-// sees an agent account only when it owns that agent or shares a channel with it
-// — so an owner-scoped agent never leaks to an unrelated account.
-const accountVisibleFromWhere = `
-		FROM accounts a
-		LEFT JOIN user_accounts u ON u.account_id = a.id
-		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
-		LEFT JOIN system_accounts sy ON sy.account_id = a.id
-		WHERE (
-		        a.id = $1
-		     OR u.account_id IS NOT NULL
-		     OR ag.owner_user_id = $1
-		     OR EXISTS (
-		         SELECT 1
-		         FROM channel_members cm_self
-		         JOIN channel_members cm_them ON cm_them.channel_id = cm_self.channel_id
-		         WHERE cm_self.account_id = $1 AND cm_them.account_id = a.id
-		     )
-		      )`
-
-// ListAccounts returns the accounts visible to visibleTo (see
-// accountVisibleFromWhere for the visibility rule).
+// ListAccounts returns the accounts visible to visibleTo. The visibility rule
+// (D9, owner-gated access — the frozen record pins DM/channel visibility
+// precisely but delegates account-listing scope to "the accounts visible to the
+// caller", comms.proto:48-49; this is the store's conservative realization,
+// flagged for review): the caller always sees itself and every user account (the
+// first-class member directory the management hierarchy needs), and sees an agent
+// account only when it owns that agent or shares a channel with it — so an
+// owner-scoped agent never leaks to an unrelated account. The predicate is
+// textually shared across the ListVisibleAccounts, AccountVisibleTo, and the two
+// visible-handle queries (queries/accounts.sql) so the stream edge's per-event
+// account filter cannot drift from this list read (the anti-drift guarantee the
+// frozen "store is the D9 source of truth" requires).
 func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Account, error) {
-	const q = `
-		SELECT a.id, a.handle, a.display_name,
-		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
-		       sy.account_id` +
-		accountVisibleFromWhere + `
-		ORDER BY a.handle`
-	rows, err := s.pool.Query(ctx, q, string(visibleTo))
+	rows, err := s.q.ListVisibleAccounts(ctx, string(visibleTo))
 	if err != nil {
 		return nil, fmt.Errorf("store: list accounts: %w", err)
 	}
-	defer rows.Close()
-
-	var accounts []Account
-	for rows.Next() {
-		acc, err := scanAccount(rows)
-		if err != nil {
-			return nil, fmt.Errorf("store: scan account: %w", err)
-		}
-		accounts = append(accounts, acc)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate accounts: %w", err)
+	accounts := make([]Account, 0, len(rows))
+	for _, row := range rows {
+		accounts = append(accounts, accountFromRow(row.ID, row.Handle, row.DisplayName, row.UserRole,
+			row.OwnerUserID, row.HomeChannelID, row.Persona, row.AgentRole, row.ParentAgentID, row.SystemAccountID))
 	}
 	return accounts, nil
 }
@@ -1006,65 +945,15 @@ func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Accoun
 // AccountVisibleTo reports whether actor may see target — the single-id form of
 // the ListAccounts predicate, used by the SubscribeComms stream edge to filter
 // AccountChanged so the directory event rides at read-parity (a viewer never
-// learns of an agent it could not list). Shares accountVisibleFromWhere with the
-// list read so the two cannot drift.
+// learns of an agent it could not list). Shares the visibility predicate with
+// the list read (queries/accounts.sql) so the two cannot drift.
 func (s *Store) AccountVisibleTo(ctx context.Context, actor AccountID, target AccountID) (bool, error) {
-	var visible bool
-	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1`+accountVisibleFromWhere+` AND a.id = $2)`,
-		string(actor), string(target),
-	).Scan(&visible); err != nil {
+	visible, err := s.q.AccountVisibleTo(ctx, db.AccountVisibleToParams{
+		ID:   string(actor),
+		ID_2: string(target),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check account visibility: %w", err)
 	}
 	return visible, nil
-}
-
-// scanAccount reads one joined account row (accounts LEFT JOIN user_accounts
-// LEFT JOIN agent_accounts LEFT JOIN system_accounts) into an Account, setting
-// exactly the User, Agent, or System subtype by which side of the join
-// populated. Shared by GetAccount and ListAccounts so the oneof reconstruction
-// lives in one place. The system_accounts column is scanned LAST, so every
-// projection that feeds scanAccount must select it in that position or the
-// fixed-arity Scan mismatches.
-func scanAccount(row pgx.Row) (Account, error) {
-	var (
-		acc             Account
-		id, handle      string
-		displayName     string
-		role            *int32
-		ownerUserID     *string
-		homeChannelID   *string
-		persona         *string
-		agRole          *string
-		parentAgentID   *string
-		systemAccountID *string
-	)
-	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona, &agRole, &parentAgentID, &systemAccountID); err != nil {
-		return Account{}, err
-	}
-	acc.ID = AccountID(id)
-	acc.Handle = handle
-	acc.DisplayName = displayName
-	switch {
-	case role != nil:
-		acc.User = &UserAccount{Role: UserRole(*role)}
-	case ownerUserID != nil:
-		agent := &AgentAccount{OwnerUserID: AccountID(*ownerUserID)}
-		if homeChannelID != nil {
-			agent.HomeChannelID = ChannelID(*homeChannelID)
-		}
-		if persona != nil {
-			agent.Persona = *persona
-		}
-		if agRole != nil {
-			agent.Role = *agRole
-		}
-		if parentAgentID != nil {
-			agent.ParentAgentID = AccountID(*parentAgentID)
-		}
-		acc.Agent = agent
-	case systemAccountID != nil:
-		acc.System = &SystemAccount{}
-	}
-	return acc, nil
 }

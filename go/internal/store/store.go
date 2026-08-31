@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/RigelBuild/compass/go/internal/store/db"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,6 +36,12 @@ const migrationLockKey int64 = 0x0C0A_5500_0000_0001
 // it with Open and release it with Close.
 type Store struct {
 	pool *pgxpool.Pool
+	// q is the sqlc-generated typed query set bound to the pool (db.New(pool)),
+	// the migrated read/write path (sqlc adoption, RIG-3034). Pool-scoped calls
+	// go through s.q directly; a tx-scoped path rebinds it with s.q.WithTx(tx).
+	// Set once in Open, immutable thereafter, so it is safe for concurrent use
+	// exactly like the pool it wraps.
+	q *db.Queries
 	// objectStore is the archive-tier object-store seam (RIG-1667 T4), injected
 	// via SetObjectStore. nil until slice B wires a real client (store tests
 	// inject an in-memory fake); a flush against a nil store fails loudly.
@@ -90,7 +97,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
 
-	s := &Store{pool: pool, safetyValveCapBytes: defaultSafetyValveCapBytes}
+	s := &Store{pool: pool, q: db.New(pool), safetyValveCapBytes: defaultSafetyValveCapBytes}
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, err

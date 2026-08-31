@@ -6,9 +6,59 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
+	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
+	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
+	// Agent-tree queries (sqlc adoption T2, RIG-3034). These replace the
+	// const-hoisted `agentTreeProjection` + per-caller WHERE composition that lived
+	// in internal/store/agent_tree.go and was run through the `queryAgents` helper —
+	// exactly the "SQL in a variable" shape the inline-SQL gate cannot grep. Each of
+	// the three tree reads is now a full, static, schema-checked query.
+	//
+	// The projection is column-identical to the former agentTreeProjection: the join
+	// to agent_accounts is INNER (the tree is agents-only), so every row scans back
+	// through the shared accountFromRow mapping (fed by treeAccountText) into a domain Account with its
+	// Agent subtype set. The two `role` columns are aliased (user_role / agent_role)
+	// so the generated row fields do not collide.
+	AgentNeighborhood(ctx context.Context, id string) ([]AgentNeighborhoodRow, error)
+	AgentSubtree(ctx context.Context, accountID string) ([]AgentSubtreeRow, error)
+	AgentsByOwner(ctx context.Context, ownerUserID string) ([]AgentsByOwnerRow, error)
+	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
+	EnsureChannelMember(ctx context.Context, arg EnsureChannelMemberParams) error
+	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
+	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
+	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
+	GetAgentOwner(ctx context.Context, accountID string) (string, error)
+	GetAgentParent(ctx context.Context, accountID string) (pgtype.Text, error)
+	GetGlobalHandleID(ctx context.Context, handle string) (string, error)
+	GetVisibleAgentHandleID(ctx context.Context, arg GetVisibleAgentHandleIDParams) (string, error)
+	GetVisibleGlobalHandleID(ctx context.Context, arg GetVisibleGlobalHandleIDParams) (string, error)
+	// Account-domain queries (sqlc adoption T2, RIG-3034). These replace the inline
+	// SQL literals that lived in internal/store/accounts.go; the hand-written Store
+	// methods keep their exact signatures and wrap these generated calls, mapping the
+	// generated row structs back to the domain Account (see accountFromRow, and
+	// accountFromRow via treeAccountText for the tree rows, in the Go).
+	//
+	// The account projection (a.id … sy.account_id) is repeated per query because
+	// sqlc has no query-fragment composition. It is column-identical to the former
+	// scanAccount projection (accounts LEFT JOIN user_accounts LEFT JOIN
+	// agent_accounts LEFT JOIN system_accounts), with the two `role` columns aliased
+	// (user_role / agent_role) so the generated row fields do not collide. The
+	// account-visibility predicate (formerly the accountVisibleFromWhere Go const) is
+	// likewise inlined into each read that needs it; the four copies MUST stay
+	// textually identical so the roster clip cannot drift from the ListAccounts read.
+	InsertAccount(ctx context.Context, arg InsertAccountParams) error
+	InsertAccountHandle(ctx context.Context, arg InsertAccountHandleParams) error
+	InsertAgentAccount(ctx context.Context, arg InsertAgentAccountParams) error
+	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
+	InsertSystemAccount(ctx context.Context, accountID string) error
+	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
+	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
+	ResolveOwner(ctx context.Context, accountID string) (string, error)
 	// Scaffold-only query proving sqlc generation works end to end (T1).
 	//
 	// This is NOT a real store query: the per-domain query files land in T2..T6 as
@@ -17,6 +67,8 @@ type Querier interface {
 	// selects a genuinely existing column from a genuinely existing table
 	// (tenants, 0001_init.sql), so sqlc compiles it against the real schema.
 	ScaffoldGetTenant(ctx context.Context, id string) (Tenant, error)
+	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
+	UpdateAgentParent(ctx context.Context, arg UpdateAgentParentParams) error
 }
 
 var _ Querier = (*Queries)(nil)
