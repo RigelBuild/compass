@@ -367,7 +367,12 @@ func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.Sessions
 // execute runs the command against the host and maps the outcome to a result
 // message (a typed response variant, or a RunnerError with the mapped code).
 func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
-	switch c := cmd.GetCommand().(type) {
+	command := cmd.GetCommand()
+	if command == nil {
+		// A dispatched command with no variant set — a wire contract skew.
+		return d.errorResult(ctx, id, errors.New("sessions stream: command frame missing command variant"))
+	}
+	switch c := command.(type) {
 	case *compassv1internal.SessionsResponse_Start:
 		sessionID, err := d.host.Start(ctx, c.Start, cmd.GetResumeBody().GetSessionBody())
 		if err != nil {

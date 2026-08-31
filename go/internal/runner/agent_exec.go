@@ -356,12 +356,14 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 		// nothing — but only the FINAL chunk can hold one, so discounting a
 		// chunk's trailing CR discounts a byte that is ordinary payload and
 		// under-reports a line that is over the cap by exactly that byte.
-		seen += len(chunk)
-		for _, b := range chunk[max(0, len(chunk)-2):] {
-			tail[0], tail[1] = tail[1], b
-		}
-		if room := limit - len(line); room > 0 {
-			line = append(line, chunk[:min(len(chunk), room)]...)
+		if chunk != nil {
+			seen += len(chunk)
+			for _, b := range chunk[max(0, len(chunk)-2):] {
+				tail[0], tail[1] = tail[1], b
+			}
+			if room := limit - len(line); room > 0 {
+				line = append(line, chunk[:min(len(chunk), room)]...)
+			}
 		}
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue // more of the same line; keep consuming.
