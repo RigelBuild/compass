@@ -84,24 +84,16 @@ jobs:
         # The one binary the toolchain bootstrap does NOT provide: compass CI
         # never puts a `devenv` on PATH. refresh-devenv-nixpkgs.ts shells
         # `devenv update nixpkgs` from PATH against the ROOT devenv.lock, so the
-        # CLI MUST be the exact devenv that lock is written by. Resolve its
-        # source straight from devenv.lock at runtime — owner/repo/rev of the
-        # `devenv` node — and build `github:<owner>/<repo>/<rev>#devenv`, so this
-        # step can never drift from the shell and carries no second, divergent
-        # devenv definition: it tracks whatever devenv source the root lock names
-        # with no edit here.
+        # CLI MUST be the exact devenv that lock is written by. The devenv-cli
+        # tool (tools/toolchain/devenv-cli) resolves the `devenv` node of a named
+        # devenv.lock, builds it, and prints a single-`devenv`-symlink shim
+        # dir (--mode bin-dir), so this step tracks whatever devenv source the
+        # root lock names with no edit here and carries no second, divergent
+        # devenv definition — shared with ci.yml's seed step (RIG-2546). bun is on
+        # PATH from the toolchain bootstrap step above.
         run: |
-          src=$(jq -er '.nodes.devenv.locked as $d
-            | "github:\($d.owner // "" | select(. != "") // error("no owner"))/\($d.repo // "" | select(. != "") // error("no repo"))/\($d.rev // "" | select(. != "") // error("no rev"))#devenv"' \
-            devenv.lock) || {
-            echo "::error::could not resolve devenv source from devenv.lock"
-            exit 1
-          }
-          out=$(nix build --no-link --print-out-paths "$src")
-          shimdir="$RUNNER_TEMP/devenv-shim/bin"
-          mkdir -p "$shimdir"
-          ln -s "$out/bin/devenv" "$shimdir/devenv"
-          echo "$shimdir" >>"$GITHUB_PATH"
+          bindir=$(bun tools/toolchain/devenv-cli/index.ts --lock devenv.lock --mode bin-dir)
+          echo "$bindir" >>"$GITHUB_PATH"
 
       - name: Assert devenv is on PATH
         # Fail loud at setup if the shim is missing, rather than exit-127ing
