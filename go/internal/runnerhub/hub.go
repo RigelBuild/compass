@@ -560,7 +560,14 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	h.recordSeq(ev.RunnerSeq)
 
 	frame := ev.Frame
-	switch f := frame.GetFrame().(type) {
+	oneof := frame.GetFrame()
+	if oneof == nil {
+		// Unset oneof — the "unknown frame". Log + count so a contract skew is
+		// observable (agent.proto:38-39), but never drop it silently.
+		h.countUnknown(ev)
+		return nil
+	}
+	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
 		h.deliverSession(ev.SessionID, f.Session)
 		return nil

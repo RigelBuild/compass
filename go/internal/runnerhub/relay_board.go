@@ -103,7 +103,14 @@ func (h *Hub) executeBoardCall(
 	account store.AccountID,
 	call *compassv1internal.BoardCallRequest,
 ) (*compassv1internal.BoardCallResult, error) {
-	switch c := call.GetCall().(type) {
+	oneof := call.GetCall()
+	if oneof == nil {
+		return nil, connect.NewError(
+			connect.CodeInvalidArgument,
+			errors.New("runnerhub: board call has no set_issue_state variant set"),
+		)
+	}
+	switch c := oneof.(type) {
 	case *compassv1internal.BoardCallRequest_SetIssueState:
 		resp, err := caller.SetIssueStateAsAccount(ctx, account, c.SetIssueState)
 		if err != nil {
