@@ -762,7 +762,10 @@ func applyAskAnswer(msg *Message, askID string, answers []AskAnswer) error {
 		// Coverage holds → record every answer in place and mark the ask
 		// answered so a subsequent AnswerAsk is rejected.
 		for _, a := range answers {
-			q := byID[a.QuestionID]
+			q, ok := byID[a.QuestionID]
+			if !ok {
+				return fmt.Errorf("%w: answer names unknown question_id %q in ask %q", ErrInvalidArgument, a.QuestionID, askID)
+			}
 			q.ChosenOptionIDs = a.ChosenOptionIDs
 			q.CustomText = a.CustomText
 		}
