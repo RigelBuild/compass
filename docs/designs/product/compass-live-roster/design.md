@@ -70,7 +70,7 @@ board helpers are likewise pure over an injected agent list (`board.ts:53-56`
 `boardAgents(agents, all)`, `board.ts:87` `treeOrder(agents)`,
 `board.ts:139-142` `prRowGroups(agents, all)`). Only the INPUT is hardcoded.
 The agent-trees record designed exactly this derivation
-(`docs/designs/product/compass-agent-trees/design.md:383-417`, §T4) against
+(`docs/designs/agent/compass-agent-trees/design.md:383-417`, §T4) against
 the fixture carrying `parent_agent_id`; the fixture→live source swap is the
 layer it left open — this record. Its derivation contract (stable input order,
 dangling-promotes-to-root) is untouched here.

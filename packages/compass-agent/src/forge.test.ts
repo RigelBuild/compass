@@ -1,5 +1,5 @@
 // ForgeBroker + the ten native forge tools (design:
-// docs/designs/product/compass-agent-forge-tools/design.md, T1 + T2).
+// docs/designs/agent/compass-agent-forge-tools/design.md, T1 + T2).
 // Each test defends an observable contract of the agent->Runner forge call: the
 // exact `ForgeCallRequest` a tool `execute` puts on the wire (arm case, arm
 // payload, call_id / client_request_id / forge selector, bigint coercion), and

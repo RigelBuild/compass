@@ -16,7 +16,7 @@ its T3) and the lifecycle tools (`packages/compass-agent/src/lifecycle.ts`):
 same broker shape, same identity model, same registration path. Everything
 below the agent — the Server write chokepoint, the hub relay, the Runner
 gateway leg, and the proto carrier — is COMPLETE and frozen elsewhere
-([`compass-forge-write-path/design.md`](../compass-forge-write-path/design.md));
+([`compass-forge-write-path/design.md`](../../product/compass-forge-write-path/design.md));
 this record consumes it and designs nothing on the Go side.
 
 **Grounding.** This record and the code it describes live together in this
@@ -72,7 +72,7 @@ else.
    in-band `unimplemented` until the writer lands.** The backend arms are
    `CodeUnimplemented` stubs (`go/server/forge.go`) pending the
    `agent_forge_subscriptions` store writer, which the poll-driver lane owns
-   ([`compass-forge-poll-driver/design.md`](../compass-forge-poll-driver/design.md),
+   ([`compass-forge-poll-driver/design.md`](../../product/compass-forge-poll-driver/design.md),
    DL-163: the tables land writer-less; that lane brings the writer). Matt
    ruled build-all: the tools ship now so the surface is stable and complete;
    the two arms simply error at runtime (rendered as a clean in-band
@@ -362,7 +362,7 @@ hard scope enforcement is A8's frozen deferral, not reopened here.
   churn), and the runtime error is honest — the per-tool guidance states the
   arm is not yet wired, so the model learns "not available yet", not "broken".
   This composes with the poll-driver lane
-  ([`compass-forge-poll-driver/design.md`](../compass-forge-poll-driver/design.md),
+  ([`compass-forge-poll-driver/design.md`](../../product/compass-forge-poll-driver/design.md),
   DL-163: the tables land writer-less; that lane brings the writer).
 - **Deferring the `ForgeRef` (provider/host) selector.** Considered and
   OVERRULED by Matt: expose it now. The wave needs BOTH forges — it files

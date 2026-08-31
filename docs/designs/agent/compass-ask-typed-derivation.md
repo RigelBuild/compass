@@ -116,7 +116,7 @@ message Ask {
   // The questions, in the order the agent asked them. At least one.
   repeated AskQuestion questions = 6;
   // Superseded single-question shape (compass-0.5 D5); see
-  // docs/designs/product/compass-ask-typed-derivation.md.
+  // docs/designs/agent/compass-ask-typed-derivation.md.
   reserved 2 to 5;
   reserved "question", "options", "allow_multiple", "chosen_option_ids";
 }

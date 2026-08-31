@@ -82,7 +82,7 @@ this record rides its `RunnerCallTransport` seam and does not re-decide it.
   ruleset" (`go/internal/runtime/egress.go:7-9`). The container-runtime record
   moves the MVP *policy* to default-open but keeps the mechanism and the moat
   rationale — "blast-radius containment"
-  (`docs/designs/product/compass-agent-container-runtime.md:77`, `:206-217`) —
+  (`docs/designs/agent/compass-agent-container-runtime.md:77`, `:206-217`) —
   and per-agent restriction stays "a future opt-in" (`:216-217`). A Unix socket
   is not a network address, so the frozen transport opens no port and disturbs
   no egress posture; nothing in this record's comms legs relies on or perturbs

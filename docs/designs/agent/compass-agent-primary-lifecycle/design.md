@@ -385,7 +385,7 @@ PR, per the same-PR-flip rule):
   write-path ruling; explicitly not touched).
 
 `Interfaces:` consumes the frozen records cited above; produces
-`docs/designs/product/compass-agent-primary-lifecycle/design.md` + the
+`docs/designs/agent/compass-agent-primary-lifecycle/design.md` + the
 `DECISIONS.md` delta. Gate: `design-ledger-gate`.
 
 ### T2 — compass-repo: the `BoardCall` proto family + regen (NOT this PR)

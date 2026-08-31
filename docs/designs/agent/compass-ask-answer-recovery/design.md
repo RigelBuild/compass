@@ -3,7 +3,7 @@
 Status: Draft
 
 This record is the RIG-2257 successor to the T7 runner/hub dependency filed by
-`docs/designs/product/compass-ask-comms-roundtrip/design.md` Decision 3. It is
+`docs/designs/agent/compass-ask-comms-roundtrip/design.md` Decision 3. It is
 a pre-freeze rewrite of this same record: Matt ruled the prior draft's
 owed-marker + control-op-wake architecture out (see Alternatives considered),
 in favor of **the answer to an ask becoming a normal message on the existing

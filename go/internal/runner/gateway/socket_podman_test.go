@@ -3,7 +3,7 @@
 package gateway
 
 // Integration skeleton for the socket's uid-map + :Z-relabel invariant
-// (RIG-1351 T2, design docs/designs/product/compass-agent-runner-transport/
+// (RIG-1351 T2, design docs/designs/agent/compass-agent-runner-transport/
 // design.md:397-400): the host socket, bind-mounted via SocketListener.Mount and
 // relabelled :Z by the runtime, must be OWNED by the mapped agent uid in-container
 // and connect()-able from inside AFTER the relabel. This extends the

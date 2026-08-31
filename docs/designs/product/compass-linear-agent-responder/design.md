@@ -315,7 +315,7 @@ turn on an idle agent. This is the exact rail the ask-answer-recovery
 record built on ("an answerer-authored message is NOT author-excluded, so
 it is swept, delivered, acked, and reconnect-redelivered by the one
 delivery rail that already exists",
-`docs/designs/product/compass-ask-answer-recovery/design.md:38-41`).
+`docs/designs/agent/compass-ask-answer-recovery/design.md:38-41`).
 
 On `created`: resolve the Manager (routing above) → EnsureChannelMember(@linear)
 into its home channel → get-or-create the issue topic → insert the association
@@ -517,7 +517,7 @@ DeliverControl or a synthetic exec) would bypass the durable delivery rail —
 recreating exactly the owed-marker/bespoke-wake architecture Matt ruled out in
 RIG-2257 ("in favor of the answer to an ask becoming a normal message on the
 existing durable delivery rail",
-`docs/designs/product/compass-ask-answer-recovery/design.md:7-10`). A comms
+`docs/designs/agent/compass-ask-answer-recovery/design.md:7-10`). A comms
 message is durable, redelivered across reconnects, deduped agent-side, and
 wakes an offline agent through the shipped AgentWaker seam — all properties
 the Linear loop needs and a bespoke injection would have to rebuild.

@@ -364,7 +364,7 @@ type AskAnswerBlock struct {
 
 // Ask is a structured question set the agent posts and, at the turn level,
 // chooses whether to block on (see
-// docs/designs/product/compass-ask-typed-derivation.md; the frozen
+// docs/designs/agent/compass-ask-typed-derivation.md; the frozen
 // single-question shape is superseded — one Ask now carries N AskQuestions,
 // answered atomically in one RespondToAsk). AskID is minted once on append.
 type Ask struct {

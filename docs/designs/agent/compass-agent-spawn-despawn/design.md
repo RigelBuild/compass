@@ -11,7 +11,7 @@ seams: the agent→Server lifecycle relay (spawn + despawn), the missing
 agent-side tool pair. Companion records this composes with:
 [`compass-agent-comms-tools/design.md`](../compass-agent-comms-tools/design.md)
 (the agent-tool + relay pattern this mirrors, DL-028/DL-029),
-[`compass-server-ownership-layer/design.md`](../compass-server-ownership-layer/design.md)
+[`compass-server-ownership-layer/design.md`](../../product/compass-server-ownership-layer/design.md)
 (#995 — the Server as ownership layer; its DL-049 sibling-call-family precedent),
 and [`compass-agent-container-runtime.md`](../compass-agent-container-runtime.md)
 (the provisioning substrate the spawn drives).
@@ -193,7 +193,7 @@ exist inside it is the agent's business, so a spawned peer clones whatever it
 has credentials for, after launch. This mirrors the same removal on
 `ProvisionAgentWorkspaceRequest` (server-side auto-clone is deleted, not made
 optional) — see the ownership record's OQ-4, superseded to *removed*
-([`compass-server-ownership-layer/design.md`](../compass-server-ownership-layer/design.md),
+([`compass-server-ownership-layer/design.md`](../../product/compass-server-ownership-layer/design.md),
 OQ-4). Post-MVP, an agent tool may clone on the agent's behalf so agents need
 hold no git creds; until then the container's scoped credential stands.
 

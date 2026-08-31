@@ -250,7 +250,7 @@ is in NONE of the three bundle whitelists —
 > "`configTopDirs are the only permitted top-level directories in a config
 > bundle` — skills/extensions/mcp/settings/rules/agents"
 >
-> `docs/designs/product/compass-per-agent-overrides/design.md:134-141`
+> `docs/designs/agent/compass-per-agent-overrides/design.md:134-141`
 > (delivery-gap caution, verified): "`prompts/` is in NONE of the bundle
 > whitelists — the store door (`agent_config.go:35-42`), the runner unpack
 > (`config_materialize.go:71-78`), and the CLI bundle builder (`bundle.go:63-70`)

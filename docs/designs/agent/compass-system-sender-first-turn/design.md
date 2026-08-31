@@ -9,7 +9,7 @@ shape of case-1 (root-manager boot): the seeded root Manager's first turn is a
 Compass-authored **initial Setup thread in its home channel**, sent by a
 **reserved `@compass` system-sender alias** — and scoped the details out to
 this follow-up. Per the parent record
-(`docs/designs/product/compass-first-turn-delivery/design.md:299-301`): "The
+(`docs/designs/agent/compass-first-turn-delivery/design.md:299-301`): "The
 follow-up record owes: the reserved-alias representation, reserved-handle
 validation, Setup-thread creation trigger (root-manager first
 `StartAgentSession`), thread content/versioning, and its ledger rows." This

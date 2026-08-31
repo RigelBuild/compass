@@ -17,11 +17,11 @@ load-bearing open forks remain — the record is freeze-ready).
 Composes with the frozen RIG-1715 gateway record
 (`docs/designs/platform/compass-server-llm-gateway/design.md`), the frozen
 RIG-2936 per-Manager profile record
-(`docs/designs/product/compass-per-agent-overrides/design.md`), the
+(`docs/designs/agent/compass-per-agent-overrides/design.md`), the
 config-delivery record
-(`docs/designs/product/compass-agent-config-delivery/design.md`, DL-078),
+(`docs/designs/agent/compass-agent-config-delivery/design.md`, DL-078),
 and the config-passthrough record
-(`docs/designs/product/compass-agent-config-passthrough/design.md`);
+(`docs/designs/agent/compass-agent-config-passthrough/design.md`);
 consumes the RIG-2562 model evaluations (in design in the internal
 fleet-tooling repo) as evidence, not as a blocker.
 

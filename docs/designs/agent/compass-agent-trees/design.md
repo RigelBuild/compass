@@ -87,7 +87,7 @@ Grounding, verified this run:
   - The agent-facing spawn path: `SpawnPeerRequest` on the `AgentGateway`
     lifecycle family, orchestrated server-side through `LifecycleCaller` →
     `store.CreateAgent`
-    (`docs/designs/product/compass-agent-spawn-despawn/design.md:659-662`:
+    (`docs/designs/agent/compass-agent-spawn-despawn/design.md:659-662`:
     `SpawnAsAccount(ctx context.Context, caller store.AccountID, req
     *compassv1internal.SpawnPeerRequest)`). A spawned agent's parent **is
     the spawning agent** — the server resolves the caller's account id at
@@ -308,7 +308,7 @@ curated taxonomy that drifts from it.
 
 ### T1 — this record + ledger row (this PR, docs-only)
 
-Freeze this record at `docs/designs/product/compass-agent-trees/design.md`
+Freeze this record at `docs/designs/agent/compass-agent-trees/design.md`
 and append DL-095 to `docs/designs/product/DECISIONS.md` in the same diff
 (§Ledger delta). No code changes.
 
