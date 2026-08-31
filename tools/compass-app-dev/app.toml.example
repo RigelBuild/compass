@@ -1,0 +1,19 @@
+# Compass native-app config. Copy to $XDG_CONFIG_HOME/compass/app.toml, else
+# ~/.config/compass/app.toml, and edit for your target server. The app reads
+# ONLY this file for connection config — there is no env var or CLI flag for the
+# server URL (go/internal/appconfig). Unknown keys are rejected.
+
+# The only mode. (Embedded mode was retired in RIG-2554 — the app no longer
+# supervises a stack; it always connects to a remote compass-server.)
+mode = "client"
+
+# The compass-server network door. REQUIRED; must be an absolute https URL.
+server_url = "https://your-server.example.ts.net:50061"
+
+# Optional PEM trust anchor for a server whose cert chains to a private CA
+# (a compass-server dev/dogfood env mints its own). Omit (or leave "") to trust
+# the system roots only. Absolute path.
+# ca_cert = "/Users/you/.config/compass/server-ca.crt"
+
+# The bearer token is NOT configured here: it lives only in the OS keychain
+# (paste it once on the connect screen) — never in this file, argv, or env.

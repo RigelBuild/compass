@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# compass-app-dev — the local dogfood loop for the Compass native shell: build
+# (and launch) go/cmd/compass-app straight from the checkout against a remote
+# compass-server, with no .app/.dmg/tarball staging. The binary compiles beside
+# this tool and the resolver serves apps/ui/dist in place via COMPASS_ASSETS_DIR.
+#
+# A bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag): install is
+# inherited via .moon/tasks/tag-bun.yml (the shared root install), so this leaf
+# has no own bun.lock and never runs its own install. Its ci-group.bun tag keeps
+# the ci-matrix generator's zero-untagged assertion satisfied. The build/run
+# tasks are dev-only (runInCI:false) — the shell compile is covered by the gtk4
+# e2e + darwin CI lanes; only the pure argv/env core is unit-tested here.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
+  # Compile the dev binary. Depends on the UI dist so the resolver has assets to
+  # serve at launch. Dev-only: never scheduled in CI, never cached (the go build
+  # owns its own incrementality).
+  build:
+    command: 'bun run index.ts build'
+    deps: ['compass-ui:build']
+    options:
+      runInCI: false
+      cache: false
+      runFromWorkspaceRoot: false
+  # Build, then launch the shell (a persistent GUI process). `preset: server`
+  # marks it long-running + local-only, matching compass-ui:dev.
+  run:
+    command: 'bun run index.ts run'
+    preset: 'server'
+    deps: ['build']
+    options:
+      runInCI: false
+      cache: false
+      runFromWorkspaceRoot: false
