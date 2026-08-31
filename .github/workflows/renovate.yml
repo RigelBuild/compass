@@ -137,4 +137,4 @@ jobs:
         # bypassing the soak this repo mandates. The pin line is itself managed:
         # the self-pin custom.regex manager in config.json5 bumps it through a
         # reviewable PR under the normal cooldown.
-        run: bunx renovate@44.33.1
+        run: bunx renovate@44.46.2
