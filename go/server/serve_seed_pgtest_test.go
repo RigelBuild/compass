@@ -129,7 +129,7 @@ func (h *seedHarness) awaitSeed(t *testing.T) {
 
 // TestServeSeedsRootSupervisorOnEmptyTree pins the acceptance path: on an empty
 // agent tree, the first Runner's command stream attaching seeds exactly one root
-// agent named "supervisor" with role "manager" under the bootstrap admin, and
+// agent named "supervisor" with role "supervisor" under the bootstrap admin, and
 // drives it live (a recorded session it owns).
 //
 // Mutation: dropping the ready hook (or the CreateAgent) leaves no supervisor —
@@ -149,8 +149,8 @@ func TestServeSeedsRootSupervisorOnEmptyTree(t *testing.T) {
 	if supervisor.Agent == nil {
 		t.Fatalf("seeded supervisor is not an agent: %+v", supervisor)
 	}
-	if supervisor.Agent.Role != rootSupervisorRole {
-		t.Fatalf("supervisor role = %q, want %q (the Manager block-0 selector)", supervisor.Agent.Role, rootSupervisorRole)
+	if supervisor.Agent.Role != "supervisor" {
+		t.Fatalf("supervisor role = %q, want %q (the block-0 prompt selector: config/prompts/supervisor/SYSTEM.md)", supervisor.Agent.Role, "supervisor")
 	}
 	if supervisor.Agent.ParentAgentID != "" {
 		t.Fatalf("supervisor parent = %q, want empty (a root)", supervisor.Agent.ParentAgentID)

@@ -16,15 +16,17 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// The root Manager seeded on first launch. A fixed handle so the empty-tree gate
-// and CreateAgent's unique-handle constraint together make the seed idempotent;
-// role "manager" selects config/prompts/manager/SYSTEM.md as the container's
-// block-0 prompt (RIG-1732), which is what makes the seeded agent a real Manager
-// rather than a default agent.
+// The root supervisor seeded on first launch. A fixed handle so the empty-tree
+// gate and CreateAgent's unique-handle constraint together make the seed
+// idempotent; role "supervisor" selects config/prompts/supervisor/SYSTEM.md as
+// the container's block-0 prompt (RIG-1732), which is what makes the seeded root
+// a real tree supervisor rather than a default agent. Under the Manager role
+// taxonomy the tree root is a supervisor (owns the whole tree: intake,
+// incidents, broadcasts, first contact), not a leaf manager (RIG-3066).
 const (
 	rootSupervisorHandle      = "supervisor"
 	rootSupervisorDisplayName = "Supervisor"
-	rootSupervisorRole        = "manager"
+	rootSupervisorRole        = "supervisor"
 )
 
 // spawnableRoles is the closed Manager-role taxonomy a spawn request may name:
