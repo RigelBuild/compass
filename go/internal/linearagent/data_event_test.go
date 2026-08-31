@@ -156,3 +156,32 @@ func TestParseLinearDataEvent_Comment(t *testing.T) {
 		t.Error("comment update ok = true, want false")
 	}
 }
+
+// TestLinearCommentForgeAccountIsDisplayNameOnly pins the RIG-2732 Fork-1
+// producer-symmetry decision (DL-304): the webhook comment producer resolves
+// ForgeAccount to displayName ONLY, never a displayName||name fallback, so it
+// stays byte-identical with the sweep producer (forge.linearComment.toComment,
+// which fetches and reads only displayName). A re-added name fallback would
+// diverge the digested SnapshotComment across producers and reintroduce the
+// phantom-diff heartbeat on the account field — this test reds if that happens.
+func TestLinearCommentForgeAccountIsDisplayNameOnly(t *testing.T) {
+	// displayName present -> used.
+	withDisplay := `{"type":"Comment","action":"create","data":{"id":"c1","body":"b","user":{"name":"login-name","displayName":"Alice"},"issue":{"number":7,"url":"iu","team":{"key":"RIG"}}}}`
+	ev, ok, err := ParseLinearDataEvent([]byte(withDisplay))
+	if err != nil || !ok {
+		t.Fatalf("parse: ok=%v err=%v", ok, err)
+	}
+	if got := ev.Comment.GetForgeAccount(); got != "Alice" {
+		t.Errorf("forge_account = %q, want Alice (displayName)", got)
+	}
+	// displayName absent -> forge_account is empty, NOT the name fallback: the
+	// sweep producer cannot see name, so the webhook must not either.
+	noDisplay := `{"type":"Comment","action":"create","data":{"id":"c2","body":"b","user":{"name":"login-name"},"issue":{"number":7,"url":"iu","team":{"key":"RIG"}}}}`
+	ev2, ok2, err2 := ParseLinearDataEvent([]byte(noDisplay))
+	if err2 != nil || !ok2 {
+		t.Fatalf("parse: ok=%v err=%v", ok2, err2)
+	}
+	if got := ev2.Comment.GetForgeAccount(); got != "" {
+		t.Errorf("forge_account = %q, want \"\" (no displayName||name fallback — producer symmetry)", got)
+	}
+}

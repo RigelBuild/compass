@@ -250,7 +250,7 @@ func TestRoutePerArtifactExactCoordinateOnly(t *testing.T) {
 	}
 }
 
-// TestApplyCommentGrowsKeySet: COMMENT adds a URL-keyed comment.
+// TestApplyCommentGrowsKeySet: COMMENT adds a comment keyed by its stable comment key.
 func TestApplyCommentGrowsKeySet(t *testing.T) {
 	s0 := ApplyEvent(nil, commentEvent("https://gh/c1"))
 	if len(s0.Comments) != 1 {
