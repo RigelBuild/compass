@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The Linear Agent Session association (compass-linear-agent-responder
@@ -40,18 +40,17 @@ func (s *Store) UpsertLinearAgentSession(ctx context.Context, row LinearAgentSes
 	if row.LinearSessionID == "" {
 		return false, fmt.Errorf("%w: linear session id is required", ErrInvalidArgument)
 	}
-	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO linear_agent_sessions
-		     (linear_session_id, manager_account_id, channel_id, topic_id, linear_issue_id)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (linear_session_id) DO NOTHING`,
-		row.LinearSessionID, string(row.ManagerAccountID), string(row.ChannelID),
-		row.TopicID, nullIfEmpty(row.LinearIssueID),
-	)
+	affected, err := s.q.UpsertLinearAgentSession(ctx, db.UpsertLinearAgentSessionParams{
+		LinearSessionID:  row.LinearSessionID,
+		ManagerAccountID: string(row.ManagerAccountID),
+		ChannelID:        string(row.ChannelID),
+		TopicID:          row.TopicID,
+		LinearIssueID:    textOrNull(row.LinearIssueID),
+	})
 	if err != nil {
 		return false, fmt.Errorf("store: upsert linear agent session: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	return affected == 1, nil
 }
 
 // LinearAgentSession reads the association for linearSessionID — the `prompted`
@@ -61,38 +60,24 @@ func (s *Store) LinearAgentSession(ctx context.Context, linearSessionID string) 
 	if linearSessionID == "" {
 		return LinearAgentSessionRow{}, fmt.Errorf("%w: linear session id is required", ErrInvalidArgument)
 	}
-	row := s.pool.QueryRow(ctx,
-		`SELECT linear_session_id, manager_account_id, channel_id, topic_id, linear_issue_id, created_at
-		   FROM linear_agent_sessions
-		  WHERE linear_session_id = $1`,
-		linearSessionID,
-	)
-	r, err := scanLinearAgentSession(row)
+	row, err := s.q.LinearAgentSession(ctx, linearSessionID)
 	if err != nil {
 		if noRows(err) {
 			return LinearAgentSessionRow{}, fmt.Errorf("%w: linear agent session %q", ErrNotFound, linearSessionID)
 		}
 		return LinearAgentSessionRow{}, fmt.Errorf("store: read linear agent session: %w", err)
 	}
-	return r, nil
-}
-
-// scanLinearAgentSession scans one row into a LinearAgentSessionRow, mapping the
-// nullable linear_issue_id column to "" (no issue) via a pgx-native scan.
-func scanLinearAgentSession(row pgx.Row) (LinearAgentSessionRow, error) {
-	var (
-		r       LinearAgentSessionRow
-		manager string
-		channel string
-		issueID *string
-	)
-	if err := row.Scan(&r.LinearSessionID, &manager, &channel, &r.TopicID, &issueID, &r.CreatedAt); err != nil {
-		return LinearAgentSessionRow{}, err
+	out := LinearAgentSessionRow{
+		LinearSessionID:  row.LinearSessionID,
+		ManagerAccountID: AccountID(row.ManagerAccountID),
+		ChannelID:        ChannelID(row.ChannelID),
+		TopicID:          row.TopicID,
 	}
-	r.ManagerAccountID = AccountID(manager)
-	r.ChannelID = ChannelID(channel)
-	if issueID != nil {
-		r.LinearIssueID = *issueID
+	if row.LinearIssueID.Valid {
+		out.LinearIssueID = row.LinearIssueID.String
 	}
-	return r, nil
+	if row.CreatedAt.Valid {
+		out.CreatedAt = row.CreatedAt.Time
+	}
+	return out, nil
 }

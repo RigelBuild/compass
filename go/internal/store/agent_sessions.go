@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The durable session-ownership chain: the persistent
@@ -41,10 +43,11 @@ func (s *Store) RecordAgentSession(ctx context.Context, sessionID string, agentA
 	if agentAccountID == "" {
 		return fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO agent_sessions (session_id, agent_account_id, recorded_at_unix_ms) VALUES ($1, $2, $3)`,
-		sessionID, string(agentAccountID), time.Now().UnixMilli(),
-	); err != nil {
+	if err := s.q.InsertAgentSession(ctx, db.InsertAgentSessionParams{
+		SessionID:        sessionID,
+		AgentAccountID:   string(agentAccountID),
+		RecordedAtUnixMs: time.Now().UnixMilli(),
+	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: session %q already recorded", ErrConflict, sessionID)
 		}
@@ -69,14 +72,8 @@ func (s *Store) LatestSessionForAccount(ctx context.Context, agent AccountID) (s
 	if agent == "" {
 		return "", false, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	if err := s.pool.QueryRow(ctx,
-		`SELECT session_id
-		   FROM agent_sessions
-		  WHERE agent_account_id = $1
-		  ORDER BY recorded_at_unix_ms DESC, session_id DESC
-		  LIMIT 1`,
-		string(agent),
-	).Scan(&sessionID); err != nil {
+	sessionID, err = s.q.LatestSessionForAccount(ctx, string(agent))
+	if err != nil {
 		if noRows(err) {
 			return "", false, nil
 		}
@@ -105,17 +102,11 @@ func (s *Store) RequireAgentSessionSubscriber(ctx context.Context, caller Accoun
 	if sessionID == "" {
 		return fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	var authorized bool
-	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (
-		          SELECT 1
-		            FROM agent_sessions se
-		            JOIN agent_accounts ag ON ag.account_id = se.agent_account_id
-		            JOIN channel_members cm ON cm.channel_id = ag.home_channel_id
-		                                   AND cm.account_id = $2
-		           WHERE se.session_id = $1)`,
-		sessionID, string(caller),
-	).Scan(&authorized); err != nil {
+	authorized, err := s.q.RequireAgentSessionSubscriber(ctx, db.RequireAgentSessionSubscriberParams{
+		SessionID: sessionID,
+		AccountID: string(caller),
+	})
+	if err != nil {
 		return fmt.Errorf("store: authorize agent session subscriber: %w", err)
 	}
 	if !authorized {

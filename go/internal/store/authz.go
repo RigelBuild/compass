@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // requireChannelMember is the D9 write-authorization primitive: it verifies the
@@ -18,12 +20,12 @@ import (
 // mutation can gate inside its own tx before touching state — the D9 discipline
 // the frozen record requires on every write RPC ("authorized server-side
 // against the authenticated account's visible set", design.md:1101-1102).
-func requireChannelMember(ctx context.Context, q querier, actor AccountID, channelID ChannelID) error {
-	var member bool
-	if err := q.QueryRow(ctx,
-		"SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2)",
-		string(channelID), string(actor),
-	).Scan(&member); err != nil {
+func requireChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID ChannelID) error {
+	member, err := db.New(q).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
+		ChannelID: string(channelID),
+		AccountID: string(actor),
+	})
+	if err != nil {
 		return fmt.Errorf("store: check channel membership: %w", err)
 	}
 	if !member {
@@ -46,12 +48,12 @@ func (s *Store) IsChannelMember(ctx context.Context, actor AccountID, channelID 
 
 // isChannelMember reports whether actor is a member of channelID (the
 // package-internal form IsChannelMember exports and requireChannelMember wraps).
-func isChannelMember(ctx context.Context, q querier, actor AccountID, channelID ChannelID) (bool, error) {
-	var member bool
-	if err := q.QueryRow(ctx,
-		"SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2)",
-		string(channelID), string(actor),
-	).Scan(&member); err != nil {
+func isChannelMember(ctx context.Context, q db.DBTX, actor AccountID, channelID ChannelID) (bool, error) {
+	member, err := db.New(q).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
+		ChannelID: string(channelID),
+		AccountID: string(actor),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check channel membership: %w", err)
 	}
 	return member, nil
@@ -66,11 +68,11 @@ func isChannelMember(ctx context.Context, q querier, actor AccountID, channelID 
 // (which JOINs channel_members on the topic's channel). An unknown topic yields
 // false (not visible) — the not-found/forbidden merge extended to the stream.
 func (s *Store) IsTopicChannelMember(ctx context.Context, actor AccountID, topicID string) (bool, error) {
-	var member bool
-	if err := s.pool.QueryRow(ctx,
-		"SELECT EXISTS (SELECT 1 FROM topics t JOIN channel_members cm ON cm.channel_id = t.channel_id WHERE t.id = $1 AND cm.account_id = $2)",
-		topicID, string(actor),
-	).Scan(&member); err != nil {
+	member, err := s.q.TopicChannelMemberExists(ctx, db.TopicChannelMemberExistsParams{
+		ID:        topicID,
+		AccountID: string(actor),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check topic channel membership: %w", err)
 	}
 	return member, nil
@@ -84,27 +86,13 @@ func (s *Store) IsTopicChannelMember(ctx context.Context, actor AccountID, topic
 // not-found/forbidden merge), so a non-owner cannot probe which group ids exist.
 // This realizes the frozen record's "CreateChannel — caller-authorized against
 // the parent group" (design.md:362-367).
-func requireGroupCreateAuthz(ctx context.Context, q querier, actor AccountID, groupID ChannelGroupID) error {
-	var authorized bool
-	if err := q.QueryRow(ctx,
-		`SELECT EXISTS (
-		        SELECT 1 FROM channel_groups g
-		        WHERE g.id = $1 AND (
-		              g.owner_user_id = $2
-		           -- Gates on BARE g.visibility = SHARED, not effective
-		           -- (MIN-over-ancestry) visibility. Sound only because groups are
-		           -- immutable post-create: the sole channel_groups mutation is the
-		           -- CreateChannelGroup INSERT (no UpdateChannelGroup / re-parent
-		           -- RPC), and CreateChannelGroup enforces child <= parent ceiling,
-		           -- so bare-SHARED implies effective-SHARED. If a re-parent or
-		           -- visibility-update RPC ever lands, switch this to
-		           -- effectiveVisibilityCTE or it becomes a create-leak (a
-		           -- bare-SHARED group nested under an OWNER parent would authorize
-		           -- creates it should not).
-		           OR g.visibility = $3
-		           OR g.owner_user_id = (SELECT owner_user_id FROM agent_accounts WHERE account_id = $2)))`,
-		string(groupID), string(actor), int32(VisibilityShared),
-	).Scan(&authorized); err != nil {
+func requireGroupCreateAuthz(ctx context.Context, q db.DBTX, actor AccountID, groupID ChannelGroupID) error {
+	authorized, err := db.New(q).GroupCreateAuthorized(ctx, db.GroupCreateAuthorizedParams{
+		ID:          string(groupID),
+		OwnerUserID: string(actor),
+		Visibility:  int16(VisibilityShared),
+	})
+	if err != nil {
 		return fmt.Errorf("store: check group create authz: %w", err)
 	}
 	if !authorized {
@@ -125,15 +113,12 @@ func (s *Store) IsAgentWorkspaceVisible(ctx context.Context, actor AccountID, ag
 // isAgentWorkspaceVisible is the querier-based form IsAgentWorkspaceVisible
 // exports and OpenAgentWorkspace wraps, so the workspace open can gate inside
 // its own transaction (the same-tx D9 discipline every write RPC upholds).
-func isAgentWorkspaceVisible(ctx context.Context, q querier, actor AccountID, agentAccountID AccountID) (bool, error) {
-	var visible bool
-	if err := q.QueryRow(ctx,
-		`SELECT EXISTS (
-		        SELECT 1 FROM agent_accounts ag
-		        JOIN channel_members cm ON cm.channel_id = ag.home_channel_id AND cm.account_id = $1
-		        WHERE ag.account_id = $2)`,
-		string(actor), string(agentAccountID),
-	).Scan(&visible); err != nil {
+func isAgentWorkspaceVisible(ctx context.Context, q db.DBTX, actor AccountID, agentAccountID AccountID) (bool, error) {
+	visible, err := db.New(q).AgentWorkspaceVisible(ctx, db.AgentWorkspaceVisibleParams{
+		AccountID:   string(actor),
+		AccountID_2: string(agentAccountID),
+	})
+	if err != nil {
 		return false, fmt.Errorf("store: check workspace visibility: %w", err)
 	}
 	return visible, nil

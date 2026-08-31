@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"time"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // SecretDelivery is how a declared secret is delivered into a container — the
@@ -87,11 +89,14 @@ func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string,
 	if err := validateKindRouting(kind, provider, host); err != nil {
 		return err
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO secrets (name, delivery, kind, provider, host, declared_by)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		name, int32(delivery), int32(kind), provider, host, string(actor),
-	); err != nil {
+	if err := s.q.InsertSecret(ctx, db.InsertSecretParams{
+		Name:       name,
+		Delivery:   int16(delivery), //nolint:gosec // G115: SecretDelivery is a CHECK-constrained 0/1 enum (secrets.delivery), always within int16
+		Kind:       int16(kind),     //nolint:gosec // G115: SecretKind is a CHECK-constrained 0/1/2 enum (secrets.kind), always within int16
+		Provider:   provider,
+		Host:       host,
+		DeclaredBy: string(actor),
+	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: secret %q already declared", ErrConflict, name)
 		}
@@ -154,11 +159,11 @@ func validateKindRouting(kind SecretKind, provider, host string) error {
 // enforced at the T7 RPC edge, not re-litigated per row here.
 func (s *Store) DeleteSecretDeclaration(ctx context.Context, actor AccountID, name string) error {
 	_ = actor // see doc: name-keyed global registry; actor is audit context, not a filter
-	tag, err := s.pool.Exec(ctx, "DELETE FROM secrets WHERE name = $1", name)
+	affected, err := s.q.DeleteSecret(ctx, name)
 	if err != nil {
 		return fmt.Errorf("store: delete secret declaration: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		return fmt.Errorf("%w: secret %q", ErrNotFound, name)
 	}
 	return nil
@@ -169,32 +174,22 @@ func (s *Store) DeleteSecretDeclaration(ctx context.Context, actor AccountID, na
 // (inject-all: no per-agent filter in the MVP). It never returns a value —
 // there is none stored.
 func (s *Store) DeclaredSecrets(ctx context.Context) ([]SecretDeclaration, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT name, delivery, kind, provider, host, declared_by, created_at, updated_at
-		 FROM secrets ORDER BY name`)
+	rows, err := s.q.DeclaredSecrets(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: list declared secrets: %w", err)
 	}
-	defer rows.Close()
-
 	var out []SecretDeclaration
-	for rows.Next() {
-		var (
-			d          SecretDeclaration
-			delivery   int32
-			kind       int32
-			declaredBy string
-		)
-		if err := rows.Scan(&d.Name, &delivery, &kind, &d.Provider, &d.Host, &declaredBy, &d.CreatedAt, &d.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("store: scan declared secret: %w", err)
-		}
-		d.Delivery = SecretDelivery(delivery)
-		d.Kind = SecretKind(kind)
-		d.DeclaredBy = AccountID(declaredBy)
-		out = append(out, d)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate declared secrets: %w", err)
+	for _, r := range rows {
+		out = append(out, SecretDeclaration{
+			Name:       r.Name,
+			Delivery:   SecretDelivery(r.Delivery),
+			Kind:       SecretKind(r.Kind),
+			Provider:   r.Provider,
+			Host:       r.Host,
+			DeclaredBy: AccountID(r.DeclaredBy),
+			CreatedAt:  r.CreatedAt.Time,
+			UpdatedAt:  r.UpdatedAt.Time,
+		})
 	}
 	return out, nil
 }

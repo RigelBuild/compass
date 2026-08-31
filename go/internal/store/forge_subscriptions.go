@@ -2,11 +2,13 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The DL-053 agent-notification subscription writer (RIG-2732 Piece 1, design
@@ -136,18 +138,18 @@ func (s *Store) EnsureAgentForgeSubscription(ctx context.Context, sub AgentForge
 	if sub.AgentAccountID == "" {
 		return "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	var id string
-	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO agent_forge_subscriptions
-		     (id, agent_account_id, forge_provider, forge_host, repo, kind, number, scope, project)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 ON CONFLICT (agent_account_id, forge_provider, forge_host, repo, kind, number, project) DO UPDATE
-		    SET agent_account_id = EXCLUDED.agent_account_id
-		 RETURNING id`,
-		newID(), string(sub.AgentAccountID), int32(sub.Provider), sub.Host, sub.Repo,
-		int32(sub.Kind), int64(sub.Number), //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number, or 0 for a container) written to a BIGINT, always well within the int64 domain.
-		int32(normalizeScope(sub.Scope)), sub.Project,
-	).Scan(&id); err != nil {
+	id, err := s.q.EnsureAgentForgeSubscription(ctx, db.EnsureAgentForgeSubscriptionParams{
+		ID:             newID(),
+		AgentAccountID: string(sub.AgentAccountID),
+		ForgeProvider:  int16(sub.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum (agent_forge_subscriptions.forge_provider), always within int16
+		ForgeHost:      sub.Host,
+		Repo:           sub.Repo,
+		Kind:           int16(sub.Kind),                  //nolint:gosec // G115: ForgeArtifactKind is a CHECK-constrained 1/2 enum, always within int16
+		Number:         int64(sub.Number),                //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number, or 0 for a container) written to a BIGINT, always well within the int64 domain.
+		Scope:          int16(normalizeScope(sub.Scope)), //nolint:gosec // G115: ForgeSubscriptionScope is a CHECK-constrained 1/2 enum (normalized), always within int16
+		Project:        sub.Project,
+	})
+	if err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return "", fmt.Errorf("%w: unknown agent %q", ErrInvalidArgument, sub.AgentAccountID)
 		}
@@ -176,33 +178,18 @@ func (s *Store) DeleteAgentForgeSubscription(ctx context.Context, agent AccountI
 		return fmt.Errorf("%w: subscription id is required", ErrInvalidArgument)
 	}
 	return s.WithTx(ctx, func(tx pgx.Tx) error {
-		var (
-			provider int32
-			host     string
-			repo     string
-			kind     int32
-			number   int64
-		)
-		if err := tx.QueryRow(ctx,
-			`DELETE FROM agent_forge_subscriptions
-			  WHERE id = $1 AND agent_account_id = $2
-			 RETURNING forge_provider, forge_host, repo, kind, number`,
-			subscriptionID, string(agent),
-		).Scan(&provider, &host, &repo, &kind, &number); err != nil {
+		qtx := db.New(tx)
+		coord, err := qtx.DeleteAgentForgeSubscription(ctx, db.DeleteAgentForgeSubscriptionParams{
+			ID:             subscriptionID,
+			AgentAccountID: string(agent),
+		})
+		if err != nil {
 			if noRows(err) {
 				return fmt.Errorf("%w: subscription %q", ErrNotFound, subscriptionID)
 			}
 			return fmt.Errorf("store: delete agent forge subscription: %w", err)
 		}
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM forge_artifact_cursors
-			  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5
-			    AND NOT EXISTS (
-			        SELECT 1 FROM agent_forge_subscriptions
-			         WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5
-			    )`,
-			provider, host, repo, kind, number,
-		); err != nil {
+		if err := qtx.GCForgeArtifactCursorIfUnsubscribed(ctx, db.GCForgeArtifactCursorIfUnsubscribedParams(coord)); err != nil {
 			return fmt.Errorf("store: garbage-collect forge artifact cursor: %w", err)
 		}
 		return nil
@@ -218,15 +205,17 @@ func (s *Store) AgentForgeSubscriptionsForArtifact(ctx context.Context, provider
 	if err := validSubscriptionCoordinate(provider, host, repo, kind, number, ForgeSubscriptionScopeArtifact, ""); err != nil {
 		return 0, err
 	}
-	var n int
-	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM agent_forge_subscriptions
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5`,
-		int32(provider), host, repo, int32(kind), int64(number), //nolint:gosec // G115: number is a canonical forge artifact number written to a BIGINT, always within the int64 domain.
-	).Scan(&n); err != nil {
+	n, err := s.q.CountAgentForgeSubscriptionsForArtifact(ctx, db.CountAgentForgeSubscriptionsForArtifactParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+		Repo:          repo,
+		Kind:          int16(kind),   //nolint:gosec // G115: ForgeArtifactKind is a CHECK-constrained 1/2 enum, always within int16
+		Number:        int64(number), //nolint:gosec // G115: canonical artifact number written to a BIGINT, always within the int64 domain.
+	})
+	if err != nil {
 		return 0, fmt.Errorf("store: count agent forge subscriptions for artifact: %w", err)
 	}
-	return n, nil
+	return int(n), nil
 }
 
 // ForgeNotifySubscriber is one subscriber the notify path fans a change out to:
@@ -296,34 +285,26 @@ func (s *Store) SubscribersForArtifact(ctx context.Context, provider ForgeProvid
 	if number == 0 {
 		return nil, fmt.Errorf("%w: artifact number is required", ErrInvalidArgument)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT id, agent_account_id, delivered_revision, project
-		   FROM agent_forge_subscriptions
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4
-		    AND (
-		          (scope = 1 AND number = $5)
-		       OR ($6 AND scope = 2 AND number = 0 AND project = $7)
-		    )`,
-		int32(provider), host, repo, int32(kind),
-		int64(number), //nolint:gosec // G115: canonical artifact number in a BIGINT domain.
-		openedEvent, project,
-	)
+	rows, err := s.q.SubscribersForArtifact(ctx, db.SubscribersForArtifactParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+		Repo:          repo,
+		Kind:          int16(kind),   //nolint:gosec // G115: ForgeArtifactKind is a CHECK-constrained 1/2 enum, always within int16
+		Number:        int64(number), //nolint:gosec // G115: canonical artifact number in a BIGINT domain.
+		Column6:       openedEvent,
+		Project:       project,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: subscribers for artifact: %w", err)
 	}
-	defer rows.Close()
 	var out []ForgeNotifySubscriber
-	for rows.Next() {
-		var sub ForgeNotifySubscriber
-		var agent string
-		if err := rows.Scan(&sub.SubscriptionID, &agent, &sub.DeliveredRevision, &sub.Project); err != nil {
-			return nil, fmt.Errorf("store: scan artifact subscriber: %w", err)
-		}
-		sub.AgentAccountID = AccountID(agent)
-		out = append(out, sub)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate artifact subscribers: %w", err)
+	for _, r := range rows {
+		out = append(out, ForgeNotifySubscriber{
+			SubscriptionID:    r.ID,
+			AgentAccountID:    AccountID(r.AgentAccountID),
+			DeliveredRevision: r.DeliveredRevision,
+			Project:           r.Project,
+		})
 	}
 	return out, nil
 }
@@ -343,101 +324,58 @@ func (s *Store) ListForgeNotifyTargets(ctx context.Context, provider ForgeProvid
 	if host == "" {
 		return nil, fmt.Errorf("%w: forge host is required", ErrInvalidArgument)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT s.repo, s.kind,
-		        CASE WHEN s.scope = 2 THEN 0 ELSE s.number END AS coord_number,
-		        s.id, s.agent_account_id, s.delivered_revision, s.project,
-		        c.forge_provider IS NOT NULL AS has_cursor,
-		        c.etag, c.comments_etag, c.checks_etag, c.revision, c.snapshot, c.polled_at
-		   FROM agent_forge_subscriptions s
-		   LEFT JOIN forge_artifact_cursors c
-		     ON c.forge_provider = s.forge_provider
-		    AND c.forge_host = s.forge_host
-		    AND c.repo = s.repo
-		    AND c.kind = s.kind
-		    AND c.number = CASE WHEN s.scope = 2 THEN 0 ELSE s.number END
-		  WHERE s.forge_provider = $1 AND s.forge_host = $2
-		  ORDER BY s.repo, s.kind, coord_number`,
-		int32(provider), host,
-	)
+	rows, err := s.q.ListForgeNotifyTargets(ctx, db.ListForgeNotifyTargetsParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: list forge notify targets: %w", err)
 	}
-	defer rows.Close()
 	var (
 		out []ForgeNotifyTarget
 		cur *ForgeNotifyTarget // the target the current run of rows belongs to
 	)
-	for rows.Next() {
-		var (
-			repo         string
-			kind         int32
-			coordNumber  int64
-			subID        string
-			agent        string
-			delivered    string
-			project      string
-			hasCursor    bool
-			etag         *string
-			commentsETag *string
-			checksETag   *string
-			revision     *string
-			snapshot     []byte
-			polledAt     *time.Time
-		)
-		if err := rows.Scan(&repo, &kind, &coordNumber, &subID, &agent, &delivered, &project,
-			&hasCursor, &etag, &commentsETag, &checksETag, &revision, &snapshot, &polledAt); err != nil {
-			return nil, fmt.Errorf("store: scan forge notify target: %w", err)
-		}
+	for _, r := range rows {
+		kind := r.Kind
 		// coord_number is a canonical artifact number (or 0) from a BIGINT,
 		// always within the uint64 domain — cast once, reuse for the coordinate
 		// compare and both target/cursor constructs.
-		coord := uint64(coordNumber) //nolint:gosec // G115: see above.
-		if cur == nil || cur.Repo != repo || int32(cur.Kind) != kind || cur.Number != coord {
+		coord := uint64(r.CoordNumber) //nolint:gosec // G115: see above.
+		if cur == nil || cur.Repo != r.Repo || int16(cur.Kind) != kind || cur.Number != coord {
 			out = append(out, ForgeNotifyTarget{
 				Provider: provider,
 				Host:     host,
-				Repo:     repo,
+				Repo:     r.Repo,
 				Kind:     ForgeArtifactKind(kind),
 				Number:   coord,
 			})
 			cur = &out[len(out)-1]
-			if hasCursor {
+			if r.HasCursor {
 				cur.Cursor = &ForgeArtifactCursor{
 					Provider:     provider,
 					Host:         host,
-					Repo:         repo,
+					Repo:         r.Repo,
 					Kind:         ForgeArtifactKind(kind),
 					Number:       coord,
-					ETag:         derefString(etag),
-					CommentsETag: derefString(commentsETag),
-					ChecksETag:   derefString(checksETag),
-					Revision:     derefString(revision),
-					Snapshot:     snapshot,
+					ETag:         r.Etag.String,
+					CommentsETag: r.CommentsEtag.String,
+					ChecksETag:   r.ChecksEtag.String,
+					Revision:     r.Revision.String,
+					Snapshot:     r.Snapshot,
 				}
-				if polledAt != nil {
-					cur.Cursor.PolledAt = *polledAt
+				if r.PolledAt.Valid {
+					cur.Cursor.PolledAt = r.PolledAt.Time
 				}
 			}
 		}
 		cur.Subscribers = append(cur.Subscribers, ForgeNotifySubscriber{
-			SubscriptionID:    subID,
-			AgentAccountID:    AccountID(agent),
-			DeliveredRevision: delivered,
-			Project:           project,
+			SubscriptionID:    r.ID,
+			AgentAccountID:    AccountID(r.AgentAccountID),
+			DeliveredRevision: r.DeliveredRevision,
+			Project:           r.Project,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate forge notify targets: %w", err)
-	}
 	return out, nil
-}
-
-func derefString(p *string) string {
-	if p == nil {
-		return ""
-	}
-	return *p
 }
 
 // UpsertForgeArtifactCursor writes (inserts or replaces) the shared per-artifact
@@ -456,21 +394,19 @@ func (s *Store) UpsertForgeArtifactCursor(ctx context.Context, cur ForgeArtifact
 	if polledAt.IsZero() {
 		polledAt = time.Now().UTC()
 	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO forge_artifact_cursors
-		     (forge_provider, forge_host, repo, kind, number, etag, comments_etag, checks_etag, revision, snapshot, polled_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		 ON CONFLICT (forge_provider, forge_host, repo, kind, number) DO UPDATE
-		    SET etag = EXCLUDED.etag,
-		        comments_etag = EXCLUDED.comments_etag,
-		        checks_etag = EXCLUDED.checks_etag,
-		        revision = EXCLUDED.revision,
-		        snapshot = EXCLUDED.snapshot,
-		        polled_at = EXCLUDED.polled_at`,
-		int32(cur.Provider), cur.Host, cur.Repo, int32(cur.Kind),
-		int64(cur.Number), //nolint:gosec // G115: canonical artifact number (or 0 container) in a BIGINT domain.
-		cur.ETag, cur.CommentsETag, cur.ChecksETag, cur.Revision, cur.Snapshot, polledAt,
-	); err != nil {
+	if err := s.q.UpsertForgeArtifactCursor(ctx, db.UpsertForgeArtifactCursorParams{
+		ForgeProvider: int16(cur.Provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     cur.Host,
+		Repo:          cur.Repo,
+		Kind:          int16(cur.Kind),   //nolint:gosec // G115: ForgeArtifactKind is a CHECK-constrained 1/2 enum, always within int16
+		Number:        int64(cur.Number), //nolint:gosec // G115: canonical artifact number (or 0 container) in a BIGINT domain.
+		Etag:          cur.ETag,
+		CommentsEtag:  cur.CommentsETag,
+		ChecksEtag:    cur.ChecksETag,
+		Revision:      cur.Revision,
+		Snapshot:      cur.Snapshot,
+		PolledAt:      pgtype.Timestamptz{Time: polledAt, Valid: true},
+	}); err != nil {
 		return fmt.Errorf("store: upsert forge artifact cursor: %w", err)
 	}
 	return nil
@@ -491,19 +427,33 @@ func (s *Store) LoadForgeArtifactCursor(ctx context.Context, provider ForgeProvi
 	if kind != ForgeArtifactKindIssue && kind != ForgeArtifactKindPullRequest {
 		return nil, fmt.Errorf("%w: artifact kind must be issue or pull_request", ErrInvalidArgument)
 	}
-	cur := ForgeArtifactCursor{Provider: provider, Host: host, Repo: repo, Kind: kind, Number: number}
-	err := s.pool.QueryRow(ctx,
-		`SELECT etag, comments_etag, checks_etag, revision, snapshot, polled_at
-		   FROM forge_artifact_cursors
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5`,
-		int32(provider), host, repo, int32(kind),
-		int64(number), //nolint:gosec // G115: canonical artifact number (or 0 container) in a BIGINT domain.
-	).Scan(&cur.ETag, &cur.CommentsETag, &cur.ChecksETag, &cur.Revision, &cur.Snapshot, &cur.PolledAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	row, err := s.q.LoadForgeArtifactCursor(ctx, db.LoadForgeArtifactCursorParams{
+		ForgeProvider: int16(provider), //nolint:gosec // G115: ForgeProvider is a CHECK-constrained 1..4 enum, always within int16
+		ForgeHost:     host,
+		Repo:          repo,
+		Kind:          int16(kind),
+		Number:        int64(number), //nolint:gosec // G115: canonical artifact number (or 0 container) in a BIGINT domain.
+	})
+	if noRows(err) {
 		return nil, nil //nolint:nilnil // a never-observed cursor is (nil, nil) by the load contract: the caller (notify router via forgeNotifyStore, serve.go:1067) guards nil as "unobserved". A sentinel would force every reader to special-case it.
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: load forge artifact cursor: %w", err)
+	}
+	cur := ForgeArtifactCursor{
+		Provider:     provider,
+		Host:         host,
+		Repo:         repo,
+		Kind:         kind,
+		Number:       number,
+		ETag:         row.Etag,
+		CommentsETag: row.CommentsEtag,
+		ChecksETag:   row.ChecksEtag,
+		Revision:     row.Revision,
+		Snapshot:     row.Snapshot,
+	}
+	if row.PolledAt.Valid {
+		cur.PolledAt = row.PolledAt.Time
 	}
 	return &cur, nil
 }
@@ -521,16 +471,15 @@ func (s *Store) AdvanceForgeDeliveredRevision(ctx context.Context, agent Account
 	if subscriptionID == "" {
 		return fmt.Errorf("%w: subscription id is required", ErrInvalidArgument)
 	}
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE agent_forge_subscriptions
-		    SET delivered_revision = $3, delivered_at = now()
-		  WHERE id = $2 AND agent_account_id = $1`,
-		string(agent), subscriptionID, revision,
-	)
+	affected, err := s.q.AdvanceForgeDeliveredRevision(ctx, db.AdvanceForgeDeliveredRevisionParams{
+		AgentAccountID:    string(agent),
+		ID:                subscriptionID,
+		DeliveredRevision: revision,
+	})
 	if err != nil {
 		return fmt.Errorf("store: advance forge delivered revision: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if affected == 0 {
 		return fmt.Errorf("%w: subscription %q", ErrNotFound, subscriptionID)
 	}
 	return nil

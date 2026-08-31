@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
 // The durable TWO-TIER transcript store (RIG-1667 T4). A Postgres HOT TAIL
@@ -122,17 +124,8 @@ func (s *Store) BindLifetime(ctx context.Context, sessionID string) (uint64, err
 	if sessionID == "" {
 		return 0, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	var base int64
-	if err := s.pool.QueryRow(ctx,
-		`UPDATE agent_sessions
-		    SET base_entry_seq = COALESCE(
-		            (SELECT MAX(entry_seq)
-		               FROM agent_session_transcript_entries
-		              WHERE session_id = $1), 0)
-		  WHERE session_id = $1
-		RETURNING base_entry_seq`,
-		sessionID,
-	).Scan(&base); err != nil {
+	base, err := s.q.BindLifetime(ctx, sessionID)
+	if err != nil {
 		if noRows(err) {
 			return 0, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
 		}
@@ -171,13 +164,13 @@ func (s *Store) AppendTranscriptEntry(ctx context.Context, sessionID string, lif
 	}
 	entrySeq := base + lifetimeSeq
 
-	tag, err := s.pool.Exec(ctx,
-		`INSERT INTO agent_session_transcript_entries
-		            (session_id, entry_seq, checkpoint, entry_json, idempotency_key)
-		     VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (idempotency_key) DO NOTHING`,
-		sessionID, toInt64(entrySeq), checkpoint, entryJSON, idempotencyKey,
-	)
+	rowsAffected, err := s.q.InsertTranscriptEntry(ctx, db.InsertTranscriptEntryParams{
+		SessionID:      sessionID,
+		EntrySeq:       toInt64(entrySeq),
+		Checkpoint:     checkpoint,
+		EntryJson:      entryJSON,
+		IdempotencyKey: idempotencyKey,
+	})
 	if err != nil {
 		// A unique_violation here is the PK (session_id, entry_seq): a distinct
 		// entry re-using a stamped seq — a real conflict, not the keyed dedup
@@ -191,7 +184,7 @@ func (s *Store) AppendTranscriptEntry(ctx context.Context, sessionID string, lif
 		}
 		return fmt.Errorf("store: append transcript entry: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if rowsAffected == 0 {
 		// Duplicate idempotency_key: the retry dedup. Silent success, and NO
 		// flush — a retried checkpoint frame must not re-invoke the PRIMARY
 		// flush (design.md T4: it short-circuits before it). If the ORIGINAL
@@ -216,55 +209,33 @@ func (s *Store) SessionTranscript(ctx context.Context, sessionID string) ([]Tran
 	if sessionID == "" {
 		return nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT entry_seq, checkpoint, entry_json
-		   FROM agent_session_transcript_entries
-		  WHERE session_id = $1
-		    AND entry_seq >= COALESCE(
-		            (SELECT MAX(entry_seq)
-		               FROM agent_session_transcript_entries
-		              WHERE session_id = $1 AND checkpoint), 0)
-		  ORDER BY entry_seq`,
-		sessionID,
-	)
+	rows, err := s.q.SessionTranscript(ctx, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("store: read session transcript: %w", err)
 	}
-	defer rows.Close()
-	out, err := scanTranscriptRows(rows)
-	if err != nil {
-		return nil, err
-	}
+	out := transcriptRowsFromDB(rows)
 	if len(out) == 0 {
 		return nil, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
 	}
 	return out, nil
 }
 
-// scanTranscriptRows scans hot-tail rows into TranscriptEntryRow values. Shared
-// by SessionTranscript (pool read) and SessionResumeSnapshot (tx read) so the
-// column list and scan live in one place.
-func scanTranscriptRows(rows pgx.Rows) ([]TranscriptEntryRow, error) {
-	var out []TranscriptEntryRow
-	for rows.Next() {
-		var (
-			seq        int64
-			checkpoint bool
-			entryJSON  string
-		)
-		if err := rows.Scan(&seq, &checkpoint, &entryJSON); err != nil {
-			return nil, fmt.Errorf("store: scan transcript entry: %w", err)
-		}
+// transcriptRowsFromDB maps generated hot-tail rows into TranscriptEntryRow
+// values. Shared by SessionTranscript (pool read) and SessionResumeSnapshot (tx
+// read) so the entry_seq widening (toUint64) lives in one place.
+func transcriptRowsFromDB(rows []db.SessionTranscriptRow) []TranscriptEntryRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]TranscriptEntryRow, 0, len(rows))
+	for _, r := range rows {
 		out = append(out, TranscriptEntryRow{
-			EntrySeq:   toUint64(seq),
-			Checkpoint: checkpoint,
-			EntryJSON:  entryJSON,
+			EntrySeq:   toUint64(r.EntrySeq),
+			Checkpoint: r.Checkpoint,
+			EntryJSON:  r.EntryJson,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate transcript entries: %w", err)
-	}
-	return out, nil
+	return out
 }
 
 // FlushSuperseded writes the hot-tail entries up to uptoEntrySeq as one
@@ -300,46 +271,34 @@ func (s *Store) SafetyValveSegments(ctx context.Context, sessionID string) ([]Ar
 	if sessionID == "" {
 		return nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT object_key, min_entry_seq, max_entry_seq, kind
-		   FROM agent_session_archive_segments
-		  WHERE session_id = $1 AND kind = $2
-		  ORDER BY min_entry_seq`,
-		sessionID, string(SegmentKindSafetyValve),
-	)
+	rows, err := s.q.SafetyValveSegments(ctx, db.SafetyValveSegmentsParams{
+		SessionID: sessionID,
+		Kind:      string(SegmentKindSafetyValve),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("store: read safety valve segments: %w", err)
 	}
-	defer rows.Close()
-	return scanSegmentRows(rows)
+	return segmentRowsFromDB(rows), nil
 }
 
-// scanSegmentRows scans safety_valve manifest rows into ArchiveSegmentRow
-// values. Shared by SafetyValveSegments (pool read) and SessionResumeSnapshot
-// (tx read) so the column list and scan live in one place.
-func scanSegmentRows(rows pgx.Rows) ([]ArchiveSegmentRow, error) {
-	var out []ArchiveSegmentRow
-	for rows.Next() {
-		var (
-			objectKey string
-			minSeq    int64
-			maxSeq    int64
-			kind      string
-		)
-		if err := rows.Scan(&objectKey, &minSeq, &maxSeq, &kind); err != nil {
-			return nil, fmt.Errorf("store: scan archive segment: %w", err)
-		}
+// segmentRowsFromDB maps generated safety_valve manifest rows into
+// ArchiveSegmentRow values. Shared by SafetyValveSegments (pool read) and
+// SessionResumeSnapshot (tx read) so the seq widening (toUint64) lives in one
+// place.
+func segmentRowsFromDB(rows []db.SafetyValveSegmentsRow) []ArchiveSegmentRow {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]ArchiveSegmentRow, 0, len(rows))
+	for _, r := range rows {
 		out = append(out, ArchiveSegmentRow{
-			ObjectKey:   objectKey,
-			MinEntrySeq: toUint64(minSeq),
-			MaxEntrySeq: toUint64(maxSeq),
-			Kind:        SegmentKind(kind),
+			ObjectKey:   r.ObjectKey,
+			MinEntrySeq: toUint64(r.MinEntrySeq),
+			MaxEntrySeq: toUint64(r.MaxEntrySeq),
+			Kind:        SegmentKind(r.Kind),
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate archive segments: %w", err)
-	}
-	return out, nil
+	return out
 }
 
 // SessionResumeSnapshot is the ATOMIC two-tier read the T5 resume reconstructor
@@ -367,44 +326,25 @@ func (s *Store) SessionResumeSnapshot(ctx context.Context, sessionID string) ([]
 	// rollback-after-commit convention); on any early return it aborts the tx.
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	tailRows, err := tx.Query(ctx,
-		`SELECT entry_seq, checkpoint, entry_json
-		   FROM agent_session_transcript_entries
-		  WHERE session_id = $1
-		    AND entry_seq >= COALESCE(
-		            (SELECT MAX(entry_seq)
-		               FROM agent_session_transcript_entries
-		              WHERE session_id = $1 AND checkpoint), 0)
-		  ORDER BY entry_seq`,
-		sessionID,
-	)
+	qtx := s.q.WithTx(tx)
+
+	tailRows, err := qtx.SessionTranscript(ctx, sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: read session transcript: %w", err)
 	}
-	tail, err := scanTranscriptRows(tailRows)
-	tailRows.Close()
-	if err != nil {
-		return nil, nil, err
-	}
+	tail := transcriptRowsFromDB(tailRows)
 	if len(tail) == 0 {
 		return nil, nil, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
 	}
 
-	segRows, err := tx.Query(ctx,
-		`SELECT object_key, min_entry_seq, max_entry_seq, kind
-		   FROM agent_session_archive_segments
-		  WHERE session_id = $1 AND kind = $2
-		  ORDER BY min_entry_seq`,
-		sessionID, string(SegmentKindSafetyValve),
-	)
+	segRows, err := qtx.SafetyValveSegments(ctx, db.SafetyValveSegmentsParams{
+		SessionID: sessionID,
+		Kind:      string(SegmentKindSafetyValve),
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: read safety valve segments: %w", err)
 	}
-	segments, err := scanSegmentRows(segRows)
-	segRows.Close()
-	if err != nil {
-		return nil, nil, err
-	}
+	segments := segmentRowsFromDB(segRows)
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, nil, fmt.Errorf("store: commit resume snapshot: %w", err)
@@ -436,11 +376,8 @@ func (s *Store) ReadArchiveSegment(ctx context.Context, objectKey string) ([]byt
 // sessionBase reads the write-once rebase base for a session. An unknown session
 // is ErrInvalidArgument — the FK the AppendTranscriptEntry contract names.
 func (s *Store) sessionBase(ctx context.Context, sessionID string) (uint64, error) {
-	var base int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT base_entry_seq FROM agent_sessions WHERE session_id = $1`,
-		sessionID,
-	).Scan(&base); err != nil {
+	base, err := s.q.SessionBase(ctx, sessionID)
+	if err != nil {
 		if noRows(err) {
 			return 0, fmt.Errorf("%w: session %q does not exist", ErrInvalidArgument, sessionID)
 		}
@@ -477,52 +414,36 @@ func (s *Store) maybeSafetyValve(ctx context.Context, sessionID string) error {
 	// Cheap gate: sum the post-checkpoint byte total in ONE scalar (no per-row
 	// materialization on the common path). The valve sits above the compaction
 	// window, so in normal operation this scalar is under the cap and returns here.
-	var tailBytes int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(SUM(octet_length(entry_json)), 0)
-		   FROM agent_session_transcript_entries
-		  WHERE session_id = $1 AND entry_seq > $2`,
-		sessionID, toInt64(cpSeq),
-	).Scan(&tailBytes); err != nil {
+	tailBytes, err := s.q.HotTailBytes(ctx, db.HotTailBytesParams{
+		SessionID: sessionID,
+		EntrySeq:  toInt64(cpSeq),
+	})
+	if err != nil {
 		return fmt.Errorf("store: measure hot tail: %w", err)
 	}
 	if tailBytes <= int64(s.safetyValveCapBytes) {
 		return nil
 	}
 	// Over the cap: NOW materialize the rows to pick the eviction cut point.
-	rows, err := s.pool.Query(ctx,
-		`SELECT entry_seq, octet_length(entry_json)
-		   FROM agent_session_transcript_entries
-		  WHERE session_id = $1 AND entry_seq > $2
-		  ORDER BY entry_seq`,
-		sessionID, toInt64(cpSeq),
-	)
+	sizes, err := s.q.HotTailSizes(ctx, db.HotTailSizesParams{
+		SessionID: sessionID,
+		EntrySeq:  toInt64(cpSeq),
+	})
 	if err != nil {
 		return fmt.Errorf("store: measure hot tail: %w", err)
 	}
 	type sized struct {
 		seq   uint64
-		bytes int
+		bytes int64
 	}
-	entries := make([]sized, 0)
-	var total int
-	for rows.Next() {
-		var (
-			seq   int64
-			bytes int
-		)
-		if err := rows.Scan(&seq, &bytes); err != nil {
-			rows.Close()
-			return fmt.Errorf("store: scan hot tail size: %w", err)
-		}
-		entries = append(entries, sized{seq: toUint64(seq), bytes: bytes})
-		total += bytes
+	entries := make([]sized, 0, len(sizes))
+	var total int64
+	for _, row := range sizes {
+		entries = append(entries, sized{seq: toUint64(row.EntrySeq), bytes: row.Bytes})
+		total += row.Bytes
 	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: iterate hot tail size: %w", err)
-	}
-	if total <= s.safetyValveCapBytes {
+	cap64 := int64(s.safetyValveCapBytes)
+	if total <= cap64 {
 		return nil
 	}
 
@@ -532,7 +453,7 @@ func (s *Store) maybeSafetyValve(ctx context.Context, sessionID string) error {
 	remaining := total
 	var upto uint64
 	for i := range len(entries) - 1 {
-		if remaining <= s.safetyValveCapBytes {
+		if remaining <= cap64 {
 			break
 		}
 		upto = entries[i].seq
@@ -547,13 +468,8 @@ func (s *Store) maybeSafetyValve(ctx context.Context, sessionID string) error {
 // latestCheckpointSeq returns the entry_seq of the session's newest checkpoint
 // row, or 0 when the session has no checkpoint.
 func (s *Store) latestCheckpointSeq(ctx context.Context, sessionID string) (uint64, error) {
-	var cp int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(MAX(entry_seq), 0)
-		   FROM agent_session_transcript_entries
-		  WHERE session_id = $1 AND checkpoint`,
-		sessionID,
-	).Scan(&cp); err != nil {
+	cp, err := s.q.LatestCheckpointSeq(ctx, sessionID)
+	if err != nil {
 		return 0, fmt.Errorf("store: read latest checkpoint: %w", err)
 	}
 	return toUint64(cp), nil
@@ -566,13 +482,8 @@ func (s *Store) latestCheckpointSeq(ctx context.Context, sessionID string) (uint
 // for analytics. Mirrors latestCheckpointSeq's shape, without the checkpoint
 // filter.
 func (s *Store) SessionMaxEntrySeq(ctx context.Context, sessionID string) (uint64, error) {
-	var maxSeq int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COALESCE(MAX(entry_seq), 0)
-		   FROM agent_session_transcript_entries
-		  WHERE session_id = $1`,
-		sessionID,
-	).Scan(&maxSeq); err != nil {
+	maxSeq, err := s.q.SessionMaxEntrySeq(ctx, sessionID)
+	if err != nil {
 		return 0, fmt.Errorf("store: read session max entry seq: %w", err)
 	}
 	return toUint64(maxSeq), nil
@@ -619,26 +530,30 @@ func (s *Store) flushUpto(ctx context.Context, sessionID string, fromEntrySeq, u
 	// not actionable, so it is discarded (the store-wide convention).
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO agent_session_archive_segments
-		            (session_id, object_key, min_entry_seq, max_entry_seq, kind)
-		     VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (session_id, object_key) DO NOTHING`,
-		sessionID, key, toInt64(minSeq), toInt64(maxSeq), string(kind),
-	); err != nil {
+	qtx := s.q.WithTx(tx)
+	if err := qtx.InsertArchiveSegment(ctx, db.InsertArchiveSegmentParams{
+		SessionID:   sessionID,
+		ObjectKey:   key,
+		MinEntrySeq: toInt64(minSeq),
+		MaxEntrySeq: toInt64(maxSeq),
+		Kind:        string(kind),
+	}); err != nil {
 		return fmt.Errorf("store: insert archive segment: %w", err)
 	}
 	if prune {
-		if _, err := tx.Exec(ctx,
-			`DELETE FROM agent_session_transcript_entries
-			  WHERE session_id = $1 AND entry_seq >= $2 AND entry_seq <= $3`,
-			sessionID, toInt64(minSeq), toInt64(maxSeq),
-		); err != nil {
+		if err := qtx.PruneTranscriptEntries(ctx, db.PruneTranscriptEntriesParams{
+			SessionID:  sessionID,
+			EntrySeq:   toInt64(minSeq),
+			EntrySeq_2: toInt64(maxSeq),
+		}); err != nil {
 			return fmt.Errorf("store: prune flushed entries: %w", err)
 		}
 	}
 	if remarkBelow > 0 {
-		if _, err := tx.Exec(ctx, remarkSafetyValveSQL, sessionID, toInt64(remarkBelow)); err != nil {
+		if err := qtx.RemarkSafetyValveSuperseded(ctx, db.RemarkSafetyValveSupersededParams{
+			SessionID:   sessionID,
+			MaxEntrySeq: toInt64(remarkBelow),
+		}); err != nil {
 			return fmt.Errorf("store: re-mark stale safety valve: %w", err)
 		}
 	}
@@ -652,55 +567,33 @@ func (s *Store) flushUpto(ctx context.Context, sessionID string, fromEntrySeq, u
 // returning their ordered seqs and the verbatim-JSONL body (entry_json joined by
 // newlines). Empty seqs means no rows in range.
 func (s *Store) collectSegment(ctx context.Context, sessionID string, fromEntrySeq, uptoEntrySeq uint64) ([]uint64, []byte, error) {
-	rows, err := s.pool.Query(ctx,
-		`SELECT entry_seq, entry_json
-		   FROM agent_session_transcript_entries
-		  WHERE session_id = $1 AND entry_seq >= $2 AND entry_seq <= $3
-		  ORDER BY entry_seq`,
-		sessionID, toInt64(fromEntrySeq), toInt64(uptoEntrySeq),
-	)
+	rows, err := s.q.CollectSegment(ctx, db.CollectSegmentParams{
+		SessionID:  sessionID,
+		EntrySeq:   toInt64(fromEntrySeq),
+		EntrySeq_2: toInt64(uptoEntrySeq),
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("store: read segment entries: %w", err)
 	}
-	defer rows.Close()
-
-	var (
-		seqs  []uint64
-		jsons []string
-	)
-	for rows.Next() {
-		var (
-			seq       int64
-			entryJSON string
-		)
-		if err := rows.Scan(&seq, &entryJSON); err != nil {
-			return nil, nil, fmt.Errorf("store: scan segment entry: %w", err)
-		}
-		seqs = append(seqs, toUint64(seq))
-		jsons = append(jsons, entryJSON)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("store: iterate segment entries: %w", err)
-	}
-	if len(seqs) == 0 {
+	if len(rows) == 0 {
 		return nil, nil, nil
+	}
+	seqs := make([]uint64, 0, len(rows))
+	jsons := make([]string, 0, len(rows))
+	for _, r := range rows {
+		seqs = append(seqs, toUint64(r.EntrySeq))
+		jsons = append(jsons, r.EntryJson)
 	}
 	return seqs, []byte(strings.Join(jsons, "\n")), nil
 }
 
-// remarkSafetyValveSQL re-marks a session's safety_valve manifest rows whose
-// max_entry_seq is below a checkpoint seq to superseded — the S3 object is
-// unmoved, only reclassified from resume-eligible to analytics-only. $1 session,
-// $2 the checkpoint seq.
-const remarkSafetyValveSQL = `
-	UPDATE agent_session_archive_segments
-	   SET kind = 'superseded'
-	 WHERE session_id = $1 AND kind = 'safety_valve' AND max_entry_seq < $2`
-
 // remarkSafetyValveSuperseded applies the safety_valve re-mark on its own when a
 // PRIMARY flush had no pre-checkpoint rows to flush but still owes the re-mark.
 func (s *Store) remarkSafetyValveSuperseded(ctx context.Context, sessionID string, belowSeq uint64) error {
-	if _, err := s.pool.Exec(ctx, remarkSafetyValveSQL, sessionID, toInt64(belowSeq)); err != nil {
+	if err := s.q.RemarkSafetyValveSuperseded(ctx, db.RemarkSafetyValveSupersededParams{
+		SessionID:   sessionID,
+		MaxEntrySeq: toInt64(belowSeq),
+	}); err != nil {
 		return fmt.Errorf("store: re-mark stale safety valve: %w", err)
 	}
 	return nil

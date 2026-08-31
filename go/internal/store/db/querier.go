@@ -13,7 +13,10 @@ import (
 type Querier interface {
 	AccountVisibleTo(ctx context.Context, arg AccountVisibleToParams) (bool, error)
 	AcquireOwnerTreeLock(ctx context.Context, hashtext string) error
+	ActivityFor(ctx context.Context, dollar_1 []string) ([]AgentActivity, error)
 	AdvanceDeliveryCursor(ctx context.Context, arg AdvanceDeliveryCursorParams) error
+	AdvanceForgeDeliveredRevision(ctx context.Context, arg AdvanceForgeDeliveredRevisionParams) (int64, error)
+	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the
 	// inline-sql-gate allowlist — the gate is literal-at-callsite scoped and this
@@ -34,7 +37,25 @@ type Querier interface {
 	AgentNeighborhood(ctx context.Context, id string) ([]AgentNeighborhoodRow, error)
 	AgentOwnersByIDs(ctx context.Context, dollar_1 []string) ([]string, error)
 	AgentSubtree(ctx context.Context, accountID string) ([]AgentSubtreeRow, error)
+	// Feeds isAgentWorkspaceVisible: membership on the agent's home channel.
+	AgentWorkspaceVisible(ctx context.Context, arg AgentWorkspaceVisibleParams) (bool, error)
 	AgentsByOwner(ctx context.Context, ownerUserID string) ([]AgentsByOwnerRow, error)
+	AuthoredArtifactByCoordinate(ctx context.Context, arg AuthoredArtifactByCoordinateParams) (ForgeAuthoredArtifact, error)
+	AuthoredArtifactByRequestID(ctx context.Context, arg AuthoredArtifactByRequestIDParams) (ForgeAuthoredArtifact, error)
+	// Agent-transcript queries (sqlc adoption T5, RIG-3034). These replace the
+	// inline SQL literals in internal/store/agent_transcripts.go; the hand-written
+	// Store methods keep their exact signatures and own the two-tier flush
+	// orchestration (PUT-before-prune, the RepeatableRead/ReadOnly resume snapshot
+	// tx, the safety-valve cut-point loop) plus the uint64<->int64 seq narrowing
+	// (toInt64/toUint64). They map generated rows into TranscriptEntryRow and
+	// ArchiveSegmentRow (via the transcriptRowsFromDB/segmentRowsFromDB helpers).
+	//
+	// COALESCE(MAX/SUM(...), 0) sites carry an explicit ::BIGINT cast so sqlc types
+	// them int64 rather than interface{} (mirrors messages.sql MessagesHeadSeq). The
+	// SessionTranscript and SafetyValveSegments reads are each issued on BOTH the
+	// pool (the eponymous method) and a snapshot tx (SessionResumeSnapshot, via
+	// WithTx), so one generated query backs both call sites.
+	BindLifetime(ctx context.Context, sessionID string) (int64, error)
 	ChannelAgentMembers(ctx context.Context, arg ChannelAgentMembersParams) ([]string, error)
 	ChannelGroupVisibleTo(ctx context.Context, arg ChannelGroupVisibleToParams) (bool, error)
 	ChannelMemberExists(ctx context.Context, arg ChannelMemberExistsParams) (bool, error)
@@ -43,18 +64,46 @@ type Querier interface {
 	ChannelVisibleTo(ctx context.Context, arg ChannelVisibleToParams) (bool, error)
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
+	CollectSegment(ctx context.Context, arg CollectSegmentParams) ([]CollectSegmentRow, error)
 	ConvertDMChannel(ctx context.Context, arg ConvertDMChannelParams) error
 	CoordinationReports(ctx context.Context, parentAgentID pgtype.Text) ([]string, error)
+	CountAgentForgeSubscriptionsForArtifact(ctx context.Context, arg CountAgentForgeSubscriptionsForArtifactParams) (int64, error)
 	CountAgentMembers(ctx context.Context, channelID string) (int64, error)
 	CountChannelPins(ctx context.Context, channelID string) (CountChannelPinsRow, error)
 	CountOwedMentions(ctx context.Context) (int64, error)
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
+	CurrentAgentConfig(ctx context.Context) (CurrentAgentConfigRow, error)
+	DeclaredSecrets(ctx context.Context) ([]Secret, error)
+	DeleteAgentConfig(ctx context.Context) error
+	// Scoped to the calling agent (id AND agent). RETURNING the coordinate drives the
+	// one-tx GC of the artifact cursor when this was the last subscription.
+	DeleteAgentForgeSubscription(ctx context.Context, arg DeleteAgentForgeSubscriptionParams) (DeleteAgentForgeSubscriptionRow, error)
+	DeleteAgentPlacement(ctx context.Context, containerName string) error
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
 	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
+	DeleteSecret(ctx context.Context, name string) (int64, error)
 	DeleteTopic(ctx context.Context, id string) error
+	// Agent-forge-subscription / artifact-cursor queries (sqlc adoption T6,
+	// RIG-3034). These replace the inline SQL literals in
+	// internal/store/forge_subscriptions.go; the hand-written Store methods keep
+	// their signatures, the door-side validation (validSubscriptionCoordinate /
+	// validCoordinate), the scope normalization, the ErrConflict/ErrInvalidArgument/
+	// ErrNotFound mapping via pgErrIs, and the two hand-written tx seams: the
+	// DeleteAgentForgeSubscription GC (WithTx) and the ListForgeNotifyTargets row
+	// grouping. The read queries feed the ForgeNotifySubscriber / ForgeArtifactCursor
+	// / ForgeNotifyTarget mappers, which convert the generated rows (provider/kind
+	// ints, BIGINT numbers, LEFT-JOIN-nullable cursor columns) back to the domain
+	// types.
+	// Idempotent on the UNIQUE coordinate: the no-op DO UPDATE (re-set agent to
+	// itself) makes RETURNING fire on conflict so a repeat returns the stored id.
+	EnsureAgentForgeSubscription(ctx context.Context, arg EnsureAgentForgeSubscriptionParams) (string, error)
 	EnsureChannelMember(ctx context.Context, arg EnsureChannelMemberParams) error
+	EnsureForgeRepoSubscription(ctx context.Context, arg EnsureForgeRepoSubscriptionParams) error
 	FindAskMessage(ctx context.Context, arg FindAskMessageParams) ([]FindAskMessageRow, error)
+	// Collects the coordinate's cursor IFF no subscription for it remains (the NOT
+	// EXISTS guard leaves it in place if any other agent still subscribes).
+	GCForgeArtifactCursorIfUnsubscribed(ctx context.Context, arg GCForgeArtifactCursorIfUnsubscribedParams) error
 	GetAccount(ctx context.Context, id string) (GetAccountRow, error)
 	GetAccountByGlobalHandle(ctx context.Context, handle string) (GetAccountByGlobalHandleRow, error)
 	GetAccountByOwnerHandle(ctx context.Context, arg GetAccountByOwnerHandleParams) (GetAccountByOwnerHandleRow, error)
@@ -81,15 +130,35 @@ type Querier interface {
 	// The member INSERT/DELETE reuse EnsureChannelMember (accounts.sql) and
 	// DeleteChannelMember (channels.sql) — the statements are identical.
 	GetCoordinationGroup(ctx context.Context, arg GetCoordinationGroupParams) (string, error)
+	GetDMChannelByName(ctx context.Context, arg GetDMChannelByNameParams) (GetDMChannelByNameRow, error)
 	GetGlobalHandleID(ctx context.Context, handle string) (string, error)
+	// Feeds isReservedDMGroupTx: the reserved-DM-group discriminator (name AND
+	// VisibilityOwner) the CreateChannel create-guard keys on.
+	GetGroupNameVisibility(ctx context.Context, id string) (GetGroupNameVisibilityRow, error)
+	GetIssue(ctx context.Context, id string) (GetIssueRow, error)
 	GetMessageBlocks(ctx context.Context, id string) ([]byte, error)
 	GetMessageByRequestID(ctx context.Context, arg GetMessageByRequestIDParams) ([]GetMessageByRequestIDRow, error)
+	// Peer-DM channel queries (sqlc adoption T6, RIG-3034; dm.go was added to the
+	// store after the design record froze — the record's "plus any residue"). These
+	// replace the inline SQL literals in internal/store/dm.go; the hand-written Store
+	// methods keep their signatures and every seam that is NOT a single statement:
+	// the per-owner advisory lock (LockDM), the resolution/insert loop, the R3
+	// verify-reconcile belt, the transitive-owner membership expansion, and the
+	// cursor seeding (seedChannelDeliveryCursors, delivery_cursors.sql). The member
+	// INSERTs reuse EnsureChannelMember (accounts.sql) — the statement is identical.
+	// Visibility-discriminated get-half: a wider (SHARED) planted __dm__ group must
+	// NEVER be adopted, so visibility = $3 (bound to VisibilityOwner) excludes it.
+	GetOwnerDMGroup(ctx context.Context, arg GetOwnerDMGroupParams) (string, error)
 	GetPageCursorSeq(ctx context.Context, arg GetPageCursorSeqParams) (int64, error)
 	GetTopic(ctx context.Context, id string) (Topic, error)
 	GetTopicByName(ctx context.Context, arg GetTopicByNameParams) (GetTopicByNameRow, error)
 	GetTopicChannel(ctx context.Context, id string) (string, error)
 	GetVisibleAgentHandleID(ctx context.Context, arg GetVisibleAgentHandleIDParams) (string, error)
 	GetVisibleGlobalHandleID(ctx context.Context, arg GetVisibleGlobalHandleIDParams) (string, error)
+	// Feeds requireGroupCreateAuthz: owner, agent-owner, or SHARED-visibility group.
+	GroupCreateAuthorized(ctx context.Context, arg GroupCreateAuthorizedParams) (bool, error)
+	HotTailBytes(ctx context.Context, arg HotTailBytesParams) (int64, error)
+	HotTailSizes(ctx context.Context, arg HotTailSizesParams) ([]HotTailSizesRow, error)
 	InSweepSet(ctx context.Context, arg InSweepSetParams) (bool, error)
 	// Account-domain queries (sqlc adoption T2, RIG-3034). These replace the inline
 	// SQL literals that lived in internal/store/accounts.go; the hand-written Store
@@ -108,7 +177,15 @@ type Querier interface {
 	InsertAccount(ctx context.Context, arg InsertAccountParams) error
 	InsertAccountHandle(ctx context.Context, arg InsertAccountHandleParams) error
 	InsertAgentAccount(ctx context.Context, arg InsertAgentAccountParams) error
+	// Agent-session queries (sqlc adoption T5, RIG-3034). These replace the inline
+	// SQL literals that lived in internal/store/agent_sessions.go; the hand-written
+	// Store methods keep their exact signatures and wrap these generated calls,
+	// mapping AccountID newtypes and the not-found/forbidden merge (D9) by hand. No
+	// domain xFromRow mapper — the session reads project scalar columns the methods
+	// return directly.
+	InsertAgentSession(ctx context.Context, arg InsertAgentSessionParams) error
 	InsertAgentWorkspaceIgnore(ctx context.Context, arg InsertAgentWorkspaceIgnoreParams) error
+	InsertArchiveSegment(ctx context.Context, arg InsertArchiveSegmentParams) error
 	InsertChannel(ctx context.Context, arg InsertChannelParams) error
 	// Channel-domain queries (sqlc adoption T3, RIG-3034). These replace the inline
 	// SQL literals that lived in internal/store/channels.go; the hand-written Store
@@ -126,14 +203,52 @@ type Querier interface {
 	InsertChannelPin(ctx context.Context, arg InsertChannelPinParams) error
 	InsertCoordinationChannel(ctx context.Context, arg InsertCoordinationChannelParams) (string, error)
 	InsertCoordinationGroup(ctx context.Context, arg InsertCoordinationGroupParams) error
+	// Born kind=DM, zero-value policy (OPEN, ownerless) + mandatory; poison-free via
+	// ON CONFLICT DO NOTHING on the partial unique index (a concurrent open yields
+	// zero rows, never a raised unique-violation).
+	InsertDMChannel(ctx context.Context, arg InsertDMChannelParams) (string, error)
 	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
 	InsertMessage(ctx context.Context, arg InsertMessageParams) (InsertMessageRow, error)
+	InsertOwnerDMGroup(ctx context.Context, arg InsertOwnerDMGroupParams) error
+	// Secrets-registry queries (sqlc adoption T6, RIG-3034). These replace the inline
+	// SQL literals in internal/store/secrets.go; the hand-written Store methods keep
+	// their signatures, the door-side validation (name grammar, kind routing), the
+	// ErrConflict/ErrInvalidArgument/ErrNotFound mapping, and the RowsAffected branch
+	// (DeleteSecretDeclaration is :execrows). DeclaredSecrets maps the generated row
+	// back to the domain SecretDeclaration (delivery/kind ints -> named types).
+	InsertSecret(ctx context.Context, arg InsertSecretParams) error
 	InsertSystemAccount(ctx context.Context, accountID string) error
+	// Tenant-bootstrap queries (sqlc adoption T6, RIG-3034). These replace the inline
+	// SQL literals in internal/store/tenant.go; the hand-written Store methods keep
+	// their signatures and the unique-violation-means-fetch idempotent bootstrap
+	// shape (BootstrapTenant falls back to TenantIDBySlug on a duplicate slug).
+	InsertTenant(ctx context.Context, arg InsertTenantParams) error
+	// Token-domain queries (sqlc adoption T6, RIG-3034). These replace the inline
+	// SQL literals in internal/store/tokens.go; the hand-written Store methods keep
+	// their signatures, the ErrConflict/ErrNotFound/ErrTokenRevoked mapping, and the
+	// RowsAffected branching (RevokeToken is :execrows). ResolveTokenHash maps the
+	// generated row (subject_kind/subject_id/revoked) back to the domain Subject.
+	InsertTokenHash(ctx context.Context, arg InsertTokenHashParams) error
 	InsertTopicIgnore(ctx context.Context, arg InsertTopicIgnoreParams) error
+	InsertTranscriptEntry(ctx context.Context, arg InsertTranscriptEntryParams) (int64, error)
 	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
 	IsAgentAccount(ctx context.Context, accountID string) (bool, error)
+	IsEnabledForgeRepo(ctx context.Context, repo string) (bool, error)
+	LatestCheckpointSeq(ctx context.Context, sessionID string) (int64, error)
+	LatestSessionForAccount(ctx context.Context, agentAccountID string) (string, error)
+	LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSession, error)
+	ListAgentPlacementsForRunner(ctx context.Context, runnerID string) ([]ListAgentPlacementsForRunnerRow, error)
+	ListAuthoredArtifactsByAgent(ctx context.Context, agentAccountID string) ([]ForgeAuthoredArtifact, error)
 	ListChannelGroups(ctx context.Context, accountID string) ([]ListChannelGroupsRow, error)
 	ListChannels(ctx context.Context, accountID string) ([]ListChannelsRow, error)
+	ListEnabledForgeRepoSubscriptions(ctx context.Context, arg ListEnabledForgeRepoSubscriptionsParams) ([]ListEnabledForgeRepoSubscriptionsRow, error)
+	ListEnabledForgeRepos(ctx context.Context) ([]string, error)
+	// The reconcile sweep's work list for one (provider, host): each subscribed
+	// coordinate with its LEFT-JOINed shared FETCH cursor (nullable when never
+	// observed) and the subscriber rows, container-scope rows collapsed per
+	// (repo, kind) to coord_number 0. The Go groups the flat rows into targets.
+	ListForgeNotifyTargets(ctx context.Context, arg ListForgeNotifyTargetsParams) ([]ListForgeNotifyTargetsRow, error)
+	ListIssues(ctx context.Context) ([]ListIssuesRow, error)
 	ListMessages(ctx context.Context, arg ListMessagesParams) ([]ListMessagesRow, error)
 	// Topic-domain queries (sqlc adoption T4, RIG-3034). These replace the inline
 	// SQL literals in internal/store/topics.go; the hand-written Store methods keep
@@ -144,6 +259,15 @@ type Querier interface {
 	ListTopics(ctx context.Context, arg ListTopicsParams) ([]Topic, error)
 	ListVisibleAccounts(ctx context.Context, id string) ([]ListVisibleAccountsRow, error)
 	LoadDeliveryCursor(ctx context.Context, arg LoadDeliveryCursorParams) (LoadDeliveryCursorRow, error)
+	LoadForgeArtifactCursor(ctx context.Context, arg LoadForgeArtifactCursorParams) (LoadForgeArtifactCursorRow, error)
+	// Forge repo-subscription / watermark queries (sqlc adoption T6, RIG-3034). These
+	// replace the inline SQL literals in internal/store/forge_cursors.go; the
+	// hand-written Store methods keep their signatures, the door-side validation
+	// (validCoordinate), the ErrNotFound mapping, and the RowsAffected branches
+	// (StoreForgeRepoWatermark / SetForgeRepoSubscriptionEnabled are :execrows). The
+	// read methods map the generated rows (provider int, nullable swept_updated_at)
+	// back to the domain time.Time / ForgeRepoSubscription.
+	LoadForgeRepoWatermark(ctx context.Context, arg LoadForgeRepoWatermarkParams) (LoadForgeRepoWatermarkRow, error)
 	// Channel-pins (pinned board) queries (sqlc adoption T3, RIG-3034). These
 	// replace the inline SQL literals in internal/store/channel_pins.go; the
 	// hand-written Store methods and the in-tx FOR UPDATE lock / cap-check control
@@ -152,6 +276,7 @@ type Querier interface {
 	LockChannelMandatoryKind(ctx context.Context, id string) (LockChannelMandatoryKindRow, error)
 	LockChannelPolicy(ctx context.Context, id string) (LockChannelPolicyRow, error)
 	LockOwnerCoordination(ctx context.Context, dollar_1 pgtype.Text) error
+	LockOwnerDM(ctx context.Context, dollar_1 pgtype.Text) error
 	MarkMentionsRouted(ctx context.Context, arg MarkMentionsRoutedParams) error
 	MergeTopicLastSeq(ctx context.Context, arg MergeTopicLastSeqParams) error
 	MessageByID(ctx context.Context, id string) (MessageByIDRow, error)
@@ -162,14 +287,43 @@ type Querier interface {
 	OwedMentions(ctx context.Context, agentAccountID string) ([]OwedMentionsRow, error)
 	OwnerHasPresentAgent(ctx context.Context, arg OwnerHasPresentAgentParams) (bool, error)
 	PinnedEntries(ctx context.Context, channelID string) ([]PinnedEntriesRow, error)
+	PlacementForAgent(ctx context.Context, agentAccountID string) (PlacementForAgentRow, error)
+	PruneTranscriptEntries(ctx context.Context, arg PruneTranscriptEntriesParams) error
+	// Agent config-bundle queries (sqlc adoption T5, RIG-3034). These replace the
+	// inline SQL literals in internal/store/agent_config.go; the hand-written Store
+	// methods keep their signatures and own the bundle validation/hash and the
+	// tar-walk member inventory (Go-side, over the returned BYTEA). The config
+	// bundle is a fleet-wide singleton row (singleton = TRUE).
+	PutAgentConfig(ctx context.Context, arg PutAgentConfigParams) error
+	ReassertDMMandatory(ctx context.Context, id string) error
+	// Agent-placement queries (sqlc adoption T5, RIG-3034). These replace the inline
+	// SQL literals in internal/store/agent_placements.go; the hand-written Store
+	// methods keep their signatures and map the placement rows into the
+	// AgentPlacement domain struct (AccountID newtype done inline in the Go).
+	RecordAgentPlacement(ctx context.Context, arg RecordAgentPlacementParams) error
+	// Forge-authored-artifact queries (sqlc adoption T6, RIG-3034). These replace the
+	// inline SQL literals in internal/store/forge_authored.go; the hand-written Store
+	// methods keep their signatures, the door-side validation (valid/validCoordinate),
+	// the ErrConflict/ErrInvalidArgument/ErrNotFound mapping via pgErrIs, and the
+	// textOrNull client_request_id NULL discipline. The read queries feed
+	// authoredArtifactFromRow, which maps the generated row (provider/kind ints,
+	// number BIGINT, nullable client_request_id) back to the domain AuthoredArtifact.
+	// WRITE-ONCE authorship: the DO UPDATE deliberately omits agent_account_id and
+	// owner_user_id, so a re-land never rewrites who authored the artifact.
+	RecordAuthoredArtifact(ctx context.Context, arg RecordAuthoredArtifactParams) error
 	RecordOwedMention(ctx context.Context, arg RecordOwedMentionParams) error
+	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
+	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)
 	ResolveAckMessage(ctx context.Context, arg ResolveAckMessageParams) (int64, error)
 	ResolveCoordinationManager(ctx context.Context, id string) (ResolveCoordinationManagerRow, error)
 	ResolveOwner(ctx context.Context, accountID string) (string, error)
+	ResolveTokenHash(ctx context.Context, hash []byte) (ResolveTokenHashRow, error)
 	ResolveTopicForUpdate(ctx context.Context, arg ResolveTopicForUpdateParams) (string, error)
 	ResolveTopicRenameTarget(ctx context.Context, arg ResolveTopicRenameTargetParams) (string, error)
 	ReviveTopic(ctx context.Context, id string) error
+	RevokeToken(ctx context.Context, hash []byte) (int64, error)
+	SafetyValveSegments(ctx context.Context, arg SafetyValveSegmentsParams) ([]SafetyValveSegmentsRow, error)
 	// Scaffold-only query proving sqlc generation works end to end (T1).
 	//
 	// This is NOT a real store query: the per-domain query files land in T2..T6 as
@@ -190,8 +344,20 @@ type Querier interface {
 	SeedDeliveryCursor(ctx context.Context, arg SeedDeliveryCursorParams) error
 	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
 	SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error)
+	SessionBase(ctx context.Context, sessionID string) (int64, error)
+	SessionMaxEntrySeq(ctx context.Context, sessionID string) (int64, error)
+	SessionTranscript(ctx context.Context, sessionID string) ([]SessionTranscriptRow, error)
+	// Agent-activity queries (sqlc adoption T5, RIG-3034). These replace the inline
+	// SQL literals in internal/store/agent_activity.go; the hand-written Store
+	// methods keep their signatures and map the ActivityFor rows into the
+	// AgentActivity domain struct (agentActivityFromRow-equivalent, done inline in
+	// the Go — absent-from-table means absent-from-map).
+	SetActivity(ctx context.Context, arg SetActivityParams) error
+	SetForgeRepoSubscriptionEnabled(ctx context.Context, arg SetForgeRepoSubscriptionEnabledParams) (int64, error)
+	SetIssueState(ctx context.Context, arg SetIssueStateParams) (int64, error)
 	SetTopicArchived(ctx context.Context, arg SetTopicArchivedParams) error
 	SharesVisibleChannel(ctx context.Context, arg SharesVisibleChannelParams) (bool, error)
+	StoreForgeRepoWatermark(ctx context.Context, arg StoreForgeRepoWatermarkParams) (int64, error)
 	SubscribeConvertedDMParties(ctx context.Context, channelID string) error
 	// Delivery-consumer read queries (sqlc adoption T4, RIG-3034). These replace the
 	// inline SQL literals in internal/store/delivery_reads.go; the hand-written Store
@@ -200,7 +366,20 @@ type Querier interface {
 	// error mapping. MessageByID shares the message projection the Go drains via
 	// messageFromParts.
 	SubscribedAgents(ctx context.Context, arg SubscribedAgentsParams) ([]string, error)
+	// Exact-artifact subscribers, plus (on an opened event) the container-scope
+	// subscribers for the same container/project.
+	SubscribersForArtifact(ctx context.Context, arg SubscribersForArtifactParams) ([]SubscribersForArtifactRow, error)
 	SweepChannels(ctx context.Context, accountID string) ([]string, error)
+	TenantIDBySlug(ctx context.Context, slug string) (string, error)
+	TokenHashExists(ctx context.Context, hash []byte) (bool, error)
+	// Authorization-probe queries (sqlc adoption T6, RIG-3034). These replace the
+	// inline SQL literals in internal/store/authz.go; the hand-written helpers keep
+	// their signatures and the not-found/forbidden merge, wrapping these EXISTS
+	// probes (each returns a bare bool). requireChannelMember / isChannelMember reuse
+	// ChannelMemberExists (channels.sql) — the statement is textually identical — so
+	// only the three probes without an existing query live here.
+	// Feeds IsTopicChannelMember: membership on the channel that owns the topic.
+	TopicChannelMemberExists(ctx context.Context, arg TopicChannelMemberExistsParams) (bool, error)
 	TopicChannelNames(ctx context.Context, id string) (TopicChannelNamesRow, error)
 	UndeliveredMessages(ctx context.Context, accountID string) ([]UndeliveredMessagesRow, error)
 	UnroutedMentionMessages(ctx context.Context, arg UnroutedMentionMessagesParams) ([]UnroutedMentionMessagesRow, error)
@@ -210,6 +389,26 @@ type Querier interface {
 	UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMessageBlocksAsAuthorParams) (UpdateMessageBlocksAsAuthorRow, error)
 	UpdateTopicLastSeq(ctx context.Context, arg UpdateTopicLastSeqParams) error
 	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error
+	UpsertForgeArtifactCursor(ctx context.Context, arg UpsertForgeArtifactCursorParams) error
+	// Issue-domain queries (sqlc adoption T6, RIG-3034). These replace the inline
+	// SQL literals in internal/store/issues.go; the hand-written Store methods keep
+	// their signatures, the door-side validation, the ErrNotFound/ErrInvalidArgument
+	// mapping, and the RowsAffected branch (SetIssueState is :execrows). GetIssue /
+	// ListIssues feed issueFromColumns (via issueFromGetRow / issueFromListRow),
+	// which maps the generated row (forge_provider/state ints, number BIGINT) back
+	// to the domain Issue.
+	// Insert-or-update at the forge coordinate with the OQ-6(a) recency guard; the
+	// ON CONFLICT sets ONLY forge columns (never state/machinery), and the CTE's
+	// fallback SELECT keeps the returned id stable when the guard skips the UPDATE.
+	UpsertIssueForgeFields(ctx context.Context, arg UpsertIssueForgeFieldsParams) (string, error)
+	// Linear-agent-session queries (sqlc adoption T6, RIG-3034). These replace the
+	// inline SQL literals in internal/store/linear_sessions.go; the hand-written
+	// Store methods keep their signatures, the RowsAffected branch (Upsert returns
+	// created via :execrows), the textOrNull linear_issue_id NULL discipline, and the
+	// ErrNotFound/ErrInvalidArgument mapping. The LinearAgentSession read maps the
+	// generated row (nullable linear_issue_id, created_at timestamp) back to the
+	// domain LinearAgentSessionRow inline.
+	UpsertLinearAgentSession(ctx context.Context, arg UpsertLinearAgentSessionParams) (int64, error)
 }
 
 var _ Querier = (*Queries)(nil)
