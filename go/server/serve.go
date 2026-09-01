@@ -42,6 +42,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
+	"github.com/RigelBuild/compass/go/internal/linearagent"
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/secrets"
@@ -140,16 +141,25 @@ type ForgeConfig struct {
 	// App secrets are declared; otherwise board ingestion is hard-off with a
 	// boot Warn. No PAT fallback on the read path (Constraint #3).
 	App ForgeAppConfig
-	// SecretName is the declared server_only secret NAME holding the forge token
-	// (default "GITHUB_FORGE_TOKEN"; the VALUE never crosses config or a flag).
-	SecretName string
-	// ReviewerSecretName is the declared server_only secret NAME holding the
-	// REVIEWER forge token (default "GITHUB_FORGE_REVIEWER_TOKEN"; the VALUE
-	// never crosses config or a flag). A distinct GitHub identity from the
-	// author token so an agent approving a PR it authored is a different account
-	// (F1). The agent forge-WRITE path is enabled iff BOTH this and SecretName
-	// resolve to a declared secret (Matt's 2026-08-19 ruling).
-	ReviewerSecretName string
+	// ReviewerApp is the SECOND GitHub App credential — a distinct App
+	// definition (own AppID + private key + one installation) serving ONLY the
+	// reviewer write client (the submit_review arm). A distinct GitHub identity
+	// from the primary App so an agent approving a PR it authored dispatches
+	// submit_review on a different account than it authored with, dissolving the
+	// author-approving-own-PR 422 at the credential layer (F1, DEC-1). The
+	// reviewer App registers NO webhook and no read lane, so its
+	// AppWebhookSecretName is unused; reads/webhooks/board/author-writes all ride
+	// the primary App (2-App topology, DEC-3).
+	ReviewerApp ForgeAppConfig
+	// LinearClientIDSecretName / LinearClientSecretName are the declared
+	// server_only secret NAMEs holding the Linear OAuth client-credentials pair
+	// (actor=app, the RIG-2682 "Compass" app). The Linear write + notify lanes
+	// mint one shared client-credentials token from this pair (never a member
+	// PAT); a Linear coordinate + notify lane are wired iff BOTH names resolve to
+	// a declared secret (the VALUEs never cross config or a flag). Default to
+	// LINEAR_FORGE_CLIENT_ID / LINEAR_FORGE_CLIENT_SECRET.
+	LinearClientIDSecretName string
+	LinearClientSecretName   string
 	// LinearWebhookSecretName is the declared server_only secret NAME holding
 	// the Linear webhook signing secret the shared POST /webhooks ingress
 	// verifies deliveries against (the VALUE never crosses config or a flag).
@@ -182,17 +192,15 @@ type ForgeAppConfig struct {
 
 // Forge config defaults, applied by resolveForge when a field is zero.
 const (
-	defaultForgeHost       = "github.com"
-	defaultForgeSecretName = "GITHUB_FORGE_TOKEN" //nolint:gosec // G101: this is the default declared-secret NAME (an env-var identifier), not a credential value — the value is resolved from the secrets provider, never hardcoded
-	// defaultForgeReviewerSecretName is the default declared-secret NAME holding
-	// the REVIEWER forge token (F1) — a distinct identity from the author token.
-	// A secret NAME, not a value (see defaultForgeSecretName's gosec note).
-	defaultForgeReviewerSecretName = "GITHUB_FORGE_REVIEWER_TOKEN" //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
-	// defaultForgeLinearSecretName is the declared-secret NAME holding the Linear
-	// write token (DL-051/DL-052). A Linear write coordinate is registered ONLY
-	// when this secret is declared; otherwise the write path is GitHub-only. A
-	// secret NAME, not a value.
-	defaultForgeLinearSecretName = "LINEAR_FORGE_TOKEN" //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
+	defaultForgeHost = "github.com"
+	// defaultForgeLinearClientIDSecretName / defaultForgeLinearClientSecretName
+	// are the default declared-secret NAMEs holding the Linear OAuth
+	// client-credentials pair (actor=app, the RIG-2682 "Compass" app). The Linear
+	// write coordinate + notify lane are wired iff BOTH resolve to a declared
+	// secret; otherwise the write path is GitHub-only and the notify lane is off.
+	// Secret NAMEs, not values (see the gosec note below).
+	defaultForgeLinearClientIDSecretName = "LINEAR_FORGE_CLIENT_ID"     //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
+	defaultForgeLinearClientSecretName   = "LINEAR_FORGE_CLIENT_SECRET" //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
 	// defaultReconcileBackstop is the board reconciler's default sweep cadence
 	// (OQ-5): startup sweep + a 30-min ticker (a 304 page-1 GET per enabled repo
 	// is ≈ free, notify_reader.go:12-13; a cold-start zero watermark walks once).
@@ -216,18 +224,19 @@ func (c ForgeConfig) boardIngestionEnabled() bool {
 	return c.App.AppID != 0
 }
 
-// resolved returns the config with its zero fields defaulted (Host, SecretName,
-// ReviewerSecretName, App.ReconcileBackstop). SeedRepos and App ids are taken
-// verbatim.
+// resolved returns the config with its zero fields defaulted (Host, the Linear
+// client-credentials secret NAMEs, App.ReconcileBackstop). SeedRepos and App ids
+// are taken verbatim; App private-key/webhook secret NAMEs are operator-set with
+// no default (a configured App names them explicitly).
 func (c ForgeConfig) resolved() ForgeConfig {
 	if c.Host == "" {
 		c.Host = defaultForgeHost
 	}
-	if c.SecretName == "" {
-		c.SecretName = defaultForgeSecretName
+	if c.LinearClientIDSecretName == "" {
+		c.LinearClientIDSecretName = defaultForgeLinearClientIDSecretName
 	}
-	if c.ReviewerSecretName == "" {
-		c.ReviewerSecretName = defaultForgeReviewerSecretName
+	if c.LinearClientSecretName == "" {
+		c.LinearClientSecretName = defaultForgeLinearClientSecretName
 	}
 	if c.App.ReconcileBackstop <= 0 {
 		c.App.ReconcileBackstop = defaultReconcileBackstop
@@ -236,35 +245,47 @@ func (c ForgeConfig) resolved() ForgeConfig {
 }
 
 // forgeWritesEnabled reports whether the agent forge-WRITE path is enabled: iff
-// BOTH the author secret (SecretName) and the reviewer secret
-// (ReviewerSecretName) resolve to a name present in declared (Matt's 2026-08-19
-// ruling — independent of boardIngestionEnabled, both secrets required). It is a
-// pure predicate over the resolved declared-secret set so the "enabled = both
-// declared" rule is unit-testable without a running Serve; buildForgeWriteService
-// re-validates each name through validateForgeSecret to fail fast with the two
-// distinct texts. Called on the resolved() config so the defaulted names apply.
+// BOTH the primary App and the reviewer App are configured — each with AppID != 0
+// AND its private-key secret present in declared (the 2-App cutover, DEC-1/DEC-3,
+// re-keying the retired two-PAT-names predicate). Requiring the primary App to
+// enable writes force-enables board ingestion (boardIngestionEnabled keys on the
+// same App.AppID) — the unified shape Matt explicitly wants (DL-305). It is a
+// pure predicate over the resolved declared-secret set so the rule is
+// unit-testable without a running Serve; buildForgeWriteService re-validates each
+// App key through validateForgeSecret to fail fast. Called on the resolved()
+// config so the defaulted names apply.
 func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool {
-	haveAuthor, haveReviewer := c.forgeWriteSecretsDeclared(declared)
-	return haveAuthor && haveReviewer
+	havePrimary, haveReviewer := c.forgeWriteAppsConfigured(declared)
+	return havePrimary && haveReviewer
 }
 
-// forgeWriteSecretsDeclared reports which of the two required write secrets —
-// the author (SecretName) and the reviewer (ReviewerSecretName) — are present
-// in the resolved declared set. Both true is the writes-enabled state
-// (forgeWritesEnabled); exactly one true is a partial misconfiguration
-// warnPartialForgeWriteSecrets surfaces. Resolves the config internally so the
-// defaulted names apply — the caller need not pre-resolve.
-func (c ForgeConfig) forgeWriteSecretsDeclared(declared []secrets.ResolvedSecret) (haveAuthor, haveReviewer bool) {
+// forgeWriteAppsConfigured reports which of the two required write Apps — the
+// primary (c.App) and the reviewer (c.ReviewerApp) — are configured: AppID != 0
+// AND the App's private-key secret NAME present in the resolved declared set.
+// Both true is the writes-enabled state (forgeWritesEnabled); exactly one true is
+// a partial misconfiguration warnPartialForgeWriteSecrets surfaces. Resolves the
+// config internally so any defaulted names apply — the caller need not
+// pre-resolve.
+func (c ForgeConfig) forgeWriteAppsConfigured(declared []secrets.ResolvedSecret) (havePrimary, haveReviewer bool) {
 	fc := c.resolved()
+	havePrimary = fc.App.AppID != 0 && secretDeclared(declared, fc.App.AppPrivateKeySecret)
+	haveReviewer = fc.ReviewerApp.AppID != 0 && secretDeclared(declared, fc.ReviewerApp.AppPrivateKeySecret)
+	return havePrimary, haveReviewer
+}
+
+// secretDeclared reports whether a non-empty name is present in the resolved
+// declared set. An empty name is never declared (an App with a zero key-secret
+// name is not configured).
+func secretDeclared(declared []secrets.ResolvedSecret, name string) bool {
+	if name == "" {
+		return false
+	}
 	for _, s := range declared {
-		switch s.Name {
-		case fc.SecretName:
-			haveAuthor = true
-		case fc.ReviewerSecretName:
-			haveReviewer = true
+		if s.Name == name {
+			return true
 		}
 	}
-	return haveAuthor, haveReviewer
+	return false
 }
 
 // The bootstrap-admin identity the local-socket door attributes callers to until
@@ -414,9 +435,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Owner-only: the socket is the server's whole trust boundary on the local
 	// machine, so no other user may connect.
 	if err := os.Chmod(cfg.SocketPath, 0o600); err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing chmod path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return fmt.Errorf("chmod 0600 %s: %w", cfg.SocketPath, err)
+		return failStartup(udsListener, listeners, fmt.Errorf("chmod 0600 %s: %w", cfg.SocketPath, err))
 	}
 
 	// Pin the inode we bound so shutdown cleanup can tell our socket apart from
@@ -436,9 +455,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// mid-request.
 	st, err := openStore(ctx, cfg)
 	if err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return err
+		return failStartup(udsListener, listeners, err)
 	}
 	defer st.Close()
 
@@ -452,9 +469,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// observable at boot.
 	admin, systemAccount, err := seedBootstrapAccounts(ctx, st, cfg)
 	if err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return err
+		return failStartup(udsListener, listeners, err)
 	}
 
 	// Log the resolved public base URL so an operator can see which host the
@@ -486,9 +501,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// subscribed yet at boot, so it does not publish.
 	issueBrd := board.NewIssueProjection(bus, st)
 	if err := issueBrd.Rehydrate(ctx); err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return fmt.Errorf("rehydrating issue board: %w", err)
+		return failStartup(udsListener, listeners, fmt.Errorf("rehydrating issue board: %w", err))
 	}
 
 	// The comms event stream rides a second bus instance — its own seq space and
@@ -544,18 +557,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// notifies live sessions to re-fetch); it shares the one resolver with FetchSecrets.
 	secretsSvc := newSecretsService(st, resolver, hub)
 
-	// The board webhook-ingestion lane (RIG-2883) and its webhook ingress wiring,
-	// built BEFORE the doors because the network door mounts the lane's webhook
-	// ingress (sink + secret resolver, threaded into buildDoors). Fails fast HERE
-	// on the same udsListener.Close()+listeners.close() cleanup path the Rehydrate
-	// fault above uses. All returns are nil when the App is absent. The notify
-	// lane (T7) rides the SAME ingress via webhookSink; Serve starts its arm +
-	// reconciler alongside the board lane's below.
-	lane, notifyLane, webhookSink, webhookSecret, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, hub, resolver, hubLog)
+	// The forge read-side credentials, built BEFORE the doors because the network
+	// door mounts the board lane's webhook ingress (sink + secret resolver) and
+	// the Linear notify lane, both threaded into buildDoors. Fails fast HERE on
+	// the shared cleanup path. Board fields are nil when the GitHub App is absent;
+	// forge.linearTokens is nil when Linear is not configured. Serve starts each
+	// lane's arm + reconciler below.
+	forgeWiring, err := buildForgeReadWiring(ctx, cfg, st, issueBrd, hub, resolver, hubLog)
 	if err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return err
+		return failStartup(udsListener, listeners, err)
 	}
 
 	// Assemble the three compass.v1 doors (shipped Unix socket, optional dev
@@ -563,16 +573,17 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// net door's /webhooks/linear handler feeds. On a net-door build error the
 	// listeners this Serve bound are still ours to close.
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver,
-		devListener, netListener, netTLS, webhookSink, webhookSecret)
+		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens)
 	if err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return err
+		return failStartup(udsListener, listeners, err)
 	}
 
-	// The forge-WRITE caller is independent of the board ingest lane (Matt's
-	// 2026-08-19 ruling): enabled iff BOTH write secrets are declared.
-	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, resolver, hub, hubLog, udsListener, listeners); err != nil {
+	// The forge-WRITE caller: enabled iff BOTH the primary and reviewer Apps are
+	// configured (the 2-App cutover). The author write leg REUSES the shared
+	// primary App client (forgeWiring.primaryClient) so it rides the one budget
+	// gate; the reviewer leg gets its own App client; the Linear coordinate rides
+	// the shared forgeWiring.linearTokens instance.
+	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, resolver, hub, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners); err != nil {
 		return err
 	}
 
@@ -601,10 +612,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// group so they inherit the doors' lifecycle exactly — cancelled on
 	// SIGINT/SIGTERM via gctx, first-error-wins, drained with everything else.
 	// The board + GitHub notify lanes are nil when the GitHub App is absent (they
-	// share the App gate); the Linear notify lane is nil when LINEAR_FORGE_TOKEN
-	// is undeclared (its independent gate). A nil lane starts nothing. Every Run
-	// returns nil on ctx-cancel.
-	startForgeIngestLanes(gctx, g, lane, notifyLane, doors.linearNotify)
+	// share the App gate); the Linear notify lane is nil when Linear is not
+	// configured (its client-credentials pair undeclared). A nil lane starts
+	// nothing. Every Run returns nil on ctx-cancel.
+	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, forgeWiring.notifyLane, doors.linearNotify)
 	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
@@ -641,8 +652,9 @@ type serveDoors struct {
 	dev *http.Server
 	net *http.Server
 	// linearNotify is the Linear agent-notification lane (RIG-2732 T7), built
-	// beside the webhook handler it feeds; nil when LINEAR_FORGE_TOKEN is
-	// undeclared. Serve starts its arm + reconciler on the serve group.
+	// beside the webhook handler it feeds; nil when Linear is not configured (its
+	// client-credentials pair undeclared). Serve starts its arm + reconciler on
+	// the serve group.
 	linearNotify *forgeNotifyLane
 }
 
@@ -667,6 +679,7 @@ func buildDoors(
 	netTLS *tls.Config,
 	webhookSink ForgeEventSink,
 	webhookSecret func(ctx context.Context) ([]byte, error),
+	linearTokens *linearagent.TokenSource,
 ) (serveDoors, error) {
 	// otelconnect produces the server RPC span (and, once a MeterProvider is
 	// installed, RPC duration/count metrics); NewTraceResponseInterceptor stamps
@@ -745,18 +758,15 @@ func buildDoors(
 	}
 
 	// The Linear agent-notification lane (RIG-2732 T7): App-INDEPENDENT, gated on
-	// LINEAR_FORGE_TOKEN. Built here — beside the webhook handler it feeds — so a
-	// resolve fault fail-fasts door assembly, and its data-change sink threads
-	// straight into buildLinearWebhookWiring below, replacing the
-	// injected-and-nil-for-now sink so a verified /webhooks/linear Issue/Comment
-	// event routes to subscribers instead of ack-and-drop. Nil when the secret is
-	// undeclared (the handler's data branch then acks-and-drops). The lane is
-	// returned in serveDoors so Serve can start its arm + reconciler on the serve
-	// group.
-	linearNotifyLane, err := buildLinearNotifyLane(ctx, st, hub, resolver, slog.Default())
-	if err != nil {
-		return serveDoors{}, err
-	}
+	// the shared Linear client-credentials token source (nil when Linear is not
+	// configured). Built here — beside the webhook handler it feeds — so its
+	// data-change sink threads straight into buildLinearWebhookWiring below,
+	// replacing the injected-and-nil-for-now sink so a verified /webhooks/linear
+	// Issue/Comment event routes to subscribers instead of ack-and-drop. Nil when
+	// linearTokens is nil (the handler's data branch then acks-and-drops). The
+	// lane is returned in serveDoors so Serve can start its arm + reconciler on
+	// the serve group.
+	linearNotifyLane := buildLinearNotifyLane(st, hub, linearTokens, slog.Default())
 	var linearDataSink ForgeEventSink
 	if linearNotifyLane != nil {
 		linearDataSink = linearNotifyLane.sink
@@ -768,10 +778,10 @@ func buildDoors(
 	// notifications without a GitHub App). Its data-change arm's sink is the
 	// Linear-provider-bound notify lane's sink (linearDataSink), so a verified
 	// Issue/Comment event routes to subscribers at the LINEAR/linear.app
-	// coordinate; nil when the notify lane is off (LINEAR_FORGE_TOKEN undeclared),
-	// and the handler's data branch then acks-and-drops. The two gates are
-	// independent: the webhook secret gates the handler; LINEAR_FORGE_TOKEN gates
-	// the sink. Its session arm is left unwired (nil sessionSink -> logged-drop)
+	// coordinate; nil when the notify lane is off (Linear not configured), and the
+	// handler's data branch then acks-and-drops. The two gates are independent:
+	// the webhook secret gates the handler; the Linear client-credentials pair
+	// gates the sink. Its session arm is left unwired (nil sessionSink -> logged-drop)
 	// until the RIG-2717 responder assembly wires a *linearagent.Dispatcher here.
 	// The handler is mounted only on the net door below, when one exists.
 	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, resolver, linearDataSink, slog.Default())
@@ -911,6 +921,55 @@ type boardIngestLane struct {
 	client *forge.GitHub
 }
 
+// forgeReadWiring bundles the forge read-side credentials Serve builds once and
+// threads into the doors + the write path: the board + notify lanes over the
+// shared primary App client (the board arm's webhook ingress sink + secret), the
+// shared primary App client the author write leg reuses, and the ONE Linear
+// OAuth token source both the notify lane and the Linear write coordinate ride.
+// Board fields are nil when the GitHub App is absent; linearTokens is nil when
+// Linear is not configured.
+type forgeReadWiring struct {
+	boardLane     *boardIngestLane
+	notifyLane    *forgeNotifyLane
+	webhookSink   ForgeEventSink
+	webhookSecret func(ctx context.Context) ([]byte, error)
+	primaryClient *forge.GitHub
+	linearTokens  *linearagent.TokenSource
+}
+
+// buildForgeReadWiring assembles the forge read-side credentials in one call:
+// the board webhook wiring (both App lanes + the shared primary client) and the
+// shared Linear OAuth token source. Either half is independently off (App absent
+// -> nil board fields; Linear unconfigured -> nil linearTokens); a resolve or
+// boot-time-mint fault from either is returned so Serve fails fast on its
+// cleanup path.
+func buildForgeReadWiring(
+	ctx context.Context,
+	cfg ServeConfig,
+	st *store.Store,
+	issueBrd *board.IssueProjection,
+	hub *runnerhub.Hub,
+	resolver secrets.Resolver,
+	log *slog.Logger,
+) (forgeReadWiring, error) {
+	boardLane, notifyLane, webhookSink, webhookSecret, primaryClient, err := buildBoardWebhookWiring(ctx, cfg, st, issueBrd, hub, resolver, log)
+	if err != nil {
+		return forgeReadWiring{}, err
+	}
+	linearTokens, err := buildLinearTokenSource(ctx, cfg, resolver, log)
+	if err != nil {
+		return forgeReadWiring{}, err
+	}
+	return forgeReadWiring{
+		boardLane:     boardLane,
+		notifyLane:    notifyLane,
+		webhookSink:   webhookSink,
+		webhookSecret: webhookSecret,
+		primaryClient: primaryClient,
+		linearTokens:  linearTokens,
+	}, nil
+}
+
 // buildBoardWebhookWiring builds BOTH forge lanes (board ingestion + agent
 // notification) over ONE shared GitHub App client and derives the network
 // door's webhook ingress wiring: the lanes themselves (whose arms + reconcilers
@@ -938,23 +997,23 @@ func buildBoardWebhookWiring(
 	hub *runnerhub.Hub,
 	resolver secrets.Resolver,
 	log *slog.Logger,
-) (*boardIngestLane, *forgeNotifyLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), error) {
+) (*boardIngestLane, *forgeNotifyLane, ForgeEventSink, func(ctx context.Context) ([]byte, error), *forge.GitHub, error) {
 	rc := cfg.Forge.resolved()
 	// App absent -> both forge lanes hard-off. Warn once here (the single
 	// diagnostic site) when enabled subscription rows exist, and mount nothing.
 	if !cfg.Forge.boardIngestionEnabled() {
 		warnDisabledBoardIngestion(ctx, st, store.ForgeProviderGitHub, rc.Host, log)
-		return nil, nil, nil, nil, nil
+		return nil, nil, nil, nil, nil, nil
 	}
 	// Validate both App secrets ONCE at this shared site (distinct fail-fast
 	// texts via validateForgeSecret) so a configured App with a missing secret
 	// fails startup and BOTH lanes inherit a validated App — the notify lane no
 	// longer relies on the board lane validating first.
 	if err := validateForgeSecret(ctx, resolver, "board webhook app key", rc.App.AppPrivateKeySecret); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	if err := validateForgeSecret(ctx, resolver, "board webhook secret", rc.App.AppWebhookSecretName); err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	// Build the ONE shared App token source + GitHub client both lanes ride.
 	// appTokenSource is safe for concurrent use (mint singleflighted), so the
@@ -966,18 +1025,22 @@ func buildBoardWebhookWiring(
 		Host:           rc.Host,
 	})
 	if err != nil {
-		return nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
+		return nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
 	}
 	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok})
 
 	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, client, log)
 	if err != nil {
-		return nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
 	notifyLane := buildForgeNotifyLane(cfg, st, hub, client, log)
 	sink := &fanoutSink{sinks: []ForgeEventSink{lane.sink, notifyLane.sink}}
 	secret := newCachedWebhookSecret(resolver, rc.App.AppWebhookSecretName)
-	return lane, notifyLane, sink, secret, nil
+	// client is returned as the shared primary App client the author write leg
+	// REUSES (RIG-2991 + the App cutover): the SAME *forge.GitHub object board
+	// reads, notify reads, AND author writes ride, so one client-side
+	// rate-budget/resetAt gate spans all three against the single installation.
+	return lane, notifyLane, sink, secret, client, nil
 }
 
 // buildLinearWebhookWiring builds the shared Linear POST /webhooks/linear
@@ -1350,13 +1413,13 @@ func buildForgeNotifyLane(
 }
 
 // buildLinearNotifyLane assembles the Linear agent-notification lane (RIG-2732
-// T7), the Linear sibling of buildForgeNotifyLane. It gates App-INDEPENDENTLY on
-// the LINEAR_FORGE_TOKEN read credential (forgeSecretDeclared) — the same secret
-// the write path's Linear coordinate gates on (serve.go:1513-1517) — matching the
-// house pattern that every forge lane gates as a unit on its own credential. An
-// undeclared/absent secret returns (nil, nil), the off-state the caller reads as
-// "mount no Linear notify sink"; a resolve FAULT returns the error (fail-fast,
-// like forgeSecretDeclared elsewhere).
+// T7), the Linear sibling of buildForgeNotifyLane. It is gated by the caller on
+// the shared Linear OAuth client-credentials token source: a nil tokens means
+// Linear is not configured, so it returns nil — the off-state the caller reads
+// as "mount no Linear notify sink". A non-nil tokens builds the lane over a
+// Linear client riding the SAME token-source instance the write coordinate rides
+// (the one-instance rule, DEC-4), so it cannot fail (no resolve, no error
+// return).
 //
 // Linear is issues-only and check-less (DL-051): its event alphabet is
 // Issue/Comment, so no CHECKS/REVIEW arms ever fire. The checks roller is still
@@ -1365,24 +1428,19 @@ func buildForgeNotifyLane(
 // ChecksConditional returns ErrUnsupported, but the router invokes RollUp only on
 // a CHECKS event Linear never produces (correct and never-called).
 func buildLinearNotifyLane(
-	ctx context.Context,
 	st *store.Store,
 	hub *runnerhub.Hub,
-	resolver secrets.Resolver,
+	tokens *linearagent.TokenSource,
 	log *slog.Logger,
-) (*forgeNotifyLane, error) {
-	declared, err := forgeSecretDeclared(ctx, resolver, defaultForgeLinearSecretName)
-	if err != nil {
-		return nil, err
-	}
-	if !declared {
-		return nil, nil //nolint:nilnil // an undeclared LINEAR_FORGE_TOKEN is a valid off-state: a nil lane is the signal (the caller guards `if lane != nil`), not an ambiguous nil-nil — a sentinel error would force the caller to distinguish it from a real fault.
+) *forgeNotifyLane {
+	if tokens == nil {
+		return nil // Linear not configured (client-credentials pair undeclared): lane off.
 	}
 	const (
 		provider = store.ForgeProviderLinear
 		host     = "linear.app"
 	)
-	client := forge.NewLinear(forge.LinearConfig{Token: newForgeTokenSource(resolver, defaultForgeLinearSecretName), Log: log})
+	client := forge.NewLinear(forge.LinearConfig{Token: tokens, Log: log})
 
 	notifyStore := &forgeNotifyStore{st: st, provider: provider, host: host}
 	dispatcher := &forgeNotifyDispatcher{hub: hub}
@@ -1398,7 +1456,7 @@ func buildLinearNotifyLane(
 			Backstop: 0, // no App config carries a Linear backstop; 0 -> ingest's defaultBackstop.
 			Log:      log,
 		})
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client}, nil
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client}
 }
 
 // newDeclaredSecretResolver returns a func that resolves the declared server_only
@@ -1429,9 +1487,8 @@ func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx 
 // uncached resolve there lets an attacker force one full secretspec provider
 // Load (registry read + manifest temp-file write + provider Load) per cheap
 // garbage POST — an asymmetric-cost amplification ahead of authentication. The
-// cache (same forgeTokenTTL and rotation semantics as forgeTokenSource) bounds
-// the per-request cost to a memcmp while a rotated signing secret still takes
-// effect within the TTL. A resolve fault is surfaced to the caller (a 503),
+// cache (forgeTokenTTL) bounds the per-request cost to a memcmp while a rotated
+// signing secret still takes effect within the TTL. A resolve fault is surfaced to the caller (a 503),
 // never cached. Unlike the App-key resolver (also newDeclaredSecretResolver but
 // cold — NewAppTokenSource caches the minted token and only reads the key on
 // mint), this one is on the request hot path, so it needs the cache.
@@ -1491,16 +1548,20 @@ func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason,
 	return fmt.Errorf("forge secret %q not declared", name)
 }
 
-// wireForgeWriteCaller resolves the declared secrets, and — when the forge-WRITE
-// path is enabled (both write secrets declared) — builds the write chokepoint
-// and mounts it on the hub via SetForgeCaller. A resolve FAULT (not an absent
-// name) fails startup regardless of whether writes are on; when writes are off,
-// the caller is left unwired and Hub.RelayForgeCall fail-closes to an in-band
-// CodeUnavailable (relay_forge.go), the clean degrade — but a PARTIAL misconfig
-// (only one of the two write secrets declared) logs a Warn first, since that is
-// a likely operator typo rather than an intentional off. On any startup fault it
-// unwinds the caller-bound listeners (udsListener + listeners) before returning,
-// the same teardown path the poll driver and Rehydrate faults use.
+// wireForgeWriteCaller builds the write chokepoint and mounts it on the hub via
+// SetForgeCaller when the forge-WRITE path is enabled (BOTH the primary and
+// reviewer Apps configured). A resolve FAULT (not an absent name) fails startup
+// regardless of whether writes are on; when writes are off, the caller is left
+// unwired and Hub.RelayForgeCall fail-closes to an in-band CodeUnavailable
+// (relay_forge.go), the clean degrade — but a PARTIAL misconfig (exactly one App
+// configured) logs a Warn first, since that is a likely operator typo rather than
+// an intentional off. primaryClient is the shared primary App client the author
+// write leg reuses (nil when the App is absent — which, since writes now require
+// the primary App, only coincides with writes being off); linearTokens is the
+// shared Linear token source the Linear coordinate rides (nil when Linear is not
+// configured). On any startup fault it unwinds the caller-bound listeners
+// (udsListener + listeners) before returning, the same teardown path the poll
+// driver and Rehydrate faults use.
 func wireForgeWriteCaller(
 	ctx context.Context,
 	cfg ServeConfig,
@@ -1509,86 +1570,104 @@ func wireForgeWriteCaller(
 	resolver secrets.Resolver,
 	hub *runnerhub.Hub,
 	log *slog.Logger,
+	primaryClient *forge.GitHub,
+	linearTokens *linearagent.TokenSource,
 	udsListener net.Listener,
 	listeners boundListeners,
 ) error {
 	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return fmt.Errorf("forge secret resolve failed at startup: %w", err)
+		return failStartup(udsListener, listeners, fmt.Errorf("forge secret resolve failed at startup: %w", err))
 	}
 	if !cfg.Forge.forgeWritesEnabled(declaredSecrets) {
 		warnPartialForgeWriteSecrets(cfg.Forge, declaredSecrets, log)
 		return nil
 	}
-	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, log)
+	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, primaryClient, linearTokens, log)
 	if err != nil {
-		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-		listeners.close()
-		return err
+		return failStartup(udsListener, listeners, err)
 	}
 	hub.SetForgeCaller(forgeSvc)
 	return nil
 }
 
 // buildForgeWriteService assembles the agent forge-WRITE chokepoint (the
-// runnerhub.ForgeCaller) per Matt's 2026-08-19 ruling: independent of the board
-// ingest lane, enabled iff BOTH forge write secrets are declared. In order it: (1)
-// validates BOTH the author and reviewer secrets ONCE at startup so a
-// misconfiguration fails fast with the two distinct texts (undeclared name vs a
-// resolve that errors, via validateForgeSecret — the same fail-fast the board
-// lane's App-secret validation uses), (2) builds the provider registry, registering the GitHub
-// coordinate (author+reviewer, F1) and — when its secret is declared — a Linear
-// coordinate, and (3) returns the forgeService the caller mounts with
-// hub.SetForgeCaller. The caller gates the whole call on forgeWritesEnabled, so
-// this only runs when both write secrets are present; the validateForgeSecret
-// calls are the fail-fast on a resolve fault.
+// runnerhub.ForgeCaller) for the 2-App cutover: enabled iff BOTH the primary and
+// reviewer Apps are configured. In order it: (1) validates the reviewer App key
+// secret ONCE at startup (the primary App key was already validated when the
+// board wiring built primaryClient) via validateForgeSecret so a misconfig fails
+// fast; (2) builds the reviewer App token source + client; (3) builds the
+// provider registry, registering the GitHub coordinate (author = the shared
+// primary App client, reviewer = the reviewer App client, F1) and — when the
+// shared Linear token source is present — a Linear coordinate; and (4) returns
+// the forgeService the caller mounts with hub.SetForgeCaller.
 //
-// The registry always holds the GitHub coordinate (its host defaults to
-// github.com, so registerGitHubForgeCoordinate registers it whenever writes are
-// enabled) plus a Linear coordinate when LINEAR_FORGE_TOKEN is declared, so the
-// returned service is always non-nil on success.
+// The author write leg REUSES primaryClient (NOT a fresh client over the same
+// token source): the client-side rate-budget/resetAt gate is per-*forge.GitHub
+// client (mu-guarded), so threading only the token source into a new client would
+// give the author writes a SEPARATE budget gate from the board/notify reads.
+// Reusing the one client keeps author writes and reads on ONE shared budget gate
+// against the single installation (RIG-2991). primaryClient is non-nil here: the
+// caller only reaches this when writes are enabled, which requires the primary
+// App configured, which is exactly when buildBoardWebhookWiring built the client.
 func buildForgeWriteService(
 	ctx context.Context,
 	cfg ServeConfig,
 	st *store.Store,
 	issueBrd *board.IssueProjection,
 	resolver secrets.Resolver,
+	primaryClient *forge.GitHub,
+	linearTokens *linearagent.TokenSource,
 	log *slog.Logger,
 ) (*forgeService, error) {
 	fc := cfg.Forge.resolved()
 
-	// (1) Startup secret resolve for BOTH roles: fail fast with the distinct
-	// texts so a permanent misconfig (an undeclared name) is not confused with a
-	// transient outage (a resolve that errors). The TokenSources re-resolve later
-	// on TTL/Invalidate.
-	if err := validateForgeSecret(ctx, resolver, "forge write", fc.SecretName); err != nil {
-		return nil, err
-	}
-	if err := validateForgeSecret(ctx, resolver, "forge write", fc.ReviewerSecretName); err != nil {
-		return nil, err
+	// (1) The author write leg rides the shared primary App client. A defensive
+	// guard: the caller only reaches here when writes are enabled (primary App
+	// configured), so primaryClient is built — but a nil here would otherwise
+	// register a nil author client, so fail fast with a clear error rather than
+	// panic on first write.
+	if primaryClient == nil {
+		return nil, errors.New("forge write: primary App client is nil (writes enabled without a configured primary App)")
 	}
 
-	// (2) The provider registry: the GitHub coordinate (author+reviewer, F1)
-	// plus a Linear coordinate when its secret is declared.
+	// (2) The reviewer App client: validate its key secret (distinct fail-fast
+	// text), then build its own installation-token source + client — a distinct
+	// GitHub identity from the primary App so F1's author-cannot-approve holds.
+	if err := validateForgeSecret(ctx, resolver, "forge reviewer app key", fc.ReviewerApp.AppPrivateKeySecret); err != nil {
+		return nil, err
+	}
+	reviewerTok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+		AppID:          fc.ReviewerApp.AppID,
+		InstallationID: fc.ReviewerApp.InstallationID,
+		PrivateKey:     newDeclaredSecretResolver(resolver, fc.ReviewerApp.AppPrivateKeySecret),
+		Host:           fc.Host,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("forge reviewer app token source: %w", err)
+	}
+	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: reviewerTok})
+
+	// (3) The provider registry: the GitHub coordinate (author = shared primary
+	// client, reviewer = reviewer App client, F1) plus a Linear coordinate when
+	// the shared Linear token source is configured.
 	registry := newForgeProviderRegistry()
-	registerGitHubForgeCoordinate(registry, fc, resolver)
+	registerGitHubForgeCoordinate(registry, fc, primaryClient, reviewerClient)
 
-	// Linear write coordinate — registered ONLY when LINEAR_FORGE_TOKEN is
-	// declared (else GitHub-only). Linear is issues-only (DL-051): its PR/review
-	// ops return ErrUnsupported, which the chokepoint flattens to in-band
-	// unimplemented. One client serves both roles — Linear has no author/reviewer
-	// split (no review concept), so the same client is the author and the reviewer
-	// entry. Its coordinate host is left empty so a Linear-provider ForgeRef with
-	// no host resolves it via the registry's per-provider default; the GraphQL
-	// endpoint default lives inside NewLinear. isDefault=false: the GitHub
-	// coordinate is the default a nil/unset ForgeRef resolves to, so Linear is the
-	// additive coordinate a LINEAR-addressed ForgeRef selects explicitly.
-	if linearDeclared, err := forgeSecretDeclared(ctx, resolver, defaultForgeLinearSecretName); err != nil {
-		return nil, err
-	} else if linearDeclared {
-		linear := forge.NewLinear(forge.LinearConfig{Token: newForgeTokenSource(resolver, defaultForgeLinearSecretName), Log: log})
+	// Linear write coordinate — registered ONLY when Linear is configured (the
+	// shared client-credentials token source is non-nil, else GitHub-only). Linear
+	// is issues-only (DL-051): its PR/review ops return ErrUnsupported, which the
+	// chokepoint flattens to in-band unimplemented. One client serves both roles —
+	// Linear has no author/reviewer split (no review concept), so the same client
+	// is the author and the reviewer entry. It rides the SAME linearTokens
+	// instance the notify lane rides (the one-instance rule, DEC-4). Its
+	// coordinate host is left empty so a Linear-provider ForgeRef with no host
+	// resolves it via the registry's per-provider default; the GraphQL endpoint
+	// default lives inside NewLinear. isDefault=false: the GitHub coordinate is the
+	// default a nil/unset ForgeRef resolves to, so Linear is the additive
+	// coordinate a LINEAR-addressed ForgeRef selects explicitly.
+	if linearTokens != nil {
+		linear := forge.NewLinear(forge.LinearConfig{Token: linearTokens, Log: log})
 		registry.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}, linear, linear, false)
 	}
 
@@ -1596,16 +1675,62 @@ func buildForgeWriteService(
 }
 
 // registerGitHubForgeCoordinate registers the production GitHub write coordinate
-// — the AUTHOR client (over fc.SecretName) and the REVIEWER client (over
-// fc.ReviewerSecretName, F1), each on its own TTL-caching TokenSource — as the
-// default coordinate a nil/unset ForgeRef resolves to. The two roles are
-// distinct GitHub identities so an agent approving a PR it authored dispatches
-// submit_review on a different account than it authored with, dissolving the
-// author-approving-own-PR rejection at the credential layer.
-func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, resolver secrets.Resolver) {
-	author := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: newForgeTokenSource(resolver, fc.SecretName)})
-	reviewer := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: newForgeTokenSource(resolver, fc.ReviewerSecretName)})
+// — the AUTHOR client (the shared primary App client) and the REVIEWER client
+// (the reviewer App client, F1) — as the default coordinate a nil/unset ForgeRef
+// resolves to. The two roles are distinct GitHub App identities so an agent
+// approving a PR it authored dispatches submit_review on a different account than
+// it authored with, dissolving the author-approving-own-PR rejection at the
+// credential layer.
+func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, author, reviewer *forge.GitHub) {
 	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: fc.Host}, author, reviewer, true)
+}
+
+// buildLinearTokenSource builds the ONE shared Linear OAuth client-credentials
+// token source (actor=app) from the declared client-id/secret pair, or returns
+// nil when Linear is not configured (neither name declared — the clean off-state
+// for a deployment that runs no Linear lane). Exactly ONE of the two names
+// declared is a likely operator typo: it Warns and treats Linear as off (mirrors
+// warnPartialForgeWriteSecrets). When BOTH are declared it builds the source and
+// runs a boot-time mint check — one Token(ctx) call — so a bad pair or a disabled
+// client_credentials toggle fails Serve at startup (fail-fast like
+// validateForgeSecret), not on the first write. The returned instance is passed
+// to BOTH the notify lane and the write coordinate (the one-instance rule, DEC-4).
+func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secrets.Resolver, log *slog.Logger) (*linearagent.TokenSource, error) {
+	fc := cfg.Forge.resolved()
+	declared, err := resolver.Resolve(ctx, "forge linear")
+	if err != nil {
+		return nil, fmt.Errorf("forge secret resolve failed at startup: %w", err)
+	}
+	var clientID, clientSecret string
+	for _, s := range declared {
+		switch s.Name {
+		case fc.LinearClientIDSecretName:
+			clientID = s.Value
+		case fc.LinearClientSecretName:
+			clientSecret = s.Value
+		}
+	}
+	haveID, haveSecret := clientID != "", clientSecret != ""
+	if !haveID && !haveSecret {
+		return nil, nil //nolint:nilnil // Linear not configured is a valid off-state: a nil source is the signal (the callers guard `if tokens != nil`), not an ambiguous nil-nil.
+	}
+	if haveID != haveSecret {
+		declaredName, missingName := fc.LinearClientIDSecretName, fc.LinearClientSecretName
+		if haveSecret {
+			declaredName, missingName = fc.LinearClientSecretName, fc.LinearClientIDSecretName
+		}
+		log.Warn("forge Linear lanes disabled: only one of the two Linear client-credential secrets is declared; both are required",
+			"declared", declaredName, "missing", missingName)
+		return nil, nil //nolint:nilnil // a partial Linear config is an operator typo, surfaced by the Warn; treated as off (a nil source), never a fatal.
+	}
+	tokens := linearagent.NewTokenSource(clientID, clientSecret, nil, "")
+	// Boot-time mint check: a Token(ctx) call proves the pair mints (the DL-204
+	// degrade probe guards only attribution, not the mint path), so a bad secret
+	// or a disabled client_credentials toggle fails Serve here, not on first write.
+	if _, err := tokens.Token(ctx); err != nil {
+		return nil, fmt.Errorf("forge Linear boot-time mint check failed (verify the client-credentials pair and the app's client-credentials toggle): %w", err)
+	}
+	return tokens, nil
 }
 
 // forgeSecretDeclared reports whether name is present in the resolved
@@ -1684,24 +1809,24 @@ func (f *fanoutSink) Enqueue(ctx context.Context, ev forge.ForgeEvent) {
 }
 
 // warnPartialForgeWriteSecrets emits exactly one slog.Warn when the forge-WRITE
-// path is disabled because only ONE of the two required write secrets is
-// declared — a likely operator typo in one of the two env-var NAMES, which
-// otherwise silently fails every agent forge write closed (CodeUnavailable)
-// with nothing in the startup log to explain it. The intentional both-absent
-// OFF state stays silent. Mirrors warnDisabledBoardIngestion: diagnostic only,
-// never fail-fast, and logs secret NAMES (env-var identifiers) never values.
+// path is disabled because exactly ONE of the two required Apps (the primary and
+// the reviewer) is configured — a likely operator typo (a missing App id or an
+// undeclared App key secret), which otherwise silently fails every agent forge
+// write closed (CodeUnavailable) with nothing in the startup log to explain it.
+// The intentional both-absent OFF state stays silent. Mirrors
+// warnDisabledBoardIngestion: diagnostic only, never fail-fast, and logs a role
+// name never a secret value.
 func warnPartialForgeWriteSecrets(fc ForgeConfig, declared []secrets.ResolvedSecret, log *slog.Logger) {
-	haveAuthor, haveReviewer := fc.forgeWriteSecretsDeclared(declared)
-	if haveAuthor == haveReviewer {
-		return // both present (enabled path, not here) or both absent (intentional off)
+	havePrimary, haveReviewer := fc.forgeWriteAppsConfigured(declared)
+	if havePrimary == haveReviewer {
+		return // both configured (enabled path, not here) or both absent (intentional off)
 	}
-	rc := fc.resolved()
-	declaredName, missingName := rc.SecretName, rc.ReviewerSecretName
+	configured, missing := "primary App", "reviewer App"
 	if haveReviewer {
-		declaredName, missingName = rc.ReviewerSecretName, rc.SecretName
+		configured, missing = "reviewer App", "primary App"
 	}
-	log.Warn("forge write path disabled: only one of the two required forge write secrets is declared; both are required",
-		"declared", declaredName, "missing", missingName)
+	log.Warn("forge write path disabled: only one of the two required GitHub Apps is configured; both are required",
+		"configured", configured, "missing", missing)
 }
 
 // normalizeGitHubRepo validates an "owner/name" repo string and lowercases it
@@ -1717,71 +1842,14 @@ func normalizeGitHubRepo(raw string) (string, error) {
 	return strings.ToLower(trimmed), nil
 }
 
-// forgeTokenSource is the driver's forge.TokenSource: a TTL cache over the one
-// SpecResolver, selecting the configured secret name from the resolved set. A
-// resolve is not cheap (reads the whole registry, writes a manifest, drives a
-// provider Load — resolver.go:135-165), so the value is cached for forgeTokenTTL
-// and re-resolved only on TTL expiry or Invalidate() (the client calls the
-// latter on a 401/bad-creds-403). This is the design's stated reason for a
-// TTL-cache with an invalidation seam rather than a captured token or bare func.
-type forgeTokenSource struct {
-	resolver secrets.Resolver
-	name     string
-	ttl      time.Duration
-	now      func() time.Time
-
-	mu      sync.Mutex
-	token   string
-	expires time.Time
-	valid   bool
-}
-
-// newForgeTokenSource returns a TokenSource resolving name through resolver,
-// caching each resolved value for forgeTokenTTL.
-func newForgeTokenSource(resolver secrets.Resolver, name string) *forgeTokenSource {
-	return &forgeTokenSource{resolver: resolver, name: name, ttl: forgeTokenTTL, now: time.Now}
-}
-
-// Token returns the cached token while it is valid and unexpired, else
-// re-resolves the declared set and selects the configured name. A missing name
-// at Token time (declaration deleted post-boot) is an error the driver surfaces
-// per-pass as an auth failure + retry next tick (idempotent).
-//
-// Single-caller by the driver's contract: the poll driver calls Token
-// sequentially per fetch batch on one goroutine, and Invalidate runs on that
-// same goroutine (never re-entrantly from inside Token), so holding t.mu across
-// the resolve I/O never contends. Were a second concurrent caller ever added,
-// the lock would simply serialize resolves (singleflight-like) — benign, but the
-// single-caller assumption is the reason the resolve is inside the lock.
-func (t *forgeTokenSource) Token(ctx context.Context) (string, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.valid && t.now().Before(t.expires) {
-		return t.token, nil
-	}
-	resolved, err := t.resolver.Resolve(ctx, "forge poll")
-	if err != nil {
-		return "", fmt.Errorf("forge token resolve: %w", err)
-	}
-	for _, s := range resolved {
-		if s.Name == t.name {
-			t.token = s.Value
-			t.expires = t.now().Add(t.ttl)
-			t.valid = true
-			return t.token, nil
-		}
-	}
-	t.valid = false
-	return "", fmt.Errorf("forge secret %q not declared", t.name)
-}
-
-// Invalidate drops the cached value so the next Token re-resolves — the client
-// calls it when it observes an auth failure, so a rotated token takes effect
-// immediately rather than after the TTL.
-func (t *forgeTokenSource) Invalidate() {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.valid = false
+// failStartup tears down the UDS socket + eager-bound listeners on any post-bind
+// startup fault, then returns err unchanged — the one cleanup path every Serve
+// fail-fast (and wireForgeWriteCaller) shares, so a new fault site is one call,
+// not a repeated three-line teardown.
+func failStartup(udsListener net.Listener, listeners boundListeners, err error) error {
+	udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+	listeners.close()
+	return err
 }
 
 func closeListener(l net.Listener) {

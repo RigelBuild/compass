@@ -79,7 +79,7 @@ var linearClosedStateTypes = []string{"completed", "canceled"}
 // LinearConfig configures a Linear client.
 type LinearConfig struct {
 	Host   string       // GraphQL endpoint URL; "" -> linearDefaultEndpoint
-	Token  TokenSource  // required (its own LINEAR_FORGE_TOKEN, DL-052)
+	Token  TokenSource  // required (the shared Linear OAuth client-credentials source, DL-052)
 	Client *http.Client // nil -> a default client with a sane timeout
 	Log    *slog.Logger // nil -> slog.Default(); carries the degrade log line
 }

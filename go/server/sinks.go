@@ -179,9 +179,9 @@ func startCommsBusConsumers(gctx context.Context, g *errgroup.Group, commsBus *e
 // notification lanes (RIG-2732 T7) — the GitHub notify lane and the Linear notify
 // lane — each contributing its webhook-arm drain and its reconciler sweep. The
 // board and GitHub notify lanes share the App gate (nil-or-set together); the
-// Linear notify lane gates INDEPENDENTLY on LINEAR_FORGE_TOKEN, so it is nil-or-
-// set on its own. Every lane is nil-checked; a nil lane starts nothing. The
-// notify lanes are the same *forgeNotifyLane type, taken variadically so a new
+// Linear notify lane gates INDEPENDENTLY on the Linear client-credentials pair,
+// so it is nil-or-set on its own. Every lane is nil-checked; a nil lane starts
+// nothing. The notify lanes are the same *forgeNotifyLane type, taken variadically so a new
 // notify lane is one more argument, not a new param. Serve calls this one helper
 // so the Run starts, which share the serve group + gctx, stay one statement at
 // the call site (mirroring startCommsBusConsumers). Every Run returns nil on

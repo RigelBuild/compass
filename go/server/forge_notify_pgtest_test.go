@@ -145,15 +145,15 @@ func TestForgeNotifyLaneDisabledWithoutApp(t *testing.T) {
 
 	// issueBrd is nil-safe here: the App-absent gate short-circuits before any
 	// lane assembly, so the projection is never dereferenced.
-	lane, notifyLane, sink, secret, err := buildBoardWebhookWiring(ctx, ServeConfig{Forge: ForgeConfig{Host: forgeTestHost}}, st, nil, nil, &fakeResolver{}, slog.Default())
+	lane, notifyLane, sink, secret, client, err := buildBoardWebhookWiring(ctx, ServeConfig{Forge: ForgeConfig{Host: forgeTestHost}}, st, nil, nil, &fakeResolver{}, slog.Default())
 	if err != nil {
 		t.Fatalf("buildBoardWebhookWiring (App absent): %v", err)
 	}
 	if notifyLane != nil {
 		t.Fatal("notifyLane != nil with no App configured, want nil (notify lane hard-off)")
 	}
-	if lane != nil || sink != nil || secret != nil {
-		t.Fatalf("wiring not all-nil with no App configured: lane==nil? %t sink==nil? %t secret==nil? %t", lane == nil, sink == nil, secret == nil)
+	if lane != nil || sink != nil || secret != nil || client != nil {
+		t.Fatalf("wiring not all-nil with no App configured: lane==nil? %t sink==nil? %t secret==nil? %t client==nil? %t", lane == nil, sink == nil, secret == nil, client == nil)
 	}
 }
 

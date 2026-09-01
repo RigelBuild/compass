@@ -13,66 +13,73 @@ package main
 // unique to forge.
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/server"
 )
 
 func TestResolveForgeMapping(t *testing.T) {
-	t.Run("disabled default: no repos, no App", func(t *testing.T) {
-		fc, err := resolveForge("", "", "", "", "", "", "", "")
+	t.Run("disabled default: no repos, no Apps", func(t *testing.T) {
+		fc, err := resolveForge(forgeInputs{})
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
 		}
-		if len(fc.SeedRepos) != 0 {
-			t.Fatalf("SeedRepos = %v, want empty", fc.SeedRepos)
-		}
-		if fc.App.AppID != 0 || fc.App.InstallationID != 0 {
-			t.Fatalf("App ids = %d/%d, want 0/0", fc.App.AppID, fc.App.InstallationID)
-		}
-		// Empty host/secret/App-secret NAMEs are left zero for server-side
-		// defaulting — resolveForge must not bake defaults the ServeConfig owns.
-		if fc.Host != "" || fc.SecretName != "" ||
-			fc.App.AppPrivateKeySecret != "" || fc.App.AppWebhookSecretName != "" {
-			t.Fatalf("empty inputs should stay zero, got host=%q secret=%q key=%q webhook=%q",
-				fc.Host, fc.SecretName, fc.App.AppPrivateKeySecret, fc.App.AppWebhookSecretName)
+		// Everything stays zero: no seed, no Apps, and — crucially — empty host /
+		// secret NAMEs are NOT defaulted here (server-side ServeConfig owns those
+		// defaults). A zero-value ForgeConfig is exactly that contract.
+		if want := (server.ForgeConfig{}); !reflect.DeepEqual(fc, want) {
+			t.Fatalf("empty inputs should map to a zero ForgeConfig\n got %+v\nwant %+v", fc, want)
 		}
 	})
 
 	t.Run("full flag mapping", func(t *testing.T) {
-		fc, err := resolveForge("owner/repo, foo/bar", "MY_TOKEN", "ghe.example.com",
-			"12345", "678", "APP_KEY", "WEBHOOK_SECRET", "LINEAR_WEBHOOK_SECRET")
+		fc, err := resolveForge(forgeInputs{
+			repos:                  "owner/repo, foo/bar",
+			host:                   "ghe.example.com",
+			appID:                  "12345",
+			installationID:         "678",
+			appKeySecret:           "APP_KEY",
+			appWebhook:             "WEBHOOK_SECRET",
+			reviewerAppID:          "222",
+			reviewerInstallationID: "333",
+			reviewerAppKeySecret:   "REVIEWER_APP_KEY",
+			linearClientID:         "LINEAR_CID",
+			linearClientSecret:     "LINEAR_CSECRET",
+			linearWebhook:          "LINEAR_WEBHOOK_SECRET",
+		})
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
 		}
-		if fc.Host != "ghe.example.com" {
-			t.Fatalf("Host = %q, want ghe.example.com", fc.Host)
+		// The whole mapping in one comparison: ids parsed to int64, secret NAMEs
+		// threaded verbatim, repos split + lowercased, and the reviewer App's
+		// webhook NAME left empty (it registers no webhook).
+		want := server.ForgeConfig{
+			Host:                     "ghe.example.com",
+			SeedRepos:                []string{"owner/repo", "foo/bar"},
+			LinearClientIDSecretName: "LINEAR_CID",
+			LinearClientSecretName:   "LINEAR_CSECRET",
+			LinearWebhookSecretName:  "LINEAR_WEBHOOK_SECRET",
+			App: server.ForgeAppConfig{
+				AppID:                12345,
+				InstallationID:       678,
+				AppPrivateKeySecret:  "APP_KEY",
+				AppWebhookSecretName: "WEBHOOK_SECRET",
+			},
+			ReviewerApp: server.ForgeAppConfig{
+				AppID:               222,
+				InstallationID:      333,
+				AppPrivateKeySecret: "REVIEWER_APP_KEY",
+			},
 		}
-		if fc.SecretName != "MY_TOKEN" {
-			t.Fatalf("SecretName = %q, want MY_TOKEN", fc.SecretName)
-		}
-		if fc.App.AppID != 12345 || fc.App.InstallationID != 678 {
-			t.Fatalf("App ids = %d/%d, want 12345/678", fc.App.AppID, fc.App.InstallationID)
-		}
-		if fc.App.AppPrivateKeySecret != "APP_KEY" || fc.App.AppWebhookSecretName != "WEBHOOK_SECRET" {
-			t.Fatalf("App secrets = %q/%q, want APP_KEY/WEBHOOK_SECRET",
-				fc.App.AppPrivateKeySecret, fc.App.AppWebhookSecretName)
-		}
-		if fc.LinearWebhookSecretName != "LINEAR_WEBHOOK_SECRET" {
-			t.Fatalf("LinearWebhookSecretName = %q, want LINEAR_WEBHOOK_SECRET", fc.LinearWebhookSecretName)
-		}
-		want := []string{"owner/repo", "foo/bar"}
-		if len(fc.SeedRepos) != len(want) {
-			t.Fatalf("SeedRepos = %v, want %v", fc.SeedRepos, want)
-		}
-		for i, w := range want {
-			if fc.SeedRepos[i] != w {
-				t.Fatalf("SeedRepos[%d] = %q, want %q", i, fc.SeedRepos[i], w)
-			}
+		if !reflect.DeepEqual(fc, want) {
+			t.Fatalf("full flag mapping mismatch\n got %+v\nwant %+v", fc, want)
 		}
 	})
 
 	t.Run("case normalization: Owner/Name lowercases to one target", func(t *testing.T) {
-		fc, err := resolveForge("Owner/Name", "", "", "", "", "", "", "")
+		fc, err := resolveForge(forgeInputs{repos: "Owner/Name"})
 		if err != nil {
 			t.Fatalf("resolveForge: %v", err)
 		}
@@ -94,7 +101,7 @@ func TestResolveForgeRejectsGarbage(t *testing.T) {
 	}
 	for _, tc := range garbage {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := resolveForge(tc.repos, "", "", "", "", "", "", "")
+			_, err := resolveForge(forgeInputs{repos: tc.repos})
 			if err == nil {
 				t.Fatalf("resolveForge(%q) = nil error, want a startup error", tc.repos)
 			}
@@ -107,13 +114,16 @@ func TestResolveForgeRejectsGarbage(t *testing.T) {
 
 func TestResolveForgeRejectsBadAppID(t *testing.T) {
 	for _, tc := range []struct {
-		name, appID, installID, wantFlag string
+		name, wantFlag string
+		in             forgeInputs
 	}{
-		{"non-numeric app id", "notanumber", "", "--forge-app-id"},
-		{"non-numeric installation id", "123", "nope", "--forge-installation-id"},
+		{"non-numeric app id", "--forge-app-id", forgeInputs{repos: "owner/repo", appID: "notanumber"}},
+		{"non-numeric installation id", "--forge-installation-id", forgeInputs{repos: "owner/repo", appID: "123", installationID: "nope"}},
+		{"non-numeric reviewer app id", "--forge-reviewer-app-id", forgeInputs{repos: "owner/repo", reviewerAppID: "nope"}},
+		{"non-numeric reviewer installation id", "--forge-reviewer-app-installation-id", forgeInputs{repos: "owner/repo", reviewerAppID: "123", reviewerInstallationID: "nope"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := resolveForge("owner/repo", "", "", tc.appID, tc.installID, "", "", "")
+			_, err := resolveForge(tc.in)
 			if err == nil {
 				t.Fatalf("resolveForge = nil error, want a startup error")
 			}

@@ -418,7 +418,8 @@ func TestForgeNoLiveSessionFailsClosedOverTheWire(t *testing.T) {
 // provider=LINEAR) comes back as an in-band `unimplemented` ForgeCallError —
 // Linear is issues-only (DL-051), its PR half returns ErrUnsupported, which the
 // chokepoint flattens to unimplemented. Present because serve.go registers a
-// Linear coordinate when LINEAR_FORGE_TOKEN is declared (not left as a TODO), and
+// Linear coordinate when the Linear OAuth client-credentials pair is declared
+// (not left as a TODO), and
 // Linear satisfies forge.Provider.
 func TestForgeLinearUnimplementedOverTheWire(t *testing.T) {
 	w := newForgeE2EWire(t)
