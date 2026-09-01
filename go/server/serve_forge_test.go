@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RigelBuild/compass/go/internal/linearagent"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
@@ -65,205 +66,182 @@ func TestForgeConfigEnableAndDefaults(t *testing.T) {
 		if got.Host != defaultForgeHost {
 			t.Fatalf("Host = %q, want %q", got.Host, defaultForgeHost)
 		}
-		if got.SecretName != defaultForgeSecretName {
-			t.Fatalf("SecretName = %q, want %q", got.SecretName, defaultForgeSecretName)
+		if got.LinearClientIDSecretName != defaultForgeLinearClientIDSecretName {
+			t.Fatalf("LinearClientIDSecretName = %q, want %q", got.LinearClientIDSecretName, defaultForgeLinearClientIDSecretName)
+		}
+		if got.LinearClientSecretName != defaultForgeLinearClientSecretName {
+			t.Fatalf("LinearClientSecretName = %q, want %q", got.LinearClientSecretName, defaultForgeLinearClientSecretName)
 		}
 		if got.App.ReconcileBackstop != defaultReconcileBackstop {
 			t.Fatalf("ReconcileBackstop = %v, want %v", got.App.ReconcileBackstop, defaultReconcileBackstop)
 		}
 	})
 	t.Run("explicit fields survive defaulting", func(t *testing.T) {
-		in := ForgeConfig{Host: "ghe.example.com", SecretName: "TOK", App: ForgeAppConfig{ReconcileBackstop: 3 * time.Minute}}
+		in := ForgeConfig{Host: "ghe.example.com", LinearClientIDSecretName: "LID", App: ForgeAppConfig{ReconcileBackstop: 3 * time.Minute}}
 		got := in.resolved()
-		if got.Host != "ghe.example.com" || got.SecretName != "TOK" || got.App.ReconcileBackstop != 3*time.Minute {
+		if got.Host != "ghe.example.com" || got.LinearClientIDSecretName != "LID" || got.App.ReconcileBackstop != 3*time.Minute {
 			t.Fatalf("explicit fields clobbered by defaulting: %+v", got)
 		}
 	})
 }
 
-// TestForgeReviewerSecretDefaultingAndWritesEnabled pins the T8 write-path
-// enablement contract (Matt's 2026-08-19 ruling): the reviewer secret name
-// defaults to defaultForgeReviewerSecretName, an explicit one survives, and the
-// write path is enabled iff BOTH the author and reviewer secrets are declared —
-// independent of the board lane's boardIngestionEnabled gate.
-func TestForgeReviewerSecretDefaultingAndWritesEnabled(t *testing.T) {
-	t.Run("reviewer secret defaulted to the F1 default name", func(t *testing.T) {
-		if got := (ForgeConfig{}).resolved().ReviewerSecretName; got != defaultForgeReviewerSecretName {
-			t.Fatalf("ReviewerSecretName = %q, want %q", got, defaultForgeReviewerSecretName)
+// TestForgeWriteAppsGate pins the 2-App write-path enablement contract
+// (DEC-1/DEC-3): the forge-WRITE path is enabled iff BOTH the primary App and
+// the reviewer App are configured — each AppID != 0 AND its private-key secret
+// declared. Requiring the primary App force-couples writes to board ingestion
+// (both key on App.AppID) — the unified shape Matt wants.
+func TestForgeWriteAppsGate(t *testing.T) {
+	// bothApps is a config with the primary + reviewer Apps configured; declared
+	// carries both App key secrets.
+	bothApps := ForgeConfig{
+		App:         ForgeAppConfig{AppID: 1, InstallationID: 2, AppPrivateKeySecret: "PRIMARY_KEY", AppWebhookSecretName: "WH"},
+		ReviewerApp: ForgeAppConfig{AppID: 3, InstallationID: 4, AppPrivateKeySecret: "REVIEWER_KEY"},
+	}
+	bothDeclared := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}, {Name: "REVIEWER_KEY"}}
+
+	t.Run("both Apps configured + both keys declared -> writes enabled", func(t *testing.T) {
+		if !bothApps.forgeWritesEnabled(bothDeclared) {
+			t.Fatal("both Apps configured with both key secrets declared should enable the write path")
 		}
 	})
-	t.Run("explicit reviewer secret survives defaulting", func(t *testing.T) {
-		if got := (ForgeConfig{ReviewerSecretName: "REV_TOK"}).resolved().ReviewerSecretName; got != "REV_TOK" {
-			t.Fatalf("ReviewerSecretName = %q, want the explicit REV_TOK", got)
+	t.Run("primary App only -> writes disabled", func(t *testing.T) {
+		cfg := ForgeConfig{App: bothApps.App}
+		if cfg.forgeWritesEnabled(bothDeclared) {
+			t.Fatal("primary-App-only should NOT enable the write path (both Apps required)")
 		}
 	})
-	t.Run("both defaulted secrets declared -> writes enabled", func(t *testing.T) {
-		declared := []secrets.ResolvedSecret{
-			{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName},
-		}
-		if !(ForgeConfig{}).forgeWritesEnabled(declared) {
-			t.Fatal("both secrets declared should enable the write path")
+	t.Run("reviewer App only -> writes disabled", func(t *testing.T) {
+		cfg := ForgeConfig{ReviewerApp: bothApps.ReviewerApp}
+		if cfg.forgeWritesEnabled(bothDeclared) {
+			t.Fatal("reviewer-App-only should NOT enable the write path (both Apps required)")
 		}
 	})
-	t.Run("only the author secret declared -> writes disabled", func(t *testing.T) {
-		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}}
-		if (ForgeConfig{}).forgeWritesEnabled(declared) {
-			t.Fatal("author-only should NOT enable the write path (both required)")
+	t.Run("both App ids set but a key secret undeclared -> writes disabled", func(t *testing.T) {
+		// The reviewer key is missing from the declared set: configured means
+		// AppID != 0 AND key declared, so this is a partial (disabled) state.
+		onlyPrimaryKey := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}}
+		if bothApps.forgeWritesEnabled(onlyPrimaryKey) {
+			t.Fatal("a configured reviewer App with its key undeclared must NOT enable writes")
 		}
 	})
-	t.Run("only the reviewer secret declared -> writes disabled", func(t *testing.T) {
-		declared := []secrets.ResolvedSecret{{Name: defaultForgeReviewerSecretName}}
-		if (ForgeConfig{}).forgeWritesEnabled(declared) {
-			t.Fatal("reviewer-only should NOT enable the write path (both required)")
-		}
-	})
-	t.Run("neither declared -> writes disabled", func(t *testing.T) {
+	t.Run("neither App configured -> writes disabled", func(t *testing.T) {
 		if (ForgeConfig{}).forgeWritesEnabled(nil) {
-			t.Fatal("no declared secrets should leave the write path disabled")
+			t.Fatal("no Apps configured should leave the write path disabled")
 		}
 	})
-	t.Run("enablement honours explicit secret names, not just defaults", func(t *testing.T) {
-		cfg := ForgeConfig{SecretName: "AUTHOR_TOK", ReviewerSecretName: "REVIEWER_TOK"}
-		both := []secrets.ResolvedSecret{{Name: "AUTHOR_TOK"}, {Name: "REVIEWER_TOK"}}
-		if !cfg.forgeWritesEnabled(both) {
-			t.Fatal("explicit names both declared should enable the write path")
+	t.Run("enabling writes force-enables board ingestion (unified shape)", func(t *testing.T) {
+		// Both Apps configured -> writes enabled AND boardIngestionEnabled true
+		// (both key on App.AppID). The 2026-08-19 independent-gates ruling is
+		// amended (DL-305): writes now require the primary App.
+		if !bothApps.forgeWritesEnabled(bothDeclared) {
+			t.Fatal("fixture precondition: writes should be enabled")
 		}
-		// The DEFAULT names being present must NOT enable a config that named
-		// custom secrets — the predicate keys on the resolved config's names.
-		defaults := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
-		if cfg.forgeWritesEnabled(defaults) {
-			t.Fatal("default names must not satisfy a config that declared custom secret names")
-		}
-	})
-	t.Run("write enablement is independent of the board ingestion gate", func(t *testing.T) {
-		// boardIngestionEnabled is false (no App) yet writes are enabled on both
-		// secrets — the two gates are orthogonal (Matt's ruling).
-		cfg := ForgeConfig{}
-		if cfg.boardIngestionEnabled() {
-			t.Fatal("fixture precondition: board ingestion should be disabled")
-		}
-		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
-		if !cfg.forgeWritesEnabled(declared) {
-			t.Fatal("writes must enable on both secrets even with board ingestion disabled")
+		if !bothApps.boardIngestionEnabled() {
+			t.Fatal("enabling writes must force board ingestion on (primary App configured)")
 		}
 	})
 }
 
-// TestBuildLinearNotifyLaneGate pins the RIG-2732 T7 Linear notify lane's
-// App-INDEPENDENT gate: buildLinearNotifyLane runs iff LINEAR_FORGE_TOKEN is
-// declared (the read credential the reconciler needs), NOT the GitHub App gate.
-// The gate short-circuits before any store/hub touch, so a nil store + nil hub
-// suffice; the declared path binds the Linear coordinate
-// (store.ForgeProviderLinear / "linear.app"). A resolve fault fails fast.
+// TestBuildLinearNotifyLaneGate pins the Linear notify lane's gate: it is built
+// iff the caller passes a non-nil shared Linear token source (Linear configured);
+// a nil source is the off-state (lane nil). The gate short-circuits before any
+// store/hub touch, so a nil store + nil hub suffice; the built lane binds the
+// Linear coordinate (store.ForgeProviderLinear / "linear.app").
 func TestBuildLinearNotifyLaneGate(t *testing.T) {
-	ctx := context.Background() // test root
-	t.Run("undeclared LINEAR_FORGE_TOKEN -> nil lane (off-state)", func(t *testing.T) {
-		lane, err := buildLinearNotifyLane(ctx, nil, nil, &fakeResolver{}, nil)
-		if err != nil {
-			t.Fatalf("buildLinearNotifyLane (undeclared): %v", err)
-		}
-		if lane != nil {
-			t.Fatal("lane != nil with LINEAR_FORGE_TOKEN undeclared, want nil (lane off)")
+	t.Run("nil token source -> nil lane (off-state)", func(t *testing.T) {
+		if lane := buildLinearNotifyLane(nil, nil, nil, nil); lane != nil {
+			t.Fatal("lane != nil with a nil Linear token source, want nil (lane off)")
 		}
 	})
-	t.Run("declared LINEAR_FORGE_TOKEN -> non-nil lane with a sink", func(t *testing.T) {
-		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: defaultForgeLinearSecretName, Value: "lin-tok"}}}
-		lane, err := buildLinearNotifyLane(ctx, nil, nil, res, nil)
-		if err != nil {
-			t.Fatalf("buildLinearNotifyLane (declared): %v", err)
-		}
+	t.Run("non-nil token source -> non-nil lane with a sink", func(t *testing.T) {
+		tokens := linearagent.NewTokenSource("cid", "csecret", nil, "")
+		lane := buildLinearNotifyLane(nil, nil, tokens, nil)
 		if lane == nil {
-			t.Fatal("lane == nil with LINEAR_FORGE_TOKEN declared, want a non-nil lane")
+			t.Fatal("lane == nil with a configured Linear token source, want a non-nil lane")
 		}
 		if lane.arm == nil || lane.reconciler == nil || lane.sink == nil {
 			t.Fatalf("assembled lane has a nil member: %+v", lane)
 		}
 	})
-	t.Run("resolve fault -> error (fail-fast)", func(t *testing.T) {
-		res := &fakeResolver{err: errors.New("boom")}
-		lane, err := buildLinearNotifyLane(ctx, nil, nil, res, nil)
-		if err == nil {
-			t.Fatal("buildLinearNotifyLane returned nil error on a resolve fault, want fail-fast")
+}
+
+// TestBuildLinearTokenSourceGate pins buildLinearTokenSource's pre-mint gating —
+// the branches that decide WHETHER a Linear token source is built, before any
+// network mint (the mint itself is covered by linearagent's TokenSource tests).
+// Neither client-cred secret declared is the clean off-state (nil, nil); a
+// resolve fault fails fast; exactly one of the pair declared is a likely
+// operator typo, surfaced by ONE Warn naming the declared + missing secret and
+// treated as off (nil, nil) — never a fatal.
+func TestBuildLinearTokenSourceGate(t *testing.T) {
+	ctx := context.Background() // test root
+	cfg := ServeConfig{}        // Forge zero -> resolved() defaults the two client-cred names.
+	idName, secretName := defaultForgeLinearClientIDSecretName, defaultForgeLinearClientSecretName
+
+	t.Run("neither secret declared -> nil source (off-state), no Warn", func(t *testing.T) {
+		h := &capWarnHandler{}
+		tokens, err := buildLinearTokenSource(ctx, cfg, &fakeResolver{}, slog.New(h))
+		if err != nil {
+			t.Fatalf("buildLinearTokenSource (neither declared): %v", err)
 		}
-		if lane != nil {
-			t.Fatalf("lane = %+v on a resolve fault, want nil", lane)
+		if tokens != nil {
+			t.Fatal("token source != nil with neither Linear secret declared, want nil (off)")
+		}
+		if h.warns != 0 {
+			t.Fatalf("Warn count = %d, want 0 for the intentional both-absent off state", h.warns)
 		}
 	})
-}
 
-func TestForgeTokenSourceCachesUntilTTL(t *testing.T) {
-	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "GITHUB_FORGE_TOKEN", Value: "tok-1"}}}
-	ts := newForgeTokenSource(res, "GITHUB_FORGE_TOKEN")
+	t.Run("resolve fault -> error (fail-fast)", func(t *testing.T) {
+		tokens, err := buildLinearTokenSource(ctx, cfg, &fakeResolver{err: errors.New("boom")}, slog.Default())
+		if err == nil {
+			t.Fatal("buildLinearTokenSource on a resolve fault = nil error, want fail-fast")
+		}
+		if tokens != nil {
+			t.Fatalf("token source = %v on a resolve fault, want nil", tokens)
+		}
+	})
 
-	// A fixed clock the test advances by hand — no real sleeps.
-	now := time.Unix(0, 0)
-	ts.now = func() time.Time { return now }
-	ts.ttl = time.Minute
+	t.Run("only the client id declared -> nil source + one Warn naming declared+missing", func(t *testing.T) {
+		h := &capWarnHandler{}
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: idName, Value: "cid"}}}
+		tokens, err := buildLinearTokenSource(ctx, cfg, res, slog.New(h))
+		if err != nil {
+			t.Fatalf("buildLinearTokenSource (partial): %v", err)
+		}
+		if tokens != nil {
+			t.Fatal("token source != nil with only the client id declared, want nil (partial -> off)")
+		}
+		if h.warns != 1 {
+			t.Fatalf("Warn count = %d, want exactly 1 on a partial (id-only) misconfig", h.warns)
+		}
+		if h.lastAttr["declared"] != idName {
+			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], idName)
+		}
+		if h.lastAttr["missing"] != secretName {
+			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], secretName)
+		}
+	})
 
-	ctx := context.Background() // test root
-	tok, err := ts.Token(ctx)
-	if err != nil || tok != "tok-1" {
-		t.Fatalf("first Token = %q, %v; want tok-1, nil", tok, err)
-	}
-	if res.calls != 1 {
-		t.Fatalf("resolve calls = %d after first Token, want 1", res.calls)
-	}
-
-	// Rotate the resolver's value; within the TTL the cache still serves the OLD
-	// value and does NOT re-resolve — the whole point of the TTL cache.
-	res.resolved[0].Value = "tok-2"
-	now = now.Add(30 * time.Second)
-	tok, err = ts.Token(ctx)
-	if err != nil || tok != "tok-1" {
-		t.Fatalf("within-TTL Token = %q, %v; want cached tok-1, nil", tok, err)
-	}
-	if res.calls != 1 {
-		t.Fatalf("resolve calls = %d within TTL, want still 1 (cache hit)", res.calls)
-	}
-
-	// Cross the TTL: the next Token re-resolves and the rotated value takes over.
-	now = now.Add(time.Minute)
-	tok, err = ts.Token(ctx)
-	if err != nil || tok != "tok-2" {
-		t.Fatalf("post-TTL Token = %q, %v; want re-resolved tok-2, nil", tok, err)
-	}
-	if res.calls != 2 {
-		t.Fatalf("resolve calls = %d post-TTL, want 2 (re-resolve)", res.calls)
-	}
-}
-
-func TestForgeTokenSourceInvalidateDropsCache(t *testing.T) {
-	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "GITHUB_FORGE_TOKEN", Value: "tok-1"}}}
-	ts := newForgeTokenSource(res, "GITHUB_FORGE_TOKEN")
-	now := time.Unix(0, 0)
-	ts.now = func() time.Time { return now }
-	ts.ttl = time.Hour // long TTL, so only Invalidate can force a re-resolve
-
-	ctx := context.Background() // test root
-	if tok, err := ts.Token(ctx); err != nil || tok != "tok-1" {
-		t.Fatalf("first Token = %q, %v; want tok-1, nil", tok, err)
-	}
-
-	// A rotation the driver learns about via an auth failure (client calls
-	// Invalidate). Within the TTL, only Invalidate drops the cache so the next
-	// Token re-resolves and picks up the changed value.
-	res.resolved[0].Value = "tok-2"
-	ts.Invalidate()
-	tok, err := ts.Token(ctx)
-	if err != nil || tok != "tok-2" {
-		t.Fatalf("post-Invalidate Token = %q, %v; want re-resolved tok-2, nil", tok, err)
-	}
-	if res.calls != 2 {
-		t.Fatalf("resolve calls = %d, want 2 (initial + post-Invalidate)", res.calls)
-	}
-}
-
-func TestForgeTokenSourceMissingNameErrors(t *testing.T) {
-	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "OTHER", Value: "x"}}}
-	ts := newForgeTokenSource(res, "GITHUB_FORGE_TOKEN")
-	if _, err := ts.Token(context.Background()); err == nil {
-		t.Fatal("Token with the configured name absent = nil error, want a not-declared error")
-	}
+	t.Run("only the client secret declared -> nil source + one Warn naming declared+missing", func(t *testing.T) {
+		h := &capWarnHandler{}
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: secretName, Value: "csecret"}}}
+		tokens, err := buildLinearTokenSource(ctx, cfg, res, slog.New(h))
+		if err != nil {
+			t.Fatalf("buildLinearTokenSource (partial): %v", err)
+		}
+		if tokens != nil {
+			t.Fatal("token source != nil with only the client secret declared, want nil (partial -> off)")
+		}
+		if h.warns != 1 {
+			t.Fatalf("Warn count = %d, want exactly 1 on a partial (secret-only) misconfig", h.warns)
+		}
+		if h.lastAttr["declared"] != secretName {
+			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], secretName)
+		}
+		if h.lastAttr["missing"] != idName {
+			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], idName)
+		}
+	})
 }
 
 // TestValidateForgeSecretDistinctErrors pins record test 7's core property: the
@@ -276,7 +254,7 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 
 	t.Run("name absent -> not declared", func(t *testing.T) {
 		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "OTHER", Value: "x"}}}
-		err := validateForgeSecret(ctx, res, "forge write", "GITHUB_FORGE_TOKEN")
+		err := validateForgeSecret(ctx, res, "forge write", "APP_KEY")
 		if err == nil {
 			t.Fatal("validateForgeSecret with the name absent = nil, want an error")
 		}
@@ -288,7 +266,7 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 	t.Run("resolve errors -> resolve failed at startup", func(t *testing.T) {
 		sentinel := errors.New("provider unreachable")
 		res := &fakeResolver{err: sentinel}
-		err := validateForgeSecret(ctx, res, "forge write", "GITHUB_FORGE_TOKEN")
+		err := validateForgeSecret(ctx, res, "forge write", "APP_KEY")
 		if err == nil {
 			t.Fatal("validateForgeSecret with a resolve error = nil, want an error")
 		}
@@ -302,16 +280,16 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 
 	t.Run("the two texts are distinguishable", func(t *testing.T) {
 		absent := validateForgeSecret(ctx,
-			&fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "OTHER"}}}, "forge write", "GITHUB_FORGE_TOKEN")
-		failed := validateForgeSecret(ctx, &fakeResolver{err: errors.New("boom")}, "forge write", "GITHUB_FORGE_TOKEN")
+			&fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "OTHER"}}}, "forge write", "APP_KEY")
+		failed := validateForgeSecret(ctx, &fakeResolver{err: errors.New("boom")}, "forge write", "APP_KEY")
 		if absent.Error() == failed.Error() {
 			t.Fatal("the not-declared and resolve-failed texts must differ so a crash-loop is diagnosable")
 		}
 	})
 
 	t.Run("name present -> nil", func(t *testing.T) {
-		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "GITHUB_FORGE_TOKEN", Value: "x"}}}
-		if err := validateForgeSecret(ctx, res, "forge write", "GITHUB_FORGE_TOKEN"); err != nil {
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "APP_KEY", Value: "x"}}}
+		if err := validateForgeSecret(ctx, res, "forge write", "APP_KEY"); err != nil {
 			t.Fatalf("validateForgeSecret with the name present = %v, want nil", err)
 		}
 	})
@@ -342,53 +320,56 @@ func (h *capWarnHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *capWarnHandler) WithGroup(string) slog.Handler      { return h }
 
 // TestWarnPartialForgeWriteSecrets pins the observability contract for a partial
-// write-secret misconfiguration: exactly one of the two required secrets
-// declared emits ONE Warn naming the declared and the missing secret, while the
+// write-App misconfiguration: exactly ONE of the two required Apps configured
+// emits ONE Warn naming the configured and the missing role, while the
 // intentional both-absent OFF state and the both-present ENABLED state stay
-// silent. Guards against a silent hard-outage on an operator typo in one of the
-// two env-var names.
+// silent. Guards against a silent hard-outage on an operator typo (a missing App
+// id or an undeclared App key).
 func TestWarnPartialForgeWriteSecrets(t *testing.T) {
-	t.Run("author-only declared -> one Warn naming declared+missing", func(t *testing.T) {
+	primary := ForgeAppConfig{AppID: 1, InstallationID: 2, AppPrivateKeySecret: "PRIMARY_KEY"}
+	reviewer := ForgeAppConfig{AppID: 3, InstallationID: 4, AppPrivateKeySecret: "REVIEWER_KEY"}
+	primaryDeclared := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}}
+	reviewerDeclared := []secrets.ResolvedSecret{{Name: "REVIEWER_KEY"}}
+	bothDeclared := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}, {Name: "REVIEWER_KEY"}}
+
+	t.Run("primary-App-only -> one Warn naming configured+missing", func(t *testing.T) {
 		h := &capWarnHandler{}
-		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}}
-		warnPartialForgeWriteSecrets(ForgeConfig{}, declared, slog.New(h))
+		warnPartialForgeWriteSecrets(ForgeConfig{App: primary}, primaryDeclared, slog.New(h))
 		if h.warns != 1 {
-			t.Fatalf("Warn count = %d, want exactly 1 on a partial (author-only) misconfig", h.warns)
+			t.Fatalf("Warn count = %d, want exactly 1 on a partial (primary-App-only) misconfig", h.warns)
 		}
-		if h.lastAttr["declared"] != defaultForgeSecretName {
-			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], defaultForgeSecretName)
+		if h.lastAttr["configured"] != "primary App" {
+			t.Fatalf("configured attr = %q, want %q", h.lastAttr["configured"], "primary App")
 		}
-		if h.lastAttr["missing"] != defaultForgeReviewerSecretName {
-			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], defaultForgeReviewerSecretName)
+		if h.lastAttr["missing"] != "reviewer App" {
+			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], "reviewer App")
 		}
 	})
-	t.Run("reviewer-only declared -> one Warn naming declared+missing", func(t *testing.T) {
+	t.Run("reviewer-App-only -> one Warn naming configured+missing", func(t *testing.T) {
 		h := &capWarnHandler{}
-		declared := []secrets.ResolvedSecret{{Name: defaultForgeReviewerSecretName}}
-		warnPartialForgeWriteSecrets(ForgeConfig{}, declared, slog.New(h))
+		warnPartialForgeWriteSecrets(ForgeConfig{ReviewerApp: reviewer}, reviewerDeclared, slog.New(h))
 		if h.warns != 1 {
-			t.Fatalf("Warn count = %d, want exactly 1 on a partial (reviewer-only) misconfig", h.warns)
+			t.Fatalf("Warn count = %d, want exactly 1 on a partial (reviewer-App-only) misconfig", h.warns)
 		}
-		if h.lastAttr["declared"] != defaultForgeReviewerSecretName {
-			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], defaultForgeReviewerSecretName)
+		if h.lastAttr["configured"] != "reviewer App" {
+			t.Fatalf("configured attr = %q, want %q", h.lastAttr["configured"], "reviewer App")
 		}
-		if h.lastAttr["missing"] != defaultForgeSecretName {
-			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], defaultForgeSecretName)
+		if h.lastAttr["missing"] != "primary App" {
+			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], "primary App")
 		}
 	})
-	t.Run("neither declared -> silent (intentional off)", func(t *testing.T) {
+	t.Run("neither configured -> silent (intentional off)", func(t *testing.T) {
 		h := &capWarnHandler{}
 		warnPartialForgeWriteSecrets(ForgeConfig{}, nil, slog.New(h))
 		if h.warns != 0 {
 			t.Fatalf("Warn count = %d, want 0 for the intentional both-absent off state", h.warns)
 		}
 	})
-	t.Run("both declared -> silent (enabled path warns nothing)", func(t *testing.T) {
+	t.Run("both configured -> silent (enabled path warns nothing)", func(t *testing.T) {
 		h := &capWarnHandler{}
-		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
-		warnPartialForgeWriteSecrets(ForgeConfig{}, declared, slog.New(h))
+		warnPartialForgeWriteSecrets(ForgeConfig{App: primary, ReviewerApp: reviewer}, bothDeclared, slog.New(h))
 		if h.warns != 0 {
-			t.Fatalf("Warn count = %d, want 0 when both secrets are declared", h.warns)
+			t.Fatalf("Warn count = %d, want 0 when both Apps are configured", h.warns)
 		}
 	})
 }

@@ -150,4 +150,33 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 		t.Fatalf("notify lane's reader issued a request through an armed shared gate: transport calls = %d, want 1 "+
 			"(two independent gates would let it through as call 2)", rt.calls)
 	}
+
+	// (4) The AUTHOR WRITE leg rides the SAME shared primary client (the App
+	// cutover reuses buildBoardWebhookWiring's client as the author write client,
+	// NOT a fresh client over its token source — a fresh client would carry a
+	// SEPARATE resetAt gate). registerGitHubForgeCoordinate wires that exact
+	// client as the author role, so an author write now fast-fails on the armed
+	// gate and issues NO request. A regression that threaded only the token source
+	// into a new author client would let this write through as call 2.
+	reg := newForgeProviderRegistry()
+	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: host, Token: staticTokenSource{}})
+	registerGitHubForgeCoordinate(reg, cfg.Forge.resolved(), client, reviewerClient)
+	resolved, ok := reg.resolve(nil)
+	if !ok {
+		t.Fatal("registry did not resolve the default GitHub coordinate")
+	}
+	if resolved.author != forge.Provider(client) {
+		t.Fatal("author role is not the shared primary client (a fresh client would carry a separate budget gate)")
+	}
+	_, err = resolved.author.CommentOnIssue(ctx, "owner/repo", 1, "body")
+	if err == nil {
+		t.Fatal("author write after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
+	}
+	if !errors.Is(err, forge.ErrBudgetExhausted) {
+		t.Fatalf("author write err = %v, want ErrBudgetExhausted", err)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("author write issued a request through an armed shared gate: transport calls = %d, want 1 "+
+			"(a separate author-client gate would let it through as call 2)", rt.calls)
+	}
 }

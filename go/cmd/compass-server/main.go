@@ -375,14 +375,18 @@ func resolveNetworkDoor(listen, tlsCert, tlsKey string) (string, *server.TLSConf
 // forgeFlags holds the RIG-1810/RIG-2883 forge CLI flag pointers, registered as
 // a group so run() stays short (they mirror the S3 flag set's precedence).
 type forgeFlags struct {
-	repos          *string
-	secret         *string
-	host           *string
-	appID          *string
-	installationID *string
-	appKeySecret   *string
-	appWebhook     *string
-	linearWebhook  *string
+	repos                  *string
+	host                   *string
+	appID                  *string
+	installationID         *string
+	appKeySecret           *string
+	appWebhook             *string
+	reviewerAppID          *string
+	reviewerInstallationID *string
+	reviewerAppKeySecret   *string
+	linearClientID         *string
+	linearClientSecret     *string
+	linearWebhook          *string
 }
 
 // registerForgeFlags declares the forge flags on the given FlagSet and returns
@@ -395,26 +399,49 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 				"(RIG-2883 board ingestion). Defaults to $COMPASS_FORGE_REPOS. A declarative "+
 				"seed reconciled at boot (bootstrap-only insert), NOT the live target "+
 				"set — the table is authoritative after the first insert."),
-		secret: fs.String("forge-secret", "",
-			"Declared server_only secret NAME holding the forge token (the VALUE never "+
-				"crosses a flag). Defaults to $COMPASS_FORGE_SECRET, then GITHUB_FORGE_TOKEN."),
 		host: fs.String("forge-host", "",
 			"Forge host the board lane binds (github.com or a GHES host; the API base "+
 				"derives from it). Defaults to $COMPASS_FORGE_HOST, then github.com."),
 		appID: fs.String("forge-app-id", "",
-			"GitHub App id (numeric) the board webhook lane runs on (RIG-2883, App-only). "+
-				"Defaults to $COMPASS_FORGE_APP_ID. Board ingestion runs iff this is set "+
-				"AND both App secrets are declared."),
+			"PRIMARY GitHub App id (numeric): serves board reads, notify reads, author "+
+				"writes, board, and webhooks (2-App topology). Defaults to "+
+				"$COMPASS_FORGE_APP_ID. Board ingestion runs iff this is set AND both App "+
+				"secrets are declared; the forge-WRITE path additionally requires the "+
+				"reviewer App."),
 		installationID: fs.String("forge-installation-id", "",
-			"GitHub App installation id the token is minted for. Defaults to "+
+			"PRIMARY GitHub App installation id the token is minted for. Defaults to "+
 				"$COMPASS_FORGE_INSTALLATION_ID."),
 		appKeySecret: fs.String("forge-app-key-secret", "",
-			"Declared server_only secret NAME holding the App PEM private key (the VALUE "+
-				"never crosses a flag). Defaults to $COMPASS_FORGE_APP_KEY_SECRET."),
+			"Declared server_only secret NAME holding the PRIMARY App PEM private key "+
+				"(the VALUE never crosses a flag). Defaults to "+
+				"$COMPASS_FORGE_APP_KEY_SECRET."),
 		appWebhook: fs.String("forge-app-webhook-secret", "",
 			"Declared server_only secret NAME holding the webhook signing secret the "+
 				"ingress verifies deliveries against. Defaults to "+
 				"$COMPASS_FORGE_APP_WEBHOOK_SECRET."),
+		reviewerAppID: fs.String("forge-reviewer-app-id", "",
+			"REVIEWER GitHub App id (numeric): a distinct App identity serving ONLY the "+
+				"reviewer write client (F1 author-cannot-approve-own-PR). Defaults to "+
+				"$COMPASS_FORGE_REVIEWER_APP_ID. The forge-WRITE path runs iff this AND the "+
+				"primary App are both configured. The reviewer App registers no webhook."),
+		reviewerInstallationID: fs.String("forge-reviewer-app-installation-id", "",
+			"REVIEWER GitHub App installation id the token is minted for. Defaults to "+
+				"$COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID."),
+		reviewerAppKeySecret: fs.String("forge-reviewer-app-key-secret", "",
+			"Declared server_only secret NAME holding the REVIEWER App PEM private key "+
+				"(the VALUE never crosses a flag; conventionally "+
+				"FORGE_REVIEWER_APP_PRIVATE_KEY). Defaults to "+
+				"$COMPASS_FORGE_REVIEWER_APP_KEY_SECRET."),
+		linearClientID: fs.String("forge-linear-client-id", "",
+			"Declared server_only secret NAME holding the Linear OAuth client id (the "+
+				"client-credentials actor=app pair, the VALUE never crosses a flag). "+
+				"Defaults to $COMPASS_FORGE_LINEAR_CLIENT_ID, then LINEAR_FORGE_CLIENT_ID. "+
+				"The Linear write + notify lanes run iff BOTH this and the client secret "+
+				"are declared."),
+		linearClientSecret: fs.String("forge-linear-client-secret", "",
+			"Declared server_only secret NAME holding the Linear OAuth client secret "+
+				"(the VALUE never crosses a flag). Defaults to "+
+				"$COMPASS_FORGE_LINEAR_CLIENT_SECRET, then LINEAR_FORGE_CLIENT_SECRET."),
 		linearWebhook: fs.String("forge-linear-webhook-secret", "",
 			"Declared server_only secret NAME holding the Linear webhook signing "+
 				"secret the shared POST /webhooks/linear ingress verifies deliveries "+
@@ -427,48 +454,84 @@ func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 // resolve applies the flag-then-env precedence to each forge flag and delegates
 // to resolveForge (the pure input->output core, unit-tested directly).
 func (f forgeFlags) resolve() (server.ForgeConfig, error) {
-	return resolveForge(
-		firstNonEmpty(*f.repos, os.Getenv("COMPASS_FORGE_REPOS")),
-		firstNonEmpty(*f.secret, os.Getenv("COMPASS_FORGE_SECRET")),
-		firstNonEmpty(*f.host, os.Getenv("COMPASS_FORGE_HOST")),
-		firstNonEmpty(*f.appID, os.Getenv("COMPASS_FORGE_APP_ID")),
-		firstNonEmpty(*f.installationID, os.Getenv("COMPASS_FORGE_INSTALLATION_ID")),
-		firstNonEmpty(*f.appKeySecret, os.Getenv("COMPASS_FORGE_APP_KEY_SECRET")),
-		firstNonEmpty(*f.appWebhook, os.Getenv("COMPASS_FORGE_APP_WEBHOOK_SECRET")),
-		firstNonEmpty(*f.linearWebhook, os.Getenv("COMPASS_FORGE_LINEAR_WEBHOOK_SECRET")),
-	)
+	return resolveForge(forgeInputs{
+		repos:                  firstNonEmpty(*f.repos, os.Getenv("COMPASS_FORGE_REPOS")),
+		host:                   firstNonEmpty(*f.host, os.Getenv("COMPASS_FORGE_HOST")),
+		appID:                  firstNonEmpty(*f.appID, os.Getenv("COMPASS_FORGE_APP_ID")),
+		installationID:         firstNonEmpty(*f.installationID, os.Getenv("COMPASS_FORGE_INSTALLATION_ID")),
+		appKeySecret:           firstNonEmpty(*f.appKeySecret, os.Getenv("COMPASS_FORGE_APP_KEY_SECRET")),
+		appWebhook:             firstNonEmpty(*f.appWebhook, os.Getenv("COMPASS_FORGE_APP_WEBHOOK_SECRET")),
+		reviewerAppID:          firstNonEmpty(*f.reviewerAppID, os.Getenv("COMPASS_FORGE_REVIEWER_APP_ID")),
+		reviewerInstallationID: firstNonEmpty(*f.reviewerInstallationID, os.Getenv("COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID")),
+		reviewerAppKeySecret:   firstNonEmpty(*f.reviewerAppKeySecret, os.Getenv("COMPASS_FORGE_REVIEWER_APP_KEY_SECRET")),
+		linearClientID:         firstNonEmpty(*f.linearClientID, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_ID")),
+		linearClientSecret:     firstNonEmpty(*f.linearClientSecret, os.Getenv("COMPASS_FORGE_LINEAR_CLIENT_SECRET")),
+		linearWebhook:          firstNonEmpty(*f.linearWebhook, os.Getenv("COMPASS_FORGE_LINEAR_WEBHOOK_SECRET")),
+	})
 }
 
-// resolveForge turns the forge flags (already flag-then-env resolved) into the
+// forgeInputs is the already-resolved (flag-then-env) forge input set the pure
+// resolveForge core maps onto server.ForgeConfig. A struct rather than a long
+// positional list so a new knob is a named field, not another unlabeled arg.
+type forgeInputs struct {
+	repos                  string
+	host                   string
+	appID                  string
+	installationID         string
+	appKeySecret           string
+	appWebhook             string
+	reviewerAppID          string
+	reviewerInstallationID string
+	reviewerAppKeySecret   string
+	linearClientID         string
+	linearClientSecret     string
+	linearWebhook          string
+}
+
+// resolveForge turns the forge inputs (already flag-then-env resolved) into the
 // ServeConfig.Forge surface, mirroring resolveNetworkDoor's shape: pure
 // input->output, no I/O. The repos string is a comma-separated owner/name list;
 // each entry is validated (garbage is a startup error) and lowercased for GITHUB
-// so Owner/Name and owner/name collapse to one target. appID/installationID are
-// parsed as int64 when set (garbage is a startup error); empty leaves them zero.
-// Empty host/secret/App-secret NAMEs default server-side.
-func resolveForge(repos, secret, host, appID, installationID, appKeySecret, appWebhook, linearWebhook string) (server.ForgeConfig, error) {
-	seed, err := parseForgeRepos(repos)
+// so Owner/Name and owner/name collapse to one target. App ids are parsed as
+// int64 when set (garbage is a startup error); empty leaves them zero. Empty
+// host / secret NAMEs are left zero for server-side defaulting.
+func resolveForge(in forgeInputs) (server.ForgeConfig, error) {
+	seed, err := parseForgeRepos(in.repos)
 	if err != nil {
 		return server.ForgeConfig{}, err
 	}
-	id, err := parseForgeInt(appID, "--forge-app-id")
+	id, err := parseForgeInt(in.appID, "--forge-app-id")
 	if err != nil {
 		return server.ForgeConfig{}, err
 	}
-	instID, err := parseForgeInt(installationID, "--forge-installation-id")
+	instID, err := parseForgeInt(in.installationID, "--forge-installation-id")
+	if err != nil {
+		return server.ForgeConfig{}, err
+	}
+	reviewerID, err := parseForgeInt(in.reviewerAppID, "--forge-reviewer-app-id")
+	if err != nil {
+		return server.ForgeConfig{}, err
+	}
+	reviewerInstID, err := parseForgeInt(in.reviewerInstallationID, "--forge-reviewer-app-installation-id")
 	if err != nil {
 		return server.ForgeConfig{}, err
 	}
 	return server.ForgeConfig{
-		Host:                    host,
-		SeedRepos:               seed,
-		SecretName:              secret,
-		LinearWebhookSecretName: linearWebhook,
+		Host:                     in.host,
+		SeedRepos:                seed,
+		LinearClientIDSecretName: in.linearClientID,
+		LinearClientSecretName:   in.linearClientSecret,
+		LinearWebhookSecretName:  in.linearWebhook,
 		App: server.ForgeAppConfig{
 			AppID:                id,
 			InstallationID:       instID,
-			AppPrivateKeySecret:  appKeySecret,
-			AppWebhookSecretName: appWebhook,
+			AppPrivateKeySecret:  in.appKeySecret,
+			AppWebhookSecretName: in.appWebhook,
+		},
+		ReviewerApp: server.ForgeAppConfig{
+			AppID:               reviewerID,
+			InstallationID:      reviewerInstID,
+			AppPrivateKeySecret: in.reviewerAppKeySecret,
 		},
 	}, nil
 }
