@@ -1000,6 +1000,42 @@ func yamlMapIndex(node any, key string) (any, bool) {
 	}
 }
 
+// yamlMapEntry is one entry of a YAML-decoded mapping node; key is rendered to a
+// string for diagnostics (see yamlMapEntries).
+type yamlMapEntry struct {
+	key string
+	val any
+}
+
+// yamlMapEntries returns every entry of a YAML-decoded mapping node as a slice,
+// handling both map[string]any and the map[any]any yaml.v3 produces when ANY key
+// is non-string. Non-string keys are rendered with fmt.Sprint (they name a
+// provider/header and are used only for diagnostics). A non-mapping node yields
+// nil. It is the yamlMapIndex analog for a security walk that must ENUMERATE
+// members: iterating through both shapes means a non-string sibling key can no
+// longer flip the node's Go type and fail-open a map[string]any-only assertion
+// that would skip a credential-bearing sibling. Returning a slice (not a
+// normalized map) is collision-safe: a non-string key that renders to the same
+// string as a sibling cannot overwrite and hide it.
+func yamlMapEntries(node any) []yamlMapEntry {
+	switch m := node.(type) {
+	case map[string]any:
+		out := make([]yamlMapEntry, 0, len(m))
+		for k, v := range m {
+			out = append(out, yamlMapEntry{key: k, val: v})
+		}
+		return out
+	case map[any]any:
+		out := make([]yamlMapEntry, 0, len(m))
+		for k, v := range m {
+			out = append(out, yamlMapEntry{key: fmt.Sprint(k), val: v})
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 // rejectCredentialModels rejects a models.yml member that sets either of the two
 // credential-bearing provider surfaces (CP-4):
 //
@@ -1016,29 +1052,25 @@ func yamlMapIndex(node any, key string) (any, bool) {
 // `!command`) passes; anything else (contains spaces, punctuation like a bearer
 // token, a URL, etc.) is treated as a literal secret and rejected.
 func rejectCredentialModels(mapping map[string]any, joined string) error {
-	providers, ok := mapping["providers"].(map[string]any)
-	if !ok {
+	providers, present := mapping["providers"]
+	if !present {
 		return nil
 	}
-	for name, raw := range providers {
-		prov, ok := raw.(map[string]any)
+	for _, p := range yamlMapEntries(providers) {
+		if v, present := yamlMapIndex(p.val, "apiKey"); present && v != nil {
+			return fmt.Errorf("%w: models member %q sets providers.%s.apiKey (provider credentials never ride the config bundle)", ErrInvalidArgument, joined, p.key)
+		}
+		headers, ok := yamlMapIndex(p.val, "headers")
 		if !ok {
 			continue
 		}
-		if v, present := prov["apiKey"]; present && v != nil {
-			return fmt.Errorf("%w: models member %q sets providers.%s.apiKey (provider credentials never ride the config bundle)", ErrInvalidArgument, joined, name)
-		}
-		headers, ok := prov["headers"].(map[string]any)
-		if !ok {
-			continue
-		}
-		for h, hv := range headers {
-			s, ok := hv.(string)
+		for _, hdr := range yamlMapEntries(headers) {
+			s, ok := hdr.val.(string)
 			if !ok {
 				continue
 			}
 			if !isEnvIndirection(s) {
-				return fmt.Errorf("%w: models member %q sets providers.%s.headers.%s to a literal secret (pin it to an env reference instead)", ErrInvalidArgument, joined, name, h)
+				return fmt.Errorf("%w: models member %q sets providers.%s.headers.%s to a literal secret (pin it to an env reference instead)", ErrInvalidArgument, joined, p.key, hdr.key)
 			}
 		}
 	}
