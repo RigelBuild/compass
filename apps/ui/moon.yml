@@ -15,11 +15,11 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['src/**/*', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    inputs: ['src/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   build:
     command: 'bunx vite build'
     deps: ['install']
-    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     outputs: ['dist']
   test:
     # `--conditions browser` resolves solid-js to its client build (dist/solid.js),
@@ -47,7 +47,7 @@ tasks:
     # vite.config.ts too, matching the `build`/`typecheck` inputs. Without these a
     # vite.config-only change would leave `test` unaffected and serve the gate a
     # cached-green, precisely on the config change the gate exists to catch.
-    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   stylelint:
     # D7 guard (RIG-2034 T6): bans raw hex, --rigel-* refs, literal
     # durations/easings, and the retired legacy var vocabulary outside
@@ -74,7 +74,7 @@ tasks:
     #    the rot this gate exists to red on. Precedent: `ci` itself (below).
     command: 'bunx playwright test e2e/dev-boot.spec.ts'
     deps: ['install']
-    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', 'e2e/dev-boot.spec.ts', 'playwright.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', 'e2e/dev-boot.spec.ts', 'playwright.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     options:
       cache: false
   ci:

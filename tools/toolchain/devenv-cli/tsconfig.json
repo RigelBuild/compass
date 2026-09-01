@@ -1,12 +1,6 @@
 {
+	"extends": "../../../tsconfig.base.json",
 	"compilerOptions": {
-		"target": "ES2022",
-		"module": "preserve",
-		"moduleResolution": "bundler",
-		"strict": true,
-		"verbatimModuleSyntax": true,
-		"noEmit": true,
-		"skipLibCheck": true,
 		"allowImportingTsExtensions": true,
 		"types": ["bun"]
 	},
