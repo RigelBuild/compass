@@ -77,9 +77,10 @@ broken engine isn't sent chasing tokens first):
 
 1. `--version` print → `slog` setup (unchanged, `main.go:86-92`);
 2. `engine, err := backends.selectEngine()` — **moved up** from `main.go:153`.
-   Its own errors (an unknown backend name, a non-numeric
-   `COMPASS_MICROVM_CPUS`, `main.go:291-304`) are legible startup refusals in
-   their own right;
+   Its own errors — an unknown backend name (`SelectBackend`'s default case,
+   `microvm.go:116`), a non-numeric `COMPASS_MICROVM_CPUS`/`_MEMORY_MB`
+   (`intOrEnv`, `main.go:291-304`) — are legible startup refusals in their own
+   right;
 3. the backend-gated preflight (below) — still ahead of the id/addr/token/
    image checks (`main.go:106-123`), so the refusal-ordering contract is kept
    *per selected backend*;
@@ -121,11 +122,22 @@ The ctx passed is the same top-of-`main` root the current preflight call uses
 (`context.Background()` at `main.go:102` — the process root, before the
 signal-bound ctx exists at `main.go:161`).
 
-The canary's startup wiring rides the same gate: when the microVM probe
-matches, `verifyBackendPreflight` runs `VerifyMicroVMSupport` **then**
-`BootCanary` (§(e)/(f)), logging the returned `CanaryReport` via `slog` (the
-V5-era consumer of the measurement; V8's benchmark surface takes it over
-later). Rationale and cost in OQ-4.
+The canary's startup wiring rides the same gate through a third unexported
+single-method probe interface in `package main`:
+
+```go
+type canaryBooter interface{ BootCanary(context.Context) (CanaryReport, error) }
+```
+
+When the microVM probe matches and `VerifyMicroVMSupport` passes,
+`verifyBackendPreflight` asserts `engine.(canaryBooter)` and runs `BootCanary`
+(§(e)/(f)), logging the returned `CanaryReport` via `slog` (the V5-era consumer
+of the measurement; V8's benchmark surface takes it over later). A microVM
+engine that satisfies `microVMPreflighter` but not `canaryBooter` is a startup
+**error**, never a silent skip — the same fail-closed posture as the
+neither-probe-matches case above. Keeping it a distinct single-method interface,
+rather than widening `microVMPreflighter` to two methods, preserves the
+single-method-probe discipline. Rationale and cost in OQ-4.
 
 ### (b) `VerifyMicroVMSupport`: the check set, where it lives, and the shared pure core
 
@@ -590,9 +602,12 @@ The (e)+(f)+(g) dynamic preflight.
     echo-exec + assert nonce; read `session.vm.PSS()` and sum to bytes; Remove
     under `context.WithoutCancel(ctx)` + short grace and delete the temp dir,
     errors joined into the return, never discarded;
-  - the W2 gate extended: microVM arm runs `VerifyMicroVMSupport` then
-    `BootCanary`, `slog`-logging the report
-    (`boot_latency`, `guest_rss_bytes`);
+  - the W2 gate extended: after the microVM arm's `VerifyMicroVMSupport`
+    passes, `verifyBackendPreflight` asserts `engine.(canaryBooter)` (§(a))
+    and runs `BootCanary`, `slog`-logging the report
+    (`boot_latency`, `guest_rss_bytes`); a microVM engine that satisfies
+    `microVMPreflighter` but fails the `canaryBooter` assertion is a startup
+    error, never a silent skip;
   - one sentence added to `canary_microvm_test.go`'s header cross-referencing
     `BootCanary` (§(g));
   - consumes `Create`/`Start`/`Exec`/`Remove` and the
@@ -705,13 +720,18 @@ recommendation.
   with weaker proof. **Recommendation:** composed verbs over a throwaway
   workspace mount (§(e)), reserved `compass-canary-<hex>` name outside the
   agent prefix.
-- **OQ-6 (non-load-bearing) — passt joins the binary floor checks.** The
-  parent names "the VMM and `virtiofsd` binaries" (microvm-runner.md:221-223)
-  but the boot path hard-requires passt too (`exec.LookPath("passt")`,
-  `launch.go:174-176`), and compass-stack's floor table already carries all
-  three (`preflight.go:60-64`). Omitting passt would leave a preflight hole
-  the first boot falls into. **Recommendation:** check the trio; flag as a
-  (benign, additive) divergence from the parent's two-binary phrasing.
+- **OQ-6 (non-load-bearing) — the presence/floor checks add assets the
+  parent's clause doesn't name.** Two additive divergences, both benign:
+  (i) passt joins the binary floor checks — the parent names "the VMM and
+  `virtiofsd` binaries" (microvm-runner.md:221-223) but the boot path
+  hard-requires passt too (`exec.LookPath("passt")`, `launch.go:174-176`),
+  and compass-stack's floor table already carries all three
+  (`preflight.go:60-64`); (ii) the image check adds `InitrdImage` beyond the
+  parent's "kernel + rootfs" phrasing (microvm-runner.md:222-224) — the
+  initrd is load-bearing, not optional (`microvm.go:33-38`), so a boot cannot
+  come up without it. Omitting either would leave a preflight hole the first
+  boot falls into. **Recommendation:** check the full trios; flag both as
+  (benign, additive) divergences from the parent's phrasing.
 - **OQ-7 (non-load-bearing) — the canary's deadline is a derived bounded ctx
   spanning the whole call; the ctx-lifetime footgun does not apply.** The
   footgun (never `WithTimeout`+`defer cancel()` at VM-session scope) guards
