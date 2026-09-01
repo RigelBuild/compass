@@ -559,6 +559,16 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      0: junk\n      Authorization: \"Bearer sk-live-123\"\n"},
 			wantSub: "providers.x.headers.Authorization",
 		},
+		{
+			// (d) combined shield: a non-string sibling at BOTH the providers
+			// node AND the provider node simultaneously. The two helpers descend
+			// linearly with no shared state, so this cannot fail if (a)+(b) pass;
+			// pinned explicitly to defend the composition against a future refactor
+			// that couples the descents.
+			name:    "models apiKey shielded by non-string siblings at providers and provider",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  0: junk\n  openai:\n    1: junk\n    apiKey: sk-secret\n"},
+			wantSub: "providers.openai.apiKey",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
