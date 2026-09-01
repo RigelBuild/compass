@@ -78,7 +78,8 @@ is one of a closed set of three:
 - **`supervisor`** — owns the whole tree (the root; intake, incidents,
   operator first-contact, grows the project subtrees).
 - **`owner`** — owns one product, service, or domain end to end (decomposes it
-  into lanes, delegates to child managers, grows its own subtree).
+  into lanes and sub-domains, delegating lanes to child managers and sub-domains
+  to child owners, grows its own subtree).
 - **`manager`** — owns one lane and drives it to done (the leaf).
 
 So a single node is both a role and a function: a `supervisor` at the root, a

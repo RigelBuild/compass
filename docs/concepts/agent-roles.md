@@ -9,8 +9,10 @@ them carries a **role** that sets what it does. There are exactly three:
   broadcasts for the whole tree. It grows and owns the project subtrees. There is
   always exactly one at the root (see [management trees](../../config/skills/management-trees/SKILL.md)).
 - **`owner`** — owns one product, service, or domain end to end. It decomposes
-  its area into per-function lanes, delegates each to a child `manager`,
-  aggregates status and PRs back up, and grows its own subtree. The mid-tier.
+  its area into per-function lanes and coherent sub-domains, delegating a lane to
+  a child `manager` and a sub-domain to a child `owner` (owner tiers nest as deep
+  as the domain needs), aggregates status and PRs back up, and grows its own
+  subtree. The mid-tier.
 - **`manager`** — owns one lane and drives it to done. The leaf: it is assigned
   issues, holds them end to end, ships stacked PRs through the review loop, and
   stops only when blocked on human input.
