@@ -205,13 +205,14 @@ const (
 	// (OQ-5): startup sweep + a 30-min ticker (a 304 page-1 GET per enabled repo
 	// is ≈ free, notify_reader.go:12-13; a cold-start zero watermark walks once).
 	defaultReconcileBackstop = 30 * time.Minute
-	// forgeTokenTTL is the TTL the driver's TokenSource caches a resolved token
-	// for: a resolve reads the whole declared-secret registry, writes a manifest
-	// temp file, and drives a full secretspec provider Load (resolver.go:135-165),
-	// so re-resolving every poll pass would tax the store and provider. The
-	// cache drops its value on TTL expiry or on Invalidate() (the client calls
-	// it on a 401/bad-creds-403), so a rotated token still takes effect within
-	// the TTL or immediately on the next auth failure.
+	// forgeTokenTTL is the TTL the cachedWebhookSecret hot-path cache holds a
+	// resolved webhook signing secret for: /webhooks/{github,linear} resolve the
+	// secret on every request before the HMAC check, and a resolve reads the whole
+	// declared-secret registry, writes a manifest temp file, and drives a full
+	// secretspec provider Load (resolver.go:135-165), so an uncached resolve would
+	// let a garbage POST force that whole Load ahead of authentication. The cache
+	// bounds the per-request cost to a memcmp; a rotated secret still takes effect
+	// within the TTL.
 	forgeTokenTTL = 5 * time.Minute
 )
 
@@ -1723,7 +1724,11 @@ func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secre
 			"declared", declaredName, "missing", missingName)
 		return nil, nil //nolint:nilnil // a partial Linear config is an operator typo, surfaced by the Warn; treated as off (a nil source), never a fatal.
 	}
-	tokens := linearagent.NewTokenSource(clientID, clientSecret, nil, "")
+	// The 30s-bounded client matches NewGitHub/appTokenSource: it caps the
+	// boot-time mint below (an unbounded doer would let a half-open TCP to
+	// api.linear.app wedge Serve's whole boot, defeating this fail-fast check)
+	// and the same instance the notify lane + write coordinate later reuse.
+	tokens := linearagent.NewTokenSource(clientID, clientSecret, &http.Client{Timeout: 30 * time.Second}, "")
 	// Boot-time mint check: a Token(ctx) call proves the pair mints (the DL-204
 	// degrade probe guards only attribution, not the mint path), so a bad secret
 	// or a disabled client_credentials toggle fails Serve here, not on first write.
