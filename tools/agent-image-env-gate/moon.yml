@@ -27,12 +27,12 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
     # The pure core (env-check.ts) over fixtures for each wrong-image defect.
     command: 'bun test'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   check:
     # The real gate: build the exact spec the publish lane ships, inspect its
     # OCI config, and assert env-cleanliness + platform. Depends on

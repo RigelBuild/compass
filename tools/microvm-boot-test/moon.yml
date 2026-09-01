@@ -23,13 +23,13 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
     # The pure core (run-core.ts) over fixtures: the out-path parsing + env
     # mapping, incl. the fail-closed drift edges.
     command: 'bun test'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   ci:
     deps: ['typecheck', 'test']
     options:

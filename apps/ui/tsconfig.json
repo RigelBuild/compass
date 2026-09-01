@@ -1,13 +1,7 @@
 {
+	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
-		"target": "ES2022",
-		"module": "preserve",
-		"moduleResolution": "bundler",
 		"lib": ["ES2022", "DOM", "DOM.Iterable"],
-		"strict": true,
-		"verbatimModuleSyntax": true,
-		"noEmit": true,
-		"skipLibCheck": true,
 		"jsx": "preserve",
 		"jsxImportSource": "@solidjs/web",
 		"types": ["vite/client", "bun"]

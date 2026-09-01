@@ -14,11 +14,11 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', 'package.json', '/bun.lock']
+    inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
     command: 'bun test'
     deps: ['install']
-    inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', 'package.json', '/bun.lock']
+    inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   ci:
     deps: ['typecheck', 'test']
     options:
