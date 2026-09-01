@@ -1,5 +1,5 @@
 // LifecycleBroker + the two native lifecycle tools (design:
-// docs/designs/product/compass-agent-spawn-despawn/design.md, T6).
+// docs/designs/agent/compass-agent-spawn-despawn/design.md, T6).
 // Each test defends an observable contract of the agent->Runner lifecycle call:
 // the exact `LifecycleCallRequest` a tool `execute` puts on the wire (oneof
 // case, spawn/despawn payload, call_id / client_request_id), and how a

@@ -1,6 +1,6 @@
 // The agent's comms surface: a thin broker over the Runner transport, plus the
 // two native tools an agent registers on its Agent (design
-// docs/designs/product/compass-agent-comms-tools/design.md, T3).
+// docs/designs/agent/compass-agent-comms-tools/design.md, T3).
 //
 // WHY THE BROKER IS THIN. An earlier stdio draft had to own correlation itself —
 // a pending map keyed by call id, a stdin pump feeding results back, and a

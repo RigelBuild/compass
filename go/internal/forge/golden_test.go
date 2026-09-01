@@ -1,7 +1,7 @@
 package forge
 
 // Golden-fixture replay (leg 1 of the forge integration-testing record,
-// docs/designs/product/compass-forge-integration-testing/design.md §T1). A
+// docs/designs/server/compass-forge-integration-testing/design.md §T1). A
 // plain, untagged test that replays committed request/response fixtures from
 // testdata/<provider>/ through the existing scriptedRoundTripper stub against
 // the REAL forge clients, asserting BOTH halves of each exchange: the request

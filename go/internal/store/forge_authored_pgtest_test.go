@@ -3,7 +3,7 @@
 package store
 
 // DL-055 forge ownership-index store contracts (design
-// docs/designs/product/compass-forge-write-path/design.md §T7 test cycle, the
+// docs/designs/server/compass-forge-write-path/design.md §T7 test cycle, the
 // DL-174 pair: this pgtest suite plus the in-memory reference in
 // forge_authored_test.go): the migration 0002 table shape, the idempotent
 // coordinate upsert, the FK RESTRICT on agent/owner, the by-agent scan order,

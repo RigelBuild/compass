@@ -161,7 +161,7 @@ type ForgeConfig struct {
 
 // ForgeAppConfig is the GitHub App credential the board webhook-ingestion lane
 // runs on (RIG-2883, frozen surface at
-// docs/designs/product/compass-forge-agent-notification/design.md:1035-1048).
+// docs/designs/server/compass-forge-agent-notification/design.md:1035-1048).
 // The lane runs iff AppID != 0 AND both AppPrivateKeySecret and
 // AppWebhookSecretName are declared (mirrors validateForgeSecret's fail-fast);
 // no App -> board ingestion hard-off with a boot Warn (Constraint #3).

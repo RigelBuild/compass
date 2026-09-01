@@ -10,7 +10,7 @@ import (
 )
 
 // The DL-055 forge ownership index (design
-// docs/designs/product/compass-forge-write-path/design.md §T7): the durable
+// docs/designs/server/compass-forge-write-path/design.md §T7): the durable
 // record of every forge artifact Compass AUTHORED on behalf of an agent. The
 // write chokepoint (T4) records the row AND the F3 idempotency memo in one
 // statement on a create success; a provider error records nothing. The dedup

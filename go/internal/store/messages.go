@@ -527,7 +527,7 @@ func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope Searc
 }
 
 // AnswerAsk records a participant's atomic answer to a pending structured ask
-// (RespondToAsk; see docs/designs/product/compass-ask-typed-derivation.md). It
+// (RespondToAsk; see docs/designs/agent/compass-ask-typed-derivation.md). It
 // locates the message whose blocks carry an ask with askID within the actor's
 // visible set — the membership JOIN makes "the message exists" and "the actor
 // participates" one gate — records the per-question answers on that ask block,

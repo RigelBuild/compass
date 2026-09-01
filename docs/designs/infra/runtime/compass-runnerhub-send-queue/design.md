@@ -4,7 +4,7 @@ Status: Active
 
 Tracker: RIG-1611 — PR #75 review LOW #3, parked at review time ("no change for
 MVP, multi-Runner only"). Provenance: the parent product record
-`docs/designs/product/compass-notification-delivery/design.md` (RIG-1569 T3)
+`docs/designs/server/compass-notification-delivery/design.md` (RIG-1569 T3)
 ships the fan-out consumer whose head-of-line blocking motivates this record;
 that record is frozen (`Status: Active`) and is cited, never edited. This is
 the **SERVER-side counterpart** to the already-**MERGED** RUNNER-side work

@@ -17,7 +17,7 @@
 // lane removes on migration (Matt ruling 2026-08-15) — the ratchet stays whole,
 // so any NEW raw motion reds CI.
 //
-// Refs RIG-2034; design: docs/designs/product/compass-ds-token-cutover/design.md (e)
+// Refs RIG-2034; design: docs/designs/ui/compass-ds-token-cutover/design.md (e)
 module.exports = {
 	rules: {
 		// D7 ban 1a — raw hex color literals. Catches hex in properties stylelint

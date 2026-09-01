@@ -50,7 +50,7 @@ built on top of it, out of tree.
 - **Public URL is per-deployment.** Managed is `compass.rigel.build`; a
   self-hosted deploy sets its own. The core reads a public-base-URL config value
   (flag + env), never a hardcoded host — see
-  [`compass-linear-agent-responder`](../designs/product/compass-linear-agent-responder/design.md).
+  [`compass-linear-agent-responder`](../designs/server/compass-linear-agent-responder/design.md).
 - **Bundled dependencies default on, with a clean external opt-out.** The
   self-hosted stack bundles its postgres by default and exposes
   `--database-external`; the managed tier supplies its own. Future bundled deps

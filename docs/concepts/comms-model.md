@@ -24,8 +24,8 @@ the thread is where the exchanges that matter live, indexed per conversation.
 This is **structural, not a prompting convention**. The only path that writes a
 comms message is an explicit post; a streamed turn writes nothing to comms. An
 agent cannot flood a channel just by thinking out loud — it must deliberately
-post. See the [Zulip threading model](../designs/product/compass-zulip-threading-model/design.md)
-record (ledger DL-098, DL-099) and [session persistence](../designs/product/compass-agent-session-persistence/design.md)
+post. See the [Zulip threading model](../designs/server/compass-zulip-threading-model/design.md)
+record (ledger DL-098, DL-099) and [session persistence](../designs/agent/compass-agent-session-persistence/design.md)
 (the log and the live trace are two projections of one artifact, DL-088).
 
 ## The session log is read-only — you never prompt into a session
@@ -65,7 +65,7 @@ Because communication is a first-class surface rather than a log tail, a comms
 message can carry **typed blocks** richer than plain text — most notably a
 structured **`ask`** (a question with discrete answer options): it is *posted*
 over the comms lane like any message, and its answer is *correlated back* over
-the control lane (see [the ask round-trip](../designs/product/compass-ask-comms-roundtrip/design.md),
+the control lane (see [the ask round-trip](../designs/agent/compass-ask-comms-roundtrip/design.md),
 ledger DL-211). More typed block kinds are planned. These are native to
 Compass's comms surface and do not necessarily project onto a flatter external
 message vocabulary.

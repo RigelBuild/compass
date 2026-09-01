@@ -56,20 +56,20 @@ describe("isCarveOut", () => {
 		expect(isCarveOut("bun.lock")).toBe(true);
 	});
 	test("a canonical docs/ record is NOT carved out", () => {
-		expect(
-			isCarveOut("docs/designs/product/compass-board-view/design.md"),
-		).toBe(false);
+		expect(isCarveOut("docs/designs/ui/compass-board-view/design.md")).toBe(
+			false,
+		);
 	});
 });
 
 describe("findViolations", () => {
 	test("flags a real reference in a scanned file", () => {
 		const v = findViolations([
-			"docs/designs/product/compass-board-view/design.md:12:tracked as SEA-1512 here",
+			"docs/designs/ui/compass-board-view/design.md:12:tracked as SEA-1512 here",
 		]);
 		expect(v).toHaveLength(1);
 		expect(v[0]).toEqual({
-			file: "docs/designs/product/compass-board-view/design.md",
+			file: "docs/designs/ui/compass-board-view/design.md",
 			line: 12,
 			text: "tracked as SEA-1512 here",
 		});

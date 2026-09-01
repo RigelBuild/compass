@@ -3,7 +3,7 @@
 package server
 
 // End-to-end T8 of the FROZEN Compass forge-write design
-// (docs/designs/product/compass-forge-write-path/design.md §T8, acceptance
+// (docs/designs/server/compass-forge-write-path/design.md §T8, acceptance
 // :876-885): the WHOLE agent-initiated forge-WRITE wire, driven over a REAL
 // per-container AgentGateway unix socket against a real Postgres + a real
 // Runner-over-stub-engine, with the forge chokepoint mounted on the
