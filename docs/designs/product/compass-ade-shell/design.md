@@ -6,7 +6,7 @@ Status: Active
 > iteration of the Compass ADE dev shell, building on the explorable Bridge
 > walking-skeleton (#453, #460). The product vision it serves and the strategic
 > posture behind it are preserved in the
-> [architecture lineage](../compass-architecture-lineage/design.md) record. This record captures the
+> [architecture lineage](../../meta/compass-architecture-lineage/design.md) record. This record captures the
 > shell's interaction model and the workstream/agent state model — not the daemon
 > or the `compass.v1` wire contract, which stay as those records define them.
 

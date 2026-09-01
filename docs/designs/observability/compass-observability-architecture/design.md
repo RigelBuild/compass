@@ -263,7 +263,7 @@ we can swap out on the managed service for a bigger dep."** So:
   dependency — "a deterministic in-memory/fake reference proves each contract
   cheaply, and a live `pgtest` suite proves the real Postgres backend obeys
   the same contract"
-  (`docs/designs/product/compass-test-strategy/design.md:123-128,412-416`).
+  (`docs/designs/meta/compass-test-strategy/design.md:123-128,412-416`).
   Class-2 rollup tables are a natural addition, no new dependency.
 
 The rejected bigger-dep paths are in Alternatives considered.

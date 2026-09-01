@@ -5,7 +5,7 @@
 // visible forward (the superseding record cites the superseded one, nothing
 // points back), so an agent grounding on a single record could not tell a
 // decision in it was overturned elsewhere. The fix (design record:
-// docs/designs/product/compass-design-ledger/design.md) is a canonical
+// docs/designs/meta/compass-design-ledger/design.md) is a canonical
 // read-first ledger (DECISIONS.md), machine-checkable per-record `Status:`
 // headers, and this gate against dangling pointers + a forgotten same-PR
 // ledger flip.
@@ -633,7 +633,7 @@ export async function runOnce(deps: Deps): Promise<number> {
 		err(line > 0 ? `  ${file}:${line}: ${message}` : `  ${file}: ${message}`);
 	}
 	err("");
-	err("See docs/designs/product/compass-design-ledger/design.md.");
+	err("See docs/designs/meta/compass-design-ledger/design.md.");
 	return 1;
 }
 

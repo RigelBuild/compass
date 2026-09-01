@@ -309,7 +309,7 @@ touch the agent↔Runner vsock hop (RIG-2394), and it never becomes a second
 store — Postgres remains the durability source of truth, preserving the
 DL-019/DL-020 spirit ("the ring is never a second store; losing it loses no
 committed state",
-`docs/designs/product/compass-architecture-lineage/design.md:52-56`).
+`docs/designs/meta/compass-architecture-lineage/design.md:52-56`).
 
 **What rides the substrate.**
 
@@ -370,7 +370,7 @@ poison message parks instead of redelivering forever.
 NATS on the agent↔Runner hop (frozen vsock, RIG-2394); JetStream as the comms
 **message store** (Postgres write-through is the product's structure — the
 audit/search substrate rationale behind DL-021,
-`docs/designs/product/compass-architecture-lineage/design.md:46-51` — and
+`docs/designs/meta/compass-architecture-lineage/design.md:46-51` — and
 that survives this record intact: JetStream carries delivery, Postgres keeps
 the message).
 

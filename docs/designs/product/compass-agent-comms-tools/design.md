@@ -13,7 +13,7 @@ frozen as the agent↔Runner call transport record
 designs the two contract legs it cites but does not define — the Runner→Server
 `RelayCommsCall` RPC and the Server-side execution handler — plus the agent-side
 tools and their identity/authz model. Companion to the
-[architecture lineage](../compass-architecture-lineage/design.md) record (§T5 agent stdio contract)
+[architecture lineage](../../meta/compass-architecture-lineage/design.md) record (§T5 agent stdio contract)
 and the container-runtime record
 [`compass-agent-container-runtime.md`](../compass-agent-container-runtime.md)
 (threat model, egress posture).
