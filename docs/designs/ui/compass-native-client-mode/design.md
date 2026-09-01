@@ -2,7 +2,7 @@
 
 Status: Draft
 
-Refines the frozen parent record `docs/designs/product/compass-native-app/design.md` §T5 + §A4. Design only; no implementation.
+Refines the frozen parent record `docs/designs/ui/compass-native-app/design.md` §T5 + §A4. Design only; no implementation.
 
 ## Problem / Intent
 
@@ -741,5 +741,5 @@ shape are implementation structure under those rows, not new contracts.
 Dependency to flag in the impl PR: OQ-1 resolved to `zalando/go-keyring`, a new
 third-party Go-module dep — it IMPLEMENTS DL-109's existing "keychain-first"
 ruling (it is not a new decision and does not amend the ledger), but a new dep
-warrants an explicit call-out at review. `docs/designs/product/DECISIONS.md`
+warrants an explicit call-out at review. `docs/designs/ui/DECISIONS.md`
 stays untouched (single-writer rule; no new row owed).

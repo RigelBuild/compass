@@ -44,10 +44,8 @@ import { $ } from "bun";
 /** The design-corpus root the gate governs (all buckets beneath it). */
 export const DESIGNS_ROOT = "docs/designs";
 /**
- * The governed buckets under `DESIGNS_ROOT`. `product` is transitional — the
- * reorg (RIG-2577) dissolves it into the other buckets; it stays in the list
- * (still governed) until the RIG-2542-gated native sweep empties it. An empty
- * bucket directory scans to zero records, which is green.
+ * The governed buckets under `DESIGNS_ROOT`. Every record lives under exactly
+ * one of these; a file outside them is not a governed record.
  */
 export const GOVERNED_ROOTS: readonly string[] = [
 	"ui",
@@ -57,7 +55,6 @@ export const GOVERNED_ROOTS: readonly string[] = [
 	"infra",
 	"observability",
 	"repo",
-	"product",
 ];
 /** The canonical ledger, parsed as the decision table (never as a record). */
 export const DECISIONS_PATH = `${DESIGNS_ROOT}/DECISIONS.md`;

@@ -106,15 +106,11 @@ describe("splitLink", () => {
 });
 
 describe("touchesRecord", () => {
-	test("a <name>/design.md product record is a record", () => {
-		expect(touchesRecord("docs/designs/product/compass-0.6/design.md")).toBe(
-			true,
-		);
+	test("a <name>/design.md record is a record", () => {
+		expect(touchesRecord("docs/designs/ui/compass-0.6/design.md")).toBe(true);
 	});
-	test("a top-level <name>.md product record is a record", () => {
-		expect(touchesRecord("docs/designs/product/compass-tauri-shell.md")).toBe(
-			true,
-		);
+	test("a top-level <name>.md record is a record", () => {
+		expect(touchesRecord("docs/designs/ui/compass-tauri-shell.md")).toBe(true);
 	});
 	test("a record under a second governed root (agent) is a record", () => {
 		expect(touchesRecord("docs/designs/agent/compass-x/design.md")).toBe(true);
@@ -131,7 +127,7 @@ describe("touchesRecord", () => {
 		expect(touchesRecord("docs/designs/DECISIONS.md")).toBe(false);
 	});
 	test("a nested non-design.md file is not a record", () => {
-		expect(touchesRecord("docs/designs/product/foo/bar.md")).toBe(false);
+		expect(touchesRecord("docs/designs/ui/foo/bar.md")).toBe(false);
 	});
 	test("a flat .md inside a subgroup is NOT a record (governed at root only)", () => {
 		expect(touchesRecord("docs/designs/infra/ci/foo.md")).toBe(false);
@@ -142,8 +138,8 @@ describe("touchesRecord", () => {
 	test("a file under a non-bucket path is not a record", () => {
 		expect(touchesRecord("docs/designs/notabucket/x.md")).toBe(false);
 	});
-	test("a non-markdown product file is not a record", () => {
-		expect(touchesRecord("docs/designs/product/notes.txt")).toBe(false);
+	test("a non-markdown file is not a record", () => {
+		expect(touchesRecord("docs/designs/ui/notes.txt")).toBe(false);
 	});
 });
 
@@ -151,10 +147,10 @@ describe("resolveRecordRelative", () => {
 	test("a nested record's `../sibling` pointer → designs-root-relative sibling", () => {
 		expect(
 			resolveRecordRelative(
-				"product/compass-0.6/design.md",
+				"ui/compass-0.6/design.md",
 				"../compass-0.8/design.md",
 			),
-		).toBe("product/compass-0.8/design.md");
+		).toBe("ui/compass-0.8/design.md");
 	});
 	test("a cross-bucket pointer resolves inside DESIGNS_ROOT", () => {
 		// A ui/ record superseded by an agent/ record: `../../agent/...` from
@@ -286,9 +282,9 @@ function row(overrides: Partial<LedgerRow> = {}): LedgerRow {
 
 function header(overrides: Partial<RecordHeader> = {}): RecordHeader {
 	return {
-		// A top-level product record NOT in the version-narrative chain, so a
+		// A top-level record NOT in the version-narrative chain, so a
 		// baseline `Status: Active` is valid.
-		path: "docs/designs/product/compass-tauri-shell.md",
+		path: "docs/designs/ui/compass-tauri-shell.md",
 		statusLine: "Status: Active",
 		line: 3,
 		...overrides,
@@ -720,7 +716,7 @@ describe("evaluate — record Status: header presence & grammar", () => {
 		);
 		expect(vs.length).toBe(1);
 		expect(vs[0]?.message).toContain("missing");
-		expect(vs[0]?.file).toBe("docs/designs/product/compass-tauri-shell.md");
+		expect(vs[0]?.file).toBe("docs/designs/ui/compass-tauri-shell.md");
 		expect(vs[0]?.line).toBe(3);
 	});
 	test("malformed status header → 'malformed'", () => {
@@ -734,13 +730,12 @@ describe("evaluate — record Status: header presence & grammar", () => {
 		expect(vs[0]?.message).toContain("malformed");
 		expect(vs[0]?.line).toBe(3);
 	});
-	test("newly-governed non-product bucket record, statusLine null → 'missing'", () => {
-		// The cutover made non-product buckets governed (repo/, infra/, …),
-		// which is why compass-eng-docs/design.md had to gain `Status: Active`.
-		// This locks that a record under a NON-product governed bucket is
-		// header-enforced identically — a regression that special-cased the
-		// product bucket for header presence would pass the product tests above
-		// yet silently un-enforce every repo/infra/ui/… record.
+	test("a record under any governed bucket, statusLine null → 'missing'", () => {
+		// Every governed bucket (repo/, infra/, ui/, …) is header-enforced
+		// identically — which is why compass-eng-docs/design.md had to gain
+		// `Status: Active`. This locks that a record under a governed bucket
+		// other than the one the fixtures above use is enforced the same way,
+		// so no bucket can be silently un-enforced.
 		const vs = evaluate(
 			[row()],
 			[
@@ -777,7 +772,7 @@ describe("evaluate — Historical-set membership", () => {
 			[],
 			[
 				header({
-					path: "docs/designs/product/compass-tauri-shell.md",
+					path: "docs/designs/ui/compass-tauri-shell.md",
 					statusLine: "Status: Historical",
 				}),
 			],
@@ -793,7 +788,7 @@ describe("evaluate — Historical-set membership", () => {
 				[],
 				[
 					header({
-						path: "docs/designs/product/compass-tauri-shell.md",
+						path: "docs/designs/ui/compass-tauri-shell.md",
 						statusLine: "Status: Active",
 					}),
 				],
@@ -820,7 +815,7 @@ describe("evaluate — record-level Superseded pointer", () => {
 			[],
 			[
 				header({
-					path: "docs/designs/product/compass-tauri-shell.md",
+					path: "docs/designs/ui/compass-tauri-shell.md",
 					statusLine: "Status: Superseded by ../other/design.md",
 				}),
 			],
@@ -833,7 +828,7 @@ describe("evaluate — record-level Superseded pointer", () => {
 	});
 	test("record-relative pointer resolves to a sibling under a nested record", () => {
 		// A nested non-chain record + `../sibling/design.md` → designs-root-relative
-		// `product/sibling/design.md`. The resolver only knows that path, so a
+		// `ui/sibling/design.md`. The resolver only knows that path, so a
 		// correct base is the only way this passes.
 		expect(
 			evaluate(
@@ -894,19 +889,19 @@ describe("evaluate — record-level Superseded pointer", () => {
 				[],
 				[
 					header({
-						path: "docs/designs/product/compass-tauri-shell.md",
+						path: "docs/designs/ui/compass-tauri-shell.md",
 						statusLine: "Status: Superseded by other-record.md",
 					}),
 				],
 				noChange,
-				onlyExists("product/other-record.md"),
+				onlyExists("ui/other-record.md"),
 			),
 		).toEqual([]);
 	});
 });
 
 describe("evaluate — touch-coupling (DL-Q1)", () => {
-	const rec = "docs/designs/product/compass-0.6/design.md";
+	const rec = "docs/designs/ui/compass-0.6/design.md";
 
 	test("touches a record, not the ledger, no declaration → one violation", () => {
 		const vs = evaluate(
@@ -982,7 +977,7 @@ describe("runOnce", () => {
 		"| --- | --- | --- | --- |",
 		"| DL-001 | use X | Active (Matt, 2026-07-22) | [r](compass-0.6/design.md) |",
 	].join("\n");
-	const oneRecord = "docs/designs/product/compass-tauri-shell.md";
+	const oneRecord = "docs/designs/ui/compass-tauri-shell.md";
 
 	function deps(overrides: Partial<Deps>): {
 		d: Deps;
