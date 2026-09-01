@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -409,6 +410,13 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 		{"rules .mdc", []tarEntry{{name: "rules/b.mdc", content: "# rule b"}}},
 		{"agents .md", []tarEntry{{name: "agents/design.md", content: "# design agent"}}},
 		{"prompts/<role>/SYSTEM.md", []tarEntry{{name: "prompts/supervisor/SYSTEM.md", content: "# supervisor"}}},
+		{"profiles/<name>/profile.yml empty models", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  agents: {}\n"}}},
+		{"profiles full superset", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  manager: litellm/claude-opus:high\n  agents: {}\ncorpus:\n  prompts: null\n  skills: []\n  rules: []\nextensions:\n  mcp: null\nsettings: {}\n"}}},
+		{"profiles empty document", []tarEntry{{name: "profiles/candidate/profile.yml", content: ""}}},
+		// Symmetric to the shielded-credential reject case below: a nested
+		// non-string key with NO credential-marked leaf must still be ACCEPTED.
+		// Guards against yamlMapIndex over-matching and over-rejecting benign config.
+		{"profiles settings nested non-string key no credential", []tarEntry{{name: "profiles/candidate/profile.yml", content: "settings:\n  auth:\n    broker:\n      123: x\n"}}},
 		{"top-level AGENTS.md", []tarEntry{{name: "AGENTS.md", content: "# fleet conventions"}}},
 		{"top-level models.yml mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: https://y\n"}}},
 		{"models.yml headers env reference", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Org: MY_ORG_ENV\n"}}},
@@ -448,6 +456,29 @@ func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 		{"prompts nested too deep", []tarEntry{{name: "prompts/supervisor/sub/SYSTEM.md", content: "x"}}},
 		{"prompts flat too shallow", []tarEntry{{name: "prompts/SYSTEM.md", content: "x"}}},
 		{"prompts bad role name", []tarEntry{{name: "prompts/bad name/SYSTEM.md", content: "x"}}},
+		{"profiles wrong filename", []tarEntry{{name: "profiles/candidate/other.yml", content: "models: {}\n"}}},
+		{"profiles too deep", []tarEntry{{name: "profiles/candidate/sub/profile.yml", content: "models: {}\n"}}},
+		{"profiles too shallow", []tarEntry{{name: "profiles/profile.yml", content: "models: {}\n"}}},
+		{"profiles bad name", []tarEntry{{name: "profiles/bad name/profile.yml", content: "models: {}\n"}}},
+		{"profiles malformed yaml", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models: [unterminated\n"}}},
+		{"profiles non-mapping", []tarEntry{{name: "profiles/candidate/profile.yml", content: "- a\n- b\n"}}},
+		{"profiles unknown top-level key", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models: {}\nbogus: 1\n"}}},
+		{"profiles models.manager non-string", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  manager:\n    nested: 1\n"}}},
+		{"profiles models.agents value non-string", []tarEntry{{name: "agents/impl.md", content: "---\nname: impl\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    impl:\n      k: v\n"}}},
+		{"profiles models.agents non-string key (numeric)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    123: sel\n"}}},
+		// on/off/yes/no are !!str under yaml.v3's YAML-1.2 core schema, so an `on:`
+		// key is a STRING key (map[string]any) and would NOT exercise the guard.
+		// An explicit bool `true:` is genuinely non-string → map[any]any, rejected
+		// by rejectNonStringKeys (the sole reason: drop the guard and the bundle is
+		// accepted, since map[any]any also defeats the cross-member lint's assertion).
+		{"profiles models.agents non-string key (explicit bool)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    true: sel\n"}}},
+		{"profiles models non-string sibling key bypasses manager", []tarEntry{{name: "profiles/x/profile.yml", content: "models:\n  manager: litellm/x\n  0: y\n"}}},
+		{"profiles settings credential key", []tarEntry{{name: "profiles/x/profile.yml", content: "settings:\n  auth:\n    broker:\n      token: sekret\n"}}},
+		// A non-string sibling key inside the credential leaf's parent node flips
+		// that node to yaml.v3 map[any]any. A map[string]any-only walk fails open on
+		// it and reports the credential NOT set — the leaf then rides the bundle.
+		// yamlMapIndex must descend through map[any]any so the leaf is still found.
+		{"profiles settings credential shielded by nested non-string sibling", []tarEntry{{name: "profiles/x/profile.yml", content: "settings:\n  auth:\n    broker:\n      123: x\n      token: sekret\n"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -479,6 +510,14 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			name:    "settings credential key nested searxng",
 			member:  tarEntry{name: "settings/config.yml", content: "searxng:\n  token: sk-abc\n"},
 			wantSub: "searxng.token",
+		},
+		{
+			// Top-level settings/config.yml shares the rejectCredentialSettings->
+			// yamlMapIndex walk with profile settings; a credential leaf shielded by
+			// a non-string sibling must reject here too, not just on the profile path.
+			name:    "settings credential key shielded by non-string sibling",
+			member:  tarEntry{name: "settings/config.yml", content: "auth:\n  broker:\n    123: x\n    token: sekret\n"},
+			wantSub: "auth.broker.token",
 		},
 		{
 			name:    "models apiKey",
@@ -538,6 +577,8 @@ func TestConfigBundleMemberNamesNewMembers(t *testing.T) {
 		tarEntry{name: "agents/review.md", content: "x"},
 		tarEntry{name: "prompts/supervisor/SYSTEM.md", content: "# sup"},
 		tarEntry{name: "prompts/owner/SYSTEM.md", content: "# own"},
+		tarEntry{name: "profiles/default/profile.yml", content: "models: {}\n"},
+		tarEntry{name: "profiles/fast/profile.yml", content: "models: {}\n"},
 	)
 	info, err := configBundleMemberNames(b)
 	if err != nil {
@@ -554,5 +595,86 @@ func TestConfigBundleMemberNamesNewMembers(t *testing.T) {
 	}
 	if got, want := strings.Join(info.Prompts, ","), "owner,supervisor"; got != want {
 		t.Errorf("prompts = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(info.Profiles, ","), "default,fast"; got != want {
+		t.Errorf("profiles = %q, want %q", got, want)
+	}
+}
+
+// TestValidateConfigBundleProfileAgentKeyLint pins the cross-member
+// models.agents key lint (RIG-2968 T1): a profile keying a subagent-role model
+// is admitted ONLY when the key matches the FRONTMATTER name: of an agents/*.md
+// def shipped in the same bundle — NOT the filename stem. The def in these
+// fixtures has a frontmatter name that DIVERGES from its stem (stem "impl",
+// frontmatter name "implementer"), so the two directions pin that the lint keys
+// on the parsed frontmatter name, not the stem.
+func TestValidateConfigBundleProfileAgentKeyLint(t *testing.T) {
+	// A def whose frontmatter name (implementer) diverges from its stem (impl).
+	divergentDef := tarEntry{name: "agents/impl.md", content: "---\nname: implementer\ndescription: d\n---\nROLE\n"}
+
+	t.Run("frontmatter-name key ACCEPTED", func(t *testing.T) {
+		b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+			divergentDef,
+			tarEntry{name: "profiles/candidate/profile.yml", content: "models:\n  agents:\n    implementer: litellm/claude-sonnet:medium\n"},
+		)
+		if _, err := validateAndHashConfigBundle(b); err != nil {
+			t.Fatalf("profile keying the frontmatter name rejected: %v", err)
+		}
+	})
+
+	t.Run("stem-only key REJECTED", func(t *testing.T) {
+		b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+			divergentDef,
+			tarEntry{name: "profiles/candidate/profile.yml", content: "models:\n  agents:\n    impl: litellm/claude-sonnet:medium\n"},
+		)
+		_, err := validateAndHashConfigBundle(b)
+		if !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("want ErrInvalidArgument for a stem-only key, got %v", err)
+		}
+		if !strings.Contains(err.Error(), "impl") {
+			t.Fatalf("error %q should name the offending key", err)
+		}
+	})
+
+	t.Run("no matching def REJECTED", func(t *testing.T) {
+		b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+			divergentDef,
+			tarEntry{name: "profiles/candidate/profile.yml", content: "models:\n  agents:\n    ghost: litellm/claude-sonnet:medium\n"},
+		)
+		if _, err := validateAndHashConfigBundle(b); !errors.Is(err, ErrInvalidArgument) {
+			t.Fatalf("want ErrInvalidArgument for a key matching no def, got %v", err)
+		}
+	})
+
+	// F2: a def whose SIBLING frontmatter field (description) is a YAML-ambiguous
+	// scalar (bare colon) must still have its name recovered so a profile keying
+	// that name is ACCEPTED — the door must be at least as permissive as the SDK
+	// loader. Reds before the agentDefFrontmatterName line-scan fallback (name
+	// parses to "" -> lint rejects), greens after.
+	t.Run("colon-bearing sibling field name recovered ACCEPTED", func(t *testing.T) {
+		b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+			tarEntry{name: "agents/impl.md", content: "---\nname: implementer\ndescription: A thing: with a colon\n---\nROLE\n"},
+			tarEntry{name: "profiles/x/profile.yml", content: "models:\n  agents:\n    implementer: sel\n"},
+		)
+		if _, err := validateAndHashConfigBundle(b); err != nil {
+			t.Fatalf("profile keying a name from a def with a colon-bearing sibling field rejected: %v", err)
+		}
+	})
+}
+
+// TestValidateConfigBundleAdmitsDefaultProfile pins that the shipped fleet
+// default profile (config/profiles/default/profile.yml) passes the store door
+// unchanged — the "the committed config IS the default profile" contract. It
+// reads the real committed file so a drift that reds the door is caught here.
+func TestValidateConfigBundleAdmitsDefaultProfile(t *testing.T) {
+	content, err := os.ReadFile("../../../config/profiles/default/profile.yml")
+	if err != nil {
+		t.Fatalf("reading shipped default profile: %v", err)
+	}
+	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "profiles/default/profile.yml", content: string(content)},
+	)
+	if _, err := validateAndHashConfigBundle(b); err != nil {
+		t.Fatalf("shipped default profile rejected at the door: %v", err)
 	}
 }

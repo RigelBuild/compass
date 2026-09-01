@@ -41,6 +41,7 @@ const (
 	topDirRules      = "rules"
 	topDirAgents     = "agents"
 	topDirPrompts    = "prompts"
+	topDirProfiles   = "profiles"
 )
 
 // Top-level regular-file members admitted by exact filename (not under a top
@@ -55,6 +56,9 @@ const (
 	// memberSystemMD is the ONLY filename admitted under prompts/<role>/ — the
 	// role prompt is exactly prompts/<role>/SYSTEM.md (RIG-3075 T2).
 	memberSystemMD = "SYSTEM.md"
+	// memberProfileYML is the ONLY filename admitted under profiles/<name>/ —
+	// the profile is exactly profiles/<name>/profile.yml (RIG-2968 T1).
+	memberProfileYML = "profile.yml"
 )
 
 // configBundleTopDirs is the whitelist as a set, for the O(1) membership check in
@@ -67,6 +71,7 @@ var configBundleTopDirs = map[string]bool{
 	topDirRules:      true,
 	topDirAgents:     true,
 	topDirPrompts:    true,
+	topDirProfiles:   true,
 }
 
 // configNamePattern is the grammar for a config entry's <name> segment —
@@ -76,6 +81,12 @@ var configBundleTopDirs = map[string]bool{
 // (T4): constrained at the door, not escaped downstream (mirrors secrets.go's
 // secretNamePattern posture).
 var configNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// frontmatterNamePattern matches a `name:` line in an agents/*.md frontmatter
+// block for the tolerant line-scan fallback in agentDefFrontmatterName, used
+// when a strict whole-block YAML parse fails because a SIBLING field is a
+// YAML-ambiguous scalar. Anchored; the first match wins.
+var frontmatterNamePattern = regexp.MustCompile(`^name:\s*(.*)$`)
 
 const (
 	// maxDecompressedBytes caps the total DECOMPRESSED size of a config bundle,
@@ -228,6 +239,7 @@ type AgentConfigInfoResult struct {
 	Rules       []string
 	Subagents   []string
 	Prompts     []string
+	Profiles    []string
 	HasSettings bool
 	HasAgentsMD bool
 	HasModels   bool
@@ -256,6 +268,7 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	ruleSet := make(map[string]bool)
 	agentSet := make(map[string]bool)
 	promptSet := make(map[string]bool)
+	profileSet := make(map[string]bool)
 	var info AgentConfigInfoResult
 
 	tr := tar.NewReader(&cappedReader{r: gz})
@@ -307,6 +320,12 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 			if len(parts) == 3 && parts[2] == memberSystemMD {
 				promptSet[parts[1]] = true
 			}
+		case topDirProfiles:
+			// A profile is exactly profiles/<name>/profile.yml; count the
+			// <name>, matching the door grammar (validateProfileMember).
+			if len(parts) == 3 && parts[2] == memberProfileYML {
+				profileSet[parts[1]] = true
+			}
 		}
 	}
 	info.Skills = sortedKeys(skillSet)
@@ -315,6 +334,7 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	info.Rules = sortedKeys(ruleSet)
 	info.Subagents = sortedKeys(agentSet)
 	info.Prompts = sortedKeys(promptSet)
+	info.Profiles = sortedKeys(profileSet)
 	return info, nil
 }
 
@@ -453,6 +473,35 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		members = append(members, member{name: hdr.Name, content: content})
 	}
 
+	// Cross-member profile lint (RIG-2968 T1). The per-member pass above
+	// validated each profiles/<name>/profile.yml in isolation (YAML mapping +
+	// superset-key closure + models.* selector shape); the models.agents key
+	// lint is CROSS-MEMBER — each key must match the frontmatter name: of an
+	// agents/*.md def in the SAME bundle — so it runs here over the fully
+	// collected member set, after the single streamed pass. It reads only the
+	// already-collected member bytes (no re-decompress) and never feeds the
+	// hash, so the canonical version stays order-independent and metadata-zeroed.
+	// Separate the two member classes the lint needs (agent-def frontmatter
+	// names, and the profile bodies) into plain maps so the check is a pure
+	// function over collected bytes. The member NAME segment already passed the
+	// grammar in validateRegularMember, so parts[1] is safe to index.
+	agentDefNames := make(map[string]bool)
+	profileBodies := make(map[string][]byte)
+	for _, m := range members {
+		parts := strings.Split(m.name, "/")
+		switch {
+		case len(parts) == 2 && parts[0] == topDirAgents:
+			if name := agentDefFrontmatterName(m.content); name != "" {
+				agentDefNames[name] = true
+			}
+		case len(parts) == 3 && parts[0] == topDirProfiles && parts[2] == memberProfileYML:
+			profileBodies[m.name] = m.content
+		}
+	}
+	if err := lintProfileAgentKeys(profileBodies, agentDefNames); err != nil {
+		return "", err
+	}
+
 	// Sort by name. Duplicate regular names are rejected above, so keys are
 	// unique and this ordering is total — sort stability is moot.
 	sort.Slice(members, func(i, j int) bool { return members[i].name < members[j].name })
@@ -499,7 +548,7 @@ func configMemberParts(name string) ([]string, error) {
 		return parts, nil
 	}
 	if !configBundleTopDirs[parts[0]] {
-		return nil, fmt.Errorf("%w: bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, or prompts/ and is not a top-level %s or %s", ErrInvalidArgument, name, memberAgentsMD, memberModels)
+		return nil, fmt.Errorf("%w: bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, agents/, prompts/, or profiles/ and is not a top-level %s or %s", ErrInvalidArgument, name, memberAgentsMD, memberModels)
 	}
 	return parts, nil
 }
@@ -556,6 +605,8 @@ func validateRegularMember(parts []string, r io.Reader) ([]byte, error) {
 			return nil, fmt.Errorf("%w: prompts role name %q must match %s", ErrInvalidArgument, parts[1], configNamePattern.String())
 		}
 		return io.ReadAll(r)
+	case topDirProfiles:
+		return validateProfileMember(parts, joined, r)
 	}
 
 	// Top-level single-component files (configMemberParts admits only the two
@@ -639,6 +690,223 @@ func validateModelsMember(joined string, r io.Reader) ([]byte, error) {
 	return content, nil
 }
 
+// profileSupersetKeys is the closed set of top-level keys a profile.yml may
+// declare (RIG-2968 T1, §Approach superset schema). v1 CONSUMES only `models`;
+// `corpus`/`extensions`/`settings` are schema'd, consumption deferred — but all
+// four are ACCEPTED at the door so later phases grow additively with no schema
+// break. "Unknown key" = a top-level key OUTSIDE this set, never a deferred axis.
+var profileSupersetKeys = map[string]bool{
+	"models":     true,
+	"corpus":     true,
+	"extensions": true,
+	"settings":   true,
+}
+
+// validateProfileMember validates a profiles/<name>/profile.yml member in
+// isolation: exactly three components with filename profile.yml and a
+// grammar-valid <name>, a YAML-mapping body, top-level keys within the profile
+// superset, and (where present) string-shaped models.* selectors. The
+// CROSS-MEMBER models.agents key lint (each key must match a shipped agent def's
+// frontmatter name) is not enforceable per-member and runs in
+// validateAndHashConfigBundle over the collected member set.
+func validateProfileMember(parts []string, joined string, r io.Reader) ([]byte, error) {
+	if len(parts) != 3 || parts[2] != memberProfileYML {
+		return nil, fmt.Errorf("%w: profiles member %q must be profiles/<name>/%s", ErrInvalidArgument, joined, memberProfileYML)
+	}
+	if !configNamePattern.MatchString(parts[1]) {
+		return nil, fmt.Errorf("%w: profiles name %q must match %s", ErrInvalidArgument, parts[1], configNamePattern.String())
+	}
+	content, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	mapping, err := parseYAMLMapping(content, joined)
+	if err != nil {
+		return nil, err
+	}
+	for key := range mapping {
+		if !profileSupersetKeys[key] {
+			return nil, fmt.Errorf("%w: profile member %q sets unknown top-level key %q (allowed: corpus, extensions, models, settings)", ErrInvalidArgument, joined, key)
+		}
+	}
+	if err := validateProfileModelSelectors(mapping, joined); err != nil {
+		return nil, err
+	}
+	// The profile settings sub-mapping shares the settings/config.yml credential
+	// axis, so reuse the same denylist here (F3). The extensions/corpus axes'
+	// credential surfaces are deferred with their consumption task — not now.
+	if settingsRaw, present := mapping["settings"]; present && settingsRaw != nil {
+		if err := rejectNonStringKeys(settingsRaw, joined, "settings"); err != nil {
+			return nil, err
+		}
+		if settingsMap, ok := settingsRaw.(map[string]any); ok {
+			if err := rejectCredentialSettings(settingsMap, joined); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return content, nil
+}
+
+// rejectNonStringKeys rejects a YAML value that is a mapping with any non-string
+// key. yaml.v3 decodes such a mapping as map[any]any (not map[string]any), so a
+// v.(map[string]any) assertion on it fails OPEN, silently skipping every
+// key-level check below. A non-mapping value (scalar/list/absent) is not this
+// class and passes through for the caller's own shape handling.
+func rejectNonStringKeys(v any, joined, path string) error {
+	if _, ok := v.(map[any]any); ok {
+		return fmt.Errorf("%w: profile member %q %s must be a string-keyed mapping", ErrInvalidArgument, joined, path)
+	}
+	return nil
+}
+
+// validateProfileModelSelectors enforces the models.* selector SHAPE: a model
+// selector is an opaque string (the split-on-last-colon grammar is the SDK's,
+// never re-parsed here). models.manager, where present, must be a string; every
+// value under models.agents, where present, must be a string. An absent or null
+// axis is fine (deferred/empty). Non-string selectors are rejected so a
+// mis-shaped profile fails closed at the door rather than silently at render.
+// A models (or models.agents) mapping with any non-string key is rejected up
+// front: yaml.v3 decodes it as map[any]any, so a naive map[string]any assertion
+// would fail OPEN and skip every selector check below.
+func validateProfileModelSelectors(mapping map[string]any, joined string) error {
+	modelsRaw, present := mapping["models"]
+	if !present || modelsRaw == nil {
+		return nil
+	}
+	if err := rejectNonStringKeys(modelsRaw, joined, "models"); err != nil {
+		return err
+	}
+	models, ok := modelsRaw.(map[string]any)
+	if !ok {
+		// A non-mapping models value (scalar/list) is a deferred-shape concern,
+		// not a v1 door failure (v1 consumes models but tolerates an empty axis).
+		// The map[any]any case was already rejected above.
+		return nil
+	}
+	if v, present := models["manager"]; present && v != nil {
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("%w: profile member %q models.manager must be a string selector", ErrInvalidArgument, joined)
+		}
+	}
+	agentsRaw, present := models["agents"]
+	if !present || agentsRaw == nil {
+		return nil
+	}
+	if err := rejectNonStringKeys(agentsRaw, joined, "models.agents"); err != nil {
+		return err
+	}
+	agents, ok := agentsRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	for name, v := range agents {
+		if v == nil {
+			continue
+		}
+		if _, ok := v.(string); !ok {
+			return fmt.Errorf("%w: profile member %q models.agents.%s must be a string selector", ErrInvalidArgument, joined, name)
+		}
+	}
+	return nil
+}
+
+// lintProfileAgentKeys is the CROSS-MEMBER models.agents key lint (RIG-2968 T1):
+// every key under a profile's models.agents must match the FRONTMATTER name: of
+// an agents/*.md def shipped in the SAME bundle — NOT its filename stem. The SDK
+// resolves a subagent by agent.name and consults the override record per spawned
+// agentName, so a key matching no def name is a SILENT no-op at spawn; the lint
+// turns that typo into a reviewable door failure. agentDefNames is the set of
+// frontmatter names collected from the bundle's agents/ members; profileBodies
+// maps each profile member path to its raw YAML. Runs after the streamed pass,
+// over already-collected bytes, so it never perturbs the canonical hash.
+func lintProfileAgentKeys(profileBodies map[string][]byte, agentDefNames map[string]bool) error {
+	for joined, body := range profileBodies {
+		mapping, err := parseYAMLMapping(body, joined)
+		if err != nil {
+			// Already validated during the per-member pass; a re-parse failure
+			// here would be a logic error, but fail closed regardless.
+			return err
+		}
+		// The per-member validateProfileModelSelectors pass runs and aborts the
+		// bundle before this cross-member lint, and it already rejected any
+		// non-string-keyed models mapping (yaml.v3's map[any]any). So no such
+		// mapping reaches here: these map[string]any assertions cannot fail-open
+		// on that class, and a miss below is a genuine non-mapping value.
+		models, ok := mapping["models"].(map[string]any)
+		if !ok {
+			continue
+		}
+		agents, ok := models["agents"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for name := range agents {
+			if !agentDefNames[name] {
+				return fmt.Errorf("%w: profile member %q models.agents key %q matches no shipped agents/*.md def frontmatter name (a key matching no def name is a silent no-op at spawn)", ErrInvalidArgument, joined, name)
+			}
+		}
+	}
+	return nil
+}
+
+// agentDefFrontmatterName parses an agents/*.md def's leading YAML frontmatter
+// and returns its name: field, or "" if there is no frontmatter or no name. It
+// recovers the name even when a SIBLING frontmatter field is a YAML-ambiguous
+// scalar (e.g. `description: A thing: with a colon`) that would fail a strict
+// whole-block parse, matching the SDK loader's permissiveness: it first tries a
+// full YAML parse, then falls back to a tolerant `name:` line-scan (mirroring
+// the SDK's parseFrontmatter line-parser cascade for the name field). The lint
+// keys on this parsed name, NOT the filename stem, so a def whose frontmatter
+// name diverges from its stem lints correctly.
+func agentDefFrontmatterName(content []byte) string {
+	fm, ok := extractFrontmatter(content)
+	if !ok {
+		return ""
+	}
+	var doc struct {
+		Name string `yaml:"name"`
+	}
+	if err := yaml.Unmarshal(fm, &doc); err == nil && doc.Name != "" {
+		return doc.Name
+	}
+	// Whole-block parse failed or yielded no name: a sibling field may be a
+	// YAML-ambiguous scalar. Fall back to a tolerant line-scan for the name
+	// field alone, mirroring the SDK's parseFrontmatter line-parser fallback.
+	for line := range strings.SplitSeq(string(fm), "\n") {
+		m := frontmatterNamePattern.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		raw := strings.TrimSpace(m[1])
+		var scalar string
+		if err := yaml.Unmarshal([]byte(raw), &scalar); err == nil && scalar != "" {
+			return scalar
+		}
+		return raw
+	}
+	return ""
+}
+
+// extractFrontmatter returns the YAML frontmatter block bytes between a leading
+// `---` line and the next `---` line, and whether such a block was found. It
+// mirrors the standard Markdown front-matter shape the SDK's def loader consumes:
+// the opening fence must be the file's first line.
+func extractFrontmatter(content []byte) ([]byte, bool) {
+	s := string(content)
+	s = strings.TrimPrefix(s, "\ufeff")
+	if !strings.HasPrefix(s, "---\n") && !strings.HasPrefix(s, "---\r\n") {
+		return nil, false
+	}
+	rest := s[strings.IndexByte(s, '\n')+1:]
+	for _, fence := range []string{"\n---\n", "\n---\r\n", "\n---"} {
+		if idx := strings.Index(rest, fence); idx >= 0 {
+			return []byte(rest[:idx+1]), true
+		}
+	}
+	return nil, false
+}
+
 // validateFlatNamedMember enforces a flat dir/<name><ext> member: <name> matches
 // the config name grammar and <ext> is one of the allowed extensions.
 func validateFlatNamedMember(topDir, filename, joined string, exts ...string) error {
@@ -698,21 +966,38 @@ func rejectCredentialSettings(mapping map[string]any, joined string) error {
 
 // yamlPathIsSet reports whether the nested path resolves to a present (non-nil)
 // value in the mapping. An intermediate segment that is not a mapping means the
-// path is not set.
+// path is not set. It descends through both string-keyed and non-string-keyed
+// mapping nodes (see yamlMapIndex): a non-string SIBLING key one level above a
+// credential leaf must not be able to shield that leaf from the denylist walk.
 func yamlPathIsSet(mapping map[string]any, segments []string) bool {
 	var current any = mapping
 	for _, seg := range segments {
-		m, ok := current.(map[string]any)
-		if !ok {
-			return false
-		}
-		next, present := m[seg]
+		next, present := yamlMapIndex(current, seg)
 		if !present || next == nil {
 			return false
 		}
 		current = next
 	}
 	return true
+}
+
+// yamlMapIndex looks up a string key in a YAML-decoded mapping node that may be
+// either map[string]any (all keys are strings) or map[any]any (yaml.v3 decodes a
+// mapping to this shape when ANY key is non-string). Handling both means a
+// non-string sibling key can no longer flip an intermediate node to map[any]any
+// and thereby fail-open a map[string]any-only lookup, hiding a string-keyed leaf
+// from a security walk. A non-mapping node yields (nil, false).
+func yamlMapIndex(node any, key string) (any, bool) {
+	switch m := node.(type) {
+	case map[string]any:
+		v, ok := m[key]
+		return v, ok
+	case map[any]any:
+		v, ok := m[key]
+		return v, ok
+	default:
+		return nil, false
+	}
 }
 
 // rejectCredentialModels rejects a models.yml member that sets either of the two
