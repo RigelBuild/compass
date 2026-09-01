@@ -966,21 +966,38 @@ func rejectCredentialSettings(mapping map[string]any, joined string) error {
 
 // yamlPathIsSet reports whether the nested path resolves to a present (non-nil)
 // value in the mapping. An intermediate segment that is not a mapping means the
-// path is not set.
+// path is not set. It descends through both string-keyed and non-string-keyed
+// mapping nodes (see yamlMapIndex): a non-string SIBLING key one level above a
+// credential leaf must not be able to shield that leaf from the denylist walk.
 func yamlPathIsSet(mapping map[string]any, segments []string) bool {
 	var current any = mapping
 	for _, seg := range segments {
-		m, ok := current.(map[string]any)
-		if !ok {
-			return false
-		}
-		next, present := m[seg]
+		next, present := yamlMapIndex(current, seg)
 		if !present || next == nil {
 			return false
 		}
 		current = next
 	}
 	return true
+}
+
+// yamlMapIndex looks up a string key in a YAML-decoded mapping node that may be
+// either map[string]any (all keys are strings) or map[any]any (yaml.v3 decodes a
+// mapping to this shape when ANY key is non-string). Handling both means a
+// non-string sibling key can no longer flip an intermediate node to map[any]any
+// and thereby fail-open a map[string]any-only lookup, hiding a string-keyed leaf
+// from a security walk. A non-mapping node yields (nil, false).
+func yamlMapIndex(node any, key string) (any, bool) {
+	switch m := node.(type) {
+	case map[string]any:
+		v, ok := m[key]
+		return v, ok
+	case map[any]any:
+		v, ok := m[key]
+		return v, ok
+	default:
+		return nil, false
+	}
 }
 
 // rejectCredentialModels rejects a models.yml member that sets either of the two

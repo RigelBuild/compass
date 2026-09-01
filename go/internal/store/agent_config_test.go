@@ -462,9 +462,19 @@ func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 		{"profiles models.manager non-string", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  manager:\n    nested: 1\n"}}},
 		{"profiles models.agents value non-string", []tarEntry{{name: "agents/impl.md", content: "---\nname: impl\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    impl:\n      k: v\n"}}},
 		{"profiles models.agents non-string key (numeric)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    123: sel\n"}}},
-		{"profiles models.agents non-string key (bareword bool)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    on: sel\n"}}},
+		// on/off/yes/no are !!str under yaml.v3's YAML-1.2 core schema, so an `on:`
+		// key is a STRING key (map[string]any) and would NOT exercise the guard.
+		// An explicit bool `true:` is genuinely non-string → map[any]any, rejected
+		// by rejectNonStringKeys (the sole reason: drop the guard and the bundle is
+		// accepted, since map[any]any also defeats the cross-member lint's assertion).
+		{"profiles models.agents non-string key (explicit bool)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    true: sel\n"}}},
 		{"profiles models non-string sibling key bypasses manager", []tarEntry{{name: "profiles/x/profile.yml", content: "models:\n  manager: litellm/x\n  0: y\n"}}},
 		{"profiles settings credential key", []tarEntry{{name: "profiles/x/profile.yml", content: "settings:\n  auth:\n    broker:\n      token: sekret\n"}}},
+		// A non-string sibling key inside the credential leaf's parent node flips
+		// that node to yaml.v3 map[any]any. A map[string]any-only walk fails open on
+		// it and reports the credential NOT set — the leaf then rides the bundle.
+		// yamlMapIndex must descend through map[any]any so the leaf is still found.
+		{"profiles settings credential shielded by nested non-string sibling", []tarEntry{{name: "profiles/x/profile.yml", content: "settings:\n  auth:\n    broker:\n      123: x\n      token: sekret\n"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
