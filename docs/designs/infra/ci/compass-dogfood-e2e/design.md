@@ -828,7 +828,7 @@ reports without gating.
    never rewrites): D2's no-secrets, deterministic per-PR cadence governs THIS
    dogfood tier and is unchanged. A separate secret-bearing forge live-oracle
    step joins the per-PR gate as its own decision (DL-210,
-   [forge integration testing](../../product/compass-forge-integration-testing/design.md));
+   [forge integration testing](../../../server/compass-forge-integration-testing/design.md));
    it does not modify this tier.
 3. **D3 — Harness shape (Decision, Matt, 2026-08-05): option C.** A
    `//go:build podman` Go test suite over the merged compass-stack bring-up

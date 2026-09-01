@@ -6,7 +6,7 @@ per-agent containers, the three-tier Client→Server→Runner architecture) — 
 in the design corpus, indexed by the decision ledger
 ([`../../designs/DECISIONS.md`](../../designs/DECISIONS.md)) with
 the surviving milestone rationale in the
-[architecture lineage](../../designs/product/compass-architecture-lineage/design.md)
+[architecture lineage](../../designs/meta/compass-architecture-lineage/design.md)
 record; this spec describes only what the code exposes today.
 
 Interface- and security-critical behavior is stated as `### Requirement:` +

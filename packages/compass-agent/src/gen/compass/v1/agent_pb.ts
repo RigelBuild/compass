@@ -243,7 +243,7 @@ export const SessionFrameSchema: GenMessage<SessionFrame> = /*@__PURE__*/
  * pushed to the agent over AgentGateway.Control (agent_gateway.proto). One
  * AgentControl per control op. The variant NAMES and TYPES are the ratified
  * v0.6 oneof (design: architecture-lineage); the transport-consolidation
- * record (docs/designs/product/compass-agent-transport-consolidation) gives it
+ * record (docs/designs/agent/compass-agent-transport-consolidation) gives it
  * its first WIRE definition, replacing the never-built stdin decoder.
  *
  * Payload FIELDS: only the variants representable with existing compass.v1

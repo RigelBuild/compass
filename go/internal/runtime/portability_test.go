@@ -7,7 +7,7 @@ package runtime
 // activate a devenv from — with NO host /nix mount, no overlay, and no
 // assumption the host has Nix. This is the "T8 agent-owns-/nix test" the
 // container-runtime record pins
-// (docs/designs/product/compass-agent-container-runtime.md:640).
+// (docs/designs/agent/compass-agent-container-runtime.md:640).
 //
 // Distinct from lifecycle_test.go: that one bakes a tiny alpine Containerfile
 // stand-in and proves the Launch/egress/teardown control flow. This one runs

@@ -1,7 +1,7 @@
 package linearagent
 
 // Responder routing resolution (RIG-2717 T4, design
-// docs/designs/product/compass-linear-agent-responder/design.md §Part 2 / §T4).
+// docs/designs/server/compass-linear-agent-responder/design.md §Part 2 / §T4).
 //
 // A Linear delegation or @mention names the Compass app, never a specific
 // Manager, so the bridge must resolve which stable Manager runs the session.

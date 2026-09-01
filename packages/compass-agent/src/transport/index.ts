@@ -1,6 +1,6 @@
 // The agent side of the agent->Runner call transport: a RunnerCallTransport over
 // a Connect client that dials the Runner's per-container Unix socket
-// (design docs/designs/product/compass-agent-runner-transport/design.md, RIG-1351
+// (design docs/designs/agent/compass-agent-runner-transport/design.md, RIG-1351
 // T4). The in-container first-party agent reaches its Runner over a bind-mounted
 // Unix socket — a local hop, no network path, so the egress seal is untouched.
 //

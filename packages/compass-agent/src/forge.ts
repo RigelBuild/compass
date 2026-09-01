@@ -1,7 +1,7 @@
 // The agent's forge surface: a thin broker over the Runner transport, plus the
 // ten native tools an agent registers to read and write forge artifacts —
 // issues, pull requests, comments, reviews, and change-notification
-// subscriptions (design docs/designs/product/compass-agent-forge-tools/design.md,
+// subscriptions (design docs/designs/agent/compass-agent-forge-tools/design.md,
 // T1 + T2).
 //
 // This mirrors comms.ts / lifecycle.ts one leg over: `AgentGateway.Forge` is a

@@ -1,5 +1,5 @@
 // The comms/IRC tool split, pinned (design
-// docs/designs/product/compass-per-agent-overrides/design.md §Plan T7).
+// docs/designs/agent/compass-per-agent-overrides/design.md §Plan T7).
 //
 // WHAT THIS DEFENDS. Compass's native tools — the comms surface
 // (`comms_post_message`, `compass_roster`, …), the lifecycle surface

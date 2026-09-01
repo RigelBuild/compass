@@ -2082,7 +2082,7 @@ jobs:
         # separate, secret-bearing per-PR job (the LIVEGITHUB_*/LINEAR_FORGE testbed
         # creds), so "the PR gate carries no secrets" is now true of the dogfood
         # tier alone — see the record
-        # docs/designs/product/compass-forge-integration-testing.
+        # docs/designs/server/compass-forge-integration-testing.
         #
         # Same capture-replay-exit shape as the moon job's suites: redirect (not
         # a `| tee` pipeline, whose exit status is tee's 0 and would swallow a

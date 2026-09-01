@@ -3,7 +3,7 @@
 package forge
 
 // Live-credentials oracle suite (leg 2 of the forge integration-testing record,
-// docs/designs/product/compass-forge-integration-testing/design.md §T2). Guarded
+// docs/designs/server/compass-forge-integration-testing/design.md §T2). Guarded
 // by //go:build livegithub so a bare `go test ./internal/forge/` never compiles
 // it — the untagged golden battery (golden_test.go) stays credential-free.
 //

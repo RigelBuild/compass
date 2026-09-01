@@ -1,5 +1,5 @@
 // The compass.v1 agent->Runner call transport (design
-// docs/designs/product/compass-agent-runner-transport/design.md, RIG-1351 T1).
+// docs/designs/agent/compass-agent-runner-transport/design.md, RIG-1351 T1).
 //
 // INTERNAL-ONLY surface. Unlike compass.proto / comms.proto — the public,
 // generated-client door between a UI and the Server — AgentGateway is the

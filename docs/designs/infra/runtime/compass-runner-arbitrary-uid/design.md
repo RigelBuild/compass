@@ -10,7 +10,7 @@ blocks hosted/GA deployments where the host uid is arbitrary
 preflight-and-refuse is the interim, arbitrary-uid is the GA-blocking
 follow-up — this record). The **launch mechanism is already decided and
 frozen** in the Active record
-`docs/designs/product/compass-agent-container-runtime.md` — T1's uid-mapping
+`docs/designs/agent/compass-agent-container-runtime.md` — T1's uid-mapping
 invariant (`:630-640`), T2's flag switch (`:668-670`: "``Create``
 (`podman.go:347-357`) switches `--userns=keep-id` to
 `--userns=keep-id:uid=<agent-uid>,gid=<agent-gid>`" — `Create` is now at

@@ -24,7 +24,7 @@ The Runner executes Sessions commands strictly serially: `RunSessions`
 that loop for a full container build/pull (minutes), so no Stop, Status,
 despawn, or second spawn can execute on that Runner meanwhile. The
 spawn/despawn record made Provision agent-triggerable in a loop and named the
-exposure (`docs/designs/product/compass-agent-spawn-despawn/design.md:231-233`:
+exposure (`docs/designs/agent/compass-agent-spawn-despawn/design.md:231-233`:
 "A spawn's minutes-long container build/pull therefore head-of-line-blocks
 every other command on that Runner — Stop, Status, despawn, a second spawn, an
 operator reload"). Matt resolved its OQ-6 as accept-for-MVP (`:886-888`:

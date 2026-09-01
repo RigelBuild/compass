@@ -477,7 +477,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// mirroring Deliver's resolve-under-lock / send-outside discipline; the
 	// per-container transition lock held across Start guarantees no Stop/Retire
 	// races between the bind above and this send. See
-	// docs/designs/product/compass-system-sender-first-turn/design.md.
+	// docs/designs/agent/compass-system-sender-first-turn/design.md.
 	if served {
 		op := &compassv1internal.AgentControl{
 			Control: &compassv1internal.AgentControl_ReplayComplete{

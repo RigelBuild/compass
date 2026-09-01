@@ -11,7 +11,7 @@ import { BadgeGlyph } from "./BadgeGlyph";
 // a CSS-selector change could silently break.
 
 // The six frozen glyph grids, transcribed verbatim from the ASCII art in
-// docs/designs/product/compass-badge-clarity/design.md §"The six glyph grids"
+// docs/designs/ui/compass-badge-clarity/design.md §"The six glyph grids"
 // (`#` = lit, `.` = off; 9×9). This is an INDEPENDENT copy of the contract —
 // the component transcribes the same grids into [x,y] coordinate arrays, so
 // comparing the rendered rects against these grids catches a wrong grid even
