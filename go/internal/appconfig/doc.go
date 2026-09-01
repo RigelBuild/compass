@@ -1,9 +1,7 @@
 // Package appconfig is the native app's client config parser (design §A3). One
 // file — $XDG_CONFIG_HOME/compass/app.toml (fallback ~/.config/compass/app.toml)
 // — configures the native-client connection: a base URL plus an optional
-// private-anchor CA cert. Embedded mode was retired in RIG-2554, so client is
-// the only mode; a mode="embedded" value parses to a legible rejection, not a
-// compatibility arm.
+// private-anchor CA cert. The native app is a client.
 //
 // The core is pure: Parse decodes and validates a TOML byte slice with no I/O,
 // and Load layers path resolution on top. Mirroring the stack package idiom, the

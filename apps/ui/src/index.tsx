@@ -24,9 +24,6 @@ if (!root) {
 //
 //   "client"  → bootNativeClient gates on the shell's armed connection (probe +
 //               connect screen), then boots through the SAME main() chain.
-//   "embedded" → the native embedded provider. T5.6 wires that provider; until
-//               then embedded shares the env path (a co-hosted server is dialed
-//               by env just like the browser dev build), so it falls through.
 //   absent    → the UNCHANGED browser-dev path: envConnectionProvider.
 //   fixture   → the offline fixture boot (§A1), a third BROWSER-ONLY arm checked
 //               first: Vite statically replaces `import.meta.env.MODE`, so in a

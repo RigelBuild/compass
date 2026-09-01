@@ -13,14 +13,14 @@
 
 declare global {
 	interface Window {
-		__COMPASS_MODE__?: "embedded" | "client";
+		__COMPASS_MODE__?: "client";
 		__COMPASS_SERVER_URL__?: string;
 	}
 }
 
 /** The shell-injected launch mode, or undefined in a browser dev build (no
  *  shell). typeof-guarded so it never throws when `window` is absent. */
-export function shellMode(): "embedded" | "client" | undefined {
+export function shellMode(): "client" | undefined {
 	if (typeof window === "undefined") {
 		return undefined;
 	}

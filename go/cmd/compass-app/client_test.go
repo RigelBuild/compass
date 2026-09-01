@@ -27,7 +27,6 @@ import (
 // clientConfig is a representative valid native-client config. ServerURL is an
 // absolute https URL (validated upstream by appconfig); runClient never dials it.
 var clientConfig = appconfig.Config{
-	Mode:      appconfig.ModeClient,
 	ServerURL: "https://remote.example:8443",
 }
 
@@ -126,7 +125,7 @@ func TestRunClientSharesOneTargetAcrossPumpAndService(t *testing.T) {
 	if err := os.WriteFile(caFile, caPEM, 0o600); err != nil {
 		t.Fatalf("writing CA fixture: %v", err)
 	}
-	cfg := appconfig.Config{Mode: appconfig.ModeClient, ServerURL: srv.URL, CACert: caFile}
+	cfg := appconfig.Config{ServerURL: srv.URL, CACert: caFile}
 
 	svc, err := runClient(cfg, t.TempDir())
 	if err != nil {

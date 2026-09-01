@@ -28,9 +28,4 @@ describe("shellMode / shellServerUrl", () => {
 		expect(shellMode()).toBeUndefined();
 		expect(shellServerUrl()).toBeUndefined();
 	});
-
-	test("distinguish embedded from client mode", () => {
-		w.__COMPASS_MODE__ = "embedded";
-		expect(shellMode()).toBe("embedded");
-	});
 });

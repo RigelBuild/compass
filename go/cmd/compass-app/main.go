@@ -121,7 +121,7 @@ func run() error {
 		newAppWindow(app, svc, name, "Compass", startupJS)
 	}
 
-	slog.Info("compass-app starting", "mode", cfg.Mode, "assets", assetsDir, "version", version)
+	slog.Info("compass-app starting", "assets", assetsDir, "version", version)
 	return app.Run()
 }
 
@@ -190,18 +190,10 @@ func firstFreeName(base string, exists func(string) bool) string {
 // launch wires the native-client bridge service (design §T5.6). Embedded mode —
 // the in-process stack supervisor — was retired in RIG-2554, so launch is a thin
 // wrapper over runClient: there is no stack to spawn, monitor, or tear down, and
-// no quit controller. The Mode was validated to client by appconfig.Load; the
-// default arm rejects any other resolved Mode legibly rather than dialing a
-// half-configured target.
+// no quit controller. The window opens immediately: no pre-window probe (the
+// single auto-connect is the UI's boot-time shellConnect(""), T5.5).
 func launch(cfg appconfig.Config, stateDir string) (*bridgeService, error) {
-	switch cfg.Mode {
-	case appconfig.ModeClient:
-		// Client mode opens the window immediately: no pre-window probe (the
-		// single auto-connect is the UI's boot-time shellConnect(""), T5.5).
-		return runClient(cfg, stateDir)
-	default:
-		return nil, fmt.Errorf("unknown app mode %v", cfg.Mode)
-	}
+	return runClient(cfg, stateDir)
 }
 
 // shellStartupJS builds the OQ-8 startup script the webview loads before the app

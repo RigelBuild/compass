@@ -169,16 +169,14 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	// the door as a bearer, never on a command line.
 	assertTokenNotInCmdlines(t, f.RuntimeDir(), f.AdminToken())
 
-	// A client-mode app.toml carries mode/server_url/ca_cert but NEVER the token
-	// (the token lives in the tokenstore, DL-109). NOTE: this is a
-	// design-conformance placeholder, not regression coverage — compass-app has
-	// no app.toml WRITER yet (embedded.go/main.go only Load it), so this
-	// constructs the TOML the client setup would write and asserts the shape.
-	// The real hygiene coverage is the /proc scan + tokenstore legs above; when a
-	// production client-mode config writer lands, point this at it instead of a
-	// test-authored literal so it catches a real leak.
-	appToml := "mode = \"client\"\n" +
-		"server_url = " + strconv.Quote(f.ServerURL()) + "\n" +
+	// A client app.toml carries server_url/ca_cert but NEVER the token (the token
+	// lives in the tokenstore, DL-109). NOTE: this is a design-conformance
+	// placeholder, not regression coverage — compass-app has no app.toml WRITER
+	// yet (main.go only Loads it), so this constructs the TOML the client setup
+	// would write and asserts the shape. The real hygiene coverage is the /proc
+	// scan + tokenstore legs above; when a production client config writer lands,
+	// point this at it instead of a test-authored literal so it catches a real leak.
+	appToml := "server_url = " + strconv.Quote(f.ServerURL()) + "\n" +
 		"ca_cert = " + strconv.Quote(f.CAPath()) + "\n"
 	appTomlPath := filepath.Join(t.TempDir(), "app.toml")
 	if err := os.WriteFile(appTomlPath, []byte(appToml), 0o600); err != nil {

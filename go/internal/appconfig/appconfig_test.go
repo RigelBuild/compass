@@ -16,85 +16,74 @@ func TestParse(t *testing.T) {
 		errSubstrs []string
 	}{
 		{
-			name: "empty file → client (server_url required)",
+			name: "empty file → error (server_url required)",
 			data: "",
-			// Absent mode defaults to client, which requires server_url; an
-			// empty file therefore fails legibly rather than resolving.
+			// The app is a client and requires server_url; an empty file
+			// therefore fails legibly rather than resolving.
 			wantErr:    true,
 			errSubstrs: []string{"server_url"},
 		},
 		{
-			name: "client with server_url",
-			data: "mode = \"client\"\nserver_url = \"https://host:8443\"\n",
-			want: Config{Mode: ModeClient, ServerURL: "https://host:8443"},
-		},
-		{
-			name: "absent mode with server_url → client",
+			name: "server_url only → client",
 			data: "server_url = \"https://host:8443\"\n",
-			want: Config{Mode: ModeClient, ServerURL: "https://host:8443"},
+			want: Config{ServerURL: "https://host:8443"},
 		},
 		{
-			name: "client with ca_cert parsed through",
-			data: "mode = \"client\"\nserver_url = \"https://host:8443\"\nca_cert = \"/etc/anchor.pem\"\n",
-			want: Config{Mode: ModeClient, ServerURL: "https://host:8443", CACert: "/etc/anchor.pem"},
+			name: "ca_cert parsed through",
+			data: "server_url = \"https://host:8443\"\nca_cert = \"/etc/anchor.pem\"\n",
+			want: Config{ServerURL: "https://host:8443", CACert: "/etc/anchor.pem"},
 		},
 		{
-			name:       "embedded → legible retirement rejection",
-			data:       `mode = "embedded"`,
+			// Regression: the mode key was hard-removed (RIG-3111). A stale
+			// mode = "client" line is now an ordinary unknown-key rejection
+			// that names the offending key — that IS the migration message.
+			name:       "stale mode key → unknown-key rejection",
+			data:       "mode = \"client\"\nserver_url = \"https://host:8443\"\n",
 			wantErr:    true,
-			errSubstrs: []string{"embedded", "retired", "compass-stack up", "client"},
+			errSubstrs: []string{"unknown key", "mode"},
 		},
 		{
-			name:       "client missing server_url → error",
-			data:       `mode = "client"`,
+			// A populated file that omits server_url still errors (distinct from
+			// the empty-file case: a non-empty config carrying only other valid
+			// keys is not a pass).
+			name:       "populated file missing server_url → error",
+			data:       "ca_cert = \"/etc/anchor.pem\"\n",
 			wantErr:    true,
 			errSubstrs: []string{"server_url"},
 		},
 		{
-			name:       "client with http server_url → error",
-			data:       "mode = \"client\"\nserver_url = \"http://host:8443\"\n",
+			name:       "http server_url → error",
+			data:       "server_url = \"http://host:8443\"\n",
 			wantErr:    true,
 			errSubstrs: []string{"https", "cleartext"},
 		},
 		{
-			name:       "client with relative server_url → error",
-			data:       "mode = \"client\"\nserver_url = \"host:8443\"\n",
+			name:       "relative server_url → error",
+			data:       "server_url = \"host:8443\"\n",
 			wantErr:    true,
 			errSubstrs: []string{"server_url"},
 		},
 		{
-			name:       "unknown mode → error",
-			data:       `mode = "proxy"`,
-			wantErr:    true,
-			errSubstrs: []string{"proxy", "client"},
-		},
-		{
 			name:       "malformed toml → error",
-			data:       "mode = ",
+			data:       "server_url = ",
 			wantErr:    true,
 			errSubstrs: []string{"app.toml"},
 		},
 		{
-			name:       "whitespace-only mode → client (server_url required)",
-			data:       `mode = "  "`,
+			name:       "whitespace-only server_url → error",
+			data:       "server_url = \"   \"\n",
 			wantErr:    true,
 			errSubstrs: []string{"server_url"},
 		},
 		{
-			name:       "client whitespace-only server_url → error",
-			data:       "mode = \"client\"\nserver_url = \"   \"\n",
-			wantErr:    true,
-			errSubstrs: []string{"server_url"},
-		},
-		{
-			name:       "client server_url with embedded credentials → error",
-			data:       "mode = \"client\"\nserver_url = \"https://user:pass@host:8443\"\n",
+			name:       "server_url with embedded credentials → error",
+			data:       "server_url = \"https://user:pass@host:8443\"\n",
 			wantErr:    true,
 			errSubstrs: []string{"credentials", "keychain"},
 		},
 		{
 			name:       "unknown key → error",
-			data:       "mode = \"client\"\nserver_url = \"https://host:8443\"\ncacert = \"/etc/anchor.pem\"\n",
+			data:       "server_url = \"https://host:8443\"\ncacert = \"/etc/anchor.pem\"\n",
 			wantErr:    true,
 			errSubstrs: []string{"unknown key", "cacert"},
 		},
@@ -125,8 +114,8 @@ func TestParse(t *testing.T) {
 }
 
 // TestLoadAbsentFileIsFirstRunError: an absent app.toml is a legible first-run
-// error (client mode needs a server_url; embedded's zero-config default was
-// retired in RIG-2554), naming the config path and pointing at the client setup.
+// error (the app is a client and needs a server_url), naming the config path
+// and pointing at the client setup.
 func TestLoadAbsentFileIsFirstRunError(t *testing.T) {
 	dir := t.TempDir()
 	got, err := Load(dir, "")
@@ -141,28 +130,13 @@ func TestLoadAbsentFileIsFirstRunError(t *testing.T) {
 }
 
 func TestLoadReadsPresentFile(t *testing.T) {
-	dir := writeConfig(t, "mode = \"client\"\nserver_url = \"https://host:8443\"\n")
+	dir := writeConfig(t, "server_url = \"https://host:8443\"\n")
 	got, err := Load(dir, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := (Config{Mode: ModeClient, ServerURL: "https://host:8443"}); got != want {
+	if want := (Config{ServerURL: "https://host:8443"}); got != want {
 		t.Errorf("got %+v, want %+v", got, want)
-	}
-}
-
-// TestLoadEmbeddedFileIsRejected: a present file selecting the retired embedded
-// mode is rejected through Load (not just Parse) with the retirement copy.
-func TestLoadEmbeddedFileIsRejected(t *testing.T) {
-	dir := writeConfig(t, `mode = "embedded"`)
-	got, err := Load(dir, "")
-	if err == nil {
-		t.Fatalf("embedded file: want a rejection, got config %+v", got)
-	}
-	for _, sub := range []string{"embedded", "retired", "compass-stack up"} {
-		if !strings.Contains(err.Error(), sub) {
-			t.Errorf("embedded rejection %q missing substring %q", err, sub)
-		}
 	}
 }
 
@@ -172,21 +146,15 @@ func TestLoadHomeFallbackPath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("mode = \"client\"\nserver_url = \"https://host:8443\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("server_url = \"https://host:8443\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := Load("", home)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if want := (Config{Mode: ModeClient, ServerURL: "https://host:8443"}); got != want {
+	if want := (Config{ServerURL: "https://host:8443"}); got != want {
 		t.Errorf("got %+v, want %+v", got, want)
-	}
-}
-
-func TestModeString(t *testing.T) {
-	if got := ModeClient.String(); got != "client" {
-		t.Errorf("ModeClient.String() = %q, want client", got)
 	}
 }
 

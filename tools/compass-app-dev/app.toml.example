@@ -3,10 +3,6 @@
 # ONLY this file for connection config — there is no env var or CLI flag for the
 # server URL (go/internal/appconfig). Unknown keys are rejected.
 
-# The only mode. (Embedded mode was retired in RIG-2554 — the app no longer
-# supervises a stack; it always connects to a remote compass-server.)
-mode = "client"
-
 # The compass-server network door. REQUIRED; must be an absolute https URL.
 server_url = "https://your-server.example.ts.net:50061"
 
