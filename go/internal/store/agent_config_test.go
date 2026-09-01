@@ -413,6 +413,10 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 		{"profiles/<name>/profile.yml empty models", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  agents: {}\n"}}},
 		{"profiles full superset", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  manager: litellm/claude-opus:high\n  agents: {}\ncorpus:\n  prompts: null\n  skills: []\n  rules: []\nextensions:\n  mcp: null\nsettings: {}\n"}}},
 		{"profiles empty document", []tarEntry{{name: "profiles/candidate/profile.yml", content: ""}}},
+		// Symmetric to the shielded-credential reject case below: a nested
+		// non-string key with NO credential-marked leaf must still be ACCEPTED.
+		// Guards against yamlMapIndex over-matching and over-rejecting benign config.
+		{"profiles settings nested non-string key no credential", []tarEntry{{name: "profiles/candidate/profile.yml", content: "settings:\n  auth:\n    broker:\n      123: x\n"}}},
 		{"top-level AGENTS.md", []tarEntry{{name: "AGENTS.md", content: "# fleet conventions"}}},
 		{"top-level models.yml mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: https://y\n"}}},
 		{"models.yml headers env reference", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Org: MY_ORG_ENV\n"}}},
@@ -506,6 +510,14 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			name:    "settings credential key nested searxng",
 			member:  tarEntry{name: "settings/config.yml", content: "searxng:\n  token: sk-abc\n"},
 			wantSub: "searxng.token",
+		},
+		{
+			// Top-level settings/config.yml shares the rejectCredentialSettings->
+			// yamlMapIndex walk with profile settings; a credential leaf shielded by
+			// a non-string sibling must reject here too, not just on the profile path.
+			name:    "settings credential key shielded by non-string sibling",
+			member:  tarEntry{name: "settings/config.yml", content: "auth:\n  broker:\n    123: x\n    token: sekret\n"},
+			wantSub: "auth.broker.token",
 		},
 		{
 			name:    "models apiKey",
