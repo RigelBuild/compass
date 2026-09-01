@@ -46,8 +46,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +74,12 @@ const (
 	// generous headroom, not a tuned value; it must stay well under the KVM
 	// -timeout so a wedge fails as itself, not as a suite timeout.
 	inGuestProbeTimeout = 60 * time.Second
+	// guestConnectTimeoutSecs bounds the in-guest /dev/tcp egress probe. It MUST
+	// stay strictly under inGuestProbeTimeout (the host-side exec ctx) so a
+	// dropped SYN trips the guest's own timeout (exit 124 — the unreachable
+	// verdict inGuestCanReachIP reads), never a host-ctx DeadlineExceeded that
+	// would surface as a harness fault rather than a firewall verdict.
+	guestConnectTimeoutSecs = 10
 )
 
 // w3Relay is the fake Server for the W3 suite: recordingRelay (capturing every
@@ -308,6 +314,7 @@ func TestVsockGateway_TeardownRemovesSuffixedSocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
+	t.Cleanup(func() { _ = h.Remove(context.WithoutCancel(t.Context()), name) })
 	path := listenerPath(t, h, name)
 	if _, err := os.Lstat(path); err != nil {
 		t.Fatalf("suffixed socket must exist after Provision: Lstat = %v", err)
@@ -406,7 +413,11 @@ func TestVsockGateway_InGuestVsockIsNotIP(t *testing.T) {
 	}
 
 	// A raw-IP egress attempt from inside the guest is blocked by the always-armed
-	// default-deny firewall — the gateway is not reachable by any IP route. Probe
+	// default-deny firewall — the gateway is not reachable by any IP route. The
+	// block is attributable to the firewall (not dead IP networking) because (a)
+	// the session only reaches this exec past Start's net_provisioned Health gate,
+	// which guarantees the netns + passt path is live, and (b) the always-armed
+	// default-deny is proven independently by egress_inguest_microvm_test.go. Probe
 	// a globally-routable raw IP (never a name — DNS stalls the harness resolver),
 	// bounded by a guest-side timeout so a dropped SYN reports exit 124.
 	if inGuestCanReachIP(t, engine, id, "8.8.8.8") {
@@ -462,6 +473,11 @@ func inGuestProbeScript(reqJSON string) string {
 	// Connect-unary content type for JSON is application/json; the RPC path is
 	// the fully-qualified procedure. Bounded by an AbortSignal so a wedged dial
 	// fails as a printed error, not a hang inside the guest.
+	//
+	// INVARIANT: reqJSON is spliced into a JS backtick template literal, so it
+	// MUST stay free of backticks and ${...}. It is today (json.Marshal of a
+	// fixed call_id-only const); a future dynamic payload must JSON.stringify on
+	// the Go side and JSON.parse in-script rather than embed raw JSON here.
 	return `
 const body = ` + "`" + reqJSON + "`" + `;
 try {
@@ -512,7 +528,7 @@ func inGuestCanReachIP(t *testing.T, m *runtime.MicroVMRuntime, id runtime.Conta
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), inGuestProbeTimeout)
 	defer cancel()
-	script := "timeout 10 bash -c 'exec 3<>/dev/tcp/" + ip + "/443 && echo connected'"
+	script := fmt.Sprintf("timeout %d bash -c 'exec 3<>/dev/tcp/%s/443 && echo connected'", guestConnectTimeoutSecs, ip)
 	out, err := m.Exec(ctx, id, runtime.NewExecSpec("sh", "-c", script).AsUser("1000"))
 	if err != nil {
 		t.Fatalf("in-guest IP connect probe to %s errored (harness fault, not a firewall verdict): %v", ip, err)
@@ -548,5 +564,4 @@ func assertSocket0600(t *testing.T, path string) {
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("suffixed socket %q mode = %o, want 0600 (owner-only, Runner-owned)", path, perm)
 	}
-	_ = filepath.Dir(path) // dir mode is asserted by the gateway's own listen path; leaf mode is the W3 anchor
 }
