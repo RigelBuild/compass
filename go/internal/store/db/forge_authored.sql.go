@@ -128,7 +128,7 @@ INSERT INTO forge_authored_artifacts
     (forge_provider, forge_host, repo, kind, number,
      agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-ON CONFLICT (forge_provider, forge_host, repo, kind, number) DO UPDATE
+ON CONFLICT (tenant_id, forge_provider, forge_host, repo, kind, number) DO UPDATE
    SET session_id         = EXCLUDED.session_id,
        client_request_id  = EXCLUDED.client_request_id,
        created_at_unix_ms = EXCLUDED.created_at_unix_ms

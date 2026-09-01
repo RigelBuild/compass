@@ -20,6 +20,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // seedTenant inserts a fresh, non-bootstrap tenant row (bucket A: tenants is
@@ -186,15 +188,23 @@ func TestUnsetGUCFailsClosed(t *testing.T) {
 	}
 }
 
-// TestPooledConnReuseCarriesNoScope proves case 4: a physical connection scoped
-// to tenant A inside one transaction, then reused for a second transaction that
-// sets no scope, does NOT see A's rows — the SET LOCAL is transaction-scoped, so
-// nothing leaks across the checkout boundary. A real transaction-mode PgBouncer
-// was not available in the harness (the pgtest harness hands back a direct pgx
-// pool DSN, no bouncer); this simulates the pooler's connection-reuse hazard by
-// pinning ONE physical *pgxpool.Conn and running two sequential transactions on
-// it with A-scope then no-scope, which is exactly the reuse a transaction-mode
-// pooler creates.
+// TestPooledConnReuseCarriesNoScope proves case 4: the PRODUCTION single-statement
+// path (scopedDBTX's pgx SendBatch, NOT an explicit Begin/Commit) leaves no
+// leftover tenant scope on a physical connection reused for a later checkout —
+// the transaction-mode-pooler reuse hazard (design.md:663-673, 745-753).
+//
+// A real transaction-mode PgBouncer is not in the pgtest harness (it hands back a
+// direct pgx pool DSN), and standing one up in CI is tracked as a follow-up
+// (RIG-3106 review, Matt-ruled M2). This test proves the property the pooler
+// relies on, at the layer that actually carries it: SET LOCAL is
+// transaction-scoped, and a pgx batch is ONE implicit transaction (one Sync), so
+// the scoping armed into the batch resets at the batch's boundary. It drives the
+// real production mechanism — s pinned *pgx.Conn, two sequential SendBatch calls
+// each arming SET LOCAL ROLE + (batch 1 only) the tenant GUC exactly as
+// scopedDBTX.armQueue does — across the SAME physical backend, which is exactly
+// the reuse a transaction-mode pooler creates between checkouts. If the batch-1
+// SET LOCAL leaked past its implicit transaction, batch 2 (armed role, no GUC)
+// would still see tenant A's rows; it must fail closed (zero rows) instead.
 func TestPooledConnReuseCarriesNoScope(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
@@ -204,53 +214,59 @@ func TestPooledConnReuseCarriesNoScope(t *testing.T) {
 	}
 	tenantA := string(s.bootstrapTenantID)
 
-	conn, err := s.pool.Acquire(ctx)
+	pconn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	defer conn.Release()
+	defer pconn.Release()
+	// The underlying physical backend, reused for BOTH batches below — the same
+	// connection a transaction-mode pooler would hand to two sequential checkouts.
+	pinned := pconn.Conn()
 
-	// Txn 1 on this physical conn: scope to A, confirm A's row is visible.
-	tx1, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin tx1: %v", err)
+	// Batch 1 — the production arm for a request scoped to tenant A: SET LOCAL
+	// ROLE compass_app + set_config(tenantGUC, A, true) + the query, all in ONE
+	// SendBatch (one implicit transaction), mirroring scopedDBTX.armQueue.
+	b1 := &pgx.Batch{}
+	b1.Queue("SET LOCAL ROLE compass_app")
+	b1.Queue("SELECT set_config('compass.tenant_id', $1, true)", tenantA)
+	b1.Queue("SELECT count(*) FROM accounts")
+	br1 := pinned.SendBatch(ctx, b1)
+	if _, err := br1.Exec(); err != nil {
+		t.Fatalf("batch1 set role: %v", err)
 	}
-	if _, err := tx1.Exec(ctx, "SET LOCAL ROLE compass_app"); err != nil {
-		t.Fatalf("tx1 set role: %v", err)
-	}
-	if _, err := tx1.Exec(ctx, "SELECT set_config('compass.tenant_id', $1, true)", tenantA); err != nil {
-		t.Fatalf("tx1 set_config: %v", err)
+	if _, err := br1.Exec(); err != nil {
+		t.Fatalf("batch1 set_config: %v", err)
 	}
 	var scoped int
-	if err := tx1.QueryRow(ctx, "SELECT count(*) FROM accounts").Scan(&scoped); err != nil {
-		t.Fatalf("tx1 count: %v", err)
+	if err := br1.QueryRow().Scan(&scoped); err != nil {
+		t.Fatalf("batch1 count: %v", err)
+	}
+	if err := br1.Close(); err != nil {
+		t.Fatalf("batch1 close: %v", err)
 	}
 	if scoped == 0 {
-		t.Fatalf("tx1 scoped to A saw 0 rows, want A's seeded row — scope not applied")
-	}
-	if err := tx1.Commit(ctx); err != nil {
-		t.Fatalf("commit tx1: %v", err)
+		t.Fatalf("batch1 scoped to A saw 0 rows, want A's seeded row — scope not applied")
 	}
 
-	// Txn 2 on the SAME physical conn: enter the app role but set NO tenant GUC
-	// — the transaction-mode-pooler reuse hazard. If SET LOCAL leaked from tx1,
-	// this would still see A's rows. It must not.
-	tx2, err := conn.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin tx2: %v", err)
-	}
-	if _, err := tx2.Exec(ctx, "SET LOCAL ROLE compass_app"); err != nil {
-		t.Fatalf("tx2 set role: %v", err)
+	// Batch 2 on the SAME physical backend: arm the app role but set NO tenant GUC
+	// — the reuse hazard. If batch 1's SET LOCAL set_config leaked past its
+	// implicit transaction, this would still see A's rows. It must fail closed.
+	b2 := &pgx.Batch{}
+	b2.Queue("SET LOCAL ROLE compass_app")
+	b2.Queue("SELECT count(*) FROM accounts")
+	br2 := pinned.SendBatch(ctx, b2)
+	if _, err := br2.Exec(); err != nil {
+		t.Fatalf("batch2 set role: %v", err)
 	}
 	var leaked int
-	if err := tx2.QueryRow(ctx, "SELECT count(*) FROM accounts").Scan(&leaked); err != nil {
-		t.Fatalf("tx2 count must fail closed (zero), got error: %v", err)
+	if err := br2.QueryRow().Scan(&leaked); err != nil {
+		t.Fatalf("batch2 count must fail closed (zero), got error: %v", err)
+	}
+	if err := br2.Close(); err != nil {
+		t.Fatalf("batch2 close: %v", err)
 	}
 	if leaked != 0 {
-		t.Fatalf("tx2 (reused conn, no scope) saw %d rows, want 0 — SET LOCAL leaked across checkout", leaked)
-	}
-	if err := tx2.Rollback(ctx); err != nil {
-		t.Fatalf("rollback tx2: %v", err)
+		t.Fatalf("batch2 (reused backend, no scope) saw %d rows, want 0 — SET LOCAL leaked across the batch boundary", leaked)
 	}
 }
 
@@ -371,6 +387,77 @@ func TestForgeBoardTwoTenantsSameCoordinate(t *testing.T) {
 	}
 }
 
+// TestForgeAuthoredTwoTenantsSameCoordinate proves the forge_authored_artifacts
+// coordinate PK carries tenant_id (RIG-3106 review, Matt-ruled M1): two tenants
+// authoring the SAME forge coordinate each get their OWN ownership row with no
+// PK collision, and each reads back only its own via AuthoredArtifactByCoordinate
+// (RLS hides the other tenant's row). Without tenant_id in the PK, tenant B's
+// RecordAuthoredArtifact would hit tenant A's RLS-invisible row on ON CONFLICT
+// and Postgres would reject the write — the failure this test guards against.
+func TestForgeAuthoredTwoTenantsSameCoordinate(t *testing.T) {
+	s := newTestStore(t)
+	tenantB := seedTenant(t, s, "tenant-b")
+	ctxA := context.Background()
+	ctxB := WithTenant(context.Background(), tenantB)
+
+	// A real FK referent (owner user + owned agent) under each tenant.
+	ownerA, err := s.CreateUser(ctxA, NewUser{Handle: "author-a", DisplayName: "Author A"})
+	if err != nil {
+		t.Fatalf("CreateUser(A): %v", err)
+	}
+	agentA, err := s.CreateAgent(ctxA, ownerA.ID, NewAgent{Handle: "agent-a", DisplayName: "Agent A"})
+	if err != nil {
+		t.Fatalf("CreateAgent(A): %v", err)
+	}
+	ownerB, err := s.CreateUser(ctxB, NewUser{Handle: "author-b", DisplayName: "Author B"})
+	if err != nil {
+		t.Fatalf("CreateUser(B): %v", err)
+	}
+	agentB, err := s.CreateAgent(ctxB, ownerB.ID, NewAgent{Handle: "agent-b", DisplayName: "Agent B"})
+	if err != nil {
+		t.Fatalf("CreateAgent(B): %v", err)
+	}
+
+	artifactAt := func(agent, owner AccountID) AuthoredArtifact {
+		return AuthoredArtifact{
+			Provider:        ForgeProviderGitHub,
+			Host:            "github.com",
+			Repo:            "acme/widgets",
+			Kind:            ForgeArtifactKindPullRequest,
+			Number:          77,
+			AgentAccountID:  agent,
+			OwnerUserID:     owner,
+			SessionID:       "sess",
+			CreatedAtUnixMS: 1000,
+		}
+	}
+	if err := s.RecordAuthoredArtifact(ctxA, artifactAt(agentA.ID, ownerA.ID)); err != nil {
+		t.Fatalf("record authored (A): %v", err)
+	}
+	if err := s.RecordAuthoredArtifact(ctxB, artifactAt(agentB.ID, ownerB.ID)); err != nil {
+		t.Fatalf("record authored (B, same coordinate, different tenant) must NOT collide: %v", err)
+	}
+
+	// Each tenant reads back its OWN authorship at the shared coordinate.
+	gotA, err := s.AuthoredArtifactByCoordinate(ctxA, ForgeProviderGitHub, "github.com", "acme/widgets", ForgeArtifactKindPullRequest, 77)
+	if err != nil {
+		t.Fatalf("AuthoredArtifactByCoordinate(A): %v", err)
+	}
+	if gotA.AgentAccountID != agentA.ID {
+		t.Fatalf("tenant A read agent %q, want its own %q", gotA.AgentAccountID, agentA.ID)
+	}
+	gotB, err := s.AuthoredArtifactByCoordinate(ctxB, ForgeProviderGitHub, "github.com", "acme/widgets", ForgeArtifactKindPullRequest, 77)
+	if err != nil {
+		t.Fatalf("AuthoredArtifactByCoordinate(B): %v", err)
+	}
+	if gotB.AgentAccountID != agentB.ID {
+		t.Fatalf("tenant B read agent %q, want its own %q", gotB.AgentAccountID, agentB.ID)
+	}
+	if gotA.AgentAccountID == gotB.AgentAccountID {
+		t.Fatalf("both tenants resolved the same authorship row — tenant_id not in the coordinate PK")
+	}
+}
+
 // TestN7HandleAcrossTwoTenants proves case 7: @matt can exist under two tenants
 // with no collision (the org-scoped partial-unique index carries tenant_id), and
 // a handle resolver returns only the caller's-tenant account. Both the global
@@ -426,22 +513,80 @@ func channelsContain(chs []Channel, want ChannelID) bool {
 }
 
 // TestRLSCatalogEnabledAndForced proves the migration left RLS both ENABLED and
-// FORCED on every one of the 26 tenant-owned tables, and left the three
-// infrastructure tables (bucket A) exempt. It reads the pg_class catalog flags
-// directly rather than probing behavior because the harness connects as a
-// superuser (which bypasses even FORCE), so FORCE cannot be proven by a query
-// returning zero rows — only by the flag. This is the test that fails if a
-// future edit drops FORCE, ENABLE, or a table from 0002_rls.sql: TestCrossTenant*
-// prove the non-owner request path is scoped (which ENABLE alone gives), but only
-// this catalog check defends the owner-binding FORCE guarantee the design
-// requires, and the bucket-A exemption auth depends on.
+// FORCED on every tenant-owned table, and left the infrastructure tables
+// (bucket A) exempt. It reads the pg_class catalog flags directly rather than
+// probing behavior because the harness connects as a superuser (which bypasses
+// even FORCE), so FORCE cannot be proven by a query returning zero rows — only
+// by the flag. This is the test that fails if a future edit drops FORCE, ENABLE,
+// or a table from 0002_rls.sql: TestCrossTenant* prove the non-owner request
+// path is scoped (which ENABLE alone gives), but only this catalog check defends
+// the owner-binding FORCE guarantee the design requires, and the bucket-A
+// exemption auth depends on.
+//
+// It is SELF-AUDITING: rather than trust a hand-maintained table list, it
+// enumerates every table carrying a tenant_id column from the live catalog and
+// asserts each is enabled+forced. A FUTURE migration that adds a tenant-owned
+// table (tenant_id column) but forgets to ENABLE/FORCE RLS fails here
+// automatically — the highest-severity case (a silent cross-tenant leak) can no
+// longer slip through a forgotten list edit. The known-26 list is kept only as a
+// floor cross-check: every expected table must still carry tenant_id, so a table
+// that silently LOSES its tenant_id column (dropping out of the enumerated set)
+// is caught too.
 func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	// The 26 tenant-owned tables the migration's policy loop covers — kept in
-	// sync with 0002_rls.sql's tenant_tables array. A table missing here (or
-	// there) surfaces as a catalog-flag mismatch.
+	// Bucket A (infrastructure) carries NO tenant_id, so it never appears in the
+	// tenant_id enumeration below; any tenant_id-bearing table NOT in this exempt
+	// set must be RLS-enabled+forced. Kept as an explicit allow-list so a
+	// deliberate future exemption is a conscious edit here, not a silent miss.
+	bucketA := map[string]bool{"tenants": true, "tokens": true, "agent_config_bundle": true}
+
+	// Enumerate every table in the current (per-test) schema that carries a
+	// tenant_id column, straight from the live catalog — the authoritative set of
+	// tenant-owned tables, not a hand-maintained list.
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity
+		   FROM pg_class c
+		   JOIN pg_namespace n ON n.oid = c.relnamespace
+		  WHERE n.nspname = current_schema()
+		    AND c.relkind = 'r'
+		    AND EXISTS (
+		        SELECT 1 FROM information_schema.columns col
+		         WHERE col.table_schema = current_schema()
+		           AND col.table_name = c.relname
+		           AND col.column_name = 'tenant_id')`)
+	if err != nil {
+		t.Fatalf("enumerate tenant_id-bearing tables: %v", err)
+	}
+	defer rows.Close()
+	enumerated := map[string]bool{}
+	for rows.Next() {
+		var tbl string
+		var enabled, forced bool
+		if err := rows.Scan(&tbl, &enabled, &forced); err != nil {
+			t.Fatalf("scan catalog row: %v", err)
+		}
+		if bucketA[tbl] {
+			t.Errorf("%s: bucket-A infrastructure table unexpectedly carries a tenant_id column", tbl)
+			continue
+		}
+		enumerated[tbl] = true
+		if !enabled {
+			t.Errorf("%s: tenant-owned (has tenant_id) but ENABLE ROW LEVEL SECURITY missing (relrowsecurity=false) — cross-tenant leak", tbl)
+		}
+		if !forced {
+			t.Errorf("%s: tenant-owned (has tenant_id) but FORCE ROW LEVEL SECURITY missing (relforcerowsecurity=false) — a non-superuser owner would bypass RLS", tbl)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate catalog rows: %v", err)
+	}
+
+	// Floor cross-check: every table the design classifies as tenant-owned must
+	// still appear in the enumerated (tenant_id-bearing) set. A table that
+	// silently loses its tenant_id column would drop out of the positive check
+	// above; this catches that regression.
 	tenantOwned := []string{
 		"accounts",
 		"user_accounts", "agent_accounts", "system_accounts", "account_handles",
@@ -455,20 +600,8 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 		"issues", "forge_repo_subscriptions", "forge_artifact_cursors",
 	}
 	for _, tbl := range tenantOwned {
-		var enabled, forced bool
-		if err := s.pool.QueryRow(ctx,
-			`SELECT relrowsecurity, relforcerowsecurity
-			   FROM pg_class
-			  WHERE oid = format('%I.%I', current_schema(), $1::text)::regclass`,
-			tbl,
-		).Scan(&enabled, &forced); err != nil {
-			t.Fatalf("read RLS flags for %q: %v", tbl, err)
-		}
-		if !enabled {
-			t.Errorf("%s: ENABLE ROW LEVEL SECURITY missing (relrowsecurity=false)", tbl)
-		}
-		if !forced {
-			t.Errorf("%s: FORCE ROW LEVEL SECURITY missing (relforcerowsecurity=false) — a non-superuser owner would bypass RLS", tbl)
+		if !enumerated[tbl] {
+			t.Errorf("%s: expected tenant-owned but has no tenant_id column (dropped from RLS coverage)", tbl)
 		}
 	}
 
@@ -477,7 +610,7 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	// tenants / agent_config_bundle breaks bootstrap and the fleet-config
 	// singleton. An accidental ENABLE here is a fail-closed outage, not a leak —
 	// so it is worth catching deterministically too.
-	for _, tbl := range []string{"tenants", "tokens", "agent_config_bundle"} {
+	for tbl := range bucketA {
 		var enabled bool
 		if err := s.pool.QueryRow(ctx,
 			`SELECT relrowsecurity

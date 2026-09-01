@@ -41,10 +41,16 @@
 -- BootstrapTenant(), so at 0002 time the bootstrap tenant row does NOT yet
 -- exist. This migration therefore never references a specific tenant id. On a
 -- fresh (squashed-0001, seed-forward) database every table is empty at 0002
--- time, so the backfill UPDATEs touch zero rows; they are written correct for a
--- hypothetical data-carrying deployment regardless, resolving each row's tenant
--- through its FK chain to accounts.tenant_id (or, for the account-less forge
--- board tables, the single tenant in the degenerate single-tenant case).
+-- time, so the backfill UPDATEs touch zero rows. Their correctness on a
+-- hypothetical data-carrying deployment is split: the FK-rooted (bucket B and
+-- forge_authored) backfills resolve each row's tenant exactly through its FK
+-- chain to accounts.tenant_id, and are correct for real data; the account-less
+-- backfills (owner-less channel_groups, the C1 board tables issues /
+-- forge_repo_subscriptions / forge_artifact_cursors) fall back to
+-- (SELECT id FROM tenants LIMIT 1) and are therefore correct ONLY in the
+-- single-tenant degenerate case — on a multi-tenant data-carrying DB they would
+-- mis-attribute those rows to an arbitrary tenant (matching the per-statement
+-- comments below).
 --
 -- Classification (Matt-ruled + scout-verified buckets, design brief §Table
 -- classification):
@@ -217,10 +223,20 @@ UPDATE agent_forge_subscriptions s SET tenant_id = (SELECT a.tenant_id FROM acco
 ALTER TABLE agent_forge_subscriptions ALTER COLUMN tenant_id SET DEFAULT current_setting('compass.tenant_id', true);
 ALTER TABLE agent_forge_subscriptions ALTER COLUMN tenant_id SET NOT NULL;
 
+-- forge_authored_artifacts is account-FK-rooted for the backfill (its
+-- agent_account_id resolves the tenant exactly, unlike the C1 board tables), but
+-- its PRIMARY KEY is a forge coordinate, so it also needs tenant_id folded INTO
+-- the key (C1 treatment): two tenants may author the SAME coordinate without a
+-- PK collision — a create-once-per-tenant record, and a shared forge identity
+-- where a coordinate authored outside one tenant (e.g. a PR pulled in for review)
+-- must not hit another tenant's RLS-invisible row on ON CONFLICT (RIG-3106
+-- review, Matt-ruled).
 ALTER TABLE forge_authored_artifacts ADD COLUMN tenant_id TEXT;
 UPDATE forge_authored_artifacts f SET tenant_id = (SELECT a.tenant_id FROM accounts a WHERE a.id = f.agent_account_id);
 ALTER TABLE forge_authored_artifacts ALTER COLUMN tenant_id SET DEFAULT current_setting('compass.tenant_id', true);
 ALTER TABLE forge_authored_artifacts ALTER COLUMN tenant_id SET NOT NULL;
+ALTER TABLE forge_authored_artifacts DROP CONSTRAINT forge_authored_artifacts_pkey;
+ALTER TABLE forge_authored_artifacts ADD PRIMARY KEY (tenant_id, forge_provider, forge_host, repo, kind, number);
 
 -- ── C2: linear_agent_sessions via manager_account_id (no FK, backfill by id) ─
 ALTER TABLE linear_agent_sessions ADD COLUMN tenant_id TEXT;

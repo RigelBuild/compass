@@ -22,6 +22,16 @@ WHERE cm.channel_id = $1
 ON CONFLICT (agent_account_id, channel_id) DO NOTHING;
 
 -- name: RecordOwedMention :exec
+-- Runs under the BYPASSRLS system role (delivery consumer, no tenant GUC), so
+-- tenant_id is stamped explicitly from the owning account's FK rather than the
+-- column DEFAULT (which would NULL-violate with no GUC). The INSERT..SELECT
+-- yields zero rows only if $1 has no accounts row — impossible on the no-loss
+-- path: the caller always passes an agent resolved from live channel membership
+-- (delivery/dispatch.go), whose accounts row exists. A stray user/unknown id
+-- would instead FK-violate the owed_mentions -> agent_accounts FK. The
+-- ON CONFLICT DO NOTHING is the intended idempotent re-record (a zero-row result
+-- there is the NORMAL replay case, not a drop), so asserting rows-affected here
+-- would wrongly fail an idempotent re-fire.
 INSERT INTO owed_mentions (agent_account_id, message_id, channel_id, recorded_at_unix_ms, tenant_id)
 SELECT $1, $2, $3, $4, a.tenant_id FROM accounts a WHERE a.id = $1
 ON CONFLICT (agent_account_id, message_id) DO NOTHING;
