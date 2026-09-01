@@ -47,7 +47,7 @@ concrete Dogfood acceptance gate.
 
 Note on ledgers: this record lives in the sealed design corpus
 (`docs/designs/platform/`), which the design-ledger-gate governs only for the
-**product** corpus (`docs/designs/ui/DECISIONS.md`). A platform record
+**product** corpus (`docs/designs/product/DECISIONS.md`). A platform record
 adds no DECISIONS row and declares no ledger delta, so nothing here is
 ledger-tracked; the `compass` repo it targets has no design-ledger tooling of
 its own.

@@ -72,7 +72,7 @@ self-host stack (`compass-stack` + `compass-server` + `compass-runner` +
 postgres) has no distribution home at all — the client-only record's OQ-3
 recorded exactly this orphan ("`compass-stack`/`compass-postgres` have no
 release-artifact home today",
-`../../ui/compass-native-client-only/design.md:447-462`). This record
+`../../../ui/compass-native-client-only/design.md:447-462`). This record
 designs both surfaces: the client's full OS matrix (Linux AND macOS together)
 with the install channels users actually reach for (homebrew, nix flakes, a
 tarball), and the self-hoster's host-level KVM-stack bring-up with postgres
