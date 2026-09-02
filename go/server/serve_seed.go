@@ -27,6 +27,19 @@ const (
 	rootSupervisorRole        = "manager"
 )
 
+// spawnableRoles is the closed Manager-role taxonomy a spawn request may name:
+// supervisor (owns the whole tree — intake, incidents, broadcasts, first
+// contact), owner (owns a product/service/domain), manager (owns one lane). The
+// set is a frozen product decision, NOT derived from the operator config
+// bundle's prompts/ members — legality is a fixed contract while the bundle is
+// mutable state. All three are spawnable; a spawned supervisor is parented and
+// permitted (standing up a separate tree is the intended use).
+var spawnableRoles = map[string]struct{}{
+	"supervisor": {},
+	"owner":      {},
+	"manager":    {},
+}
+
 // seedClientRequestID is the fixed idempotency key the seed's SpawnAgent runs
 // under. Fixed (not per-call) so a re-enroll that re-fires the seed for an
 // already-seeded-and-live supervisor joins the completed spawn or is rejected

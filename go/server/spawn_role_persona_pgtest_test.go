@@ -13,15 +13,20 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// TestSpawnStoresAndThreadsRole: a spawn with role "manager" lands the role in
-// the created agent_accounts row AND on the Provision wire (threaded from the
-// store account, the source of record).
+// TestSpawnStoresAndThreadsRole: a spawn with role "manager" and no persona
+// lands the role in the created agent_accounts row AND on the Provision wire
+// (threaded from the store account, the source of record), and stores an empty
+// persona verbatim — pinning the PR's deliberate asymmetry: role is a closed
+// server-validated set, persona is free-text and may be empty.
 func TestSpawnStoresAndThreadsRole(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
@@ -47,6 +52,9 @@ func TestSpawnStoresAndThreadsRole(t *testing.T) {
 	if got := f.runner.provisionRole(t); got != "manager" {
 		t.Fatalf("Provision wire role = %q, want manager (threaded from the store account)", got)
 	}
+	if got := acc.Agent.Persona; got != "" {
+		t.Fatalf("stored persona = %q, want empty (a role-only spawn leaves persona blank; persona is free-text and optional)", got)
+	}
 }
 
 // TestSpawnStoresAndThreadsPersona: a spawn with a persona lands it in the
@@ -60,6 +68,7 @@ func TestSpawnStoresAndThreadsPersona(t *testing.T) {
 		Handle:          "peer-persona",
 		DisplayName:     "Peer Persona",
 		ClientRequestId: "spawn-persona",
+		Role:            "manager",
 		Persona:         wantPersona,
 	})
 	if err != nil {
@@ -79,38 +88,98 @@ func TestSpawnStoresAndThreadsPersona(t *testing.T) {
 	}
 }
 
-// TestSpawnEmptyRolePersonaIsByteIdenticalToToday: a spawn naming neither role
-// nor persona stores empty strings AND carries empty strings on the Provision
-// wire — the field-less spawn is unchanged from pre-T4 behavior.
-func TestSpawnEmptyRolePersonaIsByteIdenticalToToday(t *testing.T) {
+// TestSpawnEmptyRoleIsRejected: a spawn naming no role (empty) is refused
+// CodeInvalidArgument and writes NO account row — every spawned node carries a
+// role from the closed taxonomy. This pins the ROLE requirement only; the
+// contrasting invariant that an empty PERSONA is accepted (persona is
+// free-text, not a closed set) is pinned by TestSpawnStoresAndThreadsRole,
+// which spawns a valid role with no persona and asserts the stored persona is
+// empty.
+func TestSpawnEmptyRoleIsRejected(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
 
-	resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
-		Handle:          "peer-empty",
-		DisplayName:     "Peer Empty",
-		ClientRequestId: "spawn-empty",
+	_, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-empty-role",
+		DisplayName:     "Peer Empty Role",
+		ClientRequestId: "spawn-empty-role",
+		Persona:         "compass-agent lane",
 	})
-	if err != nil {
-		t.Fatalf("SpawnAsAccount = %v, want success", err)
+	if err == nil {
+		t.Fatal("SpawnAsAccount with an empty role = nil error, want CodeInvalidArgument")
 	}
-	newID := store.AccountID(resp.GetAgentAccountId())
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("empty-role spawn code = %v, want CodeInvalidArgument", got)
+	}
+	if !errors.Is(err, errUnknownRole) {
+		t.Fatalf("empty-role spawn cause = %v, want errUnknownRole", err)
+	}
+	if _, err := f.store.AgentByHandle(ctx, f.ownerAdmin, "peer-empty-role"); err == nil {
+		t.Fatal("an account was created for an empty-role spawn, want none (rejected before CreateAgent)")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("AgentByHandle(peer-empty-role) = %v, want ErrNotFound (no row written)", err)
+	}
+}
 
-	acc, err := f.store.GetAccount(ctx, newID)
-	if err != nil {
-		t.Fatalf("GetAccount(spawned) = %v", err)
+// TestSpawnOffTaxonomyRoleIsRejected: a spawn naming a role outside the closed
+// taxonomy is refused CodeInvalidArgument and writes NO account row.
+func TestSpawnOffTaxonomyRoleIsRejected(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	_, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-director",
+		DisplayName:     "Peer Director",
+		ClientRequestId: "spawn-director",
+		Role:            "director",
+		Persona:         "compass-agent lane",
+	})
+	if err == nil {
+		t.Fatal("SpawnAsAccount with an off-taxonomy role = nil error, want CodeInvalidArgument")
 	}
-	if got := acc.Agent.Role; got != "" {
-		t.Fatalf("stored role = %q, want empty for a field-less spawn", got)
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("off-taxonomy-role spawn code = %v, want CodeInvalidArgument", got)
 	}
-	if got := acc.Agent.Persona; got != "" {
-		t.Fatalf("stored persona = %q, want empty for a field-less spawn", got)
+	if !errors.Is(err, errUnknownRole) {
+		t.Fatalf("off-taxonomy-role spawn cause = %v, want errUnknownRole", err)
 	}
-	if got := f.runner.provisionRole(t); got != "" {
-		t.Fatalf("Provision wire role = %q, want empty for a field-less spawn", got)
+	if _, err := f.store.AgentByHandle(ctx, f.ownerAdmin, "peer-director"); err == nil {
+		t.Fatal("an account was created for an off-taxonomy-role spawn, want none (rejected before CreateAgent)")
+	} else if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("AgentByHandle(peer-director) = %v, want ErrNotFound (no row written)", err)
 	}
-	if got := f.runner.provisionPersona(t); got != "" {
-		t.Fatalf("Provision wire persona = %q, want empty for a field-less spawn", got)
+}
+
+// TestSpawnAcceptsEachTaxonomyRole: all three roles are spawnable (supervisor
+// stays spawnable — a spawned supervisor is parented and permitted), and each
+// lands in the created row AND on the Provision wire threaded from the store.
+func TestSpawnAcceptsEachTaxonomyRole(t *testing.T) {
+	for _, role := range []string{"supervisor", "owner", "manager"} {
+		t.Run(role, func(t *testing.T) {
+			f := newLifecycleFixture(t)
+			ctx := context.Background()
+
+			resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+				Handle:          "peer-" + role,
+				DisplayName:     "Peer " + role,
+				ClientRequestId: "spawn-" + role,
+				Role:            role,
+				Persona:         "compass-agent lane",
+			})
+			if err != nil {
+				t.Fatalf("SpawnAsAccount(role=%q) = %v, want success", role, err)
+			}
+			acc, err := f.store.GetAccount(ctx, store.AccountID(resp.GetAgentAccountId()))
+			if err != nil {
+				t.Fatalf("GetAccount(spawned) = %v", err)
+			}
+			if acc.Agent.Role != role {
+				t.Fatalf("stored role = %q, want %q", acc.Agent.Role, role)
+			}
+			if got := f.runner.provisionRole(t); got != role {
+				t.Fatalf("Provision wire role = %q, want %q (threaded from the store account)", got, role)
+			}
+		})
 	}
 }
 
@@ -135,11 +204,13 @@ func TestSpawnIdempotentReSpawnKeepsStoredRolePersona(t *testing.T) {
 		t.Fatalf("first SpawnAsAccount = %v, want success", err)
 	}
 
-	// A retry naming a DIFFERENT role/persona must not rewrite the stored values.
+	// A retry naming a DIFFERENT (but still valid-taxonomy) role/persona must not
+	// rewrite the stored values. "owner" is a valid member — the point is that the
+	// resume ignores the retry's values, not that the role is rejected.
 	second, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-dup-rp",
 		ClientRequestId: "spawn-dup-rp",
-		Role:            "impostor",
+		Role:            "owner",
 		Persona:         "different",
 	})
 	if err != nil {
@@ -207,11 +278,13 @@ func TestSpawnResumeReprovisionThreadsStoredRolePersona(t *testing.T) {
 
 	// Re-spawn the same handle under a DISTINCT client_request_id (so it reaches
 	// CreateAgent, conflicts on the handle, and resumes the unplaced account)
-	// naming DIFFERENT role/persona — the injection attempt the resume must ignore.
+	// naming a DIFFERENT (still valid-taxonomy) role/persona — the injection
+	// attempt the resume must ignore. "owner" is a valid member; the resume must
+	// re-provision under the stored first-spawn values, never the retry's.
 	second, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-resume-rp",
 		ClientRequestId: "spawn-resume-rp-2",
-		Role:            "impostor",
+		Role:            "owner",
 		Persona:         "different",
 	})
 	if err != nil {

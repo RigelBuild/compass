@@ -85,6 +85,7 @@ func TestSpawnInheritsCallerOwner(t *testing.T) {
 		Handle:          "peer-1",
 		DisplayName:     "Peer One",
 		ClientRequestId: "spawn-1",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAsAccount = %v, want success", err)
@@ -135,6 +136,7 @@ func TestSpawnSetsParentToCaller(t *testing.T) {
 		Handle:          "peer-parent",
 		DisplayName:     "Peer Parent",
 		ClientRequestId: "spawn-parent",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAsAccount = %v, want success", err)
@@ -178,6 +180,7 @@ func TestSpawnSameClientRequestIdRetryJoins(t *testing.T) {
 	first, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-dup",
 		ClientRequestId: "spawn-dup",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("first SpawnAsAccount = %v, want success", err)
@@ -186,6 +189,7 @@ func TestSpawnSameClientRequestIdRetryJoins(t *testing.T) {
 	second, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-dup",
 		ClientRequestId: "spawn-dup",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("retry SpawnAsAccount = %v, want idempotent success", err)
@@ -232,6 +236,7 @@ func TestSpawnMidChainFailureRollsBack(t *testing.T) {
 	_, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-roll",
 		ClientRequestId: "spawn-roll",
+		Role:            "manager",
 	})
 	if err == nil {
 		t.Fatal("SpawnAsAccount with a failing Start = nil error, want the failure surfaced")
@@ -256,6 +261,7 @@ func TestSpawnMidChainFailureRollsBack(t *testing.T) {
 	resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-roll",
 		ClientRequestId: "spawn-roll-2",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("re-spawn of the same handle after rollback = %v, want success (handle must not be burned)", err)
@@ -294,6 +300,7 @@ func TestSpawnSameHandleDifferentOwnerCreatesDistinctPeer(t *testing.T) {
 	respA, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-shared",
 		ClientRequestId: "spawn-a",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("owner-A spawn = %v, want success", err)
@@ -313,6 +320,7 @@ func TestSpawnSameHandleDifferentOwnerCreatesDistinctPeer(t *testing.T) {
 	respB, err := f.lc.SpawnAsAccount(ctx, callerB.ID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-shared",
 		ClientRequestId: "spawn-b",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("owner-B spawn of the same handle = %v, want success (distinct per-owner peer)", err)
@@ -362,6 +370,7 @@ func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 	peerB, err := f.lc.SpawnAsAccount(ctx, callerB.ID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-b",
 		ClientRequestId: "spawn-peer-b",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("owner-B spawn = %v, want success", err)
@@ -421,6 +430,7 @@ func TestDespawnSameOwnerSiblingSucceeds(t *testing.T) {
 	target, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "sibling",
 		ClientRequestId: "spawn-sibling",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("spawn sibling = %v, want success", err)
@@ -458,6 +468,7 @@ func TestDespawnSecondTimeIsIdempotentSuccess(t *testing.T) {
 	target, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-twice",
 		ClientRequestId: "spawn-twice",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("spawn = %v, want success", err)
@@ -591,6 +602,7 @@ func TestSpawnHandleCollidesWithUserAccountIsAlreadyExists(t *testing.T) {
 	_, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "taken-handle",
 		ClientRequestId: "spawn-collides-user",
+		Role:            "manager",
 	})
 	if err == nil {
 		t.Fatal("spawn onto a user-held handle = success, want CodeAlreadyExists (never resume/steal, never leak account kind)")
@@ -624,6 +636,7 @@ func TestSpawnHandleCollidesWithSystemAccountIsAlreadyExists(t *testing.T) {
 	_, err = f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          sys.Handle,
 		ClientRequestId: "spawn-collides-system",
+		Role:            "manager",
 	})
 	if err == nil {
 		t.Fatal("spawn onto the system handle = success, want CodeAlreadyExists (never shadow the system sender)")
@@ -653,6 +666,7 @@ func TestSpawnAutoOpensManagerPeerDM(t *testing.T) {
 		Handle:          "peer-dm",
 		DisplayName:     "Peer DM",
 		ClientRequestId: "spawn-dm-1",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAsAccount = %v, want success", err)
@@ -696,6 +710,7 @@ func TestSpawnIdempotentReturnsSameDMName(t *testing.T) {
 	first, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-dm-idem",
 		ClientRequestId: "spawn-dm-idem-1",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAsAccount(first) = %v, want success", err)
@@ -709,6 +724,7 @@ func TestSpawnIdempotentReturnsSameDMName(t *testing.T) {
 	second, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-dm-idem",
 		ClientRequestId: "spawn-dm-idem-2",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAsAccount(second) = %v, want success", err)
@@ -745,6 +761,7 @@ func TestSpawnDMOpenFailureNeverRollsBackSpawn(t *testing.T) {
 		resp, err := lc.SpawnAsAccount(context.Background(), pf.agentID, &compassv1internal.SpawnPeerRequest{
 			Handle:          "peer-dm-fail",
 			ClientRequestId: "spawn-dm-fail-1",
+			Role:            "manager",
 		})
 		if err != nil {
 			t.Fatalf("SpawnAsAccount = %v, want success despite the DM-open failure (never a rollback)", err)
@@ -765,6 +782,7 @@ func TestSpawnDMOpenFailureNeverRollsBackSpawn(t *testing.T) {
 		resp, err := lc.SpawnAsAccount(context.Background(), pf.agentID, &compassv1internal.SpawnPeerRequest{
 			Handle:          "peer-dm-nil",
 			ClientRequestId: "spawn-dm-nil-1",
+			Role:            "manager",
 		})
 		if err != nil {
 			t.Fatalf("SpawnAsAccount = %v, want success with a nil DM opener", err)

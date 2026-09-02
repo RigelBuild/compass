@@ -151,6 +151,13 @@ var errHandleTaken = errors.New("handle already taken")
 // never a normal outcome — CodeInternal, never a silent success.
 var errCallerNotAgent = errors.New("resolved caller is not an agent account")
 
+// errUnknownRole is the in-band cause when a spawn names a role outside the
+// closed taxonomy (spawnableRoles), including an empty role: every spawned node
+// carries a valid role, and the server is the authority on the set. The label,
+// not the prompt text, is validated — prompt text still arrives only via the
+// operator config bundle. CodeInvalidArgument.
+var errUnknownRole = errors.New("unknown spawn role")
+
 // SpawnAsAccount creates a peer agent owned by the caller's OWNER and brings it
 // online, running the same provision->placement->start->session chain a human
 // spawn takes. The new agent's owner is the caller agent's owner (F2), resolved
@@ -186,6 +193,22 @@ func (l *lifecycleService) SpawnAsAccount(
 	ctx, cancel := context.WithTimeout(ctx, spawnChainTimeout)
 	defer cancel()
 
+	// Role validation: every spawned node carries a role from the closed
+	// taxonomy, and the server is the authority on the set. This is the first
+	// check in the chain — a structurally-invalid role is the cheapest possible
+	// rejection (a pure in-memory set lookup), so reject it before any store I/O
+	// and before the create/resume switch below, so the guard also covers the
+	// idempotent-resume branch and a malformed role always returns the same
+	// CodeInvalidArgument regardless of unrelated handle state. The LABEL is
+	// validated here, never the prompt text: the container's block-0 prompt
+	// still arrives only via the operator config bundle (prompts/<role>/SYSTEM.md),
+	// so a valid label with an unshipped prompt degrades to the default block-0
+	// (a visible runtime warn, not a spawn failure), while an off-taxonomy label
+	// never reaches the store at all.
+	if _, ok := spawnableRoles[req.GetRole()]; !ok {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errUnknownRole)
+	}
+
 	// F2 ownership: the spawned peer inherits the CALLER'S OWNER. Resolve it
 	// from the store — the caller is an agent account, and its owner is who the
 	// new peer belongs to.
@@ -216,10 +239,10 @@ func (l *lifecycleService) SpawnAsAccount(
 	// Persona and role are set-at-creation from the spawn request (org-management
 	// Manager creation): under the D9 owner-acts model the caller's OWNER is the
 	// authority, so a Manager-creating spawn legitimately carries role+persona at
-	// creation. They are stored via CreateAgent (the source of record) and then
+	// creation. Role is caller-SELECTED but server-VALIDATED (above); persona is
+	// free-text. Both are stored via CreateAgent (the source of record) and then
 	// threaded to the Runner from the CREATED store account below, never from the
-	// request directly — so an empty role+persona spawn is byte-identical to
-	// today's field-less spawn.
+	// request directly.
 	created, err := l.store.CreateAgent(ctx, callerOwner, store.NewAgent{
 		Handle:      req.GetHandle(),
 		DisplayName: req.GetDisplayName(),

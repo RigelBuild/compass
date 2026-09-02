@@ -395,6 +395,7 @@ func TestPeerDMSpawnPathDelivers(t *testing.T) {
 		Handle:          "mgr-peer",
 		DisplayName:     "Manager Peer",
 		ClientRequestId: "spawn-t6-1",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAsAccount(manager) = %v, want success", err)

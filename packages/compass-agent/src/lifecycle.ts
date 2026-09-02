@@ -75,20 +75,23 @@ export class LifecycleBroker {
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const spawnParameters = type({
-	// The non-blank bound is enforced at runtime but is NOT expressible in JSON
-	// Schema — arktype drops the `.narrow` predicate from the wire schema the
-	// model is shown, so the description carries the rule instead (see the
-	// comms.ts `postParameters` note).
+	// The non-blank bound on `handle`/`persona` is enforced at runtime but is NOT
+	// expressible in JSON Schema — arktype drops the `.narrow` predicate from the
+	// wire schema the model is shown, so their descriptions carry the rule instead
+	// (see the comms.ts `postParameters` note). `role` needs no such carry: it is a
+	// closed literal union, which DOES render into the JSON Schema, so the model
+	// sees the exact taxonomy and an off-taxonomy (or empty) label is rejected
+	// structurally at the tool edge — the server re-validates it as the authority.
 	handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe("The new peer's account handle (unique); must not be blank"),
-	role: type("string")
-		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
-		.describe(
-			"The block-0 prompt selector for the spawned peer — selects " +
-				"config/prompts/<role>/SYSTEM.md. Required; must not be blank. Set at " +
-				"creation only (a spawn onto an existing handle keeps the stored role).",
-		),
+	role: type("'supervisor' | 'owner' | 'manager'").describe(
+		"The Manager role for the spawned peer, from the closed taxonomy: " +
+			"supervisor (owns the whole tree), owner (owns a product/service/domain), " +
+			"or manager (owns one lane). Selects config/prompts/<role>/SYSTEM.md as the " +
+			"peer's block-0 prompt. Set at creation only (a spawn onto an existing " +
+			"handle keeps the stored role).",
+	),
 	persona: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(

@@ -148,6 +148,7 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 			Handle:          "peer-1",
 			DisplayName:     "Peer One",
 			ClientRequestId: "spawn-req-1",
+			Role:            "manager",
 		}},
 	}))
 	if err != nil {
@@ -368,6 +369,7 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 		Handle:          "peer-b",
 		DisplayName:     "Peer B",
 		ClientRequestId: "spawn-b-1",
+		Role:            "manager",
 	})
 	if err != nil {
 		t.Fatalf("SpawnAsAccount(agent B) = %v, want success", err)
