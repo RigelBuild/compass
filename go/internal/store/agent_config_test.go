@@ -421,6 +421,10 @@ func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
 		{"top-level models.yml mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: https://y\n"}}},
 		{"models.yml headers env reference", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Org: MY_ORG_ENV\n"}}},
 		{"models.yml headers !command indirection", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: \"!op read secret\"\n"}}},
+		// Symmetric to the shielded-credential models.yml reject cases: a nested
+		// non-string key with NO credential leaf must still be ACCEPTED. Guards
+		// against yamlMapEntries over-rejecting benign models config.
+		{"models.yml nested non-string key no credential", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    0: junk\n    baseUrl: https://y\n"}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -528,6 +532,42 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			name:    "models header literal secret",
 			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: \"Bearer sk-live-123\"\n"},
 			wantSub: "providers.x.headers.Authorization",
+		},
+		// A non-string sibling key flips the enclosing yaml.v3 node to
+		// map[any]any; a map[string]any-only descent fails OPEN and rides the
+		// credential past the door. rejectCredentialModels must descend through
+		// both map shapes (yamlMapEntries/yamlMapIndex) so no sibling can shield
+		// a credential leaf. Three shield sites, one per assertion the walk makes.
+		{
+			// (a) provider-level shield: a non-string sibling under the provider
+			// flips the provider node, hiding its apiKey.
+			name:    "models apiKey shielded by non-string sibling at provider",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  openai:\n    0: junk\n    apiKey: sk-secret\n"},
+			wantSub: "providers.openai.apiKey",
+		},
+		{
+			// (b) providers-level shield: a non-string key directly under
+			// providers flips the providers node, hiding EVERY provider.
+			name:    "models apiKey shielded by non-string sibling at providers",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  0: junk\n  openai:\n    apiKey: sk-secret\n"},
+			wantSub: "providers.openai.apiKey",
+		},
+		{
+			// (c) headers-level shield: a non-string sibling in headers flips the
+			// headers node, hiding a literal-secret header.
+			name:    "models header literal secret shielded by non-string sibling",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      0: junk\n      Authorization: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.headers.Authorization",
+		},
+		{
+			// (d) combined shield: a non-string sibling at BOTH the providers
+			// node AND the provider node simultaneously. The two helpers descend
+			// linearly with no shared state, so this cannot fail if (a)+(b) pass;
+			// pinned explicitly to defend the composition against a future refactor
+			// that couples the descents.
+			name:    "models apiKey shielded by non-string siblings at providers and provider",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  0: junk\n  openai:\n    1: junk\n    apiKey: sk-secret\n"},
+			wantSub: "providers.openai.apiKey",
 		},
 	}
 	for _, tc := range cases {
