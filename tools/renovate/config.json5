@@ -227,12 +227,17 @@
       // regex (the internal monorepo tracked devenv.nix; compass tracks go.nix instead). The
       // version is dotted in go.nix, so there is NO dots↔underscores gymnastics —
       // capture it straight for the golang-version datasource, and devenv.nix picks
-      // it up automatically at eval time. A go bump changes no pin file, so this
-      // manager carries no postUpgradeTasks refresh leg (the overlay ships the
-      // hashes; refresh-toolchain-hashes.ts self-gates past go.nix). Auto-opens
-      // like every other toolchain manager (Matt's ruling: all toolchain bumps
-      // auto-open). The go.mod `go` directive tracks this pin minus at most one
-      // minor by MANUAL policy (go/go.mod:10-12), so the gomod `go`-directive
+      // it up automatically at eval time. A go bump rewrites go.nix and no hash
+      // pin (the overlay ships the hashes), so refresh-toolchain-hashes.ts
+      // self-gates past it — but the go-overlay input pinned in devenv.lock can
+      // LAG upstream go: its `versions` set only carries releases at or before
+      // its rev, so a bump to a newer go than the pinned overlay provides evals a
+      // missing attr and reds CI. The go↔go-overlay lockstep packageRule below
+      // (matchDepNames ["go"]) carries the refresh leg that advances the overlay
+      // input in the same branch and validates the new version resolves. Auto-
+      // opens like every other toolchain manager (Matt's ruling: all toolchain
+      // bumps auto-open). The go.mod `go` directive tracks this pin minus at most
+      // one minor by MANUAL policy (go/go.mod:10-12), so the gomod `go`-directive
       // update is disabled below — a pin bump may occasionally need a manual go.mod
       // follow-up.
       customType: "regex",
@@ -561,6 +566,46 @@
           "flake.nix",
           "flake.lock",
         ],
+        executionMode: "branch",
+      },
+    },
+    {
+      // ── Go toolchain ↔ go-overlay lockstep (RIG-3100) ──
+      // The go customManager (above) opens a solo branch that rewrites ONLY the
+      // version string in tools/toolchain/versions/go.nix. The per-platform
+      // hashes come from the go-overlay input, whose rev is pinned in
+      // devenv.lock — and go-overlay's `versions` set only carries go releases
+      // at or before that rev. So when Renovate bumps go.nix to a release newer
+      // than the pinned overlay provides, both the dev shell (devenv.nix's
+      // `go_X_Y_Z` attr) and the parity gate (gate-tools.nix's
+      // `go-bin.versions.<ver>`) eval a missing attribute and CI dies
+      // `attribute '"<ver>"' missing` / `gate-tools.nix langs produced no store
+      // paths`. This task, on that branch, advances the go-overlay input to a
+      // rev that provides the new version and validates it resolves through the
+      // SAME gate-tools.nix `langs.go` path CI uses — so a go bump lands in ONE
+      // green PR instead of a red one needing a manual overlay follow-up.
+      //
+      // `executionMode: "branch"` runs it once after the go.nix update is
+      // applied; safe here because the go pin never shares a branch — the
+      // versions/*.nix un-group rule above nulls its groupName, so it owns its
+      // own branch and thus the single branch-mode task slot Renovate builds per
+      // branch. Rule-level postUpgradeTasks REPLACE the top-level one for
+      // matching branches; the evicted top-level task's refresh-toolchain-hashes
+      // leg self-gates on the vendored-binary versions/*.nix pins and no-ops on
+      // go.nix anyway (go's hashes come from the overlay, not a sha256 pin), so
+      // nothing is lost. fileFilters is an INCLUDE allowlist — Renovate commits
+      // ONLY files matching it — and the refresh writes exactly devenv.lock (the
+      // `devenv update go-overlay` re-lock); it does NOT rewrite go.nix (the go
+      // manager already did) nor any hash pin, so devenv.lock is the sole entry.
+      //
+      // Self-hosted bot config MUST allow the command:
+      //   allowedCommands: [… , "^bun tools/renovate/refresh-go-overlay\\.ts$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
+      matchManagers: ["custom.regex"],
+      matchDepNames: ["go"],
+      postUpgradeTasks: {
+        commands: ["bun tools/renovate/refresh-go-overlay.ts"],
+        fileFilters: ["devenv.lock"],
         executionMode: "branch",
       },
     },
