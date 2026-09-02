@@ -22,6 +22,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "bun";
+import { devenvSource, flakeref } from "../toolchain/devenv-cli/core.ts";
 import { findForbiddenEnv } from "./env-check.ts";
 
 // The platform the consumer's frozen record pins (compass-native #1073,
@@ -96,13 +97,25 @@ if (import.meta.main) {
 	const agentImageDir = join(repoRoot, "agent-image");
 
 	// Build the image spec exactly as the publish lane does. devenv tracing goes
-	// to stderr; the spec store path is the last stdout line.
+	// to stderr; the spec store path is the last stdout line. The devenv fork rev
+	// is resolved from agent-image/devenv.lock at runtime (never hand-pinned), so
+	// this gate builds the exact derivation the lock names — the same source
+	// ci.yml's seed step resolves.
+	let ref: string;
+	try {
+		ref = flakeref(
+			devenvSource(await Bun.file(join(agentImageDir, "devenv.lock")).text()),
+		);
+	} catch (cause) {
+		fail(
+			`could not resolve devenv source from agent-image/devenv.lock: ${String(cause)}`,
+		);
+	}
 	let buildOut: string;
 	try {
-		buildOut =
-			await $`nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent`
-				.cwd(agentImageDir)
-				.text();
+		buildOut = await $`nix run ${ref} -- container build agent`
+			.cwd(agentImageDir)
+			.text();
 	} catch (cause) {
 		fail(`image build failed: ${String(cause)}`);
 	}
