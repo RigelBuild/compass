@@ -248,7 +248,7 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec ContainerSpec) (Containe
 	// then has to tear down (record §(e)). Drop the runtime dir Create just made
 	// so a refused Create leaves nothing behind, mirroring the duplicate-name leg.
 	if gatewayPath := microvm.GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort); len(gatewayPath) > sunPathMax {
-		err := fmt.Errorf("microvm: gateway socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --run-root", gatewayPath, len(gatewayPath), sunPathMax)
+		err := fmt.Errorf("microvm: gateway socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten --microvm-runroot or $COMPASS_MICROVM_RUNROOT", gatewayPath, len(gatewayPath), sunPathMax)
 		if rmErr := os.RemoveAll(runtimeDir); rmErr != nil {
 			return "", errors.Join(err, fmt.Errorf("microvm: cleaning up refused session dir %s: %w", runtimeDir, rmErr))
 		}

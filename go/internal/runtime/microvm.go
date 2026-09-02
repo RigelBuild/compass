@@ -38,10 +38,12 @@ type MicroVMConfig struct {
 	// switch_root (microvm-v2a §(a)).
 	InitrdImage string
 	// ImageManifest is an optional path to a sha256sum-format manifest
-	// (`<hex digest>  <basename>` lines). When set, the guest images are
-	// hash-verified against it at preflight; when unset, preflight checks
-	// presence and readability only and logs a warning that the images are not
-	// hash-verified.
+	// (`<hex digest>  <basename>` lines, text or binary `*`-marked mode). When
+	// set, the guest images are hash-verified against it at preflight; when
+	// unset, preflight checks presence and readability only and logs a warning
+	// that the images are not hash-verified. Guest-image basenames must not
+	// begin with `*`: sha256sum's binary-mode marker makes such a name
+	// ambiguous in the manifest format, so the entry would be mis-keyed.
 	ImageManifest string
 	// RunRoot is the root under which each session's runtime dir is created
 	// (<RunRoot>/microvm/<session>/), holding that session's AF_UNIX sockets —

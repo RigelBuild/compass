@@ -156,7 +156,7 @@ func (m *MicroVMRuntime) verifyImages(probes preflightProbes) error {
 		if err != nil {
 			return fmt.Errorf("microvm preflight: hashing guest %s image %q: %w", img.name, img.path, err)
 		}
-		if got != want {
+		if !strings.EqualFold(got, want) {
 			return fmt.Errorf("microvm preflight: guest %s image %q digest mismatch: expected %s, got %s (verify the image against --microvm-image-manifest)", img.name, img.path, want, got)
 		}
 	}
