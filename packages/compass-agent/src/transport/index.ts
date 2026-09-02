@@ -19,6 +19,8 @@ import {
 import { Layer, Logger, ManagedRuntime } from "effect";
 
 import type {
+	BoardCallRequest,
+	BoardCallResult,
 	CommsCallRequest,
 	CommsCallResult,
 	ControlSubscribeRequest,
@@ -68,6 +70,7 @@ export interface RunnerTransport {
 	comms(req: CommsCallRequest): Promise<CommsCallResult>;
 	lifecycle(req: LifecycleCallRequest): Promise<LifecycleCallResult>;
 	forge(req: ForgeCallRequest): Promise<ForgeCallResult>;
+	board(req: BoardCallRequest): Promise<BoardCallResult>;
 	publishSpine(): PublishSpine;
 	postConversationFrame(
 		req: PostConversationFrameRequest,
@@ -130,6 +133,7 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 		comms: (req) => client.comms(req),
 		lifecycle: (req) => client.lifecycle(req),
 		forge: (req) => client.forge(req),
+		board: (req) => client.board(req),
 		publishSpine: () => {
 			spine ??= createPublishSpine((stream) => client.publish(stream), runtime);
 			return spine;

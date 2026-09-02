@@ -57,6 +57,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/telemetry-export";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
+import { BoardBroker, createBoardTools } from "./board";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AGENT_CONFIG_MOUNT_PATH,
@@ -669,6 +670,7 @@ export async function main(
 	const commsBroker = new CommsBroker(transport);
 	const lifecycleBroker = new LifecycleBroker(transport);
 	const forgeBroker = new ForgeBroker(transport);
+	const boardBroker = new BoardBroker(transport);
 	// The comms/lifecycle natives are authored as `AgentTool` (pi-agent-core)
 	// because CompassAgent's `#withNatives` mechanism (agent.ts) operates on
 	// `AgentTool[]`. `createAgentSession`'s `customTools` wants
@@ -702,6 +704,7 @@ export async function main(
 		...createCommsTools(commsBroker),
 		...createLifecycleTools(lifecycleBroker),
 		...createForgeTools(forgeBroker),
+		...createBoardTools(boardBroker),
 	] as ToolDefinition[];
 
 	// The tee session storage, wrapped + initialize()d (its scan of the session

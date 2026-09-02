@@ -110,6 +110,33 @@ a broken link. This is the contract `comms.ts` defers to for the render guards
 it shares (`render-guard.ts` `attr`/`flat`, plus the forge-added `ref`
 URL/slug guard).
 
+## The board toolset
+
+One native board tool ships (`src/board.ts`) — `board_set_issue_state`
+(`approval: "write"`) over a thin `BoardBroker` on the `RunnerTransport.board()`
+seam, the same broker/identity/registration shape as forge. The target `state`
+is a closed eight-token union (`backlog`, `todo`, `queued`, `blocked`,
+`in_progress`, `in_review`, `done`, `archived`) mapped to the `IssueState` proto
+enum by an exhaustive table — `ISSUE_STATE_UNSPECIFIED` is deliberately absent,
+so the sentinel is rejected at schema and never reaches the wire.
+
+Unlike `ForgeBroker`, the board broker carries **no** DL-206 idempotency key: a
+state transition is not a create, and the server treats a target equal to the
+current state as an idempotent no-op, so a re-issue is harmless and nothing
+needs to dedup. Identity is the forge shape — the agent presents no token; the
+Runner owns which session a call arrived on and the Server resolves session →
+account and runs the transition under that caller.
+
+**The board is a manual lifecycle the agent owns.** An agent moves its issue as
+the work moves and closes it (`done`) itself; nothing advances board state for
+it — a forge closed/merged badge is consistent with `done` but never
+auto-advances the Compass-native state. The one input is a Compass-local issue
+id resolved against the caller's own board (no repo selector, no shared
+cross-repo credential), so the free-text-`repo` cross-repo threat forge
+documents (A8) does not arise here. The success ack renders one shape-guarded
+line (the model-supplied issue id through `attr`), and an in-band domain error
+throws under the OMP tool-failure contract with its code/detail render-guarded.
+
 ## Answer liveness — a temporary limit
 
 The answer wake is delivered to whatever session is live for the asking agent

@@ -22,6 +22,19 @@ export {
 	toJson,
 } from "@bufbuild/protobuf";
 export {
+	// The agent-initiated board call envelopes (internal-only AgentGateway gen).
+	// One `BoardCallRequest` carries the SDK toolCallId as `call_id` plus a oneof
+	// over the board operations (today: `set_issue_state`); the `BoardCallResult`
+	// mirrors it with an `error` case — an in-band domain failure (not_found,
+	// invalid_argument), NOT a transport teardown. The same two messages are
+	// reused verbatim as the RelayBoardCall payloads on the Runner->Server leg
+	// (DL-049), so this is the one wire shape for both hops.
+	type BoardCallError,
+	BoardCallErrorSchema,
+	type BoardCallRequest,
+	BoardCallRequestSchema,
+	type BoardCallResult,
+	BoardCallResultSchema,
 	// The agent-initiated forge call envelopes (internal-only AgentGateway gen).
 	// One `ForgeCallRequest` carries the SDK toolCallId as `call_id`, a oneof over
 	// the ten forge arms, an optional `ForgeRef forge` (unset = the configured
@@ -85,6 +98,13 @@ export {
 	SetAgentStatusRequestSchema,
 	type SetAgentStatusResponse,
 	SetAgentStatusResponseSchema,
+	// The one board-call arm today (internal-only AgentGateway gen): the
+	// `SetIssueStateRequest` names a Compass-local issue id + target `IssueState`;
+	// the `SetIssueStateResponse` carries the post-transition `Issue` truth.
+	type SetIssueStateRequest,
+	SetIssueStateRequestSchema,
+	type SetIssueStateResponse,
+	SetIssueStateResponseSchema,
 	type SpawnPeerRequest,
 	SpawnPeerRequestSchema,
 	type SpawnPeerResponse,
@@ -247,6 +267,10 @@ export {
 	ForgeRefSchema,
 	type Issue,
 	IssueSchema,
+	// The canonical issue lifecycle state (Issue.state, SetIssueStateRequest.state)
+	// — the eight-value board enum the board tool targets and renders.
+	IssueState,
+	IssueStateSchema,
 	type PullRequest,
 	PullRequestSchema,
 	type Review,
