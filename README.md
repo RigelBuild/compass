@@ -77,7 +77,7 @@ share one contract.
 proto/compass/            the compass.v1 schema — the owned door
 go/
   cmd/                    nine binaries — server, runner, stack, app, CLI, …
-  server/                 the Server implementation — CompassService, CommsService, SecretsService handlers
+  server/                 the Server — serves the compass.v1 handlers (CommsService lives in internal/comms)
   internal/               runtime, runner, runnerhub, store, comms, …
   gen/                    generated Go client/server stubs (checked in)
   e2e/                    the cross-process end-to-end suites
