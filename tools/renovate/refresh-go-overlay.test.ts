@@ -98,14 +98,24 @@ fi
 exit 0
 `;
 
-// Stub `nix`: intercept `nix eval … -f <gate> langs.go.version`. Return the go
-// version go.nix now pins by reading it out of the tree — modelling the real
-// overlay resolving `go-bin.versions.<pin>` once the input is advanced. A
-// SENTINEL override file lets a test force a mismatch (an overlay that resolves
-// a DIFFERENT version) to exercise the fail-loud path.
+// Stub `nix`: intercept `nix eval … -f <gate> langs.go.version` and model the
+// two go-overlay outcomes the script must tell apart. It records its args so a
+// test can assert the SHIPPED script evals the REAL CI target (a typo'd
+// file/attr would otherwise pass green here), then branches on sentinel files:
+//   .force-eval-fail — the PRIMARY RIG-3100 failure: a too-old overlay makes
+//     go-bin.versions.<new> a MISSING attr, so `nix eval` exits non-zero.
+//   .force-resolved  — a partial/wrong advance: the eval SUCCEEDS but yields a
+//     DIFFERENT version, exercising the resolved !== target equality guard.
+// With neither, it reads the version go.nix now pins out of the tree — modelling
+// the real overlay resolving go-bin.versions.<pin> once the input is advanced.
 const STUB_NIX = `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "eval" ]; then
+  echo "$@" > .nix-eval-args
+  if [ -f .force-eval-fail ]; then
+    echo "error: attribute matching the pinned go version is missing" >&2
+    exit 1
+  fi
   if [ -f .force-resolved ]; then
     cat .force-resolved
     exit 0
@@ -207,18 +217,36 @@ describe("tools/renovate/refresh-go-overlay.ts coupling (RIG-3100)", () => {
 		expect(lock).not.toContain(OVERLAY_REV_BASE);
 		// The validation eval saw the bumped version resolve.
 		expect(res.stdout.toString()).toContain(`resolves go ${GO_VERSION_BUMP}`);
+		// The eval hit the REAL CI target (gate-tools.nix langs.go.version), not a
+		// typo'd file/attr that would pass green against an arg-agnostic stub.
+		const evalArgs = await readFile(join(repo, ".nix-eval-args"), "utf8");
+		expect(evalArgs).toContain(GATE_REL);
+		expect(evalArgs).toContain("langs.go.version");
 	});
 
-	// Fail-loud: if the overlay advance does NOT land the pinned version (the rev
-	// is still too old, so the CI-path eval resolves a DIFFERENT version), the
-	// script must die non-zero rather than ship a go bump the overlay can't
-	// resolve — the whole point of the validation step.
+	// Fail-loud, partial-advance case: the overlay advances but still resolves a
+	// DIFFERENT version than the pin (a wrong/partial advance where the eval
+	// SUCCEEDS). The resolved !== target equality guard must catch it and die
+	// non-zero rather than ship a go bump the overlay does not actually resolve.
 	test("fails loud (exit≠0) when the resolved version mismatches the pin", async () => {
 		await Bun.write(join(repo, GO_NIX_REL), goNix(GO_VERSION_BUMP));
-		// Force the stub eval to resolve a stale version, as a too-old overlay
-		// rev would (the attr for the new version is missing, so the resolver
-		// lands the older one it does carry).
+		// Force the eval to resolve a DIFFERENT version than the pin, modelling a
+		// partial/wrong overlay advance whose eval succeeds — exercising the
+		// equality guard (the missing-attr eval-throw is the sibling test below).
 		await Bun.write(join(repo, ".force-resolved"), GO_VERSION_BASE);
+
+		const res = await runRefresh(repo);
+		expect(res.exitCode).not.toBe(0);
+	});
+
+	// Fail-loud, missing-attr case: the PRIMARY RIG-3100 failure. A still-too-old
+	// overlay makes `go-bin.versions.<new>` a missing attribute, so the CI-path
+	// eval itself exits non-zero — it does NOT fall back to an older release. The
+	// script must propagate that as a non-zero exit, in-branch, instead of red CI
+	// on the PR.
+	test("fails loud (exit≠0) when the validation eval fails (missing overlay attr)", async () => {
+		await Bun.write(join(repo, GO_NIX_REL), goNix(GO_VERSION_BUMP));
+		await Bun.write(join(repo, ".force-eval-fail"), "");
 
 		const res = await runRefresh(repo);
 		expect(res.exitCode).not.toBe(0);

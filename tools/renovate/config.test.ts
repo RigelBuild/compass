@@ -594,18 +594,24 @@ describe("tools/renovate go ↔ go-overlay lockstep (RIG-3100)", () => {
 	// branch, so this rule is safe ONLY because the go pin never shares a branch.
 	// The versions/*.nix un-group rule nulls its groupName, so a go bump resolves
 	// to its own solo branch, never the TypeScript rollup — where it would
-	// collide with the top-level branch-mode task.
-	test("a go pin bump un-groups to its own solo branch (null), not the TS rollup", () => {
-		const group = resolveGroupName({
-			manager: "custom.regex",
-			fileName: "tools/toolchain/versions/go.nix",
-			depName: "go",
-			depType: "toolchain",
-			updateType: "minor",
-		});
-		expect(group).toBeNull();
-		expect(group).not.toBe("TypeScript dependencies");
-	});
+	// collide with the top-level branch-mode task. Holds for BOTH minor and major
+	// bumps: the un-group rule has no matchUpdateTypes (fires for every type),
+	// and the go-overlay refresh rule likewise has none, so a major go bump also
+	// solo-branches and gets the overlay refresh on its own single task slot.
+	test.each(["minor", "major"] as const)(
+		"a go pin %s bump un-groups to its own solo branch (null), not the TS rollup",
+		(updateType) => {
+			const group = resolveGroupName({
+				manager: "custom.regex",
+				fileName: "tools/toolchain/versions/go.nix",
+				depName: "go",
+				depType: "toolchain",
+				updateType,
+			});
+			expect(group).toBeNull();
+			expect(group).not.toBe("TypeScript dependencies");
+		},
+	);
 });
 
 describe("tools/renovate solo-branch grouping outcomes", () => {
