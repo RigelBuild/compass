@@ -16,15 +16,17 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// The root Manager seeded on first launch. A fixed handle so the empty-tree gate
-// and CreateAgent's unique-handle constraint together make the seed idempotent;
-// role "manager" selects config/prompts/manager/SYSTEM.md as the container's
-// block-0 prompt (RIG-1732), which is what makes the seeded agent a real Manager
-// rather than a default agent.
+// The root supervisor seeded on first launch. A fixed handle so the empty-tree
+// gate and CreateAgent's unique-handle constraint together make the seed
+// idempotent; role "supervisor" selects config/prompts/supervisor/SYSTEM.md as
+// the container's block-0 prompt (RIG-1732), which is what makes the seeded root
+// a real tree supervisor rather than a default agent. Under the Manager role
+// taxonomy the tree root is a supervisor (owns the whole tree: intake,
+// incidents, broadcasts, first contact), not a leaf manager (RIG-3066).
 const (
 	rootSupervisorHandle      = "supervisor"
 	rootSupervisorDisplayName = "Supervisor"
-	rootSupervisorRole        = "manager"
+	rootSupervisorRole        = "supervisor"
 )
 
 // spawnableRoles is the closed Manager-role taxonomy a spawn request may name:
@@ -70,7 +72,7 @@ const setupTopicName = "Setup"
 //go:embed setup_thread.md
 var setupThreadBody string
 
-// seedRootSupervisor brings up the root Manager "supervisor" on first launch: on
+// seedRootSupervisor brings up the root supervisor on first launch: on
 // an empty agent tree it creates one root agent under the bootstrap admin, then
 // provisions and starts it. It is the runner-ready-hook body (wired via
 // Hub.SetRunnerReadyHook) because Provision/Start need a Runner whose command
@@ -156,16 +158,16 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	// joined this boot's completed seed spawn. It does NOT re-confirm liveness
 	// against the Runner on a memo join (see the memo caveat above), so this
 	// reports the seed drove to completion, not an independently verified session.
-	log.Info("root-supervisor seed: root Manager seed completed", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
+	log.Info("root-supervisor seed: root supervisor seed completed", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
 
-	// Give the Manager its first turn: post the Setup thread as @compass into its
+	// Give the supervisor its first turn: post the Setup thread as @compass into its
 	// home channel. A post failure is logged, not fatal (matching the seed's own
 	// posture); the next ready-hook re-fire retries it.
 	postSetupThread(ctx, cm, st, compassID, supervisor, log)
 }
 
 // postSetupThread posts the platform's Setup thread as @compass into the
-// supervisor's home channel, giving the seeded root Manager its first turn. It
+// supervisor's home channel, giving the seeded root supervisor its first turn. It
 // first makes @compass an (unsubscribed) member of that channel — PostMessage
 // D9-gates the post on membership, so a post before membership collapses to
 // CodeNotFound — then posts under a supervisor-scoped idempotency key, so a

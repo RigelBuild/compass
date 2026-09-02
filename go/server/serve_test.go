@@ -49,3 +49,17 @@ func TestServeRejectsNonLoopbackDevHTTPUpFront(t *testing.T) {
 		t.Fatalf("socket created despite non-loopback DevHTTP rejection (stat err = %v)", statErr)
 	}
 }
+
+// TestSeededRootRoleIsSpawnable pins the seed const to the closed taxonomy: the
+// role the first-launch seed writes for the tree root (rootSupervisorRole) must
+// be a member of spawnableRoles. The seed path creates the root via
+// store.CreateAgent, which does NOT validate against spawnableRoles (it bypasses
+// the SpawnAsAccount gate by design), so nothing else guards the seeded value —
+// an edit that drifts rootSupervisorRole to an off-taxonomy string would seed a
+// root no spawn gate would ever accept, and no other test would catch it. This
+// couples the two so that drift reddens here.
+func TestSeededRootRoleIsSpawnable(t *testing.T) {
+	if _, ok := spawnableRoles[rootSupervisorRole]; !ok {
+		t.Fatalf("rootSupervisorRole = %q is not in the closed spawnableRoles taxonomy %v; the seeded tree root must carry a spawnable role", rootSupervisorRole, spawnableRoles)
+	}
+}
