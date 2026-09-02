@@ -51,8 +51,11 @@ the payload shape that surfaces that content as typed session-trace content.
   `ERRORED` lifecycle frame is preserved (board/presence/delivery key off it),
   but the counted-`UnmappedEvent` abort staging carries no contract — it was
   explicitly a placeholder.
-- **pi-ai pin `16.5.2`** (from `^16.4.8`); the `AssistantMessageEvent` error
-  variant shape below is pinned to it.
+- **pi-ai pin.** `packages/compass-agent/package.json` specs `@oh-my-pi/pi-ai:
+  ^16.4.8`, which `bun.lock` resolves to `16.5.2`; the
+  `AssistantMessageEvent` error variant shape below is cited against that
+  resolved `16.5.2` source. The field shape is identical across the `^16.4.8`
+  range, so no version-spec change is part of this contract.
 - **markdownlint:** dash bullets, blank lines around headings/lists/fences/
   tables, language on every fence, leading+trailing table pipes. MD013 disabled.
 
@@ -69,7 +72,7 @@ frame gets.
 
 The failure arrives as a `message_update` whose inner
 `AssistantMessageEvent` is the error variant
-(`@oh-my-pi/pi-ai/src/types.ts:921-926`):
+(`@oh-my-pi/pi-ai/src/types.ts:905-910`):
 
 ```ts
 | {
@@ -80,11 +83,11 @@ The failure arrives as a `message_update` whose inner
   };
 ```
 
-`inner.error` is a full `AssistantMessage` (`types.ts:723-750`); the fields this
+`inner.error` is a full `AssistantMessage` (`types.ts:707-747`); the fields this
 contract reads:
 
-- `errorMessage?: string` (`types.ts:743`) — the user-facing failure text.
-- `errorStatus?: number` (`types.ts:747`) — HTTP status the provider surfaced.
+- `errorMessage?: string` (`types.ts:727`) — the user-facing failure text.
+- `errorStatus?: number` (`types.ts:731`) — HTTP status the provider surfaced.
 
 `inner` is narrowed to the error variant by the `switch (inner.type)` on the
 discriminant, so `inner.error.errorMessage` / `inner.error.errorStatus` /
@@ -197,7 +200,7 @@ Five right-sized tasks; T2/T3 depend on T1 (the regen must land first so the
   internal-go lane). Checked-in outputs updated: `go/gen/compass/v1/compass.pb.go`,
   `packages/compass-client/src/gen/compass/v1/compass_pb.ts`,
   `packages/compass-agent/src/gen/compass/v1/compass_pb.ts` (via `--include-imports`).
-- **Acceptance:** `moon run proto:gen-check` clean (no drift); the three gen trees
+- **Acceptance:** `moon run proto:drift` clean (no drift); the three gen trees
   carry `SessionError`/`SessionErrorKind`.
 
 ### T2 — mapper error/abort arms + frame-sink routing
@@ -232,7 +235,14 @@ the same contract.
 
 - **Interfaces consumed:** `mapping.test.ts` helpers `upd()`, `typedEvents()`,
   `soleTyped()`, `FIXED_NOW`; `SessionErrorKind` / `SessionError`.
-- Add fixtures to `packages/compass-agent/src/mapping.test.ts`:
+- **Rewrite the existing describe block**, do not merely add fixtures: the block
+  `EventMapper — inner error: crash → session ERRORED vs abort → counted
+  unmapped` (`packages/compass-agent/src/mapping.test.ts:358-382`) encodes the
+  RETIRED contract and reddens under the new emit rule — its `reason "error"`
+  test asserts `soleSessionState(...)` (exactly one frame) but the arm now emits
+  two, and its `reason "aborted"` test asserts `frame.kind === "unmapped"` but
+  the arm now emits a `sessionError` frame. Replace both tests and update the
+  block comment (`:359-363`) to the new contract:
   - error-reason `message_update` → two frames: a `sessionError` typed event
     (`kind === SESSION_ERROR_KIND_ERROR`, `message` = the errorMessage) then an
     `ERRORED` lifecycle frame.
@@ -240,14 +250,14 @@ the same contract.
     (`kind === SESSION_ERROR_KIND_ABORTED`), no lifecycle frame, no `UnmappedEvent`.
   - `status` present when `errorStatus` is set; absent when it is not.
 - Red-check: reverting the arm to the pre-change behavior (ERRORED-only / counted
-  UnmappedEvent) reddens the new tests.
+  UnmappedEvent) reddens the rewritten tests.
 - **Acceptance:** `bun test src/mapping.test.ts` green; red-check confirmed.
 
 ### T4 — frame-sink routing test
 
 - **Interfaces consumed:** `packages/compass-agent/src/transport/frame-sink.test.ts`
   harness (the existing `isInjection` priority-lane test at
-  `frame-sink.test.ts:712-734` is the pattern — a `sessionInjection` frame lands
+  `frame-sink.test.ts:697-736` is the pattern — a `sessionInjection` frame lands
   on the priority lane, never the trace lane).
 - Add a test mirroring it for a `sessionError` frame: it rides the never-drop
   priority lane and never the drop-oldest trace lane. Cover both `kind`s.
@@ -298,18 +308,20 @@ the same contract.
 
 - **(RESOLVED — Matt ruled 2026-09-02)** Never-drop lane for `SessionError`:
   ruled **never-drop PRIORITY lane** (folded into Approach → Frame-sink routing,
-  and DL-312). The alternative (accept trace-lane drop for a low-frequency
+  and DL-320). The alternative (accept trace-lane drop for a low-frequency
   terminal frame) was rejected because a `reason = aborted` content frame is the
   sole signal and a drop silently reverts to the contentless behavior RIG-2616
   fixes.
 
 - **(Non-load-bearing, deferred)** Surface `AssistantMessage.errorId`
-  (`types.ts:748`, a bit-packed machine-readable classifier) as a future
+  (`types.ts:733`, a bit-packed machine-readable classifier) as a future
   `SessionError` field. Omitted from the frozen contract: a subscriber cannot
-  interpret the bit layout without pi-ai's `utils/error-id.ts`, and the oneof/
+  interpret the bit layout without pi-ai's error-id helpers (`error/flags.ts`;
+  the SDK's own `types.ts:732` doc-comment still points at the pre-move
+  `utils/error-id.ts`), and the oneof/
   message grows additively if a consumer ever needs it. The design is correct
   without it.
 - **(Non-load-bearing, deferred)** Surface `AssistantMessage.stopDetails`
-  (`types.ts:742`, provider-specific terminal classification, e.g. an Anthropic
+  (`types.ts:726`, provider-specific terminal classification, e.g. an Anthropic
   refusal). Omitted: provider-specific and not needed to render *what* failed;
   additive later if a refusal-specific render is wanted.
