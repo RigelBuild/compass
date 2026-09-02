@@ -253,6 +253,19 @@ func TestVerifyMicroVMSupportManifest(t *testing.T) {
 		}
 	})
 
+	t.Run("uppercase manifest digest passes", func(t *testing.T) {
+		cfg, probes, dir := setup(t)
+		cfg.ImageManifest = writeManifest(t, dir, map[string]string{
+			"kernel.img": strings.ToUpper(digests["kernel.img"]),
+			"rootfs.img": strings.ToUpper(digests["rootfs.img"]),
+			"initrd.img": strings.ToUpper(digests["initrd.img"]),
+		})
+		m := NewMicroVMRuntime(cfg)
+		if err := m.verifyMicroVMSupport(t.Context(), probes); err != nil {
+			t.Fatalf("verifyMicroVMSupport = %v, want nil (hex digest compare must be case-insensitive)", err)
+		}
+	})
+
 	t.Run("mismatch names image and both digests", func(t *testing.T) {
 		cfg, probes, dir := setup(t)
 		bogus := strings.Repeat("0", 64)
