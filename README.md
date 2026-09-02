@@ -63,10 +63,12 @@ Every client reaches the Server only through the generated contract client,
 never a raw socket or a hand-written stub. The schema lives at
 [`proto/compass/v1/`](./proto/compass/v1); the generated Go and TypeScript
 clients are checked in and CI drift-gated, so a stale client fails the build.
-Two services live in the package: **`CompassService`** (server liveness, the
-event stream, the agent-session lifecycle) and **`CommsService`** (the
+Three services live in the package: **`CompassService`** (server liveness, the
+event stream, the agent-session lifecycle), **`CommsService`** (the
 communication layer — accounts, channels, threaded messages, and their event
-stream). Native clients (gRPC over the local transport) and browsers (gRPC-Web)
+stream), and **`SecretsService`** (the server-side secret registry — declare,
+list, and delete user- and agent-scoped secrets). Native clients (gRPC over the
+local transport) and browsers (gRPC-Web)
 share one contract.
 
 ## Repository layout
@@ -75,7 +77,8 @@ share one contract.
 proto/compass/            the compass.v1 schema — the owned door
 go/
   cmd/                    nine binaries — server, runner, stack, app, CLI, …
-  internal/               server, runtime, runnerhub, store, comms, …
+  server/                 the Server implementation — CompassService, CommsService, SecretsService handlers
+  internal/               runtime, runner, runnerhub, store, comms, …
   gen/                    generated Go client/server stubs (checked in)
   e2e/                    the cross-process end-to-end suites
 packages/
@@ -134,7 +137,9 @@ under [`docs/concepts/`](./docs/concepts/README.md):
 
 Compass self-hosts as a small set of binaries you run on a KVM-capable Linux
 host. `compass-stack up` supervises the server, a bundled PostgreSQL, and the
-agent runner as one stack; per-agent sessions run in microVMs. Install the
+agent runner as one stack; per-agent sessions run in microVMs (the KVM-backed
+self-host path — the rootless-podman container of the Architecture section is
+the dev default). Install the
 binaries from the nix flake or a release tarball, run
 `compass-stack preflight`, and bring the stack up under systemd. The full guide
 — deployment shapes, the bundled vs. external database, and the systemd unit —
@@ -189,8 +194,8 @@ silently fall out of sync with the schema.
 
 Compass is **AGPL-3.0-only** — see [LICENSE](./LICENSE).
 
-The protocol is the exception. So third-party UIs and closed-source consumers
-can link the contract without taking on the workspace's copyleft, the
+The protocol is the exception. So that third-party UIs and closed-source
+consumers can link the contract without taking on the workspace's copyleft, the
 `compass.v1` schema and the generated TypeScript client (`@compass/client`) are
 licensed permissively as **`MIT OR Apache-2.0`** — the protocol is permissive,
 the implementation is copyleft. See [LICENSE-MIT](./LICENSE-MIT) and
