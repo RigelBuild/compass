@@ -217,8 +217,8 @@ func setupOtel(ctx context.Context) (shutdown func(), err error) {
 // backendFlags holds the runtime-backend selection flags, registered on the
 // default flag set before flag.Parse and resolved into a runtime after it.
 type backendFlags struct {
-	backend, vmm, virtiofsd, kernel, rootfs, initrd, runRoot *string
-	cpus, memoryMB                                           *int
+	backend, vmm, virtiofsd, kernel, rootfs, initrd, imageManifest, runRoot *string
+	cpus, memoryMB                                                          *int
 }
 
 // registerBackendFlags declares the backend-selection flags. Call before
@@ -238,6 +238,10 @@ func registerBackendFlags() backendFlags {
 			"Path to the guest rootfs image (microvm backend). Defaults to $COMPASS_MICROVM_ROOTFS."),
 		initrd: flag.String("microvm-initrd", "",
 			"Path to the guest initramfs image (microvm backend). Defaults to $COMPASS_MICROVM_INITRD."),
+		imageManifest: flag.String("microvm-image-manifest", "",
+			"Path to a sha256sum-format manifest of the guest images (microvm backend); "+
+				"set enables hash-verification at preflight, unset checks presence only. "+
+				"Defaults to $COMPASS_MICROVM_IMAGE_MANIFEST."),
 		runRoot: flag.String("microvm-runroot", "",
 			"Root dir for per-session microVM runtime dirs (microvm backend). Defaults to $COMPASS_MICROVM_RUNROOT."),
 		cpus: flag.Int("microvm-cpus", 0,
@@ -268,6 +272,7 @@ func (f backendFlags) selectEngine() (runtime.ContainerRuntime, error) {
 			KernelImage:     orEnv(*f.kernel, "COMPASS_MICROVM_KERNEL"),
 			RootfsImage:     orEnv(*f.rootfs, "COMPASS_MICROVM_ROOTFS"),
 			InitrdImage:     orEnv(*f.initrd, "COMPASS_MICROVM_INITRD"),
+			ImageManifest:   orEnv(*f.imageManifest, "COMPASS_MICROVM_IMAGE_MANIFEST"),
 			RunRoot:         orEnv(*f.runRoot, "COMPASS_MICROVM_RUNROOT"),
 			DefaultCPUs:     cpus,
 			DefaultMemoryMB: memoryMB,
