@@ -40,3 +40,17 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
+  # The shared canonical RigelBuild/devenv fork, pinned by rev in devenv.lock.
+  # Root previously resolved `devenv` implicitly from the installed CLI's bundled
+  # modules (upstream cachix/devenv); this makes the source explicit and unifies
+  # it with the agent-image module set (agent-image/devenv.yaml:45-49), which
+  # already pins this fork. The fork keeps upstream's values as DEFAULTS, so a
+  # consumer setting none of the fork's added options — as this root shell does —
+  # resolves a byte-identical dev environment; the fork is a strict superset.
+  # renovate.yml's devenv-CLI-on-PATH step reads this lock's devenv node with no
+  # edit, so the CLI that writes root relocks tracks whatever source this names.
+  devenv:
+    url: github:RigelBuild/devenv
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
