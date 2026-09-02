@@ -63,12 +63,19 @@
   // (unlike the internal monorepo, whose meta jobs moved off GHA): compass runs all CI on GitHub
   // Actions and keeps every workflow `uses:` SHA-pinned — see the github-actions
   // manager rationale below. Dropped vs the internal monorepo: `cargo`/`rust-toolchain` (no Rust),
-  // `woodpecker` (no Woodpecker), and `nix` — Renovate's nix manager tracks
-  // `flake.lock`, and compass has NO root flake (the only flake.lock files are
-  // under forks/*, fenced below), while devenv.lock/devenv.yaml are not flake.lock
-  // (the custom git-refs manager covers them) — so a nix manager would be dead
-  // config. No `dockerfile` manager either: the only Dockerfiles in tree are under
-  // forks/*, also fenced, so it too would be dead config.
+  // `woodpecker` (no Woodpecker), and `nix`. Compass now DOES carry a root
+  // flake (flake.nix/flake.lock, added for the distribution flake + gtk4/OTel
+  // work), but the nix manager stays off deliberately: the flake's nixpkgs is
+  // pinned in lockstep with devenv.lock (inputs.nixpkgs.url hard-codes the
+  // devenv-nixpkgs channel rev; the flake-parity gate fails CI on any skew), and
+  // the devenv-nixpkgs postUpgradeTask (refresh-devenv-nixpkgs.ts) re-aligns
+  // flake.nix + flake.lock whenever that channel bumps. An independent nix
+  // manager tracking flake.lock would fight that coupling — bumping nixpkgs out
+  // of step with devenv.lock and reliably reddening flake-parity. The forks/*
+  // flake.lock files stay fenced below. devenv.lock/devenv.yaml are not
+  // flake.lock either (the custom git-refs manager covers them). No `dockerfile`
+  // manager: the only Dockerfiles in tree are under forks/*, also fenced, so it
+  // would be dead config.
   enabledManagers: [
     "bun",
     "npm",
@@ -518,8 +525,15 @@
       // branch-mode task slot Renovate builds per branch. Rule-level
       // postUpgradeTasks REPLACE the top-level one for matching branches; the
       // evicted top-level toolchain task self-gates on the versions/*.nix pins and
-      // would be a no-op here anyway. fileFilters cover exactly the files the script
-      // writes (compass has no committed inner-rev guard file, so no such entry).
+      // would be a no-op here anyway. fileFilters is an INCLUDE allowlist —
+      // Renovate commits ONLY files matching it — so it must name every file the
+      // script writes: devenv.lock + package.json (biome catalog pin) + bun.lock
+      // (steps 2/4/5), and flake.nix + flake.lock (step 6's flake lockstep). Omit
+      // the flake pair and Renovate would run the re-lock but silently DROP it
+      // from the commit, shipping a channel bump with the flake still skewed →
+      // flake-parity red on every bump (the same silent-drop mode the FOD guard
+      // in config.test.ts documents). compass has no committed inner-rev guard
+      // file, so no such entry.
       //
       // FOD-REFRESH IS INTENTIONALLY ABSENT here, though this branch rewrites
       // bun.lock + a workspace manifest (the biome catalog pin) — the two inputs
@@ -540,7 +554,13 @@
       // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
       postUpgradeTasks: {
         commands: ["bun tools/renovate/refresh-devenv-nixpkgs.ts"],
-        fileFilters: ["devenv.lock", "package.json", "bun.lock"],
+        fileFilters: [
+          "devenv.lock",
+          "package.json",
+          "bun.lock",
+          "flake.nix",
+          "flake.lock",
+        ],
         executionMode: "branch",
       },
     },

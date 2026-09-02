@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
+import { nixpkgsLockedRev } from "../toolchain/flake-parity-core.ts";
 
 // Orchestration harness for tools/renovate/refresh-devenv-nixpkgs.ts
 // (RIG-2432).
@@ -23,6 +24,15 @@ const SCRIPT_REL = "tools/renovate/refresh-devenv-nixpkgs.ts";
 const CORE_REL = "tools/renovate/refresh-devenv-nixpkgs.core.ts";
 const REAL_SCRIPT = join(import.meta.dir, "refresh-devenv-nixpkgs.ts");
 const REAL_CORE = join(import.meta.dir, "refresh-devenv-nixpkgs.core.ts");
+// Step 6 imports nixpkgsLockedRev from ../toolchain/flake-parity-core.ts, so the
+// throwaway repo must carry it at the same repo-root-relative path.
+const PARITY_CORE_REL = "tools/toolchain/flake-parity-core.ts";
+const REAL_PARITY_CORE = join(
+	import.meta.dir,
+	"..",
+	"toolchain",
+	"flake-parity-core.ts",
+);
 
 // Hermetic git: identity from env only, no user/global/system config leakage.
 const HERMETIC_ENV = {
@@ -113,6 +123,39 @@ function packageJson(biome: string): string {
 	)}\n`;
 }
 
+// Minimal root flake.nix whose inputs.nixpkgs.url hard-codes the devenv-nixpkgs
+// channel (OUTER) rev — the literal step 6 must rewrite in lockstep with a
+// channel bump. A second, prose mention of the rev guards that the rewrite
+// touches ONLY the URL, not documentation that legitimately names the rev.
+function flakeNix(outerRev: string): string {
+	return `{
+  # Pinned to devenv.lock's channel rev (${outerRev}); the parity gate asserts
+  # flake.lock's rev == devenv.lock's.
+  inputs.nixpkgs.url = "github:cachix/devenv-nixpkgs/${outerRev}";
+  outputs = { self, nixpkgs }: { };
+}
+`;
+}
+
+// Minimal flake.lock recording the nixpkgs channel rev in the `nodes.nixpkgs.
+// locked.rev` path the parity gate compares (flake-parity-core.nixpkgsLockedRev).
+// Seeded at the BASE rev so a bump makes step 6's `flakeLockRev !== channelRev`
+// gate fire; the stub `nix flake update` rewrites it to the bumped rev.
+function flakeLock(outerRev: string): string {
+	return `${JSON.stringify(
+		{
+			nodes: {
+				nixpkgs: { locked: { rev: outerRev, type: "github" } },
+				root: {},
+			},
+			root: "root",
+			version: 7,
+		},
+		null,
+		2,
+	)}\n`;
+}
+
 // Stub `devenv`: on `devenv update nixpkgs`, rewrite devenv.lock to the BUMPED
 // inner rev — simulating the real re-lock resolving the channel's nixpkgs-src.
 // Any other invocation is a no-op success. Offline.
@@ -132,7 +175,23 @@ exit 0
 // Emits GARBAGE for an unknown rev so the fail-loud path is reachable.
 const STUB_NIX = `#!/usr/bin/env bash
 set -euo pipefail
-# last arg is the flake ref: github:NixOS/nixpkgs/<rev>#legacyPackages.<sys>.<attr>.version
+# Step 6 re-locks the flake: \`nix flake update nixpkgs …\`. Simulate the real
+# re-lock offline: read the rev flake.nix now pins (step 6 rewrote it first) and
+# write a flake.lock whose nodes.nixpkgs.locked.rev matches — the exact field the
+# parity gate compares — then record it ran so the harness can assert step 6
+# fired. No network.
+if [ "\${1:-}" = "flake" ] && [ "\${2:-}" = "update" ]; then
+  touch .nix-flake-update-ran
+  rev=$(grep -oE 'devenv-nixpkgs/[a-f0-9]{40}' flake.nix | head -1 | cut -d/ -f2)
+  cat > flake.lock <<LOCK
+{ "nodes": { "nixpkgs": { "locked": { "rev": "$rev", "type": "github" } }, "root": {} }, "root": "root", "version": 7 }
+LOCK
+  exit 0
+fi
+# Otherwise a \`nix eval --raw … NixOS/nixpkgs/<rev>#…<attr>.version\` → a version
+# string keyed off BOTH the rev and the attr, so the assertion proves the
+# script evaluated the bumped INNER rev (not the outer/base) for biome.
+# Emits GARBAGE for an unknown rev so the fail-loud path is reachable.
 ref="\${@: -1}"
 rev="\${ref#github:NixOS/nixpkgs/}"; rev="\${rev%%#*}"
 attrpath="\${ref#*#}"; attr="\${attrpath%.version}"; attr="\${attr##*.}"
@@ -168,15 +227,23 @@ async function buildRepo(): Promise<string> {
 	await mkdir(join(repo, "tools", "renovate"), { recursive: true });
 	await mkdir(join(repo, "stubbin"), { recursive: true });
 
-	// Ship the REAL script + its core.
+	// Ship the REAL script + its core + the flake-parity-core module step 6
+	// imports (nixpkgsLockedRev), so the SHIPPED file runs unmodified.
 	await Bun.write(join(repo, SCRIPT_REL), await readFile(REAL_SCRIPT, "utf8"));
 	await Bun.write(join(repo, CORE_REL), await readFile(REAL_CORE, "utf8"));
+	await mkdir(join(repo, "tools", "toolchain"), { recursive: true });
+	await Bun.write(
+		join(repo, PARITY_CORE_REL),
+		await readFile(REAL_PARITY_CORE, "utf8"),
+	);
 
 	await Bun.write(
 		join(repo, "devenv.lock"),
 		devenvLock(OUTER_REV_BASE, INNER_REV_BASE),
 	);
 	await Bun.write(join(repo, "package.json"), packageJson("2.4.16"));
+	await Bun.write(join(repo, "flake.nix"), flakeNix(OUTER_REV_BASE));
+	await Bun.write(join(repo, "flake.lock"), flakeLock(OUTER_REV_BASE));
 
 	for (const [name, body] of [
 		["devenv", STUB_DEVENV],
@@ -259,6 +326,23 @@ describe("tools/renovate/refresh-devenv-nixpkgs.ts lockstep (RIG-2432)", () => {
 		expect(pkg).toContain('"@biomejs/biome": "catalog:"');
 		// Step 5 fired (bun install --lockfile-only).
 		expect(await Bun.file(join(repo, ".bun-install-ran")).exists()).toBe(true);
+		// Step 6: flake.nix rewritten to the BUMPED OUTER (channel) rev, and the
+		// flake re-lock ran. Renovate moved devenv.lock's channel rev; step 6
+		// keeps flake.nix's inputs.nixpkgs.url + flake.lock in lockstep so the
+		// flake-parity gate does not red on the skew.
+		const flake = await readFile(join(repo, "flake.nix"), "utf8");
+		expect(flake).toContain(`github:cachix/devenv-nixpkgs/${OUTER_REV_BUMP}`);
+		expect(flake).not.toContain(
+			`github:cachix/devenv-nixpkgs/${OUTER_REV_BASE}`,
+		);
+		expect(await Bun.file(join(repo, ".nix-flake-update-ran")).exists()).toBe(
+			true,
+		);
+		// flake.lock ends pinned at the bumped channel rev — the exact field the
+		// parity gate compares. Closes the loop on the side the gate reads (the
+		// script-only tests otherwise never check flake.lock's end state).
+		const flakeLockText = await readFile(join(repo, "flake.lock"), "utf8");
+		expect(nixpkgsLockedRev(flakeLockText)).toBe(OUTER_REV_BUMP);
 	});
 
 	// No-op-rewrite branch: a channel bump that does NOT move biome (the stub
@@ -283,6 +367,14 @@ describe("tools/renovate/refresh-devenv-nixpkgs.ts lockstep (RIG-2432)", () => {
 		expect(res.stdout.toString()).toContain("already match");
 		// Lockfile re-resolve skipped (no pin change).
 		expect(await Bun.file(join(repo, ".bun-install-ran")).exists()).toBe(false);
+		// ...but step 6 STILL fired: the flake lockstep is decoupled from the
+		// biome-pin rewrite (its whole reason to be a separate step). The channel
+		// moved, so flake.nix's URL rev + flake.lock's locked rev must both track
+		// it even though package.json/bun.lock stayed put.
+		const flake = await readFile(join(repo, "flake.nix"), "utf8");
+		expect(flake).toContain(`github:cachix/devenv-nixpkgs/${OUTER_REV_BUMP}`);
+		const flakeLockText = await readFile(join(repo, "flake.lock"), "utf8");
+		expect(nixpkgsLockedRev(flakeLockText)).toBe(OUTER_REV_BUMP);
 	});
 
 	// Fail-loud: if the version eval yields a non-version string (a broken rev,
