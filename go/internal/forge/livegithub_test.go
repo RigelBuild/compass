@@ -88,7 +88,9 @@ const (
 // installation-token sources for the author and reviewer identities — each an
 // *appTokenSource behind the TokenSource seam (Token mints an installation
 // access token from the App JWT; Invalidate drops the cache), so the oracle
-// drives the same mint path as the deployed server.
+// drives the same mint path as the deployed server. It eagerly builds BOTH
+// identities regardless of which the caller uses, so a reviewer-only misconfig
+// still fails an author-only test loud — the intended all-creds-or-skip gate.
 func requireLive(t *testing.T) (repo string, author, reviewer TokenSource) {
 	t.Helper()
 	repo = os.Getenv(envRepo)
@@ -102,10 +104,13 @@ func requireLive(t *testing.T) (repo string, author, reviewer TokenSource) {
 
 // liveAppSource builds a real App installation-token source from the id /
 // installation / PEM env trio, t.Skipping (never failing) when any is unset so
-// a credential-less run skips cleanly, and t.Fataling only when a value is
-// present but malformed (a non-numeric id or a NewAppTokenSource rejection is a
-// misconfigured secret, not a skip). The PEM is captured by value into the
-// PrivateKey resolver — no per-mint env read.
+// a credential-less run skips cleanly, and t.Fataling when the id or
+// installation is present but non-numeric, or NewAppTokenSource rejects the
+// config (a misconfigured secret, not a skip). A present-but-malformed PEM is
+// NOT caught here: NewAppTokenSource resolves the key lazily, so a bad PEM
+// surfaces as a mint failure on the first live GitHub leg (still red, never
+// silent-green). The PEM is captured by value into the PrivateKey resolver —
+// no per-mint env read.
 func liveAppSource(t *testing.T, idEnv, installEnv, keyEnv string) TokenSource {
 	t.Helper()
 	idStr := os.Getenv(idEnv)
