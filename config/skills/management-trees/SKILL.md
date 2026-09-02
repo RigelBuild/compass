@@ -13,10 +13,10 @@ the standing org chart of the operator's software company.
 
 ## Invariant — there is always a root Supervisor
 
-Every Compass tree has one root-level **Supervisor**. It persists; the operator
-grows a subtree per project, repo, or department beneath it. A lone Manager with
-no tree above it is not the Compass shape — that is what a plain OMP session is
-for.
+Every Compass tree has one root-level **Supervisor** — a node whose ROLE is
+`supervisor` (see the closed role set below). It persists; the operator grows a
+subtree per project, repo, or department beneath it. A lone Manager with no tree
+above it is not the Compass shape — that is what a plain OMP session is for.
 
 The root Supervisor:
 
@@ -69,8 +69,23 @@ wave: tool-named agents bind a node to a tool instead of a responsibility. The
 `aws` agent should have been an **Observability Manager** or a **Platform
 Manager**; the tool is what it reaches for, not what it is.
 
-(This composes with roles: the *role* sets capability, model, and tools; the
-*name* states the function.)
+### Roles compose with names
+
+A node's **role** and its **name** are two different things and both matter. The
+role sets capability, model, and tools; the name states the function. The role
+is one of a closed set of three:
+
+- **`supervisor`** — owns the whole tree (the root; intake, incidents,
+  operator first-contact, grows the project subtrees).
+- **`owner`** — owns one product, service, or domain end to end (decomposes it
+  into lanes and sub-domains, delegating lanes to child managers and sub-domains
+  to child owners, grows its own subtree).
+- **`manager`** — owns one lane and drives it to done (the leaf).
+
+So a single node is both a role and a function: a `supervisor` at the root, a
+**Payments** `owner` below it, a **CI** `manager` under that. Pick the role for
+the scope, name it for the function. The full role contract is in
+`docs/concepts/agent-roles.md`.
 
 ## Example tree shapes
 
@@ -78,9 +93,9 @@ Every example names nodes by **function**, per the tenet above.
 
 ### Single product / service
 
-Supervisor -> a **Product Manager** for that service -> function Managers beneath
-it (**CI Manager**, **Observability Manager**, **Frontend Manager**) ->
-ephemeral workers.
+Supervisor [`supervisor`] -> a **Product Manager** [`owner`] for that service ->
+function Managers beneath it (**CI Manager**, **Observability Manager**,
+**Frontend Manager**) [each `manager`] -> ephemeral workers [subagents].
 
 - **When to use:** one shippable product or service with a few distinct
   concerns. The most common starting shape.
@@ -92,7 +107,8 @@ ephemeral workers.
 
 ### Multi-service / monorepo (the current wave shape)
 
-Supervisor -> a Manager per product area, each owning a lane -> workers.
+Supervisor [`supervisor`] -> a Manager per product area [each `manager`], each
+owning a lane -> workers [subagents].
 
 - **When to use:** several services or areas in one repo, worked in parallel.
   Mirrors today's merge wave, but named by area/function rather than by repo or
@@ -105,8 +121,9 @@ Supervisor -> a Manager per product area, each owning a lane -> workers.
 
 ### Whole company from one operator
 
-Supervisor -> department Managers mirroring an org chart (**Platform**,
-**Payments**, **Growth**, **Docs**), each growing its own subtree.
+Supervisor [`supervisor`] -> department Managers [each `owner`] mirroring an org
+chart (**Platform**, **Payments**, **Growth**, **Docs**), each growing its own
+subtree.
 
 - **When to use:** the "build a company with one person" shape — multiple
   products or business functions run concurrently.
@@ -119,8 +136,8 @@ Supervisor -> department Managers mirroring an org chart (**Platform**,
 
 ### Design-heavy / greenfield
 
-Supervisor -> a **Design-Lead Manager** producing frozen design records ->
-implementation Managers executing them.
+Supervisor [`supervisor`] -> a **Design-Lead Manager** [`owner`] producing frozen
+design records -> implementation Managers [each `manager`] executing them.
 
 - **When to use:** greenfield or high-ambiguity work where the contract must be
   settled before code is written.
