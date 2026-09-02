@@ -18,11 +18,13 @@ import (
 //
 // DEPENDENCY HONESTY: the host-capability check logic now lives in the runtime
 // lane's internal/hostcheck (the /dev/kvm probe, the version-floor comparator,
-// the per-check verdicts) and is enforced at Runner startup by
-// VerifyMicroVMSupport (go/internal/runtime/microvm_preflight.go). This command
-// is a thin consumer of that shared core — no longer a placeholder to be
-// replaced — and keeps only what is stack-specific: the podman rootless-capability
-// check (postgres runs as a rootless container) and the print/exit surface. Do
+// the per-check verdicts). The runtime lane also defines VerifyMicroVMSupport
+// (go/internal/runtime/microvm_preflight.go) to enforce the same floors as a
+// hard-fail Runner-startup gate; its wiring into Runner selection lands in a
+// later V5 wave. This command is a thin consumer of that shared core — no
+// longer a placeholder to be replaced — and keeps only what is stack-specific:
+// the podman rootless-capability check (postgres runs as a rootless container)
+// and the print/exit surface. Do
 // not grow this into a capability framework.
 
 // podmanBinary is the podman executable name, resolved on PATH. It is the check

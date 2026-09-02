@@ -154,7 +154,21 @@ func TestVerifyMicroVMSupport(t *testing.T) {
 				}
 				cfg.RunRoot = longDir
 			},
-			wantParts: []string{"AF_UNIX", "--run-root"},
+			wantParts: []string{"AF_UNIX", "--microvm-runroot"},
+		},
+		{
+			name: "run-root not creatable/writable",
+			mutate: func(cfg *MicroVMConfig, _ *preflightProbes) {
+				// Point RunRoot at a path under a regular file so MkdirAll of
+				// the probe dir fails with ENOTDIR — the writability axis with
+				// no probe seam (verifyRunRoot calls os.MkdirAll directly).
+				file := filepath.Join(t.TempDir(), "not-a-dir")
+				if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+					t.Fatalf("writing blocking file: %v", err)
+				}
+				cfg.RunRoot = filepath.Join(file, "under-a-file")
+			},
+			wantParts: []string{"not creatable/writable"},
 		},
 	}
 	for _, tt := range tests {
@@ -284,6 +298,57 @@ func TestVerifyMicroVMSupportManifest(t *testing.T) {
 		m := NewMicroVMRuntime(cfg)
 		if err := m.verifyMicroVMSupport(t.Context(), probes); err != nil {
 			t.Fatalf("verifyMicroVMSupport = %v, want nil (unset manifest is presence-only)", err)
+		}
+	})
+}
+
+// TestParseManifest covers the sha256sum-format line shapes directly: text mode
+// (two spaces), one-space, binary mode (`*` marker), blank-line tolerance, and a
+// no-separator malformed line. The binary-mode row is the regression guard for
+// the marker-stripping fix.
+func TestParseManifest(t *testing.T) {
+	const digest = "abc123"
+	t.Run("line shapes key on bare basename", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "manifest.sha256")
+		content := "" +
+			digest + "  text-mode.img\n" + // two spaces (GNU text mode)
+			digest + " one-space.img\n" + // single space
+			digest + " *binary-mode.img\n" + // binary mode `*` marker
+			"\n" + // blank line, tolerated
+			"   \n" // whitespace-only line, tolerated
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("writing manifest: %v", err)
+		}
+		got, err := parseManifest(path)
+		if err != nil {
+			t.Fatalf("parseManifest = %v, want nil", err)
+		}
+		want := map[string]string{
+			"text-mode.img":   digest,
+			"one-space.img":   digest,
+			"binary-mode.img": digest,
+		}
+		if len(got) != len(want) {
+			t.Fatalf("parseManifest = %v, want %v", got, want)
+		}
+		for name, wantDigest := range want {
+			if got[name] != wantDigest {
+				t.Errorf("key %q = %q, want %q", name, got[name], wantDigest)
+			}
+		}
+	})
+
+	t.Run("no-separator line is malformed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "manifest.sha256")
+		if err := os.WriteFile(path, []byte("nospacehere\n"), 0o600); err != nil {
+			t.Fatalf("writing manifest: %v", err)
+		}
+		_, err := parseManifest(path)
+		if err == nil {
+			t.Fatal("parseManifest = nil, want malformed-line error")
+		}
+		if !strings.Contains(err.Error(), "malformed manifest line") {
+			t.Errorf("error %q does not name the malformed line", err.Error())
 		}
 	})
 }

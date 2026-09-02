@@ -45,6 +45,12 @@ func defaultPreflightProbes() preflightProbes {
 		openKVM:  hostcheck.ProbeKVM,
 		lookPath: exec.LookPath,
 		version: func(ctx context.Context, path string) (string, error) {
+			// CombinedOutput (not Output): a preflight must not miss a --version
+			// a tool prints to stderr. hostcheck.FirstLine takes the first line,
+			// and the trio all print --version as their first stdout line, so
+			// the shared DecideVersion agrees with compass-stack's install-time
+			// gate (which uses Output) for a well-behaved trio; capturing stderr
+			// here only widens what this startup gate can catch.
 			out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
 			return string(out), err
 		},
@@ -180,7 +186,7 @@ func (m *MicroVMRuntime) verifyRunRoot(_ preflightProbes) error {
 	vsockSocket := filepath.Join(m.config.RunRoot, "microvm", strings.Repeat("a", idLen), "vsock.sock")
 	gatewayPath := microvm.GatewaySocketPath(vsockSocket, agentGatewayVsockPort)
 	if len(gatewayPath) > sunPathMax {
-		return fmt.Errorf("microvm preflight: worst-case gateway socket path is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --run-root", len(gatewayPath), sunPathMax)
+		return fmt.Errorf("microvm preflight: worst-case gateway socket path is %d bytes, over the %d-byte AF_UNIX limit: shorten --microvm-runroot or $COMPASS_MICROVM_RUNROOT", len(gatewayPath), sunPathMax)
 	}
 	return nil
 }
@@ -204,8 +210,8 @@ func hashFileSHA256(path string) (string, error) {
 }
 
 // parseManifest reads a sha256sum-format manifest into a basename→digest map.
-// Lines are `<hex>␠␠<basename>` (two spaces) or `<hex>␠<basename>`; blank lines
-// are tolerated.
+// Lines are `<hex>␠␠<basename>` (text mode, two spaces) or `<hex>␠*<basename>`
+// (binary mode, one space then a `*` marker); blank lines are tolerated.
 func parseManifest(path string) (map[string]string, error) {
 	f, err := os.Open(path) //nolint:gosec // G304: operator-supplied manifest path is the intended input
 	if err != nil {
@@ -226,9 +232,12 @@ func parseManifest(path string) (map[string]string, error) {
 		if !found {
 			return nil, fmt.Errorf("malformed manifest line %q: want `<hex digest>  <basename>`", line)
 		}
-		// A second leading space (sha256sum's binary-mode marker or its two-space
-		// separator) leaves the name starting with a space; trim it.
-		out[strings.TrimSpace(name)] = digest
+		// Cut on the first space, then strip any leftover separator noise: text
+		// mode leaves a second leading space, binary mode leaves a leading `*`
+		// marker (`sha256sum -b`). Normalize both away to key on the bare
+		// basename.
+		name = strings.TrimPrefix(strings.TrimSpace(name), "*")
+		out[name] = digest
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
