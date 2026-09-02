@@ -255,7 +255,7 @@ UI today is a browser SolidJS app that dials a door from
 `VITE_COMPASS_BASE_URL` + `VITE_COMPASS_CALLER_ID` (`apps/ui/src/boot.ts:1-17`
 "resolving the live connection from the Vite env";
 `apps/ui/.env.development:23`), and the native shell (Wails v3, product record
-`docs/designs/product/compass-native-app/design.md`) adds an embedded mode
+`docs/designs/ui/compass-native-app/design.md`) adds an embedded mode
 that itself supervises the stack via the SAME `go/internal/stack` (its §A3:
 "the Wails v3 shell … spawns and monitors ONE" stack) — so the harness core
 and the native app share the bring-up seam by construction. HOW a test drives

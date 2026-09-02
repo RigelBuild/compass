@@ -108,7 +108,7 @@ outgrows flat scanning; until then records sit directly under their bucket.
 ### The design-ledger-gate governs every bucket
 
 `tools/design-ledger-gate` scans every governed bucket (the six taxonomy buckets
-above plus the transitional `product/` root, below): every record's `Status:`
+above): every record's `Status:`
 header is checked for presence and grammar, and a PR that touches a governed
 record must either touch the ledger (`docs/designs/DECISIONS.md`) or declare a
 `Ledger-impact:` line in its description. The `DECISIONS.md` ledger rows stay
@@ -126,9 +126,3 @@ deletion — a move leaves the same dangling-link rot a deletion would. Two narr
 metadata edits ride the same standard and are likewise not freeze violations:
 normalizing a newly-governed record's `Status:` header to the gate grammar, and
 a one-line correction of a record's stale self-described location.
-
-### `product/` is transitional
-
-A `product/` bucket persists transitionally alongside the six above until the
-`compass-native-*` records clear their in-flight lane and the final sweep
-removes it; records still under `product/` remain governed in the meantime.

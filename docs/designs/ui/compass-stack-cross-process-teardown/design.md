@@ -178,7 +178,7 @@ killing the *server* first makes a surviving runner exit on its own when its
 link drops — both facts the teardown sequence below relies on.
 
 **The frozen record's claim this realizes.**
-`docs/designs/product/compass-native-app/design.md:204-206`:
+`docs/designs/ui/compass-native-app/design.md:204-206`:
 
 > ```text
 > On app quit, per DL-108: the stack lingers by default;

@@ -469,7 +469,7 @@ the frozen contract. OQ-4/5/6 stay deferred (non-load-bearing).
   `compass devenv.nix:189-190` notes the app links the system WebKit framework on
   macOS, so it does NOT cross-compile from an ubuntu runner) are out of scope
   here; their release-artifact distribution is decided in the native-packaging
-  lane (`compass docs/designs/product/compass-native-packaging/design.md`, RIG-1687
+  lane (`compass docs/designs/ui/compass-native-packaging/design.md`, RIG-1687
   umbrella). The deferral is filed as **RIG-2477** (parented under RIG-1687) so it
   has a tracked home rather than living only as a design-record note.
   - *Cross-ref (companion record, same PR):* the client-only pivot's **DL-238**

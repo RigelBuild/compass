@@ -2,7 +2,7 @@
 
 Status: Draft
 
-Refines the frozen parent record `docs/designs/product/compass-native-app/design.md` §T5 + §A4. Design only; no implementation.
+Refines the frozen parent record `docs/designs/ui/compass-native-app/design.md` §T5 + §A4. Design only; no implementation.
 
 ## Problem / Intent
 

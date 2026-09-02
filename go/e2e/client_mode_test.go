@@ -3,7 +3,7 @@
 package e2e
 
 // TestClientModeHeadlessChain is the T5.7 headless CI variant
-// (docs/designs/product/compass-native-client-mode/design.md §T5.7, lines
+// (docs/designs/ui/compass-native-client-mode/design.md §T5.7, lines
 // 582-598). The webview-dependent steps (connect screen renders, paste-token,
 // board renders, auto-connect-no-screen) are manual QA on the dev box with
 // T5.3's TestConnectClassification as the CI proxy, mirroring T4's split — they

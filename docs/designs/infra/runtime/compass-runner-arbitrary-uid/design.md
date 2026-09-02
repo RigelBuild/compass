@@ -6,7 +6,7 @@ Status: Draft
 
 The embedded compass-runner refuses to start unless its real uid is 1000, which
 blocks hosted/GA deployments where the host uid is arbitrary
-(`docs/designs/product/compass-native-app/design.md` §OQ5 froze the split:
+(`docs/designs/ui/compass-native-app/design.md` §OQ5 froze the split:
 preflight-and-refuse is the interim, arbitrary-uid is the GA-blocking
 follow-up — this record). The **launch mechanism is already decided and
 frozen** in the Active record

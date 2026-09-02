@@ -444,7 +444,7 @@
     {
       // ── wails/v3: hold below v3.1 (GTK4-migration floor, RIG-2818/RIG-2819) ──
       // The GTK4 migration record freezes a hard "Never v3.1" floor
-      // (docs/designs/product/compass-gtk4-migration/design.md §Global Constraints
+      // (docs/designs/ui/compass-gtk4-migration/design.md §Global Constraints
       // "Wails floor"): wails v3.1 drops the legacy GTK3 build tag, so bumping to it
       // before the GTK4 flip (RIG-2819) is proven would strand the app with no
       // working native shell. go/go.mod pins a v3.0.0 prerelease today; Renovate would

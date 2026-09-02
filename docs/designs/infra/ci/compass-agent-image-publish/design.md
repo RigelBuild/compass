@@ -10,7 +10,7 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 > below is a path in that repo at HEAD `b3fc25311`, not this one (line numbers
 > drift as the code evolves; resolve them against that commit). It lives in the
 > sealed design corpus (`docs/designs/infra/ci/`) because that is where the wave's design
-> records freeze; the `docs/designs/product/*` cross-references (e.g. DL-112)
+> records freeze; the `docs/designs/ui/*` cross-references (e.g. DL-112)
 > are paths in this (sealed) corpus.
 >
 > **Superseded in part** (RIG-1746, Matt 2026-08-25): the *CI-placement*
@@ -37,7 +37,7 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 
 The `compass-agent` base image already builds and loads locally
 (`dogfood:agent-image` → `containers-storage:compass-agent:latest`), but per
-frozen decision DL-112 (`docs/designs/product/compass-native-app/design.md`
+frozen decision DL-112 (`docs/designs/ui/compass-native-app/design.md`
 §OQ6) the native app does not bundle the agent image: `compass-stack` `podman
 pull`s it from GHCR at first run. Nothing publishes the image today. This
 record designs the publish lane — the GHCR side of that seam; the pull side is
@@ -75,7 +75,7 @@ decision, not an assumption:
 
 A settled fact, not an open question: the consumer's arch is **frozen** in
 compass-native's merged record (PR #1073,
-`docs/designs/product/compass-native-app/design.md`) to Linux x86_64 for the
+`docs/designs/ui/compass-native-app/design.md`) to Linux x86_64 for the
 dogfood milestone — non-Linux runner support and
 macOS packaging are deferred there to a GA follow-up (`:522-524` "reproducible
 build of the app bundle for Linux (the dev/dogfood target; macOS packaging
