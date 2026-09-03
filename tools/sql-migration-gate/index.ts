@@ -20,8 +20,11 @@
 // no-bash-gate CI task forbid this logic in bash) and unit-testable.
 //
 // Inputs (env):
-//   GATE_ROOT - workspace root to run the linters from (default: git toplevel).
-//               The linters discover their repo-root configs (/.squawk.toml,
+//   GATE_ROOT - workspace root to run the linters from. Default: the git
+//               toplevel, falling back to process.cwd() when git reports none
+//               (a jj workspace's .git lives in the colocated clone). moon runs
+//               this with runFromWorkspaceRoot:true, so cwd is the repo root in
+//               CI. The linters discover their repo-root configs (/.squawk.toml,
 //               /.sqruff) and the migration glob resolves repo-relative from
 //               here.
 // Exit codes:
@@ -84,9 +87,9 @@ export async function runOnce(deps: Deps): Promise<number> {
 	const { runLinter, log, err } = deps;
 
 	const squawk = await runLinter("squawk", [MIGRATION_GLOB]);
-	err(squawk.output);
+	if (squawk.output) err(squawk.output);
 	const sqruff = await runLinter("sqruff", ["lint", MIGRATION_GLOB]);
-	err(sqruff.output);
+	if (sqruff.output) err(sqruff.output);
 
 	const results = [squawk, sqruff];
 	const exit = combineExitCodes(results);
@@ -96,46 +99,76 @@ export async function runOnce(deps: Deps): Promise<number> {
 	return exit;
 }
 
+/**
+ * Build the production `runLinter`: resolve the migration glob to real file
+ * paths under `root` and spawn the linter over them. Exported so the real
+ * spawn path (including the missing-binary throw → code 2) is unit-testable.
+ */
+export function makeSpawnLinter(
+	root: string,
+): (name: string, argv: string[]) => Promise<LinterResult> {
+	return async (name, argv) => {
+		// Glob expansion is the shell's job in the original gate; do it here
+		// so each linter receives real file paths, not a literal glob. A glob
+		// that matches nothing is a hard error — a gate with no subject must
+		// not read as green.
+		const glob = new Bun.Glob(MIGRATION_GLOB);
+		const files = [...glob.scanSync({ cwd: root, onlyFiles: true })]
+			.map((f) => f.replaceAll("\\", "/"))
+			.sort();
+		if (files.length === 0) {
+			return {
+				name,
+				code: 2,
+				output: `sql-migration-gate: no migrations matched ${MIGRATION_GLOB} under ${root}`,
+			};
+		}
+		// argv is [<glob>] for squawk, ["lint", <glob>] for sqruff — replace
+		// the glob token with the resolved file list.
+		const resolved = argv.flatMap((a) => (a === MIGRATION_GLOB ? files : [a]));
+		try {
+			const proc = Bun.spawn([name, ...resolved], {
+				cwd: root,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
+			const [stdout, stderr] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+			]);
+			const code = await proc.exited;
+			return { name, code, output: (stdout + stderr).trimEnd() };
+		} catch (e) {
+			// Bun.spawn throws synchronously when the binary is missing
+			// (ENOENT — e.g. a PATH regression or running outside the dev
+			// shell). Map it to the documented code 2 with a clean message
+			// instead of letting it escape as an unhandled rejection with a
+			// raw stack trace. Still fail-closed: 2 dominates the combine.
+			return {
+				name,
+				code: 2,
+				output: `sql-migration-gate: could not spawn ${name}: ${e instanceof Error ? e.message : String(e)}`,
+			};
+		}
+	};
+}
+
 if (import.meta.main) {
-	const root =
-		process.env.GATE_ROOT ??
-		(await $`git rev-parse --show-toplevel`.nothrow().quiet().text()).trim();
+	// Resolve the root the linters run from and the migration glob resolves
+	// against, in priority order: explicit GATE_ROOT, then the git toplevel,
+	// then process.cwd(). The git toplevel is empty in a jj workspace (its .git
+	// lives in the colocated clone, not the workspace) — a legitimate local dev
+	// context, not an error — and moon runs this with runFromWorkspaceRoot:true
+	// so cwd is the repo root in CI. Falling back to cwd (never "") keeps every
+	// valid environment working without the empty-string-as-path fragility.
+	const gitTop = (
+		await $`git rev-parse --show-toplevel`.nothrow().quiet().text()
+	).trim();
+	const root = process.env.GATE_ROOT ?? (gitTop || process.cwd());
 
 	process.exit(
 		await runOnce({
-			runLinter: async (name, argv) => {
-				// Glob expansion is the shell's job in the original gate; do it here
-				// so each linter receives real file paths, not a literal glob. A glob
-				// that matches nothing is a hard error — a gate with no subject must
-				// not read as green.
-				const glob = new Bun.Glob(MIGRATION_GLOB);
-				const files = [...glob.scanSync({ cwd: root, onlyFiles: true })]
-					.map((f) => f.replaceAll("\\", "/"))
-					.sort();
-				if (files.length === 0) {
-					return {
-						name,
-						code: 2,
-						output: `sql-migration-gate: no migrations matched ${MIGRATION_GLOB} under ${root}`,
-					};
-				}
-				// argv is [<glob>] for squawk, ["lint", <glob>] for sqruff — replace
-				// the glob token with the resolved file list.
-				const resolved = argv.flatMap((a) =>
-					a === MIGRATION_GLOB ? files : [a],
-				);
-				const proc = Bun.spawn([name, ...resolved], {
-					cwd: root,
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				const [stdout, stderr] = await Promise.all([
-					new Response(proc.stdout).text(),
-					new Response(proc.stderr).text(),
-				]);
-				const code = await proc.exited;
-				return { name, code, output: (stdout + stderr).trimEnd() };
-			},
+			runLinter: makeSpawnLinter(root),
 			log: (msg) => console.log(msg),
 			err: (msg) => console.error(msg),
 		}),

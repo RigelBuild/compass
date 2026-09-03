@@ -12,11 +12,16 @@
 // - Literal expectations, not values derived from the module.
 
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	combineExitCodes,
 	type Deps,
 	formatVerdict,
 	type LinterResult,
+	MIGRATION_GLOB,
+	makeSpawnLinter,
 	runOnce,
 } from "./index.ts";
 
@@ -105,10 +110,15 @@ function harness(codes: Record<string, number>) {
 }
 
 describe("runOnce", () => {
-	test("runs BOTH linters even when the first fails (no short-circuit)", async () => {
-		const { deps, ran } = harness({ squawk: 1, sqruff: 1 });
+	test("runs BOTH linters even when the first fails, surfacing both outputs", async () => {
+		const { deps, ran, errs } = harness({ squawk: 1, sqruff: 1 });
 		await runOnce(deps);
 		expect(ran).toEqual(["squawk", "sqruff"]);
+		// Both batteries' findings must surface in one push — the old bug hid
+		// one half; dropping either err() call would re-hide it.
+		const joined = errs.join("\n");
+		expect(joined).toContain("squawk findings");
+		expect(joined).toContain("sqruff findings");
 	});
 
 	test("returns 1 when only sqruff finds — the exact regression", async () => {
@@ -125,8 +135,51 @@ describe("runOnce", () => {
 		expect(logs.join("\n")).toContain("OK");
 	});
 
+	test("clean run emits no blank output lines (only the OK verdict)", async () => {
+		const { deps, errs } = harness({ squawk: 0, sqruff: 0 });
+		await runOnce(deps);
+		// Clean linters produce empty output; the guard must suppress those so
+		// stderr carries no blank noise ahead of the OK line.
+		expect(errs).toEqual([]);
+	});
+
 	test("propagates a spawn failure as 2", async () => {
 		const { deps } = harness({ squawk: 2, sqruff: 0 });
 		expect(await runOnce(deps)).toBe(2);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// makeSpawnLinter — the REAL spawn path: empty-glob and missing-binary both
+// resolve to the documented code 2 (never an escaping throw, never green).
+// ---------------------------------------------------------------------------
+
+describe("makeSpawnLinter", () => {
+	test("empty glob (no migrations under root) -> code 2", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sql-gate-empty-"));
+		try {
+			const linter = makeSpawnLinter(root);
+			const res = await linter("squawk", [MIGRATION_GLOB]);
+			expect(res.code).toBe(2);
+			expect(res.output).toContain("no migrations matched");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("missing binary throws in spawn -> mapped to code 2, not an escaping rejection", async () => {
+		const root = mkdtempSync(join(tmpdir(), "sql-gate-nobin-"));
+		const migDir = join(root, "go/internal/store/migrations");
+		mkdirSync(migDir, { recursive: true });
+		writeFileSync(join(migDir, "0001_init.sql"), "SELECT 1;\n");
+		try {
+			// A binary that cannot exist on PATH; Bun.spawn throws synchronously.
+			const linter = makeSpawnLinter(root);
+			const res = await linter("squawk-does-not-exist-xyz", [MIGRATION_GLOB]);
+			expect(res.code).toBe(2);
+			expect(res.output).toContain("could not spawn");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });
