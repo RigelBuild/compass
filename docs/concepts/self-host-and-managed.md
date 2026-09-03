@@ -18,8 +18,8 @@ feature may make about its environment.
   forking it**, and adds the control plane the core does not have (tenant
   orchestration, billing, cross-tenant fleet health, and inter-tenant isolation
   as a product
-  requirement). It runs at **`compass.rigel.build`**. Its code lives in a
-  **private monorepo**, not this one. **It does not exist yet — it is a
+  requirement). It runs at **`compass.rigel.build`**. It is built **out of
+  tree**, as a separate private product. **It does not exist yet — it is a
   near-future buildout** — but designs land now with it in view so the core
   stays a clean base for it.
 
@@ -33,17 +33,31 @@ built on top of it, out of tree.
   resolve against this repo; its tasks land here.
 - **Managed control-plane concerns are out of scope for this repo — name them,
   then defer.** Tenant orchestration, billing, cross-tenant analytics, the
-  hosted control surface, and multi-tenant scheduling live in the private
-  monorepo. When a design touches one, state that it is managed-plane and
-  out of scope; do not design it here.
+  hosted control surface, and multi-tenant scheduling are managed-plane
+  concerns. When a design touches one, state that it is managed-plane and out
+  of scope; do not design it here, and do not point at where it is designed.
+- **The managed product's end-state and rollout stay out of this repo.**
+  Managed *capability* implemented in the core belongs here, framed as core
+  capability (what it does for the self-hosted product). But the managed
+  *product's* end-state, deployment shape, and rollout sequencing — "the
+  managed deployment drops X at the first-external-tenant milestone," "the
+  managed service's sole runtime is Y" — are private product roadmap, not core
+  capability. Build the seam the managed product can extend and describe the
+  core default; do not describe or sequence the out-of-tree end-state.
 - **The core must not assume it is single-tenant, nor assume it is managed.**
   Prefer a seam the managed service can extend over a choice that only fits one
   product. A store, an endpoint, or a URL is configured at deploy, never
   hardcoded to one product's shape.
-- **Do not name the private monorepo.** Refer to "the private monorepo" or "the
-  managed multi-tenant service" — never a repo proper name (applies the
+- **Never name or point at the private repo.** Do not name it, and do not
+  point at it as a place — no "the private monorepo," no "designed there," no
+  "built in the private monorepo." When the other product must be referred to
+  at all, say **"the managed service"** (the product, as a consumer/operator
+  of the core) — generically, and only when unavoidable; prefer describing the
+  core capability directly so it need not be named. `moon run
+  orion-ref-gate:check` catches the literal repo name; the place-pointer ban is
+  broader and is on the author and reviewer. (Applies the
   describe-behavior-directly principle from [`AGENTS.md`](../../AGENTS.md)
-  Hygiene).
+  Hygiene.)
 
 ## Deploy-time differences the core already carries
 

@@ -15,8 +15,9 @@ the Server↔Runner topology, and the NATS eventing substrate are the live
 example (the RIG-2861 record,
 `docs/designs/infra/runtime/compass-managed-multitenancy/design.md`). Without
 a stated convention, agents do not know what belongs in the public
-`RigelBuild/compass` core versus the private monorepo, and public
-records risk "managed-service" framing for what is really core capability.
+`RigelBuild/compass` core versus the managed plane (built out of tree), and
+public records risk "managed-service" framing for what is really core
+capability.
 
 ## Approach
 
@@ -29,10 +30,10 @@ that is literally true and makes the OSS product better. The managed service
 is a **consumer and operator** of that core, never the subject of the
 record. This is the parent record's "one architecture, two products" seam
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:71-101`),
-which already draws the line: "**This record designs a change to the OSS
-core.** … Nothing in the managed control plane (tenant orchestration,
-billing, the hosted control surface, all of which live in the private
-monorepo) is designed here."
+which already draws the line: this record designs a change to the OSS core,
+and nothing in the managed control plane (tenant orchestration, billing, the
+hosted control surface) is designed here — those are managed-plane concerns,
+built out of tree.
 
 ### Boundary test
 
@@ -41,8 +42,8 @@ monorepo) is designed here."
 - **Yes** → OSS core (`RigelBuild/compass`, records under `docs/designs/`
   here).
 - **No, because it needs cloud infrastructure, billing, or
-  tenant-provisioning orchestration** → the private monorepo (never
-  mirrored public).
+  tenant-provisioning orchestration** → managed plane, out of tree (built as a
+  separate private product; not designed or mirrored here).
 
 ### Examples
 
@@ -52,9 +53,9 @@ monorepo) is designed here."
 | OSS core | Server↔Runner connection topology |
 | OSS core | NATS eventing substrate |
 | OSS core | The single-binary embedded-NATS default |
-| Private monorepo | AWS/EKS deployment IaC (Pulumi, Kubernetes manifests) |
-| Private monorepo | Tenant provisioning and billing orchestration |
-| Private monorepo | Operational runbooks for the hosted service |
+| Managed plane (out of tree) | Cloud deployment IaC (Pulumi, Kubernetes manifests) |
+| Managed plane (out of tree) | Tenant provisioning and billing orchestration |
+| Managed plane (out of tree) | Operational runbooks for the hosted service |
 
 The RIG-2861 tenancy record is the worked example of
 core-capability-under-managed-motivation: motivated by the managed product,
