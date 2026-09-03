@@ -7,22 +7,34 @@
 #   squawk  migration-SAFETY analysis — flags unsafe DDL (a NOT-NULL column with
 #           no default, a full-table rewrite, a non-CONCURRENT index on a live
 #           table). Config + accepted-rule rationale in /.squawk.toml.
-#   sqruff  SQL style/lint — structural + correctness rules kept, pure-layout
-#           reformatting rules excluded for this hand-authored schema. Config in
-#           /.sqruff.
+#   sqruff  SQL style/lint — structural + correctness + capitalisation rules
+#           kept, pure-layout reformatting rules excluded for this hand-authored
+#           schema. Config in /.sqruff.
 #
-# NOT a bun or go project: it execs two nix-provided binaries over a file glob,
-# so it inherits neither the tag-bun install nor the whole-repo biome lint/format
-# (excluded below). A nix-tool gate like its siblings (flake-gate, guest-image,
-# agent-image): `language: nix` + `tags: ['ci-group.nix']` (even though the work
-# is a shell exec, not a nix build — the sibling convention), so it rides the
-# same non-bun/non-go CI leg and `moon run :ci` sweeps it.
+# A bun/TypeScript CLI (`bun` tag), like its gate siblings inline-sql-gate and
+# microvm-boot-test: install is inherited via .moon/tasks/tag-bun.yml (the shared
+# root install) and lint/format are whole-repo root tasks, so this leaf carries
+# no own bun.lock. The `check` task execs the two nix-provided linter binaries
+# (squawk/sqruff) — both are on PATH on every moon CI leg (ci.yml phase-two puts
+# the devenv nixpkgs tools on PATH for each running leg, gated on matrix.run, not
+# on the group), so a bun-group leg has them just as the nix leg did.
+#
+# WHY A SCRIPT, NOT AN INLINE `bash -c`: the gate WAS
+# `command: 'bash -c "squawk …; rc=$?; sqruff …; rc2=$?; exit $(( rc | rc2 ))"'`.
+# moon wraps every task command in its own `bash -c "<command>"`, and the nested
+# double quotes collided: the OUTER shell expanded `$?`, `$rc`, `$rc2`, and
+# `$(( rc | rc2 ))` (all unset → 0) BEFORE the inner shell ran, so the inner
+# shell got a literal `…; rc=0; …; rc2=0; exit 0` and the gate ran fail-OPEN —
+# it printed every finding and always exited 0. It went unnoticed because
+# 0001_init.sql genuinely passes both linters. The exit-code combination now
+# lives in index.ts (rule://scripts-ts-over-bash + the no-bash-gate CI task) and
+# is unit-tested (index.test.ts).
 #
 # Compass CI is a single moon-driven job (.github/workflows/ci.yml runs
 # `moon run :ci`), so the `ci` aggregate below is swept automatically.
 layer: 'tool'
-language: 'nix'
-tags: ['ci-group.nix']
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
 
 # Affected-detection walks the PROJECT GRAPH ONLY (moon query projects
 # --affected → downstream); it NEVER consults a project's cross-tree task
@@ -44,20 +56,25 @@ tags: ['ci-group.nix']
 dependsOn:
   - 'compass-go'
 
-workspace:
-  inheritedTasks:
-    exclude: ['install', 'lint', 'format']
-
 tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    # The pure core (index.ts): the fail-closed exit-code combination + verdict
+    # formatting + the no-short-circuit orchestration — the contract the old
+    # inline-`bash -c` form silently violated.
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   check:
-    # Both linters over every first-party migration. Run from the workspace root
-    # so squawk/sqruff discover their repo-root configs (/.squawk.toml, /.sqruff)
-    # and the glob resolves repo-relative. squawk takes the files as args; sqruff
-    # takes `lint <files>`. Run BOTH unconditionally and OR their exit codes so a
-    # single push surfaces squawk-safety AND sqruff-style findings together (a
-    # plain `&&` would short-circuit and hide the sqruff half behind a squawk
-    # failure, costing a second red cycle). Fail-closed: non-zero from either.
-    command: 'bash -c "squawk go/internal/store/migrations/*.sql; rc=$?; sqruff lint go/internal/store/migrations/*.sql; rc2=$?; exit $(( rc | rc2 ))"'
+    # Both linters over every first-party migration, exit codes OR'd fail-closed
+    # in index.ts. Run from the workspace root so squawk/sqruff discover their
+    # repo-root configs (/.squawk.toml, /.sqruff) and the migration glob resolves
+    # repo-relative (GATE_ROOT defaults to the git toplevel = workspace root).
+    command: 'bun run tools/sql-migration-gate/index.ts'
+    deps: ['install']
     options:
       runFromWorkspaceRoot: true
       # Never cache: a fail-closed lint gate must not ride a cached green from
@@ -68,8 +85,9 @@ tasks:
       - '/go/internal/store/migrations/**/*.sql'
       - '/.squawk.toml'
       - '/.sqruff'
+      - 'index.ts'
   ci:
-    deps: ['check']
+    deps: ['typecheck', 'test', 'check']
     options:
       cache: false
       runInCI: true
