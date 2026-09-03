@@ -188,19 +188,20 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// postUpgradeTasks.commands are gated by the BOT config's global
 	// `allowedCommands` allowlist (a repo config cannot self-authorize a command),
 	// which Renovate matches UNANCHORED via regEx(pattern).test(cmd). So each
-	// entry's `^…$` IS the security property. Compass declares four DISTINCT
+	// entry's `^…$` IS the security property. Compass declares five DISTINCT
 	// commands across the task sites (the FOD-hash refresh rides two sites — the
 	// top-level branch-mode task and the catalog rule's update-mode task — so it
 	// appears twice in the declared list but needs only one allowlist entry); every
 	// distinct command must be permitted, every entry must be used, and no entry may
-	// be an unanchored substring rule.
+	// be an unanchored substring rule. RIG-3100 added the fifth: the go↔go-overlay
+	// lockstep on the go pin's solo branch.
 	const commands = allDeclaredCommands();
 	const distinctCommands = [...new Set(commands)];
 	const allowed = bot.allowedCommands ?? [];
 
-	test("declares four DISTINCT postUpgrade commands and four allowlist entries", () => {
-		expect(distinctCommands).toHaveLength(4);
-		expect(allowed).toHaveLength(4);
+	test("declares five DISTINCT postUpgrade commands and five allowlist entries", () => {
+		expect(distinctCommands).toHaveLength(5);
+		expect(allowed).toHaveLength(5);
 	});
 
 	test("the fod-hash refresh is declared at BOTH task sites (top-level + catalog)", () => {
@@ -251,12 +252,13 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		).toBe(false);
 	});
 
-	test("permits exactly the four RIG-2432 commands", () => {
+	test("permits exactly the five RIG-2432/RIG-3100 commands", () => {
 		expect(distinctCommands.sort()).toEqual(
 			[
 				"bun install --lockfile-only",
 				"bun tools/renovate/refresh-devenv-nixpkgs.ts",
 				"bun tools/renovate/refresh-fod-hashes.ts",
+				"bun tools/renovate/refresh-go-overlay.ts",
 				"bun tools/renovate/refresh-toolchain-hashes.ts",
 			].sort(),
 		);
@@ -556,6 +558,60 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 			expect(["patch", "minor"]).toContain(t);
 		}
 	});
+});
+
+describe("tools/renovate go ↔ go-overlay lockstep (RIG-3100)", () => {
+	// The packageRule coupling a go.nix toolchain bump to a go-overlay input
+	// refresh — found by its command, not index.
+	const goOverlayRule = cfg.packageRules.find((r) =>
+		r.postUpgradeTasks?.commands?.some((c) =>
+			/refresh-go-overlay\.ts$/.test(c),
+		),
+	);
+
+	test("the go-overlay refresh rule matches the go dep on the custom.regex manager", () => {
+		expect(goOverlayRule).toBeDefined();
+		expect(goOverlayRule?.matchManagers).toContain("custom.regex");
+		expect(goOverlayRule?.matchDepNames).toContain("go");
+	});
+
+	// Branch-mode task over exactly devenv.lock — the sole file the refresh
+	// writes (the `devenv update go-overlay` re-lock). It must NOT rewrite go.nix
+	// (the go manager already did) nor any hash pin, so listing anything else
+	// would be dead filter surface; listing LESS would silent-drop the re-lock,
+	// shipping a go bump the overlay can't resolve → the exact CI red this task
+	// exists to prevent. fileFilters is an INCLUDE allowlist, so this pins it.
+	test("the lockstep postUpgradeTask is branch-mode over devenv.lock alone", () => {
+		const task = goOverlayRule?.postUpgradeTasks;
+		expect(task?.executionMode).toBe("branch");
+		expect(task?.fileFilters).toEqual(["devenv.lock"]);
+		expect(task?.commands).toEqual([
+			"bun tools/renovate/refresh-go-overlay.ts",
+		]);
+	});
+
+	// Solo-branch safety: the branch-mode task slot is winner-take-all per
+	// branch, so this rule is safe ONLY because the go pin never shares a branch.
+	// The versions/*.nix un-group rule nulls its groupName, so a go bump resolves
+	// to its own solo branch, never the TypeScript rollup — where it would
+	// collide with the top-level branch-mode task. Holds for BOTH minor and major
+	// bumps: the un-group rule has no matchUpdateTypes (fires for every type),
+	// and the go-overlay refresh rule likewise has none, so a major go bump also
+	// solo-branches and gets the overlay refresh on its own single task slot.
+	test.each(["minor", "major"] as const)(
+		"a go pin %s bump un-groups to its own solo branch (null), not the TS rollup",
+		(updateType) => {
+			const group = resolveGroupName({
+				manager: "custom.regex",
+				fileName: "tools/toolchain/versions/go.nix",
+				depName: "go",
+				depType: "toolchain",
+				updateType,
+			});
+			expect(group).toBeNull();
+			expect(group).not.toBe("TypeScript dependencies");
+		},
+	);
 });
 
 describe("tools/renovate solo-branch grouping outcomes", () => {
