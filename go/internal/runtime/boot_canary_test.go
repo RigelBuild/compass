@@ -43,6 +43,7 @@ import (
 type canaryFakeVM struct {
 	nonce    []byte
 	pss      map[string]int64
+	pssErr   error
 	mu       sync.Mutex
 	shutdown bool
 }
@@ -64,7 +65,7 @@ func (f *canaryFakeVM) Shutdown(context.Context) error {
 
 func (f *canaryFakeVM) WaitVMMExit(_ time.Duration) bool { return true }
 
-func (f *canaryFakeVM) PSS() (map[string]int64, error) { return f.pss, nil }
+func (f *canaryFakeVM) PSS() (map[string]int64, error) { return f.pss, f.pssErr }
 
 func (f *canaryFakeVM) wasShutdown() bool {
 	f.mu.Lock()
@@ -81,6 +82,7 @@ var _ guestVM = (*canaryFakeVM)(nil)
 type canaryLaunchRecorder struct {
 	mu            sync.Mutex
 	pss           map[string]int64
+	pssErr        error
 	launchErr     error
 	vms           []*canaryFakeVM
 	calls         int
@@ -102,7 +104,7 @@ func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfi
 	if err != nil {
 		return nil, err
 	}
-	vm := &canaryFakeVM{nonce: nonce, pss: r.pss}
+	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr}
 	r.vms = append(r.vms, vm)
 	return vm, nil
 }
@@ -290,7 +292,8 @@ func TestBootCanaryEchoFailureStillTearsDown(t *testing.T) {
 // (a successful call, not a transport error) is still a canary failure — the
 // canary is a health gate, so a bad exit fails it.
 func TestBootCanaryNonZeroExitFails(t *testing.T) {
-	m, _, client := seamCanary(t, nil)
+	before := canaryTempDirs(t)
+	m, rec, client := seamCanary(t, nil)
 	client.exitCode = 3
 
 	_, err := m.BootCanary(t.Context())
@@ -300,9 +303,40 @@ func TestBootCanaryNonZeroExitFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "exited 3") {
 		t.Errorf("error %q does not name the non-zero exit", err)
 	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down after the non-zero-exit failure")
+	}
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after a failed BootCanary, want 0", n)
 	}
+	assertNoTempLeak(t, before)
+}
+
+// TestBootCanaryPSSErrorNonFatal pins the one fail-open seam on an otherwise
+// fail-closed startup gate (record §(e)/OQ-10): a PSS read error is telemetry,
+// never fatal — the canary still succeeds with GuestRSSBytes == 0 and the
+// session still tears down. A regression flipping this branch to fatal would
+// make the canary spuriously refuse Runner startup on a host with an unreadable
+// smaps_rollup, and this test breaks on that flip.
+func TestBootCanaryPSSErrorNonFatal(t *testing.T) {
+	before := canaryTempDirs(t)
+	m, rec, _ := seamCanary(t, nil)
+	rec.pssErr = errors.New("boom: smaps_rollup unreadable")
+
+	report, err := m.BootCanary(t.Context())
+	if err != nil {
+		t.Fatalf("BootCanary = %v, want nil (a PSS read error is best-effort telemetry, never fatal)", err)
+	}
+	if report.GuestRSSBytes != 0 {
+		t.Errorf("GuestRSSBytes = %d, want 0 on a PSS read error", report.GuestRSSBytes)
+	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down after a PSS read error")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
+	assertNoTempLeak(t, before)
 }
 
 // TestBootCanaryDerivesDeadlineWhenCallerHasNone: with a deadline-less caller

@@ -253,10 +253,13 @@ func parseManifest(path string) (map[string]string, error) {
 // headroom for provision, one echo exec, and the severed teardown (record §(f)).
 const canaryDeadline = 90 * time.Second
 
-// canaryTeardownGrace bounds the severed teardown Remove: the canary's own
-// bounded ctx may already have expired (a mid-boot timeout), so teardown runs
-// under a fresh short grace derived from a WithoutCancel copy so the VM is torn
-// down cleanly instead of against an already-dead ctx (record §(f)).
+// canaryTeardownGrace is the fresh short grace the severed teardown ctx carries:
+// the canary's own bounded ctx may already have expired (a mid-boot timeout), so
+// teardown runs under a WithoutCancel copy of it so the VM is torn down cleanly
+// instead of against an already-dead ctx (record §(f)). NB: this bounds Remove
+// only if/when Remove honors its ctx deadline — today Remove is deadline-agnostic
+// (vm.Shutdown re-strips cancellation and bounds itself with its own reapGrace
+// timer, os.RemoveAll ignores ctx), so the grace is not yet an enforced ceiling.
 const canaryTeardownGrace = 30 * time.Second
 
 // canaryNamePrefix is the reserved name prefix every canary session carries. It
@@ -373,8 +376,11 @@ func (m *MicroVMRuntime) BootCanary(ctx context.Context) (report CanaryReport, e
 	// PSS is best-effort telemetry, not the boot gate (record §(e)): a read
 	// error (or a sandboxed helper with no readable smaps_rollup) leaves
 	// GuestRSSBytes at 0, logged, never failing the canary.
-	if session.vm != nil {
-		pss, pssErr := session.vm.PSS()
+	m.mu.Lock()
+	vm := session.vm
+	m.mu.Unlock()
+	if vm != nil {
+		pss, pssErr := vm.PSS()
 		if pssErr != nil {
 			slog.Warn("microvm: canary: reading guest PSS (best-effort)", "error", pssErr)
 		}
