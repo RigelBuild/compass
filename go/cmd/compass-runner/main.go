@@ -40,7 +40,7 @@ func main() {
 	}
 }
 
-func run() error { //nolint:funlen // flag registration + operator-input validation is the honest bulk; the env-only OTel setup call tips it 2 lines over — extracting the flags would scatter ~15 flag vars for no readability gain
+func run() error {
 	runnerID := flag.String("runner-id", "",
 		"This Runner's stable id, cross-checked against the token subject. Defaults to $COMPASS_RUNNER_ID.")
 	serverAddr := flag.String("server", "",
@@ -91,15 +91,23 @@ func run() error { //nolint:funlen // flag registration + operator-input validat
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	log := slog.Default()
 
-	// Ahead of every operator-input check: this validates an engine fact the
-	// whole launch path depends on — that podman is new enough for the
-	// container userns remap (--userns=keep-id:uid=,gid=, podman ≥ 4.3;
-	// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md). It takes no
-	// operator configuration and its failure is unconditional. Behind the flag
-	// checks, an operator on too-old a podman is told to set a token, fixes
-	// that, re-runs, and only then learns the engine can never launch a
-	// container — so the legible startup refusal must come first.
-	if err := runtime.NewPodmanCLI().VerifyUsernsRemapSupport(context.Background()); err != nil {
+	// The SELECTED engine's static host-capability preflight runs ahead of
+	// every operator-input check. A refusal about a host fact the launch path
+	// depends on — the microVM host trio/KVM/guest images, or podman's userns
+	// remap support (--userns=keep-id:uid=,gid=, podman ≥ 4.3;
+	// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md) — must
+	// precede telling an operator to fix a token/id: otherwise an operator on an
+	// unsupported host sets a token, fixes that, re-runs, and only then learns
+	// the engine can never launch a container. It takes no operator configuration
+	// and its failure is unconditional, kept per selected backend. Select the
+	// engine first (its own errors — unknown backend name, non-numeric
+	// CPUS/MEMORY_MB — are legible startup refusals in their own right), then
+	// gate on its preflight.
+	engine, err := backends.selectEngine()
+	if err != nil {
+		return err
+	}
+	if err := verifyBackendPreflight(context.Background(), engine); err != nil {
 		return err
 	}
 
@@ -150,11 +158,6 @@ func run() error { //nolint:funlen // flag registration + operator-input validat
 		return err
 	}
 
-	engine, err := backends.selectEngine()
-	if err != nil {
-		return err
-	}
-
 	slog.Info("compass-runner starting",
 		"version", version, "runner_id", id, "server", addr)
 
@@ -177,6 +180,36 @@ func run() error { //nolint:funlen // flag registration + operator-input validat
 		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
 		HTTPClient: httpClient,
 	}, specs, log)
+}
+
+// microVMPreflighter is the microVM backend's static host-capability probe:
+// the host trio (VMM/virtiofsd binaries), KVM access, and guest-image presence.
+type microVMPreflighter interface {
+	VerifyMicroVMSupport(ctx context.Context) error
+}
+
+// podmanPreflighter is the podman backend's static host-capability probe:
+// podman is new enough for the container userns remap.
+type podmanPreflighter interface {
+	VerifyUsernsRemapSupport(ctx context.Context) error
+}
+
+// verifyBackendPreflight runs the selected engine's static host-capability
+// preflight. It dispatches on the engine's concrete type, first match wins,
+// probing the microVM backend before podman; no engine satisfies both today, so
+// dispatch is deterministic. An engine exposing neither probe is a fail-closed
+// startup error naming the concrete type — never a silent skip, so a backend
+// added without a preflight surfaces loudly at launch rather than running
+// unchecked.
+func verifyBackendPreflight(ctx context.Context, engine runtime.ContainerRuntime) error {
+	switch e := engine.(type) {
+	case microVMPreflighter:
+		return e.VerifyMicroVMSupport(ctx)
+	case podmanPreflighter:
+		return e.VerifyUsernsRemapSupport(ctx)
+	default:
+		return fmt.Errorf("backend %T exposes no startup preflight probe", engine)
+	}
 }
 
 // setupOtel installs the tracer and meter providers off the env-only OTLP

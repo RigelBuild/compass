@@ -3,10 +3,23 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/RigelBuild/compass/go/internal/runtime"
+)
+
+// Compile-time regression guard on the reorder: the real backend types must
+// satisfy the unexported probe interfaces, so runtime.SelectBackend's default
+// *PodmanCLI provably routes to the podman branch of verifyBackendPreflight and
+// the microVM backend to the microVM branch. If a future change drops a probe
+// method, this fails to compile rather than silently falling through to the
+// fail-closed default at runtime.
+var (
+	_ microVMPreflighter = (*runtime.MicroVMRuntime)(nil)
+	_ podmanPreflighter  = (*runtime.PodmanCLI)(nil)
 )
 
 // parseMount is the operator surface for --mount: a malformed value must be
@@ -58,4 +71,94 @@ func TestParseMount(t *testing.T) {
 			}
 		})
 	}
+}
+
+// podmanOnlyEngine exposes only the podman probe; its embedded nil
+// ContainerRuntime satisfies the param type but is never called.
+type podmanOnlyEngine struct {
+	runtime.ContainerRuntime
+	called *bool
+	err    error
+}
+
+func (e podmanOnlyEngine) VerifyUsernsRemapSupport(context.Context) error {
+	*e.called = true
+	return e.err
+}
+
+// microVMOnlyEngine exposes only the microVM probe.
+type microVMOnlyEngine struct {
+	runtime.ContainerRuntime
+	called *bool
+	err    error
+}
+
+func (e microVMOnlyEngine) VerifyMicroVMSupport(context.Context) error {
+	*e.called = true
+	return e.err
+}
+
+// neitherEngine exposes no probe: only the embedded (nil) ContainerRuntime.
+type neitherEngine struct {
+	runtime.ContainerRuntime
+}
+
+// verifyBackendPreflight dispatches on the selected engine's concrete type
+// (RIG-2496): microVM first, then podman, first match wins; the matched probe
+// runs and its error is returned verbatim; an engine exposing neither probe is a
+// fail-closed startup error naming the type — never a silent skip.
+func TestVerifyBackendPreflight(t *testing.T) {
+	sentinel := errors.New("preflight refused")
+
+	t.Run("podman probe dispatched", func(t *testing.T) {
+		called := false
+		err := verifyBackendPreflight(context.Background(), podmanOnlyEngine{called: &called})
+		if err != nil {
+			t.Fatalf("verifyBackendPreflight = %v, want nil", err)
+		}
+		if !called {
+			t.Error("podman probe was not called")
+		}
+	})
+
+	t.Run("microvm probe dispatched", func(t *testing.T) {
+		called := false
+		err := verifyBackendPreflight(context.Background(), microVMOnlyEngine{called: &called})
+		if err != nil {
+			t.Fatalf("verifyBackendPreflight = %v, want nil", err)
+		}
+		if !called {
+			t.Error("microVM probe was not called")
+		}
+	})
+
+	t.Run("neither probe is fail-closed naming the type", func(t *testing.T) {
+		err := verifyBackendPreflight(context.Background(), neitherEngine{})
+		if err == nil {
+			t.Fatal("verifyBackendPreflight = nil, want a fail-closed refusal")
+		}
+		if !strings.Contains(err.Error(), "neitherEngine") {
+			t.Errorf("error %q does not name the engine type", err)
+		}
+	})
+
+	t.Run("probe error returned verbatim", func(t *testing.T) {
+		called := false
+		err := verifyBackendPreflight(context.Background(), podmanOnlyEngine{called: &called, err: sentinel})
+		if !errors.Is(err, sentinel) {
+			t.Errorf("verifyBackendPreflight = %v, want the sentinel error", err)
+		}
+	})
+
+	t.Run("default backend is a podman probe type", func(t *testing.T) {
+		engine, err := runtime.SelectBackend(runtime.BackendConfig{})
+		if err != nil {
+			t.Fatalf("SelectBackend = %v, want the default podman engine", err)
+		}
+		// Do NOT invoke the real probe (it shells out to `podman version`);
+		// only assert it routes to the podman branch by type.
+		if _, ok := engine.(podmanPreflighter); !ok {
+			t.Errorf("default backend %T does not satisfy podmanPreflighter", engine)
+		}
+	})
 }
