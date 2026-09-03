@@ -13,6 +13,7 @@ package runtime
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
@@ -52,7 +53,7 @@ func TestBootCanary(t *testing.T) {
 	}
 
 	// And no per-session runtime dir left under <RunRoot>/microvm.
-	microvmDir := cfg.RunRoot + "/microvm"
+	microvmDir := filepath.Join(cfg.RunRoot, "microvm")
 	entries, statErr := os.ReadDir(microvmDir)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {

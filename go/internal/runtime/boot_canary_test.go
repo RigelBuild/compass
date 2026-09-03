@@ -129,8 +129,11 @@ func parseBootNonce(cmdline string) ([]byte, error) {
 // canaryFakeClient is a GuestControlClient for the canary path: Provision
 // succeeds, and Exec echoes the command's argument back on stdout with a
 // configurable exit code (default 0) unless execErr forces a transport failure.
+// stdout, when non-nil, overrides the echoed output verbatim so a test can drive
+// the exit-0-but-wrong-stdout case (the nonce-mismatch branch).
 type canaryFakeClient struct {
 	execErr  error
+	stdout   *string
 	exitCode int32
 }
 
@@ -143,11 +146,14 @@ func (c *canaryFakeClient) Exec(_ context.Context, req *connect.Request[compassv
 		return nil, c.execErr
 	}
 	// Echo the argument(s) after the command name, mirroring `echo <nonce>`, so
-	// BootCanary's nonce-round-trip check passes.
+	// BootCanary's nonce-round-trip check passes — unless stdout overrides it.
 	cmd := req.Msg.GetCommand()
 	var out string
 	if len(cmd) > 1 {
 		out = strings.Join(cmd[1:], " ")
+	}
+	if c.stdout != nil {
+		out = *c.stdout
 	}
 	return connect.NewResponse(&compassv1.ExecResponse{
 		Stdout:   []byte(out + "\n"),
@@ -312,6 +318,36 @@ func TestBootCanaryNonZeroExitFails(t *testing.T) {
 	assertNoTempLeak(t, before)
 }
 
+// TestBootCanaryNonceMismatchFails: an echo exec that returns exit 0 but stdout
+// NOT containing the boot nonce is a canary failure. Exit 0 alone only proves a
+// call returned; the nonce round-trip is the sole assertion that the guest really
+// ran OUR command and returned OUR data — the "exec gate" leg of the whole-chain
+// claim (record §(e)). A regression dropping this check (or a guestd returning
+// exit 0 with stubbed/empty stdout) would let a broken exec path pass the startup
+// canary as a healthy boot, the exact fail-open the gate prevents; this test
+// breaks on that. The always-run teardown must still fire.
+func TestBootCanaryNonceMismatchFails(t *testing.T) {
+	before := canaryTempDirs(t)
+	m, rec, client := seamCanary(t, nil)
+	wrong := "not-the-nonce"
+	client.stdout = &wrong // exit 0, but stdout never carries the minted nonce
+
+	_, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want a nonce-mismatch failure")
+	}
+	if !strings.Contains(err.Error(), "does not contain the nonce") {
+		t.Errorf("error %q does not name the nonce mismatch", err)
+	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down after the nonce-mismatch failure")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after a failed BootCanary, want 0", n)
+	}
+	assertNoTempLeak(t, before)
+}
+
 // TestBootCanaryPSSErrorNonFatal pins the one fail-open seam on an otherwise
 // fail-closed startup gate (record §(e)/OQ-10): a PSS read error is telemetry,
 // never fatal — the canary still succeeds with GuestRSSBytes == 0 and the
@@ -332,6 +368,36 @@ func TestBootCanaryPSSErrorNonFatal(t *testing.T) {
 	}
 	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
 		t.Error("canary VM was not shut down after a PSS read error")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
+	assertNoTempLeak(t, before)
+}
+
+// TestBootCanaryPartialPSSStillReported pins the OTHER half of the PSS contract:
+// the real VM.PSS() (microvm/launch.go) returns a PARTIAL map ALONGSIDE a non-nil
+// joined error when some children read and some do not — that is its normal shape,
+// not an edge case. BootCanary must sum what it could read rather than discarding
+// the partial map on any error. A regression zeroing the map inside the error
+// branch (a plausible "tidy the error path" refactor) silently drops real
+// telemetry, and this test breaks on that (record §(e)/OQ-10).
+func TestBootCanaryPartialPSSStillReported(t *testing.T) {
+	before := canaryTempDirs(t)
+	m, rec, _ := seamCanary(t, map[string]int64{"cloud-hypervisor": 100, "virtiofsd": 50})
+	rec.pssErr = errors.New("boom: one child's smaps_rollup unreadable")
+
+	report, err := m.BootCanary(t.Context())
+	if err != nil {
+		t.Fatalf("BootCanary = %v, want nil (a partial PSS read is best-effort telemetry, never fatal)", err)
+	}
+	// (100 + 50) kB * 1024 = 153600 bytes — the partial map is still summed
+	// despite the accompanying error.
+	if want := int64((100 + 50) * 1024); report.GuestRSSBytes != want {
+		t.Errorf("GuestRSSBytes = %d, want %d (a partial PSS map must still be reported)", report.GuestRSSBytes, want)
+	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down after a partial PSS read")
 	}
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
@@ -379,6 +445,34 @@ func TestBootCanaryHonorsCallerDeadline(t *testing.T) {
 	// canaryDeadline: remaining must be well under canaryDeadline.
 	if remaining := time.Until(deadline); remaining > callerBound {
 		t.Errorf("launch deadline %v out exceeds the caller's %v bound; BootCanary re-derived instead of honoring the caller", remaining, callerBound)
+	}
+}
+
+// TestBootCanaryHonorsLongerCallerDeadline: a caller ctx whose deadline EXCEEDS
+// canaryDeadline is used as-is — BootCanary does NOT clamp it down to the 90s
+// canary bound. This is the case the `if _, ok := ctx.Deadline(); !ok` guard
+// actually protects: a shorter caller deadline is enforced by context.WithTimeout
+// regardless of the guard, so only a longer one distinguishes honoring the caller
+// from re-deriving. A regression dropping the guard (always re-deriving
+// canaryDeadline) would clamp the caller's longer deadline, and this test breaks
+// on that (record §(f)).
+func TestBootCanaryHonorsLongerCallerDeadline(t *testing.T) {
+	m, rec, _ := seamCanary(t, nil)
+	callerBound := 10 * time.Minute
+	ctx, cancel := context.WithTimeout(t.Context(), callerBound)
+	defer cancel()
+
+	if _, err := m.BootCanary(ctx); err != nil {
+		t.Fatalf("BootCanary = %v, want nil", err)
+	}
+	_, deadline, ok := rec.snapshot()
+	if !ok {
+		t.Fatal("launch ctx carried no deadline")
+	}
+	// The caller's 10m deadline must pass through, not be clamped to the 90s
+	// canaryDeadline: remaining must be materially greater than canaryDeadline.
+	if remaining := time.Until(deadline); remaining <= canaryDeadline {
+		t.Errorf("launch deadline %v out was clamped to the canary bound; BootCanary re-derived instead of honoring the caller's longer %v deadline", remaining, callerBound)
 	}
 }
 
