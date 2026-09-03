@@ -4,7 +4,7 @@ Compass is the open-source **Agentic Software Factory**. You manage a tree of
 long-lived **Manager** agents — each owns a lane of work, drives its own issues
 and pull requests, coordinates with you and with other agents in chat threads,
 and ships only what you review and merge. The agent inside every node is
-[Oh My Pi](./forks/oh-my-pi); Compass is the full system around it — the
+[Oh My Pi](https://github.com/can1357/oh-my-pi); Compass is the full system around it — the
 server, the runtime, the security boundary, and the surfaces you drive it all
 through.
 
