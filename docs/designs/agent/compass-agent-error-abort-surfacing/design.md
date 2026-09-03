@@ -5,6 +5,13 @@ Status: Active
 Refs: RIG-2616 (parent RIG-974). Surface: compass-agent event mapper +
 `compass.v1` session-trace contract.
 
+> Ledger-id note (post-freeze, annotate-don't-rewrite): a concurrent-merge
+> window allocated this record's emit-rule and never-drop-routing ledger rows
+> the same DL ids as an earlier-dated UI record. They were renumbered on
+> `DECISIONS.md` to keep ids unique: **DL-319 → DL-322** (emit rule),
+> **DL-320 → DL-323** (FrameSink never-drop routing). DL-318 is unchanged. The
+> in-body citations below read as point-in-time; the ledger rows are canonical.
+
 ## Problem / Intent
 
 An inner-stream failure or a deliberate abort reaches the compass-agent event
