@@ -626,6 +626,37 @@ CREATE TABLE agent_config_bundle (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ── Model registry (fleet singleton, CAS-versioned) ──────────────────────────
+-- The Server-side STABLE-NAME registry (RIG-3122 P2): the ONE fleet-wide map
+-- from a stable model name to its ordered candidate chain + listing metadata,
+-- which the gateway resolver reads to route a request's modelId (design.md
+-- compass-stable-name-routing §P1/P2). Like agent_config_bundle it is a fleet
+-- SINGLETON — one registry for the whole fleet — but UNLIKE it the write path
+-- is COMPARE-AND-SET on a monotonic version, not a content-hash upsert:
+--   * singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton) — the PK is a
+--     constant TRUE (same one-row pin as agent_config_bundle): a second INSERT
+--     collides on the PK and the CHECK forbids any other value, so the table
+--     holds exactly one row.
+--   * version BIGINT — a monotonic whole-registry version (NOT a content hash).
+--     It supplies the CAS substrate the gateway credentials store also uses (a
+--     monotonic version per row, compass-server-llm-gateway/design.md:324-329):
+--     a Put carries the version it read and only lands if the row still holds
+--     it (version = version + 1), so a racing operator write is never clobbered.
+--     The version also keys the gateway resolver's in-memory ref (P1), which
+--     re-reads only on a version change.
+--   * registry JSONB — the whole registry payload (name -> {display_name,
+--     ordered candidates [{provider, model_id}], metadata}); validated
+--     fail-closed at the RPC boundary (ValidateModelRegistry) before any write.
+--   * CURRENT-ONLY retention — no history; a Put REPLACES the row's payload in
+--     place and bumps the version.
+CREATE TABLE model_registry (
+    singleton  BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    version    BIGINT NOT NULL,
+    registry   JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ── Issues: the durable board issue ──────────────────────────────────────────
 -- The store-of-record for a Compass board issue (RIG-1728, DL-019): the
 -- forge-derived facts a poll ingests, plus the Compass-owned machinery a board

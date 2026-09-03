@@ -37,6 +37,25 @@ import (
 // token from here; it is never logged.
 const adminTokenFile = "admin-token"
 
+// compassServiceMaxReadBytes caps a single inbound message on the CompassService
+// network door (M1). It clears the largest legitimate message the mount carries
+// — a PutAgentConfig bundle up to the store's 64 MiB decompressed cap — with
+// headroom for wire framing, while bounding an operator's PutModelRegistry /
+// PutAgentConfig against an unbounded in-memory buffer.
+const compassServiceMaxReadBytes = 128 << 20 // 128 MiB
+
+// siblingServiceMaxReadBytes caps a single inbound message on the CommsService
+// and SecretsService mounts, which ride the same network door as CompassService
+// but carry only small unary messages (a chat turn, a secret value) — none of
+// the 64 MiB config-bundle scale CompassService's PutAgentConfig reaches (M2).
+// connect-go imposes NO default read cap, and CommsService is authenticatedOpen
+// (any member reaches PostMessage), so an uncapped sibling mount is STRICTLY
+// more exposed than the admin-gated CompassService the round-1 fix already
+// capped: an ordinary account could stream an arbitrarily large PostMessage the
+// server buffers whole in memory. 16 MiB is generous over any legitimate
+// message here while closing that hole — the guestd vsock.go:94 posture.
+const siblingServiceMaxReadBytes = 16 << 20 // 16 MiB
+
 // boundListeners holds the TCP listeners eagerly bound before any on-disk
 // state, plus the network door's validated TLS config. Binding up front means a
 // bad address, an in-use port, or a bad keypair fails Serve before it creates a
@@ -280,15 +299,27 @@ func buildNetworkServer(
 		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(adminID),
 	)
-	netPath, netHandler := compassv1connect.NewCompassServiceHandler(svc, interceptors)
-	netCommsPath, netCommsHandler := compassv1connect.NewCommsServiceHandler(commsSvc, interceptors)
+	// WithReadMaxBytes caps a single inbound message on the CompassService door
+	// (M1, defense in depth). connect-go imposes NO default read cap, so without
+	// this an operator could stream an arbitrarily large PutModelRegistry (or
+	// PutAgentConfig) message the server buffers whole in memory before the store
+	// door's own caps ever run. The bound is sized to the LARGEST legitimate
+	// message this mount carries: PutAgentConfig accepts a config bundle up to the
+	// store's 64 MiB decompressed cap (agent_config.go maxDecompressedBytes), so
+	// the transport cap must clear that with headroom for the gzip-compressed wire
+	// form plus proto framing. 128 MiB is that headroom; the model-registry
+	// payload (1 MiB store cap) sits far below it. Mirrors the WithReadMaxBytes
+	// posture the internal doors already take (guestd vsock.go:94 at 16 MiB, the
+	// agent gateway at maxAgentMessageBytes).
+	netPath, netHandler := compassv1connect.NewCompassServiceHandler(svc, interceptors, connect.WithReadMaxBytes(compassServiceMaxReadBytes))
+	netCommsPath, netCommsHandler := compassv1connect.NewCommsServiceHandler(commsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux := http.NewServeMux()
 	netMux.Handle(netPath, netHandler)
 	netMux.Handle(netCommsPath, netCommsHandler)
 	// SecretsService rides the same bearer + admin-gate chain: the gate classifies
 	// its 3 procedures authenticatedOpen, so any authenticated account clears it and
 	// the handler enforces the user-only writes / user-or-agent list.
-	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors)
+	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netSecretsPath, netSecretsHandler)
 
 	// The internal RunnerService door: the surface a Runner dials out to (Enroll +

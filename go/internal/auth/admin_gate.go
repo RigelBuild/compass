@@ -65,6 +65,8 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceIssueTokenProcedure,
 		compassv1connect.CompassServiceRevokeTokenProcedure,
 		compassv1connect.CompassServicePutAgentConfigProcedure,
+		compassv1connect.CompassServicePutModelRegistryProcedure,
+		compassv1connect.CompassServiceDeleteModelRegistryProcedure,
 		compassv1connect.CompassServiceDeleteAgentConfigProcedure:
 		return adminOnly{}, true
 
@@ -85,7 +87,8 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceSubscribeEventsProcedure,
 		compassv1connect.CompassServiceListBoardIssuesProcedure,
 		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
-		compassv1connect.CompassServiceGetAgentConfigInfoProcedure:
+		compassv1connect.CompassServiceGetAgentConfigInfoProcedure,
+		compassv1connect.CompassServiceGetModelRegistryProcedure:
 		return authenticatedOpen{}, true
 
 	// Every CommsService method: open to any authenticated account (the service

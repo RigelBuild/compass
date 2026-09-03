@@ -238,6 +238,14 @@ type Message struct {
 	TenantID         string
 }
 
+type ModelRegistry struct {
+	Singleton bool
+	Version   int64
+	Registry  []byte
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
 type OwedMention struct {
 	AgentAccountID   string
 	MessageID        string
