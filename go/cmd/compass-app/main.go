@@ -253,10 +253,11 @@ func launch(
 		params := embeddedParams{socket: socket, stateDir: stateDir, image: image}
 
 		// The embedded bring-up (preflight → stack up → WhoAmI) runs BEFORE the
-		// window opens, under a bounded bring-up context. run() is the process
-		// root (called directly by main), so context.Background() here is the
-		// sanctioned process-root context, not a mid-tree re-root; the bring-up
-		// window is derived from it.
+		// window opens, under a bounded bring-up context. launch() is invoked
+		// once from run() (the process entrypoint) and no context is created
+		// upstream, so this context.Background() is the sanctioned root of the
+		// bring-up pipeline, not a mid-tree re-root; the bring-up window is
+		// derived from it.
 		bringUpCtx, cancel := context.WithTimeout(context.Background(), bringUpTimeout)
 		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, runStackDown(stackBin))
 		cancel()

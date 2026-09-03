@@ -166,10 +166,9 @@ func pemEncodeCert(t *testing.T, cert *x509.Certificate) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
 }
 
-// TestShellStartupJS covers the OQ-8 startup-global injection for CLIENT mode:
-// the client mode token, __COMPASS_SERVER_URL__ present in client mode, and
+// TestShellStartupJS covers the OQ-8 startup-global injection in both modes: the
+// mode token, __COMPASS_SERVER_URL__ present only in client mode, and
 // JSON-escaping of a hostile server URL so it cannot break out of the script.
-// (The embedded-mode arm of shellStartupJS is covered in embedded_test.go.)
 func TestShellStartupJS(t *testing.T) {
 	t.Run("client injects mode and server url", func(t *testing.T) {
 		js, err := shellStartupJS(appconfig.ModeClient.String(), "https://remote.example:8443")
@@ -181,6 +180,23 @@ func TestShellStartupJS(t *testing.T) {
 		}
 		if !strings.Contains(js, `window.__COMPASS_SERVER_URL__="https://remote.example:8443";`) {
 			t.Errorf("client JS = %q, want the server-url global", js)
+		}
+	})
+
+	t.Run("embedded injects mode and omits the server-url global", func(t *testing.T) {
+		// In embedded mode the app supervises a local stack and has no
+		// server_url, so shellStartupJS must emit only the mode token and MUST
+		// NOT emit __COMPASS_SERVER_URL__ (the branch at shellStartupJS's
+		// `if mode == client` gate). A non-empty serverURL argument is ignored.
+		js, err := shellStartupJS(appconfig.ModeEmbedded.String(), "https://ignored.example:8443")
+		if err != nil {
+			t.Fatalf("shellStartupJS err = %v, want nil", err)
+		}
+		if !strings.Contains(js, `window.__COMPASS_MODE__="embedded";`) {
+			t.Errorf("embedded JS = %q, want the embedded mode global", js)
+		}
+		if strings.Contains(js, "__COMPASS_SERVER_URL__") {
+			t.Errorf("embedded JS = %q, must not emit the server-url global", js)
 		}
 	})
 
