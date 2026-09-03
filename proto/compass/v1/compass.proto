@@ -459,6 +459,7 @@ message SessionEvent {
     SessionPlan plan = 7;
     SessionNotice notice = 8;
     SessionInjection session_injection = 9;
+    SessionError session_error = 10;
   }
 }
 
@@ -551,6 +552,26 @@ enum SessionInjectionKind {
   SESSION_INJECTION_KIND_UNSPECIFIED = 0;
   SESSION_INJECTION_KIND_STEER = 1;
   SESSION_INJECTION_KIND_DELIVER = 2;
+}
+
+// A turn-ending failure surfaced as session-trace content: an inner/provider
+// stream error, or a deliberate abort (steer/user cancel). `kind` discriminates
+// the two — an abort is NOT a crash and does NOT ride the ERRORED lifecycle
+// state. `message` is the human-readable failure text (AssistantMessage
+// errorMessage); `status` is the provider HTTP status when one was surfaced.
+message SessionError {
+  SessionErrorKind kind = 1;
+  string message = 2;
+  optional int32 status = 3;
+}
+
+// The class of a SessionError. ERROR pairs with the ERRORED lifecycle
+// transition (an unexpected inner/provider failure); ABORTED is a deliberate
+// cancel and carries no lifecycle transition.
+enum SessionErrorKind {
+  SESSION_ERROR_KIND_UNSPECIFIED = 0;
+  SESSION_ERROR_KIND_ERROR = 1;
+  SESSION_ERROR_KIND_ABORTED = 2;
 }
 
 // SubscribeAgentSession: the session whose typed observation trace to tail.
