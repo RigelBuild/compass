@@ -30,6 +30,8 @@ import (
 	"os"
 	"os/exec" //nolint:depguard // microVM test harness: LookPath-resolved VMM/virtiofsd/passt binaries
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/hostcheck"
 )
 
 // RequireMicroVMEnvVar, when set to a non-empty value, turns the no-KVM SKIP
@@ -127,18 +129,12 @@ func Require(t *testing.T) Env {
 	return Env{}
 }
 
-// kvmOpenable reports whether /dev/kvm can be opened by the current uid. It opens
-// (and immediately closes) the device rather than stat-ing it, because presence
-// on the filesystem does not imply the uid has the read/write access a VMM needs;
-// an open is the authoritative probe.
+// kvmOpenable reports whether /dev/kvm can be opened by the current uid. It
+// delegates to hostcheck.ProbeKVM so there is one copy of the open-/dev/kvm
+// posture: an open (not a stat), because presence on the filesystem does not
+// imply the uid has the read/write access a VMM needs.
 func kvmOpenable() bool {
-	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
-	if err != nil {
-		return false
-	}
-	// Probe only; the VMM opens its own handle. Close error is not actionable.
-	_ = f.Close()
-	return true
+	return hostcheck.ProbeKVM() == nil
 }
 
 // resolveEnv populates an Env from the guest-image env vars and PATH lookups for
