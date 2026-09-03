@@ -403,12 +403,12 @@ after T1 lands.
   user backend); an X11/Xvfb run stays as a cheap secondary regression lane.
   Folded into T4. Compositor is e2e-runner-closure-only, so OQ2/size budget is
   untouched.
-+ **OQ5 (RESOLVED — private monorepo verified 2026-08-26): no cross-repo
-  closure coupling.** An earlier draft asserted that a hand-synced private-side
-  CI image staged this GTK closure's `-dev` outputs, making a private-side
-  amendment a merge-blocking predecessor. Reading the private monorepo directly
-  disproves that: nothing there builds or links `compass-app`, and its CI
-  toolchain does not consume this GTK closure. So no private lane depends on
++ **OQ5 (RESOLVED — verified against the managed-side build 2026-08-26): no
+  cross-repo closure coupling.** An earlier draft asserted that a hand-synced
+  managed-side CI image staged this GTK closure's `-dev` outputs, making a
+  managed-side amendment a merge-blocking predecessor. That is verified false:
+  nothing on the managed side builds or links `compass-app`, and its CI
+  toolchain does not consume this GTK closure. So no out-of-tree lane depends on
   it — case (a) is confirmed and there is no predecessor.
   `tools/toolchain/gtk-closure.nix` is compass's own single definition,
   imported only by in-repo consumers (`devenv.nix`, `gtk-e2e-env.nix`,
