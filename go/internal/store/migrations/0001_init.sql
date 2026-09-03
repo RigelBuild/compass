@@ -308,7 +308,7 @@ CREATE INDEX messages_mentions_unrouted_idx ON messages (seq) WHERE mentions_rou
 CREATE INDEX messages_topic_seq_idx ON messages (topic_id, seq DESC);
 
 -- Full-text search index (design.md:1137-1139): GIN over the generated tsvector.
-CREATE INDEX messages_search_idx ON messages USING GIN (search_tsv);
+CREATE INDEX messages_search_idx ON messages USING gin (search_tsv);
 
 -- Idempotency: at most one stored message per (author, client_request_id) when
 -- the key is supplied, so a retried PostMessage returns the stored row instead

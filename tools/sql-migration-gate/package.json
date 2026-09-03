@@ -1,0 +1,14 @@
+{
+	"name": "@compass/sql-migration-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (RIG-3031): squawk (migration-safety) + sqruff (SQL style) over the first-party migrations under go/internal/store/migrations/, with the two linters' exit codes combined fail-closed so a finding from either reds the gate.",
+	"module": "index.ts",
+	"bin": {
+		"sql-migration-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

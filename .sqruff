@@ -13,9 +13,9 @@
 
 [sqruff]
 dialect = postgres
-# Only the layout + capitalisation rules are excluded (see per-rule notes); every
-# other default rule stays enabled.
-exclude_rules = LT01,LT02,LT05,CP02
+# Only the layout rules are excluded (see per-rule notes); every capitalisation
+# and correctness rule stays enabled.
+exclude_rules = LT01,LT02,LT05
 
 # LT01 (layout.spacing): the schema aligns column types into readable columns
 #   (id  TEXT PRIMARY KEY / slug  TEXT NOT NULL). Multi-space alignment is
@@ -26,6 +26,9 @@ exclude_rules = LT01,LT02,LT05,CP02
 # LT05 (layout.long_lines): the file's value is its dense inline design-rationale
 #   comments (with design.md / RIG-NNNN cross-refs); an 80-col cap would force
 #   mechanical, meaning-fragmenting rewraps of prose, not SQL.
-# CP02 (capitalisation.identifiers): the file uses uppercase SQL keywords and
-#   access-method names (USING GIN); CP02 misreads GIN as an identifier that must
-#   be lowercased, fighting the consistent uppercase-keyword style.
+# (Capitalisation rules CP01–CP05 all stay ON: the schema uses a consistent
+#   uppercase-keyword style and the linter enforces it. The one access-method
+#   keyword is written lowercase — `USING gin` (canonical Postgres) — so CP02
+#   does not misread `GIN` as an identifier needing lowercasing. Earlier CP02
+#   was excluded solely to suppress that one false positive; lowercasing the
+#   access method is the narrower fix and keeps the identifier-case check live.)
