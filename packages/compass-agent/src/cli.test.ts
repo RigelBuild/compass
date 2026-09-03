@@ -33,6 +33,7 @@ import type {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { BoardBroker, createBoardTools } from "./board";
 import {
 	AGENT_SOCKET_PATH,
 	authSeedPath,
@@ -492,6 +493,7 @@ function fakeCarrier(
 		comms: () => Promise.reject(new Error("comms is not used by main")),
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
+		board: () => Promise.reject(new Error("board is not used by main")),
 		publishSpine: () => spine,
 		postConversationFrame: async (req) => {
 			if (hooks.onDurable) await hooks.onDurable(req);
@@ -2501,11 +2503,13 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			comms: async () => ({}) as never,
 			lifecycle: async () => ({}) as never,
 			forge: async () => ({}) as never,
+			board: async () => ({}) as never,
 		};
 		const expectedNames = [
 			...createCommsTools(new CommsBroker(fakeTransport)),
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
 			...createForgeTools(new ForgeBroker(fakeTransport)),
+			...createBoardTools(new BoardBroker(fakeTransport)),
 		].map((t) => t.name);
 
 		const session = fakeSession();
@@ -2537,11 +2541,12 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		const names = toolNames(seen[0].customTools);
 		// Every native tool the factories produce reached customTools.
 		for (const name of expectedNames) expect(names).toContain(name);
-		// Discriminating anchors: two confirmed lifecycle names and two forge names.
+		// Discriminating anchors: two lifecycle names, two forge names, the board tool.
 		expect(names).toContain("agents_spawn_peer");
 		expect(names).toContain("agents_despawn_peer");
 		expect(names).toContain("forge_get_issue");
 		expect(names).toContain("forge_create_pull_request");
+		expect(names).toContain("board_set_issue_state");
 		// Headless approval policy (RIG-1741): the entrypoint pins autoApprove so
 		// the write-approval natives auto-execute with no human in the container.
 		expect(seen[0].autoApprove).toBe(true);
@@ -2565,13 +2570,15 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			comms: async () => ({}) as never,
 			lifecycle: async () => ({}) as never,
 			forge: async () => ({}) as never,
+			board: async () => ({}) as never,
 		};
 		const natives = [
 			...createCommsTools(new CommsBroker(fakeTransport)),
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
 			...createForgeTools(new ForgeBroker(fakeTransport)),
+			...createBoardTools(new BoardBroker(fakeTransport)),
 		];
-		expect(natives).toHaveLength(19);
+		expect(natives).toHaveLength(20);
 		for (const tool of natives) {
 			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
 				name: tool.name,
@@ -2617,11 +2624,11 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].skills).toEqual([]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		expect(seen[0].disableExtensionDiscovery).toBe(true);
-		// No MCP tools (empty mount → empty connect), but the comms/lifecycle/forge
-		// natives are ALWAYS merged in (RIG-1741/RIG-2672) — so customTools carries
-		// exactly those, and never a discovered MCP tool.
+		// No MCP tools (empty mount → empty connect), but the comms/lifecycle/forge/
+		// board natives are ALWAYS merged in (RIG-1741/RIG-2672/RIG-3191) — so
+		// customTools carries exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(19);
+		expect(seen[0].customTools).toHaveLength(20);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -2651,10 +2658,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(skillNames(seen[0].skills)).toEqual(["only"]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		// No MCP tools from a skills-only mount, but the natives always merge in
-		// (RIG-1741/RIG-2672) — so customTools is exactly the comms/lifecycle/forge
-		// natives.
+		// (RIG-1741/RIG-2672/RIG-3191) — so customTools is exactly the comms/
+		// lifecycle/forge/board natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(19);
+		expect(seen[0].customTools).toHaveLength(20);
 	});
 
 	// ── RIG-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──

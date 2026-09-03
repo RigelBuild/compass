@@ -49,6 +49,7 @@ import {
 	createAgentSession,
 	type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
+import { BoardBroker, type BoardTransport, createBoardTools } from "./board";
 import { CommsBroker, type CommsTransport, createCommsTools } from "./comms";
 import type { CommsCallRequest, CommsCallResult } from "./compassv1";
 import { createForgeTools, ForgeBroker, type ForgeTransport } from "./forge";
@@ -70,6 +71,9 @@ const unreached = (leg: string): Promise<never> =>
 	Promise.reject(
 		new Error(`${leg} transport must not be called in the tool-split pin`),
 	);
+const boardTransport: BoardTransport = {
+	board: (_req) => unreached("board"),
+};
 const commsTransport: CommsTransport = {
 	comms: (_req: CommsCallRequest): Promise<CommsCallResult> =>
 		unreached("comms"),
@@ -84,11 +88,11 @@ const lifecycleTransport: LifecycleTransport = {
 };
 
 // The EXACT Compass native tool set cli.ts registers on the Manager session
-// (cli.ts:701-705). Built from the same three factories over real brokers, so
+// (cli.ts:703-708). Built from the same four factories over real brokers, so
 // the expected set can never drift from what ships: a new native tool is
 // automatically part of the pinned split.
 function compassNativeTools(): ToolDefinition[] {
-	// Mirrors cli.ts:701-705: the factories return `AgentTool[]`, which the
+	// Mirrors cli.ts:703-708: the factories return `AgentTool[]`, which the
 	// entrypoint widens to `ToolDefinition[]` for the `customTools` option
 	// (`customTools?: (CustomTool | ToolDefinition)[]`). The two are
 	// structurally compatible for registration but inference will not unify
@@ -97,6 +101,7 @@ function compassNativeTools(): ToolDefinition[] {
 		...createCommsTools(new CommsBroker(commsTransport)),
 		...createLifecycleTools(new LifecycleBroker(lifecycleTransport)),
 		...createForgeTools(new ForgeBroker(forgeTransport)),
+		...createBoardTools(new BoardBroker(boardTransport)),
 	] as ToolDefinition[];
 }
 

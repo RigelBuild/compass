@@ -136,6 +136,7 @@ function fakeCarrier(): RunnerTransport {
 		comms: () => Promise.reject(new Error("comms is not used by main")),
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		forge: () => Promise.reject(new Error("forge is not used by main")),
+		board: () => Promise.reject(new Error("board is not used by main")),
 		publishSpine: () => spine,
 		postConversationFrame: () =>
 			Promise.resolve(create(PostConversationFrameResponseSchema, {})),
