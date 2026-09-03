@@ -26,6 +26,8 @@ import {
 	AgentSessionState,
 	DeliveryAckSchema,
 	ForgeNotificationAckSchema,
+	SessionErrorKind,
+	SessionErrorSchema,
 	SessionEventSchema,
 	SessionFrameSchema,
 	SessionInjectionKind,
@@ -734,4 +736,47 @@ test("a SessionInjection rides the Publish PRIORITY sub-lane, never the drop-old
 	).toBe("m-1");
 	// It never touched the loss-tolerable trace lane.
 	expect(traceFrames.length).toBe(0);
+});
+
+test("a SessionError rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
+	// DL-323: a SessionError is a "session" trace frame (state UNSPECIFIED), so by
+	// the default classification it would ride the bounded, drop-oldest trace lane
+	// — where a busy trace stream could silently drop the surfaced failure content
+	// (for a reason=aborted failure, the SOLE signal). isSessionError() pins it
+	// onto the never-drop priority lane instead. The socket recorder cannot
+	// distinguish the two Publish sub-lanes, so this spy-spine test is what pins
+	// the choice. Non-vacuity: drop the `|| isSessionError(frame)` arm in emit()
+	// (frame-sink.ts) → the priority assertion reddens (0) and the trace assertion
+	// reddens (2). Both SessionErrorKinds ride the same lane.
+	for (const kind of [SessionErrorKind.ERROR, SessionErrorKind.ABORTED]) {
+		const { spine, priorityFrames, traceFrames } = spySpine();
+		const sink = createSocketFrameSink(spineTransport(spine));
+		sink.emit({
+			kind: "session",
+			value: create(SessionFrameSchema, {
+				state: AgentSessionState.UNSPECIFIED,
+				typedEvent: create(SessionEventSchema, {
+					event: {
+						case: "sessionError",
+						value: create(SessionErrorSchema, {
+							kind,
+							message: "boom",
+						}),
+					},
+				}),
+			}),
+		});
+		// Exactly one priority frame, carrying the sessionError oneof case + kind.
+		expect(priorityFrames.length).toBe(1);
+		const inner = priorityFrames[0]?.frame?.frame;
+		expect(inner?.case).toBe("session");
+		const event =
+			inner?.case === "session" ? inner.value.typedEvent?.event : undefined;
+		expect(event?.case).toBe("sessionError");
+		expect(event?.case === "sessionError" ? event.value.kind : undefined).toBe(
+			kind,
+		);
+		// It never touched the loss-tolerable trace lane.
+		expect(traceFrames.length).toBe(0);
+	}
 });

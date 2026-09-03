@@ -282,6 +282,9 @@ export {
 	// message schemas are the oneof payloads it constructs with `create`.
 	type SessionAssistantText,
 	SessionAssistantTextSchema,
+	type SessionError,
+	SessionErrorKind,
+	SessionErrorSchema,
 	type SessionEvent,
 	SessionEventSchema,
 	type SessionFileDiff,
