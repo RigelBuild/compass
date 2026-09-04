@@ -176,7 +176,7 @@ supervisor, not a container daemon.
    spawn-side `readStartTime` (`pgidfile.go:331-338`) and the down-side
    `readGroupLeaderStartTime` (`adapters/groupsignal.go:93-98`), which must
    share one encoding — T3 below). This is a
-   second, independent reason on top of the two below.
+   third, independent reason on top of the two below.
 2. **Two supervision models vs one — the maintenance crux.** Even on Linux,
    adopting Quadlet means maintaining, testing, and keeping
    behaviorally-equivalent TWO supervision models (unit-file
@@ -855,8 +855,14 @@ the lock for its lifetime with `down` staying a real stop verb (DL-259):
 **Recommendation: (b)** — it keeps DL-183's single-owner guarantee, which
 (a) trades away, and makes `down` a first-class stop of a supervised stack
 rather than leaning on T2's install-time `down`-unit-awareness to mask a
-wedged guard. T1 item 4 and the T2 operator-stop-truth bullet are written
-against (b); if Matt rules (a), both fold to the release-at-Ready shape.
+wedged guard. Every T1/T2 site is already written to be
+option-agnostic: T1 item 4's before-lock sweep is the
+option-independent fix (Global Constraint — the sweep MUST run before
+the lock is acquired whichever OQ-6 option lands), the T2
+operator-stop-truth bullet carries both (a)/(b) branches explicitly,
+and T1 test-cycle item (5) states its (a) and (b) shapes — so a
+ruling of (a) needs no rewrite, only deletion of the now-moot (b)
+branches.
 This modifies a Matt-ruled safety contract (DL-183), so it is his call, not
 a coordinator fold.
 
