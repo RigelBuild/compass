@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # build.sh — build the versioned Compass native-app release tarball
-# (compass-app-<version>-linux-amd64.tar.gz), the thin CLIENT bundle: the gtk4
-# shell (compass-app) + the UI dist + the desktop file + LICENSE. No sidecar
-# binaries, no postgres tooling — the headless stack ships separately.
+# (compass-app-<version>-linux-amd64.tar.gz): the gtk4 shell (compass-app) + the
+# three embedded sidecars (compass-stack, compass-server, compass-runner) + the
+# UI dist + the desktop file + LICENSE, every binary stamped with the ONE
+# version. No postgres tooling and no compass-postgres sidecar — the embedded
+# stack's postgres is a stock postgres:18 container via rootless podman (§A4).
 #
 # Why bash: this is nix + go build orchestration glue — it realizes the pinned
 # GTK cc/pkg-config closure with `nix build`, links the one gtk4 binary against
@@ -73,8 +75,18 @@ CGO_ENABLED=1 CC="$CC_BIN" PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
   -ldflags "-X main.version=$v" \
   -o "$STAGE/bin/compass-app" ./cmd/compass-app
 
-# --- 5. Stage the A2 layout — the thin client bundle: one gtk4 binary + dist +
-# desktop + LICENSE (§156-168).
+# The three embedded sidecars (§A4/DL-321): pure-Go daemons the supervised stack
+# resolves in-bundle via prependExecDirToPath, so they build WITHOUT the gtk4
+# tag and without the CC/PKG_CONFIG closure the shell needs — same $v stamp.
+# NO compass-postgres: embedded's postgres is a DL-260 container, not a sidecar.
+for b in compass-stack compass-server compass-runner; do
+  log "Building sidecar ($b)"
+  go -C "$GO_DIR" build -trimpath \
+    -ldflags "-X main.version=$v" \
+    -o "$STAGE/bin/$b" "./cmd/$b"
+done
+
+# --- 5. Stage the rest of the layout — dist + desktop + LICENSE (§156-168).
 
 # dist: the compass-ui:build output (apps/ui/dist), staged beside the shell.
 UI_DIST="$REPO_ROOT/apps/ui/dist"
@@ -90,7 +102,7 @@ cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 
 # --- 6. Sanity assertions (§256-261). A green build means a COMPLETE bundle.
 log "Sanity: verifying staged bundle"
-for b in compass-app; do
+for b in compass-app compass-stack compass-server compass-runner; do
   bin="$STAGE/bin/$b"
   if [[ ! -x "$bin" ]]; then
     err "sanity: missing/non-executable binary: bin/$b"
