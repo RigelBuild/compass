@@ -103,14 +103,20 @@ condition is version-keyed, not row-count-keyed — see Global Constraints).
   `runnerhub.RunnerTokenRegistered` (`mint.go:80-93`) is a KIND-AGNOSTIC
   store-level existence check — it resolves a hash and returns true for ANY
   resolving subject, never comparing `Kind` — used by the runner-credential
-  provisioning heal paths, not a door. The third class widens its
+  provisioning heal paths, not a door — its two callers are
+  `go/cmd/compass-mint-runner-token/main.go:157` (the operator CLI) and
+  `go/internal/stack/adapters/token.go:87` (the AUTOMATED stack-boot heal,
+  not operator-driven). The third class widens its
   false-"registered" surface by one: a `SubjectService` token hash that
   appeared in a runner's token file would report registered, so the heal path
   would keep it instead of rotating and the runner would then fail the kind
   gate at `runnerhub/auth.go:79`. Not an escalation (the door still fails
-  closed) and reaching it needs an operator pasting a service token into runner
-  state; a non-load-bearing follow-up for the T4/issuance slice could compare
-  the resolved `Kind` before treating a token as registered.
+  closed); reaching it via the CLI leg needs an operator pasting a service token
+  into runner state, while the `token.go:87` heal leg reaches it only from a
+  token already in a runner's own resolved state — so neither is an untrusted
+  input path. A non-load-bearing follow-up for the T4/issuance slice could
+  compare the resolved `Kind` before treating a token as registered, landing in
+  exactly those two callsites.
 - The token-existence-oracle posture holds: every door maps
   `ErrTokenNotFound` / `ErrTokenRevoked` / `ErrWrongKind` to the same bare
   `CodeUnauthenticated` (`token.go:92-97`).
@@ -223,34 +229,39 @@ subj, err := auth.ResolveToken(ctx, st, presented, store.SubjectService)
 // per-surface authz then checks subj.ID against the surface's service allowlist.
 ```
 
-Doc refresh (T4 owns it, since the third door wrap is where the two-door prose
-goes stale): the enum grows to three kinds but there are still only two DOORS
-after PR2, so the existing two-door enumerations stay literally true until T4
-adds the third — at which point refresh them in the same slice. The CONTRACT is
-a discovery rule (the line-pinned list below is evidence, not the boundary):
-refresh every comment under `go/` and `proto/` that ENUMERATES or COUNTS the
-door/kind set — matching roughly `/cross-door|cross-kind|account (token|
-subject|door)|Runner (token|subject|door)|both doors|two doors|(the )?other
-door|these two|exactly two|two mandatory/` — since any two-door enumeration or
-literal door COUNT goes stale when the third door mounts. Note TWO enumeration
-axes exist and the regex covers both: the subject-KIND split (account/Runner)
-AND the door-COUNT split (socket vs network, "two doors") — a third mounted
-door falsifies a literal door count as surely as a third kind falsifies a
-two-kind enumeration, so an executor must not assume kind-keyed matching is
-exhaustive. The sites known at authoring time (verified at `eb5ef7a1`):
+Doc refresh (T4 owns it, since the third door wrap is where the subject-KIND
+prose goes stale): this record changes the subject-KIND axis (account/Runner
+grows a third kind), NOT the door count. The door count is already three at
+`eb5ef7a1` — the `compass.v1` surface has three doors (`serve.go:572`,
+`:647`, `:662`: shipped Unix socket, optional dev loopback, optional
+authenticated network) plus the Kind-gated RunnerService mount
+(`network_door.go:313` behind `runnerhub/auth.go:79`'s `SubjectRunner`
+bearer) — so a "two doors" claim is NOT made stale by this record's third kind.
+The two-door COUNT sentences that remain (`auth/doc.go:7`, and the
+`both doors` sites at `interceptor.go:86`/`:129`, `service.go:539`/`:604`)
+are scoped to the `auth` PACKAGE's OWN pair — network + socket, the two doors
+whose handlers read the caller via `CallerFrom` (`auth/doc.go:2` scopes the
+package to "the network door"; RunnerService authenticates in `runnerhub`, not
+`auth`) — so they are narrow-and-true within that scope, independently of
+SubjectService; they are OUT OF SCOPE for both PR2 and T4. The CONTRACT is a
+discovery rule for the subject-KIND sites only (the line-pinned list below is
+evidence, not the boundary): refresh every NON-GENERATED comment under `go/`
+and `proto/` that ENUMERATES the account/Runner subject KINDS — matching
+(case-INSENSITIVELY) roughly `/cross-door|cross-kind|account (token|subject|
+door)|Runner (token|subject|door)|(the )?other door|two mandatory/` — since any
+two-KIND subject enumeration goes stale when the third kind lands. Exclude
+`go/gen/**` and `go/internal/gen/**` (regenerate those from the proto instead,
+never hand-edit — see T4's proto note below); test prose IS in scope. The
+door-COUNT axis is deliberately NOT swept here: it is orthogonal to the kind
+axis this record adds, and the `auth`-scoped count sentences above are correct
+within their package scope. The subject-KIND sites known at authoring time (verified at `eb5ef7a1` — these
+are the T4 refresh targets):
 `go/internal/auth/token.go:98-99` (the shared-resolver door enumeration — "Both
 the account door … and the Runner door … share this one resolver"),
 `token.go:79-81` (`ErrWrongKind`'s account-vs-Runner examples),
-`go/internal/auth/doc.go:7-19` (the package-level door COUNT — "Two doors reach
-the same compass.v1 service, and each authenticates differently" — the
-socket-vs-network axis; a third mounted door makes the literal count wrong),
-`go/internal/auth/interceptor.go:86` ("the caller uniformly via CallerFrom on
-both doors") and `:129` ("both doors reject identically"),
-`go/server/service.go:539` and `:604` ("an interceptor must attach one on both
-doors"),
 `go/internal/auth/interceptor.go:140-141` (the cross-door failure enumeration),
-the `go/internal/runnerhub/auth.go:4-14` package doc (the two-door
-cross-door-rejection framing), `go/internal/store/types.go:89-90` (the
+the `go/internal/runnerhub/auth.go:4-14` package doc (the cross-door-rejection
+framing), `go/internal/store/types.go:89-90` (the
 cross-door EXAMPLE clause — "reject a cross-kind token (a Runner token on
 CompassService/CommsService, an account token on RunnerService)" — which SHARES
 line 90 with the "Sealed to exactly these two" seal sentence T1 rewrites, so
@@ -268,12 +279,27 @@ there, and a Runner token is Unauthenticated on the account/comms doors: the
 OQ7 cross-door rule") and `:299-301` ("an account token is Unauthenticated here
 and a Runner token is Unauthenticated on the CompassService/CommsService doors
 above (OQ7 cross-door rejection)"), and — the sharpest, because it states a
-literal COUNT that becomes factually wrong when a third door mounts —
+literal COUNT of cross-door rejection tests that grows when a third KIND lands —
 `proto/compass/v1/runner.proto:53-56` ("the RunnerService side of the TWO
 mandatory cross-door rejection tests"); its sibling `:183-184`
 ("account-subject tokens rejected") is an ordinary stale two-kind enumeration,
-not a count. `network_door.go` lives at `go/server/`, NOT `go/internal/` like
-the rest — the one cited file outside `go/internal/`.
+not a count. Editing `runner.proto:53-56` forces a regenerate: that prose is
+mirrored verbatim into the checked-in generated tree
+(`go/internal/gen/compass/v1/compassv1internalconnect/runner.connect.go:98`,
+`:367`), which is NOT gitignored and is drift-gated — `compass-proto:drift`
+(in `proto:ci`) fails closed on any byte diff — so regenerate and commit that
+tree in the same slice, never hand-edit it. `network_door.go` lives at
+`go/server/`, NOT `go/internal/` like the rest — the one cited file outside
+`go/internal/`.
+
+The door-COUNT sites are deliberately OUT of scope (this record changes the kind
+axis, not the door count): `go/internal/auth/doc.go:7-19` ("Two doors reach the
+same compass.v1 service"), `interceptor.go:86` ("both doors") and `:129`
+("both doors reject identically"), `go/server/service.go:539`/`:604` ("attach
+one on both doors"). All are scoped to the `auth` package's OWN network+socket
+pair (the `CallerFrom` doors) and are narrow-and-true within that scope — a
+third KIND does not falsify them, and the third door (RunnerService) already
+exists at `eb5ef7a1`, so they are neither PR2 nor T4 work.
 
 ### T5 — cross-door pgtest
 
