@@ -152,11 +152,11 @@ func (c *CollectorContainer) ProbeCollector(ctx context.Context, healthEndpoint 
 //     pointing at the bind-mounted config.
 func collectorRunArgs(spec stack.CollectorContainerSpec, configFile string) []string {
 	return []string{
-		"run", "--detach",
-		"--rm",
-		"--replace",
-		"--name", spec.Name,
-		"--stop-timeout", strconv.FormatInt(stopSeconds(spec.StopTimeout), 10),
+		cmdPodmanRun, flagPodmanDetach,
+		flagPodmanRM,
+		flagPodmanReplace,
+		flagPodmanName, spec.Name,
+		flagPodmanStopTimeout, strconv.FormatInt(stopSeconds(spec.StopTimeout), 10),
 		"-p", spec.GRPCEndpoint + ":4317",
 		"-p", spec.HTTPEndpoint + ":4318",
 		"-p", spec.HealthEndpoint + ":13133",
