@@ -281,10 +281,11 @@ func vmmArgs(cfg BootConfig, consolePath string, opts launchOptions) []string {
 	return args
 }
 
-// startChild sets the child's Pdeathsig (a best-effort orphan guard: on Linux
-// PR_SET_PDEATHSIG fires on the spawning THREAD's death, so the spawn holds the
-// OS thread for it to bind reliably) and captures its stdout+stderr to logPath
-// so a boot failure can surface the daemon's own diagnostics. The real teardown
+// startChild installs the child's best-effort orphan guard via the
+// platform-specific orphanGuardSysProcAttr (Linux PR_SET_PDEATHSIG, which fires
+// on the spawning THREAD's death — so the spawn holds the OS thread for it to
+// bind reliably; a no-op elsewhere) and captures its stdout+stderr to logPath so
+// a boot failure can surface the daemon's own diagnostics. The real teardown
 // guarantee is Shutdown, not Pdeathsig (record §(g) lines 300-303).
 func startChild(c *child) error {
 	logFile, err := os.OpenFile(c.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -295,7 +296,7 @@ func startChild(c *child) error {
 	// dup'd it into the child. Close after Start below.
 	c.cmd.Stdout = logFile
 	c.cmd.Stderr = logFile
-	c.cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}
+	c.cmd.SysProcAttr = orphanGuardSysProcAttr()
 
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
