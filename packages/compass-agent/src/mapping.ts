@@ -33,7 +33,7 @@
 // a monotonic per-event counter. `atUnixMs` comes from an injectable clock so
 // tests are deterministic.
 
-import type { AssistantMessageEvent } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
 import {
 	type AgentPlanEntry,
@@ -43,6 +43,8 @@ import {
 	AgentToolCallStatus,
 	create,
 	SessionAssistantTextSchema,
+	SessionErrorKind,
+	SessionErrorSchema,
 	type SessionEvent,
 	SessionEventSchema,
 	type SessionFileDiff,
@@ -246,6 +248,29 @@ export class EventMapper {
 		return { kind: "session", value };
 	}
 
+	// Build one SessionError trace frame from a pi-ai inner-error AssistantMessage
+	// (mapping.ts error arm). `kind` discriminates an unexpected failure (ERROR,
+	// paired with the ERRORED lifecycle transition) from a deliberate abort
+	// (ABORTED, no transition). `message` is the failure text (empty when the SDK
+	// surfaced none); `status` is set only when the provider surfaced an HTTP
+	// status, so a subscriber can tell "no status" from a literal 0. Routes
+	// through `#sessionEvent` for uniform id/clock stamping.
+	#sessionError(
+		kind: SessionErrorKind,
+		error: AssistantMessage,
+	): OutboundFrame {
+		return this.#sessionEvent({
+			case: "sessionError",
+			value: create(SessionErrorSchema, {
+				kind,
+				message: error.errorMessage ?? "",
+				...(error.errorStatus !== undefined
+					? { status: error.errorStatus }
+					: {}),
+			}),
+		});
+	}
+
 	// Build one SessionInjection trace frame — the agent-side observation that a
 	// channel message was injected into the live session as a steer or a deliver
 	// (design "steer/deliver split observation seam", T1). Public because the
@@ -296,27 +321,26 @@ export class EventMapper {
 			}
 			case "error": {
 				// The stream surfaced an inner error. `reason` splits the failure
-				// class (SDK: "aborted" | "error"):
-				//   - "error" = an unexpected inner/provider failure → an ERRORED
-				//     lifecycle transition (compass.proto:132 scopes ERRORED to the
+				// class (SDK: "aborted" | "error"), and both surface their content as
+				// a SessionError trace frame (DL-322): `inner.error.errorMessage` is
+				// the user-facing failure text, `inner.error.errorStatus` the provider
+				// HTTP status when one was surfaced.
+				//   - "error" = an unexpected inner/provider failure → emit the
+				//     SessionError(ERROR) content frame AND preserve the ERRORED
+				//     lifecycle transition (compass.proto scopes ERRORED to the
 				//     OOM/panic/engine-restart class; an inner stream error is that
-				//     class).
+				//     class, and board/presence/delivery key off it). Content first.
 				//   - "aborted" = a deliberate steer/user cancel, NOT a crash —
 				//     conflating it with ERRORED would misreport a normal abort as an
-				//     engine failure. Surface it as a counted UnmappedEvent so it is
-				//     logged + counted, never dropped, pending the abort-surfacing
-				//     contract (a follow-up).
+				//     engine failure. Emit only the SessionError(ABORTED) content
+				//     frame, with NO lifecycle transition.
 				if (inner.reason === "error") {
-					return [this.#sessionState(AgentSessionState.ERRORED)];
+					return [
+						this.#sessionError(SessionErrorKind.ERROR, inner.error),
+						this.#sessionState(AgentSessionState.ERRORED),
+					];
 				}
-				return [
-					{
-						kind: "unmapped",
-						eventType: "message_update:error",
-						reason:
-							"agent abort (reason=aborted) — not a crash; abort-surfacing staged",
-					},
-				];
+				return [this.#sessionError(SessionErrorKind.ABORTED, inner.error)];
 			}
 			default:
 				// start/text_start/thinking_start/thinking_end/image_end/toolcall_*/

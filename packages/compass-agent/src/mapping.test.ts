@@ -15,6 +15,7 @@ import {
 	AgentPlanEntryStatus,
 	AgentSessionState,
 	AgentToolCallStatus,
+	SessionErrorKind,
 	type SessionEvent,
 } from "./compassv1";
 import { EventMapper, type MapOutput } from "./mapping";
@@ -355,29 +356,97 @@ describe("EventMapper — non-content inner events emit nothing", () => {
 	}
 });
 
-describe("EventMapper — inner error: crash → session ERRORED vs abort → counted unmapped", () => {
-	// The pi-ai `error` variant carries reason "error" | "aborted" — NOT the same
-	// failure class:
-	//   - "error" = an inner/provider failure → a session frame to ERRORED.
-	//   - "aborted" = a deliberate cancel, NOT a crash → surfaced as a counted
-	//     UnmappedEvent (never conflated with ERRORED, never dropped).
-	test('reason "error" → one session frame in state ERRORED', () => {
-		expect(
-			soleSessionState(
-				mapper().map(upd({ type: "error", reason: "error", error: partial() })),
-			),
-		).toBe(AgentSessionState.ERRORED);
+describe("EventMapper — inner error: error → SessionError + ERRORED vs abort → SessionError only", () => {
+	// The pi-ai `error` variant carries reason "error" | "aborted". Both surface
+	// their content as a SessionError trace event; the failure class differs:
+	//   - "error" = an inner/provider failure → the SessionError(ERROR) content
+	//     frame AND the ERRORED lifecycle transition (content first).
+	//   - "aborted" = a deliberate cancel, NOT a crash → the SessionError(ABORTED)
+	//     content frame only, no lifecycle transition, never a counted unmapped.
+	// `status` rides the frame only when the provider surfaced an HTTP status.
+	const errored = (over: Partial<AssistantMessage>): AssistantMessage => ({
+		...partial(),
+		...over,
 	});
 
-	test('reason "aborted" → one counted UnmappedEvent, NOT ERRORED', () => {
+	test('reason "error" → SessionError(ERROR) content frame then ERRORED lifecycle', () => {
 		const out = mapper().map(
-			upd({ type: "error", reason: "aborted", error: partial() }),
+			upd({
+				type: "error",
+				reason: "error",
+				error: errored({ errorMessage: "provider exploded", errorStatus: 500 }),
+			}),
 		);
-		expect(out).toHaveLength(1);
-		const frame = out[0];
-		expect(frame.kind).toBe("unmapped");
-		if (frame.kind === "unmapped")
-			expect(frame.eventType).toBe("message_update:error");
+		expect(out).toHaveLength(2);
+		const [content, lifecycle] = out;
+		if (content.kind !== "session")
+			throw new Error(`expected session frame, got ${content.kind}`);
+		const ev = defined(content.value.typedEvent, "typed session event").event;
+		if (ev.case !== "sessionError")
+			throw new Error(`expected sessionError, got ${ev.case}`);
+		expect(ev.value.kind).toBe(SessionErrorKind.ERROR);
+		expect(ev.value.message).toBe("provider exploded");
+		expect(ev.value.status).toBe(500);
+		if (lifecycle.kind !== "session")
+			throw new Error(`expected session frame, got ${lifecycle.kind}`);
+		expect(lifecycle.value.typedEvent).toBeUndefined();
+		expect(lifecycle.value.state).toBe(AgentSessionState.ERRORED);
+	});
+
+	test('reason "aborted" → one SessionError(ABORTED), no lifecycle, no unmapped', () => {
+		const out = mapper().map(
+			upd({
+				type: "error",
+				reason: "aborted",
+				error: errored({ errorMessage: "user cancelled" }),
+			}),
+		);
+		const ev = soleTyped(out).event;
+		if (ev.case !== "sessionError")
+			throw new Error(`expected sessionError, got ${ev.case}`);
+		expect(ev.value.kind).toBe(SessionErrorKind.ABORTED);
+		expect(ev.value.message).toBe("user cancelled");
+	});
+
+	test("a surfaced errorStatus rides the frame; an absent one leaves status unset", () => {
+		const withStatus = soleTyped(
+			mapper().map(
+				upd({
+					type: "error",
+					reason: "aborted",
+					error: errored({ errorStatus: 429 }),
+				}),
+			),
+		).event;
+		if (withStatus.case !== "sessionError")
+			throw new Error(`expected sessionError, got ${withStatus.case}`);
+		expect(withStatus.value.status).toBe(429);
+
+		// The literal-0 boundary is the whole reason #sessionError guards on
+		// `errorStatus !== undefined` rather than truthiness: HTTP status 0 is a
+		// real provider sentinel (network-level failure / no response), and a
+		// truthiness guard would silently drop it. Status 0 must ride the frame.
+		const zeroStatus = soleTyped(
+			mapper().map(
+				upd({
+					type: "error",
+					reason: "aborted",
+					error: errored({ errorStatus: 0 }),
+				}),
+			),
+		).event;
+		if (zeroStatus.case !== "sessionError")
+			throw new Error(`expected sessionError, got ${zeroStatus.case}`);
+		expect(zeroStatus.value.status).toBe(0);
+
+		const noStatus = soleTyped(
+			mapper().map(upd({ type: "error", reason: "aborted", error: partial() })),
+		).event;
+		if (noStatus.case !== "sessionError")
+			throw new Error(`expected sessionError, got ${noStatus.case}`);
+		expect(noStatus.value.status).toBeUndefined();
+		// An absent errorMessage collapses to the empty string, never undefined.
+		expect(noStatus.value.message).toBe("");
 	});
 });
 
