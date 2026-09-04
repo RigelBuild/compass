@@ -30,8 +30,8 @@ import (
 func insertSystemMember(t *testing.T, s *Store, ch ChannelID, sys AccountID) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
-		"INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, $3)",
-		string(ch), string(sys), true,
+		"INSERT INTO channel_members (channel_id, account_id, subscribed, tenant_id) VALUES ($1, $2, $3, $4)",
+		string(ch), string(sys), true, string(s.resolveTenant(context.Background())),
 	); err != nil {
 		t.Fatalf("insert system channel_members row (%s,%s): %v", ch, sys, err)
 	}

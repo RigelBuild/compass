@@ -326,6 +326,13 @@ func (s *Store) SessionResumeSnapshot(ctx context.Context, sessionID string) ([]
 	// rollback-after-commit convention); on any early return it aborts the tx.
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Arm the read-only tx with the tenant scoping (SET LOCAL ROLE + GUC) before
+	// any policied read, exactly as beginTenantTx does for the read-write paths
+	// — a resume snapshot is a request-path read and must be tenant-scoped.
+	if err := armTx(ctx, s, tx); err != nil {
+		return nil, nil, err
+	}
+
 	qtx := s.q.WithTx(tx)
 
 	tailRows, err := qtx.SessionTranscript(ctx, sessionID)
@@ -522,7 +529,7 @@ func (s *Store) flushUpto(ctx context.Context, sessionID string, fromEntrySeq, u
 		return fmt.Errorf("store: flush put segment: %w", err)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return fmt.Errorf("store: begin flush: %w", err)
 	}

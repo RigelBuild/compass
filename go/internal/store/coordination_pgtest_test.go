@@ -459,10 +459,10 @@ func TestUpsertConcurrentUserInsertSuffixesWithoutWedge(t *testing.T) {
 	}
 	userChID := newID()
 	if _, err := txUser.Exec(ctx,
-		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) `+
-			`VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription, tenant_id) `+
+			`VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 		userChID, "manager-coordination", string(groupID), int32(ChannelKindChannel),
-		int32(ChannelPostPolicyOpen), string(owner.ID), false,
+		int32(ChannelPostPolicyOpen), string(owner.ID), false, string(s.resolveTenant(ctx)),
 	); err != nil {
 		t.Fatalf("user tx insert channel: %v", err)
 	}

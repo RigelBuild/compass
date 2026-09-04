@@ -155,7 +155,7 @@ WITH up AS (
           title, body, forge_state, url, forge_account, labels, agent_handle,
           forge_updated_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-     ON CONFLICT (forge_provider, forge_host, repo, number) DO UPDATE
+     ON CONFLICT (tenant_id, forge_provider, forge_host, repo, number) DO UPDATE
         SET title = EXCLUDED.title, body = EXCLUDED.body,
             forge_state = EXCLUDED.forge_state, url = EXCLUDED.url,
             forge_account = EXCLUDED.forge_account, labels = EXCLUDED.labels,

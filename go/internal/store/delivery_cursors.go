@@ -234,7 +234,7 @@ func (s *Store) UnroutedMentionMessages(ctx context.Context, afterSeq int64, lim
 // not "fix" it by jumping the low-water past an un-acked lower owed seq, which
 // loses commit-lagged messages. A duplicate or reordered ack is a no-op.
 func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel ChannelID, messageID string) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return fmt.Errorf("store: begin ack delivery: %w", err)
 	}

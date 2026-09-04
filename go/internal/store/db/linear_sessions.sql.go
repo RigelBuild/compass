@@ -17,9 +17,18 @@ FROM linear_agent_sessions
 WHERE linear_session_id = $1
 `
 
-func (q *Queries) LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSession, error) {
+type LinearAgentSessionRow struct {
+	LinearSessionID  string
+	ManagerAccountID string
+	ChannelID        string
+	TopicID          string
+	LinearIssueID    pgtype.Text
+	CreatedAt        pgtype.Timestamptz
+}
+
+func (q *Queries) LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSessionRow, error) {
 	row := q.db.QueryRow(ctx, linearAgentSession, linearSessionID)
-	var i LinearAgentSession
+	var i LinearAgentSessionRow
 	err := row.Scan(
 		&i.LinearSessionID,
 		&i.ManagerAccountID,

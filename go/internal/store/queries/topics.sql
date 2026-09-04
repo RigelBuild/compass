@@ -6,7 +6,7 @@
 -- last_seq) matches the former scanTopics order so the Go maps each row to Topic.
 
 -- name: ListTopics :many
-SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq
+SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id
 FROM topics
 WHERE channel_id = $1 AND ($2 OR NOT archived)
 ORDER BY last_seq DESC, created_at_unix_ms DESC, id;
@@ -21,7 +21,7 @@ FOR UPDATE OF t;
 UPDATE topics SET archived = $2 WHERE id = $1;
 
 -- name: GetTopic :one
-SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq
+SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id
 FROM topics WHERE id = $1;
 
 -- name: ResolveTopicRenameTarget :one

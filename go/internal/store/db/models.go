@@ -20,6 +20,7 @@ type AccountHandle struct {
 	AccountID   string
 	Handle      string
 	OwnerUserID pgtype.Text
+	TenantID    string
 }
 
 type AgentAccount struct {
@@ -29,12 +30,14 @@ type AgentAccount struct {
 	Persona       string
 	ParentAgentID pgtype.Text
 	Role          string
+	TenantID      string
 }
 
 type AgentActivity struct {
 	AgentAccountID   string
 	Activity         string
 	ActivityAtUnixMs int64
+	TenantID         string
 }
 
 type AgentConfigBundle struct {
@@ -51,6 +54,7 @@ type AgentDeliveryCursor struct {
 	AckedSeq       int64
 	AboveSeqs      []int64
 	AckedAt        pgtype.Timestamptz
+	TenantID       string
 }
 
 type AgentForgeSubscription struct {
@@ -66,6 +70,7 @@ type AgentForgeSubscription struct {
 	DeliveredRevision string
 	DeliveredAt       pgtype.Timestamptz
 	CreatedAt         pgtype.Timestamptz
+	TenantID          string
 }
 
 type AgentPlacement struct {
@@ -74,6 +79,7 @@ type AgentPlacement struct {
 	ContainerName  string
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	TenantID       string
 }
 
 type AgentSession struct {
@@ -81,6 +87,7 @@ type AgentSession struct {
 	AgentAccountID   string
 	BaseEntrySeq     int64
 	RecordedAtUnixMs int64
+	TenantID         string
 }
 
 type AgentSessionArchiveSegment struct {
@@ -89,6 +96,7 @@ type AgentSessionArchiveSegment struct {
 	MinEntrySeq int64
 	MaxEntrySeq int64
 	Kind        string
+	TenantID    string
 }
 
 type AgentSessionTranscriptEntry struct {
@@ -97,11 +105,13 @@ type AgentSessionTranscriptEntry struct {
 	Checkpoint     bool
 	EntryJson      string
 	IdempotencyKey string
+	TenantID       string
 }
 
 type AgentWorkspace struct {
 	ID             string
 	AgentAccountID string
+	TenantID       string
 }
 
 type Channel struct {
@@ -113,6 +123,7 @@ type Channel struct {
 	PostPolicy            int16
 	OwnerAccountID        pgtype.Text
 	MandatorySubscription bool
+	TenantID              string
 }
 
 type ChannelGroup struct {
@@ -121,12 +132,14 @@ type ChannelGroup struct {
 	ParentGroupID pgtype.Text
 	OwnerUserID   string
 	Visibility    int16
+	TenantID      string
 }
 
 type ChannelMember struct {
 	ChannelID  string
 	AccountID  string
 	Subscribed bool
+	TenantID   string
 }
 
 type ChannelPin struct {
@@ -135,6 +148,7 @@ type ChannelPin struct {
 	Position          int32
 	PinnedAtUnixMs    int64
 	PinnedByAccountID string
+	TenantID          string
 }
 
 type ForgeArtifactCursor struct {
@@ -149,6 +163,7 @@ type ForgeArtifactCursor struct {
 	Revision      string
 	Snapshot      []byte
 	PolledAt      pgtype.Timestamptz
+	TenantID      string
 }
 
 type ForgeAuthoredArtifact struct {
@@ -162,6 +177,7 @@ type ForgeAuthoredArtifact struct {
 	SessionID       string
 	ClientRequestID pgtype.Text
 	CreatedAtUnixMs int64
+	TenantID        string
 }
 
 type ForgeRepoSubscription struct {
@@ -173,6 +189,7 @@ type ForgeRepoSubscription struct {
 	ListEtag       string
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
+	TenantID       string
 }
 
 type Issue struct {
@@ -194,6 +211,7 @@ type Issue struct {
 	Assignee       string
 	Summary        string
 	Branch         string
+	TenantID       string
 }
 
 type LinearAgentSession struct {
@@ -203,6 +221,7 @@ type LinearAgentSession struct {
 	TopicID          string
 	LinearIssueID    pgtype.Text
 	CreatedAt        pgtype.Timestamptz
+	TenantID         string
 }
 
 type Message struct {
@@ -216,6 +235,7 @@ type Message struct {
 	SearchTsv        interface{}
 	TopicID          string
 	MentionsRoutedAt pgtype.Int8
+	TenantID         string
 }
 
 type OwedMention struct {
@@ -223,6 +243,7 @@ type OwedMention struct {
 	MessageID        string
 	ChannelID        string
 	RecordedAtUnixMs int64
+	TenantID         string
 }
 
 type Secret struct {
@@ -234,10 +255,12 @@ type Secret struct {
 	DeclaredBy string
 	CreatedAt  pgtype.Timestamptz
 	UpdatedAt  pgtype.Timestamptz
+	TenantID   string
 }
 
 type SystemAccount struct {
 	AccountID string
+	TenantID  string
 }
 
 type Tenant struct {
@@ -263,9 +286,11 @@ type Topic struct {
 	CreatedAtUnixMs    int64
 	Archived           bool
 	LastSeq            int64
+	TenantID           string
 }
 
 type UserAccount struct {
 	AccountID string
 	Role      int16
+	TenantID  string
 }

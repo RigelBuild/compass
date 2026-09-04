@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const declaredSecrets = `-- name: DeclaredSecrets :many
@@ -14,15 +16,26 @@ SELECT name, delivery, kind, provider, host, declared_by, created_at, updated_at
 FROM secrets ORDER BY name
 `
 
-func (q *Queries) DeclaredSecrets(ctx context.Context) ([]Secret, error) {
+type DeclaredSecretsRow struct {
+	Name       string
+	Delivery   int16
+	Kind       int16
+	Provider   string
+	Host       string
+	DeclaredBy string
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) DeclaredSecrets(ctx context.Context) ([]DeclaredSecretsRow, error) {
 	rows, err := q.db.Query(ctx, declaredSecrets)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []Secret
+	var items []DeclaredSecretsRow
 	for rows.Next() {
-		var i Secret
+		var i DeclaredSecretsRow
 		if err := rows.Scan(
 			&i.Name,
 			&i.Delivery,

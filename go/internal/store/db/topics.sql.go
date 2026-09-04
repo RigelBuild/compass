@@ -19,7 +19,7 @@ func (q *Queries) DeleteTopic(ctx context.Context, id string) error {
 }
 
 const getTopic = `-- name: GetTopic :one
-SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq
+SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id
 FROM topics WHERE id = $1
 `
 
@@ -34,13 +34,14 @@ func (q *Queries) GetTopic(ctx context.Context, id string) (Topic, error) {
 		&i.CreatedAtUnixMs,
 		&i.Archived,
 		&i.LastSeq,
+		&i.TenantID,
 	)
 	return i, err
 }
 
 const listTopics = `-- name: ListTopics :many
 
-SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq
+SELECT id, channel_id, name, created_by_account_id, created_at_unix_ms, archived, last_seq, tenant_id
 FROM topics
 WHERE channel_id = $1 AND ($2 OR NOT archived)
 ORDER BY last_seq DESC, created_at_unix_ms DESC, id
@@ -74,6 +75,7 @@ func (q *Queries) ListTopics(ctx context.Context, arg ListTopicsParams) ([]Topic
 			&i.CreatedAtUnixMs,
 			&i.Archived,
 			&i.LastSeq,
+			&i.TenantID,
 		); err != nil {
 			return nil, err
 		}
