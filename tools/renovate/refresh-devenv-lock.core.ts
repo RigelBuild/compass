@@ -7,8 +7,8 @@
 // the packageRule's `fileFilters` would then silently drop the write (it is an
 // INCLUDE allowlist naming exactly one lock), shipping a PR whose rev bump was
 // never followed by a real relock. The entry point owns the shell-outs (the
-// base diff, `devenv update devenv`); this file owns the decisions. NO
-// shell-outs, NO fs beyond text passed in.
+// base diff, the `nix run <fork flakeref> -- update devenv` relock); this file
+// owns the decisions. NO shell-outs, NO fs beyond text passed in.
 
 /**
  * The two independently-locked devenv scopes in this repo. RD-1 unifies the
@@ -34,8 +34,12 @@ export const DEVENV_LOCK_SCOPES: Record<
 	"agent-image": { lock: "agent-image/devenv.lock", cwd: "agent-image" },
 };
 
-/** Every scope's lock path, in scope order — the git-diff pathspec. */
-export const DEVENV_LOCK_PATHS: string[] = Object.values(
+/**
+ * Every scope's lock path, in scope order — the git-diff pathspec. `readonly`
+ * for symmetry with the `readonly lock`/`readonly cwd` fields above; it still
+ * spreads into a `$`-template pathspec fine.
+ */
+export const DEVENV_LOCK_PATHS: readonly string[] = Object.values(
 	DEVENV_LOCK_SCOPES,
 ).map((s) => s.lock);
 
@@ -51,10 +55,13 @@ export const DEVENV_LOCK_PATHS: string[] = Object.values(
  *   relock.
  * - BOTH locks changed → throws. The two rules carry distinct groupNames
  *   precisely so they never share a branch, so this shape means an assumption
- *   broke. Relocking both would be worse than useless: each rule's
+ *   broke. Relocking either one would be worse than useless: each rule's
  *   `fileFilters` names ONE lock, so Renovate would commit one relock and
  *   silently discard the other — a PR that bumped a rev without relocking it.
- *   Fail loud instead.
+ *   Exit non-zero instead. That exit does NOT abort the branch (Renovate
+ *   commits the regex bump regardless); it reds the `renovate/artifacts`
+ *   status, and the human review gate is what stops the merge. See the
+ *   entry point's "what a non-zero exit actually buys" note.
  *
  * Paths are compared exactly (repo-root-relative, as `git diff --name-only`
  * emits them), so an unrelated `foo/devenv.lock` can never be mistaken for
@@ -72,7 +79,9 @@ export function changedDevenvLock(
 				`(${changed.map((s) => DEVENV_LOCK_SCOPES[s].lock).join(", ")}) — each packageRule's ` +
 				"fileFilters names exactly ONE lock, so a two-lock branch would commit one relock and " +
 				"silently drop the other. The two rules carry distinct groupNames so they never share a " +
-				"branch; this shape means that invariant broke.",
+				"branch; this shape means that invariant broke. Exiting non-zero reds the " +
+				"`renovate/artifacts` status — it does not abort the branch — so the mandatory human " +
+				"review of the PR is what keeps this shape from merging.",
 		);
 	}
 	return changed[0] ?? null;

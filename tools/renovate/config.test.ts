@@ -585,18 +585,21 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 		depName: string;
 		lock: string;
 		groupName: string;
+		patternLiteral: string;
 	}[] = [
 		{
 			label: "root",
 			depName: "RigelBuild/devenv",
 			lock: "devenv.lock",
 			groupName: "devenv fork (root)",
+			patternLiteral: "/^devenv\\.lock$/",
 		},
 		{
 			label: "agent-image",
 			depName: "RigelBuild/devenv-agent-image",
 			lock: "agent-image/devenv.lock",
 			groupName: "devenv fork (agent-image)",
+			patternLiteral: "/^agent-image\\/devenv\\.lock$/",
 		},
 	];
 	const managerFor = (depName: string) =>
@@ -606,7 +609,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 
 	test.each(forkScopes)(
 		"declares a git-refs regex manager for the $label lock's fork rev",
-		({ depName, lock }) => {
+		({ depName, lock, patternLiteral }) => {
 			const manager = managerFor(depName);
 			expect(manager).toBeDefined();
 			expect(manager?.customType).toBe("regex");
@@ -624,6 +627,12 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			// pattern would make the root manager extract from the agent-image lock
 			// too (or vice versa), collapsing the two independent scopes into one
 			// dep with two files and two conflicting digests.
+			//
+			// Pin the LITERAL first, then re-parse it behaviourally below. The
+			// literal assertion is what makes a Renovate delimiter-semantics drift
+			// (e.g. how an unescaped interior `/` is read) fail as a changed literal
+			// rather than silently changing what the re-parse below is testing.
+			expect(manager?.managerFilePatterns).toEqual([patternLiteral]);
 			const pattern = manager?.managerFilePatterns?.[0];
 			const delimited = /^\/(.*)\/$/.exec(pattern as string);
 			expect(delimited).not.toBeNull();

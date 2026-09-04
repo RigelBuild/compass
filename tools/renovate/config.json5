@@ -240,7 +240,10 @@
       // same-named sibling. The lockFileMaintenance-is-unimplementable
       // reasoning on the root manager above applies verbatim here.
       customType: "regex",
-      managerFilePatterns: ["/^agent-image/devenv\\.lock$/"],
+      // The interior slash is escaped so the whole value reads unambiguously as
+      // a `/…/`-delimited regex (behaviourally identical under Renovate's
+      // parseRegexMatch; config.test.ts pins the literal).
+      managerFilePatterns: ["/^agent-image\\/devenv\\.lock$/"],
       matchStrings: [
         "\"repo\": \"devenv\",\\s*\"rev\": \"(?<currentDigest>[a-f0-9]{40})\"",
       ],
@@ -650,9 +653,11 @@
       // exactly ONE branch-mode task per branch, so a dep that never shares a
       // branch owns that single slot. It is also what keeps the two locks on
       // INDEPENDENT cadences per RD-1 (unify the source, do NOT reconcile the
-      // locks): two groupNames, two branches, two PRs. The rollup can't capture
-      // this dep regardless — its update type is `digest` and the rollup admits
-      // only patch/minor.
+      // locks): two groupNames, two branches, two PRs. The isolation chain is
+      // groupName -> branchTopic -> branchName, so two distinct groupNames
+      // yield two distinct branch names (no need to re-derive it). The rollup
+      // can't capture this dep regardless — its update type is `digest` and the
+      // rollup admits only patch/minor.
       matchManagers: ["custom.regex"],
       matchDepNames: ["RigelBuild/devenv"],
       groupName: "devenv fork (root)",
@@ -668,14 +673,18 @@
       // cooldown treats it as permanently `pending` and the digest sits on the
       // dashboard forever with zero PRs cut (the RIG-1220 silent-no-updates
       // shape). Disable the cooldown for THIS rule only — SAME reason as the
-      // devenv-nixpkgs rule above; the window exists for the compromised-
-      // registry-release risk, which does not apply to our own fork.
+      // devenv-nixpkgs rule above. The cooldown is mechanically INAPPLICABLE to
+      // a git-refs digest (there is no release timestamp to age), so nulling it
+      // is not a risk judgement about the fork: the compensating control is the
+      // MANDATORY human review of the PR before merge (no automerge is
+      // configured — see the top of this file).
       minimumReleaseAge: null,
       // ── The relock task. ──
       // The regex update rewrites ONLY the rev string, leaving narHash /
       // lastModified / the fork's transitive nodes describing the OLD rev. This
-      // task runs `devenv update devenv` in the repo root to rewrite the whole
-      // lock consistently at the fork's current HEAD.
+      // task runs `nix run <the lock's own fork flakeref> -- update devenv` in
+      // the repo root to rewrite the whole lock consistently at the fork's
+      // current HEAD.
       //
       // This pairing — regex digest + postUpgradeTask — is NOT a workaround to
       // be simplified away: `lockFileMaintenance` cannot do this job. See the
@@ -719,10 +728,15 @@
       // (RD-1: unify the source, do NOT reconcile the locks) AND guarantees the
       // two branch-mode relock tasks never contend for one branch's single
       // task slot. Same command as the root rule — the script decides which
-      // lock to relock from the branch diff and runs `devenv update devenv` in
-      // agent-image/ for this one — so one allowlist entry covers both.
+      // lock to relock from the branch diff and, for this one, runs
+      // `nix run <agent-image/devenv.lock's OWN fork flakeref> -- update devenv`
+      // in agent-image/ (so this lock is written by the devenv version IT pins,
+      // never the root lock's) — so one allowlist entry covers both.
       // `minimumReleaseAge: null` for the same git-refs-carries-no-release-age
-      // reason, and the same lockFileMaintenance-is-unimplementable argument
+      // reason: the cooldown is mechanically inapplicable to a git-refs digest
+      // (no release timestamp to age), and the compensating control is the
+      // mandatory human review of the PR before merge (no automerge is
+      // configured). The same lockFileMaintenance-is-unimplementable argument
       // (see the manager) applies verbatim.
       matchManagers: ["custom.regex"],
       matchDepNames: ["RigelBuild/devenv-agent-image"],
