@@ -3,7 +3,7 @@
 Status: Active
 Tracking: RIG-2863 / RIG-3122 (parent RIG-1715, RIG-2845)
 
-Ledger: DL-325 (this PR), Topology & tiers. Amends the two-kind token-subject
+Ledger: DL-327 (this PR), Topology & tiers. Amends the two-kind token-subject
 seal frozen by the retired v0.6 milestone record (see Problem / Intent); no
 rows superseded. Per the corpus convention, the frozen record is amended by
 this NEW record, never rewritten.
@@ -42,7 +42,7 @@ LLM gateway (`docs/designs/server/compass-server-llm-gateway/design.md`) is a
 supervised compute tier that authenticates BACK to the Server — its
 "RPC-to-Server-for-creds" surface is "a narrow, stack-token-authenticated
 Server surface (list credentials for pool / write back refreshed OAuth tokens /
-CAS disable)" (llm-gateway record, §Approach, lines 348-350). That stack token
+CAS disable)" (llm-gateway record, §Approach, lines 348-351). That stack token
 is neither an account subject nor a Runner subject; a future MCP gateway
 presents the same problem. Intent: admit a THIRD token-subject principal class,
 `SubjectService SubjectKind = 2`, for every first-party supervised compute tier
@@ -104,7 +104,15 @@ and are painful to rename once token rows exist.
 
 ## Plan
 
-PR2 executor contract — the five edits, each grounded on the current line:
+PR2 executor contract — TWO scopes, each grounded on the current line. **The
+enum half (T1/T2/T3/T5) lands NOW as PR2** — every file+line it names exists
+today, and it is the urgent half (the enum number + `tokens.subject_kind`
+CHECK are painful to change once token rows exist, per Problem / Intent). **The
+door half (T4) lands WITH the service surface**, which does not exist in the
+tree yet: it is delivered by RIG-2863 (RIG-1715 T2 — the AuthStorage-over-compass
+adapter + the LLM gateway's stack-token RPC surface, currently Backlog), and
+T4 mounts on it there, ordered AFTER that surface. SubjectService token
+ISSUANCE (the mint path, no corpus task owns it yet) is OQ-3 below.
 
 ### T1 — `SubjectService` const + seal-comment update
 
@@ -152,7 +160,7 @@ Interfaces:
 // produces: //nolint:gosec // G115: SubjectKind is a CHECK-constrained 0/1/2 enum (tokens.subject_kind), always within int16
 ```
 
-### T4 — service-door mount
+### T4 — service-door mount (lands WITH the RIG-2863 service surface, NOT in PR2)
 
 The service surface (first consumer: the LLM gateway's stack-token RPC surface
 per the llm-gateway record) authenticates via the shared resolver with the new
@@ -194,7 +202,7 @@ Interfaces:
 - [ ] T1: `SubjectService SubjectKind = 2` + seal comment (`types.go:90-99`) + `Subject.ID` doc
 - [ ] T2: `0001_init.sql:377` CHECK `IN (0, 1)` → `IN (0, 1, 2)` + header comment `:372-373`
 - [ ] T3: `tokens.go:20` nolint `0/1` → `0/1/2`
-- [ ] T4: service-door mount via `ResolveToken(..., store.SubjectService)` + per-surface Subject-ID authz
+- [ ] T4 (RIG-2863 T2, NOT PR2): service-door mount via `ResolveToken(..., store.SubjectService)` + per-surface Subject-ID authz, mounted on the stack-token RPC surface that slice delivers
 - [ ] T5: cross-door pgtest matrix (3×3 kind-gate + CHECK-admits-2 round-trip)
 
 ## Open Questions
@@ -208,6 +216,21 @@ Interfaces:
   one is), so the schema ceremony buys nothing over the one-line CHECK edit.
   Recommendation: keep the inline IN-list. Only escalate if Matt expects
   kind churn beyond design-gated additions.
+- **OQ-3 (deferral naming the owning slice — NON-load-bearing for PR2, the enum
+  half): SubjectService token ISSUANCE lives in the RIG-2863 T4 slice.** Both
+  existing kinds have a real mint path — `IssueAccountToken` (`token.go:51-55`)
+  for `SubjectAccount`, `runnerhub.MintRunnerToken` (`mint.go:103`) + the
+  `compass-mint-runner-token` CLI for `SubjectRunner`. No corpus task mints a
+  `SubjectService` token yet (this record's T5 only writes rows test-side via
+  `PutTokenHash`), so the enum + door would otherwise ship with no principal able
+  to pass the door. Resolution (driver call, boring-consistent — mirrors the
+  existing mint paths, no design fork): issuance lands in the RIG-2863 (RIG-1715
+  T2) slice ALONGSIDE the service surface T4 mounts on — an `IssueServiceToken`
+  (boot/store fn or an operator CLI, mirroring `MintRunnerToken`), minting under
+  a distinct Subject ID per tier (`llm-gateway`, later `mcp-gateway`). PR2 (the
+  enum half, T1/T2/T3/T5) does NOT depend on it; it is recorded here so the T4
+  slice owns it explicitly rather than an executor improvising a mint path on a
+  security-critical door.
 - Non-load-bearing deferral: the canonical Subject-ID registry for service
   principals (e.g. `llm-gateway`, `mcp-gateway` as named constants vs
   config-supplied strings) is a PR2 implementation detail of the T4 surface's
