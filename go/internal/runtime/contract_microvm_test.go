@@ -18,6 +18,7 @@ package runtime
 // podman analog) stay there.
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -89,7 +90,7 @@ func TestMicroVMQBudget(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := m.Remove(t.Context(), id); err != nil {
+		if err := m.Remove(context.WithoutCancel(t.Context()), id); err != nil {
 			t.Errorf("Remove (cleanup): %v", err)
 		}
 	})
