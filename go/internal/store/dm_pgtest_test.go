@@ -293,9 +293,10 @@ func TestUpsertDMChannelSquatBeltRejectsWrongKind(t *testing.T) {
 	gid := dmGroupIDFor(t, s, owner.ID)
 	const squatName = "dm--alice--carol"
 	if _, err := s.pool.Exec(context.Background(),
-		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription)
-		   VALUES ($1, $2, $3, $4, $5, NULL, $6)`,
+		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription, tenant_id)
+		   VALUES ($1, $2, $3, $4, $5, NULL, $6, $7)`,
 		newID(), squatName, string(gid), int32(ChannelKindChannel), int32(ChannelPostPolicyOpen), true,
+		string(s.resolveTenant(context.Background())),
 	); err != nil {
 		t.Fatalf("plant squat row: %v", err)
 	}

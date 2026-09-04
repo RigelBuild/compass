@@ -770,15 +770,15 @@ func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 			t.Fatalf("insert squatter account: %v", err)
 		}
 		if _, err := s.pool.Exec(ctx,
-			"INSERT INTO user_accounts (account_id, role) VALUES ($1, $2)", id, int32(UserRoleMember),
+			"INSERT INTO user_accounts (account_id, role, tenant_id) VALUES ($1, $2, $3)", id, int32(UserRoleMember), string(s.resolveTenant(ctx)),
 		); err != nil {
 			t.Fatalf("insert squatter user_account: %v", err)
 		}
 		// Plant the reserved handle in the GLOBAL index (owner_user_id NULL): the
 		// squatter owns the resolution key the system seeder contends for.
 		if _, err := s.pool.Exec(ctx,
-			"INSERT INTO account_handles (account_id, handle, owner_user_id) VALUES ($1, $2, NULL)",
-			id, SystemAccountHandle,
+			"INSERT INTO account_handles (account_id, handle, owner_user_id, tenant_id) VALUES ($1, $2, NULL, $3)",
+			id, SystemAccountHandle, string(s.resolveTenant(ctx)),
 		); err != nil {
 			t.Fatalf("insert squatter handle row: %v", err)
 		}
@@ -797,7 +797,7 @@ func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 			t.Fatalf("insert squatter account: %v", err)
 		}
 		if _, err := s.pool.Exec(ctx,
-			"INSERT INTO agent_accounts (account_id, owner_user_id) VALUES ($1, $2)", id, string(owner.ID),
+			"INSERT INTO agent_accounts (account_id, owner_user_id, tenant_id) VALUES ($1, $2, $3)", id, string(owner.ID), string(s.resolveTenant(ctx)),
 		); err != nil {
 			t.Fatalf("insert squatter agent_account: %v", err)
 		}
@@ -805,8 +805,8 @@ func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 		// the squatter actually owns the resolution key the system seeder
 		// contends for — the wrong-shape-row-in-the-global-index threat.
 		if _, err := s.pool.Exec(ctx,
-			"INSERT INTO account_handles (account_id, handle, owner_user_id) VALUES ($1, $2, NULL)",
-			id, SystemAccountHandle,
+			"INSERT INTO account_handles (account_id, handle, owner_user_id, tenant_id) VALUES ($1, $2, NULL, $3)",
+			id, SystemAccountHandle, string(s.resolveTenant(ctx)),
 		); err != nil {
 			t.Fatalf("insert squatter handle row: %v", err)
 		}

@@ -1189,8 +1189,8 @@ func TestListMessagesFailsLoudOnZeroQuestionAsk(t *testing.T) {
 	const staleBlocks = `[{"kind":"ask","ask":{"ask_id":"stale-1","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]}}]`
 	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
-		newID(), topicID, string(author.ID), int64(1), staleBlocks,
+		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+		newID(), topicID, string(author.ID), int64(1), staleBlocks, string(s.resolveTenant(ctx)),
 	); err != nil {
 		t.Fatalf("inject stale row: %v", err)
 	}
@@ -1227,8 +1227,8 @@ func TestListMessagesFailsLoudOnEmptyQuestionID(t *testing.T) {
 	const blankQIDBlocks = `[{"kind":"ask","ask":{"ask_id":"blank-qid-1","questions":[{"question_id":"","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]}]}}]`
 	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
-		newID(), topicID, string(author.ID), int64(1), blankQIDBlocks,
+		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+		newID(), topicID, string(author.ID), int64(1), blankQIDBlocks, string(s.resolveTenant(ctx)),
 	); err != nil {
 		t.Fatalf("inject empty-question_id row: %v", err)
 	}
@@ -1262,8 +1262,8 @@ func TestListMessagesFailsLoudOnDuplicateQuestionID(t *testing.T) {
 	const dupQIDBlocks = `[{"kind":"ask","ask":{"ask_id":"dup-qid-1","questions":[{"question_id":"dup-1","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]},{"question_id":"dup-1","question":"Which region?","options":[{"id":"opt-b","label":"us-east"}]}]}}]`
 	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
-		newID(), topicID, string(author.ID), int64(1), dupQIDBlocks,
+		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+		newID(), topicID, string(author.ID), int64(1), dupQIDBlocks, string(s.resolveTenant(ctx)),
 	); err != nil {
 		t.Fatalf("inject duplicate-question_id row: %v", err)
 	}
@@ -1452,8 +1452,8 @@ func mustTopic(t *testing.T, ctx context.Context, s *Store, ch ChannelID, author
 	t.Helper()
 	id := newID()
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms) VALUES ($1, $2, $3, $4, $5)`,
-		id, string(ch), name, string(author), int64(1),
+		`INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms, tenant_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+		id, string(ch), name, string(author), int64(1), string(s.resolveTenant(ctx)),
 	); err != nil {
 		t.Fatalf("create topic %q: %v", name, err)
 	}

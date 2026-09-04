@@ -82,7 +82,15 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
 
-	s := &Store{pool: pool, q: db.New(pool), safetyValveCapBytes: defaultSafetyValveCapBytes}
+	s := &Store{pool: pool, safetyValveCapBytes: defaultSafetyValveCapBytes}
+	// Bind the sqlc query set to the tenant-scoping DBTX (scopedDBTX), not the
+	// bare pool: every pool-path s.q.<Query> then arms SET LOCAL ROLE + the
+	// compass.tenant_id GUC from ctx in one round-trip so RLS scopes it
+	// (tenant_tx.go). migrate() below runs on the raw pool (s.pool) as the
+	// owner, before any policy exists to fight; BootstrapTenant runs through
+	// s.q, but the tenants table is RLS-exempt (bucket A) so the app role with
+	// an empty GUC writes it fine.
+	s.q = db.New(s.scopedPool())
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, err

@@ -84,7 +84,7 @@ func (s *Store) CreateUser(ctx context.Context, u NewUser) (Account, error) {
 	}
 
 	id := newID()
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Account{}, fmt.Errorf("store: begin create user: %w", err)
 	}
@@ -143,7 +143,7 @@ func (s *Store) BootstrapAdmin(ctx context.Context, u NewUser) (Account, error) 
 	}
 
 	id := newID()
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Account{}, fmt.Errorf("store: begin bootstrap admin: %w", err)
 	}
@@ -238,7 +238,7 @@ func (s *Store) EnsureLinearBridgeAccount(ctx context.Context) (Account, error) 
 // fails startup — never silent adoption, mirroring adminByHandle's posture.
 func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayName string) (Account, error) {
 	id := newID()
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Account{}, fmt.Errorf("store: begin ensure system account: %w", err)
 	}
@@ -315,7 +315,7 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 
 	accountID := newID()
 	channelID := newID()
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Account{}, fmt.Errorf("store: begin create agent: %w", err)
 	}
@@ -542,7 +542,7 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 		return Account{}, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Account{}, fmt.Errorf("store: begin reparent agent: %w", err)
 	}
