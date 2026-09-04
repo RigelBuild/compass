@@ -3,9 +3,11 @@ import { bootNativeClient } from "./boot-native";
 import { nativeConnectionProvider } from "./daemon-transport";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 import { envConnectionProvider } from "./live/provider";
-import { shellServerUrl } from "./shell-globals";
+import { type ShellMode, shellServerUrl } from "./shell-globals";
 
-export type BootMode = "client" | "embedded" | undefined;
+/** The launch mode `bootForMode` dispatches on: the shell-injected `ShellMode`,
+ *  or undefined in a browser dev build where no shell sets it. */
+export type BootMode = ShellMode | undefined;
 
 export type BootModeDeps = {
 	bootNativeClient: (
@@ -21,8 +23,15 @@ export type BootModeDeps = {
 
 export const defaultDeps: BootModeDeps = {
 	bootNativeClient,
+	// Embedded never receives __COMPASS_SERVER_URL__ (the shell injects it in
+	// client mode only, guarded by client_test.go), and the bridge fetch routes
+	// over the Wails IPC by path — so this is a syntactic same-origin
+	// placeholder, never dialed. It must be ABSOLUTE: createDaemonFetch does
+	// `new Request(url)`, which rejects a relative URL on a document with no
+	// resolvable origin. Matches the placeholder convention in
+	// packages/compass-client (createCompassClientOverFetch).
 	embeddedConnectionProvider: () =>
-		nativeConnectionProvider(shellServerUrl() ?? ""),
+		nativeConnectionProvider(shellServerUrl() ?? "http://compass.localhost"),
 	envConnectionProvider,
 	bootConnection,
 };

@@ -1,7 +1,10 @@
 /// <reference types="bun" />
 import { beforeEach, describe, expect, test } from "bun:test";
-import { type BootModeDeps, bootForMode } from "./boot-mode";
+import { bootConnection } from "./boot";
+import { type BootModeDeps, bootForMode, defaultDeps } from "./boot-mode";
+import { bootNativeClient } from "./boot-native";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
+import { envConnectionProvider } from "./live/provider";
 
 const CONNECTION: ResolvedConnection = {
 	baseUrl: "",
@@ -59,7 +62,7 @@ describe("bootForMode", () => {
 		expect(connectionBootCalls).toBe(0);
 	});
 
-	test("embedded resolves the bridge provider without the client probe", async () => {
+	test("embedded dispatches through bootConnection, never the client probe", async () => {
 		const connection = await bootForMode("embedded", root, deps)();
 
 		expect(connection?.token).toBeUndefined();
@@ -78,5 +81,23 @@ describe("bootForMode", () => {
 		expect(embeddedFactoryCalls).toBe(0);
 		expect(clientCalls).toBe(0);
 		expect(connectionBootCalls).toBe(1);
+	});
+});
+
+describe("defaultDeps production wiring", () => {
+	test("binds the real boot functions", () => {
+		expect(defaultDeps.bootNativeClient).toBe(bootNativeClient);
+		expect(defaultDeps.bootConnection).toBe(bootConnection);
+		expect(defaultDeps.envConnectionProvider).toBe(envConnectionProvider);
+	});
+
+	test("embedded provider is the bridge provider (fetchImpl set, no bearer), NOT the env provider", async () => {
+		const resolved = await defaultDeps.embeddedConnectionProvider().resolve();
+		// DL-111 ambient-admin: no bearer crosses the IPC seam.
+		expect(resolved.token).toBeUndefined();
+		// The IPC tunnel fetch — defined for nativeConnectionProvider, undefined
+		// for envConnectionProvider; this is what discriminates the two, so a
+		// revert of embedded→env would fail here.
+		expect(resolved.fetchImpl).toBeDefined();
 	});
 });
