@@ -64,6 +64,7 @@ const cfg = config as RenovateConfig;
 const bot = botConfig as {
 	allowedCommands?: string[];
 	customEnvVariables?: Record<string, string>;
+	executionTimeout?: number;
 };
 // tools/renovate/ → repo root is two levels up.
 const repoRoot = join(import.meta.dir, "..", "..");
@@ -748,6 +749,77 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 	test("the two fork scopes carry DISTINCT groupNames (independent cadences)", () => {
 		const groups = forkScopes.map((s) => ruleFor(s.depName)?.groupName);
 		expect(new Set(groups).size).toBe(forkScopes.length);
+	});
+
+	// M1 (RIG-2815 review): the relock `nix run`s the fork flakeref, and the fork
+	// publishes no binary cache, so every fork rev is a from-source devenv build
+	// before the relock runs — measured minutes, plausibly past Renovate's 15-min
+	// default executionTimeout on a cold 2-vCPU runner. A timeout kills the child,
+	// the relock never runs, and Renovate still commits the regex bump (the exact
+	// half-relock this task exists to prevent). Pin the raised ceiling so a
+	// default change or accidental removal fails HERE, not as a nightly relock
+	// silently timing out. globalOnly, so it lives in bot-config.
+	test("bot-config sets an executionTimeout covering a cold fork build", () => {
+		expect(typeof bot.executionTimeout).toBe("number");
+		// Comfortably above the 15-min default; a cold from-source fork build can
+		// exceed 15 min on a hosted runner.
+		expect(bot.executionTimeout).toBeGreaterThanOrEqual(30);
+	});
+
+	// M2 (RIG-2815 review): the relock's `nix run` depends on the runner's
+	// nix.conf naming the devenv + cachix substituters and their trusted keys —
+	// the fork's `#devenv` closure is not on cache.nixos.org and nix ignores the
+	// fork flake's own nixConfig non-interactively, so without these caches the
+	// realise cold-compiles the Nix fork from source and can exhaust the runner.
+	// Nothing in refresh-devenv-lock.ts provides them; renovate.yml's
+	// extra_nix_config does. Assert that block still names both caches + keys so
+	// trimming them there (e.g. once the PATH devenv-cli step is retired) fails a
+	// test rather than wedging the nightly relock. Same fail-closed posture as the
+	// self-pin workflow guard below (which already reads renovate.yml).
+	test("renovate.yml wires the substituters the relock nix run needs", () => {
+		const workflow = readFileSync(
+			join(repoRoot, ".github", "workflows", "renovate.yml"),
+			"utf8",
+		);
+		// Strip YAML comment lines before asserting, mirroring the self-pin
+		// workflow guard below (config.test.ts): a substituter that survives only
+		// in a commented-out or rationale-narrated block still leaves the runner
+		// without it, so the guard must read live config, not prose.
+		const liveConfig = workflow
+			.split("\n")
+			.filter((l) => !/^\s*#/.test(l))
+			.join("\n");
+		// Order-independent: both caches must sit on a LIVE extra-substituters
+		// line, in either order.
+		expect(
+			/^\s*extra-substituters = .*https:\/\/devenv\.cachix\.org/m.test(
+				liveConfig,
+			),
+		).toBe(true);
+		expect(liveConfig).toContain("https://cachix.cachix.org");
+		// Both trusted public keys must accompany their substituters on a live
+		// extra-trusted-public-keys line, or nix rejects the cached paths and
+		// falls back to a from-source build.
+		expect(
+			/^\s*extra-trusted-public-keys = .*devenv\.cachix\.org-1:/m.test(
+				liveConfig,
+			),
+		).toBe(true);
+		expect(liveConfig).toContain("cachix.cachix.org-1:");
+	});
+
+	// L3 (RIG-2815 review): the two fork managers carry the SAME matchStrings
+	// literal (RD-1 forbids reconciling the rules, and JSON5 has no anchor, so the
+	// duplication is deliberate). Nothing else pins that they stay in sync — each
+	// per-manager matchString test reads its own manager — so a one-sided edit
+	// would drift silently. Assert the two share one literal, mirroring the
+	// "same relock command" guard above.
+	test("both fork managers declare the IDENTICAL matchString literal", () => {
+		const literals = forkScopes.map(
+			(s) => managerFor(s.depName)?.matchStrings?.[0],
+		);
+		expect(literals.every((l) => typeof l === "string")).toBe(true);
+		expect(new Set(literals).size).toBe(1);
 	});
 });
 

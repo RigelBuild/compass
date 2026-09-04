@@ -152,12 +152,17 @@ if [ "\${1:-}" = "run" ]; then
     echo "stub nix: forced relock failure" >&2
     exit 1
   fi
-  # Drop \`run\` + the flakeref, then the \`--\` separator: what remains is the
-  # devenv subcommand the script asked for.
+  # Drop \`run\` + the flakeref, then REQUIRE the \`--\` separator: real nix needs
+  # it to pass \`update devenv\` through to the devenv binary (without it, nix
+  # parses them as its OWN args). Enforcing it here means an argv missing \`--\`
+  # writes nothing, so a regression that dropped \`--\` from the script's template
+  # fails through BEHAVIOUR (the byte-identical guard fires), not only the
+  # endsWith argv assertion. What remains after the shift is the devenv subcommand.
   shift 2
-  if [ "\${1:-}" = "--" ]; then
-    shift
+  if [ "\${1:-}" != "--" ]; then
+    exit 0
   fi
+  shift
   if [ "\${1:-}" != "update" ] || [ "\${2:-}" != "devenv" ]; then
     exit 0
   fi
@@ -412,6 +417,43 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 		expect(res.stdout.toString()).toContain("changed vs main;");
 		expect(res.stdout.toString()).not.toContain("origin/main");
 		// …and the relock still happened normally.
+		expect(await readFile(join(repo, ROOT_LOCK_REL), "utf8")).toContain(
+			RELOCKED_REV,
+		);
+	});
+
+	// The base-ref fallback DIRECTION under the case that actually exercises it:
+	// BOTH `origin/<base>` and the bare `<base>` resolve, but to DIFFERENT
+	// commits. Production always has both (Renovate fetches origin), and the two
+	// can diverge — a stale local `main` in the runner checkout vs the fetched
+	// `origin/main` the branch is really based on. The gate must diff against the
+	// REMOTE ref (as every sibling refresh script does); diffing the stale local
+	// ref would silently mis-compute the changed set. The `origin absent` test
+	// above cannot see this — with one ref deleted both orderings pick the same
+	// ref — so a flipped order would pass it while breaking here.
+	test("prefers origin/<base> over a stale local <base> when both resolve", async () => {
+		// Renovate wrote the regex bump to the working tree.
+		await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");
+		// Advance the LOCAL main ref onto a commit that already carries that bump,
+		// leaving origin/main at the baseline. Now both refs resolve but differ:
+		// origin/main (baseline) still sees the lock as changed and must relock; a
+		// stale local main (already bumped) would read "nothing changed" and skip.
+		await $`git add -A`.cwd(repo).env(HERMETIC_ENV).quiet();
+		await $`git commit -q -m stale-local-bump`
+			.cwd(repo)
+			.env(HERMETIC_ENV)
+			.quiet();
+
+		const res = await runRefresh(repo);
+		expect(res.exitCode).toBe(0);
+		// It diffed against the REMOTE ref, saw the lock changed, and relocked —
+		// the behaviour a flipped (bare-first) order would lose (it would read the
+		// already-bumped local main as unchanged and exit green with no relock).
+		expect(res.stdout.toString()).toContain("changed vs origin/main;");
+		expect(res.stdout.toString()).not.toContain("nothing to do");
+		expect(await Bun.file(join(repo, ".devenv-update-cwds")).exists()).toBe(
+			true,
+		);
 		expect(await readFile(join(repo, ROOT_LOCK_REL), "utf8")).toContain(
 			RELOCKED_REV,
 		);

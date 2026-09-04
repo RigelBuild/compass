@@ -70,6 +70,18 @@
 // and is what keeps the writer of a lock identical to the devenv version that
 // lock pins.
 //
+// That `nix run` also depends on the runner's nix.conf naming the devenv +
+// cachix SUBSTITUTERS and their trusted public keys (RIG-2815 review M2). The
+// fork's `#devenv` closure is not on cache.nixos.org (it pulls
+// `github:cachix/nix`), and nix ignores the fork flake's own
+// `nixConfig.extra-substituters` non-interactively (no `--accept-flake-config`),
+// so without those caches the realise cold-compiles the Nix fork + full closure
+// from source and can exhaust the runner. The caches are provided by
+// .github/workflows/renovate.yml's `extra_nix_config` block (which writes
+// /etc/nix/nix.conf on the runner, inherited by this child) — NOT by anything in
+// this file. config.test.ts asserts that block still names both caches + keys so
+// trimming them there fails a test rather than wedging a nightly relock.
+//
 // Exit codes:
 //   0 - the changed lock was relocked (or a no-op branch: neither lock differs
 //       from base).

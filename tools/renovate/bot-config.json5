@@ -48,6 +48,32 @@
     HOME: "/tmp/renovate-home",
   },
 
+  // GLOBAL child-process execution ceiling (RIG-2815 review M1). Renovate applies
+  // executionTimeout (config/options; default 15 min) in the shared exec path
+  // (util/exec getRawExecOptions) as the DEFAULT timeout for EVERY child process
+  // it creates — not just this task — so raising it also raises the hang budget
+  // for every other manager's artifact update. Accepted deliberately: the
+  // devenv-fork relock is the binding constraint and a wedged child is otherwise
+  // bounded by the CI job, not this knob. Why the relock needs the headroom: the
+  // relock (refresh-devenv-lock.ts) `nix run`s the fork flakeref read from the
+  // lock it is about to relock, and no fork rev is ever pushed to a binary cache
+  // for its `#devenv` output — the fork's only live CI gate (rigel-ci.yml) is
+  // pull-only by design, and the cache-pushing build.yml is gated to
+  // `github.repository_owner == 'cachix'` so it never runs on the fork. So every
+  // fork rev is a from-source Rust build of the devenv CLI + its closure before
+  // the relock even starts: the fork's own rigel-ci.yml measures `nix build
+  // .#devenv` at a consistent ~4.5 min on ubuntu-latest WITH the devenv
+  // substituter warm; the 15-min default leaves little headroom if a substituter
+  // is cold, degraded, or a rev lands before the fork's cache is populated —
+  // exactly when the from-source Nix-fork closure build dominates. On timeout the
+  // child is killed, the relock never runs, and Renovate still commits the regex
+  // rev bump (a postUpgradeTask exit does not abort the branch), i.e. the exact
+  // rev-bumped-but-unrelocked PR this task exists to prevent, arriving
+  // intermittently and rev-dependently. 45 min covers that tail. config.test.ts
+  // pins this so a default change or accidental removal fails closed rather than
+  // silently restoring the 15-min cliff.
+  executionTimeout: 45,
+
   // Allow ONLY the postUpgradeTasks commands tools/renovate/config.json5 declares.
   // postUpgradeTasks.commands are gated by this global allowlist (a repo config
   // can't self-authorize a command), and the `^…$` anchors pin each entry to
