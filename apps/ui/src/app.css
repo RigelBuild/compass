@@ -394,40 +394,6 @@
 	border-color: var(--cx-border-strong);
 }
 
-.state-dot {
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-	flex: none;
-	background: var(--cx-st-idle);
-}
-.state-dot[data-state="working"] {
-	background: var(--cx-st-working);
-	box-shadow: 0 0 0 2.5px
-		color-mix(in srgb, var(--cx-st-working) 20%, transparent);
-}
-.state-dot[data-state="waiting"] {
-	background: var(--cx-st-waiting);
-}
-.state-dot[data-state="paused"] {
-	background: var(--cx-st-paused);
-}
-.state-dot[data-state="error"] {
-	background: var(--cx-st-error);
-}
-.state-dot[data-state="done"] {
-	background: var(--cx-st-done);
-	box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--cx-st-done) 22%, transparent);
-}
-.state-dot[data-state="stopped"] {
-	background: transparent;
-	box-shadow: inset 0 0 0 1.5px var(--cx-st-stopped);
-}
-.state-dot[data-state="disconnected"] {
-	background: transparent;
-	box-shadow: inset 0 0 0 1.5px var(--cx-st-disconnected);
-}
-
 .tree-agent .name {
 	flex: 1;
 	font-size: 12px;
@@ -2302,7 +2268,7 @@
 
 /* Fleet tabs badge their icon with the agent's StateDot, bottom-right
  * (dock-in-sidebar D2) — the at-a-glance liveness the dock tabs carried. */
-.r-tab .state-dot {
+.r-tab .cx-state-dot {
 	position: absolute;
 	right: 3px;
 	bottom: 3px;

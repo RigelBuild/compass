@@ -7,6 +7,7 @@ import "./design/components/badge-glyph.css";
 import "./design/components/card.css";
 import "./design/components/menu.css";
 import "./design/components/shortcuts.css";
+import "./design/components/state-dot.css";
 import "./app.css";
 import {
 	CoachTip,

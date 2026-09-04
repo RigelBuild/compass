@@ -39,7 +39,7 @@ import { flush, mountApp } from "./test-router";
 // Query anchors (grepped): Bridge root `.bridge` (Bridge.tsx:46); LeftSidebar
 // root `<aside class="left">` (LeftSidebar.tsx:352); ChannelSidebar root
 // `<aside class="channel-rail">` (ChannelSidebar.tsx:147); StateDot
-// `<span class="state-dot">` (StateDot.tsx:19-25); ChannelView root
+// `<span class="cx-state-dot">` (StateDot.tsx:133-154); ChannelView root
 // `<section class="conversation">` (ChannelView.tsx:309); AgentView root
 // `.agent-view` (AgentView.tsx:204); top nav `<nav class="view-tabs">` with
 // `.view-tab` children (App.tsx:53-65, target §645-646).
@@ -166,7 +166,7 @@ describe("App shell (T7)", () => {
 		const tabs = navViewTabs(container);
 		const agentTab = tabs.find(
 			(t) =>
-				t.querySelector(".state-dot") !== null &&
+				t.querySelector(".cx-state-dot") !== null &&
 				t.textContent?.includes(AGENT_NAME),
 		);
 		expect(agentTab).toBeDefined();
