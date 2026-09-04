@@ -155,6 +155,12 @@ sentence in place.
 Also extend the `Subject.ID` doc (`types.go:106-107`: "ID is the
 AccountID (SubjectAccount) or the Runner id (SubjectRunner)…") to name the
 service id space (a stable service name, e.g. `llm-gateway`).
+Also refresh the `Subject` struct doc at `types.go:101-103` (the two-kind
+enumeration — "the id of the account or Runner it authenticates") in the same
+comment block: it is a KIND-axis enumeration that goes stale the moment the
+third kind lands (three kinds exist after T1), so it belongs in T1, not the T4
+door-refresh list — leaving it would put a "the account or Runner" struct doc
+directly above an `ID` field doc T1 has just extended to a third id space.
 
 Interfaces:
 
@@ -180,6 +186,12 @@ Interfaces:
 -- consumes: CHECK (subject_kind IN (0, 1))   -- 0001_init.sql:377
 -- produces: CHECK (subject_kind IN (0, 1, 2))
 ```
+
+After the edit, run `moon run compass-go:sqlc-gen` and confirm no drift (the
+checked-in `internal/store/db` tree is the source of truth; the `sqlc-drift`
+gate fails closed on any stale byte — a CHECK-only widen regenerates
+identically, but confirm), and expect `sql-migration-gate` (squawk + sqruff
+over `go/internal/store/migrations/*.sql`) to re-run over the edited file.
 
 ### T3 — nolint text tracks the enum
 
@@ -218,12 +230,24 @@ adds the third — at which point refresh them in the same slice. The CONTRACT i
 a discovery rule (the line-pinned list below is evidence, not the boundary):
 refresh every comment under `go/` and `proto/` that ENUMERATES or COUNTS the
 door/kind set — matching roughly `/cross-door|cross-kind|account (token|
-subject)|Runner (token|subject)|these two|exactly two|two mandatory/` — since
-any two-door enumeration or literal door COUNT goes stale when the third door
-mounts. The sites known at authoring time (verified at `eb5ef7a1`):
+subject|door)|Runner (token|subject|door)|both doors|two doors|(the )?other
+door|these two|exactly two|two mandatory/` — since any two-door enumeration or
+literal door COUNT goes stale when the third door mounts. Note TWO enumeration
+axes exist and the regex covers both: the subject-KIND split (account/Runner)
+AND the door-COUNT split (socket vs network, "two doors") — a third mounted
+door falsifies a literal door count as surely as a third kind falsifies a
+two-kind enumeration, so an executor must not assume kind-keyed matching is
+exhaustive. The sites known at authoring time (verified at `eb5ef7a1`):
 `go/internal/auth/token.go:98-99` (the shared-resolver door enumeration — "Both
 the account door … and the Runner door … share this one resolver"),
 `token.go:79-81` (`ErrWrongKind`'s account-vs-Runner examples),
+`go/internal/auth/doc.go:7-19` (the package-level door COUNT — "Two doors reach
+the same compass.v1 service, and each authenticates differently" — the
+socket-vs-network axis; a third mounted door makes the literal count wrong),
+`go/internal/auth/interceptor.go:86` ("the caller uniformly via CallerFrom on
+both doors") and `:129` ("both doors reject identically"),
+`go/server/service.go:539` and `:604` ("an interceptor must attach one on both
+doors"),
 `go/internal/auth/interceptor.go:140-141` (the cross-door failure enumeration),
 the `go/internal/runnerhub/auth.go:4-14` package doc (the two-door
 cross-door-rejection framing), `go/internal/store/types.go:89-90` (the
@@ -233,9 +257,7 @@ line 90 with the "Sealed to exactly these two" seal sentence T1 rewrites, so
 T1 must edit that seal sentence IN PLACE, sentence-scoped not line-range-scoped,
 preserving the leading "account token on RunnerService)." on line 90),
 `types.go:86-88` (the `SubjectKind` doc opener — "a Runner subject and an
-account subject share the token store but never collide"), `types.go:101-103`
-(the `Subject` doc's two-kind enumeration — "the id of the account or Runner it
-authenticates"; T1 edits only the `:106-107` ID doc and leaves this stale),
+account subject share the token store but never collide"),
 `go/internal/runnerhub/mint.go:5-7` ("a Runner subject and an account subject
 share one store but can never collide"),
 `go/internal/runnerhub/handler.go:68-69` ("an account token never reaches here
@@ -248,8 +270,9 @@ and a Runner token is Unauthenticated on the CompassService/CommsService doors
 above (OQ7 cross-door rejection)"), and — the sharpest, because it states a
 literal COUNT that becomes factually wrong when a third door mounts —
 `proto/compass/v1/runner.proto:53-56` ("the RunnerService side of the TWO
-mandatory cross-door rejection tests") and `:183-184` ("account-subject tokens
-rejected"). `network_door.go` lives at `go/server/`, NOT `go/internal/` like
+mandatory cross-door rejection tests"); its sibling `:183-184`
+("account-subject tokens rejected") is an ordinary stale two-kind enumeration,
+not a count. `network_door.go` lives at `go/server/`, NOT `go/internal/` like
 the rest — the one cited file outside `go/internal/`.
 
 ### T5 — cross-door pgtest
