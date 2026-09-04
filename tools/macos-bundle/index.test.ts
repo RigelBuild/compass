@@ -199,6 +199,40 @@ describe("parseArgs — repeatable --sidecar collects the embedded sidecars", ()
 		).toThrow(/collides with the shell/);
 	});
 
+	test("a sidecar basenamed compass-app throws even when --binary is basenamed otherwise", () => {
+		expect(() =>
+			parseArgs([
+				"--binary",
+				"/tmp/compass-app-darwin-arm64",
+				"--dist",
+				"/d",
+				"--version",
+				"1.0.0",
+				"--out",
+				"/o.dmg",
+				"--sidecar",
+				"/tmp/compass-app",
+			]),
+		).toThrow(/collides with the shell executable/);
+	});
+
+	test("a --binary basenamed otherwise with a same-named sidecar does NOT throw", () => {
+		expect(
+			parseArgs([
+				"--binary",
+				"/b/shell-x",
+				"--dist",
+				"/d",
+				"--version",
+				"1.0.0",
+				"--out",
+				"/o.dmg",
+				"--sidecar",
+				"/s/shell-x",
+			]).sidecars,
+		).toEqual(["/s/shell-x"]);
+	});
+
 	test("rejects two sidecars sharing a basename", () => {
 		expect(() =>
 			parseArgs([

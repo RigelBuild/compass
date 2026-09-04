@@ -370,6 +370,27 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 			).darwinAffected,
 		).toBe(true);
 	});
+	test("darwinAffected on a sidecar cmd path (the mac lane now compiles the sidecars)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["go/cmd/compass-stack/main.go"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
+
+	test("darwinAffected on a shared go/internal change (transitive sidecar input — the #847 class)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["go/internal/runtime/microvm/launch.go"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
 
 	test("darwinAffected false when the PR touches neither the shell nor the bundler", () => {
 		expect(

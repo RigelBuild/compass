@@ -57,7 +57,7 @@ export type GenOutput = {
 	forgeAffected: boolean;
 	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/ or a shared GTK closure input */
 	gtk4Affected: boolean;
-	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell) or the macos-bundle tool */
+	/** push/schedule OR changedPaths touches the darwin shell surface (the gtk4 closure — the mac lane compiles the SAME shell), the macos-bundle tool, or the sidecar surface (three sidecars plus shared go/internal/) */
 	darwinAffected: boolean;
 };
 
@@ -98,10 +98,26 @@ const GTK4_CLOSURE_PATHS = [
  * darwin trigger: the macos-14 lane compiles the SAME native shell the gtk4 lane
  * does, so it must fire on any go/cmd/compass-app/ change OR a shared GTK closure
  * input (mirror gtk4's surface), PLUS a change to the macos-bundle tool itself
- * (the bundler the lane exercises). Per compass-distribution DL-263: affected on
- * PR, full-sweep on push/schedule (isFullSweep below).
+ * (the bundler the lane exercises). The lane also cross-compiles the three pure-Go
+ * sidecars, which import the shared go/internal tree, so those paths trigger it too.
+ * Per compass-distribution DL-263: affected on PR, full-sweep on push/schedule (isFullSweep below).
  */
 const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
+/**
+ * darwin sidecar surface: the mac lane now cross-compiles the three pure-Go
+ * sidecars (compass-stack/server/runner) beside the shell, and they import the
+ * shared go/internal tree — so a change to any sidecar cmd dir OR anything under
+ * go/internal/ must fire the darwin lane, else a darwin cross-compile break (e.g.
+ * a go/internal/runtime change like #847) first surfaces at the release cut. The
+ * go/internal/ superset is deliberately broad over a hand-maintained transitive
+ * set, which would silently drift and re-open the gap.
+ */
+const DARWIN_SIDECAR_PREFIXES = [
+	"go/cmd/compass-stack/",
+	"go/cmd/compass-server/",
+	"go/cmd/compass-runner/",
+	"go/internal/",
+];
 
 // ── Pure core ──────────────────────────────────────────────────────────────
 
@@ -210,7 +226,8 @@ export function generate(input: GenInput): GenOutput {
 			(p) =>
 				p.startsWith(GTK4_PATH_PREFIX) ||
 				GTK4_CLOSURE_PATHS.includes(p) ||
-				p.startsWith(MACOS_BUNDLE_PATH_PREFIX),
+				p.startsWith(MACOS_BUNDLE_PATH_PREFIX) ||
+				DARWIN_SIDECAR_PREFIXES.some((prefix) => p.startsWith(prefix)),
 		);
 
 	return {

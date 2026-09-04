@@ -1525,19 +1525,24 @@ jobs:
             fi
             # The darwin lane compiles the SAME shell the gtk4 lane does, so a
             # closure-only PR must trigger it too; plus a macos-bundle tool change
-            # (the bundler this lane exercises). Mirrors the darwinAffected
-            # trigger in tools/ci-matrix/index.ts.
+            # (the bundler this lane exercises) and the three pure-Go sidecars plus
+            # their shared go/internal/ tree. Mirrors the darwinAffected trigger
+            # in tools/ci-matrix/index.ts.
             changed=$(git diff --name-only "$base"...HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
               tools/toolchain/gtk-e2e-env.nix \
-              tools/macos-bundle/)
+              tools/macos-bundle/ \
+              go/cmd/compass-stack/ \
+              go/cmd/compass-server/ \
+              go/cmd/compass-runner/ \
+              go/internal/)
             if [ -z "$changed" ]; then
               run_it=0
             fi
           fi
           if [ "$run_it" = 0 ]; then
-            echo "darwin: PR does not touch the shell surface or the macos-bundle tool — skipping (affected gate)"
+            echo "darwin: PR does not touch the shell, sidecar, closure, or macos-bundle surface — skipping (affected gate)"
             exit 0
           fi
 
@@ -1608,13 +1613,29 @@ jobs:
           mnt="$(mktemp -d)"
           hdiutil attach "$out" -mountpoint "$mnt" -nobrowse -readonly
           rc=0
-          for want in \
-            "$mnt/Compass.app/Contents/MacOS/compass-app" \
-            "$mnt/Compass.app/Contents/MacOS/compass-stack" \
-            "$mnt/Compass.app/Contents/MacOS/compass-server" \
-            "$mnt/Compass.app/Contents/MacOS/compass-runner" \
-            "$mnt/Compass.app/Contents/Info.plist" \
-            "$mnt/Compass.app/Contents/Resources/dist/index.html"; do
+          BINARIES=(
+            "$mnt/Compass.app/Contents/MacOS/compass-app"
+            "$mnt/Compass.app/Contents/MacOS/compass-stack"
+            "$mnt/Compass.app/Contents/MacOS/compass-server"
+            "$mnt/Compass.app/Contents/MacOS/compass-runner"
+          )
+          for want in "${BINARIES[@]}"; do
+            if [ ! -x "$want" ]; then
+              echo "::error::darwin: mounted bundle missing or non-executable $want"
+              rc=1
+            elif ! got="$("$want" --version 2>&1)"; then
+              echo "::error::darwin: $want --version exited non-zero: $got"
+              rc=1
+            elif [ "${got#*$dev}" = "$got" ]; then
+              echo "::error::darwin: $want --version = '$got', expected to contain '$dev'"
+              rc=1
+            fi
+          done
+          FILES=(
+            "$mnt/Compass.app/Contents/Info.plist"
+            "$mnt/Compass.app/Contents/Resources/dist/index.html"
+          )
+          for want in "${FILES[@]}"; do
             if [ ! -f "$want" ]; then
               echo "::error::darwin: mounted bundle missing $want"
               rc=1
