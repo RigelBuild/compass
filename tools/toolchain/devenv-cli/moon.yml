@@ -22,8 +22,6 @@ tasks:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', '/bun.lock']
 
   test:
-    command: 'bun test'
-    deps: ['install']
     inputs: ['*.ts', '/bun.lock']
 
   ci:

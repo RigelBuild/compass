@@ -7,6 +7,10 @@
 # the canonical docs/ sources — the generated src/content/docs/ mirror is
 # gitignored and exempt). Public counterpart to sealed/apps/docs: no Cloudflare
 # Access gate, no PostHog analytics.
+workspace:
+  inheritedTasks:
+    exclude: ['test']
+
 layer: 'application'
 language: 'typescript'
 tags: ['bun', 'oss', 'ci-group.bun']

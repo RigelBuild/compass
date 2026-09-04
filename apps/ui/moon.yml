@@ -2,6 +2,10 @@
 # The Compass web UI (SolidJS + Vite). System tasks: bun/vite/biome from the
 # devenv toolchain on PATH. It consumes the checked-in generated client
 # (@compass/client -> compass.v1); compass-proto:drift gates its freshness.
+workspace:
+  inheritedTasks:
+    exclude: ['test']
+
 layer: 'application'
 language: 'typescript'
 tags: ['bun', 'oss', 'ci-group.bun']
@@ -32,8 +36,9 @@ tasks:
     # or a rename that stops matching reports success having run nothing — and the
     # output carries no `pass` line at all, so a count check reads absent rather
     # than zero. Green-on-543 and green-on-0 become the same result. Nothing here
-    # needs the flag: this project has test files, and its two sibling bun
-    # projects run a bare `bun test`.
+    # needs the flag: this project has test files, and its sibling bun projects
+    # inherit `bun test --parallel=2` from .moon/tasks/tag-bun.yml while this
+    # project is excluded from that inherited task and runs its own command.
     # Scoped to `src/` so bun's test runner globs only the unit suites there
     # (all 33 live under src/) and never the Playwright e2e harness at
     # e2e/visual-smoke.spec.ts — bun matches `*.spec.ts` by default, and loading
