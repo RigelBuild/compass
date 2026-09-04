@@ -133,8 +133,8 @@ Concretely:
 - **Stickiness.** While a volume lives, the session (and its C3 bursts)
   relaunch on the volume's box. In the OSS single-box Runner this is
   trivially true (there is one box); the invariant P2 encodes is *box-local*:
-  a Runner never attaches a volume it does not host, and `Attach` of an
-  absent volume is an error, never a silent recreate. Multi-box placement is
+  a Runner never attaches a volume it does not host, and `Lookup` of an
+  absent volume is a typed error, never a silent recreate. Multi-box placement is
   a control-plane concern outside this repo's scope (OQ-4).
 - **Derived state always persists** (Global Constraint 5): `target/`,
   `node_modules`, caches live on the volume because the *whole working
@@ -152,7 +152,7 @@ Concretely:
   reflink/snapshot (btrfs/XFS/bcachefs reflink copy), by rsync-clone
   otherwise; a later session on the same repo restores the snapshot and starts
   warm on `git fetch` + checkout-delta instead of a full clone. *What* gets
-  snapshotted, *when* (the clean-tree stamp point), and the repo→snapshot
+  snapshotted, *when* (the clean-tree stamp point), and the `(account, repo)`→snapshot
   index the provision path reads are the load-bearing sub-fork OQ-1b — the
   amortization mechanism, not just the clone posture, is what Matt ratifies.
   Detection of the copy primitive is a runtime capability probe, not a config
@@ -238,7 +238,7 @@ container-local dir onto the volume.
   hold, file contents in place of tokens). So A's amortization is sound only
   with a designed provenance mechanism: the recommended one snapshots a
   **provably-clean** post-clone tree (an agent→Runner clone-complete signal
-  plus a `git status`-clean check), keyed in a repo→snapshot index (W2) the
+  plus a `git status`-clean check), keyed in an `(account, repo)`→snapshot index (W2) the
   provision path reads. This is the load-bearing sub-fork **OQ-1b**; it rides
   A's ruling because "A amortizes fine" is load-bearing in A's own
   cost/benefit.
@@ -399,9 +399,13 @@ against Option A + provenance-(a), they change little under B but must not
 merge a credential posture or snapshot mechanism Matt has not ruled.
 **Descope-survivors:** if OQ-1b is ruled "descope snapshot amortization," W1
 (lifecycle + local-dir backend + close-stamp), W2's `cloner` volume-copy
-primitive, W4 (`WorkspaceSource`), and the non-snapshot legs of W5/W6 still
-ship; what drops is W2's snapshot-store/index, W5's clone-complete sub-unit,
-and W6 probe 3. Hermetic unless noted.
+primitive, W3's seam + checkout and customer-mount backends, W4
+(`WorkspaceSource`), and the non-snapshot legs of W5/W6 still ship; what drops
+is W2's snapshot-store/index, W3's snapshot-source backend + the
+`TreeSource.Snapshot` path, W5's clone-complete sub-unit, and W6 probe 3.
+`Snapshot` then joins `Archive`/`Restore` as **reserved-not-implemented** on
+the W1 interface (its sole caller drops), keeping the honest-sentinel
+discipline. Hermetic unless noted.
 
 ### W1 — volume lifecycle API + local-dir backend (`go/internal/vfs`)
 
@@ -461,19 +465,22 @@ The package skeleton mirrors `go/internal/compute`'s layering
   closed-but-unexpired session never carries a past-deadline stamp into its
   new life; (b) **`Expire` takes a per-volume lock and re-verifies eligibility
   under it**, so a volume is never reaped in the window between the reaper
+  reading its stamp and a concurrent `Attach`; (c) the stamp carries
   **close-vs-suspend intent** (a suspended session is *not* eligible however
   old — D4's suspend uses the same stop+remove teardown path,
   design.md:708-709, so the intent bit comes from the caller, not inferred
   from "container gone"). A crash between container-remove and stamp-write
   leaves an **unstamped** closed volume; the startup pass reconciles unstamped
-  volumes against the **Server's authoritative session registry** — the same
-  source that reconstructs `COMPASS_RESUME_SESSION_FILE`
-  (`agent_exec.go:40-42`), queried at Runner boot (the in-memory `sessions`
-  map, `host.go:77`, is rebuilt empty on restart and is not authoritative).
-  The reconciler reaps an unstamped volume whose session the Server reports
-  closed, clears the intent of one still live, and — if the Server is
-  **unreachable** at startup — leaves every unstamped volume untouched and
-  retries, never reaping on unknown. So a crash fails *safe* (eventually
+  volumes against the Server's authoritative session set: it holds every
+  unstamped volume until the Server has pushed that set over the `Sessions`
+  stream after `Enroll` (`runner.proto:61-70`, Server-push — the Runner has no
+  pull verb, and the in-memory `sessions` map, `host.go:77`, is rebuilt empty
+  on restart and is not authoritative; the Server is the same authority that
+  reconstructs `COMPASS_RESUME_SESSION_FILE`, `agent_exec.go:40-42`). An
+  unstamped volume absent from the pushed set is reaped, one the Server reports
+  live has its intent cleared, and until the set arrives (Server not yet
+  resynced) every unstamped volume is held, never reaped on unknown. So a crash
+  fails *safe* (eventually
   reaped) not *open* (never reaped) and never *wrong* (a live session's volume
   reaped).
 - **Depends:** nothing (first P2 code task).
@@ -484,9 +491,9 @@ The package skeleton mirrors `go/internal/compute`'s layering
   uid** (the keep-id ownership invariant, Layout); **attach clears a
   past-deadline stamp**; `Expire` reaps only closed-past-deadline volumes
   (live, suspended, recently-closed, and reopened all survive); a
-  **crash-orphaned unstamped** volume is reconciled against a fake session
-  registry (reaped when reported closed, spared when reported live, spared
-  when the registry is unreachable); `Archive`/`Restore` return the honest
+  **crash-orphaned unstamped** volume is reconciled against a fake delivered
+  session set (reaped when absent, spared when present-live, held when the set
+  has not yet arrived); `Archive`/`Restore` return the honest
   sentinel.
 
 ### W2 — snapshot backends: reflink with rsync fallback
@@ -593,9 +600,9 @@ The package skeleton mirrors `go/internal/compute`'s layering
   born). The provision path composes: resolve-or-create (`Lookup`, then
   `CreateVolume` iff `ErrVolumeNotFound`) → `Attach` (which clears any
   close-stamp) → `Materialize` → `Launch`. Teardown composes the reverse:
-  `Release` the materialized root (never deleting volume contents, P2-GC-c) →
-  write the close-stamp **carrying the caller's close-vs-suspend intent** (W1)
-  → `Teardown` the container (`agent.go:216-236`); a suspend teardown stamps
+  `Teardown` the container (`agent.go:216-236`) → `Release` the materialized
+  root (never deleting volume contents, P2-GC-c) → write the close-stamp
+  **carrying the caller's close-vs-suspend intent** (W1); a suspend teardown stamps
   *suspended* and stays ineligible for `Expire`. Reprovision of a
   closed-but-unexpired session re-attaches and re-materializes warm. Box loss:
   `Lookup`'s typed not-found routes to the cold path (create + cold
@@ -603,10 +610,16 @@ The package skeleton mirrors `go/internal/compute`'s layering
 - **Clone-complete signal → snapshot (sub-unit, gated on OQ-1b).** Under
   provenance-(a) the snapshot is taken from a **provably-clean post-clone
   tree**, so the trigger is owned here, not left implicit: (i) the agent
-  (`packages/compass-agent`, TypeScript) emits a **clone-complete** control
-  message over the AgentGateway socket once its self-clone finishes; (ii) a
-  Runner-side handler verifies a `git status`-clean tree at the expected `Ref`
-  and calls `VolumeManager.Snapshot` (W1) → writes the `(AgentAccountID, repo)`
+  (`packages/compass-agent`, TypeScript) emits a **clone-complete** signal to
+  the Runner over a **new unary `AgentGateway` RPC** — delivered-or-erred, the
+  `PostConversationFrame` precedent (`agent_gateway.proto:68-73`), *not* the
+  loss-tolerable `Publish` spine: the trigger fires exactly once per clone and
+  cannot be reconstructed, so a drop on `Publish` would silently kill the warm
+  path for that `(account, repo)` with no retry, whereas a unary drop is an
+  agent-retried error; (ii) a Runner-side handler verifies a **host-side**
+  `git status`-clean tree at the volume root (viable under the keep-id
+  ownership invariant, Layout) at the expected `Ref`, then calls
+  `VolumeManager.Snapshot` (W1) → writes the `(AgentAccountID, repo)`
   index entry (W2, P2-GC-f). This is the **only caller of `Snapshot`** in P2 —
   without it the verb is dead and the warm path never triggers. The whole
   sub-unit dies if OQ-1b is ruled "descope snapshots," so it merges behind the
@@ -653,20 +666,24 @@ The package skeleton mirrors `go/internal/compute`'s layering
 ## Tasks
 
 - [ ] **W1** — `go/internal/vfs` volume lifecycle API
-      (`CreateVolume`/`Attach`/`Snapshot`/`Archive`/`Restore`/`Expire`) +
+      (`CreateVolume`/`Lookup`/`Attach`/`Snapshot`/`Archive`/`Restore`/`Expire`) +
       local-dir backend; `Archive`/`Restore` reserved-not-implemented
       (OQ-2). Hermetic.
 - [ ] **W2** — snapshot backends: reflink probe + rsync fallback, snapshot
-      store + repo→snapshot index, one-current-snapshot-per-repo retention,
-      restore path (depends: W1; reflink CI leg FS-pinned).
+      store + `(AgentAccountID, repo)`→snapshot index (never cross-account,
+      P2-GC-f), one-current-snapshot-per-`(account, repo)` retention, restore
+      path (depends: W1; **snapshot-store/index leg merge-gated on OQ-1**;
+      reflink CI leg FS-pinned).
 - [ ] **W3** — `VirtualFS` seam + checkout/snapshot/customer-mount backends
       (depends: W1, W2; **merge-gated on OQ-1**).
 - [ ] **W4** — `WorkspaceSource` variant + `AgentSpec.Mounts` doc amendment
       + mount rendering (depends: W1; parallel with W3).
 - [ ] **W5** — provision wiring: resolve-or-create → attach (clears stamp) →
       materialize → launch; `SpecBuilder` owns the P2-GC-d path triple;
-      teardown close-stamp with close-vs-suspend intent; box-loss cold path
-      (depends: W1, W3, W4; **merge-gated on OQ-1**).
+      teardown (container → release → close-stamp with close-vs-suspend
+      intent); agent clone-complete signal → host-side git-status-clean verify
+      → `Snapshot` → `(account, repo)` index write (sub-unit gated on OQ-1b);
+      box-loss cold path (depends: W1, W2, W3, W4; **merge-gated on OQ-1**).
 - [ ] **W6** — expiry reaper driver + the five-probe P2 acceptance suite
       (rebuild-freshness + git-shape probes, not timers) (depends: W1–W5).
 
