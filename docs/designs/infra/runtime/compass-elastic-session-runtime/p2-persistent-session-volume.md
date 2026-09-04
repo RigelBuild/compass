@@ -393,10 +393,11 @@ session path stays green (8), version floors (9). P2-specific additions:
 ## Plan
 
 Six implementation tasks (W1–W6). W1 is foundational. **OQ-1 gating:** W3's
-checkout-backend semantics, W5's wiring + clone-complete-signal sub-unit, and
-W2's snapshot-store/index leg are **gated on the OQ-1 ruling** — drafted
-against Option A + provenance-(a), they change little under B but must not
-merge a credential posture or snapshot mechanism Matt has not ruled.
+checkout-backend semantics, W5's wiring + clone-complete-signal sub-unit,
+W2's snapshot-store/index leg, and W6's snapshot-materialized acceptance
+probe (probe 3) are **gated on the OQ-1 ruling** — drafted against Option A +
+provenance-(a), they change little under B but must not merge a credential
+posture or snapshot mechanism Matt has not ruled.
 **Descope-survivors:** if OQ-1b is ruled "descope snapshot amortization," W1
 (lifecycle + local-dir backend + close-stamp), W2's `cloner` volume-copy
 primitive, W3's seam + checkout and customer-mount backends, W4
@@ -470,19 +471,25 @@ The package skeleton mirrors `go/internal/compute`'s layering
   old — D4's suspend uses the same stop+remove teardown path,
   design.md:708-709, so the intent bit comes from the caller, not inferred
   from "container gone"). A crash between container-remove and stamp-write
-  leaves an **unstamped** closed volume; the startup pass reconciles unstamped
-  volumes against the Server's authoritative session set: it holds every
-  unstamped volume until the Server has pushed that set over the `Sessions`
-  stream after `Enroll` (`runner.proto:61-70`, Server-push — the Runner has no
-  pull verb, and the in-memory `sessions` map, `host.go:77`, is rebuilt empty
-  on restart and is not authoritative; the Server is the same authority that
-  reconstructs `COMPASS_RESUME_SESSION_FILE`, `agent_exec.go:40-42`). An
-  unstamped volume absent from the pushed set is reaped, one the Server reports
-  live has its intent cleared, and until the set arrives (Server not yet
-  resynced) every unstamped volume is held, never reaped on unknown. So a crash
-  fails *safe* (eventually
-  reaped) not *open* (never reaped) and never *wrong* (a live session's volume
-  reaped).
+  leaves an **unstamped** closed volume; the startup pass **stamps every
+  unstamped volume closed at discovery time** — a discovered-orphan stamp
+  whose deadline runs from discovery, not from the lost close — and invariant
+  (a) undoes it for free if that session is re-provisioned before the
+  deadline. This needs **no Server query**, and by design cannot want one:
+  RunnerService exposes no session-query verb and `SessionsResponse` carries
+  no session-set variant (its `command` oneof is exhaustive,
+  `runner.proto:233-284`), while the Runner — not the Server — is
+  authoritative for live session truth (OQ6,
+  `go/internal/runner/host.go:3-7`, `go/internal/runner/dispatch.go:10-11`)
+  and `Hub.enroll` clears the Server's session bindings at every enroll
+  (`hub.go:933-935`), so the Server's live-session map is *empty* exactly when
+  a restart would consult it. The in-memory `sessions` map (`host.go:77`) is
+  rebuilt empty on restart and is not authoritative either. So a crash fails
+  *safe* (reaped one full expiry window after discovery) not *open* (the
+  volume is always stamped, so `Expire` can always reach it) and never *wrong*
+  (a live or resuming session re-attaches and clears the stamp on its next
+  launch, and a suspended session that never crashed was stamped *suspended*
+  by its normal teardown, untouched by this pass).
 - **Depends:** nothing (first P2 code task).
 - **Test cycle:** hermetic over tempdirs — create/attach round-trip returns
   a stable path; `Lookup` round-trips the resolved volume and returns the
@@ -491,10 +498,10 @@ The package skeleton mirrors `go/internal/compute`'s layering
   uid** (the keep-id ownership invariant, Layout); **attach clears a
   past-deadline stamp**; `Expire` reaps only closed-past-deadline volumes
   (live, suspended, recently-closed, and reopened all survive); a
-  **crash-orphaned unstamped** volume is reconciled against a fake delivered
-  session set (reaped when absent, spared when present-live, held when the set
-  has not yet arrived); `Archive`/`Restore` return the honest
-  sentinel.
+  **crash-orphaned unstamped** volume is stamped at discovery, survives to
+  its discovery-based deadline, is cleared by a subsequent `Attach`, and is
+  reaped only when the deadline passes with no re-attach;
+  `Archive`/`Restore` return the honest sentinel.
 
 ### W2 — snapshot backends: reflink with rsync fallback
 
@@ -631,8 +638,9 @@ The package skeleton mirrors `go/internal/compute`'s layering
   provision→materialize→session→**release** round-trip (design.md:561-562);
   W5 owns at merge: the volume survives teardown, the mount path is stable
   across the reattach, and a suspend-stamped volume is `Expire`-ineligible.
-  W5 and W6 land together behind the OQ-1 gate; the five-probe acceptance
-  suite (the parent's end-to-end P2 cycle) is W6's.
+  W5 and W6's snapshot-materialized probe (probe 3) land together behind the
+  OQ-1 gate; the five-probe acceptance suite (the parent's end-to-end P2
+  cycle) is W6's.
 
 ### W6 — expiry reaper wiring + the P2 acceptance suite
 
@@ -685,7 +693,8 @@ The package skeleton mirrors `go/internal/compute`'s layering
       → `Snapshot` → `(account, repo)` index write (sub-unit gated on OQ-1b);
       box-loss cold path (depends: W1, W2, W3, W4; **merge-gated on OQ-1**).
 - [ ] **W6** — expiry reaper driver + the five-probe P2 acceptance suite
-      (rebuild-freshness + git-shape probes, not timers) (depends: W1–W5).
+      (rebuild-freshness + git-shape probes, not timers) (depends: W1–W5;
+      **probe 3 merge-gated on OQ-1**).
 
 ## Open Questions
 
