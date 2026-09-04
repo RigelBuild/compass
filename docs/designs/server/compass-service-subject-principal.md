@@ -63,8 +63,11 @@ tiers — the LLM gateway now, an MCP gateway later — NOT a kind per tier.
   e.g. the owner resolution over `agent_accounts.owner_user_id`
   (`go/internal/comms/comms.go:114-115`: "an agent caller resolves to its
   owner_user_id, a user caller to itself") discriminating what a given account
-  subject may do. A service door authorizes the resolved `Subject.ID` against
-  the surface's allowlist the same way.
+  subject may do — layered ON TOP of the tenant GUC the request path arms
+  (`tenant_tx.go:135-143`), which is where the account door's isolation
+  substantially comes from, not `owner_user_id` alone. A service door
+  authorizes the resolved `Subject.ID` against the surface's allowlist the same
+  way; its TENANT posture is not settled by this record — see OQ-4.
 - **The existing cross-door kind-gate isolates the new class for free.**
   `ResolveToken` (`go/internal/auth/token.go:102-116`) is the ONE shared
   resolver: `if subj.Kind != want { return store.Subject{}, ErrWrongKind }`
@@ -94,9 +97,20 @@ condition is version-keyed, not row-count-keyed — see Global Constraints).
 - The two existing kinds keep their numbers: `SubjectAccount = 0`,
   `SubjectRunner = 1` (`types.go:96-98`). `SubjectService = 2` is additive;
   numbers are append-only, never reused.
-- The one-resolver invariant holds: every door authenticates through
-  `auth.ResolveToken` (`token.go:102`); no door grows its own resolve or
-  kind-check.
+- The one-resolver invariant holds over DOORS: every door authenticates
+  through `auth.ResolveToken` (`token.go:102`); no door grows its own resolve
+  or kind-check. One non-door path is deliberately outside it:
+  `runnerhub.RunnerTokenRegistered` (`mint.go:80-93`) is a KIND-AGNOSTIC
+  store-level existence check — it resolves a hash and returns true for ANY
+  resolving subject, never comparing `Kind` — used by the runner-credential
+  provisioning heal paths, not a door. The third class widens its
+  false-"registered" surface by one: a `SubjectService` token hash that
+  appeared in a runner's token file would report registered, so the heal path
+  would keep it instead of rotating and the runner would then fail the kind
+  gate at `runnerhub/auth.go:79`. Not an escalation (the door still fails
+  closed) and reaching it needs an operator pasting a service token into runner
+  state; a non-load-bearing follow-up for the T4/issuance slice could compare
+  the resolved `Kind` before treating a token as registered.
 - The token-existence-oracle posture holds: every door maps
   `ErrTokenNotFound` / `ErrTokenRevoked` / `ErrWrongKind` to the same bare
   `CodeUnauthenticated` (`token.go:92-97`).
@@ -131,9 +145,14 @@ ISSUANCE (the mint path, no corpus task owns it yet) is OQ-3 below.
 ### T1 — `SubjectService` const + seal-comment update
 
 `go/internal/store/types.go`: add the third const to the block at
-`types.go:94-99` and update the seal sentence at `types.go:90-91` ("Sealed to
-exactly these two (design.md: 1175-1183).") to name three kinds and cite THIS
-record. Also extend the `Subject.ID` doc (`types.go:106-107`: "ID is the
+`types.go:94-99` and update the seal SENTENCE ("Sealed to exactly these two
+(design.md: 1175-1183).", spanning `types.go:90-91`) to name three kinds and
+cite THIS record. Edit it SENTENCE-scoped, not by wiping the `:90-91` line
+range: line 90 also carries the TAIL of the preceding cross-door example clause
+("account token on RunnerService).", the clause T4 later refreshes), so a
+wholesale line-range replace would truncate that clause. Rewrite only the seal
+sentence in place.
+Also extend the `Subject.ID` doc (`types.go:106-107`: "ID is the
 AccountID (SubjectAccount) or the Runner id (SubjectRunner)…") to name the
 service id space (a stable service name, e.g. `llm-gateway`).
 
@@ -195,20 +214,43 @@ subj, err := auth.ResolveToken(ctx, st, presented, store.SubjectService)
 Doc refresh (T4 owns it, since the third door wrap is where the two-door prose
 goes stale): the enum grows to three kinds but there are still only two DOORS
 after PR2, so the existing two-door enumerations stay literally true until T4
-adds the third — at which point refresh them in the same slice (at least these
-six sites): `token.go:98-99` (the shared-resolver door enumeration — "Both the
-account door … and the Runner door … share this one resolver"),
+adds the third — at which point refresh them in the same slice. The CONTRACT is
+a discovery rule (the line-pinned list below is evidence, not the boundary):
+refresh every comment under `go/` and `proto/` that ENUMERATES or COUNTS the
+door/kind set — matching roughly `/cross-door|cross-kind|account (token|
+subject)|Runner (token|subject)|these two|exactly two|two mandatory/` — since
+any two-door enumeration or literal door COUNT goes stale when the third door
+mounts. The sites known at authoring time (verified at `eb5ef7a1`):
+`go/internal/auth/token.go:98-99` (the shared-resolver door enumeration — "Both
+the account door … and the Runner door … share this one resolver"),
 `token.go:79-81` (`ErrWrongKind`'s account-vs-Runner examples),
-`interceptor.go:140-141` (the cross-door failure enumeration), the
-`runnerhub/auth.go:4-14` package doc (the two-door cross-door-rejection
-framing), `types.go:89` (the cross-door EXAMPLE clause — "a Runner token on
-CompassService/CommsService, an account token on RunnerService" — a separate
-sentence in the same comment as, but distinct from, the "Sealed to exactly
-these two" seal sentence T1 rewrites at `:90-91`, so the two tasks do not
-collide), and `network_door.go:229-230, :299-301` (the door-mount
-cross-rejection comments at the sites the service door mounts on — "an account
-token is Unauthenticated there, and a Runner token is Unauthenticated on the
-CompassService/CommsService doors above (OQ7 cross-door rejection)").
+`go/internal/auth/interceptor.go:140-141` (the cross-door failure enumeration),
+the `go/internal/runnerhub/auth.go:4-14` package doc (the two-door
+cross-door-rejection framing), `go/internal/store/types.go:89-90` (the
+cross-door EXAMPLE clause — "reject a cross-kind token (a Runner token on
+CompassService/CommsService, an account token on RunnerService)" — which SHARES
+line 90 with the "Sealed to exactly these two" seal sentence T1 rewrites, so
+T1 must edit that seal sentence IN PLACE, sentence-scoped not line-range-scoped,
+preserving the leading "account token on RunnerService)." on line 90),
+`types.go:86-88` (the `SubjectKind` doc opener — "a Runner subject and an
+account subject share the token store but never collide"), `types.go:101-103`
+(the `Subject` doc's two-kind enumeration — "the id of the account or Runner it
+authenticates"; T1 edits only the `:106-107` ID doc and leaves this stale),
+`go/internal/runnerhub/mint.go:5-7` ("a Runner subject and an account subject
+share one store but can never collide"),
+`go/internal/runnerhub/handler.go:68-69` ("an account token never reaches here
+… the RunnerService cross-door rejection") and `:260-261` ("an account token is
+Unauthenticated here, the OQ7 cross-door rule"),
+`go/server/network_door.go:229-231` ("an account token is Unauthenticated
+there, and a Runner token is Unauthenticated on the account/comms doors: the
+OQ7 cross-door rule") and `:299-301` ("an account token is Unauthenticated here
+and a Runner token is Unauthenticated on the CompassService/CommsService doors
+above (OQ7 cross-door rejection)"), and — the sharpest, because it states a
+literal COUNT that becomes factually wrong when a third door mounts —
+`proto/compass/v1/runner.proto:53-56` ("the RunnerService side of the TWO
+mandatory cross-door rejection tests") and `:183-184` ("account-subject tokens
+rejected"). `network_door.go` lives at `go/server/`, NOT `go/internal/` like
+the rest — the one cited file outside `go/internal/`.
 
 ### T5 — cross-door pgtest
 
@@ -225,7 +267,14 @@ account token and a Runner token presented at `want=SubjectService` each fail
 CHECK admits 2) and `ResolveTokenHash` returns the kind intact; and
 `PutTokenHash` with `Subject{Kind: SubjectKind(3), ID: "nope"}` FAILS with a
 constraint violation (proving the widened CHECK is still a closed set of
-exactly `{0, 1, 2}` — not dropped or over-widened to admit 3).
+exactly `{0, 1, 2}` — not dropped or over-widened to admit 3). Assert only
+`err != nil` on that call — the ID is non-empty and the hash fresh, so the
+widened CHECK (SQLSTATE 23514) is the sole possible failure source. Do NOT add
+a new store sentinel or SQLSTATE constant for it: the store maps only 23505 →
+`ErrConflict` and 23503 → `ErrInvalidArgument` (`errors.go:9-12`), and a 23514
+falls through to the bare wrap at `tokens.go:26` — introducing a typed sentinel
+is a store API change this record does not scope (T2/T3 touch only the CHECK
+and the nolint text).
 
 Interfaces:
 
@@ -270,6 +319,37 @@ Interfaces:
   enum half, T1/T2/T3/T5) does NOT depend on it; it is recorded here so the T4
   slice owns it explicitly rather than an executor improvising a mint path on a
   security-critical door.
+- **OQ-4 (service-door tenant posture — load-bearing for T4, NON-load-bearing
+  for PR2). The record fixes the auth PRINCIPAL but not its TENANT posture; T4
+  must not improvise one.** A service door is a request path, and under RLS a
+  request-path store statement arms `SET LOCAL ROLE compass_app` plus a tenant
+  GUC (`tenant_tx.go:135-143`), with `resolveTenant` falling back to the
+  BOOTSTRAP tenant when the context carries none (`tenant.go:54-59`). So a
+  service-door RPC that resolves a `SubjectService` token but sets no tenant
+  runs bootstrap-scoped and sees only that tenant's rows — which silently
+  breaks this record's own first consumer: the LLM gateway's stack-token
+  surface must serve EVERY tenant's provider credentials, isolating them by
+  per-tenant pool scoping enforced server-side, not by the process (a
+  compromised gateway holding one stack token can read every tenant's creds —
+  `docs/designs/server/compass-server-llm-gateway/design.md:333-337`; pools
+  resolve from `owner_user_id`, :377-378). The only cross-tenant escape is
+  `WithSystemRole` (BYPASSRLS), and it is explicitly fenced from request paths:
+  "applied ONLY at the four named background-loop entrypoints … a request-path
+  call NEVER sets it" (`tenant_tx.go:41-47`; role scope :19-22). A service door
+  is a request path, so this record does NOT authorize it to take that escape.
+  The three shapes T4 must choose among (the executor may NOT improvise):
+  (a) the door resolves a tenant per request from a request-carried selector,
+  validated against the Subject.ID allowlist, and calls `store.WithTenant` —
+  request path stays tenant-scoped and fail-closed; (b) the surface is
+  deliberately cross-tenant, which requires a NEW, explicitly Matt-ruled
+  widening of the `WithSystemRole` background-loop exemption
+  (`tenant_tx.go:41-47`) to a request-path door — a security-boundary change
+  this record does NOT grant; or (c) tenancy is formally deferred to the
+  RIG-2863 (RIG-1715 T2) slice as a BLOCKING prerequisite of T4, so the surface
+  cannot ship without a ruling. Resolution: shape chosen with the T4 surface in
+  the RIG-2863 slice; PR2 (the enum half, T1/T2/T3/T5) does NOT depend on it —
+  the enum and CHECK carry no tenant posture. Recorded here (not left implicit)
+  so the T4 executor is handed a named fork, not an undesigned security choice.
 - Non-load-bearing deferral: the canonical Subject-ID registry for service
   principals (e.g. `llm-gateway`, `mcp-gateway` as named constants vs
   config-supplied strings) is an implementation detail of the T4 surface's
