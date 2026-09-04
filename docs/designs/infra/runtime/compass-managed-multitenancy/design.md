@@ -420,8 +420,8 @@ the topology chosen here is what makes any-Runner wake routable.
 fabric seams and implementations (T1-T6) — lands in the OSS
 `RigelBuild/compass` core, because the OSS core must run it
 single-tenant-degenerate; the managed-service orchestration (tenant
-provisioning, billing, box lifecycle) is the private control-plane layer
-(RIG-2485 and the managed control plane), consistent with RIG-1717's
+provisioning, billing, box lifecycle) is the out-of-tree managed control plane
+(RIG-2485), consistent with RIG-1717's
 one-architecture-two-products split
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:71-101`).
 The where-does-work-land convention this split implies is formalized in
@@ -463,9 +463,8 @@ virtualization level). Our agent workload is largely I/O-bound waiting on LLM
 calls, so the real overhead is likely under the rule-of-thumb and is worth
 measuring on the actual workload before treating 10% as a planning fact.
 Because that fork spans this record's topology and RIG-2485/RIG-2394-D2's box
-lifecycle, its home is the private monorepo's AWS-EKS substrate
-design (RIG-2878), not this record; it gates only the box layer *beneath*
-this substrate-agnostic topology.
+lifecycle, it is an out-of-tree managed-control-plane concern, not this
+record; it gates only the box layer *beneath* this substrate-agnostic topology.
 
 ## Alternatives considered
 

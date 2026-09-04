@@ -192,7 +192,7 @@ the leg; a re-run clears it. If that proves frequent, the Woodpecker fallback
 If hosted-runner KVM proves unreliable in practice — frequent reds from
 withheld `/dev/kvm`, or GitHub tightening access — the fallback is to **enroll
 the compass repo itself on the self-hosted Woodpecker fleet** and run the KVM
-leg there. This is explicitly *compass's own* CI, not the private monorepo's:
+leg there. This is explicitly *compass's own* CI, not the managed service's:
 compass features are tested in compass. The fleet has a registered self-hosted
 Linux CI agent (x86_64, KVM-capable, docker backend) already, so the hardware
 is in place; what is missing is a compass pipeline (no `.woodpecker*` config
@@ -220,9 +220,9 @@ same env + tag contract E-D2's GHA step uses, so adopting the fallback is a
 lane swap, not a redesign. It also realizes V8's "CI job (KVM-labeled runner)"
 (`microvm-runner.md:606-608`).
 
-*Separate concern — the managed service:* the managed Compass will run from the
-private monorepo, and that monorepo will need its own KVM CI when the managed
-buildout starts. That is deferred to the managed-service control-plane work
+*Separate concern — the managed service:* the managed service is built out of
+tree and will need its own KVM CI when its buildout starts. That is deferred to
+the managed-service control-plane work
 (the fleet control plane, RIG-2485), not this record — this record keeps
 compass's own tests in compass.
 
