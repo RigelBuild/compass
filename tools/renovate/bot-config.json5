@@ -56,7 +56,7 @@
   // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
   // quietly.)
   //
-  // Five entries, all load-bearing:
+  // Six entries, all load-bearing:
   //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
   //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
   //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
@@ -85,7 +85,14 @@
   //      releases at or before its pinned rev, so without this a bump to a newer
   //      go than the overlay provides evals a missing attr and reds CI
   //      (RIG-3100).
-  // (1), (3), (4), and (5) are `bun <script>.ts` — the Renovate hooks are
+  //   6. the devenv-fork relock, which on either compass devenv lock's
+  //      fork-rev digest bump runs `devenv update devenv` in that lock's own
+  //      directory, rewriting the whole lock (narHash/lastModified + the
+  //      fork's transitive nodes) at the new rev rather than leaving the
+  //      regex-bumped rev beside a stale hash. Both devenv-fork packageRules
+  //      declare this ONE command — the script self-gates on WHICH lock
+  //      changed — so one entry covers both (RIG-2815).
+  // (1), (3), (4), (5), and (6) are `bun <script>.ts` — the Renovate hooks are
   // TypeScript run via bun (AGENTS.md "Scripts: TypeScript over bash"); bun is on
   // the runner PATH.
   allowedCommands: [
@@ -94,5 +101,6 @@
     "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",
     "^bun tools/renovate/refresh-fod-hashes\\.ts$",
     "^bun tools/renovate/refresh-go-overlay\\.ts$",
+    "^bun tools/renovate/refresh-devenv-lock\\.ts$",
   ],
 }
