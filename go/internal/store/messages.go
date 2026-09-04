@@ -44,7 +44,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	// serializes and validates the blocks inside the tx.
 	mintAskIDs(m.Blocks)
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Message{}, false, fmt.Errorf("store: begin append message: %w", err)
 	}
@@ -564,7 +564,7 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	// answer block until the first commits, then re-read the updated blocks
 	// (READ COMMITTED EvalPlanQual) and layer its own answer on top, so both
 	// survive (RIG-1226).
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: begin answer ask: %w", err)
 	}

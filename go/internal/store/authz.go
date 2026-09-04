@@ -43,7 +43,7 @@ func requireChannelMember(ctx context.Context, q db.DBTX, actor AccountID, chann
 // into an error — the D9 discipline extended from the read RPCs to the live
 // stream (design.md:446-447: the fan-out is visibility-scoped).
 func (s *Store) IsChannelMember(ctx context.Context, actor AccountID, channelID ChannelID) (bool, error) {
-	return isChannelMember(ctx, s.pool, actor, channelID)
+	return isChannelMember(ctx, s.scopedPool(), actor, channelID)
 }
 
 // isChannelMember reports whether actor is a member of channelID (the
@@ -107,7 +107,7 @@ func requireGroupCreateAuthz(ctx context.Context, q db.DBTX, actor AccountID, gr
 // stream edge to filter AgentWorkspaceChanged events, mirroring the
 // OpenAgentWorkspace read gate. An unknown agent yields false (not visible).
 func (s *Store) IsAgentWorkspaceVisible(ctx context.Context, actor AccountID, agentAccountID AccountID) (bool, error) {
-	return isAgentWorkspaceVisible(ctx, s.pool, actor, agentAccountID)
+	return isAgentWorkspaceVisible(ctx, s.scopedPool(), actor, agentAccountID)
 }
 
 // isAgentWorkspaceVisible is the querier-based form IsAgentWorkspaceVisible

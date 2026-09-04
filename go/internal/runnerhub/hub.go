@@ -746,6 +746,11 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 // ack must not kill the Runner's whole event stream. A nil delivery store (a
 // Deliver-only hub) drops the ack silently: no cursor exists to advance.
 func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1internal.DeliveryAck) {
+	// N5/OQ-4: the delivery-ack cursor advance is a cross-tenant system path —
+	// the ack resolves the acking agent's tenant only implicitly, and the cursor
+	// tables are RLS-policied, so this runs under the BYPASSRLS system role
+	// rather than a fail-closed request scope that would drop every ack.
+	ctx = store.WithSystemRole(ctx)
 	h.mu.Lock()
 	delivery := h.delivery
 	h.mu.Unlock()
@@ -802,6 +807,11 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 // from the durable gap. A nil delivery store (a Deliver-only hub) drops the ack
 // silently: no cursor exists to advance.
 func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *compassv1internal.ForgeNotificationAck) {
+	// N5/OQ-4: like deliverAck, the forge-delivery cursor advance is a
+	// cross-tenant system path — RLS-policied agent_forge_subscriptions rows
+	// advanced from a Runner event whose tenant is only implicit. Run under the
+	// BYPASSRLS system role rather than a fail-closed request scope.
+	ctx = store.WithSystemRole(ctx)
 	h.mu.Lock()
 	delivery := h.delivery
 	h.mu.Unlock()

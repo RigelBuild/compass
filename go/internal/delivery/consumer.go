@@ -305,6 +305,15 @@ func (c *Consumer) SetAgentWaker(w AgentWaker) {
 // bus shutdown (end silently). ctx threads from the serve group into every store
 // read and dispatch below; the loop never re-roots it.
 func (c *Consumer) Run(ctx context.Context) error {
+	// N5/OQ-4: the fan-out consumer is a cross-tenant background loop (it tails
+	// EVERY tenant's posted messages, sweeps EVERY agent's owed set, and scans
+	// the whole messages table). It must run under the BYPASSRLS system role, not
+	// the tenant-scoped request path — a request-path (fail-closed) scope would
+	// see zero rows and halt delivery fleet-wide. Marking the root ctx here
+	// propagates the system role into every store call the loop makes (replay,
+	// live dispatch, the settle/start drains, sweeps, and scanMissedMentions),
+	// since the loop threads this ctx and never re-roots it.
+	ctx = store.WithSystemRole(ctx)
 	sub, err := c.bus.Subscribe(0, c.bus.InstanceEpoch())
 	if err != nil {
 		// A fresh subscription at since_seq=0 on a live bus cannot underflow; any

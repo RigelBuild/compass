@@ -366,7 +366,7 @@ func LockOwnerCoordinationTx(ctx context.Context, tx pgx.Tx, ownerUserID Account
 // touches the pgx pool directly. fn must confine all its reads/writes to the
 // passed tx.
 func (s *Store) WithTx(ctx context.Context, fn func(pgx.Tx) error) error {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}

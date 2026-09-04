@@ -15,15 +15,21 @@ FROM agent_activity
 WHERE agent_account_id = ANY($1::text[])
 `
 
-func (q *Queries) ActivityFor(ctx context.Context, dollar_1 []string) ([]AgentActivity, error) {
+type ActivityForRow struct {
+	AgentAccountID   string
+	Activity         string
+	ActivityAtUnixMs int64
+}
+
+func (q *Queries) ActivityFor(ctx context.Context, dollar_1 []string) ([]ActivityForRow, error) {
 	rows, err := q.db.Query(ctx, activityFor, dollar_1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []AgentActivity
+	var items []ActivityForRow
 	for rows.Next() {
-		var i AgentActivity
+		var i ActivityForRow
 		if err := rows.Scan(&i.AgentAccountID, &i.Activity, &i.ActivityAtUnixMs); err != nil {
 			return nil, err
 		}

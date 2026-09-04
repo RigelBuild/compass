@@ -94,15 +94,21 @@ WHERE channel_id = ANY($1::text[])
 ORDER BY account_id
 `
 
-func (q *Queries) ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMember, error) {
+type ChannelMembersByChannelIDsRow struct {
+	ChannelID  string
+	AccountID  string
+	Subscribed bool
+}
+
+func (q *Queries) ChannelMembersByChannelIDs(ctx context.Context, dollar_1 []string) ([]ChannelMembersByChannelIDsRow, error) {
 	rows, err := q.db.Query(ctx, channelMembersByChannelIDs, dollar_1)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ChannelMember
+	var items []ChannelMembersByChannelIDsRow
 	for rows.Next() {
-		var i ChannelMember
+		var i ChannelMembersByChannelIDsRow
 		if err := rows.Scan(&i.ChannelID, &i.AccountID, &i.Subscribed); err != nil {
 			return nil, err
 		}
