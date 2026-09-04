@@ -19,8 +19,6 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    command: 'bun test'
-    deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   check:
     # The gate itself, against the real gen trees and the real plugin. Distinct

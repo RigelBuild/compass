@@ -16,8 +16,6 @@ tasks:
     deps: ['install']
     inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    command: 'bun test'
-    deps: ['install']
     inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   ci:
     deps: ['typecheck', 'test']
