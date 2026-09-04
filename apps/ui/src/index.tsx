@@ -1,13 +1,10 @@
 import { createRoot } from "solid-js";
 import { createAnalytics } from "./analytics/analytics";
 import { analyticsConfigFromEnv } from "./analytics/config";
-import { bootCaller, bootConnection, renderBootError } from "./boot";
-import { bootNativeClient } from "./boot-native";
+import { bootCaller, renderBootError } from "./boot";
+import { bootForMode } from "./boot-mode";
 import { createLiveClients, resolveCaller } from "./live/client";
-import {
-	envConnectionProvider,
-	type ResolvedConnection,
-} from "./live/provider";
+import type { ResolvedConnection } from "./live/provider";
 import { mountShell, newAppQueryClient } from "./mount";
 import { shellMode } from "./shell-globals";
 import { createAppStore } from "./store";
@@ -24,9 +21,8 @@ if (!root) {
 //
 //   "client"  → bootNativeClient gates on the shell's armed connection (probe +
 //               connect screen), then boots through the SAME main() chain.
-//   "embedded" → the native embedded provider. T5.6 wires that provider; until
-//               then embedded shares the env path (a co-hosted server is dialed
-//               by env just like the browser dev build), so it falls through.
+//   "embedded" → the native embedded provider, resolved directly through the
+//               bridge transport (no client probe or connect screen).
 //   absent    → the UNCHANGED browser-dev path: envConnectionProvider.
 //   fixture   → the offline fixture boot (§A1), a third BROWSER-ONLY arm checked
 //               first: Vite statically replaces `import.meta.env.MODE`, so in a
@@ -60,10 +56,7 @@ if (import.meta.env.MODE === "fixture") {
 			);
 		});
 } else {
-	const bootConnectionForMode =
-		shellMode() === "client"
-			? () => bootNativeClient(root)
-			: () => bootConnection(root, () => envConnectionProvider().resolve());
+	const bootConnectionForMode = bootForMode(shellMode(), root);
 	void bootConnectionForMode()
 		.then((connection) => {
 			if (connection) {
