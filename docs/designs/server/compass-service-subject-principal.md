@@ -83,9 +83,11 @@ tiers — the LLM gateway now, an MCP gateway later — NOT a kind per tier.
 - **Named `SubjectService`** — NOT `SubjectStack` (reads as the deployment
   stack), NOT `SubjectGateway` (narrower than the class).
 
-Shipping this addendum BEFORE the implementation (PR2) is deliberate: the enum
+Shipping this addendum BEFORE the implementation (PR2 — the enum-half
+implementation PR, T1/T2/T3/T5, throughout this record) is deliberate: the enum
 NUMBER and the `tokens.subject_kind` CHECK constraint land in `0001_init.sql`
-and are painful to rename once token rows exist.
+and are painful to change once any non-disposable database has APPLIED v1 (the
+condition is version-keyed, not row-count-keyed — see Global Constraints).
 
 ## Global Constraints
 
@@ -118,7 +120,8 @@ and are painful to rename once token rows exist.
 PR2 executor contract — TWO scopes, each grounded on the current line. **The
 enum half (T1/T2/T3/T5) lands NOW as PR2** — every file+line it names exists
 today, and it is the urgent half (the enum number + `tokens.subject_kind`
-CHECK are painful to change once token rows exist, per Problem / Intent). **The
+CHECK are painful to change once any non-disposable database has applied v1,
+per Global Constraints). **The
 door half (T4) lands WITH the service surface**, which does not exist in the
 tree yet: it is delivered by RIG-2863 (RIG-1715 T2 — the AuthStorage-over-compass
 adapter + the LLM gateway's stack-token RPC surface, currently Backlog), and
@@ -192,12 +195,20 @@ subj, err := auth.ResolveToken(ctx, st, presented, store.SubjectService)
 Doc refresh (T4 owns it, since the third door wrap is where the two-door prose
 goes stale): the enum grows to three kinds but there are still only two DOORS
 after PR2, so the existing two-door enumerations stay literally true until T4
-adds the third — at which point refresh them in the same slice:
-`token.go:98-99` (the shared-resolver door enumeration — "Both the account door
-… and the Runner door … share this one resolver"), `token.go:79-81`
-(`ErrWrongKind`'s account-vs-Runner examples), `interceptor.go:140-141` (the
-cross-door failure enumeration), and the `runnerhub/auth.go:4-14` package doc
-(the two-door cross-door-rejection framing).
+adds the third — at which point refresh them in the same slice (at least these
+six sites): `token.go:98-99` (the shared-resolver door enumeration — "Both the
+account door … and the Runner door … share this one resolver"),
+`token.go:79-81` (`ErrWrongKind`'s account-vs-Runner examples),
+`interceptor.go:140-141` (the cross-door failure enumeration), the
+`runnerhub/auth.go:4-14` package doc (the two-door cross-door-rejection
+framing), `types.go:89` (the cross-door EXAMPLE clause — "a Runner token on
+CompassService/CommsService, an account token on RunnerService" — a separate
+sentence in the same comment as, but distinct from, the "Sealed to exactly
+these two" seal sentence T1 rewrites at `:90-91`, so the two tasks do not
+collide), and `network_door.go:229-230, :299-301` (the door-mount
+cross-rejection comments at the sites the service door mounts on — "an account
+token is Unauthenticated there, and a Runner token is Unauthenticated on the
+CompassService/CommsService doors above (OQ7 cross-door rejection)").
 
 ### T5 — cross-door pgtest
 
@@ -209,9 +220,12 @@ round-trip in `go/internal/store/tokens_test.go` (harness
 `SubjectService` token resolves at `want=SubjectService`; presented at
 `want=SubjectAccount` and `want=SubjectRunner` it fails `ErrWrongKind`; an
 account token and a Runner token presented at `want=SubjectService` each fail
-`ErrWrongKind`. Also a store-level round-trip: `PutTokenHash` with
+`ErrWrongKind`. Also two store-level round-trips: `PutTokenHash` with
 `Subject{Kind: SubjectService, ID: "llm-gateway"}` persists (proving the T2
-CHECK admits 2) and `ResolveTokenHash` returns the kind intact.
+CHECK admits 2) and `ResolveTokenHash` returns the kind intact; and
+`PutTokenHash` with `Subject{Kind: SubjectKind(3), ID: "nope"}` FAILS with a
+constraint violation (proving the widened CHECK is still a closed set of
+exactly `{0, 1, 2}` — not dropped or over-widened to admit 3).
 
 Interfaces:
 
