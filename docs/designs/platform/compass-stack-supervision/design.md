@@ -281,7 +281,8 @@ the unit template does NOT let the OS pre-empt it: systemd's default
 the children in parallel before the ordered drain, so the templates pin
 `KillMode=mixed` / `AbandonProcessGroup=true` (T2). The operator's
 `compass-stack down` verb also becomes unit-aware so it stops through the
-unit rather than being undone by a restart (T2). Status truth stays
+unit (T2) — but a bare `up --supervise` wedges `down` behind the
+live-holder guard until OQ-6 is ruled (below). Status truth stays
 `compass-stack status` (the unit's state is process-liveness, not stack
 health); the T2 checklist (former OQ-4, below) is the unit content gate.
 
@@ -336,7 +337,8 @@ darwin answer yet). Those are stack-TOPOLOGY unknowns, not supervision
 unknowns — this record ships the supervision mechanics for macOS (T2
 launchd template + T3 darwin identity reader) and leaves the topology
 validation with the lane that owns it. Whether macOS `service install`
-GA-gates on that lane is OQ-5 (the one remaining fork, below). (The
+GA-gates on that lane is OQ-5 (one of two remaining forks, below — the
+other is OQ-6, the `--supervise` lock lifetime). (The
 `apple-container-macos-runner/design.md:713-733` line range cited above
 resolves only once that sibling RIG-3238 record lands on main — PR #869 is
 not yet merged; the citation is a forward reference, not a
@@ -573,9 +575,13 @@ Interfaces:
   non-cancelable ctx (no group SIGKILL before graceful teardown); (3)
   attached supervise exits non-nil only after N consecutive health-probe
   failures, not one; (4) a partial-drain child death → restart → the
-  surviving old child is torn down by the pre-spawn cleanup, not orphaned.
-  Plus a process-level smoke on Linux: `up --supervise`, `kill` a child,
-  assert non-zero exit and a clean survivor teardown.
+  surviving old child is torn down by the pre-spawn cleanup, not orphaned;
+  (5) with `up --supervise` running, `compass-stack down` performs a real
+  stop (per the ruled OQ-6 option) and the supervise process exits ZERO,
+  never `ErrStackStarting` — the OQ-6 behavior T2's stop-truth delegates
+  here; it lands with the OQ-6 ruling. Plus a process-level smoke on Linux:
+  `up --supervise`, `kill` a child, assert non-zero exit and a clean
+  survivor teardown.
 
 ### T2 — `compass-stack service install` / `uninstall` + unit templates
 
@@ -645,7 +651,7 @@ Interfaces:
   fold; the underlying lock-lifetime mechanism it rides on is OQ-6, a Matt
   fork. For a bare (unit-less) `up --supervise` — dev/devenv, and T1's
   standalone Linux smoke before `service install` exists — `down` works
-  once OQ-6 is ruled and not before; T1's smoke asserts the OQ-6 behavior.
+  once OQ-6 is ruled and not before; T1's test cycle item (5) covers it.
 - Unit-content gate: every item of the T2 checklist (former OQ-4, below) —
   explicit `--state-dir`, absolute paths + PATH, `KillMode=mixed` /
   `AbandonProcessGroup=true` ordered-teardown knobs, pinned `RestartSec` /
@@ -739,8 +745,9 @@ Interfaces:
 - [ ] T2 — `service install`/`uninstall` verbs + embedded systemd/launchd
       unit templates, rendered against the T2 unit-content checklist;
       golden-file tests + systemd-host smoke (launchd smoke with T3).
-- [ ] T3 — darwin `readStartTime` (`sysctl KERN_PROC` via x/sys) behind the
-      existing var seam; darwin-tagged unit test on the DL-263 CI leg.
+- [ ] T3 — darwin start-time readers at BOTH seams (`readStartTime` +
+      `readGroupLeaderStartTime`, `sysctl KERN_PROC` via x/sys, one shared
+      encoding); darwin-tagged unit test on the DL-263 CI leg.
 - [ ] T4 — self-host doc "run as a service" section (both platforms +
       status-truth caveat), DL-328 ledger row, close-out.
 
