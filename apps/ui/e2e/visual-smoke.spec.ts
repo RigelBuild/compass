@@ -20,7 +20,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	test("bridge board", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });
-		await page.locator(".state-dot").first().waitFor({ state: "visible" });
+		await page.locator(".cx-state-dot").first().waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
 		await page.screenshot({
 			path: `${SCREENS}/bridge.png`,
@@ -133,7 +133,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	test("state-dot close-up", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });
-		const dot = page.locator(".state-dot").first();
+		const dot = page.locator(".cx-state-dot").first();
 		await dot.waitFor({ state: "visible" });
 		// Cropped close-up clip of a single state dot.
 		await page.evaluate(() => document.fonts.ready);

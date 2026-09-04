@@ -4,11 +4,12 @@
    this box). This file carries: the 9×9 sizing, per-state color via --cx-st-*,
    the crispEdges 1-bit rendering rule, and the working-only pulse hook.
 
-   Mirrors the existing .state-dot[data-state=…] convention (app.css:490-514):
-   class + data-* variant modifiers, keyed off the AgentState enum. Only
-   `working` animates, in the working-state green (--cx-st-working), NEVER the
-   purple phosphor (--cx-pulse-color). The other seven are static, distinguished
-   by glyph + color alone (CVD-safe, reduced-motion-safe by brand contract). */
+   This is now the sole source of state-dot styling: RIG-2118 deleted the legacy
+   flat-dot `.state-dot[data-state=…]` block from app.css. Class + data-* variant
+   modifiers, keyed off the AgentState enum. Only `working` animates, in the
+   working-state green (--cx-st-working), NEVER the purple phosphor
+   (--cx-pulse-color). The other seven are static, distinguished by glyph + color
+   alone (CVD-safe, reduced-motion-safe by brand contract). */
 
 .cx-state-dot {
 	display: inline-block;
@@ -22,6 +23,17 @@
 	   not a guarantee on the empty wrapper itself. */
 	image-rendering: pixelated;
 	shape-rendering: crispedges;
+}
+
+/* Seat the inline SVG glyph at the wrapper's top edge. Without this the SVG is a
+   replaced inline-level box sitting on the parent's text baseline, and the app's
+   inherited line-height pushes it down so the 9×9 glyph overflows the 9px box by
+   ~5px (5 of 9 rows); the box does not clip (overflow is visible), so those rows
+   render outside it and collide with adjacent content. `display: block` seats it
+   at offset 0. badge-glyph.css is the sizing precedent (a 9×9 glyph box); this
+   `> svg` rule is the seating counterpart. */
+.cx-state-dot > svg {
+	display: block;
 }
 
 /* --- Per-state color (fill/stroke resolves from currentColor) --- */
