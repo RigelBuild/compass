@@ -370,6 +370,7 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 			).darwinAffected,
 		).toBe(true);
 	});
+
 	test("darwinAffected on a sidecar cmd path (the mac lane now compiles the sidecars)", () => {
 		expect(
 			generate(
@@ -387,6 +388,17 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 				prInput({
 					affectedIds: [],
 					changedPaths: ["go/internal/runtime/microvm/launch.go"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
+
+	test("darwinAffected on a go/server change (unix-tagged sidecar input compiled into compass-stack/server)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["go/server/socket.go"],
 				}),
 			).darwinAffected,
 		).toBe(true);

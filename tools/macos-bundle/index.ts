@@ -124,7 +124,9 @@ export function renderInfoPlist(opts: InfoPlistOptions): string {
  * Parse `--binary <path> --dist <dir> --version <semver> --out <dmg>` plus zero
  * or more repeated `--sidecar <path>` into a typed BundleArgs. Pure; throws an
  * Error naming the offending flag on a missing value, an unknown flag, a
- * basename collides with the shell executable's staged name, or duplicate sidecar basenames.
+ * duplicate of a single-valued flag, a missing required flag, a sidecar whose
+ * basename collides with the shell executable's staged name, or duplicate
+ * sidecar basenames.
  * `--sidecar` is exempt from the duplicate check by design (it accumulates),
  * but a `--sidecar` with no value fails as loud as any other. Fail-loud on any
  * malformed input mirrors build.sh's sanity posture.

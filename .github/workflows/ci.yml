@@ -1434,9 +1434,10 @@ jobs:
     # It compiles the SAME shell the gtk4-e2e lane does, then stages + ad-hoc
     # signs the .app and wraps the .dmg via the macos-bundle tool, asserting the
     # bundle is complete + mountable. The job-level `if:` ANDs the dispatch-aware
-    # gate guard with the darwin affected gate: on a PR it runs only when setup
-    # found the shell surface (go/cmd/compass-app/ or a GTK closure input) or the
-    # macos-bundle tool changed (darwin_affected), and always on push/schedule
+    # found the shell surface (go/cmd/compass-app/ or a GTK closure input), the
+    # macos-bundle tool, or the sidecar surface (the three sidecar cmd dirs plus
+    # every first-party package they compile in) changed (darwin_affected), and
+    # always on push/schedule
     # and on a base-re-point re-trigger (DL-263 cadence — full sweep on main +
     # nightly ALWAYS, plus affected-on-PR). The in-step affected guard stays as
     # defense-in-depth.
@@ -1502,11 +1503,13 @@ jobs:
         # dev-version logic).
         #
         # AFFECTED-GUARDED to match the one-job affected posture (DL-263): on a PR
-        # it runs only when go/cmd/compass-app/, a shared GTK closure input, or
-        # the macos-bundle tool actually changed. push-to-main and the nightly
-        # schedule always run it (the full-sweep backstop); a base-re-point
-        # re-trigger (workflow_dispatch) also runs it full. The in-step guard
-        # mirrors the darwinAffected trigger in tools/ci-matrix/index.ts.
+        # it runs only when the shell surface (go/cmd/compass-app/ or a shared GTK
+        # closure input), the macos-bundle tool, or the sidecar surface (the three
+        # sidecar cmd dirs plus every first-party package they compile in) actually
+        # changed. push-to-main and the nightly schedule always run it (the
+        # full-sweep backstop); a base-re-point re-trigger (workflow_dispatch) also
+        # runs it full. The in-step guard mirrors the darwinAffected trigger in
+        # tools/ci-matrix/index.ts.
         if: success()
         env:
           CGO_ENABLED: '1'
@@ -1526,8 +1529,9 @@ jobs:
             # The darwin lane compiles the SAME shell the gtk4 lane does, so a
             # closure-only PR must trigger it too; plus a macos-bundle tool change
             # (the bundler this lane exercises) and the three pure-Go sidecars plus
-            # their shared go/internal/ tree. Mirrors the darwinAffected trigger
-            # in tools/ci-matrix/index.ts.
+            # every first-party package they compile in — `go list -deps` resolves
+            # those non-cmd roots to {events, gen, internal, server}. Mirrors the
+            # darwinAffected trigger in tools/ci-matrix/index.ts.
             changed=$(git diff --name-only "$base"...HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
@@ -1536,7 +1540,10 @@ jobs:
               go/cmd/compass-stack/ \
               go/cmd/compass-server/ \
               go/cmd/compass-runner/ \
-              go/internal/)
+              go/internal/ \
+              go/server/ \
+              go/events/ \
+              go/gen/)
             if [ -z "$changed" ]; then
               run_it=0
             fi

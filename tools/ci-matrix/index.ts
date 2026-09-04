@@ -105,18 +105,24 @@ const GTK4_CLOSURE_PATHS = [
 const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
 /**
  * darwin sidecar surface: the mac lane now cross-compiles the three pure-Go
- * sidecars (compass-stack/server/runner) beside the shell, and they import the
- * shared go/internal tree — so a change to any sidecar cmd dir OR anything under
- * go/internal/ must fire the darwin lane, else a darwin cross-compile break (e.g.
- * a go/internal/runtime change like #847) first surfaces at the release cut. The
- * go/internal/ superset is deliberately broad over a hand-maintained transitive
- * set, which would silently drift and re-open the gap.
+ * sidecars (compass-stack/server/runner) beside the shell, so a change to any
+ * first-party package they compile in must fire the darwin lane — else a darwin
+ * cross-compile break (e.g. a go/internal/runtime change like #847) first
+ * surfaces at the release cut. `go list -deps ./cmd/<sidecar>` resolves the
+ * bundled binaries' non-cmd first-party roots to exactly {events, gen, internal,
+ * server} (go/e2e is tests-only and excluded). We enumerate those package roots
+ * as prefixes rather than a hand-maintained transitive file set (which would
+ * silently drift and re-open the gap); each root is itself a deliberately broad
+ * superset over its actual imported files.
  */
 const DARWIN_SIDECAR_PREFIXES = [
 	"go/cmd/compass-stack/",
 	"go/cmd/compass-server/",
 	"go/cmd/compass-runner/",
 	"go/internal/",
+	"go/server/",
+	"go/events/",
+	"go/gen/",
 ];
 
 // ── Pure core ──────────────────────────────────────────────────────────────
