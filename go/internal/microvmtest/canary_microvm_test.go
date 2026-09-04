@@ -22,7 +22,10 @@
 // microVM is V2a's job and needs the runtime this record does not own. Asserting
 // the resolved Env is fully populated and the two image paths exist on disk is
 // the strongest claim this slice can make WITHOUT a boot — and it is a real
-// assertion, never a skip-always stub.
+// assertion, never a skip-always stub. This is distinct from the V5 boot canary,
+// runtime.(*MicroVMRuntime).BootCanary (microvm_preflight.go), which DOES do a
+// real Create→Start→Exec→Remove boot as the microVM startup preflight; despite
+// the shared "canary" word the two are unrelated artifacts (record §(g)).
 //
 // It lives in the EXTERNAL test package `microvmtest_test` (not in-package) and
 // calls the EXPORTED microvmtest.Require, for two reasons that both matter:

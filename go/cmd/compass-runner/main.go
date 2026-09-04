@@ -194,6 +194,14 @@ type podmanPreflighter interface {
 	VerifyUsernsRemapSupport(ctx context.Context) error
 }
 
+// canaryBooter is the microVM backend's dynamic host-capability probe: it really
+// boots a throwaway VM through the backend's own verbs, proving the whole boot
+// chain. Kept a DISTINCT single-method interface from microVMPreflighter (not a
+// widened two-method probe) so the single-method-probe discipline holds.
+type canaryBooter interface {
+	BootCanary(ctx context.Context) (runtime.CanaryReport, error)
+}
+
 // verifyBackendPreflight runs the selected engine's static host-capability
 // preflight. It dispatches on the engine's concrete type, first match wins,
 // probing the microVM backend before podman; no engine satisfies both today, so
@@ -204,12 +212,36 @@ type podmanPreflighter interface {
 func verifyBackendPreflight(ctx context.Context, engine runtime.ContainerRuntime) error {
 	switch e := engine.(type) {
 	case microVMPreflighter:
-		return e.VerifyMicroVMSupport(ctx)
+		return runMicroVMPreflight(ctx, e, engine)
 	case podmanPreflighter:
 		return e.VerifyUsernsRemapSupport(ctx)
 	default:
 		return fmt.Errorf("backend %T exposes no startup preflight probe", engine)
 	}
+}
+
+// runMicroVMPreflight runs the microVM backend's two-stage startup gate: the
+// static VerifyMicroVMSupport check, then — only once it passes — the dynamic
+// BootCanary, logging the returned CanaryReport at info. A microVM engine that
+// satisfies microVMPreflighter but not canaryBooter is a fail-closed startup
+// error naming the type, never a silent skip (same posture as the neither-probe
+// default). Split out so verifyBackendPreflight stays within funlen.
+func runMicroVMPreflight(ctx context.Context, pre microVMPreflighter, engine runtime.ContainerRuntime) error {
+	if err := pre.VerifyMicroVMSupport(ctx); err != nil {
+		return err
+	}
+	canary, ok := engine.(canaryBooter)
+	if !ok {
+		return fmt.Errorf("microVM backend %T exposes no boot canary probe", engine)
+	}
+	report, err := canary.BootCanary(ctx)
+	if err != nil {
+		return err
+	}
+	slog.Info("microvm boot canary passed",
+		"boot_latency", report.BootLatency,
+		"guest_rss_bytes", report.GuestRSSBytes)
+	return nil
 }
 
 // setupOtel installs the tracer and meter providers off the env-only OTLP
