@@ -1,9 +1,12 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/tasks.json
 #
-# Tasks inherited by every project tagged `bun`. Only the dependency install
-# lives here — lint and format are whole-repo tasks on the root project
-# (/moon.yml), so biome runs once across the repo instead of once per bun
-# project.
+# Tasks inherited by every project tagged `bun`. Two tasks live here: the
+# shared dependency install and the parallel test runner. Lint and format are
+# whole-repo tasks on the root project (/moon.yml), so biome runs once across
+# the repo instead of once per bun project.
+inheritedBy:
+  tag: 'bun'
+
 tasks:
   # Workspace dep install: a no-op that depends on the single `root:install`
   # (the real `bun install`, defined on the root project in /moon.yml). The N
@@ -17,13 +20,15 @@ tasks:
     options:
       internal: true
 
-  # Parallel test runner (RIG-2451). `--parallel=2` matches the 2-vCPU CI
-  # elastic-pool floor and stays deterministic on any host — a bare `--parallel`
-  # would spawn CPU-count workers per moon task and over-subscribe a contended
-  # box (the RIG-2288/2294 timeout class). `--parallel` implies per-file
-  # isolation. Projects drop only their `command:`/`deps:` and keep their own
-  # `inputs:`, so the flag string has one control point here. apps/ui stays
-  # serial (its own explicit command); apps/eng-docs has no test files.
+  # Parallel test runner (RIG-2451). Inherited by tag `bun` only (via the
+  # inheritedBy block above). `--parallel=2` matches the 2-vCPU CI elastic-pool
+  # floor and stays deterministic on any host — a bare `--parallel` would spawn
+  # CPU-count workers per moon task and over-subscribe a contended box (the
+  # RIG-2288/2294 timeout class). `--parallel` implies per-file isolation. moon
+  # merges args by default (mergeArgs: append), so a project that keeps its own
+  # `command:` arg-merges rather than overrides — which is why apps/ui and
+  # apps/eng-docs use `workspace.inheritedTasks.exclude: ['test']` to opt out
+  # (apps/ui runs its own serial command; apps/eng-docs has no test files).
   test:
     command: 'bun test --parallel=2'
     deps: ['install']
