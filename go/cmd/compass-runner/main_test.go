@@ -20,6 +20,7 @@ import (
 var (
 	_ microVMPreflighter = (*runtime.MicroVMRuntime)(nil)
 	_ podmanPreflighter  = (*runtime.PodmanCLI)(nil)
+	_ canaryBooter       = (*runtime.MicroVMRuntime)(nil)
 )
 
 // parseMount is the operator surface for --mount: a malformed value must be
@@ -86,14 +87,41 @@ func (e podmanOnlyEngine) VerifyUsernsRemapSupport(context.Context) error {
 	return e.err
 }
 
-// microVMOnlyEngine exposes only the microVM probe.
+// microVMOnlyEngine exposes the microVM static probe AND the canary probe — a
+// real microVM engine satisfies both, and the gate now runs the canary after the
+// static check passes, so a fake missing BootCanary would trip the fail-closed
+// canary assertion rather than exercise the static-probe dispatch.
 type microVMOnlyEngine struct {
+	runtime.ContainerRuntime
+	called       *bool
+	canaryCalled *bool
+	err          error
+	report       runtime.CanaryReport
+	canaryErr    error
+}
+
+func (e microVMOnlyEngine) VerifyMicroVMSupport(context.Context) error {
+	*e.called = true
+	return e.err
+}
+
+func (e microVMOnlyEngine) BootCanary(context.Context) (runtime.CanaryReport, error) {
+	if e.canaryCalled != nil {
+		*e.canaryCalled = true
+	}
+	return e.report, e.canaryErr
+}
+
+// microVMNoCanaryEngine exposes ONLY the static microVM probe, not the canary —
+// a microVM backend that cannot boot-canary. The gate must fail closed on it,
+// naming the type, never silently skipping the canary.
+type microVMNoCanaryEngine struct {
 	runtime.ContainerRuntime
 	called *bool
 	err    error
 }
 
-func (e microVMOnlyEngine) VerifyMicroVMSupport(context.Context) error {
+func (e microVMNoCanaryEngine) VerifyMicroVMSupport(context.Context) error {
 	*e.called = true
 	return e.err
 }
@@ -123,6 +151,10 @@ func (e bothProbesEngine) VerifyUsernsRemapSupport(context.Context) error {
 	return e.err
 }
 
+func (e bothProbesEngine) BootCanary(context.Context) (runtime.CanaryReport, error) {
+	return runtime.CanaryReport{}, nil
+}
+
 // verifyBackendPreflight dispatches on the selected engine's concrete type
 // (RIG-2496): microVM first, then podman, first match wins; the matched probe
 // runs and its error is returned verbatim; an engine exposing neither probe is a
@@ -141,14 +173,53 @@ func TestVerifyBackendPreflight(t *testing.T) {
 		}
 	})
 
-	t.Run("microvm probe dispatched", func(t *testing.T) {
-		called := false
-		err := verifyBackendPreflight(context.Background(), microVMOnlyEngine{called: &called})
+	t.Run("microvm static probe then canary dispatched", func(t *testing.T) {
+		called, canaryCalled := false, false
+		err := verifyBackendPreflight(context.Background(),
+			microVMOnlyEngine{called: &called, canaryCalled: &canaryCalled})
 		if err != nil {
 			t.Fatalf("verifyBackendPreflight = %v, want nil", err)
 		}
 		if !called {
-			t.Error("microVM probe was not called")
+			t.Error("microVM static probe was not called")
+		}
+		if !canaryCalled {
+			t.Error("boot canary was not called after the static probe passed")
+		}
+	})
+
+	t.Run("static probe error skips the canary", func(t *testing.T) {
+		called, canaryCalled := false, false
+		err := verifyBackendPreflight(context.Background(),
+			microVMOnlyEngine{called: &called, canaryCalled: &canaryCalled, err: sentinel})
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("verifyBackendPreflight = %v, want the sentinel error", err)
+		}
+		if canaryCalled {
+			t.Error("boot canary ran after the static probe failed")
+		}
+	})
+
+	t.Run("canary error returned verbatim", func(t *testing.T) {
+		called := false
+		err := verifyBackendPreflight(context.Background(),
+			microVMOnlyEngine{called: &called, canaryErr: sentinel})
+		if !errors.Is(err, sentinel) {
+			t.Errorf("verifyBackendPreflight = %v, want the canary sentinel error", err)
+		}
+	})
+
+	t.Run("microVM without canary is fail-closed naming the type", func(t *testing.T) {
+		called := false
+		err := verifyBackendPreflight(context.Background(), microVMNoCanaryEngine{called: &called})
+		if err == nil {
+			t.Fatal("verifyBackendPreflight = nil, want a fail-closed canary refusal")
+		}
+		if !called {
+			t.Error("microVM static probe was not called")
+		}
+		if !strings.Contains(err.Error(), "microVMNoCanaryEngine") {
+			t.Errorf("error %q does not name the engine type", err)
 		}
 	})
 
