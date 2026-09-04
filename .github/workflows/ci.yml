@@ -1434,6 +1434,7 @@ jobs:
     # It compiles the SAME shell the gtk4-e2e lane does, then stages + ad-hoc
     # signs the .app and wraps the .dmg via the macos-bundle tool, asserting the
     # bundle is complete + mountable. The job-level `if:` ANDs the dispatch-aware
+    # gate guard with the darwin affected gate: on a PR it runs only when setup
     # found the shell surface (go/cmd/compass-app/ or a GTK closure input), the
     # macos-bundle tool, or the sidecar surface (the three sidecar cmd dirs plus
     # every first-party package they compile in) changed (darwin_affected), and
@@ -1543,7 +1544,9 @@ jobs:
               go/internal/ \
               go/server/ \
               go/events/ \
-              go/gen/)
+              go/gen/ \
+              go/go.mod \
+              go/go.sum)
             if [ -z "$changed" ]; then
               run_it=0
             fi

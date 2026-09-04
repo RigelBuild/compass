@@ -99,7 +99,7 @@ const GTK4_CLOSURE_PATHS = [
  * does, so it must fire on any go/cmd/compass-app/ change OR a shared GTK closure
  * input (mirror gtk4's surface), PLUS a change to the macos-bundle tool itself
  * (the bundler the lane exercises). The lane also cross-compiles the three pure-Go
- * sidecars, which import the shared go/internal tree, so those paths trigger it too.
+ * sidecars, whose first-party package surface is enumerated in DARWIN_SIDECAR_PREFIXES below.
  * Per compass-distribution DL-263: affected on PR, full-sweep on push/schedule (isFullSweep below).
  */
 const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
@@ -113,7 +113,10 @@ const MACOS_BUNDLE_PATH_PREFIX = "tools/macos-bundle/";
  * server} (go/e2e is tests-only and excluded). We enumerate those package roots
  * as prefixes rather than a hand-maintained transitive file set (which would
  * silently drift and re-open the gap); each root is itself a deliberately broad
- * superset over its actual imported files.
+ * superset over its actual imported files. The module manifest (go/go.mod,
+ * go/go.sum) is included alongside the roots: a dependency bump or `replace`
+ * directive is a compile input to all four binaries that can break the darwin
+ * cross-compile the same #847 way.
  */
 const DARWIN_SIDECAR_PREFIXES = [
 	"go/cmd/compass-stack/",
@@ -123,6 +126,8 @@ const DARWIN_SIDECAR_PREFIXES = [
 	"go/server/",
 	"go/events/",
 	"go/gen/",
+	"go/go.mod",
+	"go/go.sum",
 ];
 
 // ── Pure core ──────────────────────────────────────────────────────────────

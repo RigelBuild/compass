@@ -404,6 +404,28 @@ describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 		).toBe(true);
 	});
 
+	test("darwinAffected on a go/events change (sidecar input)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["go/events/bus.go"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
+
+	test("darwinAffected on a go/gen change (generated sidecar input)", () => {
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["go/gen/db/models.go"],
+				}),
+			).darwinAffected,
+		).toBe(true);
+	});
+
 	test("darwinAffected false when the PR touches neither the shell nor the bundler", () => {
 		expect(
 			generate(prInput({ affectedIds: [], changedPaths: ["docs/readme.md"] }))
