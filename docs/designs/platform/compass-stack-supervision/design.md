@@ -462,7 +462,7 @@ to Ready, then blocks watching the stack; a child death exits non-zero
 (after draining the survivors); SIGTERM/SIGINT runs `Down` and exits zero.
 
 **T1 requires a bounded change to the stack core — NOT "the core
-unchanged" (folded from the design-critic red-team, three interacting
+unchanged" (folded from the design-critic red-team, four interacting
 contract facts).**
 
 1. **`Process.Wait` is single-caller, so a fan-in Wait plus drain
@@ -576,12 +576,16 @@ Interfaces:
   attached supervise exits non-nil only after N consecutive health-probe
   failures, not one; (4) a partial-drain child death → restart → the
   surviving old child is torn down by the pre-spawn cleanup, not orphaned;
-  (5) with `up --supervise` running, `compass-stack down` performs a real
-  stop (per the ruled OQ-6 option) and the supervise process exits ZERO,
-  never `ErrStackStarting` — the OQ-6 behavior T2's stop-truth delegates
-  here; it lands with the OQ-6 ruling. Plus a process-level smoke on Linux:
-  `up --supervise`, `kill` a child, assert non-zero exit and a clean
-  survivor teardown.
+  (5) `compass-stack down` against a supervised (Ready) stack never wedges
+  on `ErrStackStarting` and the stop lands with the OQ-6 ruling — asserted
+  in-process against a stubbed Ready-supervised lock holder (the OQ-6
+  counterpart to `downdetached_test.go:238`, which today asserts refusal
+  for an up-in-flight holder): under (b) `DownDetached` signals the
+  supervising holder and it exits ZERO; under (a) the lock is already
+  released so `down` signals the children directly and the supervise loop's
+  child-death path applies. This is the OQ-6 behavior T2's stop-truth
+  delegates here. Plus a process-level smoke on Linux: `up --supervise`,
+  `kill` a child, assert non-zero exit and a clean survivor teardown.
 
 ### T2 — `compass-stack service install` / `uninstall` + unit templates
 
