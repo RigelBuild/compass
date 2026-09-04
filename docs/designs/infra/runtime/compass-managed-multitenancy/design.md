@@ -416,13 +416,13 @@ non-sticky wake on any Runner —
 RIG-2485 is the control plane those rulings defer to) is a hard input to Q2:
 the topology chosen here is what makes any-Runner wake routable.
 
-**Repo boundary (RIG-1717):** the tenancy substrate — schema, RLS, and the
-fabric seams and implementations (T1-T6) — lands in the OSS
-`RigelBuild/compass` core, because the OSS core must run it
-single-tenant-degenerate; the managed-service orchestration (tenant
-provisioning, billing, box lifecycle) is the out-of-tree managed control plane
-(RIG-2485), consistent with RIG-1717's
-one-architecture-two-products split
+**Repo boundary (RIG-1717):** the tenancy substrate — schema,
+RLS, and the fabric seams and implementations (T1-T6) — lands
+in the OSS `RigelBuild/compass` core, because the OSS core
+must run it single-tenant-degenerate; the managed-service
+orchestration (tenant provisioning, billing, box lifecycle)
+is the out-of-tree managed control plane (RIG-2485),
+consistent with RIG-1717's one-architecture-two-products split
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md:71-101`).
 The where-does-work-land convention this split implies is formalized in
 `docs/designs/meta/oss-core-managed-boundary/design.md`.
@@ -438,11 +438,11 @@ pod on a nested-virt Kubernetes node pool. So the choice of managed box
 substrate does not change any Q1/Q2/Q3 answer, interface, or task in this
 record.
 
-That substrate choice is nonetheless a live managed-control-plane fork.
-RIG-2394's D2 prefers a KVM-capable **bare-metal** host — running
+That substrate choice is nonetheless a live managed-control-plane
+fork. RIG-2394's D2 prefers a KVM-capable **bare-metal** host — running
 cloud-hypervisor directly on host VT-x — specifically to dodge the
-nested-virtualization tax, and calls a nested cloud VM "a self-inflicted
-tradeoff"
+nested-virtualization tax, and calls a nested cloud VM "a self-inflicted,
+clearly-documented tradeoff"
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md:671-692`).
 Two later facts stale that premise: AWS enabled nested
 virtualization on **non-metal** EC2 (C8i/M8i/R8i, no surcharge, 2026-02), and

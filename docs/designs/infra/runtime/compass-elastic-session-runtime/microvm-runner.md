@@ -678,18 +678,18 @@ each is kept so the executor sees *why*, not just *what*.
    cost — and microVM must be built regardless (it is the reason the parent
    design exists). Reach is preserved without a second runtime:
    cloud-hypervisor needs only a KVM-capable host, and running
-   it directly on bare metal means no nesting and therefore
-   **no ~10% nested-virtualization performance tax**. Self-hosters
-   provision a
-   KVM-capable box *for* Compass (an owned/homelab box, Hetzner-class
-   bare-metal, or a nested-virt-enabled hyperscaler instance — GCP any Linux
-   VM, Azure Dv3/Ev3+, AWS C8i/M8i/R8i or `.metal`). **Native-macOS-embedded
-   is dropped**: macOS has no KVM, Compass is an always-on/overnight workload
-   ill-suited to a personal Mac anyway, and macOS users use the managed
-   service or point the app at a remote KVM Runner. The ~10% tax therefore
-   only ever applies to a self-hoster who *chooses* a nested cloud VM over
-   bare-metal — a self-inflicted, clearly-documented tradeoff, never the
-   managed path.
+   it directly on bare metal means no nesting and therefore **no
+   ~10% nested-virtualization performance tax**. Self-hosters
+   provision a KVM-capable box *for* Compass (an owned/homelab
+   box, Hetzner-class bare-metal, or a nested-virt-enabled
+   hyperscaler instance — GCP any Linux VM, Azure Dv3/Ev3+,
+   AWS C8i/M8i/R8i or `.metal`). **Native-macOS-embedded is
+   dropped**: macOS has no KVM, Compass is an always-on/overnight
+   workload ill-suited to a personal Mac anyway, and macOS
+   users use the managed service or point the app at a remote
+   KVM Runner. The ~10% tax therefore only ever applies
+   to a self-hoster who *chooses* a nested cloud VM over
+   bare-metal — a self-inflicted, clearly-documented tradeoff.
 3. **D3 — KVM absent ⇒ hard-fail, loudly.** With no container fallback (D2),
    a box without microVM support cannot run Compass. `VerifyMicroVMSupport`
    (V5) fails Runner startup with an error naming the missing capability and
