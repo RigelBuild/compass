@@ -25,7 +25,7 @@ func (s *Store) CreateChannelGroup(ctx context.Context, ownerUserID AccountID, g
 		return ChannelGroup{}, fmt.Errorf("%w: group name is required", ErrInvalidArgument)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return ChannelGroup{}, fmt.Errorf("store: begin create group: %w", err)
 	}
@@ -104,7 +104,7 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	}
 
 	id := newID()
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Channel{}, fmt.Errorf("store: begin create channel: %w", err)
 	}
@@ -293,7 +293,7 @@ func (s *Store) ListChannels(ctx context.Context, visibleTo AccountID) ([]Channe
 	for _, row := range rows {
 		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
 	}
-	if err := loadChannelMembers(ctx, s.pool, channels); err != nil {
+	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return nil, err
 	}
 	return channels, nil
@@ -345,7 +345,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 	for _, row := range rows {
 		channels = append(channels, channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription))
 	}
-	if err := loadChannelMembers(ctx, s.pool, channels); err != nil {
+	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return Channel{}, err
 	}
 	switch len(channels) {
@@ -372,7 +372,7 @@ func (s *Store) ChannelByNameForViewer(ctx context.Context, viewer AccountID, na
 // the channel to mutate it, so an unknown channel and a non-member both return
 // ErrNotFound (the not-found/forbidden merge).
 func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, channelID ChannelID, updates []MemberUpdate, opts MemberUpdatesOptions) (Channel, []AccountID, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Channel{}, nil, fmt.Errorf("store: begin update members: %w", err)
 	}
@@ -691,7 +691,7 @@ func upsertMemberErr(err error, m AccountID) error {
 //     already-subscribed member whose cursor exists is a no-op and a human
 //     member yields no row.
 func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID ChannelID, p ChannelPolicy) (Channel, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Channel{}, fmt.Errorf("store: begin set channel policy: %w", err)
 	}
@@ -826,7 +826,7 @@ func (s *Store) getChannel(ctx context.Context, id ChannelID) (Channel, error) {
 		return Channel{}, fmt.Errorf("store: get channel: %w", err)
 	}
 	channels := []Channel{channelFromRow(row.ID, row.Name, row.GroupID, row.Kind, row.PostPolicy, row.OwnerAccountID, row.MandatorySubscription)}
-	if err := loadChannelMembers(ctx, s.pool, channels); err != nil {
+	if err := loadChannelMembers(ctx, s.scopedPool(), channels); err != nil {
 		return Channel{}, err
 	}
 	return channels[0], nil
@@ -916,7 +916,7 @@ func (s *Store) OpenAgentWorkspace(ctx context.Context, actor AccountID, agentAc
 		return AgentWorkspace{}, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return AgentWorkspace{}, fmt.Errorf("store: begin open workspace: %w", err)
 	}

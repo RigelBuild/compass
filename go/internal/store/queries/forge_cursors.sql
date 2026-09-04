@@ -19,7 +19,7 @@ UPDATE forge_repo_subscriptions
 -- name: EnsureForgeRepoSubscription :exec
 INSERT INTO forge_repo_subscriptions (forge_provider, forge_host, repo, enabled)
 VALUES ($1, $2, $3, $4)
-ON CONFLICT (forge_provider, forge_host, repo) DO NOTHING;
+ON CONFLICT (tenant_id, forge_provider, forge_host, repo) DO NOTHING;
 
 -- name: ListEnabledForgeRepos :many
 SELECT repo

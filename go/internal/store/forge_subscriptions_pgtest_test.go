@@ -55,9 +55,9 @@ func jsonSemanticEqual(t *testing.T, a, b []byte) bool {
 func seedArtifactCursor(t *testing.T, s *Store, provider ForgeProvider, host, repo string, kind ForgeArtifactKind, number uint64) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
-		`INSERT INTO forge_artifact_cursors (forge_provider, forge_host, repo, kind, number)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		int32(provider), host, repo, int32(kind), int64(number),
+		`INSERT INTO forge_artifact_cursors (forge_provider, forge_host, repo, kind, number, tenant_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		int32(provider), host, repo, int32(kind), int64(number), string(s.resolveTenant(context.Background())),
 	); err != nil {
 		t.Fatalf("seed artifact cursor: %v", err)
 	}

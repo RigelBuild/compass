@@ -149,9 +149,13 @@ func TestStartAgentSessionWithBackfilledPlacementRecordsSession(t *testing.T) {
 	// Exactly the row 0004's backfill INSERT produces: real agent, real
 	// container name, empty runner id. Seeded with SQL because
 	// RecordAgentPlacement refuses an empty runner id — only the migration
-	// writes this shape.
+	// writes this shape. tenant_id is resolved from the agent's account FK
+	// exactly as the T2 (0002_rls) backfill does — this raw owner-connection
+	// INSERT sets no compass.tenant_id GUC, so the column DEFAULT cannot stamp it
+	// and the NOT NULL constraint requires an explicit value.
 	execSQL(t, ctx, f.dsn,
-		`INSERT INTO agent_placements (agent_account_id, runner_id, container_name) VALUES ($1, '', $2)`,
+		`INSERT INTO agent_placements (agent_account_id, runner_id, container_name, tenant_id)
+		 SELECT $1, '', $2, a.tenant_id FROM accounts a WHERE a.id = $1`,
 		string(f.agentID), fakeContainer)
 
 	resp, err := f.client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{

@@ -56,7 +56,7 @@ CREATE TABLE accounts (
     id           TEXT PRIMARY KEY,
     handle       TEXT NOT NULL,
     display_name TEXT NOT NULL,
-    tenant_id    TEXT NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT,
+    tenant_id    TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) REFERENCES tenants (id) ON DELETE RESTRICT,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -68,7 +68,8 @@ CREATE INDEX accounts_tenant_idx ON accounts (tenant_id);
 -- agent row of the same id.
 CREATE TABLE user_accounts (
     account_id TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT,
-    role       SMALLINT NOT NULL DEFAULT 0 CHECK (role IN (0, 1))
+    role       SMALLINT NOT NULL DEFAULT 0 CHECK (role IN (0, 1)),
+    tenant_id  TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- Agent accounts: an owned subtype gated by its owning user. home_channel_id
@@ -101,6 +102,7 @@ CREATE TABLE agent_accounts (
     persona         TEXT NOT NULL DEFAULT '',
     parent_agent_id TEXT REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
     role            TEXT NOT NULL DEFAULT '',
+    tenant_id       TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     -- Composite-FK target for forge_authored_artifacts: (account_id,
     -- owner_user_id) must be UNIQUE so a composite FK can reference the exact
     -- pair (account_id alone is the PK, but a composite FK requires a UNIQUE on
@@ -124,7 +126,8 @@ CREATE INDEX agent_accounts_parent_idx ON agent_accounts (parent_agent_id);
 -- coexist with a user or agent row of the same id. ON DELETE RESTRICT so the
 -- reserved account cannot be orphaned out from under its subtype row.
 CREATE TABLE system_accounts (
-    account_id TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT
+    account_id TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT,
+    tenant_id  TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- ── Account handles (the resolution index) ──────────────────────────────────
@@ -139,7 +142,8 @@ CREATE TABLE system_accounts (
 CREATE TABLE account_handles (
     account_id    TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT,
     handle        TEXT NOT NULL,
-    owner_user_id TEXT REFERENCES user_accounts (account_id) ON DELETE RESTRICT
+    owner_user_id TEXT REFERENCES user_accounts (account_id) ON DELETE RESTRICT,
+    tenant_id     TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- The two partial-unique indexes ARE the resolution index and enforce the
@@ -150,8 +154,8 @@ CREATE TABLE account_handles (
 -- An agent handle MAY overlap a global user handle with no collision at resolve
 -- time: a user is only ever looked up bare (first index) and an agent only ever
 -- owner-qualified (second index), so the two never contend on one lookup.
-CREATE UNIQUE INDEX account_handles_global_key ON account_handles (handle) WHERE owner_user_id IS NULL;
-CREATE UNIQUE INDEX account_handles_owner_key ON account_handles (owner_user_id, handle) WHERE owner_user_id IS NOT NULL;
+CREATE UNIQUE INDEX account_handles_global_key ON account_handles (tenant_id, handle) WHERE owner_user_id IS NULL;
+CREATE UNIQUE INDEX account_handles_owner_key ON account_handles (tenant_id, owner_user_id, handle) WHERE owner_user_id IS NOT NULL;
 
 -- ── Channel groups ──────────────────────────────────────────────────────────
 -- Namespace nodes. parent_group_id nests them (NULL = a top-level root);
@@ -163,7 +167,8 @@ CREATE TABLE channel_groups (
     name            TEXT NOT NULL,
     parent_group_id TEXT REFERENCES channel_groups (id) ON DELETE RESTRICT,
     owner_user_id   TEXT NOT NULL DEFAULT '',
-    visibility      SMALLINT NOT NULL DEFAULT 0 CHECK (visibility IN (0, 1))
+    visibility      SMALLINT NOT NULL DEFAULT 0 CHECK (visibility IN (0, 1)),
+    tenant_id       TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 CREATE INDEX channel_groups_parent_idx ON channel_groups (parent_group_id);
@@ -191,7 +196,8 @@ CREATE TABLE channels (
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     post_policy            SMALLINT NOT NULL DEFAULT 0 CHECK (post_policy IN (0, 1)),
     owner_account_id       TEXT REFERENCES accounts (id) ON DELETE RESTRICT,
-    mandatory_subscription BOOLEAN NOT NULL DEFAULT FALSE
+    mandatory_subscription BOOLEAN NOT NULL DEFAULT FALSE,
+    tenant_id              TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 CREATE INDEX channels_group_idx ON channels (group_id);
@@ -211,6 +217,7 @@ CREATE TABLE channel_members (
     channel_id TEXT NOT NULL REFERENCES channels (id) ON DELETE RESTRICT,
     account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     subscribed BOOLEAN NOT NULL DEFAULT FALSE,
+    tenant_id  TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (channel_id, account_id)
 );
 
@@ -222,7 +229,8 @@ CREATE INDEX channel_members_account_idx ON channel_members (account_id);
 -- workspace per agent (UNIQUE), created idempotently on first OpenAgentWorkspace.
 CREATE TABLE agent_workspaces (
     id               TEXT PRIMARY KEY,
-    agent_account_id TEXT NOT NULL UNIQUE REFERENCES agent_accounts (account_id) ON DELETE RESTRICT
+    agent_account_id TEXT NOT NULL UNIQUE REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- ── Topics ────────────────────────────────────────────────────────────────
@@ -243,7 +251,8 @@ CREATE TABLE topics (
     created_by_account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     created_at_unix_ms    BIGINT NOT NULL,
     archived              BOOLEAN NOT NULL DEFAULT FALSE,
-    last_seq              BIGINT NOT NULL DEFAULT 0  -- denormalized activity order
+    last_seq              BIGINT NOT NULL DEFAULT 0,  -- denormalized activity order
+    tenant_id             TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- Case-insensitive uniqueness per channel is the get-or-create key: two racing
@@ -284,7 +293,8 @@ CREATE TABLE messages (
     -- re-scannable by the recovery pass; readers care only about NULL vs
     -- non-NULL. Unix-ms BIGINT per the schema convention (at_unix_ms above),
     -- never a SQL TIMESTAMP.
-    mentions_routed_at BIGINT
+    mentions_routed_at BIGINT,
+    tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- Pre-settle mention-loss recovery scan (RIG-2490 T1). The scan's only query is
@@ -353,6 +363,7 @@ CREATE TABLE channel_pins (
     position             INTEGER NOT NULL,
     pinned_at_unix_ms    BIGINT NOT NULL,
     pinned_by_account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+    tenant_id            TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (channel_id, message_id)
 );
 
@@ -399,6 +410,7 @@ CREATE TABLE secrets (
     declared_by TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id   TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     -- kind↔provider/host invariant, enforced (not merely documented): a provider
     -- row (kind=1) carries a non-empty provider and no host; a gh row (kind=2) a
     -- non-empty host and no provider; a generic row (kind=0) neither. Without
@@ -442,7 +454,8 @@ CREATE TABLE agent_sessions (
     -- RIG-1641 T3). DEFAULT 0 keeps a NOT NULL add safe on this squashed
     -- migration: every RecordAgentSession supplies the value, and the default is
     -- only a floor for any row a future path forgets to stamp (it sorts oldest).
-    recorded_at_unix_ms BIGINT NOT NULL DEFAULT 0
+    recorded_at_unix_ms BIGINT NOT NULL DEFAULT 0,
+    tenant_id           TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- Look a session up by the party that owns it; also the "sessions of this agent"
@@ -464,7 +477,8 @@ CREATE TABLE agent_placements (
     runner_id        TEXT NOT NULL,
     container_name   TEXT NOT NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- The reattach query is "every agent on this Runner", so runner_id is the read
@@ -498,6 +512,7 @@ CREATE TABLE agent_session_transcript_entries (
     checkpoint      BOOLEAN NOT NULL DEFAULT FALSE,
     entry_json      TEXT   NOT NULL,
     idempotency_key TEXT   NOT NULL UNIQUE,
+    tenant_id       TEXT   NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (session_id, entry_seq)
 );
 
@@ -514,6 +529,7 @@ CREATE TABLE agent_session_archive_segments (
     min_entry_seq BIGINT NOT NULL,
     max_entry_seq BIGINT NOT NULL,
     kind          TEXT   NOT NULL CHECK (kind IN ('superseded', 'safety_valve', 'session_end')),
+    tenant_id     TEXT   NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (session_id, object_key)
 );
 
@@ -536,6 +552,7 @@ CREATE TABLE agent_delivery_cursors (
     -- acked_seq + applied_above.
     above_seqs       BIGINT[] NOT NULL DEFAULT '{}',
     acked_at         TIMESTAMPTZ,
+    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (agent_account_id, channel_id)
 );
 
@@ -565,6 +582,7 @@ CREATE TABLE owed_mentions (
     message_id          TEXT NOT NULL REFERENCES messages (id) ON DELETE CASCADE,
     channel_id          TEXT NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
     recorded_at_unix_ms BIGINT NOT NULL,
+    tenant_id           TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     PRIMARY KEY (agent_account_id, message_id)
 );
 
@@ -580,7 +598,8 @@ CREATE TABLE owed_mentions (
 CREATE TABLE agent_activity (
     agent_account_id    TEXT PRIMARY KEY REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
     activity            TEXT NOT NULL,
-    activity_at_unix_ms BIGINT NOT NULL
+    activity_at_unix_ms BIGINT NOT NULL,
+    tenant_id           TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- ── Agent config bundle (fleet singleton) ─────────────────────────────────────
@@ -647,12 +666,13 @@ CREATE TABLE issues (
     priority       TEXT     NOT NULL DEFAULT '',
     assignee       TEXT     NOT NULL DEFAULT '',
     summary        TEXT     NOT NULL DEFAULT '',
-    branch         TEXT     NOT NULL DEFAULT ''
+    branch         TEXT     NOT NULL DEFAULT '',
+    tenant_id      TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
 
 -- The idempotency key: one board item per forge coordinate.
 CREATE UNIQUE INDEX issues_coordinate_key
-    ON issues (forge_provider, forge_host, repo, number);
+    ON issues (tenant_id, forge_provider, forge_host, repo, number);
 
 -- ── Forge subscriptions & reconcile watermarks ───────────────────────────────
 -- The DL-053 forge webhook-lane target machinery (RIG-1810; webhook-driven per
@@ -679,7 +699,8 @@ CREATE TABLE forge_repo_subscriptions (
     list_etag      TEXT     NOT NULL DEFAULT '', -- conditional-GET etag for the repo LIST walk
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (forge_provider, forge_host, repo)
+    tenant_id      TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (tenant_id, forge_provider, forge_host, repo)
 );
 
 -- DL-053's forge_subscriptions, renamed agent_forge_subscriptions (OQ-C) and
@@ -702,6 +723,7 @@ CREATE TABLE agent_forge_subscriptions (
     delivered_revision TEXT NOT NULL DEFAULT '',
     delivered_at     TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     UNIQUE (agent_account_id, forge_provider, forge_host, repo, kind, number, project)
 );
 
@@ -723,7 +745,8 @@ CREATE TABLE forge_artifact_cursors (
     revision       TEXT NOT NULL DEFAULT '',
     snapshot       JSONB,                      -- last observed state, for DetectChanges
     polled_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (forge_provider, forge_host, repo, kind, number)
+    tenant_id      TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (tenant_id, forge_provider, forge_host, repo, kind, number)
 );
 
 -- One row per forge artifact Compass AUTHORED on behalf of an agent (DL-055):
@@ -755,7 +778,8 @@ CREATE TABLE forge_authored_artifacts (
     session_id         TEXT     NOT NULL DEFAULT '',
     client_request_id  TEXT,  -- NULL = caller supplied no idempotency key (F3)
     created_at_unix_ms BIGINT   NOT NULL,
-    PRIMARY KEY (forge_provider, forge_host, repo, kind, number),
+    tenant_id          TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (tenant_id, forge_provider, forge_host, repo, kind, number),
     -- Composite FK: the pair must be a real (agent, that-agent's-owner). ON
     -- DELETE RESTRICT so a referenced agent/owner cannot be orphaned out from
     -- under an ownership row.
@@ -798,5 +822,111 @@ CREATE TABLE linear_agent_sessions (
     channel_id         TEXT NOT NULL,                  -- the Manager's home channel
     topic_id           TEXT NOT NULL,                  -- comms topic of the conversation
     linear_issue_id    TEXT,                           -- provenance (issue delegated on); NULL if none
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id          TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
 );
+
+-- ── Row-Level Security: tenant isolation (RIG-2861 T2 / RIG-3106) ────────────
+-- The enforcement half of managed multi-tenancy, folded inline (Matt-ruled:
+-- pre-live, no incremental migrations yet, so the ALTER/backfill/DROP-INDEX
+-- mechanics 0002 used are unnecessary — every tenant-owned table above declares
+-- tenant_id NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE) inline,
+-- and the forge-coordinate tables fold tenant_id INTO their key so two tenants
+-- may hold the same coordinate without collision). This section turns on RLS
+-- with FORCE and installs the per-tenant policy.
+--
+-- Threat model: a request-path query runs as the non-owner compass_app role with
+-- SET LOCAL compass.tenant_id = <tenant>, and reads/writes ONLY its own tenant's
+-- rows; a query with no tenant GUC fails CLOSED (zero rows / rejected write),
+-- never all rows and never an error escape. The four cross-tenant background
+-- loops run under the narrowly-scoped compass_system BYPASSRLS role and are the
+-- ONLY code allowed past the policies.
+--
+-- Load-bearing correctness notes:
+--   * FORCE ROW LEVEL SECURITY: the migrating role OWNS every table, and a table
+--     owner bypasses RLS by default — WITHOUT FORCE the policies are silently
+--     inert for the exact role they must constrain. A superuser owner bypasses
+--     even FORCE, so the request path NEVER runs as the owner: every request
+--     statement issues SET LOCAL ROLE compass_app (a non-owner, non-BYPASSRLS
+--     role) so the policies actually apply.
+--   * GUC-unset semantics: the policy reads
+--     (SELECT current_setting('compass.tenant_id', TRUE)) (missing_ok = TRUE, so
+--     a never-set connection yields NULL, not SQLSTATE 42704) and guards it
+--     non-empty. The scalar-subquery wrapper makes the planner evaluate the GUC
+--     once per statement, not once per row.
+--   * SET LOCAL only: tenant scoping is transaction-scoped, never a session SET,
+--     so it cannot leak across a transaction-mode pooler's connection checkouts.
+--   * tenant_id stamping: each tenant_id column DEFAULTs to the request GUC, so a
+--     request-path INSERT that omits tenant_id is stamped with the acting tenant
+--     — and the policy's WITH CHECK still rejects an INSERT made with no/empty GUC.
+--     The one system-role write into a tenant table (owed_mentions via
+--     RecordOwedMention, BYPASSRLS with no GUC) stamps tenant_id explicitly from
+--     the owning account's FK instead (queries/delivery_cursors.sql).
+
+-- compass_app: the request-path role. NOLOGIN (assumed via SET LOCAL ROLE from
+-- the owner connection, never dialed directly), NO BYPASSRLS — the role the
+-- policies constrain. compass_system: the cross-tenant background/system role,
+-- BYPASSRLS, used ONLY by the N5 loops. Both are CLUSTER-GLOBAL objects, so
+-- creation is idempotent (this migration re-runs per test schema against one
+-- shared cluster) under store.go's cross-process advisory lock. Granted to the
+-- current (owner) role so the owner connection may SET LOCAL ROLE into them.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'compass_app') THEN
+        CREATE ROLE compass_app NOLOGIN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'compass_system') THEN
+        CREATE ROLE compass_system NOLOGIN BYPASSRLS;
+    END IF;
+    -- Idempotent even if a prior partial run left compass_system without the
+    -- attribute (or a future edit flips it): assert it explicitly.
+    ALTER ROLE compass_system BYPASSRLS;
+    EXECUTE format('GRANT compass_app, compass_system TO %I', current_user);
+END $$;
+
+-- Schema + object grants for both roles, resolved against the schema this
+-- migration is applied into (the per-test isolation schema, or public in prod).
+-- ALL TABLES / ALL SEQUENCES covers every object above; messages.seq (BIGSERIAL)
+-- is among the sequences compass_app needs to INSERT a message. Idempotent.
+DO $$
+DECLARE
+    sch text := current_schema();
+BEGIN
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO compass_app, compass_system', sch);
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO compass_app, compass_system', sch);
+    EXECUTE format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA %I TO compass_app, compass_system', sch);
+END $$;
+
+-- ENABLE + FORCE RLS + the per-tenant policy on every tenant-owned table. The
+-- policy shape is the frozen T2 form: a scalar-subquery GUC read (evaluated once
+-- per statement), a non-empty guard (fail-closed on an unset/empty GUC), and
+-- tenant_id equality — as both USING (reads) and WITH CHECK (writes). Done in a
+-- DO loop so the identical policy is never copy-pasted 25 times.
+DO $$
+DECLARE
+    t text;
+    tenant_tables text[] := ARRAY[
+        'accounts',
+        'user_accounts', 'agent_accounts', 'system_accounts', 'account_handles',
+        'channel_groups', 'channels', 'channel_members', 'agent_workspaces',
+        'topics', 'messages', 'channel_pins', 'secrets',
+        'agent_sessions', 'agent_placements',
+        'agent_session_transcript_entries', 'agent_session_archive_segments',
+        'agent_delivery_cursors', 'owed_mentions', 'agent_activity',
+        'agent_forge_subscriptions', 'forge_authored_artifacts',
+        'linear_agent_sessions',
+        'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors'
+    ];
+BEGIN
+    FOREACH t IN ARRAY tenant_tables LOOP
+        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+        EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+        EXECUTE format($f$
+            CREATE POLICY tenant_isolation ON %I
+                USING ((SELECT current_setting('compass.tenant_id', TRUE)) <> ''
+                       AND tenant_id = (SELECT current_setting('compass.tenant_id', TRUE)))
+                WITH CHECK ((SELECT current_setting('compass.tenant_id', TRUE)) <> ''
+                       AND tenant_id = (SELECT current_setting('compass.tenant_id', TRUE)))
+        $f$, t);
+    END LOOP;
+END $$;
