@@ -38,14 +38,16 @@ import (
 // canaryFakeVM is a guestVM handle for the canary path: Health answers ready and
 // echoes the boot nonce the fake launchFunc decoded from cfg.Cmdline (so
 // awaitHealthy's identity binding passes), PSS returns a configurable non-empty
-// map (so GuestRSSBytes is assertable), and Shutdown is recorded (the teardown
+// map (so GuestRSSBytes is assertable), Shutdown is recorded (the teardown
+// assertion) and can be forced to fail via shutdownErr (the teardown-error-join
 // assertion).
 type canaryFakeVM struct {
-	nonce    []byte
-	pss      map[string]int64
-	pssErr   error
-	mu       sync.Mutex
-	shutdown bool
+	nonce       []byte
+	pss         map[string]int64
+	pssErr      error
+	shutdownErr error
+	mu          sync.Mutex
+	shutdown    bool
 }
 
 func (f *canaryFakeVM) Health(context.Context) (*compassv1.HealthResponse, error) {
@@ -60,7 +62,7 @@ func (f *canaryFakeVM) Shutdown(context.Context) error {
 	f.mu.Lock()
 	f.shutdown = true
 	f.mu.Unlock()
-	return nil
+	return f.shutdownErr
 }
 
 func (f *canaryFakeVM) WaitVMMExit(_ time.Duration) bool { return true }
@@ -83,6 +85,7 @@ type canaryLaunchRecorder struct {
 	mu            sync.Mutex
 	pss           map[string]int64
 	pssErr        error
+	shutdownErr   error
 	launchErr     error
 	vms           []*canaryFakeVM
 	calls         int
@@ -104,7 +107,7 @@ func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfi
 	if err != nil {
 		return nil, err
 	}
-	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr}
+	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr, shutdownErr: r.shutdownErr}
 	r.vms = append(r.vms, vm)
 	return vm, nil
 }
@@ -398,6 +401,50 @@ func TestBootCanaryPartialPSSStillReported(t *testing.T) {
 	}
 	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
 		t.Error("canary VM was not shut down after a partial PSS read")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
+	assertNoTempLeak(t, before)
+}
+
+// TestBootCanaryTeardownErrorJoined pins the documented teardown-error-join
+// contract (BootCanary doc, record §(e)/(f)): the always-run Remove teardown's
+// error is joined into BootCanary's return, never discarded. On an OTHERWISE
+// successful canary (boot + echo + nonce all pass), a failing guest Shutdown must
+// still surface as a non-nil BootCanary error carrying the teardown failure. The
+// existing failure-path tests only assert teardown RAN (wasShutdown); none proves
+// a FAILING teardown reaches the caller. Because BootCanary gates Runner startup,
+// a silently-swallowed Remove failure would report a canary that leaked a live
+// VMM+virtiofsd as a clean boot — the fail-closed posture inverted on the exact
+// path the gate protects. The named-return + errors.Join idiom is the kind a
+// "tidy the error path" refactor flattens to a plain defer; this test breaks on
+// that. (The sibling throwaway-workspace RemoveAll join at BootCanary's other
+// defer uses the identical named-return errors.Join mechanism this proves, but
+// cannot be reddened deterministically without a production temp-dir seam —
+// os.TempDir() is not writable to force RemoveAll to fail regardless of uid — so
+// it rides the shared mechanism proof rather than a root-sensitive test.)
+func TestBootCanaryTeardownErrorJoined(t *testing.T) {
+	before := canaryTempDirs(t)
+	m, rec, _ := seamCanary(t, map[string]int64{"cloud-hypervisor": 100})
+	rec.shutdownErr = errors.New("boom: shutdown refused")
+
+	report, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want a non-nil error carrying the teardown failure")
+	}
+	if !strings.Contains(err.Error(), "boom: shutdown refused") {
+		t.Errorf("BootCanary error = %v, want it to carry the teardown shutdown failure", err)
+	}
+	// The boot chain itself succeeded, so the report is still assembled from what
+	// ran before teardown — the error is the teardown's, not the boot's.
+	if want := int64(100 * 1024); report.GuestRSSBytes != want {
+		t.Errorf("GuestRSSBytes = %d, want %d (the boot chain succeeded; only teardown failed)", report.GuestRSSBytes, want)
+	}
+	// Teardown still RAN despite erroring: the VM's Shutdown was invoked and the
+	// session table drained (Remove deletes the entry before Shutdown).
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM Shutdown was not invoked during teardown")
 	}
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
