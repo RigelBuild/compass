@@ -98,9 +98,20 @@ and are painful to rename once token rows exist.
 - The token-existence-oracle posture holds: every door maps
   `ErrTokenNotFound` / `ErrTokenRevoked` / `ErrWrongKind` to the same bare
   `CodeUnauthenticated` (`token.go:92-97`).
-- `0001_init.sql` is the initial migration — editable only while it remains
-  unshipped-to-data; the CHECK edit lands there, not in a new migration
-  (the reason this record precedes PR2).
+- `0001_init.sql` is edited in place (the CHECK widen lands there, not in a
+  new migration — the reason this record precedes PR2). This is safe ONLY
+  while every environment is disposable: `migrate()` skips any version already
+  recorded in `schema_migrations` (`store.go:157-164`), and the refuse-to-serve
+  guard compares max-embedded vs recorded version (both `1`, `store.go:169-176`),
+  so a database that has ALREADY applied v1 keeps the old
+  `CHECK (subject_kind IN (0, 1))` and boots clean past the guard — token-table
+  emptiness is irrelevant, the constraint is materialized in that database's
+  catalog at v1-apply time regardless of row count, and a later SubjectService
+  insert then fails the stale CHECK at runtime. So every existing dev/CI/
+  self-host database must be wiped and re-migrated, or the change moves to a
+  new `NNNN_*.sql ALTER`. This is the established pre-GA in-place-edit posture
+  (RIG-3106 #830 RLS enforcement, RIG-2861 T1 #715 tenant schema; the pgtest
+  harness resets per run).
 
 ## Plan
 
@@ -178,10 +189,23 @@ subj, err := auth.ResolveToken(ctx, st, presented, store.SubjectService)
 // per-surface authz then checks subj.ID against the surface's service allowlist.
 ```
 
+Doc refresh (T4 owns it, since the third door wrap is where the two-door prose
+goes stale): the enum grows to three kinds but there are still only two DOORS
+after PR2, so the existing two-door enumerations stay literally true until T4
+adds the third — at which point refresh them in the same slice:
+`token.go:98-99` (the shared-resolver door enumeration — "Both the account door
+… and the Runner door … share this one resolver"), `token.go:79-81`
+(`ErrWrongKind`'s account-vs-Runner examples), `interceptor.go:140-141` (the
+cross-door failure enumeration), and the `runnerhub/auth.go:4-14` package doc
+(the two-door cross-door-rejection framing).
+
 ### T5 — cross-door pgtest
 
-Extend the store/auth pgtest coverage (harness per
-`go/internal/store/harness_test.go`) with the three-kind cross-door matrix: a
+Extend the existing cross-door cases in `go/internal/auth/token_test.go:134-154`
+(auth harness `go/internal/auth/harness_pgtest_test.go`, build tag
+`pgtest && unix`) with the three-kind cross-door matrix, and the store
+round-trip in `go/internal/store/tokens_test.go` (harness
+`go/internal/store/harness_test.go`, build tag `pgtest`). The matrix: a
 `SubjectService` token resolves at `want=SubjectService`; presented at
 `want=SubjectAccount` and `want=SubjectRunner` it fails `ErrWrongKind`; an
 account token and a Runner token presented at `want=SubjectService` each fail
@@ -202,7 +226,7 @@ Interfaces:
 - [ ] T1: `SubjectService SubjectKind = 2` + seal comment (`types.go:90-99`) + `Subject.ID` doc
 - [ ] T2: `0001_init.sql:377` CHECK `IN (0, 1)` → `IN (0, 1, 2)` + header comment `:372-373`
 - [ ] T3: `tokens.go:20` nolint `0/1` → `0/1/2`
-- [ ] T4 (RIG-2863 T2, NOT PR2): service-door mount via `ResolveToken(..., store.SubjectService)` + per-surface Subject-ID authz, mounted on the stack-token RPC surface that slice delivers
+- [ ] T4 (lands in RIG-2863 = RIG-1715 T2, NOT PR2): service-door mount via `ResolveToken(..., store.SubjectService)` + per-surface Subject-ID authz, mounted on the stack-token RPC surface that slice delivers
 - [ ] T5: cross-door pgtest matrix (3×3 kind-gate + CHECK-admits-2 round-trip)
 
 ## Open Questions
@@ -217,7 +241,8 @@ Interfaces:
   Recommendation: keep the inline IN-list. Only escalate if Matt expects
   kind churn beyond design-gated additions.
 - **OQ-3 (deferral naming the owning slice — NON-load-bearing for PR2, the enum
-  half): SubjectService token ISSUANCE lives in the RIG-2863 T4 slice.** Both
+  half): SubjectService token ISSUANCE lands in the RIG-2863 slice (RIG-1715 T2),
+  alongside this record's T4.** Both
   existing kinds have a real mint path — `IssueAccountToken` (`token.go:51-55`)
   for `SubjectAccount`, `runnerhub.MintRunnerToken` (`mint.go:103`) + the
   `compass-mint-runner-token` CLI for `SubjectRunner`. No corpus task mints a
@@ -233,5 +258,7 @@ Interfaces:
   security-critical door.
 - Non-load-bearing deferral: the canonical Subject-ID registry for service
   principals (e.g. `llm-gateway`, `mcp-gateway` as named constants vs
-  config-supplied strings) is a PR2 implementation detail of the T4 surface's
-  allowlist; it does not affect the schema or the enum.
+  config-supplied strings) is an implementation detail of the T4 surface's
+  allowlist, and lands WITH T4 in the RIG-2863 slice (RIG-1715 T2) — not in
+  PR2. It does not affect the schema or the enum, so PR2 (T1/T2/T3/T5) does
+  not touch it.
