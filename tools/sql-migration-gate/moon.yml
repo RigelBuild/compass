@@ -65,8 +65,6 @@ tasks:
     # The pure core (index.ts): the fail-closed exit-code combination + verdict
     # formatting + the no-short-circuit orchestration — the contract the old
     # inline-`bash -c` form silently violated.
-    command: 'bun test'
-    deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   check:
     # Both linters over every first-party migration, exit codes OR'd fail-closed
