@@ -110,8 +110,7 @@ func TestInvalidCredentialHostIsRejected(t *testing.T) {
 	})
 
 	_, err := ws.CredentialSetupScript()
-	var invalid *InvalidHostError
-	if !errors.As(err, &invalid) {
+	if _, ok := errors.AsType[*InvalidHostError](err); !ok {
 		t.Fatalf("CredentialSetupScript() error = %v, want *InvalidHostError", err)
 	}
 }
@@ -131,8 +130,7 @@ func TestZoneScopedCredentialHostIsRejected(t *testing.T) {
 	})
 
 	script, err := ws.CredentialSetupScript()
-	var invalid *InvalidHostError
-	if !errors.As(err, &invalid) {
+	if _, ok := errors.AsType[*InvalidHostError](err); !ok {
 		t.Fatalf("CredentialSetupScript() error = %v, want *InvalidHostError", err)
 	}
 	if script != "" {

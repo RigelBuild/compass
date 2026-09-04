@@ -1821,8 +1821,7 @@ func TestGetIssueDecodeError(t *testing.T) {
 	if err == nil {
 		t.Fatal("GetIssue: want decode error, got nil")
 	}
-	var se *StatusError
-	if errors.As(err, &se) {
+	if _, ok := errors.AsType[*StatusError](err); ok {
 		t.Errorf("err = %v, want a non-*StatusError decode fault", err)
 	}
 }

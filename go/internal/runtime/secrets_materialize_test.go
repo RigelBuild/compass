@@ -56,8 +56,7 @@ func (r *scriptRunner) Exec(ctx context.Context, _ ContainerID, spec ExecSpec) (
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		// A non-zero script exit is a successful runtime call returning a failed
 		// command (the ContainerRuntime contract), never a spawn error.
 		return ExecOutput{Stderr: stderr.String(), ExitCode: exitErr.ExitCode()}, nil

@@ -586,8 +586,7 @@ func TestLinearGraphQLAuthErrorCodeInvalidates(t *testing.T) {
 	l := newTestLinear(rt, ts, slog.New(&capturingHandler{}))
 
 	_, err := l.GetIssue(context.Background(), "SEA", 7)
-	var se *StatusError
-	if !errors.As(err, &se) {
+	if _, ok := errors.AsType[*StatusError](err); !ok {
 		t.Fatalf("err = %v, want *StatusError", err)
 	}
 	if ts.invalidated != 1 {

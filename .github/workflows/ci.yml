@@ -1923,7 +1923,7 @@ jobs:
         # root-creates / podman-writes handoff the checkout uses.
         #
         # Key shape: scoped to this job (`dogfood-e2e-`) so it never collides with
-        # a future cache in another job, pinned to the go minor (`go1.25.0`,
+        # a future cache in another job, pinned to the go minor (`go1.26.0`,
         # matching go/go.mod) so a toolchain bump starts fresh, and hashed on
         # go/go.sum (the module root is go/) so any dependency change invalidates
         # the module cache. The restore-keys prefix lets a go.sum change still warm
@@ -1934,9 +1934,9 @@ jobs:
           path: |
             /home/podman/.cache/go-build
             /home/podman/go/pkg/mod
-          key: dogfood-e2e-go-${{ runner.os }}-go1.25.0-${{ hashFiles('go/go.sum') }}
+          key: dogfood-e2e-go-${{ runner.os }}-go1.26.0-${{ hashFiles('go/go.sum') }}
           restore-keys: |
-            dogfood-e2e-go-${{ runner.os }}-go1.25.0-
+            dogfood-e2e-go-${{ runner.os }}-go1.26.0-
 
       - name: Hand the Go caches to the podman user (as root)
         # The cache restore above ran as root, so it created GOCACHE

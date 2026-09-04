@@ -35,8 +35,7 @@ func sigkilledExitError(t *testing.T) error {
 	if err == nil {
 		t.Fatal("expected a non-nil wait error for a SIGKILLed child")
 	}
-	var exitErr *exec.ExitError
-	if !errors.As(err, &exitErr) {
+	if _, ok := errors.AsType[*exec.ExitError](err); !ok {
 		t.Fatalf("wait error is %T, want *exec.ExitError", err)
 	}
 	return err

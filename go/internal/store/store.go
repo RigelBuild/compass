@@ -322,8 +322,7 @@ func parseVersion(name string) (int, error) {
 // so a method can map a unique-violation (23505) to ErrConflict or a
 // foreign-key violation (23503) to ErrInvalidArgument without string-matching.
 func pgErrIs(err error, code string) bool {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		return pgErr.Code == code
 	}
 	return false
@@ -333,8 +332,7 @@ func pgErrIs(err error, code string) bool {
 // Postgres error, or "" otherwise — so a foreign-key handler can tell which of
 // several FKs on a table fired (the parent-agent FK vs the owner-user FK).
 func pgConstraintName(err error) string {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if pgErr, ok := errors.AsType[*pgconn.PgError](err); ok {
 		return pgErr.ConstraintName
 	}
 	return ""

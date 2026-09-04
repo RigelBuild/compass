@@ -95,8 +95,7 @@ func TestTLSTargetDialUntrustedCA(t *testing.T) {
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
-	var certErr *tls.CertificateVerificationError
-	if !errors.As(err, &certErr) {
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); !ok {
 		t.Fatalf("dial error = %v (%T), want tls.CertificateVerificationError", err, err)
 	}
 	if ef.Message == "" {
