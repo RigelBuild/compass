@@ -172,8 +172,10 @@ supervisor, not a container daemon.
    Quadlet needs systemd, and macOS has no systemd — so Quadlet cannot even
    express the macOS half of the requirement, while the pgid mechanism is
    portable (setpgid / SIGTERM / `kill(-pgid)` all exist on darwin; the
-   start-time identity read is a bounded per-OS swap behind the existing
-   `readStartTime` var seam, `pgidfile.go:331-338` — T3 below). This is a
+   start-time identity read is a bounded per-OS swap at TWO seams — the
+   spawn-side `readStartTime` (`pgidfile.go:331-338`) and the down-side
+   `readGroupLeaderStartTime` (`adapters/groupsignal.go:93-98`), which must
+   share one encoding — T3 below). This is a
    second, independent reason on top of the two below.
 2. **Two supervision models vs one — the maintenance crux.** Even on Linux,
    adopting Quadlet means maintaining, testing, and keeping
@@ -296,7 +298,8 @@ paths were examined:
 
 - **Native-darwin supervise (chosen).** The refusal lifts by giving the
   DL-183 identity token a darwin reader — `sysctl KERN_PROC` via
-  `golang.org/x/sys/unix` (already in the module, `go/go.mod:96`) reading
+  `golang.org/x/sys/unix` (already in the module graph as an indirect
+  dependency, `go/go.mod:96`, promoted to direct by this import) reading
   the `KinfoProc` start `timeval`. It is a bounded but TWO-site swap (T3
   below): the token is read both at spawn (`readStartTime`,
   `pgidfile.go:331-338`) and independently at teardown
@@ -375,7 +378,7 @@ same-tree anchor.)
   manual session started).
 - **Non-systemd process supervisors (s6 / runit / supervisord) — declined.**
   Dominated by the same two-models argument (none covers embedded macOS or
-  non-systemd-agnostic dev) plus a new third-party runtime dependency the
+  the non-systemd dev/devenv tier) plus a new third-party runtime dependency the
   self-host tier does not otherwise carry.
 - **`compass-stack up` as a thin facade over `systemctl` (declined).** Keep
   the DL-259 verb but have it generate + `systemctl --user` Quadlet units
@@ -427,6 +430,15 @@ same-tree anchor.)
   identities are ever signaled; verify-before-signal; bounded escalation;
   survivor-rewrite on partial failure
   (`ui/compass-stack-cross-process-teardown/design.md:299-301`).
+- Lock lifetime under `--supervise` (OQ-6, Matt fork): `up --supervise` is
+  the first caller to hold the state-dir lockfile with a LIVE pid for the
+  stack's whole lifetime, voiding the "up always exits, so the lock holder
+  is dead in every teardown" invariant `DownDetached`'s live-holder guard
+  relies on (`pgidfile.go:90-94`, `downdetached.go:74-84`). Whichever OQ-6
+  option lands, `compass-stack down` MUST remain a real stop of a
+  supervised stack (DL-259) and the T1 pre-spawn sweep MUST run before the
+  lock is acquired (else it self-refuses). No `--supervise` deliverable
+  ships a wedged `down`.
 - Stop grace: `TimeoutStopSec` (systemd) / `ExitTimeOut` (launchd) >= 90s —
   the DL-262 teardown drain worst case is ~80s
   (`downdetached.go:15-24`: "15 + (30+5) + (10+5) + (10+5) = 80s").
@@ -476,9 +488,14 @@ contract facts).**
    death → drains the whole healthy stack and exits non-zero → OS supervisor
    restarts → a guaranteed whole-stack restart every ~2 minutes. So
    supervise does NOT Wait container children through the bounded adapter:
-   it supervises them by liveness poll (`podman container exists` / Health)
-   on the same interval, treating only a real exit / "no such container" as
-   death, OR via an unbounded `podman wait` path that re-invokes on timeout.
+   it supervises them by liveness POLL — `ContainerController.Exists`
+   (`deps.go:191-192`) on the same interval as the attached-Health poll,
+   treating only a real exit / "no such container" (N consecutive) as
+   death. The alternative — an unbounded `podman wait` path that re-invokes
+   on timeout — is REJECTED: it would mutate the adapter's `Wait` timeout
+   contract that `DownDetached`'s bounded drain also depends on, coupling
+   supervision to teardown; the poll adds a loop over an existing seam and
+   changes no contract.
 3. **Context discipline (else SIGTERM hard-kills the group before graceful
    teardown).** `Process.Wait`'s cancellation path escalates to
    `syscall.Kill(-pid, SIGKILL)` of the whole group (`process.go:152-169`).
@@ -499,10 +516,16 @@ contract facts).**
    it — DL-183 forbids signaling any pgid not read from the current record),
    and a half-dead old server still holding the socket can wedge the new
    spawn into a bind-fail restart loop. So supervise mode gains a pre-spawn
-   step: before (re)spawning, run the `downdetached` record-consuming
+   step: BEFORE acquiring the state-dir lock (else `DownDetached` observes
+   the supervise process's own live lockfile pid and returns
+   `ErrStackStarting` against itself — the same OQ-6 live-holder guard — and
+   the sweep silently never runs), run the `downdetached` record-consuming
    cleanup against any existing `stack.pgids` (identity-checked, so a
    post-reboot stale record is a safe no-op, `groupsignal.go:60-70`), or
    refuse to spawn while a record with a live identity-checked entry exists.
+   (Under OQ-6 option (b) the guard could instead learn to exempt the
+   caller's own pid; the before-lock ordering is the option-independent
+   fix.)
 
 Division of labor is unchanged: the stack keeps its single supervision
 model (DL-183 spawn order, identity-token teardown, drain); the OS
@@ -521,10 +544,14 @@ Interfaces:
 
 - Consumes: `stack.Up` / `Stack.Down` (`stack.go:94,183`), the per-child
   `Wait(ctx)` process-handle contract (`deps.go:136-138`), `Stack.Health`
-  (`stack.go:198-211`) for the attached-stack degradation and container
-  liveness, and the `downdetached` record-consuming cleanup for the
-  pre-spawn step — plus the ONE core change above (sole-Wait-ownership or an
-  idempotent/shared `Wait`).
+  (`stack.go:201-211`) for ATTACHED-stack degradation only (it is a single
+  server-socket probe — `s.deps.Prober.Probe`, `stack.go:202` — nothing
+  more; a dead postgres behind a still-answering server reads Ready),
+  `ContainerController.Exists` (`deps.go:191-192`) for container-child
+  liveness (widening that seam's documented role from teardown-only to
+  teardown-plus-supervision), and the `downdetached` record-consuming
+  cleanup for the pre-spawn step — plus the ONE core change above
+  (sole-Wait-ownership or an idempotent/shared `Wait`).
 - Produces: a `--supervise` flag on the `up` verb in
   `go/cmd/compass-stack/main.go` plus a supervise loop in `internal/stack`
   (a method on `*Stack`, e.g. `Supervise(ctx) error`): fan-in the owned
@@ -580,7 +607,7 @@ Interfaces:
     is chosen, not an accident of defaults), `Environment=PATH=…`,
     `WantedBy=default.target`; NO `After=network.target` (it is a
     system-manager unit the per-user manager silently ignores, and the
-    server binds loopback only, `main.go:30-31` — no network-up ordering
+    server binds loopback only, `main.go:42-45` — no network-up ordering
     needed); install runs `systemctl --user daemon-reload` + `enable --now`
     and checks/advises `loginctl enable-linger` (mandatory for boot-start:
     rootless podman requires a real `XDG_RUNTIME_DIR`; the CLI's own
@@ -597,17 +624,28 @@ Interfaces:
     `EnvironmentVariables` PATH; install runs
     `launchctl bootstrap gui/$UID` then `enable`.
 - Operator stop-truth — the `down` verb vs the installed unit (folded from
-  the red-team): running `compass-stack down` against a service-supervised
-  stack kills the children out from under the supervise process, which
-  observes child death, drains, exits non-zero — and the OS supervisor
-  RESTARTS the stack the operator just stopped, so `down` becomes a
-  no-op-with-extra-steps and the only real stop verbs become
-  `systemctl --user stop` / `launchctl bootout`, contradicting DL-259's
-  one-verb surface. So `service install` makes `down` unit-aware: when an
-  installed unit is active, `down` stops it THROUGH the unit
-  (`systemctl --user stop` / `launchctl bootout`) so the supervise process
-  performs the teardown and exits ZERO (no restart), preserving
-  `compass-stack` as the stop surface. This is a fold, not a Matt fork.
+  the red-team, and corrected for the OQ-6 lock-lifetime fork): a naive
+  `compass-stack down` against a service-supervised stack does NOT reach the
+  children — because `up --supervise` holds the state-dir lockfile with a
+  LIVE pid for its whole lifetime, `DownDetached` step 1 hits the
+  live-holder guard and returns `ErrStackStarting`
+  (`downdetached.go:74-84`), rendered as "a stack is starting; retry once it
+  is up" (`main.go:406-409`) — a guard that never clears while supervise
+  runs. OQ-6 (below) decides how `down` gets a real path to a supervised
+  stack: option (b)'s mode-token guard makes a supervising holder a valid
+  `down` target that is signalled (it tears down and exits ZERO, no
+  restart); option (a) releases the lock at Ready so `down`'s guard passes
+  and it reads the record. On top of whichever OQ-6 lands, `service install`
+  makes `down` UNIT-AWARE: when an installed unit is active, `down` stops it
+  THROUGH the unit (`systemctl --user stop` / `launchctl bootout`) so the
+  supervise process performs the ordered teardown and exits ZERO (no
+  restart from the OS supervisor), preserving `compass-stack` as the single
+  stop surface DL-259 names — rather than the operator having to know
+  `systemctl --user stop` / `launchctl bootout`. The unit-aware `down` is a
+  fold; the underlying lock-lifetime mechanism it rides on is OQ-6, a Matt
+  fork. For a bare (unit-less) `up --supervise` — dev/devenv, and T1's
+  standalone Linux smoke before `service install` exists — `down` works
+  once OQ-6 is ruled and not before; T1's smoke asserts the OQ-6 behavior.
 - Unit-content gate: every item of the T2 checklist (former OQ-4, below) —
   explicit `--state-dir`, absolute paths + PATH, `KillMode=mixed` /
   `AbandonProcessGroup=true` ordered-teardown knobs, pinned `RestartSec` /
@@ -644,7 +682,9 @@ encoding — the "encodings never need to agree" property holds ACROSS OSes
 two readers on one OS. A darwin `up` whose token the darwin `down` cannot
 match would silently skip every live process child at teardown. So T3 adds
 a darwin reader to BOTH seams sharing ONE encoding: `sysctl KERN_PROC` via
-`golang.org/x/sys/unix` (already a module dependency, `go/go.mod:96`)
+`golang.org/x/sys/unix` (already in the module graph as an indirect
+dependency, `go/go.mod:96`, promoted to direct by this import — no new
+module)
 reading `KinfoProc`'s start `timeval`, packed as `sec*1e6 + usec` into the
 `uint64` the pipeline already carries (`pgidEntry.StartTime uint64`,
 `pgidfile.go:80-88`; `Alive`'s `startTime uint64`; serialized decimal —
@@ -660,9 +700,11 @@ Interfaces:
   reader produced at spawn).
 - Produces: darwin readers for BOTH seams (four build-tagged files:
   `readstarttime_{linux,darwin}.go` + the groupsignal `_{linux,darwin}.go`
-  split), sharing one darwin timeval-packing encoding; removal of the
-  "refuses on non-Linux unix" behavior (the seam comments update from
-  test-seam to cross-OS seam); no CLI surface change.
+  split), sharing one darwin timeval-packing encoding; the `go/go.mod`
+  (and `go.sum`) delta from `go mod tidy` promoting `golang.org/x/sys` out
+  of the indirect block; removal of the "refuses on non-Linux unix"
+  behavior (the seam comments update from test-seam to cross-OS seam); no
+  CLI surface change.
 - Test cycle: the existing seam-stubbed tests keep passing unchanged; the
   existing spawn-vs-down mirror-test pair (`groupsignal_test.go:77-84`,
   which exists precisely because the duplication is load-bearing) EXTENDS
@@ -719,9 +761,11 @@ ruling, all are content-completeness for the executor):
 - **Environment + boot order.** systemd user units and launchd agents
   inherit no login-shell PATH, so the `ExecStart`/`ProgramArguments` binary
   path is absolute AND an explicit PATH is set (the stack's own `LookPath`
-  children — podman, the DL-321 sidecars — must resolve). Linux adds
-  `After=network.target` (the TLS door bind); podman needs no daemon so no
-  socket dependency (`podman.go:23-24`). `loginctl enable-linger` is
+  children — podman, the DL-321 sidecars — must resolve). NO
+  `After=network.target` (it is a system-manager unit the per-user manager
+  silently ignores, and the server binds loopback only,
+  `main.go:42-45` — no network-up ordering needed); podman needs no daemon
+  so no socket dependency (`podman.go:23-24`). `loginctl enable-linger` is
   MANDATORY on Linux — rootless podman hard-requires a real
   `XDG_RUNTIME_DIR`, which exists only in a lingering or logged-in session
   (`defaultRuntimeDir` falls back to `<stateDir>/run` when unset,
@@ -736,10 +780,10 @@ ruling, all are content-completeness for the executor):
   of truth is `compass-stack status` — the unit's state is supervise-pid
   liveness only.
 
-### OQ-5 [load-bearing, Matt fork] — macOS service: ship against podman-machine now, or gate GA on RIG-3238?
+### OQ-5 [load-bearing, Matt fork — tracked RIG-3261] — macOS service: ship against podman-machine now, or gate GA on RIG-3238?
 
 The supervision mechanics for macOS are shippable in this record (T3 darwin
-identity reader — a bounded seam swap; T2 launchd template), but a WORKING
+identity reader — a bounded two-seam swap; T2 launchd template), but a WORKING
 macOS stack end-to-end still hangs on topology unknowns owned by the
 sibling lanes: embedded-revival OQ-7 (the postgres DSN + agent sockets are
 AF_UNIX bind-mounts, unvalidated across the podman-machine virtiofs/VM
@@ -767,7 +811,45 @@ supported" doc claim + GA smoke on the sibling lane's socket-topology
 validation, and let Linux ship independently either way. This is dependency
 ordering only — macOS-in-scope is ruled, not open.
 
-### Resolved decisions
+### OQ-6 [load-bearing, Matt fork — tracked RIG-3261] — `--supervise` lock lifetime: release the lock at Ready, or teach the down-guard a supervising holder?
+
+`up --supervise` is the FIRST caller to hold the state-dir lockfile with a
+LIVE pid for the stack's whole lifetime, voiding the invariant the teardown
+path relies on: "up always exits after a successful spawn, so the writer
+pid is dead in every linger teardown" (`pgidfile.go:90-94`). `upLocked`
+returns a spawning `*Stack` still HOLDING the lock (`stack.go:151`; released
+only on the attach path or by `Down`), the lockfile carries `os.Getpid()`
+(`lockfile.go:124`), and `DownDetached` step 1 refuses outright when that
+holder is live — `if live { return ErrStackStarting }`
+(`downdetached.go:74-84`), rendered as "a stack is starting; retry once it
+is up" (`main.go:406-409`). So while a bare `up --supervise` runs,
+`compass-stack down` is permanently wedged behind that guard and never
+reaches the record. The fork — how the supervise process reconciles holding
+the lock for its lifetime with `down` staying a real stop verb (DL-259):
+
+- **(a) Release the O_EXCL lockfile once Ready is reached.** Restores the
+  linger-ownership shape `DownDetached` already expects (a dead/absent
+  holder → guard passes → `down` reads the record and signals the
+  children); the supervise process's teardown authority then comes from its
+  held child handles, not the lock. Cost: forfeits the mutual exclusion the
+  live lock gives — a second `up` could spawn a DUPLICATE stack while the
+  first supervises, a regression to the DL-183 single-owner model.
+- **(b) Teach `DownDetached`'s live-holder guard a mode/state token.** The
+  lockfile records whether the holder is a mid-bring-up `up` (refuse, as
+  today) or a supervise process parked at Ready (a VALID `down` target that
+  is signalled, not refused). Preserves single-owner mutual exclusion. Cost:
+  a real semantic change to the frozen DL-183 interlock — the guard, the
+  lockfile format, and their invariants.
+
+**Recommendation: (b)** — it keeps DL-183's single-owner guarantee, which
+(a) trades away, and makes `down` a first-class stop of a supervised stack
+rather than leaning on T2's install-time `down`-unit-awareness to mask a
+wedged guard. T1 item 4 and the T2 operator-stop-truth bullet are written
+against (b); if Matt rules (a), both fold to the release-at-Ready shape.
+This modifies a Matt-ruled safety contract (DL-183), so it is his call, not
+a coordinator fold.
+
+## Resolved decisions
 
 - **OQ-1 (Quadlet vs pgid) — RULED: keep pgid, decline Quadlet** (Matt,
   2026-09-04). The all-platforms requirement adds a third independent
