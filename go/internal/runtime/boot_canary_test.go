@@ -82,11 +82,13 @@ var _ guestVM = (*canaryFakeVM)(nil)
 // the deadline the launch ctx carried (for the ctx-derivation assertions). A
 // non-nil launchErr makes launch fail (the Start-failure case).
 type canaryLaunchRecorder struct {
-	mu            sync.Mutex
-	pss           map[string]int64
-	pssErr        error
-	shutdownErr   error
-	launchErr     error
+	mu          sync.Mutex
+	pss         map[string]int64
+	pssErr      error
+	shutdownErr error
+	launchErr   error
+	// onLaunch fires under r.mu: it must not call back into the recorder
+	// (snapshot/vms) or it deadlocks on the non-reentrant sync.Mutex.
 	onLaunch      func(shared string)
 	vms           []*canaryFakeVM
 	calls         int
@@ -425,9 +427,10 @@ func TestBootCanaryPartialPSSStillReported(t *testing.T) {
 // "tidy the error path" refactor flattens to a plain defer; this test breaks on
 // that. (The sibling throwaway-workspace RemoveAll join at BootCanary's other
 // defer uses the identical named-return errors.Join mechanism; it has its own
-// regression test, TestBootCanaryWorkspaceCleanupErrorJoined, which reddens that
-// leg through the existing launch seam by locking a subtree in the minted
-// workspace so os.RemoveAll fails EACCES.)
+// regression tests — TestBootCanaryWorkspaceCleanupErrorJoined pins the drop-the-join
+// case and TestBootCanaryWorkspaceCleanupAndBootErrorsBothJoined pins join-not-overwrite
+// — both reaching that leg through the existing launch seam by locking a subtree in
+// the minted workspace so os.RemoveAll fails EACCES.)
 func TestBootCanaryTeardownErrorJoined(t *testing.T) {
 	before := canaryTempDirs(t)
 	m, rec, _ := seamCanary(t, map[string]int64{"cloud-hypervisor": 100})
@@ -499,7 +502,31 @@ func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
 		t.Skip("root bypasses the directory write bit, so os.RemoveAll would not fail with EACCES")
 	}
 	m, rec, _ := seamCanary(t, map[string]int64{"cloud-hypervisor": 100})
-	rec.onLaunch = func(shared string) {
+	rec.onLaunch = plantLockedSubtree(t)
+
+	_, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want a non-nil error carrying the workspace-cleanup failure")
+	}
+	if !strings.Contains(err.Error(), "removing throwaway workspace") {
+		t.Errorf("BootCanary error = %v, want it to carry the workspace-cleanup failure", err)
+	}
+	// No assertNoTempLeak here: this test's mechanism IS an unremovable workspace
+	// (plantLockedSubtree's t.Cleanup reclaims it instead). The session table must
+	// still be empty — the teardown ran to completion despite the cleanup error.
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table = %d after teardown, want 0", n)
+	}
+}
+
+// plantLockedSubtree returns an onLaunch hook that plants a 0555 subdir holding
+// a file inside the canary's minted workspace, so os.RemoveAll fails EACCES on
+// the inner unlink — the mechanism both workspace-cleanup tests share. It
+// registers a t.Cleanup that restores write and removes the deliberately-leaked
+// workspace afterward.
+func plantLockedSubtree(t *testing.T) func(shared string) {
+	t.Helper()
+	return func(shared string) {
 		locked := filepath.Join(shared, "locked")
 		if err := os.Mkdir(locked, 0o755); err != nil {
 			t.Errorf("planting locked subdir: %v", err)
@@ -519,13 +546,39 @@ func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
 			_ = os.RemoveAll(shared)
 		})
 	}
+}
+
+// TestBootCanaryWorkspaceCleanupAndBootErrorsBothJoined pins that the
+// throwaway-workspace RemoveAll join is a genuine errors.Join, not a plain
+// overwrite — the symmetric partner to TestBootCanaryBootAndTeardownErrorsBothJoined
+// for the SIBLING leg. Because the workspace-cleanup defer is registered FIRST it
+// runs LAST (LIFO), so it holds the most accumulated error to destroy: an
+// overwrite there would discard both the boot diagnostic AND the teardown-session
+// error, silently un-doing the sibling join's coverage from the outside. When the
+// boot chain fails (echo exec refused) AND the workspace RemoveAll then fails
+// (EACCES on the planted 0555 subtree), BootCanary must return an error carrying
+// BOTH. TestBootCanaryWorkspaceCleanupErrorJoined drives an otherwise-successful
+// canary where err is nil at that join, so overwrite and join are observationally
+// identical; only this both-legs-fail case distinguishes them (record §(e)/(f)).
+// (Skipped as root, which bypasses the directory write bit — mirrors
+// go/server/socket_test.go.)
+func TestBootCanaryWorkspaceCleanupAndBootErrorsBothJoined(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the directory write bit, so os.RemoveAll would not fail with EACCES")
+	}
+	m, rec, client := seamCanary(t, map[string]int64{"cloud-hypervisor": 100})
+	client.execErr = errors.New("boom: exec refused") // the BOOT failure
+	rec.onLaunch = plantLockedSubtree(t)              // the CLEANUP failure
 
 	_, err := m.BootCanary(t.Context())
 	if err == nil {
-		t.Fatal("BootCanary = nil, want a non-nil error carrying the workspace-cleanup failure")
+		t.Fatal("BootCanary = nil, want both the boot and workspace-cleanup failures joined")
+	}
+	if !strings.Contains(err.Error(), "exec refused") {
+		t.Errorf("BootCanary error = %v dropped the BOOT failure (workspace cleanup overwrote it instead of joining)", err)
 	}
 	if !strings.Contains(err.Error(), "removing throwaway workspace") {
-		t.Errorf("BootCanary error = %v, want it to carry the workspace-cleanup failure", err)
+		t.Errorf("BootCanary error = %v dropped the workspace-cleanup failure", err)
 	}
 }
 
