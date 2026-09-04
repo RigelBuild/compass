@@ -78,7 +78,7 @@ Compass ships as two products over one shared core:
   boundary.
   All of this record's `go/internal/*` and `agent-image/*` citations are
   public-repo paths.
-- **Managed Compass (dual AGPL + commercial license, built out of tree).** The
+- **Managed Compass (dual AGPL + commercial license), built out of tree.** The
   hosted multi-tenant service, which *reuses* the OSS core rather than forking
   it.
 

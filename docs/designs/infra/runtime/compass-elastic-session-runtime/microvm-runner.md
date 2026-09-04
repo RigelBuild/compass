@@ -403,7 +403,8 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
 - **Transitional container path, then microVM-only (D2).** The rootless
   container remains the running boundary through Dogfood + trusted-tenant Beta
   (design.md:892-894) and is then **removed**: microVM is the sole runtime.
-  This work runs in parallel with M0/S1/P2/C3 and is off the critical path.
+  This work runs in parallel with M0/S1/P2/C3 and is off the critical
+  path.
 
 ## Plan
 
@@ -675,9 +676,11 @@ each is kept so the executor sees *why*, not just *what*.
    second permanent runtime roughly *doubles* the production support and
    bugfix surface, which for a solo maintainer dominates the one-time build
    cost — and microVM must be built regardless (it is the reason the parent
-   design exists). Reach is preserved without a second runtime: cloud-hypervisor
-   runs directly on a KVM-capable bare-metal host — no nesting, so **no ~10%
-   nested-virtualization performance tax**. Self-hosters provision a
+   design exists). Reach is preserved without a second runtime:
+   cloud-hypervisor needs only a KVM-capable host, and running
+   it directly on bare metal means no nesting and therefore
+   **no ~10% nested-virtualization performance tax**. Self-hosters
+   provision a
    KVM-capable box *for* Compass (an owned/homelab box, Hetzner-class
    bare-metal, or a nested-virt-enabled hyperscaler instance — GCP any Linux
    VM, Azure Dv3/Ev3+, AWS C8i/M8i/R8i or `.metal`). **Native-macOS-embedded
