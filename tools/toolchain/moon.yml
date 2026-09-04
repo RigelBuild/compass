@@ -21,8 +21,6 @@ tasks:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', '/bun.lock']
 
   test:
-    command: 'bun test'
-    deps: ['install']
     # ci.yml and pgtest.go are inputs because a test below asserts their two
     # Postgres image digests are equal. Without them an edit to either file
     # leaves this task cached, so the assertion silently stops re-running

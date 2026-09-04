@@ -2,6 +2,10 @@
 # The Compass web UI (SolidJS + Vite). System tasks: bun/vite/biome from the
 # devenv toolchain on PATH. It consumes the checked-in generated client
 # (@compass/client -> compass.v1); compass-proto:drift gates its freshness.
+workspace:
+  inheritedTasks:
+    exclude: ['test']
+
 layer: 'application'
 language: 'typescript'
 tags: ['bun', 'oss', 'ci-group.bun']

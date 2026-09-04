@@ -25,8 +25,6 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    command: 'bun test'
-    deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   check:
     # The ban gate: scan the whole repo's go/**/*.go tree for inline SQL at pgx

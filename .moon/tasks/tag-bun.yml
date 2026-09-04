@@ -16,3 +16,14 @@ tasks:
     deps: ['root:install']
     options:
       internal: true
+
+  # Parallel test runner (RIG-2451). `--parallel=2` matches the 2-vCPU CI
+  # elastic-pool floor and stays deterministic on any host — a bare `--parallel`
+  # would spawn CPU-count workers per moon task and over-subscribe a contended
+  # box (the RIG-2288/2294 timeout class). `--parallel` implies per-file
+  # isolation. Projects drop only their `command:`/`deps:` and keep their own
+  # `inputs:`, so the flag string has one control point here. apps/ui stays
+  # serial (its own explicit command); apps/eng-docs has no test files.
+  test:
+    command: 'bun test --parallel=2'
+    deps: ['install']
