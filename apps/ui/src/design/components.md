@@ -229,10 +229,9 @@ razor-crisp per the brand 1-bit whole-cell rule); it sits within the ~12px
 agent-row height. Each grid reads correctly at that size (the reason `working`
 is a double-chevron, not a ring — `brand state-icons.md`).
 
-**Open question (for Matt):** Render size reconciliation: the frozen record T3
-phrases this as "the 12px row-dot render size"; shipped as a 9px crisp dot in a
-12px row. Confirm the 9px dot box is the intended shipped size (vs an 18px
-integer-multiple).
+**Render size (Matt-ruled, RIG-2118):** shipped as a 9px crisp dot box (one CSS
+px per grid cell) within the ~12px agent row. The earlier open question — 9px
+vs an 18px integer-multiple — is resolved: 9px is the intended shipped size.
 
 `working` — double-chevron `»` (fast-forward); the ONLY animated state
 (`--cx-st-working`):
