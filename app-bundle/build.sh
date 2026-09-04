@@ -81,7 +81,7 @@ CGO_ENABLED=1 CC="$CC_BIN" PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
 # NO compass-postgres: embedded's postgres is a DL-260 container, not a sidecar.
 for b in compass-stack compass-server compass-runner; do
   log "Building sidecar ($b)"
-  go -C "$GO_DIR" build -trimpath \
+  CGO_ENABLED=0 go -C "$GO_DIR" build -trimpath \
     -ldflags "-X main.version=$v" \
     -o "$STAGE/bin/$b" "./cmd/$b"
 done

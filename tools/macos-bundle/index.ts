@@ -122,10 +122,11 @@ export function renderInfoPlist(opts: InfoPlistOptions): string {
  * Parse `--binary <path> --dist <dir> --version <semver> --out <dmg>` plus zero
  * or more repeated `--sidecar <path>` into a typed BundleArgs. Pure; throws an
  * Error naming the offending flag on a missing value, an unknown flag, a
- * duplicate of a single-valued flag, or a missing required flag. `--sidecar` is
- * exempt from the duplicate check by design (it accumulates), but a `--sidecar`
- * with no value fails as loud as any other. Fail-loud on any malformed input
- * mirrors build.sh's sanity posture.
+ * duplicate of a single-valued flag, a missing required flag, a sidecar whose
+ * basename collides with the shell executable, or duplicate sidecar basenames.
+ * `--sidecar` is exempt from the duplicate check by design (it accumulates),
+ * but a `--sidecar` with no value fails as loud as any other. Fail-loud on any
+ * malformed input mirrors build.sh's sanity posture.
  */
 export function parseArgs(argv: string[]): BundleArgs {
 	const flags = new Map<string, string>();
@@ -166,13 +167,42 @@ export function parseArgs(argv: string[]): BundleArgs {
 		}
 		return value;
 	};
+	const binary = require_("--binary");
+	assertSidecarBasenamesDistinct(binary, sidecars);
 	return {
-		binary: require_("--binary"),
+		binary,
 		dist: require_("--dist"),
 		version: require_("--version"),
 		out: require_("--out"),
 		sidecars,
 	};
+}
+
+/**
+ * Reject a sidecar whose basename collides with the shell executable or with
+ * another sidecar. Both stage into Contents/MacOS/<basename> where `cp`
+ * silently overwrites, so a collision would clobber the shell or a sibling
+ * sidecar — this pure guard fails loud instead, mirroring build.sh's sanity
+ * posture (a green bundle is a COMPLETE bundle).
+ */
+function assertSidecarBasenamesDistinct(
+	binary: string,
+	sidecars: string[],
+): void {
+	const binaryBasename = basename(binary);
+	const seen = new Set<string>();
+	for (const sidecar of sidecars) {
+		const name = basename(sidecar);
+		if (name === binaryBasename) {
+			throw new Error(
+				`macos-bundle: sidecar '${name}' collides with the shell executable '${binaryBasename}'`,
+			);
+		}
+		if (seen.has(name)) {
+			throw new Error(`macos-bundle: duplicate sidecar basename '${name}'`);
+		}
+		seen.add(name);
+	}
 }
 
 // ── The edge (impure) ──────────────────────────────────────────────────────

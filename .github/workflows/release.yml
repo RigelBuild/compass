@@ -560,9 +560,9 @@ jobs:
             go -C go build -trimpath -ldflags "$ldflags" \
             -o "../compass_${tag}_darwin-arm64" ./cmd/compass
 
-      - name: Build and stage the Linux client bundle
-        # The thin client app tarball (gtk4 shell + UI dist + desktop + LICENSE)
-        # joins the semver Release asset set (RIG-2752 / compass-distribution T1).
+      - name: Build and stage the Linux app bundle
+        # The app tarball (gtk4 shell + the three embedded sidecars + UI dist + desktop
+        # + LICENSE) joins the semver Release asset set (RIG-2752 / compass-distribution T1).
         # COMPASS_BUNDLE_VERSION pins the clean semver so the app binary carries
         # the same one version as the daemons (Global Constraint 1); moon's
         # compass-app-bundle:build deps-edge builds the UI dist first. Rename the

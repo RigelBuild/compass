@@ -1558,6 +1558,15 @@ jobs:
             -ldflags "-X main.version=$dev" \
             -o /tmp/compass-app ./cmd/compass-app
 
+          # The three embedded sidecars (§A4): pure-Go, CGO_ENABLED=0, same dev
+          # version stamp, built beside the shell so the bundle staging + mount
+          # assertion below exercise the same four binaries build.sh ships.
+          for b in compass-stack compass-server compass-runner; do
+            CGO_ENABLED=0 go -C go build -trimpath \
+              -ldflags "-X main.version=$dev" \
+              -o "/tmp/$b" "./cmd/$b"
+          done
+
           # Run the darwin-tagged unit suite for the shell entrypoint — this is
           # the ONLY lane that executes it. The moon `compass-go:test` lane runs
           # untagged (`go test ./...`), which compiles the non-gtk4 stub and
@@ -1586,6 +1595,9 @@ jobs:
             --binary /tmp/compass-app \
             --dist apps/ui/dist \
             --version "$dev" \
+            --sidecar /tmp/compass-stack \
+            --sidecar /tmp/compass-server \
+            --sidecar /tmp/compass-runner \
             --out "$out"
 
           # Assert the dmg exists, mounts, and carries a complete .app.
@@ -1598,6 +1610,9 @@ jobs:
           rc=0
           for want in \
             "$mnt/Compass.app/Contents/MacOS/compass-app" \
+            "$mnt/Compass.app/Contents/MacOS/compass-stack" \
+            "$mnt/Compass.app/Contents/MacOS/compass-server" \
+            "$mnt/Compass.app/Contents/MacOS/compass-runner" \
             "$mnt/Compass.app/Contents/Info.plist" \
             "$mnt/Compass.app/Contents/Resources/dist/index.html"; do
             if [ ! -f "$want" ]; then

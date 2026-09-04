@@ -166,10 +166,10 @@ describe("parseArgs — repeatable --sidecar collects the embedded sidecars", ()
 		]);
 	});
 
-	test("a repeated --sidecar is NOT rejected as a duplicate flag", () => {
-		expect(() =>
-			parseArgs([...requiredArgs(), "--sidecar", "a", "--sidecar", "b"]),
-		).not.toThrow();
+	test("the duplicate check still fires for single-valued flags", () => {
+		expect(() => parseArgs([...requiredArgs(), "--dist", "other"])).toThrow(
+			/more than once/,
+		);
 	});
 
 	test("no --sidecar yields an empty array, not a parse error", () => {
@@ -191,6 +191,24 @@ describe("parseArgs — repeatable --sidecar collects the embedded sidecars", ()
 		expect(() =>
 			parseArgs(["--sidecar", "--binary", "/tmp/compass-app"]),
 		).toThrow(/'--sidecar' expects a value/);
+	});
+
+	test("rejects a sidecar whose basename collides with the shell", () => {
+		expect(() =>
+			parseArgs([...requiredArgs(), "--sidecar", "/other/compass-app"]),
+		).toThrow(/collides with the shell/);
+	});
+
+	test("rejects two sidecars sharing a basename", () => {
+		expect(() =>
+			parseArgs([
+				...requiredArgs(),
+				"--sidecar",
+				"/a/compass-stack",
+				"--sidecar",
+				"/b/compass-stack",
+			]),
+		).toThrow(/duplicate sidecar basename/);
 	});
 });
 
