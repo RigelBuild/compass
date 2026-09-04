@@ -1,6 +1,6 @@
 # Compass forge App-credential cutover (GitHub + Linear)
 
-Status: Draft
+Status: Active
 
 Tracking: RIG-2991 (thread 1, already filed as the W1 deferral) + the
 five sibling threads Matt directed this session. Predecessors: RIG-2883
@@ -44,6 +44,19 @@ Six threads:
    `docs/designs/server/compass-linear-agent-responder/design.md:42-45`), so
    a live end-to-end delegation needs a user identity to perform the
    human→app handoff.
+
+   **SUPERSEDED (DL-324, Matt's RIG-3096 pivot 2026-09-02):** this thread is
+   dropped. The forge live-test Linear legs authenticate app-actor only — no
+   retained user credential and no delegation-setup step in CI, so no live
+   end-to-end delegation leg is built (its coverage is not relocated here;
+   T5/T6 own the live Linear surface). Grounding: `LINEAR_FORGE_USER_TOKEN`
+   has zero code hits; the oracle's Linear CREDENTIAL is the single
+   `LINEAR_FORGE` env var (`go/internal/forge/livegithub_test.go:65`;
+   `requireLinear` :91-99 skips on it, co-equally with the `LINEAR_FORGE_TEAM`
+   team key :66),
+   minted per run as an app-actor token by
+   `tools/forge-linear-token/index.ts` from the client-credentials pair
+   (`.github/workflows/ci.yml:1002-1004`).
 
 Why: App identities give forge-side scoping (per-App permissions, per-repo
 installs) and installation-scoped rate limits instead of a user account's
@@ -213,6 +226,13 @@ higher-fidelity option over capture-and-replay, accepting that the tunnel
 adds live-ingress machinery to CI. A one-time App webhook-registration
 runbook (skill://human-action-handoff) still covers production registration
 and PEM rotation.
+
+**SUPERSEDED (DL-324, 2026-09-02):** the "Linear keeps exactly one USER
+credential in the live tier" clause above is dropped — the live-test Linear
+legs are app-actor only, no retained user credential and no delegation-setup
+step (Matt's RIG-3096 pivot; `go/internal/forge/livegithub_test.go:65`,
+`requireLinear` :91-99). The GitHub
+App-mint and DEC-6 webhook-validation clauses in this block are unaffected.
 
 ### Alternatives considered
 
@@ -468,7 +488,7 @@ Interfaces:
   delete-merge per rule://pulumi-protected-teardown (never one PR, never a
   manual state unprotect).
 
-### T5 — Live tests onto the Apps (retain one Linear user cred)
+### T5 — Live tests onto the Apps (Linear user cred SUPERSEDED — app-actor only, DL-324)
 
 Owner: compass-forge lane; the CI workflow + testbed provisioning historically
 sat with compass-server/core (RIG-2345/2425 provisioned
@@ -490,6 +510,20 @@ end-to-end leg — the human→app delegation the app-actor cannot self-assign
 literals if the gating env set changes (`liveSkipMessage` contract,
 `livegithub_test.go:46-49` — the CI guard greps it from source,
 `ci.yml:1055-1062`).
+
+**SUPERSEDED (DL-324, Matt's RIG-3096 pivot 2026-09-02):** the "ADD one Linear
+USER credential (`LINEAR_FORGE_USER_TOKEN`) for the delegation-setup step"
+instruction above is dropped. The live-test Linear legs authenticate app-actor
+only. The oracle's Linear CREDENTIAL is the single `LINEAR_FORGE` env var
+(`go/internal/forge/livegithub_test.go:65`; `requireLinear` :91-99 skips on it,
+co-equally with the `LINEAR_FORGE_TEAM` team key :66), minted per
+CI run as an app-actor token by `tools/forge-linear-token/index.ts` from the
+`LINEAR_FORGE_CLIENT_ID`/`_SECRET` Actions secrets via the client-credentials
+grant (`.github/workflows/ci.yml:1002-1004`); no user token, no delegation-setup
+step. (The `--forge-linear-client-id`/`-secret`/`-webhook-secret` flags are
+compass-SERVER runtime flags at `go/cmd/compass-server/main.go:435-450`, not
+oracle credentials.) The GitHub App-source swap in
+this task (the rest of the paragraph) is unaffected and shipped as built.
 
 Fidelity note: the oracle authenticates each identity with its own standalone
 token source, so the production 2-App topology's riskiest property — board
@@ -592,8 +626,8 @@ Interfaces:
 - [ ] T4 — GitHub write-PAT clean cutover (fields, flags, defaults deleted);
       Linear PAT → ONE shared OAuth actor=app TokenSource for both build
       sites + boot-time mint check; IaC PAT-row teardown merge(s).
-- [ ] T5 — `livegithub` oracle GitHub legs onto real App token sources; one
-      Linear USER cred retained for delegation setup; CI env + skip guards
+- [ ] T5 — `livegithub` oracle GitHub legs onto real App token sources; Linear
+      legs app-actor only (no retained user cred, DL-324); CI env + skip guards
       updated.
 - [ ] T6 — Live tunnel round-trip webhook validation (real GitHub App + real
       Linear app deliveries through the mounted handlers, livegithub tier);
@@ -647,6 +681,13 @@ DL-305..DL-309.
   used only for the human→app delegation setup the app-actor cannot
   self-assign; the Linear write/notify legs stay on the already-minted app
   token (`ci.yml:1001-1003`).
+  **SUPERSEDED (DL-324, Matt's RIG-3096 pivot 2026-09-02):** the
+  "Linear keeps ONE user credential" half of DEC-5 is dropped — the live-test
+  Linear legs are app-actor only (no `LINEAR_FORGE_USER_TOKEN` — zero code
+  hits; the Linear CREDENTIAL is the single `LINEAR_FORGE` env var,
+  `go/internal/forge/livegithub_test.go:65`, minted app-actor per run by
+  `tools/forge-linear-token/index.ts`, `ci.yml:1002-1004`). The GitHub
+  App-installation-token-mint half of DEC-5 stands.
 - **DEC-6 (was OQ-6): real-App webhook validation is a LIVE TUNNEL
   ROUND-TRIP in the livegithub tier** — Matt, 2026-08-31. A smee.io-style
   tunnel receiver gives the oracle a public ingress; the real GitHub App and
@@ -666,6 +707,7 @@ Ledger-impact: LANDED rows DL-305..DL-309 in `docs/designs/DECISIONS.md`
 DL-305 two-App topology incl. the writes⇒board-ingestion amendment to the
 2026-08-19 independent-gates ruling (`serve.go:150-151`); DL-306 the
 `ReviewerApp` config shape; DL-307 the clean PAT cutover + the Linear
-actor=app finish of DL-204; DL-308 the live-test credential model incl. the
-one-Linear-user-cred carve-out; DL-309 the live-tunnel real-App webhook
+actor=app finish of DL-204; DL-308 the live-test credential model — its GitHub
+App-mint clause live, its one-Linear-user-cred carve-out later superseded by
+DL-324 (app-actor only); DL-309 the live-tunnel real-App webhook
 validation.
