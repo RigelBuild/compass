@@ -370,11 +370,12 @@ CREATE TABLE channel_pins (
 -- ── Token hashes ────────────────────────────────────────────────────────────
 -- Subject-typed token store (design.md:1175-1183): the SHA-256 hash is the PK
 -- (the plaintext token is returned once and never stored). subject_kind is
--- 0 account / 1 runner; subject_id spans both id spaces. revoked_at is set on
--- RevokeToken so ResolveTokenHash can distinguish revoked from never-issued.
+-- 0 account / 1 runner / 2 service; subject_id spans those id spaces.
+-- revoked_at is set on RevokeToken so ResolveTokenHash can distinguish
+-- revoked from never-issued.
 CREATE TABLE tokens (
     hash         BYTEA PRIMARY KEY,
-    subject_kind SMALLINT NOT NULL CHECK (subject_kind IN (0, 1)),
+    subject_kind SMALLINT NOT NULL CHECK (subject_kind IN (0, 1, 2)),
     subject_id   TEXT NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_at   TIMESTAMPTZ
