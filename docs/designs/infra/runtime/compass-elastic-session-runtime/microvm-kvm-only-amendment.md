@@ -78,8 +78,8 @@ timeline:
 
 - `design.md:892-894` (OQ-5, the resolved inter-tenant-boundary decision):
   "Through Dogfood + trusted-tenant Beta the rootless container remains the
-  running boundary; I1 lands the microVM before the first external multi-tenant
-  tenant." This stays exactly as frozen, and `microvm-runner.md:60-65` restates
+  running boundary; I1 lands the microVM before it becomes the sole
+  runtime." This stays exactly as frozen, and `microvm-runner.md:60-65` restates
   it: the container is the running boundary **through Beta**, then removed. The
   container is a transitional bootstrap, not a KVM-absent fallback — the two are
   different roles, and only the fallback role is retired here.
