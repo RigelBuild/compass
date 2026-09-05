@@ -64,6 +64,7 @@ const cfg = config as RenovateConfig;
 const bot = botConfig as {
 	allowedCommands?: string[];
 	customEnvVariables?: Record<string, string>;
+	executionTimeout?: number;
 };
 // tools/renovate/ → repo root is two levels up.
 const repoRoot = join(import.meta.dir, "..", "..");
@@ -188,20 +189,23 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// postUpgradeTasks.commands are gated by the BOT config's global
 	// `allowedCommands` allowlist (a repo config cannot self-authorize a command),
 	// which Renovate matches UNANCHORED via regEx(pattern).test(cmd). So each
-	// entry's `^…$` IS the security property. Compass declares five DISTINCT
+	// entry's `^…$` IS the security property. Compass declares six DISTINCT
 	// commands across the task sites (the FOD-hash refresh rides two sites — the
 	// top-level branch-mode task and the catalog rule's update-mode task — so it
-	// appears twice in the declared list but needs only one allowlist entry); every
+	// appears twice in the declared list but needs only one allowlist entry; the
+	// devenv-fork relock likewise rides BOTH devenv-fork rules under one command
+	// string, since the script self-gates on which lock changed); every
 	// distinct command must be permitted, every entry must be used, and no entry may
 	// be an unanchored substring rule. RIG-3100 added the fifth: the go↔go-overlay
-	// lockstep on the go pin's solo branch.
+	// lockstep on the go pin's solo branch. RIG-2815 added the sixth: the
+	// devenv-fork relock on each devenv lock's solo branch.
 	const commands = allDeclaredCommands();
 	const distinctCommands = [...new Set(commands)];
 	const allowed = bot.allowedCommands ?? [];
 
-	test("declares five DISTINCT postUpgrade commands and five allowlist entries", () => {
-		expect(distinctCommands).toHaveLength(5);
-		expect(allowed).toHaveLength(5);
+	test("declares six DISTINCT postUpgrade commands and six allowlist entries", () => {
+		expect(distinctCommands).toHaveLength(6);
+		expect(allowed).toHaveLength(6);
 	});
 
 	test("the fod-hash refresh is declared at BOTH task sites (top-level + catalog)", () => {
@@ -252,10 +256,11 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		).toBe(false);
 	});
 
-	test("permits exactly the five RIG-2432/RIG-3100 commands", () => {
+	test("permits exactly the six RIG-2432/RIG-3100/RIG-2815 commands", () => {
 		expect(distinctCommands.sort()).toEqual(
 			[
 				"bun install --lockfile-only",
+				"bun tools/renovate/refresh-devenv-lock.ts",
 				"bun tools/renovate/refresh-devenv-nixpkgs.ts",
 				"bun tools/renovate/refresh-fod-hashes.ts",
 				"bun tools/renovate/refresh-go-overlay.ts",
@@ -442,9 +447,12 @@ describe("tools/renovate root bun catalog manager", () => {
 
 describe("tools/renovate devenv nixpkgs lockstep", () => {
 	// The customManager surfacing devenv.lock's channel rev as a git-refs digest;
-	// find it by file pattern, not index.
-	const devenvManager = cfg.customManagers?.find((m) =>
-		m.managerFilePatterns?.some((p) => p.includes("devenv")),
+	// find it by the dep it stamps, not index — and NOT by file pattern alone:
+	// the RIG-2815 devenv-FORK managers also pattern-match a devenv lock, so a
+	// `includes("devenv")` finder would be ambiguous (order-dependent) between
+	// three managers over the same two files.
+	const devenvManager = cfg.customManagers?.find(
+		(m) => m.depNameTemplate === "cachix/devenv-nixpkgs",
 	);
 	const devenvRule = cfg.packageRules.find(
 		(r) => r.groupName === "devenv nixpkgs channel",
@@ -557,6 +565,261 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 		for (const t of rollup?.matchUpdateTypes ?? []) {
 			expect(["patch", "minor"]).toContain(t);
 		}
+	});
+});
+
+describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
+	// Both compass devenv scopes resolve github:RigelBuild/devenv by DEFAULT
+	// BRANCH, so the concrete rev lives only in devenv.lock and nothing moved it
+	// until T7. Two customManagers surface the two locks' fork revs as git-refs
+	// digests, each paired with its own solo-branched packageRule carrying the
+	// relock postUpgradeTask. RD-1 keeps the two locks on INDEPENDENT cadences
+	// (unify the source, do NOT reconcile the locks), which is why this is two
+	// managers + two rules + two groupNames and not one widened pair.
+	//
+	// Found by the dep each stamps, never by index or a bare "devenv" file-pattern
+	// substring (the devenv-nixpkgs channel manager pattern-matches the same root
+	// lock).
+	const RELOCK = "bun tools/renovate/refresh-devenv-lock.ts";
+	const forkScopes: {
+		label: string;
+		depName: string;
+		lock: string;
+		groupName: string;
+		patternLiteral: string;
+	}[] = [
+		{
+			label: "root",
+			depName: "RigelBuild/devenv",
+			lock: "devenv.lock",
+			groupName: "devenv fork (root)",
+			patternLiteral: "/^devenv\\.lock$/",
+		},
+		{
+			label: "agent-image",
+			depName: "RigelBuild/devenv-agent-image",
+			lock: "agent-image/devenv.lock",
+			groupName: "devenv fork (agent-image)",
+			patternLiteral: "/^agent-image\\/devenv\\.lock$/",
+		},
+	];
+	const managerFor = (depName: string) =>
+		cfg.customManagers?.find((m) => m.depNameTemplate === depName);
+	const ruleFor = (depName: string) =>
+		cfg.packageRules.find((r) => r.matchDepNames?.includes(depName));
+
+	test.each(forkScopes)(
+		"declares a git-refs regex manager for the $label lock's fork rev",
+		({ depName, lock, patternLiteral }) => {
+			const manager = managerFor(depName);
+			expect(manager).toBeDefined();
+			expect(manager?.customType).toBe("regex");
+			expect(manager?.datasourceTemplate).toBe("git-refs");
+			// Both scopes point at the SAME fork repo (RD-1's unified source); only
+			// the depName differs, which is what keeps the two rules independently
+			// governed and in separate branches.
+			expect(manager?.packageNameTemplate).toBe(
+				"https://github.com/RigelBuild/devenv",
+			);
+			// The locks name no ref, so the tracked value is the default branch.
+			expect(manager?.currentValueTemplate).toBe("main");
+
+			// The file pattern must be ANCHORED to exactly this lock: a loose
+			// pattern would make the root manager extract from the agent-image lock
+			// too (or vice versa), collapsing the two independent scopes into one
+			// dep with two files and two conflicting digests.
+			//
+			// Pin the LITERAL first, then re-parse it behaviourally below. The
+			// literal assertion is what makes a Renovate delimiter-semantics drift
+			// (e.g. how an unescaped interior `/` is read) fail as a changed literal
+			// rather than silently changing what the re-parse below is testing.
+			expect(manager?.managerFilePatterns).toEqual([patternLiteral]);
+			const pattern = manager?.managerFilePatterns?.[0];
+			const delimited = /^\/(.*)\/$/.exec(pattern as string);
+			expect(delimited).not.toBeNull();
+			const re = new RegExp(delimited?.[1] as string);
+			expect(re.test(lock)).toBe(true);
+			expect(re.test("package.json")).toBe(false);
+			expect(re.test(`a/${lock}`)).toBe(false); // anchored, no arbitrary prefix
+			const otherLock = forkScopes.find((s) => s.lock !== lock)?.lock as string;
+			expect(re.test(otherLock)).toBe(false); // and never the sibling scope
+		},
+	);
+
+	// The matchString must recover EXACTLY ONE 40-hex rev from the REAL lock, and
+	// it must be the fork's own `nodes.devenv.locked.rev`. The anchor's whole
+	// safety argument is that `"repo": "devenv",` is followed by `"rev"` ONLY in
+	// the `locked` block — the `original` block repeats the repo but is followed
+	// by `"type"` (the input names no ref). Assert the uniqueness against ground
+	// truth so a devenv lock-format change fails HERE rather than silently
+	// binding to the wrong node (or to the `devenv-nixpkgs` node the channel
+	// manager owns).
+	test.each(forkScopes)(
+		"matchString extracts the fork rev from the real $label lock",
+		({ depName, lock }) => {
+			const lockText = readFileSync(join(repoRoot, lock), "utf8");
+			const matchString = managerFor(depName)?.matchStrings?.[0];
+			expect(matchString).toBeDefined();
+			const matches = [
+				...lockText.matchAll(new RegExp(matchString as string, "g")),
+			];
+			expect(matches).toHaveLength(1);
+			const rev = matches[0]?.groups?.currentDigest;
+			expect(rev).toMatch(/^[a-f0-9]{40}$/);
+			const parsed = JSON.parse(lockText);
+			expect(rev).toBe(parsed.nodes.devenv.locked.rev);
+			// Not the devenv-nixpkgs channel rev — a `"repo": "devenv"` prefix match
+			// against `"devenv-nixpkgs"` is the exact mis-bind the trailing quote in
+			// the anchor prevents.
+			expect(rev).not.toBe(parsed.nodes.nixpkgs?.locked?.rev);
+		},
+	);
+
+	// Solo-branched, scheduled, cooldown-nulled — the devenv-nixpkgs rule's shape.
+	// The groupName must be UNIQUE to this rule: it is what makes the branch-mode
+	// relock task safe (one branch-mode task slot per branch, so the dep must own
+	// its branch) AND what keeps the two locks on independent cadences.
+	test.each(forkScopes)(
+		"the $label fork rule is solo-grouped, scheduled, and cooldown-exempt",
+		({ depName, groupName }) => {
+			const rule = ruleFor(depName);
+			expect(rule).toBeDefined();
+			expect(rule?.matchManagers).toContain("custom.regex");
+			expect(rule?.groupName).toBe(groupName);
+			expect(
+				cfg.packageRules.filter((r) => r.groupName === groupName),
+			).toHaveLength(1);
+			expect(rule?.schedule?.length).toBeGreaterThan(0);
+			// A git-refs digest on a moving branch HEAD carries no release age, so
+			// the repo-wide strict cooldown would peg it permanently `pending` and
+			// cut zero PRs (the RIG-1220 silent-no-updates shape).
+			expect(rule?.minimumReleaseAge).toBeNull();
+		},
+	);
+
+	// Branch-mode relock over exactly the ONE lock the rule governs. fileFilters
+	// is an INCLUDE allowlist — Renovate commits ONLY listed files — so naming
+	// the sibling lock would be dead surface and naming LESS would silent-drop
+	// the relock, shipping a rev bump whose narHash/lastModified never moved (the
+	// same silent-drop mode the FOD guard above documents).
+	test.each(forkScopes)(
+		"the $label relock postUpgradeTask is branch-mode over its lock alone",
+		({ depName, lock }) => {
+			const task = ruleFor(depName)?.postUpgradeTasks;
+			expect(task?.executionMode).toBe("branch");
+			expect(task?.fileFilters).toEqual([lock]);
+			expect(task?.commands).toEqual([RELOCK]);
+		},
+	);
+
+	// ONE command string serves both rules — the script self-gates on WHICH lock
+	// changed — so a single anchored allowlist entry covers both. This is the
+	// coupling the allowedCommands describe above counts; assert the two rules
+	// really do share the string rather than drifting into two near-identical
+	// scripts (which would silently need a second allowlist entry).
+	test("both fork rules declare the SAME relock command (one allowlist entry)", () => {
+		const declaring = cfg.packageRules.filter((r) =>
+			r.postUpgradeTasks?.commands?.includes(RELOCK),
+		);
+		expect(declaring).toHaveLength(2);
+		expect(
+			bot.allowedCommands?.filter((a) => new RegExp(a).test(RELOCK)),
+		).toEqual(["^bun tools/renovate/refresh-devenv-lock\\.ts$"]);
+	});
+
+	// The two locks must never land in ONE branch: two branch-mode relock tasks
+	// on a shared branch means Renovate builds only one and the other lock ships
+	// rev-bumped-but-unrelocked. Replay the real last-match-wins packageRule
+	// semantics for each scope's digest and assert each resolves to its own
+	// group, never the TypeScript rollup (which also matches custom.regex).
+	test.each(forkScopes)(
+		"the $label fork digest resolves to its own solo branch, not the TS rollup",
+		({ depName, lock, groupName }) => {
+			const group = resolveGroupName({
+				manager: "custom.regex",
+				fileName: lock,
+				depName,
+				updateType: "digest",
+			});
+			expect(group).toBe(groupName);
+			expect(group).not.toBe("TypeScript dependencies");
+		},
+	);
+
+	test("the two fork scopes carry DISTINCT groupNames (independent cadences)", () => {
+		const groups = forkScopes.map((s) => ruleFor(s.depName)?.groupName);
+		expect(new Set(groups).size).toBe(forkScopes.length);
+	});
+
+	// M1 (RIG-2815 review): the relock `nix run`s the fork flakeref, and the fork
+	// publishes no binary cache, so every fork rev is a from-source devenv build
+	// before the relock runs — measured minutes, plausibly past Renovate's 15-min
+	// default executionTimeout on a cold 2-vCPU runner. A timeout kills the child,
+	// the relock never runs, and Renovate still commits the regex bump (the exact
+	// half-relock this task exists to prevent). Pin the raised ceiling so a
+	// default change or accidental removal fails HERE, not as a nightly relock
+	// silently timing out. globalOnly, so it lives in bot-config.
+	test("bot-config sets an executionTimeout covering a cold fork build", () => {
+		expect(typeof bot.executionTimeout).toBe("number");
+		// Comfortably above the 15-min default; a cold from-source fork build can
+		// exceed 15 min on a hosted runner.
+		expect(bot.executionTimeout).toBeGreaterThanOrEqual(30);
+	});
+
+	// M2 (RIG-2815 review): the relock's `nix run` depends on the runner's
+	// nix.conf naming the devenv + cachix substituters and their trusted keys —
+	// the fork's `#devenv` closure is not on cache.nixos.org and nix ignores the
+	// fork flake's own nixConfig non-interactively, so without these caches the
+	// realise cold-compiles the Nix fork from source and can exhaust the runner.
+	// Nothing in refresh-devenv-lock.ts provides them; renovate.yml's
+	// extra_nix_config does. Assert that block still names both caches + keys so
+	// trimming them there (e.g. once the PATH devenv-cli step is retired) fails a
+	// test rather than wedging the nightly relock. Same fail-closed posture as the
+	// self-pin workflow guard below (which already reads renovate.yml).
+	test("renovate.yml wires the substituters the relock nix run needs", () => {
+		const workflow = readFileSync(
+			join(repoRoot, ".github", "workflows", "renovate.yml"),
+			"utf8",
+		);
+		// Strip YAML comment lines before asserting, mirroring the self-pin
+		// workflow guard below (config.test.ts): a substituter that survives only
+		// in a commented-out or rationale-narrated block still leaves the runner
+		// without it, so the guard must read live config, not prose.
+		const liveConfig = workflow
+			.split("\n")
+			.filter((l) => !/^\s*#/.test(l))
+			.join("\n");
+		// Order-independent: both caches must sit on a LIVE extra-substituters
+		// line, in either order.
+		expect(
+			/^\s*extra-substituters = .*https:\/\/devenv\.cachix\.org/m.test(
+				liveConfig,
+			),
+		).toBe(true);
+		expect(liveConfig).toContain("https://cachix.cachix.org");
+		// Both trusted public keys must accompany their substituters on a live
+		// extra-trusted-public-keys line, or nix rejects the cached paths and
+		// falls back to a from-source build.
+		expect(
+			/^\s*extra-trusted-public-keys = .*devenv\.cachix\.org-1:/m.test(
+				liveConfig,
+			),
+		).toBe(true);
+		expect(liveConfig).toContain("cachix.cachix.org-1:");
+	});
+
+	// L3 (RIG-2815 review): the two fork managers carry the SAME matchStrings
+	// literal (RD-1 forbids reconciling the rules, and JSON5 has no anchor, so the
+	// duplication is deliberate). Nothing else pins that they stay in sync — each
+	// per-manager matchString test reads its own manager — so a one-sided edit
+	// would drift silently. Assert the two share one literal, mirroring the
+	// "same relock command" guard above.
+	test("both fork managers declare the IDENTICAL matchString literal", () => {
+		const literals = forkScopes.map(
+			(s) => managerFor(s.depName)?.matchStrings?.[0],
+		);
+		expect(literals.every((l) => typeof l === "string")).toBe(true);
+		expect(new Set(literals).size).toBe(1);
 	});
 });
 

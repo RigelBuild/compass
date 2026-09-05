@@ -48,6 +48,32 @@
     HOME: "/tmp/renovate-home",
   },
 
+  // GLOBAL child-process execution ceiling (RIG-2815 review M1). Renovate applies
+  // executionTimeout (config/options; default 15 min) in the shared exec path
+  // (util/exec getRawExecOptions) as the DEFAULT timeout for EVERY child process
+  // it creates — not just this task — so raising it also raises the hang budget
+  // for every other manager's artifact update. Accepted deliberately: the
+  // devenv-fork relock is the binding constraint and a wedged child is otherwise
+  // bounded by the CI job, not this knob. Why the relock needs the headroom: the
+  // relock (refresh-devenv-lock.ts) `nix run`s the fork flakeref read from the
+  // lock it is about to relock, and no fork rev is ever pushed to a binary cache
+  // for its `#devenv` output — the fork's only live CI gate (rigel-ci.yml) is
+  // pull-only by design, and the cache-pushing build.yml is gated to
+  // `github.repository_owner == 'cachix'` so it never runs on the fork. So every
+  // fork rev is a from-source Rust build of the devenv CLI + its closure before
+  // the relock even starts: the fork's own rigel-ci.yml measures `nix build
+  // .#devenv` at a consistent ~4.5 min on ubuntu-latest WITH the devenv
+  // substituter warm; the 15-min default leaves little headroom if a substituter
+  // is cold, degraded, or a rev lands before the fork's cache is populated —
+  // exactly when the from-source Nix-fork closure build dominates. On timeout the
+  // child is killed, the relock never runs, and Renovate still commits the regex
+  // rev bump (a postUpgradeTask exit does not abort the branch), i.e. the exact
+  // rev-bumped-but-unrelocked PR this task exists to prevent, arriving
+  // intermittently and rev-dependently. 45 min covers that tail. config.test.ts
+  // pins this so a default change or accidental removal fails closed rather than
+  // silently restoring the 15-min cliff.
+  executionTimeout: 45,
+
   // Allow ONLY the postUpgradeTasks commands tools/renovate/config.json5 declares.
   // postUpgradeTasks.commands are gated by this global allowlist (a repo config
   // can't self-authorize a command), and the `^…$` anchors pin each entry to
@@ -56,7 +82,7 @@
   // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
   // quietly.)
   //
-  // Five entries, all load-bearing:
+  // Six entries, all load-bearing:
   //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
   //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
   //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
@@ -85,7 +111,14 @@
   //      releases at or before its pinned rev, so without this a bump to a newer
   //      go than the overlay provides evals a missing attr and reds CI
   //      (RIG-3100).
-  // (1), (3), (4), and (5) are `bun <script>.ts` — the Renovate hooks are
+  //   6. the devenv-fork relock, which on either compass devenv lock's
+  //      fork-rev digest bump runs `devenv update devenv` in that lock's own
+  //      directory, rewriting the whole lock (narHash/lastModified + the
+  //      fork's transitive nodes) at the new rev rather than leaving the
+  //      regex-bumped rev beside a stale hash. Both devenv-fork packageRules
+  //      declare this ONE command — the script self-gates on WHICH lock
+  //      changed — so one entry covers both (RIG-2815).
+  // (1), (3), (4), (5), and (6) are `bun <script>.ts` — the Renovate hooks are
   // TypeScript run via bun (AGENTS.md "Scripts: TypeScript over bash"); bun is on
   // the runner PATH.
   allowedCommands: [
@@ -94,5 +127,6 @@
     "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",
     "^bun tools/renovate/refresh-fod-hashes\\.ts$",
     "^bun tools/renovate/refresh-go-overlay\\.ts$",
+    "^bun tools/renovate/refresh-devenv-lock\\.ts$",
   ],
 }
