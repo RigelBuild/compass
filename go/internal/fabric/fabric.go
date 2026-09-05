@@ -23,6 +23,11 @@ type Unsubscribe func()
 type EventFabric interface {
 	Publish(ctx context.Context, subject string, ref EventRef) error
 	Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error)
+	// SubscribeKind is the tenant-wildcard read side: one durable queue-group
+	// consumer receiving one kind across EVERY tenant, which is what the
+	// per-Server delivery singleton needs (§T3). Publish stays per-tenant and
+	// concrete.
+	SubscribeKind(ctx context.Context, kind EventKind, fn func(EventRef)) (Unsubscribe, error)
 }
 
 // RunnerFabric is the Server↔Runner async seam (frozen, §T3): per-Runner

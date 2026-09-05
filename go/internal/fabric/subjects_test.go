@@ -133,6 +133,86 @@ func TestCommsSubjectRejectsInvalidKind(t *testing.T) {
 	}
 }
 
+// TestCommsWildcardSubject defends the delivery plane's cross-tenant fan-in
+// subject. The wildcard must sit on the TENANT token and nowhere else: a
+// wildcard kind would put all seven comms kinds on one delivery consumer, and
+// a subject outside the stream's compass.*.comms.* capture would build a
+// consumer that is created successfully and then silently never delivers.
+func TestCommsWildcardSubject(t *testing.T) {
+	t.Parallel()
+
+	t.Run("builds the tenant-wildcard subject", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct {
+			kind EventKind
+			want string
+		}{
+			{KindMessagePosted, "compass.*.comms.message_posted"},
+			{KindTopicUpserted, "compass.*.comms.topic_upserted"},
+		} {
+			got, err := CommsWildcardSubject(tc.kind)
+			if err != nil {
+				t.Fatalf("CommsWildcardSubject(%q): %v", tc.kind, err)
+			}
+			if got != tc.want {
+				t.Fatalf("CommsWildcardSubject(%q) = %q, want %q", tc.kind, got, tc.want)
+			}
+		}
+	})
+
+	// The kind token is NOT wildcarded, and it is not exempt from the grammar
+	// either: it is the one caller-supplied token on this path, so an
+	// unvalidated kind is how a reserved character escapes into the subject.
+	t.Run("rejects an invalid kind", func(t *testing.T) {
+		t.Parallel()
+		for _, kind := range []EventKind{"", "bad.kind", "message>posted", "*", "message posted"} {
+			if s, err := CommsWildcardSubject(kind); err == nil {
+				t.Errorf("CommsWildcardSubject(%q) = %q, want an error", kind, s)
+			}
+		}
+	})
+
+	// Subscribe's strict grammar must stay strict: the wildcard path has its
+	// own validated builder precisely so validCommsSubject never has to accept
+	// a "*" tenant, which would also let a concrete-subject caller subscribe
+	// across tenants by hand.
+	t.Run("is not reachable through the concrete grammar", func(t *testing.T) {
+		t.Parallel()
+		wildcard, err := CommsWildcardSubject(KindMessagePosted)
+		if err != nil {
+			t.Fatalf("CommsWildcardSubject: %v", err)
+		}
+		if err := validCommsSubject(wildcard); err == nil {
+			t.Fatalf("validCommsSubject(%q) = nil; Subscribe must stay concrete-only", wildcard)
+		}
+	})
+
+	// The stream captures compass.*.comms.* — if the wildcard subject fell
+	// outside it the delivery consumer's FilterSubject would match nothing.
+	t.Run("is captured by the comms stream", func(t *testing.T) {
+		t.Parallel()
+		wildcard, err := CommsWildcardSubject(KindMessagePosted)
+		if err != nil {
+			t.Fatalf("CommsWildcardSubject: %v", err)
+		}
+		streamTokens := strings.Split(commsStreamSubjects, ".")
+		got := strings.Split(wildcard, ".")
+		if len(got) != len(streamTokens) {
+			t.Fatalf("CommsWildcardSubject = %q has %d tokens, want %d to match %q",
+				wildcard, len(got), len(streamTokens), commsStreamSubjects)
+		}
+		for i, want := range streamTokens {
+			if want == wildcardToken {
+				continue // the stream wildcards this position; anything matches.
+			}
+			if got[i] != want {
+				t.Fatalf("CommsWildcardSubject = %q: token %d is %q, want %q to be captured by %q",
+					wildcard, i, got[i], want, commsStreamSubjects)
+			}
+		}
+	})
+}
+
 // TestEventKindsAreValidSubjectTokens defends the closed set of kinds against
 // the grammar: a kind constant is used verbatim as a subject token, so one
 // introduced with a "." or an uppercase-with-space spelling would break every

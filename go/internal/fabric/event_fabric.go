@@ -80,6 +80,51 @@ func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(EventRef
 	if err := validCommsSubject(subject); err != nil {
 		return nil, err
 	}
+	return f.subscribeSubject(ctx, subject, fn)
+}
+
+// SubscribeKind drives fn for every event of one kind ACROSS EVERY TENANT,
+// until the returned Unsubscribe is called, ctx is done, or the Fabric is
+// closed. It is the delivery plane's cross-tenant fan-in path: the delivery
+// consumer is a per-Server singleton serving all tenants, while each event is
+// published on a concrete compass.<tenant>.comms.<kind>, so the one consumer
+// subscribes on the tenant-wildcard subject CommsWildcardSubject builds.
+//
+// Identical in every other respect to Subscribe — one DURABLE queue-group
+// consumer (durableName hashes the wildcard subject to its own name, distinct
+// from any concrete-tenant consumer, so each matching event is claimed by
+// exactly one Server instance), the same explicit ack / Nak-to-MaxDeliver /
+// park-on-DLQSubject semantics, and the same drain on all three teardown
+// paths. Wildcard and concrete consumers are independent durables; see
+// SUBJECTS.md's "Its own durable consumer" property when migrating callers.
+//
+// The wildcard is on the TENANT token only: kind is concrete and validated, so
+// a SubscribeKind(KindMessagePosted) receives message_posted for every tenant
+// and nothing else. Subscribe keeps its strict concrete-subject grammar — a
+// wildcard subject cannot be reached through it.
+func (f *Fabric) SubscribeKind(ctx context.Context, kind EventKind, fn func(EventRef)) (Unsubscribe, error) {
+	if err := f.checkOpen(); err != nil {
+		return nil, err
+	}
+	if fn == nil {
+		return nil, fmt.Errorf("fabric: SubscribeKind(%q) requires a callback", kind)
+	}
+	subject, err := CommsWildcardSubject(kind)
+	if err != nil {
+		return nil, err
+	}
+	return f.subscribeSubject(ctx, subject, fn)
+}
+
+// subscribeSubject is the shared body of Subscribe and SubscribeKind: it
+// registers the durable consumer on an ALREADY-VALIDATED subject and wires its
+// teardown. Split out so each public entry point owns its own subject
+// validation — Subscribe's strict concrete-only grammar, SubscribeKind's
+// tenant-wildcard builder — and neither can reach the other's.
+//
+// It performs no validation of its own: subject must come from
+// validCommsSubject or CommsWildcardSubject.
+func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error) {
 	stream, err := f.ensureStream(ctx)
 	if err != nil {
 		return nil, err
@@ -93,7 +138,7 @@ func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(EventRef
 	}
 
 	cc, err := cons.Consume(func(msg jetstream.Msg) {
-		f.handleEvent(ctx, subject, msg, fn)
+		f.handleEvent(ctx, msg, fn)
 	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
 		// Transient pull errors are the library's to retry; surfacing them is
 		// the only thing this side can do, and swallowing them would hide a
@@ -143,22 +188,22 @@ func (f *Fabric) Subscribe(ctx context.Context, subject string, fn func(EventRef
 // handleEvent runs one delivery: decode, invoke fn under a panic guard, then ack
 // or park. Split out of Subscribe so the ack/park decision is readable on its
 // own.
-func (f *Fabric) handleEvent(ctx context.Context, subject string, msg jetstream.Msg, fn func(EventRef)) {
+func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(EventRef)) {
 	ref, decodeErr := decodeEventRef(msg.Data())
 	if decodeErr != nil {
 		// Unparseable: no number of redeliveries changes the bytes.
-		f.park(ctx, subject, msg, decodeErr)
+		f.park(ctx, msg, decodeErr)
 		return
 	}
 	if err := invoke(fn, ref); err != nil {
-		f.retryOrPark(ctx, subject, msg, err)
+		f.retryOrPark(ctx, msg, err)
 		return
 	}
 	if err := msg.Ack(); err != nil {
 		// The event WAS processed; a lost ack costs a redelivery, which the
 		// subscriber's Postgres re-read makes idempotent. Log, never park.
 		f.log.WarnContext(ctx, "fabric: acking delivered event failed; it will be redelivered",
-			"subject", subject, "kind", string(ref.Kind), "row_id", ref.RowID, "error", err)
+			"subject", msg.Subject(), "kind", string(ref.Kind), "row_id", ref.RowID, "error", err)
 	}
 }
 
@@ -180,25 +225,25 @@ func invoke(fn func(EventRef), ref EventRef) (err error) {
 // attempt budget is spent. Reading NumDelivered from the message metadata (not a
 // local counter) is what makes the budget hold across Server instances and
 // restarts — the count is the server's.
-func (f *Fabric) retryOrPark(ctx context.Context, subject string, msg jetstream.Msg, cause error) {
+func (f *Fabric) retryOrPark(ctx context.Context, msg jetstream.Msg, cause error) {
 	md, err := msg.Metadata()
 	if err != nil {
 		// No metadata means no attempt count, so the budget cannot be enforced;
 		// park rather than risk redelivering a poison message forever.
-		f.park(ctx, subject, msg, fmt.Errorf("%w (and its metadata was unreadable: %w)", cause, err))
+		f.park(ctx, msg, fmt.Errorf("%w (and its metadata was unreadable: %w)", cause, err))
 		return
 	}
 	if md.NumDelivered >= f.cfg.deliveryBudget() {
-		f.park(ctx, subject, msg, fmt.Errorf("%w (after %d delivery attempts)", cause, md.NumDelivered))
+		f.park(ctx, msg, fmt.Errorf("%w (after %d delivery attempts)", cause, md.NumDelivered))
 		return
 	}
 	f.log.WarnContext(ctx, "fabric: event handling failed; redelivering",
-		"subject", subject, "attempt", md.NumDelivered, "max_deliver", f.cfg.maxDeliver(), "error", cause)
+		"subject", msg.Subject(), "attempt", md.NumDelivered, "max_deliver", f.cfg.maxDeliver(), "error", cause)
 	if err := msg.Nak(); err != nil {
 		// AckWait still expires and redelivers, so this is a latency cost, not
 		// a lost event.
 		f.log.WarnContext(ctx, "fabric: nak failed; redelivery waits for ack_wait",
-			"subject", subject, "error", err)
+			"subject", msg.Subject(), "error", err)
 	}
 }
 
@@ -217,22 +262,22 @@ func (f *Fabric) retryOrPark(ctx context.Context, subject string, msg jetstream.
 //
 // The reason on the wire is sanitized and bounded (see sanitizeReason); the
 // full cause goes to the log, which has no wire limit.
-func (f *Fabric) park(ctx context.Context, subject string, msg jetstream.Msg, cause error) {
+func (f *Fabric) park(ctx context.Context, msg jetstream.Msg, cause error) {
 	f.log.ErrorContext(ctx, "fabric: parking event on the dlq",
-		"subject", subject, "dlq_subject", DLQSubject, "error", cause)
+		"subject", msg.Subject(), "dlq_subject", DLQSubject, "error", cause)
 
 	dlq := nats.NewMsg(DLQSubject)
 	dlq.Data = msg.Data()
-	dlq.Header.Set(dlqHeaderSubject, subject)
+	dlq.Header.Set(dlqHeaderSubject, msg.Subject())
 	reason := sanitizeReason(cause.Error())
 	dlq.Header.Set(dlqHeaderReason, reason)
 	if err := f.nc.PublishMsg(dlq); err != nil {
 		f.log.ErrorContext(ctx, "fabric: publishing to the dlq failed; terminating the message anyway",
-			"subject", subject, "error", err)
+			"subject", msg.Subject(), "error", err)
 	}
 	if err := msg.TermWithReason(reason); err != nil {
 		f.log.ErrorContext(ctx, "fabric: terminating a parked message failed; it may redeliver until max_deliver",
-			"subject", subject, "error", err)
+			"subject", msg.Subject(), "error", err)
 	}
 }
 

@@ -263,6 +263,9 @@ func TestCloseIsIdempotentAndFailsClosed(t *testing.T) {
 	if _, err := f.Subscribe(ctx, subject, func(EventRef) {}); !errors.Is(err, errClosed) {
 		t.Fatalf("Subscribe after Close: want errClosed, got %v", err)
 	}
+	if _, err := f.SubscribeKind(ctx, KindMessagePosted, func(EventRef) {}); !errors.Is(err, errClosed) {
+		t.Fatalf("SubscribeKind after Close: want errClosed, got %v", err)
+	}
 	if err := f.SendCommand(ctx, "r1", nil); !errors.Is(err, errClosed) {
 		t.Fatalf("SendCommand after Close: want errClosed, got %v", err)
 	}

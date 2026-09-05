@@ -15,7 +15,7 @@ const (
 	// commsStreamSubjects is the single wildcard the COMPASS_COMMS JetStream
 	// stream captures: every tenant's every comms kind. It matches exactly what
 	// CommsSubject builds — four tokens, tenant and kind wildcarded.
-	commsStreamSubjects = subjectPrefix + ".*.comms.*"
+	commsStreamSubjects = subjectPrefix + "." + wildcardToken + ".comms." + wildcardToken
 
 	// RunnerEventsQueue is the queue group every Server's RunnerFabric.Events
 	// subscription joins, so one Runner event is handled by exactly one Server
@@ -43,6 +43,28 @@ func CommsSubject(tenant string, kind EventKind) (string, error) {
 		return "", err
 	}
 	return subjectPrefix + "." + tenant + ".comms." + string(kind), nil
+}
+
+// CommsWildcardSubject builds the TENANT-WILDCARD comms subject for one event
+// kind: compass.*.comms.<kind>. It is the delivery plane's cross-tenant
+// fan-in subject — the delivery consumer is a per-Server singleton serving
+// every tenant, and each message publishes to a concrete
+// compass.<tenant>.comms.<kind>, so catching every tenant needs one consumer
+// whose FilterSubject wildcards the tenant token (§T3).
+//
+// Only the TENANT token is wildcarded. The kind stays a concrete, validated
+// token — a wildcard kind would capture all seven comms kinds on one consumer,
+// which delivery must not do — so this returns an error if kind is not a valid
+// single subject token (see ValidSubjectToken).
+//
+// Subscribe-side only. Publish derives its subject from the ref via
+// CommsSubject, and EventRef.valid rejects a "*" tenant, so no publish can
+// ever target this subject.
+func CommsWildcardSubject(kind EventKind) (string, error) {
+	if err := ValidSubjectToken("event kind", string(kind)); err != nil {
+		return "", err
+	}
+	return subjectPrefix + "." + wildcardToken + ".comms." + string(kind), nil
 }
 
 // validCommsSubject checks a whole comms subject against the frozen grammar:
@@ -77,6 +99,11 @@ func validCommsSubject(subject string) error {
 const (
 	commsSubjectTokens = 4
 	commsToken         = "comms"
+
+	// wildcardToken is NATS's single-token wildcard, used by
+	// CommsWildcardSubject for the tenant token only. Spelled once here so the
+	// wildcard subject and commsStreamSubjects cannot drift apart.
+	wildcardToken = "*"
 )
 
 // RunnerCommandSubject builds a Runner's command subject:
