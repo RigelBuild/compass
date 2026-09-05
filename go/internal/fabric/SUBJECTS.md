@@ -11,6 +11,7 @@ this file is the operational restatement that later tasks build against, and
 | Grammar | Plane | Builder | Direction |
 | --- | --- | --- | --- |
 | `compass.<tenant>.comms.<kind>` | JetStream | `CommsSubject(tenant, kind)` | Server → Servers (comms/delivery fan-out) |
+| `compass.*.comms.<kind>` | JetStream | `CommsWildcardSubject(kind)` | Servers → one delivery consumer (cross-tenant fan-in, **subscribe-side only**) |
 | `compass.runner.<runner_id>.cmd` | core NATS | `RunnerCommandSubject(runnerID)` | Server → one Runner (async command push) |
 | `compass.runner.events` | core NATS, queue group `compass-runner-events` | `RunnerEventsSubject()` | Runners → exactly one Server (event fan-in) |
 | `client.<sessionID>` | core NATS | `ClientSubject(sessionID)` | Server → one live client connection |
@@ -19,6 +20,37 @@ this file is the operational restatement that later tasks build against, and
 `client.<sessionID>` sits outside the `compass.` root deliberately — the frozen
 grammar names it that way, and it must not be captured by the comms stream's
 subject wildcard.
+
+### The tenant-wildcard subscribe: `compass.*.comms.<kind>`
+
+Publish is always per-tenant and concrete. The read side has a second entry
+point, `EventFabric.SubscribeKind(ctx, kind, fn)`, which subscribes on
+`compass.*.comms.<kind>` — one kind, every tenant. The T3 delivery consumer is
+a per-Server **singleton** serving all tenants, so a per-tenant subscribe would
+need one consumer per tenant created at tenant-creation time; the wildcard gives
+it one durable queue-group consumer instead, and tenant creation stays a
+Postgres insert.
+
+- **The wildcard is on the tenant token only.** The kind stays concrete and is
+  validated by `ValidSubjectToken`. A wildcard kind would put all seven comms
+  kinds on the delivery consumer, waking it (and its Postgres re-read) for every
+  unrelated write.
+- **No stream-config change.** `Subjects` is already `compass.*.comms.*`, which
+  captures this subject by construction; JetStream accepts a wildcard
+  `FilterSubject` on a durable consumer.
+- **Its own durable consumer.** `Durable` is `comms-` + sha256(subject), so the
+  wildcard subject hashes to a name distinct from every concrete-tenant
+  consumer. Shared and durable as usual: each matching event is claimed by
+  exactly one Server instance. Wildcard and concrete consumers on the same kind
+  are independent durables, so an event matching both is delivered once to each;
+  a migration introducing `SubscribeKind` must retire the concrete subscribes
+  rather than double-handle events.
+- **`Subscribe` stays concrete-only.** `validCommsSubject` still rejects a `*`
+  token, so the wildcard is reachable only through `SubscribeKind`'s own
+  validated builder — a caller cannot hand-write a cross-tenant subject.
+- **Publish cannot target it.** `Publish` derives its subject from the ref via
+  `CommsSubject`, and `EventRef.valid` rejects a `*` tenant, so a wildcard
+  publish is impossible rather than merely discouraged.
 
 ### Token validation: reject, never sanitize
 
@@ -123,9 +155,10 @@ park, republish the raw payload to `compass.dlq.comms` and then
   a DLQ publish that needed a stream would need a DLQ of its own.
 - `Term` is issued **even if the DLQ publish fails**, with both failures logged:
   a poison message redelivering forever is the worse outcome.
-- Headers on the parked message: `Compass-Original-Subject` (the subject it was
-  delivered on) and `Compass-Park-Reason` (the error), so an operator reading the
-  DLQ needs no log correlation.
+- Headers on the parked message: `Compass-Original-Subject` (the concrete
+  subject the message was delivered on, even for a wildcard (`SubscribeKind`)
+  consumer, so it always names the tenant) and `Compass-Park-Reason` (the
+  error), so an operator reading the DLQ needs no log correlation.
 
 The attempt count comes from the message's server-side metadata rather than any
 local counter, which is what makes the budget hold across Server instances and
