@@ -75,9 +75,12 @@ const pgidRecordName = "stack.pgids"
 const upBudget = 3 * time.Minute
 
 // downBudget bounds each `compass-stack down` subprocess. DownDetached's absolute
-// worst case (every component escalating to SIGKILL) is ~65s; the SIGTERM-succeeds
-// path is far quicker. Bounded so a wedged down fails fast.
-const downBudget = 90 * time.Second
+// worst case (every component escalating to SIGKILL) is ~105s now that the nats
+// drain budget joins the collector/postgres teardown; the SIGTERM-succeeds path
+// is ~85s. Bounded generously above the escalation worst case so a `down` that
+// legitimately escalates is never killed mid-teardown, while a genuinely wedged
+// down still fails fast.
+const downBudget = 150 * time.Second
 
 // answerPollInterval is the gap between server-socket readiness probes. Small
 // enough to make the post-up live assertion prompt, an explicit event-gate

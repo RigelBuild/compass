@@ -45,15 +45,16 @@ func downTestDeps(t *testing.T, h *harness) Deps {
 // test, restoring them after. Small but nonzero so the deadline math is real.
 func shrinkBudgets(t *testing.T) {
 	t.Helper()
-	pr, ps, pp, pc, pk, pi := runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, postKillGrace, downPollInterval
+	pr, ps, pp, pc, pn, pk, pi := runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, natsDrainBudget, postKillGrace, downPollInterval
 	runnerDrainBudget = 20 * time.Millisecond
 	serverDrainBudget = 20 * time.Millisecond
 	postgresDrainBudget = 20 * time.Millisecond
 	collectorDrainBudget = 20 * time.Millisecond
+	natsDrainBudget = 20 * time.Millisecond
 	postKillGrace = 20 * time.Millisecond
 	downPollInterval = time.Millisecond
 	t.Cleanup(func() {
-		runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, postKillGrace, downPollInterval = pr, ps, pp, pc, pk, pi
+		runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, natsDrainBudget, postKillGrace, downPollInterval = pr, ps, pp, pc, pn, pk, pi
 	})
 }
 
@@ -636,10 +637,11 @@ func seedCollectorRecord(t *testing.T, cfg Config, h *harness) {
 	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
 }
 
-// collectorDownDeps points the collector confirm at container existence while
-// the server/postgres confirms track their group liveness (they are processes
-// in this record).
-func collectorDownDeps(t *testing.T, h *harness) Deps {
+// sidecarContainerDownDeps points a container component's confirm at container
+// existence while the server/postgres confirms track their group liveness (they
+// are processes in these records). Shared by the collector and nats teardown
+// tests — the Containers seam is name-agnostic, so one wiring serves both.
+func sidecarContainerDownDeps(t *testing.T, h *harness) Deps {
 	t.Helper()
 	deps := downTestDeps(t, h)
 	deps.Containers = h.containers
@@ -665,7 +667,7 @@ func indexOf(events []string, want string) int {
 func TestDownDetachedCollectorContainerTornDownByName(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedCollectorRecord(t, cfg, h)
-	deps := collectorDownDeps(t, h)
+	deps := sidecarContainerDownDeps(t, h)
 
 	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
@@ -701,7 +703,7 @@ func TestDownDetachedCollectorContainerTornDownByName(t *testing.T) {
 func TestDownDetachedCollectorEscalatesToRemove(t *testing.T) {
 	cfg, h := newHarness(t)
 	seedCollectorRecord(t, cfg, h)
-	deps := collectorDownDeps(t, h)
+	deps := sidecarContainerDownDeps(t, h)
 
 	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
 		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
@@ -718,6 +720,98 @@ func TestDownDetachedCollectorEscalatesToRemove(t *testing.T) {
 	want := []string{"ctr-stop " + collectorContainerNameTest, "ctr-rm " + collectorContainerNameTest}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("collector escalation:\n got  %v\n want %v (stop then rm -f)", got, want)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// The stable name a v2 nats container entry carries in these tests.
+const natsContainerNameTest = "compass-nats-test01"
+
+// seedNatsRecord writes a v2 record whose nats entry is a container (ctr)
+// sitting between the server and postgres process entries — the start-order
+// shape a real up records — and marks all four children live. It is the
+// hermetic guard for the cross-process nats teardown: a liveTargets that does
+// not know ComponentNats silently skips the container and leaks it, which no
+// podman-gated integration test would catch on a default-CI run.
+func seedNatsRecord(t *testing.T, cfg Config, h *harness) {
+	t.Helper()
+	rec := pgidRecord{
+		WriterPid: 4242,
+		Version:   pgidFileVersion,
+		Entries: []pgidEntry{
+			{Kind: entryProc, Component: ComponentPostgres, Pgid: pgPgid, StartTime: pgToken(pgPgid)},
+			{Kind: entryContainer, Component: ComponentNats, ContainerName: natsContainerNameTest},
+			{Kind: entryProc, Component: ComponentServer, Pgid: serverPgid, StartTime: pgToken(serverPgid)},
+			{Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)},
+		},
+	}
+	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+		t.Fatalf("seed nats record = %v", err)
+	}
+	h.containers.setExistsName(natsContainerNameTest, true)
+	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
+	h.groupSig.set(serverPgid, pgToken(serverPgid), true)
+	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
+}
+
+// TestDownDetachedNatsContainerTornDownByName proves the cross-process teardown
+// of the bundled nats: a detached down reads the v2 record, stops the nats
+// container BY NAME (graceful, no rm -f) and in reverse start order — after the
+// server is signaled (its future consumer, PR3/PR4), before postgres. Graceful
+// matters more here than for the collector: `podman stop` SIGTERMs nats-server
+// so it flushes the JetStream store, while an rm -f would leave the store to
+// recover on next boot.
+func TestDownDetachedNatsContainerTornDownByName(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedNatsRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+
+	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onStop[natsContainerNameTest] = func() {
+		h.containers.setExistsName(natsContainerNameTest, false)
+	}
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil", err)
+	}
+
+	if got := ctrEvents(h.rec.snapshot()); !reflect.DeepEqual(got, []string{"ctr-stop " + natsContainerNameTest}) {
+		t.Fatalf("nats teardown:\n got  %v\n want [ctr-stop %s] (graceful, by name)", got, natsContainerNameTest)
+	}
+	ev := h.rec.snapshot()
+	iServer := indexOf(ev, "group-term "+strconv.Itoa(serverPgid))
+	iNats := indexOf(ev, "ctr-stop "+natsContainerNameTest)
+	iPg := indexOf(ev, "group-term "+strconv.Itoa(pgPgid))
+	if !(iServer >= 0 && iNats >= 0 && iPg >= 0 && iServer < iNats && iNats < iPg) {
+		t.Fatalf("teardown order wrong: server@%d nats@%d postgres@%d; want server<nats<postgres in %v", iServer, iNats, iPg, ev)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedNatsEscalatesToRemove proves the nats SIGKILL tier: a nats
+// container that ignores `podman stop` is force-removed by `podman rm -f`, then
+// (existence gone) confirmed.
+func TestDownDetachedNatsEscalatesToRemove(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedNatsRecord(t, cfg, h)
+	deps := sidecarContainerDownDeps(t, h)
+
+	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onRemove[natsContainerNameTest] = func() {
+		h.containers.setExistsName(natsContainerNameTest, false)
+	}
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil", err)
+	}
+	got := ctrEvents(h.rec.snapshot())
+	want := []string{"ctr-stop " + natsContainerNameTest, "ctr-rm " + natsContainerNameTest}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("nats escalation:\n got  %v\n want %v (stop then rm -f)", got, want)
 	}
 	assertPgidFileGone(t, cfg.StateDir)
 }
