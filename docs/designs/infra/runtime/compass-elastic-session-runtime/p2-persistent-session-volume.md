@@ -13,14 +13,14 @@
 > citation is a path in the **`RigelBuild/compass`** monorepo at main
 > `17111cc0` (line numbers drift; resolve against that commit).
 
-Status: PROPOSED — details P2 under the frozen parent + the active amendment.
+Status: PROPOSED — details P2 under the frozen parent + the active amendment;
+the central clone/credential fork (OQ-1) is ruled (Matt, 2026-09-05, DL-326).
 Tracking: RIG-2395
 
-Ledger impact: none intended. The clone/credential fork (OQ-1) is
-load-bearing and, once ruled, may warrant a ledger row beside DL-052 (it is a
-credential-**location** decision DL-052 does not speak to,
-virtualfs-descope-amendment.md:62-67); that row lands with the ruling, not
-with this draft.
+Ledger impact: **DL-326** (the OQ-1 ruling: agent self-clone + clone-only
+snapshot). It is a credential-**location** decision beside DL-052, which speaks
+only to the Server's write credential (virtualfs-descope-amendment.md:62-67);
+the row landed with Matt's ruling.
 
 ## Problem / Intent
 
@@ -280,10 +280,10 @@ snapshots via OQ-1b's clean-stamp mechanism), and B's price is a standing new
 credential surface plus launch-path churn. A is reversible: if a prebuild
 *service* ever materializes trees with no session, that is the moment a
 host-side read credential earns its existence, and the `Materialize` signature
-already accommodates it. The whole fork is **OQ-1, load-bearing** — its clone
-posture (1a) and snapshot provenance (1b) are ratified together; the caller
-takes it to Matt, the Plan below sequences the gated tasks after the ruling,
-and this record drafts against A + provenance-(a).
+already accommodates it. The whole fork was **OQ-1, load-bearing** — its clone
+posture (1a) and snapshot provenance (1b), ratified together by Matt as
+**Option A + clone-only** (DL-326, §OQ-1); this record now builds to that
+ruling.
 
 ### `WorkspaceSource` and the provision wiring
 
@@ -364,12 +364,12 @@ session path stays green (8), version floors (9). P2-specific additions:
   comment (`agent.go:43-44`), never the `Mount` shape (`podman.go:62-66`). The
   read-write agent-gateway-socket mount (`podman.go:100-103`) is the existing
   read-write-bind-mount precedent at this layer.
-- **P2-GC-b — no new credential surface under the drafted-against ruling.**
-  Option A under provenance-(a) introduces no host-side forge credential, and
-  until Matt rules OQ-1 no task may introduce one. A ruling of OQ-1b(b) or of
-  Option B/C *does* introduce a host-side forge credential and re-opens this
-  constraint — the prohibition binds the drafted-against posture, not every
-  legal outcome of OQ-1.
+- **P2-GC-b — no new credential surface.** The ruled Option A + clone-only
+  (DL-326) introduces no host-side forge credential — the agent self-clones
+  in-container with its existing `$HOME` token — and no P2 task may introduce
+  one. This binds the ruled posture; a future Option B/C or build-prebuild
+  service (the DL-326 revisit trigger) would re-open this constraint under its
+  own decision.
 - **P2-GC-c — volume destruction only via `Expire`.** `Release`, `Teardown`,
   eviction, crash, and failed launches never delete volume contents; the only
   reclaim path is the policy reaper (the parent's GC 5 made mechanical).
@@ -392,21 +392,15 @@ session path stays green (8), version floors (9). P2-specific additions:
 
 ## Plan
 
-Six implementation tasks (W1–W6). W1 is foundational. **OQ-1 gating:** W3's
-checkout-backend semantics, W5's wiring + clone-complete-signal sub-unit,
-W2's snapshot-store/index leg, and W6's snapshot-materialized acceptance
-probe (probe 3) are **gated on the OQ-1 ruling** — drafted against Option A +
-provenance-(a), they change little under B but must not merge a credential
-posture or snapshot mechanism Matt has not ruled.
-**Descope-survivors:** if OQ-1b is ruled "descope snapshot amortization," W1
-(lifecycle + local-dir backend + close-stamp), W2's `cloner` volume-copy
-primitive, W3's seam + checkout and customer-mount backends, W4
-(`WorkspaceSource`), and the non-snapshot legs of W5/W6 still ship; what drops
-is W2's snapshot-store/index, W3's snapshot-source backend + the
-`TreeSource.Snapshot` path, W5's clone-complete sub-unit, and W6 probe 3.
-`Snapshot` then joins `Archive`/`Restore` as **reserved-not-implemented** on
-the W1 interface (its sole caller drops), keeping the honest-sentinel
-discipline. Hermetic unless noted.
+Six implementation tasks (W1–W6). W1 is foundational. **OQ-1 is ruled Option A
+with a clone-only snapshot (DL-326, §OQ-1)**, so W3's checkout-backend
+semantics, W5's wiring plus its clone-complete-signal sub-unit, W2's
+snapshot-store/index leg, and W6's snapshot-materialized acceptance probe
+(probe 3) all **build to that contract**: the agent self-clones in-container
+(no host-side forge credential), and the snapshot carries a provably-clean
+post-clone tree only (no cross-session build state). The record was drafted
+against this posture, so the ruling settled the contract without reshaping any
+task. Hermetic unless noted.
 
 ### W1 — volume lifecycle API + local-dir backend (`go/internal/vfs`)
 
@@ -509,9 +503,9 @@ The package skeleton mirrors `go/internal/compute`'s layering
   implementations — reflink copy (`cp --reflink=always`-class, FS-supporting)
   and rsync-clone — chosen by a **runtime capability probe** (attempt a reflink
   of a probe file in the base dir at manager construction; cache the verdict;
-  no config knob, OQ-3). Useful under every OQ-1b ruling (it is also D4's
+  no config knob, OQ-3). Useful regardless (it is also D4's
   archive/restore copy path), so it is **not** gated.
-- **Snapshot store + index (gated on OQ-1b).** A sibling subtree under the base
+- **Snapshot store + index.** A sibling subtree under the base
   dir keyed by `VolumeSnapshotID`, plus an **`(AgentAccountID, repo)`→snapshot
   index** the provision path reads to set `TreeSource.Snapshot` for a new
   session of an already-seen `(account, repo)`. The account scope is
@@ -523,9 +517,9 @@ The package skeleton mirrors `go/internal/compute`'s layering
   unbounded-multi-GB-liability argument, design.md:619-621, applies to the
   snapshot subtree exactly as to volumes); a superseded snapshot is unlinked
   only after the replacement commits. What counts as a snapshot-worthy (clean)
-  source, and when it is taken, is OQ-1b (the trigger is W5's clone-complete
-  sub-unit); this whole leg drops if OQ-1b is ruled "descope."
-- **Depends:** W1; **snapshot-store/index leg merge-gated on OQ-1**.
+  source, and when it is taken, is the clone-only ruling (DL-326; the trigger
+  is W5's clone-complete sub-unit).
+- **Depends:** W1. The snapshot-store/index leg builds (clone-only, DL-326).
 - **Test cycle:** hermetic on the rsync path (any FS); the reflink path
   needs a reflink-capable FS — CI job pinned to one, plus the probe's
   fallback asserted on a non-capable FS (tmpfs). Snapshot→restore
@@ -535,7 +529,7 @@ The package skeleton mirrors `go/internal/compute`'s layering
   (P2-GC-f) or an unseen repo; taking a newer snapshot atomically supersedes
   the prior one (old key gone, one current key per `(account, repo)`).
 
-### W3 — `VirtualFS` seam + backends *(gated on OQ-1)*
+### W3 — `VirtualFS` seam + backends *(Option A, DL-326)*
 
 - **Interfaces:**
 
@@ -560,19 +554,17 @@ The package skeleton mirrors `go/internal/compute`'s layering
   }
   ```
 
-  Under Option A the checkout backend's `Materialize` prepares the
-  destination (snapshot-restore via W2, else an empty owned root) and
-  records the expected `Repo`/`Ref`; the agent writes the tree bytes
-  in-container. Under Option B it additionally performs the host-side
-  clone/fetch. The seam, `TreeSource`, and the tests' shape are identical
-  either way — only the checkout backend's body and W5's launch-order differ.
-  **`Materialize`'s post-condition varies with the OQ-1 ruling** — "destination
-  prepared, tree completed in-container by the agent" under A vs "tree present
-  at root" under B — so the interface doc-comment states the post-condition
-  explicitly against the ruling (an empty-dir return under A must not surprise
-  a future caller: C3 burst wiring, customer-VFS interop).
-- **Depends:** W1, W2; **merge-gated on OQ-1** (the backend body encodes the
-  ruling).
+  Under the ruled Option A (DL-326) the checkout backend's `Materialize`
+  prepares the destination (snapshot-restore via W2, else an empty owned root)
+  and records the expected `Repo`/`Ref`; the agent writes the tree bytes
+  in-container. The seam, `TreeSource`, and the tests' shape were designed
+  decision-proof — Option B would only have swapped the checkout backend's body
+  (adding a host-side clone/fetch) and W5's launch-order, never the interface.
+  **`Materialize`'s post-condition under A is "destination prepared, tree
+  completed in-container by the agent"** — so the interface doc-comment states
+  that post-condition explicitly (an empty-dir return must not surprise a
+  future caller: C3 burst wiring, customer-VFS interop).
+- **Depends:** W1, W2. The backend body encodes Option A (DL-326).
 - **Test cycle:** contract tests a fake and the real backend both pass
   (the S1 seam discipline, design.md:561-565); snapshot-source materialize
   restores the tree; customer-mount source validates and passes through;
@@ -595,7 +587,7 @@ The package skeleton mirrors `go/internal/compute`'s layering
   in-container path; `Mount.ReadOnly=false` renders without `:ro`
   (`podman.go:846-850`).
 
-### W5 — provision wiring + teardown/reprovision *(gated on OQ-1)*
+### W5 — provision wiring + teardown/reprovision *(Option A, DL-326)*
 
 - **Interfaces:** `SpecBuilder` (`go/internal/runner/host.go:46-48`) derives
   `WorkspaceSource` + the volume mount from the provision request, and is the
@@ -614,7 +606,7 @@ The package skeleton mirrors `go/internal/compute`'s layering
   closed-but-unexpired session re-attaches and re-materializes warm. Box loss:
   `Lookup`'s typed not-found routes to the cold path (create + cold
   materialize), logged as a capability event, never an error to the user.
-- **Clone-complete signal → snapshot (sub-unit, gated on OQ-1b).** Under
+- **Clone-complete signal → snapshot (sub-unit).** Under
   provenance-(a) the snapshot is taken from a **provably-clean post-clone
   tree**, so the trigger is owned here, not left implicit: (i) the agent
   (`packages/compass-agent`, TypeScript) emits a **clone-complete** signal to
@@ -628,18 +620,18 @@ The package skeleton mirrors `go/internal/compute`'s layering
   ownership invariant, Layout) at the expected `Ref`, then calls
   `VolumeManager.Snapshot` (W1) → writes the `(AgentAccountID, repo)`
   index entry (W2, P2-GC-f). This is the **only caller of `Snapshot`** in P2 —
-  without it the verb is dead and the warm path never triggers. The whole
-  sub-unit dies if OQ-1b is ruled "descope snapshots," so it merges behind the
-  OQ-1 gate with the rest of W5.
-- **Depends:** W1, W2, W3, W4; **merge-gated on OQ-1** (Option B would reorder
-  materialize-vs-launch; the clone-complete sub-unit is gated on OQ-1b).
+  without it the verb is dead and the warm path never triggers. This sub-unit
+  builds under the clone-only ruling (DL-326); it would have dropped only under
+  a "descope snapshots" ruling, which Matt did not take.
+- **Depends:** W1, W2, W3, W4. Encodes Option A + clone-only (DL-326):
+  materialize-then-launch order, and the clone-complete sub-unit builds.
 - **Test cycle:** integration — provision→session→teardown→reprovision
   round-trip on the volume path, extended to the parent's full
   provision→materialize→session→**release** round-trip (design.md:561-562);
   W5 owns at merge: the volume survives teardown, the mount path is stable
   across the reattach, and a suspend-stamped volume is `Expire`-ineligible.
-  W5 and W6's snapshot-materialized probe (probe 3) land together behind the
-  OQ-1 gate; the five-probe acceptance suite (the parent's end-to-end P2
+  W5 and W6's snapshot-materialized probe (probe 3) land together (Option A,
+  DL-326); the five-probe acceptance suite (the parent's end-to-end P2
   cycle) is W6's.
 
 ### W6 — expiry reaper wiring + the P2 acceptance suite
@@ -680,100 +672,92 @@ The package skeleton mirrors `go/internal/compute`'s layering
 - [ ] **W2** — snapshot backends: reflink probe + rsync fallback, snapshot
       store + `(AgentAccountID, repo)`→snapshot index (never cross-account,
       P2-GC-f), one-current-snapshot-per-`(account, repo)` retention, restore
-      path (depends: W1; **snapshot-store/index leg merge-gated on OQ-1**;
-      reflink CI leg FS-pinned).
+      path (depends: W1; snapshot-store/index leg builds the clone-only snapshot
+      per DL-326; reflink CI leg FS-pinned).
 - [ ] **W3** — `VirtualFS` seam + checkout/snapshot/customer-mount backends
-      (depends: W1, W2; **merge-gated on OQ-1**).
+      (depends: W1, W2; backend body encodes Option A per DL-326).
 - [ ] **W4** — `WorkspaceSource` variant + `AgentSpec.Mounts` doc amendment
       + mount rendering (depends: W1; parallel with W3).
 - [ ] **W5** — provision wiring: resolve-or-create → attach (clears stamp) →
       materialize → launch; `SpecBuilder` owns the P2-GC-d path triple;
       teardown (container → release → close-stamp with close-vs-suspend
       intent); agent clone-complete signal → host-side git-status-clean verify
-      → `Snapshot` → `(account, repo)` index write (sub-unit gated on OQ-1b);
-      box-loss cold path (depends: W1, W2, W3, W4; **merge-gated on OQ-1**).
+      → `Snapshot` → `(account, repo)` index write (clone-only snapshot, DL-326);
+      box-loss cold path (depends: W1, W2, W3, W4; encodes Option A per DL-326).
 - [ ] **W6** — expiry reaper driver + the five-probe P2 acceptance suite
       (rebuild-freshness + git-shape probes, not timers) (depends: W1–W5;
-      **probe 3 merge-gated on OQ-1**).
+      probe 3 asserts the clone-only warm path, DL-326).
 
 ## Open Questions
 
-Each tagged **load-bearing** (blocks the gated tasks' merge; the caller asks
-Matt) or **non-load-bearing** (deferred with rationale). The record is
-drafted against each recommendation as a stated assumption.
+Each tagged **load-bearing** (blocked the gated tasks' merge) or
+**non-load-bearing** (deferred with rationale). OQ-1 (the one load-bearing
+question) is now ruled (DL-326); the record builds to each recommendation.
 
 > Namespace: an unprefixed **OQ-N** refers to *this* record's open questions;
 > the parent record's are always written **parent OQ N** (space, no hyphen).
 
-1. **[load-bearing] Clone model + snapshot provenance.** Two coupled,
-   load-bearing sub-decisions Matt ratifies as one package — A's cost/benefit
-   leans on "A can amortize snapshots," so the posture cannot be ruled without
-   the mechanism.
+### OQ-1 — Clone model + snapshot provenance *(RULED 2026-09-05, Matt)*
 
-   **1a — Clone model + clone-read-credential location** (the amendment's
-   deferred fork, virtualfs-descope-amendment.md:57-72,123-129).
-   **(A)** keep the agent self-clone: Runner prepares/attaches the volume
-   (empty or snapshot-restored), agent clones/fetches in-container with its
-   existing `$HOME` machine-user token (`workspace.go:58-62`,
-   `agent.go:354-358`) — no new credential class, GC 8 trivially green;
-   **(B)** Runner-side host clone before container start — `VirtualFS`
-   literally materializes and sessionless prebuilds become possible, at the
-   price of a new host-side forge READ credential (distinct from DL-052's
-   Server-only write secret, `docs/designs/DECISIONS.md:83`) with
-   provisioning/rotation/scoping burden and a wider Runner-host blast radius,
-   plus launch-order churn; **(C)** a host-side read-only mirror + in-container
-   `file://` clone (§Alternatives) — collapses to "B with a smaller blast
-   radius": credential-free *for the agent*, but the mirror refresh needs the
-   same host-side forge read credential, merely fetch-scoped.
-   **Recommendation: A**, revisiting B only if a sessionless prebuild service
-   ever exists; the `Materialize` signature already accommodates the flip.
-   Ratifying A includes ratifying the stated reading of Global Constraint 2
-   (seam owns destination + source-selection; the cold path's tree bytes are
-   written by the agent under the seam's contract).
+**Ruling: Option A (agent self-clone) + provenance-(a) (clone-only snapshot).**
+Both coupled sub-decisions were ratified together as recommended; the record
+was drafted against this posture, so the ruling changes no mechanism — it
+un-gates the tasks and fixes the drafted-against assumption as the contract.
+Ledgered as **DL-326**.
 
-   **1b — Snapshot-amortization provenance under A** (the parent mandates the
-   prebuild model, design.md:622-626). Under A the clone runs in-container
-   *after* `Materialize` returns, so there is no automatic clean snapshot
-   point, and a close-time snapshot leaks one session's untracked non-ignored
-   WIP into the next — a `git fetch` + checkout-delta restore does not remove
-   it — against `workspace.go:1-8`'s isolation. A mechanism must be chosen:
-   **(a, recommended)** snapshot a **provably-clean** post-clone tree — the
-   agent signals clone-complete to the Runner (owned by W5's clone-complete
-   sub-unit), the Runner verifies a `git status`-clean tree at the ref, then
-   snapshots; the snapshot store keys an `(account, repo)`→snapshot index
-   (W2, P2-GC-f) the provision path reads. Amortizes the **clone**
-   safely with **no new credential**; build-prebuild (a warm `target/` shared
-   across sessions) is deferred to the moment a prebuild *service* exists —
-   exactly when B's host-side credential would earn its existence.
-   **(b)** a Runner-driven one-shot first-clone (a scoped, single-use exception
-   to A) — a clean *and* built snapshot, but reintroduces a host-side read
-   credential for that path. **(c)** close-time snapshots restored through an
-   **ignore-aware** `git clean -fd` (no `-x`) + `git reset --hard` — removes
-   the untracked-non-ignored leak while keeping ignored caches (`target/`,
-   `node_modules`), but still shares any *ignored* file a session left (a
-   gitignored `.env`), so it does not fully close the leak.
-   **Recommendation: (a)**; the acceptable alternative ruling is to **descope
-   snapshot amortization from P2 entirely** (ship the per-session persistent
-   volume, defer cross-session snapshots to a follow-up), dropping W2's
-   snapshot leg and W6 probe 3 from P2 scope. The record is drafted against
-   (a).
-2. **[non-load-bearing] `Archive`/`Restore` implementation timing.** The
-   parent puts the verbs on P2's API but their consumer is D4's cold-idle
-   (design.md:638-641,714-723). **Recommendation:** freeze the signatures in
-   W1 with honest not-implemented sentinels (the `Resize`/`ExecStreaming`
-   discipline, `podman.go:387-396`, `compute.go:26-29`); the object-store
-   backend and endpoint config land with D4, which owns the archive
-   thresholds anyway. No P2 executor is blocked.
-3. **[non-load-bearing] Snapshot FS-capability detection.** **Recommendation:**
-   a runtime probe at `VolumeManager` construction (attempt a reflink copy of
-   a probe file in the base dir; cache the verdict; fall back to rsync) — no
-   operator knob until a deployment demonstrates the probe mis-detecting.
-   Pure mechanism; W2 owns it.
-4. **[non-load-bearing — out of scope] Session→box stickiness vs the
-   scheduler.** Multi-box placement (which box a resuming session lands on,
-   collision handling) is a control-plane concern outside this repo; the
-   parent's D4 already designs the voluntary cold-migration relief valve
-   (design.md:759-770). P2 encodes only the box-local invariant: a Runner
-   attaches only volumes it hosts, and an absent volume is a typed error
-   routed to the cold path. Nothing in `go/internal/vfs` assumes or names
-   any particular placement layer.
+**1a — Clone model + clone-read-credential location: A.** The agent keeps its
+self-clone: the Runner prepares/attaches the volume (empty or
+snapshot-restored), the agent clones/fetches in-container with its existing
+`$HOME` machine-user token (`workspace.go:58-62`, `agent.go:354-358`) — no new
+credential class, GC 8 trivially green. Ratifying A also ratifies the record's
+reading of Global Constraint 2 (design.md:423-428): the `VirtualFS` seam owns
+the destination and source-selection, and the cold path's tree bytes are
+written by the agent under the seam's contract — `Materialize` on the
+fresh-clone path is preparation, not tree-writing. **Revisit trigger (Matt):**
+direct forge integrations with box-global read-only clones of subscribed repos
+on the Runner side are a deliberate follow-up optimization, not needed early;
+that is the moment a host-side read credential (Option B/C) would earn its
+existence, and the `Materialize` signature already accommodates the flip. A is
+reversible by design.
+
+**1b — Snapshot-amortization provenance under A: clone-only (provenance-(a)).**
+The snapshot carries a **provably-clean post-clone tree** and nothing else —
+the agent signals clone-complete to the Runner (W5's clone-complete sub-unit),
+the Runner verifies a `git status`-clean tree at the ref, then snapshots,
+keyed in an `(account, repo)`→snapshot index (W2, P2-GC-f) the provision path
+reads. A new session of a seen `(account, repo)` skips the cold **clone** (a
+`git fetch` + checkout-delta restore) and then builds cold on its own volume.
+This carries **zero cross-session leak**: a clean tree at a ref is org-public
+content already (no WIP, no other session's build artifacts), and the account
+scope in the index key holds the tenancy boundary (P2-GC-f). Cross-session
+**build** prebuild (a warm `target/` shared across sessions) is explicitly
+**out of P2 scope** — it is the part that carries the leak vector and needs a
+provenance story clone-only does not, and each session already keeps its own
+warm `target/` across suspend/resume via its persistent volume. Build-prebuild
+rides the same future prebuild-service moment as the 1a revisit trigger.
+
+### OQ-2 — `Archive`/`Restore` implementation timing *(non-load-bearing)*
+
+The parent puts the verbs on P2's API but their consumer is D4's cold-idle
+(design.md:638-641,714-723). **Recommendation:** freeze the signatures in
+W1 with honest not-implemented sentinels (the `Resize`/`ExecStreaming`
+discipline, `podman.go:387-396`, `compute.go:26-29`); the object-store
+backend and endpoint config land with D4, which owns the archive
+thresholds anyway. No P2 executor is blocked.
+
+### OQ-3 — Snapshot FS-capability detection *(non-load-bearing)*
+
+**Recommendation:** a runtime probe at `VolumeManager` construction (attempt a
+reflink copy of a probe file in the base dir; cache the verdict; fall back to
+rsync) — no operator knob until a deployment demonstrates the probe
+mis-detecting. Pure mechanism; W2 owns it.
+
+### OQ-4 — Session→box stickiness vs the scheduler *(non-load-bearing — out of scope)*
+
+Multi-box placement (which box a resuming session lands on, collision
+handling) is a control-plane concern outside this repo; the parent's D4
+already designs the voluntary cold-migration relief valve
+(design.md:759-770). P2 encodes only the box-local invariant: a Runner
+attaches only volumes it hosts, and an absent volume is a typed error
+routed to the cold path. Nothing in `go/internal/vfs` assumes or names
+any particular placement layer.
