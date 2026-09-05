@@ -1,9 +1,9 @@
 # Design: Compass T3 delivery→EventFabric cutover (RIG-3107)
 
-Status: Draft
+Status: Active
 Ratified: OQ-1..OQ-4 decided by Matt (2026-09-05, see Resolved decisions); frozen on merge
 Parent: `docs/designs/infra/runtime/compass-managed-multitenancy/design.md` (frozen), T3
-Ledger-impact: appends DL rows for OQ-1/OQ-2/OQ-3/OQ-4 rulings + the double-publish interpretation at submit (design-ledger-gate)
+Ledger-impact: appends DL-327..333 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reconnect-seam shape, and the double-publish interpretation (design-ledger-gate)
 
 ## Problem / Intent
 
@@ -33,7 +33,8 @@ The three consumers of the one bus and their disposition:
    full payloads, bus seq/epoch, and D9-visibility filtering, which the compact
    `EventRef` ("event kind + row id + tenant… never a payload copy",
    `compass-managed-multitenancy/design.md:774-775`) does not carry. The
-   client-edge NATS migration is deferred to T5.
+   client-edge NATS migration is a later, not-yet-recorded task (not scheduled
+   by the parent's T5, which is multi-Server operation + NATS clustering).
 2. `delivery.Consumer` — **migrates to the fabric** (this record).
 3. `presence.Publisher` (`go/server/sinks.go:159-165`) — **keeps the bus**
    (same payload/seq needs).
@@ -68,7 +69,7 @@ subject, never a field on the wire event beyond `EventRef.Tenant` itself.
 
 The other six bus publishers (`publishChannelChanged`,
 `publishAgentWorkspaceChanged`, `publishMessageUpdated`,
-`publishTopicUpserted`, etc., `mapping.go:484-529`) stay bus-only: the
+`publishTopicUpserted`, etc., `mapping.go:463-529`) stay bus-only: the
 delivery consumer's `handleEvent` acts only on `MessagePosted` — "A
 MessagePosted is the delivery trigger; … every other variant is ignored"
 (`go/internal/delivery/consumer.go:417-427`) — so nothing else needs the
@@ -131,7 +132,9 @@ an IMMEDIATE in-process trigger (`sub.Lagged()` → `sweepAllLive` +
 with the lag branch; and (2) `scanMissedMentions` routes ONLY mentions +
 ask-answers (`scan.go:35-70`), never plain delivers, so it recovers a
 publish-failed PLAIN message not at all. **What triggers full-set recovery after
-a publish-side failure is therefore an open, load-bearing fork — OQ-3 part 2.**
+a publish-side failure is resolved by OQ-3 part 2 / DL-330: a fabric-reconnect
+hook plus a minutes-scale periodic floor tick, each running `sweepAllLive` +
+`scanMissedMentions`.**
 No outbox table in this PR — Postgres remains "the sole durability source of
 truth" and the cursor defines what is owed; an outbox would be a second
 delivery-trigger store (see Alternatives, and OQ-3 part 2 for the trigger
@@ -144,12 +147,13 @@ parallel in-process channel fabric; NATS runs as a standalone stack service in
 every deployment" (`compass-managed-multitenancy/design.md:635-637`). That
 bans a second SWAPPABLE `EventFabric` implementation (an in-process channel
 impl of the seam) — it does not ban the pre-existing `events.Bus` coexisting
-during the phased T3→T5 migration. During this transitional phase,
+during the phased, multi-step migration. During this transitional phase,
 `message_posted` is intentionally published twice: once on the bus (for the
 two consumers that stay, client stream + presence) and once on the fabric (for
 the one consumer that migrates). The two publishes serve disjoint consumer
 sets; no consumer reads both, so no double-handling occurs. The transitional
-shape ends at T5 when the client edge migrates and the bus retires.
+shape ends when the client edge migrates and the bus retires — a later,
+not-yet-recorded task, distinct from the parent's T5 (multi-Server clustering).
 
 ## Alternatives considered
 
@@ -163,7 +167,7 @@ shape ends at T5 when the client edge migrates and the bus retires.
   record pins Postgres as durability owner with the fabric as transport only
   (`compass-managed-multitenancy/design.md:627-634`). Note the correction from
   the red-team: the cursor sweep closes the window only if something TRIGGERS
-  it, which is the open question OQ-3 part 2 resolves — the outbox is one of the
+  it, which OQ-3 part 2 resolved — the outbox is one of the
   candidate answers there (it makes the publish itself durable, sidestepping the
   trigger question), weighed against the lighter reconnect-hook/floor-tick
   triggers.
@@ -177,7 +181,8 @@ shape ends at T5 when the client edge migrates and the bus retires.
 ## Global Constraints
 
 - **Double-publish is the sanctioned transitional shape.** `message_posted`
-  goes to BOTH the in-process bus (client stream + presence, until T5) and
+  goes to BOTH the in-process bus (client stream + presence, until the client
+  edge migrates) and
   the fabric (delivery). This does not violate the frozen "One eventing path —
   NATS only" constraint, which bans a second swappable `EventFabric`
   implementation, not the bus's phased coexistence (see Approach). No OTHER
@@ -223,7 +228,7 @@ shape ends at T5 when the client edge migrates and the bus retires.
   assembly (`serve.go`, T3) MUST construct a real fabric or fail to boot — never
   a silent degraded mode.
 - **Scan-vs-hold is closed under one critical section.** `scanMissedMentions`
-  does `messageHeld(id)` check → route → `MarkMentionsRouted` (`scan.go:46-63`);
+  does `messageHeld(id)` check → route → `MarkMentionsRouted` (`scan.go:44-60`);
   under OQ-2's callback-direct concurrency a fabric callback can `hold(m)`
   between the check and the mark, routing mentions off partial blocks and then
   excluding a later-block mention from recovery (`mentions_routed_at` stamped).
@@ -287,19 +292,37 @@ machinery per the OQ rulings.
   settle/start drain loop (`notify` → `drainSettles`/`drainStarts`,
   `consumer.go:355-357`) survives unchanged; the `sub.Live` arm, the replay
   drain, and the `sub.Lagged()` overrun branch (`consumer.go:342-349,
-  358-411`) are deleted (their replacement per OQ-3's recovery mapping).
-  The consumer's constructor + `onEventRef` are the T2 surface; the `serve.go`
-  fabric construction and `startDeliveryConsumer` rewiring are T3 (assembly).
-- **Test cycle:** existing delivery unit suite green with the fake trigger
-  swapped from bus-publish to a fake-fabric `onEventRef` injection (hold/fire
-  split, mention routing, steer-only precedence, gates — all unchanged
-  behavior); a new test proving a ref whose row is missing
+  358-411`) are deleted (their replacement is the OQ-3 part 2 recovery trigger;
+  see the recovery note in this task's test cycle). The consumer's `onEventRef`
+  plus its constructor are the T2 surface; the `serve.go` fabric construction and
+  `startDeliveryConsumer` rewiring are T3 (assembly). Also produces the
+  fabric-level per-consumer serial-callback contract OQ-2 rests on: a doc
+  comment on `Subscribe`/`SubscribeKind` (`event_fabric.go`, PR3 tree — reached
+  because PR4 stacks on #903) promising the callback is invoked serially per
+  consumer, plus a fabric test asserting no two callbacks overlap, so the
+  consumer's concurrency argument rests on a fabric contract rather than a
+  nats.go internal.
+- **Test cycle:** the same commit that removes the `bus` field/parameter and the
+  `afterResubscribe` seam edits the three existing test files that drive them —
+  `consumer_test.go` (`c.afterResubscribe`, `c.bus.Publish`),
+  `pre_settle_closure_pgtest_test.go`, and `scan_wiring_test.go` — so the
+  delivery package COMPILES and the existing unit suite stays green at this
+  commit (the overrun-branch tests that assert `afterResubscribe` are deleted
+  WITH the branch, here, not deferred). The suite is re-driven with the fake
+  trigger swapped from bus-publish to a fake-fabric `onEventRef` injection
+  (hold/fire split, mention routing, steer-only precedence, gates — all
+  unchanged behavior); a new test proving a ref whose row is missing
   (`store.ErrNotFound`) is handled per OQ-1's ack ruling; a red-green test that
   a `hold` landing between `scanMissedMentions`'s held-check and its
   `MarkMentionsRouted` does NOT strand the message's later-block mentions (the
-  scan-vs-hold critical-section invariant, Global Constraints); and a
+  scan-vs-hold critical-section invariant, Global Constraints); the fabric
+  no-overlap contract test above; and a
   race-detector run (`go test -race ./go/internal/delivery/...`) covering
-  concurrent `onEventRef` + settle drain per OQ-2's ruling.
+  concurrent `onEventRef` + settle drain per OQ-2's ruling. **Recovery-trigger
+  ordering:** deleting the `sub.Lagged()` overrun branch removes the only
+  mid-run recovery trigger, so the OQ-3 part 2 replacement (T5) MUST land in the
+  same PR — the branch is never deleted in a merged tree without its
+  replacement present.
 
 ### T3 — Fabric construction + lifecycle in server assembly
 
@@ -353,28 +376,36 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
 
 - **Interfaces:** consumes `sweepAllLive(ctx)` (`settle.go:315-319`),
   `scanMissedMentions(ctx)` (`scan.go:34`),
-  `SessionResolver.LiveAgentSessions()` (`consumer.go:59`), and — per the
-  recommended OQ-3 part 2 ruling — a fabric-exposed reconnect-notification seam
-  (`fabric.go:66-70` documents that a caller may add NATS handlers safely).
-  Produces: the ruled-on trigger set (recommended: a reconnect hook AND a
-  periodic floor tick each run `sweepAllLive` + `scanMissedMentions`, restoring
-  the mid-run recovery the deleted overrun branch provided and covering plain
-  delivers `scanMissedMentions` cannot), with doc-comment updates that re-derive
-  the no-loss argument from JetStream durability instead of the ring overrun.
-- **Test cycle:** a unit test that a publish-failed PLAIN (non-mention) message
-  to a live, never-restarting recipient IS recovered by the ruled trigger (the
-  F1 silent-stall hole, red-green); the start-time scan still runs before the
-  first event; the overrun-branch tests (`afterResubscribe` seam,
-  `consumer.go:242-247`) deleted with the branch.
+  `SessionResolver.LiveAgentSessions()` (`consumer.go:59`), and the ruled
+  reconnect seam. **That seam does not exist yet** — the
+  `EventFabric` interface (`fabric.go:23-31`, PR3 tree) exposes only
+  `Publish`/`Subscribe`/`SubscribeKind`, and the fabric's own
+  `ReconnectHandler` (`fabric.go:262-264`) is log-only and set once at `New()`;
+  `Config.Options` REPLACES it (a later `nats.ReconnectHandler` wins), so wiring
+  a consumer callback through `Config.Options` discards the fabric's outage
+  diagnostics unless the caller re-logs (`fabric.go:68-70`). T5 therefore
+  PRODUCES the seam per the seam-shape ruling (see Resolved decisions, OQ-3
+  part 2 → seam): a new `EventFabric` method
+  `OnReconnect(fn func()) (Unsubscribe, error)` on the interface and `*Fabric`,
+  chained onto the fabric's existing `ReconnectHandler` so its outage log
+  survives, reached by the delivery consumer through the interface value it
+  already holds.
+  Produces: a fabric-reconnect hook (via `OnReconnect`) AND a minutes-scale
+  periodic floor tick, each running `sweepAllLive` + `scanMissedMentions` —
+  restoring the mid-run recovery the deleted overrun branch provided and covering
+  plain delivers `scanMissedMentions` cannot — with doc-comment updates that
+  re-derive the no-loss argument from JetStream durability instead of the ring
+  overrun.
 
-### T6 — Changelog + ledger + record cross-references
+### T6 — Changelog + record cross-references
 
 - **Interfaces:** consumes `docs/designs/DECISIONS.md`; this record. Produces:
-  changelog entry; DL rows for the ratified OQ rulings (OQ-1, OQ-2, OQ-3 part 1
-  RLS split, OQ-3 part 2 recovery trigger, OQ-4 single-instance constraint) AND
-  a DL row freezing the double-publish-is-not-a-Global-Constraint-violation
-  interpretation (per the red-team, so the interpretation is itself frozen and
-  the bus-retirement inherits it explicitly). The parent multitenancy record's
+  the changelog entry and this record's cross-references. The DL rows for the
+  ratified OQ rulings (DL-327..332, incl. the
+  double-publish-is-not-a-Global-Constraint-violation interpretation) landed
+  WITH this record's own freeze PR per the "Ledger delta owed" Global
+  Constraint — they are NOT re-produced here (the append-only unique-ID rule
+  forbids duplicating them). The parent multitenancy record's
   T3 task is FROZEN prose — it is NOT rewritten; this record's own DL rows +
   `Parent:` header carry the "delivery cutover landed" linkage (the freeze rule
   adds a record/ledger row, never rewrites frozen prose).
@@ -385,23 +416,28 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
 - [ ] T1: fabric publish in `publishMessagePosted` + `Store.ResolveTenant` +
       failure counter (tests a–d)
 - [ ] T2: consumer trigger cutover — `SubscribeKind` in, bus tail out, per
-      OQ-1/OQ-2/OQ-3 rulings; scan-vs-hold critical-section test; suites green +
-      race run
+      OQ-1/OQ-2/OQ-3 rulings; fabric serial-callback contract doc + no-overlap
+      test; the three bus/`afterResubscribe` test files edited in this commit;
+      scan-vs-hold critical-section test; suites green + race run
 - [ ] T3: fabric construction + lifecycle in `serve.go` assembly; fail-closed
       nil-fabric startup
 - [ ] T4: two-instance single-claim, redelivery, DLQ-park integration proof
       (transport-only scope note; slow-callback redelivery case)
 - [ ] T5: recovery-path rewire — Matt-ruled publish-failure trigger
-      (`sweepAllLive` / `scanMissedMentions`) per OQ-3 part 2; plain-deliver
+      (`sweepAllLive` / `scanMissedMentions`) per OQ-3 part 2; PRODUCES the
+      reconnect seam (does not exist yet); lands in T2's PR; plain-deliver
       recovery test
-- [ ] T6: changelog + DECISIONS.md DL rows (incl. double-publish interpretation)
-      + cross-references
+- [ ] T6: changelog + record cross-references (DL-327..332 already landed with
+      this record's freeze PR)
 
 ## Resolved decisions
 
 All five load-bearing questions were ratified by Matt (2026-09-05); the fork
 analysis is retained below for the executor, each stamped with its decided
-outcome. No live question survives to the freeze.
+outcome. The `skill://review` pass surfaced one follow-on API-shape sub-fork
+(the reconnect seam's shape, under OQ-3 part 2), which Matt ruled the same day
+(Option A — add `EventFabric.OnReconnect`, stamped in that section). No live
+question survives to the freeze.
 
 ### OQ-1 (LOAD-BEARING): JetStream ack timing for HELD delivers
 
@@ -429,26 +465,26 @@ via the reconnect cursor sweep, independent of this registry"
 (`consumer.go:212-215`). Ack means "the durable trigger did its job: the owed
 state is in Postgres (cursor) and the in-RAM timing registry".
 
-- - Pro: preserves today's semantics exactly; no ack-window pressure; a turn of
-    any length holds nothing in-flight.
-- - Con: the JetStream redelivery guarantee does not cover the hold-to-fire
-    window (but the cursor sweep already does, and always has).
+- Pro: preserves today's semantics exactly; no ack-window pressure; a turn of
+  any length holds nothing in-flight.
+- Con: the JetStream redelivery guarantee does not cover the hold-to-fire
+  window (but the cursor sweep already does, and always has).
 
 **Option B — ack-on-fire.** The callback blocks (or the ack is deferred) until
 `fireHeld` dispatches the message, keeping it in-flight/unacked for the whole
 author turn.
 
-- - Pro: JetStream's redelivery covers the hold window; a crash mid-hold
-    redelivers rather than waiting for the recipient's next start edge.
-- - Con: `DefaultAckWait = 30 * time.Second` (`stream.go:30-33`) is far shorter
-    than an agent turn, so a healthy held message would redeliver mid-turn,
-    re-classify, re-hold (duplicate held entries), and after `DefaultMaxDeliver
-    = 5` attempts a perfectly healthy message DLQ-parks
-    (`stream.go:23-28`). Avoiding that means per-message `InProgress()`
-    heartbeats threaded from the hold registry into the fabric — new API
-    surface, a liveness loop, and an in-flight slot pinned per concurrently
-    streaming author. High complexity for a window an existing durable
-    mechanism (the cursor sweep) already closes.
+- Pro: JetStream's redelivery covers the hold window; a crash mid-hold
+  redelivers rather than waiting for the recipient's next start edge.
+- Con: `DefaultAckWait = 30 * time.Second` (`stream.go:30-33`) is far shorter
+  than an agent turn, so a healthy held message would redeliver mid-turn,
+  re-classify, re-hold (duplicate held entries), and after `DefaultMaxDeliver
+  = 5` attempts a perfectly healthy message DLQ-parks
+  (`stream.go:23-28`). Avoiding that means per-message `InProgress()`
+  heartbeats threaded from the hold registry into the fabric — new API
+  surface, a liveness loop, and an in-flight slot pinned per concurrently
+  streaming author. High complexity for a window an existing durable
+  mechanism (the cursor sweep) already closes.
 
 **Recommendation: Option A (ack-on-receive).** Restart durability of held
 delivers falls to the Postgres delivery-cursor sweep, which is the designed
@@ -474,42 +510,45 @@ via the `Consume` callback (`event_fabric.go:140-142`). Where does
 `onEventRef` re-reads + classifies + holds/dispatches on the fabric's
 goroutine, concurrent with the consumer loop's settle/start drains.
 
-- - Shared state is already lock-protected: `hold` takes `c.mu`
-    (`dispatch.go:89-93`), `fireHeld` pops the registry under `c.mu`
-    (`settle.go:270-273`), and per-recipient dispatch ordering is owned by the
-    per-session gates — "a live deliver takes the gate per message, so it
-    queues BEHIND an in-flight sweep for the same session"
-    (`dispatch.go:327-332`) — which were designed for exactly this
-    live-vs-sweep interleaving.
-- - Two MessagePosted callbacks never overlap: the fabric's `Consume` invokes
-    the handler serially per consumer (`event_fabric.go:140-142` — one
-    callback registration, invoked per message by the consume context).
-- - The one ordering hazard — a settle drain firing BEFORE a
-    logically-earlier post is held, delaying that deliver to the author's NEXT
-    settle edge — is **not new**: today's single loop `select`s between
-    `c.notify` and `sub.Live` non-deterministically (`consumer.go:352-358`),
-    so a settle already queued can drain before an earlier-posted message
-    still sitting in the Live buffer. The single goroutine prevents overlap,
-    not cross-channel order; the cursor sweep is, and remains, the no-loss
-    floor. This must be stated in the code as the re-proved invariant.
-- - Con: the invariant argument lives in `c.mu` + gates rather than "one
-    goroutine, QED"; a `-race` suite run over concurrent onEventRef+drain is
-    mandatory (T2's test cycle).
+- Shared state is already lock-protected: `hold` takes `c.mu`
+  (`dispatch.go:89-93`), `fireHeld` pops the registry under `c.mu`
+  (`settle.go:270-273`), and per-recipient dispatch ordering is owned by the
+  per-session gates — "a live deliver takes the gate per message, so it
+  queues BEHIND an in-flight sweep for the same session"
+  (`dispatch.go:327-332`) — which were designed for exactly this
+  live-vs-sweep interleaving.
+- Two MessagePosted callbacks never overlap: the fabric's `Consume` dispatches
+  serially per consumer through a single per-subscription goroutine
+  (nats.go@v1.53.1 `jetstream/pull.go:287` invokes the handler inline;
+  `nats.go:5080` runs one `waitForMsgs` goroutine per async subscription). This
+  is a transitive library property; T2 gives it a fabric-level contract (a doc
+  comment on `Subscribe`/`SubscribeKind` + a no-overlap fabric test).
+- The one ordering hazard — a settle drain firing BEFORE a
+  logically-earlier post is held, delaying that deliver to the author's NEXT
+  settle edge — is **not new**: today's single loop `select`s between
+  `c.notify` and `sub.Live` non-deterministically (`consumer.go:352-358`),
+  so a settle already queued can drain before an earlier-posted message
+  still sitting in the Live buffer. The single goroutine prevents overlap,
+  not cross-channel order; the cursor sweep is, and remains, the no-loss
+  floor. This must be stated in the code as the re-proved invariant.
+- Con: the invariant argument lives in `c.mu` + gates rather than "one
+  goroutine, QED"; a `-race` suite run over concurrent onEventRef+drain is
+  mandatory (T2's test cycle).
 
 **Option B — enqueue onto the existing single loop, callback waits.** The
 callback appends the ref to a queue (mirroring `settleQueue`) and blocks on a
 per-message completion handshake until the loop processes it, so the ack still
 means "processed".
 
-- - Pro: single-goroutine ordering preserved verbatim; zero new concurrency to
-    prove.
-- - Con: needs a per-message done-channel handshake; the fabric goroutine
-    blocks on loop scheduling, so a long start-edge sweep (a full
-    `sweepSession` + `sweepPins` + `sweepOwedMentions` per queued start,
-    `settle.go:124-144`) stalls the ack past `AckWait` ⇒ spurious redelivery
-    of healthy messages; and a non-blocking variant (ack on enqueue) makes the
-    ack mean "buffered in RAM", strictly weaker than Option A's "classified
-    and held/dispatched".
+- Pro: single-goroutine ordering preserved verbatim; zero new concurrency to
+  prove.
+- Con: needs a per-message done-channel handshake; the fabric goroutine
+  blocks on loop scheduling, so a long start-edge sweep (a full
+  `sweepSession` + `sweepPins` + `sweepOwedMentions` per queued start,
+  `settle.go:124-144`) stalls the ack past `AckWait` ⇒ spurious redelivery
+  of healthy messages; and a non-blocking variant (ack on enqueue) makes the
+  ack mean "buffered in RAM", strictly weaker than Option A's "classified
+  and held/dispatched".
 
 **Recommendation: Option A (callback-direct under `c.mu` + gates).** It is the
 smaller mechanism, its ack meaning composes with OQ-1's ack-on-receive, and the
@@ -530,6 +569,35 @@ an always-live recipient is recovered without a session restart. Option B
 (publisher-side bounded retry) MAY be added as belt-and-suspenders but is not
 sufficient alone.
 
+**Seam shape (follow-on fork surfaced in review). DECISION (Matt, 2026-09-05):
+Option A — add an `EventFabric` reconnect method.** The ratified
+reconnect-hook ruling named a trigger, not a seam: the frozen `EventFabric`
+interface (`fabric.go:23-31`) exposes no reconnect notification, and the
+fabric's own `ReconnectHandler` (`fabric.go:262-264`) is log-only, set once at
+`New()`, and REPLACED (not chained) through `Config.Options`
+(`fabric.go:68-70`). So the trigger needs a NEW seam, and its shape is an
+API-shape call on the frozen 3-method interface — put to Matt rather than
+decided by the author, and ruled Option A.
+
+- **Option A — add an `EventFabric` reconnect method (ruled).**
+  `OnReconnect(fn func()) (Unsubscribe, error)`, chained onto the fabric's
+  existing log handler so its outage diagnostics survive, so the delivery
+  consumer reaches the trigger through the interface value it already holds.
+  - Pro: the trigger lives in one package; the fabric keeps ownership of its own
+    reconnect diagnostics; consistent with the PR3 `SubscribeKind` precedent (the
+    interface already grew a read-side method for the delivery singleton's needs).
+    Con: grows the frozen 3-method seam to four methods (accepted — the seam is
+    still pre-GA and grew for `SubscribeKind` on the same reasoning).
+- **Option B — assembly-side handler wired through `Config.Options` in T3**
+  (rejected): re-emitting the fabric's log line and calling into the consumer.
+  - Pro: leaves the `EventFabric` interface untouched. Con: splits the trigger
+    across `serve.go` + delivery, and re-implements the outage diagnostics the
+    fabric already owns (a caller replacing `ReconnectHandler` loses them,
+    `fabric.go:68-70`).
+
+T5 produces the `OnReconnect` method on `EventFabric` + `*Fabric`; it does not
+exist on the frozen interface today.
+
 **The fork, part 1 — RLS scope.** Today `Run` marks the whole loop
 `ctx = store.WithSystemRole(ctx)` (`consumer.go:316`; BYPASSRLS), justified
 because "the fan-out consumer is a cross-tenant background loop"
@@ -545,22 +613,22 @@ enumerate every agent/tenant) keep `WithSystemRole`; `onEventRef` builds
 system-role ctx) for the `MessageByID` re-read and the whole
 `onMessagePosted` classification+dispatch chain.
 
-- - Pro: fail-closed defense-in-depth — a forged/corrupted ref whose RowID
-    belongs to another tenant reads zero rows under RLS instead of
-    cross-tenant-delivering under BYPASSRLS; the ref's tenant is load-bearing,
-    which is the point of stamping it.
-- - Con: one message's processing path runs under a different DB role than the
-    sweep that may re-deliver the same message; `drainSettles`→`fireHeld`'s
-    re-read (`settle.go:276`) still runs system-role (the held entry carries
-    no tenant today — adding `tenant` to `heldEntry` and tenant-scoping the
-    fire re-read is the consistent extension, and Option A includes it).
+- Pro: fail-closed defense-in-depth — a forged/corrupted ref whose RowID
+  belongs to another tenant reads zero rows under RLS instead of
+  cross-tenant-delivering under BYPASSRLS; the ref's tenant is load-bearing,
+  which is the point of stamping it.
+- Con: one message's processing path runs under a different DB role than the
+  sweep that may re-deliver the same message; `drainSettles`→`fireHeld`'s
+  re-read (`settle.go:276`) still runs system-role (the held entry carries
+  no tenant today — adding `tenant` to `heldEntry` and tenant-scoping the
+  fire re-read is the consistent extension, and Option A includes it).
 
 **Option B — keep whole-loop system-role; `ref.Tenant` is routing-only.**
 
-- - Pro: zero RLS churn; smallest diff.
-- - Con: forfeits the isolation dividend of the tenant-stamped ref; every
-    delivery re-read stays BYPASSRLS forever, and T5's client-edge migration
-    would have to retrofit the split anyway.
+- Pro: zero RLS churn; smallest diff.
+- Con: forfeits the isolation dividend of the tenant-stamped ref; every
+  delivery re-read stays BYPASSRLS forever, and the later client-edge migration
+  would have to retrofit the split anyway.
 
 **The fork, part 2 — what replaces the bus-lag recovery?** The
 `sub.Lagged()` overrun branch (`consumer.go:360-408`) — re-subscribe, then
@@ -591,7 +659,7 @@ re-subscribe" — does NOT hold, on two counts:
    delivered. Silent at-least-once → deliver-at-next-recipient-restart, i.e. for
    an always-on agent, effectively never.
 
-**The fork Matt must rule: what triggers full-set recovery after a publish-side
+**The fork as put to Matt: what triggers full-set recovery after a publish-side
 failure?**
 
 - **Option A — reconnect-hook + periodic floor tick (recommended).** Expose a
@@ -656,10 +724,10 @@ the settled suffix is never redelivered (content loss). The record's own
 two-instance proof (T4) would pass GREEN over this hole (it asserts single-claim,
 not delivery correctness).
 
-**The fork Matt must rule:**
+**The fork as put to Matt:**
 
 - **Option A — single-instance transitional constraint (recommended).** State in
-  Global Constraints (done, pending ratification) that a single Server is assumed
+  Global Constraints (done) that a single Server is assumed
   until the parent record's durable session bindings land (parent T4,
   `compass-managed-multitenancy/design.md:795`, sequenced AFTER this cutover);
   scope the T4 integration proof to transport claim semantics only; point at what
