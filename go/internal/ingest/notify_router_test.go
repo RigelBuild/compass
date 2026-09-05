@@ -197,7 +197,7 @@ func TestRouteCarriesRevision(t *testing.T) {
 	if err := newRouter(t, st, d, &fakeChecksRoller{}).Route(context.Background(), ev); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
-	want := SnapshotRevision(ptr(ApplyEvent(nil, ev)))
+	want := SnapshotRevision(new(ApplyEvent(nil, ev)))
 	if d.sent[0].GetRevision() != want {
 		t.Errorf("notification revision = %q, want %q", d.sent[0].GetRevision(), want)
 	}
@@ -631,8 +631,6 @@ func TestRouteZeroCoordinateRejected(t *testing.T) {
 }
 
 // ---- helpers ----
-
-func ptr(s ArtifactSnapshot) *ArtifactSnapshot { return &s }
 
 func subIDs(ns []*compassv1internal.ForgeNotification) []string {
 	out := make([]string, len(ns))
