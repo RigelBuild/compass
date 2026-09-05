@@ -1,6 +1,6 @@
 # Compass self-host stack supervision: constant-on cross-platform service
 
-Status: Draft
+Status: Active (Matt, 2026-09-05)
 Issue: RIG-3239
 
 ## Problem / Intent
@@ -281,8 +281,9 @@ the unit template does NOT let the OS pre-empt it: systemd's default
 the children in parallel before the ordered drain, so the templates pin
 `KillMode=mixed` / `AbandonProcessGroup=true` (T2). The operator's
 `compass-stack down` verb also becomes unit-aware so it stops through the
-unit (T2) — but a bare `up --supervise` wedges `down` behind the
-live-holder guard until OQ-6 is ruled (below). Status truth stays
+unit (T2) — for a bare `up --supervise`, OQ-6→(b)'s mode-token guard
+makes the supervising holder a valid `down` target (Resolved
+decisions). Status truth stays
 `compass-stack status` (the unit's state is process-liveness, not stack
 health); the T2 checklist (former OQ-4, below) is the unit content gate.
 
@@ -336,13 +337,19 @@ which also notes the runner's podman host-capability preflight has no
 darwin answer yet). Those are stack-TOPOLOGY unknowns, not supervision
 unknowns — this record ships the supervision mechanics for macOS (T2
 launchd template + T3 darwin identity reader) and leaves the topology
-validation with the lane that owns it. Whether macOS `service install`
-GA-gates on that lane is OQ-5 (one of two remaining forks, below — the
-other is OQ-6, the `--supervise` lock lifetime). (The
-`apple-container-macos-runner/design.md:713-733` line range cited above
-resolves only once that sibling RIG-3238 record lands on main — PR #869 is
-not yet merged; the citation is a forward reference, not a
-same-tree anchor.)
+validation with the lane that owns it. Per Matt's RIG-3239 ruling the
+launchd LaunchAgent supervises the `compass-stack` host process
+independent of what runtime runs inside it (podman today,
+apple-container later), so macOS supervision is NOT gated on the
+RIG-3238 backend choice — this record ships the macOS mechanics now
+(OQ-5, Resolved decisions). The only remaining macOS gate is the
+"macOS supported" GA doc-claim + end-to-end smoke, which ride the
+stack-TOPOLOGY validation owned by the sibling lane (embedded-revival
+OQ-7's AF_UNIX-across-the-VM-boundary question) — dependency ordering
+on another lane, not a supervision fork here. (The
+`apple-container-macos-runner/design.md:713-733` citation resolves
+only once that sibling RIG-3238 record lands on main — PR #869 is not
+yet merged; it is a forward reference, not a same-tree anchor.)
 
 ### Alternatives considered
 
@@ -432,12 +439,12 @@ same-tree anchor.)
   identities are ever signaled; verify-before-signal; bounded escalation;
   survivor-rewrite on partial failure
   (`ui/compass-stack-cross-process-teardown/design.md:299-301`).
-- Lock lifetime under `--supervise` (OQ-6, Matt fork): `up --supervise` is
+- Lock lifetime under `--supervise` (OQ-6 → (b), ruled): `up --supervise` is
   the first caller to hold the state-dir lockfile with a LIVE pid for the
   stack's whole lifetime, voiding the "up always exits, so the lock holder
   is dead in every teardown" invariant `DownDetached`'s live-holder guard
-  relies on (`pgidfile.go:90-94`, `downdetached.go:74-84`). Whichever OQ-6
-  option lands, `compass-stack down` MUST remain a real stop of a
+  relies on (`pgidfile.go:90-94`, `downdetached.go:74-84`). Under the ruled
+  (b) mode-token guard, `compass-stack down` MUST remain a real stop of a
   supervised stack (DL-259) and the T1 pre-spawn sweep MUST run before the
   lock is acquired (else it self-refuses). No `--supervise` deliverable
   ships a wedged `down`.
@@ -577,14 +584,13 @@ Interfaces:
   failures, not one; (4) a partial-drain child death → restart → the
   surviving old child is torn down by the pre-spawn cleanup, not orphaned;
   (5) `compass-stack down` against a supervised (Ready) stack never wedges
-  on `ErrStackStarting` and the stop lands with the OQ-6 ruling — asserted
-  in-process against a stubbed Ready-supervised lock holder (the OQ-6
-  counterpart to `downdetached_test.go:238`, which today asserts refusal
-  for an up-in-flight holder): under (b) `DownDetached` signals the
-  supervising holder and it exits ZERO; under (a) the lock is already
-  released so `down` signals the children directly and the supervise loop's
-  child-death path applies. This is the OQ-6 behavior T2's stop-truth
-  delegates here. Plus a process-level smoke on Linux: `up --supervise`,
+  on `ErrStackStarting` and the stop lands under the ruled OQ-6 (b) —
+  asserted in-process against a stubbed Ready-supervised lock holder (the
+  OQ-6 counterpart to `downdetached_test.go:238`, which today asserts
+  refusal for an up-in-flight holder): the (b) mode-token guard makes
+  `DownDetached` signal the supervising holder and it exits ZERO. This is
+  the OQ-6 behavior T2's stop-truth delegates here. Plus a process-level
+  smoke on Linux: `up --supervise`,
   `kill` a child, assert non-zero exit and a clean survivor teardown.
 
 ### T2 — `compass-stack service install` / `uninstall` + unit templates
@@ -634,28 +640,25 @@ Interfaces:
     `EnvironmentVariables` PATH; install runs
     `launchctl bootstrap gui/$UID` then `enable`.
 - Operator stop-truth — the `down` verb vs the installed unit (folded from
-  the red-team, and corrected for the OQ-6 lock-lifetime fork): a naive
+  the red-team, resolved under the ruled OQ-6 (b) lock-lifetime): a naive
   `compass-stack down` against a service-supervised stack does NOT reach the
   children — because `up --supervise` holds the state-dir lockfile with a
   LIVE pid for its whole lifetime, `DownDetached` step 1 hits the
   live-holder guard and returns `ErrStackStarting`
   (`downdetached.go:74-84`), rendered as "a stack is starting; retry once it
   is up" (`main.go:406-409`) — a guard that never clears while supervise
-  runs. OQ-6 (below) decides how `down` gets a real path to a supervised
-  stack: option (b)'s mode-token guard makes a supervising holder a valid
-  `down` target that is signalled (it tears down and exits ZERO, no
-  restart); option (a) releases the lock at Ready so `down`'s guard passes
-  and it reads the record. On top of whichever OQ-6 lands, `service install`
-  makes `down` UNIT-AWARE: when an installed unit is active, `down` stops it
-  THROUGH the unit (`systemctl --user stop` / `launchctl bootout`) so the
-  supervise process performs the ordered teardown and exits ZERO (no
-  restart from the OS supervisor), preserving `compass-stack` as the single
-  stop surface DL-259 names — rather than the operator having to know
-  `systemctl --user stop` / `launchctl bootout`. The unit-aware `down` is a
-  fold; the underlying lock-lifetime mechanism it rides on is OQ-6, a Matt
-  fork. For a bare (unit-less) `up --supervise` — dev/devenv, and T1's
-  standalone Linux smoke before `service install` exists — `down` works
-  once OQ-6 is ruled and not before; T1's test cycle item (5) covers it.
+  runs. OQ-6 → (b) resolves it: the mode-token guard makes a supervising
+  holder parked at Ready a valid `down` target that is signalled (it tears
+  down and exits ZERO, no restart), while a mid-bring-up `up` is still
+  refused. On top of that, `service install` makes `down` UNIT-AWARE: when
+  an installed unit is active, `down` stops it THROUGH the unit
+  (`systemctl --user stop` / `launchctl bootout`) so the supervise process
+  performs the ordered teardown and exits ZERO (no restart from the OS
+  supervisor), preserving `compass-stack` as the single stop surface DL-259
+  names — rather than the operator having to know `systemctl --user stop` /
+  `launchctl bootout`. For a bare (unit-less) `up --supervise` — dev/devenv,
+  and T1's standalone Linux smoke before `service install` exists — the (b)
+  guard gives `down` a real path; T1's test cycle item (5) covers it.
 - Unit-content gate: every item of the T2 checklist (former OQ-4, below) —
   explicit `--state-dir`, absolute paths + PATH, `KillMode=mixed` /
   `AbandonProcessGroup=true` ordered-teardown knobs, pinned `RestartSec` /
@@ -673,7 +676,8 @@ Interfaces:
   active stops it through the unit and exits zero (no restart) → uninstall
   removes the unit. The launchd leg smokes the same cycle on a darwin host
   (install → running → crash-kill → KeepAlive restart → stop → uninstall);
-  it lands with T3 and is gated by OQ-5's end-to-end caveat.
+  it lands with T3; the full end-to-end macOS GA smoke rides the
+  stack-topology validation lane, not supervision (OQ-5, Resolved).
 
 ### T3 — darwin start-time identity reader
 
@@ -721,8 +725,8 @@ Interfaces:
   to the darwin readers so the two encodings cannot drift; a new
   darwin-tagged unit test reads the test process's own start time twice
   (stable, non-empty) and verifies a dead/mismatched pid fails the identity
-  check. Runs on the DL-263 darwin CI leg. The full macOS stack-up smoke is
-  OQ-5-gated (topology, not supervision).
+  check. Runs on the DL-263 darwin CI leg. The full macOS stack-up smoke
+  rides the topology-validation lane, not this supervision record (OQ-5, Resolved).
 
 ### T4 — Docs, ledger, close-out
 
@@ -791,81 +795,6 @@ ruling, all are content-completeness for the executor):
   of truth is `compass-stack status` — the unit's state is supervise-pid
   liveness only.
 
-### OQ-5 [load-bearing, Matt fork — tracked RIG-3261] — macOS service: ship against podman-machine now, or gate GA on RIG-3238?
-
-The supervision mechanics for macOS are shippable in this record (T3 darwin
-identity reader — a bounded two-seam swap; T2 launchd template), but a WORKING
-macOS stack end-to-end still hangs on topology unknowns owned by the
-sibling lanes: embedded-revival OQ-7 (the postgres DSN + agent sockets are
-AF_UNIX bind-mounts, unvalidated across the podman-machine virtiofs/VM
-boundary, `ui/compass-native-embedded-revival/design.md:909-931`) and
-RIG-3238's OQ-12 (runner-on-darwin once podman-machine goes,
-`platform/apple-container-macos-runner/design.md:713-733`). The fork: (a)
-ship T2/T3's macOS support now, labeled experimental until the topology
-validates, or (b) hold the macOS half of `service install` behind the
-RIG-3238 lane's resolution and ship Linux-only first. **The cost option (a)
-must carry (folded from the design-critic red-team):** an "experimental"
-doc label does NOT stop a crashloop — on a mac where the socket topology
-cannot work, `up --supervise` never reaches Ready, and launchd's
-`KeepAlive={SuccessfulExit=false}` (which cannot tell a never-Ready
-bring-up failure from a post-Ready crash) restarts it every ~10s forever,
-burning CPU + podman-machine churn. So option (a) is only safe bundled with
-a bounded-crashloop guard: the darwin `service install` runs an
-install-time preflight (podman machine reachable + one probe cycle) and
-refuses with a legible error until it passes, AND/OR the supervise loop
-self-disables after N consecutive bring-up failures (a start-failure
-backoff launchd's `SuccessfulExit` key cannot express). **Recommendation:
-(a) with that preflight + self-limit** — build and land the darwin
-mechanics now (they are small, testable on the DL-263 CI leg, and required
-under EVERY macOS outcome, including apple-container), gate only the "macOS
-supported" doc claim + GA smoke on the sibling lane's socket-topology
-validation, and let Linux ship independently either way. This is dependency
-ordering only — macOS-in-scope is ruled, not open.
-
-### OQ-6 [load-bearing, Matt fork — tracked RIG-3261] — `--supervise` lock lifetime: release the lock at Ready, or teach the down-guard a supervising holder?
-
-`up --supervise` is the FIRST caller to hold the state-dir lockfile with a
-LIVE pid for the stack's whole lifetime, voiding the invariant the teardown
-path relies on: "up always exits after a successful spawn, so the writer
-pid is dead in every linger teardown" (`pgidfile.go:90-94`). `upLocked`
-returns a spawning `*Stack` still HOLDING the lock (`stack.go:151`; released
-only on the attach path or by `Down`), the lockfile carries `os.Getpid()`
-(`lockfile.go:124`), and `DownDetached` step 1 refuses outright when that
-holder is live — `if live { return ErrStackStarting }`
-(`downdetached.go:74-84`), rendered as "a stack is starting; retry once it
-is up" (`main.go:406-409`). So while a bare `up --supervise` runs,
-`compass-stack down` is permanently wedged behind that guard and never
-reaches the record. The fork — how the supervise process reconciles holding
-the lock for its lifetime with `down` staying a real stop verb (DL-259):
-
-- **(a) Release the O_EXCL lockfile once Ready is reached.** Restores the
-  linger-ownership shape `DownDetached` already expects (a dead/absent
-  holder → guard passes → `down` reads the record and signals the
-  children); the supervise process's teardown authority then comes from its
-  held child handles, not the lock. Cost: forfeits the mutual exclusion the
-  live lock gives — a second `up` could spawn a DUPLICATE stack while the
-  first supervises, a regression to the DL-183 single-owner model.
-- **(b) Teach `DownDetached`'s live-holder guard a mode/state token.** The
-  lockfile records whether the holder is a mid-bring-up `up` (refuse, as
-  today) or a supervise process parked at Ready (a VALID `down` target that
-  is signalled, not refused). Preserves single-owner mutual exclusion. Cost:
-  a real semantic change to the frozen DL-183 interlock — the guard, the
-  lockfile format, and their invariants.
-
-**Recommendation: (b)** — it keeps DL-183's single-owner guarantee, which
-(a) trades away, and makes `down` a first-class stop of a supervised stack
-rather than leaning on T2's install-time `down`-unit-awareness to mask a
-wedged guard. Every T1/T2 site is already written to be
-option-agnostic: T1 item 4's before-lock sweep is the
-option-independent fix (Global Constraint — the sweep MUST run before
-the lock is acquired whichever OQ-6 option lands), the T2
-operator-stop-truth bullet carries both (a)/(b) branches explicitly,
-and T1 test-cycle item (5) states its (a) and (b) shapes — so a
-ruling of (a) needs no rewrite, only deletion of the now-moot (b)
-branches.
-This modifies a Matt-ruled safety contract (DL-183), so it is his call, not
-a coordinator fold.
-
 ## Resolved decisions
 
 - **OQ-1 (Quadlet vs pgid) — RULED: keep pgid, decline Quadlet** (Matt,
@@ -896,5 +825,34 @@ a coordinator fold.
   rootless/no-daemon hard requirement, no per-container keep-id equivalent),
   mirroring the embedded-revival OQ-9 rejection — see Alternatives.
 - macOS in scope: ruled by Matt ("how do we support this on macOS as
-  well?") — only the dependency ordering (OQ-5) remains open, never
-  whether macOS is supported.
+  well?") — macOS is supported, and the dependency ordering (OQ-5) is now
+  ruled below.
+- **OQ-5 (macOS service dependency ordering) — RULED: ship supervision now,
+  runtime-agnostic** (Matt, RIG-3239, 2026-09-05): "we'd use a launchd
+  service for the stack, unrelated to it running on podman/apple
+  container." The launchd LaunchAgent supervises the `compass-stack` host
+  process independent of the runtime inside it, so macOS supervision is NOT
+  gated on the RIG-3238 podman-vs-apple-container backend choice — the
+  OQ-5-as-filed "ship against podman-machine now vs gate GA on RIG-3238"
+  fork dissolves. This record ships the macOS supervision mechanics now (T2
+  launchd template + T3 darwin identity reader) WITH the darwin
+  `service install` install-time preflight + N-consecutive-failure
+  self-limit crashloop guard (from the red-team — a never-Ready mac still
+  KeepAlive-restarts every ~10s otherwise). The only residual macOS gate is
+  the "macOS supported" GA doc-claim + end-to-end smoke, which ride the
+  stack-TOPOLOGY validation owned by the sibling lane (embedded-revival
+  OQ-7's AF_UNIX-across-the-VM-boundary question) — dependency ordering on
+  another lane, not a supervision fork here.
+- **OQ-6 (`--supervise` lock lifetime) — RULED: (b), teach the down-guard a
+  mode/state token** (Matt, RIG-3261, 2026-09-05): `DownDetached`'s
+  live-holder guard learns whether the lock holder is a mid-bring-up `up`
+  (refuse, as today — `ErrStackStarting`) or a supervise process parked at
+  Ready (a VALID `down` target that is signalled, tears down, and exits
+  ZERO). Preserves DL-183's single-owner mutual exclusion that option (a),
+  releasing the lock at Ready, would have traded away. Cost accepted: a
+  real semantic change to the DL-183 down-guard — the guard's refuse-vs-signal
+  decision and the lockfile mode/state token — landed by T1 (the before-lock
+  pre-spawn sweep stays the option-independent fix), the teardown signaling
+  itself (pgid record, verify-before-signal, reverse-order SIGTERM)
+  unchanged, with the `downdetached_test.go:238` counterpart asserting the
+  Ready-holder signal-not-refuse path.
