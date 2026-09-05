@@ -147,7 +147,7 @@ Concretely:
   session is closed AND whose close-stamp is past the deadline; a live or
   suspended session's volume is never eligible.
 - **Snapshots for first-clone amortization** (the Codespaces prebuild model,
-  parent design.md:622-626): a freshly materialized, **provably-clean** tree
+  parent design.md:622-626): a freshly cloned, **provably-clean** tree
   is snapshotted at the FS layer where the box's filesystem supports
   reflink/snapshot (btrfs/XFS/bcachefs reflink copy), by rsync-clone
   otherwise; a later session on the same repo restores the snapshot and starts
@@ -333,7 +333,7 @@ contract violation.
   decision the amendment marked load-bearing for Matt
   (virtualfs-descope-amendment.md:123-129); this record recommended and
   sequenced around it (OQ-1) rather than deciding it — Matt ruled it on
-  2026-09-05 (DL-326, §OQ-1), which this record now records.
+  2026-09-05 (DL-326, §OQ-1), which this record now reflects.
 - **Option C — a host-side read-only bare mirror + in-container `file://`
   clone.** The codebase names this pattern: `mountArg`'s doc calls the
   read-only mount "the shared bare-repo cache" (`podman.go:842-844`),
@@ -369,9 +369,10 @@ session path stays green (8), version floors (9). P2-specific additions:
 - **P2-GC-b — no new credential surface.** The ruled Option A + clone-only
   (DL-326) introduces no host-side forge credential — the agent self-clones
   in-container with its existing `$HOME` token — and no P2 task may introduce
-  one. This binds the ruled posture; a future Option B/C or build-prebuild
-  service (the DL-326 revisit trigger) would re-open this constraint under its
-  own decision.
+  one. This binds the ruled posture; the DL-326 revisit trigger — a sessionless
+  prebuild *service* that materializes trees with no session — would re-open
+  this constraint under its own decision (Option B/C earns its host-side read
+  credential only there).
 - **P2-GC-c — volume destruction only via `Expire`.** `Release`, `Teardown`,
   eviction, crash, and failed launches never delete volume contents; the only
   reclaim path is the policy reaper (the parent's GC 5 made mechanical).
@@ -694,7 +695,8 @@ The package skeleton mirrors `go/internal/compute`'s layering
 
 Each tagged **load-bearing** (blocked the gated tasks' merge) or
 **non-load-bearing** (deferred with rationale). OQ-1 (the one load-bearing
-question) is now ruled (DL-326); the record builds to each recommendation.
+question) is ruled (DL-326) and is a contract; the non-load-bearing OQ-2..OQ-4
+stay recommendations the record is drafted against as stated assumptions.
 
 > Namespace: an unprefixed **OQ-N** refers to *this* record's open questions;
 > the parent record's are always written **parent OQ N** (space, no hyphen).
@@ -716,10 +718,11 @@ reading of Global Constraint 2 (design.md:423-428): the `VirtualFS` seam owns
 the destination and source-selection, and the cold path's tree bytes are
 written by the agent under the seam's contract — `Materialize` on the
 fresh-clone path is preparation, not tree-writing. **Revisit trigger (Matt):**
-direct forge integrations with box-global read-only clones of subscribed repos
-on the Runner side are a deliberate follow-up optimization, not needed early;
-that is the moment a host-side read credential (Option B/C) would earn its
-existence, and the `Materialize` signature already accommodates the flip. A is
+two separate follow-ups, not one — box-global read-only clones of subscribed
+repos on the Runner side are a deferred follow-up optimization (not needed
+early), and *separately* a host-side read credential (Option B/C) earns its
+existence only when a sessionless prebuild *service* materializes trees with no
+session; the `Materialize` signature already accommodates that flip, so A is
 reversible by design.
 
 **1b — Snapshot-amortization provenance under A: clone-only (provenance-(a)).**
@@ -732,12 +735,18 @@ reads. A new session of a seen `(account, repo)` skips the cold **clone** (a
 This carries **zero cross-session leak**: the snapshot holds no WIP and no
 other session's build artifacts, and the account scope in the index key — not
 the tree's cleanliness — holds the tenancy boundary (P2-GC-f: cleanliness is
-not authorization). Cross-session
-**build** prebuild (a warm `target/` shared across sessions) is explicitly
+not authorization). Cross-session **build** prebuild (a warm `target/` shared
+across sessions) is explicitly
 **out of P2 scope** — it is the part that carries the leak vector and needs a
 provenance story clone-only does not, and each session already keeps its own
 warm `target/` across suspend/resume via its persistent volume. Build-prebuild
 rides the same future prebuild-service moment as the 1a revisit trigger.
+
+The parenthetical *(provenance-(a))* is the pre-ruling option label for this
+clean-post-clone-tree snapshot; the alternative close-time approach — an
+ignore-aware `git clean -fd` + `git reset --hard` — was rejected because it
+still shares any *ignored* file (e.g. a gitignored `.env`) a session left
+behind, so it does not close the leak.
 
 ### OQ-2 — `Archive`/`Restore` implementation timing *(non-load-bearing)*
 
