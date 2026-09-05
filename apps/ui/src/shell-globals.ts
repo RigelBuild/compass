@@ -11,16 +11,21 @@
 // a browser dev build (no shell) both are simply absent, which the readers
 // report as undefined so the caller falls back to the unchanged env path.
 
+/** The shell-injected launch mode. Client boots the connect-screen probe;
+ *  embedded resolves the bridge connection directly. Owned here — the single
+ *  source of truth both the injected global and every boot consumer name. */
+export type ShellMode = "embedded" | "client";
+
 declare global {
 	interface Window {
-		__COMPASS_MODE__?: "embedded" | "client";
+		__COMPASS_MODE__?: ShellMode;
 		__COMPASS_SERVER_URL__?: string;
 	}
 }
 
 /** The shell-injected launch mode, or undefined in a browser dev build (no
  *  shell). typeof-guarded so it never throws when `window` is absent. */
-export function shellMode(): "embedded" | "client" | undefined {
+export function shellMode(): ShellMode | undefined {
 	if (typeof window === "undefined") {
 		return undefined;
 	}
