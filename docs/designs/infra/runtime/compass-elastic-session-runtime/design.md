@@ -78,7 +78,7 @@ Compass ships as two products over one shared core:
   boundary.
   All of this record's `go/internal/*` and `agent-image/*` citations are
   public-repo paths.
-- **Managed Compass (private monorepo, dual AGPL + commercial license).** The
+- **Managed Compass (dual AGPL + commercial license), built out of tree.** The
   hosted multi-tenant service, which *reuses* the OSS core rather than forking
   it.
 
@@ -86,7 +86,7 @@ Compass ships as two products over one shared core:
 tasks land in the public repo — that is why the record lives here and every
 code citation resolves against `RigelBuild/compass`. Nothing in the managed
 control plane (tenant orchestration, billing, the hosted control surface, all
-of which live in the private monorepo) is designed here.
+of which are built out of tree) is designed here.
 
 **The motivation is primarily the managed service.** Hosted-scale density (pack
 many tenants, suspend the idle ones), durability across eviction, and a
@@ -890,8 +890,8 @@ Nothing pinned in the Approach is re-opened here.
    as a microVM OCI runtime (krun/libkrun or kata via podman `--runtime`), so
    the seam is expected to hold; the image/boot/egress plumbing above it is
    the real work I1 owns. Through Dogfood + trusted-tenant Beta the rootless
-   container remains the running boundary; I1 lands the microVM before the
-   first external multi-tenant tenant.
+   container remains the running boundary; I1 lands the microVM before it
+   becomes the sole runtime.
 6. **[non-load-bearing] Cold-idle object-store archive — thresholds.** D4
    archives an idle session's volume to the object store past a deeper idle
    threshold (freeing local disk; a cold-idle session costs object storage

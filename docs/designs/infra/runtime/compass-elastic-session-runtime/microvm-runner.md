@@ -59,10 +59,10 @@ inter-tenant boundary IS a hardware-virtualized microVM, design.md:881-894;
 the virtio-fs no-copy invariant, design.md:586-587) and replaces only the
 falsified implementation mechanism. Per design.md:892-894, "Through Dogfood +
 trusted-tenant Beta the rootless container remains the running boundary" — so
-this work runs in parallel with M0/S1/P2/C3 and blocks nothing before the
-first external multi-tenant tenant. Beyond that point the container path is
-**removed** and microVM becomes the sole runtime (D2); the container backend
-is a transitional bootstrap, not a permanent second runtime.
+this work runs in parallel with M0/S1/P2/C3 and is off the critical path. Once
+microVM is proven the container path is **removed** and microVM becomes the
+sole runtime (D2); the container backend is a transitional bootstrap, not a
+permanent second runtime.
 
 ## Approach
 
@@ -403,8 +403,8 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
 - **Transitional container path, then microVM-only (D2).** The rootless
   container remains the running boundary through Dogfood + trusted-tenant Beta
   (design.md:892-894) and is then **removed**: microVM is the sole runtime.
-  This work runs in parallel with M0/S1/P2/C3 and gates nothing before the
-  first external multi-tenant tenant.
+  This work runs in parallel with M0/S1/P2/C3 and is off the critical
+  path.
 
 ## Plan
 
@@ -676,20 +676,20 @@ each is kept so the executor sees *why*, not just *what*.
    second permanent runtime roughly *doubles* the production support and
    bugfix surface, which for a solo maintainer dominates the one-time build
    cost — and microVM must be built regardless (it is the reason the parent
-   design exists). Reach is preserved without a second runtime: the managed
-   service runs cloud-hypervisor on **elastic, hourly, autoscaling bare-metal**
-   instances (AWS `*.metal` in standard ASGs; GCP `c3-*-metal` "consumed and
-   managed in the same way as VM instances") — no nesting, so **no ~10%
-   nested-virtualization performance tax**; self-hosters provision a
-   KVM-capable box *for* Compass (an owned/homelab box, Hetzner-class
-   bare-metal, or a nested-virt-enabled hyperscaler instance — GCP any Linux
-   VM, Azure Dv3/Ev3+, AWS C8i/M8i/R8i or `.metal`). **Native-macOS-embedded
-   is dropped**: macOS has no KVM, Compass is an always-on/overnight workload
-   ill-suited to a personal Mac anyway, and macOS users use the managed
-   service or point the app at a remote KVM Runner. The ~10% tax therefore
-   only ever applies to a self-hoster who *chooses* a nested cloud VM over
-   bare-metal — a self-inflicted, clearly-documented tradeoff, never the
-   managed path.
+   design exists). Reach is preserved without a second runtime:
+   cloud-hypervisor needs only a KVM-capable host, and running
+   it directly on bare metal means no nesting and therefore **no
+   ~10% nested-virtualization performance tax**. Self-hosters
+   provision a KVM-capable box *for* Compass (an owned/homelab
+   box, Hetzner-class bare-metal, or a nested-virt-enabled
+   hyperscaler instance — GCP any Linux VM, Azure Dv3/Ev3+,
+   AWS C8i/M8i/R8i or `.metal`). **Native-macOS-embedded is
+   dropped**: macOS has no KVM, Compass is an always-on/overnight
+   workload ill-suited to a personal Mac anyway, and macOS
+   users use the managed service or point the app at a remote
+   KVM Runner. The ~10% tax therefore only ever applies
+   to a self-hoster who *chooses* a nested cloud VM over
+   bare-metal — a self-inflicted, clearly-documented tradeoff.
 3. **D3 — KVM absent ⇒ hard-fail, loudly.** With no container fallback (D2),
    a box without microVM support cannot run Compass. `VerifyMicroVMSupport`
    (V5) fails Runner startup with an error naming the missing capability and
