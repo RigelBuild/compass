@@ -73,6 +73,13 @@ type Querier interface {
 	CountOwedMentions(ctx context.Context) (int64, error)
 	CountRootAgents(ctx context.Context, ownerUserID string) (int64, error)
 	CurrentAgentConfig(ctx context.Context) (CurrentAgentConfigRow, error)
+	// Model-registry queries (RIG-3122 P2). Back the hand-written Store methods in
+	// internal/store/model_registry.go, which own the fail-closed payload
+	// validation (ValidateModelRegistry), the JSONB marshal/unmarshal, and the
+	// ErrVersionConflict/ErrNotFound mapping. The registry is a fleet-wide singleton
+	// row (singleton = TRUE) with a monotonic version supplying the CAS substrate:
+	// a write only lands if the row still holds the version the caller read.
+	CurrentModelRegistry(ctx context.Context) (CurrentModelRegistryRow, error)
 	DeclaredSecrets(ctx context.Context) ([]DeclaredSecretsRow, error)
 	DeleteAgentConfig(ctx context.Context) error
 	// Scoped to the calling agent (id AND agent). RETURNING the coordinate drives the
@@ -82,6 +89,7 @@ type Querier interface {
 	DeleteChannelMember(ctx context.Context, arg DeleteChannelMemberParams) (int64, error)
 	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
+	DeleteModelRegistry(ctx context.Context) error
 	DeleteSecret(ctx context.Context, name string) (int64, error)
 	DeleteTopic(ctx context.Context, id string) error
 	// Agent-forge-subscription / artifact-cursor queries (sqlc adoption T6,
@@ -209,6 +217,11 @@ type Querier interface {
 	InsertDMChannel(ctx context.Context, arg InsertDMChannelParams) (string, error)
 	InsertHomeChannel(ctx context.Context, arg InsertHomeChannelParams) error
 	InsertMessage(ctx context.Context, arg InsertMessageParams) (InsertMessageRow, error)
+	// InsertModelRegistry seeds the FIRST registry (the caller read no row, expected
+	// version 0). ON CONFLICT DO NOTHING makes it a CAS: it lands only when the
+	// singleton is still absent, so a racing seed loses (zero rows, ErrNoRows via
+	// RETURNING) rather than clobbering the winner. The seeded version is 1.
+	InsertModelRegistry(ctx context.Context, registry []byte) (int64, error)
 	InsertOwnerDMGroup(ctx context.Context, arg InsertOwnerDMGroupParams) error
 	// Secrets-registry queries (sqlc adoption T6, RIG-3034). These replace the inline
 	// SQL literals in internal/store/secrets.go; the hand-written Store methods keep
@@ -397,6 +410,12 @@ type Querier interface {
 	UpdateChannelPolicy(ctx context.Context, arg UpdateChannelPolicyParams) error
 	UpdateMessageBlocks(ctx context.Context, arg UpdateMessageBlocksParams) (int64, error)
 	UpdateMessageBlocksAsAuthor(ctx context.Context, arg UpdateMessageBlocksAsAuthorParams) (UpdateMessageBlocksAsAuthorRow, error)
+	// UpdateModelRegistry is the compare-and-set write over an existing row: it
+	// lands only when the row still holds $2 (the version the caller read), bumping
+	// to version + 1 and returning the new version. A stale/racing expected version
+	// matches no row (ErrNoRows via RETURNING) — the caller maps that to
+	// ErrVersionConflict.
+	UpdateModelRegistry(ctx context.Context, arg UpdateModelRegistryParams) (int64, error)
 	UpdateTopicLastSeq(ctx context.Context, arg UpdateTopicLastSeqParams) error
 	UpsertChannelMember(ctx context.Context, arg UpsertChannelMemberParams) error
 	UpsertForgeArtifactCursor(ctx context.Context, arg UpsertForgeArtifactCursorParams) error

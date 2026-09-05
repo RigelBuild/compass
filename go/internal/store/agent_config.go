@@ -142,15 +142,26 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 // absolute or ".." paths, carry a symlink or hardlink member, violate the
 // <name> grammar, exceed the decompressed-size or file-count cap, or contain an
 // mcp/*.json that is not valid JSON, is rejected as a %w-wrapped
-// ErrInvalidArgument and NO row is written. actor is the operator-scoped writer
-// (empty → ErrInvalidArgument); the singleton has no per-actor column, but the
-// param documents the operator-scoped write and matches the record.
+// ErrInvalidArgument and NO row is written. A bundle whose profile references a
+// model stable name absent from the current registry (the reverse orphan guard,
+// design.md §P2 L530-532) is likewise ErrInvalidArgument. actor is the
+// operator-scoped writer (empty → ErrInvalidArgument); the singleton has no
+// per-actor column, but the param documents the operator-scoped write and
+// matches the record.
 func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []byte) (version string, err error) {
 	if actor == "" {
 		return "", fmt.Errorf("%w: config-bundle writer account id is required", ErrInvalidArgument)
 	}
 	version, err = validateAndHashConfigBundle(bundle)
 	if err != nil {
+		return "", err
+	}
+	// Reverse orphan guard (design.md §P2 L530-532): a profile that pins a model
+	// stable name absent from the current registry (and not an escape-hatch
+	// provider/id selector) fails closed here rather than publishing a stranded
+	// reference. See checkBundleProfileRefsAgainstRegistry for the accepted
+	// non-transactional two-store TOCTOU window this shares with PutModelRegistry.
+	if err := s.checkBundleProfileRefsAgainstRegistry(ctx, bundle); err != nil {
 		return "", err
 	}
 	if err := s.q.PutAgentConfig(ctx, db.PutAgentConfigParams{
@@ -336,6 +347,63 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	info.Prompts = sortedKeys(promptSet)
 	info.Profiles = sortedKeys(profileSet)
 	return info, nil
+}
+
+// configBundleProfileBodies walks a stored, already-validated config bundle and
+// returns each published profile's raw profile.yml body, keyed by the profile
+// <name>. It reuses the same tar-walk + grammar (configMemberParts + the
+// cappedReader gzip-bomb guard) the store door enforced at Put, so it reads only
+// trusted content. The model-registry orphan cross-check
+// (publishedProfileModelRefs) consumes it to learn which stable names the
+// published profiles reference. A bundle with no profiles yields an empty map.
+//
+// This deliberately RE-WALKS the bundle validateAndHashConfigBundle already
+// walked at Put (which collects the same profile bodies into profileBodies for
+// the agent-key lint): on the operator write path a bundle is gunzipped and
+// tar-walked twice. The duplication is accepted for now to keep the Put door's
+// signature unchanged; folding the two walks into one (threading the already-
+// collected bodies through) is tracked as a follow-up (RIG-3220). If either walk's
+// grammar changes, the other MUST change in step or the lint reads a different
+// member set than the door validated.
+func configBundleProfileBodies(bundle []byte) (map[string][]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(bundle))
+	if err != nil {
+		return nil, fmt.Errorf("%w: bundle is not a valid gzip stream: %w", ErrInvalidArgument, err)
+	}
+	// Read-only gunzip: Close only releases the decompressor, so its error is
+	// not actionable here (nothing was written to flush).
+	defer func() { _ = gz.Close() }()
+
+	bodies := make(map[string][]byte)
+	tr := tar.NewReader(&cappedReader{r: gz})
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			if errors.Is(err, errBundleTooLarge) {
+				return nil, errBundleTooLarge
+			}
+			return nil, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
+		}
+		parts, err := configMemberParts(hdr.Name)
+		if err != nil {
+			return nil, err
+		}
+		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+		// A profile is exactly profiles/<name>/profile.yml (door grammar).
+		if len(parts) == 3 && parts[0] == topDirProfiles && parts[2] == memberProfileYML {
+			content, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("%w: reading profile member %q: %w", ErrInvalidArgument, hdr.Name, err)
+			}
+			bodies[parts[1]] = content
+		}
+	}
+	return bodies, nil
 }
 
 // trimAnySuffix trims the first matching suffix from s, else returns s.

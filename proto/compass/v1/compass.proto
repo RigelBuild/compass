@@ -152,6 +152,29 @@ service CompassService {
   // when already empty succeeds. On success every live Runner is signalled with
   // an empty config version so it re-materializes the empty config dir.
   rpc DeleteAgentConfig(DeleteAgentConfigRequest) returns (DeleteAgentConfigResponse);
+
+  // Declare the fleet model registry: the stable-name → candidate-chain map the
+  // gateway resolver routes with (compass-stable-name-routing §P2). Compare-and-
+  // set on the whole-registry version — the caller carries the version it read
+  // (0 to seed the first registry) and the write lands only if the row still
+  // holds it, so a racing operator write is never clobbered; a stale version is
+  // ABORTED. Admin-gated operator write (operator-scoped only: agents never
+  // author). The payload is validated fail-closed at the RPC boundary (schema
+  // shape, candidate provider/model_id shape, and no removal that would orphan a
+  // published profile's models.* reference) before a row is written.
+  rpc PutModelRegistry(PutModelRegistryRequest) returns (PutModelRegistryResponse);
+
+  // Report the current model registry: its version and full payload. An
+  // unconfigured fleet is a valid state — the response is empty (version 0, no
+  // entries), never an error. Value-free of credentials by construction (the
+  // registry names providers/models, never holds keys), so it is open to any
+  // authenticated account like GetAgentConfigInfo.
+  rpc GetModelRegistry(GetModelRegistryRequest) returns (GetModelRegistryResponse);
+
+  // Clear the fleet model registry back to the unconfigured state. Admin-gated
+  // like PutModelRegistry. Fails closed if the registry being cleared holds any
+  // stable name still referenced by a published profile's models.* map.
+  rpc DeleteModelRegistry(DeleteModelRegistryRequest) returns (DeleteModelRegistryResponse);
 }
 
 // How a resolved secret is delivered into the agent container. Mirrors
@@ -782,6 +805,73 @@ message GetAgentConfigInfoResponse {
 
 message DeleteAgentConfigRequest {}
 message DeleteAgentConfigResponse {}
+
+// One candidate in a stable name's ordered chain: an upstream (provider,
+// model_id) the gateway resolver tries in order until one has a usable
+// credential for the caller. The pair is opaque here — the SDK owns the
+// selector grammar; the store validates only that both are non-empty and
+// whitespace-free.
+message ModelCandidate {
+  string provider = 1;
+  string model_id = 2;
+}
+
+// The listing metadata a stable name carries, taken from its primary candidate
+// (OQ-2): the shape the container /v1/models listing and the cold-boot models.yml
+// seed render from. All fields optional — an entry may carry none.
+message ModelMetadata {
+  // The upstream context window in tokens, 0 when unknown.
+  int64 context_window = 1;
+  // Cost per million input/output tokens in integer micro-USD (money is never a
+  // float), 0 when unknown.
+  int64 input_cost_micro_usd = 2;
+  int64 output_cost_micro_usd = 3;
+  // The SDK Api type the primary candidate speaks (e.g. "anthropic-messages",
+  // "openai-completions"), empty when unset.
+  string api = 4;
+}
+
+// One stable name's registry entry: a human display name, the ordered candidate
+// chain, and the listing metadata.
+message ModelRegistryEntry {
+  string display_name = 1;
+  repeated ModelCandidate candidates = 2;
+  ModelMetadata metadata = 3;
+}
+
+// The fleet model registry payload: the stable-name → entry map. The map key is
+// the stable name (the modelId the gateway resolver looks up).
+message ModelRegistry {
+  map<string, ModelRegistryEntry> entries = 1;
+}
+
+// PutModelRegistry: declare the fleet model registry. The caller's identity is
+// the authenticated connection, never a field here.
+message PutModelRegistryRequest {
+  // The registry payload to write, validated fail-closed at the door.
+  ModelRegistry registry = 1;
+  // The version the caller read (compare-and-set). 0 seeds the first registry;
+  // a non-zero value must equal the row's current version or the write is
+  // ABORTED (a racing operator write landed first — re-read and retry).
+  int64 expected_version = 2;
+}
+
+message PutModelRegistryResponse {
+  // The new whole-registry version after the write (the prior version + 1).
+  int64 version = 1;
+}
+
+message GetModelRegistryRequest {}
+
+// GetModelRegistry: the current registry version and payload. An unconfigured
+// fleet reports version 0 and an empty registry.
+message GetModelRegistryResponse {
+  int64 version = 1;
+  ModelRegistry registry = 2;
+}
+
+message DeleteModelRegistryRequest {}
+message DeleteModelRegistryResponse {}
 
 // ── The canonical Compass issue/PR type family (compass-issue-model, #1018,
 // Active) ── One owned wire family: the server translates raw forge data into

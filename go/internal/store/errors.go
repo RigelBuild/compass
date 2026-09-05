@@ -55,6 +55,16 @@ var (
 	// edge maps it to FAILED_PRECONDITION.
 	ErrFailedPrecondition = errors.New("store: failed precondition")
 
+	// ErrVersionConflict is returned by a compare-and-set store write whose
+	// expected version does not match the row's current version — a racing
+	// operator write landed first. Distinct from ErrConflict (a uniqueness or
+	// terminal-state refusal) so the RPC edge can map a failed CAS to
+	// CodeAborted (the connect/gRPC convention for "retry after re-reading"),
+	// never to InvalidArgument. The model_registry store is the first CAS-on-
+	// version writer (RIG-3122 P2); the sentinel lives here so the mapping is
+	// stable and %w-wrapped context can ride along.
+	ErrVersionConflict = errors.New("store: version conflict")
+
 	// ErrSchemaVersion is returned by Open when the database's applied schema
 	// version does not match the version this binary's embedded migrations
 	// define — the refuse-to-serve guard (design.md:1136-1137). A newer
