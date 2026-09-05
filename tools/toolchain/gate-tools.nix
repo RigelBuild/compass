@@ -62,6 +62,13 @@ let
 
   toolchainTools = import ./toolchain-tools.nix { inherit pkgs; };
 
+  # The Go analysis battery (golangci-lint/govulncheck/go-licenses/nilaway),
+  # each rebuilt with the go-overlay toolchain the dev shell uses
+  # (tools/toolchain/go-analysis.nix), passed the same goToolchain so CI and the
+  # dev shell resolve one store path per tool. Covered by the store-path `langs`
+  # verdict below, not the parsed `packages` attrs — none is a bare nixpkgs attr.
+  goAnalysis = import ./go-analysis.nix { inherit pkgs goToolchain; };
+
   # Command names a derivation exposes. Dot-prefixed entries are nix wrapper
   # internals (.go-licenses-wrapped), never on PATH as commands.
   binsOf = drv:
@@ -95,5 +102,9 @@ in
     node = identityOf toolchainTools.node;
     moon = identityOf toolchainTools.moon;
     go = identityOf goToolchain;
+    golangci-lint = identityOf goAnalysis.golangci-lint;
+    govulncheck = identityOf goAnalysis.govulncheck;
+    go-licenses = identityOf goAnalysis.go-licenses;
+    nilaway = identityOf goAnalysis.nilaway;
   };
 }

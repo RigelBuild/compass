@@ -321,6 +321,9 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	if !ok {
 		return "", errSessionUnknown
 	}
+	if handle == nil {
+		return "", errSessionUnknown
+	}
 
 	h.mu.Lock()
 	for _, s := range h.sessions {
