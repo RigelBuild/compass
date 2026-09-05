@@ -7,4 +7,4 @@
 #
 # Floor policy: the `go` directive in go/go.mod tracks this pin minus at most
 # one minor, so an upstream Go security patch never blocks on a mod edit.
-{ version = "1.26.6"; }
+{ version = "1.27.1"; }
