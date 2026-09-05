@@ -112,9 +112,10 @@ condition is version-keyed, not row-count-keyed — see Global Constraints).
   would keep it instead of rotating and the runner would then fail the kind
   gate at `runnerhub/auth.go:79`. Not an escalation (the door still fails
   closed); reaching it via the CLI leg needs an operator pasting a service token
-  into runner state, while the `token.go:87` heal leg reaches it only from a
-  token already in a runner's own resolved state — so neither is an untrusted
-  input path. A non-load-bearing follow-up for the T4/issuance slice could
+  into runner state, while the `stack/adapters/token.go:87` heal leg reaches it
+  only from a token already in a runner's own resolved state — so neither is
+  an untrusted input path. A non-load-bearing follow-up for the T4/issuance
+  slice could
   compare the resolved `Kind` before treating a token as registered, landing in
   exactly those two callsites.
 - The token-existence-oracle posture holds: every door maps
@@ -239,22 +240,27 @@ authenticated network) plus the Kind-gated RunnerService mount
 bearer) — so a "two doors" claim is NOT made stale by this record's third kind.
 The two-door COUNT sentences that remain (`auth/doc.go:7`, and the
 `both doors` sites at `interceptor.go:86`/`:129`, `service.go:539`/`:604`)
-are scoped to the `auth` PACKAGE's OWN pair — network + socket, the two doors
-whose handlers read the caller via `CallerFrom` (`auth/doc.go:2` scopes the
-package to "the network door"; RunnerService authenticates in `runnerhub`, not
-`auth`) — so they are narrow-and-true within that scope, independently of
-SubjectService; they are OUT OF SCOPE for both PR2 and T4. The CONTRACT is a
+live on the door-COUNT axis, which is ORTHOGONAL to the subject-KIND axis this
+record adds — a third KIND cannot falsify or refresh a door-count claim — so
+they are OUT OF SCOPE for both PR2 and T4. Whether `auth/doc.go:7`'s literal
+"two doors" count is even accurate at `eb5ef7a1` (the dev-loopback door at
+`serve.go:745-747` also mounts the `auth` ambient/`CallerFrom` pair, so three
+`compass.v1` doors read a caller through this package, not two) is a
+pre-existing doc question this record neither creates nor owns. The CONTRACT is a
 discovery rule for the subject-KIND sites only (the line-pinned list below is
 evidence, not the boundary): refresh every NON-GENERATED comment under `go/`
-and `proto/` that ENUMERATES the account/Runner subject KINDS — matching
-(case-INSENSITIVELY) roughly `/cross-door|cross-kind|account (token|subject|
-door)|Runner (token|subject|door)|(the )?other door|two mandatory/` — since any
-two-KIND subject enumeration goes stale when the third kind lands. Exclude
-`go/gen/**` and `go/internal/gen/**` (regenerate those from the proto instead,
-never hand-edit — see T4's proto note below); test prose IS in scope. The
+and `proto/` — INCLUDING `.sql` migration comments — that ENUMERATES the
+account/Runner subject KINDS, matching (case-INSENSITIVELY) roughly
+`/cross-door|cross-kind|account (token|subject|door)|Runner (token|subject|
+door)|(the )?other door|two mandatory|0 account|1 runner/` — since any two-KIND
+subject enumeration goes stale when the third kind lands. Exclude `go/gen/**`,
+`go/internal/gen/**`, and the checked-in sqlc tree `go/internal/store/db/**`
+(regenerate those from their sources — the proto for the first two, the
+migrations via `sqlc-gen` for the last — never hand-edit; see T4's proto note
+below); test prose IS in scope. The
 door-COUNT axis is deliberately NOT swept here: it is orthogonal to the kind
-axis this record adds, and the `auth`-scoped count sentences above are correct
-within their package scope. The subject-KIND sites known at authoring time (verified at `eb5ef7a1` — these
+axis this record adds, so a third KIND cannot make a door-count sentence stale.
+The subject-KIND sites known at authoring time (verified at `eb5ef7a1` — these
 are the T4 refresh targets):
 `go/internal/auth/token.go:98-99` (the shared-resolver door enumeration — "Both
 the account door … and the Runner door … share this one resolver"),
@@ -287,19 +293,23 @@ not a count. Editing `runner.proto:53-56` forces a regenerate: that prose is
 mirrored verbatim into the checked-in generated tree
 (`go/internal/gen/compass/v1/compassv1internalconnect/runner.connect.go:98`,
 `:367`), which is NOT gitignored and is drift-gated — `compass-proto:drift`
-(in `proto:ci`) fails closed on any byte diff — so regenerate and commit that
-tree in the same slice, never hand-edit it. `network_door.go` lives at
+(in `compass-proto:ci`) fails closed on any byte diff — so regenerate and
+commit that tree in the same slice, never hand-edit it. `network_door.go` lives at
 `go/server/`, NOT `go/internal/` like the rest — the one cited file outside
-`go/internal/`.
+`go/internal/`. Finally, `go/internal/store/migrations/0001_init.sql:372-373`
+— the CHECK comment "subject_kind is 0 account / 1 runner" — is the migration's
+own two-KIND enumeration; T2 already owns editing it to add "/ 2 service", so it
+is named here only to give the `.sql`-in-scope clause a concrete target, NOT for
+T4 to re-edit.
 
 The door-COUNT sites are deliberately OUT of scope (this record changes the kind
 axis, not the door count): `go/internal/auth/doc.go:7-19` ("Two doors reach the
 same compass.v1 service"), `interceptor.go:86` ("both doors") and `:129`
 ("both doors reject identically"), `go/server/service.go:539`/`:604` ("attach
-one on both doors"). All are scoped to the `auth` package's OWN network+socket
-pair (the `CallerFrom` doors) and are narrow-and-true within that scope — a
-third KIND does not falsify them, and the third door (RunnerService) already
-exists at `eb5ef7a1`, so they are neither PR2 nor T4 work.
+one on both doors"). They live on the door-COUNT axis, ORTHOGONAL to the
+subject-KIND axis this record adds — a third KIND cannot falsify or refresh a
+door-count claim — so they are neither PR2 nor T4 work. (Whether the literal
+count is accurate is a pre-existing doc question this record does not own.)
 
 ### T5 — cross-door pgtest
 
