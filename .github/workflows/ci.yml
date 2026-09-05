@@ -338,11 +338,13 @@ jobs:
 
       - name: Put the dev shell's nixpkgs tools on PATH
         if: matrix.run == 'true'
-        # Phase two. buf, protoc, the Go analysis battery, biome and markdownlint
-        # have no `setup-*` action that could reproduce a nixpkgs pin. Rather than
-        # pick a close-enough release from some other channel and hope, CI
-        # resolves the SAME derivations the dev shell does, from the nixpkgs
-        # revision devenv.lock pins.
+        # Phase two. buf, protoc, biome and markdownlint have no `setup-*` action
+        # that could reproduce a nixpkgs pin. Rather than pick a close-enough
+        # release from some other channel and hope, CI resolves the SAME
+        # derivations the dev shell does, from the nixpkgs revision devenv.lock
+        # pins. (The Go analysis battery — golangci-lint/govulncheck/go-licenses/
+        # nilaway — is NOT here: it is rebuilt against the go toolchain and rides
+        # phase one via gate-tools.nix `langs`, not this nixpkgs-attrs step.)
         #
         # The attribute list comes from the parity script's own parse of
         # devenv.nix (run under the bun that phase one just put on PATH), so what

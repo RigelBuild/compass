@@ -67,6 +67,8 @@ describe("parseDevenvPackages", () => {
 		"    toolchainTools.node",
 		"    toolchainTools.moon",
 		"    goToolchain",
+		"    goAnalysis.golangci-lint",
+		"    goAnalysis.nilaway",
 		"  ];",
 		"",
 		"  enterShell = ''",
@@ -103,6 +105,7 @@ describe("parseDevenvPackages", () => {
 		const attrs = parseDevenvPackages(devenv);
 		expect(attrs).not.toContain("toolchainTools");
 		expect(attrs).not.toContain("goToolchain");
+		expect(attrs).not.toContain("goAnalysis");
 		// And it certainly did not throw on the dotted `toolchainTools.bun`
 		// tokens, because they sit outside the `(with pkgs; [ … ])` half.
 		expect(attrs).toEqual(["buf", "protobuf", "protoc-gen-go"]);

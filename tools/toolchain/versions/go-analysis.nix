@@ -19,12 +19,18 @@
 #     (honnef.co/go/tools) panics on the go1.27 IR. 2.13.0 added go1.27 support
 #     (#6642); pinned to 2.13.2.
 #
-# govulncheck and go-licenses need only the compiler rebuild — their nixpkgs
-# pins already carry an x/tools new enough for go1.27, so they keep `src = null`
-# (build the nixpkgs source with the overridden toolchain).
+# govulncheck and go-licenses need no source override — their nixpkgs pins carry
+# an x/tools new enough for go1.27, so they omit a pin here and build the nixpkgs
+# source with the overridden toolchain (go-licenses also gets the toolchain in
+# its own `go` arg — see go-analysis.nix). Only the two below carry a pin.
 #
-# Bump policy: move a tool's rev/tag + hash + vendorHash together; the fetch and
-# vendor derivations fail loudly on a stale hash, so nothing drifts silently.
+# MANUALLY MAINTAINED — these pins are NOT yet Renovate-managed (the other
+# versions/*.nix files each have a customManager in tools/renovate/config.json5;
+# this file has none — tracked as a follow-up). Bump policy until then: move a
+# tool's rev/tag + hash + vendorHash together and re-prefetch both hashes. The
+# FOD derivations fail loudly on a WRONG hash, but never on a stale-but-consistent
+# pin — this file is the pin most likely to rot (nilaway tracks an untagged main
+# rev) and the least likely to be noticed, so check it on every Go bump.
 {
   nilaway = {
     version = "0-unstable-2026-08-08";
