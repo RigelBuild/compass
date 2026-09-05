@@ -167,10 +167,9 @@ not-yet-recorded task, distinct from the parent's T5 (multi-Server clustering).
   record pins Postgres as durability owner with the fabric as transport only
   (`compass-managed-multitenancy/design.md:627-634`). Note the correction from
   the red-team: the cursor sweep closes the window only if something TRIGGERS
-  it, which OQ-3 part 2 resolved — the outbox is one of the
-  candidate answers there (it makes the publish itself durable, sidestepping the
-  trigger question), weighed against the lighter reconnect-hook/floor-tick
-  triggers.
+  it, which OQ-3 part 2 resolved — the outbox is one of the candidate answers
+  there (it makes the publish itself durable, sidestepping the trigger
+  question), weighed against the lighter reconnect-hook/floor-tick triggers.
 - **Keep the delivery consumer's bus subscription alongside the fabric one.**
   Double-handling: every MessagePosted would classify (and potentially
   dispatch) twice per Server. The SUBJECTS.md migration note pins this: "a
@@ -182,11 +181,10 @@ not-yet-recorded task, distinct from the parent's T5 (multi-Server clustering).
 
 - **Double-publish is the sanctioned transitional shape.** `message_posted`
   goes to BOTH the in-process bus (client stream + presence, until the client
-  edge migrates) and
-  the fabric (delivery). This does not violate the frozen "One eventing path —
-  NATS only" constraint, which bans a second swappable `EventFabric`
-  implementation, not the bus's phased coexistence (see Approach). No OTHER
-  event kind gains a fabric publish in this PR.
+  edge migrates) and the fabric (delivery). This does not violate the frozen
+  "One eventing path — NATS only" constraint, which bans a second swappable
+  `EventFabric` implementation, not the bus's phased coexistence (see
+  Approach). No OTHER event kind gains a fabric publish in this PR.
 - **Publish after commit, always.** The fabric publish happens strictly after
   the Postgres commit (both call sites already are:
   `go/internal/comms/comms.go:428-430`, `:453-472`); the consumer re-reads the
@@ -303,9 +301,16 @@ machinery per the OQ rulings.
   consumer's concurrency argument rests on a fabric contract rather than a
   nats.go internal.
 - **Test cycle:** the same commit that removes the `bus` field/parameter and the
-  `afterResubscribe` seam edits the three existing test files that drive them —
-  `consumer_test.go` (`c.afterResubscribe`, `c.bus.Publish`),
-  `pre_settle_closure_pgtest_test.go`, and `scan_wiring_test.go` — so the
+  `afterResubscribe` seam edits EVERY test file in `package delivery` that
+  references `c.bus.*`, `events.Bus`, or `c.afterResubscribe` — eleven at time
+  of writing, because `package delivery` is ONE compilation unit that breaks
+  simultaneously: `helpers_test.go`'s shared `newTestConsumer` constructor
+  (which most bus-driving tests route through) and `trace_test.go`'s
+  `publishCtxResponse` helper signature both name the `events.Bus` type
+  directly, alongside `consumer_test.go`, `mention_test.go`,
+  `offline_mention_test.go`, `pre_settle_closure_pgtest_test.go`,
+  `scan_wiring_test.go`, `ask_answer_target_test.go`, `sweep_test.go`,
+  `pin_sweep_test.go`, and `ask_answer_recovery_pgtest_test.go` — so the
   delivery package COMPILES and the existing unit suite stays green at this
   commit (the overrun-branch tests that assert `afterResubscribe` are deleted
   WITH the branch, here, not deferred). The suite is re-driven with the fake
@@ -316,8 +321,8 @@ machinery per the OQ rulings.
   a `hold` landing between `scanMissedMentions`'s held-check and its
   `MarkMentionsRouted` does NOT strand the message's later-block mentions (the
   scan-vs-hold critical-section invariant, Global Constraints); the fabric
-  no-overlap contract test above; and a
-  race-detector run (`go test -race ./go/internal/delivery/...`) covering
+  no-overlap contract test above; and a race-detector run
+  (`go test -race ./go/internal/delivery/...`) covering
   concurrent `onEventRef` + settle drain per OQ-2's ruling. **Recovery-trigger
   ordering:** deleting the `sub.Lagged()` overrun branch removes the only
   mid-run recovery trigger, so the OQ-3 part 2 replacement (T5) MUST land in the
@@ -396,12 +401,22 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
   plain delivers `scanMissedMentions` cannot — with doc-comment updates that
   re-derive the no-loss argument from JetStream durability instead of the ring
   overrun.
+- **Test cycle:** a red-green unit test that a publish-failed PLAIN
+  (non-mention) message to a live, never-restarting recipient IS recovered by
+  the ruled trigger — this is the DL-330 silent-stall hole the red-team
+  promoted to CRITICAL, so the record's headline recovery ruling ships with a
+  test proving it closes; a test that the start-time scan still runs before the
+  first event; and a test that `OnReconnect`'s chained callback fires the
+  `sweepAllLive` + `scanMissedMentions` pair WITHOUT displacing the fabric's own
+  reconnect log (the chained-not-replaced invariant DL-333 rests on). The
+  overrun-branch `afterResubscribe` tests are deleted in T2 with the branch, not
+  here.
 
 ### T6 — Changelog + record cross-references
 
 - **Interfaces:** consumes `docs/designs/DECISIONS.md`; this record. Produces:
   the changelog entry and this record's cross-references. The DL rows for the
-  ratified OQ rulings (DL-327..332, incl. the
+  ratified OQ rulings and the reconnect-seam shape (DL-327..333, incl. the
   double-publish-is-not-a-Global-Constraint-violation interpretation) landed
   WITH this record's own freeze PR per the "Ledger delta owed" Global
   Constraint — they are NOT re-produced here (the append-only unique-ID rule
@@ -417,8 +432,10 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
       failure counter (tests a–d)
 - [ ] T2: consumer trigger cutover — `SubscribeKind` in, bus tail out, per
       OQ-1/OQ-2/OQ-3 rulings; fabric serial-callback contract doc + no-overlap
-      test; the three bus/`afterResubscribe` test files edited in this commit;
-      scan-vs-hold critical-section test; suites green + race run
+      test; every `package delivery` test file referencing `c.bus.*`/
+      `events.Bus`/`c.afterResubscribe` edited in this commit (eleven, incl. the
+      shared `newTestConsumer` in `helpers_test.go`); scan-vs-hold
+      critical-section test; suites green + race run
 - [ ] T3: fabric construction + lifecycle in `serve.go` assembly; fail-closed
       nil-fabric startup
 - [ ] T4: two-instance single-claim, redelivery, DLQ-park integration proof
@@ -427,7 +444,7 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
       (`sweepAllLive` / `scanMissedMentions`) per OQ-3 part 2; PRODUCES the
       reconnect seam (does not exist yet); lands in T2's PR; plain-deliver
       recovery test
-- [ ] T6: changelog + record cross-references (DL-327..332 already landed with
+- [ ] T6: changelog + record cross-references (DL-327..333 already landed with
       this record's freeze PR)
 
 ## Resolved decisions
