@@ -412,8 +412,8 @@ in V2a-concrete form.
   hard-fail under `COMPASS_REQUIRE_MICROVM=1` (`microvmtest.go:35-41`). The
   test process needs the `kvm` supplementary group.
 - **External-reference gate.** This record and every artifact it plans are
-  Compass tracked files: no references to the private monorepo's name, no
-  private hostnames, no private-tracker issue slugs (RIG-NNN is fine).
+  Compass tracked files: never name or point at the private repo, no private
+  hostnames, no private-tracker issue slugs (RIG-NNN is fine).
 - **Egress prerequisites ride along.** The rootfs keeps `nft`/`getent`/`awk`
   and the writable regular-file `/etc/resolv.conf`
   (`guest-image/default.nix:141-156`; `egress.go:76-77`) — V3 depends on
