@@ -255,10 +255,13 @@ is `manifestProject = "compass"` (resolver.go:19) and the profile
 resolver.go:78, but C1 does not use it) — so the provider keyspace is shared.
 Because the reserved-prefix partition renames the six forge secrets under
 `SERVER_`, and the pre-production deployment carries no live data worth
-preserving, the existing six declarations are simply WIPED and re-provisioned
-under their prefixed names through the new admin RPC (OQ-4) — the operator
-re-supplies each value under the prefixed provider name (name-keyed provider,
-so the rename requires a provider write), not an in-place row move.
+preserving, the existing six declarations are simply WIPED; their NAMES are
+re-declared at boot under their prefixed names from the resolved forge config
+(OQ-4), and the operator re-supplies each VALUE in the writable provider under
+the prefixed name (name-keyed provider, so the rename requires a provider
+write) BEFORE the server boots — not an in-place row move, and not a
+running-server RPC call (the RPC/CLI is the rotation surface, not the first-boot
+bootstrap path; F2).
 
 **C1 REMOVES the public proto ENUM change** the previous delivery-kind mechanism
 required: no `SECRET_DELIVERY_SERVER_ONLY` proto enum value, no
@@ -297,8 +300,11 @@ signing, and Linear OAuth secrets are server_only by convention only
 boot-resolved by name via `newDeclaredSecretResolver`, serve.go:1469-1481)
 and today ride the same inject-all path into every agent container. They are
 re-declared under `SERVER_`-prefixed names in the separate `server_secrets`
-store in this PR chain (OQ-4, RESOLVED) — the pre-production deployment is wiped
-and re-declared through the new admin RPC, not migrated in place.
+store in this PR chain (OQ-4, RESOLVED) — the pre-production deployment is
+wiped, the NAMES re-declared at boot from the resolved forge config, and the
+VALUES re-populated in the writable provider (the admin `SetServerSecret` RPC /
+`compass server-secret` CLI serve rotation on a running server, not first-boot
+bootstrap; F2), not migrated in place.
 
 ### D7 — One seal/open path for `api_key` and OAuth payloads
 
@@ -600,101 +606,133 @@ declared into a store that does not exist.
   - Value custody + operator provisioning (Matt-ruled, F2): the VALUES of all
     server secrets — the six forge secrets and the `GATEWAY_CREDENTIALS_`
     master key — live in an operator-chosen WRITABLE SecretSpec provider, not
-    in the DB. The self-hosted default is `age://` (an age-encrypted file with a
-    local age identity key: writable, so the master key can mint into it;
+    in the DB. The self-hosted default is `age://` (an age-encrypted file with
+    a local age identity key: writable, so the master key can mint into it;
     encrypted at rest, which this whole record is about; headless- and
     container-safe with no D-Bus dependency, unlike `keyring`). A deployment
     with a cloud secret store points the SERVER resolver at it instead
     (`awssm`/`awsps` on AWS, `aac`/`akv` on Azure), and one already running
     Vault/OpenBao uses that — the provider is a per-resolver-INSTANCE config
-    choice (`WithProvider`, resolver.go:73), not a hardcode, so this is a
-    recommended default rather than a fixed backend. The master key is
-    server-minted on first boot and written back to that provider (T2,
-    unchanged). The six forge secrets are operator-SUPPLIED values: the operator
-    populates them in the provider — for the `age://` default, deploy tooling
-    seeds the age file; `compass server-secret set` (the T0 CLI below) writes a
-    value through `resolver.Set` for rotation on a running server. The prefix
-    RENAMES them (`LINEAR_FORGE_CLIENT_SECRET` →
+    choice (`WithProvider`, resolver.go:73/75), not a hardcode, so this is a
+    recommended default rather than a fixed backend. Two things make this an
+    EXECUTABLE T0 deliverable rather than prose: (1) DEPENDENCY PREREQUISITE —
+    `age` is a secretspec 0.17+ provider behind an `age` build feature, but
+    the repo pins `github.com/cachix/secretspec/secretspec-go` at v0.15.0
+    (go/go.mod:22), where `age://` does not resolve and T2's master-key
+    write-back has no writable target; T0 therefore REQUIRES a bump to `>=
+    0.17` with the `age` build feature enabled in the resolved secretspec
+    build (a separate prerequisite PR, Matt-ruled). On the current pin the
+    writable providers per the secretspec matrix are `dotenv`/`keyring`, so
+    absent the bump the target-state `age://` default is unavailable; `age://`
+    is the target-state default, gated behind the bump. (2) WIRING SEAM —
+    today serve.go:528 constructs the single resolver with NO provider option
+    (the SDK default chain); T0 constructs the SERVER resolver with
+    `secrets.WithProvider(<operator-configured URI>)` (resolver.go:75) fed by
+    a NEW server flag/env carrying that URI (defaulting to the `age://` path),
+    while serve.go:528's container resolver keeps its existing construction.
+    The master key is server-minted on first boot and written back to that
+    provider (T2, unchanged). The six forge secrets are operator-SUPPLIED
+    values: the operator populates them in the provider — for the `age://`
+    default, deploy tooling seeds the age file; `compass server-secret set`
+    (the T0 CLI below) writes a value through `resolver.Set` for rotation on a
+    running server. The prefix RENAMES them (`LINEAR_FORGE_CLIENT_SECRET` →
     `SERVER_LINEAR_FORGE_CLIENT_SECRET`) and the provider keyspace is keyed by
     NAME (`setArgs`, resolver.go:258-267), so a value is populated under the
     prefixed name via the `serverSecretName()` seam (CONSUMER-REPOINT above).
     The NAMES are declared into `server_secrets` at boot from the RESOLVED
     config `cfg.Forge.resolved()` (serve.go:232-246) — the same accessor every
-    live forge consumer uses — gated on the SAME enablement predicates that gate
-    the forge lanes (`boardIngestionEnabled`, serve.go:224-226, plus the
+    live forge consumer uses — gated on the SAME enablement predicates that
+    gate the forge lanes (`boardIngestionEnabled`, serve.go:224-226, plus the
     Linear-configured gate), so a deployment running neither App nor Linear
-    declares and requires nothing. Because the operator populates the provider
-    DIRECTLY (an age file, env, or a cloud store) BEFORE the server runs, the six
-    values are present at first boot with NO running server required to bootstrap
-    them — the R16 chicken-and-egg (a running server needed to reach the
-    provisioning RPC) is dissolved. `validateForgeSecret` (serve.go:1013/1016)
-    keeps its hard-fail, but it is now a clean STATIC deploy-time error: a
-    configured App whose forge value is absent from the provider fails startup
-    with an actionable "set `SERVER_<NAME>` in the provider" message, fixed by
-    populating the provider and rebooting — never by reaching a not-yet-running
-    RPC. The complete set is SIX names: the PRIMARY App PEM (`appKeySecret`,
+    declares and requires nothing. This boot declare runs on EVERY boot, so it
+    is idempotent by construction: it tolerates `ErrConflict` from the
+    non-idempotent `DeclareServerSecret` (secrets.go:100-102) as the
+    already-declared no-op — the same tolerated-conflict arm `SetSecret` uses
+    (secrets_service.go:116-118) — so every boot after the first re-declares
+    the six names cleanly rather than surfacing a duplicate-name error as a
+    startup failure. Because the operator populates the provider DIRECTLY (an
+    age file or a cloud secret store — the provider MUST be writable, since
+    the master key is server-minted and written back through `resolver.Set`;
+    `env` is read-only in secretspec and so is NOT a valid SERVER-resolver
+    provider even though it would suffice for the six operator-supplied forge
+    values) BEFORE the server runs, the six values are present at first boot
+    with NO running server required to bootstrap them — the R16
+    chicken-and-egg (a running server needed to reach the provisioning RPC) is
+    dissolved. `validateForgeSecret` (serve.go:1013/1016) keeps its hard-fail,
+    but it is now a clean STATIC deploy-time error: a configured App whose
+    forge value is absent from the provider fails startup with an actionable
+    "set `SERVER_<NAME>` in the provider" message, fixed by populating the
+    provider and rebooting — never by reaching a not-yet-running RPC. The
+    complete set is SIX names: the PRIMARY App PEM (`appKeySecret`,
     main.go:414-417), the webhook secret (`appWebhook`, main.go:418-421), the
     REVIEWER App PEM (`reviewerAppKeySecret`, main.go:430; consumed
     serve.go:1644), and the three Linear secrets (client id, client secret,
     webhook — per `cfg.Forge.resolved()`, provenance main.go:435-450).
     Provisioning is idempotent at the RPC layer: `SetServerSecret` tolerates a
     re-provision of an already-declared name — it rewrites the provider value,
-    mirroring `SetSecret`'s ErrConflict-tolerant arm (secrets_service.go:117-118),
-    rather than erroring — while store `DeclareServerSecret` itself mirrors the
-    non-idempotent `DeclareSecret` (ErrConflict on a duplicate name,
-    secrets.go:100-102). Closes the pre-existing inject-all exposure (D6) for
-    every configured name once provisioned. Same PR chain: OQ-4, RESOLVED.
+    mirroring `SetSecret`'s ErrConflict-tolerant arm
+    (secrets_service.go:117-118), rather than erroring — while store
+    `DeclareServerSecret` itself mirrors the non-idempotent `DeclareSecret`
+    (ErrConflict on a duplicate name, secrets.go:100-102). Closes the
+    pre-existing inject-all exposure (D6) for every configured name once
+    provisioned. Same PR chain: OQ-4, RESOLVED.
 - Consumes: nothing from T1-T5 (pure prerequisite).
-- Tests: a secret declared in `server_secrets` is ABSENT from a
-  FetchSecrets response (because it lives in the other table — no filter
-  involved) while `secrets` rows in the same boot ARE present; the server
-  resolver instance RESOLVES it; the container resolver's generated
-  manifest never contains its name; the new RPC rejects a non-admin
-  caller; the reserved master-key name is rejected on
-  SetServerSecret/DeleteServerSecret AND on the user-path
+- Tests: a secret declared in `server_secrets` is ABSENT from a FetchSecrets
+  response (because it lives in the other table — no filter involved) while
+  `secrets` rows in the same boot ARE present; the server resolver instance
+  RESOLVES it; the container resolver's generated manifest never contains its
+  name; the new RPC rejects a non-admin caller; the reserved master-key name
+  is rejected on SetServerSecret/DeleteServerSecret AND on the user-path
   SetSecret/DeleteSecret (a non-admin authenticated user calling SetSecret
-  with a `GATEWAY_CREDENTIALS_`-prefixed name is rejected and the provider value
-  is unchanged — F1); the server resolver can READ `server_secrets` through the
-  normal compass_app store path (the GRANT is present — F3); all six configured
-  names (primary + reviewer App PEM, webhook, and the three Linear secrets)
-  are provisioned through the `SetServerSecret` RPC under their
-  `SERVER_`-prefixed names, resolve through the server resolver, and are gone
-  from FetchSecrets; and provisioning is IDEMPOTENT at the RPC layer — a re-provision of the
-  same name through `SetServerSecret` succeeds and rewrites the provider value
-  (mirroring `SetSecret`'s ErrConflict-tolerant arm, secrets_service.go:117-118),
-  with no duplicate-row error surfaced to the caller; store `DeclareServerSecret`
-  itself returns ErrConflict on a duplicate name exactly as `DeclareSecret` does
-  (secrets.go:100-102). A server whose App is UNCONFIGURED (no
-  `--forge-app-id`) and whose Linear is unset declares and requires none of the
-  six and boots clean. A server with the App CONFIGURED and the six present in
-  the provider boots with the forge lanes live; with the App configured but a
-  forge value ABSENT from the provider, boot fails with an actionable static
-  "set `SERVER_<NAME>` in the provider" error (`validateForgeSecret`,
-  serve.go:1013/1016) — fixed by populating the provider and rebooting, not by
-  reaching a running-server RPC. A deployment with the Linear
-  pair configured under the DEFAULT names
-  (`defaultForgeLinearClientIDSecretName` / `defaultForgeLinearClientSecretName`)
-  and NO flag/env set is provisioned and resolved under their `SERVER_`-prefixed
-  names via the `serverSecretName()` seam and is absent from FetchSecrets (red
-  if the resolve side reads the raw flag/env layer instead of the prefixed
-  `resolved()` name). CONSUMER-REPOINT positive assertions (the (b)/(c) silent
-  modes need them, since an absent name is indistinguishable from a legitimate
-  off-state): boot a server with all six names provisioned and assert the GitHub
-  App token source mints, the GitHub and Linear webhook handlers are MOUNTED
-  (non-nil),
-  the Linear token source is non-nil, AND the forge WRITE caller is MOUNTED
+  with a `GATEWAY_CREDENTIALS_`-prefixed name is rejected and the provider
+  value is unchanged — F1); the server resolver can READ `server_secrets`
+  through the normal compass_app store path (the GRANT is present — F3); all
+  six configured names (primary + reviewer App PEM, webhook, and the three
+  Linear secrets) resolve through the server resolver under their
+  `SERVER_`-prefixed names and are gone from FetchSecrets; a ROTATION of any
+  of the six through the `SetServerSecret` RPC rewrites its provider value and
+  is picked up on the next resolve (the RPC is the rotation path, not the
+  first-boot bootstrap path); and provisioning is IDEMPOTENT at the RPC layer
+  — a re-provision of the same name through `SetServerSecret` succeeds and
+  rewrites the provider value (mirroring `SetSecret`'s ErrConflict-tolerant
+  arm, secrets_service.go:117-118), with no duplicate-row error surfaced to
+  the caller; store `DeclareServerSecret` itself returns ErrConflict on a
+  duplicate name exactly as `DeclareSecret` does (secrets.go:100-102). A
+  server whose App is UNCONFIGURED (no `--forge-app-id`) and whose Linear is
+  unset declares and requires none of the six and boots clean. A SECOND boot
+  of a configured deployment (the six names already present in
+  `server_secrets`) declares idempotently and boots clean — red if the boot
+  declare surfaces `ErrConflict` from `DeclareServerSecret` as a startup error
+  rather than tolerating it as the already-declared no-op. A server with the
+  App CONFIGURED and the six present in the provider boots with the forge
+  lanes live; with the App configured but a forge value ABSENT from the
+  provider, boot fails with an actionable static "set `SERVER_<NAME>` in the
+  provider" error (`validateForgeSecret`, serve.go:1013/1016) — fixed by
+  populating the provider and rebooting, not by reaching a running-server RPC.
+  A deployment with the Linear pair configured under the DEFAULT names
+  (`defaultForgeLinearClientIDSecretName` /
+  `defaultForgeLinearClientSecretName`) and NO flag/env set is provisioned and
+  resolved under their `SERVER_`-prefixed names via the `serverSecretName()`
+  seam and is absent from FetchSecrets (red if the resolve side reads the raw
+  flag/env layer instead of the prefixed `resolved()` name). CONSUMER-REPOINT
+  positive assertions (the (b)/(c) silent modes need them, since an absent
+  name is indistinguishable from a legitimate off-state): boot a server with
+  all six names provisioned and assert the GitHub App token source mints, the
+  GitHub and Linear webhook handlers are MOUNTED (non-nil), the Linear token
+  source is non-nil, AND the forge WRITE caller is MOUNTED
   (`hub.SetForgeCaller` called / `RelayForgeCall` does not fail-close to
   `CodeUnavailable`) — i.e. the forge read AND write lanes still wire off the
   server resolver, not just that the names are in `server_secrets`. F1 PREFIX
   PARTITION assertions: (user path) a non-admin authenticated caller invoking
-  `SetSecret`/`DeclareSecret` with a `SERVER_`- or `GATEWAY_CREDENTIALS_`-prefixed
-  name is REJECTED before `resolver.Set`, no `secrets` row is created, and the
-  provider value is unchanged; (admin path) an admin invoking `SetServerSecret`
-  with an UNPREFIXED name is REJECTED before the `server_secrets` insert and
-  before `resolver.Set`, no `server_secrets` row is created. Together these
-  assert the two keyspaces are disjoint by name, so no name can ever be live in
-  both tables — the structural F1 property, checked with pure string tests, no
-  cross-table or cross-tenant read.
+  `SetSecret`/`DeclareSecret` with a `SERVER_`- or
+  `GATEWAY_CREDENTIALS_`-prefixed name is REJECTED before `resolver.Set`, no
+  `secrets` row is created, and the provider value is unchanged; (admin path)
+  an admin invoking `SetServerSecret` with an UNPREFIXED name is REJECTED
+  before the `server_secrets` insert and before `resolver.Set`, no
+  `server_secrets` row is created. Together these assert the two keyspaces are
+  disjoint by name, so no name can ever be live in both tables — the
+  structural F1 property, checked with pure string tests, no cross-table or
+  cross-tenant read.
 
 ### T1 — Envelope-crypto helper package
 
@@ -768,8 +806,12 @@ is declared into it) and T1.
     genuinely kills it. `SpecResolver.Resolve` is NOT: it threads ctx only into
     `DeclaredSecrets` (resolver.go:136); the actual provider round-trip is
     `b.Load()` (resolver.go:165), whose SDK signature carries NO ctx
-    (`func (b *Builder) Load() (*Resolved, error)`, secretspec-go v0.15.0
-    secretspec.go:245) and which blocks in an uncancellable FFI call
+    (`func (b *Builder) Load() (*Resolved, error)`, verified against
+    secretspec-go v0.15.0 secretspec.go:245, the current pin — re-verify this
+    signature after the `>= 0.17` bump T0 requires (F2/H-1 prerequisite); if
+    `Load` gains a ctx-carrying form, the goroutine-offload design below
+    simplifies to a plain ctx-bounded call) and which blocks in an uncancellable
+    FFI call
     (`nativeResolve` → `C.secretspec_resolve`, binding_cgo.go:30 /
     binding_purego.go:118). A hung provider (1Password awaiting biometric
     approval, an unreachable Vault, a half-open TCP) would otherwise hold the
@@ -969,64 +1011,70 @@ RPC exactly as the frozen record already specifies.
 - [ ] T0 — `server_secrets` store (mechanism C1): new migration (table +
       single-row `server_key_state` table for the key-swap tripwire digest +
       GRANT SELECT/INSERT/UPDATE/DELETE on `server_secrets` and
-      SELECT/INSERT/UPDATE on `server_key_state` to compass_app/compass_system +
-      bucketA allow-list edit in rls_pgtest_test.go), `ServerDeclaredSecrets`
-      store view + second SpecResolver instance (same profile), admin-gated
-      SetServerSecret/DeleteServerSecret RPC carrying the F1 PREFIX guard
-      (REQUIRE a reserved server-secret prefix — `SERVER_` or
-      `GATEWAY_CREDENTIALS_` — checked before the `server_secrets` insert and
-      before `resolver.Set`, AND at the `store.DeclareServerSecret` store door,
-      so no writer can create a `server_secrets` row under an unprefixed name)
-      AND the matching user-path half on `secretsService.SetSecret`/`DeleteSecret`
-      and `store.DeclareSecret` (REJECT any reserved-prefixed name before
-      `resolver.Set`/`Delete`) — together the STRUCTURAL F1 PREFIX PARTITION,
-      the two doors making the keyspaces disjoint by name so no name is ever live
-      in both tables in either order, a pure string check with no cross-table
-      read; PLUS the reserved `GATEWAY_CREDENTIALS_MASTER_KEY` name rejected on
-      the admin path too (rotation is OQ-1 machinery, not a raw overwrite),
-      and operator provisioning of the SIX server-secret values (primary +
-      reviewer App PEM, webhook, three Linear): their VALUES live in an
-      operator-chosen WRITABLE SecretSpec provider (self-hosted default `age://`
-      — writable, encrypted-at-rest, headless; a cloud store or Vault/OpenBao
-      where present — F2), populated by the operator directly (deploy tooling
-      seeds the age file) or, for rotation on a running server, through the NEW
-      `compass server-secret set/list/delete` CLI (go/cmd/compass/, mirroring
+      SELECT/INSERT/UPDATE on `server_key_state` to compass_app/compass_system
+      + bucketA allow-list edit in rls_pgtest_test.go),
+      `ServerDeclaredSecrets` store view + second SpecResolver instance (same
+      profile), admin-gated SetServerSecret/DeleteServerSecret RPC carrying
+      the F1 PREFIX guard (REQUIRE a reserved server-secret prefix — `SERVER_`
+      or `GATEWAY_CREDENTIALS_` — checked before the `server_secrets` insert
+      and before `resolver.Set`, AND at the `store.DeclareServerSecret` store
+      door, so no writer can create a `server_secrets` row under an unprefixed
+      name) AND the matching user-path half on
+      `secretsService.SetSecret`/`DeleteSecret` and `store.DeclareSecret`
+      (REJECT any reserved-prefixed name before `resolver.Set`/`Delete`) —
+      together the STRUCTURAL F1 PREFIX PARTITION, the two doors making the
+      keyspaces disjoint by name so no name is ever live in both tables in
+      either order, a pure string check with no cross-table read; PLUS the
+      reserved `GATEWAY_CREDENTIALS_MASTER_KEY` name rejected on the admin
+      path too (rotation is OQ-1 machinery, not a raw overwrite), and operator
+      provisioning of the SIX server-secret values (primary + reviewer App
+      PEM, webhook, three Linear): their VALUES live in an operator-chosen
+      WRITABLE SecretSpec provider (self-hosted default `age://` — writable,
+      encrypted-at-rest, headless; a cloud store or Vault/OpenBao where
+      present — F2) resolved by a SERVER resolver constructed
+      `secrets.WithProvider(<operator-configured URI>)` (resolver.go:75) off a
+      NEW server flag/env for that URI (serve.go:528's container resolver
+      unchanged), populated by the operator directly (deploy tooling seeds the
+      age file) or, for rotation on a running server, through the NEW `compass
+      server-secret set/list/delete` CLI (go/cmd/compass/, mirroring
       `newSecretCmd` secret.go:42-49 — value read from stdin never argv per
-      secret.go:39-41 — dialing the admin `SetServerSecret`/`DeleteServerSecret`
-      RPCs over `dialSecretsClient`), which is idempotent at the RPC layer (a
-      re-provision rewrites the provider value, tolerating ErrConflict per
-      secrets_service.go:117-118; store `DeclareServerSecret` itself is
-      non-idempotent, mirroring `DeclareSecret`); the NAMES are declared into
-      `server_secrets` at boot from the resolved forge config on the ordinary
-      compass_app store path (`server_secrets` is bucket-A, RLS NOT enabled, so
-      NO BYPASSRLS and NO cross-tenant read is needed) — a configured App whose
-      forge value is absent from the provider fails startup with an actionable
-      static "set `SERVER_<NAME>` in the provider" error (`validateForgeSecret`,
-      serve.go:1013/1016), fixed by populating the provider and rebooting, never
-      by reaching a running-server RPC; an unconfigured App/Linear declares and
-      requires nothing and boots clean — plus the `serverSecretName()` prefix
-      seam applied as an INVARIANT (every argument compared against a resolved
-      `s.Name` is prefix-wrapped — including `secretDeclared` in
-      `forgeWriteAppsConfigured` serve.go:272 and `forgeSecretDeclared`
-      serve.go:1078 — while every log/error/operator-config string is not) so
-      declared and resolved names agree — PLUS the
-      doc-comment repairs T0's own changes require: the five
-      "three/3 procedures authenticatedOpen" SecretsService comments
-      (admin_gate.go:116-121, network_door.go:288-290, secrets_service.go:6,
-      serve.go:555, serve.go:749-750) are restated as three authenticatedOpen
-      + two adminOnly once the two admin methods land; the `adminOnly` type
-      doc (admin_gate.go:22-26) widens its "privileged CompassService
-      agent-session RPCs (and token issuance)" enumeration to admit the two
-      `SecretsService` server-secret writes; and the `SecretsService` service
-      comment (proto/compass/v1/compass.proto:175-179) is restated to cover the
-      two admin-gated server-secret methods and to note their authz is
-      door-side (`adminOnly` in `classifyProcedure`), not handler-side — this
-      one propagates through `moon run compass-proto:gen` into two checked-in
-      TS gen trees — `packages/compass-client/src/gen` (the PUBLIC lane,
-      buf.gen.yaml) and `packages/compass-agent/src/gen` (the internal-only agent
-      lane, buf.gen.agent-ts.yaml, proto/moon.yml:35-41) — which the drift gate
-      does NOT catch as staleness on its own (it regenerates and diffs, so stale
-      comment text regenerates identically and passes).
+      secret.go:39-41 — dialing the admin
+      `SetServerSecret`/`DeleteServerSecret` RPCs over `dialSecretsClient`),
+      which is idempotent at the RPC layer (a re-provision rewrites the
+      provider value, tolerating ErrConflict per secrets_service.go:117-118;
+      store `DeclareServerSecret` itself is non-idempotent, mirroring
+      `DeclareSecret`); the NAMES are declared into `server_secrets` at boot
+      from the resolved forge config on the ordinary compass_app store path
+      (`server_secrets` is bucket-A, RLS NOT enabled, so NO BYPASSRLS and NO
+      cross-tenant read is needed) — a configured App whose forge value is
+      absent from the provider fails startup with an actionable static "set
+      `SERVER_<NAME>` in the provider" error (`validateForgeSecret`,
+      serve.go:1013/1016), fixed by populating the provider and rebooting,
+      never by reaching a running-server RPC; an unconfigured App/Linear
+      declares and requires nothing and boots clean — plus the
+      `serverSecretName()` prefix seam applied as an INVARIANT (every argument
+      compared against a resolved `s.Name` is prefix-wrapped — including
+      `secretDeclared` in `forgeWriteAppsConfigured` serve.go:272-273 (BOTH
+      the primary and reviewer arms) and `forgeSecretDeclared` serve.go:1078 —
+      while every log/error/operator-config string is not) so declared and
+      resolved names agree — PLUS the doc-comment repairs T0's own changes
+      require: the five "three/3 procedures authenticatedOpen" SecretsService
+      comments (admin_gate.go:116-121, network_door.go:288-290,
+      secrets_service.go:6, serve.go:555, serve.go:749-750) are restated as
+      three authenticatedOpen + two adminOnly once the two admin methods land;
+      the `adminOnly` type doc (admin_gate.go:22-26) widens its "privileged
+      CompassService agent-session RPCs (and token issuance)" enumeration to
+      admit the two `SecretsService` server-secret writes; and the
+      `SecretsService` service comment
+      (proto/compass/v1/compass.proto:175-179) is restated to cover the two
+      admin-gated server-secret methods and to note their authz is door-side
+      (`adminOnly` in `classifyProcedure`), not handler-side — this one
+      propagates through `moon run compass-proto:gen` into two checked-in TS
+      gen trees — `packages/compass-client/src/gen` (the PUBLIC lane,
+      buf.gen.yaml) and `packages/compass-agent/src/gen` (the internal-only
+      agent lane, buf.gen.agent-ts.yaml, proto/moon.yml:35-41) — which the
+      drift gate does NOT catch as staleness on its own (it regenerates and
+      diffs, so stale comment text regenerates identically and passes).
       (Opportunistic in the same edit, flagged pre-existing not T0-caused:
       admin_gate.go:40-41's "every generated CompassService and CommsService
       procedure" phrasing is already stale — the switch covers SecretsService
@@ -1034,17 +1082,23 @@ RPC exactly as the frozen record already specifies.
       correct both in the same pass, but neither gates T0.) Red-green tests:
       absent-from-FetchSecrets + server-resolver-resolves +
       user-path-prefix-guard (a `SetSecret` on a reserved-prefixed name is
-      rejected, no `secrets` row created) +
-      admin-path-prefix-guard (a `SetServerSecret` on an UNPREFIXED name is
-      rejected, no `server_secrets` row created) + provision-idempotent (a
-      re-provision of the same name via `SetServerSecret` succeeds and rewrites
-      the provider value, no duplicate-row error to the caller) +
-      boots-from-provider (an unconfigured App/Linear boots clean requiring none
-      of the six; a configured App with the six present in the provider boots
-      with the lanes live; a configured App with a forge value absent from the
-      provider fails startup with the actionable static error). PREREQUISITE of T2.
-      Proto delta: two additive `SecretsService` methods, no enum change —
-      the checked-in public gen trees are drift-gated, so this needs the
+      rejected, no `secrets` row created) + admin-path-prefix-guard (a
+      `SetServerSecret` on an UNPREFIXED name is rejected, no `server_secrets`
+      row created) + provision-idempotent (a re-provision of the same name via
+      `SetServerSecret` succeeds and rewrites the provider value, no
+      duplicate-row error to the caller) + boots-from-provider (an
+      unconfigured App/Linear boots clean requiring none of the six; a
+      configured App with the six present in the provider boots with the lanes
+      live; a configured App with a forge value absent from the provider fails
+      startup with the actionable static error). DEPENDENCY PREREQUISITE
+      (gating, Matt-ruled separate PR): bump
+      `github.com/cachix/secretspec/secretspec-go` from the pinned v0.15.0
+      (go/go.mod:22) to `>= 0.17` with the `age` build feature enabled in the
+      resolved secretspec build — `age` is a 0.17+ build-feature provider, so
+      on the current pin the `age://` default does not resolve and T2's
+      master-key write-back has no writable target. PREREQUISITE of T2. Proto
+      delta: two additive `SecretsService` methods, no enum change — the
+      checked-in public gen trees are drift-gated, so this needs the
       `compass.proto` edit + `moon run compass-proto:gen`, and both new
       procedure paths MUST be added to `classifyProcedure` as `adminOnly` or
       `classify_exhaustive_test` reds CI
