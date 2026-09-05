@@ -614,17 +614,22 @@
       // in config.test.ts documents). compass has no committed inner-rev guard
       // file, so no such entry.
       //
-      // A channel bump re-resolves the agent-closure bun.lock (including
-      // opentelemetry transitives) and moves pkgs.bun, the nixpkgs-versioned
-      // builder used by the FOD. Both inputs move agent-image/entrypoint.nix's
-      // bun `outputHash`, so the FOD refresh MUST ride this rule. It self-gates
-      // on bun.lock changing and runs after refresh-devenv-nixpkgs.ts rewrites
-      // the lockfile; when the trigger is unchanged it safely no-ops. The
-      // command and output file must both be listed here because fileFilters is
-      // an INCLUDE allowlist: omitting agent-image/entrypoint.nix would silently
-      // drop the recomputed hash edit and leave every channel bump red. The
-      // #580 digest bump empirically hit exactly that failure (`hash mismatch
-      // in fixed-output derivation compass-agent-node-modules`).
+      // A channel bump re-resolves the agent-closure bun.lock (opentelemetry
+      // transitives) ONLY when the biome catalog pin moves — refresh-devenv-
+      // nixpkgs.ts skips the relock on a biome-static bump — and independently
+      // moves pkgs.bun, the nixpkgs-versioned builder the FOD realises. Either
+      // can move agent-image/entrypoint.nix's bun `outputHash`, so the FOD
+      // refresh MUST ride this rule. It gates on bun.lock OR devenv.lock (the
+      // channel rev this bump always rewrites), so it fires on EVERY channel
+      // bump regardless of whether the relock ran, and reconciles the pin
+      // idempotently — a no-op write when the realised tree is unchanged. It runs
+      // after refresh-devenv-nixpkgs.ts so the relock's bun.lock write is already
+      // in the working tree. The command and output file must both be listed here
+      // because fileFilters is an INCLUDE allowlist: omitting
+      // agent-image/entrypoint.nix would silently drop the recomputed hash edit
+      // and leave a channel bump red. The #580 digest bump empirically hit
+      // exactly that failure (`hash mismatch in fixed-output derivation
+      // compass-agent-node-modules`).
       //
       // Self-hosted bot config MUST allow both commands:
       //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",

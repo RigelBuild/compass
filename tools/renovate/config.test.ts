@@ -190,11 +190,12 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// `allowedCommands` allowlist (a repo config cannot self-authorize a command),
 	// which Renovate matches UNANCHORED via regEx(pattern).test(cmd). So each
 	// entry's `^…$` IS the security property. Compass declares six DISTINCT
-	// commands across the task sites (the FOD-hash refresh rides two sites — the
-	// top-level branch-mode task and the catalog rule's update-mode task — so it
-	// appears twice in the declared list but needs only one allowlist entry; the
-	// devenv-fork relock likewise rides BOTH devenv-fork rules under one command
-	// string, since the script self-gates on which lock changed); every
+	// commands across the task sites (the FOD-hash refresh rides three sites — the
+	// top-level branch-mode task, the catalog rule's update-mode task, and the
+	// devenv-nixpkgs branch-mode lockstep task — so it appears three times in the
+	// declared list but needs only one allowlist entry; the devenv-fork relock
+	// likewise rides BOTH devenv-fork rules under one command string, since the
+	// script self-gates on which lock changed); every
 	// distinct command must be permitted, every entry must be used, and no entry may
 	// be an unanchored substring rule. RIG-3100 added the fifth: the go↔go-overlay
 	// lockstep on the go pin's solo branch. RIG-2815 added the sixth: the
@@ -275,7 +276,7 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 	// image build fails `hash mismatch in fixed-output derivation`. refresh-fod-
 	// hashes.ts recomputes it, but Renovate only COMMITS files a task's fileFilters
 	// name — so a task that rewrites a FOD file without listing it silently drops
-	// the fix and the bump PR still goes red. Guard both sites' fileFilters.
+	// the fix and the bump PR still goes red. Guard all three sites' fileFilters.
 	const FOD = "bun tools/renovate/refresh-fod-hashes.ts";
 	const topLevel = cfg.postUpgradeTasks;
 	const catalogRule = cfg.packageRules.find(
@@ -512,13 +513,19 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	// agent-image/entrypoint.nix (the FOD outputHash). compass has NO committed
 	// inner-rev guard file, unlike the internal monorepo's guard entry.
 	//
-	// The FOD refresh is required here: a channel bump re-resolves the
-	// compass-agent bun.lock closure (including opentelemetry transitives) and
-	// moves pkgs.bun, the nixpkgs-versioned FOD builder. Both move the outputHash;
-	// PR #580 empirically failed with a compass-agent-node-modules hash mismatch.
-	// refresh-fod-hashes.ts runs after the relock, self-gates on bun.lock changes,
-	// and fileFilters must include its output or Renovate silently drops the edit.
-	test("the lockstep postUpgradeTask is branch-mode over the written files", () => {
+	// The FOD refresh is required here: a channel bump moves pkgs.bun, the
+	// nixpkgs-versioned builder the FOD realises, and — when the biome catalog pin
+	// also moves — re-resolves the compass-agent bun.lock closure (opentelemetry
+	// transitives). Either can move the outputHash; PR #580 empirically failed
+	// with a compass-agent-node-modules hash mismatch. refresh-fod-hashes.ts runs
+	// AFTER the relock (it reads the relock's bun.lock write from the working
+	// tree) and gates on bun.lock OR devenv.lock so it fires on every channel bump
+	// regardless of whether the relock ran; fileFilters must include its output or
+	// Renovate silently drops the edit. The order is load-bearing and silent when
+	// wrong: reversed, the FOD refresh runs before the relock writes bun.lock, the
+	// gate reads clean, and it no-ops — the pinned toEqual below turns that into a
+	// red test.
+	test("the lockstep postUpgradeTask is branch-mode, runs relock-then-FOD, and commits every written file", () => {
 		const task = devenvRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
 		expect(task?.fileFilters).toEqual([
@@ -537,13 +544,10 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 		// asserts turn that silent drop into a red test.
 		expect(task?.fileFilters).toContain("flake.nix");
 		expect(task?.fileFilters).toContain("flake.lock");
-		expect(task?.commands?.length).toBeGreaterThan(0);
-		expect(task?.commands).toContain(
+		expect(task?.commands).toEqual([
 			"bun tools/renovate/refresh-devenv-nixpkgs.ts",
-		);
-		expect(task?.commands).toContain(
 			"bun tools/renovate/refresh-fod-hashes.ts",
-		);
+		]);
 		expect(task?.fileFilters).toContain("agent-image/entrypoint.nix");
 	});
 
