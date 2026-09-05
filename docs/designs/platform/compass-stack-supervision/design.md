@@ -453,12 +453,12 @@ yet merged; it is a forward reference, not a same-tree anchor.)
   (`downdetached.go:15-24`: "15 + (30+5) + (10+5) + (10+5) = 80s").
 - Status truth stays `compass-stack status`: the OS unit expresses
   process-liveness of the supervise pid, never stack health semantics.
-- ID allocation + freeze order (ledger-collision guard): this record claims
-  DL-328. Main's ledger tail is DL-324; DL-325/DL-326/DL-327 are claimed by
-  unlanded PRs (#804/#859 on DL-325, #859 on DL-326, #868 on DL-327), so
-  DL-328 is the first free number as of this writing. The driver MUST
-  re-grep main's then-current ledger tail immediately before landing and
-  take the next free id if DL-328 is taken. The row cites its own decision
+- ID allocation + freeze order (ledger-collision guard): this record lands as
+  DL-329. At freeze, main's ledger tail was DL-328 (DL-325 runner trust-split,
+  DL-326 session-volume clone, DL-327 token-subject, DL-328 gateway-creds
+  encryption all landed), so DL-329 is the first free number — the record's
+  originally-claimed DL-328 was taken by the gateway-creds row, and the driver
+  took the next free id per this guard. The row cites its own decision
   self-containedly (no cross-cite to an unlanded number), so merge order
   cannot falsify it.
 
@@ -740,7 +740,7 @@ Interfaces:
   platforms, the linger prerequisite, the log locations, and the
   status-truth caveat (`compass-stack status`, never
   `systemctl --user status` / `launchctl print` alone); the DECISIONS.md
-  DL-328 row (rewritten to this ruling — the coordinator lands it with the
+  DL-329 row (rewritten to this ruling — the coordinator lands it with the
   record); RIG-3239 close-out.
 - Test cycle: markdownlint on the record + doc; the doc's command sequence
   is walked once verbatim on a Linux host as part of the T2 smoke.
@@ -757,7 +757,7 @@ Interfaces:
       `readGroupLeaderStartTime`, `sysctl KERN_PROC` via x/sys, one shared
       encoding); darwin-tagged unit test on the DL-263 CI leg.
 - [ ] T4 — self-host doc "run as a service" section (both platforms +
-      status-truth caveat), DL-328 ledger row, close-out.
+      status-truth caveat), DL-329 ledger row, close-out.
 
 ## Open Questions
 
