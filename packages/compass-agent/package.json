@@ -2,7 +2,7 @@
 	"name": "@compass/agent",
 	"version": "0.1.0",
 	"description": "First-party Compass agent built on the OMP SDK (@oh-my-pi/pi-agent-core), emitting compass.v1 natively over the AgentGateway socket. Runs inside the per-agent container; the Runner execs `compass-agent` and relays its frames.",
-	"license": "MIT OR Apache-2.0",
+	"license": "AGPL-3.0-only",
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts"
