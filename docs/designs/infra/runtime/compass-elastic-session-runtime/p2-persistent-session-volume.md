@@ -153,8 +153,9 @@ Concretely:
   otherwise; a later session on the same repo restores the snapshot and starts
   warm on `git fetch` + checkout-delta instead of a full clone. *What* gets
   snapshotted, *when* (the clean-tree stamp point), and the `(account, repo)`→snapshot
-  index the provision path reads are the load-bearing sub-fork OQ-1b — the
-  amortization mechanism, not just the clone posture, is what Matt ratifies.
+  index the provision path reads are settled by the ruled OQ-1b (clone-only,
+  DL-326): a provably-clean post-clone tree, stamped at W5's clone-complete
+  signal, keyed in the W2 index.
   Detection of the copy primitive is a runtime capability probe, not a config
   knob (OQ-3). `VolumeSnapshotID` stays an **opaque string** (frozen so by the
   parent, design.md:536-537); its P2 production shape is the snapshot store's
@@ -192,13 +193,13 @@ backends in siblings, session-scoped construction):
 - `Release` detaches/cleans the materialized root without destroying volume
   contents (volume destruction is `Expire`'s, never `Release`'s).
 
-Under the recommended clone model (next section), the P2 checkout backend's
+Under the ruled clone model (Option A, DL-326), the P2 checkout backend's
 `Materialize` **prepares** the destination — snapshot-restore when
 `TreeSource.Snapshot` is set, else an empty owned root — and the agent
-completes the tree (clone or fetch-delta) in-container. If OQ-1 is ruled the
-other way, the same signature holds and the backend performs the full
-host-side clone; the seam shape is decision-proof, which is exactly why the
-amendment let it wait for P2.
+completes the tree (clone or fetch-delta) in-container. The signature was
+designed decision-proof: Option B would have kept it while performing the full
+host-side clone in the backend body — which is why the amendment let the seam
+wait for P2.
 
 ### The clone/credential fork — the record's central decision (OQ-1)
 
@@ -330,8 +331,9 @@ contract violation.
   snapshots here are dumb FS-level copies keyed by opaque id.
 - **Ruling the clone fork inside this record.** Rejected — it is exactly the
   decision the amendment marked load-bearing for Matt
-  (virtualfs-descope-amendment.md:123-129); this record recommends and
-  sequences around it (OQ-1) rather than deciding it.
+  (virtualfs-descope-amendment.md:123-129); this record recommended and
+  sequenced around it (OQ-1) rather than deciding it — Matt ruled it on
+  2026-09-05 (DL-326, §OQ-1), which this record now records.
 - **Option C — a host-side read-only bare mirror + in-container `file://`
   clone.** The codebase names this pattern: `mountArg`'s doc calls the
   read-only mount "the shared bare-repo cache" (`podman.go:842-844`),
@@ -347,8 +349,8 @@ contract violation.
   or B, and against `workspace.go:1-8`'s one-agent-one-clone isolation). C thus
   collapses to "B with a smaller blast radius." Recorded because a reviewer or
   executor will see the mirror pattern in the code and ask, and because the
-  fetch-scoped-vs-clone-scoped credential narrowing is a genuine input to
-  Matt's OQ-1 ruling.
+  fetch-scoped-vs-clone-scoped credential narrowing was a genuine input to
+  Matt's OQ-1 ruling (ruled Option A, DL-326).
 
 ## Global Constraints
 
@@ -499,12 +501,12 @@ The package skeleton mirrors `go/internal/compute`'s layering
 
 ### W2 — snapshot backends: reflink with rsync fallback
 
-- **Volume-copy primitive (ungated).** An unexported `cloner` seam with two
+- **Volume-copy primitive.** An unexported `cloner` seam with two
   implementations — reflink copy (`cp --reflink=always`-class, FS-supporting)
   and rsync-clone — chosen by a **runtime capability probe** (attempt a reflink
   of a probe file in the base dir at manager construction; cache the verdict;
   no config knob, OQ-3). Useful regardless (it is also D4's
-  archive/restore copy path), so it is **not** gated.
+  archive/restore copy path).
 - **Snapshot store + index.** A sibling subtree under the base
   dir keyed by `VolumeSnapshotID`, plus an **`(AgentAccountID, repo)`→snapshot
   index** the provision path reads to set `TreeSource.Snapshot` for a new
@@ -727,9 +729,10 @@ the Runner verifies a `git status`-clean tree at the ref, then snapshots,
 keyed in an `(account, repo)`→snapshot index (W2, P2-GC-f) the provision path
 reads. A new session of a seen `(account, repo)` skips the cold **clone** (a
 `git fetch` + checkout-delta restore) and then builds cold on its own volume.
-This carries **zero cross-session leak**: a clean tree at a ref is org-public
-content already (no WIP, no other session's build artifacts), and the account
-scope in the index key holds the tenancy boundary (P2-GC-f). Cross-session
+This carries **zero cross-session leak**: the snapshot holds no WIP and no
+other session's build artifacts, and the account scope in the index key — not
+the tree's cleanliness — holds the tenancy boundary (P2-GC-f: cleanliness is
+not authorization). Cross-session
 **build** prebuild (a warm `target/` shared across sessions) is explicitly
 **out of P2 scope** — it is the part that carries the leak vector and needs a
 provenance story clone-only does not, and each session already keeps its own
