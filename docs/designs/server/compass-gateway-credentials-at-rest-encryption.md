@@ -252,7 +252,9 @@ with the per-tenant defer (RIG-3237).
 C1 keeps the SAME SecretSpec profile for both instances — the shared project
 is `manifestProject = "compass"` (resolver.go:19) and the profile
 `defaultProfile = "default"` (resolver.go:23; `WithProfile` exists,
-resolver.go:78, but C1 does not use it) — so the provider keyspace is shared.
+resolver.go:78, but C1 does not use it), and BY DEFAULT one provider URI
+configures both resolver instances (F2 WIRING SEAM) — so the provider keyspace
+is shared unless the operator opts Layer B onto a different provider.
 Because the reserved-prefix partition renames the six forge secrets under
 `SERVER_`, and the pre-production deployment carries no live data worth
 preserving, the existing six declarations are simply WIPED; their NAMES are
@@ -360,8 +362,11 @@ rejected branches are the ones a future reader will reach for first.
   F1 reserved-prefix partition (T0, both paths — the user path rejects
   reserved-prefixed names, the admin path requires them) at the DECLARATION
   layer rather than at the provider-keyspace layer; the boot read-back verify
-  additionally covers the master key. C2 would make the provider-keyspace
-  isolation structural for all of them.
+  additionally covers the master key. The F2 optional Layer-B provider split
+  already delivers provider-keyspace isolation for the user `SetSecret` path
+  when an operator opts into it (a per-resolver URI, not a second profile); C2
+  would make that isolation STRUCTURAL and unconditional (a dedicated profile
+  for all seven names, not an operator opt-out).
   Acceptable with the guard in place; the follow-up (per-tenant credential
   at-rest isolation + gateway-topology exposure) is where C2 is reconsidered
   (RIG-3237).
@@ -588,8 +593,9 @@ declared into a store that does not exist.
     `GATEWAY_CREDENTIALS_MASTER_KEY` is additionally rejected on
     `SetServerSecret`/`DeleteServerSecret` (rotation is OQ-1 machinery, never a
     raw overwrite), so an admin cannot clobber the auto-provisioned key.
-  - User-path prefix guard (F1 — mandatory, NOT admin-RPC-only): C1
-    shares the provider keyspace (§D2 read-back verify), so the
+  - User-path prefix guard (F1 — mandatory, NOT admin-RPC-only, and
+    NOT dependent on the shared-keyspace default): C1 shares the provider
+    keyspace by DEFAULT (§D2 read-back verify, F2 WIRING SEAM), under which the
     `authenticatedOpen` user `secretsService.SetSecret`/`DeleteSecret` path
     (any authenticated account, admin_gate.go:122-125) can overwrite a
     server secret's provider value AND — absent the guard — mint a shadow
@@ -639,10 +645,19 @@ declared into a store that does not exist.
     cannot drift to different provider capability sets (a separate
     prerequisite PR, Matt-ruled). (2) WIRING SEAM —
     today serve.go:528 constructs the single resolver with NO provider option
-    (the SDK default chain); T0 constructs the SERVER resolver with
-    `secrets.WithProvider(<operator-configured URI>)` (resolver.go:75) fed by
-    a NEW server flag/env carrying that URI (defaulting to the `age://` path),
-    while serve.go:528's container resolver keeps its existing construction.
+    (the SDK default chain); T0 threads the operator-configured URI, from a NEW
+    server flag/env (defaulting to the `age://` path), through
+    `secrets.WithProvider(<URI>)` (resolver.go:75). By DEFAULT the SAME URI
+    configures BOTH resolver instances — the SERVER (server-secret) resolver
+    AND the container/user resolver at serve.go:528 — so the provider
+    keyspace is shared by construction and the F1 guard + D2 read-back below are
+    the primary controls on it. An operator MAY OPTIONALLY point the
+    container/user (Layer B) resolver at a DIFFERENT provider (a second
+    flag/env); doing so isolates the two keyspaces, under which F1 and D2 remain
+    as defense-in-depth rather than becoming redundant (F1 is a
+    declaration-layer NAME partition independent of provider; D2's read-back
+    defends the master key regardless of who else can write the keyspace). The
+    shared default is the ruled baseline; the split is the operator's opt-out.
     The master key is server-minted on first boot and written back to that
     provider (T2, unchanged). The six forge secrets are operator-SUPPLIED
     values: the operator populates them in the provider — for the `age://`
@@ -877,12 +892,19 @@ is declared into it) and T1.
     cap-1 channel), so on a steady-state boot — key already provisioned,
     nothing to serialize — a hung provider still yields a bounded, diagnosable
     startup error rather than a parked process. This is necessary because the
-    provider keyspace is a shared mutable surface: C1 pins BOTH resolver
-    instances to the same SecretSpec project + profile (`manifestProject =
-    "compass"`, `defaultProfile = "default"`, resolver.go:19/23), so the
-    master key's provider VALUE is reachable by any writer of that
-    keyspace — an operator's out-of-band `secretspec set`, AND (absent the
-    guard below) the user-driven `SetSecret` RPC. The verify is a tripwire,
+    provider keyspace is a shared mutable surface under the DEFAULT single-URI
+    wiring (F2): C1 pins BOTH resolver instances to the same SecretSpec
+    project + profile (`manifestProject = "compass"`, `defaultProfile =
+    "default"`,
+    resolver.go:19/23) and, by default, the same provider URI, so the master
+    key's provider VALUE is reachable by any writer of that keyspace — an
+    operator's out-of-band `secretspec set`, AND (absent the guard below) the
+    user-driven `SetSecret` RPC. The verify is retained even when an operator
+    opts Layer B onto a separate provider (where the user path can no longer
+    reach the master key's keyspace): it still defends the master key against an
+    operator's out-of-band overwrite and against a swapped provider file, so it
+    is a control on the master key's integrity, not solely a consequence of
+    keyspace sharing. The verify is a tripwire,
     not a boundary: on a plain boot the resolved value IS "the key the
     process is about to encrypt with", so a byte-compare cannot by itself
     distinguish "my key" from "a swapped key". T5 strengthens it by binding
