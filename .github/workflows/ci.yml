@@ -1437,8 +1437,10 @@ jobs:
     # signs the .app and wraps the .dmg via the macos-bundle tool, asserting the
     # bundle is complete + mountable. The job-level `if:` ANDs the dispatch-aware
     # gate guard with the darwin affected gate: on a PR it runs only when setup
-    # found the shell surface (go/cmd/compass-app/ or a GTK closure input) or the
-    # macos-bundle tool changed (darwin_affected), and always on push/schedule
+    # found the shell surface (go/cmd/compass-app/ or a GTK closure input), the
+    # macos-bundle tool, or the sidecar surface (the three sidecar cmd dirs plus
+    # every first-party package they compile in) changed (darwin_affected), and
+    # always on push/schedule
     # and on a base-re-point re-trigger (DL-263 cadence — full sweep on main +
     # nightly ALWAYS, plus affected-on-PR). The in-step affected guard stays as
     # defense-in-depth.
@@ -1504,11 +1506,13 @@ jobs:
         # dev-version logic).
         #
         # AFFECTED-GUARDED to match the one-job affected posture (DL-263): on a PR
-        # it runs only when go/cmd/compass-app/, a shared GTK closure input, or
-        # the macos-bundle tool actually changed. push-to-main and the nightly
-        # schedule always run it (the full-sweep backstop); a base-re-point
-        # re-trigger (workflow_dispatch) also runs it full. The in-step guard
-        # mirrors the darwinAffected trigger in tools/ci-matrix/index.ts.
+        # it runs only when the shell surface (go/cmd/compass-app/ or a shared GTK
+        # closure input), the macos-bundle tool, or the sidecar surface (the three
+        # sidecar cmd dirs plus every first-party package they compile in) actually
+        # changed. push-to-main and the nightly schedule always run it (the
+        # full-sweep backstop); a base-re-point re-trigger (workflow_dispatch) also
+        # runs it full. The in-step guard mirrors the darwinAffected trigger in
+        # tools/ci-matrix/index.ts.
         if: success()
         env:
           CGO_ENABLED: '1'
@@ -1527,19 +1531,30 @@ jobs:
             fi
             # The darwin lane compiles the SAME shell the gtk4 lane does, so a
             # closure-only PR must trigger it too; plus a macos-bundle tool change
-            # (the bundler this lane exercises). Mirrors the darwinAffected
-            # trigger in tools/ci-matrix/index.ts.
+            # (the bundler this lane exercises) and the three pure-Go sidecars plus
+            # every first-party package they compile in — `go list -deps` resolves
+            # those non-cmd roots to {events, gen, internal, server}. Mirrors the
+            # darwinAffected trigger in tools/ci-matrix/index.ts.
             changed=$(git diff --name-only "$base"...HEAD -- \
               go/cmd/compass-app/ \
               tools/toolchain/gtk-closure.nix \
               tools/toolchain/gtk-e2e-env.nix \
-              tools/macos-bundle/)
+              tools/macos-bundle/ \
+              go/cmd/compass-stack/ \
+              go/cmd/compass-server/ \
+              go/cmd/compass-runner/ \
+              go/internal/ \
+              go/server/ \
+              go/events/ \
+              go/gen/ \
+              go/go.mod \
+              go/go.sum)
             if [ -z "$changed" ]; then
               run_it=0
             fi
           fi
           if [ "$run_it" = 0 ]; then
-            echo "darwin: PR does not touch the shell surface or the macos-bundle tool — skipping (affected gate)"
+            echo "darwin: PR does not touch the shell, sidecar, closure, or macos-bundle surface — skipping (affected gate)"
             exit 0
           fi
 
@@ -1559,6 +1574,15 @@ jobs:
           CGO_ENABLED=1 go -C go build -trimpath \
             -ldflags "-X main.version=$dev" \
             -o /tmp/compass-app ./cmd/compass-app
+
+          # The three embedded sidecars (§A4): pure-Go, CGO_ENABLED=0, same dev
+          # version stamp, built beside the shell so the bundle staging + mount
+          # assertion below exercise the same four binaries build.sh ships.
+          for b in compass-stack compass-server compass-runner; do
+            CGO_ENABLED=0 go -C go build -trimpath \
+              -ldflags "-X main.version=$dev" \
+              -o "/tmp/$b" "./cmd/$b"
+          done
 
           # Run the darwin-tagged unit suite for the shell entrypoint — this is
           # the ONLY lane that executes it. The moon `compass-go:test` lane runs
@@ -1588,6 +1612,9 @@ jobs:
             --binary /tmp/compass-app \
             --dist apps/ui/dist \
             --version "$dev" \
+            --sidecar /tmp/compass-stack \
+            --sidecar /tmp/compass-server \
+            --sidecar /tmp/compass-runner \
             --out "$out"
 
           # Assert the dmg exists, mounts, and carries a complete .app.
@@ -1598,10 +1625,29 @@ jobs:
           mnt="$(mktemp -d)"
           hdiutil attach "$out" -mountpoint "$mnt" -nobrowse -readonly
           rc=0
-          for want in \
-            "$mnt/Compass.app/Contents/MacOS/compass-app" \
-            "$mnt/Compass.app/Contents/Info.plist" \
-            "$mnt/Compass.app/Contents/Resources/dist/index.html"; do
+          BINARIES=(
+            "$mnt/Compass.app/Contents/MacOS/compass-app"
+            "$mnt/Compass.app/Contents/MacOS/compass-stack"
+            "$mnt/Compass.app/Contents/MacOS/compass-server"
+            "$mnt/Compass.app/Contents/MacOS/compass-runner"
+          )
+          for want in "${BINARIES[@]}"; do
+            if [ ! -x "$want" ]; then
+              echo "::error::darwin: mounted bundle missing or non-executable $want"
+              rc=1
+            elif ! got="$("$want" --version 2>&1)"; then
+              echo "::error::darwin: $want --version exited non-zero: $got"
+              rc=1
+            elif [ "${got#*$dev}" = "$got" ]; then
+              echo "::error::darwin: $want --version = '$got', expected to contain '$dev'"
+              rc=1
+            fi
+          done
+          FILES=(
+            "$mnt/Compass.app/Contents/Info.plist"
+            "$mnt/Compass.app/Contents/Resources/dist/index.html"
+          )
+          for want in "${FILES[@]}"; do
             if [ ! -f "$want" ]; then
               echo "::error::darwin: mounted bundle missing $want"
               rc=1

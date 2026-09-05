@@ -74,12 +74,11 @@ type Call struct {
 // Target is a resolved daemon endpoint the pump forwards against. It holds the
 // HTTP client wired to reach the daemon and the base URL to build requests from.
 //
-// Production wires a TLS/network-door target (native-client mode): a constructor
-// supplies a client with a TLS-dialing transport and an https base URL, and the
-// pump forwarding logic is unchanged. [NewUnixTarget] remains only as a
-// test-harness h2c-over-UDS stub — its production caller was removed in T-1
-// (RIG-2554); its sole users are the pump test suite (pump_test.go) and two
-// compass-app tests.
+// Two production wirings build a Target. Embedded mode wires a
+// cleartext-HTTP/2-over-UDS target ([NewUnixTarget]) at the private stack's Unix
+// socket; native-client mode wires a TLS/network-door target
+// ([NewTLSTarget]) at an https base URL. The pump forwarding logic is identical
+// for both.
 type Target struct {
 	client  *http.Client
 	baseURL string

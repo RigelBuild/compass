@@ -3,8 +3,9 @@
 // These defend the bundler's pure contract: the Info.plist template carries
 // every required CFBundle key with the passed values (name/executable/
 // identifier), both version keys carry the clean semver (GC4), the package type
-// is APPL, and the arg parser accepts the release-grammar flags + fails loud on
-// missing/duplicate/unknown input (build.sh sanity posture).
+// is APPL, and the arg parser accepts the release-grammar flags (including the
+// repeatable --sidecar) + fails loud on missing/duplicate/unknown input
+// (build.sh sanity posture).
 //
 // Only the PURE core is exercised — the edge (codesign / hdiutil / staging) is
 // import.meta.main-guarded, so importing index.ts never runs it.
@@ -128,7 +129,120 @@ describe("parseArgs — accepts the release-grammar flags", () => {
 			dist: "apps/ui/dist",
 			version: "1.4.2",
 			out: "/tmp/out.dmg",
+			sidecars: [],
 		});
+	});
+});
+
+describe("parseArgs — repeatable --sidecar collects the embedded sidecars", () => {
+	/** The required grammar every sidecar case is layered onto. */
+	function requiredArgs(): string[] {
+		return [
+			"--binary",
+			"/tmp/compass-app",
+			"--dist",
+			"apps/ui/dist",
+			"--version",
+			"1.4.2",
+			"--out",
+			"/tmp/out.dmg",
+		];
+	}
+
+	test("collects repeated --sidecar values in the order given", () => {
+		const args = parseArgs([
+			...requiredArgs(),
+			"--sidecar",
+			"/tmp/compass-stack",
+			"--sidecar",
+			"/tmp/compass-server",
+			"--sidecar",
+			"/tmp/compass-runner",
+		]);
+		expect(args.sidecars).toEqual([
+			"/tmp/compass-stack",
+			"/tmp/compass-server",
+			"/tmp/compass-runner",
+		]);
+	});
+
+	test("the duplicate check still fires for single-valued flags", () => {
+		expect(() => parseArgs([...requiredArgs(), "--dist", "other"])).toThrow(
+			/more than once/,
+		);
+	});
+
+	test("no --sidecar yields an empty array, not a parse error", () => {
+		expect(parseArgs(requiredArgs()).sidecars).toEqual([]);
+	});
+
+	test("a single --sidecar still collects into an array", () => {
+		const args = parseArgs([...requiredArgs(), "--sidecar", "/tmp/x"]);
+		expect(args.sidecars).toEqual(["/tmp/x"]);
+	});
+
+	test("--sidecar with no value fails loud like any other flag", () => {
+		expect(() => parseArgs([...requiredArgs(), "--sidecar"])).toThrow(
+			/'--sidecar' expects a value/,
+		);
+	});
+
+	test("--sidecar swallowing the next flag as its value fails loud", () => {
+		expect(() =>
+			parseArgs(["--sidecar", "--binary", "/tmp/compass-app"]),
+		).toThrow(/'--sidecar' expects a value/);
+	});
+
+	test("rejects a sidecar whose basename collides with the shell", () => {
+		expect(() =>
+			parseArgs([...requiredArgs(), "--sidecar", "/other/compass-app"]),
+		).toThrow(/collides with the shell/);
+	});
+
+	test("a sidecar basenamed compass-app throws even when --binary is basenamed otherwise", () => {
+		expect(() =>
+			parseArgs([
+				"--binary",
+				"/tmp/compass-app-darwin-arm64",
+				"--dist",
+				"/d",
+				"--version",
+				"1.0.0",
+				"--out",
+				"/o.dmg",
+				"--sidecar",
+				"/tmp/compass-app",
+			]),
+		).toThrow(/collides with the shell executable/);
+	});
+
+	test("a --binary basenamed otherwise with a same-named sidecar does NOT throw", () => {
+		expect(
+			parseArgs([
+				"--binary",
+				"/b/shell-x",
+				"--dist",
+				"/d",
+				"--version",
+				"1.0.0",
+				"--out",
+				"/o.dmg",
+				"--sidecar",
+				"/s/shell-x",
+			]).sidecars,
+		).toEqual(["/s/shell-x"]);
+	});
+
+	test("rejects two sidecars sharing a basename", () => {
+		expect(() =>
+			parseArgs([
+				...requiredArgs(),
+				"--sidecar",
+				"/a/compass-stack",
+				"--sidecar",
+				"/b/compass-stack",
+			]),
+		).toThrow(/duplicate sidecar basename/);
 	});
 });
 
