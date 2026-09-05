@@ -671,7 +671,7 @@ func forward(
 	ctx context.Context,
 	sub events.Subscription[busPayload],
 	stream *connect.ServerStream[compassv1.SubscribeEventsResponse],
-) error { //nolint:unparam // forward's result is always nil by the stream-handler contract (every path returns nil on client hang-up / clean shutdown); it is the handler signature, not dead code
+) error {
 	for _, event := range sub.Replay {
 		select {
 		case <-ctx.Done():

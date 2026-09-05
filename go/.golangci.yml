@@ -41,6 +41,7 @@ linters:
 
     # ── Class 2: fights Go idiom ─────────────────────────────────────────────
     - exhaustruct # demands every struct field set; Go zero-values + partial literals are idiomatic
+    - exhaustruct_v5 # successor to exhaustruct (golangci-lint 2.13), same idiom fight
     - varnamelen # short names (i, g, ok, ul) are idiomatic Go, not a defect
     - ireturn # returning interfaces (constructors, test helpers) is idiomatic Go
     - noctx # the daemon binds process-lifetime listeners and does a local stale-socket probe; a request-scoped net.Dialer/ListenConfig has no caller ctx to thread here (a T3+ outbound client to the Runner brings noctx back into play with per-call ctx)
