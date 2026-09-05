@@ -32,6 +32,9 @@ tasks:
       - '/package.json'
       - '/bunfig.toml'
       - '/devenv.lock'
+      # RIG-2815: the guard suite + the relock core's real-manifest tests read
+      # the agent-image devenv lock too, not just the root one.
+      - '/agent-image/devenv.lock'
       - '/.github/workflows/renovate.yml'
     options:
       # Never cache: the guard suite reads the live root package.json, bunfig,
