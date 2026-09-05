@@ -422,6 +422,19 @@ func (m *LocalManager) ReconcileOrphans(ctx context.Context) error {
 // it: this pass exists only to make UNSTAMPED volumes reachable by the reaper,
 // and rewriting a suspended session's stamp would make it reapable.
 func stampOrphanLocked(root string, discoveredAt time.Time) error {
+	// A volume reaped out from under this pass — between eachVolume's marker
+	// stat and this lock acquisition — is not an orphan to stamp. Guard the
+	// mutation the way Attach and Stamp already guard theirs: without this,
+	// writeStamp's os.MkdirAll would resurrect the reaped root's shell, Lookup
+	// would then succeed on a reaped session, and the provision path would warm-
+	// Attach an EMPTY volume instead of cold-materializing — silently defeating
+	// the not-found-is-an-observable-signal contract.
+	if err := requireVolumeRoot(root, filepath.Base(root)); err != nil {
+		if errors.Is(err, ErrVolumeNotFound) {
+			return nil
+		}
+		return err
+	}
 	stamp, err := readStamp(root)
 	if err != nil {
 		return err
@@ -735,15 +748,26 @@ func writeAndClose(f *os.File, data []byte) error {
 	return errors.Join(writeErr, closeErr)
 }
 
-// clearStamp removes the volume's close-stamp (invariant (a)). An absent stamp
-// is already-clear, not a failure: Attach of a volume that was never stamped —
-// the common case, a resume of a still-live session — must succeed.
+// clearStamp removes the volume's close-stamp (invariant (a)), atomically AND
+// durably. An absent stamp is already-clear, not a failure: Attach of a volume
+// that was never stamped — the common case, a resume of a still-live session —
+// must succeed.
+//
+// The unlink is fsynced (its containing metadata dir) with the same durability
+// writeStamp gives the write, because invariant (a) is exactly as load-bearing
+// as (c): a host crash shortly after an Attach that lost the clear would
+// resurrect the past-deadline stamp with its ORIGINAL timestamp, and the next
+// Expire would reap a volume belonging to the session that just re-attached —
+// the loss of the warm tree this package exists to preserve.
 func clearStamp(root string) error {
 	path := stampPath(root)
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // already clear; nothing to make durable.
+		}
 		return fmt.Errorf("vfs: clearing close stamp %q: %w", path, err)
 	}
-	return nil
+	return syncDir(filepath.Dir(path))
 }
 
 // volumeLock is a held per-volume advisory file lock. It owns the open fd the

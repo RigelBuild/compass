@@ -582,6 +582,47 @@ func TestReaperIgnoresNonVolumeDirs(t *testing.T) {
 	}
 }
 
+// TestReconcileOrphansDoesNotResurrectAReapedRoot pins onto the third mutator
+// the guard its two siblings (Attach, Stamp) already carry: a volume reaped out
+// from under a reconcile pass — between eachVolume's marker stat and this pass's
+// lock acquisition — must NOT be re-stamped. Without the guard, writeStamp's
+// os.MkdirAll resurrects the reaped root's shell, Lookup then SUCCEEDS on a dead
+// session, and the provision path warm-Attaches an EMPTY volume instead of
+// cold-materializing — silently defeating the not-found-is-an-observable-signal
+// contract Lookup documents.
+//
+// The reap is applied directly and stampOrphanLocked driven on the absent root:
+// a fully-removed root is no longer a base-dir entry eachVolume would visit, so
+// the window the guard closes is only reachable by running the mutator against a
+// root that vanished after discovery — which is exactly the deterministic form
+// of that race.
+func TestReconcileOrphansDoesNotResurrectAReapedRoot(t *testing.T) {
+	m := newManager(t)
+	v := mustCreate(t, m, "sess-reaped-mid-reconcile")
+
+	// The reap that landed between discovery and this pass's lock acquisition.
+	if err := os.RemoveAll(v.HostRoot); err != nil {
+		t.Fatalf("reaping the volume root: %v", err)
+	}
+
+	// The mutator the pass would run on the discovered-then-reaped root. A
+	// reaped volume is not an orphan to stamp: the typed not-found is swallowed,
+	// so the pass reports success without touching the filesystem.
+	if err := stampOrphanLocked(v.HostRoot, time.Now()); err != nil {
+		t.Fatalf("stampOrphanLocked on a reaped root = %v, want nil (a reaped volume is not an orphan to stamp)", err)
+	}
+
+	// The load-bearing consequence: the root stays absent, so Lookup still
+	// reports the reap and the provision path cold-materializes rather than
+	// warm-attaching an empty shell.
+	if exists(t, v.HostRoot) {
+		t.Fatal("stampOrphanLocked resurrected a reaped volume root; a reconcile pass must never recreate a volume it did not find live")
+	}
+	if _, err := m.Lookup(t.Context(), v.SessionID); !errors.Is(err, ErrVolumeNotFound) {
+		t.Fatalf("Lookup after a reaped-root reconcile = %v, want ErrVolumeNotFound (else provision warm-attaches an empty volume)", err)
+	}
+}
+
 // TestExpireSkipsALockedVolume is invariant (b)'s observable half: the
 // per-volume advisory lock is what closes the window between the reaper reading
 // a stamp and a concurrent Attach clearing it. Holding the lock stands in for
