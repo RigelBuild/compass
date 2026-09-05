@@ -321,7 +321,7 @@ jobs:
   release-assets-macos:
     name: release-assets-macos
     runs-on: macos-14
-    # Build the macOS .app/.dmg client bundle at the release sha on a macos-14
+    # Build the macOS .app/.dmg app bundle at the release sha on a macos-14
     # (arm64) runner and hand it to release-assets as a workflow artifact
     # (compass-distribution T3 / RIG-2754). It runs on macos-14 because the shell
     # links the SYSTEM WebKit framework and the bundle edge (codesign/hdiutil) is
@@ -378,15 +378,18 @@ jobs:
             echo "$store/bin" >>"$GITHUB_PATH"
           done
 
-      - name: Build and stage the macOS client bundle
+      - name: Build and stage the macOS app bundle
         # The release version is the semver release-please cut, sourced from
         # version.txt (Global Constraint 1: ONE version string across all
-        # binaries — the darwin shell carries the SAME clean semver ldflags stamp
-        # as the daemons). The shell compiles with cgo against the system WebKit
-        # framework (no build tag — T2 restructured the tags so a bare `go build
-        # ./cmd/compass-app` compiles on darwin), then the macos-bundle tool
-        # stages + ad-hoc signs the .app and wraps the .dmg under the release
-        # asset grammar.
+        # binaries — the darwin shell and the three sidecars carry the SAME clean
+        # semver ldflags stamp as the released daemons). The shell compiles with
+        # cgo against the system WebKit framework (no build tag — T2 restructured
+        # the tags so a bare `go build ./cmd/compass-app` compiles on darwin);
+        # the three embedded sidecars are pure Go (CGO_ENABLED=0). The
+        # macos-bundle tool then stages + ad-hoc signs the .app — shell, sidecars
+        # beside it in Contents/MacOS, UI dist in Contents/Resources — and wraps
+        # the .dmg under the release asset grammar. No compass-postgres:
+        # embedded's postgres is a stock postgres:18 container (DL-260/DL-321).
         env:
           TAG_NAME: ${{ needs.release-pr.outputs.tag_name }}
         run: |
@@ -400,12 +403,21 @@ jobs:
             -ldflags "-X main.version=$version" \
             -o /tmp/compass-app ./cmd/compass-app
 
+          for b in compass-stack compass-server compass-runner; do
+            CGO_ENABLED=0 go -C go build -trimpath \
+              -ldflags "-X main.version=$version" \
+              -o "/tmp/$b" "./cmd/$b"
+          done
+
           moon run compass-ui:build
 
           bun run tools/macos-bundle/index.ts \
             --binary /tmp/compass-app \
             --dist apps/ui/dist \
             --version "$version" \
+            --sidecar /tmp/compass-stack \
+            --sidecar /tmp/compass-server \
+            --sidecar /tmp/compass-runner \
             --out "compass-app_${tag}_darwin-arm64.dmg"
 
       - name: Upload the macOS dmg for release-assets to fold in
@@ -548,9 +560,9 @@ jobs:
             go -C go build -trimpath -ldflags "$ldflags" \
             -o "../compass_${tag}_darwin-arm64" ./cmd/compass
 
-      - name: Build and stage the Linux client bundle
-        # The thin client app tarball (gtk4 shell + UI dist + desktop + LICENSE)
-        # joins the semver Release asset set (RIG-2752 / compass-distribution T1).
+      - name: Build and stage the Linux app bundle
+        # The app tarball (gtk4 shell + the three embedded sidecars + UI dist + desktop
+        # + LICENSE) joins the semver Release asset set (RIG-2752 / compass-distribution T1).
         # COMPASS_BUNDLE_VERSION pins the clean semver so the app binary carries
         # the same one version as the daemons (Global Constraint 1); moon's
         # compass-app-bundle:build deps-edge builds the UI dist first. Rename the

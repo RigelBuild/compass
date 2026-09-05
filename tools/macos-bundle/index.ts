@@ -16,13 +16,16 @@
 // staging dir in a UDZO .dmg via `hdiutil`. Guarding behind `import.meta.main`
 // lets the test import the pure core without firing the edge.
 //
-// The .app layout mirrors the Linux thin-client bundle (GC9): binary + UI dist,
-// no sidecars. The dist lands at Contents/Resources/dist beside the executable
-// at Contents/MacOS/compass-app, satisfying the shell's beside-the-executable
-// dist resolution (go/cmd/compass-app/main.go resolveAssetsDir).
+// The .app layout mirrors the Linux tarball bundle (GC9 / §A4): the shell, the
+// three embedded sidecars, and the UI dist. The dist lands at
+// Contents/Resources/dist beside the executable at Contents/MacOS/compass-app,
+// satisfying the shell's beside-the-executable dist resolution
+// (go/cmd/compass-app/main.go resolveAssetsDir); each sidecar lands at
+// Contents/MacOS/<name> BESIDE the shell, where resolveStackBin's sibling probe
+// finds it. No compass-postgres — embedded's postgres is a container (DL-260).
 
 import { cp, mkdir, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { $ } from "bun";
 
 // ── Pure-core types ────────────────────────────────────────────────────────
@@ -49,6 +52,16 @@ export type BundleArgs = {
 	version: string;
 	/** Path the produced .dmg is written to. */
 	out: string;
+	/**
+	 * Paths to the sidecar binaries staged beside the shell in Contents/MacOS,
+	 * in the order the repeated `--sidecar` flags were given. Optional: the
+	 * required contract is binary/dist/version/out, so a caller that passes no
+	 * `--sidecar` gets an empty array (a shell-only .app) rather than a parse
+	 * error — WHICH sidecars a release carries is the release lane's call
+	 * (release.yml passes the three), not a grammar constant. Every path given
+	 * is still assertExists-checked before staging.
+	 */
+	sidecars: string[];
 };
 
 // ── Pure-core constants ────────────────────────────────────────────────────
@@ -57,6 +70,8 @@ export type BundleArgs = {
 const LS_MINIMUM_SYSTEM_VERSION = "11.0";
 /** The Info.plist format version key value (always 6.0). */
 const CF_BUNDLE_INFO_DICTIONARY_VERSION = "6.0";
+/** The name the shell is staged as in Contents/MacOS — also CFBundleExecutable. */
+const SHELL_EXECUTABLE_NAME = "compass-app";
 
 // ── Pure core ──────────────────────────────────────────────────────────────
 
@@ -106,13 +121,19 @@ export function renderInfoPlist(opts: InfoPlistOptions): string {
 }
 
 /**
- * Parse `--binary <path> --dist <dir> --version <semver> --out <dmg>` into a
- * typed BundleArgs. Pure; throws an Error naming the offending
- * flag on a missing value, an unknown flag, a duplicate, or a missing required
- * flag. Fail-loud on any malformed input mirrors build.sh's sanity posture.
+ * Parse `--binary <path> --dist <dir> --version <semver> --out <dmg>` plus zero
+ * or more repeated `--sidecar <path>` into a typed BundleArgs. Pure; throws an
+ * Error naming the offending flag on a missing value, an unknown flag, a
+ * duplicate of a single-valued flag, a missing required flag, a sidecar whose
+ * basename collides with the shell executable's staged name, or duplicate
+ * sidecar basenames.
+ * `--sidecar` is exempt from the duplicate check by design (it accumulates),
+ * but a `--sidecar` with no value fails as loud as any other. Fail-loud on any
+ * malformed input mirrors build.sh's sanity posture.
  */
 export function parseArgs(argv: string[]): BundleArgs {
 	const flags = new Map<string, string>();
+	const sidecars: string[] = [];
 	// Static flag table → Record membership (a fixed literal set, not a runtime
 	// collection).
 	const known: Record<string, true> = {
@@ -120,6 +141,7 @@ export function parseArgs(argv: string[]): BundleArgs {
 		"--dist": true,
 		"--version": true,
 		"--out": true,
+		"--sidecar": true,
 	};
 	for (let i = 0; i < argv.length; i++) {
 		// biome-ignore lint/style/noNonNullAssertion: index < argv.length.
@@ -131,10 +153,14 @@ export function parseArgs(argv: string[]): BundleArgs {
 		if (value === undefined || known[value] === true) {
 			throw new Error(`macos-bundle: flag '${flag}' expects a value`);
 		}
-		if (flags.has(flag)) {
-			throw new Error(`macos-bundle: flag '${flag}' given more than once`);
+		if (flag === "--sidecar") {
+			sidecars.push(value);
+		} else {
+			if (flags.has(flag)) {
+				throw new Error(`macos-bundle: flag '${flag}' given more than once`);
+			}
+			flags.set(flag, value);
 		}
-		flags.set(flag, value);
 		i++;
 	}
 	const require_ = (flag: string): string => {
@@ -144,12 +170,40 @@ export function parseArgs(argv: string[]): BundleArgs {
 		}
 		return value;
 	};
+	const binary = require_("--binary");
+	assertSidecarBasenamesDistinct(sidecars);
 	return {
-		binary: require_("--binary"),
+		binary,
 		dist: require_("--dist"),
 		version: require_("--version"),
 		out: require_("--out"),
+		sidecars,
 	};
+}
+
+/**
+ * Reject a sidecar whose basename collides with the shell executable's staged
+ * name or with another sidecar. All stage into Contents/MacOS/<basename> where
+ * `cp` silently overwrites, so a collision would clobber the shell or a sibling
+ * sidecar — this pure guard fails loud instead, mirroring build.sh's sanity
+ * posture (a green bundle is a COMPLETE bundle). Keyed on the STAGED name
+ * (SHELL_EXECUTABLE_NAME), not basename(--binary): the shell always stages as
+ * SHELL_EXECUTABLE_NAME regardless of the source path the caller passes.
+ */
+function assertSidecarBasenamesDistinct(sidecars: string[]): void {
+	const seen = new Set<string>();
+	for (const sidecar of sidecars) {
+		const name = basename(sidecar);
+		if (name === SHELL_EXECUTABLE_NAME) {
+			throw new Error(
+				`macos-bundle: sidecar '${name}' collides with the shell executable '${SHELL_EXECUTABLE_NAME}'`,
+			);
+		}
+		if (seen.has(name)) {
+			throw new Error(`macos-bundle: duplicate sidecar basename '${name}'`);
+		}
+		seen.add(name);
+	}
 }
 
 // ── The edge (impure) ──────────────────────────────────────────────────────
@@ -171,6 +225,9 @@ async function main(): Promise<void> {
 	// green bundle means a COMPLETE bundle.
 	await assertExists(args.binary, "compass-app binary");
 	await assertExists(join(args.dist, "index.html"), "UI dist (index.html)");
+	for (const sidecar of args.sidecars) {
+		await assertExists(sidecar, `sidecar binary (${basename(sidecar)})`);
+	}
 
 	// Stage the .app beside the requested dmg output so the staging dir and the
 	// dmg share a parent and cleanup is local.
@@ -183,11 +240,20 @@ async function main(): Promise<void> {
 	await mkdir(resourcesDir, { recursive: true });
 
 	// Contents/MacOS/compass-app — the darwin shell binary.
-	const stagedBinary = join(macosDir, "compass-app");
+	const stagedBinary = join(macosDir, SHELL_EXECUTABLE_NAME);
 	await cp(args.binary, stagedBinary);
 	// Ensure the executable bit survives (cp preserves mode; assert anyway by
 	// chmod +x via node, which is a no-op if already set).
 	await $`chmod +x ${stagedBinary}`.quiet();
+
+	// Contents/MacOS/<name> — the embedded sidecars, BESIDE the shell so
+	// resolveStackBin's sibling probe (go/cmd/compass-app) resolves them and
+	// prependExecDirToPath threads them onto the supervised stack's $PATH.
+	for (const sidecar of args.sidecars) {
+		const stagedSidecar = join(macosDir, basename(sidecar));
+		await cp(sidecar, stagedSidecar);
+		await $`chmod +x ${stagedSidecar}`.quiet();
+	}
 
 	// Contents/Resources/dist/ — the UI dist, beside-the-executable per the
 	// shell's resolveAssetsDir (dist under the executable's dir → Resources).
@@ -198,7 +264,7 @@ async function main(): Promise<void> {
 		join(appDir, "Contents", "Info.plist"),
 		renderInfoPlist({
 			name: "Compass",
-			executable: "compass-app",
+			executable: SHELL_EXECUTABLE_NAME,
 			identifier: "build.rigel.compass",
 			version: args.version,
 		}),
