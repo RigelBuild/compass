@@ -614,31 +614,34 @@
       // in config.test.ts documents). compass has no committed inner-rev guard
       // file, so no such entry.
       //
-      // FOD-REFRESH IS INTENTIONALLY ABSENT here, though this branch rewrites
-      // bun.lock + a workspace manifest (the biome catalog pin) — the two inputs
-      // agent-image/entrypoint.nix names as moving its bun `outputHash`. It is
-      // safe because biome never enters the hashed tree: the FOD installs with
-      // `bun install --frozen-lockfile --ignore-scripts --filter '@compass/agent'`
-      // (entrypoint.nix), and biome is a ROOT-ONLY devDependency (package.json
-      // `devDependencies`, absent from @compass/agent's manifest). Verified: that
-      // exact filtered install yields biome in neither `node_modules` nor the
-      // `.bun` virtual store, so a channel/biome bump cannot move outputHash. If
-      // biome ever becomes a compass-agent dependency, this rule must append
-      // `bun tools/renovate/refresh-fod-hashes.ts` + `agent-image/entrypoint.nix`
-      // to its task (it runs after the bun.lock rewrite, so it would self-gate and
-      // refresh in the same branch). config.test.ts pins this exemption.
+      // A channel bump re-resolves the agent-closure bun.lock (including
+      // opentelemetry transitives) and moves pkgs.bun, the nixpkgs-versioned
+      // builder used by the FOD. Both inputs move agent-image/entrypoint.nix's
+      // bun `outputHash`, so the FOD refresh MUST ride this rule. It self-gates
+      // on bun.lock changing and runs after refresh-devenv-nixpkgs.ts rewrites
+      // the lockfile; when the trigger is unchanged it safely no-ops. The
+      // command and output file must both be listed here because fileFilters is
+      // an INCLUDE allowlist: omitting agent-image/entrypoint.nix would silently
+      // drop the recomputed hash edit and leave every channel bump red. The
+      // #580 digest bump empirically hit exactly that failure (`hash mismatch
+      // in fixed-output derivation compass-agent-node-modules`).
       //
-      // Self-hosted bot config MUST allow the command:
-      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$"]
-      // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
+      // Self-hosted bot config MUST allow both commands:
+      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",
+      //                         "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins the wiring).
       postUpgradeTasks: {
-        commands: ["bun tools/renovate/refresh-devenv-nixpkgs.ts"],
+        commands: [
+          "bun tools/renovate/refresh-devenv-nixpkgs.ts",
+          "bun tools/renovate/refresh-fod-hashes.ts",
+        ],
         fileFilters: [
           "devenv.lock",
           "package.json",
           "bun.lock",
           "flake.nix",
           "flake.lock",
+          "agent-image/entrypoint.nix",
         ],
         executionMode: "branch",
       },
