@@ -85,13 +85,11 @@ func newTestSupervisor(t *testing.T, provisioned bool, defaultUID uint32) (compa
 	return client, svc
 }
 
-func uidPtr(u uint32) *uint32 { return &u }
-
 func TestExecRefusedBeforeProvision(t *testing.T) {
 	client, _ := newTestSupervisor(t, false, 0)
 	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
 		Command: []string{"/bin/true"},
-		Uid:     uidPtr(1000),
+		Uid:     new(uint32(1000)),
 	}))
 	if err == nil {
 		t.Fatal("Exec before Provision returned nil, want failed-precondition")
@@ -306,7 +304,7 @@ func TestExecUIDZeroRefused(t *testing.T) {
 	client, _ := newTestSupervisor(t, true, 1000)
 	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
 		Command: []string{"/bin/true"},
-		Uid:     uidPtr(0),
+		Uid:     new(uint32(0)),
 	}))
 	if err == nil || connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("Exec uid 0 = %v, want FailedPrecondition", err)
@@ -338,7 +336,7 @@ func TestExecStdinReachesChildNotArgv(t *testing.T) {
 	secret := "s3cr3t-body"
 	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
 		Command: []string{"/bin/sh", "-c", "cat"},
-		Uid:     uidPtr(uint32(syscall.Getuid())),
+		Uid:     new(uint32(syscall.Getuid())),
 		Stdin:   []byte(secret),
 	}))
 	if err != nil {
@@ -353,7 +351,7 @@ func TestExecNonZeroExitIsSuccessfulResponse(t *testing.T) {
 	client, _ := newTestSupervisor(t, true, 1000)
 	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
 		Command: []string{"/bin/sh", "-c", "exit 7"},
-		Uid:     uidPtr(uint32(syscall.Getuid())),
+		Uid:     new(uint32(syscall.Getuid())),
 	}))
 	if err != nil {
 		t.Fatalf("Exec with non-zero exit returned handler error %v, want successful response", err)
@@ -370,7 +368,7 @@ func TestExecEnvMergedExecKeysWin(t *testing.T) {
 	svc.mu.Unlock()
 	resp, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
 		Command: []string{"/bin/sh", "-c", "printf '%s,%s' \"$A\" \"$B\""},
-		Uid:     uidPtr(uint32(syscall.Getuid())),
+		Uid:     new(uint32(syscall.Getuid())),
 		Env:     map[string]string{"B": "exec"},
 	}))
 	if err != nil {
@@ -418,7 +416,7 @@ func TestExecOutputOverflowIsResourceExhausted(t *testing.T) {
 	svc.mu.Unlock()
 	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
 		Command: []string{"/bin/sh", "-c", "printf 'x%.0s' $(seq 1 64)"},
-		Uid:     uidPtr(uint32(syscall.Getuid())),
+		Uid:     new(uint32(syscall.Getuid())),
 	}))
 	if err == nil {
 		t.Fatal("Exec with output past the cap returned success, want ResourceExhausted")
@@ -439,7 +437,7 @@ func TestExecTimeoutKillsAndReapsChild(t *testing.T) {
 	start := time.Now()
 	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
 		Command:        []string{"/bin/sh", "-c", "sleep 300"},
-		Uid:            uidPtr(uint32(syscall.Getuid())),
+		Uid:            new(uint32(syscall.Getuid())),
 		TimeoutSeconds: 1,
 	}))
 	if err == nil {
@@ -468,7 +466,7 @@ func TestExecCanceledReapsChild(t *testing.T) {
 	go func() {
 		_, err := client.Exec(ctx, connect.NewRequest(&compassv1internal.ExecRequest{
 			Command: []string{"/bin/sh", "-c", "touch " + marker + "; sleep 300"},
-			Uid:     uidPtr(uint32(syscall.Getuid())),
+			Uid:     new(uint32(syscall.Getuid())),
 		}))
 		errCh <- err
 	}()
@@ -504,7 +502,7 @@ func TestExecStreamDemuxOrdering(t *testing.T) {
 		Frame: &compassv1internal.ExecStreamRequest_Start{
 			Start: &compassv1internal.StartExec{
 				Command: []string{"/bin/sh", "-c", "echo out; echo err 1>&2; exit 0"},
-				Uid:     uidPtr(uint32(syscall.Getuid())),
+				Uid:     new(uint32(syscall.Getuid())),
 			},
 		},
 	}); err != nil {
@@ -572,7 +570,7 @@ func TestSignalKillsLiveChildAndExitCarriesSignal(t *testing.T) {
 		Frame: &compassv1internal.ExecStreamRequest_Start{
 			Start: &compassv1internal.StartExec{
 				Command: []string{"/bin/sh", "-c", "sleep 300"},
-				Uid:     uidPtr(uint32(syscall.Getuid())),
+				Uid:     new(uint32(syscall.Getuid())),
 			},
 		},
 	}); err != nil {
@@ -628,7 +626,7 @@ func TestBrokenExecStreamReapsChild(t *testing.T) {
 		Frame: &compassv1internal.ExecStreamRequest_Start{
 			Start: &compassv1internal.StartExec{
 				Command: []string{"/bin/sh", "-c", "sleep 300"},
-				Uid:     uidPtr(uint32(syscall.Getuid())),
+				Uid:     new(uint32(syscall.Getuid())),
 			},
 		},
 	}); err != nil {
