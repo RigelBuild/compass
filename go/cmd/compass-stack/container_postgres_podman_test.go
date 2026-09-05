@@ -261,12 +261,13 @@ func newContainerFixture(t *testing.T, root string) containerFixture {
 		RuntimeDir:  runtimeDir,
 	}
 	deps, err := buildDeps(stack.Config{
-		StateDir:    cfg.StateDir,
-		SocketPath:  cfg.SocketPath,
-		ListenAddr:  cfg.ListenAddr,
-		DatabaseDSN: cfg.DatabaseDSN,
-		AgentImage:  cfg.AgentImage,
-		RuntimeDir:  cfg.RuntimeDir,
+		StateDir:        cfg.StateDir,
+		SocketPath:      cfg.SocketPath,
+		ListenAddr:      cfg.ListenAddr,
+		DatabaseDSN:     cfg.DatabaseDSN,
+		AgentImage:      cfg.AgentImage,
+		RuntimeDir:      cfg.RuntimeDir,
+		ExternalNatsURL: "nats://127.0.0.1:4222",
 	})
 	if err != nil {
 		t.Fatalf("buildDeps: %v", err)

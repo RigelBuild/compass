@@ -263,6 +263,13 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// light-postgres choice, so spawnChain skips startCollector entirely rather
 		// than dereferencing the (deliberately unwired) CollectorContainer seam.
 		ExternalOTLPEndpoint: "127.0.0.1:4317",
+		// This headless stack connects to no broker — the server/runner NATS
+		// cutover is a later slice — so a bundled NATS would be pure CI cost
+		// (and the e2e deps below wire no NatsContainer/NatsProber, so the
+		// bundle path would hit the nil-dep error next). Opt out via the
+		// --nats-external switch, mirroring the collector choice above, so
+		// spawnChain skips startNats entirely.
+		ExternalNatsURL: "nats://127.0.0.1:4222",
 	}
 
 	// Canned-model mode (RIG-1787 H3): stand up the deterministic stub, write a

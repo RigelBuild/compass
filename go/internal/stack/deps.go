@@ -70,6 +70,23 @@ type Deps struct {
 	// where no collector component starts; the core dereferences it only on the
 	// collector-readiness gate.
 	CollectorProber CollectorProber
+	// NatsContainer starts the container-backed NATS child: the default when
+	// Config.ExternalNatsURL is empty. Start runs `podman run` (detached) and
+	// returns a Process handle whose Pid the caller does NOT persist as a pgid
+	// (a rootless container runs beneath conmon, outside the client's group) —
+	// the container's teardown identity is its stable name, recorded as a v2
+	// container entry and torn down via Containers on a fresh down, exactly like
+	// CollectorContainer. Nil on the --nats-external path, where no nats
+	// container starts; the core dereferences it only when it dispatches to the
+	// nats start.
+	NatsContainer NatsContainer
+	// NatsProber probes the bundled NATS server's HTTP monitoring endpoint for
+	// readiness between launching it and the components that connect to it —
+	// the nats analogue of CollectorProber, since NatsContainer.Start returns at
+	// launch, not at readiness. Nil on the --nats-external path, where no nats
+	// component starts; the core dereferences it only on the nats-readiness
+	// gate.
+	NatsProber NatsProber
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 
@@ -109,6 +126,14 @@ const (
 	// child, so it uses no componentBinary; the enum + String case are its log
 	// label and the component key its v2 container pgid entry records.
 	ComponentCollector
+	// ComponentNats is the bundled NATS child (the fabric's message broker).
+	// Like ComponentCollector it is a container child, so it uses no
+	// componentBinary; the enum + String case are its log label and the
+	// component key its v2 container pgid entry records. Appended after
+	// ComponentCollector as a new iota value — the existing values must not
+	// renumber, since a persisted pgid record round-trips components by their
+	// String() name and a reorder would silently retag entries.
+	ComponentNats
 )
 
 // String renders the component for logs and errors.
@@ -122,6 +147,8 @@ func (c Component) String() string {
 		return "compass-runner"
 	case ComponentCollector:
 		return "otel-collector"
+	case ComponentNats:
+		return "nats"
 	default:
 		return "unknown-component"
 	}
@@ -230,6 +257,23 @@ type CollectorContainer interface {
 	Start(ctx context.Context, spec CollectorContainerSpec) (Process, error)
 }
 
+// NatsContainer starts the container-backed NATS child, the nats analogue of
+// CollectorContainer. It is the START seam; ContainerController tears NATS down
+// on a fresh cross-process down by the persisted name (the same reusable
+// teardown contract postgres and the collector use).
+//
+// Start writes the generated nats-server config to disk, creates the JetStream
+// data dir, runs `podman run` (detached) from spec, and returns a Process
+// handle for the in-process lifecycle: Signal(SignalTerm) maps to `podman stop`
+// and Wait blocks until the container exits, so an in-process Down drains it the
+// same way it drains a process child. The handle's Pid is NOT a process-group id
+// (a rootless container runs beneath conmon) and is never persisted as a pgid;
+// the container's durable teardown identity is spec.Name, recorded as a v2
+// container entry. A non-nil error means the container could not be launched.
+type NatsContainer interface {
+	Start(ctx context.Context, spec NatsContainerSpec) (Process, error)
+}
+
 // CertEnsurer ensures the TLS anchor (one PEM that is both the server's
 // --tls-cert and the runner's --ca) exists under stateDir and is valid well past
 // now. It is expiry-aware, not skip-if-present: when the existing anchor's
@@ -288,6 +332,18 @@ type DBProber interface {
 // yet (the collector still starting).
 type CollectorProber interface {
 	ProbeCollector(ctx context.Context, healthEndpoint string) error
+}
+
+// NatsProber probes the bundled NATS server's HTTP monitoring endpoint for
+// readiness — the nats analogue of CollectorProber. NatsContainer.Start returns
+// at launch, not at readiness, so spawnChain polls this between launching NATS
+// and the components that connect to it. A nil error means the server answered
+// healthy on monitorEndpoint; a non-nil error means not yet (still starting, or
+// JetStream still recovering its store). Deliberately an HTTP probe, not a
+// nats:// client connect: the readiness gate must not pull a NATS client
+// dependency into the supervisor.
+type NatsProber interface {
+	ProbeNats(ctx context.Context, monitorEndpoint string) error
 }
 
 // ServerInfo is the subset of GetServerInfo the core consumes.

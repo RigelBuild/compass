@@ -43,6 +43,16 @@ const (
 	// collector legibly rather than hanging.
 	collectorReadyPollInterval = 100 * time.Millisecond
 	collectorReadyPollBudget   = 30 * time.Second
+	// natsReadyPollInterval/natsReadyPollBudget bound the nats-readiness poll
+	// between launching the bundled NATS and the components that connect to it.
+	// NATS boots fast — no cold init like postgres's initdb — and a single-node
+	// R1 JetStream store recovers in well under a second at the scales this
+	// stack runs, so the budget is the same readyPollBudget tier as the
+	// collector: ample for a cold `podman run` of a present image plus store
+	// recovery, while still failing a genuinely wedged server legibly rather
+	// than hanging.
+	natsReadyPollInterval = 100 * time.Millisecond
+	natsReadyPollBudget   = 30 * time.Second
 )
 
 // Stack is a supervised embedded stack: the resolved config plus the child
@@ -56,6 +66,7 @@ type Stack struct {
 	runner    Process
 	pg        Process
 	collector Process
+	nats      Process
 	// collectorContainerName is the stable name of the bundled collector
 	// container when it ran (T4); empty on the --otel-external opt-out path. It
 	// is the in-process Down's teardown identity for the collector (the same
@@ -66,6 +77,16 @@ type Stack struct {
 	// startCollector captures it off the spec it already builds so waitCollector
 	// reads the readiness target without rebuilding the spec.
 	collectorHealthEndpoint string
+	// natsContainerName is the stable name of the bundled nats container when it
+	// ran; empty on the --nats-external opt-out path. Down does not read this
+	// write-only field: durable teardown identity is the persisted v2 pgid entry.
+	// Retained for sibling parity and debuggability.
+	natsContainerName string
+	// natsMonitorEndpoint is the host loopback HTTP monitoring endpoint the
+	// bundled nats published when it ran; empty on the opt-out path. startNats
+	// captures it off the spec it already builds so waitNats reads the readiness
+	// target without rebuilding the spec.
+	natsMonitorEndpoint string
 	// pgContainerName is the stable name of the container-backed postgres child
 	// when the container path ran (S4); empty on the process and external paths.
 	// It is the in-process Down's teardown identity for the container (the same
@@ -246,6 +267,22 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 
+	// 1d. Bundled NATS (the fabric's message broker). Grouped with the other
+	// infra preconditions — after postgres and the collector, before the TLS
+	// anchor and the server/runner — because server and runner are the surfaces
+	// that will CONNECT to it (that cutover is PR3/PR4; nothing in-tree connects
+	// yet), so the broker must be accepting before a consumer comes up, exactly
+	// the collector's ordering rationale. On the --nats-external opt-out
+	// (ExternalNatsURL set) startNats is a no-op and no readiness gate runs:
+	// consumers point straight at the external URL, so nothing bundled starts.
+	// Start returns at launch; waitNats is the readiness gate.
+	if err := s.startNats(ctx); err != nil {
+		return err
+	}
+	if err := s.waitNats(ctx); err != nil {
+		return err
+	}
+
 	// 2. TLS anchor, expiry-aware (rotates when NotAfter is within the window).
 	cert, err := s.deps.Certs.EnsureCert(ctx, s.cfg.StateDir, s.deps.now())
 	if err != nil {
@@ -374,6 +411,36 @@ func (s *Stack) startCollector(ctx context.Context) error {
 	return s.appendEntry(ComponentCollector, pgidEntry{Kind: entryContainer, Component: ComponentCollector, ContainerName: spec.Name})
 }
 
+// startNats brings up the bundled NATS container and records it as a v2
+// container entry (torn down by name, never by pgid — a rootless container runs
+// beneath conmon, outside the client's process group), exactly like
+// startCollector. The Process handle is held on the Stack so the in-process Down
+// drains it (Signal → podman stop); the persisted name is what a fresh
+// cross-process down reconstructs and signals. On the --nats-external opt-out
+// (ExternalNatsURL set) it is a no-op: no bundled nats starts, nothing is
+// recorded, and a down tears down only the other children — the nats analogue of
+// startCollector's ExternalOTLPEndpoint early return.
+func (s *Stack) startNats(ctx context.Context) error {
+	if s.cfg.ExternalNatsURL != "" {
+		return nil
+	}
+	spec, err := natsContainerSpec(s.cfg)
+	if err != nil {
+		return err
+	}
+	if s.deps.NatsContainer == nil {
+		return errors.New("start nats: NatsContainer dep is nil on the bundle path (ExternalNatsURL unset but no nats adapter wired) — a legible failure, not a nil-deref panic")
+	}
+	n, err := s.deps.NatsContainer.Start(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("start nats container: %w", err)
+	}
+	s.nats = n
+	s.natsContainerName = spec.Name
+	s.natsMonitorEndpoint = spec.MonitorEndpoint
+	return s.appendEntry(ComponentNats, pgidEntry{Kind: entryContainer, Component: ComponentNats, ContainerName: spec.Name})
+}
+
 // recordChild appends a spawned process child's teardown identity (pgid == pid,
 // plus the leader start-time token read at spawn) and rewrites the state-dir
 // pgid record so it reflects every child started so far. Rewriting after each
@@ -481,8 +548,40 @@ func (s *Stack) waitCollector(ctx context.Context) error {
 	}
 }
 
+// waitNats polls NatsProber.ProbeNats until the bundled NATS answers healthy on
+// its HTTP monitoring endpoint or the budget elapses — a direct mirror of
+// waitCollector for the nats precondition, since NatsContainer.Start returns at
+// launch. On the --nats-external opt-out no nats was started (deps.NatsProber is
+// nil), so the gate is skipped entirely — mirroring how startNats no-ops on that
+// path. A budget timeout is a legible error the caller renders as Failed. The
+// poll respects ctx cancellation.
+func (s *Stack) waitNats(ctx context.Context) error {
+	if s.cfg.ExternalNatsURL != "" {
+		return nil
+	}
+	if s.deps.NatsProber == nil {
+		return errors.New("wait nats: NatsProber dep is nil on the bundle path (ExternalNatsURL unset but no nats adapter wired) — a legible failure, not a nil-deref panic")
+	}
+	deadline := s.deps.now().Add(natsReadyPollBudget)
+	ticker := time.NewTicker(natsReadyPollInterval)
+	defer ticker.Stop()
+	for {
+		if err := s.deps.NatsProber.ProbeNats(ctx, s.natsMonitorEndpoint); err == nil {
+			return nil
+		}
+		if !s.deps.now().Before(deadline) {
+			return fmt.Errorf("nats did not answer healthy within %s", natsReadyPollBudget)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // drainChildren signals and waits each owned child in reverse start order
-// (runner → server → collector → postgres). It is safe to call with nil handles
+// (runner → server → nats → collector → postgres). It is safe to call with nil handles
 // (a mid-sequence failure) and on an attached stack (all nil).
 func (s *Stack) drainChildren(ctx context.Context) error {
 	var errs error
@@ -492,6 +591,7 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 	}{
 		{"compass-runner", s.runner},
 		{"compass-server", s.server},
+		{"nats", s.nats},
 		{"otel-collector", s.collector},
 		{"postgres", s.pg},
 	} {
@@ -506,6 +606,6 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 			errs = errors.Join(errs, fmt.Errorf("wait %s: %w", c.name, err))
 		}
 	}
-	s.runner, s.server, s.collector, s.pg = nil, nil, nil, nil
+	s.runner, s.server, s.nats, s.collector, s.pg = nil, nil, nil, nil, nil
 	return errs
 }
