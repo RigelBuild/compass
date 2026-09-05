@@ -89,8 +89,10 @@ const (
 // *appTokenSource behind the TokenSource seam (Token mints an installation
 // access token from the App JWT; Invalidate drops the cache), so the oracle
 // drives the same mint path as the deployed server. It eagerly builds BOTH
-// identities regardless of which the caller uses, so a reviewer-only misconfig
-// still fails an author-only test loud — the intended all-creds-or-skip gate.
+// identities regardless of which the caller uses, so a reviewer-side misconfig
+// is caught even by an author-only test: an unset reviewer trio skips the test
+// (which CI's assert-ran guard, ci.yml, turns into a hard red), and a malformed
+// one fails it outright — the all-creds-or-skip gate.
 func requireLive(t *testing.T) (repo string, author, reviewer TokenSource) {
 	t.Helper()
 	repo = os.Getenv(envRepo)
@@ -121,11 +123,11 @@ func liveAppSource(t *testing.T, idEnv, installEnv, keyEnv string) TokenSource {
 	}
 	appID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil {
-		t.Fatalf("%s = %q: not a numeric App id: %v", idEnv, idStr, err)
+		t.Fatalf("%s: not a numeric App id (%d bytes): %v", idEnv, len(idStr), err)
 	}
 	installID, err := strconv.ParseInt(installStr, 10, 64)
 	if err != nil {
-		t.Fatalf("%s = %q: not a numeric installation id: %v", installEnv, installStr, err)
+		t.Fatalf("%s: not a numeric installation id (%d bytes): %v", installEnv, len(installStr), err)
 	}
 	key := []byte(pem)
 	ts, err := NewAppTokenSource(GitHubAppConfig{
@@ -506,7 +508,10 @@ func TestLiveGitHubF1AuthorApprovalRejected(t *testing.T) {
 func TestLiveGitHubAuthFailureInvalidates(t *testing.T) {
 	repo, _, _ := requireLive(t)
 	ctx := context.Background()
-	bad := &fakeTokenSource{token: "ghp_compass_live_invalid_" + newRunID()}
+	// A well-formed-but-dead installation-token prefix (ghs_, the post-cutover
+	// model) so the 401/403 arrives from GitHub's auth layer, not a malformed
+	// header — never a bot PAT (ghp_), which this suite retired (RIG-3096).
+	bad := &fakeTokenSource{token: "ghs_compass_live_invalid_" + newRunID()}
 	gh := liveGitHub(bad)
 
 	_, err := gh.ListIssues(ctx, repo, IssueFilter{State: "open"})
@@ -1046,6 +1051,12 @@ func updateCaptureSpecs() []captureSpec {
 // githubUpdateSpecs is the GitHub half of the capture table (prelude 0 — GitHub
 // writes/reads are single-shot; get_pull_request's reviews+checks legs are EXTRA
 // after the asserted detail GET, not prelude).
+//
+// The App token source deliberately does NOT share the recording transport — it
+// builds its own client (githubapp.go), so the installation-token mint is never
+// captured. Keep it that way: a recorded mint body would serialize a live token
+// into committed testdata and into the bot PR this lane opens, and would break
+// the prelude accounting the specs assert.
 func githubUpdateSpecs() []captureSpec {
 	return []captureSpec{
 		{provider: providerGitHub, name: "create_issue", prelude: 0,
