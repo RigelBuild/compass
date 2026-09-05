@@ -611,7 +611,8 @@ declared into a store that does not exist.
     encrypted at rest, which this whole record is about; headless- and
     container-safe with no D-Bus dependency, unlike `keyring`). A deployment
     with a cloud secret store points the SERVER resolver at it instead
-    (`awssm`/`awsps` on AWS, `aac`/`akv` on Azure), and one already running
+    (`awssm` (any pin) or `awsps` (0.18+) on AWS, `akv` (any pin) or `aac`
+    (0.20+) on Azure), and one already running
     Vault/OpenBao uses that — the provider is a per-resolver-INSTANCE config
     choice (`WithProvider`, resolver.go:73/75), not a hardcode, so this is a
     recommended default rather than a fixed backend. Two things make this an
@@ -619,12 +620,24 @@ declared into a store that does not exist.
     `age` is a secretspec 0.17+ provider behind an `age` build feature, but
     the repo pins `github.com/cachix/secretspec/secretspec-go` at v0.15.0
     (go/go.mod:22), where `age://` does not resolve and T2's master-key
-    write-back has no writable target; T0 therefore REQUIRES a bump to `>=
-    0.17` with the `age` build feature enabled in the resolved secretspec
-    build (a separate prerequisite PR, Matt-ruled). On the current pin the
-    writable providers per the secretspec matrix are `dotenv`/`keyring`, so
-    absent the bump the target-state `age://` default is unavailable; `age://`
-    is the target-state default, gated behind the bump. (2) WIRING SEAM —
+    write-back has no writable target. This gates the self-hosted `age://`
+    DEFAULT specifically, NOT T0/T2 wholesale: on the current pin the matrix
+    already marks Write yes for `keyring`, `dotenv`, `pass`, `gopass`
+    (0.15+), `awssm`, `akv` and `vault`, so a deployment pointing the
+    SERVER resolver at a cloud store or Vault/OpenBao needs NO bump; what
+    v0.15 lacks is `age` (0.17+), with `pass`/`gopass` the self-hosted
+    encrypted-at-rest alternatives available today (`age://` is the ruled
+    default — a single local identity file rather than a GPG keyring). The
+    bump covers TWO separate closures, since the SDK read path and the CLI
+    write path are distinct binaries: (a) the Go module `secretspec-go` `>=
+    0.17` for the READ path (`b.Load()`, resolver.go:165); AND (b) the
+    `secretspec` CLI BINARY the WRITE path shells via `resolver.Set`
+    (`exec.CommandContext(ctx, r.cli, args...)`, resolver.go:233; `r.cli`
+    defaults to bare `"secretspec"` on PATH, resolver.go:91) — also `>=
+    0.17` built with the `age` feature and pinned explicitly via `WithCLI`
+    (resolver.go:81) into the Server's closure so the read and write halves
+    cannot drift to different provider capability sets (a separate
+    prerequisite PR, Matt-ruled). (2) WIRING SEAM —
     today serve.go:528 constructs the single resolver with NO provider option
     (the SDK default chain); T0 constructs the SERVER resolver with
     `secrets.WithProvider(<operator-configured URI>)` (resolver.go:75) fed by
@@ -648,7 +661,7 @@ declared into a store that does not exist.
     is idempotent by construction: it tolerates `ErrConflict` from the
     non-idempotent `DeclareServerSecret` (secrets.go:100-102) as the
     already-declared no-op — the same tolerated-conflict arm `SetSecret` uses
-    (secrets_service.go:116-118) — so every boot after the first re-declares
+    (secrets_service.go:116-117) — so every boot after the first re-declares
     the six names cleanly rather than surfacing a duplicate-name error as a
     startup failure. Because the operator populates the provider DIRECTLY (an
     age file or a cloud secret store — the provider MUST be writable, since
@@ -671,7 +684,7 @@ declared into a store that does not exist.
     Provisioning is idempotent at the RPC layer: `SetServerSecret` tolerates a
     re-provision of an already-declared name — it rewrites the provider value,
     mirroring `SetSecret`'s ErrConflict-tolerant arm
-    (secrets_service.go:117-118), rather than erroring — while store
+    (secrets_service.go:116-117), rather than erroring — while store
     `DeclareServerSecret` itself mirrors the non-idempotent `DeclareSecret`
     (ErrConflict on a duplicate name, secrets.go:100-102). Closes the
     pre-existing inject-all exposure (D6) for every configured name once
@@ -695,7 +708,7 @@ declared into a store that does not exist.
   first-boot bootstrap path); and provisioning is IDEMPOTENT at the RPC layer
   — a re-provision of the same name through `SetServerSecret` succeeds and
   rewrites the provider value (mirroring `SetSecret`'s ErrConflict-tolerant
-  arm, secrets_service.go:117-118), with no duplicate-row error surfaced to
+  arm, secrets_service.go:116-117), with no duplicate-row error surfaced to
   the caller; store `DeclareServerSecret` itself returns ErrConflict on a
   duplicate name exactly as `DeclareSecret` does (secrets.go:100-102). A
   server whose App is UNCONFIGURED (no `--forge-app-id`) and whose Linear is
@@ -709,6 +722,13 @@ declared into a store that does not exist.
   provider, boot fails with an actionable static "set `SERVER_<NAME>` in the
   provider" error (`validateForgeSecret`, serve.go:1013/1016) — fixed by
   populating the provider and rebooting, not by reaching a running-server RPC.
+  The master-key write-back and the `compass server-secret set` rotation path
+  both resolve their provider (`age://` on the self-hosted default) through
+  the STAGED CLI binary, not only the SDK: red if the write path shells a
+  `secretspec` older than 0.17 (or one built without the `age` feature),
+  which surfaces as an unknown-provider error from `resolver.Set` rather than
+  a successful encrypted write — the assertion that closes the two-closure
+  gap the version prerequisite exists to cover.
   A deployment with the Linear pair configured under the DEFAULT names
   (`defaultForgeLinearClientIDSecretName` /
   `defaultForgeLinearClientSecretName`) and NO flag/env set is provisioned and
@@ -1041,7 +1061,7 @@ RPC exactly as the frozen record already specifies.
       secret.go:39-41 — dialing the admin
       `SetServerSecret`/`DeleteServerSecret` RPCs over `dialSecretsClient`),
       which is idempotent at the RPC layer (a re-provision rewrites the
-      provider value, tolerating ErrConflict per secrets_service.go:117-118;
+      provider value, tolerating ErrConflict per secrets_service.go:116-117;
       store `DeclareServerSecret` itself is non-idempotent, mirroring
       `DeclareSecret`); the NAMES are declared into `server_secrets` at boot
       from the resolved forge config on the ordinary compass_app store path
@@ -1091,12 +1111,20 @@ RPC exactly as the frozen record already specifies.
       configured App with the six present in the provider boots with the lanes
       live; a configured App with a forge value absent from the provider fails
       startup with the actionable static error). DEPENDENCY PREREQUISITE
-      (gating, Matt-ruled separate PR): bump
-      `github.com/cachix/secretspec/secretspec-go` from the pinned v0.15.0
-      (go/go.mod:22) to `>= 0.17` with the `age` build feature enabled in the
-      resolved secretspec build — `age` is a 0.17+ build-feature provider, so
-      on the current pin the `age://` default does not resolve and T2's
-      master-key write-back has no writable target. PREREQUISITE of T2. Proto
+      (gating for the self-hosted `age://` default path only, Matt-ruled
+      separate PR): bump `github.com/cachix/secretspec/secretspec-go` from the
+      pinned v0.15.0 (go/go.mod:22) to `>= 0.17` with the `age` build
+      feature, covering BOTH closures the two code paths shell separately —
+      the Go module for the SDK READ path (`b.Load()`, resolver.go:165) AND
+      the `secretspec` CLI BINARY the WRITE path runs (`resolver.Set` shells
+      `r.cli`, resolver.go:233/91), the latter pinned via `WithCLI`
+      (resolver.go:81) into the Server's closure so read and write cannot drift
+      to different provider capabilities. `age` is a 0.17+ build-feature
+      provider, so on the current pin the `age://` default does not resolve
+      and T2's master-key write-back has no writable target; a deployment on a
+      cloud store (`awssm`/`akv`) or Vault/OpenBao — all Write-capable at
+      the current pin — needs no bump. GATING for T2 ONLY on the `age://`
+      path. Proto
       delta: two additive `SecretsService` methods, no enum change — the
       checked-in public gen trees are drift-gated, so this needs the
       `compass.proto` edit + `moon run compass-proto:gen`, and both new
@@ -1172,7 +1200,8 @@ RPC exactly as the frozen record already specifies.
   a free row move). The NAMES are declared into `server_secrets` at boot from
   the resolved forge config, gated on the same predicates that enable the forge
   lanes; the VALUES live in an operator-chosen writable provider (self-hosted
-  default `age://`; a cloud store or Vault/OpenBao where present — F2), populated
+  default `age://`, gated on the `>= 0.17` secretspec bump T0 requires — F2;
+  a cloud store or Vault/OpenBao where present), populated
   by the operator directly (deploy tooling seeds the age file) or through the
   `compass server-secret` CLI / admin `SetServerSecret` RPC (T0) for rotation on
   a running server. Because the provider is populated BEFORE the server runs, the
