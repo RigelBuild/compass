@@ -42,6 +42,16 @@ let
   # The dev shell and the parity gate (tools/toolchain/gate-tools.nix) import this
   # one module, so the two sides cannot drift.
   toolchainTools = import ./tools/toolchain/toolchain-tools.nix { inherit pkgs; };
+
+  # The Go analysis battery (golangci-lint, govulncheck, go-licenses, nilaway),
+  # each rebuilt with the go-overlay toolchain via tools/toolchain/go-analysis.nix
+  # rather than taken as the bare nixpkgs attrs: those are built with nixpkgs' go
+  # (go1.26 at this pin) and fail every run under this shell's go1.27 with
+  # `file requires newer Go version go1.27`. Passed the same goToolchain the gate
+  # builds, so both resolve one derivation per tool. Appended below (like
+  # goToolchain) rather than listed in the parsed `with pkgs` literal, because
+  # each is a dotted reference, not a bare nixpkgs attribute.
+  goAnalysis = import ./tools/toolchain/go-analysis.nix { inherit pkgs goToolchain; };
 in
 {
   packages = (with pkgs; [
@@ -70,15 +80,13 @@ in
     protoc-gen-connect-go
     protoc-gen-es
 
-    # Go gate battery (go/moon.yml): golangci-lint (lint gate incl. the
-    # gochecksumtype/exhaustive exhaustiveness check), govulncheck (vuln scan),
-    # go-licenses (license fence), nilaway (advisory nil-flow analysis). Go
-    # itself is the go-overlay toolchain appended below, alongside the vendored
-    # bun/node/moon derivations.
-    golangci-lint
-    govulncheck
-    go-licenses
-    nilaway
+    # Go gate battery (go/moon.yml): golangci-lint (lint), govulncheck (vuln
+    # scan), go-licenses (license fence), nilaway (nil-flow analysis) are NOT
+    # here — all four are rebuilt with the go-overlay toolchain
+    # (tools/toolchain/go-analysis.nix) and appended below with the language
+    # toolchains, because the bare nixpkgs attrs are go1.26-built and cannot
+    # parse the go1.27 stdlib. Go itself is the go-overlay toolchain appended
+    # below, alongside the vendored bun/node/moon derivations.
 
     # sqlc: generates typed Go from the .sql query files in
     # go/internal/store/queries, compiled against the migrations schema
@@ -143,16 +151,22 @@ in
     postgresql
   ])
   # The language toolchains: bun/node/moon vendored from
-  # tools/toolchain/versions/*.nix and go from the go-overlay input. Appended
-  # OUTSIDE the `with pkgs; [ … ]` literal above because each is a dotted
-  # reference, not a bare nixpkgs attribute — and the toolchain-parity gate
-  # parses that literal and THROWS on any non-bare token. The gate covers these
-  # through its store-path `langs` verdict instead; it never parses this list.
+  # tools/toolchain/versions/*.nix and go from the go-overlay input, plus the Go
+  # analysis battery (golangci-lint/govulncheck/go-licenses/nilaway) rebuilt with
+  # that go toolchain (tools/toolchain/go-analysis.nix). Appended OUTSIDE the
+  # `with pkgs; [ … ]` literal above because each is a dotted reference, not a
+  # bare nixpkgs attribute — and the toolchain-parity gate parses that literal
+  # and THROWS on any non-bare token. The gate covers these through its
+  # store-path `langs` verdict instead; it never parses this list.
   ++ [
     toolchainTools.bun
     toolchainTools.node
     toolchainTools.moon
     goToolchain
+    goAnalysis.golangci-lint
+    goAnalysis.govulncheck
+    goAnalysis.go-licenses
+    goAnalysis.nilaway
   ]
   # hk (jdx/hk): the jj/git pre-push hook runner. A dotted input reference
   # (inputs.hk.packages.<system>.default), not a bare nixpkgs attr, so it is
