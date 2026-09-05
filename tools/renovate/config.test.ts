@@ -521,10 +521,14 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	// AFTER the relock (it reads the relock's bun.lock write from the working
 	// tree) and gates on bun.lock OR devenv.lock so it fires on every channel bump
 	// regardless of whether the relock ran; fileFilters must include its output or
-	// Renovate silently drops the edit. The order is load-bearing and silent when
-	// wrong: reversed, the FOD refresh runs before the relock writes bun.lock, the
-	// gate reads clean, and it no-ops — the pinned toEqual below turns that into a
-	// red test.
+	// Renovate silently drops the edit. The order is load-bearing and silent
+	// when wrong: the devenv.lock trigger makes the FOD entry gate in either
+	// order, so a reversed order does NOT read clean and no-op — it realises the
+	// FOD against the still-at-base bun.lock, then refresh-devenv-nixpkgs.ts step
+	// 5 rewrites bun.lock underneath it, committing a pin that content-addresses
+	// the OLD closure beside the NEW lockfile (the `hash mismatch in fixed-output
+	// derivation compass-agent-node-modules` this task exists to prevent). The
+	// pinned toEqual below turns that reversal into a red test.
 	test("the lockstep postUpgradeTask is branch-mode, runs relock-then-FOD, and commits every written file", () => {
 		const task = devenvRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
