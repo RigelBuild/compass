@@ -8,19 +8,24 @@ package forge
 // it — the untagged golden battery (golden_test.go) stays credential-free.
 //
 // Each scenario re-runs a T1 golden scenario against the REAL forge (GitHub /
-// Linear) using per-identity PATs from the environment, then asserts the live
-// decoded domain value matches the committed T1 fixture's `want` EXCEPT for an
-// explicit volatile-field allowlist (see volatileFields) — the fields the forge
-// assigns per run/identity or that a hygiene-unique artifact name perturbs.
+// Linear), then asserts the live decoded domain value matches the committed T1
+// fixture's `want` EXCEPT for an explicit volatile-field allowlist (see
+// volatileFields) — the fields the forge assigns per run/identity or that a
+// hygiene-unique artifact name perturbs.
 //
-// It reuses T1's harness symbols directly (same package, no import): the
-// fixture/fixtureRequest/fixtureResponse schema, loadFixtures, and the
-// fakeTokenSource shape (github_test.go) built per identity from its env PAT.
+// The GitHub legs authenticate as two GitHub Apps (author + reviewer), each
+// built into a real installation-token source (NewAppTokenSource) from an App
+// id + installation id + PEM in the environment, so the oracle drives the
+// production mint path — never a bot PAT (RIG-3096). The Linear legs
+// authenticate as the app-actor client_credentials token (LINEAR_FORGE); there
+// is no retained Linear user credential (agent delegation only). The
+// auth-failure test builds its own throwaway fakeTokenSource (github_test.go's
+// shape) to drive a deliberately-bad credential.
 //
-// The suite SKIPS (never fails) when its credentials are unset: the GitHub trio
-// gates the GitHub legs, LINEAR_FORGE gates the Linear legs independently. The
-// skip message is a stable one-line string literal (liveSkipMessage /
-// liveLinearSkipMessage) that T3's CI guard greps from this source.
+// The suite SKIPS (never fails) when its credentials are unset: the GitHub App
+// set gates the GitHub legs, LINEAR_FORGE gates the Linear legs independently.
+// The skip message is a stable one-line string literal (liveSkipMessage /
+// liveLinearSkipMessage) that the CI guard greps from this source.
 //
 // context.Background() below is the test root — the sanctioned F-ttsr exemption
 // (mirrors github_test.go / linear_test.go / golden_test.go).
@@ -57,30 +62,84 @@ const liveLinearSkipMessage = "live linear oracle: LINEAR_FORGE credential unset
 // fixtures), so a bare tagged run skips it cleanly with this one-line literal.
 const liveUpdateSkipMessage = "live update capture: -update unset; skipping fixture regeneration"
 
-// Env contract (frozen design T2 interfaces).
+// Env contract (frozen design T2 interfaces, RIG-3096 App-credential cutover).
+// The GitHub live legs now authenticate as two GitHub Apps (author + reviewer),
+// each an App id + installation id + PEM private key, so the oracle exercises
+// the production installation-token mint path (githubapp.go NewAppTokenSource)
+// the deployed server uses after the RIG-3090 cutover — never a bot PAT.
 const (
-	envRepo     = "LIVEGITHUB_REPO"           // "owner/name" of the throwaway repo
-	envAuthor   = "LIVEGITHUB_AUTHOR_TOKEN"   // test-only author bot PAT
-	envReviewer = "LIVEGITHUB_REVIEWER_TOKEN" // test-only reviewer bot PAT
-	envLinear   = "LINEAR_FORGE"              // test-only Linear token (dedicated test team)
-	envTeam     = "LINEAR_FORGE_TEAM"         // test team key; no default (dead "SEA" dropped)
+	envRepo = "LIVEGITHUB_REPO" // "owner/name" of the throwaway repo
+
+	envAuthorAppID   = "LIVEGITHUB_AUTHOR_APP_ID"              // author App id (numeric)
+	envAuthorInstall = "LIVEGITHUB_AUTHOR_APP_INSTALLATION_ID" // author App installation id (numeric)
+	envAuthorKey     = "LIVEGITHUB_AUTHOR_APP_KEY"             // author App PEM private key
+
+	envReviewerAppID   = "LIVEGITHUB_REVIEWER_APP_ID"              // reviewer App id (numeric)
+	envReviewerInstall = "LIVEGITHUB_REVIEWER_APP_INSTALLATION_ID" // reviewer App installation id (numeric)
+	envReviewerKey     = "LIVEGITHUB_REVIEWER_APP_KEY"             // reviewer App PEM private key
+
+	envLinear = "LINEAR_FORGE"      // test-only Linear token (dedicated test team; app-actor mint)
+	envTeam   = "LINEAR_FORGE_TEAM" // test team key; no default (dead "SEA" dropped)
 )
 
-// requireLive reads the GitHub credential trio and t.Skips (never fails) when
-// any is unset, mirroring go/e2e/harness_test.go's podmanUsable() skip. It
-// returns the throwaway repo coordinate and env-backed token sources for the
-// author and reviewer identities (fakeTokenSource is T1's shape; Token yields
-// the env PAT, Invalidate counts — so the auth-failure test can assert the
-// client's Invalidate() path fired).
-func requireLive(t *testing.T) (repo string, author, reviewer *fakeTokenSource) {
+// requireLive reads the GitHub App credential set for both identities and
+// t.Skips (never fails) when any is unset, mirroring go/e2e/harness_test.go's
+// podmanUsable() skip. It returns the throwaway repo coordinate and real App
+// installation-token sources for the author and reviewer identities — each an
+// *appTokenSource behind the TokenSource seam (Token mints an installation
+// access token from the App JWT; Invalidate drops the cache), so the oracle
+// drives the same mint path as the deployed server. It eagerly builds BOTH
+// identities regardless of which the caller uses, so a reviewer-side misconfig
+// is caught even by an author-only test: an unset reviewer trio skips the test
+// (which CI's assert-ran guard, ci.yml, turns into a hard red), and a malformed
+// one fails it outright — the all-creds-or-skip gate.
+func requireLive(t *testing.T) (repo string, author, reviewer TokenSource) {
 	t.Helper()
 	repo = os.Getenv(envRepo)
-	at := os.Getenv(envAuthor)
-	rt := os.Getenv(envReviewer)
-	if repo == "" || at == "" || rt == "" {
+	if repo == "" {
 		t.Skip(liveSkipMessage)
 	}
-	return repo, &fakeTokenSource{token: at}, &fakeTokenSource{token: rt}
+	author = liveAppSource(t, envAuthorAppID, envAuthorInstall, envAuthorKey)
+	reviewer = liveAppSource(t, envReviewerAppID, envReviewerInstall, envReviewerKey)
+	return repo, author, reviewer
+}
+
+// liveAppSource builds a real App installation-token source from the id /
+// installation / PEM env trio, t.Skipping (never failing) when any is unset so
+// a credential-less run skips cleanly, and t.Fataling when the id or
+// installation is present but non-numeric, or NewAppTokenSource rejects the
+// config (a misconfigured secret, not a skip). A present-but-malformed PEM is
+// NOT caught here: NewAppTokenSource resolves the key lazily, so a bad PEM
+// surfaces as a mint failure on the first live GitHub leg (still red, never
+// silent-green). The PEM is captured by value into the PrivateKey resolver —
+// no per-mint env read.
+func liveAppSource(t *testing.T, idEnv, installEnv, keyEnv string) TokenSource {
+	t.Helper()
+	idStr := os.Getenv(idEnv)
+	installStr := os.Getenv(installEnv)
+	pem := os.Getenv(keyEnv)
+	if idStr == "" || installStr == "" || pem == "" {
+		t.Skip(liveSkipMessage)
+	}
+	appID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		t.Fatalf("%s: not a numeric App id (%d bytes): %v", idEnv, len(idStr), err)
+	}
+	installID, err := strconv.ParseInt(installStr, 10, 64)
+	if err != nil {
+		t.Fatalf("%s: not a numeric installation id (%d bytes): %v", installEnv, len(installStr), err)
+	}
+	key := []byte(pem)
+	ts, err := NewAppTokenSource(GitHubAppConfig{
+		AppID:          appID,
+		InstallationID: installID,
+		PrivateKey:     func(context.Context) ([]byte, error) { return key, nil },
+		Host:           "github.com",
+	})
+	if err != nil {
+		t.Fatalf("%s/%s: NewAppTokenSource: %v", idEnv, installEnv, err)
+	}
+	return ts
 }
 
 // requireLinear reads the Linear credential AND the test team key, t.Skipping
@@ -449,7 +508,10 @@ func TestLiveGitHubF1AuthorApprovalRejected(t *testing.T) {
 func TestLiveGitHubAuthFailureInvalidates(t *testing.T) {
 	repo, _, _ := requireLive(t)
 	ctx := context.Background()
-	bad := &fakeTokenSource{token: "ghp_compass_live_invalid_" + newRunID()}
+	// A well-formed-but-dead installation-token prefix (ghs_, the post-cutover
+	// model) so the 401/403 arrives from GitHub's auth layer, not a malformed
+	// header — never a bot PAT (ghp_), which this suite retired (RIG-3096).
+	bad := &fakeTokenSource{token: "ghs_compass_live_invalid_" + newRunID()}
 	gh := liveGitHub(bad)
 
 	_, err := gh.ListIssues(ctx, repo, IssueFilter{State: "open"})
@@ -738,7 +800,7 @@ func isTransientNetworkTimeout(err error) bool {
 // closeGitHubIssue closes an issue via REST (GitHub cannot delete issues). A
 // teardown failure is logged, never fatal — the next run's unique run-id avoids
 // collisions regardless.
-func closeGitHubIssue(t *testing.T, ts *fakeTokenSource, repo string, number uint64) {
+func closeGitHubIssue(t *testing.T, ts TokenSource, repo string, number uint64) {
 	t.Helper()
 	path := fmt.Sprintf("/repos/%s/issues/%d", repo, number)
 	body := strings.NewReader(`{"state":"closed"}`)
@@ -748,7 +810,7 @@ func closeGitHubIssue(t *testing.T, ts *fakeTokenSource, repo string, number uin
 }
 
 // teardownGitHubPR closes a PR and deletes its head branch via REST.
-func teardownGitHubPR(t *testing.T, ts *fakeTokenSource, repo string, number uint64, head string) {
+func teardownGitHubPR(t *testing.T, ts TokenSource, repo string, number uint64, head string) {
 	t.Helper()
 	ctx := context.Background()
 	prPath := fmt.Sprintf("/repos/%s/pulls/%d", repo, number)
@@ -791,7 +853,7 @@ func githubREST(ctx context.Context, ts TokenSource, method, path string, body i
 // (2) creates refs/heads/<head> at that SHA, then (3) PUTs a unique file on
 // <head> to make it diverge. Authored by the same identity that opens the PR.
 // The create-content PUT is wrapped in the shared secondary-rate-limit backoff.
-func seedHeadBranch(t *testing.T, ctx context.Context, ts *fakeTokenSource, repo, head string) {
+func seedHeadBranch(t *testing.T, ctx context.Context, ts TokenSource, repo, head string) {
 	t.Helper()
 
 	var mainRef struct {
@@ -989,6 +1051,12 @@ func updateCaptureSpecs() []captureSpec {
 // githubUpdateSpecs is the GitHub half of the capture table (prelude 0 — GitHub
 // writes/reads are single-shot; get_pull_request's reviews+checks legs are EXTRA
 // after the asserted detail GET, not prelude).
+//
+// The App token source deliberately does NOT share the recording transport — it
+// builds its own client (githubapp.go), so the installation-token mint is never
+// captured. Keep it that way: a recorded mint body would serialize a live token
+// into committed testdata and into the bot PR this lane opens, and would break
+// the prelude accounting the specs assert.
 func githubUpdateSpecs() []captureSpec {
 	return []captureSpec{
 		{provider: providerGitHub, name: "create_issue", prelude: 0,
