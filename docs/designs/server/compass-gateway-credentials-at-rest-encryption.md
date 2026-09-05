@@ -630,7 +630,8 @@ declared into a store that does not exist.
     DEFAULT specifically, NOT T0/T2 wholesale: on the current pin the matrix
     already marks Write yes for `keyring`, `dotenv`, `pass`, `gopass`
     (0.15+), `awssm`, `akv` and `vault`, so a deployment pointing the
-    SERVER resolver at a cloud store or Vault/OpenBao needs NO bump; what
+    SERVER resolver at a cloud store or HashiCorp Vault needs NO bump (OpenBao,
+    like `age`, is 0.17+); what
     v0.15 lacks is `age` (0.17+), with `pass`/`gopass` the self-hosted
     encrypted-at-rest alternatives available today (`age://` is the ruled
     default — a single local identity file rather than a GPG keyring). The
@@ -914,19 +915,24 @@ is declared into it) and T1.
     swapped provider value is DETECTED at boot rather than silently adopted.
   - **Master-key overwrite guard (F1 prefix partition — on EVERY
     provider-writing path):** C1 splits the DECLARATION registries (two tables)
-    but NOT the provider keyspace (one shared profile, above). So the isolation
+    but NOT, by DEFAULT, the provider keyspace (one shared profile AND — absent an
+    operator Layer-B split, F2 — one shared provider URI, above). So the isolation
     C1 buys is that server secrets are structurally undeliverable to CONTAINERS
     (the manifest separation, §Mechanism C1) — it does NOT by itself make the
     master key's provider value unreachable from the user path. The user
     `SetSecret`/`DeleteSecret` RPC (`authenticatedOpen`, any authenticated
     account — admin_gate.go:122-125) declares into `secrets` but then calls
     `resolver.Set`, which shells `secretspec set <NAME> --profile default`
-    (resolver.go:258-267) against the SHARED keyspace — so absent a guard a user
+    (resolver.go:258-267) against the keyspace that is SHARED under the default
+    single-URI wiring (F2) — so absent a guard a user
     calling `SetSecret` with name `GATEWAY_CREDENTIALS_MASTER_KEY` would
     OVERWRITE the master key's provider value (the running process keeps its
     cached key, but the next boot adopts the attacker-chosen key → every existing
     row fails GCM auth, every new row is sealed under a known key: the exact
-    bulk-disclosure D1 prevents). The F1 prefix guard (D6) closes this: the
+    bulk-disclosure D1 prevents) — and the guard is retained under an operator
+    Layer-B split too, where the user path can no longer reach the master key's
+    keyspace: F1 is a declaration-layer NAME partition independent of provider,
+    so it does not become redundant. The F1 prefix guard (D6) closes this: the
     master-key name carries the reserved `GATEWAY_CREDENTIALS_` prefix, which the
     user `secretsService.SetSecret`/`DeleteSecret` path REJECTS BEFORE
     `resolver.Set`/`Delete` — a T0/T2 deliverable, the SAME string check that
@@ -1144,8 +1150,10 @@ RPC exactly as the frozen record already specifies.
       to different provider capabilities. `age` is a 0.17+ build-feature
       provider, so on the current pin the `age://` default does not resolve
       and T2's master-key write-back has no writable target; a deployment on a
-      cloud store (`awssm`/`akv`) or Vault/OpenBao — all Write-capable at
-      the current pin — needs no bump. GATING for T2 ONLY on the `age://`
+      cloud store (`awssm`/`akv`) or HashiCorp Vault — all Write-capable at
+      the current pin — needs no bump (OpenBao does NOT qualify: `openbao://` is a
+      0.17+ provider, with 0.16 routing it through `vault`, so an OpenBao
+      deployment rides the same bump as `age://`). GATING for T2 ONLY on the `age://`
       path. Proto
       delta: two additive `SecretsService` methods, no enum change — the
       checked-in public gen trees are drift-gated, so this needs the
