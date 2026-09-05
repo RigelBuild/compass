@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -162,10 +161,22 @@ func TestLookupRoundTripsAndTypesNotFound(t *testing.T) {
 
 // TestVolumeRootRejectsTraversal guards the one operation that deletes a
 // subtree: a session id carrying a separator or a traversal element must never
-// resolve to a path outside the base dir.
+// resolve to a path outside the base dir, and a session id ENDING in
+// lockFileSuffix must never resolve at all — its volume root would BE another
+// session's sibling lock-file path, so a reap of one would target the other's
+// lock. Each case asserts the typed ErrInvalidSessionID rather than merely a
+// non-nil error, so a rejection for an unrelated reason cannot pass for the
+// guard.
 func TestVolumeRootRejectsTraversal(t *testing.T) {
 	m := newManager(t)
-	for _, bad := range []string{"", "..", ".", "../escape", "a/b", "sess/../../etc"} {
+	badIDs := []string{
+		"", "..", ".", "../escape", "a/b", "sess/../../etc",
+		// The lock-namespace collision cases: without volumeRoot's
+		// HasSuffix check these resolve to a path in the lock namespace.
+		"sess-x" + lockFileSuffix,
+		lockFileSuffix,
+	}
+	for _, bad := range badIDs {
 		if _, err := m.CreateVolume(t.Context(), bad); !errors.Is(err, ErrInvalidSessionID) {
 			t.Errorf("CreateVolume(%q) = %v, want ErrInvalidSessionID", bad, err)
 		}
@@ -514,6 +525,63 @@ func TestReconcileOrphansSkipsAVolumeBeingAttached(t *testing.T) {
 	}
 }
 
+// TestReaperIgnoresNonVolumeDirs pins volume identity as STRUCTURAL: only a
+// directory carrying the metaDirName marker CreateVolume writes is one of this
+// package's volumes. A directory under the base dir without that marker belongs
+// to someone else and must never be stamped or reaped.
+//
+// This is not hypothetical. The frozen record places W2's snapshot store as a
+// sibling subtree under the same base dir keyed by VolumeSnapshotID — a
+// non-volume directory in exactly this position. A scan that treated every
+// directory entry as a volume root would have ReconcileOrphans stamp that store
+// closed at discovery and Expire silently delete it one retention window later:
+// a W1-armed landmine that detonates when W2 lands.
+func TestReaperIgnoresNonVolumeDirs(t *testing.T) {
+	m := newManager(t)
+
+	// A foreign directory in the base dir, with no marker dir — stands in for
+	// W2's snapshot store.
+	stray := filepath.Join(m.BaseDir(), "snapshots")
+	if err := os.Mkdir(stray, 0o700); err != nil {
+		t.Fatalf("creating the non-volume dir: %v", err)
+	}
+	sentinel := filepath.Join(stray, "snapshot-payload")
+	if err := os.WriteFile(sentinel, []byte("another subtree's bytes"), 0o600); err != nil {
+		t.Fatalf("writing the non-volume sentinel: %v", err)
+	}
+
+	// A genuine crash orphan beside it, so the pass is proven to still WORK
+	// rather than passing because it did nothing at all.
+	orphan := mustCreate(t, m, "sess-orphan")
+
+	if err := m.ReconcileOrphans(t.Context()); err != nil {
+		t.Fatalf("ReconcileOrphans with a non-volume dir present: %v", err)
+	}
+	// Never stamped: the pass must not have created a metadata dir inside it.
+	if exists(t, filepath.Join(stray, metaDirName)) {
+		t.Error("ReconcileOrphans stamped a directory with no volume marker; volume identity must be structural")
+	}
+	if _, _, ok, err := m.ReadStamp(t.Context(), orphan); err != nil || !ok {
+		t.Fatalf("the genuine orphan beside it went unstamped, so this test proves nothing: ok=%v err=%v", ok, err)
+	}
+
+	// And a zero-window Expire — which reaps anything it considers an eligible
+	// volume — must leave the stray subtree and its contents untouched.
+	if err := m.Expire(t.Context(), 0); err != nil {
+		t.Fatalf("Expire with a non-volume dir present: %v", err)
+	}
+	if !exists(t, stray) {
+		t.Fatal("Expire deleted a directory with no volume marker; the base dir is not this package's exclusively (W2's snapshot store is a sibling subtree)")
+	}
+	if !exists(t, sentinel) {
+		t.Error("Expire emptied a non-volume directory; its contents must survive untouched")
+	}
+	// The genuine orphan, by contrast, IS reachable by the reaper.
+	if exists(t, orphan.HostRoot) {
+		t.Error("the marked crash orphan survived a zero-window Expire; the marker check must not have made genuine volumes invisible")
+	}
+}
+
 // TestExpireSkipsALockedVolume is invariant (b)'s observable half: the
 // per-volume advisory lock is what closes the window between the reaper reading
 // a stamp and a concurrent Attach clearing it. Holding the lock stands in for
@@ -609,11 +677,19 @@ func TestCloseIntentZeroValueIsClosed(t *testing.T) {
 	}
 }
 
-// lockedInode is the inode the held per-volume lock actually lives on, read
-// from the lock's own fd rather than recomputed from a path formula. Reading it
-// off the fd is what lets waitForBlockedFlock gate on the real lock whatever
-// path the implementation chose for it.
-func lockedInode(t *testing.T, l *volumeLock) uint64 {
+// heldFlockField is the `MAJ:MIN:INO` field string the kernel prints for the
+// held per-volume lock, read out of /proc/locks itself rather than recomputed
+// from a path formula or reassembled from device-number math.
+//
+// Reading the kernel's own rendering is what makes the gate below an exact
+// match. The held lock appears in /proc/locks as its own (non-`->`) FLOCK row
+// carrying the very field string its blocked waiters' rows carry, so comparing
+// that string end to end compares device AND inode without this test ever
+// having to know how the kernel formats a dev_t. The row is identified by the
+// inode off the lock's own fd — whatever path the implementation chose for
+// it — plus this process's pid, which together cannot match another process's
+// unrelated lock.
+func heldFlockField(t *testing.T, l *volumeLock) string {
 	t.Helper()
 	info, err := l.f.Stat()
 	if err != nil {
@@ -623,11 +699,31 @@ func lockedInode(t *testing.T, l *volumeLock) uint64 {
 	if !ok {
 		t.Skipf("no syscall.Stat_t for the lock file on this platform (%T); the race gate needs the lock's inode", info.Sys())
 	}
-	return st.Ino
+	inoSuffix := ":" + strconv.FormatUint(st.Ino, 10)
+	pid := strconv.Itoa(os.Getpid())
+
+	data, err := os.ReadFile("/proc/locks")
+	if err != nil {
+		t.Skipf("cannot read /proc/locks (%v); the race gate needs the kernel's blocked-waiter record", err)
+	}
+	// A held row: `301: FLOCK  ADVISORY  WRITE 3173818 00:3c:775 0 EOF` — the
+	// MAJ:MIN:INO field is index 5, the owning pid index 4.
+	for line := range strings.SplitSeq(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || fields[1] != "FLOCK" || fields[4] != pid {
+			continue
+		}
+		if strings.HasSuffix(fields[5], inoSuffix) {
+			return fields[5]
+		}
+	}
+	t.Fatalf("no held FLOCK row in /proc/locks for pid %s inode %s; the race gate cannot identify the lock it must wait on", pid, inoSuffix[1:])
+	return ""
 }
 
-// waitForBlockedFlock blocks until the kernel reports a process WAITING on an
-// flock over the given inode, and fails the test if that never happens.
+// waitForBlockedFlock blocks until the kernel reports a process WAITING on the
+// flock identified by field (a `MAJ:MIN:INO` string from heldFlockField), and
+// fails the test if that never happens.
 //
 // This is the event gate that makes TestAttachRacingAReapDoesNotReturnAReaped-
 // Path deterministic instead of timing-dependent. A blocked flock has no
@@ -639,9 +735,15 @@ func lockedInode(t *testing.T, l *volumeLock) uint64 {
 // the exact blocked-then-reap interleaving every run rather than hoping a sleep
 // was long enough; a genuine failure to reach that state fails loudly here
 // instead of silently degrading into the other interleaving.
-func waitForBlockedFlock(t *testing.T, inode uint64) {
+//
+// The tick between polls is the bounded-poll tick, not a timing assumption:
+// the loop re-reads the condition every iteration and still fails loudly at the
+// deadline, so nothing here depends on a duration being "long enough". It only
+// keeps this from being a core-burning spin whose own contention can delay the
+// very scheduling it is waiting for under -race.
+func waitForBlockedFlock(t *testing.T, field string) {
 	t.Helper()
-	ino := strconv.FormatUint(inode, 10)
+	const tick = 500 * time.Microsecond
 	if _, err := os.ReadFile("/proc/locks"); err != nil {
 		t.Skipf("cannot read /proc/locks (%v); the race gate needs the kernel's blocked-waiter record", err)
 	}
@@ -651,34 +753,35 @@ func waitForBlockedFlock(t *testing.T, inode uint64) {
 		if err != nil {
 			t.Fatalf("reading /proc/locks: %v", err)
 		}
-		if hasBlockedFlockWaiter(string(data), ino) {
+		if hasBlockedFlockWaiter(string(data), field) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no process ever blocked on an flock over inode %s; the race gate never engaged", ino)
+			t.Fatalf("no process ever blocked on an flock over %s; the race gate never engaged", field)
 		}
-		runtime.Gosched()
+		time.Sleep(tick) //nolint:forbidigo // irreducible poll-tick: a blocked flock is parked inside the syscall with NO user-space completion signal (no channel, no WaitGroup), so /proc/locks polling is the only observation of the event; the condition is re-read every iteration and the deadline fails loudly, so the tick paces the poll and is never itself the thing waited on
 	}
 }
 
 // hasBlockedFlockWaiter reports whether /proc/locks content carries a blocked
-// flock waiter for the given inode. A waiter row is the `-> ` continuation of
-// the lock it is queued behind, e.g.
+// flock waiter for the lock whose kernel-printed MAJ:MIN:INO field is field. A
+// waiter row is the `-> ` continuation of the lock it is queued behind, e.g.
 //
 //	292: -> FLOCK  ADVISORY  WRITE 1759984 00:20:507753071 0 EOF
 //
-// The inode is the last colon-separated component of the MAJ:MIN:INO field, so
-// it is compared componentwise — a substring match could collide with an
-// unrelated inode on another device.
-func hasBlockedFlockWaiter(locks, ino string) bool {
+// The comparison is over the WHOLE MAJ:MIN:INO field, never the inode alone:
+// dropping MAJ:MIN would match an unrelated flock waiter on another device
+// whose inode number happens to be equal, and a spurious early match here
+// would release the reap before the Attach goroutine has parked — silently
+// degrading this load-bearing gate into the other (still-passing) interleaving,
+// a false green exactly as the test it gates promises it will not produce.
+func hasBlockedFlockWaiter(locks, field string) bool {
 	for line := range strings.SplitSeq(locks, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 7 || fields[1] != "->" || fields[2] != "FLOCK" {
 			continue
 		}
-		field := fields[6]
-		// The inode is the component after the final colon of MAJ:MIN:INO.
-		if field[strings.LastIndex(field, ":")+1:] == ino {
+		if fields[6] == field {
 			return true
 		}
 	}
@@ -722,7 +825,7 @@ func TestAttachRacingAReapDoesNotReturnAReapedPath(t *testing.T) {
 	if reaper == nil {
 		t.Fatal("stand-in reaper lock reported contention on a fresh volume")
 	}
-	inode := lockedInode(t, reaper)
+	lockField := heldFlockField(t, reaper)
 
 	type attachResult struct {
 		path string
@@ -736,7 +839,7 @@ func TestAttachRacingAReapDoesNotReturnAReapedPath(t *testing.T) {
 
 	// Gate on the kernel's own record that the Attach goroutine is parked on
 	// the lock, so the reap below lands in the window the bug lives in.
-	waitForBlockedFlock(t, inode)
+	waitForBlockedFlock(t, lockField)
 
 	if err := os.RemoveAll(v.HostRoot); err != nil {
 		t.Fatalf("reaping the volume root: %v", err)

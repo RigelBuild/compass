@@ -42,12 +42,15 @@ import (
 )
 
 // metaDirName is the per-volume metadata dir inside a volume root: it holds the
-// close-stamp. It lives INSIDE the volume root so that reaping the volume reaps
-// its stamp in one os.RemoveAll — no orphan stamp can outlive the volume it
-// describes. The per-volume lock file deliberately does NOT live here (see
-// lockFileSuffix): a lock inside the reaped subtree cannot serialize against
-// the reap itself. The dotted, package-prefixed name keeps it clear of any path
-// a checkout would write.
+// close-stamp, and it is also this package's VOLUME-IDENTITY TOKEN — a
+// directory under the base dir that does not contain it is not a volume this
+// package owns, and is never scanned, stamped, or reaped (see eachVolume). It
+// lives INSIDE the volume root so that reaping the volume reaps its stamp in
+// one os.RemoveAll — no orphan stamp can outlive the volume it describes. The
+// per-volume lock file deliberately does NOT live here (see lockFileSuffix): a
+// lock inside the reaped subtree cannot serialize against the reap itself. The
+// dotted, package-prefixed name keeps it clear of any path a checkout would
+// write.
 const metaDirName = ".compass-vfs-meta"
 
 const (
@@ -220,6 +223,14 @@ func (m *LocalManager) Lookup(ctx context.Context, sessionID string) (Volume, er
 // file lives OUTSIDE the reaped subtree (see lockVolume): a lock inside the
 // volume root would be unlinked by the reap, so the winning Attach would hold a
 // lock on a dead inode that excludes nobody.
+//
+// Both error paths JOIN the lock-release error, exactly as Stamp does. A
+// release that failed would leave the flock held for this process's lifetime,
+// so every later Expire pass would skip this volume forever — an unbounded
+// leak in the mechanism built to bound one, and a silent contradiction of
+// release()'s own contract. The typed ErrVolumeNotFound stays
+// errors.Is-detectable through such a join, so the provision path's
+// cold-materialize branch is preserved.
 func (m *LocalManager) Attach(ctx context.Context, v Volume) (string, error) {
 	// Fast pre-check: an Attach of a session that never had a volume fails here
 	// without touching the lock namespace. Not the authority — see above.
@@ -246,10 +257,10 @@ func (m *LocalManager) Attach(ctx context.Context, v Volume) (string, error) {
 	}
 	releaseErr := lock.release()
 	if existErr != nil {
-		return "", existErr
+		return "", errors.Join(existErr, releaseErr)
 	}
 	if clearErr != nil {
-		return "", clearErr
+		return "", errors.Join(clearErr, releaseErr)
 	}
 	if releaseErr != nil {
 		return "", releaseErr
@@ -363,13 +374,27 @@ func (m *LocalManager) ReadStamp(ctx context.Context, v Volume) (intent CloseInt
 // enroll — so the Server's live-session map is empty exactly when a restart
 // would consult it. This package therefore takes no RPC or server dependency.
 //
+// PRECONDITION (normative): this is a STARTUP-ONLY pass, and it MUST complete
+// before the manager serves ANY Attach — not merely before the first Expire. A
+// crash orphan is by definition a volume with no live session, so running this
+// pass while live Attaches are in flight is a CALLER error. Attach holds the
+// per-volume lock only across its under-lock existence re-check and its stamp
+// clear, so a pass that reaches a volume immediately AFTER that release sees an
+// unstamped volume, wins the lock, and stamps a RUNNING session's volume
+// IntentClosed — which invariant (a) cannot undo, because the Attach that
+// would have cleared it has already happened. Enforcing this at the type level
+// (the manager refusing Attach until the pass has run, or folding the pass into
+// construction) is the W5/W6 wiring's concern; this method's precondition is
+// simply "no concurrent Attach".
+//
 // The pass is SEPARATE from Expire rather than folded into it, and the ordering
 // contract is: the expiry driver (W6) calls ReconcileOrphans once at startup,
-// before its first Expire. Keeping them apart is what makes "unstamped means
-// live" a single, honest rule inside Expire — folding the scan in would make
-// every Expire pass able to stamp a volume it is simultaneously judging, and
-// would make a mid-session Expire (the ticker's steady state, when unstamped
-// volumes ARE live sessions) stamp live sessions closed.
+// before it serves any Attach and before its first Expire. Keeping them apart
+// is what makes "unstamped means live" a single, honest rule inside Expire —
+// folding the scan in would make every Expire pass able to stamp a volume it is
+// simultaneously judging, and would make a mid-session Expire (the ticker's
+// steady state, when unstamped volumes ARE live sessions) stamp live sessions
+// closed.
 //
 // A volume whose lock is held (a concurrent Attach) is skipped: it is being
 // attached-live, which is the opposite of orphaned. Like Expire, the pass locks
@@ -535,9 +560,21 @@ func (m *LocalManager) volumeRoot(sessionID string) (string, error) {
 
 // eachVolume runs fn against every volume root under the base dir, joining
 // per-volume errors instead of aborting on the first: one unreadable or locked
-// volume must not pin every volume behind it. Non-directory entries in the base
-// dir are skipped — the base dir holds volume subtrees, and a stray file is not
-// one.
+// volume must not pin every volume behind it.
+//
+// Volume identity here is STRUCTURAL, not positional: an entry is one of this
+// package's volumes only if it is a directory AND contains the metaDirName
+// marker dir that CreateVolume writes. That marker is the volume-identity
+// token, not merely the stamp's container — a directory under the base dir
+// without it does not belong to this package and is never stamped or reaped.
+// The base dir is not this package's exclusively: the frozen record places W2's
+// snapshot store as a sibling subtree under the same base dir keyed by
+// VolumeSnapshotID, and without this check the first ReconcileOrphans would
+// stamp that store closed and the next Expire past the window would silently
+// delete it. Crash orphans keep their marker (CreateVolume wrote it before the
+// crash), so reconciliation of genuine orphans is unaffected. Non-directory
+// entries are skipped for the same reason — the sibling per-volume lock files
+// live in this dir (see lockVolume), and a stray file is not a volume.
 func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) error) error {
 	entries, err := os.ReadDir(m.baseDir)
 	if err != nil {
@@ -552,7 +589,20 @@ func (m *LocalManager) eachVolume(ctx context.Context, fn func(root string) erro
 		if !entry.IsDir() {
 			continue
 		}
-		if err := fn(filepath.Join(m.baseDir, entry.Name())); err != nil {
+		root := filepath.Join(m.baseDir, entry.Name())
+		marker, statErr := os.Stat(filepath.Join(root, metaDirName))
+		if statErr != nil {
+			if !errors.Is(statErr, os.ErrNotExist) {
+				// Surfaced, not swallowed: an unreadable marker must not be
+				// silently read as either "a volume" or "not a volume".
+				errs = append(errs, fmt.Errorf("vfs: inspecting volume marker in %q: %w", root, statErr))
+			}
+			continue
+		}
+		if !marker.IsDir() {
+			continue
+		}
+		if err := fn(root); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -575,7 +625,7 @@ func stampPath(root string) string { return filepath.Join(metaDir(root), stampFi
 // IntentClosed (which would look reapable).
 func readStamp(root string) (*closeStamp, error) {
 	path := stampPath(root)
-	data, err := os.ReadFile(path) //nolint:gosec // G304: path is this package's own stamp file under the operator-configured base dir, derived from a traversal-checked session id, never caller input
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is confined to the operator-configured base dir — either a traversal-checked session id or a ReadDir entry name of that dir, never caller-supplied
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil //nolint:nilnil // an absent stamp is the UNSTAMPED signal (documented on readStamp), not an error — every caller branches on the nil stamp
 	}
@@ -589,11 +639,17 @@ func readStamp(root string) (*closeStamp, error) {
 	return &stamp, nil
 }
 
-// writeStamp writes the volume's close-stamp atomically: encode, stage to a
-// temp file in the same metadata dir, fsync-free rename over the target. The
-// rename is what makes a concurrent reader see either the old stamp or the new
-// one and never a torn record, and staging in the same dir keeps it a
-// same-filesystem rename.
+// writeStamp writes the volume's close-stamp atomically AND durably: encode,
+// stage to a temp file in the same metadata dir, fsync+rename over the target,
+// then fsync the containing dir so the rename itself survives a host crash.
+// The rename is what makes a concurrent reader see either the old stamp or the
+// new one and never a torn record, and staging in the same dir keeps it a
+// same-filesystem rename. The durability is load-bearing rather than belt-and-
+// braces: losing an IntentClosed stamp in a crash writeback window is benign
+// (ReconcileOrphans re-stamps it), but losing an IntentSuspended stamp fails
+// WRONG — the volume returns UNSTAMPED, gets stamped IntentClosed at the next
+// discovery, and the suspended session's volume that invariant (c) exists to
+// pin forever becomes reap-eligible.
 func writeStamp(root string, stamp closeStamp) error {
 	dir := metaDir(root)
 	if err := os.MkdirAll(dir, volumeDirMode); err != nil {
@@ -626,14 +682,38 @@ func writeStamp(root string, stamp closeStamp) error {
 		}
 		return fmt.Errorf("vfs: committing close stamp for %q: %w", root, err)
 	}
-	return nil
+	return syncDir(dir)
+}
+
+// syncDir fsyncs a directory so a rename committed inside it is durable, not
+// merely atomic. The staged file's own bytes are fsynced by writeAndClose; the
+// directory entry the rename created needs its own fsync, which is the standard
+// durable-rename pairing. Both the open and the close are reported: a
+// half-reported fsync would put the "never WRONG" claim on ReconcileOrphans
+// back on hope.
+func syncDir(dir string) error {
+	d, err := os.Open(dir) //nolint:gosec // G304: path is this package's own metadata dir under the operator-configured base dir, derived from a volume root, never caller-supplied
+	if err != nil {
+		return fmt.Errorf("vfs: opening volume metadata dir %q to fsync: %w", dir, err)
+	}
+	var errs []error
+	if syncErr := d.Sync(); syncErr != nil {
+		errs = append(errs, fmt.Errorf("vfs: fsyncing volume metadata dir %q: %w", dir, syncErr))
+	}
+	if closeErr := d.Close(); closeErr != nil {
+		errs = append(errs, fmt.Errorf("vfs: closing volume metadata dir %q: %w", dir, closeErr))
+	}
+	return errors.Join(errs...)
 }
 
 // writeAndClose writes data to f, pins the owner-only mode independent of the
-// Runner's umask, and closes it — reporting the first failure. The Close error
-// is handled, not discarded: on a written file it can carry the flush failure
-// that means the bytes never landed, which for a stamp would mean a volume the
-// reaper mis-judges.
+// Runner's umask, fsyncs it, and closes it — reporting every failure. The
+// fsync is what makes the staged bytes durable before writeStamp renames them
+// into place, so a host crash in the writeback window cannot lose a stamp (see
+// writeStamp for why losing an IntentSuspended stamp fails WRONG). The Close
+// error is handled, not discarded: on a written file it can carry the flush
+// failure that means the bytes never landed, which for a stamp would mean a
+// volume the reaper mis-judges.
 func writeAndClose(f *os.File, data []byte) error {
 	name := f.Name()
 	writeErr := func() error {
@@ -642,6 +722,9 @@ func writeAndClose(f *os.File, data []byte) error {
 		}
 		if err := f.Chmod(stampFileMode); err != nil {
 			return fmt.Errorf("vfs: pinning close stamp mode %q: %w", name, err)
+		}
+		if err := f.Sync(); err != nil {
+			return fmt.Errorf("vfs: fsyncing close stamp %q: %w", name, err)
 		}
 		return nil
 	}()
