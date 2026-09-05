@@ -93,6 +93,15 @@ const (
 	// CompassServiceDeleteAgentConfigProcedure is the fully-qualified name of the CompassService's
 	// DeleteAgentConfig RPC.
 	CompassServiceDeleteAgentConfigProcedure = "/compass.v1.CompassService/DeleteAgentConfig"
+	// CompassServicePutModelRegistryProcedure is the fully-qualified name of the CompassService's
+	// PutModelRegistry RPC.
+	CompassServicePutModelRegistryProcedure = "/compass.v1.CompassService/PutModelRegistry"
+	// CompassServiceGetModelRegistryProcedure is the fully-qualified name of the CompassService's
+	// GetModelRegistry RPC.
+	CompassServiceGetModelRegistryProcedure = "/compass.v1.CompassService/GetModelRegistry"
+	// CompassServiceDeleteModelRegistryProcedure is the fully-qualified name of the CompassService's
+	// DeleteModelRegistry RPC.
+	CompassServiceDeleteModelRegistryProcedure = "/compass.v1.CompassService/DeleteModelRegistry"
 	// SecretsServiceSetSecretProcedure is the fully-qualified name of the SecretsService's SetSecret
 	// RPC.
 	SecretsServiceSetSecretProcedure = "/compass.v1.SecretsService/SetSecret"
@@ -228,6 +237,26 @@ type CompassServiceClient interface {
 	// when already empty succeeds. On success every live Runner is signalled with
 	// an empty config version so it re-materializes the empty config dir.
 	DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error)
+	// Declare the fleet model registry: the stable-name → candidate-chain map the
+	// gateway resolver routes with (compass-stable-name-routing §P2). Compare-and-
+	// set on the whole-registry version — the caller carries the version it read
+	// (0 to seed the first registry) and the write lands only if the row still
+	// holds it, so a racing operator write is never clobbered; a stale version is
+	// ABORTED. Admin-gated operator write (operator-scoped only: agents never
+	// author). The payload is validated fail-closed at the RPC boundary (schema
+	// shape, candidate provider/model_id shape, and no removal that would orphan a
+	// published profile's models.* reference) before a row is written.
+	PutModelRegistry(context.Context, *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error)
+	// Report the current model registry: its version and full payload. An
+	// unconfigured fleet is a valid state — the response is empty (version 0, no
+	// entries), never an error. Value-free of credentials by construction (the
+	// registry names providers/models, never holds keys), so it is open to any
+	// authenticated account like GetAgentConfigInfo.
+	GetModelRegistry(context.Context, *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error)
+	// Clear the fleet model registry back to the unconfigured state. Admin-gated
+	// like PutModelRegistry. Fails closed if the registry being cleared holds any
+	// stable name still referenced by a published profile's models.* map.
+	DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error)
 }
 
 // NewCompassServiceClient constructs a client for the compass.v1.CompassService service. By
@@ -343,6 +372,24 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("DeleteAgentConfig")),
 			connect.WithClientOptions(opts...),
 		),
+		putModelRegistry: connect.NewClient[v1.PutModelRegistryRequest, v1.PutModelRegistryResponse](
+			httpClient,
+			baseURL+CompassServicePutModelRegistryProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("PutModelRegistry")),
+			connect.WithClientOptions(opts...),
+		),
+		getModelRegistry: connect.NewClient[v1.GetModelRegistryRequest, v1.GetModelRegistryResponse](
+			httpClient,
+			baseURL+CompassServiceGetModelRegistryProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("GetModelRegistry")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteModelRegistry: connect.NewClient[v1.DeleteModelRegistryRequest, v1.DeleteModelRegistryResponse](
+			httpClient,
+			baseURL+CompassServiceDeleteModelRegistryProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("DeleteModelRegistry")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -365,6 +412,9 @@ type compassServiceClient struct {
 	putAgentConfig          *connect.Client[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse]
 	getAgentConfigInfo      *connect.Client[v1.GetAgentConfigInfoRequest, v1.GetAgentConfigInfoResponse]
 	deleteAgentConfig       *connect.Client[v1.DeleteAgentConfigRequest, v1.DeleteAgentConfigResponse]
+	putModelRegistry        *connect.Client[v1.PutModelRegistryRequest, v1.PutModelRegistryResponse]
+	getModelRegistry        *connect.Client[v1.GetModelRegistryRequest, v1.GetModelRegistryResponse]
+	deleteModelRegistry     *connect.Client[v1.DeleteModelRegistryRequest, v1.DeleteModelRegistryResponse]
 }
 
 // GetServerInfo calls compass.v1.CompassService.GetServerInfo.
@@ -450,6 +500,21 @@ func (c *compassServiceClient) GetAgentConfigInfo(ctx context.Context, req *conn
 // DeleteAgentConfig calls compass.v1.CompassService.DeleteAgentConfig.
 func (c *compassServiceClient) DeleteAgentConfig(ctx context.Context, req *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error) {
 	return c.deleteAgentConfig.CallUnary(ctx, req)
+}
+
+// PutModelRegistry calls compass.v1.CompassService.PutModelRegistry.
+func (c *compassServiceClient) PutModelRegistry(ctx context.Context, req *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error) {
+	return c.putModelRegistry.CallUnary(ctx, req)
+}
+
+// GetModelRegistry calls compass.v1.CompassService.GetModelRegistry.
+func (c *compassServiceClient) GetModelRegistry(ctx context.Context, req *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error) {
+	return c.getModelRegistry.CallUnary(ctx, req)
+}
+
+// DeleteModelRegistry calls compass.v1.CompassService.DeleteModelRegistry.
+func (c *compassServiceClient) DeleteModelRegistry(ctx context.Context, req *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error) {
+	return c.deleteModelRegistry.CallUnary(ctx, req)
 }
 
 // CompassServiceHandler is an implementation of the compass.v1.CompassService service.
@@ -576,6 +641,26 @@ type CompassServiceHandler interface {
 	// when already empty succeeds. On success every live Runner is signalled with
 	// an empty config version so it re-materializes the empty config dir.
 	DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error)
+	// Declare the fleet model registry: the stable-name → candidate-chain map the
+	// gateway resolver routes with (compass-stable-name-routing §P2). Compare-and-
+	// set on the whole-registry version — the caller carries the version it read
+	// (0 to seed the first registry) and the write lands only if the row still
+	// holds it, so a racing operator write is never clobbered; a stale version is
+	// ABORTED. Admin-gated operator write (operator-scoped only: agents never
+	// author). The payload is validated fail-closed at the RPC boundary (schema
+	// shape, candidate provider/model_id shape, and no removal that would orphan a
+	// published profile's models.* reference) before a row is written.
+	PutModelRegistry(context.Context, *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error)
+	// Report the current model registry: its version and full payload. An
+	// unconfigured fleet is a valid state — the response is empty (version 0, no
+	// entries), never an error. Value-free of credentials by construction (the
+	// registry names providers/models, never holds keys), so it is open to any
+	// authenticated account like GetAgentConfigInfo.
+	GetModelRegistry(context.Context, *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error)
+	// Clear the fleet model registry back to the unconfigured state. Admin-gated
+	// like PutModelRegistry. Fails closed if the registry being cleared holds any
+	// stable name still referenced by a published profile's models.* map.
+	DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error)
 }
 
 // NewCompassServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -687,6 +772,24 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("DeleteAgentConfig")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServicePutModelRegistryHandler := connect.NewUnaryHandler(
+		CompassServicePutModelRegistryProcedure,
+		svc.PutModelRegistry,
+		connect.WithSchema(compassServiceMethods.ByName("PutModelRegistry")),
+		connect.WithHandlerOptions(opts...),
+	)
+	compassServiceGetModelRegistryHandler := connect.NewUnaryHandler(
+		CompassServiceGetModelRegistryProcedure,
+		svc.GetModelRegistry,
+		connect.WithSchema(compassServiceMethods.ByName("GetModelRegistry")),
+		connect.WithHandlerOptions(opts...),
+	)
+	compassServiceDeleteModelRegistryHandler := connect.NewUnaryHandler(
+		CompassServiceDeleteModelRegistryProcedure,
+		svc.DeleteModelRegistry,
+		connect.WithSchema(compassServiceMethods.ByName("DeleteModelRegistry")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.CompassService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case CompassServiceGetServerInfoProcedure:
@@ -723,6 +826,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceGetAgentConfigInfoHandler.ServeHTTP(w, r)
 		case CompassServiceDeleteAgentConfigProcedure:
 			compassServiceDeleteAgentConfigHandler.ServeHTTP(w, r)
+		case CompassServicePutModelRegistryProcedure:
+			compassServicePutModelRegistryHandler.ServeHTTP(w, r)
+		case CompassServiceGetModelRegistryProcedure:
+			compassServiceGetModelRegistryHandler.ServeHTTP(w, r)
+		case CompassServiceDeleteModelRegistryProcedure:
+			compassServiceDeleteModelRegistryHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -798,6 +907,18 @@ func (UnimplementedCompassServiceHandler) GetAgentConfigInfo(context.Context, *c
 
 func (UnimplementedCompassServiceHandler) DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.DeleteAgentConfig is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) PutModelRegistry(context.Context, *connect.Request[v1.PutModelRegistryRequest]) (*connect.Response[v1.PutModelRegistryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.PutModelRegistry is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) GetModelRegistry(context.Context, *connect.Request[v1.GetModelRegistryRequest]) (*connect.Response[v1.GetModelRegistryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetModelRegistry is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) DeleteModelRegistry(context.Context, *connect.Request[v1.DeleteModelRegistryRequest]) (*connect.Response[v1.DeleteModelRegistryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.DeleteModelRegistry is not implemented"))
 }
 
 // SecretsServiceClient is a client for the compass.v1.SecretsService service.
