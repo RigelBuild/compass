@@ -85,7 +85,7 @@ the two, compass keeps building against the previous pinned rev.
 the fork's CLI is also invoked raw (`nix run path:../forks/<fork>#…`) in the
 raw-CLI call sites (six files, incl. `tools/agent-image-env-gate/index.ts`) that
 bypass the lock (see L1/L2 Interfaces). Today a single `path:` tree
-makes CLI-rev == module-rev by construction (`devenv.nix:442-445` names exactly
+makes CLI-rev == module-rev by construction (`devenv.nix:457-460` names exactly
 this as the reason for the pin shape). The flake-input side follows the internal
 monorepo's frozen default — `github:RigelBuild/<fork>` pinned via `devenv.lock` —
 but the six raw-CLI sites bypass that lock, so the reversal MUST separately
@@ -124,7 +124,7 @@ is compass's review point — not a mechanical path swap.
   (`"path": "../forks/devenv"`).
 - The fork's own CLI is invoked by path everywhere the image is built:
   `agent-image/moon.yml:44` (`command: 'nix run path:../forks/devenv#devenv --
-  container build agent'`), `agent-image/publish.sh:50-51`, `devenv.nix:461`
+  container build agent'`), `agent-image/publish.sh:50-51`, `devenv.nix:476`
   (`nix run path:../forks/devenv#devenv -- container copy agent`),
   `.github/workflows/ci.yml:812`, and
   `tools/agent-image-env-gate/index.ts:100` — the fail-closed image-env gate
@@ -405,7 +405,7 @@ Interfaces:
   - CLI invocations `nix run path:../forks/devenv#devenv` → `nix run
     github:RigelBuild/devenv/<rev>#devenv` (rev-pinned literal, same rationale
     as L1): `agent-image/moon.yml:44`, `agent-image/publish.sh:50-51`,
-    `devenv.nix:461`, `.github/workflows/ci.yml:812`,
+    `devenv.nix:476`, `.github/workflows/ci.yml:812`,
     `tools/agent-image-env-gate/index.ts:100`.
 - Deletes: `forks/devenv/` (incl. `.upstream-sync`, `moon.yml`);
   `.moon/workspace.yml:78` (`devenv-fork: 'forks/devenv'`);
@@ -433,7 +433,7 @@ Interfaces:
   surface" — the flake is now fetched from `RigelBuild/devenv` at a pinned rev,
   not an in-repo file).
 - Gate: `moon run agent-image:build` green; `dogfood:agent-image`
-  (`devenv.nix:456-464`) loads the image; agent container smoke ($HOME =
+  (`devenv.nix:471-479`) loads the image; agent container smoke ($HOME =
   `/home/agent`, nix usable) — the exact property the patch protects; the OQ2
   pin shape applied consistently with L1.
 
@@ -573,7 +573,7 @@ Interfaces:
    imminent and named.
 2. **Rev-pinned CLI literals vs one lockfile for the raw `nix run` invocations**
    (`agent-image/publish.sh:32,50-51`, `agent-image/moon.yml:44`,
-   `devenv.nix:461`, `ci.yml:812`, `publish-agent-image.yml:139,160`,
+   `devenv.nix:476`, `ci.yml:812`, `publish-agent-image.yml:139,160`,
    `tools/agent-image-env-gate/index.ts:100,118`) —
    **LOAD-BEARING, but narrower than first framed.** The *flake-input* half is
    settled: the internal monorepo's prior art froze the nix-flake-input class as
@@ -586,7 +586,7 @@ Interfaces:
    compass invokes the fork CLI raw at the six sites above, which bypass
    `devenv.lock` entirely.
    Today a single `path:` tree makes the CLI rev and the locked
-   module-set rev identical by construction (`devenv.nix:442-445` names this as
+   module-set rev identical by construction (`devenv.nix:457-460` names this as
    the reason for the pin shape; the frozen dogfood-loop record makes the same
    argument, `docs/designs/platform/compass-dogfood-loop/design.md:225-229`).
    Scattering a `github:…/<rev>` literal across those six lockfile-bypass sites

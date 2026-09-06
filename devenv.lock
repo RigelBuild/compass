@@ -426,7 +426,8 @@
         "go-overlay": "go-overlay",
         "hk": "hk",
         "nix2container": "nix2container",
-        "nixpkgs": "nixpkgs"
+        "nixpkgs": "nixpkgs",
+        "secretspec-nixpkgs": "secretspec-nixpkgs"
       }
     },
     "rust-overlay": {
@@ -447,6 +448,22 @@
       "original": {
         "owner": "oxalica",
         "repo": "rust-overlay",
+        "type": "github"
+      }
+    },
+    "secretspec-nixpkgs": {
+      "locked": {
+        "lastModified": 1788549839,
+        "narHash": "sha256-kOrCcSIA6w9J1hX5DqHy2k9pDTJymExTsbV74U9UtCA=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "17de0b976395537756f30a3e78f2f06e5cec89ed",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
         "type": "github"
       }
     },

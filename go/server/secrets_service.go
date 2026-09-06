@@ -121,7 +121,17 @@ func (s *secretsService) SetSecret(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("declaring secret: %w", declErr))
 	}
 
-	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue()); err != nil {
+	// The audit reason carries the authenticated caller, so the provider's log
+	// distinguishes which operator wrote a secret rather than recording every
+	// write anonymously. The RPC is the only path that reaches this write, so
+	// the prefix also records that provenance. callerID is resolved from the
+	// bearer token (auth.CallerFrom -> the token subject), never a request
+	// field, and every account id is server-minted hex (store/ids.go), so it
+	// cannot carry a quote or newline into the reason; the CLI additionally
+	// JSON-escapes the reason into its audit record, so a forged log entry is
+	// doubly unreachable.
+	reason := fmt.Sprintf("compass: operator secret write via SetSecret RPC (caller %s)", callerID)
+	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue(), reason); err != nil {
 		// The name was validated by DeclareSecret and the value was screened
 		// non-empty above, so a Set failure here is a provider/exec fault
 		// (CLI unreachable, non-zero exit) — retryable and operator-side, never
@@ -198,9 +208,10 @@ func (s *secretsService) DeleteSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
 	name := req.Msg.GetName()
-	// Ordering note: resolver.Delete is a validate-only no-op today (no upstream
-	// provider hard-delete verb), so calling it before DeleteSecretDeclaration is
-	// inert. When a real provider delete lands, this MUST flip to
+	// Ordering note: resolver.Delete is a validate-only no-op today, so calling
+	// it before DeleteSecretDeclaration is inert. The provider verb it would
+	// shell EXISTS at this pin (`secretspec delete`, 0.18+); wiring it is a
+	// deferral (RIG-3436), not an upstream gap. When it lands, this MUST flip to
 	// declaration-first: the declaration is the source of truth Resolve reads, and
 	// deleting the provider value before the row would leave a required=true
 	// declaration pointing at a missing value — the same global resolve-poison as a
