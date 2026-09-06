@@ -118,6 +118,11 @@ type configFlags struct {
 	// way --database-external+empty-DSN is rejected — a bare string flag cannot
 	// tell "set to empty" from "unset" on the value alone.
 	otelExternalSet bool
+	natsImage       string
+	natsExternal    string
+	// natsExternalSet records whether --nats-external was explicitly passed, for
+	// the same explicit-empty reject otelExternalSet drives.
+	natsExternalSet bool
 	linger          bool
 }
 
@@ -161,6 +166,12 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 		"Do not start the bundled OTel Collector; point compass surfaces at this "+
 			"OTLP endpoint instead (the --otel-external opt-out, D3). The managed "+
 			"plane supplies its own collector.")
+	fs.StringVar(&f.natsImage, "nats-image", stack.DefaultNatsImage,
+		"Container image for the bundled NATS message broker. Defaults to the "+
+			"pinned upstream nats alpine digest. Ignored with --nats-external.")
+	fs.StringVar(&f.natsExternal, "nats-external", "",
+		"Do not start the bundled NATS; point compass surfaces at this nats:// URL "+
+			"instead. The managed plane supplies its own broker.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,
 			"Leave the stack running after this process exits (records Config.Linger).")
@@ -170,13 +181,16 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 
 // markExplicitFlags records which string flags were explicitly passed (as
 // opposed to left at their default), for the flags whose "set to empty" must be
-// told apart from "unset". Today that is only --otel-external: an explicit empty
-// endpoint is a misuse resolveConfig rejects, while an unset flag is the D3
-// default (bundle the collector). Called after fs.Parse on every subcommand.
+// told apart from "unset": --otel-external and --nats-external. For each, an
+// explicit empty value is a misuse resolveConfig rejects, while an unset flag is
+// the default (bundle the component). Called after fs.Parse on every subcommand.
 func markExplicitFlags(fs *flag.FlagSet, f *configFlags) {
 	fs.Visit(func(fl *flag.Flag) {
 		if fl.Name == "otel-external" {
 			f.otelExternalSet = true
+		}
+		if fl.Name == "nats-external" {
+			f.natsExternalSet = true
 		}
 	})
 }
@@ -244,6 +258,13 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		return stack.Config{}, errors.New("--otel-external requires an explicit OTLP endpoint: point compass surfaces at your own collector (omit the flag to bundle one)")
 	}
 
+	// The --nats-external opt-out is rejected on an explicit empty value for the
+	// same reason: an empty ExternalNatsURL reads as "bundle NATS", the opposite
+	// of the operator's intent.
+	if f.natsExternalSet && f.natsExternal == "" {
+		return stack.Config{}, errors.New("--nats-external requires an explicit nats:// URL: point compass surfaces at your own broker (omit the flag to bundle one)")
+	}
+
 	cfg := stack.Config{
 		StateDir:             f.stateDir,
 		SocketPath:           socketPath,
@@ -255,6 +276,8 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		ExternalDatabase:     f.databaseExternal,
 		CollectorImage:       f.collectorImage,
 		ExternalOTLPEndpoint: f.otelExternal,
+		NatsImage:            f.natsImage,
+		ExternalNatsURL:      f.natsExternal,
 		Linger:               f.linger,
 	}
 	if err := cfg.Validate(); err != nil {
@@ -342,6 +365,24 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 		deps.CollectorProber = cc
 		if deps.Containers == nil {
 			deps.Containers = cc
+		}
+	}
+	// The bundled nats seams (start + readiness probe) are wired whenever a
+	// bundled NATS could be in play: not on the --nats-external opt-out. Its
+	// teardown reuses the same name-agnostic ContainerController contract, so the
+	// one Containers seam already set above tears down every container component
+	// by its recorded name; set it from the nats adapter only when neither block
+	// above did (external DB + external OTLP + bundled nats), so a cross-process
+	// down that reads a nats container entry always has a teardown seam.
+	if cfg.ExternalNatsURL == "" {
+		nc, err := adapters.NewNatsContainer()
+		if err != nil {
+			return stack.Deps{}, err
+		}
+		deps.NatsContainer = nc
+		deps.NatsProber = nc
+		if deps.Containers == nil {
+			deps.Containers = nc
 		}
 	}
 	return deps, nil

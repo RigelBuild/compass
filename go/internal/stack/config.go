@@ -59,6 +59,20 @@ type Config struct {
 	// endpoint. Empty is the D3 default posture: the bundled collector is
 	// provisioned per CollectorImage (present and receiving, exporting nowhere).
 	ExternalOTLPEndpoint string
+	// NatsImage selects the image the bundled NATS component runs, mirroring
+	// CollectorImage. Non-empty is the installed-stack default: a
+	// container-backed nats-server run from this image ref (the pinned
+	// DefaultNatsImage) via the Deps.NatsContainer seam. The CLI slice resolves
+	// the default; the core applies none. Ignored when ExternalNatsURL is set
+	// (no nats component starts at all).
+	NatsImage string
+	// ExternalNatsURL opts the stack out of starting the bundled NATS entirely
+	// (the --nats-external opt-out, the ExternalOTLPEndpoint template). When
+	// set, Up skips the nats component and consumers point at this
+	// operator/managed-plane-supplied nats:// URL instead. Empty is the default
+	// posture: NATS is provisioned as a bundled stack service, reachable on the
+	// fixed loopback client endpoint.
+	ExternalNatsURL string
 	// AgentImage is the container image ref every agent workstream runs; the
 	// runner refuses to boot without it present in the local store.
 	AgentImage string
