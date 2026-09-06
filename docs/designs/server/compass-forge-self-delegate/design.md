@@ -169,10 +169,10 @@ forward-looking, guarding the moment that assembly lands. So:
 
 ### Ledger delta (stated here; the CALLER edits DECISIONS.md in the SAME PR)
 
-- **New row DL-330 (delegation write path):** the forge Linear provider sends
+- **New row DL-340 (delegation write path):** the forge Linear provider sends
   `delegateId` (self) and optional `assigneeId` on `issueCreate`, Linear-only
   consumption on `forge.CreateIssue`, degrade-on-probe-failure. The OQ-1 probe
-  (2026-09-05) confirmed self-delegate is ALLOWED, so DL-330 ratifies the
+  (2026-09-05) confirmed self-delegate is ALLOWED, so DL-340 ratifies the
   self-delegate write path (not the `agentSessionCreateOnIssue` fallback). The
   ledger append lands in this same freeze PR.
 - **No DL-324 reversal in this record.** DL-324 (app-actor-only, no Linear user
@@ -450,7 +450,7 @@ on.
    ("Compass Live Tests", `da5c6aa4-9f8f-4a3c-8157-c127d34adb99`) on `issueCreate`
    and the create returned `success: true` with the delegate slot populated
    (PROBE issues TEST-816 delegate-only, TEST-817 assignee+delegate; both
-   archived). So the outbound self-delegate write path is ratified (DL-330); the
+   archived). So the outbound self-delegate write path is ratified (DL-340); the
    `agentSessionCreateOnIssue` fallback is NOT taken.
 2. **Assignee slot (OQ-2) — independent of the delegate slot.** Delegate-only
    (no `assigneeId`) left `assignee: null` — no `actor=app` auto-assign (unlike
