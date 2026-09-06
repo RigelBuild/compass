@@ -34,6 +34,7 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
+import type { ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { ApiKey, Model } from "@oh-my-pi/pi-ai";
 import {
 	type AgentSession,
@@ -380,6 +381,25 @@ async function connectMountedMcp(
 		tools: manager.getTools(),
 		disconnect: () => manager.disconnectAll(),
 	};
+}
+
+/**
+ * Mark every custom tool `essential` so it lands in the model's top-level
+ * callable schema, and return the same array.
+ *
+ * Assigns in place BY DESIGN — see the `customTools` seam in `main` for why
+ * copying is unsafe here (SDK tools are class instances with prototype methods
+ * and `#private` state, so a spread or clone yields a tool the model can see
+ * and cannot call). `loadMode` is a mutable field on `CustomTool`, so this
+ * preserves object identity.
+ */
+function stampEssential<T extends { loadMode?: ToolLoadMode }>(
+	tools: T[],
+): T[] {
+	for (const tool of tools) {
+		tool.loadMode = "essential";
+	}
+	return tools;
 }
 
 /**
@@ -906,7 +926,42 @@ export async function main(
 		// (RIG-1741 gap-1, constructed above): all reach the session as natives via
 		// the same customTools→state.tools→#withNatives path, so the container
 		// agent can spawn peers and post to channels.
-		customTools: [...mcp.tools, ...nativeTools],
+		//
+		// `loadMode: "essential"` is REQUIRED, not decorative, and it is stamped
+		// on the WHOLE merged array — natives AND mounted-MCP tools. SDK 18.x
+		// added progressive tool disclosure: at an adapter boundary an omitted
+		// `loadMode` defaults to `"discoverable"`
+		// (`defaultLoadModeForToolName`, pi-coding-agent
+		// src/tools/essential-tools.ts:43-45), which registers the tool but keeps
+		// it OUT of the model's top-level callable schema. `MCPManager.getTools()`
+		// never sets `loadMode`, so stamping only the natives would silently
+		// demote every mounted-MCP tool — and the `xd://` device transport does
+		// NOT recover them here, because it is gated on a top-level `write` tool
+		// this headless session does not request (`xdevEnabled`, pi-coding-agent
+		// src/tools/index.ts:772). A demoted MCP tool would therefore be neither
+		// top-level callable NOR xd://-reachable: registered and unreachable,
+		// which is exactly the silent-no-surface failure the RIG-1741/CD-3 mount
+		// contract exists to prevent. Stamped once here, at the single
+		// registration seam, rather than in the four native factories.
+		//
+		// Stamped IN PLACE, never by copying. `mcp.tools` are SDK class instances
+		// (`MCPTool`, pi-coding-agent src/mcp/tool-bridge.ts:492) whose
+		// `execute`/`renderCall`/`renderResult` live on the PROTOTYPE, and its
+		// sibling `DeferredMCPTool` (:604) additionally holds ECMAScript
+		// `#private` state. Neither a spread nor an `Object.create` clone can
+		// carry that: a spread drops the prototype methods outright, and a clone
+		// keeps the methods but re-homes `this`, so a `#private` read throws
+		// `Cannot access invalid private field` at the model's FIRST call — a
+		// tool the model can see and cannot use, which is worse than a demoted
+		// one. `loadMode` is a mutable field on `CustomTool`
+		// (extensibility/custom-tools/types.ts:224), so assigning it preserves
+		// object identity: the methods, the private state, and the connection
+		// rebinding `MCPTool.execute` performs on reconnect all keep working,
+		// and the session cannot drift onto a stale copy. Compass owns this
+		// manager exclusively (built above; `getTools()` feeds `customTools` and
+		// nothing else), so there is no second consumer to isolate from the
+		// assignment.
+		customTools: stampEssential([...mcp.tools, ...nativeTools]),
 		enableMCP: false,
 		// Headless approval policy (RIG-1741, design compass-agent-comms-tools
 		// §"the container runs headless with write-approval tools auto-executing"):

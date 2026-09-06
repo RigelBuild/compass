@@ -131,7 +131,7 @@ let
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-GrsX8VmqoHIgvq/OZaOZN8HwrjI9PWcU6nYwI7I0uMo=";
+    outputHash = "sha256-JbgM44AwH7/b3Y/2T44+eBXwyvMi8owXToGVspEeCk4=";
   };
 
   # The package's own source. A BARE path here (`${../packages/…}`) would copy
@@ -188,10 +188,10 @@ let
 
     mkdir -p $out
     # `omp-legacy-pi-modules` is an OPTIONAL dynamic import inside the SDK's
-    # legacy-compat shim (pi-coding-agent legacy-pi-compat.ts:50), guarded at
-    # runtime and absent from our dependency closure. Left external so the
-    # bundler does not fail resolving a module the code already tolerates
-    # missing.
+    # legacy-compat shim (pi-coding-agent
+    # src/extensibility/plugins/legacy-pi-compat.ts:751), guarded at runtime and
+    # absent from our dependency closure. Left external so the bundler does not
+    # fail resolving a module the code already tolerates missing.
     #
     # `--compile` emits a STANDALONE executable (bun runtime + the whole
     # resolved graph baked in), not an interpreted `cli.js`. This is what lets

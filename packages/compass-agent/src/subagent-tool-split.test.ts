@@ -1,28 +1,31 @@
-// The comms/IRC tool split, pinned (design
+// The comms/hub tool split, pinned (design
 // docs/designs/agent/compass-per-agent-overrides/design.md §Plan T7).
 //
 // WHAT THIS DEFENDS. Compass's native tools — the comms surface
 // (`comms_post_message`, `compass_roster`, …), the lifecycle surface
 // (`agents_spawn_peer`, `agents_despawn_peer`), and the forge surface
-// (`forge_*`) — reach the Manager session as `customTools` (cli.ts:896:
-// `customTools: [...mcp.tools, ...nativeTools]`). An in-process `task`
-// subagent (the design's worker topology) runs at full Manager trust in the
-// SAME container, so its Compass reach is NOT a security boundary — it is a
-// capability contract. The contract: a subagent gets the OMP builtin toolset
-// (edit/read/bash/…) and `irc`, but NONE of Compass's native tools; peers and
-// the Manager are reached over OMP-internal IRC, never a Compass channel.
+// (`forge_*`) — reach the Manager session as `customTools` (cli.ts, the
+// `customTools:` registration seam in `main`:
+// `customTools: stampEssential([...mcp.tools, ...nativeTools])`).
+// An in-process `task` subagent (the design's worker topology) runs at full
+// Manager trust in the SAME container, so its Compass reach is NOT a security
+// boundary — it is a capability contract. The contract: a subagent gets the OMP
+// builtin toolset (edit/read/bash/…) and `hub`, but NONE of Compass's native
+// tools; peers and the Manager are reached over the OMP-internal peer channel,
+// never a Compass channel.
 //
 // WHY BY-CONSTRUCTION TODAY, AND WHY PIN IT ANYWAY. The exclusion falls out of
 // the SDK's subagent construction: a subagent session's `customTools` is
 // `mcpProxyTools = options.mcpManager ? createMCPProxyTools(...) : []`
-// (executor.ts:2394/:2489), and Compass passes its native tools as
+// (src/task/executor.ts:3113/:3234), and Compass passes its native tools as
 // `customTools`, never via an `mcpManager` — so a child's `customTools` is
 // empty and no Compass tool can transit. That is a property of a pinned SDK
-// (lockfile 16.5.2), not a guarantee: an SDK upgrade, or a future refactor that
-// hands Compass tools to subagents through an `mcpManager`, would silently widen
-// the child's reach. This test is the DRIFT ALARM (design §Global Constraints:
-// "T7's closed-set pin is a drift alarm, not a fence") — it reddens the day a
-// Compass tool leaks into a subagent, or `irc` drops out of one.
+// (lockfile 18.0.11), not a guarantee: an SDK upgrade, or a future refactor
+// that hands Compass tools to subagents through an `mcpManager`, would silently
+// widen the child's reach. This test is the DRIFT ALARM (design §Global
+// Constraints: "T7's closed-set pin is a drift alarm, not a fence") — it
+// reddens the day a Compass tool leaks into a subagent, or `hub` drops out of
+// one.
 //
 // THE ASSERTION IS A CLOSED SET ON THE COMPASS DIMENSION, not a deny-list and
 // not an exact-equals against the whole OMP builtin list. The builtin list is
@@ -31,9 +34,9 @@
 // versions), so an exact-equals against it would be flaky. What is INVARIANT is
 // the split: the Manager session carries EXACTLY the Compass native tool set,
 // and the subagent session carries EXACTLY NONE of it while still carrying
-// `irc`. Asserting the Compass-tool intersection in both directions is the
+// `hub`. Asserting the Compass-tool intersection in both directions is the
 // closed set that matters — it cannot pass if a Compass tool leaks in, and
-// cannot pass if `irc` is missing.
+// cannot pass if `hub` is missing.
 //
 // Hermetic: a scratch cwd + scratch HOME (the SDK anchors discovery on the
 // launch HOME, os.homedir(); pinning it keeps ambient extensions/tools out) and
@@ -87,22 +90,31 @@ const lifecycleTransport: LifecycleTransport = {
 		unreached("lifecycle"),
 };
 
-// The EXACT Compass native tool set cli.ts registers on the Manager session
-// (cli.ts:703-708). Built from the same four factories over real brokers, so
-// the expected set can never drift from what ships: a new native tool is
-// automatically part of the pinned split.
+// The EXACT Compass native tool set cli.ts registers on the Manager session.
+// Built from the same four factories over real brokers, so the expected set can
+// never drift from what ships: a new native tool is automatically part of the
+// pinned split.
 function compassNativeTools(): ToolDefinition[] {
-	// Mirrors cli.ts:703-708: the factories return `AgentTool[]`, which the
-	// entrypoint widens to `ToolDefinition[]` for the `customTools` option
-	// (`customTools?: (CustomTool | ToolDefinition)[]`). The two are
+	// Mirrors the cli.ts registration seam: the factories return `AgentTool[]`,
+	// which the entrypoint widens to `ToolDefinition[]` for the `customTools`
+	// option (`customTools?: (CustomTool | ToolDefinition)[]`). The two are
 	// structurally compatible for registration but inference will not unify
 	// them, so this is the same widening the production callsite uses.
+	//
+	// `loadMode: "essential"` mirrors the same stamp cli.ts applies to the whole
+	// merged `customTools` array (natives + mounted MCP). SDK 18.x defaults an
+	// omitted `loadMode` at an adapter boundary to `"discoverable"` (registered
+	// but not top-level), so without it these tools would not be active and this
+	// file would be measuring the wrong surface.
 	return [
 		...createCommsTools(new CommsBroker(commsTransport)),
 		...createLifecycleTools(new LifecycleBroker(lifecycleTransport)),
 		...createForgeTools(new ForgeBroker(forgeTransport)),
 		...createBoardTools(new BoardBroker(boardTransport)),
-	] as ToolDefinition[];
+	].map((tool) => ({
+		...tool,
+		loadMode: "essential" as const,
+	})) as ToolDefinition[];
 }
 
 function compassNativeToolNames(): Set<string> {
@@ -153,11 +165,11 @@ async function activeToolNames(
 	}
 }
 
-// The Manager session shape: Compass native tools ride `customTools`
-// (cli.ts:896). The subagent session shape: a real in-process subagent
+// The Manager session shape: Compass native tools ride `customTools` (cli.ts,
+// the `customTools:` seam). The subagent session shape: a real in-process subagent
 // (`taskDepth: 1`) with no `customTools` — the SDK's subagent path sets
 // `customTools` from `mcpProxyTools`, which is empty because Compass passes no
-// `mcpManager` (executor.ts:2394/:2489), so a child inherits none of the
+// `mcpManager` (src/task/executor.ts:3113/:3234), so a child inherits none of the
 // native tools the Manager holds.
 function managerActiveToolNames(cwd: string): Promise<string[]> {
 	return activeToolNames({ cwd, customTools: compassNativeTools() });
@@ -167,7 +179,7 @@ function subagentActiveToolNames(cwd: string): Promise<string[]> {
 	return activeToolNames({ cwd, taskDepth: 1 });
 }
 
-describe("subagent comms/IRC tool split (design §T7)", () => {
+describe("subagent comms/hub tool split (design §T7)", () => {
 	test("the Manager session carries exactly the Compass native tool set", async () => {
 		const cwd = scratch();
 		const active = new Set(await managerActiveToolNames(cwd));
@@ -195,18 +207,19 @@ describe("subagent comms/IRC tool split (design §T7)", () => {
 		expect(leaked).toEqual([]);
 	});
 
-	test("a subagent session still carries irc (the COOP-advertised peer channel)", async () => {
+	test("a subagent session still carries hub (the COOP-advertised peer channel)", async () => {
 		const cwd = scratch();
 		const active = new Set(await subagentActiveToolNames(cwd));
 
-		// `irc` is active on this subagent via the availability gate
-		// isIrcEnabled(settings, taskDepth) (tools/index.ts:628): at taskDepth 1
-		// the `taskDepth > 0` short-circuit returns true (irc.ts:45). (A
-		// tool-restricted subagent additionally force-includes it at
-		// executor.ts:2196-2197.) The split removes Compass's channel tools but
-		// MUST leave the OMP-internal peer channel, or workers cannot reach the
-		// Manager at all.
-		expect(active.has("irc")).toBe(true);
+		// `hub` is active on this subagent via the availability gate
+		// isIrcEnabled(settings, taskDepth) (tools/index.ts:679): at taskDepth 1
+		// the `taskDepth > 0` short-circuit returns true
+		// (tools/hub/messaging.ts:109-110). (A tool-restricted subagent
+		// additionally force-includes it in the task executor.) The split removes
+		// Compass's channel tools but MUST leave the OMP-internal peer channel, or
+		// workers cannot reach the Manager at all. The SDK renamed this tool
+		// `irc` -> `hub`; the gate function kept its original name.
+		expect(active.has("hub")).toBe(true);
 	});
 
 	test("the Manager carries Compass tools that the subagent drops — the split is real", async () => {
