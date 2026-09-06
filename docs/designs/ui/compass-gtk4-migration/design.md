@@ -48,7 +48,7 @@ for why it is this small:
    `webkitgtk_6_0 = 2.52.5` (same WebKit release as the current
    `webkitgtk_4_1 = 2.52.5`). No nixpkgs bump is required to get the packages.
 4. **The closure has ONE definition.** `gtk-closure.nix:3-10`: "ONE definition,
-   imported by two consumers so they cannot drift" (devenv.nix:251,
+   imported by two consumers so they cannot drift" (devenv.nix:266,
    gtk-e2e-env.nix:38) — plus the flake (`flake.nix:101`). Swapping the list
    swaps every consumer at once; the packaging record predicted exactly this:
    "a GTK4 flip is a closure-list + tag edit, not a packaging redesign"
@@ -252,7 +252,7 @@ after T1 lands.
   (gtk-e2e-env.nix) and the built app-bundle tarball sizes; record both
   deltas in the PR body per Global Constraint 5.
 + **Interfaces:** consumes `gtk-closure.nix:18-32` (the name list); produces
-  the new list consumed unchanged by `devenv.nix:251` (PKG_CONFIG_PATH),
+  the new list consumed unchanged by `devenv.nix:266` (PKG_CONFIG_PATH),
   `gtk-e2e-env.nix:38` (pcClosure), `flake.nix:101` (buildInputs). No
   nixpkgs pin change (Global Constraint 2: both attrs exist at
   `c946ff36bf19`).

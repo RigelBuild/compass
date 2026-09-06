@@ -99,7 +99,7 @@ verified this session). Grounded availability:
   "not executed here — it needs a rootless-podman host, which GitHub-hosted
   runners are not").
 - GA runtime hosts: **unpinned**. Podman is the external host's, not shipped
-  by the repo — `devenv.nix:415-418` is explicit that even the dogfood loop
+  by the repo — `devenv.nix:430-433` is explicit that even the dogfood loop
   "Uses the host's rootless podman", and `agent-image/` bakes no podman.
 
 **Decision: hard floor ≥ 4.3, no `--uidmap`/`--gidmap` fallback — Matt ruled**
@@ -107,7 +107,7 @@ verified this session). Grounded availability:
 the runner's operator-facing docs. Rationale: podman 4.3 shipped in 2022, so
 the below-floor population is small but not empty — Ubuntu 22.04 LTS (supported
 into 2027) ships podman 3.4.x, and GA runtime hosts are unpinned
-(`devenv.nix:415-418`), so a 22.04 operator is a plausible GA host that this
+(`devenv.nix:430-433`), so a 22.04 operator is a plausible GA host that this
 floor **will** refuse. That is exactly why the OQ-A preflight's legible startup
 refusal (not a deep-in-create failure) is the right handling, and a `--uidmap`
 fallback would double the launch-path test matrix to serve it. The error copy
@@ -364,7 +364,7 @@ decisions.
 2. **OQ-B — podman floor: hard ≥ 4.3, or a `--uidmap` fallback for < 4.3? →
    HARD FLOOR ≥ 4.3, NO FALLBACK (Matt).** `keep-id:uid=` needs podman ≥ 4.3.
    Dev box (5.8.4) and CI (4.9.3) clear it; GA runtime hosts are unpinned
-   (podman is the host's, not shipped — `devenv.nix:415-418`). **Decision:
+   (podman is the host's, not shipped — `devenv.nix:430-433`). **Decision:
    hard floor ≥ 4.3**, enforced by the OQ-A preflight and documented for
    operators; no `--uidmap` fallback. The known below-floor case is Ubuntu
    22.04 LTS (podman 3.4.x, supported into 2027), a plausible unpinned GA host

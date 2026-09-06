@@ -219,7 +219,7 @@ Grounded in the current file, the complete delta set:
   `bun install --frozen-lockfile` and the `hk install` lines (`:165-171`)
   stay.
 - All four `PROTO_HOME`/`PATH` shim exports in the process/task exec blocks:
-  compass-server (`devenv.nix:237-244`: "Go is proto-managed (.prototools);
+  compass-server (`devenv.nix:237-259`: "Go is proto-managed (.prototools);
   make its shim resolvable even when this process is launched outside the
   enterShell PATH mutation"), compass-runner (`:323-324`), gen-cert
   (`:357-358`), mint-runner-token (`:377-378`). With go a `packages` entry it

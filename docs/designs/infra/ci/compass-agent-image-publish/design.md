@@ -186,7 +186,7 @@ silent-staleness failure the doctrine targets. What it *does* buy:
   `cancel-in-progress: false` group, which a separate workflow gives cleanly.
 - **Off the hot path, not a required check.** The image closure is the heavy
   nix build that motivates CI's 90m timeout (`ci.yml:93-95`); the dogfood task
-  is opt-in for the same reason (`devenv.nix:340-348`). A separate workflow
+  is opt-in for the same reason (`devenv.nix:355-363`). A separate workflow
   keeps PR latency untouched, and a publish flake never reds the required merge
   gate.
 - **Failure ownership.** `agent-image/` is not a moon project, so the gate
@@ -325,7 +325,7 @@ visibility ever changes.
 - Comments and docs explain non-obvious WHY (compass `AGENTS.md`).
 - The image build stays OFF the hot `up`/PR path: publish is main-only +
   `workflow_dispatch`, mirroring the opt-in `dogfood:agent-image` posture
-  (`devenv.nix:345-348` — "NOT wired `after` into up — the image closure is
+  (`devenv.nix:360-363` — "NOT wired `after` into up — the image closure is
   large").
 - Reproducibility: the published `:git-<sha>` and the local dogfood load are
   copies of the SAME nix derivation — both flow through
@@ -349,7 +349,7 @@ locally (with a PAT-backed `skopeo login`) and from CI identically.
 
 - Build: `nix run path:../forks/devenv#devenv -- container build agent`
   executed with cwd `agent-image/` (the same fork-pinned invocation shape as
-  `dogfood:agent-image`, `devenv.nix:349-354`); capture the printed image-spec
+  `dogfood:agent-image`, `devenv.nix:364-369`); capture the printed image-spec
   store path.
 - Skopeo: `nix run path:../forks/nix2container#skopeo-nix2container --`
   (exposed at `forks/nix2container/flake.nix:31`; `pkgs.skopeo`'s

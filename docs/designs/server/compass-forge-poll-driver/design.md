@@ -670,12 +670,12 @@ Mirrors the two established precedents exactly:
   mutation RPC/admin surface is a named non-goal (Global Constraints).
 - **Secret resolve:** the driver's `TokenSource` closes over the one
   `secrets.SpecResolver` built at `serve.go:287`, calls
-  `Resolve(ctx, "forge poll")` (`secrets/resolver.go:135`), and selects the
+  `Resolve(ctx, "forge poll")` (`secrets/resolver.go:146`), and selects the
   configured name from the returned `[]ResolvedSecret` — the same
   single-resolve-surface DL-052 mandates; the row is declared `server_only`
   so it never reaches a container (mechanism per the ownership-layer T5,
   `compass-server-ownership-layer/design.md:1991-1995`). **Resolve is not
-  cheap** — `resolver.go:135-165` reads the entire declared-secret registry
+  cheap** — `resolver.go:146-172` reads the entire declared-secret registry
   from the store, writes a manifest temp file, and drives a full secretspec
   provider `Load` (potentially an external provider call) per invocation — so
   the `TokenSource` implementation caches the resolved value behind a short TTL
@@ -1193,7 +1193,7 @@ type forgePollStore struct {
 ```
 
 Consumes: `secrets.SpecResolver.Resolve(ctx, reason) ([]ResolvedSecret, error)`
-(`secrets/resolver.go:135`), `secrets.ResolvedSecret{Name, Value, …}`
+(`secrets/resolver.go:146`), `secrets.ResolvedSecret{Name, Value, …}`
 (`secrets/secrets.go:132-135`; Value redacted under all fmt verbs — safe to
 thread), the `board.NewIssueProjection` instance from `serve.go:259`,
 `ingest.NewIngester` (`ingest.go:44`), `forge.NewGitHub` (T1), the T2 store

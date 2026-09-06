@@ -628,14 +628,15 @@ declared into a store that does not exist.
     when this record was written (go/go.mod:22 now reads v0.20.0, bumped by
     RIG-3320), and at that pin `age://` did not resolve and T2's master-key
     write-back has no writable target. This gates the self-hosted `age://`
-    DEFAULT specifically, NOT T0/T2 wholesale: on the current pin the matrix
-    already marks Write yes for `keyring`, `dotenv`, `pass`, `gopass`
+    DEFAULT specifically, NOT T0/T2 wholesale: even at v0.15 the matrix
+    already marked Write yes for `keyring`, `dotenv`, `pass`, `gopass`
     (0.15+), `awssm`, `akv` and `vault`, so a deployment pointing the
-    SERVER resolver at a cloud store or HashiCorp Vault needs NO bump (OpenBao,
-    like `age`, is 0.17+); what
-    v0.15 lacks is `age` (0.17+), with `pass`/`gopass` the self-hosted
-    encrypted-at-rest alternatives available today (`age://` is the ruled
-    default — a single local identity file rather than a GPG keyring). The
+    SERVER resolver at a cloud store or HashiCorp Vault needed NO bump
+    (OpenBao, like `age`, is 0.17+); what v0.15 lacked is `age` (0.17+), with
+    `pass`/`gopass` the self-hosted encrypted-at-rest alternatives available
+    at that pin (`age://` is the ruled default — a single local identity file
+    rather than a GPG keyring). RIG-3320 has since taken the pin to v0.20.0,
+    so `age://` and `openbao://` both resolve and this prerequisite is MET. The
     bump covers TWO separate closures, since the SDK read path and the CLI
     write path are distinct binaries: (a) the Go module `secretspec-go` `>=
     0.17` for the READ path (`b.Load()`, resolver.go:172); AND (b) the
@@ -923,7 +924,9 @@ is declared into it) and T1.
     master key's provider value unreachable from the user path. The user
     `SetSecret`/`DeleteSecret` RPC (`authenticatedOpen`, any authenticated
     account — admin_gate.go:122-125) declares into `secrets` but then calls
-    `resolver.Set`, which shells `secretspec set <NAME> --profile default`
+    `resolver.Set`, which shells
+    `secretspec --file=<manifest> --reason=<reason> set <NAME> --provider=<p>
+    --profile=<P>`
     (resolver.go:325-331) against the keyspace that is SHARED under the default
     single-URI wiring (F2) — so absent a guard a user
     calling `SetSecret` with name `GATEWAY_CREDENTIALS_MASTER_KEY` would
@@ -1151,12 +1154,13 @@ RPC exactly as the frozen record already specifies.
       `r.cli`, resolver.go:273/30), the latter pinned via `WithCLI`
       (resolver.go:92) into the Server's closure so read and write cannot drift
       to different provider capabilities. `age` is a 0.17+ build-feature
-      provider, so on the current pin the `age://` default does not resolve
-      and T2's master-key write-back has no writable target; a deployment on a
-      cloud store (`awssm`/`akv`) or HashiCorp Vault — all Write-capable at
-      the current pin — needs no bump (OpenBao does NOT qualify: `openbao://` is a
-      0.17+ provider, with 0.16 routing it through `vault`, so an OpenBao
-      deployment rides the same bump as `age://`). GATING for T2 ONLY on the `age://`
+      provider, so at the v0.15 pin this record was written against the
+      `age://` default did not resolve and T2's master-key write-back had no
+      writable target; a deployment on a cloud store (`awssm`/`akv`) or
+      HashiCorp Vault — all Write-capable even at v0.15 — needed no bump
+      (OpenBao did NOT qualify: `openbao://` is a 0.17+ provider, with 0.16
+      routing it through `vault`, so an OpenBao deployment rode the same bump
+      as `age://`). RIG-3320 landed that bump at v0.20.0, so both resolve now. GATING for T2 ONLY on the `age://`
       path. Proto
       delta: two additive `SecretsService` methods, no enum change — the
       checked-in public gen trees are drift-gated, so this needs the

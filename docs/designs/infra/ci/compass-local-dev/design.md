@@ -22,7 +22,7 @@ no route to the gRPC-Web door — `apps/ui/vite.config.ts:4-6` says so itself:
 "The UI consumes the generated @compass/client; the daemon transport + dev
 proxy arrive with the local-transport work." Second, macOS has no path at
 all: `services.postgres` (devenv.nix:211), `processes` (devenv.nix:218), and
-`tasks` (devenv.nix:346) are all `lib.optionalAttrs pkgs.stdenv.isLinux`, and
+`tasks` (devenv.nix:361) are all `lib.optionalAttrs pkgs.stdenv.isLinux`, and
 the native desktop shell has no darwin entrypoint (grounded in §A2c). Third,
 the pre-push gate (`hk.pkl:31-33`, `check = "moon ci"`) runs in jj-vine's
 temp worktree `/tmp/jj-hooks-worktree-*`, which has the tree but no direnv
@@ -56,7 +56,7 @@ process.
 this consumer — `devenv.nix:219-220`: "compass-server: serves compass.v1 on a
 Unix domain socket (the shipped local door) plus a loopback gRPC-Web port for
 the browser UI dev server", with `ports.devhttp.allocate = 50051`
-(devenv.nix:260). The UI dials whatever `VITE_COMPASS_BASE_URL` resolves —
+(devenv.nix:275). The UI dials whatever `VITE_COMPASS_BASE_URL` resolves —
 `apps/ui/src/live/connection.ts:46-50`:
 
 ```ts
@@ -81,7 +81,7 @@ exact consumer.
 **Direct-dial (decided).** No proxy at all: the compass-ui
 process sets `VITE_COMPASS_BASE_URL = "http://127.0.0.1:${toString
 config.processes.compass-server.ports.devhttp.value}"` — the same binding
-the server's own `--dev-http` flag reads (devenv.nix:253) — and the browser
+the server's own `--dev-http` flag reads (devenv.nix:268) — and the browser
 fetch streams the gRPC-Web response natively, with no middlebox to buffer
 it. `connection.ts` was built for exactly this client: "`token` undefined is
 a deliberate no-auth client (the dev door)"
@@ -124,7 +124,7 @@ outside `up`) and `VITE_COMPASS_BASE_URL=http://127.0.0.1:5173` (the vite
 origin).
 
 **The process.** A third devenv process, launched the way the existing two
-resolve proto's shims (devenv.nix:243-244 sets
+resolve proto's shims (devenv.nix:258-259 sets
 `PROTO_HOME`/`PATH` in compass-server's exec preamble; same pattern here for
 `bunx`):
 
@@ -145,7 +145,7 @@ compass-ui = {
 };
 ```
 
-`after` the server's readiness probe (devenv.nix:288-294 gates on a real
+`after` the server's readiness probe (devenv.nix:303-309 gates on a real
 `GetServerInfo` answer over the dev-http door) so the first browser load
 never races the migrating store. The command matches the existing moon task
 (`apps/ui/moon.yml:11-12`: `dev: command: 'bunx vite'`) — one convention, two
@@ -184,9 +184,9 @@ Linux-bound: postgres is a stock devenv service, and the server/cert/mint
 lanes are pure-Go builds run through the pinned toolchain. The guard relaxes
 by removing `lib.optionalAttrs pkgs.stdenv.isLinux` from `services.postgres`
 (devenv.nix:211) and from the server process + its two tasks, leaving
-Linux-only: `compass-runner` (devenv.nix:321 — native podman loop),
-`dogfood:agent-image` (devenv.nix:401-406 — the vendored-fork nix container
-build), and `dogfood:clean` (devenv.nix:413-426 — host rootless podman). The
+Linux-only: `compass-runner` (devenv.nix:336 — native podman loop),
+`dogfood:agent-image` (devenv.nix:416-421 — the vendored-fork nix container
+build), and `dogfood:clean` (devenv.nix:428-441 — host rootless podman). The
 `PKG_CONFIG_PATH` env stays Linux-guarded exactly as it is — its comment
 already states the macOS posture (devenv.nix:122-123: "on macOS the app
 links the system WebKit framework, so the closure is Linux's alone").
@@ -205,7 +205,7 @@ process runs INSIDE the VM — per Matt's 2026-08-14 macOS ruling ("reuse the
 existing Linux-native loop unchanged; the VM is the new moving part") — and
 composes
 with the runner's own posture: "Runners are remote by design, so this dials
-the authenticated TLS door" (devenv.nix:302-304). Shape:
+the authenticated TLS door" (devenv.nix:317-319). Shape:
 
 - VM engine: `podman machine` (recommended over colima; OQ1).
 - `devenv up` on macOS does NOT provision or start the VM (mutating global
@@ -220,7 +220,7 @@ the authenticated TLS door" (devenv.nix:302-304). Shape:
   launched with the enrollment token from `dogfood:mint-runner-token` and
   the gen-cert trust anchor.
 - The VM dials the host's TLS network door (`ports.network.allocate =
-  50052`, devenv.nix:265). But compass-server binds that door to LOOPBACK
+  50052`, devenv.nix:280). But compass-server binds that door to LOOPBACK
   today: `--listen "127.0.0.1:${toString
   config.processes.compass-server.ports.network.value}"` (the
   compass-server exec's `--listen` line, devenv.nix). A podman-machine
@@ -237,7 +237,7 @@ the authenticated TLS door" (devenv.nix:302-304). Shape:
   narrowest-address constraint.
   Consequences T5 owns: the spike-resolved dial/bind address, and the
   gen-cert SAN set — "SAN defaults (127.0.0.1,::1,localhost)"
-  (devenv.nix:349-350) — must grow that address, so `compass-gen-cert`
+  (devenv.nix:364-365) — must grow that address, so `compass-gen-cert`
   gains a `--san` flag the macOS lane passes. The darwin `--listen`
   variance touches the compass-server process attr T4 unguards: T4 moves
   it out of the Linux guard unchanged, T5 may add darwin variance (e.g.
@@ -245,7 +245,7 @@ the authenticated TLS door" (devenv.nix:302-304). Shape:
   guard move) — the two tasks co-edit this attr, and both their interfaces
   acknowledge it.
 - Agent-image delivery into the VM (the `compass-agent:latest` ref the
-  runner resolves, devenv.nix:333) is `podman machine`'s containers-storage;
+  runner resolves, devenv.nix:348) is `podman machine`'s containers-storage;
   the nix image build (`dogfood:agent-image`) stays Linux-only, and macOS
   pulls the GHCR-published image per DL-112 (DECISIONS.md:211) once that
   publish lane exists — until then macOS runs runner-loop-less by default
@@ -369,7 +369,7 @@ OQ4, not a task.
   the devenv.nix surfaces this record edits: proto/.prototools removal, pins
   moving into nix derivations, the `enterShell` proto activation
   (devenv.nix:155-161), and the exec preambles' `PROTO_HOME` shims
-  (devenv.nix:243-244). This record grounds against CURRENT main (still
+  (devenv.nix:258-259). This record grounds against CURRENT main (still
   .prototools: bun 1.3.13, node 24.18.0, moon 2.4.2, go 1.26.5 —
   .prototools:6-13) and does NOT guess the post-cutover shape.
   **Implementation of T3/T4/T5 MUST be sequenced after the RIG-1983 cutover
@@ -382,10 +382,10 @@ OQ4, not a task.
 - **Tool pins (as of this record):** bun 1.3.13 / node 24.18.0 / moon 2.4.2 /
   go 1.26.5 (.prototools:6-13); biome 2.5.4 (biome.json:2, bun.lock:237);
   vite port 5173 strictPort (apps/ui/vite.config.ts:11); dev-http door 50051,
-  TLS network door 50052 (devenv.nix:260,265).
+  TLS network door 50052 (devenv.nix:275,265).
 - **Never-heavy-on-up:** nothing added to `devenv up` may pull a heavy
   closure (the precedent: `dogfood:agent-image` is deliberately opt-in,
-  devenv.nix:397-400).
+  devenv.nix:412-415).
 - **Port ownership:** devenv is the single owner of allocated port numbers
   (`config.processes.compass-server.ports.*`); no second hardcoded copy —
   consumers take them via process env.
@@ -426,7 +426,7 @@ carries no proxy work.)
   verify `curl -X POST
   http://127.0.0.1:50051/compass.v1.CompassService/GetServerInfo
   -H 'Content-Type: application/json' -d '{}'` answers (the same probe the
-  readiness check uses, devenv.nix:288-294), and a browser session loads
+  readiness check uses, devenv.nix:303-309), and a browser session loads
   the board and holds a live `SubscribeEvents` stream (the browser dials
   the door directly; no middlebox in the path).
 
@@ -564,8 +564,8 @@ co-edits the compass-server process attr T4 unguards (darwin variance via
 guard move; both tasks' interfaces acknowledge the co-edit).
 
 - **Interfaces:** consumes `podman machine ssh/inspect`, the token file
-  `${config.devenv.state}/compass/runner.token` (devenv.nix:328,383), the
-  trust anchor `tls.crt` (devenv.nix:332), and the network door on port
+  `${config.devenv.state}/compass/runner.token` (devenv.nix:343,383), the
+  trust anchor `tls.crt` (devenv.nix:347), and the network door on port
   50052 at the spike-resolved VM-reachable host address (the exact address
   and its discovery method are the opening spike's outputs, not assumed
   here); produces a new `compass-gen-cert` flag `--san` (string,
