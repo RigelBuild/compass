@@ -107,7 +107,7 @@ lockfile a level up (§(b) step 0):
 | `<id>/vmm.pid` | cloud-hypervisor | host (`launch`) |
 | `<id>/virtiofsd.pid` | virtiofsd | host (`launch`) |
 | `<id>/passt.pid` | passt | host (`launch`) |
-| `.runner.lock` | (none — the RunRoot owner's `flock`) | host (`lockRunRoot`) |
+| `.runner.lock` | (none — the RunRoot owner's `flock`) | host (`lockRunRoot`, called by `run()`); created once, NEVER unlinked (§(b) step 0) |
 
 passt's `--pid` flag is retired: with `-f` in the argv "this *exec.Cmd IS the
 passt process" (`launch.go:182-191`), so the host knows passt's pid exactly as
@@ -216,7 +216,7 @@ one goroutine per child owning exactly one cmd.Wait", PR #912
 `launch.go:460-465`; the single `c.cmd.Wait()` at PR #912 `launch.go:493`
 stays the package's only Wait, verified by grep this session).
 
-### (b) `ReapOrphans(ctx) error`: kill-and-remove at startup, never adopt
+### (b) `ReapOrphans(ctx, held) error`: kill-and-remove at startup, never adopt
 
 The parent is explicit: "on startup the backend reaps orphaned
 VMM/virtiofsd/net-backend processes by their per-session runtime dir …
@@ -227,46 +227,77 @@ honors that verbatim — the reaper has no adoption path, no health probe, no
 attempt to re-dial a found VM's vsock socket.
 
 ```go
-// ReapOrphans takes the exclusive RunRoot lock (step 0 — refused ⇒ error,
-// no scan), then scans <RunRoot>/microvm/*/ for runtime dirs left by a
+// ReapOrphans REQUIRES the exclusive RunRoot lock to be held already: the
+// token comes from lockRunRoot, taken once by run()/startup (step 0). A
+// zero token is an error with NO scan and NO signal — the reaper never
+// acquires the lock itself, so it structurally cannot scan unlocked and
+// stays safely re-invocable within one process. Past that it scans
+// <RunRoot>/microvm/*/ for runtime dirs left by a
 // previous Runner process, kills every recorded process that is verifiably
 // the one the pidfile named (boot id + pid + starttime match), and removes
 // the dir. Healthy VMs are killed, never adopted (microvm-runner.md:258-261).
 // Idempotent and safe to re-run: a partial reap leaves the dir for the next
 // attempt.
-func (m *MicroVMRuntime) ReapOrphans(ctx context.Context) error
+func (m *MicroVMRuntime) ReapOrphans(ctx context.Context, held RunRootLock) error
 ```
 
-**Step 0 — the RunRoot lock, a DELIVERED mechanism, not an assumption.**
-Before any scan, `ReapOrphans` takes an exclusive non-blocking `flock` on a
-lockfile at the RunRoot root and holds it for the Runner's life. This is a
-W2 deliverable in its own right, not a property inherited from OQ-8's
+**Step 0 — the RunRoot lock, a DELIVERED mechanism, not an assumption,
+owned by the STARTUP unit.** An exclusive non-blocking `flock` on a
+lockfile at the RunRoot root is taken ONCE by `run()`
+(`go/cmd/compass-runner/main.go:43`) through W5's `startup` unit, ahead of
+the reap hook, and released by a `defer` that runs at process shutdown —
+so it is genuinely held for the Runner's life. `ReapOrphans` does NOT
+acquire it; it REQUIRES the held-lock token as a parameter and refuses
+without one. This is a W2 deliverable in its own right, not a property
+inherited from OQ-8's
 recommendation: the reaper's whole defense against killing a second live
 Runner's sessions is this lock, and a safety property that exists only as
 an Open Question's preference is not implemented. OQ-8 still rules on WHICH
 mechanism; the body ships one so that W1-W5 implemented verbatim cannot
 produce a reaper with no cross-process exclusion at all.
 
+**Why the startup unit and not `ReapOrphans`.** Two reasons, both
+structural rather than stylistic. First, a lock the reaper acquires cannot
+be held for the Runner's life: its release func would have to outlive the
+call that returned it, and `ReapOrphans` returning while still holding a
+lock it hands to a caller is exactly the shape that makes "who releases
+this" unanswerable. Second, `flock` conflicts across distinct open file
+descriptions — including two opens of the same file within ONE process —
+so a second `ReapOrphans` call in one process would refuse ITSELF with
+EWOULDBLOCK. Step 1 below designs explicitly for repeat invocation, so
+reaper-owned acquisition would freeze a reaper that is designed to be
+re-invocable behind a lock guaranteeing it cannot be. Taking the token as
+a parameter gives both properties at once: the reaper structurally cannot
+scan unlocked, AND it is callable as many times as the process likes.
+
 ```go
 // lockRunRoot takes LOCK_EX|LOCK_NB on <RunRoot>/microvm/.runner.lock and
-// returns the release func. Refuse-not-wait: EWOULDBLOCK means another
-// Runner owns this RunRoot, and ReapOrphans returns that error WITHOUT
-// scanning a single dir — a scan there would kill live sessions whose §(a)
-// identity check matches perfectly. The lock is held for the Runner's life
-// (release runs at shutdown), and the kernel drops it on ANY holder death,
-// SIGKILL included, so a crashed Runner never wedges its successor. That
-// release-on-death property is why OQ-8 recommends flock over a recorded
-// (pid, starttime, bootid) owner file: the lock IS liveness, with no stale
-// record to reason about.
-func (m *MicroVMRuntime) lockRunRoot() (release func(), err error)
+// returns the held-lock token plus the release func. Refuse-not-wait:
+// EWOULDBLOCK means another Runner owns this RunRoot; startup then WARNs
+// and SKIPS the reap hook, so not a single dir is scanned — a scan there
+// would kill live sessions whose §(a) identity check matches perfectly.
+// ITS SOLE CALLER IS run()/startup, which acquires once and defers the
+// release, so the lock is held for the Runner's life and the kernel drops
+// it on ANY holder death, SIGKILL included: a crashed Runner never wedges
+// its successor. That release-on-death property is why OQ-8 recommends
+// flock over a recorded (pid, starttime, bootid) owner file: the lock IS
+// liveness, with no stale record to reason about.
+//
+// The release CLOSES the fd and NEVER unlinks the file. The lockfile is
+// created once and lives forever, because two Runners flocking two
+// DIFFERENT inodes of the same path is indistinguishable from no lock at
+// all — no reap arm, cleanup path, or preflight probe may remove it.
+func (m *MicroVMRuntime) lockRunRoot() (held RunRootLock, release func(), err error)
 ```
 
 **What a refused lock does to startup is a sub-fork, and it is OQ-5's, not
 OQ-8's.** OQ-8's option (i) is worded "a second Runner fails the lock and
 refuses startup", while OQ-5 rules that a reap failure is a WARN and never
-an abort — and a refused lock arrives as a `ReapOrphans` error, so the two
-wordings collide. The body takes OQ-5's arm: WARN and continue, having
-scanned NOTHING. The reasoning is that the lock's job is preventing the
+an abort. With the lock owned by `startup`, a refused lock surfaces one
+step earlier than a `ReapOrphans` error — at the `lockRunRoot` hook — so
+the arm is stated there: WARN, SKIP the reap hook entirely, continue
+serving, having scanned NOTHING (the reaper cannot run without the token).
+The reasoning is that the lock's job is preventing the
 wrong reap, which a refused lock has already accomplished; the second
 Runner's own sessions are freshly-minted ids in fresh dirs
 (`mintSessionID`, `microvm_lifecycle.go:332-341`) and cannot collide with
@@ -292,9 +323,12 @@ rather than inheriting. Both OQs should be ruled in one pass.
    no-pidfile arm below therefore does NOT remove such a dir (see 3).
    This guard is INTRA-process only: it cannot see a SECOND live Runner's
    sessions over the same RunRoot, whose processes would pass the §(a)
-   identity check and be killed with full confidence. Step 0's RunRoot lock
-   is what makes that unreachable; OQ-8 (load-bearing) rules on the
-   mechanism, and the body ships `lockRunRoot` as the one it designs
+   identity check and be killed with full confidence. Step 0's RunRoot
+   lock — held by `startup`, its token required here — is what makes that
+   unreachable, and because the reaper takes the token rather than
+   acquiring it, this repeat-invocation path is genuinely open (a second
+   in-process `flock` would refuse itself). OQ-8 (load-bearing) rules on
+   the mechanism, and the body ships `lockRunRoot` as the one it designs
    against. If the human rules OQ-8 another way, THIS clause changes with
    it — the reaper never scans without some cross-process exclusion in
    hand.
@@ -309,7 +343,16 @@ rather than inheriting. Both OQs should be ruled in one pass.
    previous boot survives a reboot — with no proc read and no signal (the
    §(a) cross-reboot defense). Same boot: read `/proc/<pid>/stat`; on
    starttime match, SIGTERM, poll for disappearance (starttime re-check)
-   up to the package's `reapGrace` (5s, `launch.go:45-47`), then SIGKILL
+   up to `orphanReapGrace = 5 * time.Second`, a reaper-local constant in
+   package `runtime` mirroring package `microvm`'s unexported `reapGrace`
+   ("how long Shutdown waits for a SIGTERM'd auxiliary daemon
+   (virtiofsd/passt) to exit before escalating to SIGKILL" /
+   `const reapGrace = 5 * time.Second`, `launch.go:45-47`). The microvm
+   constant is NOT referenceable from here — `launch.go:3` is
+   `package microvm` while `microvm_lifecycle.go:3` is `package runtime` —
+   so the reaper names its own, deliberately equal in value and declared
+   beside `orphanDirGrace` (see 3) so one place answers the package
+   question for both graces. Then SIGKILL
    and poll again; `ctx` bounds the whole SIGTERM → grace → SIGKILL
    escalation (checked between polls), and a cancellation leaves the dir
    in place behind a named per-dir error. Signal errors are
@@ -356,21 +399,38 @@ rather than inheriting. Both OQs should be ruled in one pass.
      is an organic under-recording path atomicity cannot touch (§(a)) — the
      two are different failures and OQ-7 rules on them separately.
    - **A dir with NO pidfiles at all**, younger than a small grace
-     (mtime ≤ `orphanDirGrace = 1m`), which may be a concurrent `Create`'s
-     pre-insert window (see 1). Older than the grace it is removed, per
-     OQ-7's recommendation.
+     (mtime ≤ `orphanDirGrace = time.Minute`), which may be a concurrent
+     `Create`'s pre-insert window (see 1). Older than the grace it is
+     removed, per OQ-7's recommendation. Like `orphanReapGrace` (see 2)
+     this is a reaper-local constant in package `runtime`, declared
+     beside it.
 
-**Call site.** `main.go` runs it once at startup, after the backend-gated
-preflight, via a fourth unexported single-method probe interface in
+**Call site.** `run()` (`go/cmd/compass-runner/main.go:43`), through W5's
+`startup` unit, takes the RunRoot lock (step 0) and then runs the reap
+once, after the backend-gated preflight, via two unexported single-method
+probe interfaces in
 `package main` — the V3/V4-ratified discipline the existing three probes
 follow (`microVMPreflighter`/`podmanPreflighter`/`canaryBooter`,
 `go/cmd/compass-runner/main.go:185-203`):
 
 ```go
-type orphanReaper interface{ ReapOrphans(ctx context.Context) error }
+type runRootLocker interface {
+    lockRunRoot() (runtime.RunRootLock, func(), error)
+}
+type orphanReaper interface {
+    ReapOrphans(ctx context.Context, held runtime.RunRootLock) error
+}
 ```
 
-A reap failure is a startup WARNING, not an abort (OQ-5): the un-reaped
+Two probes rather than one widened interface, per that same discipline,
+and in that order: the lock is acquired first and its release goes into
+the shutdown closure `run()` `defer`s, so it outlives the reap and covers
+the process's life. An engine implementing neither (podman) skips both.
+
+A refused lock is a startup WARNING that SKIPS the reap entirely (OQ-5,
+OQ-8's sub-fork): nothing is scanned, which is the outcome the lock exists
+to produce. A reap failure past the lock is likewise a WARNING, not an
+abort (OQ-5): the un-reaped
 processes hold stale resources but cannot corrupt new sessions — every new
 session gets a fresh random id and dir (`mintSessionID`,
 `microvm_lifecycle.go:332-341`), so nothing collides; refusing startup would
@@ -406,14 +466,17 @@ const (
 
 // DeathWatch returns a channel that receives one DeathCause per child death
 // among the VMM, virtiofsd, and passt, and closes once every watched child
-// that can still die has died. SINGLE-CONSUMER: each send is drained by
-// exactly one receiver, the session monitor below; a second receiver would
-// steal events and then observe only the close, reading the zero value
-// DeathCause(""). At most three sends occur, so the channel is buffered to
-// three and the internal goroutine never blocks on a monitor that has
-// stopped receiving after a fatal cause. The method cannot be unexported
-// instead — the monitor lives in package runtime and reaches it through the
-// guestVM seam (microvm_lifecycle.go:99-113) — so the contract is this
+// that can still die has died — and that CLOSE is the consumer's
+// termination signal: the monitor ranges over this channel, so it exits
+// when the channel does (see the monitor below). SINGLE-CONSUMER: each
+// send is drained by exactly one receiver, the session monitor below; a
+// second receiver would steal events and then observe only the close,
+// reading the zero value DeathCause(""). At most three sends occur, so
+// the channel is buffered to three and the internal goroutine never
+// blocks on a monitor that has stopped receiving after a fatal cause.
+// The method cannot be unexported instead — the monitor lives in package
+// runtime and reaches it through the guestVM seam
+// (microvm_lifecycle.go:99-113) — so the contract is this
 // comment plus the hermetic test, not visibility. It observes the children
 // through their sole reapers' exited channels — it never calls Wait — so
 // the one-reaper-per-child invariant holds.
@@ -431,17 +494,26 @@ all three channels.
 locked critical section that transfers ownership to the session table
 (`session.vm = vm` … `booted = false`, `microvm_lifecycle.go:401-415`),
 increments the session's `epoch`, captures that value, and spawns one
-monitor goroutine carrying it. The loop receives from `DeathWatch()` and,
-under `m.mu`, applies two gates before acting: the death must belong to the
-CURRENT VM life (`session.epoch == myEpoch`) and must not be a deliberate
-teardown (`!session.tearingDown`). A stale-epoch event is discarded and the
-monitor returns; a deliberate teardown's exit is discarded silently.
+monitor goroutine carrying it. The monitor RANGES over the channel — `for
+cause := range vm.DeathWatch()` — so the channel's CLOSE is its
+termination, on every path: every watched child is dead, so there is
+nothing left to observe. That is the only exit on the non-fatal passt
+path, and a `for { cause := <-ch }` loop would instead spin forever on
+the zero value `DeathCause("")` a closed channel yields, one goroutine
+per session that ever saw a passt death.
+
+For each received cause, under `m.mu`, two gates apply before acting: the
+death must belong to the CURRENT VM life (`session.epoch == myEpoch`) and
+must not be a deliberate teardown (`!session.tearingDown`). A stale-epoch
+event is discarded and the monitor returns; a deliberate teardown's exit
+is discarded silently and the loop continues to the close.
 
 Past those gates the cause decides:
 
 - `DeathPasst` — log INFO, count `peer.deaths{process=passt}`, and CONTINUE
   receiving. Not fatal, but never unobserved (§(c) deviation note below).
-- `DeathVMM` / `DeathVirtiofsd` — record `deadCause` on the session and run
+- `DeathVMM` / `DeathVirtiofsd` — record `deadCause` AND
+  `deadEpoch = myEpoch` on the session and run
   the one teardown path that already exists, `vm.Shutdown` ("the VMM is
   killed first … then virtiofsd and passt are reaped … and finally the
   AF_UNIX sockets and passt's pidfile are removed", `launch.go:352-357`) —
@@ -459,10 +531,23 @@ State on `microvmSession` (all under `m.mu`, the existing discipline —
 `microvm_lifecycle.go:141-144`):
 
 ```go
-// deadCause is non-empty once the monitor observed a mid-session child death
-// and tore the session down; read by Exec/ExecStreaming/Start to refuse with
-// a *SessionDeadError.
+// deadCause names which child's mid-session death tore the session down —
+// non-empty only alongside deadEpoch. THE REFUSE CONDITION, stated once
+// and referenced everywhere else in this record:
+//
+//     session.deadCause != "" && session.deadEpoch == session.epoch
+//
+// Exec and ExecStreaming (through startedExec) are the only readers, and
+// they refuse with a *SessionDeadError. Stop, Remove and Start never
+// refuse: teardown must always be accepted, and Start's whole job is to
+// begin the NEXT life.
 deadCause microvm.DeathCause
+// deadEpoch is the epoch deadCause belongs to. It is what scopes the READ
+// side per VM life, exactly as epoch already scopes the monitor's write
+// side: without it a death in life #1 would refuse execs forever in life
+// #2, since Stop is a no-op success that leaves deadCause set and Start
+// only bumps the epoch.
+deadEpoch uint64
 // epoch identifies the session's CURRENT VM life. Start increments it in the
 // same locked critical section that stores the new VM
 // (microvm_lifecycle.go:401-415) and hands the new value to that VM's
@@ -475,6 +560,23 @@ epoch uint64
 // teardown's exit from a crash. Start clears it alongside the epoch bump.
 tearingDown bool
 ```
+
+**Why the read side needs its own stamp, and why not "`Start` clears
+`deadCause`".** Clearing on `Start` would work only if every path into a
+second life went through it with the session lock held and nothing else
+could observe the field in between — but the record's own teardown shape
+makes clearing the strictly weaker choice: `Stop` on a dead session is a
+no-op success that returns BEFORE any `Start`, and `Remove` is
+specified to OBSERVE and report `deadCause` after the fact. A clear-on-
+`Start` design therefore has to promise both "the cause survives for
+`Remove`" and "the cause is gone by the next `Exec`", which are the same
+field in two states. The `deadEpoch` stamp needs no such promise: the
+cause stays readable for `Remove` forever, and the comparison against
+the CURRENT epoch is what makes it inert for life #2. It also matches
+the write side one-for-one — the same `uint64` under the same lock,
+gating reads exactly as `epoch` gates writes — so there is one
+generation concept in this design, not two mechanisms with a seam
+between them.
 
 **Why an epoch and not the boolean alone.** A boolean describes the SESSION
 while a death describes a specific VM, and one session can have two VM lives
@@ -527,21 +629,22 @@ type SessionDeadError struct {
 func (e *SessionDeadError) Error() string
 ```
 
-Two paths produce it: (i) `Exec`/`ExecStreaming` entered after the death
-check `deadCause` under the lock (extending `startedExec`,
+Two paths produce it: (i) `Exec`/`ExecStreaming` entered after the refuse
+condition (above) tests TRUE under the lock (extending `startedExec`,
 `microvm_lifecycle.go:742-756`) and refuse immediately; (ii) an exec already
 in flight when the VM dies fails with a transport error from the broken
 vsock stream — `Exec`'s error arm (the non-timeout branch,
-`microvm_lifecycle.go:486-495`) re-checks `deadCause` under the lock and,
-when the monitor has not yet taken it (the death may be microseconds old),
-probes the VMM directly via the seam's `VMMExited()` — a nil-safe export of
-the VMM child's `hasExited()`, a non-blocking read of the sole reaper's
-channel, "NOT a signal-0 probe" (PR #912 `launch.go:96-107`) — and wraps the
-transport error in `*SessionDeadError` on either signal, so the caller sees
-the cause, not connection noise (`deadCause` when recorded; `"vmm"` from the
-direct probe, attributable because the VMM serves the vsock transport). The
-residual window — virtiofsd freshly dead, the VMM not yet killed by the
-monitor, the in-flight exec failing anyway — stays best-effort by design:
+`microvm_lifecycle.go:486-495`) re-tests the same condition under the lock
+and, when the monitor has not yet taken it (the death may be microseconds
+old), probes the VMM directly via the seam's `VMMExited()` — a nil-safe
+export of the VMM child's `hasExited()`, a non-blocking read of the sole
+reaper's channel, "NOT a signal-0 probe" (PR #912 `launch.go:96-107`) —
+and wraps the transport error in `*SessionDeadError` on either signal, so
+the caller sees the cause, not connection noise (`deadCause` when
+recorded; `"vmm"` from the direct probe, attributable because the VMM
+serves the vsock transport). The residual window — virtiofsd freshly
+dead, the VMM not yet killed by the monitor, the in-flight exec failing
+anyway — stays best-effort by design:
 that one caller sees the raw transport error, and every subsequent call
 refuses with the fully-attributed error via (i). `errors.As` reaches
 `*SessionDeadError` through the wrap chain either way.
@@ -579,9 +682,12 @@ nil }`, `microvm_lifecycle.go:600-617`).
 So `Stop` on a dead session is a NO-OP SUCCESS, the same arm as
 never-started: the monitor has already run `vm.Shutdown`, the VMM is gone,
 the peers are reaped and the sockets removed, so there is nothing left for
-`Stop` to do and nothing to report as a failure. `deadCause` stays set for
-`Remove` to observe and report, exactly as before. Teardown is the one
-operation a dead session must never refuse.
+`Stop` to do and nothing to report as a failure. `deadCause`/`deadEpoch`
+stay set for `Remove` to observe and report, exactly as before — and a
+later `Start` bumps `epoch` past `deadEpoch`, which is what makes the
+stale cause inert for the second life without ever clearing it (the
+refuse condition, above). Teardown is the one operation a dead session
+must never refuse.
 
 **Idempotent Remove, unchanged.** `Remove` already tolerates a dead VM:
 `vm.Shutdown` is `sync.Once`-guarded ("safe to call twice",
@@ -646,10 +752,10 @@ nil-guarded and off the hot path's critical section.
 | OTel name | Instrument | Unit | Attributes | Meaning |
 | --- | --- | --- | --- | --- |
 | `compass.microvm.boot.duration` | Float64Histogram | `s` | `outcome` = `ok`\|`error` | Wall time of `Start` (Launch → Health-OK → nonce → Provision), the "VMM start → supervisor handshake" latency; same basis as `CanaryReport.BootLatency` (`microvm_preflight.go:351-355`) |
-| `compass.microvm.teardowns` | Int64Counter | `{teardown}` | `cause` = `remove`\|`stop`\|`vmm_death`\|`virtiofsd_death`\|`orphan_reap` | Session teardowns by cause; the `virtiofsd_death` series IS the parent's "virtiofsd restarts" number (OQ-4: under §(f)'s fatal-no-restart posture a virtiofsd death is a session teardown, never a restart) |
+| `compass.microvm.teardowns` | Int64Counter | `{teardown}` | `cause` = `remove`\|`stop`\|`vmm_death`\|`virtiofsd_death` | Session teardowns by cause; the `virtiofsd_death` series IS the parent's "virtiofsd restarts" number (OQ-4: under §(f)'s fatal-no-restart posture a virtiofsd death is a session teardown, never a restart). A reaped orphan is NOT a cause here — it is a previous Runner process's leftover, not a session this process ever had, and `compass.microvm.orphans.reaped` already carries that number with richer attributes; conflating them would corrupt the one series an operator uses to count session deaths |
 | `compass.microvm.vsock.rpc.duration` | Float64Histogram | `s` | `rpc` = `exec`\|`health`\|`provision`\|`signal`, `outcome` = `ok`\|`error` | Host-side wall time of guest control-plane RPCs, recorded in `Exec`/`awaitHealthy`/`Start`'s Provision/`stopGuest` (`microvm_lifecycle.go:476-502,426-458,393-399,641-650`) |
 | `compass.microvm.guest.memory.pss` | Int64ObservableGauge | `By` | `process` = `vmm`\|`virtiofsd`\|`passt` | Sum over live sessions of per-process PSS via the existing `VM.PSS()` ("PSS, NOT summed VmHWM … PSS divides shared pages among their mappers", PR #912 `launch.go:663-668`), summed per process kind so no per-session label exists; kB→bytes at record |
-| `compass.microvm.quota.used.ratio` | Float64ObservableGauge | `1` | none | Observed byte utilization of the session-volume quota, read from `m.lastQuota` (the preflight-time snapshot; see below) and recorded ONLY when that reading's `Active()` is true — V6's single-meaning discipline ("the caller must gate on Active() … V7 inherits a single-meaning number", PR #912 `microvm_quota.go:138-145`); silent (no point) when inactive or unset |
+| `compass.microvm.quota.used.ratio` | Float64ObservableGauge | `1` | none | Observed byte utilization of the session-volume quota, read from `m.lastQuota` (the preflight-time snapshot; see below) and recorded ONLY when that reading's `LimitBytes > 0` — the condition under which `UsedRatio()` is meaningful, which is NOT `Active()` (see below); V6's single-meaning discipline ("the caller must gate on Active() … V7 inherits a single-meaning number", PR #912 `microvm_quota.go:138-145`) applied to the number actually emitted; silent (no point) for a zero-value snapshot and for an inode-only active quota |
 | `compass.microvm.canary.runs` | Int64Counter | `{run}` | `outcome` = `ok`\|`error` | Boot-canary executions by outcome — the parent's `compass_microvm_canary_ok` as a countable series |
 | `compass.microvm.orphans.reaped` | Int64Counter | `{process}` | `process` = `vmm`\|`virtiofsd`\|`passt`, `outcome` = `killed`\|`possibly_live` | Orphan processes killed by `ReapOrphans`; the `possibly_live` series counts §(b) step 3's dangling-intent arm, where a child may be running with no pid on disk |
 | `compass.microvm.peer.deaths` | Int64Counter | `{death}` | `process` = `passt` | Non-fatal peer-daemon deaths observed by the session monitor (§(c)): the net backend's death is reported, never a teardown |
@@ -661,6 +767,13 @@ frozen text). The body assumes OQ-9's recommendation: the aggregate gauge
 stays, per-session PSS rides a low-frequency INFO log line (logs are exempt
 from the cardinality rule, below), and V8's benchmark sources per-VM
 numbers from the harness calling `PSS()` directly, never from a metric.
+That log line is a NAMED W4 deliverable, not an assumption — the
+`microvm session memory` sampler below — because it is the ONLY
+runaway-VM identification signal V7 ships: the aggregate gauge cannot
+name a session and V8's benchmark path is explicitly no-metric. Under an
+OQ-9 (i)-only ruling the sampler is dropped and V7 then ships NO
+runaway-identification signal at all; that is the visible consequence of
+that ruling, not a silent gap.
 
 Every attribute value is drawn from a closed enumeration named in this table;
 no session id, container name, or path ever becomes a label. The observable
@@ -697,11 +810,30 @@ invent one. V7 names it:
   utilization when this Runner started", which is what a V7 mechanism
   slice can honestly deliver; a live-tracking gauge needs a refresh policy
   and a staleness bound that V8's measurement work is the place to set.
-- **Inactive or unset ⇒ no point emitted.** A zero-value `lastQuota` (the
-  preflight skipped, or no volume root configured) has `Active() == false`
-  by construction (`Active` requires `LimitBytes > 0 && FilesystemBytes >
-  0`, PR #912 `microvm_quota.go:117-125`), so the same gate covers both
-  cases with no extra flag.
+- **A meaningless RATIO ⇒ no point emitted, and the gate is
+  `LimitBytes > 0` — NOT `Active()`.** `UsedRatio` short-circuits to a
+  hard `0` when `LimitBytes <= 0` ("Zero when no limit was observed" /
+  `if r.LimitBytes <= 0 { return 0 }`, PR #912
+  `microvm_quota.go:134-153`), so `LimitBytes > 0` is exactly the
+  condition under which the number means anything. `Active()` is a
+  DIFFERENT question — is there a bound at all — and answers it over TWO
+  INDEPENDENT arms: a byte arm requiring
+  `LimitBytes > 0 && FilesystemBytes > 0 && LimitBytes < FilesystemBytes`,
+  and, reached when that arm is false, an inode arm returning
+  `LimitInodes < FilesystemInodes - FilesystemInodes/inodeMarginDivisor`
+  (PR #912 `microvm_quota.go:117-125`; V6 keeps the inode arm
+  deliberately independent — "an inode-only project quota … is a real
+  bound, and gating would read it as absent", PR #912
+  `microvm_quota.go:110-112`). So an inode-only projected quota is ACTIVE
+  with `LimitBytes == 0`, and an `Active()`-gated gauge would emit
+  `quota.used.ratio = 0` there — indistinguishable from an empty volume,
+  and precisely the silently-wrong denominator V6's DUAL MEANING comment
+  exists to prevent. Under the `LimitBytes > 0` gate an inode-only active
+  quota emits NO byte-ratio point; an inode-utilization series, if ever
+  wanted, is its own row with its own denominator, not this one.
+  A zero-value `lastQuota` (the preflight skipped, or no volume root
+  configured) fails this gate too, so the same condition still covers
+  both cases with no extra flag.
 
 A monotonic gauge is a real limitation, stated rather than hidden: if V8
 wants live utilization it adds the refresh, and this row's meaning changes
@@ -728,8 +860,9 @@ values, resolved once: the host asks its engine which backend it is via an
 unexported single-method probe (`interface{ BackendName() string }`, the same
 discipline as `main.go`'s probes) at construction, never per-call.
 
-**INFO transition logs.** Boot and teardown transitions log at INFO with
-session id and timings (parent, microvm-runner.md:268): `Start` logs
+**INFO transition logs, plus the one PERIODIC line.** Boot and teardown
+transitions log at INFO with session id and timings (parent,
+microvm-runner.md:268): `Start` logs
 `microvm session booted` (`session_id`, `boot_duration`); the monitor logs
 `microvm session died` (`session_id`, `cause`, `uptime`) on a fatal cause
 and `microvm session peer died` (`session_id`, `process`, `uptime`) on the
@@ -740,6 +873,23 @@ per dangling-intent dir naming the child (§(b) step 3). Session id in LOGS
 is fine — the cardinality rule constrains metric labels, not log fields
 (the delivery consumer meters without ids, `dispatch.go:379-383`, while
 carrying them in the adjacent WARN, `dispatch.go:392-393`).
+
+One line is NOT a transition, and it is the OQ-9(ii) deliverable: a
+periodic `microvm session memory` (`session_id`, `vmm_pss_kb`,
+`virtiofsd_pss_kb`, `passt_pss_kb`) emitted per live session on a
+`pssSampleInterval = 60 * time.Second` tick from one goroutine started in
+`NewMicroVMRuntime`. It is the per-session counterpart of the aggregate
+PSS gauge, and it is what makes a runaway VM identifiable at all
+(§(d)'s gauge is fleet-summed by construction). It reads the same
+`VM.PSS()` — a `map[string]int64` keyed by child name, in kB (PR #912
+`launch.go:663-669`) — under the same discipline as the gauge callback:
+snapshot the session/VM pairs under `m.mu`, RELEASE the lock, then walk
+`smaps_rollup` outside it, so the sampler adds no `m.mu` hold beyond a
+slice copy per minute. Best-effort like the gauge: a missing key is a
+dropped field, never an error, and a session torn down between snapshot
+and read contributes nothing. The interval is a named constant rather
+than a knob — V7 ships the mechanism, and V8's measurement work is where
+a sampling rate would earn tuning.
 
 **Meter-setup ordering (OQ-3).** `main.go` today installs the meter provider
 AFTER the whole engine-and-preflight block: `engine, err :=
@@ -858,6 +1008,34 @@ about instrument validity.
   (`mintSessionID`, `microvm_lifecycle.go:332-341`); an abort converts one
   wedged process into a box-wide refusal with no operator gain over a loud
   WARN + next-startup retry. Rejected.
+- **`ReapOrphans` acquiring the RunRoot lock itself** ((b), OQ-8). The
+  shape an earlier draft specified in four places at once. It cannot hold
+  the lock for the Runner's life (the release func outlives the call that
+  returned it, with no defined owner), and — decisively — a SECOND
+  in-process `ReapOrphans` refuses itself with EWOULDBLOCK, because
+  `flock` conflicts across distinct open file descriptions including two
+  opens of one file within one process. §(b) step 1 designs explicitly
+  for repeat invocation, so this shape freezes a reaper that is designed
+  to be re-invocable behind a lock guaranteeing it cannot be. Rejected in
+  favor of `run()`/`startup` acquiring once and passing the token.
+- **`Start` CLEARING `deadCause` instead of a `deadEpoch` stamp** ((c)).
+  Simpler-looking, and it matches how `tearingDown` is handled, but it
+  puts one field in two contradictory duties: `Remove` is specified to
+  OBSERVE and report `deadCause` after a death, while a clear-on-`Start`
+  design needs it gone before the next `Exec` — and `Stop`-on-dead is a
+  no-op success that returns before any `Start` runs, so there is no
+  single moment where both promises hold. The `deadEpoch` stamp needs
+  neither promise: the cause stays readable forever and the comparison
+  against the CURRENT epoch makes it inert for the next life. It also
+  keeps ONE generation concept in the design, gating reads exactly as
+  `epoch` gates writes. Rejected.
+- **A bare `for { cause := <-vm.DeathWatch() }` monitor loop** ((c)).
+  Adequate while `DeathWatch` closed after one fatal send, but the
+  `DeathPasst` arm (OQ-6) made the channel multi-send and its consumer
+  long-lived, and a receive on a closed channel yields the zero value
+  `DeathCause("")` forever — a full-CPU spin, one goroutine per session
+  that ever saw a passt death. `for cause := range …` makes the close the
+  termination on every path. Rejected.
 
 ## Global Constraints
 
@@ -875,11 +1053,26 @@ Every task below inherits these.
   observation goes through `c.exited`/`hasExited` (PR #912
   `launch.go:83-105,460-465`); no V7 code calls `Wait`, and `ReapOrphans`
   operates on non-child processes via proc-probe + signal only.
-- **The reaper NEVER scans without the RunRoot lock in hand.** `ReapOrphans`
-  acquires `lockRunRoot` before touching a single dir and returns the
-  refusal error otherwise; no code path, test seam, or fake may bypass it
-  (§(b) step 0). This is the one invariant standing between the §(a)
+- **The reaper NEVER scans without the RunRoot lock in hand, and never
+  takes it itself.** `run()` (`go/cmd/compass-runner/main.go:43`), through
+  W5's `startup` unit, acquires `lockRunRoot` ONCE before the reap hook
+  and `defer`s the release for the process's life; `ReapOrphans` accepts
+  the held-lock token and refuses — no scan, no signal — without it. That
+  is the ONE owner, named identically at §(b) step 0, the `ReapOrphans`
+  doc comment, W2's Interfaces, W5's Interfaces, the `## Tasks` bullets
+  and OQ-8. No code path, test seam, or fake may bypass it, and the
+  reaper may not acquire it even as a fallback: a second `flock` from the
+  same process refuses itself, which would break the re-invocability §(b)
+  step 1 designs for. This is the one invariant standing between the §(a)
   identity check and a confident kill of a live Runner's sessions.
+- **The lockfile is created once and NEVER unlinked.** Release closes the
+  fd only; no reap arm, cleanup path, or preflight probe may remove
+  `<RunRoot>/microvm/.runner.lock`. Two Runners holding flocks on two
+  different inodes is indistinguishable from no lock at all, and the run
+  root is not inviolate in this tree — the preflight already creates and
+  `os.RemoveAll`s `<RunRoot>/microvm/.preflight` at every startup
+  (`microvm_preflight.go:177-183`) — so the prohibition has to be stated
+  rather than assumed.
 - **The on-disk record never UNDER-names a live child.** `launch` writes
   each child's intent record before its spawn and settles it after, so a
   crash at any instant leaves a dir naming every process it may have
@@ -927,7 +1120,10 @@ causes and W2's reap outcomes; W5 (startup wiring + Runner-host counter)
 consumes W2 and W4. W2 carries TWO deliverables that must land together —
 `lockRunRoot` and `ReapOrphans` — because a reaper without the lock is the
 live-session-killing scan OQ-8 exists to prevent; do not split them across
-PRs.
+PRs. The lock's ACQUISITION is W5's (`run()`/`startup` owns it, §(b) step
+0), so W2 must land before or with W5: a `ReapOrphans` requiring a token
+nobody yet mints is not callable, which is the intended direction of that
+dependency.
 
 ### W1 — host-written pidfiles with boot-id + starttime identity (hermetic + KVM)
 
@@ -989,48 +1185,75 @@ boots.
 The §(b) reaper. Depends on W1's file format.
 
 - **Interfaces:** produces
-  - `func (m *MicroVMRuntime) lockRunRoot() (release func(), err error)` in
+  - `func (m *MicroVMRuntime) lockRunRoot() (held RunRootLock, release func(), err error)` in
     `go/internal/runtime` (`//go:build unix`) — `syscall.Flock` with
     `LOCK_EX|LOCK_NB` on `<RunRoot>/microvm/.runner.lock` (created 0600,
-    the dir created if absent), returning the fd-closing release. On
+    the dir created if absent), returning the held-lock token plus the
+    fd-closing release. On
     `EWOULDBLOCK` it returns a named "another Runner owns this RunRoot"
-    error and NOTHING is scanned. Held for the Runner's life: `main.go`
-    acquires it once and defers the release, so the kernel drops it on any
-    holder death including SIGKILL (§(b) step 0, OQ-8). This is a NAMED
-    W2 deliverable, not an OQ-8 assumption — `ReapOrphans` must be
-    unable to scan without it;
-  - `func (m *MicroVMRuntime) ReapOrphans(ctx context.Context) error` in
-    `go/internal/runtime` (`//go:build unix`): take the RunRoot lock FIRST
-    (refused ⇒ return the error, scan nothing), then scan
+    error. **Its sole caller is `run()`/`startup`** (W5,
+    `go/cmd/compass-runner/main.go:43`), which acquires it ONCE ahead of
+    the reap hook and `defer`s the release for the process's life, so the
+    kernel drops it on any holder death including SIGKILL (§(b) step 0,
+    OQ-8). `ReapOrphans` never calls it — it takes the token. The release
+    CLOSES the fd and never unlinks the file: the lockfile is created
+    once and lives forever, because two Runners flocking two different
+    inodes is indistinguishable from no lock at all (§(b) step 0). This
+    is a NAMED W2 deliverable, not an OQ-8 assumption — `ReapOrphans`
+    must be unable to scan without it;
+  - `type RunRootLock` — an opaque non-nil token the lock hands out and
+    `ReapOrphans` requires, so "the lock is held" is a value an executor
+    cannot forget to check rather than a comment;
+  - `func (m *MicroVMRuntime) ReapOrphans(ctx context.Context, held RunRootLock) error` in
+    `go/internal/runtime` (`//go:build unix`): a ZERO `held` token is a
+    named error with NO scan and NO signal — the reaper never acquires
+    the lock itself, and structurally cannot scan without it; then scan
     `<RunRoot>/microvm/*/`; skip table-live dirs (under `m.mu`); per §(b)
-    kill VMM-first via SIGTERM → `reapGrace` poll → SIGKILL with boot-id
-    short-circuit and starttime re-verification before every signal; `ctx`
-    bounds the whole escalation loop (checked between polls; cancellation
-    ⇒ named per-dir error, dir kept); signal errors differentiated —
-    ESRCH benign (already gone, counts as confirmed-dead), EPERM a named
-    per-dir error with no blind retry and the dir kept; `os.RemoveAll`
-    fully-dead dirs; KEEP dirs holding a same-boot intent record (WARN +
+    kill VMM-first via SIGTERM → `orphanReapGrace` poll → SIGKILL with
+    boot-id short-circuit and starttime re-verification before every
+    signal; `ctx` bounds the whole escalation loop (checked between
+    polls; cancellation ⇒ named per-dir error, dir kept); signal errors
+    differentiated — ESRCH benign (already gone, counts as
+    confirmed-dead), EPERM a named per-dir error with no blind retry and
+    the dir kept; `os.RemoveAll` fully-dead dirs; KEEP dirs holding a
+    same-boot intent record (WARN +
     `orphans.reaped{outcome=possibly_live}`, no kill, no removal, no age
     gate); age-gate (`orphanDirGrace = time.Minute`) dirs with no readable
     pidfiles; join per-dir errors;
+  - two reaper-local constants in package `runtime`, beside each other so
+    the package question is answered once for both:
+    `const orphanReapGrace = 5 * time.Second` — mirroring package
+    `microvm`'s unexported `reapGrace` (`launch.go:45-47`, "how long
+    Shutdown waits for a SIGTERM'd auxiliary daemon … before escalating
+    to SIGKILL"), which `ReapOrphans` cannot reference: `launch.go:3` is
+    `package microvm` while `microvm_lifecycle.go:3` is `package runtime`
+    — and `const orphanDirGrace = time.Minute` (§(b) step 3, OQ-7). The
+    reaper is not the parent of these processes, so it polls rather than
+    `Wait`s; the value is deliberately kept equal to the parent-side
+    grace and neither constant is exported to the other package;
   - an injected probe seam
     `type reapProbes struct { readStat func(pid int) (uint64, error); signal func(pid int, sig syscall.Signal) error }`
     defaulted to the real proc/kill, overridden in hermetic tests. The lock
     is deliberately NOT seamed — a fake would defeat the one property the
     hermetic contention case must prove;
-  - `main.go`: `type orphanReaper interface{ ReapOrphans(ctx context.Context) error }`
-    probed after `verifyBackendPreflight` passes; a non-nil error is a
-    `slog.Warn` with the joined detail, never an abort (OQ-5) — a refused
-    lock included;
+  - `main.go`: `type orphanReaper interface{ ReapOrphans(ctx context.Context, held runtime.RunRootLock) error }`
+    and `type runRootLocker interface{ lockRunRoot() (runtime.RunRootLock, func(), error) }`,
+    both probed after `verifyBackendPreflight` passes and wired as W5's
+    `lockRunRoot` and `reap` hooks; a non-nil reap error is a `slog.Warn`
+    with the joined detail, never an abort (OQ-5), and a refused lock is
+    a `slog.Warn` that SKIPS the reap hook entirely;
   - consumes W1's `readPidfile`/`pidRecord.alive`.
 - **Test cycle:**
   - *Hermetic (fake probes, temp RunRoot):* a SECOND `lockRunRoot` over the
-    same RunRoot is REFUSED and the second `ReapOrphans` performs no scan
-    and issues no signal — asserted by planting a live-match pidfile that
-    the first holder's presence must protect, and by the fake signal probe
-    recording zero calls. (`flock` conflicts across distinct open file
-    descriptions, including two opens of the same file within one process,
-    so one test process can exercise the contention path directly.) Then
+    same RunRoot is REFUSED while the first release is outstanding
+    (`flock` conflicts across distinct open file descriptions, including
+    two opens of the same file within one process, so one test process
+    can exercise the contention path directly); after the first release
+    runs, a fresh acquisition SUCCEEDS — the re-acquirability the
+    startup-owned lifetime needs. Separately, `ReapOrphans` called with a
+    ZERO lock token performs no scan and issues no signal — asserted by
+    planting a live-match pidfile that must survive untouched and by the
+    fake signal probe recording zero calls. Then
     the reap behaviors, all with the lock held: planted live-match pidfiles
     ⇒ signalled in VMM-first order and dir removed; starttime-mismatch
     pidfile ⇒ NO signal issued, dir removed; stale-boot-id pidfile ⇒ no
@@ -1045,14 +1268,15 @@ The §(b) reaper. Depends on W1's file format.
     `Create` during a scan never loses its dir.
   - *KVM — a REAL crash, not a dropped pointer:* spawn the first Runner as
     a CHILD PROCESS, let it boot a real VM and hold the RunRoot lock, then
-    `SIGKILL` the child so the kernel drops its flock, and only then run
-    `ReapOrphans` from the surviving test process ⇒ the lock is acquired,
-    all three processes dead (proc-verified), dir gone. Constructing a
-    fresh in-process runtime over the same RunRoot would NOT be a
-    simulated crash — the first runtime still holds the lock, so the reap
-    would be correctly refused and prove nothing about the reap. This case
-    exercises the release-on-death property OQ-8(i) rests on and the reap
-    together, which is why it replaces the drop-the-pointer form.
+    `SIGKILL` the child so the kernel drops its flock, and only then take
+    the lock and run `ReapOrphans` from the surviving test process ⇒ the
+    lock is acquired, all three processes dead (proc-verified), dir gone.
+    Constructing a fresh in-process runtime over the same RunRoot would
+    NOT be a simulated crash — the first runtime still holds the lock, so
+    the acquisition would be correctly refused and prove nothing about
+    the reap. This case exercises the release-on-death property OQ-8(i)
+    rests on and the reap together, which is why it replaces the
+    drop-the-pointer form.
 
 ### W3 — `DeathWatch` + session monitor + `SessionDeadError` (hermetic + KVM)
 
@@ -1074,29 +1298,42 @@ assertion; see the Plan preamble).
   - `type SessionDeadError struct { ID ContainerID; Cause string }` with
     `Error()` in `go/internal/runtime` (untagged file, beside
     `CommandError`);
-  - `microvmSession.deadCause` + `microvmSession.epoch` +
-    `microvmSession.tearingDown` (all under `m.mu`); `Stop`/`Remove` set
-    `tearingDown` before calling `vm.Shutdown`; `Start` INCREMENTS `epoch`
-    and clears `tearingDown` in the same locked critical section that
-    stores the new VM (`microvm_lifecycle.go:401-415`), and hands the new
-    epoch to that VM's monitor (§(c));
+  - `microvmSession.deadCause` + `microvmSession.deadEpoch` +
+    `microvmSession.epoch` + `microvmSession.tearingDown` (all under
+    `m.mu`); `Stop`/`Remove` set `tearingDown` before calling
+    `vm.Shutdown`; `Start` INCREMENTS `epoch` and clears `tearingDown` in
+    the same locked critical section that stores the new VM
+    (`microvm_lifecycle.go:401-415`), and hands the new epoch to that
+    VM's monitor (§(c));
+  - the one refuse condition, `session.deadCause != "" &&
+    session.deadEpoch == session.epoch`, read under `m.mu` by
+    `startedExec` and by `Exec`'s error arm and NOWHERE restated in a
+    second form (§(c)): `deadEpoch` scopes the READ side per VM life
+    exactly as `epoch` already scopes the monitor's write side, so a
+    death recorded in life #1 refuses nothing in life #2;
   - `Start` spawns the monitor goroutine after ownership transfer
-    (`microvm_lifecycle.go:401-415`) carrying its epoch: it DISCARDS any
-    death whose `session.epoch != myEpoch` (a superseded VM life) and any
-    death arriving while `tearingDown`; on a fatal cause it records
-    `deadCause`, runs `vm.Shutdown(context.WithoutCancel(…))`, logs +
-    counts (W4 hooks) and returns; on `DeathPasst` it logs + counts
-    `peer.deaths{process=passt}` and KEEPS RECEIVING, never setting
-    `deadCause` (§(c));
+    (`microvm_lifecycle.go:401-415`) carrying its epoch, and it RANGES
+    over `DeathWatch()` — `for cause := range vm.DeathWatch()` — so the
+    channel's close is its termination on every path, including the
+    non-fatal passt path that has no other exit. It DISCARDS any
+    death whose `session.epoch != myEpoch` (a superseded VM life, then
+    returns) and any death arriving while `tearingDown`; on a fatal cause
+    it records `deadCause` AND `deadEpoch = myEpoch`, runs
+    `vm.Shutdown(context.WithoutCancel(…))`, logs + counts (W4 hooks) and
+    returns; on `DeathPasst` it logs + counts `peer.deaths{process=passt}`
+    and KEEPS RECEIVING, never setting `deadCause` (§(c));
   - `startedExec`/`Exec`/`ExecStreaming` refuse a dead session with
-    `*SessionDeadError`. `Stop` and `Remove` do NOT — `Stop` on a dead
+    `*SessionDeadError` when the refuse condition above holds. `Stop`,
+    `Remove` and `Start` do NOT — `Stop` on a dead
     session is a no-op success (the same arm as never-started,
     `microvm_lifecycle.go:615-617`) so `AgentRuntime.Teardown`'s
     Stop-then-Remove reaches `Remove` instead of early-returning at stage
     "stop" and leaking the entry and dir forever (`agent.go:216-222`;
-    §(c)); `Exec`'s error arm re-checks `deadCause` and, when it is unset,
-    probes `VMMExited()` before wrapping in-flight transport failures
-    (`microvm_lifecycle.go:486-495`; §(c));
+    §(c)), and `Start` re-boots rather than refusing — bumping `epoch`
+    past `deadEpoch` is exactly what makes the previous life's cause
+    inert; `Exec`'s error arm re-tests the same condition and, when it is
+    false, probes `VMMExited()` before wrapping in-flight transport
+    failures (`microvm_lifecycle.go:486-495`; §(c));
   - the `guestVM` seam gains `DeathWatch() <-chan microvm.DeathCause` and
     `VMMExited() bool` (`microvm_lifecycle.go:99-113` lists the seam's
     method-set rule).
@@ -1122,7 +1359,18 @@ assertion; see the Plan preamble).
     wrapped `*SessionDeadError{Cause:"vmm"}`; a second receive on a drained
     `DeathWatch` channel observes only the close (the single-consumer
     contract's failure mode pinned, never relied on); Remove after death ⇒
-    nil (idempotent), table entry gone.
+    nil (idempotent), table entry gone;
+    **SECOND-LIFE CASE: fake fires a VMM death in life #1, then `Stop` ⇒
+    nil, then `Start` boots VM#2, then `Exec` SUCCEEDS** — `deadEpoch`
+    is 1 while `epoch` is 2, so the stale cause refuses nothing, and
+    monitor#2 still records VM#2's own death (the per-life scoping of
+    the READ side, §(c));
+    **MONITOR-TERMINATION CASE: fake fires a passt death (non-fatal, the
+    monitor keeps receiving), then CLOSES the `DeathWatch` channel ⇒ the
+    monitor goroutine EXITS** — asserted on a done-channel the monitor
+    closes on return, so the case fails on a spinning `for { <-ch }`
+    loop rather than merely being slow — with no `deadCause` set and no
+    `teardowns` point (§(c)).
   - *KVM:* boot a session, `SIGKILL` the VMM pid mid-exec ⇒ the in-flight
     `Exec` fails with `*SessionDeadError`, peers reaped (proc-verified),
     sockets/pidfiles removed, `Stop` returns nil and `Remove` returns nil;
@@ -1156,17 +1404,35 @@ The §(d) instrument set inside the microVM backend.
     (`vsock.rpc.duration{rpc,outcome}`), `BootCanary`
     (`canary.runs{outcome}`), `ReapOrphans`
     (`orphans.reaped{process,outcome}`, including the `possibly_live`
-    series for §(b)'s dangling-intent arm);
+    series for §(b)'s dangling-intent arm — and NOT `teardowns`: a
+    reaped orphan dir is a previous process's leftover, never a session
+    this Runner tore down, so it must not land in the series carrying
+    `vmm_death`, §(d)), and the per-session PSS sampler below;
   - observable callbacks registered at construction: `guestPSS` snapshots
     the live VM handles under `m.mu`, RELEASES the lock, then sums
     `vm.PSS()` per process kind outside it — never holding `m.mu` across a
     `smaps_rollup` read (§(d); best-effort, errors dropped as `PSS` itself
     does, PR #912 `launch.go:678-683`); `quotaUsedRatio` reads `lastQuota`
-    under `m.mu` and emits a point ONLY when that reading's `Active()` is
-    true — false for the zero value by construction, since `Active`
-    requires positive limit and filesystem totals (PR #912
-    `microvm_quota.go:117-125`), so an unset snapshot is silent with no
-    extra flag;
+    under `m.mu` and emits a point ONLY when
+    `lastQuota.LimitBytes > 0` — the gate is the RATIO's own validity,
+    not `Active()`, because `UsedRatio` short-circuits to a hard `0`
+    when `LimitBytes <= 0` (PR #912 `microvm_quota.go:149-153`) and
+    `Active()`'s independent inode arm is true with `LimitBytes == 0`
+    (PR #912 `microvm_quota.go:117-125`). The zero-value snapshot is
+    still silent under this gate, with no extra flag (§(d));
+  - `pssSampleInterval = 60 * time.Second` and the per-session PSS
+    sampler OQ-9(ii)'s recommendation assumes: one goroutine started in
+    `NewMicroVMRuntime`, stopped by the runtime's shutdown, that on each
+    tick snapshots the live session/VM pairs under `m.mu`, RELEASES the
+    lock, and then emits one INFO `microvm session memory` line per
+    session — `session_id` plus `vmm_pss_kb`/`virtiofsd_pss_kb`/
+    `passt_pss_kb` from `vm.PSS()`, which returns `map[string]int64`
+    keyed by child name in kB (PR #912 `launch.go:663-669`). Same
+    snapshot-then-read-outside-the-lock discipline as the `guestPSS`
+    callback, so it costs no additional `m.mu` hold, and same
+    best-effort posture (a missing key is a dropped field, never an
+    error). This is the ONLY runaway-identification signal V7 ships
+    (§(d), OQ-9); it is dropped only if the human rules OQ-9 (i)-only;
   - consumes W2/W3 hooks; no new public API.
 - **Test cycle (hermetic):** `sdkmetric.NewManualReader` +
   `NewMeterProvider` installed as the global BEFORE `NewMicroVMRuntime`
@@ -1177,9 +1443,17 @@ The §(d) instrument set inside the microVM backend.
   every data point asserted to carry ONLY enum attributes (the
   `dispatchedCounts`-style attribute audit, `trace_test.go:253-256`); a
   no-op global meter ⇒ construction succeeds, records are skipped, nothing
-  panics; quota gauge with an unset `lastQuota` ⇒ NO point collected, with
-  an `Active()` reading planted ⇒ exactly one point carrying its
-  `UsedRatio()`.
+  panics; quota gauge with an unset `lastQuota` ⇒ NO point collected;
+  with a reading planted whose `LimitBytes > 0` ⇒ exactly one point
+  carrying its `UsedRatio()`; **with an INODE-ONLY reading planted
+  (`LimitBytes == 0`, `LimitInodes`/`FilesystemInodes` set so
+  `Active()` is TRUE) ⇒ NO point collected** — the case an `Active()`
+  gate would have emitted a hard `0` for (§(d));
+  the PSS sampler with two live seam-faked sessions ⇒ one
+  `microvm session memory` INFO line per session per tick, each carrying
+  `session_id` and the per-process-kind values, driven by an injected
+  tick rather than by waiting out `pssSampleInterval`, and the sampler
+  goroutine EXITS when the runtime's stop channel closes.
 
   The PSS-callback lock test is written SELF-VERIFYING, because the naive
   form passes vacuously: with no session in `m.sessions` or a nil
@@ -1203,21 +1477,40 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
         setupOtel func(ctx context.Context) (func(), error)
         selectEngine func() (runtime.ContainerRuntime, error)
         preflight func(ctx context.Context, engine runtime.ContainerRuntime) error
-        reap func(ctx context.Context, engine runtime.ContainerRuntime) error
+        lockRunRoot func(engine runtime.ContainerRuntime) (runtime.RunRootLock, func(), error)
+        reap func(ctx context.Context, engine runtime.ContainerRuntime, held runtime.RunRootLock) error
     }
 
     func startup(ctx context.Context, h startupHooks) (runtime.ContainerRuntime, func(), error)
     ```
 
     which calls them in the order `setupOtel` → `selectEngine` →
-    `preflight` → `reap` and returns the engine plus the OTel shutdown.
-    `run()` builds the real hooks and calls it, replacing the inline
-    sequence at `main.go:106-112` and the `setupOtel` call at
-    `main.go:167-172`. `setupOtel` must precede `selectEngine`, not merely
-    the preflight, because instrument construction happens inside
-    `NewMicroVMRuntime` down `selectEngine`'s call path
-    (`main.go:332-345` → `microvm.go:117-122`); §(d) has the argument. The
-    `orphanReaper` probe (W2) is the `reap` hook;
+    `preflight` → `lockRunRoot` → `reap` and returns the engine plus a
+    combined shutdown closure (the OTel flush AND the lock release).
+    `run()` (`go/cmd/compass-runner/main.go:43`) builds the real hooks
+    and calls it, replacing the inline sequence at `main.go:106-112` and
+    the `setupOtel` call at `main.go:167-172`. `setupOtel` must precede
+    `selectEngine`, not merely the preflight, because instrument
+    construction happens inside `NewMicroVMRuntime` down
+    `selectEngine`'s call path (`main.go:332-345` →
+    `microvm.go:117-122`); §(d) has the argument.
+
+    **`startup` is the RunRoot lock's sole OWNER (OQ-8, §(b) step 0).**
+    The `lockRunRoot` hook runs ONCE, before the reap hook, through a
+    fifth unexported single-method probe
+    (`type runRootLocker interface { lockRunRoot() (RunRootLock, func(), error) }`,
+    the same discipline as the existing three at `main.go:185-203`); its
+    release goes into the returned shutdown closure that `run()`
+    `defer`s, so the lock is held for the process's life and the kernel
+    drops it on any holder death. The lock token is then PASSED to the
+    `reap` hook — `ReapOrphans` never acquires it, which is what makes
+    the reaper structurally unable to scan unlocked AND safely
+    re-invocable within one process (a second `flock` from the same
+    process would refuse itself; §(b) step 0). A `lockRunRoot` error is
+    a `slog.Warn` and the reap hook is SKIPPED — nothing is scanned,
+    startup continues (OQ-5). An engine that does not implement the
+    probe (podman) skips both hooks, unchanged. The `orphanReaper` probe
+    (W2) is the `reap` hook;
   - `go/internal/runtime`: `func (m *MicroVMRuntime) BackendName() string { return "microvm" }`
     and `func (p *PodmanCLI) BackendName() string { return "podman" }` —
     NOT on the frozen interface;
@@ -1236,8 +1529,13 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
   and no other attribute beyond the enum pair; an engine without the probe
   ⇒ `backend="unknown"`, no error; `startup` called with hooks that append
   their own name to a shared slice ⇒ the slice is exactly
-  `["setupOtel", "selectEngine", "preflight", "reap"]`, and a hook
-  returning an error short-circuits the rest.
+  `["setupOtel", "selectEngine", "preflight", "lockRunRoot", "reap"]`,
+  and a hook returning an error short-circuits the rest; a
+  `lockRunRoot` hook returning an error ⇒ the `reap` hook is NEVER
+  called and `startup` still returns the engine with no error (the
+  OQ-5 warn-and-continue arm, asserted on the hook-call slice rather
+  than on a log line); the returned shutdown closure invokes the lock
+  release exactly once.
 
   This replaces an earlier claim that the ordering could be pinned "via
   the existing startup-dispatch test seam, `main.go` fake engines". It
@@ -1262,22 +1560,30 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
       reporting the intent form as neither-alive-nor-dead
       (`errPidUnknown`)
 - [ ] W2 — `(*MicroVMRuntime) lockRunRoot()`: `LOCK_EX|LOCK_NB` flock on
-      `<RunRoot>/microvm/.runner.lock`, acquired before ANY scan and held
-      for the Runner's life, refuse-not-wait on contention; a second
-      acquisition over the same RunRoot is refused and scans nothing
-- [ ] W2 — `(*MicroVMRuntime) ReapOrphans(ctx) error`: take the RunRoot
-      lock first, scan runtime dirs, boot-id short-circuit +
-      starttime-verified SIGTERM→SIGKILL bounded by ctx, ESRCH/EPERM
-      differentiated, VMM first, remove fully-dead dirs, KEEP
-      same-boot-intent dirs (WARN + `possibly_live` count), age-gate empty
-      dirs, skip table-live sessions; `main.go` probe wiring,
+      `<RunRoot>/microvm/.runner.lock`, refuse-not-wait on contention; a
+      second acquisition over the same RunRoot is refused. Acquired ONCE
+      by `run()`/`startup` (W5) and held for the Runner's life, NEVER by
+      `ReapOrphans`; the lockfile is created once and never unlinked
+- [ ] W2 — `(*MicroVMRuntime) ReapOrphans(ctx, held runRootLock) error`:
+      REQUIRES the startup-held lock token (a zero token ⇒ named error,
+      no scan, no signal), then scan runtime dirs, boot-id short-circuit
+      + starttime-verified SIGTERM→`orphanReapGrace`→SIGKILL bounded by
+      ctx, ESRCH/EPERM differentiated, VMM first, remove fully-dead dirs,
+      KEEP same-boot-intent dirs (WARN + `possibly_live` count), age-gate
+      empty dirs, skip table-live sessions; `main.go` probe wiring,
       warn-never-abort
 - [ ] W3 — `VM.DeathWatch()` (single-consumer, all three children,
       one send per exit) + `VM.VMMExited()` over the reaper channels;
       per-session monitor stamped with the session's `epoch` — a
       superseded VM life's death event is DISCARDED — plus `tearingDown`
-      for the current epoch's deliberate teardown;
+      for the current epoch's deliberate teardown; the monitor RANGES
+      over the channel and returns when it closes (no other termination
+      exists on the non-fatal passt path);
       `*runtime.SessionDeadError` on refused and in-flight execs
+- [ ] W3 — death is scoped to ONE VM life: the monitor records
+      `deadEpoch` beside `deadCause`, and readers refuse only when
+      `deadCause != "" && deadEpoch == epoch`, so a death in life #1
+      cannot refuse an exec in life #2 after a `Stop`/`Start`
 - [ ] W3 — teardown never refuses: `Stop` on a dead session is a no-op
       success (only `Exec`/`ExecStreaming` refuse), so
       `AgentRuntime.Teardown`'s Stop-then-Remove reaches `Remove`;
@@ -1291,12 +1597,24 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
 - [ ] W4 — `lastQuota QuotaReading` on `MicroVMRuntime`, written under
       `m.mu` by the preflight's `verifyQuota` and read by the
       `quota.used.ratio` callback: preflight-time snapshot, never
-      refreshed, no point emitted when inactive or unset
+      refreshed, and a point emitted ONLY when
+      `lastQuota.LimitBytes > 0` — the condition under which
+      `UsedRatio()` is meaningful, NOT `Active()` (an inode-only active
+      quota emits no byte-ratio point, §(d))
+- [ ] W4 — the per-session PSS sampler OQ-9(ii) assumes: a
+      `pssSampleInterval = 60 * time.Second` ticker emitting one INFO
+      `microvm session memory` line per live session (`session_id` plus
+      the per-process-kind kB values from `VM.PSS()`), reusing the
+      gauge callback's snapshot-`m.mu`-then-read-outside-the-lock
+      discipline, stopped on runtime shutdown (§(d))
 - [ ] W5 — `startup(ctx, hooks)` extracted from `run()` so the order
-      `setupOtel` → `selectEngine` → `preflight` → `reap` is pinned by a
-      call-order test; `setupOtel` must precede `selectEngine` (not merely
-      the preflight), because instruments are built inside
-      `NewMicroVMRuntime`
+      `setupOtel` → `selectEngine` → `preflight` → `lockRunRoot` → `reap`
+      is pinned by a call-order test; `setupOtel` must precede
+      `selectEngine` (not merely the preflight), because instruments are
+      built inside `NewMicroVMRuntime`; `run()` acquires the RunRoot lock
+      ONCE via the `runRootLocker` probe and `defer`s the release for the
+      process's life, and a refused lock WARNs and skips the reap hook
+      (OQ-8/OQ-5)
 - [ ] W5 — `BackendName()` probes;
       `compass.runner.session.starts{backend,outcome}` in the Runner host
 
@@ -1371,8 +1689,10 @@ recommendation.
   session creation until a clean reap (complexity without a demonstrated
   need). **Recommendation:** (i), with the per-dir error detail in the WARN
   and the `orphans.reaped` counter making silent rot visible. A REFUSED
-  RunRoot lock (§(b) step 0) takes the same arm: a Runner that cannot
-  acquire the lock warns and starts, having scanned nothing — the wrong
+  RunRoot lock (§(b) step 0) takes the same arm one step earlier: the
+  lock is acquired by `startup` (OQ-8), so a Runner that cannot acquire
+  it warns, SKIPS the reap hook, and starts — nothing is scanned,
+  because `ReapOrphans` may not run without the lock held. The wrong
   reap is what the lock prevents, and refusing startup over a
   still-draining predecessor would be the box outage this option rejects.
 - **OQ-6 (LOAD-BEARING) — the net backend leaves the parent's supervised
@@ -1438,7 +1758,9 @@ recommendation.
   defensible again for the reason the earlier draft gave — the reasoning
   just had to be earned rather than assumed.
 
-  The mtime age gate (`orphanDirGrace = 1m`) stays for state 1 regardless:
+  The mtime age gate (`orphanDirGrace = time.Minute`, a reaper-local
+  constant in package `runtime` beside `orphanReapGrace`, §(b) step 2)
+  stays for state 1 regardless:
   it separates the `Create` pre-insert window (microseconds of lock work)
   from everything else by orders of magnitude and bounds cleanup latency.
   Options for state 1: (i) remove after the grace; (ii) quarantine-and-WARN
@@ -1478,19 +1800,41 @@ recommendation.
   mechanism.** The body SHIPS (i) as a named W2 deliverable —
   `lockRunRoot` in W2's Interfaces, its own `## Tasks` bullet, and a
   hermetic case asserting a second acquisition over the same RunRoot is
-  refused and scans nothing (§(b) step 0). An earlier draft left the
-  defense as this question's recommendation only, which meant an executor
-  implementing W1-W5 verbatim would have shipped `ReapOrphans` with zero
+  refused and that `ReapOrphans` called without the lock held scans
+  nothing (§(b) step 0). An earlier draft left the defense as this
+  question's recommendation only, which meant an executor implementing
+  W1-W5 verbatim would have shipped `ReapOrphans` with zero
   cross-process exclusion — precisely the live-session-killing reaper this
   question exists to prevent. A safety property that lives only in an Open
   Question is not a delivered defense. If the human rules (ii) or (iii),
   W2's lock deliverable and §(b) step 1's clause change with the ruling.
 
+  **The lock's OWNER is the startup unit, not the reaper**, and that
+  follows from (i)'s own "held for the Runner's life" wording rather than
+  being a second choice layered on it. `run()`
+  (`go/cmd/compass-runner/main.go:43`) acquires it once through W5's
+  `startup` unit, ahead of the reap hook, and `defer`s the release for the
+  process's life; `ReapOrphans` REQUIRES the lock already held and never
+  acquires it. A reaper-owned lock cannot satisfy (i) at all: the release
+  func would have to outlive the call that returned it, and — the sharp
+  edge — a SECOND `ReapOrphans` in one process would refuse ITSELF with
+  EWOULDBLOCK, because `flock` conflicts across distinct open file
+  descriptions including two opens of one file within one process (this
+  record's own premise in W2's hermetic case). §(b) step 1 designs
+  explicitly for that repeat invocation, so reaper-owned ownership would
+  freeze a reaper that is designed to be re-invocable behind a lock
+  guaranteeing it cannot be. §(b) step 0, the `ReapOrphans` doc comment,
+  the Global Constraint, W2's Interfaces and the `## Tasks` bullets all
+  name this one owner.
+
   One sub-fork rides along: option (i)'s wording says a second Runner
   "refuses startup", while OQ-5 rules a reap failure a WARN and never an
-  abort — and a refused lock surfaces as a `ReapOrphans` error. The body
-  takes OQ-5's arm (WARN, continue, scan nothing), with the reasoning at
-  §(b) step 0. Ruling (i) with refuse-startup semantics is coherent but
+  abort. With the lock owned by `startup`, a refused lock surfaces
+  BEFORE the reap hook rather than as a `ReapOrphans` error, so the arm
+  has to be stated at that call site: `startup` WARNs, SKIPS the reap
+  hook entirely (nothing is scanned, because `ReapOrphans` may not run
+  without the lock), and continues serving. The reasoning is at §(b)
+  step 0. Ruling (i) with refuse-startup semantics is coherent but
   strictly stronger, so rule OQ-5 and OQ-8 in one pass.
 - **OQ-9 (load-bearing) — "per-VM RSS" vs the fleet-summed PSS gauge: a
   ruling on a frozen sentence.** The parent freezes "per-VM RSS"
@@ -1511,7 +1855,17 @@ recommendation.
   runaway identification, and let V8's benchmark read `PSS()` directly —
   no per-session metric label is ever minted and every consumer of the
   frozen sentence gets a number. The body designs against this assumption
-  (§(d)).
+  (§(d)), and (ii)'s emitter is a NAMED W4 deliverable — the
+  `microvm session memory` sampler and its `pssSampleInterval` constant,
+  in W4's Interfaces and its own `## Tasks` bullet — not a property left
+  to this recommendation. The same rule OQ-8 states applies here: a
+  signal that lives only in an Open Question is not a delivered signal,
+  and an executor implementing W1-W5 verbatim must not end up with the
+  aggregate gauge and nothing that can identify a runaway VM. If the
+  human rules (i)-only, W4's sampler deliverable and its Task bullet are
+  dropped with the ruling, and V7 then ships NO runaway-identification
+  signal at all — §(d) says so explicitly so the consequence of that
+  ruling is visible rather than silently unimplemented.
 - **OQ-10 (load-bearing) — the guest is dropped from V7's supervised set;
   the parent's sentence says it is in it.** Parent §(f): the backend
   supervises the per-session process set including "the guest via the
