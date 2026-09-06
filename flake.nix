@@ -34,10 +34,22 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
       # ONE version string stamped into all four backend binaries + the app
-      # (Global Constraint 4: the stack binaries carry ONE stamp). Short form of
-      # the flake rev; dirtyShortRev on an uncommitted working copy; "dev" when
-      # neither is available (a bare tree with no VCS metadata).
-      version = self.shortRev or self.dirtyShortRev or "dev";
+      # (Global Constraint 4: the stack binaries carry ONE stamp). The semver
+      # base comes from version.txt — the same single source release.yml and
+      # ci.yml read — trimmed because the file ends in a newline that would
+      # otherwise land in a store path name and in the ldflag. A `+g<shortRev>`
+      # build-metadata suffix keeps a non-release artifact identifiable
+      # (ci.yml's dev-compile lane uses the identical shape); dirtyShortRev
+      # already carries its own `-dirty` marker, and a bare tree with no VCS
+      # metadata stamps the plain base.
+      versionBase = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
+      version =
+        if self ? shortRev then
+          "${versionBase}+g${self.shortRev}"
+        else if self ? dirtyShortRev then
+          "${versionBase}+g${self.dirtyShortRev}"
+        else
+          versionBase;
 
       # The backend module rooted at go/ (github.com/RigelBuild/compass/go).
       # Renamed off `go` (buildGoModule unpacks src into $GOPATH=/build/go, and a

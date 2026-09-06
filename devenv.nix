@@ -375,7 +375,17 @@ in
         # binary lands directly in the process group devenv-tasks signals on
         # stop (see the process comment above for the full signal path).
         bin="${config.devenv.state}/compass/compass-server"
-        go build -o "$bin" ./cmd/compass-server
+        # Stamp the same scheme the release and CI lanes stamp: the semver base
+        # from version.txt (the single source all build paths read), plus a
+        # suffix marking this artifact as a dev-shell build. The suffix is a
+        # literal `+dev` rather than `+g<shortrev>`: the repo is worked through
+        # jj workspaces, where `.git` may be a file or absent, so shelling out
+        # to `git rev-parse` inside the process script would be a build that
+        # fails depending on which working copy it runs in.
+        version_base="$(cat "${config.devenv.root}/version.txt")"
+        [ -n "$version_base" ] || { echo "version.txt missing or empty" >&2; exit 1; }
+        go build -ldflags "-X main.version=$version_base+dev" \
+          -o "$bin" ./cmd/compass-server
         exec "$bin" \
           --socket "$COMPASS_SOCKET" \
           --dev-http "127.0.0.1:${toString config.processes.compass-server.ports.devhttp.value}" \
