@@ -329,7 +329,8 @@ in
   #   dogfood:build-cli   — builds the operator CLI (./cmd/compass) into the state
   #                         dir so a human driving the box over ssh never gets a
   #                         stale binary; nothing execs it, and its `after` edge is
-  #                         inert so a CLI compile error cannot gate the backend.
+  #                         inert BACKWARD (`@started`), so a CLI compile error
+  #                         cannot gate the backend.
   #
   # Opt-in (NOT wired into up): `dogfood:agent-image` builds+loads the agent
   # base image (heavy closure — kept off the hot up path), and `dogfood:clean`
@@ -534,17 +535,24 @@ in
     # The build is unconditional ON PURPOSE — a present-but-stale binary IS the
     # bug, so skip-if-present would skip exactly when the build is required.
     # Ordered `after` the server, not `before`: this pins the task into the `up`
-    # graph while keeping the edge inert, so a compile error anywhere in the CLI's
-    # import graph cannot stop the backend from serving. Invocation path is
-    # explicit — the state dir is not on PATH, so an operator runs
-    # `"$(devenv info devenv.state)"/compass/compass` (or the absolute path).
+    # graph while keeping the edge inert BACKWARD, so a compile error anywhere in
+    # the CLI's import graph cannot stop the backend from serving. The `@started`
+    # suffix is load-bearing: an unsuffixed `after` on a process task resolves to
+    # Ready, which would block the rebuild on the server's probe and skip it
+    # entirely once the server exhausts its restarts — leaving the CLI stale in
+    # the one case an operator needs it current, a backend that will not come up.
+    # Invocation path is explicit — the state dir is not on PATH, so an operator
+    # runs `"$DEVENV_STATE/compass/compass"` (or the absolute path); `devenv info`
+    # prints that var, and note it takes no positional argument.
     "dogfood:build-cli" = {
       exec = ''
+        set -euo pipefail
         bin="${config.devenv.state}/compass/compass"
-        go build -o "$bin" ./cmd/compass
+        go build -o "$bin.new" ./cmd/compass
+        mv -f "$bin.new" "$bin"
       '';
       cwd = "${config.devenv.root}/go";
-      after = [ "devenv:processes:compass-server" ];
+      after = [ "devenv:processes:compass-server@started" ];
     };
 
     # mint-runner-token: register the `dogfood` runner and write its enrollment
