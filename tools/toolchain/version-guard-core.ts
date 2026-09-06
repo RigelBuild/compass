@@ -83,19 +83,26 @@ export const CANDIDATES: readonly {
 	{ label: "slash", content: "0.1.0/x\n" },
 	{ label: "quote", content: '0.1.0"x\n' },
 	{ label: "non-ASCII", content: "0.1.0é\n" },
-	// Trim-set discriminators. A row can only witness a change to either lane's
-	// TRIM SET if its core is class-legal and its padding is a byte the trim
-	// sets currently EXCLUDE — then widening one lane's set flips that lane to
-	// accept while the other still rejects. Padding with two such bytes at once
-	// (`\v0.1.0\f`) cannot do this: whichever byte is still untrimmed keeps the
-	// value outside the class, so the row reads reject/reject however the trim
-	// sets move. Hence one row per byte, each alone. `\v` and `\f` are the
-	// whitespace bytes `[[:space:]]` includes and ` \t\r\n` does not, so these
-	// two rows are exactly what reds the gate if a lane reaches for a broader
-	// whitespace class. Trim NARROWING is already witnessed from the other
-	// side by the CR/tab/space rows, whose cores are class-legal too.
+	// Trim-set discriminators, one byte per row. A row witnesses a WIDENING of
+	// either lane's trim set only if its core is class-legal and its padding is
+	// a byte both sets currently EXCLUDE — then the widened lane flips to accept
+	// while the other still rejects. Padding with two such bytes at once
+	// (`\v0.1.0\f`) cannot do it: whichever byte a lane still leaves untrimmed
+	// keeps the value outside the class, so the row reads reject/reject however
+	// the trim sets move. `\v` and `\f` are the whitespace bytes `[[:space:]]`
+	// includes and ` \t\r\n` does not, so those two rows are what reds the gate
+	// if a lane reaches for a broader whitespace class.
+	//
+	// NARROWING needs a row per trim byte, positioned where that byte can
+	// actually reach the trim loop. The CR, tab and space rows cover their own
+	// bytes. LF needs its own row with the newline LEADING: the devenv lane
+	// seeds `version_base="$(cat ...)"`, and command substitution strips every
+	// TRAILING newline before the loop ever runs, so no trailing-LF row can
+	// carry an LF into it — drop LF from the trim set and every other row still
+	// agrees. A leading newline is the one position that survives `$(cat)`.
 	{ label: "leading vertical tab only", content: "\v0.1.0\n" },
 	{ label: "trailing form feed only", content: "0.1.0\f\n" },
+	{ label: "leading newline only", content: "\n0.1.0\n" },
 	{ label: "bare word", content: "banana\n" },
 	{ label: "dashes only", content: "----\n" },
 	{ label: "coreless metadata", content: "+g10c5fa7\n" },

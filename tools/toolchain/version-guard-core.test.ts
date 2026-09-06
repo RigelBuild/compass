@@ -201,6 +201,10 @@ describe("CANDIDATES", () => {
 		// each must stay a row of its own.
 		["leading vertical tab only", "\v0.1.0\n"],
 		["trailing form feed only", "0.1.0\f\n"],
+		// LF must be positioned LEADING: `$(cat)` strips trailing newlines before
+		// devenv's trim loop runs, so only a leading one can witness LF leaving
+		// the trim set.
+		["leading newline only", "\n0.1.0\n"],
 	])("covers %s", (_label, content) => {
 		expect(CANDIDATES.some((row) => row.content === content)).toBe(true);
 	});

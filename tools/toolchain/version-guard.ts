@@ -102,10 +102,17 @@ CANDIDATES.forEach(({ content }, index) => {
 // a verdict. That is a real skew the gate cannot see (bash silently drops NUL
 // from `$(cat)` and stamps, while the flake lane dies), so it is deliberately
 // not in CANDIDATES: a row for it would red the gate with an opaque "could not
-// run" that reads as harness breakage rather than the finding. Both lanes fail
-// closed on it in production — the flake hard-errors and devenv's stamp still
-// has to survive the character class — so the exposure is a confusing error,
-// not a bad stamp. Normalizing version.txt encoding is RIG-3439.
+// run" that reads as harness breakage rather than the finding.
+//
+// The blast radius is bounded by the FLAKE lane failing closed, not by the
+// character class. bash drops the NUL and the surviving bytes can be perfectly
+// class-legal, so devenv accepts and stamps: `1.2.3\0999` becomes
+// `-X main.version=1.2.3999+dev` — a wrong stamp off a file that reads 1.2.3,
+// not a confusing error. Same for a UTF-16 file. What keeps this out of a
+// released artifact is that the flake lane hard-errors on the same input, so
+// the two lanes never both ship; the exposure is a dev-shell binary claiming a
+// version its version.txt does not. Hence deferred, not dismissed — see
+// RIG-3439, whose option to reject NUL explicitly is the real fix.
 const flakeVerdicts = (): Verdict[] | Error => {
 	// JSON.stringify, not bare interpolation: a checkout or TMPDIR path holding
 	// a `"` would otherwise break out of the nix string literal. Nothing can
@@ -156,12 +163,16 @@ const flakeVerdicts = (): Verdict[] | Error => {
 // surviving value — so the stamp compared is the one the ldflag would carry.
 // Cheap enough per candidate to stay a loop.
 //
-// `shopt -s globasciiranges` and LC_ALL=C make the comparison locale-invariant.
-// bash bracket ranges like `[!0-9A-Za-z.+-]` collate per-locale unless that
-// option forces ASCII; it is on by default in the nix bash, but the flake side
-// (`builtins.match`) is locale-invariant unconditionally, so pinning it here
-// makes the parity verdict a property of the two expressions rather than of the
-// bash build options and environment the gate happens to run under.
+// `LC_ALL=C` is what makes the comparison locale-invariant, and it is the
+// setting carrying the guarantee: with an unpinned UTF-8 locale the negated
+// class `[!0-9A-Za-z.+-]` accepts `0.1.0é`, which the flake side
+// (`builtins.match`, locale-invariant unconditionally) rejects — a verdict
+// that would differ by environment rather than by expression. `shopt -s
+// globasciiranges` is belt-and-braces: it is already on by default in this
+// bash, and on its own it does not close the gap, but it pins the bracket-range
+// collation so a bash built without that default cannot reopen it. Together
+// they make the parity verdict a property of the two guards rather than of the
+// environment the gate happens to run under.
 const devenvVerdict = (index: number): Verdict | Error => {
 	const script =
 		"set -u\nshopt -s globasciiranges\nexport LC_ALL=C\n" +
