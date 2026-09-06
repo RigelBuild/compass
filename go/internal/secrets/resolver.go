@@ -227,9 +227,10 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 // <NAME>` with the value omitted from argv and stdin not a tty takes the
 // piped-stdin branch — a first-class io::stdin().read_to_string() with no
 // interactive prompt constructed — then trims the value and rejects an empty
-// one. So `secretspec --file <m> --reason <r> set <NAME> --provider <p>
+// one. So `secretspec --file=<m> --reason=<r> set <NAME> --provider <p>
 // --profile <P>` with the value on stdin is the write path, no positional
-// VALUE.
+// VALUE. The joined --flag=value form is required, not stylistic: the
+// two-token form parses a leading-dash reason as the next flag and exits 2.
 func (r *SpecResolver) Set(ctx context.Context, name, value, reason string) error {
 	if err := ValidateName(name); err != nil {
 		return err
@@ -248,18 +249,24 @@ func (r *SpecResolver) Set(ctx context.Context, name, value, reason string) erro
 	}
 	// The CLI loads the profile's declared set from a manifest; generate one
 	// declaring just this name rather than letting it search the process cwd.
-	manifestPath, err := r.writeManifest(r.resolvedProfile(), []store.SecretDeclaration{{Name: name}})
+	// One resolved profile feeds both the manifest header and the argv below, so
+	// the two cannot describe different profiles.
+	profile := r.resolvedProfile()
+	manifestPath, err := r.writeManifest(profile, []store.SecretDeclaration{{Name: name}})
 	if err != nil {
 		return err
 	}
 	// A transient input to the CLI, exactly as on the read path — remove it once
 	// the write returns; the registry, not this file, is the durable source.
 	defer func() { _ = os.Remove(manifestPath) }()
-	args := r.setArgs(name, reason, manifestPath)
+	args := r.setArgs(name, reason, manifestPath, profile)
 	//nolint:gosec // G204: the SecretSpec write seam — spawns the operator-pinned
-	// secretspec CLI (r.cli) with a Runner-assembled argv whose only variable is
-	// the secret name, validated against the env-var-name grammar (ValidateName)
-	// before it reaches here; the value rides stdin, never argv.
+	// secretspec CLI (r.cli) with an argv slice passed straight to exec, so no
+	// shell interprets any of it. Three variables ride it: name, validated
+	// against the env-var-name grammar (ValidateName) above; and reason plus
+	// manifestPath, each a single joined --flag=value token, so neither can
+	// introduce a new argv element or be re-parsed as a flag. The value rides
+	// stdin, never argv.
 	cmd := exec.CommandContext(ctx, r.cli, args...)
 	cmd.Stdin = strings.NewReader(value + "\n")
 	var stderr bytes.Buffer
@@ -300,15 +307,17 @@ func (r *SpecResolver) resolvedProfile() string {
 // subcommand; both are emitted before it as the canonical, unambiguous
 // position. The joined form binds each value to its flag, so a leading-dash
 // reason is recorded as the reason rather than parsed as a flag.
-func (r *SpecResolver) setArgs(name, reason, manifestPath string) []string {
+//
+// profile is the caller's resolvedProfile(), hence non-empty by construction,
+// so --profile is emitted unconditionally: the CLI acts under exactly the
+// profile the generated manifest declares instead of falling back to its own
+// built-in default and agreeing only by coincidence.
+func (r *SpecResolver) setArgs(name, reason, manifestPath, profile string) []string {
 	args := []string{"--file=" + manifestPath, "--reason=" + reason, "set", name}
 	if r.provider != "" {
 		args = append(args, "--provider", r.provider)
 	}
-	if r.profile != "" {
-		args = append(args, "--profile", r.profile)
-	}
-	return args
+	return append(args, "--profile", profile)
 }
 
 // writeManifest renders the manifest for the current declared set and writes it
@@ -330,6 +339,9 @@ func (r *SpecResolver) writeManifest(profile string, decls []store.SecretDeclara
 		return "", fmt.Errorf("secrets: create manifest: %w", err)
 	}
 	// CreateTemp makes the file 0600 already; write the body and close.
+	// Cleanup discards below are deliberate: on these paths the write/close
+	// error is what the caller needs, and a failed remove of a temp file we
+	// are already abandoning is not actionable.
 	if _, err := f.WriteString(body); err != nil {
 		_ = f.Close()
 		_ = os.Remove(f.Name())

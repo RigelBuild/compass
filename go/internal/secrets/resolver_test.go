@@ -84,30 +84,37 @@ func TestBuildManifest(t *testing.T) {
 func TestSetArgs(t *testing.T) {
 	const reason = "compass: unit test write"
 	const manifest = "/tmp/state/secretspec-123.toml"
-
-	// Bare resolver: the two global flags, the verb and the name, no
-	// provider/profile flags, and crucially no VALUE anywhere in the argv.
-	bare := NewSpecResolver(nil, "/tmp/state", WithProfile(""))
-	got := bare.setArgs("API_KEY", reason, manifest)
 	const setVerb = "set"
-	if want := []string{"--file=" + manifest, "--reason=" + reason, setVerb, "API_KEY"}; !equalArgs(got, want) {
+
+	// An explicit WithProfile("") still resolves to defaultProfile, and --profile
+	// is emitted unconditionally: the CLI acts under exactly the profile the
+	// generated manifest declares, rather than agreeing only because the CLI's
+	// own built-in default happens to match. No provider flag (none pinned), and
+	// crucially no VALUE anywhere in the argv.
+	bare := NewSpecResolver(nil, "/tmp/state", WithProfile(""))
+	got := bare.setArgs("API_KEY", reason, manifest, bare.resolvedProfile())
+	want := []string{
+		"--file=" + manifest, "--reason=" + reason, setVerb, "API_KEY",
+		"--profile", defaultProfile,
+	}
+	if !equalArgs(got, want) {
 		t.Errorf("setArgs bare = %v, want %v", got, want)
 	}
 
 	// Provider + profile set → their flags appear; the name is still the only
 	// positional after the verb, and both globals still lead the argv.
 	full := NewSpecResolver(nil, "/tmp/state", WithProvider("keyring://"), WithProfile("production"))
-	gotFull := full.setArgs("API_KEY", reason, manifest)
-	want := []string{
+	gotFull := full.setArgs("API_KEY", reason, manifest, full.resolvedProfile())
+	wantFull := []string{
 		"--file=" + manifest, "--reason=" + reason, setVerb, "API_KEY",
 		"--provider", "keyring://", "--profile", "production",
 	}
-	if !equalArgs(gotFull, want) {
-		t.Errorf("setArgs full = %v, want %v", gotFull, want)
+	if !equalArgs(gotFull, wantFull) {
+		t.Errorf("setArgs full = %v, want %v", gotFull, wantFull)
 	}
 
 	// A caller-supplied reason beginning with a dash stays one joined argument.
-	hostile := bare.setArgs("API_KEY", "--provider=evil://", manifest)
+	hostile := bare.setArgs("API_KEY", "--provider=evil://", manifest, bare.resolvedProfile())
 	if !slices.Contains(hostile, "--reason=--provider=evil://") || slices.Contains(hostile, "--provider=evil://") || slices.Contains(hostile, "--provider") {
 		t.Errorf("setArgs hostile reason = %v, want one joined reason token and no provider flag", hostile)
 	}
@@ -227,6 +234,18 @@ func TestSetEmptyValueRejected(t *testing.T) {
 			t.Errorf("Set with empty value %q = nil, want an error", empty)
 		}
 	}
+	// Both empty: the value guard runs FIRST, so the error names the value, not
+	// the reason. The precedence is load-bearing, not cosmetic — server.SetSecret
+	// maps a Set failure to CodeUnavailable on the stated premise that the value
+	// was already screened non-empty, so a caller that sent neither must still be
+	// told about the value. Swapping the two guard blocks reddens this.
+	err := r.Set(context.Background(), "API_KEY", "", "")
+	if err == nil {
+		t.Fatal("Set with empty value and empty reason = nil, want an error")
+	}
+	if !strings.Contains(err.Error(), "value is empty") {
+		t.Errorf("Set with both empty = %q, want the value guard to fire first (\"value is empty\")", err)
+	}
 	// A bad name is still rejected first, independent of value.
 	if err := r.Set(context.Background(), "bad-name", "value", "compass: unit test write"); err == nil {
 		t.Error("Set with invalid name = nil, want an error")
@@ -317,7 +336,7 @@ func TestSecretSpecCLIVersionFloor(t *testing.T) {
 	}
 
 	if major < minMajor || (major == minMajor && minor < minMinor) {
-		t.Fatalf("%s is version %s, want >= %d.%d — the write path needs the `age` provider (absent before 0.15) and the --reason flag; a shell resolving an older CLI fails encrypted-at-rest writes with \"Provider backend 'age' not found\"", bin, version, minMajor, minMinor)
+		t.Fatalf("%s is version %s, want >= %d.%d — the floor is parity with the secretspec-go SDK pin in go.mod, so the SDK read half and the CLI write half act under one release rather than skewing; %d.%d also subsumes the older, separate 0.15 `age`-provider floor, below which encrypted-at-rest writes fail with \"Provider backend 'age' not found\"", bin, version, minMajor, minMinor, minMajor, minMinor)
 	}
 }
 
@@ -397,7 +416,7 @@ func TestSetFeedsValueOnStdinNeverArgv(t *testing.T) {
 
 	// Pin the CLI to this test binary and route it into the TestMain stand-in
 	// branch via env. os.Args[0] is the running test executable; Set execs it as
-	// `<bin> --file <m> --reason <r> set API_KEY --provider ...`, and TestMain
+	// `<bin> --file=<m> --reason=<r> set API_KEY --provider ...`, and TestMain
 	// (guarded) plays the CLI.
 	stateDir := t.TempDir()
 	r := NewSpecResolver(nil, stateDir,
