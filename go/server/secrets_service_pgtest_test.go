@@ -20,6 +20,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -39,6 +40,7 @@ import (
 type recordingResolver struct {
 	setErr      error
 	setNames    []string
+	setReasons  []string
 	deleteNames []string
 	resolveHit  bool
 }
@@ -48,11 +50,12 @@ func (r *recordingResolver) Resolve(_ context.Context, _ string) ([]secrets.Reso
 	return nil, errors.New("ListSecrets must not resolve values")
 }
 
-func (r *recordingResolver) Set(_ context.Context, name, _ string) error {
+func (r *recordingResolver) Set(_ context.Context, name, _, reason string) error {
 	if r.setErr != nil {
 		return r.setErr
 	}
 	r.setNames = append(r.setNames, name)
+	r.setReasons = append(r.setReasons, reason)
 	return nil
 }
 
@@ -176,6 +179,11 @@ func TestSetSecretUserOnly(t *testing.T) {
 	}
 	if len(f.resolver.setNames) != 1 || f.resolver.setNames[0] != "DB_URL" {
 		t.Fatalf("resolver.Set names = %v, want [DB_URL]", f.resolver.setNames)
+	}
+	// The handler must hand the resolver a non-empty reason: the provider's
+	// require_reason policy refuses a reasonless write outright.
+	if len(f.resolver.setReasons) != 1 || strings.TrimSpace(f.resolver.setReasons[0]) == "" {
+		t.Fatalf("resolver.Set reasons = %q, want one non-empty reason", f.resolver.setReasons)
 	}
 }
 

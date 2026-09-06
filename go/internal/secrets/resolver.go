@@ -22,6 +22,12 @@ const manifestProject = "compass"
 // configured — the Server owns one project, one profile.
 const defaultProfile = "default"
 
+// defaultCLI is the SecretSpec binary the write path spawns by name, resolved
+// off PATH (the dev shell and the deployed image both stage it). Named so the
+// drift guard asserting the staged binary's version floor and the resolver
+// agree on which binary that is.
+const defaultCLI = "secretspec"
+
 // declarations is the read surface the Resolver needs from the store: the whole
 // declared set. store.Store satisfies it. An interface (not the concrete
 // *store.Store) so the pure resolve logic is unit-testable with a fake, without
@@ -42,8 +48,11 @@ type Resolver interface {
 	// hold it).
 	Resolve(ctx context.Context, reason string) ([]ResolvedSecret, error)
 	// Set writes a value into the provider for an already-declared name. The
-	// value is fed to the pinned CLI over stdin, never argv.
-	Set(ctx context.Context, name, value string) error
+	// value is fed to the pinned CLI over stdin, never argv. reason is recorded
+	// in the SecretSpec audit log and is required: an empty reason is rejected
+	// before the CLI is spawned, so the audit reason travels with every write
+	// exactly as it does on the read path.
+	Set(ctx context.Context, name, value, reason string) error
 	// Delete removes a value from the provider for a name.
 	Delete(ctx context.Context, name string) error
 }
@@ -88,7 +97,7 @@ func NewSpecResolver(st declarations, stateDir string, opts ...SpecOption) *Spec
 		store:    st,
 		profile:  defaultProfile,
 		stateDir: stateDir,
-		cli:      "secretspec",
+		cli:      defaultCLI,
 	}
 	for _, opt := range opts {
 		opt(r)
@@ -140,14 +149,10 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 	if len(decls) == 0 {
 		return nil, nil
 	}
-	// Normalize the profile once so the manifest header and the resolving
+	// One accessor for the profile so the manifest header and the resolving
 	// profile can never diverge: buildManifest emits [profiles.<profile>] and
-	// the SDK resolves the same <profile>. Empty (explicit WithProfile("")) maps
-	// to defaultProfile, exactly as buildManifest's own fallback would.
-	profile := r.profile
-	if profile == "" {
-		profile = defaultProfile
-	}
+	// the SDK resolves the same <profile>.
+	profile := r.resolvedProfile()
 	manifestPath, err := r.writeManifest(profile, decls)
 	if err != nil {
 		return nil, err
@@ -206,17 +211,26 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 // Set writes value into the provider for name via the pinned CLI, feeding the
 // value on stdin (never argv, so it is not visible in the host process list).
 // The SDK is read-shaped, so the write path shells the CLI. name must be a
-// valid secret name; an empty value is rejected up front.
+// valid secret name; an empty value and an empty reason are both rejected up
+// front. reason is recorded in the SecretSpec audit log and can be required by
+// the provider policy, so it travels with every write exactly as it does on
+// the read path.
 //
-// Verified against secretspec v0.15.0 source (secrets.rs:1635-1647, compass
-// ruling RIG-1327 f63edea3): `set <NAME>` with the value omitted from argv and
-// stdin not a tty takes the piped-stdin branch — a first-class
-// io::stdin().read_to_string() with no interactive prompt constructed — then
-// trims the value and rejects an empty one. So `secretspec set <NAME>
-// --provider <p> --profile <P>` with the value on stdin is the write path, no
-// positional VALUE. The live exec is exercised at T7 where a staged CLI binary
-// is available; construction (argv + stdin plan) is unit-tested here.
-func (r *SpecResolver) Set(ctx context.Context, name, value string) error {
+// The write is pointed at a generated manifest through the global --file flag,
+// the same explicit-manifest treatment Resolve gives the read path: the
+// registry is the source of truth and no secretspec.toml is committed, so a
+// CLI left to discover one walks up from the process cwd and finds nothing.
+// The generated manifest declares exactly the name being written.
+//
+// Verified against secretspec v0.20.0 source (secrets.rs:4423-4427 for the
+// piped-stdin branch and trim, :4430-4433 for empty-value rejection): `set
+// <NAME>` with the value omitted from argv and stdin not a tty takes the
+// piped-stdin branch — a first-class io::stdin().read_to_string() with no
+// interactive prompt constructed — then trims the value and rejects an empty
+// one. So `secretspec --file <m> --reason <r> set <NAME> --provider <p>
+// --profile <P>` with the value on stdin is the write path, no positional
+// VALUE.
+func (r *SpecResolver) Set(ctx context.Context, name, value, reason string) error {
 	if err := ValidateName(name); err != nil {
 		return err
 	}
@@ -225,7 +239,23 @@ func (r *SpecResolver) Set(ctx context.Context, name, value string) error {
 	if strings.TrimSpace(value) == "" {
 		return fmt.Errorf("secrets: set %q: value is empty", name)
 	}
-	args := r.setArgs(name)
+	// The reason is the audit record, and the CLI's own require_reason policy is
+	// an environment heuristic (it gates on agent-env detection), so an omitted
+	// reason makes the same write succeed on one host and be refused on another.
+	// Screen it here for a deterministic caller error instead.
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("secrets: set %q: reason is empty", name)
+	}
+	// The CLI loads the profile's declared set from a manifest; generate one
+	// declaring just this name rather than letting it search the process cwd.
+	manifestPath, err := r.writeManifest(r.resolvedProfile(), []store.SecretDeclaration{{Name: name}})
+	if err != nil {
+		return err
+	}
+	// A transient input to the CLI, exactly as on the read path — remove it once
+	// the write returns; the registry, not this file, is the durable source.
+	defer func() { _ = os.Remove(manifestPath) }()
+	args := r.setArgs(name, reason, manifestPath)
 	//nolint:gosec // G204: the SecretSpec write seam — spawns the operator-pinned
 	// secretspec CLI (r.cli) with a Runner-assembled argv whose only variable is
 	// the secret name, validated against the env-var-name grammar (ValidateName)
@@ -253,10 +283,25 @@ func (r *SpecResolver) Delete(ctx context.Context, name string) error {
 	return nil
 }
 
+// resolvedProfile is the SecretSpec profile every invocation runs under: the
+// pinned profile, or defaultProfile when none is configured (an explicit
+// WithProfile("")). One accessor for both paths so the generated manifest
+// header and the profile the CLI/SDK acts under can never diverge.
+func (r *SpecResolver) resolvedProfile() string {
+	if r.profile == "" {
+		return defaultProfile
+	}
+	return r.profile
+}
+
 // setArgs builds the argv for the write path (pure, so it is unit-testable
 // without executing the binary). The value never appears here — it rides stdin.
-func (r *SpecResolver) setArgs(name string) []string {
-	args := []string{"set", name}
+// --file and --reason are global flags, accepted on either side of the `set`
+// subcommand; both are emitted before it as the canonical, unambiguous
+// position. The joined form binds each value to its flag, so a leading-dash
+// reason is recorded as the reason rather than parsed as a flag.
+func (r *SpecResolver) setArgs(name, reason, manifestPath string) []string {
+	args := []string{"--file=" + manifestPath, "--reason=" + reason, "set", name}
 	if r.provider != "" {
 		args = append(args, "--provider", r.provider)
 	}

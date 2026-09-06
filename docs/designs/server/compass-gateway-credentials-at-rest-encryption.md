@@ -107,11 +107,11 @@ key from `crypto/rand` and — serialized against concurrent booters through a
 Postgres advisory lock (T2) — provisions it:
 
 - writes the value into the provider via `secrets.Resolver.Set`
-  (`go/internal/secrets/resolver.go:219`, `func (r *SpecResolver) Set(ctx
-  context.Context, name, value string) error` — "Set writes value into the
-  provider for name via the pinned CLI, feeding the value on stdin (never
+  (`go/internal/secrets/resolver.go:238`, `func (r *SpecResolver) Set(ctx
+  context.Context, name, value, reason string) error` — "Set writes value into
+  the provider for name via the pinned CLI, feeding the value on stdin (never
   argv, so it is not visible in the host process list)",
-  resolver.go:206-207);
+  resolver.go:216-217);
 - registers the name in the SEPARATE `server_secrets` store (D6) via the
   server-internal `DeclareServerSecret` (T0) — a mirror of
   `store.DeclareSecret` (`go/internal/store/secrets.go:82`, `func (s *Store)
@@ -805,9 +805,10 @@ is declared into it) and T1.
   - `func provisionGatewayMasterKey(ctx context.Context, resolver secrets.Resolver, st *store.Store) (envelope.Key, error)`
     — `resolver` is the SERVER-SECRET resolver instance (T0). Resolve
     `GATEWAY_CREDENTIALS_MASTER_KEY` through it; on absence:
-    `envelope.NewKey()` → `resolver.Set(ctx, name, encodedKey)`
-    (resolver.go:219; the value rides stdin, never argv,
-    resolver.go:206-207) → `st.DeclareServerSecret(ctx, "", name)` with
+    `envelope.NewKey()` → `resolver.Set(ctx, name, encodedKey, "compass:
+    provision gateway credentials master key")`
+    (resolver.go:238; the value rides stdin, never argv,
+    resolver.go:216-217) → `st.DeclareServerSecret(ctx, "", name)` with
     `declared_by = NULL` (server-provisioned; T0's nullable FK). No
     delivery, no kind — those columns do not exist on `server_secrets`.
   - **Concurrency — advisory-lock serialized (mandatory):** the whole

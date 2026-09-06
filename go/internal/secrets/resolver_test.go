@@ -11,8 +11,10 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -80,25 +82,38 @@ func TestBuildManifest(t *testing.T) {
 }
 
 func TestSetArgs(t *testing.T) {
-	// Bare resolver: just the verb and name, no provider/profile flags, and
-	// crucially no VALUE anywhere in the argv.
+	const reason = "compass: unit test write"
+	const manifest = "/tmp/state/secretspec-123.toml"
+
+	// Bare resolver: the two global flags, the verb and the name, no
+	// provider/profile flags, and crucially no VALUE anywhere in the argv.
 	bare := NewSpecResolver(nil, "/tmp/state", WithProfile(""))
-	got := bare.setArgs("API_KEY")
+	got := bare.setArgs("API_KEY", reason, manifest)
 	const setVerb = "set"
-	if want := []string{setVerb, "API_KEY"}; !equalArgs(got, want) {
+	if want := []string{"--file=" + manifest, "--reason=" + reason, setVerb, "API_KEY"}; !equalArgs(got, want) {
 		t.Errorf("setArgs bare = %v, want %v", got, want)
 	}
 
 	// Provider + profile set → their flags appear; the name is still the only
-	// positional after the verb.
+	// positional after the verb, and both globals still lead the argv.
 	full := NewSpecResolver(nil, "/tmp/state", WithProvider("keyring://"), WithProfile("production"))
-	gotFull := full.setArgs("API_KEY")
-	if want := []string{setVerb, "API_KEY", "--provider", "keyring://", "--profile", "production"}; !equalArgs(gotFull, want) {
+	gotFull := full.setArgs("API_KEY", reason, manifest)
+	want := []string{
+		"--file=" + manifest, "--reason=" + reason, setVerb, "API_KEY",
+		"--provider", "keyring://", "--profile", "production",
+	}
+	if !equalArgs(gotFull, want) {
 		t.Errorf("setArgs full = %v, want %v", gotFull, want)
 	}
 
+	// A caller-supplied reason beginning with a dash stays one joined argument.
+	hostile := bare.setArgs("API_KEY", "--provider=evil://", manifest)
+	if !slices.Contains(hostile, "--reason=--provider=evil://") || slices.Contains(hostile, "--provider=evil://") || slices.Contains(hostile, "--provider") {
+		t.Errorf("setArgs hostile reason = %v, want one joined reason token and no provider flag", hostile)
+	}
+
 	// The value must NEVER be in the constructed argv — it rides stdin.
-	for _, a := range full.setArgs("API_KEY") {
+	for _, a := range gotFull {
 		if strings.Contains(a, "the-secret-value") {
 			t.Errorf("value leaked into argv: %v", gotFull)
 		}
@@ -208,23 +223,30 @@ func TestSetEmptyValueRejected(t *testing.T) {
 	// front as a deterministic caller error, before shelling out.
 	r := NewSpecResolver(nil, "/tmp/state")
 	for _, empty := range []string{"", "   ", "\t", "\n", "  \n\t "} {
-		if err := r.Set(context.Background(), "API_KEY", empty); err == nil {
+		if err := r.Set(context.Background(), "API_KEY", empty, "compass: unit test write"); err == nil {
 			t.Errorf("Set with empty value %q = nil, want an error", empty)
 		}
 	}
 	// A bad name is still rejected first, independent of value.
-	if err := r.Set(context.Background(), "bad-name", "value"); err == nil {
+	if err := r.Set(context.Background(), "bad-name", "value", "compass: unit test write"); err == nil {
 		t.Error("Set with invalid name = nil, want an error")
 	}
 }
 
-// TestSecretSpecVersionPin is a drift guard: the resolver's stdin/trim/empty-
-// reject write contract and the runtime FFI dlopen were verified against
-// secretspec-go v0.15.0 source (compass ruling RIG-1327 f63edea3). If a devenv
-// fork-sync moves the pin, this fails loudly so the set() contract is re-checked
-// against the new source rather than silently drifting.
+// TestSecretSpecVersionPin is a drift guard for the SDK HALF of the secretspec
+// seam only — the module version in go.mod, which governs the read path (the
+// builder API and the native lib it dlopens). It says nothing about the CLI the
+// write path spawns; TestSecretSpecCLIVersionFloor guards that half, and the
+// two can drift independently because the read and write paths cross different
+// seams (SDK vs shelled binary).
+//
+// The resolver's stdin/trim/empty-reject write contract and the runtime FFI
+// dlopen were verified against secretspec v0.20.0 source (secrets.rs:4423-4427
+// for the piped-stdin branch and trim, :4430-4433 for empty-value rejection).
+// If a devenv fork-sync moves the pin, this fails loudly so the set() contract
+// is re-checked against the new source rather than silently drifting.
 func TestSecretSpecVersionPin(t *testing.T) {
-	const wantVersion = "v0.15.0"
+	const wantVersion = "v0.20.0"
 	const modulePath = "github.com/cachix/secretspec/secretspec-go"
 
 	// Assert the pin at its source of truth, the module's go.mod — deterministic
@@ -246,7 +268,56 @@ func TestSecretSpecVersionPin(t *testing.T) {
 		t.Fatalf("%s not found in go.mod; expected it pinned at %s", modulePath, wantVersion)
 	}
 	if got != wantVersion {
-		t.Fatalf("secretspec-go pinned at %s, want %s — the write-path contract (stdin/trim/empty-reject) was verified against %s; re-verify set() semantics against the new source before moving the pin (RIG-1327 f63edea3)", got, wantVersion, wantVersion)
+		t.Fatalf("secretspec-go pinned at %s, want %s — the write-path contract was verified against secretspec v0.20.0 source (secrets.rs:4423-4427 for piped stdin and trim, :4430-4433 for empty rejection); re-verify set() semantics against the new source before moving the pin", got, wantVersion)
+	}
+}
+
+// TestSecretSpecCLIVersionFloor guards the CLI half of the seam: the write path
+// spawns `secretspec` by name, so the binary the shell resolves — not go.mod —
+// decides whether `--reason` is accepted, whether the require_reason policy
+// exists, and whether the `age` provider is compiled in at all. Those are the
+// behaviors the write path depends on, and none of them are visible to the SDK
+// pin, so without this assertion the CLI could drift arbitrarily far while
+// every other test stayed green.
+//
+// This guard is dev-shell-only: no CI lane stages the secretspec binary. It is
+// resolved from a pinned input outside the parsed `packages` literal, so this
+// test always skips in CI; the CLI half of the seam is asserted on a developer's
+// machine instead.
+func TestSecretSpecCLIVersionFloor(t *testing.T) {
+	const minMajor, minMinor = 0, 20
+
+	bin, err := exec.LookPath(defaultCLI)
+	if err != nil {
+		t.Skipf("%s not on PATH; skipping the CLI floor guard", defaultCLI)
+	}
+
+	out, err := exec.CommandContext(context.Background(), bin, "--version").Output()
+	if err != nil {
+		t.Fatalf("%s --version: %v", bin, err)
+	}
+	// `secretspec --version` prints "secretspec <semver>".
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 {
+		t.Fatalf("%s --version = %q, want \"secretspec <version>\"", bin, strings.TrimSpace(string(out)))
+	}
+	version := fields[len(fields)-1]
+
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		t.Fatalf("%s reported version %q, want a dotted semver", bin, version)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		t.Fatalf("%s reported version %q: parse major: %v", bin, version, err)
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		t.Fatalf("%s reported version %q: parse minor: %v", bin, version, err)
+	}
+
+	if major < minMajor || (major == minMajor && minor < minMinor) {
+		t.Fatalf("%s is version %s, want >= %d.%d — the write path needs the `age` provider (absent before 0.15) and the --reason flag; a shell resolving an older CLI fails encrypted-at-rest writes with \"Provider backend 'age' not found\"", bin, version, minMajor, minMinor)
 	}
 }
 
@@ -284,11 +355,24 @@ const helperCaptureEnv = "GO_HELPER_CAPTURE_FILE"
 func TestMain(m *testing.M) {
 	if os.Getenv(helperProcessEnv) == "1" {
 		// We are the re-exec'd stand-in CLI. Capture argv (\x00-joined so no
-		// argument boundary is ambiguous) and the entire piped stdin verbatim.
-		stdin, _ := io.ReadAll(os.Stdin)
+		// argument boundary is ambiguous), the entire piped stdin verbatim, and
+		// the body of the manifest --file points at — read HERE, while the
+		// parent's temp file still exists, so the parent can assert the manifest
+		// was really on disk and really declared the name at exec time.
+		stdin, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			os.Exit(2)
+		}
 		capture := os.Getenv(helperCaptureEnv)
-		// Sentinel separates the argv record from the raw stdin bytes.
-		payload := strings.Join(os.Args, "\x00") + "\x1e" + string(stdin)
+		var manifest []byte
+		if i := slices.IndexFunc(os.Args, func(arg string) bool { return strings.HasPrefix(arg, "--file=") }); i >= 0 {
+			manifest, err = os.ReadFile(strings.TrimPrefix(os.Args[i], "--file="))
+			if err != nil {
+				os.Exit(2)
+			}
+		}
+		// Sentinels separate the argv record, the raw stdin bytes and the manifest.
+		payload := strings.Join(os.Args, "\x00") + "\x1e" + string(stdin) + "\x1e" + string(manifest)
 		if err := os.WriteFile(capture, []byte(payload), 0o600); err != nil {
 			os.Exit(2)
 		}
@@ -298,19 +382,25 @@ func TestMain(m *testing.M) {
 }
 
 // TestSetFeedsValueOnStdinNeverArgv defends finding #1 (GATING): the value→stdin,
-// never→argv invariant on the REAL exec boundary in Set. setArgs is pure and
-// cannot regress the exec wiring; this drives Set through an actual process
-// spawn (the test binary re-exec'd as the pinned CLI) and asserts what the child
-// truly received. A future edit that appends the value as a positional arg, or
-// breaks cmd.Stdin, reddens this.
+// never→argv invariant on the REAL exec boundary in Set, the audit-reason
+// contract the provider's require_reason policy enforces, and the explicit
+// manifest the CLI is pointed at. setArgs is pure and cannot regress the exec
+// wiring; this drives Set through an actual process spawn (the test binary
+// re-exec'd as the pinned CLI) and asserts what the child truly received. A
+// future edit that appends the value as a positional arg, breaks cmd.Stdin,
+// drops --reason or --file, or moves either after the `set` subcommand reddens
+// this.
 func TestSetFeedsValueOnStdinNeverArgv(t *testing.T) {
 	const value = "the-secret-value"
+	const reason = "compass: operator secret write via SetSecret RPC"
 	capture := filepath.Join(t.TempDir(), "capture")
 
 	// Pin the CLI to this test binary and route it into the TestMain stand-in
 	// branch via env. os.Args[0] is the running test executable; Set execs it as
-	// `<bin> set API_KEY --provider ...`, and TestMain (guarded) plays the CLI.
-	r := NewSpecResolver(nil, t.TempDir(),
+	// `<bin> --file <m> --reason <r> set API_KEY --provider ...`, and TestMain
+	// (guarded) plays the CLI.
+	stateDir := t.TempDir()
+	r := NewSpecResolver(nil, stateDir,
 		WithCLI(os.Args[0]),
 		WithProvider("keyring://"),
 		WithProfile("production"),
@@ -318,7 +408,7 @@ func TestSetFeedsValueOnStdinNeverArgv(t *testing.T) {
 	t.Setenv(helperProcessEnv, "1")
 	t.Setenv(helperCaptureEnv, capture)
 
-	if err := r.Set(context.Background(), "API_KEY", value); err != nil {
+	if err := r.Set(context.Background(), "API_KEY", value, reason); err != nil {
 		t.Fatalf("Set = %v, want nil", err)
 	}
 
@@ -326,12 +416,12 @@ func TestSetFeedsValueOnStdinNeverArgv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read capture file (stand-in CLI never ran or never wrote): %v", err)
 	}
-	parts := strings.SplitN(string(raw), "\x1e", 2)
-	if len(parts) != 2 {
+	parts := strings.SplitN(string(raw), "\x1e", 3)
+	if len(parts) != 3 {
 		t.Fatalf("malformed capture payload: %q", raw)
 	}
 	argv := strings.Split(parts[0], "\x00")
-	stdin := parts[1]
+	stdin, manifest := parts[1], parts[2]
 
 	// (a) argv carries the verb and the name...
 	if !slices.Contains(argv, "set") {
@@ -348,7 +438,47 @@ func TestSetFeedsValueOnStdinNeverArgv(t *testing.T) {
 		}
 	}
 
-	// (b) the value rides stdin exactly, with the trailing newline the CLI trims.
+	// (b) --reason is present as a joined token and sits ahead of `set` in
+	// argv: it is a global flag the CLI accepts on either side of the
+	// subcommand, and before it is the canonical position this test pins so the
+	// argv shape stays stable. argv[0] is the binary itself, so index comparison
+	// is over the real invocation the child received.
+	setIdx := slices.Index(argv, "set")
+	reasonIdx := slices.IndexFunc(argv, func(arg string) bool { return strings.HasPrefix(arg, "--reason=") })
+	if reasonIdx < 0 {
+		t.Fatalf("argv %v missing the joined global --reason flag; the provider's require_reason policy fails such a write", argv)
+	}
+	if got := strings.TrimPrefix(argv[reasonIdx], "--reason="); got != reason {
+		t.Errorf("argv --reason value = %q, want %q", got, reason)
+	}
+	if reasonIdx > setIdx {
+		t.Errorf("argv %v places --reason (index %d) after the 'set' subcommand (index %d); pin it before, the canonical position", argv, reasonIdx, setIdx)
+	}
+
+	// (c) --file points the CLI at a generated manifest in the resolver's state
+	// dir, ahead of `set` for the same reason. Without it the CLI walks up from
+	// the process cwd looking for a secretspec.toml the repo deliberately never
+	// commits, so every production write fails "No secretspec.toml found".
+	fileIdx := slices.IndexFunc(argv, func(arg string) bool { return strings.HasPrefix(arg, "--file=") })
+	if fileIdx < 0 {
+		t.Fatalf("argv %v missing the joined global --file flag; without a manifest the CLI fails 'No secretspec.toml found'", argv)
+	}
+	if got := strings.TrimPrefix(argv[fileIdx], "--file="); filepath.Dir(got) != stateDir {
+		t.Errorf("argv --file = %q, want a manifest under the resolver state dir %q", got, stateDir)
+	}
+	if fileIdx > setIdx {
+		t.Errorf("argv %v places --file (index %d) after the 'set' subcommand (index %d); pin it before, the canonical position", argv, fileIdx, setIdx)
+	}
+
+	// ...and that manifest really existed at exec time, declaring exactly the
+	// name being written under the resolver's profile.
+	for _, want := range []string{"[profiles.production]", "API_KEY = {", "required = true"} {
+		if !strings.Contains(manifest, want) {
+			t.Errorf("manifest handed to the CLI missing %q:\n%s", want, manifest)
+		}
+	}
+
+	// (d) the value rides stdin exactly, with the trailing newline the CLI trims.
 	if want := value + "\n"; stdin != want {
 		t.Errorf("captured stdin = %q, want %q", stdin, want)
 	}
@@ -365,10 +495,31 @@ func TestSetEmptyValueNeverInvokesCLI(t *testing.T) {
 	t.Setenv(helperProcessEnv, "1")
 	t.Setenv(helperCaptureEnv, capture)
 
-	if err := r.Set(context.Background(), "API_KEY", ""); err == nil {
+	if err := r.Set(context.Background(), "API_KEY", "", "compass: unit test write"); err == nil {
 		t.Fatal("Set with empty value = nil, want an error")
 	}
 	if _, err := os.Stat(capture); !os.IsNotExist(err) {
 		t.Errorf("capture file exists (err=%v): the CLI was invoked for an empty value; it must be rejected before exec", err)
+	}
+}
+
+// TestSetEmptyReasonNeverInvokesCLI pins the audit-reason contract at the same
+// pre-exec boundary as the empty value: the CLI's own require_reason policy is
+// an environment heuristic (it gates on agent-env detection), so a reasonless
+// write succeeds on one host and is refused on another. Set screens it instead,
+// and the capture file's absence proves no process was spawned.
+func TestSetEmptyReasonNeverInvokesCLI(t *testing.T) {
+	capture := filepath.Join(t.TempDir(), "capture")
+	r := NewSpecResolver(nil, t.TempDir(), WithCLI(os.Args[0]))
+	t.Setenv(helperProcessEnv, "1")
+	t.Setenv(helperCaptureEnv, capture)
+
+	for _, reason := range []string{"", "   \t\n"} {
+		if err := r.Set(context.Background(), "API_KEY", "the-secret-value", reason); err == nil {
+			t.Errorf("Set with reason %q = nil, want an error", reason)
+		}
+		if _, err := os.Stat(capture); !os.IsNotExist(err) {
+			t.Errorf("capture file exists (err=%v): the CLI was invoked with reason %q; an empty reason must be rejected before exec", err, reason)
+		}
 	}
 }

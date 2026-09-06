@@ -121,7 +121,9 @@ func (s *secretsService) SetSecret(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("declaring secret: %w", declErr))
 	}
 
-	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue()); err != nil {
+	// A fixed, operator-meaningful reason: this write is only ever reachable
+	// through the SetSecret RPC, so the audit log records that provenance.
+	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue(), "compass: operator secret write via SetSecret RPC"); err != nil {
 		// The name was validated by DeclareSecret and the value was screened
 		// non-empty above, so a Set failure here is a provider/exec fault
 		// (CLI unreachable, non-zero exit) — retryable and operator-side, never
