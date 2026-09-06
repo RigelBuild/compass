@@ -330,9 +330,11 @@ in
   #                         dir so a human driving the box over ssh never gets a
   #                         stale binary; nothing execs it, so it needs a `before`
   #                         edge to land in `up`'s default (upstream-only) closure
-  #                         at all — which means a CLI compile error does gate the
-  #                         backend. That cost is accepted: the alternative was a
-  #                         task that never ran.
+  #                         at all. Deliberate consequence: a CLI compile error
+  #                         fails `up` WHOLESALE — server, ui, mint-runner-token
+  #                         and runner all go with it, leaving postgres+gen-cert.
+  #                         Accepted so a non-compiling CLI cannot be ignored;
+  #                         `--mode single` is the escape hatch while it is broken.
   #
   # Opt-in (NOT wired into up): `dogfood:agent-image` builds+loads the agent
   # base image (heavy closure — kept off the hot up path), and `dogfood:clean`
@@ -541,17 +543,26 @@ in
     # processes. An `after` edge put this task DOWNSTREAM, and — alone among
     # these tasks — nothing depends on it, so it fell outside the closure and
     # never ran at all under a plain `up`. A `before` edge is what actually puts
-    # it in the graph. The accepted cost is that a CLI compile error now gates
-    # the backend starting; that is the price of the freshness guarantee, since
-    # the alternative is a task that silently never runs.
+    # it in the graph.
+    # THE GATE IS DELIBERATE, AND IT IS STACK-WIDE, NOT CLI-ONLY: a compile
+    # error anywhere in this CLI's import graph fails the task, which fails
+    # `up` — taking compass-server and everything ordered after it
+    # (dogfood:mint-runner-token, compass-runner, compass-ui) down with it, and
+    # leaving only postgres and gen-cert up. Someone doing server- or UI-only
+    # work on a briefly-broken CLI cannot boot the stack. That is accepted: on
+    # a dogfood box a CLI that will not compile should be impossible to ignore,
+    # and a loud failure at boot beats an operator discovering it over ssh.
+    # Recovery is to fix `./cmd/compass`, or to bring processes up individually
+    # (`devenv up --mode single`) while the CLI is broken.
     # `rm -f "$bin"` first is load-bearing: `go build -o` does NOT write its
     # destination when the build fails, so without the remove a failed rebuild
     # leaves the previous binary in place and an operator runs silently-old code
     # — undetectable while `--version` is a static string (RIG-3346). Removing
-    # first converts that into a self-announcing "no such file".
+    # first converts that into a self-announcing "no such file"; the cost is a
+    # ~10s window on every `up` where the binary is absent while it rebuilds.
     # Invocation path is explicit — the state dir is not on PATH, so an operator
-    # runs `"$DEVENV_STATE/compass/compass"` (or the absolute path); `devenv info`
-    # prints that var, and note it takes no positional argument.
+    # runs `"$DEVENV_STATE/compass/compass"` (or the absolute path). `devenv
+    # info` prints that var (`devenv info` itself takes no positional argument).
     "dogfood:build-cli" = {
       exec = ''
         set -euo pipefail
