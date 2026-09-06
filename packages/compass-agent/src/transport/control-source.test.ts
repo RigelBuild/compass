@@ -131,14 +131,16 @@ function emptyRecorder(): Recorder {
 // can prove the forge arm enqueues at decode and defers the rail ack to flush.
 function recordingImmediate(): {
 	immediate: {
-		steer(m: unknown, fromHandle: string): void;
-		deliver(m: unknown, fromHandle: string): void;
+		steer(m: unknown, fromHandle: string, traceparent: string): void;
+		deliver(m: unknown, fromHandle: string, traceparent: string): void;
 		forgeNotification(n: ForgeNotification, ackRail: () => void): void;
 	};
 	steers: unknown[];
 	delivers: unknown[];
 	steerHandles: string[];
 	deliverHandles: string[];
+	steerTraceparents: string[];
+	deliverTraceparents: string[];
 	forgeNotifications: ForgeNotification[];
 	forgeAckRails: (() => void)[];
 } {
@@ -146,17 +148,21 @@ function recordingImmediate(): {
 	const delivers: unknown[] = [];
 	const steerHandles: string[] = [];
 	const deliverHandles: string[] = [];
+	const steerTraceparents: string[] = [];
+	const deliverTraceparents: string[] = [];
 	const forgeNotifications: ForgeNotification[] = [];
 	const forgeAckRails: (() => void)[] = [];
 	return {
 		immediate: {
-			steer: (m, fromHandle) => {
+			steer: (m, fromHandle, traceparent) => {
 				steers.push(m);
 				steerHandles.push(fromHandle);
+				steerTraceparents.push(traceparent);
 			},
-			deliver: (m, fromHandle) => {
+			deliver: (m, fromHandle, traceparent) => {
 				delivers.push(m);
 				deliverHandles.push(fromHandle);
+				deliverTraceparents.push(traceparent);
 			},
 			forgeNotification: (n, ackRail) => {
 				forgeNotifications.push(n);
@@ -167,6 +173,8 @@ function recordingImmediate(): {
 		delivers,
 		steerHandles,
 		deliverHandles,
+		steerTraceparents,
+		deliverTraceparents,
 		forgeNotifications,
 		forgeAckRails,
 	};
@@ -194,6 +202,7 @@ function populatedSteerOp(
 	id: string,
 	text: string,
 	fromHandle = "",
+	traceparent = "",
 ): WireAgentControl {
 	const message: Message = create(MessageSchema, {
 		id,
@@ -205,7 +214,7 @@ function populatedSteerOp(
 		controlSeq: seq,
 		control: {
 			case: "steer",
-			value: create(SteerControlSchema, { message, fromHandle }),
+			value: create(SteerControlSchema, { message, fromHandle, traceparent }),
 		},
 	});
 }
@@ -217,6 +226,7 @@ function deliverOp(
 	id: string,
 	text: string,
 	fromHandle = "",
+	traceparent = "",
 ): WireAgentControl {
 	const message: Message = create(MessageSchema, {
 		id,
@@ -228,7 +238,7 @@ function deliverOp(
 		controlSeq: seq,
 		control: {
 			case: "deliver",
-			value: create(DeliverControlSchema, { message, fromHandle }),
+			value: create(DeliverControlSchema, { message, fromHandle, traceparent }),
 		},
 	});
 }
@@ -442,12 +452,19 @@ test("a populated deliver decodes its Message and dispatches it through immediat
 	const socketPath = await serve(rec, {
 		control: async function* () {
 			yield replayCompleteOp(1n);
-			yield deliverOp(2n, "msg-abc", "channel text", "matt");
+			yield deliverOp(
+				2n,
+				"msg-abc",
+				"channel text",
+				"matt",
+				"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+			);
 			yield promptOp(3n, "after");
 		},
 	});
 	const unmapped: UnmappedEvent[] = [];
-	const { immediate, delivers, deliverHandles } = recordingImmediate();
+	const { immediate, delivers, deliverHandles, deliverTraceparents } =
+		recordingImmediate();
 	const source = createSocketControlSource(
 		createUnixSocketTransport(socketPath),
 		immediate,
@@ -462,6 +479,11 @@ test("a populated deliver decodes its Message and dispatches it through immediat
 	// The wire DeliverControl.from_handle threaded through to immediate.deliver
 	// (RIG-2486 T1). Non-vacuity: drop the fromHandle arg on the dispatch → "".
 	expect(deliverHandles).toEqual(["matt"]);
+	// The wire DeliverControl.traceparent threaded through to immediate.deliver
+	// (RIG-2508 T3). Non-vacuity: drop the traceparent arg on the dispatch → "".
+	expect(deliverTraceparents).toEqual([
+		"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+	]);
 	// A populated deliver is NOT counted "payload staged" — it decoded fine.
 	const staged = unmapped.find(
 		(u) => u.eventType === "control:deliver" && u.reason.includes("staged"),
@@ -478,12 +500,19 @@ test("a populated steer decodes its Message and dispatches it through immediate.
 	const socketPath = await serve(rec, {
 		control: async function* () {
 			yield replayCompleteOp(1n);
-			yield populatedSteerOp(2n, "steer-abc", "mention text", "matt");
+			yield populatedSteerOp(
+				2n,
+				"steer-abc",
+				"mention text",
+				"matt",
+				"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+			);
 			yield promptOp(3n, "after");
 		},
 	});
 	const unmapped: UnmappedEvent[] = [];
-	const { immediate, steers, steerHandles } = recordingImmediate();
+	const { immediate, steers, steerHandles, steerTraceparents } =
+		recordingImmediate();
 	const source = createSocketControlSource(
 		createUnixSocketTransport(socketPath),
 		immediate,
@@ -498,6 +527,11 @@ test("a populated steer decodes its Message and dispatches it through immediate.
 	// The wire SteerControl.from_handle threaded through to immediate.steer
 	// (RIG-2486 T1). Non-vacuity: drop the fromHandle arg on the dispatch → "".
 	expect(steerHandles).toEqual(["matt"]);
+	// The wire SteerControl.traceparent threaded through to immediate.steer
+	// (RIG-2508 T3). Non-vacuity: drop the traceparent arg on the dispatch → "".
+	expect(steerTraceparents).toEqual([
+		"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+	]);
 	// A populated steer is NOT counted "payload staged" — it decoded fine.
 	const staged = unmapped.find(
 		(u) => u.eventType === "control:steer" && u.reason.includes("staged"),

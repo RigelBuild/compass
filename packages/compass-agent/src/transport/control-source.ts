@@ -171,7 +171,11 @@ export interface ImmediateControl {
 	// control (RIG-2486 T1) — the value the CompassAgent emits on the
 	// SessionInjection observation without a per-injection roster lookup. Empty
 	// when the Server could not resolve the author handle (a handle miss is
-	// logged server-side, never a delivery block). The fourth arg carries the
+	// logged server-side, never a delivery block). The third arg is the W3C
+	// `traceparent` off the wire control (`SteerControl.traceparent` /
+	// `DeliverControl.traceparent`, the Server's active-span context, RIG-2508
+	// T3) — empty when the Server had no active span; the CompassAgent uses it to
+	// parent/link the injected turn's trace. The fourth arg carries the
 	// denormalized SOURCE channel + topic NAMES off the wire control (peer-DM
 	// record DL-292, `DeliverControl`/`SteerControl` `channel_name`/`topic_name`)
 	// — what the CompassAgent renders as the delivery's source and reply target
@@ -180,11 +184,13 @@ export interface ImmediateControl {
 	steer(
 		msg: Message,
 		fromHandle: string,
+		traceparent: string,
 		sourceNames: DeliverSourceNames,
 	): void; // compass.v1.Message — .id intact
 	deliver(
 		msg: Message,
 		fromHandle: string,
+		traceparent: string,
 		sourceNames: DeliverSourceNames,
 	): void; // compass.v1.Message — .id intact
 	// RIG-2732 W3 forge notification arm. UNLIKE steer/deliver — which ack their
@@ -449,15 +455,25 @@ export function createSocketControlSource(
 						"empty-shell steer/deliver — payload staged (RIG-1310)",
 					);
 				} else if (wire.control.case === "steer") {
-					immediate.steer(msg, wire.control.value.fromHandle, {
-						channelName: wire.control.value.channelName,
-						topicName: wire.control.value.topicName,
-					});
+					immediate.steer(
+						msg,
+						wire.control.value.fromHandle,
+						wire.control.value.traceparent,
+						{
+							channelName: wire.control.value.channelName,
+							topicName: wire.control.value.topicName,
+						},
+					);
 				} else {
-					immediate.deliver(msg, wire.control.value.fromHandle, {
-						channelName: wire.control.value.channelName,
-						topicName: wire.control.value.topicName,
-					});
+					immediate.deliver(
+						msg,
+						wire.control.value.fromHandle,
+						wire.control.value.traceparent,
+						{
+							channelName: wire.control.value.channelName,
+							topicName: wire.control.value.topicName,
+						},
+					);
 				}
 				// Applied (counted or dispatched) at decode → ack now, ahead of any
 				// queued iterator op (invariant 2 → applied_above).

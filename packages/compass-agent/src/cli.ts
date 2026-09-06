@@ -1041,10 +1041,10 @@ export async function main(
 	// `agent` is assigned — so the `agent?.` guard never actually sees undefined.
 	let agent: CompassAgent | undefined;
 	const control = createSocketControlSource(transport, {
-		steer: (msg, fromHandle, sourceNames) =>
-			agent?.steer(msg, fromHandle, "", sourceNames),
-		deliver: (msg, fromHandle, sourceNames) =>
-			agent?.deliver(msg, fromHandle, "", sourceNames),
+		steer: (msg, fromHandle, traceparent, sourceNames) =>
+			agent?.steer(msg, fromHandle, traceparent, sourceNames),
+		deliver: (msg, fromHandle, traceparent, sourceNames) =>
+			agent?.deliver(msg, fromHandle, traceparent, sourceNames),
 		forgeNotification: (notification, ackRail) =>
 			agent?.forgeNotification(notification, ackRail),
 	});
