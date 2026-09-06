@@ -224,4 +224,27 @@ func TestServiceTokenCrossDoorMatrix(t *testing.T) {
 			t.Fatalf("a Runner token at the service door must be ErrWrongKind, got %v", err)
 		}
 	})
+
+	t.Run("runner token wanted as runner resolves", func(t *testing.T) {
+		// The runner positive diagonal: the account diagonal is covered by
+		// TestIssueThenResolveRoundTripsToTheIssuedAccount and the service one
+		// above, so this closes the 3x3 — a resolvable token of each kind
+		// succeeds at its own door, pinning the `want` comparison against all
+		// three values rather than only the two rejection axes.
+		runnerToken := "cnVubmVyLWRpYWdvbmFs" // base64url-shaped, never account-issued
+		const runnerID = "diagonal-runner"
+		if err := st.PutTokenHash(ctx, hashToken(runnerToken), store.Subject{Kind: store.SubjectRunner, ID: runnerID}); err != nil {
+			t.Fatalf("PutTokenHash(runner): %v", err)
+		}
+		subj, err := ResolveToken(ctx, st, runnerToken, store.SubjectRunner)
+		if err != nil {
+			t.Fatalf("a live Runner token must resolve at the Runner door: %v", err)
+		}
+		if subj.Kind != store.SubjectRunner {
+			t.Fatalf("resolved kind = %d, want SubjectRunner", subj.Kind)
+		}
+		if subj.ID != runnerID {
+			t.Fatalf("resolve must return the runner the token was stored for: got %q, want %q", subj.ID, runnerID)
+		}
+	})
 }
