@@ -14,9 +14,7 @@
 # byte-identically locally and in CI. It does invoke the repo's shared
 # devenv-CLI under bun to resolve the fork rev from agent-image/devenv.lock
 # rather than hand-pinning it; bun comes from the root dev shell locally and
-# the publish workflow's pinned bootstrap in CI, exactly as skopeo does. Per
-# AGENTS.md, a script that genuinely must be bash carries its rationale
-# inline; this is it.
+# the publish workflow's pinned bootstrap in CI, exactly as skopeo does.
 
 set -euo pipefail
 

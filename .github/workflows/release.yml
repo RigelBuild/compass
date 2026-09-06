@@ -224,19 +224,18 @@ jobs:
         # from gate-tools.nix's langs so it is byte-identical to the dev shell's
         # bun — the same derivation, not merely the same version. Only bun is
         # bootstrapped here: publish needs the devenv-CLI resolver, not the
-        # whole language set. `jq -er` is load-bearing: a plain `-r` prints the
-        # literal string `null` when `.store` is missing, which reads as a
-        # value and would pass the emptiness check below, so the shape drift
-        # this guards against would surface as an opaque `flake:null` failure
-        # instead of a named error.
+        # whole language set. `langs.bun` must carry a real store path, and nix
+        # eval prints JSON `null` for a missing key — a value, not an absence —
+        # so the guard tests for `null` explicitly rather than emptiness alone,
+        # the same shape the digest check in publish.sh uses.
         working-directory: .
         run: |
           set -euo pipefail
-          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -er '.store')
-          [ -n "$store" ] || {
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
             echo "::error::gate-tools.nix langs.bun produced no store path" >&2
             exit 1
-          }
+          fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
 
