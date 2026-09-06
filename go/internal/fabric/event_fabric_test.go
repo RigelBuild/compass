@@ -126,6 +126,61 @@ func TestEventFabricFiltersBySubject(t *testing.T) {
 	}
 }
 
+// TestEventFabricConcreteAndWildcardConsumersCoexist proves that concrete and
+// tenant-wildcard subscriptions are independent durables on one fabric. The
+// concrete filter must exclude t2, while the wildcard receives both tenants.
+func TestEventFabricConcreteAndWildcardConsumersCoexist(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+	concreteSubject, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	wildcardSubject, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	if durableName(wildcardSubject) == durableName(concreteSubject) {
+		t.Fatalf("wildcard and concrete durable names collide: %q", durableName(wildcardSubject))
+	}
+	concrete := make(chan EventRef, 4)
+	wildcard := make(chan EventRef, 4)
+	unsubConcrete, err := f.Subscribe(ctx, concreteSubject, func(r EventRef) { concrete <- r })
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	defer unsubConcrete()
+	unsubWildcard, err := f.SubscribeKind(ctx, KindMessagePosted, func(r EventRef) { wildcard <- r })
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsubWildcard()
+	t1 := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-t1"}
+	t2 := EventRef{Tenant: "t2", Kind: KindMessagePosted, RowID: "msg-t2"}
+	sentinel := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-sentinel"}
+	for _, ref := range []EventRef{t1, t2, sentinel} {
+		subject, subjectErr := CommsSubject(ref.Tenant, ref.Kind)
+		if subjectErr != nil {
+			t.Fatalf("CommsSubject(%s): %v", ref.Tenant, subjectErr)
+		}
+		if err := f.Publish(ctx, subject, ref); err != nil {
+			t.Fatalf("Publish %s: %v", ref.RowID, err)
+		}
+	}
+	if got := recvRef(t, concrete); got != t1 {
+		t.Fatalf("concrete first delivery = %+v, want %+v (t2 leaked)", got, t1)
+	}
+	if got := recvRef(t, concrete); got != sentinel {
+		t.Fatalf("concrete second delivery = %+v, want sentinel %+v (filter leaked)", got, sentinel)
+	}
+	first, second := recvRef(t, wildcard), recvRef(t, wildcard)
+	seen := map[string]bool{first.RowID: true, second.RowID: true}
+	if !seen[t1.RowID] || !seen[t2.RowID] || len(seen) != 2 {
+		t.Fatalf("wildcard deliveries = %v, want t1 and t2", seen)
+	}
+}
+
 // TestUnsubscribeStopsDelivery defends that Unsubscribe actually stops the
 // consume context. A leaked consumer would keep draining the shared durable
 // consumer after its owner is gone — events claimed by nobody, which on a
@@ -372,6 +427,75 @@ func TestPoisonMessageParksOnDLQ(t *testing.T) {
 	}
 	if got := attempts.Load(); got != 2 {
 		t.Errorf("callback ran %d time(s), want exactly MaxDeliver=2 attempts before parking", got)
+	}
+}
+
+// TestWildcardConsumerParksWithConcreteSubject defends the DLQ's provenance for a
+// wildcard consumer. park writes msg.Subject() — the CONCRETE delivered subject —
+// not the consumer's filter, so a message parked by a SubscribeKind consumer still
+// names its tenant. With the filter subject the header would read
+// compass.*.comms.<kind> and an operator reading the DLQ could not tell which
+// tenant the poison event belonged to.
+func TestWildcardConsumerParksWithConcreteSubject(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, MaxDeliver: 2, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the dlq subscription: %v", err)
+	}
+
+	concrete, err := CommsSubject("t1", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(EventRef) {
+		panic("subscriber is broken")
+	})
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+
+	poison := EventRef{Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-poison"}
+	if err := f.Publish(ctx, concrete, poison); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	msg, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("waiting for the parked message on %q: %v", DLQSubject, err)
+	}
+	parked, err := decodeEventRef(msg.Data)
+	if err != nil {
+		t.Fatalf("the parked payload must be the original event: %v", err)
+	}
+	if parked != poison {
+		t.Fatalf("parked %+v, want %+v", parked, poison)
+	}
+	got := msg.Header.Get(dlqHeaderSubject)
+	if got != concrete {
+		t.Errorf("park header %s = %q, want concrete subject %q", dlqHeaderSubject, got, concrete)
+	}
+	wildcard, err := CommsWildcardSubject(KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsWildcardSubject: %v", err)
+	}
+	if got == wildcard {
+		t.Errorf("park header %s used wildcard subject %q", dlqHeaderSubject, wildcard)
+	}
+	if msg.Header.Get(dlqHeaderReason) == "" {
+		t.Errorf("park header %s is empty; an operator reading the dlq has no reason", dlqHeaderReason)
 	}
 }
 
@@ -825,9 +949,11 @@ func TestSubscribeWatchdogExitsOnClose(t *testing.T) {
 		t.Fatalf("CommsSubject: %v", err)
 	}
 
-	// Every goroutine spawned inside Subscribe carries this in its stack, so a
-	// residual watchdog shows up as a count that never falls back to baseline.
-	const marker = "fabric.(*Fabric).Subscribe.func"
+	// Every goroutine spawned on the subscribe path carries this in its stack,
+	// so a residual watchdog shows up as a count that never falls back to
+	// baseline. The watchdog lives in subscribeSubject, the body Subscribe and
+	// SubscribeKind share, so this marker covers both entry points.
+	const marker = "fabric.(*Fabric).subscribeSubject.func"
 	baseline := countGoroutinesWith(t, marker)
 
 	// Rooted at context.Background() because this is a test root, and an
@@ -866,5 +992,127 @@ func countGoroutinesWith(t *testing.T, marker string) int {
 			return strings.Count(string(buf[:n]), marker)
 		}
 		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// TestSubscribeKindReceivesEveryTenant is the load-bearing test for the
+// tenant-wildcard subscribe. The T3 delivery consumer is a per-Server
+// singleton serving every tenant, while each event is published on its own
+// concrete compass.<tenant>.comms.<kind>; if the wildcard captured only some
+// tenants, delivery for the rest would silently stop and only the cursor sweep
+// would recover it. One SubscribeKind must see BOTH tenants' events with the
+// tenant field intact — intact because the subscriber re-reads Postgres under
+// that tenant, so a lost or wrong tenant is a cross-tenant read.
+func TestSubscribeKindReceivesEveryTenant(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+
+	got := make(chan EventRef, 4)
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(r EventRef) { got <- r })
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+
+	want := map[string]EventRef{
+		"t1": {Tenant: "t1", Kind: KindMessagePosted, RowID: "msg-t1"},
+		"t2": {Tenant: "t2", Kind: KindMessagePosted, RowID: "msg-t2"},
+	}
+	for tenant, ref := range want {
+		subject, err := CommsSubject(tenant, KindMessagePosted)
+		if err != nil {
+			t.Fatalf("CommsSubject(%q): %v", tenant, err)
+		}
+		if err := f.Publish(ctx, subject, ref); err != nil {
+			t.Fatalf("Publish for %q: %v", tenant, err)
+		}
+	}
+
+	// Two distinct stream subjects, so their relative delivery order is not
+	// guaranteed; collect both and compare as a set.
+	seen := make(map[string]EventRef, len(want))
+	for range want {
+		ref := recvRef(t, got)
+		if _, dup := seen[ref.Tenant]; dup {
+			t.Fatalf("tenant %q delivered twice; got %+v", ref.Tenant, ref)
+		}
+		seen[ref.Tenant] = ref
+	}
+	for tenant, wantRef := range want {
+		gotRef, ok := seen[tenant]
+		if !ok {
+			t.Fatalf("tenant %q never reached the wildcard subscriber (got %+v)", tenant, seen)
+		}
+		if gotRef != wantRef {
+			t.Fatalf("tenant %q delivered %+v, want %+v", tenant, gotRef, wantRef)
+		}
+	}
+}
+
+// TestSubscribeKindIsolatesKinds defends the half of the subject that is NOT
+// wildcarded. The stream captures compass.*.comms.*, so the consumer's
+// FilterSubject is the only thing keeping the other six kinds out — and a
+// delivery consumer woken for every topic_upsert would do a Postgres re-read
+// per unrelated write.
+//
+// Absence is proven by a positive gate, not a sleep: the foreign-kind event is
+// published and acked into the stream FIRST, so if the kind filter leaked it
+// would already be stored and deliverable when the message_posted sentinel
+// arrives.
+func TestSubscribeKindIsolatesKinds(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+
+	got := make(chan EventRef, 4)
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(r EventRef) { got <- r })
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+
+	other := EventRef{Tenant: "t1", Kind: KindTopicUpserted, RowID: "topic-1"}
+	otherSubject, err := CommsSubject(other.Tenant, other.Kind)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	if err := f.Publish(ctx, otherSubject, other); err != nil {
+		t.Fatalf("Publish the foreign kind: %v", err)
+	}
+
+	sentinel := EventRef{Tenant: "t2", Kind: KindMessagePosted, RowID: "msg-sentinel"}
+	sentinelSubject, err := CommsSubject(sentinel.Tenant, sentinel.Kind)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	if err := f.Publish(ctx, sentinelSubject, sentinel); err != nil {
+		t.Fatalf("Publish the sentinel: %v", err)
+	}
+
+	if delivered := recvRef(t, got); delivered != sentinel {
+		t.Fatalf("delivered %+v, want the sentinel %+v — the wildcard leaked a %s event",
+			delivered, sentinel, other.Kind)
+	}
+}
+
+// TestSubscribeKindRejectsBadInput defends the wildcard entry point's own
+// guards. An invalid kind must fail at the builder rather than reach
+// CreateOrUpdateConsumer, and a nil callback must be refused rather than
+// panicking on the first delivery — the same contract Subscribe has.
+func TestSubscribeKindRejectsBadInput(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	f := newFabric(t, Config{})
+
+	if _, err := f.SubscribeKind(ctx, KindMessagePosted, nil); err == nil {
+		t.Error("SubscribeKind with a nil callback = nil error, want a refusal")
+	}
+	if _, err := f.SubscribeKind(ctx, EventKind("bad.kind"), func(EventRef) {}); err == nil {
+		t.Error("SubscribeKind with a reserved-character kind = nil error, want a refusal")
+	}
+	// A wildcard kind would put all seven comms kinds on one consumer.
+	if _, err := f.SubscribeKind(ctx, EventKind("*"), func(EventRef) {}); err == nil {
+		t.Error("SubscribeKind with a wildcard kind = nil error, want a refusal")
 	}
 }
