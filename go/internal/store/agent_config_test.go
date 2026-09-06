@@ -569,6 +569,16 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			member:  tarEntry{name: "models.yml", content: "providers:\n  0: junk\n  openai:\n    1: junk\n    apiKey: sk-secret\n"},
 			wantSub: "providers.openai.apiKey",
 		},
+		{
+			// The only denylist entry whose leaf is a RECORD rather than a
+			// scalar string — the first case where yamlPathIsSet terminates on
+			// a map node rather than a string. Same branch today, but it pins
+			// the door against a future change that treats a container leaf as
+			// "not set". Added by the SDK 18.x bump.
+			name:    "settings record-valued credential leaf",
+			member:  tarEntry{name: "settings/config.yml", content: "images:\n  urls:\n    credentials:\n      s3: {key: v}\n"},
+			wantSub: "images.urls.credentials",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -584,15 +594,27 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 	}
 }
 
-// TestCredentialKeysMatchSchema is a change-detector on the generated denylist:
-// the seven SDK isCredential paths (settings-schema.ts) are the load-bearing
-// door policy, so a fork bump that adds or drops one must be caught. If this
-// reds, regenerate credential_keys_gen.go (`go generate ./...`) and re-review.
+// TestCredentialKeysMatchSchema guards the generated denylist against a
+// hand-edit or a bad merge of the DO-NOT-EDIT file: it pins credentialKeys to an
+// explicit list, so an in-repo change to either side reds.
+//
+// It deliberately does NOT detect an SDK bump, and cannot: the schema lives in
+// gitignored node_modules, so a bump changes the source of truth while touching
+// neither credentialKeys nor `want`, leaving this green. The
+// `compass-go:credential-keys-drift` moon task owns that detection by
+// regenerating against the installed schema and failing on a byte diff.
+//
+// When that gate reds, regenerate (`cd go/internal/store && go generate ./...`)
+// and update `want` here in the same commit — a new credential-marked path is
+// expected at a bump and must be ADOPTED, but a path DISAPPEARING means the door
+// stopped rejecting something it used to, which is a policy regression to
+// investigate before accepting.
 func TestCredentialKeysMatchSchema(t *testing.T) {
 	want := []string{
 		"auth.broker.token",
 		"dev.autoqaPush.token",
 		"hindsight.apiToken",
+		"images.urls.credentials",
 		"mnemopi.embeddingApiKey",
 		"mnemopi.llmApiKey",
 		"searxng.basicPassword",

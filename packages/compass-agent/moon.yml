@@ -17,7 +17,58 @@ tasks:
     inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
     inputs: ['src/**/*', 'scripts/**/*', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+
+  credential-keys-drift:
+    # Fail if the store door's credential denylist is stale vs the SDK settings
+    # schema this package pins.
+    #
+    # The denylist is generated Go (go/internal/store/credential_keys_gen.go) and
+    # the door that consumes it is Go, but the gate lives HERE because a drift
+    # gate has to be scheduled by its trigger, not colocated with its output.
+    # The trigger is the SDK pin moving — `package.json` + `/bun.lock`, both
+    # already inputs of this project's other tasks. compass-go has no dependency
+    # edge to the JS side at all (go/moon.yml `dependsOn: [compass-proto]`), so a
+    # gate placed there is watched by a project structurally blind to the event
+    # that fires it: a lockfile-only bump never puts compass-go in CI's affected
+    # closure, and the gate silently never runs.
+    #
+    # Why it matters: the generator reads the schema out of gitignored
+    # node_modules, so an SDK bump moves the source of truth without touching any
+    # tracked file. The in-repo change-detector test compares the generated list
+    # against a hand-maintained one — BOTH sides stay unchanged at a bump, so it
+    # cannot catch it. Unpatched, a bump that adds a credential-marked path
+    # leaves the door silently no longer rejecting it.
+    #
+    # `set -euo pipefail` is load-bearing: without it a FAILING generator is
+    # ignored and the byte-diff compares the snapshot against an untouched file,
+    # so the loudest failures (no `bun install`, the empty-denylist guard, the
+    # under-collection check — all error returns, not diffs) would exit 0.
+    script: |
+      set -euo pipefail
+      tmp=$(mktemp -d)
+      trap 'rm -rf "$tmp"' EXIT
+      cd ../../go
+      cp internal/store/credential_keys_gen.go "$tmp/credential_keys_gen.go"
+      go generate ./internal/store/...
+      if ! git diff --no-index --quiet "$tmp/credential_keys_gen.go" internal/store/credential_keys_gen.go; then
+        echo "credential-keys drift: go/internal/store/credential_keys_gen.go is stale vs the SDK schema pinned by packages/compass-agent."
+        echo "Regenerate with: cd go/internal/store && go generate ./..."
+        echo "A path APPEARING is an SDK bump to adopt (update the want list in go/internal/store/agent_config_test.go in the same commit);"
+        echo "a path DISAPPEARING means the door stopped rejecting a credential it used to, and is a policy regression to investigate before accepting."
+        git diff --no-index "$tmp/credential_keys_gen.go" internal/store/credential_keys_gen.go
+        exit 1
+      fi
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: false
+    inputs:
+      - 'package.json'
+      - '/bun.lock'
+      - '/go/internal/store/gen_credential_keys.go'
+      - '/go/internal/store/credential_keys_gen.go'
+      - '/go/internal/store/internal/schemaparse/**/*.go'
+
   ci:
-    deps: ['typecheck', 'test']
+    deps: ['typecheck', 'test', 'credential-keys-drift']
     options:
       cache: false
