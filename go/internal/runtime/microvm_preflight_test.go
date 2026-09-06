@@ -45,6 +45,9 @@ func okProbes() preflightProbes {
 				FilesystemBytes: 1 << 40, FilesystemInodes: 1 << 26,
 			}, nil
 		},
+		// The invoking user's /etc/subuid range: all-green by default, so only
+		// the row exercising that axis fails it.
+		verifySubordinateIDs: func() error { return nil },
 	}
 }
 
@@ -75,6 +78,10 @@ func okConfig(t *testing.T) MicroVMConfig {
 		RootfsImage: rootfs,
 		InitrdImage: initrd,
 		RunRoot:     runRoot,
+		// A VolumeRoot distinct from RunRoot is the production shape: the
+		// session-volume filesystem is the durable D9 volume, while RunRoot is
+		// the short /tmp socket dir. The quota axis targets THIS path.
+		VolumeRoot: dir,
 	}
 }
 
@@ -219,6 +226,19 @@ func TestVerifyMicroVMSupport(t *testing.T) {
 			},
 			wantParts: []string{"not creatable/writable"},
 		},
+		{
+			// The /etc/subuid axis: virtiofsd's mapping is validated by
+			// newuidmap against the invoking user's subordinate range, so a
+			// host without one must fail HERE rather than at the first boot as
+			// an opaque daemon-socket timeout.
+			name: "no subordinate uid range for the invoking user",
+			mutate: func(_ *MicroVMConfig, p *preflightProbes) {
+				p.verifySubordinateIDs = func() error {
+					return errors.New("virtiofsd id-mapping requires a subordinate uid range for mattw in /etc/subuid")
+				}
+			},
+			wantParts: []string{"/etc/subuid", "subordinate uid range"},
+		},
 	})
 }
 
@@ -276,6 +296,53 @@ func TestVerifyMicroVMSupportQuota(t *testing.T) {
 			name: "quota probe failure without required set passes",
 			mutate: func(_ *MicroVMConfig, p *preflightProbes) {
 				p.readQuota = unreadable
+			},
+			wantOK: true,
+		},
+		{
+			// FAIL CLOSED: with no VolumeRoot the session-volume filesystem is
+			// unidentified, and the RunRoot is NOT an acceptable proxy — it is
+			// the short /tmp socket dir, routinely a different filesystem. A
+			// verdict about a filesystem that was never probed is worse than a
+			// refusal, so the required profile refuses.
+			name: "quota required but the volume root is unknown fails closed",
+			mutate: func(cfg *MicroVMConfig, p *preflightProbes) {
+				cfg.QuotaRequired = true
+				cfg.VolumeRoot = ""
+				p.readQuota = func(string) (QuotaReading, error) {
+					t.Error("readQuota must NOT be called with no volume root: probing the run-root proxy " +
+						"would report a verdict about a filesystem the session volumes do not live on")
+					return QuotaReading{}, nil
+				}
+			},
+			wantParts: []string{"cannot be identified at startup", "--microvm-volume-root", "COMPASS_MICROVM_VOLUME_ROOT"},
+		},
+		{
+			name: "no volume root without required set passes with a warning",
+			mutate: func(cfg *MicroVMConfig, _ *preflightProbes) {
+				cfg.VolumeRoot = ""
+			},
+			wantOK: true,
+		},
+		{
+			// The probe must target VolumeRoot, never RunRoot: they are
+			// different filesystems in production, and a quota verdict read on
+			// the socket dir says nothing about the durable volume.
+			name: "the quota probe targets the volume root, not the run root",
+			mutate: func(cfg *MicroVMConfig, p *preflightProbes) {
+				cfg.QuotaRequired = true
+				wantPath := cfg.VolumeRoot
+				runRoot := cfg.RunRoot
+				p.readQuota = func(path string) (QuotaReading, error) {
+					if path != wantPath {
+						t.Errorf("readQuota probed %q, want the volume root %q (run root is %q)", path, wantPath, runRoot)
+					}
+					return QuotaReading{
+						Path: path, MountRoot: "/",
+						LimitBytes: 10 << 30, UsedBytes: 1 << 30,
+						FilesystemBytes: 1 << 40,
+					}, nil
+				}
 			},
 			wantOK: true,
 		},

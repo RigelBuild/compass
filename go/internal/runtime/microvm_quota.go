@@ -75,7 +75,13 @@ type QuotaReading struct {
 	UsedInodes int64
 	// FilesystemBytes is the block total at MountRoot — the unprojected size.
 	FilesystemBytes int64
-	// FilesystemInodes is the inode total at MountRoot — unprojected.
+	// FilesystemInodes is the inode total at MountRoot — unprojected, and on
+	// XFS an ESTIMATE rather than a fixed filesystem property: xfs_statfs_inodes
+	// computes f_files = min(icount + fakeinos, XFS_MAXINUMBER) where
+	// fakeinos = XFS_FSB_TO_INO(mp, f_bfree) (fs/xfs/xfs_super.c), because XFS
+	// allocates inodes on demand — so it SHRINKS as the filesystem fills and is
+	// read at a different instant than LimitInodes. Active()'s inode arm carries
+	// a margin for exactly this.
 	FilesystemInodes int64
 }
 
@@ -90,17 +96,54 @@ type QuotaReading struct {
 // and reads as absent. That is a bound which constrains nothing, and reading it
 // as absent fails a QuotaRequired startup closed (a legible operator refusal)
 // rather than passing a tenant-exhaustible volume as bounded.
+//
+// The INODE arm requires a MARGIN, not merely strict inequality, because the
+// mount-root inode total it compares against is an XFS estimate that moves
+// between the two statfs calls (FilesystemInodes' doc). Bare `<` on two samples
+// of one dynamic number can go true from jitter alone — an unquota'd volume
+// reading as bounded, the fail-OPEN direction on a security-relevant preflight.
+// A real project inode limit is orders of magnitude below the estimate, so the
+// margin costs nothing there.
+//
+// The arm stays INDEPENDENT of the byte arm rather than being gated behind it:
+// an inode-only project quota on a filesystem whose byte limit happens to equal
+// its size is a real bound, and gating would read it as absent. The residual
+// case the margin cannot rescue — a nearly-full XFS whose shrinking estimate
+// falls within the margin of a genuine project inode limit — reads as absent and
+// therefore REFUSES a QuotaRequired startup with the observed numbers in the
+// message, which is the fail-closed direction.
 func (r QuotaReading) Active() bool {
 	if r.LimitBytes > 0 && r.FilesystemBytes > 0 && r.LimitBytes < r.FilesystemBytes {
 		return true
 	}
-	return r.LimitInodes > 0 && r.FilesystemInodes > 0 && r.LimitInodes < r.FilesystemInodes
+	if r.LimitInodes <= 0 || r.FilesystemInodes <= 0 {
+		return false
+	}
+	return r.LimitInodes < r.FilesystemInodes-r.FilesystemInodes/inodeMarginDivisor
 }
+
+// inodeMarginDivisor sets how much smaller than the mount-root inode estimate a
+// path's inode total must be before it counts as a projected bound: 1/16 (6.25%)
+// of the estimate. It is a jitter floor, not a tuned threshold — adjacent statfs
+// samples of XFS's fakeinos estimate differ by far less, while a provisioned
+// project inode limit is smaller by orders of magnitude.
+const inodeMarginDivisor = 16
 
 // UsedRatio is the observed byte utilization in [0,1] — the value the preflight
 // logs and V7's compass_microvm_quota_used_ratio will meter. Zero when no limit
-// was observed. NOTE: this file registers NO meter; exposing the number is V6's
-// job, owning the metric set is V7's.
+// was observed.
+//
+// DUAL MEANING, and the caller must gate on Active(): under an enforced project
+// quota the kernel has rewritten both totals to the project's own limit and
+// usage, so this is the tenant's utilization; with no quota projected the same
+// expression is whole-FILESYSTEM utilization, including every other tenant's
+// data and the OS's. Logging both under one key would give a dashboard a number
+// whose denominator silently changes, so the preflight logs used_ratio ONLY when
+// Active() is true and the raw used/total pair otherwise (microvm_preflight.go's
+// verifyQuota). V7 inherits a single-meaning number.
+//
+// NOTE: this file registers NO meter; exposing the number is V6's job, owning
+// the metric set is V7's.
 func (r QuotaReading) UsedRatio() float64 {
 	if r.LimitBytes <= 0 {
 		return 0

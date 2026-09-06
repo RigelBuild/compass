@@ -93,11 +93,86 @@ func isolationSession(t *testing.T, env microvmtest.Env, name string) (*MicroVMR
 func guestSh(t *testing.T, m *MicroVMRuntime, id ContainerID, script string) (string, int) {
 	t.Helper()
 	out, err := m.Exec(t.Context(), id,
-		NewExecSpec("sh", "-s").WithStdin(script).AsUser("1000"))
+		NewExecSpec("sh", "-s").WithStdin(script).AsUser(strconv.Itoa(int(agentuid.AgentUID))))
 	if err != nil {
 		t.Fatalf("guest exec failed at the transport/refusal layer (not the escape itself): %v", err)
 	}
 	return out.Stdout + out.Stderr, out.ExitCode
+}
+
+// crossSessionAttempt is one way tenant A could try to reach tenant B's volume,
+// paired with what its OUTPUT must not contain. The secret body is the
+// discriminator for a `cat`; a command that prints names rather than content
+// (`ls`, `grep -r` on paths) needs its own forbidden strings, or the assertion
+// is vacuously true and the row proves nothing.
+type crossSessionAttempt struct {
+	script string
+	forbid []string
+}
+
+// sweepScript builds a recursive content search the guest can actually run. The
+// guest image ships bash 5.3 and awk but NO grep and NO find, so a `grep -r`
+// row exits 127 without searching anything — a vacuous pass that looks like
+// confinement. bash's globstar walks the trees and awk does the matching, and
+// the exit status mirrors grep's: 0 when the needle was found, 1 when it was
+// not, so a caller can still assert the non-zero exit a confined command owes.
+//
+// Matching files are printed as `<path>:<line>`, so BOTH discriminators are
+// live: the secret body appears in the output if any file's content was read,
+// and the path appears if a file under another tenant's volume was reachable at
+// all.
+//
+// Two things stop the sweep from finding ITS OWN needle, which would be a false
+// escape report rather than a real one:
+//
+//   - The needle travels in an EXPORTED ENV VAR, never in argv. Passed as
+//     `awk -v`, it lands in the searcher's own /proc/self/cmdline, so the sweep
+//     matches the string it is looking for in its own command line.
+//   - /proc, /sys and /dev are skipped. They are synthetic kernel interfaces
+//     that cannot hold another tenant's volume, so excluding them removes the
+//     self-match surface (the environ/cmdline of the running searcher) without
+//     narrowing what the row actually probes.
+func sweepScript(needle, roots string) string {
+	return "export SWEEP_NEEDLE='" + needle + "'; " +
+		"shopt -s globstar nullglob dotglob; found=1; " +
+		"for root in " + roots + "; do " +
+		"for f in \"$root\"/**/*; do " +
+		// Collapse repeated slashes before matching: a "/" root globs to
+		// "//proc/self/environ", which a /proc/* pattern does NOT match — the
+		// sweep would then read its own environ and report finding the needle
+		// it was given, a false escape.
+		"n=$f; while [[ $n == //* ]]; do n=${n#/}; done; " +
+		"case $n in /proc/*|/sys/*|/dev/*) continue;; esac; " +
+		"[[ -f $f && -r $f ]] || continue; " +
+		"if awk 'index($0, ENVIRON[\"SWEEP_NEEDLE\"]) { print FILENAME \":\" $0; hit=1 } END { exit !hit }' \"$f\" 2>/dev/null; then found=0; fi; " +
+		"done; done 2>/dev/null; exit $found"
+}
+
+// TestMicroVMSweepScriptFindsItsNeedle is the non-vacuity control for
+// sweepScript itself: pointed at a tree that DOES contain the needle, it must
+// find it and exit 0. Without this the cross-tenant sweep row could pass
+// because the search is broken rather than because the volume is unreachable —
+// exactly the failure mode that made the original `grep -r` row worthless.
+func TestMicroVMSweepScriptFindsItsNeedle(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-control")
+
+	const needle = "SWEEP-CONTROL-CANARY-2d7f4a91"
+	if out, code := guestSh(t, m, id, "mkdir -p /workspace/deep/nested && printf '%s' '"+needle+"' > /workspace/deep/nested/planted.txt"); code != 0 {
+		t.Fatalf("planting the sweep control canary: exit %d, %q", code, out)
+	}
+	out, code := guestSh(t, m, id, sweepScript(needle, "/workspace"))
+	if code != 0 {
+		t.Fatalf("sweepScript did not find a needle planted in its own search root (exit %d, %q); "+
+			"the cross-tenant sweep row would pass vacuously", code, truncate(out))
+	}
+	if !strings.Contains(out, needle) {
+		t.Fatalf("sweepScript exited 0 but its output %q does not carry the needle; the content check would be vacuous", truncate(out))
+	}
+	if !strings.Contains(out, "planted.txt") {
+		t.Errorf("sweepScript output %q does not name the matching path; the path check would be vacuous", truncate(out))
+	}
+	t.Logf("sweep control: found the planted canary -> exit %d, %q", code, strings.TrimSpace(truncate(out)))
 }
 
 // TestMicroVMVolumeTraversalConfined is the path-traversal leg: the guest tries
@@ -224,19 +299,55 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 		t.Fatalf("tenant B cannot read its OWN volume (exit %d, %q); the cross-tenant negative would be vacuous", code, out)
 	}
 
-	// Every way A could try to name B's volume.
-	attempts := map[string]string{
-		"B's absolute host volume path": "cat " + filepath.Join(volumeB, "host-secret.txt") + " " + filepath.Join(volumeB, "guest-secret.txt"),
-		"B's volume dir listing":        "ls -la " + volumeB,
-		"traversal toward B":            "cat /workspace/../volume/host-secret.txt; cat /workspace/../../*/volume/*secret*",
-		"a symlink A plants to B":       "ln -sf " + volumeB + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
-		"the whole host tmp tree":       "grep -rl 'TENANT-B-SECRET' / 2>/dev/null | head -5",
+	// Every way A could try to name B's volume. Each row's success condition
+	// matches WHAT ITS COMMAND EMITS, which the secret-body check alone does
+	// not: `ls` prints names and never file content, so a Contains(secret) on
+	// an `ls` is unconditionally true and proves nothing whether B's volume is
+	// reachable or not. Every row also asserts the NON-ZERO EXIT the traversal
+	// leg asserts — a confined command must fail, not merely print nothing.
+	attempts := map[string]crossSessionAttempt{
+		"B's absolute host volume path": {
+			script: "cat " + filepath.Join(volumeB, "host-secret.txt") + " " + filepath.Join(volumeB, "guest-secret.txt"),
+		},
+		"B's volume dir listing": {
+			// An `ls` that SUCCEEDED and listed B's secrets would pass a
+			// content check; the discriminator here is the FILENAMES plus the
+			// exit code.
+			script: "ls -la " + volumeB,
+			forbid: []string{"host-secret.txt", "guest-secret.txt"},
+		},
+		"traversal toward B": {
+			script: "cat /workspace/../volume/host-secret.txt; cat /workspace/../../*/volume/*secret*",
+		},
+		"a symlink A plants to B": {
+			script: "ln -sf " + volumeB + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
+		},
+		"a content sweep of every tree A can name": {
+			// NOT `grep -r`: the guest image ships no grep (and no find), so
+			// that row exited 127 without ever searching — vacuous twice over,
+			// once for printing paths instead of content and once for never
+			// running. This is the same sweep in what the guest DOES have
+			// (bash globstar + awk), and sweepScript keeps grep's exit
+			// semantics: non-zero when nothing matched.
+			script: sweepScript(tenantBSecret, "/ /tmp /mnt /media /run /var /home /workspace"),
+			forbid: []string{volumeB},
+		},
 	}
-	for name, script := range attempts {
+	for name, attempt := range attempts {
 		t.Run("A cannot reach "+name, func(t *testing.T) {
-			out, code := guestSh(t, mA, idA, script)
+			out, code := guestSh(t, mA, idA, attempt.script)
 			if strings.Contains(out, tenantBSecret) {
 				t.Fatalf("tenant A READ tenant B's secret via %s — CROSS-TENANT ESCAPE.\noutput: %q", name, out)
+			}
+			for _, forbidden := range attempt.forbid {
+				if strings.Contains(out, forbidden) {
+					t.Fatalf("tenant A's %s NAMED %q — tenant B's volume is reachable from A.\noutput: %q",
+						name, forbidden, truncate(out))
+				}
+			}
+			if code == 0 {
+				t.Errorf("cross-tenant attempt %q exited 0 (output %q); a confined command must fail",
+					name, truncate(out))
 			}
 			t.Logf("unreachable: %s -> exit %d, %q", name, code, strings.TrimSpace(truncate(out)))
 		})
@@ -307,8 +418,8 @@ func TestMicroVMHostOwnershipParity(t *testing.T) {
 			entry, gotUID, gotGID, wantUID, wantGID)
 		if gotUID != wantUID || gotGID != wantGID {
 			t.Errorf("host-ownership PARITY BROKEN for %s: guest-authored file is %d:%d, "+
-				"but the podman --userns=keep-id path yields %d:%d — virtiofsd's uid/gid translation "+
-				"(launch.go --translate-uid/--translate-gid) must map the in-guest agent id to the invoking host user",
+				"but the podman --userns=keep-id path yields %d:%d — virtiofsd's uid/gid mapping "+
+				"(launch.go --uid-map/--gid-map) must map the in-guest agent id to the invoking host user",
 				entry, gotUID, gotGID, wantUID, wantGID)
 		}
 	}
@@ -326,12 +437,19 @@ func TestMicroVMHostOwnershipParity(t *testing.T) {
 			"the translation must leave the invoking user's files owned by the in-guest agent", code, out)
 	}
 	t.Logf("in-guest view of a host-authored file (uid gid): %q", strings.TrimSpace(out))
-	if want := strings.Fields(strings.TrimSpace(out)); len(want) >= 2 {
-		agentID := strconv.Itoa(int(agentuid.AgentUID))
-		if want[0] != agentID || want[1] != agentID {
-			t.Errorf("a host-authored workspace file appears in-guest as %s:%s, want the agent id %s:%s — "+
-				"the agent would not own its own checkout", want[0], want[1], agentID, agentID)
-		}
+	// A malformed probe must FAIL, not skip: a `stat` variant emitting fewer
+	// than two fields would otherwise leave this whole direction unasserted
+	// while the test passed green.
+	fields := strings.Fields(strings.TrimSpace(out))
+	// The guest's stat output is followed by nothing on success, but the append
+	// leg shares the exec, so take exactly the first line's two fields.
+	if len(fields) < 2 {
+		t.Fatalf("stat output %q did not yield uid+gid; the host->guest ownership direction was NOT asserted", out)
+	}
+	agentID := strconv.Itoa(int(agentuid.AgentUID))
+	if fields[0] != agentID || fields[1] != agentID {
+		t.Errorf("a host-authored workspace file appears in-guest as %s:%s, want the agent id %s:%s — "+
+			"the agent would not own its own checkout", fields[0], fields[1], agentID, agentID)
 	}
 	// The host-side owner of that file must be unchanged by the guest's append:
 	// a translation that rewrote ownership on write would silently reassign the

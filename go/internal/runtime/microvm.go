@@ -64,6 +64,16 @@ type MicroVMConfig struct {
 	// only. Appended, never reordered: the field is additive to a config
 	// operators already construct positionally in tests.
 	QuotaRequired bool
+	// VolumeRoot is the parent dir the per-session workspace volumes are minted
+	// under (P2's volume lifecycle), i.e. a startup-known path ON THE
+	// SESSION-VOLUME FILESYSTEM. It exists solely so the D7 quota check probes
+	// the filesystem sessions actually consume: RunRoot is the socket dir, held
+	// to a SHORT /tmp path by the AF_UNIX sun_path budget, so it is routinely a
+	// different filesystem entirely and a verdict read there says nothing about
+	// the durable volume. When QuotaRequired is set and this is empty the
+	// preflight fails closed rather than reporting a verdict about a filesystem
+	// it never probed. Appended, never reordered.
+	VolumeRoot string
 }
 
 // BackendConfig selects and configures the container runtime backend. Backend

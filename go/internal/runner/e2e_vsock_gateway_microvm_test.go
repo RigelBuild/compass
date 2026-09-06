@@ -48,6 +48,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/agentuid"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
 	"github.com/RigelBuild/compass/go/internal/runnertest"
@@ -175,7 +177,7 @@ func w3LiveSpec(t *testing.T) runtime.AgentSpec {
 		Workspace: runtime.Workspace{
 			CheckoutDir: "/workspace",
 			HomeDir:     "/workspace",
-			UID:         1000,
+			UID:         agentuid.AgentUID,
 		},
 		Mounts: []runtime.Mount{{HostPath: t.TempDir(), ContainerPath: "/workspace"}},
 		Egress: runtime.EgressPolicy{},
@@ -453,7 +455,7 @@ func runInGuestProbe(t *testing.T, m *runtime.MicroVMRuntime, id runtime.Contain
 		t.Fatalf("marshaling probe request: %v", err)
 	}
 	script := inGuestProbeScript(string(reqBody))
-	out, err := m.Exec(ctx, id, runtime.NewExecSpec("bun", "-e", script).AsUser("1000"))
+	out, err := m.Exec(ctx, id, runtime.NewExecSpec("bun", "-e", script).AsUser(strconv.Itoa(int(agentuid.AgentUID))))
 	if err != nil {
 		t.Fatalf("in-guest bun probe exec errored (harness fault, not a round-trip verdict): %v", err)
 	}
@@ -529,7 +531,7 @@ func inGuestCanReachIP(t *testing.T, m *runtime.MicroVMRuntime, id runtime.Conta
 	ctx, cancel := context.WithTimeout(t.Context(), inGuestProbeTimeout)
 	defer cancel()
 	script := fmt.Sprintf("timeout %d bash -c 'exec 3<>/dev/tcp/%s/443 && echo connected'", guestConnectTimeoutSecs, ip)
-	out, err := m.Exec(ctx, id, runtime.NewExecSpec("sh", "-c", script).AsUser("1000"))
+	out, err := m.Exec(ctx, id, runtime.NewExecSpec("sh", "-c", script).AsUser(strconv.Itoa(int(agentuid.AgentUID))))
 	if err != nil {
 		t.Fatalf("in-guest IP connect probe to %s errored (harness fault, not a firewall verdict): %v", ip, err)
 	}

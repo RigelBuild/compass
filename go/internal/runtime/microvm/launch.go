@@ -156,16 +156,24 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		if lookErr != nil {
 			return nil, fmt.Errorf("microvm: resolving virtiofsd on PATH: %w", lookErr)
 		}
+		// The subordinate base is READ, never assumed: newuidmap validates the
+		// requested host range against /etc/subuid, so a host whose range does
+		// not start at the conventional 100000 would otherwise fail here as an
+		// opaque "waiting for daemon sockets" timeout. VerifySubordinateIDRange
+		// runs the same read at startup so this error is rare by construction.
+		subBase := 0
+		if cfg.AgentUID != 0 {
+			base, subErr := SubordinateIDBase()
+			if subErr != nil {
+				return nil, subErr
+			}
+			subBase = base
+		}
 		vm.virtiofsd = &child{
 			name:    "virtiofsd",
 			logPath: filepath.Join(dir, "virtiofsd.log"),
 			//nolint:gosec // G204: the microVM harness seam — virtiofsdPath is LookPath-resolved and the argv is harness-built from BootConfig, neither user-controlled
-			cmd: exec.CommandContext(ctx, virtiofsdPath,
-				append([]string{
-					"--socket-path=" + cfg.FSSocket,
-					"--shared-dir=" + cfg.FSSharedDir,
-					"--sandbox=namespace",
-				}, virtiofsdIDMapArgs(cfg.AgentUID)...)...),
+			cmd: exec.CommandContext(ctx, virtiofsdPath, virtiofsdArgs(cfg, subBase)...),
 		}
 		if startErr := startChild(vm.virtiofsd); startErr != nil {
 			return nil, fmt.Errorf("microvm: starting virtiofsd: %w", startErr)
@@ -240,6 +248,29 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	return vm, nil
 }
 
+// virtiofsdArgs builds the whole virtiofsd argv: the socket/share/sandbox flags
+// every boot carries, the capability trim, and the id mapping (empty under the
+// V2a spike, see virtiofsdIDMapArgs). subBase is the host subordinate id mapped
+// to namespace-uid 0, read from /etc/subuid by the caller; it is ignored when
+// cfg.AgentUID is zero.
+//
+// --modcaps=-mknod drops CAP_MKNOD from the capability set virtiofsd retains
+// under --sandbox=namespace. A workspace share has no legitimate use for device
+// nodes — the agent checks out source and writes build output — so the
+// capability is pure escape surface, and dropping it is free (see
+// virtiofsdIDMapArgs on the rest of the retained set).
+func virtiofsdArgs(cfg BootConfig, subBase int) []string {
+	idMap := virtiofsdIDMapArgs(cfg.AgentUID, subBase)
+	args := make([]string, 0, 4+len(idMap))
+	args = append(args,
+		"--socket-path="+cfg.FSSocket,
+		"--shared-dir="+cfg.FSSharedDir,
+		"--sandbox=namespace",
+		"--modcaps=-mknod",
+	)
+	return append(args, idMap...)
+}
+
 // virtiofsdIDMapArgs builds the virtiofsd uid/gid mapping that gives the shared
 // volume the SAME host-side ownership podman's `--userns=keep-id:uid=N,gid=N`
 // produces (record §(d): "virtiofsd does its own uid/gid translation via that
@@ -275,17 +306,42 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 // not its uid: the guest agent runs uid==gid==agentUID (guestd linuxCredential)
 // while a host user's gid is routinely different (e.g. 1000:100). Collapsing gid
 // onto uid here is precisely the parity break the V6 parity test detects.
-func virtiofsdIDMapArgs(agentUID uint32) []string {
+//
+// SECURITY POSTURE — this is NOT pure ownership parity, and the difference is
+// deliberate and accepted, not incidental. Mapping a subordinate id to
+// namespace-uid 0 makes virtiofsd ROOT IN ITS OWN USER NAMESPACE, so the daemon
+// retains a namespace-scoped CAP_CHOWN / CAP_DAC_OVERRIDE / CAP_SETUID /
+// CAP_SETGID / CAP_FOWNER / CAP_FSETID / CAP_SETFCAP (virtiofsd README §Usage)
+// that a plain rootless daemon with only the invoking user's ambient authority
+// would not have. Two things bound the consequence:
+//
+//   - The authority is namespace-scoped and the namespace holds exactly two host
+//     ids — the subordinate id and the invoking user — so it confers nothing over
+//     any OTHER host user's files.
+//   - --sandbox=namespace pivot_roots the daemon into the shared dir, so even
+//     that authority reaches only the volume subtree it is serving.
+//
+// CAP_MKNOD is dropped outright by virtiofsdArgs' --modcaps=-mknod: a workspace
+// share has no legitimate device nodes, so it is surface with no use.
+//
+// The alternative — --translate-uid/--translate-gid, which reaches the same
+// host-side ownership with NO namespace-uid-0 mapping and therefore none of the
+// above capabilities, at the cost of foreclosing POSIX ACLs on the share — is
+// tracked as a design fork (RIG-3330) for the record's owner to rule on. It is
+// NOT swapped in here: --uid-map/--gid-map is the frozen record's named
+// mechanism, and changing it is a design decision, not a review fix.
+func virtiofsdIDMapArgs(agentUID uint32, subBase int) []string {
 	if agentUID == 0 {
 		return nil
 	}
 	hostUID := os.Getuid()
 	hostGID := os.Getgid()
 	agent := strconv.FormatUint(uint64(agentUID), 10)
+	base := strconv.Itoa(subBase)
 	return []string{
-		"--uid-map", idMapSpec("0", strconv.Itoa(subordinateIDBase)),
+		"--uid-map", idMapSpec("0", base),
 		"--uid-map", idMapSpec(agent, strconv.Itoa(hostUID)),
-		"--gid-map", idMapSpec("0", strconv.Itoa(subordinateIDBase)),
+		"--gid-map", idMapSpec("0", base),
 		"--gid-map", idMapSpec(agent, strconv.Itoa(hostGID)),
 	}
 }
@@ -295,15 +351,6 @@ func virtiofsdIDMapArgs(agentUID uint32) []string {
 func idMapSpec(namespaceID, hostID string) string {
 	return ":" + namespaceID + ":" + hostID + ":1:"
 }
-
-// subordinateIDBase is the host subordinate uid/gid mapped to namespace id 0 so
-// virtiofsd can act as root INSIDE its user namespace (and therefore chown
-// guest-created inodes). It is the conventional first entry of a rootless
-// /etc/subuid + /etc/subgid range — the same 100000 base shadow-utils allocates
-// and podman's rootless userns consumes — so it needs no capability, only that
-// the invoking user has a subordinate range at all (which rootless podman on
-// this host already requires, podman.go:22-24).
-const subordinateIDBase = 100000
 
 // vmmArgs builds the cloud-hypervisor argv exactly per the record (lines
 // 542-547), dropping --fs/--vsock under the net-only smoke. Launch appends to
