@@ -230,7 +230,7 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec ContainerSpec) (Containe
 	session := &microvmSession{
 		id:    id,
 		name:  spec.Name,
-		cfg:   m.bootConfig(runtimeDir, nonce, shared),
+		cfg:   m.bootConfig(runtimeDir, nonce, shared, spec.UID),
 		uid:   spec.UID,
 		env:   spec.Env,
 		nonce: nonce,
@@ -281,7 +281,7 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec ContainerSpec) (Containe
 // sizing, and the boot nonce carried on the cmdline as lowercase hex under the
 // compass.boot_nonce key guestd parses. Split out so spec→BootConfig assembly
 // is unit-testable without booting.
-func (m *MicroVMRuntime) bootConfig(runtimeDir string, nonce []byte, shared Mount) microvm.BootConfig {
+func (m *MicroVMRuntime) bootConfig(runtimeDir string, nonce []byte, shared Mount, agentUID uint32) microvm.BootConfig {
 	return microvm.BootConfig{
 		Kernel:      m.config.KernelImage,
 		Initrd:      m.config.InitrdImage,
@@ -294,8 +294,12 @@ func (m *MicroVMRuntime) bootConfig(runtimeDir string, nonce []byte, shared Moun
 		FSTag:       workspaceFSTag,
 		FSSocket:    filepath.Join(runtimeDir, "virtiofsd.sock"),
 		FSSharedDir: shared.HostPath,
-		CPUs:        m.config.DefaultCPUs,
-		MemoryMB:    m.config.DefaultMemoryMB,
+		// The in-guest exec uid, so virtiofsd maps it back to the invoking host
+		// user and the shared volume carries the same host-side ownership the
+		// podman --userns=keep-id path produces (record §(d) parity).
+		AgentUID: agentUID,
+		CPUs:     m.config.DefaultCPUs,
+		MemoryMB: m.config.DefaultMemoryMB,
 		Net: microvm.NetConfig{
 			VhostUserSocket: filepath.Join(runtimeDir, "net.sock"),
 			MAC:             guestMAC,

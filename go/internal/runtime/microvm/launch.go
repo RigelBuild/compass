@@ -161,9 +161,11 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 			logPath: filepath.Join(dir, "virtiofsd.log"),
 			//nolint:gosec // G204: the microVM harness seam — virtiofsdPath is LookPath-resolved and the argv is harness-built from BootConfig, neither user-controlled
 			cmd: exec.CommandContext(ctx, virtiofsdPath,
-				"--socket-path="+cfg.FSSocket,
-				"--shared-dir="+cfg.FSSharedDir,
-				"--sandbox=namespace"),
+				append([]string{
+					"--socket-path=" + cfg.FSSocket,
+					"--shared-dir=" + cfg.FSSharedDir,
+					"--sandbox=namespace",
+				}, virtiofsdIDMapArgs(cfg.AgentUID)...)...),
 		}
 		if startErr := startChild(vm.virtiofsd); startErr != nil {
 			return nil, fmt.Errorf("microvm: starting virtiofsd: %w", startErr)
@@ -237,6 +239,71 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	}
 	return vm, nil
 }
+
+// virtiofsdIDMapArgs builds the virtiofsd uid/gid mapping that gives the shared
+// volume the SAME host-side ownership podman's `--userns=keep-id:uid=N,gid=N`
+// produces (record §(d): "virtiofsd does its own uid/gid translation via that
+// userns (subuid/subgid + newuidmap) … the target is the same host-side
+// ownership on the session volume, so files stay identical between backends").
+// Empty when agentUID is zero (the V2a spike harness, which asserts nothing
+// about ownership on its throwaway share).
+//
+// --uid-map/--gid-map (not --translate-uid/--translate-gid): both reach the same
+// ownership, but the map flags are the record's NAMED mechanism — the mapping is
+// performed by the user namespace virtiofsd is placed into by
+// --sandbox=namespace, rather than internally by the daemon. That distinction is
+// load-bearing here for two reasons beyond fidelity to the record:
+//
+//  1. Rootless, --sandbox=namespace alone leaves virtiofsd unable to become
+//     namespace-root ("Couldn't set the process uid as root: -1"), and a
+//     passthrough daemon that is not root in its own userns cannot chown a newly
+//     created inode to the requesting guest id — so EVERY guest create on the
+//     share failed EINVAL. Mapping an id to namespace-uid 0 makes the daemon
+//     root inside the namespace, which is what makes guest writes work at all.
+//  2. --translate-uid is documented as incompatible with
+//     `--posix-acl=always|auto`, so it would foreclose POSIX ACLs on the share.
+//
+// The two mapped ranges, both one id wide:
+//   - :0:<subuid base>:1: — an id from the invoking user's /etc/subuid range
+//     becomes namespace-root, so the daemon can chown as above. It is a
+//     subordinate id the invoking user already owns, so no capability is needed
+//     (newuidmap is setuid and honors /etc/subuid).
+//   - :<agentUID>:<host uid>:1: — the in-guest agent id maps to the invoking
+//     host user, which is the parity target itself.
+//
+// gid mirrors uid, EXCEPT that the host side is the invoking user's real gid,
+// not its uid: the guest agent runs uid==gid==agentUID (guestd linuxCredential)
+// while a host user's gid is routinely different (e.g. 1000:100). Collapsing gid
+// onto uid here is precisely the parity break the V6 parity test detects.
+func virtiofsdIDMapArgs(agentUID uint32) []string {
+	if agentUID == 0 {
+		return nil
+	}
+	hostUID := os.Getuid()
+	hostGID := os.Getgid()
+	agent := strconv.FormatUint(uint64(agentUID), 10)
+	return []string{
+		"--uid-map", idMapSpec("0", strconv.Itoa(subordinateIDBase)),
+		"--uid-map", idMapSpec(agent, strconv.Itoa(hostUID)),
+		"--gid-map", idMapSpec("0", strconv.Itoa(subordinateIDBase)),
+		"--gid-map", idMapSpec(agent, strconv.Itoa(hostGID)),
+	}
+}
+
+// idMapSpec renders one virtiofsd --uid-map/--gid-map range in its
+// `:<namespace id>:<host id>:<count>:` form, always one id wide.
+func idMapSpec(namespaceID, hostID string) string {
+	return ":" + namespaceID + ":" + hostID + ":1:"
+}
+
+// subordinateIDBase is the host subordinate uid/gid mapped to namespace id 0 so
+// virtiofsd can act as root INSIDE its user namespace (and therefore chown
+// guest-created inodes). It is the conventional first entry of a rootless
+// /etc/subuid + /etc/subgid range — the same 100000 base shadow-utils allocates
+// and podman's rootless userns consumes — so it needs no capability, only that
+// the invoking user has a subordinate range at all (which rootless podman on
+// this host already requires, podman.go:22-24).
+const subordinateIDBase = 100000
 
 // vmmArgs builds the cloud-hypervisor argv exactly per the record (lines
 // 542-547), dropping --fs/--vsock under the net-only smoke. Launch appends to

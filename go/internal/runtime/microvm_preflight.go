@@ -39,6 +39,12 @@ type preflightProbes struct {
 	statImage func(string) error
 	// hashImage returns the streaming lowercase-hex SHA-256 of the image file.
 	hashImage func(string) (string, error)
+	// readQuota reads the active project quota scoping a volume path (D7:
+	// read-only, never assign). Behind the seam so the quota axis is
+	// hermetically testable — a prjquota-active filesystem cannot be
+	// provisioned rootless, so a fake reading is the only way this decision is
+	// covered on a dev box.
+	readQuota quotaReadFn
 }
 
 // defaultPreflightProbes wires the real host-facing implementations behind the
@@ -69,6 +75,7 @@ func defaultPreflightProbes() preflightProbes {
 			return nil
 		},
 		hashImage: hashFileSHA256,
+		readQuota: readVolumeQuota,
 	}
 }
 
@@ -110,7 +117,46 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 
 	// 4. RunRoot: set, writable, and short enough that a session's worst-case
 	// suffixed gateway socket path fits the AF_UNIX budget (record §(b)/§(e)).
-	return m.verifyRunRoot(probes)
+	if err := m.verifyRunRoot(probes); err != nil {
+		return err
+	}
+
+	// 5. Session-volume quota (D7): under the multi-tenant profile an
+	// operator-provisioned project quota MUST be active on the session-volume
+	// filesystem, or startup fails naming the fix. Otherwise the observed
+	// utilization is logged and nothing gates.
+	return m.verifyQuota(probes)
+}
+
+// verifyQuota runs the D7 volume-quota check against the session-volume
+// filesystem. The per-session volume dir is not known at startup (P2's volume
+// lifecycle mints it per session), so the check targets the RunRoot — the one
+// startup-known path on the same host filesystem tree the Runner writes session
+// state into, which is what "the session-volume filesystem" means at preflight
+// time. Verification is read-only and rootless (microvm_quota.go); the Runner
+// never assigns a quota.
+//
+// QuotaRequired unset (Dogfood, single trusted tenant) never fails: an absent
+// quota is the documented posture there, so the reading is logged — including
+// the utilization V7 will meter — and startup proceeds. No meter is registered
+// here; the coherent metric set is V7's.
+func (m *MicroVMRuntime) verifyQuota(probes preflightProbes) error {
+	reading, err := verifyVolumeQuota(m.config.RunRoot, VolumeQuota{}, probes.readQuota)
+	if err != nil {
+		if m.config.QuotaRequired {
+			return err
+		}
+		slog.Warn("microvm preflight: session-volume quota is not verified; the single-tenant profile ships no host-enforced quota",
+			"run_root", m.config.RunRoot, "reason", err)
+		return nil
+	}
+	slog.Info("microvm preflight: session-volume project quota is active",
+		"run_root", m.config.RunRoot,
+		"limit_bytes", reading.LimitBytes,
+		"used_bytes", reading.UsedBytes,
+		"used_ratio", reading.UsedRatio(),
+		"required", m.config.QuotaRequired)
+	return nil
 }
 
 // imageKnob names the flag and env knob that sets one guest image path, for the

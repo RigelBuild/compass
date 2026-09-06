@@ -55,6 +55,15 @@ type MicroVMConfig struct {
 	// DefaultMemoryMB is the RAM each session guest boots with, in MiB
 	// (hotplug-grown later per D5). Zero leaves it to the VMM's own default.
 	DefaultMemoryMB int
+	// QuotaRequired selects the D7 quota posture. When set (the multi-tenant
+	// profile), Runner startup verifies an operator-provisioned project quota is
+	// active on the session-volume filesystem and fails if absent (D7
+	// verify-never-assign: the Runner reads the bound, it never assigns one —
+	// assignment needs CAP_SYS_ADMIN it lacks). Unset (Dogfood single-tenant):
+	// no host-enforced quota is required, and the observed utilization is logged
+	// only. Appended, never reordered: the field is additive to a config
+	// operators already construct positionally in tests.
+	QuotaRequired bool
 }
 
 // BackendConfig selects and configures the container runtime backend. Backend
