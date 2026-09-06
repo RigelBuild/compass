@@ -25,6 +25,13 @@ tasks:
     # the same silent-pointer-death this gate's hint was repaired for. Scoped
     # to the one cited file, not `/docs/**`, so unrelated docs edits don't
     # re-run the suite. Keep in sync with `REMEDIATION_DOC` in index.ts.
+    #
+    # This governs moon's CACHE, not CI's task selection: on a pull_request,
+    # tools/ci-matrix selects targets via `moon query projects --affected`,
+    # which walks the project graph and never consults a cross-tree input (see
+    # the discriminator note in .github/workflows/ci.yml). So a docs-only PR
+    # that moves or deletes this file does not select this project, and the
+    # backstop is ci.yml's unconditional push + nightly full sweep.
     inputs:
       - '*.ts'
       - 'tsconfig.json'

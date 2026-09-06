@@ -83,8 +83,10 @@ export const ALLOWLIST: Readonly<Record<string, string>> = {};
  * let a docs move silently kill the pointer again — the exact defect this
  * hint was repaired for. Wording tracks its "Never name or point at the
  * private repo" bullet; update both together. This path also appears in
- * `moon.yml` as an input of the `test` task — the declaration is what makes
- * the cache re-run that assertion when the doc changes, so move both.
+ * `moon.yml` as an input of the `test` task — that declaration is what makes
+ * moon's cache re-run the assertion when the doc changes, so move both. Note
+ * a pull_request selects targets by project, so a docs-only change relies on
+ * the main/nightly full sweep.
  */
 export const REMEDIATION_DOC = "docs/concepts/self-host-and-managed.md";
 
