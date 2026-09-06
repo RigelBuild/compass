@@ -844,10 +844,9 @@ is declared into it) and T1.
     `DeclaredSecrets` (resolver.go:145); the actual provider round-trip is
     `b.Load()` (resolver.go:170), whose SDK signature carries NO ctx
     (`func (b *Builder) Load() (*Resolved, error)`, verified against
-    secretspec-go v0.15.0 secretspec.go:245, the current pin — re-verify this
-    signature after the `>= 0.17` bump T0 requires (F2/H-1 prerequisite); if
-    `Load` gains a ctx-carrying form, the goroutine-offload design below
-    simplifies to a plain ctx-bounded call) and which blocks in an uncancellable
+    secretspec-go v0.20.0 secretspec.go:293, the current pin — `Load` still
+    carries no ctx after the bump, so the goroutine-offload design below
+    stands) and which blocks in an uncancellable
     FFI call
     (`nativeResolve` → `C.secretspec_resolve`, binding_cgo.go:30 /
     binding_purego.go:118). A hung provider (1Password awaiting biometric

@@ -95,7 +95,7 @@ func TestSetArgs(t *testing.T) {
 	got := bare.setArgs("API_KEY", reason, manifest, bare.resolvedProfile())
 	want := []string{
 		"--file=" + manifest, "--reason=" + reason, setVerb, "API_KEY",
-		"--profile", defaultProfile,
+		"--profile=" + defaultProfile,
 	}
 	if !equalArgs(got, want) {
 		t.Errorf("setArgs bare = %v, want %v", got, want)
@@ -107,7 +107,7 @@ func TestSetArgs(t *testing.T) {
 	gotFull := full.setArgs("API_KEY", reason, manifest, full.resolvedProfile())
 	wantFull := []string{
 		"--file=" + manifest, "--reason=" + reason, setVerb, "API_KEY",
-		"--provider", "keyring://", "--profile", "production",
+		"--provider=keyring://", "--profile=production",
 	}
 	if !equalArgs(gotFull, wantFull) {
 		t.Errorf("setArgs full = %v, want %v", gotFull, wantFull)
@@ -117,6 +117,21 @@ func TestSetArgs(t *testing.T) {
 	hostile := bare.setArgs("API_KEY", "--provider=evil://", manifest, bare.resolvedProfile())
 	if !slices.Contains(hostile, "--reason=--provider=evil://") || slices.Contains(hostile, "--provider=evil://") || slices.Contains(hostile, "--provider") {
 		t.Errorf("setArgs hostile reason = %v, want one joined reason token and no provider flag", hostile)
+	}
+
+	// Same guarantee for the operator-configured flags: ValidateProfile admits a
+	// leading dash, and the provider string is unvalidated, so a dash-leading
+	// value must stay bound to its own flag rather than being parsed as the next
+	// one (which the CLI rejects with a bare exit 2).
+	dashCfg := NewSpecResolver(nil, "/tmp/state", WithProvider("--reason=evil"), WithProfile("-prod"))
+	gotDash := dashCfg.setArgs("API_KEY", reason, manifest, dashCfg.resolvedProfile())
+	if !slices.Contains(gotDash, "--profile=-prod") || !slices.Contains(gotDash, "--provider=--reason=evil") {
+		t.Errorf("setArgs dash-leading config = %v, want joined --profile/--provider tokens", gotDash)
+	}
+	for _, a := range gotDash {
+		if a == "-prod" || a == "--reason=evil" {
+			t.Errorf("dash-leading config value became its own argv token: %v", gotDash)
+		}
 	}
 
 	// The value must NEVER be in the constructed argv — it rides stdin.
@@ -336,7 +351,7 @@ func TestSecretSpecCLIVersionFloor(t *testing.T) {
 	}
 
 	if major < minMajor || (major == minMajor && minor < minMinor) {
-		t.Fatalf("%s is version %s, want >= %d.%d — the floor is parity with the secretspec-go SDK pin in go.mod, so the SDK read half and the CLI write half act under one release rather than skewing; %d.%d also subsumes the older, separate 0.15 `age`-provider floor, below which encrypted-at-rest writes fail with \"Provider backend 'age' not found\"", bin, version, minMajor, minMinor, minMajor, minMinor)
+		t.Fatalf("%s is version %s, want >= %d.%d — the floor is parity with the secretspec-go SDK pin in go.mod, so the SDK read half and the CLI write half act under one release rather than skewing; %d.%d also subsumes the older, separate 0.17 `age`-provider floor (age:// was added in 0.17.0), below which encrypted-at-rest writes fail with \"Provider backend 'age' not found\"", bin, version, minMajor, minMinor, minMajor, minMinor)
 	}
 }
 

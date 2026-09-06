@@ -83,7 +83,8 @@ type SpecOption func(*SpecResolver)
 // "onepassword://Production"). Empty uses the SDK's default provider chain.
 func WithProvider(uri string) SpecOption { return func(r *SpecResolver) { r.provider = uri } }
 
-// WithProfile pins the SecretSpec profile. Empty uses the SDK default.
+// WithProfile pins the SecretSpec profile. Empty resolves to defaultProfile
+// (see resolvedProfile), never the SDK/CLI built-in default.
 func WithProfile(profile string) SpecOption { return func(r *SpecResolver) { r.profile = profile } }
 
 // WithCLI pins the secretspec CLI binary used for the write path.
@@ -305,8 +306,12 @@ func (r *SpecResolver) resolvedProfile() string {
 // without executing the binary). The value never appears here — it rides stdin.
 // --file and --reason are global flags, accepted on either side of the `set`
 // subcommand; both are emitted before it as the canonical, unambiguous
-// position. The joined form binds each value to its flag, so a leading-dash
-// reason is recorded as the reason rather than parsed as a flag.
+// position. Every flag uses the joined form, which binds each value to its
+// flag: the two-token form parses a leading-dash value as the next flag and
+// exits 2. That is a property of the value's shape, not of which flag carries
+// it, so it holds for the operator-configured provider and profile just as it
+// does for a caller-supplied reason — ValidateProfile admits a leading dash,
+// and the provider string is unvalidated.
 //
 // profile is the caller's resolvedProfile(), hence non-empty by construction,
 // so --profile is emitted unconditionally: the CLI acts under exactly the
@@ -315,9 +320,9 @@ func (r *SpecResolver) resolvedProfile() string {
 func (r *SpecResolver) setArgs(name, reason, manifestPath, profile string) []string {
 	args := []string{"--file=" + manifestPath, "--reason=" + reason, "set", name}
 	if r.provider != "" {
-		args = append(args, "--provider", r.provider)
+		args = append(args, "--provider="+r.provider)
 	}
-	return append(args, "--profile", profile)
+	return append(args, "--profile="+profile)
 }
 
 // writeManifest renders the manifest for the current declared set and writes it

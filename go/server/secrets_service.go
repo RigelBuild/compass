@@ -121,9 +121,13 @@ func (s *secretsService) SetSecret(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("declaring secret: %w", declErr))
 	}
 
-	// A fixed, operator-meaningful reason: this write is only ever reachable
-	// through the SetSecret RPC, so the audit log records that provenance.
-	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue(), "compass: operator secret write via SetSecret RPC"); err != nil {
+	// The audit reason carries the authenticated caller, so the provider's log
+	// distinguishes which operator wrote a secret rather than recording every
+	// write anonymously. The RPC is the only path that reaches this write, so
+	// the prefix also records that provenance. The CLI JSON-escapes the reason
+	// into its audit record, so an ID cannot forge a log entry.
+	reason := fmt.Sprintf("compass: operator secret write via SetSecret RPC (caller %s)", callerID)
+	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue(), reason); err != nil {
 		// The name was validated by DeclareSecret and the value was screened
 		// non-empty above, so a Set failure here is a provider/exec fault
 		// (CLI unreachable, non-zero exit) — retryable and operator-side, never
