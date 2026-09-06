@@ -253,6 +253,73 @@ func TestResolveConfigCollectorFlags(t *testing.T) {
 	})
 }
 
+// TestResolveConfigNatsFlags covers the bundled NATS / --nats-external flags.
+func TestResolveConfigNatsFlags(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+
+	t.Run("nats-external threads into config", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.natsExternal = "nats.example.com:4222"
+		f.natsExternalSet = true
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.ExternalNatsURL != f.natsExternal {
+			t.Errorf("ExternalNatsURL = %q, want %q", cfg.ExternalNatsURL, f.natsExternal)
+		}
+	})
+	t.Run("nats-external explicit empty is rejected", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.natsExternalSet = true
+		_, err := resolveConfig(f)
+		if err == nil {
+			t.Fatal("resolveConfig(--nats-external \"\") = nil error, want a rejection")
+		}
+		if !strings.Contains(err.Error(), "--nats-external requires an explicit nats:// URL") {
+			t.Errorf("error = %v, want it to name the missing URL", err)
+		}
+	})
+	t.Run("nats-external unset leaves endpoint empty", func(t *testing.T) {
+		cfg, err := resolveConfig(baseFlags(t.TempDir()))
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.ExternalNatsURL != "" {
+			t.Errorf("ExternalNatsURL = %q, want empty (bundle NATS)", cfg.ExternalNatsURL)
+		}
+	})
+	t.Run("nats-image defaults to the pinned digest via newFlagSet", func(t *testing.T) {
+		_, f := newFlagSet("up", true)
+		f.stateDir = t.TempDir()
+		f.image = "example.com/agent:latest"
+		cfg, err := resolveConfig(*f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.NatsImage != stack.DefaultNatsImage {
+			t.Errorf("NatsImage = %q, want the pinned default %q", cfg.NatsImage, stack.DefaultNatsImage)
+		}
+	})
+	t.Run("nats-external derives natsExternalSet through markExplicitFlags", func(t *testing.T) {
+		fs, f := newFlagSet("up", true)
+		f.stateDir = t.TempDir()
+		f.image = "example.com/agent:latest"
+		// Drive the real flag set end to end so the fs.Visit derivation runs.
+		if err := fs.Parse([]string{"--nats-external", "", "--state-dir", f.stateDir, "--image", f.image}); err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		markExplicitFlags(fs, f)
+		if !f.natsExternalSet {
+			t.Fatalf("natsExternalSet = false after --nats-external \"\" parsed; want true")
+		}
+		if _, err := resolveConfig(*f); err == nil {
+			t.Fatal("resolveConfig(--nats-external \"\") = nil error, want the naming rejection")
+		}
+	})
+}
+
 func TestRunDispatch(t *testing.T) {
 	t.Run("unknown subcommand names the three", func(t *testing.T) {
 		err := run([]string{"bogus"})

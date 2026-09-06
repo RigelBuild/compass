@@ -14,10 +14,10 @@ import (
 
 // Per-component drain budgets: after SIGTERM, how long DownDetached waits for a
 // component's confirmation channel to go quiet before escalating to a group
-// SIGKILL. Reverse start order (runner → server → collector → postgres); the
+// SIGKILL. Reverse start order (runner → server → nats → collector → postgres); the
 // server's graceful drain is the long pole. On the SIGTERM-succeeds path they
-// sum to 65s; on the escalation path the three non-runner components each add a
-// postKillGrace, so the true worst case is 15 + (30+5) + (10+5) + (10+5) = 80s.
+// sum to 85s; on the escalation path the four non-runner components each add a
+// postKillGrace, so the true worst case is 15 + (30+5) + (20+5) + (10+5) + (10+5) = 105s.
 // That can exceed the app's 60s stackDownTimeout (lifecycle.go:35) — and is
 // bounded by its ctx cancellation, not by this arithmetic: on ctx.Done waitDead
 // returns the current dead() verdict, so an overrun becomes a partial-failure
@@ -34,8 +34,14 @@ var (
 	// state to drain (D3 drops rather than buffering), so it stops fast; the
 	// budget matches postgres's container-drain tier for parity.
 	collectorDrainBudget = 10 * time.Second
+	// natsDrainBudget bounds the nats container's graceful `podman stop` before
+	// the `podman rm -f` escalation. Unlike the collector, NATS flushes its
+	// JetStream file store on SIGTERM, so it gets the wider budget its in-process
+	// natsStopTimeout also reserves — a `rm -f` mid-flush is exactly the
+	// unclean-shutdown case the store has to recover from on next boot.
+	natsDrainBudget = 20 * time.Second
 	// postKillGrace bounds the confirm after the hard kill for the non-runner
-	// components (server, collector, postgres): the kill is unblockable
+	// components (server, collector, nats, postgres): the kill is unblockable
 	// (group SIGKILL for the socket children, `podman rm -f` for the container),
 	// so a component still confirming alive past this grace — a socket still
 	// answering, or the container still existing — is a genuine survivor, not a
@@ -167,7 +173,7 @@ type target struct {
 }
 
 // liveTargets returns the identity-matched live groups in reverse start order
-// (runner → server → collector → postgres). Each recorded group is checked with
+// (runner → server → nats → collector → postgres). Each recorded group is checked with
 // GroupSignaller.Alive (existence AND start-time identity); a gone or recycled
 // group is omitted — never signaled.
 func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []target {
@@ -191,6 +197,14 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		{ComponentServer, serverDrainBudget, func(pgidEntry) func() bool {
 			// Socket quiescence: the UDS stops answering GetServerInfo.
 			return func() bool { _, err := deps.Prober.Probe(ctx, cfg.SocketPath); return err != nil }
+		}},
+		{ComponentNats, natsDrainBudget, func(e pgidEntry) func() bool {
+			// Container existence: nats is a container child torn down by name,
+			// confirmed gone when `podman container exists` reports absent.
+			// Reverse start order places it after the server and runner (its
+			// future consumers, PR3/PR4) so no live consumer outlives the broker
+			// it publishes to.
+			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
 		}},
 		{ComponentCollector, collectorDrainBudget, func(e pgidEntry) func() bool {
 			// Container existence: the collector is a container child (like the
