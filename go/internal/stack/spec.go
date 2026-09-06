@@ -16,7 +16,7 @@ const tokenEnvVar = "COMPASS_RUNNER_TOKEN"
 // mode is single-user/single-runner by design (DL-106), so the id is an internal
 // constant rather than a Config knob; it is cross-checked against the minted
 // token's subject, so mint and spawn must agree on this one value (mirrors
-// devenv's fixed `--runner-id dogfood`, devenv.nix:278).
+// devenv's fixed `--runner-id dogfood`, devenv.nix:293).
 const embeddedRunnerID = "embedded"
 
 // serverSpec builds the compass-server child spec from the resolved config and
@@ -35,7 +35,7 @@ func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 	}
 }
 
-// runnerSpec builds the compass-runner child spec (devenv.nix:277-282): it dials
+// runnerSpec builds the compass-runner child spec (devenv.nix:292-297): it dials
 // the server's TLS door over https, trusts the same cert as its --ca anchor,
 // runs cfg.AgentImage, and mints per-container sockets under cfg.RuntimeDir. The
 // token rides in Env only.

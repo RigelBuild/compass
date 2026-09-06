@@ -419,7 +419,7 @@ Interfaces:
 - Comment sweep (fork-path references in prose): `agent-image/devenv.nix:7`,
   `agent-image/toolchain.nix:96`, `agent-image/moon.yml:5,38` (the
   `nix run path:../forks/devenv#devenv` example and the `path:../forks/*`
-  cwd-rationale comment, adjacent to the repointed CLI), `devenv.nix:110,443`,
+  cwd-rationale comment, adjacent to the repointed CLI), `devenv.nix:110,458`,
   `tools/agent-image-env-gate/env-check.ts:8`, `index.ts:15`, and
   `moon.yml:10,41` (all cite `forks/devenv/...` or `path:../forks/*`),
   `apps/ui/.env.development:30-32` (cites

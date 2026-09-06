@@ -346,7 +346,7 @@ after T1 lands.
 
 ### T6 — Docs sweep + ledger encode
 
-+ **Do:** sweep remaining `gtk3` prose: `devenv.nix:106,153-160,225-251`
++ **Do:** sweep remaining `gtk3` prose: `devenv.nix:106,153-160,225-266`
   comments, `gtk-e2e-env.nix:1-27` comments, native-app record's
   system-libs constraint (`compass-native-app/design.md:384-391` names
   `webkit2gtk-4.1` — annotate, don't rewrite frozen prose, per the repo's
