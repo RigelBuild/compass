@@ -278,10 +278,10 @@ function parseProjects(json: string): ProjectInput[] {
  * `projects --affected` walks the PROJECT graph — a project is affected when
  * its own sources or a project it `dependsOn` changed — and never consults a
  * project's cross-tree task `inputs`. A gate whose subject lives in other
- * projects' trees is therefore invisible to it: `orion-ref-gate` scans the
- * whole repo (its `check` input is a workspace-root recursive glob, see
- * `tools/orion-ref-gate/moon.yml:54-56`), `design-ledger-gate` reads
- * `/docs/designs/**`, yet neither is selected unless its own handful of files
+ * projects' trees is therefore invisible to it: `orion-ref-gate`'s `check`
+ * task declares a workspace-root recursive input glob so it scans the whole
+ * repo, and `design-ledger-gate`'s reads the design corpus, yet neither is
+ * selected unless its own handful of files
  * change, so a PR can introduce exactly what the gate exists to catch and
  * never run it.
  *
@@ -303,8 +303,10 @@ function parseProjects(json: string): ProjectInput[] {
  * is a real "nothing affected" rather than a failed query.
  */
 export function parseTaskAffectedIds(json: string): string[] {
-	const parsed = JSON.parse(json) as { tasks?: Record<string, unknown> };
-	if (parsed.tasks === undefined) {
+	const parsed = JSON.parse(json) as { tasks?: Record<string, unknown> | null };
+	// `null` is checked alongside `undefined` so a null payload reports this
+	// named diagnostic rather than a raw TypeError out of `Object.keys`.
+	if (parsed.tasks == null) {
 		throw new Error(
 			"moon query tasks payload is missing the expected tasks key",
 		);

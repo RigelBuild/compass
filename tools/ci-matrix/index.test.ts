@@ -566,6 +566,14 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 		);
 	});
 
+	test("a null tasks value throws the named diagnostic, not a TypeError", () => {
+		// Guarding `undefined` alone let `null` reach Object.keys, which threw a
+		// raw TypeError — fail-closed either way, but unreadable in the log.
+		expect(() => parseTaskAffectedIds(JSON.stringify({ tasks: null }))).toThrow(
+			"missing the expected tasks key",
+		);
+	});
+
 	test("a task id containing a colon throws", () => {
 		expect(() =>
 			parseTaskAffectedIds(
