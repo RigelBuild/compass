@@ -6,30 +6,42 @@ per open question, with measured numbers and the transcript-level evidence each
 verdict rests on.
 
 **Headline: the apple-container direction is GREEN. The vsock transport is
-not — and that returns to Matt.** Every probe ran to a verdict and none
-challenges the ruled direction (apple-container as the macOS engine). But the
-load-bearing transport probe found the ruled *transport* unreachable: the CLI
-exposes no host-side vsock attach point, so the guestd-style unix→vsock
-forwarder cannot be ported onto this backend at all. design.md:612-613 states
-the disposition for exactly this outcome — "If the vsock leg is NOT reachable
-through the CLI, the transport question (not the apple-container direction)
-returns to Matt with the finding" — and OQ-11 (design.md:712-714) is a Matt
-ruling ("RULED: yes, vsock, mirroring the microVM"). **That trigger has fired.**
+not — and that returns to Matt.** Three of six probes ran to a full verdict; OQ-1,
+OQ-5 and OQ-12 are partial (the `/nix` + `$HOME` leg, OQ-7's
+memory-growth-over-session measurement, and the darwin preflight leg are unexercised
+and carried forward). None challenges the ruled direction (apple-container as the
+macOS engine). But the load-bearing transport probe found the ruled *transport*
+unreachable: the CLI exposes no host-side vsock attach point, so the guestd-style
+unix→vsock forwarder cannot be ported onto this backend through the documented CLI
+surface. design.md:612-613 states the disposition for exactly this outcome — "If the
+vsock leg is NOT reachable through the CLI, the transport question (not the
+apple-container direction) returns to Matt with the finding" — and OQ-11
+(design.md:712-714) is a Matt ruling ("RULED: yes, vsock, mirroring the microVM").
+**That trigger has fired.**
+
 A working substitute exists and is proven end to end (the CLI's own
 `--publish-socket`, running **guest-binds / host-dials** — the inverse of
 today's gateway), but adopting it changes a ruled item, so it is a
 **recommendation awaiting Matt's ruling**, not a decision this record makes.
 T-2 should not build the transport against it until Matt rules.
 
-Two further adjustments are genuinely T-2 shape changes that reopen nothing and
-in fact *simplify* the plan: virtiofs makes the `--userns=keep-id` port
-unnecessary, and the egress arming identity moves to the
-root-arms-then-agent-drops model `go/internal/runtime/egress.go:6-10` already
-specifies. The spike also turned up **two open prerequisites** that are not
-shape changes: T-2's stack port needs work on both halves — postgres's
-bind-mount socket shape is RED here, and the collector's TCP-publishing path
-went unprobed — and no arm64 `compass-agent` image exists, which blocks the
-live legs of T-2/T-3. All six are detailed under
+**Not closed by this spike:**
+
+- OQ-1's `/nix` + `$HOME` usability leg, pending an arm64 compass-agent image.
+- OQ-12's darwin preflight leg, carried to T-4.
+- OQ-7's memory-growth-over-session measurement.
+
+Two further adjustments are genuinely T-2 shape changes that reopen nothing
+already settled and in fact *simplify* the plan: virtiofs makes the
+`--userns=keep-id` port unnecessary for the host-side ownership round-trip (the
+`/nix` + `$HOME` leg is unverified, see item 5), and the egress arming identity
+moves to the root-arms-then-agent-drops model
+`go/internal/runtime/egress.go:6-10` already specifies. The spike also turned up
+**four open prerequisites** that are not shape changes: T-2's stack port needs
+work on both halves — postgres's bind-mount socket shape is RED here, and the
+collector's TCP-publishing path went unprobed — no arm64 `compass-agent` image
+exists, which blocks the live legs of T-2/T-3, and every probe ran on `container`
+1.1.0 rather than the current 1.3.1. All seven are detailed under
 [Consequences for T-2..T-5](#consequences-for-t-2t-5).
 
 ## Host + toolchain
@@ -66,8 +78,8 @@ non-interactively with `container system kernel set --recommended` (a bare
 | OQ-2/OQ-11 | (b) transport | **direction GREEN; ruled vsock transport RED → returns to Matt** | no host-side vsock attach point in the CLI; `--publish-socket` is a proven substitute, guest-binds/host-dials |
 | OQ-3 | (c) egress arming | **GREEN (already the documented model)** | caps silently dropped at uid≠0, but `egress.go:6-10`'s root-arms-then-agent-drops model is exactly what works |
 | OQ-4 | (d) streaming exec | **GREEN** | streaming, stdin, exit-code and signal semantics all match the `ChildHandle` contract |
-| OQ-5 | (e) timings | **GREEN** | ~720-950 ms warm start; 2.6-2.9 MiB idle per container VM |
-| OQ-12 | (f) runner-on-darwin | **GREEN** | cross-builds + runs natively on macOS 26; darwin `sun_path` budget measured at 34, matching `socket.go:138-139`; the darwin preflight leg is unexercised and carried to T-4 |
+| OQ-5 | (e) timings | **GREEN (partial)** | 721-952 ms warm start; 2.6-2.9 MiB idle per container VM; OQ-7's memory-growth-over-session measurement (design.md:681 assigns it to T-1(e)) was not taken |
+| OQ-12 | (f) runner-on-darwin | **GREEN (partial)** | cross-builds + runs natively on macOS 26; darwin `sun_path` budget measured at 34, matching `socket.go:138-139`; the darwin preflight leg is unexercised and carried to T-4 |
 
 ### OQ-1 — uid mapping: GREEN (partial); ownership simpler than podman
 
@@ -76,11 +88,11 @@ virtiofs performs identity translation at the boundary, so the podman
 and needs none**:
 
 - Guest running as uid 1000 wrote `/w/mapped.txt`; the host saw it owned by
-  `501:0 mattwilkinson:wheel` — the invoking macOS user, which is the property
+  `501:0 <invoking-user>:wheel` — the invoking macOS user, which is the property
   the record wanted.
 - A file created host-side appeared in-guest as `1000:1000` and was readable.
 - Same translation with **no** `--uid` flag (guest default is uid 0): host file
-  still landed as `mattwilkinson`.
+  still landed as the invoking user.
 
 So the "fixed/root uid" failure branch the record hedged against does not
 occur. `--uid/--gid/--user` exist and set the in-guest process identity; they
@@ -138,9 +150,10 @@ PROBE_INFO vsock socket(AF_VSOCK) created
 PROBE_ERR vsock connect cid=2 port=1024: connection reset by peer
 ```
 
-The CLI exposes no flag to bind a host-side vsock listener (`container run
---help` has no `vsock` surface; no top-level vsock subcommand). So the record's
-literal T-1(b) plan — port the guestd unix→vsock forwarder
+A reset rather than `ENODEV` or a timeout indicates the host vsock stack is live
+and answering. The CLI exposes no flag to bind a host-side vsock listener
+(`container run --help` has no `vsock` surface; no top-level vsock subcommand).
+So the record's literal T-1(b) plan — port the guestd unix→vsock forwarder
 (`gateway_proxy.go:29-33`) onto this backend — has **no host-side attach point
 through the CLI**. Reaching VZVirtioSocketDevice directly would mean bypassing
 the CLI for the Virtualization.framework API, which is out of scope for the
@@ -149,8 +162,8 @@ ruled "drive the `container` CLI" approach.
 **3. `--publish-socket` — GREEN, full bidirectional round-trip.** design.md:609
 already cited this flag, as proof that host↔guest forwarding exists as a
 first-class mechanism at all. The spike's finding is stronger and narrower: it
-is not merely evidence for vsock's plausibility, it is the **only reachable
-channel**:
+is not merely evidence for vsock's plausibility, it is the **only channel probed
+to a full round-trip**:
 
 ```text
 --publish-socket <spec>   Publish a socket from container to host
@@ -173,7 +186,7 @@ for the T-2 executor):
 - **Direction is inverted from today's gateway.** "From container to host" means
   the **guest binds** `container_path` and the **host dials** `host_path`. Today
   the host listens at Provision and the guest dials
-  (`go/internal/runner/gateway/socket.go:8-13`). This is the one real contract
+  (`go/internal/runner/gateway/socket.go:4-13`). This is the one real contract
   change in the whole spike.
 - **An identical host and container path works** — the invariant postgres needs.
   Publishing `/tmp/.s.PGSQL.5432:/tmp/.s.PGSQL.5432` round-tripped:
@@ -193,20 +206,33 @@ for the T-2 executor):
 - **The guest path must be in a guest-writable dir.** Binding `/run/gw.sock` as
   uid 1000 fails (`bind: permission denied`, `/run` is root-owned); `/tmp` works.
 
-**Disposition: this returns to Matt.** design.md:612-613 routes exactly this
-outcome — a vsock leg unreachable through the CLI — to Matt as a transport
-question, and OQ-11 (design.md:712-714) is his ruling. `--publish-socket` is a
-*proven substitute*, not an adopted decision: it costs the inverted gateway
-ordering above, which is a change to ruled behaviour. Recommendation: adopt it,
-since the alternative is bypassing the CLI for the Virtualization.framework API
-and abandoning the ruled "drive the `container` CLI" approach. T-2 should hold
-the transport leg until Matt rules; nothing else in T-2 is blocked by it.
+**Disposition: this returns to Matt.** The real option set is:
+
+1. **`--publish-socket` — proven end to end.** It costs the guest-binds/host-
+   dials inversion of `gateway/socket.go:4-13` plus an application-level
+   readiness handshake, because host connect alone does not prove the guest is
+   listening.
+2. **`-p/--publish` TCP loopback — surface confirmed present but UNPROBED.** It
+   keeps the host-listens direction, but puts the gateway on an in-namespace IP
+   hop and therefore re-couples OQ-2/OQ-3; it would need an nft allowlist
+   carve-out, unlike the socket path.
+3. **`--ssh` — named at design.md:609, NOT probed.** It would keep the
+   CLI-driven approach, but layers an SSH server and key material into the
+   guest, which the socket path avoids; settling it needs a further probe.
+4. **Bypass the CLI for Virtualization.framework — out of scope** under the
+   ruled "drive the `container` CLI" approach.
+
+Recommendation: adopt `--publish-socket`, since it is the only option proven
+end to end without bypassing the CLI or reopening the nft coupling. It remains
+a *proven substitute*, not an adopted decision: it changes ruled behaviour.
+T-2 should hold the transport leg until Matt rules; nothing else in T-2 is
+blocked by it.
 
 ### OQ-3 — egress arming: GREEN, and it is already the documented model
 
 Capabilities are silently dropped for any non-zero uid on this backend, so the
 *podman* arming identity — the image's default user (uid 1000) **with**
-CAP_NET_ADMIN and no `--user` (`agent.go:318-326`, whose doc comment states it
+CAP_NET_ADMIN and no `--user` (`agent.go:319-328`, whose doc comment states it
 verbatim) — cannot arm here. Full matrix:
 
 | Flags | `CapEff` | uid |
@@ -258,7 +284,11 @@ GATEWAY_UNDER_DENY=b'PONG-FROM-GUEST:PING-UNDER-DENY'
 The record's reasoning was that vsock is a virtio device rather than an
 in-namespace IP hop, so netfilter cannot see it. The conclusion holds for
 `--publish-socket` too — it is out-of-band of the guest's netfilter and needs
-**no allowlist carve-out**. The dissolution survives the mechanism change.
+**no allowlist carve-out**. The dissolution survives the mechanism change **for
+`--publish-socket`** (a socket forwarded out-of-band of the guest's netfilter),
+but would **not** survive a TCP-loopback transport (`-p/--publish`), which is an
+in-namespace IP hop needing an nft allowlist carve-out; if the transport ruling
+lands there, OQ-3's coupling re-opens.
 
 ### OQ-4 — streaming exec: GREEN
 
@@ -274,9 +304,10 @@ sigterm_exit=143              # 128+SIGTERM, distinguishable from a normal exit
 
 `container exec` carries `-i`, `-t`, `--uid/--gid/--user`, `-w/--workdir`,
 `--env/--env-file`, `--ulimit`, `-d/--detach` — a superset of what the interface
-needs.
+needs. The OQ-4 kill/exit-code semantics are pinned to `container` 1.1.0; they
+remain unverified on 1.2.x/1.3.1, and T-2 must re-verify them on 1.3.1.
 
-### OQ-5 — timings + footprint: GREEN
+### OQ-5 — timings + footprint: GREEN (partial)
 
 | Measure | Value |
 | --- | --- |
@@ -300,7 +331,7 @@ CLI output-format notes for T-2's parsers: progress renders as repeated
 `container stats` re-prints its header per sample; `container inspect` returns a
 JSON **array**, with resources under `configuration.resources`.
 
-### OQ-12 — runner-on-darwin: GREEN
+### OQ-12 — runner-on-darwin: GREEN (partial)
 
 `compass-runner` is already `//go:build unix` (`compass-runner/main.go:1`), and
 the run verdict the record asked for is positive:
@@ -339,10 +370,16 @@ already sources `jujutsu` and the CI agent from unstable. Those definitions
 live outside this repository, so they are named by role rather than path; this
 repo's only flake is `./flake.nix` at root.
 
+Probes ran on `container` **1.1.0** (what nixpkgs-unstable currently packages
+for `aarch64-darwin`); upstream is **1.3.1**. design.md:645-648 requires the
+current release, not docs. The kill/exit-code semantics and CLI output-format
+notes for T-2's parsers (OQ-5) are therefore pinned to 1.1.0 and unverified
+on 1.2.x/1.3.1.
+
 Version note for whoever lands it: the host's pinned `nixpkgs-darwin` has
 `container` at **0.12.3**, *below* the ≥ 1.0.0 floor design.md:313-319 sets, so
-it must come through the unstable overlay (1.1.0), not the default pin. Upstream
-is at 1.3.1.
+it must come through the unstable overlay (1.1.0), not the default pin. T-2
+must re-verify on 1.3.1, alongside the other prerequisites.
 
 That flake is repo-infra rather than this lane, so the declarative change is
 filed as **RIG-3352** for the owning lane rather than made here. Nothing in
@@ -369,7 +406,7 @@ changes.
    OQ-13 ruling). Postgres's contract is a host unix-socket directory
    bind-mounted into the container *at the same path*, with the host opening the
    byte-identical `host=<SocketDir>` DSN (`go/internal/stack/postgres_container.go:45-48`;
-   the mount itself at `adapters/postgres_container.go:178`). The spike proved
+   the mount itself at `adapters/postgres_container.go:183`). The spike proved
    that bind-mount shape **RED** on this backend, so the port cannot ride
    virtiofs. `--publish-socket` is the candidate and its direction fits
    (postgres binds in-container, the host dials), and an identical
@@ -380,37 +417,55 @@ changes.
    Unlike postgres it uses no unix socket at all: it publishes three TCP
    loopback ports (`-p …:4317`, `:4318`, `:13133`) and bind-mounts only a
    read-only config file (`adapters/collector_container.go:154-165`), with
-   readiness an HTTP GET against the health endpoint (`:120-122`). So the
-   AF_UNIX RED result leaves it untouched — but its real requirement,
-   **host-side TCP port publishing on apple-container, was never exercised
-   here**. The CLI does carry `-p/--publish
-   [host-ip:]host-port:container-port[/protocol]`, so the surface exists; that
-   it behaves as the collector needs is an open T-2 prerequisite, not a
-   finding of this spike.
-4. **Egress arming runs as root, then drops to the agent user** (T-2), which
-   moves *toward* the model `go/internal/runtime/egress.go:6-10` documents. Note
-   this is not a one-line identity swap: `AgentRuntime.armEgress`
-   (`go/internal/runtime/agent.go:318-326`) is shared across backends and execs
-   `NewExecSpec("sh", "-c", egress.NftScript())` with **no** user parameter, so
-   the identity is implicit in the image default user. T-2 must either widen
-   that shared seam with a per-backend arming identity (which the podman path
-   also runs) or take the `inGuestEgressArmer` marker (`agent.go:298-300`) that
-   design.md:455 explicitly declines for this backend. That is a real T-2 design
-   choice, and `NftScript()` plus the integrity model stay byte-for-byte either
-   way.
-5. **Drop the `--userns=keep-id` port entirely** (T-2). virtiofs already gives
-   the ownership round-trip podman needed that flag for.
+   readiness an HTTP GET against the health endpoint (`:120-122`). Its real
+   requirement, **host-side TCP port publishing on apple-container, was never
+   exercised here**; the CLI does carry
+   `-p/--publish [host-ip:]host-port:container-port[/protocol]`, so the surface
+   exists, but behavior remains a T-2 prerequisite.
+4. **Egress arming runs as root, then drops to the agent user** (T-2). The
+   capability matrix shows `CapEff` **`0000000000000000`** for every uid-1000
+   invocation, including `--cap-add ALL`, and records `nft: not found` /
+   `arm_as_uid1000=DENIED`. This falsifies design.md:195-197's premise that
+   `AgentRuntime.armEgress`'s nft exec path "runs unchanged", because
+   capabilities are dropped for any non-zero uid. `AgentRuntime.armEgress`
+   (`go/internal/runtime/agent.go:319-328`) is shared across backends and execs
+   `NewExecSpec("sh", "-c", egress.NftScript())` with no user parameter. T-2
+   must choose a per-backend arming identity or the `inGuestEgressArmer` marker
+   (`agent.go:298-300`) that design.md:454-455 explicitly declines for this
+   backend. That is a real T-2 design choice. Either branch is contained:
+   `NftScript()` and the `egress.go:6-10` integrity model stay byte-for-byte
+   on both. Note the asymmetry in blast radius: widening the shared seam also
+   runs on the podman path (`agent.go:319-328` is shared and `PodmanCLI`
+   carries no `EgressArmedInGuest` marker, `agent.go:294-300`), so that
+   branch needs podman regression cover; the marker branch skips `armEgress`
+   entirely (`agent.go:308-312`) and touches podman not at all.
+5. **Scope the `--userns=keep-id` conclusion** (T-2). The flag has no analogue
+   on this CLI; virtiofs supplies the host-side ownership round-trip it was
+   needed for (verified on `alpine:3.20`). The other property — a `/nix` store
+   and `$HOME` baked at uid 1000 being usable by the in-guest process — is
+   unverified and rides item 6. If it fails on the arm64 agent image, T-2 may
+   still need an ownership-fixup or named-volume workspace model
+   (design.md:595-598).
 6. **An arm64 compass-agent image is a prerequisite** for T-2/T-3's live legs.
-   `ghcr.io/rigelbuild/compass-agent:latest` has no `linux/arm64` manifest and
-   cannot run here at all, which also leaves T-1(a)'s `/nix` + `$HOME` leg open.
+   `ghcr.io/rigelbuild/compass-agent:latest` has no `linux/arm64` manifest,
+   which also leaves T-1(a)'s `/nix` + `$HOME` leg open.
+7. **Re-verify the CLI contract on 1.3.1** (T-2). All probes ran on `container`
+   1.1.0 (the nixpkgs-unstable package for `aarch64-darwin`); upstream is
+   1.3.1, and design.md:645-648 requires testing against the current release,
+   not docs. The kill/exit-code semantics (OQ-4) and the CLI output-format
+   notes for T-2's parsers (OQ-5) are pinned to 1.1.0 and unverified above it.
+   The discrete `create`/`start`/`stop`/`rm` argv and stop-timeout semantics
+   were not separately transcripted and are re-verified here too.
 
 Unaffected: the exec/kill contract, the host-side-runner topology, and T-5's
 flip criteria — now backed by real numbers. On the
-`SelectBackend`/`ContainerRuntime` seam, all nine verbs are accounted for:
-**seven were driven** onto the CLI successfully (Create, Start, Exec,
-ExecStreaming, Stop, Remove, and `Exists` — `container inspect <name>` exits 0
-for a container in any state, running or stopped, and exits 1 with a
-distinguishable `container not found` when absent, which is exactly the
-`Exists(ctx, name) (bool, error)` contract at `podman.go:378-379`); the
-remaining **two**, `MountLabel` and `Resize`, were not exercised and are
-expected to take the stub posture design.md:451-454 already specifies.
+`SelectBackend`/`ContainerRuntime` seam, all nine verbs are accounted for: six
+were exercised incidentally through the `run`/`exec` probes (Create, Start,
+Exec, ExecStreaming, Stop, and Remove), and `Exists` was driven directly
+(`container inspect <name>` exits 0 in any state and 1 with a distinguishable
+`container not found` when absent — exactly the `Exists(ctx, name) (bool,
+error)` contract at `podman.go:378-379`). The remaining two, `MountLabel` and
+`Resize`, were not exercised; `Resize` returns `ErrResizeNotImplemented`, and
+at 1.1.0 `container --help` plus `container <verb> --help` exposes no live
+resource-update verb (no `update` or `resize` subcommand), so the stub posture
+design.md:451-454 remains correct.
