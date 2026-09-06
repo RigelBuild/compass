@@ -132,6 +132,37 @@ func TestQuotaRequiredFlagWinsOverEnv(t *testing.T) {
 	}
 }
 
+// TestQuotaRequiredEnvTrueBeatsExplicitFlagFalse pins the OTHER direction of
+// boolOrEnv's precedence, which its sibling above does not cover: an env true
+// beats an explicitly-passed `--microvm-quota-required=false`.
+//
+// This is a DOCUMENTED CONTRACT, not a latent bug (boolOrEnv's doc). A false
+// flag is indistinguishable from an unset one under the zero-value convention
+// every knob here shares, and the asymmetry resolves in the SAFE direction: the
+// input that loses is the one that would turn the multi-tenant quota gate OFF,
+// so a conflicting pair leaves the gate ON. Pinning it means a future switch to
+// flag.Visit — which WOULD honor the explicit false and thereby move the
+// conflict resolution to fail-open — is a deliberate, reviewed change rather
+// than an unnoticed regression.
+func TestQuotaRequiredEnvTrueBeatsExplicitFlagFalse(t *testing.T) {
+	t.Setenv("COMPASS_MICROVM_QUOTA_REQUIRED", "true")
+	f, quotaRequired, _ := flagsFor()
+	// Explicitly false — which, under the zero-value convention, is
+	// indistinguishable from "not passed".
+	*quotaRequired = false
+
+	cfg, err := f.backendConfig()
+	if err != nil {
+		t.Fatalf("backendConfig() = %v, want nil", err)
+	}
+	if !cfg.MicroVM.QuotaRequired {
+		t.Fatal("$COMPASS_MICROVM_QUOTA_REQUIRED=true lost to an explicit --microvm-quota-required=false; " +
+			"the documented contract is that env-true wins (a false flag is indistinguishable from an unset " +
+			"one, and the conflict must resolve with the multi-tenant gate ON, not off). To disable the gate " +
+			"on such a box, unset the environment variable")
+	}
+}
+
 // TestVolumeRootReachesConfig: --microvm-volume-root / its env fallback must
 // land on MicroVMConfig.VolumeRoot. It is what makes the quota probe target the
 // session-volume filesystem instead of the RunRoot socket dir, so an unwired

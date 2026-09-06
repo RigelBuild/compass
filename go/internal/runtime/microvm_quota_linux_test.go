@@ -45,10 +45,10 @@ func TestMountRootUnreadableAncestorIsInconclusive(t *testing.T) {
 	// Restore the mode so t.TempDir's cleanup can remove the tree.
 	t.Cleanup(func() { _ = os.Chmod(blocked, 0o700) })
 
-	root, err := mountRoot(volume)
+	root, distinct, err := mountRoot(volume)
 	if err == nil {
-		t.Fatalf("mountRoot(%q) = %q with no error; a stat-blocked ancestor must be an INCONCLUSIVE probe, "+
-			"not a mount root — comparing against a possibly-projected ancestor can report a bogus active quota", volume, root)
+		t.Fatalf("mountRoot(%q) = %q (distinct=%v) with no error; a stat-blocked ancestor must be an INCONCLUSIVE probe, "+
+			"not a mount root — comparing against a possibly-projected ancestor can report a bogus active quota", volume, root, distinct)
 	}
 	if root != "" {
 		t.Errorf("mountRoot returned the reference %q alongside its error; an inconclusive probe must yield no reference", root)
@@ -60,23 +60,127 @@ func TestMountRootUnreadableAncestorIsInconclusive(t *testing.T) {
 }
 
 // TestMountRootResolvesAnUnblockedPath is the positive control for the walk: on
-// a path the Runner can traverse to its mount point, mountRoot still resolves a
-// real reference. Without it the fail-closed assertion above could pass on a
-// mountRoot that had simply stopped working.
+// a path the Runner can traverse to its mount point, mountRoot resolves a real
+// reference AND reports that it crossed a device boundary to get there.
 //
-// The ancestor-walk's own error branch is not reachable through file modes: an
-// EACCES that blocks stat(parent) necessarily blocks resolving the leaf through
-// that same parent, so EvalSymlinks refuses first (the case above). The branch
-// stays because a non-permission stat failure — an ancestor unlinked mid-walk,
-// an EIO — must fail closed rather than return a same-device guess.
+// It asserts the walk did real WORK, not merely that it returned something: the
+// root must be a strict prefix ANCESTOR of the input, and a nested subdirectory
+// must resolve to the SAME root. Both fail on an identity-returning mountRoot —
+// which is exactly what the real one does for a path that IS a mount point, the
+// degeneracy the old non-empty-and-no-error assertion could not catch.
 func TestMountRootResolvesAnUnblockedPath(t *testing.T) {
-	root, err := mountRoot(t.TempDir())
+	base := t.TempDir()
+	nested := filepath.Join(base, "a", "b", "c")
+	if err := os.MkdirAll(nested, 0o700); err != nil {
+		t.Fatalf("creating the nested tree: %v", err)
+	}
+	// t.TempDir resolves through symlinks the same way mountRoot does, so the
+	// prefix comparison below is against the resolved form on a box where
+	// $TMPDIR is a symlink.
+	resolvedBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatalf("resolving the temp dir: %v", err)
+	}
+
+	root, distinct, err := mountRoot(base)
 	if err != nil {
 		t.Fatalf("mountRoot on an unblocked temp dir = %v, want a resolved mount root", err)
 	}
-	if root == "" {
-		t.Fatal("mountRoot resolved an empty mount root on an unblocked path")
+	if !distinct {
+		t.Fatalf("mountRoot(%q) reported distinct=false; a temp dir is never its own mount point, so the "+
+			"device-boundary walk did not run", base)
 	}
+	// STRICT ancestor: an identity-returning implementation returns the input
+	// itself, which this rejects.
+	if root == resolvedBase {
+		t.Fatalf("mountRoot(%q) = %q — the input itself. The walk resolved no unprojected reference; an "+
+			"identity implementation would pass a mere non-empty check", base, root)
+	}
+	if !strings.HasPrefix(resolvedBase, strings.TrimSuffix(root, "/")+"/") {
+		t.Fatalf("mountRoot(%q) = %q, which is not a prefix ancestor of the input", base, root)
+	}
+	// A NESTED path must land on the SAME mount root: the walk climbs to a
+	// device boundary, not to some depth-relative ancestor.
+	nestedRoot, nestedDistinct, err := mountRoot(nested)
+	if err != nil {
+		t.Fatalf("mountRoot(%q) = %v, want the same mount root as its ancestor", nested, err)
+	}
+	if !nestedDistinct {
+		t.Errorf("mountRoot(%q) reported distinct=false for a deeply nested path", nested)
+	}
+	if nestedRoot != root {
+		t.Fatalf("mountRoot(%q) = %q but mountRoot(%q) = %q; a device-boundary walk must reach the same "+
+			"mount root from both (an identity implementation returns each input instead)", nested, nestedRoot, base, root)
+	}
+	t.Logf("mount-root walk: %q and %q both resolve to %q", base, nested, root)
+}
+
+// TestMountRootRecognizesASelfReferentialPath is MED-3's core: a path that IS
+// its own mount point must be reported as NON-distinct, because there is then no
+// unprojected reference to compare statfs totals against.
+//
+// /tmp is a real mount on this box (a separate st_dev from /), so mountRoot
+// returns /tmp itself — verified by instrumented run. Accepting that as a
+// reference makes LimitBytes == FilesystemBytes identically, Active() false BY
+// CONSTRUCTION, and a QuotaRequired startup a refusal on a host whose volume
+// root is (as production layouts naturally do) the mount point of a dedicated
+// quota'd filesystem.
+func TestMountRootRecognizesASelfReferentialPath(t *testing.T) {
+	const mountPoint = "/tmp"
+	if _, err := os.Stat(mountPoint); err != nil {
+		t.Skipf("%s is not present: %v", mountPoint, err)
+	}
+	resolved, err := filepath.EvalSymlinks(mountPoint)
+	if err != nil {
+		t.Skipf("resolving %s: %v", mountPoint, err)
+	}
+
+	root, distinct, err := mountRoot(mountPoint)
+	if err != nil {
+		t.Fatalf("mountRoot(%q) = %v", mountPoint, err)
+	}
+	if root != resolved {
+		t.Skipf("%s is not its own mount point on this box (mountRoot = %q); the self-referential case "+
+			"cannot be exercised here", mountPoint, root)
+	}
+	if distinct {
+		t.Fatalf("mountRoot(%q) = %q with distinct=true, but the resolved path IS the returned root: no "+
+			"device boundary was crossed, so there is NO unprojected reference and the comparison would be "+
+			"self-referential (LimitBytes == FilesystemBytes identically, Active() false by construction)",
+			mountPoint, root)
+	}
+}
+
+// TestReadVolumeQuotaRefusesASelfReferentialVolumeRoot is MED-3 one layer up:
+// the self-referential case must propagate as a DISTINCT inconclusive error
+// naming the volume-root knob and the subdirectory fix, not collapse into the
+// generic "no enforced project quota" verdict — which would refuse startup on a
+// correctly provisioned host and send the operator chasing a quota that is
+// already there.
+func TestReadVolumeQuotaRefusesASelfReferentialVolumeRoot(t *testing.T) {
+	const mountPoint = "/tmp"
+	root, distinct, err := mountRoot(mountPoint)
+	if err != nil {
+		t.Skipf("mountRoot(%q) = %v", mountPoint, err)
+	}
+	if distinct {
+		t.Skipf("%s is not its own mount point on this box (root %q); the self-referential case cannot be "+
+			"exercised here", mountPoint, root)
+	}
+
+	reading, readErr := readVolumeQuota(mountPoint)
+	if readErr == nil {
+		t.Fatalf("readVolumeQuota(%q) = %s with no error; a volume root that IS its own mount point has no "+
+			"unprojected reference, so it must be INCONCLUSIVE rather than a verdict", mountPoint, reading)
+	}
+	for _, part := range []string{
+		mountPoint, "IS the mount point", "INDETERMINATE", "--microvm-volume-root", "SUBDIRECTORY",
+	} {
+		if !strings.Contains(readErr.Error(), part) {
+			t.Errorf("error %q does not name %q", readErr.Error(), part)
+		}
+	}
+	t.Logf("self-referential volume root refused: %v", readErr)
 }
 
 // TestReadVolumeQuotaPropagatesInconclusiveMountRoot is the same posture one

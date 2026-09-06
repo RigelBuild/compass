@@ -409,6 +409,23 @@ func intOrEnv(flagVal int, envKey string) (int, error) {
 // present-but-unparseable one is an error naming the offending variable and
 // value, so `COMPASS_MICROVM_QUOTA_REQUIRED=yes` refuses at startup instead of
 // silently reading as false and fail-opening the D7 gate.
+//
+// PRECEDENCE IS ASYMMETRIC, deliberately, and it is a CONTRACT, not an
+// accident: a false flag is indistinguishable from an unset one here (there is
+// no flag.Visit and no *bool nil sentinel), so `--microvm-quota-required=false`
+// does NOT override `$COMPASS_MICROVM_QUOTA_REQUIRED=true` — the env's true
+// wins. Two reasons to keep it that way rather than honoring an explicit false:
+//
+//   - It matches the zero-value convention of every sibling knob (orEnv,
+//     intOrEnv), so one knob does not read its flags differently from the rest.
+//   - It fails in the SAFE direction for THIS knob: the losing input is the one
+//     that would turn the multi-tenant quota gate OFF, so a conflict leaves the
+//     gate ON.
+//
+// An operator who genuinely needs the gate off on a box whose environment sets
+// it must unset the environment variable; passing the flag is not enough.
+// TestQuotaRequiredEnvTrueBeatsExplicitFlagFalse pins this direction so the
+// asymmetry cannot be silently "fixed" into the fail-open direction.
 func boolOrEnv(flagVal bool, envKey string) (bool, error) {
 	if flagVal {
 		return true, nil

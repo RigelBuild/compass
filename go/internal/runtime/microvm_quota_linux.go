@@ -28,9 +28,26 @@ func readVolumeQuota(path string) (QuotaReading, error) {
 	if err := syscall.Statfs(path, &at); err != nil {
 		return QuotaReading{}, fmt.Errorf("statfs %q: %w", path, err)
 	}
-	root, err := mountRoot(path)
+	root, distinct, err := mountRoot(path)
 	if err != nil {
 		return QuotaReading{}, err
+	}
+	if !distinct {
+		// The volume root IS the mount point, so the comparison has no
+		// UNPROJECTED reference: both statfs calls would target the same path,
+		// LimitBytes would equal FilesystemBytes identically, and Active() would
+		// be false BY CONSTRUCTION rather than by observation. Reporting that as
+		// "no quota" refuses a QuotaRequired startup on a correctly provisioned
+		// host, so it is an INCONCLUSIVE probe with the fix named — the same
+		// posture as an unreadable ancestor (mountRoot's doc).
+		return QuotaReading{}, fmt.Errorf(
+			"locating an unprojected reference for %q: that path IS the mount point of its filesystem (%q), "+
+				"so there is no unquota'd ancestor to compare its statfs totals against and whether a project "+
+				"quota scopes it is INDETERMINATE; point --microvm-volume-root (or "+
+				"$COMPASS_MICROVM_VOLUME_ROOT) at a SUBDIRECTORY of the quota'd filesystem rather than at its "+
+				"mount point — that subdirectory is also where per-session volumes are actually minted, and it "+
+				"is the dir the project id and FS_XFLAG_PROJINHERIT belong on",
+			path, root)
 	}
 	var atRoot syscall.Statfs_t
 	if err := syscall.Statfs(root, &atRoot); err != nil {
@@ -68,7 +85,8 @@ func blocksToBytes(blocks uint64, bsize int64) int64 {
 
 // mountRoot walks path's ancestors until the device number changes, returning
 // the deepest ancestor still on the same filesystem — the mount point path
-// belongs to. A project quota does NOT change st_dev (it is an accounting scope
+// belongs to — plus whether the walk actually CROSSED a device boundary to get
+// there. A project quota does NOT change st_dev (it is an accounting scope
 // inside one filesystem, not a separate device), so this reliably reaches the
 // unprojected reference point the comparison needs.
 //
@@ -76,36 +94,47 @@ func blocksToBytes(blocks uint64, bsize int64) int64 {
 // otherwise walk the link's lexical parents, which may live on a different
 // filesystem entirely and make the comparison meaningless.
 //
-// An UNREADABLE ancestor is an INCONCLUSIVE probe, not a mount root. The
-// comparison is only sound against an UNPROJECTED reference, and same-device is
-// not the same as unprojected: FS_XFLAG_PROJINHERIT propagates a project id down
-// the tree, so a walk halted by an EACCES may stop at an ancestor inside the
-// SAME project (or inside a larger enclosing one), whose totals are themselves
-// rewritten. Comparing against that yields a bogus verdict — reporting a quota
-// active because the reference happened to be a bigger project, which is the
-// fail-OPEN direction on a security-relevant preflight. So the error propagates
-// through readVolumeQuota, and a QuotaRequired startup fails CLOSED naming the
-// unreadable ancestor (the posture TestReadVolumeQuotaAbsentPath pins for a
-// missing path).
-func mountRoot(path string) (string, error) {
+// distinct=false means the resolved path IS ITS OWN mount point, so there is NO
+// unprojected reference to compare against — statfs'ing it twice yields
+// identical totals and Active() is false BY CONSTRUCTION, not by observation.
+// Verified by instrumented run: mountRoot("/tmp") and mountRoot("/") each return
+// their own argument. That is the most natural production layout (a dedicated
+// XFS mounted at, say, /srv/compass/volumes), so treating it as a negative
+// verdict would refuse startup on a CORRECTLY provisioned host. The caller turns
+// it into a distinct INCONCLUSIVE error instead — the same fail-closed-but-named
+// posture as the unreadable-ancestor case below.
+//
+// An UNREADABLE ancestor is likewise an INCONCLUSIVE probe, not a mount root.
+// The comparison is only sound against an UNPROJECTED reference, and same-device
+// is not the same as unprojected: FS_XFLAG_PROJINHERIT propagates a project id
+// down the tree, so a walk halted by an EACCES may stop at an ancestor inside
+// the SAME project (or inside a larger enclosing one), whose totals are
+// themselves rewritten. Comparing against that yields a bogus verdict —
+// reporting a quota active because the reference happened to be a bigger
+// project, which is the fail-OPEN direction on a security-relevant preflight. So
+// the error propagates through readVolumeQuota, and a QuotaRequired startup
+// fails CLOSED naming the unreadable ancestor (the posture
+// TestReadVolumeQuotaAbsentPath pins for a missing path).
+func mountRoot(path string) (root string, distinct bool, err error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return "", fmt.Errorf("resolving %q: %w", path, err)
+		return "", false, fmt.Errorf("resolving %q: %w", path, err)
 	}
 	dev, err := deviceOf(resolved)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	current := resolved
 	for {
 		parent := filepath.Dir(current)
 		if parent == current {
-			// Reached "/" — the filesystem root is the mount root.
-			return current, nil
+			// Reached "/" — the filesystem root is the mount root. It is a
+			// distinct reference only if the walk moved off the given path.
+			return current, current != resolved, nil
 		}
 		parentDev, err := deviceOf(parent)
 		if err != nil {
-			return "", fmt.Errorf(
+			return "", false, fmt.Errorf(
 				"locating the mount root of %q: ancestor %q is not statable (%w), so no unprojected "+
 					"reference point could be reached and whether a project quota scopes the volume is "+
 					"INDETERMINATE; make the ancestor path traversable by the Runner uid (chmod o+x) "+
@@ -113,7 +142,7 @@ func mountRoot(path string) (string, error) {
 				path, parent, err)
 		}
 		if parentDev != dev {
-			return current, nil
+			return current, current != resolved, nil
 		}
 		current = parent
 	}

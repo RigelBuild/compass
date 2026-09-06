@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -52,6 +51,16 @@ const reapGrace = 5 * time.Second
 // boot log into the test output.
 const diagnosticTailBytes = 8 << 10
 
+// modcapsDropMknod is the exact --modcaps literal virtiofsd is launched with,
+// pinned in ONE place because virtiofsd does NOT validate capability names.
+// Verified by execution: `--modcaps=-not_a_real_cap` and `--modcaps=-bogus_cap`
+// are both accepted silently and the daemon starts normally. So a typo or an
+// upstream rename turns the flag into a no-op with no diagnostic anywhere, and
+// the argv assertion in launch_idmap_test.go is the ONLY guard — which is why
+// the literal lives here and both the launch path and that test reference this
+// const, so the two cannot drift apart into a mutually-agreeing typo.
+const modcapsDropMknod = "--modcaps=-mknod"
+
 // launchOptions selects which virtio devices cloud-hypervisor is booted with.
 // The full boot wires every device; the OQ-G net-only smoke omits virtio-fs and
 // vsock so the passt×CH vhost-user-net negotiation — the spike's primary
@@ -70,7 +79,31 @@ type child struct {
 	name    string
 	cmd     *exec.Cmd
 	logPath string
-	waited  atomic.Bool // set once cmd.Wait has returned, so liveness probes and PSS skip a reaped process
+
+	// exited is closed by this child's SOLE reaper, started by startChild once
+	// Start has succeeded. It carries the ONE cmd.Wait per child: the readiness
+	// poll's liveness check (waitForSockets), Shutdown's reap, Running and PSS
+	// all observe the exit THROUGH this channel instead of calling Wait
+	// themselves, so no two paths ever race on the same process. Nil exactly
+	// when the process was never started (cmd.Process is nil too).
+	exited chan struct{}
+	// waitErr is cmd.Wait's error, written by the reaper BEFORE it closes
+	// exited. Reading it is only safe after a receive from exited, which is the
+	// happens-before edge that makes the unsynchronized field race-free.
+	waitErr error
+}
+
+// hasExited reports whether the child's reaper has already observed its exit,
+// without blocking. It is NOT a signal-0 probe: an exited-but-unwaited process
+// is a zombie that Signal(0) reports as alive, which is precisely why the
+// liveness check reads the reaper's channel instead.
+func (c *child) hasExited() bool {
+	select {
+	case <-c.exited:
+		return true
+	default:
+		return false
+	}
 }
 
 // VM is a running (or partially-started, on the Launch error path) guest and
@@ -83,10 +116,10 @@ type VM struct {
 	virtiofsd *child // nil under the net-only smoke (no --fs)
 	passt     *child
 
-	// vmmExited is closed by the sole VMM reaper (started in launch) once the
-	// cloud-hypervisor process has been Wait'd, so the caller can observe a
-	// prompt guest self-power-off instead of a zombie-blind Signal(0) poll. Nil
-	// only under the hermetic fail-closed path (no VMM on PATH).
+	// vmmExited is the VMM child's reaper channel (vm.vmm.exited), hoisted onto
+	// the VM so WaitVMMExit can observe a prompt guest self-power-off instead of
+	// polling a zombie. Nil only under the hermetic fail-closed path (no VMM on
+	// PATH), where no VMM child was ever started.
 	vmmExited chan struct{}
 
 	consolePath string // --serial file: the guest serial console
@@ -156,24 +189,28 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		if lookErr != nil {
 			return nil, fmt.Errorf("microvm: resolving virtiofsd on PATH: %w", lookErr)
 		}
-		// The subordinate base is READ, never assumed: newuidmap validates the
-		// requested host range against /etc/subuid, so a host whose range does
-		// not start at the conventional 100000 would otherwise fail here as an
-		// opaque "waiting for daemon sockets" timeout. VerifySubordinateIDRange
-		// runs the same read at startup so this error is rare by construction.
-		subBase := 0
+		// Both subordinate bases are READ, never assumed and never shared:
+		// newuidmap validates the requested host uid range against /etc/subuid
+		// and newgidmap validates the gid range against /etc/subgid, and those
+		// are INDEPENDENT allocations (subuid.go). Reusing the uid base for the
+		// gid map boots fine on a shadow-utils-default box and dies on a
+		// divergent one — after virtiofsd has already bound its socket, which is
+		// why waitForSockets below is liveness-aware. VerifySubordinateIDRange
+		// runs the same two reads at startup so this error is rare by
+		// construction.
+		subUIDBase, subGIDBase := 0, 0
 		if cfg.AgentUID != 0 {
-			base, subErr := SubordinateIDBase()
+			uidBase, gidBase, subErr := SubordinateIDBases()
 			if subErr != nil {
 				return nil, subErr
 			}
-			subBase = base
+			subUIDBase, subGIDBase = uidBase, gidBase
 		}
 		vm.virtiofsd = &child{
 			name:    "virtiofsd",
 			logPath: filepath.Join(dir, "virtiofsd.log"),
 			//nolint:gosec // G204: the microVM harness seam — virtiofsdPath is LookPath-resolved and the argv is harness-built from BootConfig, neither user-controlled
-			cmd: exec.CommandContext(ctx, virtiofsdPath, virtiofsdArgs(cfg, subBase)...),
+			cmd: exec.CommandContext(ctx, virtiofsdPath, virtiofsdArgs(cfg, subUIDBase, subGIDBase)...),
 		}
 		if startErr := startChild(vm.virtiofsd); startErr != nil {
 			return nil, fmt.Errorf("microvm: starting virtiofsd: %w", startErr)
@@ -210,13 +247,29 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	vm.sockets = append(vm.sockets, cfg.Net.VhostUserSocket)
 
 	// virtiofsd + passt must be serving before cloud-hypervisor connects to
-	// their sockets. Bounded poll, not a fixed sleep.
+	// their sockets. Bounded poll, not a fixed sleep — and LIVENESS-AWARE, not
+	// merely path-existence: virtiofsd binds its AF_UNIX socket BEFORE the
+	// id-map setup that can fail, so a mapping failure leaves the socket on
+	// disk behind a dead daemon. A path-only poll would return nil there and
+	// launch cloud-hypervisor against a corpse, surfacing as an inscrutable
+	// vhost-user negotiation error instead of virtiofsd's own "couldn't setup
+	// id mappings" line.
+	waiting := []*child{vm.passt}
 	ready := []string{cfg.Net.VhostUserSocket}
 	if opts.withFS {
+		waiting = append(waiting, vm.virtiofsd)
 		ready = append(ready, cfg.FSSocket)
 	}
-	if waitErr := waitForSockets(ctx, ready, socketReadyTimeout); waitErr != nil {
+	if waitErr := waitForSockets(ctx, ready, waiting, socketReadyTimeout); waitErr != nil {
 		return nil, fmt.Errorf("microvm: waiting for daemon sockets: %w", waitErr)
+	}
+	// Belt-and-braces over the poll above: a daemon that dies in the window
+	// between the last poll iteration and here must not be handed to the VMM.
+	for _, c := range waiting {
+		if c.hasExited() {
+			return nil, fmt.Errorf("microvm: %s exited before cloud-hypervisor was started: %w; log tail:\n%s",
+				c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+		}
 	}
 
 	vmmPath, lookErr := exec.LookPath("cloud-hypervisor")
@@ -232,16 +285,10 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	if startErr := startChild(vm.vmm); startErr != nil {
 		return nil, fmt.Errorf("microvm: starting cloud-hypervisor: %w", startErr)
 	}
-	// The sole VMM reaper owns the single cmd.Wait for cloud-hypervisor: it
-	// unblocks WaitVMMExit on a guest self-power-off and lets Shutdown observe
-	// the exit without a second Wait. The Wait error is deliberately discarded —
-	// a killed VMM yields an expected *exec.ExitError, mirroring waitResult.
-	vm.vmmExited = make(chan struct{})
-	go func() {
-		_ = vm.vmm.cmd.Wait() // discard: a killed VMM's *exec.ExitError is the expected teardown outcome (mirrors waitResult)
-		vm.vmm.waited.Store(true)
-		close(vm.vmmExited)
-	}()
+	// startChild installed the sole reaper that owns cloud-hypervisor's single
+	// cmd.Wait; hoist its channel onto the VM so WaitVMMExit observes a guest
+	// self-power-off promptly instead of polling a zombie.
+	vm.vmmExited = vm.vmm.exited
 	if opts.withVsock {
 		vm.sockets = append(vm.sockets, cfg.VsockSocket)
 	}
@@ -250,23 +297,27 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 
 // virtiofsdArgs builds the whole virtiofsd argv: the socket/share/sandbox flags
 // every boot carries, the capability trim, and the id mapping (empty under the
-// V2a spike, see virtiofsdIDMapArgs). subBase is the host subordinate id mapped
-// to namespace-uid 0, read from /etc/subuid by the caller; it is ignored when
-// cfg.AgentUID is zero.
+// V2a spike, see virtiofsdIDMapArgs). subUIDBase and subGIDBase are the host
+// subordinate ids mapped to namespace-uid 0 and namespace-gid 0, read from
+// /etc/subuid and /etc/subgid INDEPENDENTLY by the caller (subuid.go on why
+// they must not be one value); both are ignored when cfg.AgentUID is zero.
 //
-// --modcaps=-mknod drops CAP_MKNOD from the capability set virtiofsd retains
+// modcapsDropMknod drops CAP_MKNOD from the capability set virtiofsd retains
 // under --sandbox=namespace. A workspace share has no legitimate use for device
 // nodes — the agent checks out source and writes build output — so the
 // capability is pure escape surface, and dropping it is free (see
-// virtiofsdIDMapArgs on the rest of the retained set).
-func virtiofsdArgs(cfg BootConfig, subBase int) []string {
-	idMap := virtiofsdIDMapArgs(cfg.AgentUID, subBase)
+// virtiofsdIDMapArgs on the rest of the retained set). The literal is a const
+// shared with the test because virtiofsd silently ACCEPTS unknown capability
+// names, so the argv assertion is the only guard against a typo — see
+// modcapsDropMknod's own doc.
+func virtiofsdArgs(cfg BootConfig, subUIDBase, subGIDBase int) []string {
+	idMap := virtiofsdIDMapArgs(cfg.AgentUID, subUIDBase, subGIDBase)
 	args := make([]string, 0, 4+len(idMap))
 	args = append(args,
 		"--socket-path="+cfg.FSSocket,
 		"--shared-dir="+cfg.FSSharedDir,
 		"--sandbox=namespace",
-		"--modcaps=-mknod",
+		modcapsDropMknod,
 	)
 	return append(args, idMap...)
 }
@@ -294,18 +345,23 @@ func virtiofsdArgs(cfg BootConfig, subBase int) []string {
 //  2. --translate-uid is documented as incompatible with
 //     `--posix-acl=always|auto`, so it would foreclose POSIX ACLs on the share.
 //
-// The two mapped ranges, both one id wide:
+// The four mapped ranges, all one id wide, TWO PER AXIS:
 //   - :0:<subuid base>:1: — an id from the invoking user's /etc/subuid range
 //     becomes namespace-root, so the daemon can chown as above. It is a
 //     subordinate id the invoking user already owns, so no capability is needed
 //     (newuidmap is setuid and honors /etc/subuid).
 //   - :<agentUID>:<host uid>:1: — the in-guest agent id maps to the invoking
 //     host user, which is the parity target itself.
-//
-// gid mirrors uid, EXCEPT that the host side is the invoking user's real gid,
-// not its uid: the guest agent runs uid==gid==agentUID (guestd linuxCredential)
-// while a host user's gid is routinely different (e.g. 1000:100). Collapsing gid
-// onto uid here is precisely the parity break the V6 parity test detects.
+//   - :0:<SUBGID base>:1: — the gid arm's namespace-root mapping, from
+//     /etc/subgid. It is a SEPARATE allocation from the subuid base and is read
+//     separately (subuid.go): newgidmap validates the gid range against
+//     /etc/subgid, so reusing subUIDBase here boots on a shadow-utils-default
+//     host and makes virtiofsd die on a divergent one.
+//   - :<agentUID>:<host gid>:1: — the guest agent runs uid==gid==agentUID
+//     (guestd linuxCredential) while a host user's gid is routinely different
+//     (e.g. 1000:100), so the host side here is the invoking user's real gid.
+//     Collapsing gid onto uid is precisely the parity break the V6 parity test
+//     detects.
 //
 // SECURITY POSTURE — this is NOT pure ownership parity, and the difference is
 // deliberate and accepted, not incidental. Mapping a subordinate id to
@@ -321,7 +377,7 @@ func virtiofsdArgs(cfg BootConfig, subBase int) []string {
 //   - --sandbox=namespace pivot_roots the daemon into the shared dir, so even
 //     that authority reaches only the volume subtree it is serving.
 //
-// CAP_MKNOD is dropped outright by virtiofsdArgs' --modcaps=-mknod: a workspace
+// CAP_MKNOD is dropped outright by virtiofsdArgs' modcapsDropMknod: a workspace
 // share has no legitimate device nodes, so it is surface with no use.
 //
 // The alternative — --translate-uid/--translate-gid, which reaches the same
@@ -330,18 +386,17 @@ func virtiofsdArgs(cfg BootConfig, subBase int) []string {
 // tracked as a design fork (RIG-3330) for the record's owner to rule on. It is
 // NOT swapped in here: --uid-map/--gid-map is the frozen record's named
 // mechanism, and changing it is a design decision, not a review fix.
-func virtiofsdIDMapArgs(agentUID uint32, subBase int) []string {
+func virtiofsdIDMapArgs(agentUID uint32, subUIDBase, subGIDBase int) []string {
 	if agentUID == 0 {
 		return nil
 	}
 	hostUID := os.Getuid()
 	hostGID := os.Getgid()
 	agent := strconv.FormatUint(uint64(agentUID), 10)
-	base := strconv.Itoa(subBase)
 	return []string{
-		"--uid-map", idMapSpec("0", base),
+		"--uid-map", idMapSpec("0", strconv.Itoa(subUIDBase)),
 		"--uid-map", idMapSpec(agent, strconv.Itoa(hostUID)),
-		"--gid-map", idMapSpec("0", base),
+		"--gid-map", idMapSpec("0", strconv.Itoa(subGIDBase)),
 		"--gid-map", idMapSpec(agent, strconv.Itoa(hostGID)),
 	}
 }
@@ -401,6 +456,13 @@ func vmmArgs(cfg BootConfig, consolePath string, opts launchOptions) []string {
 // bind reliably; a no-op elsewhere) and captures its stdout+stderr to logPath so
 // a boot failure can surface the daemon's own diagnostics. The real teardown
 // guarantee is Shutdown, not Pdeathsig (record §(g) lines 300-303).
+//
+// On a successful Start it also installs the child's SOLE reaper: exactly one
+// goroutine per child owning exactly one cmd.Wait, publishing the result on
+// c.exited. Every other path — the readiness poll's liveness check, Shutdown's
+// reap, Running, PSS — observes the exit through that channel rather than
+// Wait'ing itself, so there is never a second concurrent Wait on one process
+// (which would race and hand one caller a bogus "waitid: no child processes").
 func startChild(c *child) error {
 	logFile, err := os.OpenFile(c.logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -417,19 +479,48 @@ func startChild(c *child) error {
 	startErr := c.cmd.Start()
 	// Our handle on the log file is no longer needed: Start dup'd it into the
 	// child (on success) or it stays unused (on failure). Either way close it.
-	_ = logFile.Close() // the child holds its own dup; our copy is done with
+	_ = logFile.Close() // deliberate: the child holds its own dup of the fd, so a close error on our spent copy is not actionable
 	if startErr != nil {
 		return startErr
 	}
+	c.exited = make(chan struct{})
+	go func() {
+		// The single Wait for this child. waitErr is written BEFORE the close,
+		// so any reader that has received from c.exited sees it (that is the
+		// happens-before edge); an *exec.ExitError from a killed daemon is the
+		// expected teardown outcome and is filtered by waitResult at each
+		// reader, not here.
+		c.waitErr = c.cmd.Wait()
+		close(c.exited)
+	}()
 	return nil
 }
 
-// waitForSockets polls until every path exists or the deadline elapses. A
-// missing socket at the deadline is a named error naming the first path still
-// absent, so a daemon that died on launch fails the boot fast.
-func waitForSockets(ctx context.Context, paths []string, timeout time.Duration) error {
+// waitForSockets polls until every path in paths exists, one of the children in
+// waiting has exited, or the deadline elapses.
+//
+// LIVENESS, not just path existence: virtiofsd binds its AF_UNIX socket BEFORE
+// the id-map setup that can fail, so a mapping failure leaves a mode-srwx socket
+// on disk with the daemon already exited 1 (verified by execution). A
+// path-existence-only poll returns nil there and the boot proceeds to start
+// cloud-hypervisor against a dead daemon, where the real cause ("couldn't setup
+// id mappings", in virtiofsd's own log) is replaced by an inscrutable vhost-user
+// negotiation error much later. So an exited child short-circuits the poll with
+// an error NAMING the daemon and carrying its log tail.
+//
+// A missing socket at the deadline is likewise a named error naming the first
+// path still absent.
+func waitForSockets(ctx context.Context, paths []string, waiting []*child, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
+		// Liveness first: a dead daemon's leftover socket must not read as
+		// readiness, so this check precedes the Stat sweep.
+		for _, c := range waiting {
+			if c.hasExited() {
+				return fmt.Errorf("%s exited before its socket was serving: %w; log tail:\n%s",
+					c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+			}
+		}
 		missing := ""
 		for _, p := range paths {
 			if _, err := os.Stat(p); err != nil {
@@ -507,24 +598,22 @@ func (vm *VM) Shutdown(ctx context.Context) error {
 }
 
 // reap terminates an auxiliary daemon gracefully then forcibly: SIGTERM, wait up
-// to reapGrace, SIGKILL if it is still alive, then Wait to collect the exit and
-// avoid a zombie.
+// to reapGrace, SIGKILL if it is still alive. It does NOT Wait — startChild's
+// sole reaper owns this child's single cmd.Wait, and reap observes the exit
+// through c.exited, so no second Wait can race it.
 func reap(c *child) error {
 	if termErr := c.cmd.Process.Signal(syscall.SIGTERM); termErr != nil && !errors.Is(termErr, os.ErrProcessDone) {
 		return fmt.Errorf("SIGTERM %s: %w", c.name, termErr)
 	}
-	done := make(chan error, 1)
-	go func() { done <- c.cmd.Wait() }()
 	select {
-	case err := <-done:
-		c.waited.Store(true)
-		return waitResult(c.name, err)
+	case <-c.exited:
+		return waitResult(c.name, c.waitErr)
 	case <-time.After(reapGrace):
 		if killErr := c.cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 			return fmt.Errorf("SIGKILL %s: %w", c.name, killErr)
 		}
-		c.waited.Store(true)
-		return waitResult(c.name, <-done)
+		<-c.exited
+		return waitResult(c.name, c.waitErr)
 	}
 }
 
@@ -559,11 +648,13 @@ func waitResult(name string, err error) error {
 }
 
 // Running reports whether the named child's process is still alive. It is used
-// by the test to assert Shutdown left no orphan. A process that has been Wait'd
-// is definitively gone; otherwise signal 0 probes liveness without affecting it.
+// by the test to assert Shutdown left no orphan. A child whose sole reaper has
+// already observed the exit is definitively gone — and that check must come
+// FIRST, because an exited-but-unreaped process is a zombie that Signal(0)
+// reports as alive; otherwise signal 0 probes liveness without affecting it.
 func (vm *VM) Running(name string) bool {
 	c := vm.childByName(name)
-	if c == nil || c.cmd.Process == nil || c.waited.Load() {
+	if c == nil || c.cmd.Process == nil || c.hasExited() {
 		return false
 	}
 	return c.cmd.Process.Signal(syscall.Signal(0)) == nil
@@ -579,7 +670,7 @@ func (vm *VM) PSS() (map[string]int64, error) {
 	out := make(map[string]int64)
 	var errs []error
 	for _, c := range []*child{vm.vmm, vm.virtiofsd, vm.passt} {
-		if c == nil || c.cmd.Process == nil || c.waited.Load() {
+		if c == nil || c.cmd.Process == nil || c.hasExited() {
 			continue
 		}
 		pss, err := readPSS(c.cmd.Process.Pid)

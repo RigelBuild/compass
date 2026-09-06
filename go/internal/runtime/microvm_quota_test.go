@@ -245,11 +245,15 @@ func TestVerifyVolumeQuota(t *testing.T) {
 			wantParts: []string{volume, "permission denied"},
 		},
 		{
-			name:      "an empty volume path names the run-root knob",
+			// The knob must be the VOLUME root, never the retired run-root: the
+			// run-root is the socket dir on a routinely different filesystem, so
+			// setting it cannot make this check pass. Pinning the run-root text
+			// here is what regression-locked that stale advice.
+			name:      "an empty volume path names the volume-root knob, not the retired run-root",
 			path:      "",
 			want:      VolumeQuota{},
 			read:      func(string) (QuotaReading, error) { return quotaReading(10<<30, 0, 0, 0), nil },
-			wantParts: []string{"--microvm-runroot", "COMPASS_MICROVM_RUNROOT"},
+			wantParts: []string{"--microvm-volume-root", "COMPASS_MICROVM_VOLUME_ROOT"},
 		},
 	}
 	for _, tt := range tests {

@@ -86,10 +86,12 @@ type QuotaReading struct {
 }
 
 // Active reports whether an ENFORCED project quota is scoping Path: the path's
-// own statfs totals are strictly smaller than the mount root's, which only the
-// kernel's project-quota projection produces (see the file header). Either axis
-// suffices — an operator may bound bytes, inodes, or both — but the inode arm is
-// only consulted on a filesystem that reports inode counts at all.
+// own statfs totals are smaller than the mount root's, which only the kernel's
+// project-quota projection produces (see the file header). Either axis suffices
+// — an operator may bound bytes, inodes, or both — but the two axes are
+// ASYMMETRIC: the byte arm accepts any strict inequality, while the inode arm
+// requires a 1/16 jitter margin (the reason is two paragraphs down). The inode
+// arm is also only consulted on a filesystem that reports inode counts at all.
 //
 // Deliberately conservative in one direction: a project quota whose byte limit
 // happens to equal the whole filesystem's size projects no observable difference
@@ -179,7 +181,9 @@ func verifyVolumeQuota(path string, want VolumeQuota, read quotaReadFn) (QuotaRe
 	if path == "" {
 		return QuotaReading{}, fmt.Errorf(
 			"microvm preflight: session-volume quota: no volume path to verify: %s",
-			"set --microvm-runroot or $COMPASS_MICROVM_RUNROOT")
+			"set --microvm-volume-root or $COMPASS_MICROVM_VOLUME_ROOT to the parent dir session volumes "+
+				"are minted under (NOT the run-root: that is the socket dir, held to a short /tmp path by the "+
+				"AF_UNIX sun_path budget, and routinely a different filesystem, so it is not a valid proxy)")
 	}
 	reading, err := read(path)
 	if err != nil {

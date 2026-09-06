@@ -45,6 +45,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/agentuid"
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
@@ -54,6 +55,27 @@ import (
 // volume. A guest exec that ever prints this string has escaped the volume
 // subtree, so it is a distinctive sentinel rather than a generic word.
 const outsideCanaryBody = "HOST-ONLY-CANARY-8f3ac1d0-must-never-be-readable-from-a-guest"
+
+// The bounds on the quota-enforcement leg's guest write. It must cross the
+// project byte bound to observe EDQUOT, but the cost of crossing it is the
+// operator's quota size, which the test does not control — and the 120s
+// per-exec cap (execDefaultTimeout) is hard, so an unbounded fill fails as a
+// transport timeout rather than with the verdict the leg exists to assert.
+//
+// quotaFillMarginMiB is how far past the remaining headroom to write: enough to
+// be unambiguously over the bound even if usage shifts between the pre-read and
+// the write, small enough to be free.
+//
+// quotaFillCeilingMiB is the largest fill this leg will attempt. 1 GiB over
+// virtio-fs is comfortably inside the cap on any box that can run this suite at
+// all, while a 10 GiB production-sized quota is not — so a volume with more
+// headroom than this SKIPS with the reason named rather than timing out. The
+// operator's quota volume for this leg is expected to be purpose-sized (a few
+// hundred MiB), not a production project.
+const (
+	quotaFillMarginMiB  = 64
+	quotaFillCeilingMiB = 1024
+)
 
 // isolationSession boots one session against a fresh volume dir and returns the
 // runtime, its id, and the host-side volume path. Teardown is registered so a
@@ -110,6 +132,23 @@ type crossSessionAttempt struct {
 	forbid []string
 }
 
+// sweepBatchSize is how many paths one awk invocation is handed. The scan's
+// dominant cost is process creation, against the HARD 120s per-exec cap
+// (execDefaultTimeout, microvm_lifecycle.go). One-spawn-per-file over roots
+// including "/" ran the cross-tenant row at ~72s — ~60% of the cap, i.e. a flake
+// waiting for a loaded box. Batching collapses that fork cost to per-batch,
+// since awk takes many FILENAMEs per run and reports which file each match came
+// from itself.
+//
+// Measured in-guest on this box over an identical 425-file tree, needle in the
+// last file: 644ms at batch size 1 versus 47ms at 200 — a 13.7x reduction, i.e.
+// batching removes essentially all of the ~1.5ms/file spawn overhead.
+//
+// 200 is bounded by the guest's ARG_MAX rather than by taste: paths average well
+// under 128 bytes, so a 200-path argv stays far inside the limit while cutting
+// spawns by two orders of magnitude.
+const sweepBatchSize = 200
+
 // sweepScript builds a recursive content search the guest can actually run. The
 // guest image ships bash 5.3 and awk but NO grep and NO find, so a `grep -r`
 // row exits 127 without searching anything — a vacuous pass that looks like
@@ -122,19 +161,33 @@ type crossSessionAttempt struct {
 // and the path appears if a file under another tenant's volume was reachable at
 // all.
 //
+// BATCHED, one awk per sweepBatchSize files rather than one per file: the
+// per-file variant spent nearly all its time forking (see sweepBatchSize) and
+// sat at ~60% of the 120s exec cap. awk is handed many FILENAMEs at once and
+// reports the matching one itself, so the output contract is unchanged.
+//
 // Two things stop the sweep from finding ITS OWN needle, which would be a false
 // escape report rather than a real one:
 //
 //   - The needle travels in an EXPORTED ENV VAR, never in argv. Passed as
-//     `awk -v`, it lands in the searcher's own /proc/self/cmdline, so the sweep
-//     matches the string it is looking for in its own command line.
+//     `awk -v`, it would land in the searcher's own /proc/self/cmdline, so the
+//     sweep would match the string it is looking for in its own command line.
 //   - /proc, /sys and /dev are skipped. They are synthetic kernel interfaces
 //     that cannot hold another tenant's volume, so excluding them removes the
 //     self-match surface (the environ/cmdline of the running searcher) without
 //     narrowing what the row actually probes.
 func sweepScript(needle, roots string) string {
+	// The awk program: scan every FILENAME handed to this invocation, print
+	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
+	// the caller's `found` accumulator keeps grep's semantics across batches.
+	const awkProg = `index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
 	return "export SWEEP_NEEDLE='" + needle + "'; " +
-		"shopt -s globstar nullglob dotglob; found=1; " +
+		"shopt -s globstar nullglob dotglob; found=1; batch=(); " +
+		// scan() runs one awk over the accumulated batch and clears it. Guarded
+		// on a non-empty batch so a trailing flush with nothing pending does not
+		// invoke awk on zero files (which would read stdin and hang).
+		"scan() { ((${#batch[@]})) || return 0; " +
+		"if awk '" + awkProg + "' \"${batch[@]}\" 2>/dev/null; then found=0; fi; batch=(); }; " +
 		"for root in " + roots + "; do " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
@@ -144,8 +197,9 @@ func sweepScript(needle, roots string) string {
 		"n=$f; while [[ $n == //* ]]; do n=${n#/}; done; " +
 		"case $n in /proc/*|/sys/*|/dev/*) continue;; esac; " +
 		"[[ -f $f && -r $f ]] || continue; " +
-		"if awk 'index($0, ENVIRON[\"SWEEP_NEEDLE\"]) { print FILENAME \":\" $0; hit=1 } END { exit !hit }' \"$f\" 2>/dev/null; then found=0; fi; " +
-		"done; done 2>/dev/null; exit $found"
+		"batch+=(\"$f\"); " +
+		"((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")) && scan; " +
+		"done; done 2>/dev/null; scan; exit $found"
 }
 
 // TestMicroVMSweepScriptFindsItsNeedle is the non-vacuity control for
@@ -173,6 +227,73 @@ func TestMicroVMSweepScriptFindsItsNeedle(t *testing.T) {
 		t.Errorf("sweepScript output %q does not name the matching path; the path check would be vacuous", truncate(out))
 	}
 	t.Logf("sweep control: found the planted canary -> exit %d, %q", code, strings.TrimSpace(truncate(out)))
+}
+
+// TestMicroVMSweepScriptFindsANeedleAcrossBatches is the control for the
+// BATCHING specifically, which the single-file control above cannot reach: with
+// only a handful of files the sweep never fills a batch, so the mid-loop scan
+// and the accumulator that carries a hit across batches are both dead code in
+// that run — and the cross-tenant row now completes in ~26ms over the targeted
+// roots, so it does not exercise them either.
+//
+// Planting well over sweepBatchSize files and putting the needle ONLY in the
+// last one forces two things the batched form must get right:
+//
+//  1. the mid-loop `scan` flushes full batches instead of accumulating an argv
+//     past ARG_MAX;
+//  2. the trailing flush runs, and `found` survives the batch that matched —
+//     a batched sweep whose exit status came from the LAST awk alone would
+//     report "not found" whenever the needle sat in any earlier batch, so the
+//     early-needle case below pins the other side of the same accumulator.
+func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
+	env := microvmtest.Require(t)
+	m, id, _ := isolationSession(t, env, "iso-sweep-batch")
+
+	// Comfortably more than two full batches, so at least two mid-loop flushes
+	// happen before the trailing one.
+	fileCount := sweepBatchSize*2 + 25
+	plant := "mkdir -p /workspace/many && for i in $(seq 1 " + strconv.Itoa(fileCount) + "); do " +
+		"printf 'filler line %s\\n' \"$i\" > /workspace/many/f$i.txt; done && ls /workspace/many | wc -l"
+	out, code := guestSh(t, m, id, plant)
+	if code != 0 {
+		t.Fatalf("planting %d filler files: exit %d, %q", fileCount, code, truncate(out))
+	}
+	if got := strings.TrimSpace(out); got != strconv.Itoa(fileCount) {
+		t.Fatalf("planted %q files, want %d; the batch boundary would not be crossed", got, fileCount)
+	}
+
+	for _, tt := range []struct{ name, file, needle string }{
+		// Last file: only the TRAILING flush can find it.
+		{"in the final batch", "/workspace/many/f" + strconv.Itoa(fileCount) + ".txt", "SWEEP-BATCH-LAST-6c1e8f30"},
+		// First file: found by a MID-LOOP flush, so `found` must survive every
+		// later batch that matched nothing.
+		{"in the first batch", "/workspace/many/f1.txt", "SWEEP-BATCH-FIRST-91ad47b2"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if out, code := guestSh(t, m, id,
+				"printf '%s\\n' '"+tt.needle+"' >> "+tt.file); code != 0 {
+				t.Fatalf("planting the needle in %s: exit %d, %q", tt.file, code, truncate(out))
+			}
+			start := time.Now()
+			out, code := guestSh(t, m, id, sweepScript(tt.needle, "/workspace"))
+			elapsed := time.Since(start)
+			if code != 0 {
+				t.Fatalf("the batched sweep did not find a needle planted %s of %d files (exit %d, %q); "+
+					"the cross-tenant sweep row would pass vacuously", tt.name, fileCount, code, truncate(out))
+			}
+			if !strings.Contains(out, tt.needle) {
+				t.Fatalf("the batched sweep exited 0 but its output %q does not carry the needle; "+
+					"the content check would be vacuous", truncate(out))
+			}
+			if !strings.Contains(out, filepath.Base(tt.file)) {
+				t.Errorf("the batched sweep output %q does not name the matching file %s; awk must report the "+
+					"FILENAME each match came from, which is what makes a batched scan as diagnostic as a per-file one",
+					truncate(out), tt.file)
+			}
+			t.Logf("batched sweep over %d files (batch size %d) found the needle %s in %v: %q",
+				fileCount, sweepBatchSize, tt.name, elapsed.Round(time.Millisecond), strings.TrimSpace(truncate(out)))
+		})
+	}
 }
 
 // TestMicroVMVolumeTraversalConfined is the path-traversal leg: the guest tries
@@ -329,13 +450,30 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 			// running. This is the same sweep in what the guest DOES have
 			// (bash globstar + awk), and sweepScript keeps grep's exit
 			// semantics: non-zero when nothing matched.
-			script: sweepScript(tenantBSecret, "/ /tmp /mnt /media /run /var /home /workspace"),
+			//
+			// "/" is deliberately NOT a root. The discriminating question is
+			// whether B's volume path is REACHABLE from A, not whether the
+			// read-only nix store holds the needle — and sweeping "/" pulled
+			// the guest's entire ~21.8k-file rootfs through the scan, which
+			// (even batched) buys nothing this targeted list plus B's own
+			// volume parent does not already answer. The parent of volume B is
+			// included explicitly so the one tree that COULD hold the secret is
+			// definitely walked; a sweep that skipped it would be the vacuous
+			// pass this row exists to avoid.
+			script: sweepScript(tenantBSecret,
+				"/tmp /mnt /media /run /var /home /workspace "+filepath.Dir(volumeB)),
 			forbid: []string{volumeB},
 		},
 	}
 	for name, attempt := range attempts {
 		t.Run("A cannot reach "+name, func(t *testing.T) {
+			// Timed: the sweep row is the expensive one, and its cost is only
+			// bounded relative to the HARD 120s per-exec cap (execDefaultTimeout)
+			// — a row creeping back toward that cap is a flake on a loaded box,
+			// so the margin is reported rather than left to be rediscovered.
+			start := time.Now()
 			out, code := guestSh(t, mA, idA, attempt.script)
+			elapsed := time.Since(start)
 			if strings.Contains(out, tenantBSecret) {
 				t.Fatalf("tenant A READ tenant B's secret via %s — CROSS-TENANT ESCAPE.\noutput: %q", name, out)
 			}
@@ -349,7 +487,15 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 				t.Errorf("cross-tenant attempt %q exited 0 (output %q); a confined command must fail",
 					name, truncate(out))
 			}
-			t.Logf("unreachable: %s -> exit %d, %q", name, code, strings.TrimSpace(truncate(out)))
+			// Half the cap is the flake line: past it, a slower box turns this
+			// confinement assertion into a transport TimeoutError, which guestSh
+			// treats as fatal — a failure that says nothing about isolation.
+			if elapsed > execDefaultTimeout/2 {
+				t.Errorf("attempt %q took %v, over half the %v per-exec cap; it is a flake on a loaded box — "+
+					"narrow its roots or increase the scan batch size", name, elapsed, execDefaultTimeout)
+			}
+			t.Logf("unreachable: %s -> exit %d in %v (cap %v), %q",
+				name, code, elapsed.Round(time.Millisecond), execDefaultTimeout, strings.TrimSpace(truncate(out)))
 		})
 	}
 
@@ -553,9 +699,31 @@ func TestMicroVMVolumeQuotaEnforcedInGuest(t *testing.T) {
 
 	// Write past the byte bound: dd until it fails. The guest MUST hit
 	// ENOSPC/EDQUOT rather than consuming the whole host filesystem.
-	fill := "dd if=/dev/zero of=/workspace/fill bs=1M count=" +
-		strconv.FormatInt(before.LimitBytes/(1<<20)+64, 10) + " 2>&1"
+	//
+	// Only the REMAINING HEADROOM plus a margin, never the whole limit. The old
+	// `LimitBytes/MiB + 64` wrote the entire project limit again on top of
+	// whatever was already used, so against a realistically-sized operator quota
+	// (10GiB) it was a 10GiB guest write over virtio-fs — past the 120s per-exec
+	// cap, which surfaces as a transport TimeoutError (fatal at guestSh) instead
+	// of the ENOSPC/EDQUOT verdict this leg exists to prove. Headroom+margin
+	// crosses the bound by exactly the same amount while writing only what is
+	// actually needed to cross it.
+	fillMiB := (before.LimitBytes-before.UsedBytes)/(1<<20) + quotaFillMarginMiB
+	if fillMiB > quotaFillCeilingMiB {
+		t.Skipf("the quota'd volume %s has %d MiB of headroom, over this leg's %d MiB ceiling: crossing the "+
+			"bound would be a %d MiB guest write over virtio-fs, past the %v per-exec cap (execDefaultTimeout), "+
+			"so it would fail as a transport timeout rather than with the ENOSPC/EDQUOT verdict it exists to "+
+			"assert. Point $COMPASS_TEST_QUOTA_VOLUME at a purpose-sized test project (a few hundred MiB); the "+
+			"operator's quota volume for this leg is expected to be small. Observed: %s",
+			volume, fillMiB-quotaFillMarginMiB, quotaFillCeilingMiB, fillMiB, execDefaultTimeout, before)
+	}
+	t.Logf("filling %d MiB (headroom %d MiB + %d MiB margin) against a %v exec cap; limit %d B, used %d B",
+		fillMiB, fillMiB-quotaFillMarginMiB, quotaFillMarginMiB, execDefaultTimeout, before.LimitBytes, before.UsedBytes)
+
+	fill := "dd if=/dev/zero of=/workspace/fill bs=1M count=" + strconv.FormatInt(fillMiB, 10) + " 2>&1"
+	start := time.Now()
 	out, code := guestSh(t, m, id, fill)
+	elapsed := time.Since(start)
 	if code == 0 {
 		t.Fatalf("the guest wrote past the project byte bound (%d B) without failing — the quota is not enforced.\noutput: %q",
 			before.LimitBytes, out)
@@ -563,7 +731,14 @@ func TestMicroVMVolumeQuotaEnforcedInGuest(t *testing.T) {
 	if !strings.Contains(out, "No space left") && !strings.Contains(out, "Disk quota exceeded") {
 		t.Errorf("the over-bound write failed with %q, want an ENOSPC/EDQUOT diagnostic", strings.TrimSpace(out))
 	}
-	t.Logf("over-bound write confined: exit %d, %q", code, strings.TrimSpace(truncate(out)))
+	// The ceiling above is a static estimate; this is the measured check that
+	// the chosen byte count really fit the budget rather than nearly missing it.
+	if elapsed > execDefaultTimeout/2 {
+		t.Errorf("the %d MiB fill took %v, over half the %v per-exec cap; lower quotaFillCeilingMiB or use a "+
+			"smaller test project", fillMiB, elapsed, execDefaultTimeout)
+	}
+	t.Logf("over-bound write confined: exit %d in %v (cap %v), %q",
+		code, elapsed.Round(time.Millisecond), execDefaultTimeout, strings.TrimSpace(truncate(out)))
 
 	// The HOST filesystem must stay healthy: the mount root's free space is
 	// still ample, i.e. the guest exhausted its project, not the filesystem.
