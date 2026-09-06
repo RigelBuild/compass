@@ -16,9 +16,9 @@
 // modules and their platform binaries into the build).
 //
 // The schema is read from the INSTALLED package in node_modules rather than a
-// vendored copy, so the denylist tracks the pinned dependency. Note bun's
-// isolated linker keeps packages under `node_modules/.bun/node_modules/`, not
-// at the plain top level — hence the path below.
+// vendored copy, so the denylist tracks the pinned dependency. It resolves
+// through the CONSUMING package's own dependency edge (see schemaRelPath), so
+// the denylist is generated from the schema compass-agent actually runs.
 //
 // Refresh at an SDK bump: from go/internal/store, run
 //
@@ -43,11 +43,22 @@ import (
 
 // schemaRelPath is the settings schema, relative to this generator's own
 // directory (go/internal/store) — resolved from runtime.Caller so `go generate`
-// finds it regardless of the caller's working directory. It points into the
-// INSTALLED `@oh-my-pi/pi-coding-agent`, under bun's isolated-linker virtual
-// store (`node_modules/.bun/node_modules/`, not the plain top-level
-// `node_modules/`), so a `bun install` must have run before `go generate`.
-const schemaRelPath = "../../../node_modules/.bun/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts"
+// finds it regardless of the caller's working directory.
+//
+// It deliberately resolves through the CONSUMING workspace package's own
+// node_modules edge rather than bun's `node_modules/.bun/node_modules/` hoist
+// alias. That alias is a flat namespace with one entry per package NAME, so
+// with two dependents on different versions it can resolve to a version the
+// agent does not run — and it would fail silently, since the wrong schema
+// still parses fine. This path expresses the real invariant: the schema
+// belonging to the package that consumes the SDK.
+//
+// The schema lives in gitignored node_modules, so an SDK bump changes this
+// generator's input without touching any tracked file. The
+// `compass-go:credential-keys-drift` CI task is what makes such a bump fail
+// loudly if the denylist was not regenerated; a `bun install` must have run
+// before `go generate`.
+const schemaRelPath = "../../../packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts"
 
 func main() {
 	if err := run(); err != nil {
@@ -67,12 +78,21 @@ func run() error {
 		return fmt.Errorf("read settings schema %q: %w", schemaPath, err)
 	}
 
-	keys, err := extractCredentialKeys(string(src))
+	keys, total, err := extractCredentialKeys(string(src))
 	if err != nil {
 		return fmt.Errorf("parse settings schema: %w", err)
 	}
 	if len(keys) == 0 {
 		return fmt.Errorf("no credential-marked paths found — schema shape changed, refusing to emit an empty denylist")
+	}
+	// A plausibility floor on the TOTAL parsed key count. The empty-denylist
+	// guard above only catches a total parse failure; the hand-rolled parser's
+	// real risk is UNDER-collection — a def shape it mishandles yields a short
+	// list, not an error, which would silently drop a path from the door's
+	// denylist. The pinned schema carries ~480 top-level paths, so a count far
+	// below that means the parser lost its footing on a new shape.
+	if total < minSchemaKeys {
+		return fmt.Errorf("parsed only %d top-level schema paths (expected >= %d) — schema shape changed and the parser is likely under-collecting; refusing to emit a possibly-short denylist", total, minSchemaKeys)
 	}
 	sort.Strings(keys)
 
@@ -105,18 +125,25 @@ func run() error {
 	return nil
 }
 
+// minSchemaKeys is the plausibility floor for the total top-level path count
+// (see the check in run). The pinned schema has ~480; this is set well below to
+// stay quiet across ordinary schema growth or trimming while still catching a
+// parser that has stopped walking the literal properly.
+const minSchemaKeys = 400
+
 // extractCredentialKeys parses the SETTINGS_SCHEMA object literal in the schema
-// source and returns every top-level key whose def is credential-marked. It
+// source and returns every top-level key whose def is credential-marked, plus
+// the total number of top-level keys walked (for run's plausibility floor). It
 // mirrors isCredential: a def is credential-marked when it has `credential:
 // true` directly, or a `ui` object with `secret: true`.
-func extractCredentialKeys(src string) ([]string, error) {
+func extractCredentialKeys(src string) ([]string, int, error) {
 	p := &jsParser{s: src}
 	if err := p.seekSchema(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	schema, err := p.parseObject()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var keys []string
 	for key, val := range schema {
@@ -124,15 +151,48 @@ func extractCredentialKeys(src string) ([]string, error) {
 		if !ok {
 			continue
 		}
-		if def["credential"] == "true" {
+		if isLiteralTrue(def["credential"]) {
 			keys = append(keys, key)
 			continue
 		}
-		if ui, ok := def["ui"].(map[string]any); ok && ui["secret"] == "true" {
+		if ui, ok := def["ui"].(map[string]any); ok && isLiteralTrue(ui["secret"]) {
 			keys = append(keys, key)
 		}
 	}
-	return keys, nil
+	return keys, len(schema), nil
+}
+
+// isLiteralTrue reports whether a parsed def value is the literal `true`.
+// Non-object values arrive as their trimmed raw text, so ordinary authoring
+// that decorates the literal must not read as false: a trailing line or block
+// comment (`credential: true // yes`) and a `as const` assertion are both
+// stripped before comparing. Anything else — a helper call, a variable, a
+// computed expression — is deliberately NOT treated as true, since the
+// generator cannot evaluate it.
+func isLiteralTrue(v any) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	if i := strings.Index(s, "//"); i >= 0 {
+		s = s[:i]
+	}
+	for {
+		i := strings.Index(s, "/*")
+		if i < 0 {
+			break
+		}
+		j := strings.Index(s[i+2:], "*/")
+		if j < 0 {
+			s = s[:i]
+			break
+		}
+		s = s[:i] + s[i+2+j+2:]
+	}
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "const")
+	s = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "as"))
+	return s == "true"
 }
 
 // jsParser is a minimal structural parser over a JS/TS source string. It reads

@@ -252,6 +252,37 @@ tasks:
       runFromWorkspaceRoot: false
     inputs: *sqlc_sources
 
+  credential-keys-drift:
+    # Fail if the checked-in credential denylist is stale vs the INSTALLED SDK
+    # settings schema: snapshot the committed file, regenerate, and fail on any
+    # byte diff. This exists because the generator's input
+    # (packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent) is
+    # gitignored, so an SDK bump moves the source of truth without touching any
+    # tracked file — the in-repo change-detector test compares credentialKeys
+    # against a hand-maintained want list, and BOTH sides stay unchanged at a
+    # bump, so it cannot catch it. Renovate bumps the caret pin
+    # (`^18.0.11`) unattended, and a missed regeneration means the store door
+    # silently stops rejecting a newly credential-marked path. Modeled on
+    # sqlc-drift above and in `ci` for the same reason: fully local, no DB, no
+    # cross-project delegation. `git diff --no-index` compares raw files (reads
+    # no index/worktree state, and git is always on PATH), so it behaves
+    # identically in CI and in a secondary jj workspace. The generator writes in
+    # place and is idempotent, so a no-drift run leaves the byte-identical file.
+    #
+    # Requires a completed `bun install` — the generator fails loudly, naming the
+    # absolute schema path, when the dependency is not installed.
+    script: 'tmp=$(mktemp -d); trap ''rm -rf "$tmp"'' EXIT; cp internal/store/credential_keys_gen.go "$tmp/credential_keys_gen.go"; go generate ./internal/store/...; if ! git diff --no-index --quiet "$tmp/credential_keys_gen.go" internal/store/credential_keys_gen.go; then echo "credential-keys drift: internal/store/credential_keys_gen.go is stale vs the installed SDK schema — run \`go generate ./...\` from go/internal/store and commit. A path APPEARING is an SDK bump to adopt; a path DISAPPEARING means the door stopped rejecting a credential it used to, and is a policy regression to investigate before accepting:"; git diff --no-index "$tmp/credential_keys_gen.go" internal/store/credential_keys_gen.go; exit 1; fi'
+    options:
+      runFromWorkspaceRoot: false
+    inputs:
+      - 'internal/store/gen_credential_keys.go'
+      - 'internal/store/credential_keys_gen.go'
+      - 'internal/store/agent_config.go'
+      # The schema itself is gitignored and cannot be an input, so key on the
+      # lockfile: the pinned SDK version is visible there, so a bump reschedules
+      # this task.
+      - '/bun.lock'
+
   sqlc-vet:
     # `sqlc vet` with the sqlc/db-prepare rule PREPAREs every generated query
     # against a live, schema-loaded Postgres — the strongest check sqlc offers
@@ -304,15 +335,16 @@ tasks:
 
   ci:
     # module is affected: format, vet, lint (incl. exhaustiveness), -race test,
-    # build, the supply-chain fence, and the sqlc drift gate. `drift` is NOT a
+    # build, the supply-chain fence, and the two drift gates. `drift` is NOT a
     # dep here — it belongs to the schema pipeline (compass-proto) and is
     # scheduled through the gen tree, matching compass-proto/moon.yml's own
-    # `ci` composition. `sqlc-drift` IS a dep: it is fully local (no
-    # cross-project delegation, no DB), so it belongs in ci directly. `sqlc-vet`
+    # `ci` composition. `sqlc-drift` and `credential-keys-drift` ARE deps: both
+    # are fully local (no cross-project delegation, no DB), so they belong in ci
+    # directly. `sqlc-vet`
     # is deliberately NOT a dep: it needs a live Postgres, which the moon battery
     # has no business realizing (ci.yml has no service on the moon job); it is
     # invoked instead by the env-bearing `pgtest` CI job, the same way pgtest/
     # microvm/forge/gtk4 are peeled into their own service-carrying peer jobs.
-    deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses', 'sqlc-drift']
+    deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses', 'sqlc-drift', 'credential-keys-drift']
     options:
       cache: false
