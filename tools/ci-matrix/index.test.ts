@@ -10,7 +10,12 @@
 // import.meta.main-guarded, so importing index.ts never runs it.
 
 import { describe, expect, test } from "bun:test";
-import { type GenInput, generate, type ProjectInput } from "./index.ts";
+import {
+	type GenInput,
+	generate,
+	type ProjectInput,
+	parseTaskAffectedIds,
+} from "./index.ts";
 
 /** A grouped project with a `ci` task target derived from its id. */
 function proj(id: string, group: string): ProjectInput {
@@ -530,5 +535,64 @@ describe("empty affected closure — matrix still non-empty (fromJSON safe)", ()
 		expect(out.forgeAffected).toBe(false);
 		expect(out.gtk4Affected).toBe(false);
 		expect(out.darwinAffected).toBe(false);
+	});
+});
+
+describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
+	test("returns the project ids that have affected tasks", () => {
+		const json = JSON.stringify({
+			tasks: {
+				"orion-ref-gate": { check: {} },
+				"compass-go": { test: {} },
+			},
+		});
+		expect(parseTaskAffectedIds(json).sort()).toEqual([
+			"compass-go",
+			"orion-ref-gate",
+		]);
+	});
+
+	test("an unaffected workspace yields no ids, not a throw", () => {
+		// `moon query tasks` prints its envelope unconditionally, so `{}` is a
+		// real "nothing affected" and must be distinguishable from a failure.
+		expect(parseTaskAffectedIds(JSON.stringify({ tasks: {} }))).toEqual([]);
+	});
+
+	test("a payload with no tasks key yields no ids", () => {
+		expect(parseTaskAffectedIds(JSON.stringify({ options: {} }))).toEqual([]);
+	});
+
+	test("a task-only project joins the closure a project walk would miss", () => {
+		// The defect this closes: a gate whose subject lives in other projects'
+		// trees is absent from `projects --affected`, so unioning the two
+		// closures is what puts its `ci` target in the matrix.
+		const projects = workspace();
+		const gate = proj("orion-ref-gate", "bun");
+		const projectWalk = ["compass-go"];
+		const taskLevel = parseTaskAffectedIds(
+			JSON.stringify({ tasks: { "orion-ref-gate": { check: {} } } }),
+		);
+		const union = [...new Set([...projectWalk, ...taskLevel])];
+
+		const out = generate({
+			projects: [...projects, gate],
+			affectedIds: union,
+			changedPaths: ["go/internal/board/x.go"],
+			event: "pull_request",
+		});
+		const bun = out.matrix.find((l) => l.group === "bun");
+		expect(bun?.targets).toContain("orion-ref-gate:ci");
+
+		// Control: without the task-level half the gate is absent, so the
+		// assertion above is defending the union and not the fixture.
+		const without = generate({
+			projects: [...projects, gate],
+			affectedIds: projectWalk,
+			changedPaths: ["go/internal/board/x.go"],
+			event: "pull_request",
+		});
+		expect(
+			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
+		).not.toContain("orion-ref-gate:ci");
 	});
 });

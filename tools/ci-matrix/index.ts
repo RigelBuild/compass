@@ -272,6 +272,32 @@ function parseProjects(json: string): ProjectInput[] {
 	});
 }
 
+/**
+ * Project ids with at least one affected TASK.
+ *
+ * `projects --affected` walks the PROJECT graph — a project is affected when
+ * its own sources or a project it `dependsOn` changed — and never consults a
+ * project's cross-tree task `inputs`. A gate whose subject lives in other
+ * projects' trees is therefore invisible to it: `orion-ref-gate` scans the
+ * whole repo via `/**` + `/*`, `design-ledger-gate` reads `/docs/designs/**`,
+ * yet neither is selected unless its own handful of files change, so a PR can
+ * introduce exactly what the gate exists to catch and never run it.
+ *
+ * `tasks --affected` intersects the PR's changed files with each task's real
+ * `inputs`, so it sees those gates. It is not a blanket widening — it is
+ * narrower than the project walk on most paths, because it keys on declared
+ * inputs rather than on graph reachability. Unioning the two closures keeps
+ * the project graph's dependents while adding the input-declared gates.
+ *
+ * `moon query tasks` prints its JSON envelope unconditionally: an unaffected
+ * workspace yields `{"tasks": {}, …}`, not empty output, so an empty `.tasks`
+ * is a real "nothing affected" rather than a failed query.
+ */
+export function parseTaskAffectedIds(json: string): string[] {
+	const parsed = JSON.parse(json) as { tasks?: Record<string, unknown> };
+	return Object.keys(parsed.tasks ?? {});
+}
+
 async function main(): Promise<void> {
 	const eventNameRaw = process.env.GITHUB_EVENT_NAME ?? "push";
 	const event: GenInput["event"] =
@@ -285,17 +311,30 @@ async function main(): Promise<void> {
 	const fullJson = await $`moon query projects`.quiet().text();
 	const projects = parseProjects(fullJson);
 
-	// Affected set: the affected closure on a PR, else the full set.
+	// Affected set: on a PR, the union of the project closure and the
+	// task-level closure (see parseTaskAffectedIds for why the project walk
+	// alone misses cross-tree gates); else the full set.
 	let affectedIds: string[];
 	if (event === "pull_request") {
-		const affectedJson =
-			await $`moon query projects --affected --upstream deep --downstream direct`
+		const [affectedJson, taskJson] = await Promise.all([
+			$`moon query projects --affected --upstream deep --downstream direct`
 				.quiet()
-				.text();
+				.text(),
+			$`moon query tasks --affected`.quiet().text(),
+		]);
 		const affectedParsed = JSON.parse(affectedJson) as {
 			projects?: MoonProject[];
 		};
-		affectedIds = (affectedParsed.projects ?? []).map((p) => p.id);
+		const known = new Set(projects.map((p) => p.id));
+		affectedIds = [
+			...new Set([
+				...(affectedParsed.projects ?? []).map((p) => p.id),
+				// Intersected with the known set: the pure core throws on an id
+				// it cannot resolve to a ci-group tag, so a task-only id from a
+				// project missing from `moon query projects` must not leak in.
+				...parseTaskAffectedIds(taskJson).filter((id) => known.has(id)),
+			]),
+		];
 	} else {
 		affectedIds = projects.map((p) => p.id);
 	}
