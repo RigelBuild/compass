@@ -326,6 +326,10 @@ in
   #                         (the readiness probe gates on the migrated store).
   #   compass-runner      — enrolls over the TLS door with that token, then
   #                         idles in RunSessions awaiting Provision/Start.
+  #   dogfood:build-cli   — builds the operator CLI (./cmd/compass) into the state
+  #                         dir so a human driving the box over ssh never gets a
+  #                         stale binary; nothing execs it, and its `after` edge is
+  #                         inert so a CLI compile error cannot gate the backend.
   #
   # Opt-in (NOT wired into up): `dogfood:agent-image` builds+loads the agent
   # base image (heavy closure — kept off the hot up path), and `dogfood:clean`
@@ -494,9 +498,9 @@ in
     };
   };
 
-  # Dogfood loop tasks. gen-cert and mint-runner-token run cross-platform (they
-  # back the macOS-native server/UI dogfood); agent-image and clean stay
-  # Linux-only, as the whole podman-backed loop targets the Linux dev box.
+  # Dogfood loop tasks. gen-cert, build-cli and mint-runner-token run
+  # cross-platform (they back the macOS-native server/UI dogfood); agent-image and
+  # clean stay Linux-only, as the whole podman-backed loop targets the Linux dev box.
   tasks = {
     # gen-cert: mint the self-signed TLS trust anchor the network door serves and
     # the runner trusts. Built into the state dir and run the same way the server
@@ -520,22 +524,27 @@ in
 
     # build-cli: build the operator CLI (`./cmd/compass`) into the state dir so a
     # human driving the box always has a binary matching the deployed source.
-    # DELIBERATELY BUILD-ONLY — the only task here with no `exec`. The other four
-    # binaries are built by the task that immediately runs them, so their freshness
-    # is a side effect of being invoked at boot; the operator CLI is invoked LATER,
-    # by a human over ssh, so nothing would otherwise rebuild it. Before this task
-    # the box served a months-old CLI missing the `agent` and `message` verbs while
-    # `--version` printed the same static "0.1.0" as a current build, making the
-    # drift invisible from the CLI itself (RIG-3342; the identical-version blind
-    # spot is RIG-3346). Ordered `before` the server purely to pin it into the `up`
-    # graph — it has no runtime dependency on the server.
+    # Unlike the other four binary builds here, this task does not `exec` what it
+    # produces — there is nothing to run at boot. Those four are each built by the
+    # task or process that immediately execs them (gen-cert and mint-runner-token
+    # as tasks; compass-server and compass-runner as processes), so their freshness
+    # is a side effect of being invoked; the operator CLI is invoked LATER, by a
+    # human over ssh, so nothing would otherwise rebuild it (RIG-3342; the
+    # identical-version blind spot that hid the drift is RIG-3346).
+    # The build is unconditional ON PURPOSE — a present-but-stale binary IS the
+    # bug, so skip-if-present would skip exactly when the build is required.
+    # Ordered `after` the server, not `before`: this pins the task into the `up`
+    # graph while keeping the edge inert, so a compile error anywhere in the CLI's
+    # import graph cannot stop the backend from serving. Invocation path is
+    # explicit — the state dir is not on PATH, so an operator runs
+    # `"$(devenv info devenv.state)"/compass/compass` (or the absolute path).
     "dogfood:build-cli" = {
       exec = ''
         bin="${config.devenv.state}/compass/compass"
         go build -o "$bin" ./cmd/compass
       '';
       cwd = "${config.devenv.root}/go";
-      before = [ "devenv:processes:compass-server" ];
+      after = [ "devenv:processes:compass-server" ];
     };
 
     # mint-runner-token: register the `dogfood` runner and write its enrollment
