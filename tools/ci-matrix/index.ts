@@ -279,15 +279,24 @@ function parseProjects(json: string): ProjectInput[] {
  * its own sources or a project it `dependsOn` changed — and never consults a
  * project's cross-tree task `inputs`. A gate whose subject lives in other
  * projects' trees is therefore invisible to it: `orion-ref-gate` scans the
- * whole repo via `/**` + `/*`, `design-ledger-gate` reads `/docs/designs/**`,
- * yet neither is selected unless its own handful of files change, so a PR can
- * introduce exactly what the gate exists to catch and never run it.
+ * whole repo (its `check` input is a workspace-root recursive glob, see
+ * `tools/orion-ref-gate/moon.yml:54-56`), `design-ledger-gate` reads
+ * `/docs/designs/**`, yet neither is selected unless its own handful of files
+ * change, so a PR can introduce exactly what the gate exists to catch and
+ * never run it.
  *
  * `tasks --affected` intersects the PR's changed files with each task's real
- * `inputs`, so it sees those gates. It is not a blanket widening — it is
- * narrower than the project walk on most paths, because it keys on declared
- * inputs rather than on graph reachability. Unioning the two closures keeps
- * the project graph's dependents while adding the input-declared gates.
+ * `inputs`, so it sees those gates. The two closures are genuinely different
+ * shapes rather than one containing the other: on an `apps/ui` path the task
+ * closure is the narrower of the two, while on `/go/**` it additionally
+ * selects `compass-app-bundle` — which the project walk can never reach
+ * (`dependsOn: null`) even though the bundle declares `/go/**` as an input
+ * precisely so a Go change reschedules it. A `.moon/**` edit widens furthest,
+ * from two projects to all of them, since every task inherits that config.
+ * That cost is the point: each addition is a project whose own declared
+ * inputs the PR changed, and the pre-union behaviour was silently not
+ * honouring those declarations. Unioning keeps the project graph's dependents
+ * while adding the input-declared projects.
  *
  * `moon query tasks` prints its JSON envelope unconditionally: an unaffected
  * workspace yields `{"tasks": {}, …}`, not empty output, so an empty `.tasks`
@@ -295,7 +304,30 @@ function parseProjects(json: string): ProjectInput[] {
  */
 export function parseTaskAffectedIds(json: string): string[] {
 	const parsed = JSON.parse(json) as { tasks?: Record<string, unknown> };
-	return Object.keys(parsed.tasks ?? {});
+	if (parsed.tasks === undefined) {
+		throw new Error(
+			"moon query tasks payload is missing the expected tasks key",
+		);
+	}
+	const ids = Object.keys(parsed.tasks);
+	const invalidId = ids.find((id) => id.includes(":"));
+	if (invalidId !== undefined) {
+		throw new Error(
+			`moon query tasks returned an unexpected composite id: ${invalidId}`,
+		);
+	}
+	return ids;
+}
+
+/** Return the project closure plus known projects with affected tasks. */
+export function unionAffectedIds(
+	projectIds: readonly string[],
+	taskIds: readonly string[],
+	known: ReadonlySet<string>,
+): string[] {
+	return [
+		...new Set([...projectIds, ...taskIds.filter((id) => known.has(id))]),
+	];
 }
 
 async function main(): Promise<void> {
@@ -307,62 +339,57 @@ async function main(): Promise<void> {
 				? "schedule"
 				: "push";
 
-	// Full set: group universe + tags + ci-task presence.
-	const fullJson = await $`moon query projects`.quiet().text();
-	const projects = parseProjects(fullJson);
-
-	// Affected set: on a PR, the union of the project closure and the
-	// task-level closure (see parseTaskAffectedIds for why the project walk
-	// alone misses cross-tree gates); else the full set.
-	let affectedIds: string[];
-	if (event === "pull_request") {
-		const [affectedJson, taskJson] = await Promise.all([
-			$`moon query projects --affected --upstream deep --downstream direct`
-				.quiet()
-				.text(),
-			$`moon query tasks --affected`.quiet().text(),
-		]);
-		const affectedParsed = JSON.parse(affectedJson) as {
-			projects?: MoonProject[];
-		};
-		const known = new Set(projects.map((p) => p.id));
-		affectedIds = [
-			...new Set([
-				...(affectedParsed.projects ?? []).map((p) => p.id),
-				// Intersected with the known set: the pure core throws on an id
-				// it cannot resolve to a ci-group tag, so a task-only id from a
-				// project missing from `moon query projects` must not leak in.
-				...parseTaskAffectedIds(taskJson).filter((id) => known.has(id)),
-			]),
-		];
-	} else {
-		affectedIds = projects.map((p) => p.id);
-	}
-
-	// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
-	// where the flags are unconditionally true).
-	let changedPaths: string[] = [];
-	if (event === "pull_request") {
-		const baseRef = process.env.GITHUB_BASE_REF ?? "";
-		if (baseRef !== "") {
-			const diff = await $`git diff --name-only origin/${baseRef}...HEAD`
-				.nothrow()
-				.quiet()
-				.text();
-			changedPaths = diff
-				.split("\n")
-				.map((l) => l.trim())
-				.filter((l) => l !== "");
-		}
-	}
-
 	try {
+		// Full set: group universe + tags + ci-task presence.
+		const fullJson = await $`moon query projects`.quiet().text();
+		const projects = parseProjects(fullJson);
+
+		// Affected set: on a PR, the union of the project closure and the
+		// task-level closure (see parseTaskAffectedIds for why the project walk
+		// alone misses cross-tree gates); else the full set.
+		let affectedIds: string[];
+		if (event === "pull_request") {
+			const [affectedJson, taskJson] = await Promise.all([
+				$`moon query projects --affected --upstream deep --downstream direct`
+					.quiet()
+					.text(),
+				$`moon query tasks --affected`.quiet().text(),
+			]);
+			const affectedParsed = JSON.parse(affectedJson) as {
+				projects?: MoonProject[];
+			};
+			const known = new Set(projects.map((p) => p.id));
+			affectedIds = unionAffectedIds(
+				(affectedParsed.projects ?? []).map((p) => p.id),
+				parseTaskAffectedIds(taskJson),
+				known,
+			);
+		} else {
+			affectedIds = projects.map((p) => p.id);
+		}
+
+		// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
+		// where the flags are unconditionally true).
+		let changedPaths: string[] = [];
+		if (event === "pull_request") {
+			const baseRef = process.env.GITHUB_BASE_REF ?? "";
+			if (baseRef !== "") {
+				const diff = await $`git diff --name-only origin/${baseRef}...HEAD`
+					.nothrow()
+					.quiet()
+					.text();
+				changedPaths = diff
+					.split("\n")
+					.map((l) => l.trim())
+					.filter((l) => l !== "");
+			}
+		}
+
 		const out = generate({ projects, affectedIds, changedPaths, event });
 
 		const lines = [
 			`matrix=${JSON.stringify(out.matrix)}`,
 			`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
-			`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
 			`forge_affected=${out.forgeAffected ? "true" : "false"}`,
 			`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
 			`darwin_affected=${out.darwinAffected ? "true" : "false"}`,

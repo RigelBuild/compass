@@ -28,18 +28,15 @@ layer: 'tool'
 language: 'nix'
 tags: ['ci-group.nix']
 
-# The ci-matrix generator computes a PR's affected set with
-# `moon query projects --affected` (tools/ci-matrix/index.ts:224), which walks
-# the PROJECT graph only — a project is affected when its own source tree or a
-# project it `dependsOn` changed. It NEVER consults a project's cross-tree task
-# `inputs` globs (.github/workflows/ci.yml:1498-1505). flake-gate's entire
-# trigger surface lives in OTHER projects' trees (flake.nix/flake.lock/
-# devenv.lock in `root`, go/** in `compass-go`, the parity sources in
-# `toolchain-parity`), so without these edges the gate is marked affected only
-# when tools/flake-gate/moon.yml itself changes — never for the drift it exists
-# to catch. Declaring the owners as deps lets `--downstream direct` pull
-# flake-gate into the affected set whenever any owner is affected. The `inputs:`
-# globs on flake-check remain the true closure (main-sweep + local `moon ci`).
+# The ci-matrix generator computes a PR's affected set as the union of
+# `moon query projects --affected` (the PROJECT graph) and `moon query tasks
+# --affected` (declared task `inputs`). flake-gate's trigger surface lives in
+# other projects' trees (flake.nix/flake.lock/devenv.lock in `root`, the Go
+# tree in `compass-go`, and the parity sources in `toolchain-parity`). The
+# `dependsOn` edges are retained because the project walk still supplies the
+# reachability half; without them, the graph half would miss the drift this
+# gate exists to catch. The `inputs:` globs on flake-check remain the true
+# closure (main sweep + local `moon ci`).
 dependsOn:
   - 'root'
   - 'compass-go'

@@ -9,7 +9,9 @@
 #
 # Compass CI runs a per-concern matrix, not one job: tools/ci-matrix computes
 # the targets and .github/workflows/ci.yml runs `moon run <targets>`, so this
-# project's `ci` aggregate is swept only when the matrix selects it.
+# project's `ci` aggregate is swept only when the matrix selects it. The
+# task-level half of the affected union selects this gate when a file in another
+# project's tree matches the whole-repo `check` scan.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
@@ -27,11 +29,6 @@ tasks:
     # to the one cited file, not `/docs/**`, so unrelated docs edits don't
     # re-run the suite. Keep in sync with `REMEDIATION_DOC` in index.ts.
     #
-    # This project is selected on a PR by the task-level half of ci-matrix's
-    # affected union: the project walk alone never consults a cross-tree
-    # input, so a PR touching only another project's tree would not select
-    # this gate at all — including the `check` scan, whose subject is the
-    # whole repo.
     inputs:
       - '*.ts'
       - 'tsconfig.json'

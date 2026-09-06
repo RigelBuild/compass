@@ -30,29 +30,21 @@
 # lives in index.ts (rule://scripts-ts-over-bash + the no-bash-gate CI task) and
 # is unit-tested (index.test.ts).
 #
-# Compass CI is a single moon-driven job (.github/workflows/ci.yml runs
-# `moon run :ci`), so the `ci` aggregate below is swept automatically.
+# Compass CI runs a per-concern matrix: tools/ci-matrix computes the targets
+# and .github/workflows/ci.yml runs `moon run <targets>`, so this project's `ci`
+# aggregate is swept only when the matrix selects it.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
 
-# Affected-detection walks the PROJECT GRAPH ONLY (moon query projects
-# --affected → downstream); it NEVER consults a project's cross-tree task
-# `inputs` globs (ci-matrix/index.ts generate() keys off affectedIds; see
-# flake-gate/moon.yml:31-46). The MIGRATION trigger surface
-# (go/internal/store/migrations/**) lives in compass-go's tree, so declaring
-# compass-go a dep lets `--downstream direct` pull the gate into the affected
-# set whenever the Go tree (which holds the migrations) is affected — the case
-# that matters. KNOWN GAP: the gate's OTHER inputs — its configs /.squawk.toml
-# and /.sqruff — live in the ROOT project's tree, and the gate has no graph
-# edge to `root`, so a PR editing ONLY a config file is NOT marked affected on
-# that PR; a config change (e.g. dropping an exclusion) is caught on the next
-# main-push full sweep and on local `moon ci`, not on the config-only PR
-# itself. Adding `dependsOn: ['root']` would close the gap but over-triggers
-# the gate on every repo-root file change (moon edges are project-level, not
-# file-level) — a deliberate tradeoff left to a follow-up, not taken here. The
-# `inputs:` globs on `check` remain the true closure for the main-sweep + local
-# `moon ci`.
+# Affected detection is the union of the project graph walk and the task-level
+# input walk. The migration input glob on `check` covers the migration tree in
+# compass-go's project, so declaring compass-go a dep lets `--downstream direct`
+# pull the gate into the affected set whenever the Go tree is affected — the
+# case that matters.
+# The task-level half now also covers config-only changes to /.squawk.toml and
+# /.sqruff. Keep the `inputs:` globs on `check` as the true closure for the main
+# sweep + local `moon ci`.
 dependsOn:
   - 'compass-go'
 

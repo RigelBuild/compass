@@ -15,6 +15,7 @@ import {
 	generate,
 	type ProjectInput,
 	parseTaskAffectedIds,
+	unionAffectedIds,
 } from "./index.ts";
 
 /** A grouped project with a `ci` task target derived from its id. */
@@ -558,8 +559,18 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 		expect(parseTaskAffectedIds(JSON.stringify({ tasks: {} }))).toEqual([]);
 	});
 
-	test("a payload with no tasks key yields no ids", () => {
-		expect(parseTaskAffectedIds(JSON.stringify({ options: {} }))).toEqual([]);
+	test("a payload with no tasks key throws", () => {
+		expect(() => parseTaskAffectedIds(JSON.stringify({ options: {} }))).toThrow(
+			"missing the expected tasks key",
+		);
+	});
+
+	test("a task id containing a colon throws", () => {
+		expect(() =>
+			parseTaskAffectedIds(
+				JSON.stringify({ tasks: { "orion-ref-gate:check": {} } }),
+			),
+		).toThrow("orion-ref-gate:check");
 	});
 
 	test("a task-only project joins the closure a project walk would miss", () => {
@@ -572,7 +583,18 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 		const taskLevel = parseTaskAffectedIds(
 			JSON.stringify({ tasks: { "orion-ref-gate": { check: {} } } }),
 		);
-		const union = [...new Set([...projectWalk, ...taskLevel])];
+		const union = unionAffectedIds(
+			projectWalk,
+			taskLevel,
+			new Set([...projects.map((project) => project.id), gate.id]),
+		);
+		expect(
+			unionAffectedIds(
+				projectWalk,
+				["not-a-project"],
+				new Set(projects.map((p) => p.id)),
+			),
+		).toEqual(projectWalk);
 
 		const out = generate({
 			projects: [...projects, gate],
