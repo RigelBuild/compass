@@ -103,6 +103,15 @@ export const CANDIDATES: readonly {
 	{ label: "leading vertical tab only", content: "\v0.1.0\n" },
 	{ label: "trailing form feed only", content: "0.1.0\f\n" },
 	{ label: "leading newline only", content: "\n0.1.0\n" },
+	// Class-narrowing discriminator. Every other ACCEPTING row's surviving value
+	// is lowercase-or-digits, so dropping `A-Z` from either lane's class —
+	// `[0-9A-Za-z.+-]` -> `[0-9a-z.+-]`, a one-character edit — split the lanes
+	// with all rows still agreeing. An accepting value carrying an uppercase
+	// byte is what reds that, in either direction. Uppercase in version.txt is
+	// realistic rather than contrived: the release and CI stamp lanes and
+	// app-bundle/build.sh interpolate `$(cat version.txt)` with no class filter
+	// at all, so an `-RC.1` or `-SNAPSHOT` tag reaches them unexamined.
+	{ label: "uppercase core", content: "1.2.3-RC.1\n" },
 	{ label: "bare word", content: "banana\n" },
 	{ label: "dashes only", content: "----\n" },
 	{ label: "coreless metadata", content: "+g10c5fa7\n" },

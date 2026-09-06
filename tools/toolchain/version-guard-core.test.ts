@@ -205,6 +205,10 @@ describe("CANDIDATES", () => {
 		// devenv's trim loop runs, so only a leading one can witness LF leaving
 		// the trim set.
 		["leading newline only", "\n0.1.0\n"],
+		// The class-narrowing discriminator: every other accepting row's surviving
+		// value is lowercase-or-digits, so without an accepting uppercase value
+		// dropping `A-Z` from one lane's class splits the lanes silently.
+		["uppercase core", "1.2.3-RC.1\n"],
 	])("covers %s", (_label, content) => {
 		expect(CANDIDATES.some((row) => row.content === content)).toBe(true);
 	});

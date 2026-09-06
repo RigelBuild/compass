@@ -163,16 +163,20 @@ const flakeVerdicts = (): Verdict[] | Error => {
 // surviving value — so the stamp compared is the one the ldflag would carry.
 // Cheap enough per candidate to stay a loop.
 //
-// `LC_ALL=C` is what makes the comparison locale-invariant, and it is the
-// setting carrying the guarantee: with an unpinned UTF-8 locale the negated
-// class `[!0-9A-Za-z.+-]` accepts `0.1.0é`, which the flake side
-// (`builtins.match`, locale-invariant unconditionally) rejects — a verdict
-// that would differ by environment rather than by expression. `shopt -s
-// globasciiranges` is belt-and-braces: it is already on by default in this
-// bash, and on its own it does not close the gap, but it pins the bracket-range
-// collation so a bash built without that default cannot reopen it. Together
-// they make the parity verdict a property of the two guards rather than of the
-// environment the gate happens to run under.
+// `shopt -s globasciiranges` and `export LC_ALL=C` both make the comparison
+// locale-invariant, and either one alone is sufficient for the case that
+// motivates them: with NEITHER set, the negated class `[!0-9A-Za-z.+-]` under a
+// UTF-8 locale accepts `0.1.0é`, which the flake side (`builtins.match`,
+// locale-invariant unconditionally) rejects — a verdict differing by
+// environment rather than by expression. Setting either pin restores REJECT.
+//
+// Both are kept because they close it by different mechanisms, so no single
+// environment change can reopen it: `LC_ALL=C` fixes the collation locale but
+// is an env var an ambient `LC_ALL` or a future harness edit could displace,
+// while `globasciiranges` forces bracket ranges to collate by ASCII code point
+// whatever the locale, but is a bash build default a differently-built bash
+// need not carry. Together they make the parity verdict a property of the two
+// guards rather than of the environment the gate happens to run under.
 const devenvVerdict = (index: number): Verdict | Error => {
 	const script =
 		"set -u\nshopt -s globasciiranges\nexport LC_ALL=C\n" +
