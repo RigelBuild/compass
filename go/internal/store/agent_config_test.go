@@ -585,14 +585,19 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 }
 
 // TestCredentialKeysMatchSchema is a change-detector on the generated denylist:
-// the seven SDK isCredential paths (settings-schema.ts) are the load-bearing
-// door policy, so a fork bump that adds or drops one must be caught. If this
-// reds, regenerate credential_keys_gen.go (`go generate ./...`) and re-review.
+// the SDK's isCredential paths (@oh-my-pi/pi-coding-agent
+// src/config/settings-schema.ts) are the load-bearing door policy, so an SDK
+// bump that adds or drops one must be caught. If this reds, regenerate
+// credential_keys_gen.go (`go generate ./...`) and re-review the diff — a new
+// credential-marked path is expected at a bump and must be ADOPTED here, but a
+// path DISAPPEARING means the door stopped rejecting something it used to, which
+// is a policy regression to investigate before accepting.
 func TestCredentialKeysMatchSchema(t *testing.T) {
 	want := []string{
 		"auth.broker.token",
 		"dev.autoqaPush.token",
 		"hindsight.apiToken",
+		"images.urls.credentials",
 		"mnemopi.embeddingApiKey",
 		"mnemopi.llmApiKey",
 		"searxng.basicPassword",

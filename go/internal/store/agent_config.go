@@ -1013,7 +1013,8 @@ func parseYAMLMapping(content []byte, joined string) (map[string]any, error) {
 }
 
 // credentialKeys (credential_keys_gen.go) is generated from the SDK's
-// isCredential markers; refresh it at a fork bump with `go generate ./...`.
+// isCredential markers, read from the installed @oh-my-pi/pi-coding-agent;
+// refresh it at an SDK bump with `go generate ./...`.
 //
 //go:generate go run gen_credential_keys.go
 
