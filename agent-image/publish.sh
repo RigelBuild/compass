@@ -8,10 +8,11 @@
 # name off PATH (see the SKOPEO= note below — skopeo is deliberately NOT in
 # agent-image/devenv.nix; it comes from the root dev shell locally or the
 # publish workflow's pinned-helper bootstrap in CI).
-# agent-image/ is a standalone nix devenv with zero bun/TS infrastructure, and
-# the publish must run byte-identically locally and in CI, which this thin bash
-# glue over `nix`/`skopeo` does directly. Per AGENTS.md, a script that genuinely
-# must be bash carries its rationale inline; this is it.
+# agent-image/ is a standalone nix devenv with no bun PACKAGE infrastructure;
+# publish resolves its fork rev through the repo's shared bun devenv-CLI rather
+# than a hand-pinned rev. The publish must run byte-identically locally and in
+# CI, which this thin bash glue over `nix`/`skopeo` does directly. Per AGENTS.md,
+# a script that genuinely must be bash carries its rationale inline; this is it.
 
 set -euo pipefail
 
@@ -55,11 +56,13 @@ else
   TAGS=("git-${SHA}" "latest")
 fi
 
-# Build the image spec exactly as dogfood:agent-image does — same fork-pinned
-# derivation, so the published tag and the local load are copies of ONE build.
+# Build the image spec exactly as dogfood:agent-image does — the fork rev is
+# resolved from agent-image/devenv.lock via tools/toolchain/devenv-cli and is
+# never hand-pinned, so the published tag and local load are copies of ONE build.
 # devenv tracing goes to stderr; the spec store path is the last stdout line.
-log "Building image spec: nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent"
-BUILD_OUT="$(nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent)"
+DEVENV_SRC="$(bun "$SCRIPT_DIR/../tools/toolchain/devenv-cli/index.ts" --lock "$SCRIPT_DIR/devenv.lock" --mode flakeref)"
+log "Building image spec: nix run $DEVENV_SRC -- container build agent"
+BUILD_OUT="$(nix run "$DEVENV_SRC" -- container build agent)"
 SPEC="$(printf '%s\n' "$BUILD_OUT" | tail -n 1)"
 
 # A future fork bump that adds a trailing stdout line must not silently feed
