@@ -1154,3 +1154,87 @@ func TestSubscribeKindRejectsBadInput(t *testing.T) {
 		t.Error("SubscribeKind with a wildcard kind = nil error, want a refusal")
 	}
 }
+
+// TestForgedTenantRefIsParked defends the read side of the tenant invariant.
+// Publish refuses a ref whose tenant disagrees with its subject, but Publish is
+// not the only writer the shared stream can have: the server carries no
+// per-tenant authorization yet, so this test bypasses Publish with a raw client
+// exactly as a rogue publisher would. The subscriber must never see the ref —
+// EventRef's contract tells it to re-read under ref.Tenant WITHOUT consulting
+// the subject, so a delivered mismatch is a cross-tenant read.
+//
+// SubscribeKind is the entry point under test because its consumer spans every
+// tenant, which leaves the payload's tenant field as the only scope a delivery
+// carries.
+func TestForgedTenantRefIsParked(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, MaxDeliver: 1, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the dlq subscription: %v", err)
+	}
+
+	delivered := make(chan EventRef, 2)
+	unsub, err := f.SubscribeKind(ctx, KindMessagePosted, func(ref EventRef) { delivered <- ref })
+	if err != nil {
+		t.Fatalf("SubscribeKind: %v", err)
+	}
+	defer unsub()
+
+	// tenant-victim's subject carrying tenant-attacker's ref. Publish would
+	// reject this pairing outright, so it goes on the wire raw.
+	victimSubject, err := CommsSubject("tenant-victim", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	forged, err := EventRef{Tenant: "tenant-attacker", Kind: KindMessagePosted, RowID: "msg-forged"}.encode()
+	if err != nil {
+		t.Fatalf("encoding the forged ref: %v", err)
+	}
+	if err := raw.Publish(victimSubject, forged); err != nil {
+		t.Fatalf("raw Publish(%q): %v", victimSubject, err)
+	}
+
+	// Positive gate on the negative assertion: a legitimate ref published
+	// AFTER the forgery must arrive, so the forgery has demonstrably had its
+	// chance to be delivered rather than merely not arriving yet.
+	goodSubject, err := CommsSubject("tenant-victim", KindMessagePosted)
+	if err != nil {
+		t.Fatalf("CommsSubject: %v", err)
+	}
+	good := EventRef{Tenant: "tenant-victim", Kind: KindMessagePosted, RowID: "msg-legit"}
+	if err := f.Publish(ctx, goodSubject, good); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+
+	got := <-delivered
+	if got.RowID != "msg-legit" {
+		t.Fatalf("first delivery = %s/%s, want the legitimate tenant-victim/msg-legit — the forged ref reached the subscriber", got.Tenant, got.RowID)
+	}
+	select {
+	case extra := <-delivered:
+		t.Fatalf("a second event reached the subscriber: %s/%s, want only the legitimate one", extra.Tenant, extra.RowID)
+	default:
+	}
+
+	// The forgery must be parked, not silently dropped: an operator needs the
+	// concrete subject it was delivered on to know which tenant was targeted.
+	msg, err := dlq.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("waiting for the parked forgery on %q: %v", DLQSubject, err)
+	}
+	if subj := msg.Header.Get(dlqHeaderSubject); subj != victimSubject {
+		t.Errorf("parked subject header = %q, want the concrete delivered subject %q", subj, victimSubject)
+	}
+}

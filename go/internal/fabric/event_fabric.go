@@ -195,6 +195,29 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(Eve
 		f.park(ctx, msg, decodeErr)
 		return
 	}
+	// The ref's tenant must match the subject it arrived on. Publish enforces
+	// this from the write side, but Publish is not the only writer the stream
+	// can have: COMPASS_COMMS is shared and the server carries no per-tenant
+	// authorization yet (OQ-3), so a client reaching the client port can put
+	// arbitrary bytes on any comms subject. Without this check a ref naming
+	// tenant-a delivered on tenant-b's subject would hand a tenant-b-scoped
+	// subscriber a tenant-a row id, and EventRef's contract directs that
+	// subscriber to re-read under ref.Tenant WITHOUT consulting the subject
+	// (eventref.go) — so the payload would be the only tenant discriminator.
+	// SubscribeKind makes that the primary path: its consumer spans every
+	// tenant, leaving ref.Tenant as the sole scope for a delivery.
+	//
+	// A mismatch is as unprocessable as an undecodable payload — no redelivery
+	// changes it — so it parks rather than retries.
+	want, subjErr := CommsSubject(ref.Tenant, ref.Kind)
+	if subjErr != nil {
+		f.park(ctx, msg, subjErr)
+		return
+	}
+	if got := msg.Subject(); got != want {
+		f.park(ctx, msg, fmt.Errorf("fabric: event ref %s/%s names subject %q but was delivered on %q", ref.Tenant, ref.Kind, want, got))
+		return
+	}
 	if err := invoke(fn, ref); err != nil {
 		f.retryOrPark(ctx, msg, err)
 		return
