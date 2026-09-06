@@ -34,10 +34,42 @@
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
 
       # ONE version string stamped into all four backend binaries + the app
-      # (Global Constraint 4: the stack binaries carry ONE stamp). Short form of
-      # the flake rev; dirtyShortRev on an uncommitted working copy; "dev" when
-      # neither is available (a bare tree with no VCS metadata).
-      version = self.shortRev or self.dirtyShortRev or "dev";
+      # (Global Constraint 4: the stack binaries carry ONE stamp). The semver
+      # base comes from version.txt — the same single source release.yml and
+      # ci.yml read — trimmed because the file ends in a newline that would
+      # otherwise land in the ldflag (and leave a trailing dash in the store
+      # path name). A `+g<shortRev>` build-metadata suffix keeps a non-release
+      # artifact identifiable (ci.yml's dev-compile lane stamps this same
+      # clean-tree shape); dirtyShortRev already carries its own `-dirty`
+      # marker, and a bare tree with no VCS metadata stamps the plain base.
+      # Empty content throws rather than stamping a coreless `+g<rev>`, which
+      # is not valid semver but would otherwise build and ship silently — the
+      # guard `ci.yml`'s dev-compile lane and `app-bundle/build.sh` already
+      # carry (release.yml's two stamp steps do NOT; RIG-3428). The character
+      # class is then applied to the trimmed value, which is exactly what the
+      # devenv lane does after trimming the same four whitespace bytes, so the
+      # two lanes accept the same file: without the class an inner space passes
+      # here and lands raw in the ldflag (the store-path name silently
+      # sanitizes it to a dash), which is the fail-quiet outcome the guard
+      # exists to stop. The flake-gate:version-guard parity gate holds the two
+      # lanes in agreement by running both guards over a shared candidate table.
+      versionBase =
+        let
+          v = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
+        in
+        if v == "" then
+          throw "version.txt is missing or empty"
+        else if builtins.match "[0-9A-Za-z.+-]+" v == null then
+          throw "version.txt is not a version string: '${v}'"
+        else
+          v;
+      version =
+        if self ? shortRev then
+          "${versionBase}+g${self.shortRev}"
+        else if self ? dirtyShortRev then
+          "${versionBase}+g${self.dirtyShortRev}"
+        else
+          versionBase;
 
       # The backend module rooted at go/ (github.com/RigelBuild/compass/go).
       # Renamed off `go` (buildGoModule unpacks src into $GOPATH=/build/go, and a

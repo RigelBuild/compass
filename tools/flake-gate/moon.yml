@@ -87,8 +87,23 @@ tasks:
       cache: false
       runInCI: true
 
+  version-guard:
+    # The version.txt guard-parity gate. flake.nix's `versionBase` and
+    # devenv.nix's process-script guard validate the same file with two
+    # independently hand-written expressions in two languages; a skew means one
+    # lane hard-fails a tree the other builds, or both build and stamp
+    # different versions. Same shape as flake-parity above: bun runs the thin
+    # shell from the workspace root (it lifts the guards out of /flake.nix and
+    # /devenv.nix by path), and cache:false because a fail-closed gate never
+    # rides a cached green from another checkout.
+    command: 'bun tools/toolchain/version-guard.ts'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: true
+
   ci:
-    deps: ['flake-check', 'flake-parity']
+    deps: ['flake-check', 'flake-parity', 'version-guard']
     options:
       cache: false
       runInCI: true
