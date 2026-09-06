@@ -53,13 +53,16 @@
 // Seven tools ship: post, post_ask, list, roster, set_status, open_dm, and dm;
 // search is deferred (OQ-3).
 
+// The tool-parameter schema builder comes from the SDK's OWN schema stack
+// (`@oh-my-pi/omptype`, pinned to the same 18.0.3 release as the SDK), via
+// its `/ark` compatibility facade — arktype-authored code runs unchanged on the
+// omptype lazy-JIT runtime. Sourcing it from the SDK's stack rather than a
+// separately-versioned `arktype` is what keeps the tool parameter types
+// assignable to the SDK's `TSchema`: there is only ever one schema
+// implementation in the graph, so the two-copy mismatch `tsc` used to catch
+// cannot arise. Keep the omptype pin in lockstep with the SDK pin.
+import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-// `arktype` is pinned exact in package.json to whatever the SDK resolves
-// (2.2.3, via @oh-my-pi/pi-coding-agent 16.5.2), NOT to a version of our
-// choosing. A mismatch resolves two @ark/schema copies and the tool parameter
-// types stop being assignable to the SDK's — `tsc` catches it, but the SDK dep
-// floats on ^, so an SDK bump is the prompt to re-check this pin.
-import { type } from "arktype";
 import {
 	AgentPresence,
 	AskOptionSchema,

@@ -23,7 +23,8 @@
 // runtime — the no-op tracer discards spans — so it injects one through the
 // module-private `setTransportRuntime` channel (a test in src/transport/ may call
 // it) with an in-memory OTel exporter wired through effect's tracer via
-// `NodeSdk.layer` (pattern: forks/oh-my-pi/packages/agent/test/otel.test.ts). A
+// `NodeSdk.layer` (an in-memory span exporter registered as the effect runtime's
+// tracer layer, so spans land in a readable array instead of the no-op sink). A
 // fake transport gives the test exact control over whether `onHeader` fires, so
 // the `established` span EVENT is present on a header-delivering attempt and
 // absent on a hung dial.

@@ -700,12 +700,28 @@ export async function main(
 	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
 	// SDK must gain a real native-registration path, or the tool must be a true
 	// `ToolDefinition`. Do not consume args 3-5 here.
+	//
+	// `loadMode: "essential"` is REQUIRED, not decorative. SDK 18.x added
+	// progressive tool disclosure: an adapter boundary — extension
+	// `registerTool`, SDK custom tools, RPC host tools — defaults an omitted
+	// `loadMode` to `"discoverable"`
+	// (pi-coding-agent src/tools/essential-tools.ts:37-45). A discoverable tool
+	// is still REGISTERED, but it is not in the model's top-level callable
+	// schema; it is reached through the `xd://` device transport instead. These
+	// natives are the container agent's channel to the Manager and to forge/board,
+	// so they must stay top-level: without this the agent starts a session with
+	// none of `comms_*` / `agents_*` / `forge_*` / `board_*` directly callable.
+	// Set here at the single registration seam rather than in the four tool
+	// factories, so the whole native set gets one uniform, documented mode.
 	const nativeTools = [
 		...createCommsTools(commsBroker),
 		...createLifecycleTools(lifecycleBroker),
 		...createForgeTools(forgeBroker),
 		...createBoardTools(boardBroker),
-	] as ToolDefinition[];
+	].map((tool) => ({
+		...tool,
+		loadMode: "essential" as const,
+	})) as ToolDefinition[];
 
 	// The tee session storage, wrapped + initialize()d (its scan of the session
 	// dir must complete before SessionManager.create so synchronous resume
