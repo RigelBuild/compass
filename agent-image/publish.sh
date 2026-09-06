@@ -8,11 +8,15 @@
 # name off PATH (see the SKOPEO= note below — skopeo is deliberately NOT in
 # agent-image/devenv.nix; it comes from the root dev shell locally or the
 # publish workflow's pinned-helper bootstrap in CI).
-# agent-image/ is a standalone nix devenv with no bun PACKAGE infrastructure;
-# publish resolves its fork rev through the repo's shared bun devenv-CLI rather
-# than a hand-pinned rev. The publish must run byte-identically locally and in
-# CI, which this thin bash glue over `nix`/`skopeo` does directly. Per AGENTS.md,
-# a script that genuinely must be bash carries its rationale inline; this is it.
+# agent-image/ is a standalone nix devenv with no bun PACKAGE infrastructure —
+# no package.json, no bun.lock, no install step — so this orchestration stays
+# thin bash over `nix`/`skopeo` rather than a TS tool, and must run
+# byte-identically locally and in CI. It does invoke the repo's shared
+# devenv-CLI under bun to resolve the fork rev from agent-image/devenv.lock
+# rather than hand-pinning it; bun comes from the root dev shell locally and
+# the publish workflow's pinned bootstrap in CI, exactly as skopeo does. Per
+# AGENTS.md, a script that genuinely must be bash carries its rationale
+# inline; this is it.
 
 set -euo pipefail
 

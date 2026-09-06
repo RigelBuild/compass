@@ -115,10 +115,12 @@ jobs:
     # The image closure is the heavy nix build that sizes this timeout, the same
     # cost that motivates ci.yml's 90m.
     timeout-minutes: 90
-    # `run: ./publish.sh` resolves relative to this default, and publish.sh's own
-    # `github:RigelBuild/devenv` container build resolves only from agent-image/. The
-    # skopeo login/verify steps do NOT depend on this cwd — they invoke skopeo by
-    # name off PATH (bootstrapped below as an absolute store path).
+    # `run: ./publish.sh` resolves relative to this default, and publish.sh's
+    # `devenv container build` resolves this image's devenv.yaml/devenv.lock
+    # only from agent-image/. The other steps do NOT depend on this cwd — the
+    # two bootstraps override to the repo root for their repo-root-relative nix
+    # paths, and login/verify invoke skopeo by name off PATH (bootstrapped
+    # below as an absolute store path).
     defaults:
       run:
         working-directory: agent-image
@@ -220,12 +222,17 @@ jobs:
         if: steps.gate.outputs.should_publish == 'true'
         # bun comes from the nix-pinned toolchain, never setup-bun. Resolve it
         # from gate-tools.nix's langs so it is byte-identical to the dev shell's
-        # bun. Only bun is bootstrapped here: publish needs the devenv-CLI
-        # resolver, not the whole language set.
+        # bun — the same derivation, not merely the same version. Only bun is
+        # bootstrapped here: publish needs the devenv-CLI resolver, not the
+        # whole language set. `jq -er` is load-bearing: a plain `-r` prints the
+        # literal string `null` when `.store` is missing, which reads as a
+        # value and would pass the emptiness check below, so the shape drift
+        # this guards against would surface as an opaque `flake:null` failure
+        # instead of a named error.
         working-directory: .
         run: |
           set -euo pipefail
-          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -er '.store')
           [ -n "$store" ] || {
             echo "::error::gate-tools.nix langs.bun produced no store path" >&2
             exit 1
