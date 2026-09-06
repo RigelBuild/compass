@@ -18,11 +18,11 @@
 // authority is enforced Server-side — an unauthorized target comes back as a
 // `LifecycleCallError`, in-band, not as a transport teardown.
 
+// The schema builder rides the SDK's own schema stack via its `/ark` compat
+// facade — see the comms.ts note; one schema implementation in the graph, so
+// there is no two-copy mismatch to catch.
+import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-// `arktype` is pinned exact in package.json to whatever the SDK resolves — see
-// the comms.ts note on this pin; a mismatch resolves two @ark/schema copies and
-// `tsc` catches it.
-import { type } from "arktype";
 import {
 	create,
 	DespawnPeerRequestSchema,

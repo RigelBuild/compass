@@ -1624,9 +1624,18 @@ describe("main", () => {
 	});
 
 	// A compaction round-trip: a fixture body whose file contains a superseded
-	// compaction loads through the SDK's own elision — proving the T5
-	// reconstruction needs no compaction awareness beyond T4's supersession.
-	test("a superseded-compaction fixture loads via the SDK's own elision", async () => {
+	// compaction loads intact — proving the T5 reconstruction needs no compaction
+	// awareness beyond T4's supersession.
+	//
+	// The SDK moved WHERE supersession is applied. It used to elide the superseded
+	// summary at session LOAD (`elideSupersededCompactionEntries`, gone in 18.x);
+	// it now keeps stored entries verbatim and elides only when assembling the
+	// model-facing context (`buildSessionContext`, session-context.ts:174 ->
+	// `active ? entry.summary : SUPERSEDED_COMPACTION_SUMMARY` at :377). So the
+	// loaded entries carry BOTH real summaries, and this asserts the property that
+	// actually matters to compass either way: the round-trip preserves the whole
+	// compaction chain, so reconstruction never has to reason about supersession.
+	test("a superseded-compaction fixture round-trips with its chain intact", async () => {
 		const session = fakeSession();
 		const cwd = process.cwd();
 		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
@@ -1659,13 +1668,12 @@ describe("main", () => {
 					fakeCarrier(emptyLog(), { control: emptyControlStream }),
 			},
 		);
-		// The session loaded (post-compaction entry present) and the superseded
-		// compaction's summary was elided by the SDK loader.
+		// The session loaded with its full compaction chain intact — both summaries
+		// present, in order. (Supersession is applied downstream at context
+		// assembly, not here; compass never reads the elided form.)
 		const summaries = compactionSummariesOf(entriesAtCreate);
 		expect(summaries).toHaveLength(2);
-		expect(summaries[0]).toBe(
-			"[Superseded compaction summary elided during session load]",
-		);
+		expect(summaries[0]).toBe("first compaction summary");
 		expect(summaries[1]).toBe("second compaction summary");
 		expect(textsOf(entriesAtCreate)).toContain("after compaction");
 	});
@@ -2894,9 +2902,14 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (2) rules survived (the custom template's <rules> list).
 		expect(rendered).toContain("MP1-RULE-SENTINEL");
 		expect(rendered).toContain("<rules>");
-		// (2) the project footer survived as its own block (environment + cwd).
+		// (2) the project footer survived as its own block. The SDK restructured
+		// this block: `project-prompt.md` renders `PROJECT` + `<workstation>` (the
+		// environment list), while the cwd line moved out to its own
+		// `date-cwd-reminder` block (session/date-cwd-reminder.ts) that this render
+		// path does not include. Assert the footer's own markers, not the relocated
+		// cwd text.
 		expect(rendered).toContain("PROJECT");
-		expect(rendered).toContain("current working directory");
+		expect(rendered).toContain("<workstation>");
 		// The read tool stayed in the set (the gate's precondition).
 		expect(systemPrompt.join("\n")).toContain("read");
 	});

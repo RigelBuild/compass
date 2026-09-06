@@ -87,22 +87,30 @@ const lifecycleTransport: LifecycleTransport = {
 		unreached("lifecycle"),
 };
 
-// The EXACT Compass native tool set cli.ts registers on the Manager session
-// (cli.ts:703-708). Built from the same four factories over real brokers, so
-// the expected set can never drift from what ships: a new native tool is
-// automatically part of the pinned split.
+// The EXACT Compass native tool set cli.ts registers on the Manager session.
+// Built from the same four factories over real brokers, so the expected set can
+// never drift from what ships: a new native tool is automatically part of the
+// pinned split.
 function compassNativeTools(): ToolDefinition[] {
-	// Mirrors cli.ts:703-708: the factories return `AgentTool[]`, which the
-	// entrypoint widens to `ToolDefinition[]` for the `customTools` option
-	// (`customTools?: (CustomTool | ToolDefinition)[]`). The two are
+	// Mirrors the cli.ts registration seam: the factories return `AgentTool[]`,
+	// which the entrypoint widens to `ToolDefinition[]` for the `customTools`
+	// option (`customTools?: (CustomTool | ToolDefinition)[]`). The two are
 	// structurally compatible for registration but inference will not unify
 	// them, so this is the same widening the production callsite uses.
+	//
+	// `loadMode: "essential"` mirrors the same stamp cli.ts applies. SDK 18.x
+	// defaults an omitted `loadMode` at an adapter boundary to `"discoverable"`
+	// (registered but not top-level), so without it these tools would not be
+	// active and this file would be measuring the wrong surface.
 	return [
 		...createCommsTools(new CommsBroker(commsTransport)),
 		...createLifecycleTools(new LifecycleBroker(lifecycleTransport)),
 		...createForgeTools(new ForgeBroker(forgeTransport)),
 		...createBoardTools(new BoardBroker(boardTransport)),
-	] as ToolDefinition[];
+	].map((tool) => ({
+		...tool,
+		loadMode: "essential" as const,
+	})) as ToolDefinition[];
 }
 
 function compassNativeToolNames(): Set<string> {
@@ -167,7 +175,7 @@ function subagentActiveToolNames(cwd: string): Promise<string[]> {
 	return activeToolNames({ cwd, taskDepth: 1 });
 }
 
-describe("subagent comms/IRC tool split (design §T7)", () => {
+describe("subagent comms/hub tool split (design §T7)", () => {
 	test("the Manager session carries exactly the Compass native tool set", async () => {
 		const cwd = scratch();
 		const active = new Set(await managerActiveToolNames(cwd));
@@ -195,18 +203,19 @@ describe("subagent comms/IRC tool split (design §T7)", () => {
 		expect(leaked).toEqual([]);
 	});
 
-	test("a subagent session still carries irc (the COOP-advertised peer channel)", async () => {
+	test("a subagent session still carries hub (the COOP-advertised peer channel)", async () => {
 		const cwd = scratch();
 		const active = new Set(await subagentActiveToolNames(cwd));
 
-		// `irc` is active on this subagent via the availability gate
-		// isIrcEnabled(settings, taskDepth) (tools/index.ts:628): at taskDepth 1
-		// the `taskDepth > 0` short-circuit returns true (irc.ts:45). (A
-		// tool-restricted subagent additionally force-includes it at
-		// executor.ts:2196-2197.) The split removes Compass's channel tools but
-		// MUST leave the OMP-internal peer channel, or workers cannot reach the
-		// Manager at all.
-		expect(active.has("irc")).toBe(true);
+		// `hub` is active on this subagent via the availability gate
+		// isIrcEnabled(settings, taskDepth) (tools/index.ts:679): at taskDepth 1
+		// the `taskDepth > 0` short-circuit returns true
+		// (tools/hub/messaging.ts:109-110). (A tool-restricted subagent
+		// additionally force-includes it in the task executor.) The split removes
+		// Compass's channel tools but MUST leave the OMP-internal peer channel, or
+		// workers cannot reach the Manager at all. The SDK renamed this tool
+		// `irc` -> `hub`; the gate function kept its original name.
+		expect(active.has("hub")).toBe(true);
 	});
 
 	test("the Manager carries Compass tools that the subagent drops — the split is real", async () => {

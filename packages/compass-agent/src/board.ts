@@ -30,11 +30,11 @@
 // the RelayBoardCall payload on the Runner->Server leg (DL-049), one wire shape
 // for both hops. See packages/compass-agent/AGENTS.md for the package contract.
 
+// The schema builder rides the SDK's own schema stack via its `/ark` compat
+// facade — see the comms.ts note; one schema implementation in the graph, so
+// there is no two-copy mismatch to catch.
+import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-// `arktype` is pinned exact in package.json to whatever the SDK resolves — see
-// the comms.ts note on this pin; a mismatch resolves two @ark/schema copies and
-// `tsc` catches it.
-import { type } from "arktype";
 import {
 	type BoardCallRequest,
 	BoardCallRequestSchema,

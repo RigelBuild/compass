@@ -11,8 +11,8 @@
 // result out, and the captured request asserted verbatim.
 
 import { describe, expect, test } from "bun:test";
+import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { ArkErrors, type Type } from "arktype";
 import {
 	CommsBroker,
 	type CommsTransport,
@@ -465,12 +465,12 @@ describe("comms parameter schemas", () => {
 	});
 
 	// The bound the model is SHOWN, not the one enforced behind it. A `.narrow`
-	// predicate has no JSON Schema representation, so arktype cannot emit it —
-	// and the harness supplies a fallback that degrades the un-emittable node to
-	// its base rather than throwing, so the model sees a bare string and learns
+	// predicate has no JSON Schema representation, so the schema lib cannot emit
+	// it — and the harness supplies a fallback that degrades the un-emittable node
+	// to its base rather than throwing, so the model sees a bare string and learns
 	// the rule only by being rejected. Asserting the DEGRADED OUTPUT, not a bare
-	// `toThrow()`: the harness never calls it bare, so a throw-assertion pins
-	// arktype's behaviour instead of this contract, and would stay green if the
+	// `toThrow()`: the harness never calls it bare, so a throw-assertion pins the
+	// schema lib's behaviour instead of this contract, and would stay green if the
 	// fallback ever started emitting the narrow — the one change that would
 	// actually make the descriptions redundant. The description is the only place
 	// a caller can read these rules, which is why each is asserted rather than
@@ -496,12 +496,18 @@ describe("comms parameter schemas", () => {
 			"omit entirely for your home channel",
 		);
 
-		// Contrast: an expressible bound survives as real schema, which is what
-		// the asymmetry looks like from the model's side. Read off the numeric
-		// branch — the optional field is a union with `undefined`, and that union,
-		// not the range, is what stops the whole-schema emit here.
-		expect(listParameters.get("limit").expression).toContain("<= 100");
-		expect(listParameters.get("limit").expression).toContain(">= 1");
+		// Contrast: an expressible bound is genuinely ENFORCED, which is what the
+		// asymmetry looks like from the model's side — the `.narrow` non-blank rules
+		// above are silently dropped, while this range actually rejects. Asserted by
+		// enforcement rather than by the schema lib's `.expression` rendering: the
+		// rendering is an introspection detail that differs between schema
+		// implementations (omptype renders this optional node as
+		// `number % 1 | undefined`, folding the range into the compiled check),
+		// whereas rejection IS the contract the model runs into.
+		expect(rejects(listParameters, { limit: 0 })).toBe(true);
+		expect(rejects(listParameters, { limit: 101 })).toBe(true);
+		expect(rejects(listParameters, { limit: 1 })).toBe(false);
+		expect(rejects(listParameters, { limit: 100 })).toBe(false);
 		expect(listParameters.get("limit").description).toContain("default 50");
 	});
 
