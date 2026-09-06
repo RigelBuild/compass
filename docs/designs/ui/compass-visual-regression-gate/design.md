@@ -125,10 +125,11 @@ spans ~4 orders of magnitude: a full-page shot (~1280×720+, ≥900 K px) at
 a budget of 0.09 px — effectively byte-exact, the *least* slack on the shot
 most exposed to a single anti-aliasing pixel shift after a Chromium bump. One
 ratio cannot serve both ends, so the 2 *smallest* shots (`state-dot`,
-`bridge-card`) need a per-shot widening. The two larger close-ups
-(`bridge-colheads`, `right-sidebar`) do not: at the base ratio their
-area-scaled budgets are already 35 px and 260 px, comfortably above the
-intended slack.
+`bridge-card`) need a per-shot widening. At the recommended base the two
+larger close-ups (`bridge-colheads`, `right-sidebar`) do not: their
+area-scaled budgets @0.001 are already 35 px and 260 px, comfortably above
+the intended slack. Whether `bridge-colheads` still qualifies is
+base-dependent — see the per-shot list below.
 
 **The widening knob is a per-shot `maxDiffPixelRatio`, not `maxDiffPixels`.**
 At the 1.62.1 pin the two pixel-count knobs resolve with `Math.min`, not max:
@@ -166,17 +167,36 @@ OQ-1 settles on:
 - `bridge-card.png` — `max(0.001, 25/21357)`, prescribed as the **exact
   fraction `25/21357`** (budget exactly 25.0 px, tolerates 25 px). As a decimal
   it must be the rounded-UP **0.001171**.
-- `bridge-colheads.png` and `right-sidebar.png` — **no override**. At the base
-  ratio their area-scaled budgets (35 px and 260 px) already exceed the
-  intended ~25 px of slack, so any per-shot value could only tighten them. An
-  executor must not add one.
+- `bridge-colheads.png` and `right-sidebar.png` — **no override at the
+  recommended base 0.001**, where their area-scaled budgets (35 px and
+  260 px @0.001) already exceed the intended ~25 px of slack.
+  `right-sidebar` (400×650 = 260000 px) needs no override at any base OQ-1
+  names — even at 0.0005 its budget is 130 px. `bridge-colheads`
+  (855×41 = 35055 px) is base-dependent: at 0.0005 its budget falls to
+  17.53 px, *below* the 25 px of intended slack, so under that ruling it
+  takes `25/35055` by the same `max(base, floor / area)` rule as the other
+  two shots. An executor adds an override here only where that rule yields
+  one for the base Matt rules for.
 
 The comparator tests `count > area * ratio` with no rounding
-(`playwright-core/lib/coreBundle.js:7556-7562`), so a per-shot ratio must be
-expressed as the exact fraction — or rounded UP — never truncated: a truncated
-decimal silently tightens the budget by a pixel. So the call sites in T2 write
-the ratio as a derived expression (`maxDiffPixelRatio: Math.max(BASE, 10/90)`),
-computed rather than transcribed, which cannot drift when Matt rules OQ-1.
+(`playwright-core/lib/coreBundle.js:7557,7564`), so a per-shot ratio must be
+expressed as the exact fraction — or rounded UP — never truncated: a
+truncated decimal silently tightens the budget by a pixel. The exact
+fraction is not unconditionally safe either: float division can land
+`area * (floor / area)` a hair *under* the floor (it does for ~74,000 of the
+first million areas), so each fraction must be verified to land at or above
+the floor for its own area, and where it lands short the rounded-UP decimal
+is the required form. Both current cells are clean — `90 * (10/90)` is
+exactly 10, and `21357 * (25/21357)` is 25.000000000000004.
+
+The call sites in T2 therefore write the *resolved* literal fraction rather
+than a derived expression: a per-shot `maxDiffPixelRatio` replaces the
+config base instead of combining with it, so the base ratio is not in scope
+at the call site and `max(base, floor / area)` is a derivation the reader
+performs here, not an expression the spec evaluates. At the recommended
+0.001 it resolves to `10/90` and `25/21357`; if OQ-1 moves the base,
+re-resolve both against that rule — a base at or above `floor / area`
+removes the override entirely.
 
 The 7 full-page shots likewise take no override. The per-pixel color tolerance
 `threshold` (YIQ distance, Playwright default 0.2) is left at its default
@@ -222,9 +242,10 @@ with regenerated baselines from the dispatch lane, per the OQ-2 fork below.
 On failure Playwright writes `<name>-actual.png`, `<name>-expected.png`, and
 `<name>-diff.png` under `outputDir` (`e2e/.output`,
 `playwright.config.ts:54`). The `moon` job (`ci.yml:236`) gets an
-`if: failure() && matrix.run == 'true'` `actions/upload-artifact` step (SHA-pinned, per the house
-rule every action in `ci.yml` follows) scoped to `apps/ui/e2e/.output/**`, so
-a red gate always carries a downloadable actual/expected/diff triplet.
+`if: failure() && matrix.run == 'true'` `actions/upload-artifact` step
+(SHA-pinned, per the house rule every action in `ci.yml` follows) scoped to
+`apps/ui/e2e/.output/**`, so a red gate always carries a downloadable
+actual/expected/diff triplet.
 Inline-in-PR diff images are OQ-3.
 
 ### Rollout: hard gate from the first landing
@@ -281,8 +302,10 @@ as OQ-5 with this recommendation since the issue asks.
   `ci.yml`.
 - **Threshold default**: `maxDiffPixelRatio` set once in
   `playwright.config.ts` `expect.toHaveScreenshot` (base ratio per OQ-1);
-  `state-dot` and `bridge-card` additionally carry a per-shot
-  `maxDiffPixelRatio` override of `max(base, floor / area)` — the only knob
+  at the recommended base 0.001 `state-dot` and `bridge-card` additionally
+  carry a per-shot `maxDiffPixelRatio` of `max(base, floor / area)`
+  resolved to a literal fraction (the set is base-dependent — see
+  Threshold) — the only knob
   that can widen a small shot's budget, since a per-shot `maxDiffPixels`
   would resolve to `Math.min` against the config ratio and could only tighten
   it (see Threshold). No shot carries a `maxDiffPixels`. Per-pixel
@@ -328,21 +351,23 @@ its exact current raster options:
   `<locator>.screenshot({ path, animations, scale })` →
   `await expect(<locator>).toHaveScreenshot("<name>.png", { animations:
   "disabled", scale: "css" })` on the same locator — no `fullPage` — plus
-  `maxDiffPixelRatio: Math.max(BASE, 10/90)` on state-dot and
-  `Math.max(BASE, 25/21357)` on bridge-card — exact fractions, per Threshold
-  (as rounded-up decimals, 0.1112 and 0.001171).
-  right-sidebar takes **no** override.
+  `maxDiffPixelRatio: 10/90` on state-dot and `maxDiffPixelRatio: 25/21357`
+  on bridge-card — exact fractions, per Threshold (as rounded-up decimals,
+  0.1112 and 0.001171). These are the resolved values of Threshold's
+  `max(base, floor / area)` at the recommended base 0.001; re-resolve both
+  if OQ-1 moves the base. right-sidebar takes **no** override.
 - **1 clip** (bridge-colheads `:189`): keep the bounding-box union computation
   (`:180-188`), then `await expect(page).toHaveScreenshot("bridge-colheads.png",
-  { clip, animations: "disabled", scale: "css" })` — **no** per-shot override.
+  { clip, animations: "disabled", scale: "css" })` — **no** per-shot
+  override at the recommended base 0.001.
 
-Only `state-dot` and `bridge-card` carry a per-shot `maxDiffPixelRatio`
-(Threshold's `max(base, floor / area)`, recomputed if OQ-1 moves the base),
-each with a justifying comment; `bridge-colheads` and `right-sidebar` already
-have area-scaled budgets above the intended slack, so adding an override there
-would only tighten them. No shot gets a `maxDiffPixels`. Keep every navigation,
-selector wait, and
-`document.fonts.ready` await untouched. Drop the now-unused `SCREENS` const;
+At the recommended base 0.001 only `state-dot` and `bridge-card` carry a
+per-shot `maxDiffPixelRatio`, each with a justifying comment: `right-sidebar`
+has an area-scaled budget above the intended slack at every base OQ-1 names,
+and `bridge-colheads` has one at 0.001 — under a 0.0005 ruling it gains a
+`25/35055` override too (see Threshold). No shot gets a `maxDiffPixels`.
+Keep every navigation, selector wait, and `document.fonts.ready` await
+untouched. Drop the now-unused `SCREENS` const;
 import `expect` alongside `test` from `@playwright/test`
 (`visual-smoke.spec.ts:1` currently imports only `test`). Update the spec
 header comment: it is a gate, not a review-only generator.
