@@ -12,6 +12,7 @@ import {
 	findViolations,
 	isCarveOut,
 	lineHasToken,
+	REMEDIATION_DOC,
 	runOnce,
 } from "./index.ts";
 
@@ -159,7 +160,16 @@ describe("runOnce", () => {
 		expect(code).toBe(1);
 		const e = errs.join("\n");
 		expect(e).toContain("docs/x.md:7");
-		expect(e).toContain("skill://private-repo-boundary");
+		expect(e).toContain("the managed service");
+		expect(e).toContain(REMEDIATION_DOC);
+	});
+
+	test("the doc cited in the failure hint exists", async () => {
+		// Resolved from this file, not the cwd, so the assertion holds under any
+		// invocation. Without it the hint can silently die in a docs move —
+		// the defect this pointer was repaired for.
+		const abs = new URL(`../../${REMEDIATION_DOC}`, import.meta.url);
+		expect(await Bun.file(abs).exists()).toBe(true);
 	});
 
 	test("returns 2 on a scan error (fail closed)", async () => {
