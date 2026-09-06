@@ -2410,6 +2410,7 @@ interface SeenConfig {
 		loadMode?: unknown;
 		execute?: unknown;
 		renderCall?: unknown;
+		renderResult?: unknown;
 	}[];
 	enableMCP?: boolean;
 	autoApprove?: boolean;
@@ -2456,21 +2457,30 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		);
 
 		const session = fakeSession();
-		// A CLASS instance, not an object literal: the real `mcp.tools` are
-		// `MCPTool` instances (pi-coding-agent src/mcp/tool-bridge.ts:492) whose
-		// `execute`/`renderCall` live on the PROTOTYPE. A plain-literal fixture
-		// spreads losslessly and so cannot see a stamp implemented with
-		// `{ ...tool }` shearing those methods off — the fixture must carry a
-		// prototype for the assertion below to defend anything.
+		// A CLASS instance with `#private` state, not an object literal. The real
+		// `mcp.tools` are SDK class instances: `MCPTool` (pi-coding-agent
+		// src/mcp/tool-bridge.ts:492) keeps `execute`/`renderCall`/`renderResult`
+		// on the PROTOTYPE, and its sibling `DeferredMCPTool` (:604) also holds
+		// ECMAScript `#private` fields its `execute` reads. Both properties matter
+		// to the fixture: a plain literal spreads losslessly (so it cannot see a
+		// `{ ...tool }` stamp shear the methods off), and a fixture without
+		// `#private` state cannot see an `Object.create` clone re-home `this` —
+		// that break passes a `typeof execute === "function"` check and only
+		// surfaces when the method is actually CALLED, which is why the assertion
+		// below invokes it.
 		class FakeMcpTool {
 			readonly name = "db.query";
 			readonly mcpServerName = "db";
 			readonly mcpToolName = "query";
+			readonly #server = "db";
 			async execute() {
-				return { content: [] };
+				return { content: [], server: this.#server };
 			}
 			renderCall() {
 				return "db.query";
+			}
+			renderResult() {
+				return "db.query result";
 			}
 		}
 		const mcpTools = [new FakeMcpTool()];
@@ -2538,13 +2548,24 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 					loadMode: "essential",
 				}),
 			);
-			// The stamp must PRESERVE the tool's callable surface. An MCP tool's
-			// `execute`/`renderCall` are prototype methods, so a stamp implemented
-			// as `{ ...tool }` drops them and the SDK adapter's `tool.execute(...)`
-			// throws at the first model call — a tool the model can see and cannot
-			// use, which is worse than one it never sees. Reddens on a spread.
-			expect(typeof stamped?.execute).toBe("function");
+			// The stamp must preserve the tool's callable surface AND its identity.
+			// All three of `execute`/`renderCall`/`renderResult` are prototype
+			// methods, so a `{ ...tool }` stamp drops them outright; an
+			// `Object.create` clone keeps them but re-homes `this`, so a
+			// `#private` read throws only when the method is INVOKED. Presence
+			// checks pass in that second case, so the contract is asserted by
+			// actually calling `execute` — a tool the model can see and cannot
+			// call is worse than one it never sees.
 			expect(typeof stamped?.renderCall).toBe("function");
+			expect(typeof stamped?.renderResult).toBe("function");
+			const execute = stamped?.execute;
+			if (typeof execute !== "function") {
+				throw new Error("the stamp dropped the tool's execute method");
+			}
+			await expect(execute.call(stamped)).resolves.toEqual({
+				content: [],
+				server: "db",
+			});
 		}
 		expect(opts.enableMCP).toBe(false);
 	});

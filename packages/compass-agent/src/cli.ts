@@ -34,6 +34,7 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
+import type { ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import type { ApiKey, Model } from "@oh-my-pi/pi-ai";
 import {
 	type AgentSession,
@@ -380,6 +381,25 @@ async function connectMountedMcp(
 		tools: manager.getTools(),
 		disconnect: () => manager.disconnectAll(),
 	};
+}
+
+/**
+ * Mark every custom tool `essential` so it lands in the model's top-level
+ * callable schema, and return the same array.
+ *
+ * Assigns in place BY DESIGN — see the `customTools` seam in `main` for why
+ * copying is unsafe here (SDK tools are class instances with prototype methods
+ * and `#private` state, so a spread or clone yields a tool the model can see
+ * and cannot call). `loadMode` is a mutable field on `CustomTool`, so this
+ * preserves object identity.
+ */
+function stampEssential<T extends { loadMode?: ToolLoadMode }>(
+	tools: T[],
+): T[] {
+	for (const tool of tools) {
+		tool.loadMode = "essential";
+	}
+	return tools;
 }
 
 /**
@@ -924,26 +944,24 @@ export async function main(
 		// contract exists to prevent. Stamped once here, at the single
 		// registration seam, rather than in the four native factories.
 		//
-		// NOT a spread. `mcp.tools` are `MCPTool` CLASS instances
-		// (pi-coding-agent src/mcp/tool-bridge.ts:492, built by `fromTools` at
-		// :514), whose `execute`/`renderCall`/`renderResult` live on the
-		// PROTOTYPE. `{ ...tool }` copies only own enumerable properties, so it
-		// would silently shear those methods off and the SDK adapter's
-		// `tool.execute(...)` call (sdk.ts:989) would throw `is not a function`
-		// at the first model invocation — a top-level-callable tool that crashes,
-		// strictly worse than a demoted one. Cloning onto the original prototype
-		// keeps the methods while still applying the mode without mutating the
-		// SDK's own objects. The natives are plain object literals, so they are
-		// unaffected either way and go through the same path for uniformity.
-		customTools: [...mcp.tools, ...nativeTools].map((tool) =>
-			Object.assign(
-				Object.create(Object.getPrototypeOf(tool) as object),
-				tool,
-				{
-					loadMode: "essential" as const,
-				},
-			),
-		),
+		// Stamped IN PLACE, never by copying. `mcp.tools` are SDK class instances
+		// (`MCPTool`, pi-coding-agent src/mcp/tool-bridge.ts:492) whose
+		// `execute`/`renderCall`/`renderResult` live on the PROTOTYPE, and its
+		// sibling `DeferredMCPTool` (:604) additionally holds ECMAScript
+		// `#private` state. Neither a spread nor an `Object.create` clone can
+		// carry that: a spread drops the prototype methods outright, and a clone
+		// keeps the methods but re-homes `this`, so a `#private` read throws
+		// `Cannot access invalid private field` at the model's FIRST call — a
+		// tool the model can see and cannot use, which is worse than a demoted
+		// one. `loadMode` is a mutable field on `CustomTool`
+		// (extensibility/custom-tools/types.ts:224), so assigning it preserves
+		// object identity: the methods, the private state, and the connection
+		// rebinding `MCPTool.execute` performs on reconnect all keep working,
+		// and the session cannot drift onto a stale copy. Compass owns this
+		// manager exclusively (built above; `getTools()` feeds `customTools` and
+		// nothing else), so there is no second consumer to isolate from the
+		// assignment.
+		customTools: stampEssential([...mcp.tools, ...nativeTools]),
 		enableMCP: false,
 		// Headless approval policy (RIG-1741, design compass-agent-comms-tools
 		// §"the container runs headless with write-approval tools auto-executing"):

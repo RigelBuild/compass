@@ -4,8 +4,9 @@
 // WHAT THIS DEFENDS. Compass's native tools — the comms surface
 // (`comms_post_message`, `compass_roster`, …), the lifecycle surface
 // (`agents_spawn_peer`, `agents_despawn_peer`), and the forge surface
-// (`forge_*`) — reach the Manager session as `customTools` (cli.ts:926:
-// `customTools: [...mcp.tools, ...nativeTools].map(… loadMode: "essential")`).
+// (`forge_*`) — reach the Manager session as `customTools` (cli.ts, the
+// `customTools:` registration seam in `main`:
+// `customTools: stampEssential([...mcp.tools, ...nativeTools])`).
 // An in-process `task` subagent (the design's worker topology) runs at full
 // Manager trust in the SAME container, so its Compass reach is NOT a security
 // boundary — it is a capability contract. The contract: a subagent gets the OMP
@@ -164,8 +165,8 @@ async function activeToolNames(
 	}
 }
 
-// The Manager session shape: Compass native tools ride `customTools`
-// (cli.ts:926). The subagent session shape: a real in-process subagent
+// The Manager session shape: Compass native tools ride `customTools` (cli.ts,
+// the `customTools:` seam). The subagent session shape: a real in-process subagent
 // (`taskDepth: 1`) with no `customTools` — the SDK's subagent path sets
 // `customTools` from `mcpProxyTools`, which is empty because Compass passes no
 // `mcpManager` (src/task/executor.ts:3113/:3234), so a child inherits none of the
