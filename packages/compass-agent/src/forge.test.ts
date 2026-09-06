@@ -14,6 +14,7 @@
 import { describe, expect, test } from "bun:test";
 import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import {
 	CommentRefSchema,
 	create,
@@ -961,6 +962,34 @@ describe("forge parameter schemas", () => {
 		);
 		expect(rejects(getIssueParameters, { repo: "o/r", issue_number: 1 })).toBe(
 			false,
+		);
+	});
+
+	// Message-level coverage for the SHARED `nonBlank` helper path. The
+	// comms.test.ts sibling pins the hand-written descriptions; this pins the
+	// helper, which is where a rule can go missing (or get stuttered) for a dozen
+	// fields at once. Under omptype a `.describe()` shadows the narrow's
+	// `ctx.mustBe(...)` reason, so the description is the only channel the rule
+	// reaches the model through — and it must say it exactly once.
+	test("the nonBlank helper states its rule in the message, exactly once", () => {
+		const out = createIssueParameters({ repo: "o/r", title: "   " });
+		if (!(out instanceof ArkErrors)) {
+			throw new Error("expected a blank title to be rejected");
+		}
+		expect(out.summary).toContain("blank");
+
+		// No stutter: the helper appends the rule only when the caller's own text
+		// does not already carry it. Asserted on the MODEL-FACING wire schema (the
+		// same conversion the agent loop runs), since that is where a doubled rule
+		// would actually be shown. Reddens on an unconditional append.
+		const wire = arkToWireSchema(createIssueParameters);
+		const properties =
+			wire && typeof wire === "object" && "properties" in wire
+				? wire.properties
+				: undefined;
+		expect(properties).toBeDefined();
+		expect(JSON.stringify(properties)).not.toContain(
+			"blank (must not be blank)",
 		);
 	});
 
