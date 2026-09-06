@@ -518,6 +518,26 @@ in
       before = [ "devenv:processes:compass-server" ];
     };
 
+    # build-cli: build the operator CLI (`./cmd/compass`) into the state dir so a
+    # human driving the box always has a binary matching the deployed source.
+    # DELIBERATELY BUILD-ONLY — the only task here with no `exec`. The other four
+    # binaries are built by the task that immediately runs them, so their freshness
+    # is a side effect of being invoked at boot; the operator CLI is invoked LATER,
+    # by a human over ssh, so nothing would otherwise rebuild it. Before this task
+    # the box served a months-old CLI missing the `agent` and `message` verbs while
+    # `--version` printed the same static "0.1.0" as a current build, making the
+    # drift invisible from the CLI itself (RIG-3342; the identical-version blind
+    # spot is RIG-3346). Ordered `before` the server purely to pin it into the `up`
+    # graph — it has no runtime dependency on the server.
+    "dogfood:build-cli" = {
+      exec = ''
+        bin="${config.devenv.state}/compass/compass"
+        go build -o "$bin" ./cmd/compass
+      '';
+      cwd = "${config.devenv.root}/go";
+      before = [ "devenv:processes:compass-server" ];
+    };
+
     # mint-runner-token: register the `dogfood` runner and write its enrollment
     # token 0600 (raw, no newline) to the state dir. Reads COMPASS_DATABASE_DSN
     # (the same DSN the server uses) so its store precedence matches. Runs after
