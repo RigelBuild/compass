@@ -700,28 +700,12 @@ export async function main(
 	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
 	// SDK must gain a real native-registration path, or the tool must be a true
 	// `ToolDefinition`. Do not consume args 3-5 here.
-	//
-	// `loadMode: "essential"` is REQUIRED, not decorative. SDK 18.x added
-	// progressive tool disclosure: an adapter boundary — extension
-	// `registerTool`, SDK custom tools, RPC host tools — defaults an omitted
-	// `loadMode` to `"discoverable"`
-	// (pi-coding-agent src/tools/essential-tools.ts:37-45). A discoverable tool
-	// is still REGISTERED, but it is not in the model's top-level callable
-	// schema; it is reached through the `xd://` device transport instead. These
-	// natives are the container agent's channel to the Manager and to forge/board,
-	// so they must stay top-level: without this the agent starts a session with
-	// none of `comms_*` / `agents_*` / `forge_*` / `board_*` directly callable.
-	// Set here at the single registration seam rather than in the four tool
-	// factories, so the whole native set gets one uniform, documented mode.
 	const nativeTools = [
 		...createCommsTools(commsBroker),
 		...createLifecycleTools(lifecycleBroker),
 		...createForgeTools(forgeBroker),
 		...createBoardTools(boardBroker),
-	].map((tool) => ({
-		...tool,
-		loadMode: "essential" as const,
-	})) as ToolDefinition[];
+	] as ToolDefinition[];
 
 	// The tee session storage, wrapped + initialize()d (its scan of the session
 	// dir must complete before SessionManager.create so synchronous resume
@@ -922,7 +906,27 @@ export async function main(
 		// (RIG-1741 gap-1, constructed above): all reach the session as natives via
 		// the same customTools→state.tools→#withNatives path, so the container
 		// agent can spawn peers and post to channels.
-		customTools: [...mcp.tools, ...nativeTools],
+		//
+		// `loadMode: "essential"` is REQUIRED, not decorative, and it is stamped
+		// on the WHOLE merged array — natives AND mounted-MCP tools. SDK 18.x
+		// added progressive tool disclosure: at an adapter boundary an omitted
+		// `loadMode` defaults to `"discoverable"`
+		// (`defaultLoadModeForToolName`, pi-coding-agent
+		// src/tools/essential-tools.ts:43-45), which registers the tool but keeps
+		// it OUT of the model's top-level callable schema. `MCPManager.getTools()`
+		// never sets `loadMode`, so stamping only the natives would silently
+		// demote every mounted-MCP tool — and the `xd://` device transport does
+		// NOT recover them here, because it is gated on a top-level `write` tool
+		// this headless session does not request (`xdevEnabled`, pi-coding-agent
+		// src/tools/index.ts:772). A demoted MCP tool would therefore be neither
+		// top-level callable NOR xd://-reachable: registered and unreachable,
+		// which is exactly the silent-no-surface failure the RIG-1741/CD-3 mount
+		// contract exists to prevent. Stamped once here, at the single
+		// registration seam, rather than in the four native factories.
+		customTools: [...mcp.tools, ...nativeTools].map((tool) => ({
+			...tool,
+			loadMode: "essential" as const,
+		})),
 		enableMCP: false,
 		// Headless approval policy (RIG-1741, design compass-agent-comms-tools
 		// §"the container runs headless with write-approval tools auto-executing"):

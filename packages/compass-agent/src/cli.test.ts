@@ -1641,8 +1641,9 @@ describe("main", () => {
 		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
 		mkdirSync(sessionDir, { recursive: true });
 		const resumeFile = join(sessionDir, "20260101-000000_compacted.jsonl");
-		// Two compactions on the active branch; the earlier one is superseded and
-		// the SDK's elideSupersededCompactionEntries collapses its summary on load.
+		// Two compactions on the active branch; the earlier one is superseded. Both
+		// summaries are stored verbatim — supersession is applied downstream at
+		// context assembly, not at load.
 		writeFileSync(
 			resumeFile,
 			sessionFixture([
@@ -2496,7 +2497,24 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// comms/lifecycle tools (merged in main), so this is a containment check,
 		// not identity — the dedicated native-tools test below pins those.
 		expect(connectedWith).toEqual({ db: { command: "db-mcp" } });
-		expect(opts.customTools).toEqual(expect.arrayContaining(mcpTools));
+		// Asserted by PRESENTATION, not bare membership. main stamps the whole
+		// merged array `loadMode: "essential"`, and that stamp is the load-bearing
+		// part for a mounted-MCP tool: without it the SDK's adapter boundary
+		// defaults it to `"discoverable"`, which registers the tool but keeps it
+		// out of the model's top-level callable schema — and the `xd://` transport
+		// does not recover it in this headless session shape. A membership-only
+		// check passes while the tool is silently unreachable, which is the exact
+		// failure the RIG-1741/CD-3 mount contract exists to prevent.
+		for (const tool of mcpTools) {
+			expect(opts.customTools).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						name: tool.name,
+						loadMode: "essential",
+					}),
+				]),
+			);
+		}
 		expect(opts.enableMCP).toBe(false);
 	});
 
