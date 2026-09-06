@@ -37,11 +37,11 @@ tasks:
     # or docs-only PR that ADDS a private-repo reference is therefore not
     # gated on that PR; the doc pointer going stale is the mild case. The
     # backstop is ci.yml's unconditional push + nightly full sweep, which does
-    # run the scan to a real verdict. `dependsOn: ['root']` is NOT taken: it
-    # would pull this project in for most trees, but not for dot-paths like
-    # `.github/**` (which produce an empty closure yet ARE scanned), so it
-    # would read as closing a gap it leaves open — and it over-triggers on
-    # every repo-root change, the tradeoff sql-migration-gate documents
+    # run the scan to a real verdict. `dependsOn: ['root']` would close the
+    # PR-time gap — root's source is `.`, so every path marks it affected and
+    # `--downstream direct` would pull this project in — but it over-triggers
+    # the gate on every repo-root file change (moon edges are project-level,
+    # not file-level), the same tradeoff sql-migration-gate documents
     # declining. Tracked as RIG-3381.
     inputs:
       - '*.ts'
