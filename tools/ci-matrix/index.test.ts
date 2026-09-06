@@ -17,7 +17,7 @@ function proj(id: string, group: string): ProjectInput {
 	return { id, tags: [`ci-group.${group}`], ciTarget: `${id}:ci` };
 }
 
-/** The canonical four-group workspace used by most tests. */
+/** The canonical three-group workspace used by most tests. */
 function workspace(): ProjectInput[] {
 	return [
 		proj("compass-go", "go"),
@@ -25,7 +25,6 @@ function workspace(): ProjectInput[] {
 		proj("compass-agent", "bun"),
 		proj("ci-matrix", "bun"),
 		proj("compass-guest-image", "nix"),
-		proj("oh-my-pi-fork", "forks"),
 	];
 }
 
@@ -51,7 +50,7 @@ describe("coverage — an affected member lands in exactly its group entry", () 
 			targets: ["compass-go:ci"],
 		});
 		// Every other group is a placeholder.
-		for (const other of ["bun", "forks", "nix"]) {
+		for (const other of ["bun", "nix"]) {
 			expect(out.matrix.find((e) => e.group === other)).toEqual({
 				group: other,
 				run: "false",
@@ -73,13 +72,12 @@ describe("coverage — an affected member lands in exactly its group entry", () 
 	test("affected members spread across groups each land in their own entry", () => {
 		const out = generate(
 			prInput({
-				affectedIds: ["compass-go", "compass-agent", "oh-my-pi-fork"],
+				affectedIds: ["compass-go", "compass-agent"],
 			}),
 		);
 		const byGroup = new Map(out.matrix.map((e) => [e.group, e]));
 		expect(byGroup.get("go")?.run).toBe("true");
 		expect(byGroup.get("bun")?.run).toBe("true");
-		expect(byGroup.get("forks")?.run).toBe("true");
 		expect(byGroup.get("nix")?.run).toBe("false");
 		expect(byGroup.get("bun")?.targets).toEqual(["compass-agent:ci"]);
 	});
@@ -152,12 +150,7 @@ describe("zero-untagged — a project with no ci-group.* tag throws, naming it",
 describe("placeholder anchor — one entry per existing group, unaffected are placeholders", () => {
 	test("every existing group is present even with no affected members", () => {
 		const out = generate(prInput({ affectedIds: [] }));
-		expect(out.matrix.map((e) => e.group)).toEqual([
-			"bun",
-			"forks",
-			"go",
-			"nix",
-		]);
+		expect(out.matrix.map((e) => e.group)).toEqual(["bun", "go", "nix"]);
 		for (const e of out.matrix) {
 			expect(e.run).toBe("false");
 			expect(e.targets).toEqual([]);
@@ -165,7 +158,7 @@ describe("placeholder anchor — one entry per existing group, unaffected are pl
 	});
 
 	test("a group that appears on no project is absent from the matrix", () => {
-		// No 'forks' project here → no forks entry.
+		// No 'nix' project here → no nix entry.
 		const projects = [proj("compass-go", "go"), proj("compass-agent", "bun")];
 		const out = generate({
 			projects,
@@ -194,12 +187,7 @@ describe("determinism — shuffled input yields identical sorted output", () => 
 		});
 
 		expect(JSON.stringify(shuffled)).toBe(JSON.stringify(ordered));
-		expect(ordered.matrix.map((e) => e.group)).toEqual([
-			"bun",
-			"forks",
-			"go",
-			"nix",
-		]);
+		expect(ordered.matrix.map((e) => e.group)).toEqual(["bun", "go", "nix"]);
 		expect(ordered.matrix.find((e) => e.group === "go")?.targets).toEqual([
 			"compass-go:ci",
 			"compass-proto:ci",

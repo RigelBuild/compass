@@ -11,7 +11,7 @@
 // files; keeping the stub untagged is what lets its red->green unit test run
 // under `moon run compass-go:test` without podman.
 //
-// Grounded against the SDK parser firsthand (forks/oh-my-pi):
+// Grounded against the SDK parser firsthand (@oh-my-pi/pi-ai, @oh-my-pi/pi-utils):
 //   - The provider POSTs to `baseUrl + /chat/completions` with
 //     `Accept: text/event-stream` (ai/src/utils/openai-http.ts:64-90).
 //   - The response is decoded by readSseJson: each `data:` line is JSON-parsed
