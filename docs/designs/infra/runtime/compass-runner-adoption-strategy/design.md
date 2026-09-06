@@ -4,6 +4,15 @@ Status: Active
 Tracking: RIG-3070
 Owner: compass-obs (design) → compass-runner (impl, runtime/sequencing)
 
+> **The living strategy now lives at
+> [`docs/specs/runtime/runner-tiers.md`](../../../../specs/runtime/runner-tiers.md).**
+> This record stays the point-in-time ruling — why the trust model is the
+> axis, what it ratifies/supersedes/amends, and the execution plan. The
+> durable tier strategy — the tier table, the adoption funnel, the standing
+> guidance, and the **host tier** that has since joined the axis (designed in
+> [`../compass-host-runtime-tier/design.md`](../compass-host-runtime-tier/design.md))
+> — is maintained in that spec, not here.
+
 ## Problem / Intent
 
 The runtime corpus froze a microVM trajectory (DL-259 self-host KVM stack,
@@ -197,9 +206,10 @@ an argument against embedded. Compass is fundamentally an always-on
 server — agents keep working while you are away — and a personal laptop
 sleeps; so embedded-local is the try-it-on-your-box on-ramp, and a user
 who wants always-on operation graduates to a self-host stack on a
-dedicated box or VPS, or to managed. The funnel: embedded-local (front
-door, your box) → self-host stack (always-on, dedicated box) → managed
-(hosted always-on).
+dedicated box or VPS, or to managed. The durable funnel — since extended
+at its front with the host tier — is maintained in the living spec
+(`docs/specs/runtime/runner-tiers.md`), not in this record's frozen
+prose.
 
 The embedded supervision subsystem was deleted under DL-235
 (`docs/designs/ui/compass-native-client-only/design.md:42-43`: "The
@@ -227,13 +237,12 @@ parity constraint.
 
 ### Guided onboarding: embedded-local front door, then self-host
 
-The adoption funnel starts before self-host: the zero-setup front door is
-embedded-local — brew install the app, launch it, sign in with your own
-subscription, and agents run locally on the podman backend (the
-app-architecture that delivers this is the compass-native lane's
-embedded-revival record, not this record). Self-host is the graduation
-tier for always-on operation, and its bring-up must be near-one-command
-on the user's own Linux box or a VPS. The entrypoint already exists:
+The durable adoption funnel (host tier → embedded-local front door →
+self-host graduation) lives in the living spec
+(`docs/specs/runtime/runner-tiers.md`); this section records only the
+execution consequences ruled here. Self-host is the graduation tier for
+always-on operation, and its bring-up must be near-one-command on the
+user's own Linux box or a VPS. The entrypoint already exists:
 `compass-stack` dispatches
 `up|down|status|preflight` (`go/cmd/compass-stack/main.go:8-13`: "up: bring
 the embedded stack to Ready (or attach to a live one) … preflight: check the
@@ -247,13 +256,12 @@ host-floors unconditionally (`go/cmd/compass-stack/preflight.go`), so on a
 zero-KVM podman box it exits non-zero — a green-preflight experience for the
 podman entry tier is part of T1's deliverable, and T2's guide must not
 instruct a `preflight` run on the podman tier before then. This record adds
-the adoption framing on top:
-an onboarding guide (T2) that walks the funnel — the embedded-local front
-door first, then both self-host graduation paths: the zero-KVM podman
-path on any VPS or box (the entry tier), and the recommended microVM path
-on a KVM-capable box or nested-virt-enabled instance (the docs recommend
-microVM even on self-host; podman remains fully supported for users who
-don't want the KVM premium). The specific VPS provider recommendation is
+an onboarding guide (T2) that walks that funnel, covering both self-host
+graduation paths: the zero-KVM podman path on any VPS or box (the entry
+tier), and the recommended microVM path on a KVM-capable box or
+nested-virt-enabled instance (the docs recommend microVM even on
+self-host; podman remains fully supported for users who don't want the
+KVM premium). The specific VPS provider recommendation is
 deferred to doc-writing time (OQ-2). The guide content itself is an impl
 task (T2), not frozen prose here.
 
@@ -582,6 +590,21 @@ freeze-time delta shape the directory's amendments use
    the frozen KVM-only amendment (`microvm-kvm-only-amendment.md:96-97`)
    with the self-host carve-out; the `ContainerRuntime` interface stays
    frozen.
+2. **Proposed (2026-09, spec split + host tier — no DL id minted here; the
+   coordinator assigns one at freeze).** The living runner tier strategy
+   moves out of this record into a spec,
+   `docs/specs/runtime/runner-tiers.md`, which becomes the maintained
+   source-of-truth for the tier table, the adoption funnel, and the
+   standing tier guidance; this record stays the point-in-time ruling. And
+   the **host tier** joins the DL-325 trust-model axis as a third tier —
+   a `SelectBackend` value `"host"` beside `""`/`"podman"`/`"microvm"` —
+   for single-tenant operation on the operator's own machine, with no
+   isolation boundary and egress explicitly UNENFORCED, designed in
+   `docs/designs/infra/runtime/compass-host-runtime-tier/design.md`. This
+   row AMENDS DL-325 (extends its axis with a third tier and relocates the
+   strategy's living home) rather than superseding it: DL-325's
+   untrusted-multi-tenant microVM requirement and permanent self-host
+   podman tier are unchanged.
 
 This stanza is human-readable guidance for the freeze coordinator; the
 ledger row is encoded in `DECISIONS.md` in the same PR at freeze time.
