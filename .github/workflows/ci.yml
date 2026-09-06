@@ -1037,16 +1037,22 @@ jobs:
           (github.event_name == 'workflow_dispatch' &&
            github.event.inputs.pr != '')
         env:
-          # The T2 env contract (design §358-362, §431-436): the GitHub live legs
-          # gate on the LIVEGITHUB_* trio, the Linear live legs gate independently
-          # on LINEAR_FORGE (+ its team). The LIVEGITHUB_* trio + LINEAR_FORGE_TEAM
-          # come straight from repo Actions secrets — never available to a fork PR,
-          # which is why the fork arm of the `if:` skips. LINEAR_FORGE itself is
-          # the app-actor token the mint step above just exported to the job env
-          # (a personal key 400s against Linear's Bearer endpoint — RIG-2423).
+          # The T2 env contract (design §358-362, §431-436), post-RIG-3096 App
+          # cutover: the GitHub live legs authenticate as two GitHub Apps — the
+          # author + reviewer id/installation/PEM sets below — and the Linear
+          # live legs gate independently on LINEAR_FORGE (+ its team). The App
+          # secrets + LINEAR_FORGE_TEAM come straight from repo Actions secrets —
+          # never available to a fork PR, which is why the fork arm of the `if:`
+          # skips. LINEAR_FORGE itself is the app-actor token the mint step above
+          # just exported to the job env (a personal key 400s against Linear's
+          # Bearer endpoint — RIG-2423).
           LIVEGITHUB_REPO: ${{ secrets.LIVEGITHUB_REPO }}
-          LIVEGITHUB_AUTHOR_TOKEN: ${{ secrets.LIVEGITHUB_AUTHOR_TOKEN }}
-          LIVEGITHUB_REVIEWER_TOKEN: ${{ secrets.LIVEGITHUB_REVIEWER_TOKEN }}
+          LIVEGITHUB_AUTHOR_APP_ID: ${{ secrets.LIVEGITHUB_AUTHOR_APP_ID }}
+          LIVEGITHUB_AUTHOR_APP_INSTALLATION_ID: ${{ secrets.LIVEGITHUB_AUTHOR_APP_INSTALLATION_ID }}
+          LIVEGITHUB_AUTHOR_APP_KEY: ${{ secrets.LIVEGITHUB_AUTHOR_APP_KEY }}
+          LIVEGITHUB_REVIEWER_APP_ID: ${{ secrets.LIVEGITHUB_REVIEWER_APP_ID }}
+          LIVEGITHUB_REVIEWER_APP_INSTALLATION_ID: ${{ secrets.LIVEGITHUB_REVIEWER_APP_INSTALLATION_ID }}
+          LIVEGITHUB_REVIEWER_APP_KEY: ${{ secrets.LIVEGITHUB_REVIEWER_APP_KEY }}
           LINEAR_FORGE: ${{ env.LINEAR_FORGE }}
           LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
           # -race needs cgo, matching go/moon.yml's race lane (§431-436). Without
@@ -2392,17 +2398,22 @@ jobs:
       - name: Regenerate the forge golden fixtures against the live testbed
         working-directory: go
         env:
-          # The SAME T2 env contract as the live-contract oracle in forge-oracle: the
-          # GitHub live legs gate on the LIVEGITHUB_* trio, the Linear legs on
-          # LINEAR_FORGE (+ team). The LIVEGITHUB_* trio + LINEAR_FORGE_TEAM come
+          # The SAME T2 env contract as the live-contract oracle in forge-oracle
+          # (post-RIG-3096 App cutover): the GitHub live legs authenticate as the
+          # two GitHub Apps (author + reviewer id/installation/PEM), the Linear
+          # legs on LINEAR_FORGE (+ team). The App secrets + LINEAR_FORGE_TEAM come
           # from Actions secrets; LINEAR_FORGE is the app-actor token the mint
           # step above exported to the job env (client_credentials — RIG-2423). A
           # dispatch run with the secrets unset is an operator error (the mint
           # fails loud, or the -update capture would skip and rewrite nothing) —
           # not a silent-green gate risk, so this lane needs no skip-guard.
           LIVEGITHUB_REPO: ${{ secrets.LIVEGITHUB_REPO }}
-          LIVEGITHUB_AUTHOR_TOKEN: ${{ secrets.LIVEGITHUB_AUTHOR_TOKEN }}
-          LIVEGITHUB_REVIEWER_TOKEN: ${{ secrets.LIVEGITHUB_REVIEWER_TOKEN }}
+          LIVEGITHUB_AUTHOR_APP_ID: ${{ secrets.LIVEGITHUB_AUTHOR_APP_ID }}
+          LIVEGITHUB_AUTHOR_APP_INSTALLATION_ID: ${{ secrets.LIVEGITHUB_AUTHOR_APP_INSTALLATION_ID }}
+          LIVEGITHUB_AUTHOR_APP_KEY: ${{ secrets.LIVEGITHUB_AUTHOR_APP_KEY }}
+          LIVEGITHUB_REVIEWER_APP_ID: ${{ secrets.LIVEGITHUB_REVIEWER_APP_ID }}
+          LIVEGITHUB_REVIEWER_APP_INSTALLATION_ID: ${{ secrets.LIVEGITHUB_REVIEWER_APP_INSTALLATION_ID }}
+          LIVEGITHUB_REVIEWER_APP_KEY: ${{ secrets.LIVEGITHUB_REVIEWER_APP_KEY }}
           LINEAR_FORGE: ${{ env.LINEAR_FORGE }}
           LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
           CGO_ENABLED: '1'
