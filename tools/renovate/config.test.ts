@@ -75,6 +75,11 @@ const bot = botConfig as {
 // tools/renovate/ → repo root is two levels up.
 const repoRoot = join(import.meta.dir, "..", "..");
 
+// The FOD-hash refresh command, declared once. It rides FIVE task sites in
+// config.json5 and is asserted from several describes below; a rename must be a
+// single edit here, not one per assertion (a missed copy degrades quietly).
+const FOD_COMMAND = "bun tools/renovate/refresh-fod-hashes.ts";
+
 // Every postUpgradeTasks.commands entry declared anywhere in config.json5: the
 // top-level task plus every packageRule-level task.
 const allDeclaredCommands = (): string[] => {
@@ -226,17 +231,20 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 		// Sites 3 and 4 carry it fail-safe: each relocks ONE non-nixpkgs input, so
 		// neither moves pkgs.bun today — but each writes a declared trigger of the
 		// entrypoint.nix entry, so the coupling holds at file granularity and the
-		// refresh self-gates to a no-op when nothing moved. The generalized guard at
-		// the end of this file is what keeps that property true for future sites.
-		const fod = "bun tools/renovate/refresh-fod-hashes.ts";
-		expect(commands.filter((c) => c === fod)).toHaveLength(5);
+		// refresh's write is a no-op when nothing moved (the gate itself fires on
+		// those branches — the relocked devenv.lock IS the trigger — so the price
+		// is one extra realise, not nothing). The generalized guard at the end of
+		// this file is what keeps that coverage property true for future sites: it
+		// derives from FOD_ENTRIES that any site declaring a trigger must run the
+		// refresh LAST and name the pin's file.
+		expect(commands.filter((c) => c === FOD_COMMAND)).toHaveLength(5);
 		const topLevel = cfg.postUpgradeTasks?.commands ?? [];
-		expect(topLevel).toContain(fod);
+		expect(topLevel).toContain(FOD_COMMAND);
 		const catalogRule = cfg.packageRules.find(
 			(r) =>
 				r.matchDepTypes?.includes("workspaces.catalog") && r.postUpgradeTasks,
 		);
-		expect(catalogRule?.postUpgradeTasks?.commands).toContain(fod);
+		expect(catalogRule?.postUpgradeTasks?.commands).toContain(FOD_COMMAND);
 	});
 
 	test("every declared command is permitted by an anchored allowlist entry", () => {
@@ -293,7 +301,6 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 	// eviction-critical sites named below site-by-site; the generalized guard at
 	// the end of this file covers the property across EVERY task site, present and
 	// future, deriving what each must declare from FOD_ENTRIES itself.
-	const FOD = "bun tools/renovate/refresh-fod-hashes.ts";
 	const topLevel = cfg.postUpgradeTasks;
 	const catalogRule = cfg.packageRules.find(
 		(r) =>
@@ -301,7 +308,7 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 	);
 
 	test("the top-level branch-mode task runs the fod refresh and is branch mode", () => {
-		expect(topLevel?.commands).toContain(FOD);
+		expect(topLevel?.commands).toContain(FOD_COMMAND);
 		expect(topLevel?.executionMode).toBe("branch");
 	});
 
@@ -321,7 +328,7 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 	test("the catalog rule runs the fod refresh in UPDATE mode (eviction-proof)", () => {
 		// A catalog-first rollup branch evicts the top-level branch task, so the
 		// refresh must also ride the catalog rule's per-upgrade update pass.
-		expect(catalogRule?.postUpgradeTasks?.commands).toContain(FOD);
+		expect(catalogRule?.postUpgradeTasks?.commands).toContain(FOD_COMMAND);
 		expect(catalogRule?.postUpgradeTasks?.executionMode).toBe("update");
 	});
 
@@ -602,7 +609,6 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 	// substring (the devenv-nixpkgs channel manager pattern-matches the same root
 	// lock).
 	const RELOCK = "bun tools/renovate/refresh-devenv-lock.ts";
-	const FOD = "bun tools/renovate/refresh-fod-hashes.ts";
 	const forkScopes: {
 		label: string;
 		depName: string;
@@ -623,7 +629,7 @@ describe("tools/renovate devenv fork currency (RIG-2815, RIG-2546 T7)", () => {
 			lock: "devenv.lock",
 			groupName: "devenv fork (root)",
 			patternLiteral: "/^devenv\\.lock$/",
-			taskCommands: [RELOCK, FOD],
+			taskCommands: [RELOCK, FOD_COMMAND],
 			taskFileFilters: ["devenv.lock", "agent-image/entrypoint.nix"],
 		},
 		{
@@ -885,7 +891,17 @@ describe("tools/renovate go ↔ go-overlay lockstep (RIG-3100)", () => {
 	// go bump the overlay can't resolve → the exact CI red this task exists to
 	// prevent) or the refreshed pin. fileFilters is an INCLUDE allowlist, so this
 	// pins it. The command order is load-bearing: re-lock FIRST, so the pin is
-	// realised against the written lock and not the still-at-base one.
+	// realised against the written lock. The failure mode under a REVERSED order
+	// differs here from the devenv-nixpkgs and devenv-fork sites: the go
+	// customManager's file scope is /^tools/toolchain/versions/go\.nix$/
+	// (config.json5:319), which never touches devenv.lock — so at the point a
+	// reversed refresh ran, the lock would still be byte-identical to base, its
+	// self-gate (`git diff --quiet <baseRef> -- devenv.lock`,
+	// refresh-fod-hashes.ts:265-274) would read CLEAN, and the refresh would
+	// no-op without realising anything; only THEN would `devenv update
+	// go-overlay` rewrite the lock. So the refresh is silently SKIPPED rather
+	// than realised against a stale lock — a different mechanism, the same end
+	// state: the bump ships the stale pin. Hence the literal pin below.
 	test("the lockstep postUpgradeTask is branch-mode over the files it writes", () => {
 		const task = goOverlayRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
@@ -1376,8 +1392,15 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 	// declared trigger must ALSO run the refresh (to recompute the pin) and name
 	// that entry's FOD file plus every mirrorFile (or Renovate drops the recomputed
 	// pin on the floor — the RIG-2852 Gap 1 silent-drop shape). The refresh
-	// self-gates per entry, so a site where the trigger did not actually move pays
-	// only a no-op; there is no cost that justifies leaving a site uncovered.
+	// self-gates per entry on TRIGGER CHANGE, and devenv.lock is exactly what
+	// these tasks rewrite — so on those branches the gate FIRES rather than
+	// passing over: firing means writing a deliberately-fake SRI and running a
+	// full `nix build` of compass-guest-rootfs, a guaranteed fixed-output cache
+	// miss that forces a networked `bun install`. What is a no-op is the
+	// resulting WRITE (the same SRI), not the work. So covering a site whose
+	// installed tree did not actually move costs one extra rootfs realise per
+	// such branch (refresh-fod-hashes.ts:54: "costs at most one extra realise"),
+	// and no site's coverage gap is worth that price.
 	//
 	// The trigger sets are READ from FOD_ENTRIES rather than restated here, so
 	// adding a trigger or a new pinned FOD re-derives the requirement over every
@@ -1396,7 +1419,15 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 	// A future rule-level task that matched gomod deps would evict that slot and
 	// this guard would NOT flag it; such a rule must carry the refresh, the FOD
 	// file, and its mirrorFiles by hand.
-	const FOD = "bun tools/renovate/refresh-fod-hashes.ts";
+
+	// fileFilters entries are GLOB patterns (Renovate matches them as globs, e.g.
+	// "**/*.js"), so coupling must be decided by glob match, not string equality —
+	// otherwise a site that names a trigger under any non-literal spelling is
+	// invisible here and the exact failure class this guard exists to catch ships
+	// silently. Every entry is a literal path today, for which a glob match and an
+	// equality test coincide.
+	const covers = (filters: string[], path: string): boolean =>
+		filters.some((filter) => new Bun.Glob(filter).match(path));
 
 	// Every declared task site, enumerated exactly as allDeclaredCommands does:
 	// the top-level task plus every packageRule-level one. Labelled so a failure
@@ -1421,48 +1452,89 @@ describe("tools/renovate FOD trigger coverage (every task site, derived from FOD
 	const coupled = taskSites.flatMap(({ label, task }) => {
 		const filters = task.fileFilters ?? [];
 		return FOD_ENTRIES.filter((entry) =>
-			entry.triggers.some((trigger) => filters.includes(trigger)),
+			entry.triggers.some((trigger) => covers(filters, trigger)),
 		).map((entry) => ({ label, task, entry }));
 	});
 
-	test("at least one task site is coupled to a FOD entry (guard is not vacuous)", () => {
-		// Without this, a refactor that renamed a trigger — or dropped every
-		// trigger from every fileFilters — would leave the guard below silently
-		// passing over an empty set while the real coupling went unchecked.
-		expect(coupled.length).toBeGreaterThan(0);
+	test("the coupled (site, entry) set has its expected shape (guard is not vacuous)", () => {
+		// The guard below iterates `coupled`, so a set that emptied or thinned out
+		// would leave it passing while checking nothing. A bare `> 0` cannot see
+		// the thinning: all four pairs today bind the SAME entry
+		// (agent-image/entrypoint.nix, whose triggers are bun.lock and
+		// devenv.lock), so renaming just ONE of that entry's two triggers
+		// dissolves the coupling at three of the four sites while the fourth keeps
+		// the count positive. Pinning the exact count catches a partial trigger
+		// rename, or a fileFilters edit, that dissolves any single pairing. It does
+		// NOT check WHICH sites are coupled — the per-site describes above pin
+		// that — only that the population has not shrunk or grown. A newly coupled
+		// site is a deliberate edit: update this number in the same change.
+		expect(coupled.length).toBe(4);
 		expect(taskSites.length).toBeGreaterThan(0);
 	});
 
-	test("every task site naming a FOD trigger runs the refresh and commits the pin", () => {
-		const violations: string[] = [];
-		for (const { label, task, entry } of coupled) {
-			const filters = task.fileFilters ?? [];
-			const named = entry.triggers.filter((t) => filters.includes(t));
-			const context =
-				`${label} declares FOD trigger(s) ${named.join(", ")} for the pin in ` +
-				`${entry.file}`;
-			if (!(task.commands ?? []).includes(FOD)) {
-				violations.push(
-					`${context}, but does NOT run '${FOD}'. A task that commits a ` +
-						`trigger change without recomputing the pin ships a lockfile ` +
-						`change beside a hash addressing the OLD closure — the image ` +
-						`build then fails 'hash mismatch in fixed-output derivation'. ` +
-						`Append the refresh AFTER the command that writes the trigger ` +
-						`(the pin must be realised against the written file, not the ` +
-						`still-at-base one), or drop the trigger from fileFilters.`,
-				);
-			}
-			for (const required of [entry.file, ...(entry.mirrorFiles ?? [])]) {
-				if (!filters.includes(required)) {
-					violations.push(
-						`${context}, but its fileFilters omit '${required}'. ` +
-							`fileFilters is an INCLUDE allowlist, so the refreshed pin is ` +
-							`recomputed and then silently DROPPED, and the bump lands with ` +
-							`the stale pin exactly as if no refresh ran.`,
-					);
-				}
+	// Violation messages, built outside the scan loop: each states the failure
+	// mechanism a maintainer needs, and keeping them here leaves the loop below
+	// as the three predicates it checks.
+	const missingRefresh = (context: string): string =>
+		`${context}, but does NOT run '${FOD_COMMAND}'. A task that commits ` +
+		`a trigger change without recomputing the pin ships a lockfile ` +
+		`change beside a hash addressing the OLD closure — the image ` +
+		`build then fails 'hash mismatch in fixed-output derivation'. ` +
+		`Append the refresh AFTER the command that writes the trigger ` +
+		`(the pin must be realised against the written file, not the ` +
+		`still-at-base one), or drop the trigger from fileFilters.`;
+
+	const refreshNotLast = (
+		context: string,
+		position: number,
+		total: number,
+	): string =>
+		`${context}, but runs '${FOD_COMMAND}' at position ${position} ` +
+		`of ${total} instead of LAST. The refresh realises the ` +
+		`pin against the trigger files as they stand on disk, so it must ` +
+		`run after EVERY command that writes a trigger. A refresh sitting ` +
+		`before a relock either realises against the still-at-base file ` +
+		`and then has that file rewritten underneath it, or — when no ` +
+		`earlier command has moved a trigger yet — self-gates clean and ` +
+		`no-ops entirely without realising anything. Either way the bump ` +
+		`ships the stale pin. Move the refresh to the end of commands.`;
+
+	const pinDropped = (context: string, required: string): string =>
+		`${context}, but its fileFilters omit '${required}'. ` +
+		`fileFilters is an INCLUDE allowlist, so the refreshed pin is ` +
+		`recomputed and then silently DROPPED, and the bump lands with ` +
+		`the stale pin exactly as if no refresh ran.`;
+
+	// Every way a single (site, entry) pairing can fail the coupling: the refresh
+	// missing, the refresh not last, or a file the pin needs missing from the
+	// include allowlist.
+	const violationsFor = ({
+		label,
+		task,
+		entry,
+	}: (typeof coupled)[number]): string[] => {
+		const filters = task.fileFilters ?? [];
+		const commands = task.commands ?? [];
+		const named = entry.triggers.filter((t) => covers(filters, t));
+		const context =
+			`${label} declares FOD trigger(s) ${named.join(", ")} for the pin in ` +
+			`${entry.file}`;
+		const fodIndex = commands.indexOf(FOD_COMMAND);
+		const found: string[] = [];
+		if (fodIndex === -1) {
+			found.push(missingRefresh(context));
+		} else if (fodIndex !== commands.length - 1) {
+			found.push(refreshNotLast(context, fodIndex + 1, commands.length));
+		}
+		for (const required of [entry.file, ...(entry.mirrorFiles ?? [])]) {
+			if (!covers(filters, required)) {
+				found.push(pinDropped(context, required));
 			}
 		}
-		expect(violations).toEqual([]);
+		return found;
+	};
+
+	test("every task site naming a FOD trigger runs the refresh LAST and commits the pin", () => {
+		expect(coupled.flatMap(violationsFor)).toEqual([]);
 	});
 });

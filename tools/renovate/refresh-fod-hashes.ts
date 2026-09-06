@@ -53,14 +53,17 @@
 // Idempotent: re-running rewrites the same SRI — a no-op write when the realised
 // tree is unchanged (so gating on devenv.lock costs at most one extra realise).
 //
-// Wired from config.json5 at THREE sites, all the same
+// Wired from config.json5 at FIVE sites, all the same
 // `bun tools/renovate/refresh-fod-hashes.ts` command (allowlisted once in
 // bot-config.json5; config.test.ts pins them together): top-level
 // postUpgradeTasks (branch mode — gomod branches and pure-bun-first
 // TypeScript-rollup branches), the catalog packageRule (update mode —
 // catalog-first rollup branches, where the collapsed branch config evicts the
-// top-level branch task), and the devenv-nixpkgs channel rule (branch mode — a
-// channel bump moves pkgs.bun; see that rule's note).
+// top-level branch task), the devenv-nixpkgs channel rule (branch mode — a
+// channel bump moves pkgs.bun; see that rule's note), the devenv fork (root)
+// rule (branch mode — relocks devenv.lock; a declared trigger), and the go ↔
+// go-overlay lockstep rule (branch mode — relocks devenv.lock via
+// `devenv update go-overlay`; a declared trigger).
 //
 // Requires `nix` (nix-command) + `bun` + `git` on PATH and network. The build is
 // self-contained: `nix build` fetches the Go/bun toolchains it needs into the

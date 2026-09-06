@@ -727,8 +727,8 @@
       // installed tree, hence today's pin, is unchanged. But the coupling is
       // declared at FILE granularity (devenv.lock IS a trigger of that entry),
       // and a fork bump that altered how `pkgs` is constructed would falsify the
-      // causal argument silently. The refresh self-gates per entry, so the price
-      // of being safe is one no-op.
+      // causal argument silently. The gate fires, so the price of being safe is
+      // one extra rootfs realise per branch whose write is then a no-op.
       //
       // fileFilters is an INCLUDE allowlist — Renovate commits ONLY matching
       // files — and it names exhaustively the files this task can write: the lock
@@ -814,19 +814,20 @@
       // refresh, whose agent-image/entrypoint.nix entry gates on devenv.lock (a
       // declared trigger in refresh-fod-hashes.ts's FOD_ENTRIES), the very file
       // this task rewrites. So the refresh is re-declared below, AFTER the overlay
-      // re-lock. Order is LOAD-BEARING: the refresh realises the pin against the
-      // lock as it stands on disk, so the reverse order would realise against the
-      // still-at-base lock and then have that lock rewritten underneath it,
-      // shipping a pin that content-addresses the OLD closure — the silent form of
-      // the `hash mismatch in fixed-output derivation` break it exists to prevent.
+      // re-lock. Order is LOAD-BEARING: relock FIRST, refresh SECOND. The go
+      // manager changes go.nix, not devenv.lock, so reversing the order leaves
+      // devenv.lock byte-identical to base; the refresh is silently skipped by
+      // its clean self-gate, then `devenv update go-overlay` rewrites the lock.
+      // The conclusion is unchanged: relock first, refresh second, and the
+      // literal command pin above enforces that order.
       //
       // Carrying it here is FAIL-SAFE, not a fix for a live break: `devenv update
       // go-overlay` re-locks ONE non-nixpkgs input, so it does not move the
       // nixpkgs rev that supplies pkgs.bun — the FOD's builder — and today's pin
       // stays valid. But the coupling is declared at FILE granularity (devenv.lock
       // IS a trigger of that entry) and the causal argument is one input-graph
-      // refactor away from being wrong. The refresh self-gates per entry, so the
-      // price of being safe is one no-op.
+      // refactor away from being wrong. The gate fires, so the price of being
+      // safe is one extra rootfs realise per branch whose write is then a no-op.
       //
       // fileFilters is an INCLUDE allowlist — Renovate commits ONLY files matching
       // it — and it names exhaustively what this task writes: devenv.lock (the
