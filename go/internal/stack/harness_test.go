@@ -521,6 +521,105 @@ type collectorProbeError struct{}
 
 func (*collectorProbeError) Error() string { return "otel-collector not answering" }
 
+// fakeNatsContainer is the nats-START seam under test (the analogue of
+// fakeCollectorContainer): Start records the run and the spec it was handed, so
+// a test can assert the nats path was taken and inspect the resolved spec. It
+// returns a stub Process whose Signal/Wait record into the shared recorder as
+// "signal nats"/"wait nats" so the reverse-drain assertion reads nats like any
+// other child. startErr injects a launch failure.
+type fakeNatsContainer struct {
+	rec      *recorder
+	mu       sync.Mutex
+	startErr error
+	started  int
+	lastSpec NatsContainerSpec
+}
+
+func newFakeNatsContainer(rec *recorder) *fakeNatsContainer {
+	return &fakeNatsContainer{rec: rec}
+}
+
+func (c *fakeNatsContainer) Start(_ context.Context, spec NatsContainerSpec) (Process, error) {
+	c.mu.Lock()
+	c.started++
+	c.lastSpec = spec
+	c.rec.add("start nats")
+	err := c.startErr
+	c.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &stubNatsProcess{rec: c.rec}, nil
+}
+
+func (c *fakeNatsContainer) spec() NatsContainerSpec {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastSpec
+}
+
+// stubNatsProcess is the in-process handle a fakeNatsContainer.Start hands back.
+// Its Signal/Wait record with the "nats" label so drain-order assertions read it
+// like the other container children; Pid is the 0 sentinel a real container
+// handle also returns.
+type stubNatsProcess struct {
+	rec     *recorder
+	stopped atomic.Bool
+}
+
+func (p *stubNatsProcess) Signal(sig ProcessSignal) error {
+	p.rec.add("signal nats")
+	p.stopped.Store(true)
+	return nil
+}
+
+func (p *stubNatsProcess) Wait(_ context.Context) error {
+	p.rec.add("wait nats")
+	return nil
+}
+
+func (p *stubNatsProcess) Pid() int { return 0 }
+
+// stubNatsProber answers the nats-readiness probe, mirroring
+// stubCollectorProber: ready immediately by default, not-ready for the first
+// readyAfter probes, or never ready so a test can drive the budget timeout via a
+// controlled clock. It records the last monitor endpoint it probed.
+type stubNatsProber struct {
+	rec        *recorder
+	readyAfter int
+	never      bool
+	calls      atomic.Int64
+	mu         sync.Mutex
+	lastEP     string
+}
+
+func (p *stubNatsProber) ProbeNats(_ context.Context, monitorEndpoint string) error {
+	p.rec.add("probe-nats")
+	p.mu.Lock()
+	p.lastEP = monitorEndpoint
+	p.mu.Unlock()
+	n := p.calls.Add(1)
+	if p.never {
+		return errNatsNotReady
+	}
+	if n <= int64(p.readyAfter) {
+		return errNatsNotReady
+	}
+	return nil
+}
+
+func (p *stubNatsProber) lastEndpoint() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastEP
+}
+
+var errNatsNotReady = &natsProbeError{}
+
+type natsProbeError struct{}
+
+func (*natsProbeError) Error() string { return "nats not answering" }
+
 // harness bundles the recorder, the shared serverStarted flag, and the stub
 // seams so a test can tweak individual fields before calling Up.
 type harness struct {
@@ -536,6 +635,8 @@ type harness struct {
 	containers      *fakeContainerController
 	collector       *fakeCollectorContainer
 	collectorProber *stubCollectorProber
+	nats            *fakeNatsContainer
+	natsProber      *stubNatsProber
 	deps            Deps
 }
 
@@ -561,6 +662,8 @@ func newHarness(t *testing.T) (Config, *harness) {
 	containers := newFakeContainerController(rec)
 	collector := newFakeCollectorContainer(rec)
 	collectorProber := &stubCollectorProber{rec: rec}
+	nats := newFakeNatsContainer(rec)
+	natsProber := &stubNatsProber{rec: rec}
 
 	// Stub the start-time reader so the pgid-capture path never touches /proc:
 	// map each fake pid to a deterministic token (pid*10) and restore the real
@@ -570,7 +673,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	t.Cleanup(func() { readStartTime = prev })
 	h := &harness{
 		rec: rec, serverStarted: started,
-		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers, collector: collector, collectorProber: collectorProber,
+		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers, collector: collector, collectorProber: collectorProber, nats: nats, natsProber: natsProber,
 	}
 	h.deps = Deps{
 		Supervisor:         sup,
@@ -583,6 +686,8 @@ func newHarness(t *testing.T) (Config, *harness) {
 		Containers:         containers,
 		CollectorContainer: collector,
 		CollectorProber:    collectorProber,
+		NatsContainer:      nats,
+		NatsProber:         natsProber,
 		ExpectedVersion:    testVersion,
 	}
 	cfg := Config{
@@ -597,6 +702,10 @@ func newHarness(t *testing.T) (Config, *harness) {
 		// harness pins a dummy pinned ref. Tests exercising the opt-out set
 		// ExternalOTLPEndpoint explicitly.
 		CollectorImage: "otel/opentelemetry-collector-contrib:test",
+		// Same for the bundle-path nats image: natsContainerSpec rejects an empty
+		// NatsImage, so the harness pins a dummy ref. Tests exercising the
+		// --nats-external opt-out set ExternalNatsURL explicitly.
+		NatsImage: "nats:test",
 	}
 	return cfg, h
 }
@@ -606,7 +715,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 func filterEvents(events []string) []string {
 	out := events[:0:0]
 	for _, e := range events {
-		if e == "probe" || e == "probe-db" || e == "probe-collector" {
+		if e == "probe" || e == "probe-db" || e == "probe-collector" || e == "probe-nats" {
 			continue
 		}
 		out = append(out, e)
