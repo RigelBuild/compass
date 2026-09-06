@@ -195,7 +195,7 @@ func TestExecCallMapping(t *testing.T) {
 	workdir := "/workspace"
 	spec := ExecSpec{
 		Command: []string{"sh", "-s"},
-		User:    strPtr("1000"),
+		User:    new("1000"),
 		Workdir: &workdir,
 		Env:     map[string]string{"K": "V"},
 		Stdin:   &stdin,
@@ -246,11 +246,11 @@ func TestParseUID(t *testing.T) {
 	if uid, err := parseUID(nil); err != nil || uid != nil {
 		t.Fatalf("parseUID(nil) = (%v, %v), want (nil, nil)", uid, err)
 	}
-	uid, err := parseUID(strPtr("1000"))
+	uid, err := parseUID(new("1000"))
 	if err != nil || uid == nil || *uid != 1000 {
 		t.Fatalf("parseUID(1000) = (%v, %v), want (*1000, nil)", uid, err)
 	}
-	if _, err := parseUID(strPtr("agent")); err == nil {
+	if _, err := parseUID(new("agent")); err == nil {
 		t.Fatal("parseUID(agent) err = nil, want a non-numeric-uid error")
 	}
 }
@@ -476,5 +476,3 @@ func TestCreateRejectsOverLongGatewaySocketPath(t *testing.T) {
 		})
 	}
 }
-
-func strPtr(s string) *string { return &s }
