@@ -169,12 +169,17 @@ against the alternatives is below; the mechanism:
      construction (go-analysis.nix:44,47).
    - nilaway: rewrite `version = "0-unstable-<YYYY-MM-DD>"` from the new
      rev's commit date via a TOKEN-FREE shallow fetch (`git init` + `git
-     fetch --depth=1 https://github.com/uber-go/nilaway <rev>` + `git log -1
-     --format=%cs FETCH_HEAD` in a temp dir). NOT a REST call: the
-     postUpgradeTask child env is allowlist-filtered and carries no token,
-     while git transport IS authenticated by Renovate — see OQ-3 for the
-     mechanism. Fail loud (exit 1) on non-zero exit or a non-`YYYY-MM-DD`
-     result.
+     fetch --depth=1 https://github.com/uber-go/nilaway <rev>` + `TZ=UTC git
+     log -1 --date=format-local:%Y-%m-%d --format=%cd FETCH_HEAD` in a temp
+     dir). The date MUST be read in UTC: nixpkgs' `0-unstable-<date>`
+     convention is the UTC commit date, and a bare `%cs` renders the
+     committer's local-offset date — for the current rev 8649a03c that is
+     2026-08-07 (offset -07:00) against the pin's correct UTC 2026-08-08, an
+     off-by-one on any rev committed late in a negative-offset zone. NOT a
+     REST call: the postUpgradeTask child env is allowlist-filtered and
+     carries no token, while git transport IS authenticated by Renovate —
+     see OQ-3 for the mechanism. Fail loud (exit 1) on non-zero exit or a
+     non-`YYYY-MM-DD` result.
 3. **Two-pass realise per changed tool**, building that tool's derivation via
    the small vehicle from Piece 4:
    - fake BOTH `hash` and `vendorHash` in the CHANGED tool's block only. The
@@ -185,33 +190,48 @@ against the alternatives is below; the mechanism:
      attrset block, rewrite the SLICE, and splice it back, never handing the
      whole file to `rewriteInlineHash` (see T3 contract; this is the one seam
      where a wrong implementation silently corrupts the sibling pin);
-   - `nix build -f tools/toolchain/gate-tools.nix analysis.<tool> --no-link
-     --keep-going` → fails at the source FOD first → parse `got:` for the
-     tool-scoped `source` drv fragment → write the real `hash`;
-   - build again → fails at the `<name>-go-modules` vendor FOD → parse
-     `got:` for the tool-scoped `go-modules` fragment → write the real
-     `vendorHash`.
-   **Fragment attribution must be tool-scoped, not the generic word
-   `source`.** `parseGotForFragment` matches `line.includes(fragment)`
-   against the whole mismatch header (which carries the full store path), and
-   `--keep-going` can surface a SECOND mismatch block from any co-failing FOD
-   in the closure — so a bare `source` fragment could bind a foreign
-   `…-source.drv`. T1 records the two literal drv-name fragments per tool
-   (`nix derivation show`), scoped by pname (e.g. `nilaway-…-source`,
-   `…-go-modules`), and `refresh-go-analysis-hashes.ts` carries the same
-   load-time disjointness assertion refresh-fod-hashes.ts:118-128 does,
-   extended across all four fragments (2 tools × src+vendor) so no fragment
-   is a substring of another. The source-fails-first ordering is guaranteed
-   by nix semantics, not luck: the go-modules vendor FOD takes the
-   fetchFromGitHub `source` drv as an input and nix cannot attempt a
-   derivation before its inputs realise, so with both faked the source
-   mismatch is the only line pass 1 can surface. `--keep-going` is kept
-   despite that making it inert on the expected path — it is defensive (costs
-   nothing, preserves the sibling script's idiom) so a surprise co-failing
-   FOD surfaces its `got:` rather than masking this one; it is precisely
-   because `--keep-going` CAN surface a second block that the fragment must
-   be tool-scoped (above). Trusted-by-argument, not tested: the stub-nix test
-   emits the two-invocation sequence, so it exercises the parse/splice, not
+   - resolve the tool's SOURCE FOD identity at runtime: `nix eval --raw -f
+     tools/toolchain/gate-tools.nix analysis.<tool>.src.drvPath` (evaluated
+     AFTER the fakes are written — a FOD's `.drv` path is a function of its
+     outputHash, so the faked SRI is what makes the build fail on exactly
+     this path), take the store-path BASENAME (`<hash>-source.drv`), then
+     `nix build -f tools/toolchain/gate-tools.nix analysis.<tool> --no-link
+     --keep-going` → the source FOD fails first → parse `got:` for that
+     basename → write the real `hash`;
+   - with the real `hash` in place, RE-resolve the vendor FOD
+     (`analysis.<tool>.goModules.drvPath` — buildGoModule's vendored-modules
+     attr, confirmed eval-able in T1; its `.drv` MOVES once the real src hash
+     lands, because the go-modules derivation takes the source output as an
+     input) → basename (`<hash>-<name>-go-modules.drv`) → build again → the
+     go-modules vendor FOD fails → parse `got:` for that basename → write the
+     real `vendorHash`.
+   **Fragment attribution is the targeted FOD's own runtime-resolved
+   `.drv`-path basename — NOT a static drv-name fragment.** There is no
+   usable static fragment: nixpkgs names the `fetchFromGitHub` source
+   derivation plain `source` for BOTH tools (identical — a bare `source`
+   fragment binds either), and the go-modules derivation embeds the pin's
+   `version` (`nilaway-0-unstable-<date>-go-modules`,
+   `golangci-lint-<ver>-go-modules`), which step 2 rewrites BEFORE pass 2, so
+   any captured-once literal is stale on the very bump it serves. A `.drv`
+   store-path basename dodges both: it is content-addressed (unique per FOD
+   by construction), so `parseGotForFragment`'s `header.includes(basename)`
+   binds exactly one block even though `--keep-going` can surface a SECOND
+   mismatch from a co-failing FOD in the closure — the co-failing FOD's
+   basename differs. The source-fails-first ordering is guaranteed by nix
+   semantics, not luck: the go-modules vendor FOD takes the fetchFromGitHub
+   source drv as an input and nix cannot attempt a derivation before its
+   inputs realise, so with both faked the source mismatch is the only line
+   pass 1 can surface. `--keep-going` is kept despite that making it inert on
+   the expected path — it is defensive (costs nothing, preserves the sibling
+   script's idiom) so a surprise co-failing FOD surfaces its `got:` rather
+   than masking this one, and the runtime-basename match makes that surfacing
+   safe (no cross-bind). If the expected FOD does NOT report a mismatch,
+   `parseGotForFragment` returns undefined → exit 1 (fail-loud), never a
+   silent wrong write. No load-time disjointness assertion is needed (there
+   is no static fragment table to guard); the T3 test still asserts a
+   co-emitted foreign `-source.drv` block is not bound. Trusted-by-argument,
+   not tested end to end: the stub-nix test emits the eval'd drvPath then a
+   matching mismatch header, so it exercises the resolve/parse/splice, not
    the nix ordering. (One inherited theoretical hole from the sibling script:
    if a store path with the all-`A` FAKE_SRI output hash already existed, a
    faked source would "succeed" with wrong content — vanishingly unlikely,
@@ -249,7 +269,7 @@ default (`{ attrs ? [ ] }:`, gate-tools.nix:34), so `-f` works without
   `"bun tools/renovate/refresh-go-analysis-hashes.ts"` and add
   `"tools/toolchain/versions/go-analysis.nix"` to `fileFilters` (an INCLUDE
   allowlist — omit it and Renovate runs the refresh but silently DROPS the
-  rewrite from the commit, the failure mode config.json5:648-655 documents).
+  rewrite from the commit, the failure mode config.json5:604-615 documents).
   Top-level (not rule-level) wiring is the established shape for self-gating
   refreshers (refresh-toolchain-hashes + refresh-fod-hashes both ride it,
   config.json5:884-908) and both existing commands self-gate to no-ops on a
@@ -267,8 +287,10 @@ default (`{ attrs ? [ ] }:`, gate-tools.nix:34), so `-f` works without
   release timestamp; a git-refs digest to a moving branch HEAD carries none,
   so strict cooldown marks it permanently `pending` and ZERO PRs are ever cut
   — the exact silent-rot outcome this design exists to prevent. All three
-  existing git-refs rules null the cooldown for precisely this reason, calling
-  it "mechanically INAPPLICABLE to a git-refs digest" (config.json5:670-681).
+  existing git-refs rules null the cooldown for the same reason; two call it
+  "mechanically INAPPLICABLE to a git-refs digest" (config.json5:670-681,
+  :735-740), the third citing the weak fit of the compromised-release window
+  to a cachix-curated channel (config.json5:589-596).
   golangci-lint keeps the 5-day cooldown untouched (github-releases carries
   release timestamps; the distinct `go-analysis` depType keeps it clear of
   the toolchain exemption).
@@ -316,7 +338,7 @@ with no extractVersion), and it would make Renovate own the line the builder
 actually consumes. Rejected in favour of version-line matching: (i) it breaks
 the uniform idiom all four existing versions/*.nix managers use
 (`matchStrings: ["version = \"(?<currentValue>[^\"]+)\""]` + extractVersion,
-config.json5:263-293), which config.test.ts guards collectively; (ii) either
+config.json5:263-319), which config.test.ts guards collectively; (ii) either
 choice leaves exactly one sibling line refresher-owned (`tag` from `version`
 or `version` from `tag` — both trivially derivable), so the tie-break is
 idiom-consistency; (iii) a stale `version` is the worse residue (it feeds
@@ -364,17 +386,19 @@ keeps every versions/*.nix pin solo.
   primary compensating control is the artifact-error notice on the PR body
   PLUS the grep-able `renovate-go-analysis:`-prefixed log line — the nix
   build's red CI is a SECOND control that only exists once a PR is open, and
-  on shape (ii) the log line is the ONLY surface for a whole day. T4 asserts
-  the refresher's error text is greppable and carries that prefix.
-- **No rule-level postUpgradeTasks may match the two go-analysis depNames** —
-  Renovate builds ONE branch-mode task per branch and a rule-level
-  `postUpgradeTasks` REPLACES the top-level one for matching branches
-  (config.json5:701-702, :772-773). A future rule matching
-  `golangci/golangci-lint` or `uber-go/nilaway` would evict the go-analysis
-  refresher, shipping stale hashes (which under the fail-loud surface above
-  may not even open a PR). True today (all four rule-level-task rules are
-  scoped to other depNames); T2 pins it as a red test so a future violation
-  fails loud.
+  on shape (ii) the log line is the ONLY surface for a whole day. T3's test
+  asserts the refresher's error text is greppable and carries that prefix.
+- **No rule-level postUpgradeTasks may match the two go-analysis deps (by
+  depName OR depType)** — Renovate builds ONE branch-mode task per branch and
+  a rule-level `postUpgradeTasks` REPLACES the top-level one for matching
+  branches (config.json5:701-702, :772-773). A future rule matching
+  `golangci/golangci-lint`, `uber-go/nilaway`, or depType `go-analysis` would
+  evict the go-analysis refresher, shipping stale hashes (which under the
+  fail-loud surface above may not even open a PR). True today (all five
+  rule-level-task rules are scoped to other deps — config.json5:634, :715,
+  :746, :786, :854, the last by depType); T2's guard matches a synthetic dep
+  carrying depType `go-analysis` so a future violation by EITHER key fails
+  loud.
 - **Two managed pins only** — nilaway (`rev`) + golangci-lint (`tag`).
   govulncheck / go-licenses are rebuild-only (no pin attrset,
   go-analysis.nix pin-file lines 23-26): no manager, no refresher entry. The
@@ -385,7 +409,7 @@ keeps every versions/*.nix pin solo.
 - **config.test.ts guard is mandatory** — both managers, the coupled task
   wiring, the branch-resolution shape, and the allowlist pairing all pinned.
 - **bot-config.json5 allowlist** — the new command string added to
-  `allowedCommands` with `^…$` anchors (bot-config.json5:128-135 shape);
+  `allowedCommands` with `^…$` anchors (bot-config.json5:124-131 shape);
   config.test.ts pins config.json5 commands ↔ allowlist 1:1.
 - **Naming** — script: `tools/renovate/refresh-go-analysis-hashes.ts`; test:
   `tools/renovate/refresh-go-analysis-hashes.test.ts`; depNames:
@@ -420,9 +444,9 @@ nixpkgs + go-overlay context already assembled there (gate-tools.nix:34-66).
 No behaviour change to `env`/`identity`/`langs`, and no NEW-sibling-output
 breakage: every live gate-tools.nix consumer names its output explicitly
 (`nix eval … langs` in ci.yml/eng-docs-deploy.yml/release.yml/renovate.yml,
-`identity`+`langs` in parity.ts:78/:102, `langs` in release-notes:293), so a
-new top-level `analysis` attr cannot perturb them (verified across all nine
-call sites). `analysis` intentionally exposes all four derivations (verbatim
+`identity`+`langs` in parity.ts:78/:102, `langs` in release-notes:293 and
+refresh-go-overlay.ts:60,85), so a new top-level `analysis` attr cannot
+perturb them. `analysis` intentionally exposes all four derivations (verbatim
 `goAnalysis`, not a filtered attrset — one place, not two, to maintain); only
 the two pinned tools get a refresher entry (Global Constraints).
 
@@ -430,10 +454,13 @@ Verify: `nix build -f tools/toolchain/gate-tools.nix analysis.nilaway
 --no-link` and `analysis.golangci-lint --no-link` succeed at the current pins
 (optionally all four `analysis.*` — costs nothing beyond the `langs` verdict
 and keeps the unmanaged pair non-rotting); `nix eval` of `langs` unchanged.
-Record the two literal drv-name fragments per tool for T3: run `nix
-derivation show -f tools/toolchain/gate-tools.nix analysis.nilaway` (and
-`.golangci-lint`) and capture the pname-scoped `…-source` / `…-go-modules`
-fragment strings.
+Confirm each tool exposes an eval-able `.src.drvPath` and `.goModules.drvPath`
+(`nix eval --raw -f tools/toolchain/gate-tools.nix
+analysis.nilaway.src.drvPath` and `.goModules.drvPath`) — T3 resolves these at
+RUNTIME for `got:` attribution; there is NO static per-tool drv-name fragment
+to capture (nixpkgs names the source drv plain `source` for both tools and the
+go-modules drv embeds the pin version, so neither is a usable literal — see
+Approach Piece 3).
 
 Interfaces:
 
@@ -441,8 +468,9 @@ Interfaces:
   attrset `{ golangci-lint, govulncheck, go-licenses, nilaway }` of
   derivations (the verbatim `goAnalysis` import result).
 - Consumed by T3 as build target `-f tools/toolchain/gate-tools.nix
-  analysis.${tool}`; the captured per-tool fragment strings feed T3's
-  `srcFragment`/`vendorFragment`.
+  analysis.${tool}`; T3 resolves each FOD's `.drv` basename at runtime via
+  `analysis.${tool}.src.drvPath` / `.goModules.drvPath` (no static fragment
+  table).
 
 ### T2 — The two customManagers + packageRule in config.json5
 
@@ -528,31 +556,49 @@ Flow per invocation: chdir to `git rev-parse --show-toplevel`; gate on
 (baseRef = `origin/$RENOVATE_BASE_BRANCH` fallback `main`, the
 refresh-fod-hashes.ts:239-247 shape); per changed tool block:
 derived-field rewrite (golangci-lint `tag` from `version`; nilaway `version`
-date from the rev's commit date via a token-free `git fetch --depth=1` — NOT
-a REST call, see OQ-3), then fake both hashes → build `analysis.<tool>` →
-write src `hash` from the source-FOD `got:` → rebuild → write `vendorHash`
-from the `go-modules` `got:`. Exit 1 + restore original text on any missing
-marker/`got:`/commit-date fetch failure. On load, assert the four
-fragment strings (2 tools × src+vendor) are mutually non-substring (the
-refresh-fod-hashes.ts:118-128 disjointness idiom, widened) so a
-`--keep-going` co-failing FOD cannot cross-bind a tool's hash.
+UTC date from the rev's commit date via a token-free `git fetch --depth=1` —
+NOT a REST call, see OQ-3), then fake both hashes → resolve
+`analysis.<tool>.src.drvPath` (post-fake) → build `analysis.<tool>` → write
+src `hash` from that source-FOD basename's `got:` → re-resolve
+`analysis.<tool>.goModules.drvPath` (it moves once the real src hash lands) →
+rebuild → write `vendorHash` from the go-modules basename's `got:`. Exit 1 +
+restore original text on any missing marker/`got:`/commit-date fetch failure.
+No load-time disjointness assertion is needed — each pass matches the
+targeted FOD's own content-addressed `.drv` basename, unique by construction,
+so a `--keep-going` co-failing FOD cannot cross-bind (Approach Piece 3).
 
 Test cycle (RED first): `tools/renovate/refresh-go-analysis-hashes.test.ts`
 mirroring refresh-fod-hashes.test.ts — drive the ACTUAL shipped script in a
-throwaway git repo with a stub `nix` on PATH emitting the
-`hash mismatch … got:` shape (two sequential invocations: source-FOD
-mismatch, then go-modules mismatch) and a stubbed `git` on PATH for the
-commit-date fetch (the same stub-on-PATH shape the test uses for `nix`,
-refresh-fod-hashes.test.ts:183); fixtures derived from the script's exported
-table. Assert:
+throwaway git repo with a stub `nix` on PATH that answers BOTH subcommands:
+`eval --raw … .drvPath` returns a fake `/nix/store/<hash>-source.drv` (and
+`…-go-modules.drv`), and `build` emits a `hash mismatch … got:` block whose
+header carries that SAME drv path (two sequential build invocations: source
+FOD, then go-modules). The commit-date fetch is NOT stubbed on PATH — that
+would shadow the real `git` the self-gate/base-ref shape depends on
+(refresh-fod-hashes.ts:234-247, exercised against a real fixture repo,
+refresh-fod-hashes.test.ts:162-172). Instead the test points the fetch at a
+LOCAL fixture upstream (`file:///<fixture>` via the injectable fetch-URL seam,
+Interfaces) whose commit carries a pinned `GIT_COMMITTER_DATE`, exercising the
+real `git fetch --depth=1 <url> <rev>` + UTC `git log` end to end. Fixtures
+derived from the script's exported table. Assert:
 
 - a deliberately-stale golangci-lint bump (version line moved) rewrites
   `tag`, `hash`, `vendorHash` to the stub values, nilaway block untouched;
-- a nilaway rev bump rewrites `version` (stub date), `hash`, `vendorHash`,
-  golangci-lint block untouched;
-- a stub-nix invocation emitting a FOREIGN `…-source.drv` mismatch block
+- a nilaway rev bump rewrites `version` (from the fixture commit's UTC date),
+  `hash`, `vendorHash`, golangci-lint block untouched — and a fixture commit
+  with a NEGATIVE-offset timestamp late in its local day still yields the UTC
+  calendar date (guards the `%cs`-local-TZ off-by-one, Approach Piece 3
+  step 2);
+- a bump that CHANGES the nilaway `version` still binds its own go-modules
+  block (the runtime-resolved basename tracks the rewritten version — guards
+  the version-embedding staleness a static fragment would suffer);
+- a stub-nix `build` emitting a FOREIGN `…-source.drv` mismatch block
   alongside the tool's own must NOT bind the foreign one (defends the READ
   site, complementing the slice/splice contract that defends the WRITE site);
+- the refresher's stderr on the missing-marker / missing-`got:` /
+  commit-date-fetch-failure paths matches `/^renovate-go-analysis:/` (the
+  greppable-prefix compensating control the Fail-loud constraint leans on;
+  imported-helper `renovate-fod:` errors are wrapped under it);
 - no-op branch (file unchanged vs base) exits 0 with no build;
 - missing `got:` exits 1 and leaves the file at its original text;
 - idempotence: a second run is a no-net-change.
@@ -563,15 +609,16 @@ Interfaces:
   `PIN_FILE = "tools/toolchain/versions/go-analysis.nix"`,
   `BUILD_FILE = "tools/toolchain/gate-tools.nix"`,
   `TOOL_ENTRIES: ToolEntry[]` where `ToolEntry = { tool: "nilaway" |
-  "golangci-lint"; attr: string; srcFragment: string; vendorFragment:
-  string; derived: "tag-from-version" | "version-from-rev-date" }`.
-  `srcFragment`/`vendorFragment` are the literal pname-scoped drv-name
-  fragments captured in T1 (`…-source`, `…-go-modules`), NOT the generic
-  word `source`; a module-load assertion proves all four are mutually
-  non-substring.
+  "golangci-lint"; attr: string; srcAttr: string; vendorAttr: string;
+  derived: "tag-from-version" | "version-from-rev-date" }` — `srcAttr` /
+  `vendorAttr` are the gate-tools sub-attr paths (`src`, `goModules`) whose
+  `.drvPath` T3 resolves at RUNTIME; there is NO static drv-name fragment
+  (see Approach Piece 3). Also export the nilaway fetch URL as an overridable
+  seam (`NILAWAY_FETCH_URL`, default `https://github.com/uber-go/nilaway`) so
+  the test can point it at a local fixture upstream.
 - Imports from `tools/renovate/refresh-fod-hashes.ts`: `rewriteInlineHash`,
   `parseGotForFragment`.
-- Consumes T1's `analysis.<tool>` attrpath.
+- Consumes T1's `analysis.<tool>` attrpath (plus `.src` / `.goModules`).
 - New `tools/renovate/refresh-go-analysis-hashes.test.ts` (bun:test).
 
 ### T4 — bot-config allowlist + end-to-end wiring closure
@@ -579,8 +626,8 @@ Interfaces:
 Add `"^bun tools/renovate/refresh-go-analysis-hashes\\.ts$"` to
 `allowedCommands` in `tools/renovate/bot-config.json5` (seventh entry;
 update the "Six entries, all load-bearing" count/comment,
-bot-config.json5:86-127) AND the config.test.ts `toHaveLength(6)` count
-assertions (config.test.ts:210-212), which go red the moment the seventh
+bot-config.json5:85-123) AND the config.test.ts `toHaveLength(6)` count
+assertions (config.test.ts:207-208), which go red the moment the seventh
 command lands. The config.test.ts pairing loop from T2 goes green here (it is
 the same PR as T2/T3, so T4 introduces no new observable contract of its own
 — it is the closure + full-suite verification step, not a fourth red-green
@@ -627,8 +674,10 @@ Recommendation: **yes, null it** (designed against). With
 carries no release timestamp, so the strict cooldown marks it permanently
 `pending` and Renovate cuts ZERO nilaway PRs forever — the silent-rot
 outcome this issue exists to fix, in the RIG-1220 shape. All three existing
-git-refs rules null it with the explicit "mechanically INAPPLICABLE"
-rationale (config.json5:670-681). No `automerge` key exists anywhere in
+git-refs rules null it; two with the explicit "mechanically INAPPLICABLE"
+rationale (config.json5:670-681, :735-740), the third for the weak fit of the
+compromised-release window to a cachix-curated channel (config.json5:589-596).
+No `automerge` key exists anywhere in
 tools/renovate/ (verified; config.json5:30 records the related
 branch-protection posture, "main's branch protection does not require PRs
 to be up to date"), so merging a nilaway digest PR requires a human action
@@ -661,9 +710,18 @@ while a `git fetch` against github.com is exactly the transport Renovate DOES
 authenticate (corroborated in-tree: every shipped refresher reads only
 `RENOVATE_BASE_BRANCH`, never a token — none can). Mandated: in a temp dir,
 `git init` + `git fetch --depth=1 https://github.com/uber-go/nilaway <rev>` +
-`git log -1 --format=%cs FETCH_HEAD`; fail loud (exit 1) on non-zero exit or a
-non-`YYYY-MM-DD` result. The stub in T3 becomes a stub `git` on PATH (cheaper
-— the test already stubs `nix` the same way). Rejected alternative: adding a
+`TZ=UTC git log -1 --date=format-local:%Y-%m-%d --format=%cd FETCH_HEAD`; fail
+loud (exit 1) on non-zero exit or a non-`YYYY-MM-DD` result. The UTC
+normalization is load-bearing: a bare `%cs` renders the committer's
+local-offset date (for the current rev 8649a03c, 2026-08-07 at offset -07:00
+vs the pin's correct UTC 2026-08-08), matching nixpkgs' `0-unstable-<UTC
+date>` convention. T3 does NOT stub `git` on PATH — the refresher's self-gate
+and base-ref resolution (refresh-fod-hashes.ts:234-247) run REAL `git`
+against a throwaway fixture repo, and a PATH-shadowing `git` stub would gut
+that coverage; instead T3 points the fetch at a LOCAL fixture upstream
+(`file:///<fixture>` via the `NILAWAY_FETCH_URL` seam) whose commit carries a
+pinned `GIT_COMMITTER_DATE`, exercising the real fetch + UTC-`git log` path
+offline. Rejected alternative: adding a
 token to `customEnvVariables` — it widens the bot's secret surface for one
 date lookup git transport already answers. Unauthenticated `api.github.com`
 (60/hr per shared runner IP) is moot: the sandbox forbids the authenticated
