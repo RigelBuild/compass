@@ -228,10 +228,11 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 // <NAME>` with the value omitted from argv and stdin not a tty takes the
 // piped-stdin branch — a first-class io::stdin().read_to_string() with no
 // interactive prompt constructed — then trims the value and rejects an empty
-// one. So `secretspec --file=<m> --reason=<r> set <NAME> --provider <p>
-// --profile <P>` with the value on stdin is the write path, no positional
-// VALUE. The joined --flag=value form is required, not stylistic: the
-// two-token form parses a leading-dash reason as the next flag and exits 2.
+// one. So `secretspec --file=<m> --reason=<r> set <NAME> --provider=<p>
+// --profile=<P>` with the value on stdin is the write path, no positional
+// VALUE. The joined --flag=value form is required on every flag, not
+// stylistic: the two-token form parses a leading-dash value as the next flag
+// and exits 2 (see setArgs).
 func (r *SpecResolver) Set(ctx context.Context, name, value, reason string) error {
 	if err := ValidateName(name); err != nil {
 		return err

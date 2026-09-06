@@ -83,6 +83,7 @@ type secretsFixture struct {
 	client     compassv1connect.SecretsServiceClient
 	userToken  string
 	agentToken string
+	userID     store.AccountID
 	resolver   *recordingResolver
 	signaler   *recordingSignaler
 }
@@ -129,6 +130,7 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 		client:     newSecretsH2CClient(t, url),
 		userToken:  userTok,
 		agentToken: agentTok,
+		userID:     user.ID,
 		resolver:   resolver,
 		signaler:   signaler,
 	}
@@ -180,10 +182,18 @@ func TestSetSecretUserOnly(t *testing.T) {
 	if len(f.resolver.setNames) != 1 || f.resolver.setNames[0] != "DB_URL" {
 		t.Fatalf("resolver.Set names = %v, want [DB_URL]", f.resolver.setNames)
 	}
-	// The handler must hand the resolver a non-empty reason: the provider's
-	// require_reason policy refuses a reasonless write outright.
+	// The handler must hand the resolver a non-empty reason bound to the
+	// AUTHENTICATED caller: the provider's require_reason policy refuses a
+	// reasonless write outright, and the audit record is only useful if it names
+	// which operator wrote the secret. The reason must never carry the value.
 	if len(f.resolver.setReasons) != 1 || strings.TrimSpace(f.resolver.setReasons[0]) == "" {
 		t.Fatalf("resolver.Set reasons = %q, want one non-empty reason", f.resolver.setReasons)
+	}
+	if !strings.Contains(f.resolver.setReasons[0], string(f.userID)) {
+		t.Fatalf("resolver.Set reason = %q, want it to name the calling user %q", f.resolver.setReasons[0], f.userID)
+	}
+	if strings.Contains(f.resolver.setReasons[0], "postgres://x") {
+		t.Fatalf("resolver.Set reason = %q, must never carry the secret value", f.resolver.setReasons[0])
 	}
 }
 
