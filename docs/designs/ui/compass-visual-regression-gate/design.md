@@ -41,7 +41,8 @@ cloud service (Percy/Chromatic). This is decided here, not an open question:
   dev shell and gate-tools.nix resolve, so CI drives byte-for-byte the
   Chromium a Linux dev box does" (`chromium-e2e-env.nix:19-20`), and the moon
   CI leg already exports `PLAYWRIGHT_CHROMIUM_PATH` from it
-  (`.github/workflows/ci.yml:369` — `PLAYWRIGHT_CHROMIUM_PATH` export in `moon-battery`). The cross-environment raster drift
+  (`.github/workflows/ci.yml:369` — `PLAYWRIGHT_CHROMIUM_PATH` export in the
+  `moon` job, `ci.yml:236`). The cross-environment raster drift
   that motivates cloud services is exactly what this pin removes.
 - The API is available at the pin: `@playwright/test` is `1.62.1`
   (`apps/ui/package.json:34`); `toHaveScreenshot`, `maxDiffPixels`,
@@ -123,8 +124,11 @@ spans ~4 orders of magnitude: a full-page shot (~1280×720+, ≥900 K px) at
 0.001 allows ~900 differing pixels, while `state-dot.png` (9×10 = 90 px) gets
 a budget of 0.09 px — effectively byte-exact, the *least* slack on the shot
 most exposed to a single anti-aliasing pixel shift after a Chromium bump. One
-ratio cannot serve both ends, so the 4 close-ups (right-sidebar, state-dot,
-bridge-card, bridge-colheads) need a per-shot widening.
+ratio cannot serve both ends, so the 2 *smallest* shots (`state-dot`,
+`bridge-card`) need a per-shot widening. The two larger close-ups
+(`bridge-colheads`, `right-sidebar`) do not: at the base ratio their
+area-scaled budgets are already 35 px and 260 px, comfortably above the
+intended slack.
 
 **The widening knob is a per-shot `maxDiffPixelRatio`, not `maxDiffPixels`.**
 At the 1.62.1 pin the two pixel-count knobs resolve with `Math.min`, not max:
@@ -156,12 +160,23 @@ the config default (it is a plain key in that spread, not a `Math.min`
 sibling), computed as `max(base, floor / area)` against whichever base ratio
 OQ-1 settles on:
 
-- `state-dot.png` — `max(0.001, 10/90)` = **0.1111**.
-- `bridge-card.png` — `max(0.001, 25/21357)` = **0.00117**.
+- `state-dot.png` — `max(0.001, 10/90)`, prescribed as the **exact fraction
+  `10/90`** (budget exactly 10.0 px, tolerates 10 px). If a decimal is written
+  instead it must be the rounded-UP **0.1112**, never the truncated form.
+- `bridge-card.png` — `max(0.001, 25/21357)`, prescribed as the **exact
+  fraction `25/21357`** (budget exactly 25.0 px, tolerates 25 px). As a decimal
+  it must be the rounded-UP **0.001171**.
 - `bridge-colheads.png` and `right-sidebar.png` — **no override**. At the base
   ratio their area-scaled budgets (35 px and 260 px) already exceed the
   intended ~25 px of slack, so any per-shot value could only tighten them. An
   executor must not add one.
+
+The comparator tests `count > area * ratio` with no rounding
+(`playwright-core/lib/coreBundle.js:7556-7562`), so a per-shot ratio must be
+expressed as the exact fraction — or rounded UP — never truncated: a truncated
+decimal silently tightens the budget by a pixel. So the call sites in T2 write
+the ratio as a derived expression (`maxDiffPixelRatio: Math.max(BASE, 10/90)`),
+computed rather than transcribed, which cannot drift when Matt rules OQ-1.
 
 The 7 full-page shots likewise take no override. The per-pixel color tolerance
 `threshold` (YIQ distance, Playwright default 0.2) is left at its default
@@ -173,10 +188,12 @@ anti-aliasing colour drift; a Chromium bump revisits it deliberately.
 A new `visual-gate` moon task, added to the `ci` task's deps — not a
 dedicated peer job behind the rollup. The peer-job pattern (gtk4-e2e, microvm)
 exists for legs that "realize a heavy out-of-band … closure the bare moon gate
-has no business building" (`ci.yml:1128`, `moon-battery` peer-job rationale: "no
-business building"; `ci.yml:624`, `microvm` job). This gate has
+has no business building" (`ci.yml:1128` — the `gtk4-e2e` job's own rationale
+for being peeled out of the moon gate; that job starts at `ci.yml:1122`;
+`ci.yml:624`, `microvm` job). This gate has
 no such closure: the moon leg already realizes the pinned Chromium and
-exports `PLAYWRIGHT_CHROMIUM_PATH` for `dev-smoke` (`ci.yml:369`, `moon-battery`: `PLAYWRIGHT_CHROMIUM_PATH` export), and
+exports `PLAYWRIGHT_CHROMIUM_PATH` for `dev-smoke` (`ci.yml:369`, inside the
+`moon` job — `ci.yml:236`, whose `Moon battery` step is at `ci.yml:378`), and
 the harness's webServer is the same `vite --mode fixture` boot dev-smoke's
 config already drives (`playwright.config.ts:80`). A peer job would
 re-bootstrap nix + toolchain for ~a minute of Playwright. The task mirrors
@@ -204,8 +221,8 @@ with regenerated baselines from the dispatch lane, per the OQ-2 fork below.
 
 On failure Playwright writes `<name>-actual.png`, `<name>-expected.png`, and
 `<name>-diff.png` under `outputDir` (`e2e/.output`,
-`playwright.config.ts:54`). The moon-battery job gets an
-`if: failure()` `actions/upload-artifact` step (SHA-pinned, per the house
+`playwright.config.ts:54`). The `moon` job (`ci.yml:236`) gets an
+`if: failure() && matrix.run == 'true'` `actions/upload-artifact` step (SHA-pinned, per the house
 rule every action in `ci.yml` follows) scoped to `apps/ui/e2e/.output/**`, so
 a red gate always carries a downloadable actual/expected/diff triplet.
 Inline-in-PR diff images are OQ-3.
@@ -244,7 +261,8 @@ as OQ-5 with this recommendation since the issue asks.
 - **Pinned Chromium only**: the gate runs against the Chromium realized from
   `tools/toolchain/chromium-e2e-env.nix` (devenv.lock-pinned nixpkgs,
   `chromium-e2e-env.nix:19-20,41`), resolved via `PLAYWRIGHT_CHROMIUM_PATH`
-  (`playwright.config.ts:68-70`, `ci.yml:369` — `moon-battery`'s `PLAYWRIGHT_CHROMIUM_PATH` export). Single `chromium`
+  (`playwright.config.ts:68-70`, `ci.yml:369` — the `PLAYWRIGHT_CHROMIUM_PATH`
+  export in the `moon` job, `ci.yml:236`). Single `chromium`
   project, Linux only.
 - **Baselines from CI only**: `apps/ui/e2e/__screens__/` PNGs are written
   only by the regen dispatch lane (T4) running in the pinned environment.
@@ -310,7 +328,9 @@ its exact current raster options:
   `<locator>.screenshot({ path, animations, scale })` →
   `await expect(<locator>).toHaveScreenshot("<name>.png", { animations:
   "disabled", scale: "css" })` on the same locator — no `fullPage` — plus
-  `maxDiffPixelRatio: 0.1111` on state-dot and `0.00117` on bridge-card.
+  `maxDiffPixelRatio: Math.max(BASE, 10/90)` on state-dot and
+  `Math.max(BASE, 25/21357)` on bridge-card — exact fractions, per Threshold
+  (as rounded-up decimals, 0.1112 and 0.001171).
   right-sidebar takes **no** override.
 - **1 clip** (bridge-colheads `:189`): keep the bounding-box union computation
   (`:180-188`), then `await expect(page).toHaveScreenshot("bridge-colheads.png",
@@ -350,22 +370,38 @@ Add to `apps/ui/moon.yml` a `visual-gate` task:
 `dev-smoke`'s list (`moon.yml:82`) with `e2e/dev-boot.spec.ts` swapped for
 `e2e/visual-smoke.spec.ts` plus `e2e/__screens__/**/*` and `src/**/*.css`
 (already covered by `src/**/*`). Add `'visual-gate'` to the `ci` deps list
-(`moon.yml:86`). In `.github/workflows/ci.yml`, add to the moon-battery job
-an `if: failure()` SHA-pinned `actions/upload-artifact` step uploading
-`apps/ui/e2e/.output/**` (name: `visual-gate-diffs`, short retention) with
-`if-no-files-found: ignore` — the step fires on *any* bun-leg failure (a red
-typecheck, not just a visual diff), and without that knob a no-diff failure
-emits a spurious missing-artifact warning. A red gate still always ships the
-diff triplet.
+(`moon.yml:86`). In `.github/workflows/ci.yml`, add to the `moon` job
+(`ci.yml:236`) an `actions/upload-artifact` step uploading
+`apps/ui/e2e/.output/**` (short retention) with `if-no-files-found: ignore` —
+the step fires on *any* bun-leg failure (a red typecheck, not just a visual
+diff), and without that knob a no-diff failure emits a spurious
+missing-artifact warning. A red gate still always ships the diff triplet.
+
+Two matrix-shaped requirements on that step, both easy to get wrong:
+
+- **The artifact name must carry the leg:**
+  `visual-gate-diffs-${{ matrix.group }}`, not a fixed `visual-gate-diffs`.
+  The `moon` job is a matrix over the run-time-discovered concern groups
+  (`ci.yml:246-249`), and under `actions/upload-artifact` v4+ two concurrent
+  legs uploading the same artifact name is a hard error, not a merge.
+- **The gate must keep the matrix conjunct:**
+  `if: failure() && matrix.run == 'true'`. Every step in that job is gated on
+  `matrix.run == 'true'` because an unaffected group is a placeholder leg that
+  spins up and no-ops (`ci.yml:275-279`); a bare `if: failure()` drops that
+  invariant and would fire on placeholder legs.
+
+`actions/upload-artifact` appears nowhere in `ci.yml` today, so its 40-hex SHA
+pin must be added fresh — every action currently in the file is SHA-pinned and
+this one is no exception.
 
 Interfaces:
 
 - Modifies: `apps/ui/moon.yml` (new task + `ci` deps), `.github/workflows/ci.yml`
-  (one upload step in the moon-battery job).
+  (one upload step in the `moon` job — `ci.yml:236`).
 - Consumes: `PLAYWRIGHT_CHROMIUM_PATH` already exported in that job
-  (`ci.yml:369`, `moon-battery`'s `PLAYWRIGHT_CHROMIUM_PATH` export).
+  (`ci.yml:369`, the `moon` job's `PLAYWRIGHT_CHROMIUM_PATH` export).
 - Test cycle: a scratch PR with a deliberate visual change reds `ci` via
-  `visual-gate` and carries the `visual-gate-diffs` artifact; a no-op PR
+  `visual-gate` and carries the `visual-gate-diffs-<group>` artifact; a no-op PR
   stays green. Verify affected-detection schedules the task on a
   baseline-only change.
 
@@ -393,7 +429,8 @@ hides:
 
 Otherwise as forge: widened `contents: write` + `pull-requests: write`, the
 two-phase toolchain bootstrap (`ci.yml:2352-2376`, `regen-forge-fixtures`: "Phase one"/"Phase two") plus the pinned-Chromium
-realization step (`ci.yml:369`'s `moon-battery` `PLAYWRIGHT_CHROMIUM_PATH` export pattern), then
+realization step (the `moon` job's `PLAYWRIGHT_CHROMIUM_PATH` export pattern at
+`ci.yml:369`), then
 `bunx playwright test e2e/visual-smoke.spec.ts --update-snapshots` under
 `apps/ui`, then SHA-pinned `peter-evans/create-pull-request` with
 `add-paths: apps/ui/e2e/__screens__`. No secrets needed (offline fixture
@@ -465,7 +502,8 @@ Load-bearing (need Matt's ruling before the impl issues file):
    1px border change on a large full-page shot). Note the ratio is
    area-scaled, so `state-dot` and `bridge-card` take a per-shot
    `maxDiffPixelRatio` override derived from whichever base Matt rules for —
-   `max(base, floor / area)`, so at 0.001 they are 0.1111 and 0.00117, and a
+   `max(base, floor / area)` expressed as an exact fraction, so at 0.001 they
+   are `10/90` and `25/21357` (budgets of exactly 10.0 px and 25.0 px), and a
    different base shifts them (a base above `floor / area` removes the
    override entirely) — while per-pixel `threshold` stays at the default 0.2
    (see Threshold section).
