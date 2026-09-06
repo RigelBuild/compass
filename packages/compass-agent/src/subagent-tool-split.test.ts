@@ -7,12 +7,11 @@
 // (`forge_*`) — reach the Manager session as `customTools` (cli.ts:926:
 // `customTools: [...mcp.tools, ...nativeTools].map(… loadMode: "essential")`).
 // An in-process `task` subagent (the design's worker topology) runs at full
-// Manager trust in the
-// SAME container, so its Compass reach is NOT a security boundary — it is a
-// capability contract. The contract: a subagent gets the OMP builtin toolset
-// (edit/read/bash/…) and `hub`, but NONE of Compass's native tools; peers and
-// the Manager are reached over the OMP-internal peer channel, never a Compass
-// channel.
+// Manager trust in the SAME container, so its Compass reach is NOT a security
+// boundary — it is a capability contract. The contract: a subagent gets the OMP
+// builtin toolset (edit/read/bash/…) and `hub`, but NONE of Compass's native
+// tools; peers and the Manager are reached over the OMP-internal peer channel,
+// never a Compass channel.
 //
 // WHY BY-CONSTRUCTION TODAY, AND WHY PIN IT ANYWAY. The exclusion falls out of
 // the SDK's subagent construction: a subagent session's `customTools` is

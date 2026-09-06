@@ -923,10 +923,27 @@ export async function main(
 		// which is exactly the silent-no-surface failure the RIG-1741/CD-3 mount
 		// contract exists to prevent. Stamped once here, at the single
 		// registration seam, rather than in the four native factories.
-		customTools: [...mcp.tools, ...nativeTools].map((tool) => ({
-			...tool,
-			loadMode: "essential" as const,
-		})),
+		//
+		// NOT a spread. `mcp.tools` are `MCPTool` CLASS instances
+		// (pi-coding-agent src/mcp/tool-bridge.ts:492, built by `fromTools` at
+		// :514), whose `execute`/`renderCall`/`renderResult` live on the
+		// PROTOTYPE. `{ ...tool }` copies only own enumerable properties, so it
+		// would silently shear those methods off and the SDK adapter's
+		// `tool.execute(...)` call (sdk.ts:989) would throw `is not a function`
+		// at the first model invocation — a top-level-callable tool that crashes,
+		// strictly worse than a demoted one. Cloning onto the original prototype
+		// keeps the methods while still applying the mode without mutating the
+		// SDK's own objects. The natives are plain object literals, so they are
+		// unaffected either way and go through the same path for uniformity.
+		customTools: [...mcp.tools, ...nativeTools].map((tool) =>
+			Object.assign(
+				Object.create(Object.getPrototypeOf(tool) as object),
+				tool,
+				{
+					loadMode: "essential" as const,
+				},
+			),
+		),
 		enableMCP: false,
 		// Headless approval policy (RIG-1741, design compass-agent-comms-tools
 		// §"the container runs headless with write-approval tools auto-executing"):

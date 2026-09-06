@@ -122,7 +122,11 @@ export class ForgeBroker {
 const nonBlank = (description: string) =>
 	type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
-		.describe(`${description} (must not be blank)`);
+		.describe(
+			description.includes("must not be blank")
+				? description
+				: `${description} (must not be blank)`,
+		);
 
 // The optional multi-forge selector, spread into EVERY tool below. Unset = the
 // configured default GitHub forge (DL-202). Defined as a plain definition-object

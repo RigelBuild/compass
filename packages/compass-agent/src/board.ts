@@ -84,7 +84,11 @@ export class BoardBroker {
 const nonBlank = (description: string) =>
 	type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
-		.describe(`${description} (must not be blank)`);
+		.describe(
+			description.includes("must not be blank")
+				? description
+				: `${description} (must not be blank)`,
+		);
 
 // The eight real board states, as the model-facing tokens the tool accepts.
 // ISSUE_STATE_UNSPECIFIED is deliberately absent: the closed enum rejects it at

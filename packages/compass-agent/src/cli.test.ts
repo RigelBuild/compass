@@ -2402,7 +2402,15 @@ interface SeenConfig {
 	skills?: unknown[];
 	additionalExtensionPaths?: string[];
 	disableExtensionDiscovery?: boolean;
-	customTools?: unknown[];
+	// Typed to the fields these tests actually read (name/loadMode plus the
+	// callable surface a stamp must preserve), so the compiler checks the access
+	// instead of an inline assertion fabricating the shape.
+	customTools?: {
+		name?: unknown;
+		loadMode?: unknown;
+		execute?: unknown;
+		renderCall?: unknown;
+	}[];
 	enableMCP?: boolean;
 	autoApprove?: boolean;
 	customSystemPrompt?: string;
@@ -2448,7 +2456,24 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		);
 
 		const session = fakeSession();
-		const mcpTools = [{ name: "db.query" }];
+		// A CLASS instance, not an object literal: the real `mcp.tools` are
+		// `MCPTool` instances (pi-coding-agent src/mcp/tool-bridge.ts:492) whose
+		// `execute`/`renderCall` live on the PROTOTYPE. A plain-literal fixture
+		// spreads losslessly and so cannot see a stamp implemented with
+		// `{ ...tool }` shearing those methods off — the fixture must carry a
+		// prototype for the assertion below to defend anything.
+		class FakeMcpTool {
+			readonly name = "db.query";
+			readonly mcpServerName = "db";
+			readonly mcpToolName = "query";
+			async execute() {
+				return { content: [] };
+			}
+			renderCall() {
+				return "db.query";
+			}
+		}
+		const mcpTools = [new FakeMcpTool()];
 		let connectedWith: Record<string, unknown> | undefined;
 		const seen: SeenConfig[] = [];
 		await main(
@@ -2506,14 +2531,20 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// check passes while the tool is silently unreachable, which is the exact
 		// failure the RIG-1741/CD-3 mount contract exists to prevent.
 		for (const tool of mcpTools) {
-			expect(opts.customTools).toEqual(
-				expect.arrayContaining([
-					expect.objectContaining({
-						name: tool.name,
-						loadMode: "essential",
-					}),
-				]),
+			const stamped = opts.customTools?.find((t) => t.name === tool.name);
+			expect(stamped).toEqual(
+				expect.objectContaining({
+					name: tool.name,
+					loadMode: "essential",
+				}),
 			);
+			// The stamp must PRESERVE the tool's callable surface. An MCP tool's
+			// `execute`/`renderCall` are prototype methods, so a stamp implemented
+			// as `{ ...tool }` drops them and the SDK adapter's `tool.execute(...)`
+			// throws at the first model call — a tool the model can see and cannot
+			// use, which is worse than one it never sees. Reddens on a spread.
+			expect(typeof stamped?.execute).toBe("function");
+			expect(typeof stamped?.renderCall).toBe("function");
 		}
 		expect(opts.enableMCP).toBe(false);
 	});
