@@ -614,31 +614,39 @@
       // in config.test.ts documents). compass has no committed inner-rev guard
       // file, so no such entry.
       //
-      // FOD-REFRESH IS INTENTIONALLY ABSENT here, though this branch rewrites
-      // bun.lock + a workspace manifest (the biome catalog pin) — the two inputs
-      // agent-image/entrypoint.nix names as moving its bun `outputHash`. It is
-      // safe because biome never enters the hashed tree: the FOD installs with
-      // `bun install --frozen-lockfile --ignore-scripts --filter '@compass/agent'`
-      // (entrypoint.nix), and biome is a ROOT-ONLY devDependency (package.json
-      // `devDependencies`, absent from @compass/agent's manifest). Verified: that
-      // exact filtered install yields biome in neither `node_modules` nor the
-      // `.bun` virtual store, so a channel/biome bump cannot move outputHash. If
-      // biome ever becomes a compass-agent dependency, this rule must append
-      // `bun tools/renovate/refresh-fod-hashes.ts` + `agent-image/entrypoint.nix`
-      // to its task (it runs after the bun.lock rewrite, so it would self-gate and
-      // refresh in the same branch). config.test.ts pins this exemption.
+      // A channel bump re-resolves the agent-closure bun.lock (opentelemetry
+      // transitives) ONLY when the biome catalog pin moves — refresh-devenv-
+      // nixpkgs.ts skips the relock on a biome-static bump — and independently
+      // moves pkgs.bun, the nixpkgs-versioned builder the FOD realises. Either
+      // can move agent-image/entrypoint.nix's bun `outputHash`, so the FOD
+      // refresh MUST ride this rule. It gates on bun.lock OR devenv.lock (the
+      // channel rev this bump always rewrites), so it fires on EVERY channel
+      // bump regardless of whether the relock ran, and reconciles the pin
+      // idempotently — a no-op write when the realised tree is unchanged. It runs
+      // after refresh-devenv-nixpkgs.ts so the relock's bun.lock write is already
+      // in the working tree. The command and output file must both be listed here
+      // because fileFilters is an INCLUDE allowlist: omitting
+      // agent-image/entrypoint.nix would silently drop the recomputed hash edit
+      // and leave a channel bump red. The #580 digest bump empirically hit
+      // exactly that failure (`hash mismatch in fixed-output derivation
+      // compass-agent-node-modules`).
       //
-      // Self-hosted bot config MUST allow the command:
-      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$"]
-      // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
+      // Self-hosted bot config MUST allow both commands:
+      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",
+      //                         "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins the wiring).
       postUpgradeTasks: {
-        commands: ["bun tools/renovate/refresh-devenv-nixpkgs.ts"],
+        commands: [
+          "bun tools/renovate/refresh-devenv-nixpkgs.ts",
+          "bun tools/renovate/refresh-fod-hashes.ts",
+        ],
         fileFilters: [
           "devenv.lock",
           "package.json",
           "bun.lock",
           "flake.nix",
           "flake.lock",
+          "agent-image/entrypoint.nix",
         ],
         executionMode: "branch",
       },
@@ -698,23 +706,52 @@
       // `executionMode: "branch"` runs it once after the digest update is
       // applied; safe because this dep never shares a branch (its own groupName
       // above), so it owns the single branch-mode slot. Rule-level
-      // postUpgradeTasks REPLACE the top-level one for matching branches; the
-      // evicted top-level task self-gates on the versions/*.nix pins +
-      // go.mod/bun.lock and would be a no-op here anyway. fileFilters is an
-      // INCLUDE allowlist — Renovate commits ONLY matching files — and the
-      // relock writes exactly this one lock, so it is the sole entry. Listing
-      // the agent-image lock here would be dead surface (that lock is the
-      // sibling rule's) and listing LESS would silent-drop the relock, shipping
-      // a rev bump whose narHash never moved.
+      // postUpgradeTasks REPLACE the top-level one for matching branches, which
+      // evicts the top-level task's FOD-hash refresh too — and that refresh's
+      // agent-image/entrypoint.nix entry gates on devenv.lock (a declared trigger
+      // in refresh-fod-hashes.ts's FOD_ENTRIES), the very file this relock
+      // rewrites. So the refresh is re-declared below rather than left to the
+      // evicted slot; the toolchain-hash leg really is lost-free, since it
+      // self-gates on the versions/*.nix pins this branch never touches.
       //
-      // Self-hosted bot config MUST allow the command:
-      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-lock\\.ts$"]
-      // see tools/renovate/bot-config.json5 (config.test.ts pins the two
-      // together). ONE command string serves both locks — the script self-gates
-      // on WHICH lock changed — so one allowlist entry covers both rules.
+      // Order is LOAD-BEARING: relock FIRST, refresh SECOND. The refresh realises
+      // the pin against the lock as it stands on disk, so the reverse order would
+      // realise against the still-at-base lock and then have that lock rewritten
+      // underneath it — shipping a pin that content-addresses the OLD closure,
+      // i.e. the silent form of the `hash mismatch in fixed-output derivation`
+      // build break these tasks exist to prevent.
+      //
+      // Carrying the refresh here is FAIL-SAFE, not a fix for a live break:
+      // `devenv update devenv` re-locks ONE non-nixpkgs input, so it does not
+      // move the nixpkgs rev that supplies pkgs.bun — the FOD's builder — and the
+      // installed tree, hence today's pin, is unchanged. But the coupling is
+      // declared at FILE granularity (devenv.lock IS a trigger of that entry),
+      // and a fork bump that altered how `pkgs` is constructed would falsify the
+      // causal argument silently. The gate fires, so the price of being safe is
+      // one extra rootfs realise per branch whose write is then a no-op.
+      //
+      // fileFilters is an INCLUDE allowlist — Renovate commits ONLY matching
+      // files — and it names exhaustively the files this task can write: the lock
+      // the relock rewrites, plus the FOD file whose recomputed pin would
+      // otherwise be silently dropped. Listing the agent-image lock would be dead
+      // surface (that lock is the sibling rule's), as would guest-image/default.nix
+      // and flake.nix (the Go entry's triggers are go/go.mod and go/go.sum, which
+      // this task never writes). Listing LESS silent-drops the relock — shipping a
+      // rev bump whose narHash never moved — or the refreshed pin.
+      //
+      // Self-hosted bot config MUST allow both commands:
+      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-lock\\.ts$",
+      //                          "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins them together).
+      // ONE relock command string serves both locks — the script self-gates on
+      // WHICH lock changed — so one allowlist entry covers both rules, and the
+      // FOD refresh's entry is the same one the other refresh sites already use.
       postUpgradeTasks: {
-        commands: ["bun tools/renovate/refresh-devenv-lock.ts"],
-        fileFilters: ["devenv.lock"],
+        commands: [
+          "bun tools/renovate/refresh-devenv-lock.ts",
+          "bun tools/renovate/refresh-fod-hashes.ts",
+        ],
+        fileFilters: ["devenv.lock", "agent-image/entrypoint.nix"],
         executionMode: "branch",
       },
     },
@@ -773,19 +810,47 @@
       // matching branches; the evicted top-level task's refresh-toolchain-hashes
       // leg self-gates on the vendored-binary versions/*.nix pins and no-ops on
       // go.nix anyway (go's hashes come from the overlay, not a sha256 pin), so
-      // nothing is lost. fileFilters is an INCLUDE allowlist — Renovate commits
-      // ONLY files matching it — and the refresh writes exactly devenv.lock (the
-      // `devenv update go-overlay` re-lock); it does NOT rewrite go.nix (the go
-      // manager already did) nor any hash pin, so devenv.lock is the sole entry.
+      // nothing is lost there — but the eviction ALSO drops the top-level FOD-hash
+      // refresh, whose agent-image/entrypoint.nix entry gates on devenv.lock (a
+      // declared trigger in refresh-fod-hashes.ts's FOD_ENTRIES), the very file
+      // this task rewrites. So the refresh is re-declared below, AFTER the overlay
+      // re-lock. Order is LOAD-BEARING: relock FIRST, refresh SECOND. The go
+      // manager changes go.nix, not devenv.lock, so reversing the order leaves
+      // devenv.lock byte-identical to base; the refresh is silently skipped by
+      // its clean self-gate, then `devenv update go-overlay` rewrites the lock.
+      // The conclusion is unchanged: relock first, refresh second, and the
+      // literal command pin above enforces that order.
       //
-      // Self-hosted bot config MUST allow the command:
-      //   allowedCommands: [… , "^bun tools/renovate/refresh-go-overlay\\.ts$"]
-      // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
+      // Carrying it here is FAIL-SAFE, not a fix for a live break: `devenv update
+      // go-overlay` re-locks ONE non-nixpkgs input, so it does not move the
+      // nixpkgs rev that supplies pkgs.bun — the FOD's builder — and today's pin
+      // stays valid. But the coupling is declared at FILE granularity (devenv.lock
+      // IS a trigger of that entry) and the causal argument is one input-graph
+      // refactor away from being wrong. The gate fires, so the price of being
+      // safe is one extra rootfs realise per branch whose write is then a no-op.
+      //
+      // fileFilters is an INCLUDE allowlist — Renovate commits ONLY files matching
+      // it — and it names exhaustively what this task writes: devenv.lock (the
+      // `devenv update go-overlay` re-lock) and the FOD file carrying the
+      // recomputed pin. It does NOT rewrite go.nix (the go manager already did)
+      // nor any hash pin beyond that FOD; guest-image/default.nix and flake.nix
+      // would be dead surface, since the Go entry's triggers are go/go.mod and
+      // go/go.sum, which this task never writes. Listing LESS silent-drops the
+      // re-lock or the refreshed pin.
+      //
+      // Self-hosted bot config MUST allow both commands:
+      //   allowedCommands: [… , "^bun tools/renovate/refresh-go-overlay\\.ts$",
+      //                          "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins them together);
+      // the FOD refresh's entry is the same one its other sites already use.
       matchManagers: ["custom.regex"],
       matchDepNames: ["go"],
       postUpgradeTasks: {
-        commands: ["bun tools/renovate/refresh-go-overlay.ts"],
-        fileFilters: ["devenv.lock"],
+        commands: [
+          "bun tools/renovate/refresh-go-overlay.ts",
+          "bun tools/renovate/refresh-fod-hashes.ts",
+        ],
+        fileFilters: ["devenv.lock", "agent-image/entrypoint.nix"],
         executionMode: "branch",
       },
     },

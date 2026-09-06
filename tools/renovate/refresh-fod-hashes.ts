@@ -19,7 +19,13 @@
 //                                          realise — see FodEntry.mirrorFiles.
 //   agent-image/entrypoint.nix outputHash  compass-agent's installed node_modules
 //                                          tree (recursive FOD of `bun install`) —
-//                                          invalidated by a bun.lock bump
+//                                          invalidated by a bun.lock bump, and
+//                                          refreshed on a devenv-nixpkgs channel
+//                                          bump too (devenv.lock): the channel
+//                                          moves pkgs.bun, the FOD's builder,
+//                                          which MAY move the recursive tree — so
+//                                          the entry gates on BOTH and the refresh
+//                                          reconciles the pin whichever moved.
 //
 // Neither is a URL hash a `nix store prefetch-file` can recompute (that is
 // refresh-toolchain-hashes.ts's job for the vendored-binary pins). A vendorHash /
@@ -41,16 +47,23 @@
 //
 // Self-gating: for each entry, act only when one of its trigger manifests differs
 // from the base branch (mirrors refresh-toolchain-hashes.ts's versions/*.nix
-// gate). So it is a cheap no-op on every branch that touches neither manifest,
-// a gomod bump refreshes only the Go vendorHash, and a bun bump only the bun
-// outputHash. Idempotent: re-running rewrites the same SRI.
+// gate). So it is a cheap no-op on every branch that touches no trigger manifest,
+// a gomod bump refreshes only the Go vendorHash, and a bun.lock bump OR a
+// devenv-nixpkgs channel bump (devenv.lock) refreshes the bun outputHash.
+// Idempotent: re-running rewrites the same SRI — a no-op write when the realised
+// tree is unchanged (so gating on devenv.lock costs at most one extra realise).
 //
-// Wired from config.json5 both at top-level postUpgradeTasks (branch mode —
-// covers gomod branches and pure-bun-first TypeScript-rollup branches) and on the
-// catalog packageRule (update mode — covers catalog-first rollup branches, where
-// the collapsed branch config evicts the top-level branch task; see that rule's
-// note). Both are the same `bun tools/renovate/refresh-fod-hashes.ts` command,
-// allowlisted once in bot-config.json5 (config.test.ts pins the two together).
+// Wired from config.json5 at FIVE sites, all the same
+// `bun tools/renovate/refresh-fod-hashes.ts` command (allowlisted once in
+// bot-config.json5; config.test.ts pins them together): top-level
+// postUpgradeTasks (branch mode — gomod branches and pure-bun-first
+// TypeScript-rollup branches), the catalog packageRule (update mode —
+// catalog-first rollup branches, where the collapsed branch config evicts the
+// top-level branch task), the devenv-nixpkgs channel rule (branch mode — a
+// channel bump moves pkgs.bun; see that rule's note), the devenv fork (root)
+// rule (branch mode — relocks devenv.lock; a declared trigger), and the go ↔
+// go-overlay lockstep rule (branch mode — relocks devenv.lock via
+// `devenv update go-overlay`; a declared trigger).
 //
 // Requires `nix` (nix-command) + `bun` + `git` on PATH and network. The build is
 // self-contained: `nix build` fetches the Go/bun toolchains it needs into the
@@ -113,7 +126,7 @@ export const FOD_ENTRIES: FodEntry[] = [
 		file: "agent-image/entrypoint.nix",
 		marker: 'outputHash = "sha256-',
 		drvFragment: "node-modules",
-		triggers: ["bun.lock"],
+		triggers: ["bun.lock", "devenv.lock"],
 	},
 ];
 
