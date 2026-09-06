@@ -440,11 +440,12 @@ changes.
    regression cover — and that cover has no live home today: CI's only `-tags podman`
    invocation is package-scoped to `./e2e/...` (`.github/workflows/ci.yml:2143`), so
    14 of the 16 podman-tagged files outside `go/e2e/` never run. (The other two are
-   `go/internal/pgshare/pgshare.go` and its test, whose constraint also admits the
-   `pgtest` tag, so they do run — reached by the pgtest job at
-   `.github/workflows/ci.yml:541`, not by the podman lane.) The natural host for this
-   seam's cover, `go/internal/runtime/egress_integrity_podman_test.go`, is in the
-   unreached 14, and it would not cover the seam even if it ran: its subject is
+   `go/internal/pgshare/pgshare.go` and its test, whose `(pgtest || podman) && unix`
+   constraint also admits the `pgtest` tag, so they do run — reached by the pgtest
+   job's module-wide `./...` under `working-directory: go`
+   (`.github/workflows/ci.yml:518`, `:541`), not by the podman lane.) The natural host
+   for this seam's cover, `go/internal/runtime/egress_integrity_podman_test.go`, is in
+   the unreached 14, and it would not cover the seam even if it ran: its subject is
    `--user` capability-stripping, with zero `NftScript`/`EgressPolicy` references. T-2
    must therefore widen the podman test lane's scope before that cover means anything.
    The marker branch skips `armEgress` entirely (`agent.go:308-312`) and touches
