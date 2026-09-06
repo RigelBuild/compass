@@ -7,8 +7,9 @@
 # lint/format are whole-repo tasks on the root project (/moon.yml), so this
 # leaf has no own bun.lock and never runs its own install.
 #
-# Compass CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
-# `moon run :ci`), so the `ci` aggregate below is swept automatically.
+# Compass CI runs a per-concern matrix, not one job: tools/ci-matrix computes
+# the targets and .github/workflows/ci.yml runs `moon run <targets>`, so this
+# project's `ci` aggregate is swept only when the matrix selects it.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
@@ -26,12 +27,20 @@ tasks:
     # to the one cited file, not `/docs/**`, so unrelated docs edits don't
     # re-run the suite. Keep in sync with `REMEDIATION_DOC` in index.ts.
     #
-    # This governs moon's CACHE, not CI's task selection: on a pull_request,
-    # tools/ci-matrix selects targets via `moon query projects --affected`,
-    # which walks the project graph and never consults a cross-tree input (see
-    # the discriminator note in .github/workflows/ci.yml). So a docs-only PR
-    # that moves or deletes this file does not select this project, and the
-    # backstop is ci.yml's unconditional push + nightly full sweep.
+    # That declaration governs moon's CACHE, not CI's task selection: on a
+    # pull_request, tools/ci-matrix selects targets via `moon query projects
+    # --affected`, which walks the project graph and never consults a
+    # cross-tree input (see the discriminator note in
+    # .github/workflows/ci.yml). KNOWN GAP, wider than this input: a docs-only
+    # PR does not select this project AT ALL. The `check` scan's own `/**/*`
+    # input is cross-tree the same way, so a docs-only PR that ADDS a
+    # private-repo reference is not gated on that PR either — only the doc
+    # pointer's staleness is the mild case. The backstop is ci.yml's
+    # unconditional push + nightly full sweep, which does run the scan to a
+    # real verdict. `dependsOn: ['root']` would pull this project into a
+    # docs-only closure, but over-triggers the gate on every repo-root file
+    # change (moon edges are project-level, not file-level) — the same
+    # tradeoff sql-migration-gate documents declining. Tracked as RIG-3381.
     inputs:
       - '*.ts'
       - 'tsconfig.json'
