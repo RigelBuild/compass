@@ -201,7 +201,7 @@ jobs:
           echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
           echo "changed-path gate over the image closure set: should_publish=$should_publish"
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         if: steps.gate.outputs.should_publish == 'true'
         with:
           # nix-command + flakes for the RigelBuild forks' flakes. The two caches
@@ -344,7 +344,7 @@ jobs:
         with:
           ref: ${{ needs.release-pr.outputs.sha }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # nix-command + flakes; the toolchain (Go + bun) is built from nix
           # (Global Constraint 3), never `setup-go`. The two caches are declared
@@ -460,7 +460,7 @@ jobs:
         with:
           ref: ${{ needs.release-pr.outputs.sha }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # nix-command + flakes for the RigelBuild forks' flakes. The two caches
           # are declared HERE, not delegated via `accept-flake-config` — that
@@ -710,7 +710,7 @@ jobs:
           ref: ${{ needs.release-pr.outputs.sha }}
           fetch-depth: 0
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # nix-command + flakes for the RigelBuild forks' flakes. The two caches
           # are declared HERE, not delegated via `accept-flake-config` — that
