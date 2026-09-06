@@ -124,12 +124,12 @@ spans ~4 orders of magnitude: a full-page shot (~1280×720+, ≥900 K px) at
 0.001 allows ~900 differing pixels, while `state-dot.png` (9×10 = 90 px) gets
 a budget of 0.09 px — effectively byte-exact, the *least* slack on the shot
 most exposed to a single anti-aliasing pixel shift after a Chromium bump. One
-ratio cannot serve both ends, so the 2 *smallest* shots (`state-dot`,
-`bridge-card`) need a per-shot widening. At the recommended base the two
+ratio cannot serve both ends, so at the recommended base the 2 *smallest*
+shots (`state-dot`, `bridge-card`) need a per-shot widening, while the two
 larger close-ups (`bridge-colheads`, `right-sidebar`) do not: their
 area-scaled budgets @0.001 are already 35 px and 260 px, comfortably above
-the intended slack. Whether `bridge-colheads` still qualifies is
-base-dependent — see the per-shot list below.
+the intended slack. Which shots qualify is base-dependent — the count is 3
+at 0.0005, 2 at 0.001 and 1 at 0.002; see the per-shot list below.
 
 **The widening knob is a per-shot `maxDiffPixelRatio`, not `maxDiffPixels`.**
 At the 1.62.1 pin the two pixel-count knobs resolve with `Math.min`, not max:
@@ -321,8 +321,9 @@ as OQ-5 with this recommendation since the issue asks.
 Extend `apps/ui/playwright.config.ts` with:
 `snapshotPathTemplate: "{testDir}/__screens__/{arg}{ext}"` and
 `expect: { toHaveScreenshot: { maxDiffPixelRatio: <base> } }` — the config-level
-default (base ratio per OQ-1, recommendation 0.001); the two per-shot
-`maxDiffPixelRatio` overrides are set at their call sites in T2, not here.
+default (base ratio per OQ-1, recommendation 0.001); the per-shot
+`maxDiffPixelRatio` overrides that base ratio yields (two at the recommended
+0.001) are set at their call sites in T2, not here.
 `threshold` is left unset (default
 0.2) as a recorded decision. No project or webServer changes — the determinism
 knobs at :57-72 and the fixture-mode webServer at :79-95 are already the
