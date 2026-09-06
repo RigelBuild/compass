@@ -383,15 +383,30 @@ in
         # to `git rev-parse` inside the process script would be a build that
         # fails depending on which working copy it runs in.
         version_base="$(cat "${config.devenv.root}/version.txt")"
-        # Validate rather than normalize: the flake path trims whitespace, so a
-        # `-n` test alone would let whitespace-only or CRLF content through here
-        # and diverge from it. Rejecting anything outside the semver character
-        # set (a shape filter, not a full semver parse) fails closed on all of
-        # those — and, unlike stripping whitespace, never turns a malformed
-        # value into a plausible-looking stamp.
+        # Trim the same four bytes nixpkgs `lib.strings.trim` strips on the
+        # flake side (space, tab, CR, LF — both ends), THEN apply the same
+        # character class the flake applies to its trimmed value. Both steps
+        # are needed for the two lanes to accept exactly the same file: the
+        # flake trims before matching, so checking the untrimmed bytes here
+        # would reject a CRLF or tab-padded file the flake happily stamps —
+        # `nix build` green while `devenv up` hard-fails on one tree. Trimming
+        # only the surrounding whitespace (never inner) keeps the guard from
+        # turning a malformed value into a plausible-looking stamp: `0.1.0 rc1`
+        # is rejected, not silently stamped as `0.1.0rc1`. The class is a shape
+        # filter, not a full semver parse. The two lanes are held in agreement
+        # by the flake-gate:version-guard parity gate, which runs both guards
+        # over a shared candidate table.
+        while :; do
+          case "$version_base" in
+            [$' \t\r\n']*) version_base="''${version_base#?}" ;;
+            *[$' \t\r\n']) version_base="''${version_base%?}" ;;
+            *) break ;;
+          esac
+        done
         case "$version_base" in
           "" | *[!0-9A-Za-z.+-]*)
-            echo "version.txt missing or not a version string: '$version_base'" >&2
+            printf 'version.txt missing or not a version string: %q\n' \
+              "$version_base" >&2
             exit 1
             ;;
         esac

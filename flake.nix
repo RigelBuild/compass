@@ -44,11 +44,14 @@
       # marker, and a bare tree with no VCS metadata stamps the plain base.
       # Empty content throws rather than stamping a coreless `+g<rev>`, which
       # is not valid semver but would otherwise build and ship silently — the
-      # guard the other three stamp paths already carry. The same character
-      # class the devenv lane enforces is applied here too, so the two lanes
-      # accept exactly the same content: without it an inner space passes here
-      # and lands raw in the ldflag (the store-path name silently sanitizes it
-      # to a dash), which is the fail-quiet outcome the guard exists to stop.
+      # guard `ci.yml`'s dev-compile lane and `app-bundle/build.sh` already
+      # carry (release.yml's two stamp steps do NOT; RIG-3428). The character
+      # class is then applied to the trimmed value, which is exactly what the
+      # devenv lane does after trimming the same four whitespace bytes, so the
+      # two lanes accept the same file: without the class an inner space passes
+      # here and lands raw in the ldflag (the store-path name silently
+      # sanitizes it to a dash), which is the fail-quiet outcome the guard
+      # exists to stop. `version-guard-parity` gates the agreement.
       versionBase =
         let
           v = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);

@@ -21,11 +21,19 @@ tasks:
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', '/bun.lock']
 
   test:
-    # ci.yml and pgtest.go are inputs because a test below asserts their two
-    # Postgres image digests are equal. Without them an edit to either file
-    # leaves this task cached, so the assertion silently stops re-running
-    # against the thing it constrains.
-    inputs: ['*.ts', '/bun.lock', '/.github/workflows/ci.yml', '/go/internal/pgtest/pgtest.go']
+    # The non-`*.ts` inputs are files that tests below assert *about*, so an
+    # edit to one must invalidate this task — otherwise it stays cached and the
+    # assertion silently stops re-running against the thing it constrains.
+    # ci.yml + pgtest.go: a test asserts their two Postgres image digests are
+    # equal. flake.nix + devenv.nix: version-guard-core.test.ts lifts the real
+    # version.txt guards out of both and asserts they are still extractable.
+    inputs:
+      - '*.ts'
+      - '/bun.lock'
+      - '/.github/workflows/ci.yml'
+      - '/go/internal/pgtest/pgtest.go'
+      - '/flake.nix'
+      - '/devenv.nix'
 
   parity:
     # The gate itself. cache:false and no `inputs`: its verdict is a function of
