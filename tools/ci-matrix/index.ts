@@ -330,6 +330,27 @@ export function unionAffectedIds(
 	];
 }
 
+/**
+ * The `$GITHUB_OUTPUT` lines, one per key the `setup` job publishes.
+ *
+ * Every `*_affected` flag is required: `ci.yml`'s rollup accepts a skipped
+ * work job only when its paired flag reads exactly `false`, so an omitted key
+ * arrives as the empty string and reds the rollup with `result=skipped,
+ * affected flag=`. That is fail-closed, but it fails on the *next* PR rather
+ * than on the change that dropped the key, so the set is built here and
+ * asserted in the tests rather than inlined at the callsite.
+ */
+export function outputLines(out: GenOutput): string[] {
+	return [
+		`matrix=${JSON.stringify(out.matrix)}`,
+		`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
+		`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
+		`forge_affected=${out.forgeAffected ? "true" : "false"}`,
+		`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
+		`darwin_affected=${out.darwinAffected ? "true" : "false"}`,
+	];
+}
+
 async function main(): Promise<void> {
 	const eventNameRaw = process.env.GITHUB_EVENT_NAME ?? "push";
 	const event: GenInput["event"] =
@@ -387,13 +408,7 @@ async function main(): Promise<void> {
 
 		const out = generate({ projects, affectedIds, changedPaths, event });
 
-		const lines = [
-			`matrix=${JSON.stringify(out.matrix)}`,
-			`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
-			`forge_affected=${out.forgeAffected ? "true" : "false"}`,
-			`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
-			`darwin_affected=${out.darwinAffected ? "true" : "false"}`,
-		];
+		const lines = outputLines(out);
 
 		const githubOutput = process.env.GITHUB_OUTPUT;
 		if (githubOutput != null && githubOutput !== "") {

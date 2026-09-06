@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	type GenInput,
 	generate,
+	outputLines,
 	type ProjectInput,
 	parseTaskAffectedIds,
 	unionAffectedIds,
@@ -616,5 +617,78 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 		expect(
 			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
 		).not.toContain("orion-ref-gate:ci");
+	});
+});
+
+describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
+	// Every key ci.yml reads via `needs.setup.outputs.*`. The rollup accepts a
+	// skipped work job only when its paired flag is exactly "false", so a
+	// dropped key arrives empty and reds the rollup — on a later PR, not on the
+	// one that dropped it. Enumerated so a deletion fails here instead.
+	const REQUIRED_KEYS = [
+		"matrix",
+		"pgtest_affected",
+		"microvm_affected",
+		"forge_affected",
+		"gtk4_affected",
+		"darwin_affected",
+	] as const;
+
+	function linesFor(): string[] {
+		return outputLines(
+			generate({
+				projects: [proj("a", "bun")],
+				affectedIds: ["a"],
+				changedPaths: [],
+				event: "pull_request",
+			}),
+		);
+	}
+
+	test("emits exactly the keys ci.yml consumes, once each", () => {
+		const keys = linesFor().map((l) => l.split("=")[0]);
+		expect(keys.sort()).toEqual([...REQUIRED_KEYS].sort());
+	});
+
+	test("every flag is a literal true or false, never empty", () => {
+		// An empty value is the shape that reds the rollup, so assert the
+		// rendered text rather than the boolean it came from.
+		for (const line of linesFor()) {
+			const [key, ...rest] = line.split("=");
+			const value = rest.join("=");
+			expect(value).not.toBe("");
+			if (key !== "matrix") {
+				expect(["true", "false"]).toContain(value);
+			}
+		}
+	});
+
+	test("flags track the generated output rather than a constant", () => {
+		// Negative control: a run with nothing affected must render "false",
+		// otherwise the assertions above would pass on a hardcoded "true".
+		const none = outputLines(
+			generate({
+				projects: [proj("a", "bun")],
+				affectedIds: [],
+				changedPaths: [],
+				event: "pull_request",
+			}),
+		);
+		expect(none).toContain("pgtest_affected=false");
+		expect(none).toContain("microvm_affected=false");
+
+		// Positive control on the same keys: pgtest/microvm are derived from the
+		// affected set on EVERY event (unlike forge/gtk4/darwin, which a
+		// non-PR event forces true), so naming the pgtest project flips them.
+		const some = outputLines(
+			generate({
+				projects: [proj("compass-go", "go")],
+				affectedIds: ["compass-go"],
+				changedPaths: [],
+				event: "pull_request",
+			}),
+		);
+		expect(some).toContain("pgtest_affected=true");
+		expect(some).toContain("microvm_affected=true");
 	});
 });
