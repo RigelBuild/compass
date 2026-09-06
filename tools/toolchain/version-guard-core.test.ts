@@ -29,11 +29,19 @@ describe("extractFlakeGuard", () => {
 	// runs the shipped expression, so the extractor must track the shipped file.
 	// A rename or restructure that breaks lifting fails here rather than
 	// silently degrading the gate to a no-op.
+	//
+	// Asserted structurally — that the guard trims, applies SOME class, and has
+	// both reject branches — never against the class's literal bytes. Pinning
+	// `[0-9A-Za-z.+-]` here would red this suite on a synchronized widening of
+	// both lanes, which preserves parity and is a correct change; a suite that
+	// fails on correct maintenance gets its assertions relaxed, and then the
+	// extractor's tracking guarantee is gone. Which bytes each lane admits is
+	// the candidate table's business to compare, not this test's to freeze.
 	test("lifts versionBase out of the real flake.nix", () => {
 		const guard = extractFlakeGuard(realFlake);
 		expect(guard).not.toBeNull();
 		expect(guard).toContain("lib.strings.trim");
-		expect(guard).toContain('builtins.match "[0-9A-Za-z.+-]+"');
+		expect(guard).toMatch(/builtins\.match "\[.+\]\+?"/);
 		expect(guard).toContain("version.txt is missing or empty");
 		expect(guard).toContain("version.txt is not a version string");
 	});
@@ -69,7 +77,9 @@ describe("extractDevenvGuard", () => {
 		const guard = extractDevenvGuard(realDevenv);
 		expect(guard).not.toBeNull();
 		expect(guard).toContain("while :; do");
-		expect(guard).toContain("*[!0-9A-Za-z.+-]*");
+		// Structural, per the note on the flake extractor above: a negated
+		// bracket expression must be present, but not which bytes it names.
+		expect(guard).toMatch(/\*\[!.+\]\*/);
 		expect(guard).toContain("version.txt missing or not a version string");
 	});
 
@@ -135,9 +145,11 @@ describe("compareVerdicts", () => {
 		).toBe(true);
 	});
 
-	// Both directions, because a gate that only catches one is half a gate —
-	// the shipped skew was flake-accepts/devenv-rejects, and the NUL case is
-	// the reverse.
+	// Both directions, because a gate that only catches one is half a gate. The
+	// shipped skew was flake-accepts/devenv-rejects (a CRLF version.txt); the
+	// reverse arises whenever devenv's trim set is the wider one, which is
+	// exactly what the leading-vertical-tab and trailing-form-feed candidates
+	// are in CANDIDATES to witness.
 	test.each([
 		["flake accepts, devenv rejects", accept("0.1.0"), reject],
 		["devenv accepts, flake rejects", reject, accept("0.1.0")],
@@ -183,6 +195,12 @@ describe("CANDIDATES", () => {
 		["tab-padded", "\t0.1.0\t\n"],
 		["empty", ""],
 		["inner space", "0.1.0 rc1\n"],
+		// The trim-set discriminators: class-legal core, padded with a byte the
+		// trim sets exclude. Padding with two such bytes at once cannot witness a
+		// trim-set change (the untrimmed one keeps the value out of the class), so
+		// each must stay a row of its own.
+		["leading vertical tab only", "\v0.1.0\n"],
+		["trailing form feed only", "0.1.0\f\n"],
 	])("covers %s", (_label, content) => {
 		expect(CANDIDATES.some((row) => row.content === content)).toBe(true);
 	});

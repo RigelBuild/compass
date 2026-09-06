@@ -83,7 +83,19 @@ export const CANDIDATES: readonly {
 	{ label: "slash", content: "0.1.0/x\n" },
 	{ label: "quote", content: '0.1.0"x\n' },
 	{ label: "non-ASCII", content: "0.1.0é\n" },
-	{ label: "vertical tab (NOT trimmed by either)", content: "\v0.1.0\f\n" },
+	// Trim-set discriminators. A row can only witness a change to either lane's
+	// TRIM SET if its core is class-legal and its padding is a byte the trim
+	// sets currently EXCLUDE — then widening one lane's set flips that lane to
+	// accept while the other still rejects. Padding with two such bytes at once
+	// (`\v0.1.0\f`) cannot do this: whichever byte is still untrimmed keeps the
+	// value outside the class, so the row reads reject/reject however the trim
+	// sets move. Hence one row per byte, each alone. `\v` and `\f` are the
+	// whitespace bytes `[[:space:]]` includes and ` \t\r\n` does not, so these
+	// two rows are exactly what reds the gate if a lane reaches for a broader
+	// whitespace class. Trim NARROWING is already witnessed from the other
+	// side by the CR/tab/space rows, whose cores are class-legal too.
+	{ label: "leading vertical tab only", content: "\v0.1.0\n" },
+	{ label: "trailing form feed only", content: "0.1.0\f\n" },
 	{ label: "bare word", content: "banana\n" },
 	{ label: "dashes only", content: "----\n" },
 	{ label: "coreless metadata", content: "+g10c5fa7\n" },
@@ -152,7 +164,18 @@ export function extractDevenvGuard(devenvNix: string): string | null {
 		return null;
 	}
 	const snippet = rest.slice(0, secondEsac + "esac".length);
-	if (!snippet.includes("*[!0-9A-Za-z.+-]*")) {
+	// Landmark on the guard's STRUCTURE, not on the character class text. The
+	// class is the thing most likely to change legitimately, and a synchronized
+	// widening in both lanes preserves parity — landmarking on its literal
+	// would red the gate on a correct edit, and the predictable response to a
+	// gate that fails on correct maintenance is to relax the assertion, which
+	// retires the tracking guarantee altogether. A negated bracket expression
+	// against `$version_base` is what must be present; which bytes it names is
+	// the CANDIDATE TABLE's job to compare, not the extractor's to pin.
+	if (!/case "\$version_base" in/.test(snippet)) {
+		return null;
+	}
+	if (!/\*\[!.+\]\*/.test(snippet)) {
 		return null;
 	}
 	return snippet.replaceAll("''${", "${");

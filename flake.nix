@@ -51,7 +51,8 @@
       # two lanes accept the same file: without the class an inner space passes
       # here and lands raw in the ldflag (the store-path name silently
       # sanitizes it to a dash), which is the fail-quiet outcome the guard
-      # exists to stop. `version-guard-parity` gates the agreement.
+      # exists to stop. The flake-gate:version-guard parity gate holds the two
+      # lanes in agreement by running both guards over a shared candidate table.
       versionBase =
         let
           v = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);

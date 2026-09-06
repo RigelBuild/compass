@@ -89,17 +89,35 @@ CANDIDATES.forEach(({ content }, index) => {
 // `:ci`. Batching pays that cost once.
 //
 // The lifted binding becomes a function of `candidate` and is applied to each
-// path under `builtins.tryEval`, which catches exactly the guard's own
-// `throw` — so `success = false` IS the reject verdict, with no stderr
-// scraping. `nixpkgs` is resolved from THIS repo's flake.lock so the gate
-// exercises the same `lib.strings.trim` the real build uses, not an ambient
-// channel's.
+// path under `builtins.tryEval`. `nixpkgs` is resolved from THIS repo's
+// flake.lock so the gate exercises the same `lib.strings.trim` the real build
+// uses, not an ambient channel's.
+//
+// `tryEval` catches `throw` and `assert` — which is what both of the guard's
+// reject branches are, so `success = false` IS the reject verdict, with no
+// stderr scraping. It does NOT catch `readFile` I/O or encoding errors, and
+// `readFile` is the guard's first act. So content nix cannot represent as a
+// string — a NUL byte, or UTF-16 — is OUTSIDE this gate's comparable domain:
+// it aborts the whole batched eval into a harness error rather than scoring as
+// a verdict. That is a real skew the gate cannot see (bash silently drops NUL
+// from `$(cat)` and stamps, while the flake lane dies), so it is deliberately
+// not in CANDIDATES: a row for it would red the gate with an opaque "could not
+// run" that reads as harness breakage rather than the finding. Both lanes fail
+// closed on it in production — the flake hard-errors and devenv's stamp still
+// has to survive the character class — so the exposure is a confusing error,
+// not a bad stamp. Normalizing version.txt encoding is RIG-3439.
 const flakeVerdicts = (): Verdict[] | Error => {
+	// JSON.stringify, not bare interpolation: a checkout or TMPDIR path holding
+	// a `"` would otherwise break out of the nix string literal. Nothing can
+	// execute either way (nix has no command substitution, and both spawnSync
+	// calls are argv-form with no intervening shell), so this is hardening — it
+	// keeps a path with a quote in it from failing the gate for the wrong
+	// reason.
 	const paths = CANDIDATES.map(
-		(_row, index) => `(/. + "${candidatePath(index)}")`,
+		(_row, index) => `(/. + ${JSON.stringify(candidatePath(index))})`,
 	).join(" ");
 	const expr =
-		`let nixpkgs = (builtins.getFlake "${repoRoot}").inputs.nixpkgs; ` +
+		`let nixpkgs = (builtins.getFlake ${JSON.stringify(repoRoot)}).inputs.nixpkgs; ` +
 		`guard = candidate: ${flakeGuard}; ` +
 		"probe = p: let r = builtins.tryEval (guard p); " +
 		'in { inherit (r) success; stamp = if r.success then r.value else ""; }; ' +
@@ -137,8 +155,21 @@ const flakeVerdicts = (): Verdict[] | Error => {
 // version_base seeded exactly as the process script seeds it, then echoes the
 // surviving value — so the stamp compared is the one the ldflag would carry.
 // Cheap enough per candidate to stay a loop.
+//
+// `shopt -s globasciiranges` and LC_ALL=C make the comparison locale-invariant.
+// bash bracket ranges like `[!0-9A-Za-z.+-]` collate per-locale unless that
+// option forces ASCII; it is on by default in the nix bash, but the flake side
+// (`builtins.match`) is locale-invariant unconditionally, so pinning it here
+// makes the parity verdict a property of the two expressions rather than of the
+// bash build options and environment the gate happens to run under.
 const devenvVerdict = (index: number): Verdict | Error => {
-	const script = `set -u\nversion_base="$(cat "${candidatePath(index)}")"\n${devenvGuard}\nprintf '%s' "$version_base"\n`;
+	const script =
+		"set -u\nshopt -s globasciiranges\nexport LC_ALL=C\n" +
+		// Single-quoted so a scratch path containing `"`, `$`, or a backtick is
+		// inert; `'` itself cannot occur in an mkdtemp path, and the quote-escape
+		// dance would obscure the line for a byte that never appears.
+		`version_base="$(cat '${candidatePath(index)}')"\n` +
+		`${devenvGuard}\nprintf '%s' "$version_base"\n`;
 	const run = spawnSync("bash", ["-c", script], { encoding: "utf8" });
 	if (run.error !== undefined) {
 		return run.error;

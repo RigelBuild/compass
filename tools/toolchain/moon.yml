@@ -14,6 +14,20 @@ layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'oss', 'ci-group.bun']
 
+# The ci-matrix generator computes a PR's affected set with
+# `moon query projects --affected`, which walks the PROJECT graph only — a
+# project is affected when its own tree or a project it `dependsOn` changed. It
+# NEVER consults a project's cross-tree task `inputs` globs (the same mechanism
+# tools/flake-gate/moon.yml:31-46 documents and works around). Several tasks
+# here assert ABOUT files in `root`'s tree — the two Postgres image digests in
+# .github/workflows/ci.yml, and the version.txt guards this project lifts out
+# of flake.nix and devenv.nix — so without this edge a PR touching only those
+# files leaves toolchain-parity unaffected and never schedules `test` at all.
+# The `inputs:` globs stay the true cache closure; this edge is what gets the
+# task SCHEDULED in the first place.
+dependsOn:
+  - 'root'
+
 tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
