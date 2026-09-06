@@ -434,10 +434,16 @@ changes.
    (`agent.go:298-300`) that design.md:454-455 explicitly declines for this
    backend. That is a real T-2 design choice. Either branch is contained:
    `NftScript()` and the `egress.go:6-10` integrity model stay byte-for-byte
-   on both. Note the asymmetry in blast radius: widening the shared seam also
-   runs on the podman path (`agent.go:319-328` is shared and `PodmanCLI`
-   carries no `EgressArmedInGuest` marker, `agent.go:294-300`), so that
-   branch needs podman regression cover; the marker branch skips `armEgress`
+   on both. Note the asymmetry in blast radius: widening the shared seam also runs
+   on the podman path (`agent.go:319-328` is shared and `PodmanCLI` carries no
+   `EgressArmedInGuest` marker, `agent.go:294-300`), so that branch needs podman
+   regression cover — but that cover has no live home today: CI's only `-tags podman`
+   invocation is package-scoped to `./e2e/...` (`.github/workflows/ci.yml:2143`), so
+   the 16 podman-tagged files outside `go/e2e/` never run, including the natural host
+   `internal/runtime/egress_integrity_podman_test.go`. That file also does not cover
+   this seam even when run: its subject is `--user` capability-stripping, with zero
+   `NftScript`/`EgressPolicy` references. T-2 must therefore widen the podman test
+   lane's scope before that cover means anything. The marker branch skips `armEgress`
    entirely (`agent.go:308-312`) and touches podman not at all.
 5. **Scope the `--userns=keep-id` conclusion** (T-2). The flag has no analogue
    on this CLI; virtiofs supplies the host-side ownership round-trip it was
