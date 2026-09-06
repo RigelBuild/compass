@@ -23,9 +23,10 @@ const manifestProject = "compass"
 const defaultProfile = "default"
 
 // defaultCLI is the SecretSpec binary the write path spawns by name, resolved
-// off PATH (the dev shell and the deployed image both stage it). Named so the
-// drift guard asserting the staged binary's version floor and the resolver
-// agree on which binary that is.
+// off PATH. The dev shell stages it (devenv.nix); nothing stages it into the
+// shipped artifact, so a deployment must put a binary at or above the floor on
+// the server's PATH — see TestSecretSpecCLIVersionFloor and RIG-3437. Named so
+// that floor guard and the resolver agree on which binary that is.
 const defaultCLI = "secretspec"
 
 // declarations is the read surface the Resolver needs from the store: the whole
@@ -282,9 +283,12 @@ func (r *SpecResolver) Set(ctx context.Context, name, value, reason string) erro
 // Delete removes name's value from the provider. See the package/record note:
 // with a manifest-driven resolver only declared names ever resolve, so removing
 // the store declaration (store.DeleteSecretDeclaration) is the effective MVP
-// delete; a provider-value hard-delete has no CLI verb upstream. This method is
-// the seam for that write once a verb exists; today it validates the name and
-// is a no-op success so the T7 handler can call one uniform surface.
+// delete. A provider-value hard-delete IS available at this pin (`secretspec
+// delete`, 0.18+); wiring it is a deliberate deferral (RIG-3436), not an
+// upstream gap — it makes the operation destructive against a keyspace shared
+// by default, so it needs its own F1-guard and ordering analysis. This method
+// is the seam for that write; today it validates the name and is a no-op
+// success so the T7 handler can call one uniform surface.
 func (r *SpecResolver) Delete(ctx context.Context, name string) error {
 	if err := ValidateName(name); err != nil {
 		return err

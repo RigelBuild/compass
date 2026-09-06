@@ -175,8 +175,11 @@ func TestSetSecretUserOnly(t *testing.T) {
 		t.Fatalf("resolver.Set called %v on a rejected agent SetSecret, want none", f.resolver.setNames)
 	}
 
-	// User: succeeds and writes the value.
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "postgres://x")); err != nil {
+	// User: succeeds and writes the value. The literal is hoisted because the
+	// value-absence assertion below asserts on it — inlining it twice lets the
+	// two drift, silently retiring that assertion.
+	const secretValue = "postgres://x"
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", secretValue)); err != nil {
 		t.Fatalf("SetSecret as user = %v, want success", err)
 	}
 	if len(f.resolver.setNames) != 1 || f.resolver.setNames[0] != "DB_URL" {
@@ -192,7 +195,7 @@ func TestSetSecretUserOnly(t *testing.T) {
 	if !strings.Contains(f.resolver.setReasons[0], string(f.userID)) {
 		t.Fatalf("resolver.Set reason = %q, want it to name the calling user %q", f.resolver.setReasons[0], f.userID)
 	}
-	if strings.Contains(f.resolver.setReasons[0], "postgres://x") {
+	if strings.Contains(f.resolver.setReasons[0], secretValue) {
 		t.Fatalf("resolver.Set reason = %q, must never carry the secret value", f.resolver.setReasons[0])
 	}
 }

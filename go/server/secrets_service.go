@@ -208,9 +208,10 @@ func (s *secretsService) DeleteSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
 	name := req.Msg.GetName()
-	// Ordering note: resolver.Delete is a validate-only no-op today (no upstream
-	// provider hard-delete verb), so calling it before DeleteSecretDeclaration is
-	// inert. When a real provider delete lands, this MUST flip to
+	// Ordering note: resolver.Delete is a validate-only no-op today, so calling
+	// it before DeleteSecretDeclaration is inert. The provider verb it would
+	// shell EXISTS at this pin (`secretspec delete`, 0.18+); wiring it is a
+	// deferral (RIG-3436), not an upstream gap. When it lands, this MUST flip to
 	// declaration-first: the declaration is the source of truth Resolve reads, and
 	// deleting the provider value before the row would leave a required=true
 	// declaration pointing at a missing value — the same global resolve-poison as a

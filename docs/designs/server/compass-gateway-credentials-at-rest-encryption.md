@@ -288,7 +288,7 @@ delivery/kind, classified `adminOnly` in `classifyProcedure`
 is treated as adminOnly — fail closed, never admit an unknown method as
 open", admin_gate.go:44-46). Today's user-facing `SetSecret` cannot declare a
 row *as* a server secret — `secretRoutingFromProto` admits only File/Env
-delivery (secrets_service.go:275-284), with no server-only delivery value — so
+delivery (secrets_service.go:285-307), with no server-only delivery value — so
 operators declare server secrets through the new RPC. It CAN, however, mint an
 ordinary `secrets` row under a NAME that collides with a server secret
 (delivery=File/Env), which is exactly why the F1 prefix guard is mandatory on
@@ -578,7 +578,7 @@ declared into a store that does not exist.
     every agent container, inverting D6.
   - RPC: `SetServerSecret`/`DeleteServerSecret` on the secrets service —
     mirrors the `SetSecret` declare-then-Set flow and its rollback
-    discipline (secrets_service.go:92-145) minus delivery/kind, targeting
+    discipline (secrets_service.go:92-155) minus delivery/kind, targeting
     `server_secrets`; admin-gated (`adminOnly` in `classifyProcedure`,
     admin_gate.go:47). Carries the F1 PREFIX guard: it REQUIRES the declared
     name to carry a reserved server-secret prefix (`SERVER_` for the six forge
@@ -605,7 +605,7 @@ declared into a store that does not exist.
     door, so the shadow row can never be created at all) MUST REJECT any name
     carrying a reserved server-secret prefix (`SERVER_` or
     `GATEWAY_CREDENTIALS_`) — checked BEFORE `resolver.Set`/`Delete`
-    (secrets_service.go:124/208). A pure string check, not a membership SELECT:
+    (secrets_service.go:134/218). A pure string check, not a membership SELECT:
     it needs no read of `server_secrets` and no cross-tenant visibility. A T0
     deliverable on the existing user path, not only the new
     admin RPC.
@@ -942,7 +942,8 @@ is declared into it) and T1.
     unchanged). Rotation is OQ-1's machinery, never a raw overwrite through
     either surface. The name-keyed global user delete ("a row is keyed by name
     alone, not (actor, name)", go/internal/store/secrets.go:150-153) is why the
-    guard covers the delete path too, once a real provider hard-delete lands.
+    guard covers the delete path too, once the provider hard-delete is wired
+    (the `secretspec delete` verb exists at the 0.20 pin; RIG-3436).
   - **Nil-resolver deployment:** a server built with no secrets surface is
     legitimate today ("resolver may be nil on a server built with no
     secrets surface (FetchSecrets then fails CodeFailedPrecondition rather
