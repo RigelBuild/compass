@@ -31,16 +31,18 @@ tasks:
     # pull_request, tools/ci-matrix selects targets via `moon query projects
     # --affected`, which walks the project graph and never consults a
     # cross-tree input (see the discriminator note in
-    # .github/workflows/ci.yml). KNOWN GAP, wider than this input: a docs-only
-    # PR does not select this project AT ALL. The `check` scan's own `/**/*`
-    # input is cross-tree the same way, so a docs-only PR that ADDS a
-    # private-repo reference is not gated on that PR either — only the doc
-    # pointer's staleness is the mild case. The backstop is ci.yml's
-    # unconditional push + nightly full sweep, which does run the scan to a
-    # real verdict. `dependsOn: ['root']` would pull this project into a
-    # docs-only closure, but over-triggers the gate on every repo-root file
-    # change (moon edges are project-level, not file-level) — the same
-    # tradeoff sql-migration-gate documents declining. Tracked as RIG-3381.
+    # .github/workflows/ci.yml). KNOWN GAP, and it is not docs-specific: ANY
+    # PR that does not touch this project's own tree fails to select it, since
+    # the `check` scan's `/**/*` input is cross-tree the same way. A Go-only
+    # or docs-only PR that ADDS a private-repo reference is therefore not
+    # gated on that PR; the doc pointer going stale is the mild case. The
+    # backstop is ci.yml's unconditional push + nightly full sweep, which does
+    # run the scan to a real verdict. `dependsOn: ['root']` is NOT taken: it
+    # would pull this project in for most trees, but not for dot-paths like
+    # `.github/**` (which produce an empty closure yet ARE scanned), so it
+    # would read as closing a gap it leaves open — and it over-triggers on
+    # every repo-root change, the tradeoff sql-migration-gate documents
+    # declining. Tracked as RIG-3381.
     inputs:
       - '*.ts'
       - 'tsconfig.json'
