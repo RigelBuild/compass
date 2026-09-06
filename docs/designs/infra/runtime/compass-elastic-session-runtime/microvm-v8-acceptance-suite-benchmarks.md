@@ -538,18 +538,75 @@ the CID-1 dial complete an HTTP exchange (exit 0) and the test MUST go red.
   Neither says anything about processes; both are retained as fail-closed
   coverage, not as orphan evidence.
 
-  Proving mutation, re-derived so it reddens **this row's own property**:
-  comment out `Start`'s `booted`/deferred-`Shutdown` block
-  (`microvm_lifecycle.go:376-383`) so a partial boot is never torn down. The
-  new post-`Start` assertion reads the pidfiles and finds the VMM pid still
-  **live** — red. (Recording why the previously-drafted mutation was a
-  no-op, since the same trap is one edit away: against main's three
-  assertions that same mutation reddens **nothing**. `Start` still errors
-  because `awaitHealthy` still times out; `guestExec` is still nil because
-  `:412` is past the error return; and the runtime dir still disappears
-  because `Remove`'s `os.RemoveAll` at `:674-676` does not depend on
-  `Shutdown` having run. The mutation only discriminates once an assertion
-  actually reads a pid — which is exactly what leg (i) adds.)
+  Proving mutation, re-derived so it reddens **this row's own property** —
+  and it must reckon with **three** independent teardown paths, not just the
+  deferred `Shutdown`, because the other two kill the VMM whether or not
+  `Shutdown` ever runs. Two are defeatable from the test and the mutation
+  defeats both; the third is not, which is what makes the
+  could-not-discriminate outcome below mandatory rather than optional:
+
+  1. **`Start`'s deferred `Shutdown`.** `booted := true`
+     (`microvm_lifecycle.go:376`) with
+     `defer func() { if booted { _ = vm.Shutdown(context.WithoutCancel(ctx)) } }()`
+     (`:377-383`).
+  2. **`exec.CommandContext` binding — ctx cancellation kills the children
+     independently of `vm.Shutdown`.** All three are spawned bound to the
+     boot ctx:
+     `cmd: exec.CommandContext(ctx, vmmPath, vmmArgs(cfg, vm.consolePath, opts)...)`
+     (`microvm/launch.go:220`), and identically virtiofsd (`:163`) and passt
+     (`:187`). `CommandContext` "sets the command's Cancel function to
+     invoke the Kill method on its Process, and leaves its WaitDelay unset"
+     (go1.26.5 `src/os/exec/exec.go:481-483`, read this session), and package
+     `microvm` overrides neither field (grepped this session: the only
+     `cmd.Cancel`/`WaitDelay` hits under `internal/runtime/` are `PodmanCLI`'s,
+     `podman.go:595-596`). The test's own shape cancels promptly — main's
+     `TestMicroVMStartFailureLeavesNoState` derives
+     `ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)` with
+     `defer cancel()` (`microvm_lifecycle_microvm_test.go:96-97`) — and
+     `bootPollContext` honors that caller deadline
+     (`microvm_lifecycle.go:463-467`).
+  3. **`Pdeathsig: SIGTERM`.** Every child carries the orphan guard,
+     `return &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}`
+     (`microvm/orphanguard_pdeathsig.go:17-19`), installed at
+     `c.cmd.SysProcAttr = orphanGuardSysProcAttr()` (`launch.go:299`). It
+     fires on the spawning **thread's** death, and `startChild` locks that
+     thread only across `cmd.Start` — `runtime.LockOSThread()` /
+     `defer runtime.UnlockOSThread()` (`launch.go:301-302`) — so the lock is
+     released the moment `startChild` returns and the Go runtime may retire
+     that thread at any later point. This path is therefore **not
+     defeatable from the test**, and the record does not pretend otherwise:
+     it is best-effort and nondeterministic by its own design
+     ("The real teardown guarantee is Shutdown, not Pdeathsig … this only
+      shortens the window a wedged host leaves a VMM orphaned",
+     `microvm/orphanguard_pdeathsig.go:10-12`, echoed at `launch.go:288-289`).
+
+  So the honest mutation suppresses (1) **and** keeps the boot ctx
+  uncancelled across the post-`Start` read: the mutation run passes a
+  `context.WithoutCancel`-derived ctx into `m.launchFunc`
+  (`microvm_lifecycle.go:367`; the production seam is wired by
+  `installSeamDefaults`, `:131-137`), and the assertion reads the captured
+  pids' liveness **before** the test's own `defer cancel()` fires. That
+  defeats (1) and (2), the two deterministic killers. (3) cannot be defeated
+  from the test at all, which is not a gap in the mutation but the reason the
+  next paragraph is mandatory rather than a courtesy.
+
+  **A green mutation run here is recorded as "could not discriminate — a
+  competing killer reached the VMM first", never as a pass and never as a
+  disproof of the assertion** — § Approach (b)'s primitive, used exactly as
+  the gateway row uses it. This is spelled out because the failure is
+  timing-dependent rather than a clean negative: whether a defer-only
+  mutation discriminates depends on when the ctx is cancelled relative to
+  the read, so it can redden on one run and not the next, and an executor
+  reading the green run as evidence would weaken a correct assertion.
+
+  (Recording why the previously-drafted mutation was a no-op, since the same
+  trap is one edit away: against main's three assertions that same mutation
+  reddens **nothing**. `Start` still errors because `awaitHealthy` still
+  times out; `guestExec` is still nil because `:412` is past the error
+  return; and the runtime dir still disappears because `Remove`'s
+  `os.RemoveAll` at `:674-676` does not depend on `Shutdown` having run. The
+  mutation only discriminates once an assertion actually reads a pid — which
+  is exactly what leg (i) adds.)
 - **Mid-session VMM death (cycle 5).** W4 boots a session through
   `AgentRuntime.Launch`, opens a live `ExecStreaming` and the gateway
   socket, then SIGKILLs the VMM pid (read from V7's `vmm.pid`). This leg
@@ -665,10 +722,53 @@ are specified here, thresholds are not.
     three-field record, and each iteration carries a companion
     `pss_incomplete: ["passt", …]` listing the processes whose PSS was
     unreadable — so a Q-budget reader sees a lower bound *labelled* as one.
-  - W6 asserts the `vmm` and `virtiofsd` keys are present in **every**
-    measured iteration. Their absence is a real fault, unlike passt's
-    expected drop-out, so this is the assertion that makes an
-    incomplete sample visible instead of silently shrinking the number.
+  - W6 asserts the **required PSS key set** is present in **every** measured
+    microVM iteration. That set is defined here, once, bound to its source
+    rather than to prose: **the `cloud-hypervisor` and `virtiofsd` keys**,
+    per `VM.PSS()`'s `out[c.name] = pss`
+    (`internal/runtime/microvm/launch.go:485`) — the map is keyed by the
+    child's `name` field, whose three literal values are `virtiofsd`
+    (`launch.go:160`), `passt` (`:180`) and, for the VMM,
+    `name: "cloud-hypervisor"` (`:217`). **There is no `vmm` key.** Main's
+    existing consumer iterates exactly that literal set —
+    `for _, name := range []string{"cloud-hypervisor", "virtiofsd", "passt"}`
+    (`contract_microvm_test.go:112`). Every other site in this record (W6
+    Interfaces, W6's vacuity paragraph and its proving mutation, OQ-4's scope
+    note) points at **this** definition instead of restating the spelling, so
+    a child rename reds in one place. `passt` is excluded from the required
+    set because its drop-out is expected rather than faulty; the absence of
+    either required key IS a real fault, which is what makes an incomplete
+    sample visible instead of silently shrinking the number.
+
+  **Two vocabularies over one trio of processes — recorded because V8 reads
+  both surfaces and a drafting of this record already conflated them once.**
+
+  | Surface | Vocabulary | Names | Source |
+  | --- | --- | --- | --- |
+  | `VM.PSS()`'s returned map key | **binary** name | `cloud-hypervisor`, `virtiofsd`, `passt` | `out[c.name] = pss` (`microvm/launch.go:485`), names at `:160`, `:180`, `:217` |
+  | V7's `compass.microvm.guest.memory.pss` `process` attribute | **role** name | `vmm`, `virtiofsd`, `passt` | PR #931 record :757 — `Int64ObservableGauge`, `By`, `process` = `vmm`\|`virtiofsd`\|`passt` |
+  | V7's per-session pidfile stems | **role** name | `vmm.pid`, `virtiofsd.pid`, `passt.pid` | PR #931 record :105-110 — the File/Process/Writer table, where `<id>/vmm.pid` is cloud-hypervisor's, written by the host |
+
+  V7's gauge performs the `cloud-hypervisor` → `vmm` rename **at record
+  time** — its own row derives the attribute from the map ("Sum over live
+  sessions of per-process PSS via the existing `VM.PSS()`", PR #931 record
+  :757) — so V8 inherits that rename invisibly unless it is written down.
+  Which vocabulary each V8 deliverable uses: **W6's `PSSKB` keys and
+  `PSSIncomplete` entries take the BINARY names** (they come straight out of
+  `VM.PSS()`); **W4's pidfile reads take the ROLE names** (`vmm.pid` is
+  cloud-hypervisor's file). Main's prose sits on the role side too — the
+  "vmm+virtiofsd-dominated lower bound" quoted just above
+  (`microvm_preflight.go:277-287`) is a *description of a sum*, not a key
+  set, and reading it as one is precisely how a `vmm` PSS map key got into a
+  drafting of this record. OQ-6 carries the pointer so the collision cannot
+  silently recur when an executor binds V7's identifiers.
+
+  The two PSS *views* are also not expected to agree, and neither supersedes
+  the other: the JSON report's `pss_kb`/`pss_incomplete` is the **Q-budget's
+  authoritative reading** (per-iteration, per-session, raw samples), while
+  V7's gauge is the **operational series** (summed across live sessions,
+  kB→bytes at record, PR #931 record :757). Divergence between them is a
+  consequence of that difference in basis, not a defect in either.
 - **How it runs.** `TestMicroVMBenchmark` (tagged `microvm && unix`,
   `microvmtest.Require(t)` first) runs a fixed warmup boot then N=5 measured
   iterations, recording every raw sample — never only an average, so outlier
@@ -1104,6 +1204,23 @@ launched session.
   (both `package runtime`) and `TestVMMDeathBreaksStreamsCleanly`
   (`package runner`).
 
+  **The pid-identity comparison consumes V7's own predicate, not a second
+  `/proc` parser.** The `<pid> <starttime> <bootid>` match is performed by
+  the same pid-identity predicate V7's orphan reaper uses to decide a
+  recorded pid is still its process: V7's W1 produces
+  `type pidRecord struct { Intent bool; PID int; StartTime uint64; BootID string }`
+  with `readPidfile(path) (pidRecord, error)` and
+  `(pidRecord) alive() (bool, error)` — "boot-id short-circuit, then
+  starttime-compared liveness (stale boot id ⇒ false, nil; ENOENT ⇒ false,
+  nil)" (PR #931 record :1147-1152) — over `/proc/<pid>/stat` field 22
+  (PR #931 record :131-134, and §(b)'s reaper at :344-345). W4 must NOT
+  re-parse `/proc/<pid>/stat` itself: a second start-time parser beside V7's
+  can drift from the one the reaper's kill decision rides on. The exact
+  symbol is bound at implementation per OQ-6, which carries this predicate in
+  its contract list — including the flag that V7 places these in
+  `package microvm` and states no exported or test-reachable form for
+  `package runtime` / `package runner`, where W4's legs live.
+
   The `package runner` death leg, like W3's gateway leg, **cannot reach
   `e2eConfig`** (a `package runtime` test symbol,
   `microvm_lifecycle_microvm_test.go:33-55`) and consumes the existing
@@ -1115,7 +1232,7 @@ launched session.
 
   | Assertion | Could pass while false when… | Proving mutation |
   | --- | --- | --- |
-  | wedged boot torn down orphan-free: the pids **captured from V7's pidfiles during the boot window** are all dead once `Start` returns, matched by the `<pid> <starttime> <bootid>` triple so a recycled pid cannot satisfy it — **a base assertion W4 adds; main asserts nothing about processes** (`microvm_lifecycle_microvm_test.go:62-118`) | **a post-`Start` RE-READ of the pidfiles is vacuous by construction and must not be the assertion's input:** on the green path `Start`'s teardown calls `vm.Shutdown`, which removes all three pidfiles alongside the sockets (PR #931 record :194-196), so a re-read yields an EMPTY pid set and "all pids dead" passes trivially — the same shape as pidfiles never having been written. (`Remove`'s `os.RemoveAll(session.runtimeDir)`, `microvm_lifecycle.go:674-676`, would erase them too, but `Shutdown` gets there first.) | the pid values are **read and retained** during the boot window, where the positive control asserts the pidfiles exist and name LIVE processes; the post-`Start` assertion then tests THOSE retained pids, so an emptied pidfile directory cannot satisfy it. Mutation: **comment out `Start`'s `booted`/deferred-`Shutdown` block (`microvm_lifecycle.go:376-383`), so the partial boot is never torn down — and since `session.vm` is never assigned on this path (`:411` is past the error return) `Remove` skips `Shutdown` too (`:669-673`), leaving the captured VMM pid LIVE for the assertion to read: MUST go red.** (The same mutation reddens NOTHING against main's three assertions — `Start` still errors via `awaitHealthy`'s timeout, `guestExec` is still nil because its only assignment is at `:412`, and the runtime dir still disappears because `Remove`'s `os.RemoveAll` is independent of `Shutdown`. It discriminates only because this row reads a captured pid.) |
+  | wedged boot torn down orphan-free: the pids **captured from V7's pidfiles during the boot window** are all dead once `Start` returns, matched by the `<pid> <starttime> <bootid>` triple **via V7's own pid-identity predicate** (Interfaces above) so a recycled pid cannot satisfy it — **a base assertion W4 adds; main asserts nothing about processes** (`microvm_lifecycle_microvm_test.go:62-118`) | **a post-`Start` RE-READ of the pidfiles is vacuous by construction and must not be the assertion's input:** on the green path `Start`'s teardown calls `vm.Shutdown`, which removes all three pidfiles alongside the sockets (PR #931 record :194-196), so a re-read yields an EMPTY pid set and "all pids dead" passes trivially — the same shape as pidfiles never having been written. (`Remove`'s `os.RemoveAll(session.runtimeDir)`, `microvm_lifecycle.go:674-676`, would erase them too, but `Shutdown` gets there first.) | the pid values are **read and retained** during the boot window, where the positive control asserts the pidfiles exist and name LIVE processes; the post-`Start` assertion then tests THOSE retained pids, so an emptied pidfile directory cannot satisfy it. **Mutation — and THREE independent teardown paths kill the VMM here, so suppressing the deferred `Shutdown` alone does NOT discriminate (§ Approach (e) carries the full derivation): (1) `Start`'s `booted`/deferred-`Shutdown` block (`microvm_lifecycle.go:376-383`); (2) every child is `exec.CommandContext`-bound to the boot ctx (`microvm/launch.go:163`, `:187`, `:220`), and `CommandContext` "sets the command's Cancel function to invoke the Kill method on its Process" (go1.26.5 `src/os/exec/exec.go:481-483`) with no `Cancel`/`WaitDelay` override in package `microvm`, so ctx cancellation kills the VMM independently of `vm.Shutdown` — and the test's own ctx is a 30s `context.WithTimeout` with `defer cancel()` (`microvm_lifecycle_microvm_test.go:96-97`), honored by `bootPollContext` (`microvm_lifecycle.go:463-467`); (3) each child carries `Pdeathsig: syscall.SIGTERM` (`microvm/orphanguard_pdeathsig.go:17-19`, installed at `launch.go:299`), which fires on the spawning THREAD's death and is NOT defeatable from the test — `startChild` unlocks that thread as soon as it returns (`launch.go:301-302`), and the guard is best-effort by its own design (`orphanguard_pdeathsig.go:10-12`). The mutation therefore comments out (1) AND passes a `context.WithoutCancel`-derived ctx into `m.launchFunc` (`microvm_lifecycle.go:367`) so (2) cannot kill first, reading liveness BEFORE the test's own `defer cancel()` — which defeats the two DETERMINISTIC killers. Only then does the captured VMM pid stay LIVE for the assertion to read: MUST go red.** Because (3) remains undefeatable, a green mutation run is recorded as **"could not discriminate — a competing killer reached the VMM first"**, never as a pass and never as a disproof of the assertion (§ Approach (b)). (The same mutation reddens NOTHING against main's three assertions — `Start` still errors via `awaitHealthy`'s timeout, `guestExec` is still nil because its only assignment is at `:412`, and the runtime dir still disappears because `Remove`'s `os.RemoveAll` is independent of `Shutdown`. It discriminates only because this row reads a captured pid.) |
   | `Start` is fail-closed: it returns an error and leaves no exec client (retained from main, `:98-100`, `:108-110`) | the no-exec-client half is **structurally** near-vacuous: `session.guestExec` is assigned only at `microvm_lifecycle.go:412`, past every error return on this path, so it can never be non-nil here — it discriminates a regression that moves the assignment before the error returns, and nothing else | none added: W4 retains it as fail-closed coverage and does NOT credit it as orphan or teardown evidence. Its discriminating mutation is to hoist the `session.guestExec` assignment above the `awaitHealthy` error return (`:385-387`) — MUST go red |
   | the session runtime dir is removable after the failed `Start` (retained from main, `:111-116`) | passes on *any* successful `Remove`: `os.RemoveAll(session.runtimeDir)` (`microvm_lifecycle.go:674-676`) runs unconditionally, and on this path `session.vm` is nil (never assigned, `:411`), so `Remove` skips `Shutdown` (`:669-673`) entirely — the row is blind to whether any process died | none added; same posture as above. Mutation that does discriminate it: make `Remove` return before its `os.RemoveAll` — MUST go red |
   | in-flight exec fails with the typed death error | any transport error satisfies an untyped check | assert `errors.As` against V7's death type; mutation: suppress V7's death monitor's error classification — MUST go red |
@@ -1165,11 +1282,36 @@ KVM-gated, since its subject is the KVM-less path.
   `type BenchIteration struct { Backend string; BootMillis int64; ExecMillis int64; PSSKB map[string]int64; PSSIncomplete []string }`
   (unexported to the test files — no production surface). The writer and
   both report types live in an **untagged** `microvm_bench_report_test.go`,
-  because they must be visible to both tag universes (§ Approach (g)); note
-  the wrinkle that a default-tag lint/vet run then sees them with no
-  in-universe caller, so the file carries the two legs' shared helper
-  entry points (or a small untagged self-test of the writer's
-  zero-iteration refusal) to keep it non-dead under every tag set.
+  because they must be visible to both tag universes (§ Approach (g)). A
+  default-tag lint/vet run then sees them with no in-universe caller, and a
+  drafting of this record left two ways of keeping the file non-dead as an
+  unresolved `or`. **Resolved: the file carries a small untagged self-test of
+  `writeBenchReport`'s zero-iteration refusal, and the two legs' unix-only
+  helpers MUST NOT move into it.** Three reasons, in order of force:
+
+  1. **Darwin.** The untagged file's imports stay `encoding/json`, `os`,
+     `testing` — portable by construction, which is what § Global
+     Constraints' Darwin cross-check requires of an untagged file. The
+     rejected branch is the one that can break that gate: the microVM leg's
+     helpers are inherently unix-only (they touch `VM.PSS()`, V7's pidfiles,
+     `/proc`), so hoisting them into an untagged file drags unix-only surface
+     into every `GOOS`. Verified this session that the hazard is real **and**
+     that the gate must be `go vet` rather than `go build`: a scratch package
+     whose untagged `_test.go` names
+     `syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}` passes
+     `CGO_ENABLED=0 GOOS=darwin go build` (which does not compile `_test.go`
+     files at all) and fails `CGO_ENABLED=0 GOOS=darwin go vet` with
+     `unknown field Pdeathsig in struct literal of type syscall.SysProcAttr`.
+     § Global Constraints is corrected accordingly.
+  2. **It earns its place as coverage, not as linter appeasement.** The
+     zero-iteration refusal is already a required proving mutation of W6's
+     vacuity paragraph below, so the self-test is that mutation's permanent
+     positive form rather than a dead-code workaround.
+  3. **It leaves the helpers where they already are.** The shared-helper
+     branch would make the untagged file a real API surface both tagged legs
+     compile against — a structural commitment graded by § Global
+     Constraints' lint floors (golangci-lint 2.13.2; nilaway) — whereas the
+     self-test is one hermetic test and changes no other file's shape.
 
   **Load-bearing placement constraint — one package is what makes one
   process.** BOTH bench legs and the untagged report writer MUST live in
@@ -1191,7 +1333,13 @@ KVM-gated, since its subject is the KVM-less path.
   (`if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) { continue }`,
   `internal/runtime/microvm/launch.go:471-484`), so `PSSKB` is a map whose
   MISSING KEYS ARE MEANINGFUL and `PSSIncomplete` names them (see § Approach
-  (g)); the env knob `COMPASS_MICROVM_BENCH_OUT`; and V7's
+  (g)). **`PSSKB`'s key domain IS `VM.PSS()`'s child-name set** —
+  `out[c.name] = pss` (`launch.go:485`), i.e. `cloud-hypervisor`
+  (`launch.go:217`), `virtiofsd` (`:160`) and `passt` (`:180`) — so `PSSKB`
+  and `PSSIncomplete` carry **binary** names, never V7's role-name
+  vocabulary (§ Approach (g)'s two-vocabularies table), and a child rename
+  reds against that one definition. Also consumed: the env knob
+  `COMPASS_MICROVM_BENCH_OUT`; and V7's
   `compass.microvm.boot.duration` instrument for the metrics cross-check,
   read as a `metricdata.Histogram[float64]` whose points are
   `metricdata.HistogramDataPoint[float64]` (naming the type so the shape is
@@ -1235,18 +1383,33 @@ KVM-gated, since its subject is the KVM-less path.
   parses, uploads, and certifies nothing). The writer refuses (`error`) a
   report with zero iterations; `Baseline` is a mandatory enum (`present` /
   `absent:<reason>`) and never empty; every measured microVM iteration MUST
-  carry both the `vmm` and `virtiofsd` PSS keys, whose absence IS a real
-  fault (unlike passt's expected drop-out, § Approach (g)), with any missing
-  key listed in `PSSIncomplete`; and the written report MUST contain
+  carry **the required PSS key set § Approach (g) defines once** — the
+  `cloud-hypervisor` and `virtiofsd` keys, per `VM.PSS()`'s
+  `out[c.name] = pss` (`microvm/launch.go:485`) with those names at
+  `launch.go:217` and `:160` — whose absence IS a real fault (unlike passt's
+  expected drop-out, § Approach (g)), with any missing key listed in
+  `PSSIncomplete`; and the written report MUST contain
   iterations for **both** backends — asserted on the backend set, not merely
   on `Baseline == "present"`, so a split-process regression reds instead of
   clobbering. Proving mutations: skip the measured loop (N=0) — the writer
-  MUST error and the test MUST go red; run the bench invocation with
-  `-tags microvm` alone — `Baseline` MUST come back `absent:*` AND the
-  both-backends assertion MUST go red, which together is what would have
-  caught the structurally-absent baseline (whether that reds the lane is
-  OQ-3); and drop the `virtiofsd` entry from the PSS map before writing —
-  the required-keys assertion MUST go red.
+  MUST error and the test MUST go red (the untagged writer self-test of
+  Interfaces above is that same refusal in permanent positive form); run the
+  bench invocation with `-tags microvm` alone — `Baseline` MUST come back
+  `absent:*` AND the both-backends assertion MUST go red, which together is
+  what would have caught the structurally-absent baseline (whether that reds
+  the lane is OQ-3); and, for the required-key assertion, **run the drop
+  mutation ONCE PER REQUIRED KEY — drop `cloud-hypervisor`, then drop
+  `virtiofsd` — each MUST redden independently.** Per-key is not belt-and-
+  braces: a single-key drop was this row's own defect, because a two-part
+  assertion whose mutation exercises only one part reddens exactly as
+  promised while the other part stays broken and the executor records the
+  mutation as passed. Per-key binds the mutation to the whole key set rather
+  than to half of it.
+
+  Also in W6's cycle, because W6 is what introduces the untagged file:
+  `CGO_ENABLED=0 GOOS=darwin go vet ./internal/runtime/` must stay green
+  (§ Global Constraints — note it is `go vet`, not `go build`, that
+  typechecks a `_test.go` file).
 - **Depends:** V7 merged (the metric instrument) — **V7 only; V6 is not a
   dependency of this task**, matching the Plan preamble's table.
   Independent of W1-W5.
@@ -1353,12 +1516,65 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
   `go test -tags microvm -race -v -timeout 15m ./... >/tmp/microvm.log 2>&1`
   at `ci.yml:806`; the guard greps the same path, `ci.yml:831,844`), so the
   check is a third step over the same capture and needs no change to the
-  sweep. The derived name list is scoped to the files the sweep's tag set
-  actually compiles (the `microvm && unix` acceptance files plus W5's
-  untagged rows); the podman baseline leg runs in W7's separate
-  single-process bench invocation and is covered by that step's own report
-  assertions, not by this log. Failure lists the missing names, and
-  separately the unexpectedly-skipped ones.
+  sweep.
+
+  **The derived file list is pinned by name, not described.**
+  `grep ^func Test` reads a file's text regardless of its build tags — the
+  existing guard relies on exactly that ("grep reads file text regardless of
+  build tags, so it finds the tagged canary too", `ci.yml:822-823`) — so the
+  scoping is done by choosing WHICH FILES to grep. The V8 acceptance files
+  W1-W6 name, enumerated: `internal/runtime/microvm_intertenant_microvm_test.go`
+  (W1), `internal/runtime/microvm_escalation_microvm_test.go` (W2),
+  `internal/runtime/microvm_agent_lifecycle_microvm_test.go` plus W3's
+  addition to `internal/runner/e2e_vsock_gateway_microvm_test.go` (W3),
+  `internal/runtime/microvm_failure_microvm_test.go` and
+  `internal/runner/e2e_vmm_death_microvm_test.go` (W4), W5's two rows (its
+  `package runtime` `//go:build unix` file and the `package main` row in
+  `main_test.go`), and `internal/runtime/microvm_bench_microvm_test.go` (W6).
+  The podman baseline leg is deliberately absent from the list: it runs in
+  W7's separate single-process bench invocation and is covered by that step's
+  own report assertions, not by this log.
+
+  **Empty-list vacuity guard.** If the derivation yields an empty name list
+  the step FAILS LOUDLY, mirroring the existing guard's own check ("no
+  package calls microvmtest.Require — the harness moved and this guard is
+  vacuous", `ci.yml:838-841`). Without it a bad file pattern derives no names
+  and the check passes trivially — the same F-shape the check exists to
+  close.
+
+  **The OQ-8/OQ-9 interaction, stated because source-derivation would
+  otherwise look like it reds the lane on the record's own gating.** The two
+  gates bite at different granularities, and only the first touches this
+  check:
+
+  - **OQ-8 blocks a whole test function.** W1's
+    `TestInterTenantVsockIdentityBound` "must not be implemented before that
+    OQ rules" (W1 Interfaces), so until it does the function does not exist,
+    **`grep ^func Test` does not derive it, and the check does not demand
+    it** — a name present nowhere in source is not a missing `--- PASS:`.
+  - **OQ-9 blocks a ROW inside a test that does exist.** W2's
+    `TestEscalationProbeRefusedOnLoopback` is produced and its CID-2
+    positive control runs; only the CID-1 exit-code row is gated ("Do not
+    implement this row until OQ-9 rules"). So that name IS derived and MUST
+    appear as `--- PASS:` — correctly, since the test really does run. The
+    gated row must be **absent**, not `t.Skip`ped: a skipped subtest beneath
+    a derived name is exactly what the depth-scoped `--- SKIP: <name>/…`
+    scan reds, and W1's metadata leg is the only allowlisted skip.
+
+  This is a reason the list must be source-derived
+  rather than a hand-maintained literal of the record's *intended* test set:
+  a literal would name OQ-8's blocked test and red the lane for honoring the
+  gating the record deliberately imposes. It also gives the mechanism its
+  payoff, worth stating because it is the point: **when OQ-8 rules and its
+  test is added, source-derivation enrols it in the presence check
+  automatically**, with no CI edit — so the post-ruling test cannot land and
+  then silently drop out of the sweep. (The converse the record accepts:
+  while OQ-8 is open, W1's Interfaces "Produces" list names a function that
+  does not exist yet and nothing checks that it is ever added. That is the
+  OQ's own gate to close on ruling, not this step's.)
+
+  Failure lists the missing names, and separately the unexpectedly-skipped
+  ones.
 - **Test cycle:** a dry-run dispatch of the extended job on a branch: every
   named V8 acceptance `Test` function appears as run-and-passed in the
   captured log (the per-test presence check above); the artifact exists and
@@ -1430,9 +1646,19 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
       against pids **captured during the boot window** (a post-`Start`
       re-read is vacuous — `Shutdown` deletes the pidfiles, PR #931 record
       :194-196), with the during-boot pid-liveness positive
-      control, proven by the `booted`/deferred-`Shutdown` suppression
-      mutation (`microvm_lifecycle.go:376-383`) that leaves a live VMM the
-      assertion reads; plus the caller-deadline cancel leg
+      control, matched via **V7's own pid-identity predicate** rather than a
+      second `/proc` parser (OQ-6), proven by a mutation that defeats the
+      **two deterministic** teardown paths: suppress the
+      `booted`/deferred-`Shutdown` block (`microvm_lifecycle.go:376-383`)
+      AND pass a `context.WithoutCancel`-derived ctx into `m.launchFunc`
+      (`:367`) so the children's `exec.CommandContext` binding
+      (`microvm/launch.go:163,187,220`) cannot kill the VMM first — the
+      third path, `Pdeathsig: SIGTERM`
+      (`microvm/orphanguard_pdeathsig.go:17-19`), is **not defeatable from
+      the test** (`startChild` unlocks the spawning thread on return,
+      `launch.go:301-302`), which is why a green mutation run is
+      recorded "could not discriminate", never a pass; plus the
+      caller-deadline cancel leg
       (`package runtime`); mid-session VMM SIGKILL in `package runner` with
       typed death error, bounded stream/drain end (own
       `vm.Shutdown`-suppression mutation), peer teardown (own mutation),
@@ -1444,7 +1670,13 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
 - [ ] W6 — benchmark: 1 warmup + 5 measured boots, raw-sample JSON report
       behind `COMPASS_MICROVM_BENCH_OUT`, podman baseline in the SAME
       process **and the same package** `internal/runtime` (or explicit
-      `absent:<reason>`), writer + types in an untagged file, V7
+      `absent:<reason>`), writer + types in an untagged file kept
+      **Darwin-clean and non-dead by a small untagged self-test of the
+      zero-iteration refusal — NOT by moving the legs' unix-only helpers into
+      it**, the required-PSS-key assertion over § Approach (g)'s
+      once-defined set (`cloud-hypervisor` + `virtiofsd`, per
+      `out[c.name] = pss`, `microvm/launch.go:485`) with the drop mutation
+      run ONCE PER KEY, V7
       boot-duration cross-check asserting **exactly ONE**
       `metricdata.HistogramDataPoint[float64]` whose sole attribute is
       `outcome=ok` and whose **`Count == 6`** (1 warmup + 5 measured — a
@@ -1454,7 +1686,10 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
       benchmark step (`-tags "microvm podman"`, scoped `-run`, **package
       pattern `./internal/runtime/`** — pattern-less it fails at setup,
       `./...` splits it into two processes), a per-test presence check over
-      `/tmp/microvm.log` with the name list derived from source that
+      `/tmp/microvm.log` with the name list derived from source over an
+      **enumerated file list** (empty list ⇒ fail loudly, mirroring
+      `ci.yml:838-841`; the OQ-8/OQ-9-blocked tests are unwritten and so
+      underived, and adding one on ruling enrols it automatically) that
       **requires `--- PASS:` and rejects `--- SKIP:` at any depth** under a
       listed name (small skip allowlist: W1's metadata leg),
       `$GITHUB_STEP_SUMMARY` table, `actions/upload-artifact` v7.0.1
@@ -1510,9 +1745,20 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
 - **`COMPASS_REQUIRE_MICROVM=1`** for every KVM-lane run (local and CI): a
   KVM-absent SKIP becomes a hard failure, so a green run proves the suite
   booted (`microvmtest.go:37-43`).
-- **Darwin cross-check with CGO off:**
-  `CGO_ENABLED=0 GOOS=darwin go build ./internal/runtime/` must stay green —
-  untagged files must not grow unix-only imports.
+- **Darwin cross-check with CGO off — and the gate is `go vet`, not
+  `go build`, because only `vet` typechecks untagged TEST files:**
+  `CGO_ENABLED=0 GOOS=darwin go vet ./internal/runtime/` must stay green —
+  untagged files must not grow unix-only imports. `go build` does not compile
+  `_test.go` files, so it cannot enforce that on the untagged
+  `microvm_bench_report_test.go` W6 adds (W6 Interfaces). Verified this
+  session: a scratch package whose untagged `_test.go` names
+  `syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM}` exits 0 under
+  `CGO_ENABLED=0 GOOS=darwin go build` and fails
+  `CGO_ENABLED=0 GOOS=darwin go vet` with
+  `unknown field Pdeathsig in struct literal of type syscall.SysProcAttr`.
+  Both commands are green on `./internal/runtime/` today (executed this
+  session, go1.26.5), where `go list` reports 14 darwin-visible test files
+  for `vet` to typecheck.
 - **Lint floors:** golangci-lint 2.13.2; nilaway under
   `GOTOOLCHAIN=go1.27.1`.
 - **Citation convention:** an unprefixed `file.go:N` cites main; any claim
@@ -1650,8 +1896,12 @@ inline rather than pretending a decision was made.
   known `passt` PSS drop-out is not an open question but a settled fact of
   `VM.PSS()`'s best-effort contract (`microvm/launch.go:471-484`,
   `microvm_preflight.go:277-287`), handled in § Approach (g) by the
-  `pss_incomplete` field plus W6's required-`vmm`/`virtiofsd`-keys
-  assertion. Raising N does not make a partial sample whole.)
+  `pss_incomplete` field plus W6's **required-PSS-key assertion over the key
+  set § Approach (g) defines once** (the `cloud-hypervisor` and `virtiofsd`
+  keys, per `VM.PSS()`'s `out[c.name] = pss`, `microvm/launch.go:485`) —
+  named there rather than respelled here, since the map's keys are
+  `VM.PSS()`'s child names and not V7's role-name vocabulary. Raising N does
+  not make a partial sample whole.)
 - **OQ-5 (non-load-bearing) — one CI job or a separate `microvm-bench`
   job?** W7 extends the existing `microvm` job: the benchmark reuses the
   same runner relaxations, nix realizations, and rollup wiring, and a
@@ -1668,14 +1918,37 @@ inline rather than pretending a decision was made.
   parent's file-name sketch once (`passt.pid` over `netbackend.pid`, no
   `vsock.port` file, PR #931 record §OQ-1), so the review pressure that can
   rename the death error can equally rename a metric or a pidfile. This
-  record therefore names the *contracts* and not the identifiers: an
-  `errors.As`-matchable exported type distinguishing VMM death from
-  transport errors (PR #931 record §(c)); one pidfile per peer daemon
-  recording `<pid> <starttime> <bootid>` (PR #931 record §(a)); a per-`Start`
-  boot-duration histogram carrying an `outcome` attribute (PR #931 record
-  §(d)). The executor binds each of them to whatever V7 merges.
-  Non-load-bearing because every one of those assertion shapes is fixed
-  either way.
+  record therefore names the *contracts* and not the identifiers:
+
+  - an `errors.As`-matchable exported type distinguishing VMM death from
+    transport errors (PR #931 record §(c));
+  - one pidfile per peer daemon recording `<pid> <starttime> <bootid>`
+    (PR #931 record §(a));
+  - **a pid-identity predicate answering "is the process at this pid still
+    the one this pidfile recorded"**, exported or otherwise test-reachable —
+    the same one V7's reaper rides on (`readPidfile` plus
+    `(pidRecord) alive()`, with its boot-id short-circuit and starttime
+    compare, PR #931 record :1147-1152). W4 consumes it rather than forking a
+    second `/proc/<pid>/stat` field-22 parser in a test. **Flag, while V7 is
+    still open:** V7 places these in `package microvm` and states no exported
+    or test-reachable form for `package runtime` / `package runner`, where
+    W4's legs live (PR #931 record :1134-1152) — so if V7 merges with no
+    reachable predicate, that is a request to V7, not something W4
+    re-derives;
+  - a per-`Start` boot-duration histogram carrying an `outcome` attribute
+    (PR #931 record §(d));
+  - **a per-process PSS gauge whose `process` attribute is the ROLE name,
+    renamed from `VM.PSS()`'s binary-name map key** (`vmm` for
+    `cloud-hypervisor`, PR #931 record :757). The *rename* is the contract
+    here, not either spelling: § Approach (g)'s two-vocabularies table
+    records both surfaces, W6's required-key assertion is bound to the map's
+    binary names, and W4's pidfile reads use the role names. This entry
+    exists so the collision is visible at the moment an executor binds V7's
+    identifiers — reading role-name prose as a map key is exactly how a `vmm`
+    PSS key got into a drafting of this record.
+
+  The executor binds each of them to whatever V7 merges. Non-load-bearing
+  because every one of those assertion shapes is fixed either way.
 - **OQ-7 (non-load-bearing) — proving mutations: recorded once, or a
   permanent mutation harness?** The plan runs each proving mutation during
   task development and records it as a per-assertion checklist in the PR
