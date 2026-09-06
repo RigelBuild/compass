@@ -257,15 +257,22 @@ jobs:
       github.event_name != 'workflow_dispatch' ||
       github.event.inputs.pr != ''
     # 90m is an INHERITED ceiling, not a measured one. It was sized for the
-    # vendored forks' nix worst case (compass-ci-job-decomposition/design.md:77-78),
-    # and that group is now gone — real wall-clock on main was ~20m even before
-    # it left (design.md:376-379). Do NOT read this number as any leg's
-    # requirement: no file sizes it, and `agent-image/moon.yml` citing "the
-    # reason ci.yml's timeout is 90m" points back here rather than grounding it.
-    # The nix group (every `ci-group.nix` project) is the only leg plausibly
-    # needing a large ceiling. Right-sizing per leg is that record's stated
-    # intent — "never the monolith's inherited 90, which is a forks-nix
-    # artifact" (design.md:463-465) — and is still open.
+    # vendored forks' nix worst case
+    # (infra/ci/compass-ci-job-decomposition/design.md:77-78), and that group is
+    # now gone — the monolith's real wall-clock on main was ~20m even before it
+    # left (same record, :377-378). `agent-image/moon.yml` used to point back
+    # here as the reason for the 90m and no longer does, so nothing measures the
+    # NIX LEG's own worst case.
+    #
+    # Counterweight, before anyone lowers it: DL-299 and its record
+    # (infra/release/compass-unified-release-lane/design.md:145) put the
+    # agent-image closure build at ~90m, and release.yml:115-116 sizes its own
+    # 90 on that same cost. The nix group (every `ci-group.nix` project) builds
+    # that closure, so this leg may genuinely need the headroom even though the
+    # ~20m monolith baseline does not justify it. Right-sizing per leg is the
+    # decomposition record's stated intent — "never the monolith's inherited 90,
+    # which is a forks-nix artifact" (:463-465) — and is still open; it needs a
+    # per-leg measurement, not this comment.
     timeout-minutes: 90
     env:
       # A short temp root, because AF_UNIX sun_path is 108 bytes and the Go
