@@ -154,7 +154,9 @@ export async function runOnce(deps: Deps): Promise<number> {
 			deps.err(`  ${v.file}:${v.line}: ${v.text.trim()}`);
 		deps.err(
 			"A public repo must not name, cite, or quote the private internal monorepo. " +
-				"Refer to it by architectural role instead (see skill://private-repo-boundary).",
+				'Refer to it by architectural role instead — say "the managed service", or ' +
+				"describe the core capability directly so it need not be named. " +
+				"See docs/concepts/self-host-and-managed.md.",
 		);
 		return 1;
 	}
