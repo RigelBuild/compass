@@ -37,12 +37,19 @@
       # (Global Constraint 4: the stack binaries carry ONE stamp). The semver
       # base comes from version.txt — the same single source release.yml and
       # ci.yml read — trimmed because the file ends in a newline that would
-      # otherwise land in a store path name and in the ldflag. A `+g<shortRev>`
-      # build-metadata suffix keeps a non-release artifact identifiable
-      # (ci.yml's dev-compile lane uses the identical shape); dirtyShortRev
-      # already carries its own `-dirty` marker, and a bare tree with no VCS
-      # metadata stamps the plain base.
-      versionBase = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
+      # otherwise land in the ldflag (and leave a trailing dash in the store
+      # path name). A `+g<shortRev>` build-metadata suffix keeps a non-release
+      # artifact identifiable (ci.yml's dev-compile lane stamps this same
+      # clean-tree shape); dirtyShortRev already carries its own `-dirty`
+      # marker, and a bare tree with no VCS metadata stamps the plain base.
+      # Empty content throws rather than stamping a coreless `+g<rev>`, which
+      # is not valid semver but would otherwise build and ship silently — the
+      # guard the other three stamp paths already carry.
+      versionBase =
+        let
+          v = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
+        in
+        if v == "" then throw "version.txt is missing or empty" else v;
       version =
         if self ? shortRev then
           "${versionBase}+g${self.shortRev}"

@@ -383,9 +383,22 @@ in
         # to `git rev-parse` inside the process script would be a build that
         # fails depending on which working copy it runs in.
         version_base="$(cat "${config.devenv.root}/version.txt")"
-        [ -n "$version_base" ] || { echo "version.txt missing or empty" >&2; exit 1; }
+        # Validate rather than normalize: the flake path trims whitespace, so a
+        # `-n` test alone would let whitespace-only or CRLF content through here
+        # and diverge from it. Rejecting anything outside the semver character
+        # set fails closed on all of those — and, unlike stripping whitespace,
+        # never turns a malformed value into a plausible-looking stamp.
+        case "$version_base" in
+          "" | *[!0-9A-Za-z.+-]*)
+            echo "version.txt missing or not a version string: '$version_base'" >&2
+            exit 1
+            ;;
+        esac
+        # `|| exit 1` because this script is rendered without `set -e`: a failed
+        # build would otherwise fall through to the `exec` below and silently
+        # run the previously-built binary, reporting a stale version.
         go build -ldflags "-X main.version=$version_base+dev" \
-          -o "$bin" ./cmd/compass-server
+          -o "$bin" ./cmd/compass-server || exit 1
         exec "$bin" \
           --socket "$COMPASS_SOCKET" \
           --dev-http "127.0.0.1:${toString config.processes.compass-server.ports.devhttp.value}" \
