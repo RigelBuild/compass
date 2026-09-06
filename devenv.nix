@@ -386,17 +386,21 @@ in
         # Validate rather than normalize: the flake path trims whitespace, so a
         # `-n` test alone would let whitespace-only or CRLF content through here
         # and diverge from it. Rejecting anything outside the semver character
-        # set fails closed on all of those — and, unlike stripping whitespace,
-        # never turns a malformed value into a plausible-looking stamp.
+        # set (a shape filter, not a full semver parse) fails closed on all of
+        # those — and, unlike stripping whitespace, never turns a malformed
+        # value into a plausible-looking stamp.
         case "$version_base" in
           "" | *[!0-9A-Za-z.+-]*)
             echo "version.txt missing or not a version string: '$version_base'" >&2
             exit 1
             ;;
         esac
-        # `|| exit 1` because this script is rendered without `set -e`: a failed
-        # build would otherwise fall through to the `exec` below and silently
-        # run the previously-built binary, reporting a stale version.
+        # Explicit `|| exit 1` rather than leaning on the `set -e` devenv
+        # injects into the rendered task script (its src/modules/tasks.nix
+        # emits it for every non-status bash task): a failed build must not
+        # fall through to the `exec` below and silently run the previously-built
+        # binary at a stale version, and that must hold whether or not the
+        # pinned devenv keeps rendering the wrapper.
         go build -ldflags "-X main.version=$version_base+dev" \
           -o "$bin" ./cmd/compass-server || exit 1
         exec "$bin" \

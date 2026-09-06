@@ -44,12 +44,21 @@
       # marker, and a bare tree with no VCS metadata stamps the plain base.
       # Empty content throws rather than stamping a coreless `+g<rev>`, which
       # is not valid semver but would otherwise build and ship silently — the
-      # guard the other three stamp paths already carry.
+      # guard the other three stamp paths already carry. The same character
+      # class the devenv lane enforces is applied here too, so the two lanes
+      # accept exactly the same content: without it an inner space passes here
+      # and lands raw in the ldflag (the store-path name silently sanitizes it
+      # to a dash), which is the fail-quiet outcome the guard exists to stop.
       versionBase =
         let
           v = nixpkgs.lib.strings.trim (builtins.readFile ./version.txt);
         in
-        if v == "" then throw "version.txt is missing or empty" else v;
+        if v == "" then
+          throw "version.txt is missing or empty"
+        else if builtins.match "[0-9A-Za-z.+-]+" v == null then
+          throw "version.txt is not a version string: '${v}'"
+        else
+          v;
       version =
         if self ? shortRev then
           "${versionBase}+g${self.shortRev}"
