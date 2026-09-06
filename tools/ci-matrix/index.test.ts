@@ -626,6 +626,56 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
 		).not.toContain("orion-ref-gate:ci");
 	});
+
+	test("the ledger gate joins the closure on a docs-only change", () => {
+		// The sibling instance, and the one the design corpus depends on:
+		// design-ledger-gate's `check` declares a workspace-root input glob
+		// over docs/designs, which no project owns, so a docs-only diff leaves
+		// it out of the project walk entirely. Measured on moon 2.5.3 against
+		// docs/designs/DECISIONS.md: the walk yields flake-gate and root; the
+		// task half yields design-ledger-gate. A later change that narrowed the
+		// closure back for the design corpus specifically would leave the
+		// orion-ref-gate cases above green, so this fixture names its own gate.
+		// flake-gate and root are the universal floor of every moon closure, so
+		// they must exist as grouped members for the walk half to be
+		// well-formed input to the generator.
+		const projects = [
+			...workspace(),
+			proj("flake-gate", "nix"),
+			proj("root", "bun"),
+		];
+		const gate = proj("design-ledger-gate", "bun");
+		const projectWalk = ["flake-gate", "root"];
+		const union = unionAffectedIds(
+			projectWalk,
+			parseTaskAffectedIds(
+				JSON.stringify({ tasks: { "design-ledger-gate": { check: {} } } }),
+			),
+			new Set([...projects.map((project) => project.id), gate.id]),
+		);
+
+		const out = generate({
+			projects: [...projects, gate],
+			affectedIds: union,
+			changedPaths: ["docs/designs/DECISIONS.md"],
+			event: "pull_request",
+		});
+		expect(out.matrix.find((l) => l.group === "bun")?.targets).toContain(
+			"design-ledger-gate:ci",
+		);
+
+		// Control: the project walk alone leaves the ledger unchecked, which is
+		// the pre-union behaviour a docs-only PR actually got.
+		const without = generate({
+			projects: [...projects, gate],
+			affectedIds: projectWalk,
+			changedPaths: ["docs/designs/DECISIONS.md"],
+			event: "pull_request",
+		});
+		expect(
+			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
+		).not.toContain("design-ledger-gate:ci");
+	});
 });
 
 describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
