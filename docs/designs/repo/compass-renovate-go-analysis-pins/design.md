@@ -573,7 +573,10 @@ throwaway git repo with a stub `nix` on PATH that answers BOTH subcommands:
 `eval --raw … .drvPath` returns a fake `/nix/store/<hash>-source.drv` (and
 `…-go-modules.drv`), and `build` emits a `hash mismatch … got:` block whose
 header carries that SAME drv path (two sequential build invocations: source
-FOD, then go-modules). The commit-date fetch is NOT stubbed on PATH — that
+FOD, then go-modules). The stubbed FOREIGN block below (the `must NOT bind`
+assertion) uses a DIFFERENT `<hash>` prefix from the tool's own, so that
+not-bound assertion is non-vacuous — a same-prefix stub would pass it
+trivially. The commit-date fetch is NOT stubbed on PATH — that
 would shadow the real `git` the self-gate/base-ref shape depends on
 (refresh-fod-hashes.ts:234-247, exercised against a real fixture repo,
 refresh-fod-hashes.test.ts:162-172). Instead the test points the fetch at a
@@ -613,9 +616,10 @@ Interfaces:
   derived: "tag-from-version" | "version-from-rev-date" }` — `srcAttr` /
   `vendorAttr` are the gate-tools sub-attr paths (`src`, `goModules`) whose
   `.drvPath` T3 resolves at RUNTIME; there is NO static drv-name fragment
-  (see Approach Piece 3). Also export the nilaway fetch URL as an overridable
-  seam (`NILAWAY_FETCH_URL`, default `https://github.com/uber-go/nilaway`) so
-  the test can point it at a local fixture upstream.
+  (see Approach Piece 3). Also read the nilaway fetch URL from an env seam
+  (`NILAWAY_FETCH_URL`, default `https://github.com/uber-go/nilaway`) — the
+  test drives the script as a subprocess, so the override must cross the
+  process boundary via env, not a module export.
 - Imports from `tools/renovate/refresh-fod-hashes.ts`: `rewriteInlineHash`,
   `parseGotForFragment`.
 - Consumes T1's `analysis.<tool>` attrpath (plus `.src` / `.goModules`).
