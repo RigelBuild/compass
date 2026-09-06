@@ -570,11 +570,11 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			wantSub: "providers.openai.apiKey",
 		},
 		{
-			// The only denylist entry whose leaf is a RECORD rather than a scalar
-			// string, so it exercises yamlPathIsSet's non-nil-leaf check
-			// differently from every case above (all of which terminate in a
-			// string). Pins the door's behavior on the path the SDK 18.x bump
-			// added.
+			// The only denylist entry whose leaf is a RECORD rather than a
+			// scalar string — the first case where yamlPathIsSet terminates on
+			// a map node rather than a string. Same branch today, but it pins
+			// the door against a future change that treats a container leaf as
+			// "not set". Added by the SDK 18.x bump.
 			name:    "settings record-valued credential leaf",
 			member:  tarEntry{name: "settings/config.yml", content: "images:\n  urls:\n    credentials:\n      s3: {key: v}\n"},
 			wantSub: "images.urls.credentials",
@@ -604,7 +604,7 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 // `compass-go:credential-keys-drift` moon task owns that detection by
 // regenerating against the installed schema and failing on a byte diff.
 //
-// When that gate reds, regenerate (`go generate ./...` from go/internal/store)
+// When that gate reds, regenerate (`cd go/internal/store && go generate ./...`)
 // and update `want` here in the same commit — a new credential-marked path is
 // expected at a bump and must be ADOPTED, but a path DISAPPEARING means the door
 // stopped rejecting something it used to, which is a policy regression to

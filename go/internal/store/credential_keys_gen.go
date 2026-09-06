@@ -2,7 +2,7 @@
 //
 // Source: @oh-my-pi/pi-coding-agent src/config/settings-schema.ts (isCredential
 // markers: `credential: true` at the def level OR `ui.secret === true`). Refresh
-// with `go generate ./...` from go/internal/store at an SDK bump.
+// with `cd go/internal/store && go generate ./...` at an SDK bump.
 
 package store
 
@@ -18,3 +18,8 @@ var credentialKeys = []string{
 	"searxng.basicPassword",
 	"searxng.token",
 }
+
+// schemaTotalPaths is the number of top-level paths the schema carried when
+// this file was generated. The generator compares against it to catch a
+// parser that has stopped collecting properly (see gen_credential_keys.go).
+const schemaTotalPaths = 481
