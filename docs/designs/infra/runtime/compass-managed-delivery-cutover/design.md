@@ -3,7 +3,7 @@
 Status: Active
 Ratified: OQ-1..OQ-4 decided by Matt (2026-09-05, see Resolved decisions); frozen on merge
 Parent: `docs/designs/infra/runtime/compass-managed-multitenancy/design.md` (frozen), T3
-Ledger-impact: appends DL-327..333 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reconnect-seam shape, and the double-publish interpretation (design-ledger-gate)
+Ledger-impact: appends DL-331..337 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reconnect-seam shape, and the double-publish interpretation (design-ledger-gate)
 
 ## Problem / Intent
 
@@ -132,7 +132,7 @@ an IMMEDIATE in-process trigger (`sub.Lagged()` → `sweepAllLive` +
 with the lag branch; and (2) `scanMissedMentions` routes ONLY mentions +
 ask-answers (`scan.go:35-70`), never plain delivers, so it recovers a
 publish-failed PLAIN message not at all. **What triggers full-set recovery after
-a publish-side failure is resolved by OQ-3 part 2 / DL-330: a fabric-reconnect
+a publish-side failure is resolved by OQ-3 part 2 / DL-337: a fabric-reconnect
 hook plus a minutes-scale periodic floor tick, each running `sweepAllLive` +
 `scanMissedMentions`.**
 No outbox table in this PR — Postgres remains "the sole durability source of
@@ -404,7 +404,7 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
   overrun.
 - **Test cycle:** a red-green unit test that a publish-failed PLAIN
   (non-mention) message to a live, never-restarting recipient IS recovered by
-  the ruled trigger — this is the DL-330 silent-stall hole the red-team
+  the ruled trigger — this is the DL-337 silent-stall hole the red-team
   promoted to CRITICAL, so the record's headline recovery ruling ships with a
   test proving it closes; a test that the start-time scan still runs before the
   first event; and a test that `OnReconnect`'s chained callback fires the
@@ -417,7 +417,7 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
 
 - **Interfaces:** consumes `docs/designs/DECISIONS.md`; this record. Produces:
   the changelog entry and this record's cross-references. The DL rows for the
-  ratified OQ rulings and the reconnect-seam shape (DL-327..333, incl. the
+  ratified OQ rulings and the reconnect-seam shape (DL-331..337, incl. the
   double-publish-is-not-a-Global-Constraint-violation interpretation) landed
   WITH this record's own freeze PR per the "Ledger delta owed" Global
   Constraint — they are NOT re-produced here (the append-only unique-ID rule
@@ -445,7 +445,7 @@ exists anymore) and re-derive the no-loss argument from JetStream durability.
       (`sweepAllLive` / `scanMissedMentions`) per OQ-3 part 2; PRODUCES the
       reconnect seam (does not exist yet); lands in T2's PR; plain-deliver
       recovery test
-- [ ] T6: changelog + record cross-references (DL-327..333 already landed with
+- [ ] T6: changelog + record cross-references (DL-331..337 already landed with
       this record's freeze PR)
 
 ## Resolved decisions
