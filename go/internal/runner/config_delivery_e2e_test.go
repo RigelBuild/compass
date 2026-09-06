@@ -75,8 +75,8 @@ const (
 	// failure prefix is present) — a present-but-unbootable image, skip not fail.
 	agentUnbootable
 	// agentBootInconclusive: the probe saw NEITHER startup marker. The success
-	// marker is an oh-my-pi debug string emitted under PI_DEBUG_STARTUP, a
-	// contract that lives in a sibling fork and has been volatile; its absence on
+	// marker is an oh-my-pi debug string emitted under PI_DEBUG_STARTUP, an
+	// upstream SDK contract that has been volatile; its absence on
 	// an otherwise-runnable image means that contract may have DRIFTED, so the
 	// caller must skip loudly and distinctly (silently reusing the known-defect
 	// narrative would let this test stop auto-activating with no alarm).

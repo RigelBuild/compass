@@ -11,17 +11,26 @@
 // files; keeping the stub untagged is what lets its red->green unit test run
 // under `moon run compass-go:test` without podman.
 //
-// Grounded against the SDK parser firsthand (forks/oh-my-pi):
-//   - The provider POSTs to `baseUrl + /chat/completions` with
-//     `Accept: text/event-stream` (ai/src/utils/openai-http.ts:64-90).
+// Grounded against the SDK parser firsthand, at the 18.0.11 pin
+// (`packages/compass-agent/package.json`) — @oh-my-pi/pi-ai, and
+// @oh-my-pi/pi-utils via pi-ai's dependency edge (openai-http.ts:17), which is
+// transitive rather than a declared compass dependency:
+//   - The provider POSTs to `baseUrl + /chat/completions`
+//     (providers/openai-completions.ts:752-753) with `Accept: text/event-stream`
+//     (utils/openai-http.ts:93, in postOpenAIStream).
 //   - The response is decoded by readSseJson: each `data:` line is JSON-parsed
 //     into a ChatCompletionChunk, and the literal `data: [DONE]` ends the stream
-//     (utils/src/stream.ts:251-273).
+//     (pi-utils src/stream.ts:239-262 — the [DONE] return at :248-249, the
+//     JSON.parse at :253).
 //   - Each chunk's `choices[0].delta.content` string is appended as assistant
-//     text, and `choices[0].finish_reason` maps the stop reason; "stop" is a
-//     clean settle (providers/openai-completions.ts:1068-1091, mapStopReason
-//     :2337-2345). A single text chunk + a terminal finish chunk + [DONE] is the
-//     minimal well-formed leg-2 turn (no tool calls).
+//     text (providers/openai-completions.ts:1216), and `choices[0].finish_reason`
+//     maps the stop reason (:1180-1181); "stop" is a clean settle (mapStopReason
+//     :2504, its `case "stop"` at :2515-2517). A single text chunk + a terminal
+//     finish chunk + [DONE] is the minimal well-formed leg-2 turn (no tool
+//     calls).
+//
+// These coordinates are pinned to a mutable npm dependency, not an in-repo tree:
+// re-derive them at an SDK bump rather than trusting them.
 package e2e
 
 import (
