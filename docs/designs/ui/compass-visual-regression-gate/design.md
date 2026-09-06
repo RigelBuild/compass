@@ -92,12 +92,14 @@ baselines as the review artifact and a failing run produces `-actual`/`-diff`
 PNGs.
 
 `snapshotPathTemplate` is set so baselines stay at their current names:
-Playwright's default template appends platform/project suffixes
-(`bridge-chromium-linux.png`); a template of
-`{testDir}/__screens__/{arg}{ext}` keeps the existing 11 files
+Playwright's default template relocates each baseline into a
+`<specfile>-snapshots/` subdirectory (`apps/ui/e2e/visual-smoke.spec.ts-snapshots/`)
+and appends platform/project suffixes (`bridge-chromium-linux.png`); a template
+of `{testDir}/__screens__/{arg}{ext}` keeps the existing 11 files
 (`apps/ui/e2e/__screens__/`: bridge.png, bridge-empty.png, bridge-card.png,
 bridge-colheads.png, bridge-prs.png, settings.png, done.png, backlog.png,
-agent.png, right-sidebar.png, state-dot.png) as the baselines with no rename.
+agent.png, right-sidebar.png, state-dot.png) as the baselines with no directory
+move or rename.
 The suffix-free template is safe because the config defines a single
 `chromium` project (`playwright.config.ts:73-78`) and the gate only ever runs
 on Linux against the pinned Chromium (Global Constraints); a second
@@ -169,9 +171,10 @@ anti-aliasing colour drift; a Chromium bump revisits it deliberately.
 ### Where it runs: a moon task inside the existing moon battery
 
 A new `visual-gate` moon task, added to the `ci` task's deps — not a
-dedicated peer job behind the rollup. The peer-job pattern (gtk4-e2e,
-dogfood-e2e) exists for legs that "realize a heavy out-of-band … closure the
-bare moon gate has no business building" (`ci.yml:1128`, `moon-battery` peer-job rationale: "no business building"). This gate has
+dedicated peer job behind the rollup. The peer-job pattern (gtk4-e2e, microvm)
+exists for legs that "realize a heavy out-of-band … closure the bare moon gate
+has no business building" (`ci.yml:1128`, `moon-battery` peer-job rationale: "no
+business building"; `ci.yml:624`, `microvm` job). This gate has
 no such closure: the moon leg already realizes the pinned Chromium and
 exports `PLAYWRIGHT_CHROMIUM_PATH` for `dev-smoke` (`ci.yml:369`, `moon-battery`: `PLAYWRIGHT_CHROMIUM_PATH` export), and
 the harness's webServer is the same `vite --mode fixture` boot dev-smoke's
@@ -245,8 +248,10 @@ as OQ-5 with this recommendation since the issue asks.
   project, Linux only.
 - **Baselines from CI only**: `apps/ui/e2e/__screens__/` PNGs are written
   only by the regen dispatch lane (T4) running in the pinned environment.
-  A locally generated baseline is a review-rejection offense — a dev-box
-  Chromium raster differs and would bake local noise into the oracle
+  A local `--update-snapshots` run dirties these tracked files by design, so
+  this CI-only baseline rule is enforced by review, not by tooling. A locally
+  generated baseline is a review-rejection offense — a dev-box Chromium raster
+  differs and would bake local noise into the oracle
   (`compass-ui-fixture-boot/design.md:419-421`).
 - **API floor**: `@playwright/test 1.62.1` (`apps/ui/package.json:34`); no
   version bump inside this record. Every API used (`toHaveScreenshot`,
@@ -332,8 +337,10 @@ Interfaces:
 - Produces: a spec that exits non-zero on visual drift, writing
   `-actual`/`-expected`/`-diff` PNGs under `e2e/.output` on failure.
 - Test cycle: local run passes against freshly `--update-snapshots`-generated
-  local baselines (NOT committed); a deliberate CSS perturbation reds the
-  matching shot; revert restores green.
+  local baselines (NOT committed); restore the tracked baselines immediately
+  after verification with `jj restore apps/ui/e2e/__screens__` (`git checkout --`
+  is the git equivalent); a deliberate CSS perturbation reds the matching shot;
+  revert restores green.
 
 ### T3 — Moon task + battery artifact upload
 
@@ -406,9 +413,9 @@ Interfaces:
 ### T5 — First CI-generated baselines + cutover ordering
 
 Sequencing task, not a code task. Order: land T1+T2+T4 with the gate NOT yet
-in `ci` deps (T3's moon.yml edit split out); dispatch T4's lane to produce
-the first pinned-environment baselines; merge that bot PR (replacing the 11
-dev-box PNGs currently committed); **burn in before flipping the gate** —
+in `ci` deps (T3 lands in full only after the cutover); dispatch T4's lane to
+produce the first pinned-environment baselines; merge that bot PR (replacing the
+11 dev-box PNGs currently committed); **burn in before flipping the gate** —
 re-dispatch T4's lane 5–10 times and diff the resulting bot-PR baselines
 against each other: on a byte-for-byte pinned Chromium they should be
 identical, and this converts the "should be deterministic" claim into
