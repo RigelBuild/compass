@@ -17,12 +17,14 @@
 # fails loud (naming the offending project id) on any untagged project
 # (zero-untagged), any project carrying two ci-group tags (disjointness), and
 # any coverage gap. A new project with a `ci` task is picked up the moment it is
-# registered and tagged — no matrix entry to forget — so the arriving oh-my-pi
-# fork still needs no edit to this file, the same property the one-job design
-# prized, now with per-group named checks instead of one opaque `gates` status.
+# registered and tagged — no matrix entry to forget — and a departing one drops
+# out just as quietly: removing the vendored oh-my-pi fork emptied the `forks`
+# group and retired its check with no edit to this file, the same property the
+# one-job design prized, now with per-group named checks instead of one opaque
+# `gates` status.
 #
 # The `gates` display name is gone. Each concern group runs as its own matrix
-# leg named `Moon battery (<group>)` (go / bun / nix / forks today), so a
+# leg named `Moon battery (<group>)` (go / bun / nix today), so a
 # failure is attributed to a named check rather than to a line in one job's log.
 # The four special legs that already needed an environment the bare moon battery
 # has no business realizing — pgtest, microvm, forge-oracle, gtk4-e2e — remain
@@ -33,8 +35,8 @@
 # affects: `setup` computes the affected closure once and emits, per group, the
 # affected members' `:ci` targets (an unaffected group's leg no-ops) plus a
 # per-special-leg affected flag (pgtest/microvm/forge/gtk4), so a Go, UI, or
-# docs PR never pays for the vendored forks' nix builds (the dominant cost, and
-# the reason the forks leg's timeout is 90m). The tradeoff is real and named:
+# docs PR never pays for the nix group's image builds (the dominant cost, and
+# the reason the nix leg's timeout is 90m). The tradeoff is real and named:
 # affected detection trusts each task's `inputs` globs to be complete, so an
 # inputs glob that misses a file would skip a task that should have run. The
 # backstop is that main is never gated by affected: every push to main AND a
@@ -254,9 +256,10 @@ jobs:
     if: >-
       github.event_name != 'workflow_dispatch' ||
       github.event.inputs.pr != ''
-    # The forks group builds through nix (devenv's Rust crates via its flake's
-    # fenix pin), the dominant cost, so 90m is the ceiling every leg shares for
-    # now. A later dedup can give each group its own tighter ceiling; the forks
+    # The nix group builds the agent/guest images and the app bundle — the
+    # dominant cost (agent-image/moon.yml names this 90m ceiling as the reason
+    # its build is affected-gated) — so 90m is the ceiling every leg shares for
+    # now. A later dedup can give each group its own tighter ceiling; the nix
     # leg is the one that actually needs 90.
     timeout-minutes: 90
     env:

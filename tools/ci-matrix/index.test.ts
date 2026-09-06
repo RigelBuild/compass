@@ -158,7 +158,8 @@ describe("placeholder anchor — one entry per existing group, unaffected are pl
 	});
 
 	test("a group that appears on no project is absent from the matrix", () => {
-		// No 'nix' project here → no nix entry.
+		// No 'nix' project here — this literal deliberately is NOT workspace().
+		// Swapping it for the shared fixture voids the test silently.
 		const projects = [proj("compass-go", "go"), proj("compass-agent", "bun")];
 		const out = generate({
 			projects,
