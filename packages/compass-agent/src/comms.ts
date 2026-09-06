@@ -54,13 +54,29 @@
 // search is deferred (OQ-3).
 
 // The tool-parameter schema builder comes from the SDK's OWN schema stack
-// (`@oh-my-pi/omptype`, pinned to the same 18.0.3 release as the SDK), via
-// its `/ark` compatibility facade — arktype-authored code runs unchanged on the
-// omptype lazy-JIT runtime. Sourcing it from the SDK's stack rather than a
+// (`@oh-my-pi/omptype`, pinned to the same release as the SDK), via its `/ark`
+// compatibility facade — arktype-authored code runs unchanged on the omptype
+// lazy-JIT runtime. Sourcing it from the SDK's stack rather than a
 // separately-versioned `arktype` is what keeps the tool parameter types
 // assignable to the SDK's `TSchema`: there is only ever one schema
 // implementation in the graph, so the two-copy mismatch `tsc` used to catch
-// cannot arise. Keep the omptype pin in lockstep with the SDK pin.
+// cannot arise. Keep the omptype pin in lockstep with the SDK pin; package.json
+// is the authority for the version.
+//
+// TWO omptype introspection deltas to know when authoring schemas here:
+//
+//  1. A `.describe()` applied after a `.narrow()` SHADOWS the narrow's
+//     `ctx.mustBe(...)` reason in the rejection message (arktype appended it).
+//     Since that message is the model's ONLY channel for a bound absent from
+//     the JSON Schema, every `.narrow` rule MUST also be spelled out in the
+//     `.describe()` text — otherwise the model is told the field's purpose and
+//     never the violated rule, so it cannot self-correct. Assert rule text with
+//     a message assertion, not just a reject/accept boolean.
+//  2. `.get(k).description` on an OPTIONAL UNION node returns the rendered
+//     union (`"github" or "linear" or undefined`) rather than the authored
+//     text. The model-facing wire schema is unaffected, so assert description
+//     contracts through `arkToWireSchema` (as lifecycle.test.ts does for
+//     `role`), never through `.get().description`.
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
@@ -128,12 +144,15 @@ export class CommsBroker {
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const postParameters = type({
 	// The non-blank bound is enforced at runtime but is NOT expressible in JSON
-	// Schema — arktype drops the `.narrow` predicate from the wire schema the
-	// model is shown (`toJsonSchema` throws on it; the harness falls back to the
-	// unconstrained base, `pi-ai/src/utils/validation.ts:1640-1643`). So the
-	// model sees a bare string and learns the rule only by being rejected. The
-	// description carries it instead: a constraint the caller cannot see is one
-	// it will violate.
+	// Schema — a `.narrow` predicate has no JSON Schema form, so the harness
+	// degrades the node to its unconstrained base
+	// (`arkToWireSchema`'s `fallback: ctx => ctx.base`,
+	// `pi-ai/src/utils/schema/wire.ts:587`; the emitted-schema path is
+	// `pi-ai/src/utils/validation.ts:1713-1716`). So the model sees a bare
+	// string and learns the rule only by being rejected. The description must
+	// carry it: a constraint the caller cannot see is one it will violate — and
+	// under omptype a `.describe()` shadows the narrow's `mustBe` reason, so the
+	// description is the ONLY place the rule reaches the model.
 	text: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe("Markdown message body; must not be blank"),
@@ -147,7 +166,7 @@ export const postParameters = type({
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
 		.describe(
-			"Named conversation within the channel; a name-miss is an error unless create_topic is true",
+			"Named conversation within the channel, non-blank and at most 120 characters; a name-miss is an error unless create_topic is true",
 		),
 	// The target channel BY NAME. Required (peer-DM record R1+R2+R5): the home
 	// default is dropped at the tool level for post/ask — the agent must NAME its
@@ -158,7 +177,7 @@ export const postParameters = type({
 	channel: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"Target channel by name (required); to post to your own channel, name it — there is no default",
+			"Target channel by name (required, must not be blank); to post to your own channel, name it — there is no default",
 		),
 	// Gate get-or-create of an unknown `topic`: when true a name that names no
 	// existing topic MINTS it; when false (default), a name-miss is an error,
@@ -228,7 +247,7 @@ export const postAskParameters = type({
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
 		.describe(
-			'Named conversation within the channel; a name-miss is an error unless create_topic is true (default "general")',
+			'Named conversation within the channel, non-blank and at most 120 characters; a name-miss is an error unless create_topic is true (default "general")',
 		),
 	// The target channel BY NAME. Required, same rationale as
 	// `postParameters.channel`: the home default is dropped at the tool level and
@@ -236,7 +255,7 @@ export const postAskParameters = type({
 	channel: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"Target channel by name (required); to post to your own channel, name it — there is no default",
+			"Target channel by name (required, must not be blank); to post to your own channel, name it — there is no default",
 		),
 	// Gate get-or-create of an unknown `topic`, mirroring `postParameters`.
 	"create_topic?": type("boolean").describe(
@@ -298,7 +317,7 @@ export const openDmParameters = type({
 	peer_handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"The peer agent's handle to open a DM with; unknown or cross-owner is an error",
+			"The peer agent's handle to open a DM with (must not be blank); unknown or cross-owner is an error",
 		),
 });
 
@@ -307,7 +326,7 @@ export const dmParameters = type({
 	peer_handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
-			"The peer agent's handle to DM; unknown or cross-owner is an error",
+			"The peer agent's handle to DM (must not be blank); unknown or cross-owner is an error",
 		),
 	text: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
@@ -316,7 +335,7 @@ export const dmParameters = type({
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
 		.describe(
-			"Named conversation within the DM; a name-miss is an error unless create_topic is true",
+			"Named conversation within the DM, non-blank and at most 120 characters; a name-miss is an error unless create_topic is true",
 		),
 	"create_topic?": type("boolean").describe(
 		"When true, an unknown topic name is created; when false (default) a topic name-miss is an error",

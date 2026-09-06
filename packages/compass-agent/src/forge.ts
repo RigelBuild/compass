@@ -112,13 +112,17 @@ export class ForgeBroker {
 }
 
 // The required-non-blank string idiom (comms/lifecycle precedent): the `.narrow`
-// predicate is enforced at runtime but has no JSON Schema form (`toJsonSchema`
-// drops it), so the model sees a bare string and learns the rule only from the
-// description — hence the description repeats it.
+// predicate is enforced at runtime but has no JSON Schema form (the harness
+// degrades the node to its unconstrained base), so the model sees a bare string
+// and learns the rule only from the description — hence the description repeats
+// it. Appended here rather than hand-written into each caller's text so no
+// call site can forget it: under omptype a `.describe()` SHADOWS the narrow's
+// `ctx.mustBe(...)` reason in the rejection message, so if the rule is missing
+// from the description it reaches the model through no channel at all.
 const nonBlank = (description: string) =>
 	type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
-		.describe(description);
+		.describe(`${description} (must not be blank)`);
 
 // The optional multi-forge selector, spread into EVERY tool below. Unset = the
 // configured default GitHub forge (DL-202). Defined as a plain definition-object

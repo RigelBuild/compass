@@ -511,6 +511,35 @@ describe("comms parameter schemas", () => {
 		expect(listParameters.get("limit").description).toContain("default 50");
 	});
 
+	// The rule text must reach the MODEL, not just the validator. This is the
+	// contract a reject/accept boolean cannot defend, and it is
+	// schema-implementation-sensitive: under omptype a `.describe()` SHADOWS the
+	// narrow's `ctx.mustBe(...)` reason in the emitted message (arktype appended
+	// it), so a rule that lives ONLY in the narrow reaches the model through no
+	// channel at all — not the JSON Schema (a `.narrow` has no JSON Schema form),
+	// and not the rejection text. The rejection message is what the harness feeds
+	// back to the model verbatim (`pi-ai/src/utils/validation.ts:1722` maps each
+	// issue to `path: message`), so it is the surface asserted here.
+	test("a violated narrow rule names the RULE in the message the model sees", () => {
+		// `instanceof ArkErrors` is the real narrowing (same idiom as `rejects`
+		// above): it proves the value carries `summary` rather than asserting it.
+		const summaryOf = (params: unknown): string => {
+			const out = postParameters(params);
+			if (!(out instanceof ArkErrors)) {
+				throw new Error("expected the schema to reject these params");
+			}
+			return out.summary;
+		};
+
+		// The violated bound itself, not merely the field's purpose.
+		expect(
+			summaryOf({ text: "hi", topic: "x".repeat(121), channel: "c" }),
+		).toContain("120");
+		expect(summaryOf({ text: "hi", topic: "t", channel: "   " })).toContain(
+			"blank",
+		);
+	});
+
 	// open_dm requires a non-blank peer_handle — the same `.narrow` idiom.
 	test("open_dm requires a non-blank peer_handle", () => {
 		expect(rejects(openDmParameters, {})).toBe(true);
