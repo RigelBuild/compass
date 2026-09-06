@@ -6,9 +6,9 @@ Linear: RIG-3238 (design)
 Investigation + design record for RIG-3238: whether Apple `container`
 (github.com/apple/container) becomes a supported backend behind the frozen
 `ContainerRuntime`/`SelectBackend` seam for the Compass native app's embedded
-macOS front door, and if so, the adoption sequencing. This record produces a
-RECOMMENDATION and an adoption plan gated on spike evidence; it does not
-implement the backend.
+macOS front door, and if so, the adoption sequencing. This record carries
+Matt's RIG-3246 ruling plus an adoption plan whose BUILD (not direction) is
+gated on the T-1 spike; it does not implement the backend.
 
 ## Problem / Intent
 
@@ -56,9 +56,11 @@ descriptively as its OQ-10 ("apple/container as a macOS backend?" —
 recommendation "track apple/container as a post-1.0 alternative macOS
 backend — revisit when it reaches 1.0",
 `compass-native-embedded-revival/design.md:980-998`). 1.0 has shipped; this
-record is that revisit. The question: does Apple `container` become a
-supported backend behind `SelectBackend`, and if so, is it the default
-embedded-macOS front-door backend or a staged bet behind podman-machine?
+record is that revisit. The question this record opened with — does Apple
+`container` become a supported backend behind `SelectBackend`, and if so is it
+the macOS engine or a staged bet behind podman-machine — is now RULED in
+Approach: apple-container IS the macOS engine; only the flip timing and the
+vsock hardware leg remain gated.
 
 ## Approach
 
@@ -72,7 +74,7 @@ direction is committed; what stays gated is the ONE load-bearing hardware
 unknown the T-1 spike owns — whether Virtualization.framework surfaces a
 usable guest↔host vsock the guestd-style forwarder ports onto (OQ-11/12 fold
 below). A green spike is build-then-flip; a red spike on the vsock leg
-returns the transport question (not the direction) to Matt.**
+returns the transport question (not the direction) to Matt.
 
 Matt's rulings, verbatim-anchored: OQ-9 "A, we have a mac mini box on the
 Woodpecker CI … you should have ssh access to the mattmini to start testing"
@@ -237,11 +239,11 @@ leaves the most-used on-ramp on the weakest isolation shape in the fleet
 (shared-VM rootless podman) while a per-agent hardware boundary is available
 at comparable cost, and it leaves the OQ-7 socket-transport hazard
 (`compass-native-embedded-revival/design.md:909-926`) as a permanent
-workaround rather than a topology that may dissolve it (each Apple-container
-VM mounts only its own session dir; whether its virtiofs carries AF_UNIX is
-OQ-2 — if it does, the per-session socket contract survives unmodified;
-if not, the same TCP/vsock fallback podman-machine needs applies). It also
-forfeits the "no machine init" first-run win: podman-machine's first launch
+workaround rather than dissolving it: the ruled vsock transport (OQ-11) takes
+the agent socket off the virtiofs/AF_UNIX path entirely — each Apple-container
+VM reaches the host over guest↔host vsock, out-of-band of the mount boundary
+the hazard lives on. It also forfeits the "no machine init" first-run win:
+podman-machine's first launch
 is a multi-minute multi-GB VM download with resource-floor tuning
 (embedded-revival §A5), which Apple `container` simply does not have.
 
@@ -377,22 +379,27 @@ Matt ruled OQ-9 A (the mac mini on Woodpecker, ssh access provisioned).**
   `--userns=keep-id:uid=,gid=` supplies on podman, `podman.go:25-27`) or as
   a fixed/root uid, and whether `/nix` + `$HOME` baked at uid 1000 are
   usable.
-  (b) **AF_UNIX socket bind-mounts** (OQ-2): create a host-side AF_UNIX
-  listener in a dir, bind-mount the dir, dial the socket from inside the
-  container — the exact per-session gateway-socket shape
-  (`go/internal/runner/gateway/socket.go:8-13`). Record connect success and
-  round-trip.
+  (b) **vsock gateway channel** (OQ-2): the ruled transport is guest↔host
+  vsock (OQ-11), so the load-bearing probe is whether
+  Virtualization.framework's `VZVirtioSocketDevice` vsock is reachable through
+  Apple's `container` CLI. Run the guestd-style unix→vsock forwarder shape
+  (`go/internal/guestd/gateway_proxy.go:29-33`, `:205-213`) against the
+  per-session gateway-socket contract (`go/internal/runner/gateway/socket.go:8-13`)
+  and record connect + round-trip OVER VSOCK. A raw AF_UNIX virtiofs
+  bind-mount is NOT assumed to work; probe it only as an explicitly-secondary
+  datapoint, not the gate.
   (c) **egress arming** (OQ-3): `container run --cap-add NET_ADMIN` an image
   with nft, run `EgressPolicy.NftScript()`'s grammar as the PRODUCTION arming
   identity — the image's default user (uid 1000) with CAP_NET_ADMIN, NO
   `--user` (mirroring `agent.go:321-325`, where arming execs as the default
   user, not root) — and verify default-deny + allowlist behavior and that a
   capability-less user cannot edit the ruleset (the integrity model,
-  `go/internal/runtime/egress.go:6-10`). Re-run default-deny WITH whatever
-  gateway-socket transport (b)/OQ-2 selected: if that is TCP/vsock rather than
-  a raw AF_UNIX mount, confirm the ruleset carve-out keeps the gateway hop and
-  DNS reachable — (b) and (c) pass individually but their COMBINATION is the
-  real test (OQ-2/OQ-3 coupling).
+  `go/internal/runtime/egress.go:6-10`). Re-run default-deny WITH the vsock
+  gateway channel from (b): confirm the vsock hop stays reachable (it is
+  out-of-band of the guest's netfilter — a virtio device, not an in-namespace
+  IP hop — so the ruleset needs no gateway carve-out, per §Where the backend
+  plugs in) and that DNS stays reachable. This re-confirms the OQ-2/OQ-3
+  coupling is dissolved by the vsock transport, not a fork to resolve.
   (d) **streaming exec** (OQ-4): `container exec -i` a long-lived process,
   verify live stdout/stderr streaming, stdin delivery, kill semantics, and
   a distinguishable exit code on signal — the `ChildHandle` kill/wait
@@ -405,8 +412,9 @@ Matt ruled OQ-9 A (the mac mini on Woodpecker, ssh access provisioned).**
   the darwin `sun_path` budget (`socket.go:138-139`) and no podman
   host-capability preflight (`main.go:89-100`)? Removing podman-machine
   removes the Linux VM the runner runs IN today (`compass-local-dev:199,204`
-  ruled the runner runs INSIDE the VM, not natively), so this is a premise,
-  not a detail. Record build + run verdict.
+  ruled the runner runs INSIDE the VM, not natively); this leg confirms the
+  ruled host-side topology (OQ-12) on real hardware, not a detail. Record
+  build + run verdict.
   Record findings in this directory as `spike-findings.md`.
 - **Interfaces:** consumes the `container` CLI (`run`/`create`/`exec`/
   `stop`/`rm`/`inspect`, command-reference.md) and the compass-agent GHCR
@@ -540,10 +548,10 @@ Matt ruled OQ-9 A (the mac mini on Woodpecker, ssh access provisioned).**
   on the exec/kill or socket paths. Missing any one keeps the opt-in default
   off and returns the brief to Matt.
 - **Do:** when the trigger fires, bring Matt the flip decision with the bar's
-  evidence attached and the support-matrix split (Apple-silicon+26 →
-  apple-container default; everything else → podman-machine). The flip itself
-  is one `SelectBackend` darwin-resolution change plus doc updates, landed
-  only on that ruling.
+  evidence attached: the flip makes apple-container the macOS default and
+  begins podman-machine's macOS sunset (OQ-10) — Intel/macOS ≤ 15 are out of
+  scope, not a second supported arm. The flip itself is one `SelectBackend`
+  darwin-resolution change plus doc updates, landed only on that ruling.
 - **Interfaces:** consumes T-1 numbers + soak evidence. Produces the
   decision brief and, on approval, the default change.
 - **Test cycle:** the T-3 suite re-run as the flip's regression gate; the
@@ -552,8 +560,8 @@ Matt ruled OQ-9 A (the mac mini on Woodpecker, ssh access provisioned).**
 
 ## Tasks
 
-- [ ] **T-1** Spike on Apple-silicon/macOS 26: uid mapping, AF_UNIX
-  socket bind-mount, egress arming, streaming exec, timings —
+- [ ] **T-1** Spike on Apple-silicon/macOS 26: uid mapping, vsock gateway
+  channel, egress arming, streaming exec, timings, runner-on-darwin —
   `spike-findings.md` recorded with per-OQ verdicts.
 - [ ] **T-2** `AppleContainerCLI` backend + `SelectBackend`
   `"apple-container"` case + version-floor verify; argv/table tests green.
@@ -616,8 +624,10 @@ entrypoint arms nft, agent runs capability-less (`egress.go:6-10`;
 ships nftables support, whether `container exec` as root can arm before the
 agent exec starts, and whether the per-VM vmnet interface behaves under
 default-deny (containers get an IP on a shared vmnet subnet, networking.md —
-the ruleset must not sever the guest↔host gateway hop the agent socket or
-DNS rides). T-1(c) resolves. If in-guest arming can't precede the agent
+the ruleset must not sever DNS; the agent socket rides the ruled vsock
+transport (OQ-11), out-of-band of the guest's netfilter, so it needs no
+ruleset carve-out — see §Where the backend plugs in). T-1(c) resolves. If
+in-guest arming can't precede the agent
 exec, the fallback is the microVM model — arm at boot via a custom init
 image (`--init-image`, runtime-configuration.md) and expose the
 `EgressArmedInGuest` marker (`agent.go:298-300`) — a bigger T-2.
@@ -637,7 +647,7 @@ container to exit after sigkill" (apple/container#1589, 1.0.0 release
 notes) — kill semantics were still being corrected at 1.0, so the spike
 must test against the current release, not docs.
 
-### OQ-5 [load-bearing] — post-1.0 stability in practice for a front-door dependency
+### OQ-5 [non-load-bearing] — post-1.0 stability in practice for a front-door dependency
 
 1.0.0 (2026-06-09) declared the pre-1.0 breaking-change window closed
 (README §Project Status guaranteed stability only within patch versions
@@ -648,11 +658,11 @@ band in the release feed (<https://github.com/apple/container/releases>) — a
 pre-1.0 version string that the ≥ 1.0.0 floor rejects outright, so it needs
 no interpretation here. Whether minor releases hold the CLI surface stable in
 practice — output formats were still churning at 1.0 ("Cleaned up structured
-(JSON, YAML, TOML) output shape", 1.0.0 notes) — is a judgment call, not a
-doc fact. The version-floor probe + pinned-floor policy (Global
-Constraints) is the mitigation; Matt should confirm he accepts a
-one-floor-at-a-time dependency on Apple's release discipline for a
-front-door path.
+(JSON, YAML, TOML) output shape", 1.0.0 notes) — is a standing dependency of
+the committed direction, not a fork: Matt ruled apple-container the front-door
+macOS engine at RIG-3246 with that release-discipline dependency inherent. The
+version-floor probe (T-2) + pinned-floor policy (Global Constraints) is the
+standing mitigation; T-5's flip brief carries the measured stability evidence.
 
 ### OQ-6 [non-load-bearing] — backend name string
 
