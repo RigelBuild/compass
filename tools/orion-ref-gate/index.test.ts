@@ -159,7 +159,8 @@ describe("runOnce", () => {
 		expect(code).toBe(1);
 		const e = errs.join("\n");
 		expect(e).toContain("docs/x.md:7");
-		expect(e).toContain("skill://private-repo-boundary");
+		expect(e).toContain("the managed service");
+		expect(e).toContain("docs/concepts/self-host-and-managed.md");
 	});
 
 	test("returns 2 on a scan error (fail closed)", async () => {
