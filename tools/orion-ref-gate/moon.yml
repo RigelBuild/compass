@@ -19,7 +19,19 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    # `/docs/concepts/self-host-and-managed.md` is a real input: a test asserts
+    # the doc cited in the failure hint still exists, so the cache key must
+    # track it. Without it moon replays a green after the doc is deleted —
+    # the same silent-pointer-death this gate's hint was repaired for. Scoped
+    # to the one cited file, not `/docs/**`, so unrelated docs edits don't
+    # re-run the suite. Keep in sync with `REMEDIATION_DOC` in index.ts.
+    inputs:
+      - '*.ts'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/docs/concepts/self-host-and-managed.md'
   check:
     # The boundary gate: scan the whole tracked tree (via git grep) for any
     # reference to the private monorepo. Run from the workspace root so the
