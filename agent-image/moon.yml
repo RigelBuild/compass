@@ -15,9 +15,11 @@
 # Before this, agent-image/ was outside moon, so an image-build break — a
 # bun-drift assert (toolchain.nix), a stale FOD hash or a broken bundle
 # (entrypoint.nix) — surfaced only post-merge in the publish workflow, while a
-# consumer waited on a tag. The build is heavy (the image closure is the
-# dominant CI cost, the reason ci.yml's timeout is 90m), but affected-detection
-# keeps it off every PR that does not touch the closure.
+# consumer waited on a tag. The build is heavy — the image closure is the
+# dominant CI cost — but affected-detection keeps it off every PR that does not
+# touch the closure. (It does NOT size ci.yml's 90m moon-job ceiling: that
+# number was inherited from the departed vendored-forks group, per ci.yml's own
+# note at the `timeout-minutes` key.)
 layer: 'application'
 language: 'nix'
 tags: ['ci-group.nix']
