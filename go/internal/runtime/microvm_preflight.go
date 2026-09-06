@@ -39,6 +39,17 @@ type preflightProbes struct {
 	statImage func(string) error
 	// hashImage returns the streaming lowercase-hex SHA-256 of the image file.
 	hashImage func(string) (string, error)
+	// readQuota reads the active project quota scoping a volume path (D7:
+	// read-only, never assign). Behind the seam so the quota axis is
+	// hermetically testable — a prjquota-active filesystem cannot be
+	// provisioned rootless, so a fake reading is the only way this decision is
+	// covered on a dev box.
+	readQuota quotaReadFn
+	// verifySubordinateIDs resolves the invoking user's /etc/subuid range, the
+	// host allocation newuidmap validates virtiofsd's uid/gid mapping against.
+	// Behind the seam so the axis is testable on a box whose own subuid file
+	// cannot be arranged to fail.
+	verifySubordinateIDs func() error
 }
 
 // defaultPreflightProbes wires the real host-facing implementations behind the
@@ -68,7 +79,9 @@ func defaultPreflightProbes() preflightProbes {
 			_ = f.Close()
 			return nil
 		},
-		hashImage: hashFileSHA256,
+		hashImage:            hashFileSHA256,
+		readQuota:            readVolumeQuota,
+		verifySubordinateIDs: microvm.VerifySubordinateIDRange,
 	}
 }
 
@@ -110,7 +123,76 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 
 	// 4. RunRoot: set, writable, and short enough that a session's worst-case
 	// suffixed gateway socket path fits the AF_UNIX budget (record §(b)/§(e)).
-	return m.verifyRunRoot(probes)
+	if err := m.verifyRunRoot(probes); err != nil {
+		return err
+	}
+
+	// 5. Subordinate id range: virtiofsd's uid/gid mapping is validated by
+	// newuidmap against the invoking user's /etc/subuid entry, so a host with
+	// no subordinate range must fail HERE with the fix named — not at the first
+	// session boot, where virtiofsd dies before binding its socket and the
+	// cause surfaces only as "waiting for daemon sockets".
+	if err := probes.verifySubordinateIDs(); err != nil {
+		return fmt.Errorf("microvm preflight: %w", err)
+	}
+
+	// 6. Session-volume quota (D7): under the multi-tenant profile an
+	// operator-provisioned project quota MUST be active on the session-volume
+	// filesystem, or startup fails naming the fix. Otherwise the observed
+	// utilization is logged and nothing gates.
+	return m.verifyQuota(probes)
+}
+
+// verifyQuota runs the D7 volume-quota check against the SESSION-VOLUME
+// filesystem, which is VolumeRoot — the parent dir P2's volume lifecycle mints
+// per-session volumes under. It is deliberately NOT the RunRoot: that is the
+// socket dir, held to a short /tmp path by the AF_UNIX sun_path budget, so a
+// verdict read there is routinely about a different filesystem than the one
+// sessions consume. Verification is read-only and rootless (microvm_quota.go);
+// the Runner never assigns a quota.
+//
+// FAIL CLOSED when QuotaRequired is set and VolumeRoot is unknown: reporting a
+// verdict about a filesystem that was never probed is worse than refusing, since
+// it passes the multi-tenant gate on evidence from an unrelated mount. With
+// QuotaRequired unset (Dogfood, single trusted tenant) an unknown volume root is
+// logged and startup proceeds — an absent quota is the documented posture there.
+//
+// No meter is registered here; the coherent metric set is V7's.
+func (m *MicroVMRuntime) verifyQuota(probes preflightProbes) error {
+	if m.config.VolumeRoot == "" {
+		if m.config.QuotaRequired {
+			return errors.New(
+				"microvm preflight: session-volume quota is required, but the session-volume filesystem " +
+					"cannot be identified at startup; set --microvm-volume-root or $COMPASS_MICROVM_VOLUME_ROOT " +
+					"to the parent dir session volumes are minted under (the run-root is the socket dir and is " +
+					"routinely a different filesystem, so it is not a valid proxy)")
+		}
+		slog.Warn("microvm preflight: session-volume quota is not verified; no volume root is configured",
+			"fix", "set --microvm-volume-root or $COMPASS_MICROVM_VOLUME_ROOT")
+		return nil
+	}
+	reading, err := verifyVolumeQuota(m.config.VolumeRoot, VolumeQuota{}, probes.readQuota)
+	if err != nil {
+		if m.config.QuotaRequired {
+			return err
+		}
+		slog.Warn("microvm preflight: session-volume quota is not verified; the single-tenant profile ships no host-enforced quota",
+			"volume_root", m.config.VolumeRoot, "reason", err)
+		return nil
+	}
+	// used_ratio is logged ONLY on an active bound, where its denominator is the
+	// project's own limit and its numerator the project's own usage. With no
+	// quota projected, statfs reports the whole filesystem, so the same
+	// expression would silently mean "how full is the host disk" — a different
+	// number under one key. The raw pair is logged instead, so V7 inherits a
+	// single-meaning ratio (microvm_quota_linux.go on the dual meaning).
+	slog.Info("microvm preflight: session-volume project quota is active",
+		"volume_root", m.config.VolumeRoot,
+		"limit_bytes", reading.LimitBytes,
+		"used_bytes", reading.UsedBytes,
+		"used_ratio", reading.UsedRatio(),
+		"required", m.config.QuotaRequired)
+	return nil
 }
 
 // imageKnob names the flag and env knob that sets one guest image path, for the

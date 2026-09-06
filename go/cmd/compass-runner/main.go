@@ -283,7 +283,9 @@ func setupOtel(ctx context.Context) (shutdown func(), err error) {
 // default flag set before flag.Parse and resolved into a runtime after it.
 type backendFlags struct {
 	backend, vmm, virtiofsd, kernel, rootfs, initrd, imageManifest, runRoot *string
+	volumeRoot                                                              *string
 	cpus, memoryMB                                                          *int
+	quotaRequired                                                           *bool
 }
 
 // registerBackendFlags declares the backend-selection flags. Call before
@@ -315,21 +317,46 @@ func registerBackendFlags() backendFlags {
 		memoryMB: flag.Int("microvm-memory-mb", 0,
 			"Default guest RAM in MiB per session (microvm backend); 0 leaves the VMM default. "+
 				"Defaults to $COMPASS_MICROVM_MEMORY_MB."),
+		volumeRoot: flag.String("microvm-volume-root", "",
+			"Parent dir the per-session workspace volumes are minted under (microvm backend); "+
+				"the filesystem the D7 session-volume quota is verified on. "+
+				"Defaults to $COMPASS_MICROVM_VOLUME_ROOT."),
+		quotaRequired: flag.Bool("microvm-quota-required", false,
+			"Require an operator-provisioned project quota on the session-volume filesystem "+
+				"(multi-tenant profile); startup fails when none is active (microvm backend). "+
+				"Defaults to $COMPASS_MICROVM_QUOTA_REQUIRED."),
 	}
 }
 
 // selectEngine resolves the configured runtime backend from the parsed flags
 // and their environment fallbacks.
 func (f backendFlags) selectEngine() (runtime.ContainerRuntime, error) {
-	cpus, err := intOrEnv(*f.cpus, "COMPASS_MICROVM_CPUS")
+	cfg, err := f.backendConfig()
 	if err != nil {
 		return nil, err
+	}
+	return runtime.SelectBackend(cfg)
+}
+
+// backendConfig resolves every backend knob from its flag with an environment
+// fallback. Split from selectEngine so the resolution is assertable without
+// constructing a real backend: a knob that never reaches the config is dead
+// code an operator cannot set (the QuotaRequired fail-open), and only a test
+// over THIS function catches that.
+func (f backendFlags) backendConfig() (runtime.BackendConfig, error) {
+	cpus, err := intOrEnv(*f.cpus, "COMPASS_MICROVM_CPUS")
+	if err != nil {
+		return runtime.BackendConfig{}, err
 	}
 	memoryMB, err := intOrEnv(*f.memoryMB, "COMPASS_MICROVM_MEMORY_MB")
 	if err != nil {
-		return nil, err
+		return runtime.BackendConfig{}, err
 	}
-	return runtime.SelectBackend(runtime.BackendConfig{
+	quotaRequired, err := boolOrEnv(*f.quotaRequired, "COMPASS_MICROVM_QUOTA_REQUIRED")
+	if err != nil {
+		return runtime.BackendConfig{}, err
+	}
+	return runtime.BackendConfig{
 		Backend: orEnv(*f.backend, "COMPASS_RUNTIME_BACKEND"),
 		MicroVM: runtime.MicroVMConfig{
 			VMMPath:         orEnv(*f.vmm, "COMPASS_MICROVM_VMM"),
@@ -339,10 +366,12 @@ func (f backendFlags) selectEngine() (runtime.ContainerRuntime, error) {
 			InitrdImage:     orEnv(*f.initrd, "COMPASS_MICROVM_INITRD"),
 			ImageManifest:   orEnv(*f.imageManifest, "COMPASS_MICROVM_IMAGE_MANIFEST"),
 			RunRoot:         orEnv(*f.runRoot, "COMPASS_MICROVM_RUNROOT"),
+			VolumeRoot:      orEnv(*f.volumeRoot, "COMPASS_MICROVM_VOLUME_ROOT"),
 			DefaultCPUs:     cpus,
 			DefaultMemoryMB: memoryMB,
+			QuotaRequired:   quotaRequired,
 		},
-	})
+	}, nil
 }
 
 // orEnv returns flagVal when non-empty, else the named environment variable.
@@ -369,6 +398,45 @@ func intOrEnv(flagVal int, envKey string) (int, error) {
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
 		return 0, fmt.Errorf("$%s=%q is not an integer: %w", envKey, raw, err)
+	}
+	return parsed, nil
+}
+
+// boolOrEnv returns flagVal when it is true, else the named environment
+// variable parsed as a bool. The flag defaults to false, so a set flag always
+// wins and an unset one falls through to the env — the same precedence orEnv
+// and intOrEnv give their zero values. An empty env var is false (unset); a
+// present-but-unparseable one is an error naming the offending variable and
+// value, so `COMPASS_MICROVM_QUOTA_REQUIRED=yes` refuses at startup instead of
+// silently reading as false and fail-opening the D7 gate.
+//
+// PRECEDENCE IS ASYMMETRIC, deliberately, and it is a CONTRACT, not an
+// accident: a false flag is indistinguishable from an unset one here (there is
+// no flag.Visit and no *bool nil sentinel), so `--microvm-quota-required=false`
+// does NOT override `$COMPASS_MICROVM_QUOTA_REQUIRED=true` — the env's true
+// wins. Two reasons to keep it that way rather than honoring an explicit false:
+//
+//   - It matches the zero-value convention of every sibling knob (orEnv,
+//     intOrEnv), so one knob does not read its flags differently from the rest.
+//   - It fails in the SAFE direction for THIS knob: the losing input is the one
+//     that would turn the multi-tenant quota gate OFF, so a conflict leaves the
+//     gate ON.
+//
+// An operator who genuinely needs the gate off on a box whose environment sets
+// it must unset the environment variable; passing the flag is not enough.
+// TestQuotaRequiredEnvTrueBeatsExplicitFlagFalse pins this direction so the
+// asymmetry cannot be silently "fixed" into the fail-open direction.
+func boolOrEnv(flagVal bool, envKey string) (bool, error) {
+	if flagVal {
+		return true, nil
+	}
+	raw := os.Getenv(envKey)
+	if raw == "" {
+		return false, nil
+	}
+	parsed, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("$%s=%q is not a boolean (want true/false/1/0): %w", envKey, raw, err)
 	}
 	return parsed, nil
 }
