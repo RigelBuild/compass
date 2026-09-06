@@ -436,8 +436,18 @@ async function main(): Promise<void> {
 			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected} darwin=${out.darwinAffected}`,
 		);
 	} catch (err) {
+		// A failed `moon query` throws a Bun ShellError whose `message` is only
+		// "Failed with exit code N" — moon's own diagnostic (the part naming
+		// the cause) rides on a separate `stderr` Buffer. Two queries now run
+		// concurrently, so the bare message cannot even say which one failed;
+		// append the stderr when present so a CI operator sees the cause.
 		const message = err instanceof Error ? err.message : String(err);
-		console.error(`::error::${message}`);
+		const stderr = String(
+			(err as { stderr?: unknown } | null)?.stderr ?? "",
+		).trim();
+		console.error(
+			`::error::${stderr === "" ? message : `${message}: ${stderr}`}`,
+		);
 		process.exit(1);
 	}
 }

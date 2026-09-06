@@ -721,8 +721,10 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		}
 	});
 
-	test("flags track the generated output rather than a constant", () => {
-		// Negative control: a run with nothing affected must render "false",
+	test("the affected-set flags track the generated output, not a constant", () => {
+		// pgtest/microvm derive from the affected set. The path-derived three
+		// are covered by the next test, which needs its own fixtures to tell
+		// them apart. Negative control: nothing affected must render "false",
 		// otherwise the assertions above would pass on a hardcoded "true".
 		const none = outputLines(
 			generate({
@@ -735,9 +737,8 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		expect(none).toContain("pgtest_affected=false");
 		expect(none).toContain("microvm_affected=false");
 
-		// Positive control on the same keys: pgtest/microvm are derived from the
-		// affected set on EVERY event (unlike forge/gtk4/darwin, which a
-		// non-PR event forces true), so naming the pgtest project flips them.
+		// Positive control on the same keys: naming the pgtest project flips
+		// both, since each is derived from the affected set.
 		const some = outputLines(
 			generate({
 				projects: [proj("compass-go", "go")],
@@ -748,5 +749,61 @@ describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
 		);
 		expect(some).toContain("pgtest_affected=true");
 		expect(some).toContain("microvm_affected=true");
+	});
+
+	test("each path-derived flag renders its own boolean, not a sibling's", () => {
+		// forge/gtk4/darwin are the three flags a full sweep forces true, but
+		// on a pull_request they are purely changedPaths-derived, so each can
+		// be driven independently. Asserting them together on one broad path
+		// would not distinguish a cross-wire (gtk4 rendered from
+		// darwinAffected, say) because compass-app paths set gtk4 and darwin
+		// as a pair. So each case below selects ONE flag and pins the other
+		// two to false. Without this the keys are covered by name only, and a
+		// wrong "false" is worse than a dropped key: an empty value reds the
+		// rollup, whereas "false" reads as a legitimate skip and greens it.
+		const flags = (paths: string[]): string[] =>
+			outputLines(
+				generate({
+					projects: [proj("a", "bun")],
+					affectedIds: [],
+					changedPaths: paths,
+					event: "pull_request",
+				}),
+			).filter((line) => /^(forge|gtk4|darwin)_affected=/.test(line));
+
+		// forge + darwin, gtk4 false. `go/internal/**` is a darwin sidecar
+		// prefix (the mac lane cross-compiles the pure-Go sidecars), so a
+		// forge path necessarily fires darwin too — asserting darwin=false
+		// here would be asserting against the shipped path sets. gtk4 staying
+		// false is what discriminates: a gtk4 rendered from darwinAffected
+		// flips it.
+		expect(flags(["go/internal/forge/oracle.go"]).sort()).toEqual([
+			"darwin_affected=true",
+			"forge_affected=true",
+			"gtk4_affected=false",
+		]);
+
+		// darwin alone: the macos-bundle tree is darwin-only.
+		expect(flags(["tools/macos-bundle/index.ts"]).sort()).toEqual([
+			"darwin_affected=true",
+			"forge_affected=false",
+			"gtk4_affected=false",
+		]);
+
+		// gtk4's tree implies darwin (the mac app bundles the same binary),
+		// so this case pins the pair together and leaves forge false.
+		expect(flags(["go/cmd/compass-app/main.go"]).sort()).toEqual([
+			"darwin_affected=true",
+			"forge_affected=false",
+			"gtk4_affected=true",
+		]);
+
+		// Negative control: a path in none of the three sets renders all
+		// false, so the assertions above are not passing on a constant.
+		expect(flags(["docs/readme.md"]).sort()).toEqual([
+			"darwin_affected=false",
+			"forge_affected=false",
+			"gtk4_affected=false",
+		]);
 	});
 });
