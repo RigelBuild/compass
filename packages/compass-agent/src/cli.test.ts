@@ -33,6 +33,12 @@ import type {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
+import { context, type Span, trace } from "@opentelemetry/api";
+import {
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { BoardBroker, createBoardTools } from "./board";
 import {
 	AGENT_SOCKET_PATH,
@@ -53,7 +59,11 @@ import {
 	AgentControlSchema,
 	AgentSessionState,
 	create,
+	DeliverControlSchema,
+	MessageBlockSchema,
+	MessageSchema,
 	PromptControlSchema,
+	SteerControlSchema,
 	type AgentControl as WireAgentControl,
 } from "./compassv1";
 import { createForgeTools, ForgeBroker } from "./forge";
@@ -630,6 +640,62 @@ function promptOp(seq: bigint, input: string): WireAgentControl {
 		control: { case: "prompt", value: create(PromptControlSchema, { input }) },
 	});
 }
+
+// A POPULATED deliver op — the wire shape a real Runner pushes: a comms Message
+// with an id and one text block, plus the server-stamped `traceparent`. Mirrors
+// control-source.test.ts's deliverOp; the traceparent is what the composition
+// root's `deliver` closure must forward into CompassAgent.deliver.
+function deliverOp(
+	seq: bigint,
+	id: string,
+	text: string,
+	fromHandle = "",
+	traceparent = "",
+): WireAgentControl {
+	const message = create(MessageSchema, {
+		id,
+		blocks: [
+			create(MessageBlockSchema, { block: { case: "text", value: text } }),
+		],
+	});
+	return create(AgentControlSchema, {
+		controlSeq: seq,
+		control: {
+			case: "deliver",
+			value: create(DeliverControlSchema, { message, fromHandle, traceparent }),
+		},
+	});
+}
+
+// A POPULATED steer op — deliver's sibling on the immediate-dispatch class.
+// Mirrors control-source.test.ts's populatedSteerOp.
+function steerOp(
+	seq: bigint,
+	id: string,
+	text: string,
+	fromHandle = "",
+	traceparent = "",
+): WireAgentControl {
+	const message = create(MessageSchema, {
+		id,
+		blocks: [
+			create(MessageBlockSchema, { block: { case: "text", value: text } }),
+		],
+	});
+	return create(AgentControlSchema, {
+		controlSeq: seq,
+		control: {
+			case: "steer",
+			value: create(SteerControlSchema, { message, fromHandle, traceparent }),
+		},
+	});
+}
+
+// The W3C traceparent fixture the trace-continuity tests share (the same
+// ids agent.test.ts uses, so a span read here is comparable to one read there).
+const TP_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+const TP_SPAN_ID = "b7ad6b7169203331";
+const TP_HEADER = `00-${TP_TRACE_ID}-${TP_SPAN_ID}-01`;
 
 // The board states that reached the fake Runner over the Publish spine, in
 // arrival order. Empty (UNSPECIFIED) states are trace frames, not transitions.
@@ -2159,6 +2225,138 @@ describe("main activates loop OpenTelemetry", () => {
 		// the telemetry key, even though the endpoint is configured.
 		expect(spy.hasTelemetryKey).toBe(false);
 		expect(spy.telemetryOption).toBeUndefined();
+	});
+
+	// ── The composition root's traceparent FORWARDING closures (RIG-2871 T3) ──
+	//
+	// cli.ts:1043-1050 builds the `ImmediateControl` handle the socket
+	// ControlSource dispatches into, and each arm forwards its wire args on to
+	// the CompassAgent. control-source.test.ts pins that the SOURCE hands the
+	// wire `traceparent` to `immediate.steer`/`immediate.deliver`;
+	// agent.test.ts pins that CompassAgent.steer/deliver PARENT the turn span on
+	// it. Neither sees the closures BETWEEN them — the two lines in cli.ts that
+	// carry the value across — so these drive the whole seam end to end: a wire
+	// op carrying a traceparent, pushed through the injected carrier's Control
+	// stream, must come out as the turn span's parent.
+	//
+	// Telemetry is ON (endpoint set + the seam registers), which is what makes
+	// `main` build a real `createTraceBridge()` and pass it as the agent's
+	// `tracer`; the recording session below models the loop's SYNCHRONOUS
+	// `invoke_agent` span start (agent.test.ts's startTracedAgent recipe) so the
+	// bridge's `runWithParent` wrap is observable as real parentage.
+	describe("forwards the wire traceparent into the CompassAgent", () => {
+		let traceProvider: NodeTracerProvider | undefined;
+		afterEach(async () => {
+			// Full-suite safety: never leave a registered global TracerProvider or
+			// context manager behind for a sibling test (design record F3).
+			trace.disable();
+			context.disable();
+			await traceProvider?.shutdown();
+			traceProvider = undefined;
+		});
+
+		// Run `main` over a REAL trace bridge with telemetry enabled, feeding the
+		// injected carrier's Control stream the given ops, and return the single
+		// exported `invoke_agent` span. The session models the loop's synchronous
+		// span start: `prompt()` starts `invoke_agent` reading context.active() as
+		// its parent and fires the capture hook `main` installed on the session's
+		// telemetry option — the real bridge's `onSpanStart` (cli.ts:970-976).
+		async function turnSpanFor(ops: WireAgentControl[]) {
+			process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
+			const exporter = new InMemorySpanExporter();
+			traceProvider = new NodeTracerProvider({
+				spanProcessors: [new SimpleSpanProcessor(exporter)],
+			});
+			// Registered BEFORE main: the bridge's `runWithParent` needs the global
+			// context manager this installs for `context.with` to propagate into the
+			// synchronous prompt.
+			traceProvider.register();
+
+			const spy: TelemetrySpy = {
+				calls: [],
+				telemetryOption: undefined,
+				hasTelemetryKey: false,
+			};
+			const session = fakeSession();
+			let turnSpan: Span | undefined;
+			Object.assign(session.agent, {
+				prompt: (): Promise<void> => {
+					const hooks = spy.telemetryOption as {
+						onSpanStart: (ctx: unknown) => void;
+					};
+					const span = trace.getTracer("test").startSpan("invoke_agent");
+					turnSpan = span;
+					hooks.onSpanStart({
+						span,
+						kind: "invoke_agent",
+						agent: undefined,
+						model: undefined,
+						conversationId: undefined,
+					});
+					return Promise.resolve();
+				},
+			});
+
+			await main(
+				{ HOME: scratch() },
+				telemetryDeps(
+					session,
+					fakeCarrier(emptyLog(), {
+						control: async function* () {
+							// The barrier first — a pre-ReplayComplete immediate op is
+							// refused by the source and never reaches the closures.
+							yield replayCompleteOp(1n);
+							for (const op of ops) yield op;
+						},
+					}),
+					spy,
+				),
+			);
+			// End the modeled turn span so the processor exports it.
+			turnSpan?.end();
+			const spans = exporter
+				.getFinishedSpans()
+				.filter((s) => s.name === "invoke_agent");
+			expect(spans).toHaveLength(1);
+			return spans[0];
+		}
+
+		test("a wire deliver's traceparent becomes the turn span's PARENT through the composition root", async () => {
+			// Non-vacuity: revert cli.ts:1046-1047 to the pre-RIG-2871
+			// `deliver: (msg, fromHandle, _traceparent, sourceNames) =>
+			// agent?.deliver(msg, fromHandle, "", sourceNames)` — a hardcoded ""
+			// — and `runWithParent("")` no-ops, the turn span comes out ROOTLESS,
+			// and both parent assertions red. (Mutation-verified.)
+			//
+			// An IDLE, single-message deliver: it flushes at once with N=1, which
+			// is the PARENT topology (N>1 links instead).
+			const span = await turnSpanFor([
+				deliverOp(2n, "m1", "hi", "", TP_HEADER),
+			]);
+			// PARENT, not link: the wire traceparent survived the closure intact.
+			expect(span?.parentSpanContext?.traceId).toBe(TP_TRACE_ID);
+			expect(span?.parentSpanContext?.spanId).toBe(TP_SPAN_ID);
+			// And the message actually rode the turn — proof the deliver reached the
+			// agent at all, so a green parent assertion can never be a no-turn
+			// vacuum.
+			expect(span?.attributes["compass.message.ids"]).toBe("m1");
+		});
+
+		test("a wire steer's traceparent becomes the turn span's PARENT through the composition root", async () => {
+			// The sibling arm, and the one the PR review's revert probe named:
+			// non-vacuity — revert cli.ts:1044-1045 to
+			// `steer: (msg, fromHandle, _traceparent, sourceNames) =>
+			// agent?.steer(msg, fromHandle, "", sourceNames)` — a hardcoded "" —
+			// and the idle steer's `runWithParent("")` no-ops, the turn span comes
+			// out ROOTLESS, and both parent assertions red. (Mutation-verified.)
+			//
+			// An IDLE steer starts a turn via prompt() under the same
+			// `runWithParent` wrap the deliver flush uses (agent.ts idle-steer arm).
+			const span = await turnSpanFor([steerOp(2n, "m2", "hey", "", TP_HEADER)]);
+			expect(span?.parentSpanContext?.traceId).toBe(TP_TRACE_ID);
+			expect(span?.parentSpanContext?.spanId).toBe(TP_SPAN_ID);
+			expect(span?.attributes["compass.message.ids"]).toBe("m2");
+		});
 	});
 });
 
