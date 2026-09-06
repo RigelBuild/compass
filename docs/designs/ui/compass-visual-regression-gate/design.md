@@ -41,7 +41,7 @@ cloud service (Percy/Chromatic). This is decided here, not an open question:
   dev shell and gate-tools.nix resolve, so CI drives byte-for-byte the
   Chromium a Linux dev box does" (`chromium-e2e-env.nix:19-20`), and the moon
   CI leg already exports `PLAYWRIGHT_CHROMIUM_PATH` from it
-  (`.github/workflows/ci.yml:365-367`). The cross-environment raster drift
+  (`.github/workflows/ci.yml:369` — `PLAYWRIGHT_CHROMIUM_PATH` export in `moon-battery`). The cross-environment raster drift
   that motivates cloud services is exactly what this pin removes.
 - The API is available at the pin: `@playwright/test` is `1.62.1`
   (`apps/ui/package.json:34`); `toHaveScreenshot`, `maxDiffPixels`,
@@ -118,26 +118,62 @@ one-line PR once the gate has run history.
 
 `maxDiffPixelRatio` is a fraction of **total image area**, and this suite
 spans ~4 orders of magnitude: a full-page shot (~1280×720+, ≥900 K px) at
-0.001 allows ~900 differing pixels, while `state-dot.png` (a few hundred px)
-gets a budget that rounds to ~0 — effectively byte-exact, the *least* slack on
-the shot most exposed to a single anti-aliasing pixel shift after a Chromium
-bump. One ratio cannot serve both ends. So the 4 close-ups (right-sidebar,
-state-dot, bridge-card, bridge-colheads) carry per-shot `maxDiffPixels`
-overrides (start 10–25 px, each with the justifying comment Global Constraints
-require) as an absolute floor, while the 7 full-page shots keep the 0.001
-ratio. The per-pixel color tolerance `threshold` (YIQ distance, Playwright
-default 0.2) is left at its default **as an explicit decision** — it, not the
-pixel-count knobs, is what absorbs anti-aliasing colour drift; a Chromium bump
-revisits it deliberately.
+0.001 allows ~900 differing pixels, while `state-dot.png` (9×10 = 90 px) gets
+a budget of 0.09 px — effectively byte-exact, the *least* slack on the shot
+most exposed to a single anti-aliasing pixel shift after a Chromium bump. One
+ratio cannot serve both ends, so the 4 close-ups (right-sidebar, state-dot,
+bridge-card, bridge-colheads) need a per-shot widening.
+
+**The widening knob is a per-shot `maxDiffPixelRatio`, not `maxDiffPixels`.**
+At the 1.62.1 pin the two pixel-count knobs resolve with `Math.min`, not max:
+the explicit `maxDiffPixels` and the area-scaled ratio budget are computed
+independently and, when both are present, the *smaller* wins
+(`playwright-core/lib/coreBundle.js:7556-7562`). A config-level
+`maxDiffPixelRatio` is always present, because the per-call merge is
+`{...filteredConfigOptions, ...this.options}`
+(`playwright/lib/matchers/expect.js:12419-12423`) and `NonConfigProperties`
+(`expect.js:12391-12398`) strips only `clip`, `fullPage`, `mask`, `maskColor`,
+`omitBackground`, `signal` — `maxDiffPixelRatio` is absent from that list, so
+it is never stripped. A per-shot `maxDiffPixels` alongside a config-level
+ratio can therefore only ever *tighten* tolerance, and "floor" is the wrong
+word for it. Measured against the committed baseline dimensions, an earlier
+draft's 10–25 px "floors" resolve to:
+
+| Shot | Baseline | Area (px) | Ratio budget @0.001 | Stated floor | Effective tolerance |
+| --- | --- | --- | --- | --- | --- |
+| `state-dot.png` | 9×10 | 90 | 0.09 px | 10 px | **0 px** — byte-exact; floor fully inert |
+| `bridge-card.png` | 189×113 | 21357 | 21.36 px | 25 px | 21 px — floor inert |
+| `bridge-colheads.png` | 855×41 | 35055 | 35.05 px | 25 px | 25 px — floor *tightens* by ~10 px |
+| `right-sidebar.png` | 400×650 | 260000 | 260 px | 25 px | 25 px — floor *tightens* ~10× |
+
+That inverts exactly what this section set out to prevent: the shot needing
+the most slack would get none at all.
+
+The correct override is a per-shot `maxDiffPixelRatio`, which *does* replace
+the config default (it is a plain key in that spread, not a `Math.min`
+sibling), computed as `max(base, floor / area)` against whichever base ratio
+OQ-1 settles on:
+
+- `state-dot.png` — `max(0.001, 10/90)` = **0.1111**.
+- `bridge-card.png` — `max(0.001, 25/21357)` = **0.00117**.
+- `bridge-colheads.png` and `right-sidebar.png` — **no override**. At the base
+  ratio their area-scaled budgets (35 px and 260 px) already exceed the
+  intended ~25 px of slack, so any per-shot value could only tighten them. An
+  executor must not add one.
+
+The 7 full-page shots likewise take no override. The per-pixel color tolerance
+`threshold` (YIQ distance, Playwright default 0.2) is left at its default
+**as an explicit decision** — it, not the pixel-count knobs, is what absorbs
+anti-aliasing colour drift; a Chromium bump revisits it deliberately.
 
 ### Where it runs: a moon task inside the existing moon battery
 
 A new `visual-gate` moon task, added to the `ci` task's deps — not a
 dedicated peer job behind the rollup. The peer-job pattern (gtk4-e2e,
 dogfood-e2e) exists for legs that "realize a heavy out-of-band … closure the
-bare moon gate has no business building" (`ci.yml:1124-1126`). This gate has
+bare moon gate has no business building" (`ci.yml:1128`, `moon-battery` peer-job rationale: "no business building"). This gate has
 no such closure: the moon leg already realizes the pinned Chromium and
-exports `PLAYWRIGHT_CHROMIUM_PATH` for `dev-smoke` (`ci.yml:356-367`), and
+exports `PLAYWRIGHT_CHROMIUM_PATH` for `dev-smoke` (`ci.yml:369`, `moon-battery`: `PLAYWRIGHT_CHROMIUM_PATH` export), and
 the harness's webServer is the same `vite --mode fixture` boot dev-smoke's
 config already drives (`playwright.config.ts:80`). A peer job would
 re-bootstrap nix + toolchain for ~a minute of Playwright. The task mirrors
@@ -152,8 +188,8 @@ The load-bearing rule: **baselines are regenerated only in the pinned CI
 environment, never committed from a dev box.** The repo already has the exact
 machinery pattern: the `regen-forge-fixtures` workflow_dispatch lane runs an
 operator-triggered `-update` capture and "opens a BOT PR carrying the
-rewritten fixtures for human review" (`ci.yml:2263-2267`), SHA-pinned
-`peter-evans/create-pull-request` included (`ci.yml:2375`). The visual gate
+rewritten fixtures for human review" (`ci.yml:2314`, `regen-forge-fixtures`: "BOT PR carrying the rewritten fixtures"), SHA-pinned
+`peter-evans/create-pull-request` included (`ci.yml:2423`, `regen-forge-fixtures`: `peter-evans/create-pull-request`). The visual gate
 gets a sibling lane: dispatch → bootstrap the same toolchain + pinned
 Chromium → `bunx playwright test e2e/visual-smoke.spec.ts
 --update-snapshots` → bot PR with `add-paths: apps/ui/e2e/__screens__`. Matt
@@ -205,7 +241,7 @@ as OQ-5 with this recommendation since the issue asks.
 - **Pinned Chromium only**: the gate runs against the Chromium realized from
   `tools/toolchain/chromium-e2e-env.nix` (devenv.lock-pinned nixpkgs,
   `chromium-e2e-env.nix:19-20,41`), resolved via `PLAYWRIGHT_CHROMIUM_PATH`
-  (`playwright.config.ts:68-70`, `ci.yml:365-367`). Single `chromium`
+  (`playwright.config.ts:68-70`, `ci.yml:369` — `moon-battery`'s `PLAYWRIGHT_CHROMIUM_PATH` export). Single `chromium`
   project, Linux only.
 - **Baselines from CI only**: `apps/ui/e2e/__screens__/` PNGs are written
   only by the regen dispatch lane (T4) running in the pinned environment.
@@ -220,11 +256,15 @@ as OQ-5 with this recommendation since the issue asks.
   `cache: false`, mirroring `dev-smoke`'s documented rationale
   (`moon.yml:64-84`). CI actions are SHA-pinned like every action in
   `ci.yml`.
-- **Threshold default**: `maxDiffPixelRatio: 0.001` set once in
-  `playwright.config.ts` `expect.toHaveScreenshot`; the 4 close-up shots
-  additionally carry per-shot `maxDiffPixels` floors (10–25 px). Per-pixel
+- **Threshold default**: `maxDiffPixelRatio` set once in
+  `playwright.config.ts` `expect.toHaveScreenshot` (base ratio per OQ-1);
+  `state-dot` and `bridge-card` additionally carry a per-shot
+  `maxDiffPixelRatio` override of `max(base, floor / area)` — the only knob
+  that can widen a small shot's budget, since a per-shot `maxDiffPixels`
+  would resolve to `Math.min` against the config ratio and could only tighten
+  it (see Threshold). No shot carries a `maxDiffPixels`. Per-pixel
   `threshold` stays at the Playwright default (0.2). Every per-shot override
-  carries a comment justifying it.
+  carries a comment justifying it. No task may loosen any of these.
 - House ledger conventions: this record stays `Status: Draft` until merged;
   markdownlint-clean.
 
@@ -234,9 +274,10 @@ as OQ-5 with this recommendation since the issue asks.
 
 Extend `apps/ui/playwright.config.ts` with:
 `snapshotPathTemplate: "{testDir}/__screens__/{arg}{ext}"` and
-`expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.001 } }` — the config-level
-full-page default; the per-shot `maxDiffPixels` floors for the 4 close-ups are
-set at their call sites in T2, not here. `threshold` is left unset (default
+`expect: { toHaveScreenshot: { maxDiffPixelRatio: <base> } }` — the config-level
+default (base ratio per OQ-1, recommendation 0.001); the two per-shot
+`maxDiffPixelRatio` overrides are set at their call sites in T2, not here.
+`threshold` is left unset (default
 0.2) as a recorded decision. No project or webServer changes — the determinism
 knobs at :57-72 and the fixture-mode webServer at :79-95 are already the
 substrate.
@@ -263,14 +304,19 @@ its exact current raster options:
 - **3 element** (right-sidebar `:69`, state-dot `:140`, bridge-card `:204`):
   `<locator>.screenshot({ path, animations, scale })` →
   `await expect(<locator>).toHaveScreenshot("<name>.png", { animations:
-  "disabled", scale: "css", maxDiffPixels: <floor> })` on the same locator —
-  no `fullPage`.
+  "disabled", scale: "css" })` on the same locator — no `fullPage` — plus
+  `maxDiffPixelRatio: 0.1111` on state-dot and `0.00117` on bridge-card.
+  right-sidebar takes **no** override.
 - **1 clip** (bridge-colheads `:189`): keep the bounding-box union computation
   (`:180-188`), then `await expect(page).toHaveScreenshot("bridge-colheads.png",
-  { clip, animations: "disabled", scale: "css", maxDiffPixels: <floor> })`.
+  { clip, animations: "disabled", scale: "css" })` — **no** per-shot override.
 
-The 4 close-ups carry the per-shot `maxDiffPixels` floor (T1's rationale) with
-a justifying comment. Keep every navigation, selector wait, and
+Only `state-dot` and `bridge-card` carry a per-shot `maxDiffPixelRatio`
+(Threshold's `max(base, floor / area)`, recomputed if OQ-1 moves the base),
+each with a justifying comment; `bridge-colheads` and `right-sidebar` already
+have area-scaled budgets above the intended slack, so adding an override there
+would only tighten them. No shot gets a `maxDiffPixels`. Keep every navigation,
+selector wait, and
 `document.fonts.ready` await untouched. Drop the now-unused `SCREENS` const;
 import `expect` alongside `test` from `@playwright/test`
 (`visual-smoke.spec.ts:1` currently imports only `test`). Update the spec
@@ -310,7 +356,7 @@ Interfaces:
 - Modifies: `apps/ui/moon.yml` (new task + `ci` deps), `.github/workflows/ci.yml`
   (one upload step in the moon-battery job).
 - Consumes: `PLAYWRIGHT_CHROMIUM_PATH` already exported in that job
-  (`ci.yml:365-367`).
+  (`ci.yml:369`, `moon-battery`'s `PLAYWRIGHT_CHROMIUM_PATH` export).
 - Test cycle: a scratch PR with a deliberate visual change reds `ci` via
   `visual-gate` and carries the `visual-gate-diffs` artifact; a no-op PR
   stays green. Verify affected-detection schedules the task on a
@@ -320,11 +366,11 @@ Interfaces:
 
 Add a `regen-visual-baselines` workflow_dispatch job to
 `.github/workflows/ci.yml`, modeled on `regen-forge-fixtures`
-(`ci.yml:2260-2385`) but with two corrections the sibling-of-forge framing
+(`ci.yml:2308-2434`, `regen-forge-fixtures` job span) but with two corrections the sibling-of-forge framing
 hides:
 
 - **Discriminator input (must-fix):** `regen-forge-fixtures` gates on
-  `workflow_dispatch && inputs.pr == ''` (`ci.yml:2272-2274`). A second lane
+  `workflow_dispatch && inputs.pr == ''` (`ci.yml:2322`, `regen-forge-fixtures`: `github.event.inputs.pr == ''`). A second lane
   with the *same* gate means every bare `ci.yml` dispatch fires BOTH — a
   visual regen would also launch the 90-minute live forge capture and open a
   spurious forge bot PR. Add a `regen` choice dispatch input (`forge` |
@@ -339,8 +385,8 @@ hides:
   does not cover.
 
 Otherwise as forge: widened `contents: write` + `pull-requests: write`, the
-two-phase toolchain bootstrap (`ci.yml:2304-2328`) plus the pinned-Chromium
-realization step (`ci.yml:365-367`'s pattern), then
+two-phase toolchain bootstrap (`ci.yml:2352-2376`, `regen-forge-fixtures`: "Phase one"/"Phase two") plus the pinned-Chromium
+realization step (`ci.yml:369`'s `moon-battery` `PLAYWRIGHT_CHROMIUM_PATH` export pattern), then
 `bunx playwright test e2e/visual-smoke.spec.ts --update-snapshots` under
 `apps/ui`, then SHA-pinned `peter-evans/create-pull-request` with
 `add-paths: apps/ui/e2e/__screens__`. No secrets needed (offline fixture
@@ -351,7 +397,7 @@ Interfaces:
 - Modifies: `.github/workflows/ci.yml` (one new job + a `regen` dispatch input;
   extends `regen-forge-fixtures`' `if:` with `&& inputs.regen == 'forge'` —
   the only edit this record makes to an existing lane; still does not join the
-  rollup's `needs`, same as regen-forge-fixtures per `ci.yml:2271`).
+  rollup's `needs`, same as regen-forge-fixtures (`ci.yml:2319`, `regen-forge-fixtures`: "rollup check above ... does not `needs:` this job").
 - Produces: a bot PR carrying the regenerated 11 baselines for Matt's image
   review.
 - Test cycle: dispatch the lane on a branch; verify the bot PR opens with
@@ -410,11 +456,14 @@ Load-bearing (need Matt's ruling before the impl issues file):
    changes), vs 0.0005 (tighter; more sensitive to Chromium-bump raster
    drift), vs 0.002 (looser; risks missing a small real regression like a
    1px border change on a large full-page shot). Note the ratio is
-   area-scaled, so the 4 close-up shots additionally take per-shot
-   `maxDiffPixels` floors (10–25 px) rather than the ratio, and per-pixel
-   `threshold` stays at the default 0.2 (see Threshold section).
-   **Recommendation: 0.001** for the full-page default + the close-up floors,
-   revisit with run history.
+   area-scaled, so `state-dot` and `bridge-card` take a per-shot
+   `maxDiffPixelRatio` override derived from whichever base Matt rules for —
+   `max(base, floor / area)`, so at 0.001 they are 0.1111 and 0.00117, and a
+   different base shifts them (a base above `floor / area` removes the
+   override entirely) — while per-pixel `threshold` stays at the default 0.2
+   (see Threshold section).
+   **Recommendation: 0.001** for the base ratio, with the two derived per-shot
+   overrides, revisit with run history.
 2. **OQ-2 — Intentional-visual-change workflow.** When a PR intentionally
    changes a surface:
    (a) author lands the PR with the gate red, then dispatches the regen lane
