@@ -328,9 +328,11 @@ in
   #                         idles in RunSessions awaiting Provision/Start.
   #   dogfood:build-cli   — builds the operator CLI (./cmd/compass) into the state
   #                         dir so a human driving the box over ssh never gets a
-  #                         stale binary; nothing execs it, and its `after` edge is
-  #                         inert BACKWARD (`@started`), so a CLI compile error
-  #                         cannot gate the backend.
+  #                         stale binary; nothing execs it, so it needs a `before`
+  #                         edge to land in `up`'s default (upstream-only) closure
+  #                         at all — which means a CLI compile error does gate the
+  #                         backend. That cost is accepted: the alternative was a
+  #                         task that never ran.
   #
   # Opt-in (NOT wired into up): `dogfood:agent-image` builds+loads the agent
   # base image (heavy closure — kept off the hot up path), and `dogfood:clean`
@@ -534,13 +536,19 @@ in
     # identical-version blind spot that hid the drift is RIG-3346).
     # The build is unconditional ON PURPOSE — a present-but-stale binary IS the
     # bug, so skip-if-present would skip exactly when the build is required.
-    # Ordered `after` the server, not `before`: this pins the task into the `up`
-    # graph while keeping the edge inert BACKWARD, so a compile error anywhere in
-    # the CLI's import graph cannot stop the backend from serving. The `@started`
-    # suffix is load-bearing: an unsuffixed `after` on a process task resolves to
-    # Ready, which would block the rebuild on the server's probe and skip it
-    # entirely once the server exhausts its restarts — leaving the CLI stale in
-    # the one case an operator needs it current, a backend that will not come up.
+    # Ordered `before` the server, like gen-cert: `devenv up` defaults to
+    # `--mode before`, so it schedules only the UPSTREAM closure of the
+    # processes. An `after` edge put this task DOWNSTREAM, and — alone among
+    # these tasks — nothing depends on it, so it fell outside the closure and
+    # never ran at all under a plain `up`. A `before` edge is what actually puts
+    # it in the graph. The accepted cost is that a CLI compile error now gates
+    # the backend starting; that is the price of the freshness guarantee, since
+    # the alternative is a task that silently never runs.
+    # `rm -f "$bin"` first is load-bearing: `go build -o` does NOT write its
+    # destination when the build fails, so without the remove a failed rebuild
+    # leaves the previous binary in place and an operator runs silently-old code
+    # — undetectable while `--version` is a static string (RIG-3346). Removing
+    # first converts that into a self-announcing "no such file".
     # Invocation path is explicit — the state dir is not on PATH, so an operator
     # runs `"$DEVENV_STATE/compass/compass"` (or the absolute path); `devenv info`
     # prints that var, and note it takes no positional argument.
@@ -548,11 +556,11 @@ in
       exec = ''
         set -euo pipefail
         bin="${config.devenv.state}/compass/compass"
-        go build -o "$bin.new" ./cmd/compass
-        mv -f "$bin.new" "$bin"
+        rm -f "$bin"
+        go build -o "$bin" ./cmd/compass
       '';
       cwd = "${config.devenv.root}/go";
-      after = [ "devenv:processes:compass-server@started" ];
+      before = [ "devenv:processes:compass-server" ];
     };
 
     # mint-runner-token: register the `dogfood` runner and write its enrollment
