@@ -304,10 +304,11 @@ machinery per the OQ rulings.
   `afterResubscribe` seam edits EVERY test file in `package delivery` that
   references `c.bus.*`, `events.Bus`, or `c.afterResubscribe` — eleven at time
   of writing, because `package delivery` is ONE compilation unit that breaks
-  simultaneously: `helpers_test.go`'s shared `newTestConsumer` constructor
-  (which most bus-driving tests route through) and `trace_test.go`'s
-  `publishCtxResponse` helper signature both name the `events.Bus` type
-  directly, alongside `consumer_test.go`, `mention_test.go`,
+  simultaneously: `trace_test.go`'s `publishCtxResponse` helper names the
+  `events.Bus` type directly in its signature, and `helpers_test.go`'s shared
+  `newTestConsumer` (which most bus-driving tests route through) constructs one
+  and passes it to `NewConsumer` — both break on the same commit, alongside
+  `consumer_test.go`, `mention_test.go`,
   `offline_mention_test.go`, `pre_settle_closure_pgtest_test.go`,
   `scan_wiring_test.go`, `ask_answer_target_test.go`, `sweep_test.go`,
   `pin_sweep_test.go`, and `ask_answer_recovery_pgtest_test.go` — so the
