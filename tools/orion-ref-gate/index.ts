@@ -77,6 +77,15 @@ export const CARVEOUT_PATHS: readonly string[] = ["bun.lock"];
  */
 export const ALLOWLIST: Readonly<Record<string, string>> = {};
 
+/**
+ * The in-repo doc stating the boundary rule, cited in the failure hint. Named
+ * here so the test can assert the file actually exists: a bare string would
+ * let a docs move silently kill the pointer again — the exact defect this
+ * hint was repaired for. Wording tracks its "Never name or point at the
+ * private repo" bullet; update both together.
+ */
+export const REMEDIATION_DOC = "docs/concepts/self-host-and-managed.md";
+
 /** One scanned line carrying the token. */
 export interface Reference {
 	readonly file: string;
@@ -156,7 +165,7 @@ export async function runOnce(deps: Deps): Promise<number> {
 			"A public repo must not name, cite, or quote the private internal monorepo. " +
 				'Refer to it by architectural role instead — say "the managed service", or ' +
 				"describe the core capability directly so it need not be named. " +
-				"See docs/concepts/self-host-and-managed.md.",
+				`See ${REMEDIATION_DOC}.`,
 		);
 		return 1;
 	}
