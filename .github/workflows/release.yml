@@ -224,10 +224,11 @@ jobs:
         # from gate-tools.nix's langs so it is byte-identical to the dev shell's
         # bun — the same derivation, not merely the same version. Only bun is
         # bootstrapped here: publish needs the devenv-CLI resolver, not the
-        # whole language set. `langs.bun` must carry a real store path, and nix
-        # eval prints JSON `null` for a missing key — a value, not an absence —
-        # so the guard tests for `null` explicitly rather than emptiness alone,
-        # the same shape the digest check in publish.sh uses.
+        # whole language set. `langs.bun` must carry a real store path, and
+        # `jq -r` renders a missing `.store` as the literal string `null` — a
+        # value, not an absence — so the guard tests for `null` explicitly
+        # rather than emptiness alone, the same shape the digest check in
+        # publish.sh uses.
         working-directory: .
         run: |
           set -euo pipefail
