@@ -12,8 +12,18 @@ Ledger-impact: appends DL-331..337 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reco
 > `DECISIONS.md` to keep ids unique: **DL-327 → DL-334** (OQ-1 held-deliver ack
 > timing), **DL-328 → DL-335** (OQ-2 callback-direct dispatch), **DL-329 →
 > DL-336** (OQ-3 part 1 DB-role split), **DL-330 → DL-337** (OQ-3 part 2
-> publish-side recovery trigger). DL-331/DL-332/DL-333 are unchanged. The
-> in-body citations below read as point-in-time; the ledger rows are canonical.
+> publish-side recovery trigger). DL-331/DL-332/DL-333 keep their ids; DL-333's
+> Decision cell has its internal reconnect-hook citation retargeted DL-330 →
+> DL-337 in the same pass, so the cell keeps pointing at this record's own
+> recovery-trigger row rather than at the apple-container row that now holds
+> DL-330. That retarget is a deliberate, narrow exception to the ledger's
+> "Decision — a one-line paraphrase, immutable after append" rule
+> (`DECISIONS.md` §Conventions): the rule bans an in-place REWORD so a cell
+> cannot silently drift as a truth surface, and here leaving the old id in
+> place is exactly what would have made it silently wrong. An id-only fix that
+> preserves the sentence is the minimal way to keep the cell true; it is not
+> licence to reword a landed Decision. The in-body citations below read as
+> point-in-time; the ledger rows are canonical.
 
 ## Problem / Intent
 
