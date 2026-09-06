@@ -39,10 +39,11 @@ tasks:
     # backstop is ci.yml's unconditional push + nightly full sweep, which does
     # run the scan to a real verdict. `dependsOn: ['root']` would close the
     # PR-time gap — root's source is `.`, so every path marks it affected and
-    # `--downstream direct` would pull this project in — but it over-triggers
-    # the gate on every repo-root file change (moon edges are project-level,
-    # not file-level), the same tradeoff sql-migration-gate documents
-    # declining. Tracked as RIG-3381.
+    # `--downstream direct` would pull this project in — but for the same
+    # reason it would run the gate on EVERY PR, since moon edges are
+    # project-level rather than file-level. sql-migration-gate declines the
+    # same edge, though its gap is narrower (two root-level configs).
+    # Tracked as RIG-3381.
     inputs:
       - '*.ts'
       - 'tsconfig.json'
