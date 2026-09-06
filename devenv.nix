@@ -326,6 +326,15 @@ in
   #                         (the readiness probe gates on the migrated store).
   #   compass-runner      — enrolls over the TLS door with that token, then
   #                         idles in RunSessions awaiting Provision/Start.
+  #   dogfood:build-cli   — builds the operator CLI (./cmd/compass) into the state
+  #                         dir so a human driving the box over ssh never gets a
+  #                         stale binary; nothing execs it, so it needs a `before`
+  #                         edge to land in `up`'s default (upstream-only) closure
+  #                         at all. Deliberate consequence: a CLI compile error
+  #                         fails `up` WHOLESALE — server, ui, mint-runner-token
+  #                         and runner all go with it, leaving postgres+gen-cert.
+  #                         Accepted so a non-compiling CLI cannot be ignored;
+  #                         `--mode single` is the escape hatch while it is broken.
   #
   # Opt-in (NOT wired into up): `dogfood:agent-image` builds+loads the agent
   # base image (heavy closure — kept off the hot up path), and `dogfood:clean`
@@ -494,9 +503,9 @@ in
     };
   };
 
-  # Dogfood loop tasks. gen-cert and mint-runner-token run cross-platform (they
-  # back the macOS-native server/UI dogfood); agent-image and clean stay
-  # Linux-only, as the whole podman-backed loop targets the Linux dev box.
+  # Dogfood loop tasks. gen-cert, build-cli and mint-runner-token run
+  # cross-platform (they back the macOS-native server/UI dogfood); agent-image and
+  # clean stay Linux-only, as the whole podman-backed loop targets the Linux dev box.
   tasks = {
     # gen-cert: mint the self-signed TLS trust anchor the network door serves and
     # the runner trusts. Built into the state dir and run the same way the server
@@ -513,6 +522,53 @@ in
         exec "$bin" \
           --cert-out "${config.devenv.state}/compass/tls.crt" \
           --key-out "${config.devenv.state}/compass/tls.key"
+      '';
+      cwd = "${config.devenv.root}/go";
+      before = [ "devenv:processes:compass-server" ];
+    };
+
+    # build-cli: build the operator CLI (`./cmd/compass`) into the state dir so a
+    # human driving the box always has a binary matching the deployed source.
+    # Unlike the other four binary builds here, this task does not `exec` what it
+    # produces — there is nothing to run at boot. Those four are each built by the
+    # task or process that immediately execs them (gen-cert and mint-runner-token
+    # as tasks; compass-server and compass-runner as processes), so their freshness
+    # is a side effect of being invoked; the operator CLI is invoked LATER, by a
+    # human over ssh, so nothing would otherwise rebuild it (RIG-3342; the
+    # identical-version blind spot that hid the drift is RIG-3346).
+    # The build is unconditional ON PURPOSE — a present-but-stale binary IS the
+    # bug, so skip-if-present would skip exactly when the build is required.
+    # Ordered `before` the server, like gen-cert: `devenv up` defaults to
+    # `--mode before`, so it schedules only the UPSTREAM closure of the
+    # processes. An `after` edge put this task DOWNSTREAM, and — alone among
+    # these tasks — nothing depends on it, so it fell outside the closure and
+    # never ran at all under a plain `up`. A `before` edge is what actually puts
+    # it in the graph.
+    # THE GATE IS DELIBERATE, AND IT IS STACK-WIDE, NOT CLI-ONLY: a compile
+    # error anywhere in this CLI's import graph fails the task, which fails
+    # `up` — taking compass-server and everything ordered after it
+    # (dogfood:mint-runner-token, compass-runner, compass-ui) down with it, and
+    # leaving only postgres and gen-cert up. Someone doing server- or UI-only
+    # work on a briefly-broken CLI cannot boot the stack. That is accepted: on
+    # a dogfood box a CLI that will not compile should be impossible to ignore,
+    # and a loud failure at boot beats an operator discovering it over ssh.
+    # Recovery is to fix `./cmd/compass`, or to bring processes up individually
+    # (`devenv up --mode single`) while the CLI is broken.
+    # `rm -f "$bin"` first is load-bearing: `go build -o` does NOT write its
+    # destination when the build fails, so without the remove a failed rebuild
+    # leaves the previous binary in place and an operator runs silently-old code
+    # — undetectable while `--version` is a static string (RIG-3346). Removing
+    # first converts that into a self-announcing "no such file"; the cost is a
+    # ~10s window on every `up` where the binary is absent while it rebuilds.
+    # Invocation path is explicit — the state dir is not on PATH, so an operator
+    # runs `"$DEVENV_STATE/compass/compass"` (or the absolute path). `devenv
+    # info` prints that var (`devenv info` itself takes no positional argument).
+    "dogfood:build-cli" = {
+      exec = ''
+        set -euo pipefail
+        bin="${config.devenv.state}/compass/compass"
+        rm -f "$bin"
+        go build -o "$bin" ./cmd/compass
       '';
       cwd = "${config.devenv.root}/go";
       before = [ "devenv:processes:compass-server" ];
