@@ -134,12 +134,11 @@ func TestSetArgs(t *testing.T) {
 		}
 	}
 
-	// The value must NEVER be in the constructed argv — it rides stdin.
-	for _, a := range gotFull {
-		if strings.Contains(a, "the-secret-value") {
-			t.Errorf("value leaked into argv: %v", gotFull)
-		}
-	}
+	// The value-never-in-argv invariant is NOT asserted here: setArgs takes no
+	// value parameter, so no mutation of it could put the value in this argv and
+	// any check would pass vacuously. It is defended at the exec boundary by
+	// TestSetFeedsValueOnStdinNeverArgv, which spawns a real process, captures
+	// the child's actual argv, and asserts the value arrived on stdin instead.
 }
 
 func equalArgs(a, b []string) bool {
