@@ -161,15 +161,20 @@ func (c *PostgresContainer) Remove(name string) error {
 //   - server args: unix_socket_directories lists BOTH the image's compiled
 //     default (for the entrypoint bootstrap) and our bind-mounted DSN dir;
 //     listen_addresses=” is socket-only (no TCP); -p is the DSN port.
+//
+// The flags every container adapter shares (detach/rm/replace/name/stop-timeout)
+// come from the flagPodman* consts below rather than repeated literals: three
+// adapters now assemble a `podman run`, and a typo in one copy would surface as
+// an opaque podman usage error at start time rather than a compile failure.
 func runArgs(spec stack.PostgresContainerSpec, superuser string) []string {
 	pgdata := "/pgdata"
 	return []string{
-		"run", "--detach",
-		"--rm",
-		"--replace",
-		"--name", spec.Name,
+		cmdPodmanRun, flagPodmanDetach,
+		flagPodmanRM,
+		flagPodmanReplace,
+		flagPodmanName, spec.Name,
 		"--userns=keep-id",
-		"--stop-timeout", strconv.FormatInt(stopSeconds(spec.StopTimeout), 10),
+		flagPodmanStopTimeout, strconv.FormatInt(stopSeconds(spec.StopTimeout), 10),
 		"-e", "POSTGRES_DB=" + postgresDB,
 		"-e", "POSTGRES_HOST_AUTH_METHOD=trust",
 		"-e", "POSTGRES_USER=" + superuser,
@@ -182,6 +187,29 @@ func runArgs(spec stack.PostgresContainerSpec, superuser string) []string {
 		"-p", spec.Port,
 	}
 }
+
+// The `podman run` subcommand and the flags every container adapter (postgres,
+// collector, nats) emits identically. They live here beside the shared
+// containerCLI/podmanExec surface rather than in any one component's file, since
+// all three argv builders consume them.
+const (
+	// cmdPodmanRun is the podman subcommand every argv builder leads with.
+	cmdPodmanRun = "run"
+	// flagPodmanDetach runs the container in the background, returning at launch.
+	flagPodmanDetach = "--detach"
+	// flagPodmanRM auto-removes the container on exit, so a graceful stop both
+	// stops AND removes it.
+	flagPodmanRM = "--rm"
+	// flagPodmanReplace clears a survivor of the same name, so a fresh up never
+	// collides on the stable per-state-dir name.
+	flagPodmanReplace = "--replace"
+	// flagPodmanName pins the stable per-state-dir container name that is the
+	// component's durable teardown identity.
+	flagPodmanName = "--name"
+	// flagPodmanStopTimeout is the safe default grace for any `podman stop` that
+	// passes no explicit -t.
+	flagPodmanStopTimeout = "--stop-timeout"
+)
 
 // postgresDB is the single database the private store holds, created by the
 // image entrypoint from POSTGRES_DB. It matches the dbname compass-server's DSN

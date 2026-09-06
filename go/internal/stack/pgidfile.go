@@ -299,8 +299,8 @@ func parseContainerEntry(line string, f []string) (pgidEntry, error) {
 	return pgidEntry{Kind: entryContainer, Component: comp, ContainerName: name}, nil
 }
 
-// componentFromString is the inverse of Component.String for the three
-// supervised children. It is defined here beside the parser (its only consumer)
+// componentFromString is the inverse of Component.String for every supervised
+// child. It is defined here beside the parser (its only consumer)
 // rather than on Component, keeping the pgid file format self-contained.
 func componentFromString(s string) (Component, bool) {
 	switch s {
@@ -312,6 +312,8 @@ func componentFromString(s string) (Component, bool) {
 		return ComponentRunner, true
 	case ComponentCollector.String():
 		return ComponentCollector, true
+	case ComponentNats.String():
+		return ComponentNats, true
 	default:
 		return 0, false
 	}
