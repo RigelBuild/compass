@@ -19,8 +19,9 @@ scope (RIG-3070: podman permanent for self-host, microVM behind the seam;
 see `ui/compass-native-embedded-revival/design.md:71-74`), as is the macOS
 *embedded runner* backend (sibling RIG-3238 Apple-container record). One
 COUPLING crosses that fence and is grounded below: "constant-on service on
-macOS" shares the runner-on-darwin / VM-topology unknowns that RIG-3238
-carries as its OQ-12 and the embedded-revival record carries as its OQ-7.
+macOS" touches the runner-on-darwin / VM-topology question RIG-3238 carries as
+its OQ-12 (now ruled host-side) and the embedded-revival record carries as its
+OQ-7.
 
 ## Approach
 
@@ -256,7 +257,9 @@ stops, disables, and removes it.
   `Restart=on-failure` + pinned `RestartSec=5`, `TimeoutStopSec=90` (the
   DL-262 teardown drain worst case is ~80s, `downdetached.go:15-24`),
   `KillMode=mixed` + an explicit start-limit posture (so the ordered drain
-  and the crashloop ceiling are chosen, not left to defaults), explicit
+  and the POST-Ready crash-restart ceiling are chosen, not left to defaults;
+  the never-Ready path is bounded separately by the crashloop guard, OQ-4),
+  explicit
   `Environment=PATH=` (user units inherit no login-shell PATH; podman + the
   DL-321 PATH-threaded sidecars must resolve), `[Install]
   WantedBy=default.target`; NO `After=network.target` (a system-manager
@@ -330,15 +333,16 @@ darwin start-time reader unblocks spawn/teardown identity, but a WORKING
 macOS stack end-to-end still depends on unknowns the sibling lanes own:
 embedded-revival OQ-7 (the DL-260 postgres DSN and the agent sockets are
 AF_UNIX bind-mounts, and AF_UNIX does not cross the virtiofs/VM boundary —
-unvalidated) and RIG-3238's OQ-12 ("the runner cannot run natively on
-darwin once the podman-machine Linux VM is gone",
-`docs/designs/platform/apple-container-macos-runner/design.md:713-733`,
-which also notes the runner's podman host-capability preflight has no
-darwin answer yet). Those are stack-TOPOLOGY unknowns, not supervision
+unvalidated) and RIG-3238's OQ-12, the runner-on-darwin / VM-topology
+question (`docs/designs/platform/apple-container-macos-runner/design.md` — a
+forward reference: that sibling RIG-3238 record lands with PR #869, not yet
+merged), now RULED host-side: the runner runs natively on darwin and drives the
+backend host-side, which if anything strengthens this record's
+runtime-agnostic position. Those are stack-TOPOLOGY unknowns, not supervision
 unknowns — this record ships the supervision mechanics for macOS (T2
 launchd template + T3 darwin identity reader) and leaves the topology
-validation with the lane that owns it. Per Matt's RIG-3239 ruling the
-launchd LaunchAgent supervises the `compass-stack` host process
+validation with the lane that owns it. Per Matt's 2026-09-05 session directive
+the launchd LaunchAgent supervises the `compass-stack` host process
 independent of what runtime runs inside it (podman today,
 apple-container later), so macOS supervision is NOT gated on the
 RIG-3238 backend choice — this record ships the macOS mechanics now
@@ -346,10 +350,7 @@ RIG-3238 backend choice — this record ships the macOS mechanics now
 "macOS supported" GA doc-claim + end-to-end smoke, which ride the
 stack-TOPOLOGY validation owned by the sibling lane (embedded-revival
 OQ-7's AF_UNIX-across-the-VM-boundary question) — dependency ordering
-on another lane, not a supervision fork here. (The
-`apple-container-macos-runner/design.md:713-733` citation resolves
-only once that sibling RIG-3238 record lands on main — PR #869 is not
-yet merged; it is a forward reference, not a same-tree anchor.)
+on another lane, not a supervision fork here.
 
 ### Alternatives considered
 
@@ -542,10 +543,13 @@ supervisor wraps the ONE blocking process and supplies only
 `Restart=on-failure` + backoff (systemd `Type=exec`; launchd `KeepAlive`).
 Whole-stack (not per-service) restart is the right granularity: the cold
 sequence's ordering means a restarted postgres needs the server's readiness
-re-verified anyway (the crashloop ceiling is the OS supervisor's
-start-limit / throttle, pinned in the T2 templates). This also eliminates
-the two failure modes a returns-at-Ready oneshot wrapper has: the
-status-lie (a `Type=exec` unit tracks a live main pid, so a dead stack
+re-verified anyway. The OS supervisor's start-limit / throttle (pinned in the
+T2 templates) is the ceiling for POST-Ready crash restarts; a stack that
+NEVER reaches Ready is bounded separately by the crashloop guard (T2's
+install-time preflight refusal + T1's never-Ready bring-up self-limit), since
+throttle alone would KeepAlive-loop a misconfigured host indefinitely. This
+also eliminates the two failure modes a returns-at-Ready oneshot wrapper has:
+the status-lie (a `Type=exec` unit tracks a live main pid, so a dead stack
 reads `failed`, never fake-`active`) and stop-what-you-didn't-start (the OS
 supervisor owns exactly the pid it spawned).
 
@@ -573,7 +577,19 @@ Interfaces:
   `stack.go:131-146`) supervises by polling `Health`, exiting non-zero only
   after N consecutive probe failures (a single transient probe error must
   not tear the stack — the restart then takes ownership of the manual
-  stack; interval + N stated in the impl).
+  stack; interval + N stated in the impl). Separately — and OUTSIDE
+  `Supervise`, because a never-Ready `Up` returns a nil `*Stack` and never
+  enters it — the never-Ready BRING-UP self-limit lives in the CLI supervise
+  wrapper (`go/cmd/compass-stack/main.go`): it owns the `Up` call, and on an
+  `Up` that fails to reach Ready it increments a failure counter PERSISTED in
+  the state dir (beside `stack.lock`), since the OS supervisor's restart — a
+  fresh process — is the actual retry driver, so an in-process counter would
+  reset every loop. On the Nth consecutive persisted failure the wrapper exits
+  TERMINALLY (the reserved non-restart code, see T2) so a misconfigured host
+  does not KeepAlive-loop every ~10s; any `Up` that reaches Ready resets the
+  counter to zero and hands the `*Stack` to `Supervise(ctx)`. The persistence
+  file, its reset-on-Ready rule, and N are stated in the impl — the never-Ready
+  crashloop guard, half 2 (half 1 = T2's install-time preflight).
 - Test cycle (red → green, existing stub harness
   `internal/stack/harness_test.go`): (1) a stubbed child's `Wait` returning
   early causes `Supervise` to drain survivors and return non-nil — with NO
@@ -589,9 +605,18 @@ Interfaces:
   OQ-6 counterpart to `downdetached_test.go:238`, which today asserts
   refusal for an up-in-flight holder): the (b) mode-token guard makes
   `DownDetached` signal the supervising holder and it exits ZERO. This is
-  the OQ-6 behavior T2's stop-truth delegates here. Plus a process-level
-  smoke on Linux: `up --supervise`,
-  `kill` a child, assert non-zero exit and a clean survivor teardown.
+  the OQ-6 behavior T2's stop-truth delegates here. (6) the CLI supervise
+  wrapper, given a stubbed `Up` that fails to reach Ready N consecutive times
+  across simulated restarts (the persisted counter surviving each), takes the
+  terminal non-restart path — on linux exiting with the reserved code
+  (EX_CONFIG/78), on darwin additionally invoking the self-`bootout`/`disable`
+  seam (stubbed at the CLI boundary, asserted called once with the agent
+  label) before exit, since launchd keys on zero-vs-non-zero with no per-code
+  exemption — NOT the restart-inviting non-zero; a single failure followed by a
+  Ready resets the counter. (This tests the CLI-level loop, not `Supervise` —
+  the `internal/stack` harness cannot exercise a CLI-owned loop.) Plus a
+  process-level smoke on Linux: `up --supervise`, `kill` a child, assert
+  non-zero exit and a clean survivor teardown.
 
 ### T2 — `compass-stack service install` / `uninstall` + unit templates
 
@@ -607,8 +632,27 @@ Interfaces:
   `--state-dir` and flags so the service stack and an interactive stack
   are distinct unless deliberately shared).
 - Produces: `service install` / `service uninstall` verbs extending the
-  `up|down|status|preflight` dispatch (`main.go:6`); two embedded unit
-  templates —
+  `up|down|status|preflight` dispatch (`main.go:6`). `service install` runs the
+  host-prerequisite check by reusing the `preflight` verb's per-check machinery
+  (`internal/hostcheck` Result/Decide + the print/exit surface), not a divergent
+  second check, but with a SUPERVISION-scoped check set — NOT the full
+  `runPreflight`, which also runs the KVM + microVM-trio floors
+  (`preflight.go:86-110`, `hostcheck.go:42-46`) that gate the microVM RUNNER,
+  not the supervised stack (DL-319's podman tier is KVM-absent, and darwin has
+  no `/dev/kvm` at all — running those would refuse install on every supported
+  podman host). The supervision subset, per platform: on darwin the podman
+  machine reachable (`internal/preflight/preflight.go:28-34` `MachineReady`,
+  darwin-only, linux-absent) — the adapter behind that seam lands in
+  embedded-revival T-6, and a nil `MachineReady` leaves the check ABSENT rather
+  than failing (`preflight.go:117`; the sole wiring site,
+  `compass-app/embedded.go:379-383`, omits it today), so T2 either wires a
+  darwin machine probe itself or the darwin half of guard 1 is inert until T-6
+  lands; on linux rootless podman + a real `XDG_RUNTIME_DIR` (the linger
+  prerequisite below), plus one probe cycle on both. It REFUSES with a legible
+  error until the check passes — so a misconfigured host fails at install, not
+  in an invisible KeepAlive restart loop (the never-Ready crashloop guard,
+  half 1; the supervise-loop self-limit in T1 is half 2). On success it
+  renders + enables one of two embedded unit templates —
   - systemd user unit → `~/.config/systemd/user/compass-stack.service`:
     `Type=exec`, `ExecStart=<abs> up --supervise …`, `Restart=on-failure`,
     `RestartSec=5`, `TimeoutStopSec=90`, `KillMode=mixed` (folded from the
@@ -620,7 +664,12 @@ Interfaces:
     `TimeoutStopSec` deadline, composing correctly with the 90s grace),
     explicit start-limit posture (`StartLimitIntervalSec=`/`StartLimitBurst=`
     stated, not left to the 5-in-10s default — the intended circuit breaker
-    is chosen, not an accident of defaults), `Environment=PATH=…`,
+    is chosen, not an accident of defaults),
+    `RestartPreventExitStatus=78` (the reserved terminal code, EX_CONFIG, the
+    never-Ready self-limit exits with — `Restart=on-failure` restarts on ANY
+    non-zero otherwise, so without this the terminal exit is indistinguishable
+    from a child-death non-zero and gets restarted; half 2's exit needs this
+    knob to actually stay down), `Environment=PATH=…`,
     `WantedBy=default.target`; NO `After=network.target` (it is a
     system-manager unit the per-user manager silently ignores, and the
     server binds loopback only, `main.go:42-45` — no network-up ordering
@@ -637,7 +686,11 @@ Interfaces:
     launchd's default teardown SIGKILLs remaining process-group members at
     job stop, which would race the DL-183 graceful drain — the plist must
     let the children survive long enough for the ordered reverse teardown),
-    `EnvironmentVariables` PATH; install runs
+    `EnvironmentVariables` PATH. launchd's `KeepAlive={SuccessfulExit=false}`
+    keys on zero-vs-non-zero with NO per-code exemption, so the never-Ready
+    terminal exit (half 2) cannot ride an exit code here: on the Nth failure
+    the supervise wrapper `launchctl bootout`s / `disable`s its own agent
+    before exiting, so launchd does not re-launch it. install runs
     `launchctl bootstrap gui/$UID` then `enable`.
 - Operator stop-truth — the `down` verb vs the installed unit (folded from
   the red-team, resolved under the ruled OQ-6 (b) lock-lifetime): a naive
@@ -664,10 +717,18 @@ Interfaces:
   `AbandonProcessGroup=true` ordered-teardown knobs, pinned `RestartSec` /
   `ThrottleInterval` + start-limit posture, stop grace >= 90s, log routing
   (journald / launchd `StandardErrorPath`), the linger step, the
-  status-truth doc caveat.
+  crashloop guard (install-time preflight refusal + the terminal-exit knob
+  the never-Ready self-limit rides: systemd `RestartPreventExitStatus=78`; on
+  launchd there is no renderable knob — the wrapper's self-`bootout` covers
+  that path, T1-owned, see OQ-4), the status-truth doc caveat.
 - Test cycle: unit tests on the template rendering (golden files: absolute
   paths, the >= 90s stop grace, the pinned state dir, `KillMode=mixed` /
-  `AbandonProcessGroup=true`). Smoke on a real systemd host: install → unit
+  `AbandonProcessGroup=true`, the systemd `RestartPreventExitStatus=78` knob)
+  plus a unit test that `service install` REFUSES
+  with the legible error when the install-time preflight fails — on BOTH
+  platforms (darwin: podman machine unreachable; linux: rootless podman /
+  `XDG_RUNTIME_DIR` missing), since the all-platforms bar forbids a
+  macOS-only close. Smoke on a real systemd host: install → unit
   active + `compass-stack status` Ready → kill a child → unit enters
   `failed`/restarts and the stack comes back → `systemctl --user stop`
   produces the ORDERED reverse drain (runner exits before server, not a
@@ -749,10 +810,12 @@ Interfaces:
 
 - [ ] T1 — `up --supervise` blocking mode: supervise loop on the stack core
       (child-`Wait` fan-in, drain + non-zero on child death, signal-driven
-      `Down`), harness unit tests + Linux process smoke.
-- [ ] T2 — `service install`/`uninstall` verbs + embedded systemd/launchd
-      unit templates, rendered against the T2 unit-content checklist;
-      golden-file tests + systemd-host smoke (launchd smoke with T3).
+      `Down`, N-consecutive-bring-up-failure self-limit), harness unit tests
+      + Linux process smoke.
+- [ ] T2 — `service install`/`uninstall` verbs (with install-time preflight)
+      + embedded systemd/launchd unit templates, rendered against the T2
+      unit-content checklist; golden-file tests + systemd-host smoke (launchd
+      smoke with T3).
 - [ ] T3 — darwin start-time readers at BOTH seams (`readStartTime` +
       `readGroupLeaderStartTime`, `sysctl KERN_PROC` via x/sys, one shared
       encoding); darwin-tagged unit test on the DL-263 CI leg.
@@ -794,6 +857,26 @@ ruling, all are content-completeness for the executor):
   `StandardOutPath`/`StandardErrorPath`. Both docs state the status source
   of truth is `compass-stack status` — the unit's state is supervise-pid
   liveness only.
+- **Crashloop guard (never-Ready bring-up).** `KeepAlive={SuccessfulExit=false}`
+  / systemd `Restart=on-failure` restart a stack that never reaches Ready
+  (podman machine unreachable on darwin, rootless-podman/`XDG_RUNTIME_DIR`
+  missing on linux, missing dep) every throttle interval indefinitely. The
+  `ThrottleInterval` / start-limit is the ceiling for POST-Ready crash restarts
+  only; it does not stop a never-Ready loop. Two guards cover it: (1) half 1 —
+  `service install` runs the per-platform install-time preflight (reusing the
+  `preflight` verb's per-check machinery with a supervision-scoped check set —
+  not the KVM/microVM-floor `runPreflight`) and refuses with a legible error
+  until it passes, so a misconfigured host fails at install, not in an
+  invisible restart loop (T2-rendered + T2-tested on both platforms); (2)
+  half 2 — the CLI supervise wrapper self-limits after N consecutive
+  never-Ready `Up` failures across OS-supervisor restarts (counter persisted
+  in the state dir; distinct from the attached-probe N-consecutive Health
+  degradation — this counts failures to REACH Ready), exiting with a reserved
+  terminal code the unit exempts from restart (systemd
+  `RestartPreventExitStatus=78`; launchd has no per-code
+  exemption, so the wrapper self-`bootout`s its agent on that path). Half 2's
+  behavior is T1-owned + T1-tested; the exit-exemption knob is T2-rendered.
+  Interval + N stated in the impl.
 
 ## Resolved decisions
 
@@ -828,7 +911,7 @@ ruling, all are content-completeness for the executor):
   well?") — macOS is supported, and the dependency ordering (OQ-5) is now
   ruled below.
 - **OQ-5 (macOS service dependency ordering) — RULED: ship supervision now,
-  runtime-agnostic** (Matt, RIG-3239, 2026-09-05): "we'd use a launchd
+  runtime-agnostic** (Matt, session directive, 2026-09-05): "we'd use a launchd
   service for the stack, unrelated to it running on podman/apple
   container." The launchd LaunchAgent supervises the `compass-stack` host
   process independent of the runtime inside it, so macOS supervision is NOT
