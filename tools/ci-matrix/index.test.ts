@@ -10,7 +10,14 @@
 // import.meta.main-guarded, so importing index.ts never runs it.
 
 import { describe, expect, test } from "bun:test";
-import { type GenInput, generate, type ProjectInput } from "./index.ts";
+import {
+	type GenInput,
+	generate,
+	outputLines,
+	type ProjectInput,
+	parseTaskAffectedIds,
+	unionAffectedIds,
+} from "./index.ts";
 
 /** A grouped project with a `ci` task target derived from its id. */
 function proj(id: string, group: string): ProjectInput {
@@ -530,5 +537,273 @@ describe("empty affected closure — matrix still non-empty (fromJSON safe)", ()
 		expect(out.forgeAffected).toBe(false);
 		expect(out.gtk4Affected).toBe(false);
 		expect(out.darwinAffected).toBe(false);
+	});
+});
+
+describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
+	test("returns the project ids that have affected tasks", () => {
+		const json = JSON.stringify({
+			tasks: {
+				"orion-ref-gate": { check: {} },
+				"compass-go": { test: {} },
+			},
+		});
+		expect(parseTaskAffectedIds(json).sort()).toEqual([
+			"compass-go",
+			"orion-ref-gate",
+		]);
+	});
+
+	test("an unaffected workspace yields no ids, not a throw", () => {
+		// `moon query tasks` prints its envelope unconditionally, so `{}` is a
+		// real "nothing affected" and must be distinguishable from a failure.
+		expect(parseTaskAffectedIds(JSON.stringify({ tasks: {} }))).toEqual([]);
+	});
+
+	test("a payload with no tasks key throws", () => {
+		expect(() => parseTaskAffectedIds(JSON.stringify({ options: {} }))).toThrow(
+			"missing the expected tasks key",
+		);
+	});
+
+	test("a null tasks value throws the named diagnostic, not a TypeError", () => {
+		// Guarding `undefined` alone let `null` reach Object.keys, which threw a
+		// raw TypeError — fail-closed either way, but unreadable in the log.
+		expect(() => parseTaskAffectedIds(JSON.stringify({ tasks: null }))).toThrow(
+			"missing the expected tasks key",
+		);
+	});
+
+	test("a task id containing a colon throws", () => {
+		expect(() =>
+			parseTaskAffectedIds(
+				JSON.stringify({ tasks: { "orion-ref-gate:check": {} } }),
+			),
+		).toThrow("orion-ref-gate:check");
+	});
+
+	test("a task-only project joins the closure a project walk would miss", () => {
+		// The defect this closes: a gate whose subject lives in other projects'
+		// trees is absent from `projects --affected`, so unioning the two
+		// closures is what puts its `ci` target in the matrix.
+		const projects = workspace();
+		const gate = proj("orion-ref-gate", "bun");
+		const projectWalk = ["compass-go"];
+		const taskLevel = parseTaskAffectedIds(
+			JSON.stringify({ tasks: { "orion-ref-gate": { check: {} } } }),
+		);
+		const union = unionAffectedIds(
+			projectWalk,
+			taskLevel,
+			new Set([...projects.map((project) => project.id), gate.id]),
+		);
+		expect(
+			unionAffectedIds(
+				projectWalk,
+				["not-a-project"],
+				new Set(projects.map((p) => p.id)),
+			),
+		).toEqual(projectWalk);
+
+		const out = generate({
+			projects: [...projects, gate],
+			affectedIds: union,
+			changedPaths: ["go/internal/board/x.go"],
+			event: "pull_request",
+		});
+		const bun = out.matrix.find((l) => l.group === "bun");
+		expect(bun?.targets).toContain("orion-ref-gate:ci");
+
+		// Control: without the task-level half the gate is absent, so the
+		// assertion above is defending the union and not the fixture.
+		const without = generate({
+			projects: [...projects, gate],
+			affectedIds: projectWalk,
+			changedPaths: ["go/internal/board/x.go"],
+			event: "pull_request",
+		});
+		expect(
+			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
+		).not.toContain("orion-ref-gate:ci");
+	});
+
+	test("the ledger gate joins the closure on a docs-only change", () => {
+		// The sibling instance, and the one the design corpus depends on:
+		// design-ledger-gate's `check` declares a workspace-root input glob
+		// over docs/designs, which no project owns, so a docs-only diff leaves
+		// it out of the project walk entirely. Measured on moon 2.5.3 against
+		// docs/designs/DECISIONS.md: the walk yields flake-gate and root; the
+		// task half yields design-ledger-gate. A later change that narrowed the
+		// closure back for the design corpus specifically would leave the
+		// orion-ref-gate cases above green, so this fixture names its own gate.
+		// flake-gate and root are the universal floor of every moon closure, so
+		// they must exist as grouped members for the walk half to be
+		// well-formed input to the generator.
+		const projects = [
+			...workspace(),
+			proj("flake-gate", "nix"),
+			proj("root", "bun"),
+		];
+		const gate = proj("design-ledger-gate", "bun");
+		const projectWalk = ["flake-gate", "root"];
+		const union = unionAffectedIds(
+			projectWalk,
+			parseTaskAffectedIds(
+				JSON.stringify({ tasks: { "design-ledger-gate": { check: {} } } }),
+			),
+			new Set([...projects.map((project) => project.id), gate.id]),
+		);
+
+		const out = generate({
+			projects: [...projects, gate],
+			affectedIds: union,
+			changedPaths: ["docs/designs/DECISIONS.md"],
+			event: "pull_request",
+		});
+		expect(out.matrix.find((l) => l.group === "bun")?.targets).toContain(
+			"design-ledger-gate:ci",
+		);
+
+		// Control: the project walk alone leaves the ledger unchecked, which is
+		// the pre-union behaviour a docs-only PR actually got.
+		const without = generate({
+			projects: [...projects, gate],
+			affectedIds: projectWalk,
+			changedPaths: ["docs/designs/DECISIONS.md"],
+			event: "pull_request",
+		});
+		expect(
+			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
+		).not.toContain("design-ledger-gate:ci");
+	});
+});
+
+describe("outputLines — the $GITHUB_OUTPUT key contract", () => {
+	// Every key ci.yml reads via `needs.setup.outputs.*`. The rollup accepts a
+	// skipped work job only when its paired flag is exactly "false", so a
+	// dropped key arrives empty and reds the rollup — on a later PR, not on the
+	// one that dropped it. Enumerated so a deletion fails here instead.
+	const REQUIRED_KEYS = [
+		"matrix",
+		"pgtest_affected",
+		"microvm_affected",
+		"forge_affected",
+		"gtk4_affected",
+		"darwin_affected",
+	] as const;
+
+	function linesFor(): string[] {
+		return outputLines(
+			generate({
+				projects: [proj("a", "bun")],
+				affectedIds: ["a"],
+				changedPaths: [],
+				event: "pull_request",
+			}),
+		);
+	}
+
+	test("emits exactly the keys ci.yml consumes, once each", () => {
+		const keys = linesFor().map((l) => l.split("=")[0]);
+		expect(keys.sort()).toEqual([...REQUIRED_KEYS].sort());
+	});
+
+	test("every flag is a literal true or false, never empty", () => {
+		// An empty value is the shape that reds the rollup, so assert the
+		// rendered text rather than the boolean it came from.
+		for (const line of linesFor()) {
+			const [key, ...rest] = line.split("=");
+			const value = rest.join("=");
+			expect(value).not.toBe("");
+			if (key !== "matrix") {
+				expect(["true", "false"]).toContain(value);
+			}
+		}
+	});
+
+	test("the affected-set flags track the generated output, not a constant", () => {
+		// pgtest/microvm derive from the affected set. The path-derived three
+		// are covered by the next test, which needs its own fixtures to tell
+		// them apart. Negative control: nothing affected must render "false",
+		// otherwise the assertions above would pass on a hardcoded "true".
+		const none = outputLines(
+			generate({
+				projects: [proj("a", "bun")],
+				affectedIds: [],
+				changedPaths: [],
+				event: "pull_request",
+			}),
+		);
+		expect(none).toContain("pgtest_affected=false");
+		expect(none).toContain("microvm_affected=false");
+
+		// Positive control on the same keys: naming the pgtest project flips
+		// both, since each is derived from the affected set.
+		const some = outputLines(
+			generate({
+				projects: [proj("compass-go", "go")],
+				affectedIds: ["compass-go"],
+				changedPaths: [],
+				event: "pull_request",
+			}),
+		);
+		expect(some).toContain("pgtest_affected=true");
+		expect(some).toContain("microvm_affected=true");
+	});
+
+	test("each path-derived flag renders its own boolean, not a sibling's", () => {
+		// forge/gtk4/darwin are the three flags a full sweep forces true, but
+		// on a pull_request they are purely changedPaths-derived, so each can
+		// be driven independently. Asserting them together on one broad path
+		// would not distinguish a cross-wire (gtk4 rendered from
+		// darwinAffected, say) because compass-app paths set gtk4 and darwin
+		// as a pair. So each case below selects ONE flag and pins the other
+		// two to false. Without this the keys are covered by name only, and a
+		// wrong "false" is worse than a dropped key: an empty value reds the
+		// rollup, whereas "false" reads as a legitimate skip and greens it.
+		const flags = (paths: string[]): string[] =>
+			outputLines(
+				generate({
+					projects: [proj("a", "bun")],
+					affectedIds: [],
+					changedPaths: paths,
+					event: "pull_request",
+				}),
+			).filter((line) => /^(forge|gtk4|darwin)_affected=/.test(line));
+
+		// forge + darwin, gtk4 false. `go/internal/**` is a darwin sidecar
+		// prefix (the mac lane cross-compiles the pure-Go sidecars), so a
+		// forge path necessarily fires darwin too — asserting darwin=false
+		// here would be asserting against the shipped path sets. gtk4 staying
+		// false is what discriminates: a gtk4 rendered from darwinAffected
+		// flips it.
+		expect(flags(["go/internal/forge/oracle.go"]).sort()).toEqual([
+			"darwin_affected=true",
+			"forge_affected=true",
+			"gtk4_affected=false",
+		]);
+
+		// darwin alone: the macos-bundle tree is darwin-only.
+		expect(flags(["tools/macos-bundle/index.ts"]).sort()).toEqual([
+			"darwin_affected=true",
+			"forge_affected=false",
+			"gtk4_affected=false",
+		]);
+
+		// gtk4's tree implies darwin (the mac app bundles the same binary),
+		// so this case pins the pair together and leaves forge false.
+		expect(flags(["go/cmd/compass-app/main.go"]).sort()).toEqual([
+			"darwin_affected=true",
+			"forge_affected=false",
+			"gtk4_affected=true",
+		]);
+
+		// Negative control: a path in none of the three sets renders all
+		// false, so the assertions above are not passing on a constant.
+		expect(flags(["docs/readme.md"]).sort()).toEqual([
+			"darwin_affected=false",
+			"forge_affected=false",
+			"gtk4_affected=false",
+		]);
 	});
 });

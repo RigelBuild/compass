@@ -272,6 +272,87 @@ function parseProjects(json: string): ProjectInput[] {
 	});
 }
 
+/**
+ * Project ids with at least one affected TASK.
+ *
+ * `projects --affected` walks the PROJECT graph — a project is affected when
+ * its own sources or a project it `dependsOn` changed — and never consults a
+ * project's cross-tree task `inputs`. A gate whose subject lives in other
+ * projects' trees is therefore invisible to it: `orion-ref-gate`'s `check`
+ * task declares a workspace-root recursive input glob so it scans the whole
+ * repo, and `design-ledger-gate`'s reads the design corpus, yet neither is
+ * selected unless its own handful of files
+ * change, so a PR can introduce exactly what the gate exists to catch and
+ * never run it.
+ *
+ * `tasks --affected` intersects the PR's changed files with each task's real
+ * `inputs`, so it sees those gates. The two closures are genuinely different
+ * shapes rather than one containing the other: on an `apps/ui` path the task
+ * closure is the narrower of the two, while on `/go/**` it additionally
+ * selects `compass-app-bundle` — which the project walk can never reach
+ * (`dependsOn: null`) even though the bundle declares `/go/**` as an input
+ * precisely so a Go change reschedules it. A `.moon/**` edit widens furthest,
+ * from two projects to all of them, since every task inherits that config.
+ * That cost is the point: each addition is a project whose own declared
+ * inputs the PR changed, and the pre-union behaviour was silently not
+ * honouring those declarations. Unioning keeps the project graph's dependents
+ * while adding the input-declared projects.
+ *
+ * `moon query tasks` prints its JSON envelope unconditionally: an unaffected
+ * workspace yields `{"tasks": {}, …}`, not empty output, so an empty `.tasks`
+ * is a real "nothing affected" rather than a failed query.
+ */
+export function parseTaskAffectedIds(json: string): string[] {
+	const parsed = JSON.parse(json) as { tasks?: Record<string, unknown> | null };
+	// `null` is checked alongside `undefined` so a null payload reports this
+	// named diagnostic rather than a raw TypeError out of `Object.keys`.
+	if (parsed.tasks == null) {
+		throw new Error(
+			"moon query tasks payload is missing the expected tasks key",
+		);
+	}
+	const ids = Object.keys(parsed.tasks);
+	const invalidId = ids.find((id) => id.includes(":"));
+	if (invalidId !== undefined) {
+		throw new Error(
+			`moon query tasks returned an unexpected composite id: ${invalidId}`,
+		);
+	}
+	return ids;
+}
+
+/** Return the project closure plus known projects with affected tasks. */
+export function unionAffectedIds(
+	projectIds: readonly string[],
+	taskIds: readonly string[],
+	known: ReadonlySet<string>,
+): string[] {
+	return [
+		...new Set([...projectIds, ...taskIds.filter((id) => known.has(id))]),
+	];
+}
+
+/**
+ * The `$GITHUB_OUTPUT` lines, one per key the `setup` job publishes.
+ *
+ * Every `*_affected` flag is required: `ci.yml`'s rollup accepts a skipped
+ * work job only when its paired flag reads exactly `false`, so an omitted key
+ * arrives as the empty string and reds the rollup with `result=skipped,
+ * affected flag=`. That is fail-closed, but it fails on the *next* PR rather
+ * than on the change that dropped the key, so the set is built here and
+ * asserted in the tests rather than inlined at the callsite.
+ */
+export function outputLines(out: GenOutput): string[] {
+	return [
+		`matrix=${JSON.stringify(out.matrix)}`,
+		`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
+		`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
+		`forge_affected=${out.forgeAffected ? "true" : "false"}`,
+		`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
+		`darwin_affected=${out.darwinAffected ? "true" : "false"}`,
+	];
+}
+
 async function main(): Promise<void> {
 	const eventNameRaw = process.env.GITHUB_EVENT_NAME ?? "push";
 	const event: GenInput["event"] =
@@ -281,53 +362,55 @@ async function main(): Promise<void> {
 				? "schedule"
 				: "push";
 
-	// Full set: group universe + tags + ci-task presence.
-	const fullJson = await $`moon query projects`.quiet().text();
-	const projects = parseProjects(fullJson);
-
-	// Affected set: the affected closure on a PR, else the full set.
-	let affectedIds: string[];
-	if (event === "pull_request") {
-		const affectedJson =
-			await $`moon query projects --affected --upstream deep --downstream direct`
-				.quiet()
-				.text();
-		const affectedParsed = JSON.parse(affectedJson) as {
-			projects?: MoonProject[];
-		};
-		affectedIds = (affectedParsed.projects ?? []).map((p) => p.id);
-	} else {
-		affectedIds = projects.map((p) => p.id);
-	}
-
-	// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
-	// where the flags are unconditionally true).
-	let changedPaths: string[] = [];
-	if (event === "pull_request") {
-		const baseRef = process.env.GITHUB_BASE_REF ?? "";
-		if (baseRef !== "") {
-			const diff = await $`git diff --name-only origin/${baseRef}...HEAD`
-				.nothrow()
-				.quiet()
-				.text();
-			changedPaths = diff
-				.split("\n")
-				.map((l) => l.trim())
-				.filter((l) => l !== "");
-		}
-	}
-
 	try {
+		// Full set: group universe + tags + ci-task presence.
+		const fullJson = await $`moon query projects`.quiet().text();
+		const projects = parseProjects(fullJson);
+
+		// Affected set: on a PR, the union of the project closure and the
+		// task-level closure (see parseTaskAffectedIds for why the project walk
+		// alone misses cross-tree gates); else the full set.
+		let affectedIds: string[];
+		if (event === "pull_request") {
+			const [affectedJson, taskJson] = await Promise.all([
+				$`moon query projects --affected --upstream deep --downstream direct`
+					.quiet()
+					.text(),
+				$`moon query tasks --affected`.quiet().text(),
+			]);
+			const affectedParsed = JSON.parse(affectedJson) as {
+				projects?: MoonProject[];
+			};
+			const known = new Set(projects.map((p) => p.id));
+			affectedIds = unionAffectedIds(
+				(affectedParsed.projects ?? []).map((p) => p.id),
+				parseTaskAffectedIds(taskJson),
+				known,
+			);
+		} else {
+			affectedIds = projects.map((p) => p.id);
+		}
+
+		// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
+		// where the flags are unconditionally true).
+		let changedPaths: string[] = [];
+		if (event === "pull_request") {
+			const baseRef = process.env.GITHUB_BASE_REF ?? "";
+			if (baseRef !== "") {
+				const diff = await $`git diff --name-only origin/${baseRef}...HEAD`
+					.nothrow()
+					.quiet()
+					.text();
+				changedPaths = diff
+					.split("\n")
+					.map((l) => l.trim())
+					.filter((l) => l !== "");
+			}
+		}
+
 		const out = generate({ projects, affectedIds, changedPaths, event });
 
-		const lines = [
-			`matrix=${JSON.stringify(out.matrix)}`,
-			`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
-			`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
-			`forge_affected=${out.forgeAffected ? "true" : "false"}`,
-			`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
-			`darwin_affected=${out.darwinAffected ? "true" : "false"}`,
-		];
+		const lines = outputLines(out);
 
 		const githubOutput = process.env.GITHUB_OUTPUT;
 		if (githubOutput != null && githubOutput !== "") {
@@ -353,8 +436,18 @@ async function main(): Promise<void> {
 			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected} darwin=${out.darwinAffected}`,
 		);
 	} catch (err) {
+		// A failed `moon query` throws a Bun ShellError whose `message` is only
+		// "Failed with exit code N" — moon's own diagnostic (the part naming
+		// the cause) rides on a separate `stderr` Buffer. Two queries now run
+		// concurrently, so the bare message cannot even say which one failed;
+		// append the stderr when present so a CI operator sees the cause.
 		const message = err instanceof Error ? err.message : String(err);
-		console.error(`::error::${message}`);
+		const stderr = String(
+			(err as { stderr?: unknown } | null)?.stderr ?? "",
+		).trim();
+		console.error(
+			`::error::${stderr === "" ? message : `${message}: ${stderr}`}`,
+		);
 		process.exit(1);
 	}
 }

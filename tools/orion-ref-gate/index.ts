@@ -84,10 +84,7 @@ export const ALLOWLIST: Readonly<Record<string, string>> = {};
  * hint was repaired for. Wording tracks its "Never name or point at the
  * private repo" bullet; update both together. This path also appears in
  * `moon.yml` as an input of the `test` task — that declaration is what makes
- * moon's cache re-run the assertion when the doc changes, so move both. Note
- * a pull_request selects targets by project, so any PR not touching this
- * project's own tree does not select this gate at all — including its leak
- * scan — and relies on the main/nightly full sweep (see moon.yml).
+ * moon's cache re-run the assertion when the doc changes, so move both.
  */
 export const REMEDIATION_DOC = "docs/concepts/self-host-and-managed.md";
 
