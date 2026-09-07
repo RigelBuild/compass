@@ -156,7 +156,8 @@ func newNotifyE2EWire(t *testing.T) *notifyE2EWire {
 	ghRouter := ingest.NewNotifyRouter(
 		&forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: "github.com"},
 		&forgeNotifyDispatcher{hub: hub},
-		&matrixChecksRoller{}, // the CHECKS cell never reaches the roller (Number==0 rejected upstream), so a trivially-scripted roller is correct here.
+		&matrixChecksRoller{}, // a CHECKS cell here carries no head SHA, so step 0 never resolves and the roller is never reached; a trivially-scripted roller is correct.
+		nil,                   // no pull-number resolver: this lane's fixtures carry explicit numbers.
 		mxRef(),
 		log,
 	)
@@ -167,6 +168,7 @@ func newNotifyE2EWire(t *testing.T) *notifyE2EWire {
 		&forgeNotifyStore{st: st, provider: store.ForgeProviderLinear, host: "linear.app"},
 		&forgeNotifyDispatcher{hub: hub},
 		&matrixChecksRoller{},
+		nil,
 		&compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"},
 		log,
 	)
@@ -609,15 +611,18 @@ func TestForgeNotifyE2E_GitHubUpdate(t *testing.T) {
 	}
 }
 
-// TestForgeNotifyE2E_GitHubCheckSuiteGap asserts the DOCUMENTED GAP: a
-// check_suite webhook carries a head SHA but Number==0, and NotifyRouter.Route
-// rejects Number==0 (notify_router.go:153) — so NO notification is delivered and
-// the arm logs a route error. The head_sha->PR-number resolution is unlanded
-// (see TestForgeNotifyMatrix_CheckSuiteZeroNumberRejected). A following, in-scope
-// comment on the same GitHub arm is the ordered-drain sync point: the arm drains
-// one event at a time on a single goroutine, so the comment frame arriving proves
+// TestForgeNotifyE2E_GitHubCheckSuiteNoResolver asserts the NIL-RESOLVER arm of
+// the head_sha->PR-number step (RIG-2869): a check_suite webhook carries a head
+// SHA but Number==0, and this lane deliberately wires NO PullNumberResolver
+// (line 160), so Route's step 0 is skipped and the zero-number guard rejects —
+// NO notification is delivered and the arm logs a route error. That is the
+// pre-resolution behavior the router must preserve for any lane without a
+// resolver (the Linear lane in production); the resolving arm is
+// TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber. A following, in-scope comment
+// on the same GitHub arm is the ordered-drain sync point: the arm drains one
+// event at a time on a single goroutine, so the comment frame arriving proves
 // the check_suite was already routed to completion and produced nothing.
-func TestForgeNotifyE2E_GitHubCheckSuiteGap(t *testing.T) {
+func TestForgeNotifyE2E_GitHubCheckSuiteNoResolver(t *testing.T) {
 	const inSession = "sess-gh-checks-in"
 	w := newNotifyE2EWire(t)
 	gh := newFakeGitHubForge(w.secret, notifyE2EGitHubRepo)
@@ -631,7 +636,7 @@ func TestForgeNotifyE2E_GitHubCheckSuiteGap(t *testing.T) {
 	w.goLive(t, inAcct, "compass-agent-gh-checks", inSession)
 	w.runner.forget()
 
-	// The gap event first, then the delivering event; one arm, one goroutine, FIFO.
+	// The unroutable event first, then the delivering event; one arm, one goroutine, FIFO.
 	w.postGitHub(t, gh.completeCheckSuite(t, "abc123headsha"))
 	w.postGitHub(t, gh.commentOnIssue(t, 11, "https://gh/octo/repo/issues/11#c1", "after checks", "octocat"))
 
@@ -645,7 +650,7 @@ func TestForgeNotifyE2E_GitHubCheckSuiteGap(t *testing.T) {
 	// Belt-and-suspenders: no CHECKS frame anywhere on the wire.
 	for _, n := range w.runner.forgeNotifications() {
 		if n.GetChange() == mxChecks {
-			t.Errorf("a CHECKS notification was delivered, want none (check_suite Number==0 must be rejected at the router)")
+			t.Errorf("a CHECKS notification was delivered, want none (with no resolver wired, check_suite Number==0 must be rejected at the router)")
 		}
 	}
 }

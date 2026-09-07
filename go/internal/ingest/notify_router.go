@@ -112,6 +112,26 @@ type ChecksRoller interface {
 	RollUp(ctx context.Context, repo string, number uint64, headSHA, etag string) (forge.ConditionalResult[forge.Checks], error)
 }
 
+// PullNumberResolver resolves a CHECKS event's head SHA to its PR number — the
+// coordinate a check_suite webhook does NOT carry (RIG-2869). GitHub's
+// check_suite payload is head-SHA-keyed, so parseGitHubCheckSuite
+// (githubapp_webhook.go) sets HeadSHA and leaves Number 0, and Route's
+// zero-number guard rejected the whole CHECKS-via-check_suite kind as
+// unroutable. Satisfied in go/server by a TTL-cached adapter over the shared
+// GitHub client's PullRequestForSHA (forge.PullRequestResolver), so repeated
+// check_suite events for one head cost one API call.
+//
+// A nil resolver is TOLERATED and means "do not resolve": Route then behaves
+// exactly as before (the guard rejects Number==0). The Linear lane passes nil —
+// Linear is issues-only and never produces a CHECKS event.
+//
+// A commit with no associated PR is forge.ErrNoPullRequestForSHA, which Route
+// distinguishes from an infrastructure error: the former fails the route closed
+// (there is no coordinate to notify against), the latter propagates.
+type PullNumberResolver interface {
+	PullNumberForSHA(ctx context.Context, repo, headSHA string) (uint64, error)
+}
+
 // NotifyRouter routes one normalized event: load the coordinate's snapshot,
 // apply the event (snapshot mutation + new revision digest), upsert the cursor,
 // then notify each matched subscriber. It never advances delivered_revision
@@ -120,21 +140,29 @@ type NotifyRouter struct {
 	store        NotifyStore
 	dispatcher   NotifyDispatcher
 	checksRoller ChecksRoller
+	pullNumbers  PullNumberResolver
 	forgeRef     *compassv1.ForgeRef
 	log          *slog.Logger
 }
 
 // NewNotifyRouter returns a router over the durable seam st, the notify seam
-// disp, the roll-up seam checks, stamping forgeRef on every notification. A nil
+// disp, the roll-up seam checks, and the head_sha->number resolution seam pulls,
+// stamping forgeRef on every notification. A nil pulls disables step 0 (a CHECKS
+// event with no number then fails the guard, the pre-RIG-2869 behavior). A nil
 // log defaults to slog.Default so the router never nil-panics on the log path.
-func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller, forgeRef *compassv1.ForgeRef, log *slog.Logger) *NotifyRouter {
+func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller, pulls PullNumberResolver, forgeRef *compassv1.ForgeRef, log *slog.Logger) *NotifyRouter {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &NotifyRouter{store: st, dispatcher: disp, checksRoller: checks, forgeRef: forgeRef, log: log}
+	return &NotifyRouter{store: st, dispatcher: disp, checksRoller: checks, pullNumbers: pulls, forgeRef: forgeRef, log: log}
 }
 
 // Route runs the frozen algorithm (design.md:841-872) for one event:
+//  0. For a CHECKS event carrying a head SHA but NO number (a GitHub
+//     check_suite webhook — the payload is head-SHA-keyed), resolve the SHA to
+//     its PR number via PullNumberResolver BEFORE the zero-number guard, so the
+//     coordinate every later step keys on exists. A nil resolver skips this (the
+//     guard then rejects); a commit with no associated PR still fails closed.
 //  1. Load the coordinate's prior snapshot (from the cursor).
 //  2. For CHECKS, resolve the combined roll-up via ChecksRoller BEFORE apply
 //     (a check_suite is per-App, never roll-up truth), passing the cursor's
@@ -148,6 +176,38 @@ func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller,
 //     Never advances delivered_revision (W3). A per-subscriber dispatch error
 //     is logged and skipped; a vanished subscription never crashes the route.
 func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
+	// 0. head_sha -> PR number (RIG-2869), BEFORE the guard: a check_suite
+	// webhook is head-SHA-keyed and carries no artifact number, so without this
+	// the guard below rejects the whole CHECKS-via-check_suite kind. Narrow by
+	// construction: only a GITHUB CHECKS event that has a SHA, has no number,
+	// and has a resolver wired. A non-CHECKS zero-number event never consults
+	// the resolver — it is malformed, not under-specified.
+	//
+	// The provider term is what makes "by construction" true rather than
+	// incidental. Today no Linear event could reach here (Linear emits no CHECKS
+	// event and its lane wires no resolver), so the term is defense in depth —
+	// but without it the narrowing lives in the WIRING, and a later
+	// provider-agnostic lane would hand a Linear team key to a GitHub
+	// commits/{sha}/pulls read: a guaranteed 404 per event against the shared
+	// App budget, reported as a confusing GitHub error instead of a clean
+	// zero-provider rejection.
+	if ev.Number == 0 &&
+		ev.Provider == compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB &&
+		ev.Change == compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS &&
+		ev.HeadSHA != "" && r.pullNumbers != nil {
+		num, nerr := r.pullNumbers.PullNumberForSHA(ctx, ev.Repo, ev.HeadSHA)
+		switch {
+		case errors.Is(nerr, forge.ErrNoPullRequestForSHA):
+			// No PR carries this head: there is no coordinate to notify
+			// against, so fail CLOSED naming the SHA (a push to a PR-less
+			// branch is the common, benign cause).
+			return fmt.Errorf("ingest: route: checks %s@%s: no pull request for head sha: %w", ev.Repo, ev.HeadSHA, errInvalidEvent)
+		case nerr != nil:
+			return fmt.Errorf("ingest: route: resolve pull number %s@%s: %w", ev.Repo, ev.HeadSHA, nerr)
+		}
+		ev.Number = num
+	}
+
 	if ev.Provider == compassv1.ForgeProvider_FORGE_PROVIDER_UNSPECIFIED ||
 		ev.Kind == compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_UNSPECIFIED ||
 		ev.Number == 0 {

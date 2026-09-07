@@ -180,3 +180,76 @@ func TestForgeLanesShareOneBudgetGate(t *testing.T) {
 			"(a separate author-client gate would let it through as call 2)", rt.calls)
 	}
 }
+
+// TestForgeNotifyLaneWiresPullNumberResolver pins the ASSEMBLY of RIG-2869's
+// step 0, which no unit test reaches: every other test of the resolution path
+// constructs its own router, so all of them would keep passing if
+// buildForgeNotifyLane stopped threading a resolver. That regression is
+// invisible until production, where it silently restores the bug — a
+// check_suite webhook that cannot route.
+//
+// It also pins the resolver onto the SHARED client. A resolver built over a
+// freshly-minted client would carry its own rate-limit gate, quietly breaking
+// the one-budget-gate invariant buildForgeNotifyLane's siblings maintain.
+func TestForgeNotifyLaneWiresPullNumberResolver(t *testing.T) {
+	ctx := context.Background() // test root
+	const host = "github.com"
+
+	rt := &budgetRoundTripper{}
+	client := forge.NewGitHub(forge.GitHubConfig{
+		Host:   host,
+		Token:  staticTokenSource{},
+		Client: &http.Client{Transport: rt},
+	})
+	cfg := ServeConfig{Forge: ForgeConfig{
+		Host: host,
+		App: ForgeAppConfig{
+			AppID:                42,
+			InstallationID:       7,
+			AppPrivateKeySecret:  "APP_KEY",
+			AppWebhookSecretName: "APP_WEBHOOK",
+		},
+	}}
+
+	notifyLane := buildForgeNotifyLane(cfg, nil, nil, client, slog.Default())
+	if notifyLane == nil {
+		t.Fatal("buildForgeNotifyLane returned nil, want an assembled lane")
+	}
+
+	// (1) The GitHub lane threaded a resolver at all — the assertion that fails
+	// if a future edit passes nil.
+	if notifyLane.pulls == nil {
+		t.Fatal("GitHub notify lane recorded a nil PullNumberResolver: step 0 would never resolve, " +
+			"so every check_suite webhook fails the zero-number guard (RIG-2869)")
+	}
+
+	// (2) Arm the shared gate through the lane's own recorded read client.
+	if _, err := client.ListUpdatedIssues(ctx, "owner/repo", time.Time{}, ""); err == nil {
+		t.Fatal("first read: err = nil, want the 403 rate-limit signal to arm the gate")
+	}
+	if rt.calls != 1 {
+		t.Fatalf("after arming: transport calls = %d, want 1 (the single 403)", rt.calls)
+	}
+
+	// (3) The recorded resolver rides that SAME armed gate: it fast-fails and
+	// issues no request. A resolver over a separately-minted client would carry
+	// its own unarmed gate and let this through as call 2.
+	_, err := notifyLane.pulls.PullNumberForSHA(ctx, "owner/repo", "abc123headsha")
+	if err == nil {
+		t.Fatal("resolver after arming: err = nil, want ErrBudgetExhausted (the shared gate is armed)")
+	}
+	if !errors.Is(err, forge.ErrBudgetExhausted) {
+		t.Fatalf("resolver err = %v, want ErrBudgetExhausted", err)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("resolver issued a request through an armed shared gate: transport calls = %d, want 1 "+
+			"(a separately-minted client would let it through as call 2)", rt.calls)
+	}
+
+	// (4) The Linear lane records NO resolver: Linear is issues-only and never
+	// emits a CHECKS event, so there is no head SHA to resolve.
+	linearLane := buildLinearNotifyLane(nil, nil, nil, slog.Default())
+	if linearLane != nil && linearLane.pulls != nil {
+		t.Error("Linear notify lane recorded a PullNumberResolver, want nil (Linear emits no CHECKS event)")
+	}
+}

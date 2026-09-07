@@ -508,3 +508,191 @@ func TestLinearListNewArtifactsCarriesProject(t *testing.T) {
 		t.Fatalf("kept %+v, want #42 with project proj-A", res.V)
 	}
 }
+
+// --- GitHub: PullRequestForSHA (the head_sha->number step, RIG-2869) ---------
+
+// TestPullRequestForSHA tables the commit->pulls association outcomes: the
+// single-match happy path, the sentinel for a commit no PR carries, and the
+// DETERMINISTIC tie-break when several PRs share the head (open wins; lowest
+// number breaks a remaining tie) — asserted against a response order that
+// disagrees with the answer, so a pick-the-first implementation fails.
+func TestPullRequestForSHA(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantNumber uint64
+		wantNoPull bool
+		wantErr    bool
+	}{
+		{
+			name:       "single association",
+			body:       `[{"number":42,"state":"open"}]`,
+			wantNumber: 42,
+		},
+		{
+			name:       "no association is the sentinel",
+			body:       `[]`,
+			wantNoPull: true,
+		},
+		{
+			name: "open beats a lower-numbered closed PR",
+			body: `[{"number":7,"state":"closed"},{"number":99,"state":"open"}]`,
+			// 7 is lower AND first in the response; open still wins.
+			wantNumber: 99,
+		},
+		{
+			name: "open FIRST, then a lower-numbered closed PR",
+			body: `[{"number":99,"state":"open"},{"number":7,"state":"closed"}]`,
+			// The inverse ordering of the case above, and the only one where the
+			// openness guard itself decides: 7 is lower and arrives later, so a
+			// tie-break that compares numbers WITHOUT first comparing openness
+			// returns 7 and routes CHECKS to a closed PR. Both orderings are
+			// needed — this endpoint guarantees no row order.
+			wantNumber: 99,
+		},
+		{
+			name: "a merged PR reports closed and loses to an open one",
+			body: `[{"number":5,"state":"closed","merged_at":"2026-09-01T00:00:00Z"},{"number":600,"state":"open"}]`,
+			// This endpoint never reports "merged" — a merged PR is "closed" —
+			// so `state == "open"` is the right discriminator and #5 loses
+			// despite being far lower.
+			wantNumber: 600,
+		},
+		{
+			name: "a partially numberless body narrows to the usable rows",
+			body: `[{"state":"open"},{"number":33,"state":"open"}]`,
+			// Pins CURRENT behavior deliberately: an unusable row is skipped
+			// rather than failing the whole read, and only an ALL-numberless
+			// body is an error (the case below). Documented so a future change
+			// to either half is a visible decision, not a silent drift.
+			wantNumber: 33,
+		},
+		{
+			name: "several open PRs: the lowest number wins",
+			body: `[{"number":50,"state":"open"},{"number":12,"state":"open"},{"number":31,"state":"open"}]`,
+			// 50 is first in the response; the lowest open number wins.
+			wantNumber: 12,
+		},
+		{
+			name: "all closed: the lowest number wins",
+			body: `[{"number":80,"state":"closed"},{"number":9,"state":"closed"}]`,
+			// A merged/closed PR is still a coordinate a subscriber may hold.
+			wantNumber: 9,
+		},
+		{
+			name: "rows carrying no number are not the sentinel",
+			body: `[{"state":"open"}]`,
+			// A malformed body must NOT masquerade as "no PR for this SHA".
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: tc.body}}}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+			num, err := g.PullRequestForSHA(context.Background(), "org/repo", "abc123")
+			switch {
+			case tc.wantNoPull:
+				if !errors.Is(err, ErrNoPullRequestForSHA) {
+					t.Fatalf("err = %v, want ErrNoPullRequestForSHA", err)
+				}
+				if num != 0 {
+					t.Errorf("number = %d, want 0 alongside the sentinel", num)
+				}
+			case tc.wantErr:
+				if err == nil {
+					t.Fatal("err = nil, want a decode/shape error")
+				}
+				if errors.Is(err, ErrNoPullRequestForSHA) {
+					t.Error("err is ErrNoPullRequestForSHA; a malformed body must not read as no-PR")
+				}
+			default:
+				if err != nil {
+					t.Fatalf("PullRequestForSHA: %v", err)
+				}
+				if num != tc.wantNumber {
+					t.Errorf("number = %d, want %d", num, tc.wantNumber)
+				}
+			}
+		})
+	}
+}
+
+// TestPullRequestForSHAWalksAllPages: the association walk follows the rel="next"
+// Link chain, so the only OPEN PR sitting on page 2 is never truncated away by a
+// page-1-only read.
+func TestPullRequestForSHAWalksAllPages(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: `[{"number":11,"state":"closed"}]`, headers: map[string]string{
+			"Link": `<https://api.github.com/x?page=2>; rel="next"`,
+		}},
+		{status: 200, body: `[{"number":90,"state":"open"}]`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	num, err := g.PullRequestForSHA(context.Background(), "org/repo", "abc123")
+	if err != nil {
+		t.Fatalf("PullRequestForSHA: %v", err)
+	}
+	if num != 90 {
+		t.Errorf("number = %d, want 90 (the open PR on page 2, not the page-1 closed one)", num)
+	}
+	if rt.calls != 2 {
+		t.Errorf("calls = %d, want 2 (the rel=\"next\" chain is walked)", rt.calls)
+	}
+}
+
+// TestPullRequestForSHAErrorIsNotTheSentinel: a transport/status failure must
+// stay an infrastructure error, so the router propagates it instead of failing
+// the route closed as an unroutable event.
+func TestPullRequestForSHAErrorIsNotTheSentinel(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: http.StatusInternalServerError, body: `{"message":"boom"}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	if _, err := g.PullRequestForSHA(context.Background(), "org/repo", "abc123"); err == nil {
+		t.Fatal("err = nil, want the 500 surfaced")
+	} else if errors.Is(err, ErrNoPullRequestForSHA) {
+		t.Error("a 500 read as ErrNoPullRequestForSHA; an infra fault must not fail the route closed")
+	}
+}
+
+// TestPullRequestForSHARejectsDelimiterSHA pins that a head SHA carrying a URL
+// delimiter fails by NAME rather than silently addressing another endpoint. The
+// SHA is interpolated into the request path, so a "?" truncates the path and
+// moves the remainder into the query string: the read would return a 200 for a
+// DIFFERENT resource, which is worse than an error. The value is
+// GitHub-authenticated, so this is a correctness guard, not a trust boundary.
+//
+// The round tripper is scripted with ONE response and the test asserts it is
+// never consumed, which is what proves the rejection happens before the wire.
+func TestPullRequestForSHARejectsDelimiterSHA(t *testing.T) {
+	for _, sha := range []string{"abc?state=all", "abc#frag", "abc/def", ""} {
+		t.Run("sha="+sha, func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{
+				{status: 200, body: `[{"number":1,"state":"open"}]`},
+			}}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+			if _, err := g.PullRequestForSHA(context.Background(), "org/repo", sha); err == nil {
+				t.Errorf("PullRequestForSHA(%q) = nil error, want a named rejection", sha)
+			}
+			if rt.calls != 0 {
+				t.Errorf("issued %d requests, want 0 (a malformed sha must never reach the wire)", rt.calls)
+			}
+		})
+	}
+
+	// A repo legitimately contains "/" (owner/name), so the guard must not
+	// reject it — only the SHA is checked.
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: `[{"number":5,"state":"open"}]`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	if num, err := g.PullRequestForSHA(context.Background(), "org/repo", "abc123"); err != nil || num != 5 {
+		t.Errorf("PullRequestForSHA with a two-segment repo = (%d, %v), want (5, nil)", num, err)
+	}
+}
