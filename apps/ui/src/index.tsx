@@ -101,9 +101,26 @@ async function main(
 	// unless a PostHog project key is configured, and createAnalytics then hands
 	// back a no-op that never touches posthog — an unconfigured deployment emits
 	// zero analytics. Identify the caller we just learned via WhoAmI so events
-	// attach to a stable distinct id. Correlation stamping (trace/session id into
-	// captured events) is a follow-up slice and is deliberately not wired here.
-	const analytics = createAnalytics(analyticsConfigFromEnv());
+	// attach to a stable distinct id.
+	//
+	// The inbound half of correlation is wired here: `clients.traceId` is the slot
+	// the transport records each reply's server trace id into, and analytics reads
+	// it at capture time. Reading through a getter is what makes the ordering work
+	// — the clients exist before this line, but the first trace id only lands once
+	// a call has returned.
+	//
+	// Best-effort by construction, on two counts. The slot holds the LAST reply's
+	// trace id, so an event fired before any call has returned carries nothing,
+	// and one fired between calls carries the previous call's trace rather than
+	// its own. And the server sets `traceresponse` only on UNARY replies, and
+	// only when an OTel provider is installed — an unconfigured deployment
+	// (empty exporter endpoint ⇒ no span ⇒ no header) stamps nothing at all.
+	//
+	// The OUTBOUND half (sending the PostHog session id to the server so its
+	// spans carry it) is deliberately not wired here.
+	const analytics = createAnalytics(analyticsConfigFromEnv(), {
+		traceId: () => clients.traceId.current,
+	});
 	analytics.identify(callerId);
 
 	// One app-lifetime QueryClient — the server-state cache the query layer keys
