@@ -282,7 +282,7 @@ default (`{ attrs ? [ ] }:`, gate-tools.nix:34), so `-f` works without
   config.test.ts:188-204).
 - **nilaway cooldown rule**: one packageRule `matchManagers:
   ["custom.regex"], matchDepNames: ["uber-go/nilaway"], minimumReleaseAge:
-  null` — see OQ-2. The repo-wide `minimumReleaseAge: "5 days"` +
+  null`. The repo-wide `minimumReleaseAge: "5 days"` +
   `internalChecksFilter: "strict"` (config.json5:57-58) measures age from a
   release timestamp; a git-refs digest to a moving branch HEAD carries none,
   so strict cooldown marks it permanently `pending` and ZERO PRs are ever cut
@@ -367,7 +367,7 @@ keeps every versions/*.nix pin solo.
   (config.json5:57-58) applies; do NOT stamp `depTypeTemplate: "toolchain"`
   (its exemption at config.json5:419-420 would null the cooldown). The
   nilaway cooldown-null is not an exemption — the cooldown is mechanically
-  inapplicable to a git-refs digest (no release timestamp; see OQ-2).
+  inapplicable to a git-refs digest (no release timestamp).
 - **Fail-loud, never fail-open** — the refresher exits 1 on any hash it
   cannot compute (missing marker, missing `got:`, failed commit-date fetch),
   mirroring both existing refreshers. A silent no-op ships the stale pin the
@@ -671,33 +671,30 @@ refresher derives `version`) is equivalent in outcome; this is a taste call,
 not load-bearing — either way one sibling line is refresher-owned and the
 config.test.ts extraction guard pins whichever is chosen.
 
-### OQ-2 (load-bearing) — null the 5-day cooldown for nilaway?
+### OQ-2 (resolved — null it) — the 5-day cooldown for nilaway
 
-Recommendation: **yes, null it** (designed against). With
-`internalChecksFilter: "strict"`, a git-refs digest on a moving `main` HEAD
-carries no release timestamp, so the strict cooldown marks it permanently
-`pending` and Renovate cuts ZERO nilaway PRs forever — the silent-rot
-outcome this issue exists to fix, in the RIG-1220 shape. All three existing
-git-refs rules null it; two with the explicit "mechanically INAPPLICABLE"
-rationale (config.json5:670-681, :735-740), the third for the weak fit of the
-compromised-release window to a cachix-curated channel (config.json5:589-596).
-No `automerge` key exists anywhere in
-tools/renovate/ (verified; config.json5:30 records the related
-branch-protection posture, "main's branch protection does not require PRs
-to be up to date"), so merging a nilaway digest PR requires a human action
-— the identical compensating control the three shipped git-refs
-cooldown-nulls rely on (config.json5:678-680, :737-739). (Whether branch
-protection additionally ENFORCES a review is a repo-settings fact not
-visible in-repo; the primary control is that nothing auto-merges.) The
-practical review is the PR's upstream-diff link plus the red/green
-analysis-battery build; OQ-4's optional weekly schedule is the honest place
-to add de-facto soak. Flagged load-bearing because the brief
-says "5-day cooldown applies — inherit it; do NOT exempt these pins":
-golangci-lint fully inherits it, but a literal reading for nilaway
-contradicts the zero-PRs mechanics. If Matt wants nilaway soaked anyway, the
-alternative is dropping `internalChecksFilter` strictness for this dep — a
-worse, wider knob — or accepting dashboard-only surfacing (no auto-PR),
-which still beats today's nothing but fails the "open a bump PR" intent.
+**Nilaway's packageRule sets `minimumReleaseAge: null`; golangci-lint keeps the
+full 5-day soak.**
+
+The repo-wide `minimumReleaseAge: "5 days"` + `internalChecksFilter: "strict"`
+measures age from a release timestamp. Nilaway is pinned to an untagged rev on a
+moving `main`, so its git-refs digest update carries no release timestamp at
+all: under a strict cooldown Renovate marks it permanently `pending` and cuts
+ZERO nilaway PRs, forever — the RIG-1220 silent-rot shape this record exists to
+kill. The cooldown is mechanically inapplicable here, so nulling it is not a
+risk judgement about the dependency.
+
+This matches all three shipped git-refs rules, two of them on this exact
+"mechanically INAPPLICABLE" rationale (config.json5:670-681, :735-740). The
+compensating control is theirs as well: no `automerge` key exists anywhere in
+tools/renovate/, so a human merges each nilaway digest PR
+(config.json5:678-680, :737-739). Whether branch protection additionally
+enforces a review is a repo-settings fact not visible in-repo; the primary
+control is that nothing auto-merges. The practical review is the PR's
+upstream-diff link plus the red/green analysis-battery build.
+
+Golangci-lint is untouched — it resolves from github-releases with real release
+timestamps, where the soak works as intended and is worth keeping.
 
 ### OQ-3 (resolved — token-free shallow fetch) — nilaway `version` date source
 
