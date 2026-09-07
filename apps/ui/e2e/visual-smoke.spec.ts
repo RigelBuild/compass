@@ -1,19 +1,19 @@
-import { test } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 
 // Visual-smoke harness (RIG-2034 T1). Navigates the HashRouter surfaces of the
-// app and writes one full-page PNG per surface into e2e/__screens__/ for Matt's
-// before/after review. The webServer boots the app under `--mode fixture`, so
-// the app boots fully on the in-memory fixture store (stub-data.ts) with no
-// daemon on :50051 and no VITE_COMPASS_BASE_URL — offline by construction, not
-// by accident of un-wired live paths. Each capture awaits a stable per-surface
-// selector (never a fixed sleep) so the shot is taken after content renders,
-// and pins determinism (animations disabled, css-scaled raster, fonts settled)
-// so the artifact is byte-stable across same-box runs.
+// app and asserts one screenshot per surface against committed in-repo
+// baselines, failing when rendered pixels drift. The webServer boots the app
+// under `--mode fixture`, so the app boots fully on the in-memory fixture store
+// (stub-data.ts) with no daemon on :50051 and no VITE_COMPASS_BASE_URL — offline
+// by construction, not by accident of un-wired live paths. Each assertion
+// awaits a stable per-surface selector (never a fixed sleep) so the shot is
+// taken after content renders, and pins determinism (animations disabled,
+// css-scaled raster, fonts settled) so the artifact is byte-stable across
+// same-box runs.
 //
 // A real stub agent id (acc-compass-ui) drives the /#/agent/:agentId route; it
 // is defined in src/stub-data.ts (STUB_AGENTS).
 
-const SCREENS = "e2e/__screens__";
 const AGENT_ID = "acc-compass-ui";
 
 test.describe("visual smoke — legacy-palette baseline", () => {
@@ -22,8 +22,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await page.locator(".bridge").waitFor({ state: "visible" });
 		await page.locator(".cx-state-dot").first().waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await page.screenshot({
-			path: `${SCREENS}/bridge.png`,
+		await expect(page).toHaveScreenshot("bridge.png", {
 			fullPage: true,
 			animations: "disabled",
 			scale: "css",
@@ -36,8 +35,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await page.goto("/?empty#/");
 		await page.locator(".bridge-empty").waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await page.screenshot({
-			path: `${SCREENS}/bridge-empty.png`,
+		await expect(page).toHaveScreenshot("bridge-empty.png", {
 			fullPage: true,
 			animations: "disabled",
 			scale: "css",
@@ -66,8 +64,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			.first()
 			.waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await sidebar.screenshot({
-			path: `${SCREENS}/right-sidebar.png`,
+		await expect(sidebar).toHaveScreenshot("right-sidebar.png", {
 			animations: "disabled",
 			scale: "css",
 		});
@@ -78,8 +75,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await page.locator(".agent-view").waitFor({ state: "visible" });
 		await page.locator(".av-body").waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await page.screenshot({
-			path: `${SCREENS}/agent.png`,
+		await expect(page).toHaveScreenshot("agent.png", {
 			fullPage: true,
 			animations: "disabled",
 			scale: "css",
@@ -98,8 +94,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			.first()
 			.waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await page.screenshot({
-			path: `${SCREENS}/backlog.png`,
+		await expect(page).toHaveScreenshot("backlog.png", {
 			fullPage: true,
 			animations: "disabled",
 			scale: "css",
@@ -110,8 +105,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await page.goto("/#/done");
 		await page.locator(".done-view").waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await page.screenshot({
-			path: `${SCREENS}/done.png`,
+		await expect(page).toHaveScreenshot("done.png", {
 			fullPage: true,
 			animations: "disabled",
 			scale: "css",
@@ -122,8 +116,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await page.goto("/#/settings");
 		await page.locator(".settings-view").waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await page.screenshot({
-			path: `${SCREENS}/settings.png`,
+		await expect(page).toHaveScreenshot("settings.png", {
 			fullPage: true,
 			animations: "disabled",
 			scale: "css",
@@ -137,10 +130,13 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await dot.waitFor({ state: "visible" });
 		// Cropped close-up clip of a single state dot.
 		await page.evaluate(() => document.fonts.ready);
-		await dot.screenshot({
-			path: `${SCREENS}/state-dot.png`,
+		// Tiny area: at the 0.001 base this 9x10 = 90 px shot's budget is 0.09 px,
+		// i.e. byte-exact. The per-shot ratio REPLACES the base (it is not a floor
+		// min'd against it), giving a 10 px budget.
+		await expect(dot).toHaveScreenshot("state-dot.png", {
 			animations: "disabled",
 			scale: "css",
+			maxDiffPixelRatio: 10 / 90,
 		});
 	});
 
@@ -161,8 +157,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			.first()
 			.waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		await page.screenshot({
-			path: `${SCREENS}/bridge-prs.png`,
+		await expect(page).toHaveScreenshot("bridge-prs.png", {
 			fullPage: true,
 			animations: "disabled",
 			scale: "css",
@@ -186,9 +181,9 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		const y = Math.min(...boxes.map((b) => b.y));
 		const width = Math.max(...boxes.map((b) => b.right)) - x;
 		const height = Math.max(...boxes.map((b) => b.bottom)) - y;
-		await page.screenshot({
-			path: `${SCREENS}/bridge-colheads.png`,
-			clip: { x, y, width, height },
+		const clip = { x, y, width, height };
+		await expect(page).toHaveScreenshot("bridge-colheads.png", {
+			clip,
 			animations: "disabled",
 			scale: "css",
 		});
@@ -201,10 +196,13 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await card.waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
 		// Cropped close-up clip of a single issue card (IssueCard.tsx:47 `.cx-card`).
-		await card.screenshot({
-			path: `${SCREENS}/bridge-card.png`,
+		// Small area: at the 0.001 base this 189x113 = 21357 px shot's budget is
+		// 21.36 px. The per-shot ratio REPLACES the base (it is not a floor min'd
+		// against it), giving a 25 px budget.
+		await expect(card).toHaveScreenshot("bridge-card.png", {
 			animations: "disabled",
 			scale: "css",
+			maxDiffPixelRatio: 25 / 21357,
 		});
 	});
 });
