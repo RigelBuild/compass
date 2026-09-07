@@ -36,6 +36,148 @@ function bearerInterceptors(token?: string): Interceptor[] | undefined {
 	return token ? [bearerAuthInterceptor(token)] : undefined;
 }
 
+// The W3C trace-context RESPONSE header the server sets on every unary reply
+// (go/internal/otel/interceptor.go). Draft-stage in the spec, but the standard
+// name and the "00-<32hex traceid>-<16hex spanid>-<2hex flags>" grammar are
+// what the server emits, and the network door CORS-exposes it, so the browser
+// can read it.
+const traceResponseHeader = "traceresponse";
+
+/**
+ * A one-slot mailbox holding the trace id of the most recent server reply.
+ *
+ * Mutable on purpose, and the mutability is the whole point: the transport is
+ * constructed during boot BEFORE the analytics client exists, so the writer
+ * (this package's response interceptor) and the reader (the analytics wrapper,
+ * layers above) cannot be introduced to each other at construction time. A
+ * stable reference handed to both closes that gap without reordering boot and
+ * without the transport layer taking a dependency on analytics.
+ *
+ * The write discipline — the transport interceptor writes, everything above it
+ * only reads — is a CONVENTION, not a type guarantee: `current` is structurally
+ * writable, so `clients.traceId.current = "x"` type-checks from any consumer.
+ * Splitting into a reader/writer pair would make that structural, but with
+ * exactly one writer and one reader the pair buys a type distinction nobody is
+ * reaching around, at the cost of two interfaces and a cast at the seam that
+ * constructs the slot — so the convention stands, documented rather than
+ * enforced.
+ */
+export interface TraceIdSink {
+	current: string | undefined;
+}
+
+// A 32-hex trace id of all zeros is explicitly invalid per W3C trace-context —
+// it is what an uninitialized/unsampled span context renders as, so stamping it
+// would correlate every such event to one bogus "trace".
+const zeroTraceId = "00000000000000000000000000000000";
+
+/**
+ * Extract the 32-hex trace id from a `traceresponse` header value, or
+ * `undefined` when the value is absent or not a trace id we can trust.
+ *
+ * Only field 2 is returned: the span id and flags describe one server-side span,
+ * which is not the correlation key, and forwarding the whole `00-…-…-…` string
+ * would join nothing on the trace side.
+ *
+ * Version handling follows the spec's forward-compatibility rule: fields 1-3
+ * keep their meaning across versions, so a future version is parsed by reading
+ * the same three positions and ignoring anything appended. Two things are NOT
+ * tolerated. A malformed 4-field value: at the known version `00` the grammar
+ * is fully specified, so a bad span id or flag byte means the sender is broken,
+ * and trusting field 2 out of a broken value is a guess. And version `ff`,
+ * which the spec reserves as never-valid — a sender emitting it is stating the
+ * value is not a real trace context, so trusting its field 2 would contradict
+ * this parser's own rule that a value we cannot vouch for is no value at all.
+ *
+ * Hex is lowercase per the spec and returned exactly as received; normalizing
+ * case would silently rewrite the key the trace backend indexed.
+ */
+export function parseTraceResponse(value: string): string | undefined {
+	const fields = value.split("-");
+	// Fields 1-3 are position-stable across versions; fewer than four means
+	// there is no trace id position to read at all.
+	if (fields.length < 4) {
+		return undefined;
+	}
+	const [version, traceId, spanId, flags] = fields;
+	if (version === undefined || !/^[0-9a-f]{2}$/.test(version)) {
+		return undefined;
+	}
+	// `ff` is shaped like a version but reserved invalid, so it never reaches the
+	// forward-compat branch below: a future-version parse would otherwise trust
+	// field 2 out of a value the spec says can never be a trace context.
+	if (version === "ff") {
+		return undefined;
+	}
+	// Version 00's grammar is exactly four fields. Extra fields are a future
+	// version's business, never this one's.
+	if (version === "00" && fields.length !== 4) {
+		return undefined;
+	}
+	if (traceId === undefined || !/^[0-9a-f]{32}$/.test(traceId)) {
+		return undefined;
+	}
+	if (traceId === zeroTraceId) {
+		return undefined;
+	}
+	if (spanId === undefined || !/^[0-9a-f]{16}$/.test(spanId)) {
+		return undefined;
+	}
+	if (flags === undefined || !/^[0-9a-f]{2}$/.test(flags)) {
+		return undefined;
+	}
+	return traceId;
+}
+
+/**
+ * Records each response's `traceresponse` trace id into `sink`, so a consumer
+ * above the transport can stamp it on whatever it emits next.
+ *
+ * An absent or unparseable header CLEARS NOTHING: the last known good trace id
+ * stays in the sink. A call that carried no trace id is not evidence the
+ * previous trace ended — the alternative (blanking on every untraced reply)
+ * would leave the sink empty most of the time and drop correlation for events
+ * that genuinely belong to the last traced call. Same reasoning for a failed
+ * call: the rejection propagates untouched and the sink is left alone.
+ */
+export function traceResponseInterceptor(sink: TraceIdSink): Interceptor {
+	return (next) => async (req) => {
+		const res = await next(req);
+		// `?? ""` collapses "header absent" with "header present but empty" —
+		// harmless, because both mean there is nothing to record and the empty
+		// string parses to `undefined` on the length check. A DUPLICATE
+		// `traceresponse` (a realistic proxy artifact) is equally safe by
+		// construction: `Headers.get` comma-joins the values, the join is
+		// unparseable, and the sink keeps its last known good id rather than
+		// picking one of two candidate traces at random. Both are considered
+		// no-ops, not oversights.
+		const traceId = parseTraceResponse(
+			res.header.get(traceResponseHeader) ?? "",
+		);
+		if (traceId !== undefined) {
+			sink.current = traceId;
+		}
+		return res;
+	};
+}
+
+// The full interceptor list every client/transport factory installs, and the one
+// place the two concerns compose. The bearer rule is unchanged (and still throws
+// first on a misconfigured credential). The trace sink follows the same
+// omitted-means-off discipline: no sink ⇒ no trace interceptor at all, so a
+// caller that does not ask for correlation gets byte-identical behavior —
+// including `undefined` rather than an empty list when neither is asked for.
+function callInterceptors(
+	token?: string,
+	traceSink?: TraceIdSink,
+): Interceptor[] | undefined {
+	const bearer = bearerInterceptors(token);
+	if (!traceSink) {
+		return bearer;
+	}
+	return [...(bearer ?? []), traceResponseInterceptor(traceSink)];
+}
+
 /** A typed client for the Compass server over a given transport. */
 export type CompassClient = Client<typeof CompassService>;
 
@@ -59,11 +201,15 @@ export function createCompassClient(transport: Transport): CompassClient {
  * (the native desktop shell) it routes every request through a shell-provided
  * fetch that tunnels over IPC — the one seam that lets the same clients dial
  * either transport with nothing above the boundary knowing the mode.
+ *
+ * `opts.traceSink` opts this transport into recording each reply's
+ * `traceresponse` trace id; omitted, no trace interceptor is installed and the
+ * transport behaves exactly as before.
  */
 export function createCompassWebTransport(
 	baseUrl: string,
 	token?: string,
-	opts?: { fetch?: typeof globalThis.fetch },
+	opts?: { fetch?: typeof globalThis.fetch; traceSink?: TraceIdSink },
 ): Transport {
 	return createGrpcWebTransport({
 		baseUrl,
@@ -72,7 +218,7 @@ export function createCompassWebTransport(
 		// truthiness guard keeps the browser dev path (no injected fetch) building
 		// the same `{ baseUrl, interceptors }` config as before.
 		...(opts?.fetch ? { fetch: opts.fetch } : {}),
-		interceptors: bearerInterceptors(token),
+		interceptors: callInterceptors(token, opts?.traceSink),
 	});
 }
 
@@ -90,16 +236,18 @@ export { createRouterTransport } from "@connectrpc/connect";
 /**
  * Create a compass.v1 client over gRPC-Web at `baseUrl` — the door the web UI
  * uses. Bundles the transport so UI code imports only `@compass/client`. When
- * `token` is set, every request carries `authorization: Bearer <token>`.
+ * `token` is set, every request carries `authorization: Bearer <token>`; when
+ * `traceSink` is set, each reply's `traceresponse` trace id is recorded into it.
  */
 export function createCompassWebClient(
 	baseUrl: string,
 	token?: string,
+	traceSink?: TraceIdSink,
 ): CompassClient {
 	return createCompassClient(
 		createGrpcWebTransport({
 			baseUrl,
-			interceptors: bearerInterceptors(token),
+			interceptors: callInterceptors(token, traceSink),
 		}),
 	);
 }
@@ -111,7 +259,8 @@ export function createCompassWebClient(
  * server with no TCP port. `baseUrl` is a same-origin placeholder the custom
  * `fetch` ignores \u2014 gRPC-Web only reads it to form the request path. Keeps the
  * `@connectrpc/connect-web` import inside the owned door. When `token` is set,
- * every request carries `authorization: Bearer <token>`.
+ * every request carries `authorization: Bearer <token>`; when `traceSink` is
+ * set, each reply's `traceresponse` trace id is recorded into it.
  */
 export function createCompassClientOverFetch(
 	// The fetch shape `createGrpcWebTransport` consumes — the request/response
@@ -119,6 +268,7 @@ export function createCompassClientOverFetch(
 	fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
 	baseUrl = "http://compass.localhost",
 	token?: string,
+	traceSink?: TraceIdSink,
 ): CompassClient {
 	// connect-web types its `fetch` option as `typeof globalThis.fetch`, which
 	// under some DOM/bun lib configs carries extra members (e.g. `preconnect`) a
@@ -128,7 +278,7 @@ export function createCompassClientOverFetch(
 		createGrpcWebTransport({
 			baseUrl,
 			fetch: fetch as typeof globalThis.fetch,
-			interceptors: bearerInterceptors(token),
+			interceptors: callInterceptors(token, traceSink),
 		}),
 	);
 }
@@ -144,16 +294,18 @@ export function createCommsClient(transport: Transport): CommsClient {
 /**
  * Create a comms client over gRPC-Web at `baseUrl`, mirroring
  * `createCompassWebClient`. When `token` is set, every request carries
- * `authorization: Bearer <token>`.
+ * `authorization: Bearer <token>`; when `traceSink` is set, each reply's
+ * `traceresponse` trace id is recorded into it.
  */
 export function createCommsWebClient(
 	baseUrl: string,
 	token?: string,
+	traceSink?: TraceIdSink,
 ): CommsClient {
 	return createCommsClient(
 		createGrpcWebTransport({
 			baseUrl,
-			interceptors: bearerInterceptors(token),
+			interceptors: callInterceptors(token, traceSink),
 		}),
 	);
 }
@@ -161,19 +313,21 @@ export function createCommsWebClient(
 /**
  * Create a comms client whose gRPC-Web transport routes every request through a
  * caller-supplied `fetch`, mirroring `createCompassClientOverFetch`. When
- * `token` is set, every request carries `authorization: Bearer <token>`.
+ * `token` is set, every request carries `authorization: Bearer <token>`; when
+ * `traceSink` is set, each reply's `traceresponse` trace id is recorded into it.
  */
 export function createCommsClientOverFetch(
 	fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
 	baseUrl = "http://compass.localhost",
 	token?: string,
+	traceSink?: TraceIdSink,
 ): CommsClient {
 	// Same single-boundary fetch cast as the compass door above.
 	return createCommsClient(
 		createGrpcWebTransport({
 			baseUrl,
 			fetch: fetch as typeof globalThis.fetch,
-			interceptors: bearerInterceptors(token),
+			interceptors: callInterceptors(token, traceSink),
 		}),
 	);
 }
@@ -221,6 +375,7 @@ export {
 	PinnedEntrySchema,
 	RosterEntrySchema,
 	RosterScope,
+	SubscribeCommsResponseSchema,
 	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,

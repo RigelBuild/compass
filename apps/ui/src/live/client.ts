@@ -10,7 +10,12 @@
 // workspace drives — StopAgentSession). Both carry the same bearer as a
 // connect interceptor (the factories install it); no local-assumption leaks.
 
-import type { CommsClient, CompassClient, Transport } from "@compass/client";
+import type {
+	CommsClient,
+	CompassClient,
+	TraceIdSink,
+	Transport,
+} from "@compass/client";
 import {
 	createCommsClient,
 	createCompassClient,
@@ -31,6 +36,15 @@ export interface LiveClients {
 	 *  reference in every query key, so cache identity (queries, invalidation,
 	 *  setQueryData) requires this single shared instance (query record §A2). */
 	readonly transport: Transport;
+	/** The trace id of the most recent server reply, recorded off the
+	 *  `traceresponse` response header by a transport interceptor.
+	 *
+	 *  It rides on LiveClients because this is the one place that owns transport
+	 *  construction — the sink is WRITTEN by the transport layer and READ above
+	 *  it (analytics stamps it on captured events), and boot builds the clients
+	 *  before analytics exists, so a shared mutable slot handed out here is what
+	 *  connects a writer and a reader that can never meet at construction. */
+	readonly traceId: TraceIdSink;
 }
 
 /** Build the live clients for a resolved connection. Pure construction (no I/O):
@@ -41,13 +55,16 @@ export interface LiveClients {
  *  transport fetch through: undefined (browser dev) uses the platform fetch; a
  *  shell-provided fetch tunnels over IPC — the seam is invisible above here. */
 export function createLiveClients(conn: ResolvedConnection): LiveClients {
+	const traceId: TraceIdSink = { current: undefined };
 	const transport = createCompassWebTransport(conn.baseUrl, conn.token, {
 		fetch: conn.fetchImpl,
+		traceSink: traceId,
 	});
 	return {
 		comms: createCommsClient(transport),
 		compass: createCompassClient(transport),
 		transport,
+		traceId,
 	};
 }
 
