@@ -43,10 +43,12 @@ package runtime
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/RigelBuild/compass/go/internal/agentuid"
 	"github.com/RigelBuild/compass/go/internal/microvmtest"
 )
 
@@ -84,7 +86,7 @@ func startEgressSession(t *testing.T, egress EgressPolicy, name string) (*MicroV
 	workspace := t.TempDir()
 	id, err := m.Create(t.Context(), ContainerSpec{
 		Name:   name,
-		UID:    1000,
+		UID:    agentuid.AgentUID,
 		Egress: egress,
 		Mounts: []Mount{{HostPath: workspace, ContainerPath: "/workspace"}},
 	})
@@ -123,7 +125,7 @@ func canReachIPv4(t *testing.T, m *MicroVMRuntime, id ContainerID, ip string) bo
 	defer cancel()
 	script := "timeout " + guestConnectTimeout +
 		" bash -c 'exec 3<>/dev/tcp/" + ip + "/443 && echo connected'"
-	out, err := m.Exec(ctx, id, NewExecSpec("sh", "-c", script).AsUser("1000"))
+	out, err := m.Exec(ctx, id, NewExecSpec("sh", "-c", script).AsUser(strconv.Itoa(int(agentuid.AgentUID))))
 	if err != nil {
 		t.Fatalf("in-guest connect probe to %s errored (harness fault, not a firewall verdict): %v", ip, err)
 	}
@@ -166,7 +168,7 @@ func TestInGuestEgressAgentCannotAlterRuleset(t *testing.T) {
 	// failed command (guest exec model), never a transport error.
 	ctx, cancel := context.WithTimeout(t.Context(), egressProbeTimeout)
 	defer cancel()
-	flush, err := m.Exec(ctx, id, NewExecSpec("nft", "flush", "ruleset").AsUser("1000"))
+	flush, err := m.Exec(ctx, id, NewExecSpec("nft", "flush", "ruleset").AsUser(strconv.Itoa(int(agentuid.AgentUID))))
 	if err != nil {
 		t.Fatalf("nft flush probe errored (harness fault, not a firewall verdict): %v", err)
 	}
