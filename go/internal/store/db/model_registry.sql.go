@@ -61,7 +61,7 @@ func (q *Queries) InsertModelRegistry(ctx context.Context, registry []byte) (int
 
 const updateModelRegistry = `-- name: UpdateModelRegistry :one
 UPDATE model_registry
-   SET registry = $1, version = version + 1, updated_at = now()
+   SET registry = $1, version = version + 1
  WHERE singleton = TRUE AND version = $2
 RETURNING version
 `

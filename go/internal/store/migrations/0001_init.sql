@@ -961,3 +961,75 @@ BEGIN
         $f$, t);
     END LOOP;
 END $$;
+
+-- ── updated_at maintenance (RIG-3495) ───────────────────────────────────────
+-- created_at + updated_at is the schema convention for every table from here
+-- on, and updated_at is maintained by THIS trigger — never by a hand-written
+-- `updated_at = now()` in a query file.
+--
+-- Hand-maintenance is the failure mode, not a hypothetical one: secrets.updated_at
+-- rotted exactly that way. The column was declared here, read by DeclaredSecrets
+-- and surfaced on SecretDeclaration.UpdatedAt, but no write statement in
+-- queries/secrets.sql ever set it — so the value could only ever equal
+-- created_at, and every caller reading it was reading a lie. A per-statement
+-- convention that is invisible at the point a NEW write statement is added
+-- cannot survive; a trigger is enforced by the table, so a write path added
+-- later inherits it without anyone remembering.
+--
+-- The rule for a new table: give it created_at + updated_at with the usual
+-- DEFAULT now(), add its name to updated_at_tables below, and set updated_at
+-- NOWHERE else. There must be exactly one mechanism.
+--
+-- NOT covered, deliberately: issues.forge_updated_at and
+-- forge_repo_subscriptions.swept_updated_at. Those are forge-supplied
+-- watermarks — the remote's mutation time and the sweep high-water mark — not
+-- this row's local mutation time, and their writers set them explicitly
+-- (issues.sql's upsert even guards on the incoming value going forward). They
+-- are differently named precisely so this trigger cannot reach them.
+--
+-- search_path safety: the function is SECURITY INVOKER (the default, and what
+-- we want — a trigger doing NEW.updated_at = now() needs no elevated rights),
+-- but it still runs with whatever search_path the CALLING session has set, so
+-- an unqualified name in the body could be resolved against a schema the caller
+-- controls. Pinning search_path on the function makes the body's resolution
+-- independent of the caller. pg_catalog alone is enough and is the right pin
+-- here: the body resolves exactly one name, now(), which lives in pg_catalog —
+-- and this migration is applied into a per-test isolation schema as often as
+-- into public (internal/pgshare hands each test its own schema via search_path),
+-- so naming `public` would pin to a schema that is NOT the one holding these
+-- tables. NEW/OLD are parser-level, not search_path-resolved.
+CREATE FUNCTION set_updated_at() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    SET search_path = pg_catalog
+AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END $$;
+
+-- One BEFORE UPDATE ... FOR EACH ROW trigger per table carrying updated_at.
+-- BEFORE (not AFTER) because the trigger mutates the row being written, and
+-- UPDATE only (not INSERT) because the column's DEFAULT now() already stamps an
+-- inserted row — a BEFORE INSERT here would merely re-derive the same value
+-- while destroying the ability to insert a row with a deliberate updated_at.
+-- An INSERT ... ON CONFLICT DO UPDATE fires this on the conflict path, which is
+-- what makes every upsert in queries/ keep the column live for free. Done in a
+-- DO loop for the same reason the RLS block above is: so the identical trigger
+-- is never copy-pasted per table, and adding a table is one array entry.
+DO $$
+DECLARE
+    t text;
+    updated_at_tables text[] := ARRAY[
+        'secrets',
+        'agent_placements',
+        'agent_config_bundle',
+        'model_registry',
+        'forge_repo_subscriptions'
+    ];
+BEGIN
+    FOREACH t IN ARRAY updated_at_tables LOOP
+        EXECUTE format(
+            'CREATE TRIGGER set_updated_at BEFORE UPDATE ON %I
+                 FOR EACH ROW EXECUTE FUNCTION set_updated_at()', t);
+    END LOOP;
+END $$;
