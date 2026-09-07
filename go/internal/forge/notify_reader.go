@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -257,6 +258,22 @@ func (g *GitHub) ChecksConditional(ctx context.Context, repo string, number uint
 	return ConditionalResult[Checks]{V: checks, ETag: newETag}, nil
 }
 
+// pathSafeSegment reports whether s can be interpolated into a request path
+// without changing the path's SHAPE. It rejects the empty string and the three
+// URL-structural delimiters, which do not merely produce a 404: a "?" truncates
+// the path and shifts the remainder into the query string, silently addressing a
+// DIFFERENT endpoint than the caller named (and defeating the "?"-sniffing that
+// picks a page separator), while "/" and "#" re-segment or truncate it.
+//
+// It deliberately does NOT enforce a hex object id. The values are
+// GitHub-authenticated — they arrive on an HMAC-verified webhook — so this is
+// not a trust boundary; the goal is to turn a silently-wrong endpoint into a
+// named failure, and a stricter shape rule would encode a convention the
+// sibling reads in this file do not share.
+func pathSafeSegment(s string) bool {
+	return s != "" && !strings.ContainsAny(s, "?#/")
+}
+
 // PullRequestForSHA resolves a commit SHA to the pull-request number it belongs
 // to, via GitHub's "list pull requests associated with a commit" endpoint
 // (/repos/{repo}/commits/{sha}/pulls). It is the notify lane's head_sha->number
@@ -279,6 +296,15 @@ func (g *GitHub) ChecksConditional(ctx context.Context, repo string, number uint
 //     stacked descendant). Both halves are total orders over the decoded rows,
 //     so the same association set always resolves to the same number.
 func (g *GitHub) PullRequestForSHA(ctx context.Context, repo, sha string) (uint64, error) {
+	// The SHA lands in the request PATH, so a malformed value does not merely
+	// 404 — a `?` truncates the path and shifts the remainder into the query
+	// string, silently addressing a different endpoint than the one intended.
+	// The value is GitHub-authenticated (it arrives on an HMAC-verified
+	// webhook), so this is not a trust boundary; it converts a confusing
+	// wrong-endpoint answer into a named failure.
+	if !pathSafeSegment(sha) {
+		return 0, fmt.Errorf("forge: github pull for %q@%q: head sha carries a url delimiter", repo, sha)
+	}
 	u := g.apiBase() + "/repos/" + repo + "/commits/" + sha + "/pulls"
 	rows, err := getAllPages(ctx, g, u, func(e []ghCommitPull) []ghCommitPull { return e })
 	if err != nil {

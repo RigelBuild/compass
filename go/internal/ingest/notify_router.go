@@ -179,10 +179,20 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	// 0. head_sha -> PR number (RIG-2869), BEFORE the guard: a check_suite
 	// webhook is head-SHA-keyed and carries no artifact number, so without this
 	// the guard below rejects the whole CHECKS-via-check_suite kind. Narrow by
-	// construction: only a CHECKS event that has a SHA, has no number, and has a
-	// resolver wired. A non-CHECKS zero-number event never consults the
-	// resolver — it is malformed, not under-specified.
+	// construction: only a GITHUB CHECKS event that has a SHA, has no number,
+	// and has a resolver wired. A non-CHECKS zero-number event never consults
+	// the resolver — it is malformed, not under-specified.
+	//
+	// The provider term is what makes "by construction" true rather than
+	// incidental. Today no Linear event could reach here (Linear emits no CHECKS
+	// event and its lane wires no resolver), so the term is defense in depth —
+	// but without it the narrowing lives in the WIRING, and a later
+	// provider-agnostic lane would hand a Linear team key to a GitHub
+	// commits/{sha}/pulls read: a guaranteed 404 per event against the shared
+	// App budget, reported as a confusing GitHub error instead of a clean
+	// zero-provider rejection.
 	if ev.Number == 0 &&
+		ev.Provider == compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB &&
 		ev.Change == compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS &&
 		ev.HeadSHA != "" && r.pullNumbers != nil {
 		num, nerr := r.pullNumbers.PullNumberForSHA(ctx, ev.Repo, ev.HeadSHA)

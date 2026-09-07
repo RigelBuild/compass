@@ -1197,6 +1197,14 @@ type forgeNotifyLane struct {
 	// ONE client — a builder that minted its own would record a different pointer.
 	// Production reads it never.
 	reader forge.NotifyReader
+	// pulls is the head_sha->PR-number resolver this lane's router uses for
+	// step 0 (RIG-2869): non-nil on the GitHub lane, nil on the Linear lane,
+	// which emits no CHECKS event. Recorded for the same reason as reader —
+	// without it nothing can observe that the assembly actually threaded a
+	// resolver, so a future edit passing nil here would compile, pass the whole
+	// suite, and silently restore the bug this field's lane exists to fix.
+	// Production reads it never.
+	pulls ingest.PullNumberResolver
 }
 
 // forgeNotifyStore adapts *store.Store to ingest.NotifyStore, binding the forge
@@ -1436,7 +1444,7 @@ func buildForgeNotifyLane(
 			Backstop: fc.App.ReconcileBackstop,
 			Log:      log,
 		})
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client}
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: pulls}
 }
 
 // buildLinearNotifyLane assembles the Linear agent-notification lane (RIG-2732
@@ -1486,7 +1494,9 @@ func buildLinearNotifyLane(
 			Backstop: 0, // no App config carries a Linear backstop; 0 -> ingest's defaultBackstop.
 			Log:      log,
 		})
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client}
+	// pulls stays nil: Linear is issues-only and never emits a CHECKS event, so
+	// there is no head SHA to resolve.
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: nil}
 }
 
 // newDeclaredSecretResolver returns a func that resolves the declared server_only

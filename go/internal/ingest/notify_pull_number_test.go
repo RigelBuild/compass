@@ -283,11 +283,40 @@ func TestCachedPullNumberResolverNeverCachesInfraError(t *testing.T) {
 }
 
 // TestNewCachedPullNumberResolverNilBase: a nil base stays nil rather than
-// becoming a cache over nothing, so the Linear lane's nil resolver reaches the
-// router as the nil the router tolerates.
+// becoming a cache over nothing, so a lane with no resolver reaches the router
+// as the nil the router tolerates.
+//
+// The assertion goes through the SEAM, not the concrete type, and that is the
+// whole point. A constructor returning a concrete *CachedPullNumberResolver
+// would satisfy `got != nil` while producing a TYPED NIL once assigned into a
+// PullNumberResolver: the interface value is non-nil, so Route's nil check
+// passes and the first call dereferences a nil receiver, panicking the notify
+// drain goroutine — which has no recover, so the whole lane dies. Comparing the
+// concrete return would pass either way and prove nothing.
 func TestNewCachedPullNumberResolverNilBase(t *testing.T) {
-	if got := NewCachedPullNumberResolver(nil); got != nil {
-		t.Errorf("NewCachedPullNumberResolver(nil) = %v, want nil", got)
+	// Passed through a func taking the interface, so the value genuinely crosses
+	// the seam boundary. An inline `var x PullNumberResolver = ...` would say
+	// the same thing, but staticcheck (ST1023) strips the annotation as
+	// inferable — and inferring the CONCRETE type is exactly the mistake this
+	// test exists to catch.
+	assertNilSeam := func(t *testing.T, seam PullNumberResolver) {
+		t.Helper()
+		if seam != nil {
+			t.Fatalf("NewCachedPullNumberResolver(nil) as a PullNumberResolver = %v, want a true nil", seam)
+		}
+	}
+	assertNilSeam(t, NewCachedPullNumberResolver(nil))
+
+	// The contract that matters: a router handed that value takes the untouched
+	// pre-resolution path instead of panicking.
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}}}
+	d := &fakeDispatcher{}
+	r := newRouterWithPulls(t, st, d, &fakeChecksRoller{}, NewCachedPullNumberResolver(nil))
+	if err := r.Route(context.Background(), checkSuiteEvent("abc123")); err == nil {
+		t.Error("Route with a nil resolver = nil error, want the zero-number guard to reject")
+	}
+	if len(d.sent) != 0 {
+		t.Errorf("dispatched %d, want 0", len(d.sent))
 	}
 }
 
@@ -373,5 +402,73 @@ func TestCachedPullNumberResolverEvictsExpired(t *testing.T) {
 	}
 	if got := c.size(); got != 1 {
 		t.Errorf("resident = %d, want 1: the read evicted the expired zzz and the failed resolve stored nothing, leaving only ccc", got)
+	}
+}
+
+// slowResolver answers a scripted sequence, so a test can interleave two
+// resolves for one key and control which one observed the world later.
+type slowResolver struct {
+	answers []func() (uint64, error)
+	calls   int
+}
+
+func (s *slowResolver) PullNumberForSHA(_ context.Context, _, _ string) (uint64, error) {
+	i := s.calls
+	s.calls++
+	if i >= len(s.answers) {
+		return 0, forge.ErrNoPullRequestForSHA
+	}
+	return s.answers[i]()
+}
+
+// TestCachedPullNumberResolverLastObservedWins pins that the cache is ordered by
+// what each resolve SAW, not by which one returned last.
+//
+// The burst this cache exists for makes the race routine: one push fires a
+// check_suite per installed App, so two resolves for the same head overlap. If
+// the slow one started before the PR was opened and the fast one found it, the
+// slow one landing last would pin "no PR" for a full TTL and fail every
+// check_suite for that head until it expired — the cache actively serving a
+// wrong answer over a right one it already held.
+func TestCachedPullNumberResolverLastObservedWins(t *testing.T) {
+	const ttl = 10 * time.Minute
+	clk := &fakeClock{t: time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)}
+	base := &slowResolver{}
+	c := newCachedPullNumberResolver(base, ttl, clk.now)
+	ctx := context.Background()
+
+	// The FAST resolve observes the world at 12:00 and finds PR 77.
+	base.answers = []func() (uint64, error){func() (uint64, error) { return 77, nil }}
+	if num, err := c.PullNumberForSHA(ctx, "octo/repo", "abc123"); err != nil || num != 77 {
+		t.Fatalf("fresh resolve = (%d, %v), want (77, nil)", num, err)
+	}
+
+	// The SLOW resolve began EARLIER (at 11:59, before the PR existed) and only
+	// now returns the sentinel. Storing it would overwrite the fresher answer.
+	stale := pullNumberEntry{
+		noPull:     true,
+		expires:    clk.t.Add(ttl),
+		observedAt: clk.t.Add(-time.Minute),
+	}
+	c.store(pullNumberKey{repo: "octo/repo", sha: "abc123"}, stale)
+
+	num, err := c.PullNumberForSHA(ctx, "octo/repo", "abc123")
+	if err != nil {
+		t.Fatalf("after the stale store = %v, want the fresher 77 to survive", err)
+	}
+	if num != 77 {
+		t.Errorf("number = %d, want 77 (a resolve that observed an EARLIER world must not overwrite a later one)", num)
+	}
+	if base.calls != 1 {
+		t.Errorf("underlying calls = %d, want 1 (the surviving entry is still a cache hit)", base.calls)
+	}
+
+	// A LATER observation still wins — the guard orders writes, it does not
+	// freeze the entry.
+	clk.add(time.Minute)
+	fresher := pullNumberEntry{number: 88, expires: clk.now().Add(ttl), observedAt: clk.now()}
+	c.store(pullNumberKey{repo: "octo/repo", sha: "abc123"}, fresher)
+	if num, err := c.PullNumberForSHA(ctx, "octo/repo", "abc123"); err != nil || num != 88 {
+		t.Errorf("after a later observation = (%d, %v), want (88, nil)", num, err)
 	}
 }

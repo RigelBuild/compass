@@ -69,16 +69,30 @@ type pullNumberKey struct {
 // pullNumberEntry is one cached outcome: either a resolved number, or the
 // no-PR-for-this-SHA answer (number 0, noPull true). It never holds an
 // infrastructure error.
+//
+// observedAt is when the resolve that produced this entry STARTED, not when it
+// finished. Two resolves for one key overlap whenever a burst misses (the cache
+// resolves outside the lock on purpose), and the useful answer is the one that
+// looked at the world most recently — not the one that happened to return last.
+// A slow resolve that began before a PR existed must never overwrite a fast
+// later resolve that found it.
 type pullNumberEntry struct {
-	number  uint64
-	noPull  bool
-	expires time.Time
+	number     uint64
+	noPull     bool
+	expires    time.Time
+	observedAt time.Time
 }
 
 // NewCachedPullNumberResolver wraps base in a TTL cache over the default TTL and
-// the wall clock. A nil base returns nil, so a lane with no resolver stays a nil
-// resolver the router tolerates rather than becoming a cache over nothing.
-func NewCachedPullNumberResolver(base PullNumberResolver) *CachedPullNumberResolver {
+// the wall clock. A nil base yields a nil RESOLVER, so a lane with no resolver
+// stays one the router tolerates rather than becoming a cache over nothing.
+//
+// It returns the INTERFACE, not the concrete type, and that is load-bearing: a
+// nil *CachedPullNumberResolver assigned into a PullNumberResolver would be a
+// typed nil — an interface value that is NOT nil, so the router's nil check
+// would pass and the first call would dereference a nil receiver. Returning the
+// interface makes the nil a true nil at every callsite.
+func NewCachedPullNumberResolver(base PullNumberResolver) PullNumberResolver {
 	if base == nil {
 		return nil
 	}
@@ -123,16 +137,19 @@ func (c *CachedPullNumberResolver) PullNumberForSHA(ctx context.Context, repo, h
 	// Resolved outside the lock: a commits/{sha}/pulls GET must never serialize
 	// every other coordinate's cache lookup behind it. Two concurrent misses on
 	// one key can both call base — the cost is one duplicate GET, which is
-	// strictly better than holding the mutex across network I/O.
+	// strictly better than holding the mutex across network I/O. observedAt is
+	// captured BEFORE the call so store can order the two by what each one saw,
+	// not by which finished first.
+	observedAt := c.now()
 	num, err := c.base.PullNumberForSHA(ctx, repo, headSHA)
 	switch {
 	case errors.Is(err, forge.ErrNoPullRequestForSHA):
-		c.store(key, pullNumberEntry{noPull: true, expires: c.now().Add(c.ttl)})
+		c.store(key, pullNumberEntry{noPull: true, expires: c.now().Add(c.ttl), observedAt: observedAt})
 		return 0, err
 	case err != nil:
 		return 0, err // infrastructure fault: never cached, retried next event
 	}
-	c.store(key, pullNumberEntry{number: num, expires: c.now().Add(c.ttl)})
+	c.store(key, pullNumberEntry{number: num, expires: c.now().Add(c.ttl), observedAt: observedAt})
 	return num, nil
 }
 
@@ -141,6 +158,13 @@ func (c *CachedPullNumberResolver) PullNumberForSHA(ctx context.Context, repo, h
 // looks up, so a coordinate seen exactly once would otherwise stay resident
 // forever. Every store is already behind a network resolve, so walking the live
 // set is far cheaper than the call that got us here.
+//
+// The write is LAST-OBSERVED-WINS, not last-to-finish-wins. During the burst
+// this cache exists for, two resolves for one head overlap; if a slow one began
+// before the PR was opened and a fast one afterwards found it, letting the slow
+// one land would pin "no PR" for a full TTL and fail every check_suite for that
+// head until it expired. So an entry whose resolve started EARLIER never
+// replaces a live entry that saw the world later.
 func (c *CachedPullNumberResolver) store(key pullNumberKey, entry pullNumberEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -149,6 +173,9 @@ func (c *CachedPullNumberResolver) store(key pullNumberKey, entry pullNumberEntr
 		if !now.Before(e.expires) {
 			delete(c.entries, k)
 		}
+	}
+	if cur, ok := c.entries[key]; ok && now.Before(cur.expires) && cur.observedAt.After(entry.observedAt) {
+		return
 	}
 	c.entries[key] = entry
 }
