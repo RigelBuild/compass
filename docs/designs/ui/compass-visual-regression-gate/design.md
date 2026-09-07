@@ -124,12 +124,11 @@ spans ~4 orders of magnitude: a full-page shot (~1280×720+, ≥900 K px) at
 0.001 allows ~900 differing pixels, while `state-dot.png` (9×10 = 90 px) gets
 a budget of 0.09 px — effectively byte-exact, the *least* slack on the shot
 most exposed to a single anti-aliasing pixel shift after a Chromium bump. One
-ratio cannot serve both ends, so at the recommended base the 2 *smallest*
-shots (`state-dot`, `bridge-card`) need a per-shot widening, while the two
+ratio cannot serve both ends, so at the ruled base of 0.001 the 2 *smallest*
+shots (`state-dot`, `bridge-card`) take a per-shot widening, while the two
 larger close-ups (`bridge-colheads`, `right-sidebar`) do not: their
 area-scaled budgets @0.001 are already 35 px and 260 px, comfortably above
-the intended slack. Which shots qualify is base-dependent — the count is 3
-at 0.0005, 2 at 0.001 and 1 at 0.002; see the per-shot list below.
+the intended slack. See the per-shot list below.
 
 **The widening knob is a per-shot `maxDiffPixelRatio`, not `maxDiffPixels`.**
 At the 1.62.1 pin the two pixel-count knobs resolve with `Math.min`, not max:
@@ -158,8 +157,8 @@ the most slack would get none at all.
 
 The correct override is a per-shot `maxDiffPixelRatio`, which *does* replace
 the config default (it is a plain key in that spread, not a `Math.min`
-sibling), computed as `max(base, floor / area)` against whichever base ratio
-OQ-1 settles on:
+sibling), computed as `max(base, floor / area)` against the ruled base of
+0.001:
 
 - `state-dot.png` — `max(0.001, 10/90)`, prescribed as the **exact fraction
   `10/90`** (budget exactly 10.0 px, tolerates 10 px). If a decimal is written
@@ -167,16 +166,11 @@ OQ-1 settles on:
 - `bridge-card.png` — `max(0.001, 25/21357)`, prescribed as the **exact
   fraction `25/21357`** (budget exactly 25.0 px, tolerates 25 px). As a decimal
   it must be the rounded-UP **0.001171**.
-- `bridge-colheads.png` and `right-sidebar.png` — **no override at the
-  recommended base 0.001**, where their area-scaled budgets (35 px and
-  260 px @0.001) already exceed the intended ~25 px of slack.
-  `right-sidebar` (400×650 = 260000 px) needs no override at any base OQ-1
-  names — even at 0.0005 its budget is 130 px. `bridge-colheads`
-  (855×41 = 35055 px) is base-dependent: at 0.0005 its budget falls to
-  17.53 px, *below* the 25 px of intended slack, so under that ruling it
-  takes `25/35055` by the same `max(base, floor / area)` rule as the other
-  two shots. An executor adds an override here only where that rule yields
-  one for the base Matt rules for.
+- `bridge-colheads.png` and `right-sidebar.png` — **no override.** At the
+  ruled base their area-scaled budgets (35 px and 260 px @0.001) already
+  exceed the intended ~25 px of slack.
+
+These two overrides are the complete set. The executor writes them as given.
 
 The comparator tests `count > area * ratio` with no rounding
 (`playwright-core/lib/coreBundle.js:7557,7564`), so a per-shot ratio must be
@@ -193,10 +187,8 @@ The call sites in T2 therefore write the *resolved* literal fraction rather
 than a derived expression: a per-shot `maxDiffPixelRatio` replaces the
 config base instead of combining with it, so the base ratio is not in scope
 at the call site and `max(base, floor / area)` is a derivation the reader
-performs here, not an expression the spec evaluates. At the recommended
-0.001 it resolves to `10/90` and `25/21357`; if OQ-1 moves the base,
-re-resolve both against that rule — a base at or above `floor / area`
-removes the override entirely.
+performs here, not an expression the spec evaluates. At the ruled base it
+resolves to `10/90` and `25/21357`.
 
 The 7 full-page shots likewise take no override. The per-pixel color tolerance
 `threshold` (YIQ distance, Playwright default 0.2) is left at its default
@@ -233,22 +225,49 @@ rewritten fixtures for human review" (`ci.yml:2314`, `regen-forge-fixtures`: "BO
 gets a sibling lane: dispatch → bootstrap the same toolchain + pinned
 Chromium → `bunx playwright test e2e/visual-smoke.spec.ts
 --update-snapshots` → bot PR with `add-paths: apps/ui/e2e/__screens__`. Matt
-reviews the baseline diff as images in the PR — which is also the review
-surface for intentional visual changes: land the code PR with the gate red or
-with regenerated baselines from the dispatch lane, per the OQ-2 fork below.
+reviews the baseline diff as native GitHub before/after images — which is also
+the review surface for intentional visual changes: under the OQ-2 (b) ruling
+the author dispatches the lane **on the feature branch**, so the bot PR
+targets that branch and the feature PR lands green with its own baselines.
 
 ### Failure surfacing
 
-On failure Playwright writes `<name>-actual.png`, `<name>-expected.png`, and
-`<name>-diff.png` under `outputDir` (`e2e/.output`,
-`playwright.config.ts:54`). The `moon` job (`ci.yml:236`) gets an
-`if: failure() && matrix.run == 'true'` `actions/upload-artifact` step
-(SHA-pinned, per the house rule every action in `ci.yml` follows) scoped to
-`apps/ui/e2e/.output/**`, so a red gate always carries a downloadable
-actual/expected/diff triplet.
-Inline-in-PR diff images are OQ-3.
+Two surfaces, split by failure mode — this is the OQ-3 ruling, and the split
+is load-bearing.
 
-### Rollout: hard gate from the first landing
+**An intended visual change is reviewed as a native GitHub image diff, with no
+download.** The regen lane rewrites the 11 tracked baselines
+(`apps/ui/e2e/__screens__/*.png`) in place, so GitHub renders them in 2-up,
+swipe, and **onion-skin** modes; onion skin is the instrument for the
+sub-pixel shifts this gate exists to catch. Under the OQ-2 (b) ruling that bot
+PR targets the feature branch, so it is the same surface the author already has
+open.
+
+**The click-path, so execution does not have to rediscover it:** open the bot
+PR → **Files changed** → each changed `__screens__/*.png` renders as an image
+diff with a **2-up / Swipe / Onion skin** control in the file header. 2-up is
+the default and also reports a dimension change, which is the fastest read on
+an accidental viewport or layout-size regression. Two caveats an author will
+hit: GitHub collapses large diffs, so a multi-shot regen may need "Load diff"
+per file; and the two element close-ups are small on screen at natural size
+(`state-dot.png` is 9x10, `bridge-card.png` 189x113), so judge those by
+opening the raw blob at each side of the diff rather than by squinting at the
+inline swipe. Nothing here is committed to by CI — it is browser behaviour,
+recorded so the reviewer knows where to look.
+
+**An unexpected red gate still needs the artifact**, because the native viewer
+diffs committed files at a path and Playwright's failure triplet is not
+committed. On failure Playwright writes `<name>-actual.png`,
+`<name>-expected.png`, and `<name>-diff.png` under `outputDir` (`e2e/.output`,
+`playwright.config.ts:54`), which is untracked. The `moon` job (`ci.yml:236`)
+therefore gets an `if: failure() && matrix.run == 'true'`
+`actions/upload-artifact` step (SHA-pinned, per the house rule every action in
+`ci.yml` follows) scoped to `apps/ui/e2e/.output/**`, so a red gate always
+carries a downloadable actual/expected/diff triplet for diagnosis. The author's
+path out of an unexpected red is to regenerate on the branch, which converts it
+into the image diff above.
+
+### Rollout: hard gate from the first landing (decided, OQ-4)
 
 No advisory period. The determinism substrate is proven (fixture-boot T4's
 byte-identity self-test), the environment is pinned byte-for-byte, the first
@@ -257,16 +276,14 @@ absorbs residual noise. An advisory mode needs real machinery (a
 `continue-on-error` leg outside the moon battery, plus somewhere to look) and
 history shows advisory gates go unread. The rollback lever if it flakes:
 bump `maxDiffPixelRatio` or drop a noisy shot from the gate — each a
-one-line, same-day PR. Presented as OQ-4 since the issue asks, with this as
-the recommendation.
+one-line, same-day PR.
 
-### Coverage at v1: all 11 shots
+### Coverage at v1: all 11 shots (decided, OQ-5)
 
 All 11 existing surfaces gate from day one. The set already exists as
 committed, determinism-hardened baselines; curating a subset means deciding
 per-surface noise levels with zero run history, and the fallback (drop a shot
-that proves noisy, one-line PR) is cheaper than guessing up front. Presented
-as OQ-5 with this recommendation since the issue asks.
+that proves noisy, one-line PR) is cheaper than guessing up front.
 
 ## Global Constraints
 
@@ -300,12 +317,10 @@ as OQ-5 with this recommendation since the issue asks.
   `cache: false`, mirroring `dev-smoke`'s documented rationale
   (`moon.yml:64-84`). CI actions are SHA-pinned like every action in
   `ci.yml`.
-- **Threshold default**: `maxDiffPixelRatio` set once in
-  `playwright.config.ts` `expect.toHaveScreenshot` (base ratio per OQ-1);
-  at the recommended base 0.001 `state-dot` and `bridge-card` additionally
-  carry a per-shot `maxDiffPixelRatio` of `max(base, floor / area)`
-  resolved to a literal fraction (the set is base-dependent — see
-  Threshold) — the only knob
+- **Threshold default**: `maxDiffPixelRatio: 0.001` set once in
+  `playwright.config.ts` `expect.toHaveScreenshot`; `state-dot` and
+  `bridge-card` additionally carry a per-shot `maxDiffPixelRatio` resolved to
+  a literal fraction (`10/90` and `25/21357`) — the only knob
   that can widen a small shot's budget, since a per-shot `maxDiffPixels`
   would resolve to `Math.min` against the config ratio and could only tighten
   it (see Threshold). No shot carries a `maxDiffPixels`. Per-pixel
@@ -320,10 +335,9 @@ as OQ-5 with this recommendation since the issue asks.
 
 Extend `apps/ui/playwright.config.ts` with:
 `snapshotPathTemplate: "{testDir}/__screens__/{arg}{ext}"` and
-`expect: { toHaveScreenshot: { maxDiffPixelRatio: <base> } }` — the config-level
-default (base ratio per OQ-1, recommendation 0.001); the per-shot
-`maxDiffPixelRatio` overrides that base ratio yields (two at the recommended
-0.001) are set at their call sites in T2, not here.
+`expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.001 } }` — the
+config-level default; the two per-shot `maxDiffPixelRatio` overrides
+(`10/90`, `25/21357`) are set at their call sites in T2, not here.
 `threshold` is left unset (default
 0.2) as a recorded decision. No project or webServer changes — the determinism
 knobs at :57-72 and the fixture-mode webServer at :79-95 are already the
@@ -354,19 +368,16 @@ its exact current raster options:
   "disabled", scale: "css" })` on the same locator — no `fullPage` — plus
   `maxDiffPixelRatio: 10/90` on state-dot and `maxDiffPixelRatio: 25/21357`
   on bridge-card — exact fractions, per Threshold (as rounded-up decimals,
-  0.1112 and 0.001171). These are the resolved values of Threshold's
-  `max(base, floor / area)` at the recommended base 0.001; re-resolve both
-  if OQ-1 moves the base. right-sidebar takes **no** override.
+  0.1112 and 0.001171). right-sidebar takes **no** override.
 - **1 clip** (bridge-colheads `:189`): keep the bounding-box union computation
   (`:180-188`), then `await expect(page).toHaveScreenshot("bridge-colheads.png",
   { clip, animations: "disabled", scale: "css" })` — **no** per-shot
-  override at the recommended base 0.001.
+  override.
 
-At the recommended base 0.001 only `state-dot` and `bridge-card` carry a
-per-shot `maxDiffPixelRatio`, each with a justifying comment: `right-sidebar`
-has an area-scaled budget above the intended slack at every base OQ-1 names,
-and `bridge-colheads` has one at 0.001 — under a 0.0005 ruling it gains a
-`25/35055` override too (see Threshold). No shot gets a `maxDiffPixels`.
+Only `state-dot` and `bridge-card` carry a per-shot `maxDiffPixelRatio`, each
+with a justifying comment; `right-sidebar` and `bridge-colheads` have
+area-scaled budgets above the intended slack at the ruled base (260 px and
+35 px). No shot gets a `maxDiffPixels`.
 Keep every navigation, selector wait, and `document.fonts.ready` await
 untouched. Drop the now-unused `SCREENS` const;
 import `expect` alongside `test` from `@playwright/test`
@@ -452,6 +463,14 @@ hides:
   `apps/ui` node_modules (`@playwright/test`, vite), so it adds a
   `bun install` / `moon :install` step the "same two-phase bootstrap" phrase
   does not cover.
+- **jj-hazard operator note (required by the OQ-2 (b) ruling):** the lane's
+  bot PR merges a commit onto the GitHub bookmark that the author's local jj
+  working copy does not have. A `sync-before-submit` rebase — or any bookmark
+  rewrite — can then silently drop the baseline commit and resurrect the red
+  gate with no obvious cause. The lane's PR body must carry the counter-step
+  verbatim: after merging a baseline bot PR, run `jj git fetch` and rebase
+  onto the updated bookmark **before** the next `jj-vine submit`, then confirm
+  the baseline commit is still in the stack.
 
 Otherwise as forge: widened `contents: write` + `pull-requests: write`, the
 two-phase toolchain bootstrap (`ci.yml:2352-2376`, `regen-forge-fixtures`: "Phase one"/"Phase two") plus the pinned-Chromium
@@ -519,71 +538,70 @@ Interfaces:
 
 ## Open Questions
 
-Load-bearing (need Matt's ruling before the impl issues file):
+All five load-bearing forks were **ruled by Matt on 2026-09-07** at the design-PR
+gate. Recorded here as the frozen contract — execution reads the decided target,
+not a fork.
 
-1. **OQ-1 — Threshold start value.** `maxDiffPixelRatio` at 0.001 (0.1%, the
-   issue's suggestion — absorbs anti-aliasing noise, catches layout/palette
-   changes), vs 0.0005 (tighter; more sensitive to Chromium-bump raster
-   drift), vs 0.002 (looser; risks missing a small real regression like a
-   1px border change on a large full-page shot). Note the ratio is
-   area-scaled, so `state-dot` and `bridge-card` take a per-shot
-   `maxDiffPixelRatio` override derived from whichever base Matt rules for —
-   `max(base, floor / area)` expressed as an exact fraction, so at 0.001 they
-   are `10/90` and `25/21357` (budgets of exactly 10.0 px and 25.0 px), and a
-   different base shifts them (a base above `floor / area` removes the
-   override entirely) — while per-pixel `threshold` stays at the default 0.2
-   (see Threshold section).
-   **Recommendation: 0.001** for the base ratio, with the two derived per-shot
-   overrides, revisit with run history.
-2. **OQ-2 — Intentional-visual-change workflow.** When a PR intentionally
-   changes a surface:
-   (a) author lands the PR with the gate red, then dispatches the regen lane
-   and merges the bot PR (gate red on main briefly);
-   (b) author dispatches the regen lane **on the feature branch** (the native
-   workflow_dispatch run-from-branch selector) — `peter-evans/create-pull-request`
-   defaults its `base` to the checked-out branch, so the bot PR targets that
-   branch with the regenerated baselines and no extra input is needed (the
-   earlier "`ref` dispatch input" idea was unnecessary machinery); the feature
-   PR then lands green with its own baselines;
-   (c) allow a documented local `--update-snapshots` + commit, breaking the
-   baselines-from-CI-only rule;
-   (d) the lane pushes the regenerated baselines as a direct commit to the PR
-   branch (`contents: write`, no bot PR) — fewer steps, but removes the human
-   in-diff image review the bot PR gives;
-   (e) author iterates locally with `--update-snapshots`, then a required CI
-   regen replaces those files before merge (merge-queue-style).
-   **Two under-weighted costs on (b):** (i) per intentional change the author
-   pays dispatch → full toolchain+Playwright bootstrap → merge bot PR into own
-   branch → re-run gate — a multi-step, multi-minute loop on what may be the
-   *most common* change shape in an actively-developed UI, not the exception;
-   (ii) **jj hazard** — merging a bot PR into a jj-managed feature branch puts
-   a commit on the GitHub bookmark the local jj working copy lacks, and the
-   mandated `sync-before-submit` rebase (or any bookmark rewrite) before the
-   next `jj-vine submit` can silently drop the bot's baseline commit,
-   resurrecting the red gate with no obvious cause. Any CI-writes-to-your-branch
-   scheme (b/d) collides with jj bookmark rewriting.
-   **Recommendation: (b)** — keeps main always green and the CI-only rule
-   intact — but Matt should rule with the jj collision and the per-PR loop
-   cost on the table.
-3. **OQ-3 — Diff visibility for adjudication.** (a) CI artifact zip only
-   (T3's design — Matt downloads the actual/expected/diff triplet); (b)
-   additionally a bot PR-comment embedding the diff images (needs an image
-   host or committing diffs to a scratch branch — more machinery, images
-   inline); (c) a Playwright HTML report artifact instead of raw PNGs
-   (single browsable file, still a download). **Recommendation: (a)** at
-   v1 — zero new machinery; escalate to (b) only if the download step
-   proves to be real friction. Deferrable: the artifact upload lands
-   either way.
-4. **OQ-4 — Hard gate vs advisory start.** (a) hard gate from first landing
-   (Approach's case: pinned env + CI-generated baselines + 0.1% ratio leave
-   little to stabilize, and the rollback is a one-line threshold bump); (b)
-   a 2-week advisory period (`continue-on-error` leg) collecting flake data
-   first. **Recommendation: (a)**, with the T5 ordering as the safety
-   mechanism.
-5. **OQ-5 — v1 coverage.** (a) all 11 shots (Approach's case: baselines
-   exist, dropping a noisy shot later is one line); (b) a curated core
-   subset (bridge, settings, agent, state-dot) to minimize initial noise
-   surface. **Recommendation: (a)**.
+1. **OQ-1 (RESOLVED — Matt 2026-09-07): base `maxDiffPixelRatio` = 0.001.**
+   The 0.1% base absorbs anti-aliasing noise while still catching layout and
+   palette changes. **Resolution:** config-level default `0.001`, with exactly
+   two per-shot `maxDiffPixelRatio` overrides resolved against
+   `max(base, floor / area)` — `state-dot.png` takes the exact fraction
+   `10/90` and `bridge-card.png` takes `25/21357`. `bridge-colheads` and
+   `right-sidebar` take **no** override at this base (their area-scaled
+   budgets, 35 px and 260 px, already exceed the intended slack), and the 7
+   full-page shots take none. Per-pixel `threshold` stays at the Playwright
+   default 0.2. The Threshold section now states these two overrides as
+   resolved literals: an executor writes them, not the derivation.
+   Revisit with run history.
+2. **OQ-2 (RESOLVED — Matt 2026-09-07): (b) — dispatch the regen lane on the
+   feature branch.** The bot PR targets the feature branch
+   (`peter-evans/create-pull-request` defaults `base` to the checked-out
+   branch), so the feature PR lands green with its own baselines and `main`
+   is never knowingly red. **Resolution:** (b), with the two costs named in
+   this record accepted as known and carried into execution — (i) the
+   per-change dispatch → bootstrap → merge-bot-PR → re-run loop, and (ii) the
+   **jj hazard**: the bot's commit lands on the GitHub bookmark and not in the
+   local jj working copy, so a `sync-before-submit` rebase or any bookmark
+   rewrite can silently drop it and resurrect the red gate. T4 must carry that
+   hazard as an explicit operator note: after merging a baseline bot PR, run
+   `jj git fetch` and rebase onto the updated bookmark **before** the next
+   `jj-vine submit`, and verify the baseline commit survived.
+3. **OQ-3 (RESOLVED — Matt 2026-09-07): GitHub's native image diff on the
+   baseline PR; no manual artifact download as the adjudication path.**
+   Downloading a zip per red gate is too slow to be the review loop.
+   GitHub renders committed PNG changes in three modes — **2-up**, **swipe**,
+   and **onion skin** — and onion skin is the right instrument for the
+   sub-pixel shifts this gate exists to catch
+   ([GitHub docs, "Working with non-code files" → Viewing differences](https://docs.github.com/en/repositories/working-with-files/using-files/working-with-non-code-files#viewing-differences)).
+   **Resolution:** the **regen bot PR is the adjudication surface.** Because
+   the lane rewrites `apps/ui/e2e/__screens__/*.png` in place and those 11
+   baselines are tracked files, every intentional visual change is reviewed as
+   a native before/after image diff with zero downloads — and OQ-2 (b) already
+   routes that bot PR at the feature branch, so this is the same surface the
+   author is already opening.
+   **One honest limit, which execution must not paper over:** the native
+   viewer diffs *committed files at the same path*, and Playwright's
+   `-actual`/`-expected`/`-diff` triplet is written to `apps/ui/e2e/.output/`,
+   which is untracked (`git ls-files apps/ui/e2e/.output` → 0 files). So an
+   *unintended* red gate — a regression the author did not mean to cause — has
+   no committed file to diff and is not visible in the PR image viewer. T3's
+   failure artifact therefore **stays**, as the diagnostic path for an
+   unexpected red, not as the review path for an intended change. The two
+   surfaces split by failure mode: intended change → bot-PR image diff
+   (no download); unexpected red → the author regenerates on the branch, which
+   converts it into that same image diff and shows exactly which surfaces
+   moved. Option (b)'s image-host machinery and (c)'s HTML report are both
+   dropped.
+4. **OQ-4 (RESOLVED — Matt 2026-09-07): (a) hard gate from the first
+   landing.** No advisory period. **Resolution:** the gate blocks `ci` from
+   the moment T3 lands, with T5's cutover ordering as the safety mechanism and
+   a one-line threshold bump (or dropping a noisy shot) as the rollback lever.
+5. **OQ-5 (RESOLVED — Matt 2026-09-07): (a) all 11 shots at v1.** The
+   determinism-hardened baselines already exist; curating a subset would mean
+   guessing per-surface noise levels with zero run history. **Resolution:**
+   all 11 surfaces gate from day one; dropping a shot that proves noisy is a
+   one-line PR.
 
-Non-load-bearing / deferrable: OQ-3's escalation path; whether the regen
-lane later folds into a label-triggered automation (out of scope here).
+Non-load-bearing / deferrable: whether the regen lane later folds into a
+label-triggered automation (out of scope here).
