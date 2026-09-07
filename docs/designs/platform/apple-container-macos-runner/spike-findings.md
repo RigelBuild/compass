@@ -1,7 +1,7 @@
 # T-1 spike findings — apple `container` on real hardware
 
 Deliverable of T-1 in [design.md](design.md). Run 2026-09-05 on the committed
-mac mini (`mattmini`), the hardware design.md:368-369 names as committed. Verdict
+mac mini (`mattmini`), the hardware design.md:375-376 names as committed. Verdict
 per open question, with measured numbers and the transcript-level evidence each
 verdict rests on.
 
@@ -13,10 +13,10 @@ and carried forward). None challenges the ruled direction (apple-container as th
 macOS engine). But the load-bearing transport probe found the ruled *transport*
 unreachable: the CLI exposes no host-side vsock attach point, so the guestd-style
 unix→vsock forwarder cannot be ported onto this backend through the documented CLI
-surface. design.md:612-613 states the disposition for exactly this outcome — "If the
+surface. design.md:619-620 states the disposition for exactly this outcome — "If the
 vsock leg is NOT reachable through the CLI, the transport question (not the
 apple-container direction) returns to Matt with the finding" — and OQ-11
-(design.md:712-714) is a Matt ruling ("RULED: yes, vsock, mirroring the microVM").
+(design.md:719-721) is a Matt ruling ("RULED: yes, vsock, mirroring the microVM").
 **That trigger has fired.**
 
 A working substitute exists and is proven end to end (the CLI's own
@@ -55,11 +55,11 @@ exists, which blocks the live legs of T-2/T-3, and every probe ran on `container
 | Guest kernel | 6.18.15 aarch64 (kata-static 3.28.0) |
 | Provisioning | `nix shell github:nixos/nixpkgs/nixos-unstable#container` |
 
-The record's passing installer remark (design.md:327-329, an aside inside the
+The record's passing installer remark (design.md:334-336, an aside inside the
 substrate-invariant bullet noting that "the installer requiring admin once to
 place files under `/usr/local` is an install-time cost") turns out to be
 unnecessary — no `.pkg` is involved. nixpkgs-unstable packages apple/container
-for `aarch64-darwin` at 1.1.0, clearing the ≥ 1.0.0 floor design.md:313-319
+for `aarch64-darwin` at 1.1.0, clearing the ≥ 1.0.0 floor design.md:320-326
 sets. The spike ran entirely from a `nix shell` — no sudo, no host mutation,
 cached-binary fetch in ~12 s. The declarative follow-up is filed as RIG-3352
 (see [Provisioning](#provisioning-the-clis-real-path)).
@@ -78,7 +78,7 @@ non-interactively with `container system kernel set --recommended` (a bare
 | OQ-2/OQ-11 | (b) transport | **direction GREEN; ruled vsock transport RED → returns to Matt** | no host-side vsock attach point in the CLI; `--publish-socket` is a proven substitute, guest-binds/host-dials |
 | OQ-3 | (c) egress arming | **GREEN (already the documented model)** | caps silently dropped at uid≠0, but `egress.go:6-10`'s root-arms-then-agent-drops model is exactly what works |
 | OQ-4 | (d) streaming exec | **GREEN** | streaming, stdin, exit-code and signal semantics all match the `ChildHandle` contract |
-| OQ-5 | (e) timings | **GREEN (partial)** | 721-952 ms warm start; 2.6-2.9 MiB idle per container VM; OQ-7's memory-growth-over-session measurement (design.md:681 assigns it to T-1(e)) was not taken |
+| OQ-5 | (e) timings | **GREEN (partial)** | 721-952 ms warm start; 2.6-2.9 MiB idle per container VM; OQ-7's memory-growth-over-session measurement (design.md:688 assigns it to T-1(e)) was not taken |
 | OQ-12 | (f) runner-on-darwin | **GREEN (partial)** | cross-builds + runs natively on macOS 26; darwin `sun_path` budget measured at 34, matching `socket.go:138-139`; the darwin preflight leg is unexercised and carried to T-4 |
 
 ### OQ-1 — uid mapping: GREEN (partial); ownership simpler than podman
@@ -98,7 +98,7 @@ So the "fixed/root uid" failure branch the record hedged against does not
 occur. `--uid/--gid/--user` exist and set the in-guest process identity; they
 are not needed for host-side ownership correctness.
 
-**Not probed: the `/nix` + `$HOME` leg.** T-1(a) (design.md:375-381) asks two
+**Not probed: the `/nix` + `$HOME` leg.** T-1(a) (design.md:382-388) asks two
 questions, and only the ownership round-trip above is answered. Every OQ-1
 probe ran against `docker.io/library/alpine:3.20`, not the compass-agent image,
 so it cannot speak to whether the baked-at-uid-1000 `/nix` store and `$HOME`
@@ -131,7 +131,7 @@ socket_visible_in_guest=no
 This **confirms the `compass-local-dev/design.md:194-199` limitation HOLDS** on
 this backend — the hazard obtains rather than dissolving, and the record was
 right not to assume otherwise (T-1(b)'s "explicitly-secondary datapoint").
-design.md:240-245 argued the hazard dissolves *because* the ruled vsock
+design.md:247-252 argued the hazard dissolves *because* the ruled vsock
 transport takes the socket off the virtiofs path; that argument dies with vsock
 (candidate 2 below), so it is re-derived for `--publish-socket` in candidate 3.
 The consequence for T-2's **postgres** port — which relies on exactly this
@@ -159,7 +159,7 @@ through the CLI**. Reaching VZVirtioSocketDevice directly would mean bypassing
 the CLI for the Virtualization.framework API, which is out of scope for the
 ruled "drive the `container` CLI" approach.
 
-**3. `--publish-socket` — GREEN, full bidirectional round-trip.** design.md:609
+**3. `--publish-socket` — GREEN, full bidirectional round-trip.** design.md:616
 already cited this flag, as proof that host↔guest forwarding exists as a
 first-class mechanism at all. The spike's finding is stronger and narrower: it
 is not merely evidence for vsock's plausibility, it is the **only channel probed
@@ -216,7 +216,7 @@ for the T-2 executor):
    keeps the host-listens direction, but puts the gateway on an in-namespace IP
    hop and therefore re-couples OQ-2/OQ-3; it would need an nft allowlist
    carve-out, unlike the socket path.
-3. **`--ssh` — named at design.md:609, NOT probed.** It would keep the
+3. **`--ssh` — named at design.md:616, NOT probed.** It would keep the
    CLI-driven approach, but layers an SSH server and key material into the
    guest, which the socket path avoids; settling it needs a further probe.
 4. **Bypass the CLI for Virtualization.framework — out of scope** under the
@@ -323,7 +323,7 @@ sample for an *idle* guest, a lower bound that will not hold with an agent
 workload resident. Concurrent-capacity planning should use the **1 GiB per-VM
 cap** plus OQ-7's caveat that Virtualization.framework's partial memory
 ballooning does not return freed guest pages to the host
-(design.md:673-682) — not the idle figure. These are the numbers T-5's flip
+(design.md:680-689) — not the idle figure. These are the numbers T-5's flip
 brief carries, with that scoping.
 
 CLI output-format notes for T-2's parsers: progress renders as repeated
@@ -341,7 +341,7 @@ the run verdict the record asked for is positive:
 - Copied to `mattmini` and executed natively on macOS 26: `--help` renders the
   full flag set and exits **0**.
 - **Darwin `sun_path` budget measured on the host**, the first hazard T-1(f)
-  names (design.md:410-413). A darwin/arm64 probe binary reports
+  names (design.md:417-420). A darwin/arm64 probe binary reports
   `sunPathMax=103` and a runtime-dir budget of **34** — matching
   `socket.go:138-139`'s documented 34-on-darwin exactly (linux measures 107/38
   on the same probe) — and the default `/run/compass` (12 bytes) fits.
@@ -371,13 +371,13 @@ live outside this repository, so they are named by role rather than path; this
 repo's only flake is `./flake.nix` at root.
 
 Probes ran on `container` **1.1.0** (what nixpkgs-unstable currently packages
-for `aarch64-darwin`); upstream is **1.3.1**. design.md:645-648 requires the
+for `aarch64-darwin`); upstream is **1.3.1**. design.md:652-655 requires the
 current release, not docs. The kill/exit-code semantics and CLI output-format
 notes for T-2's parsers (OQ-5) are therefore pinned to 1.1.0 and unverified
 on 1.2.x/1.3.1.
 
 Version note for whoever lands it: the host's pinned `nixpkgs-darwin` has
-`container` at **0.12.3**, *below* the ≥ 1.0.0 floor design.md:313-319 sets, so
+`container` at **0.12.3**, *below* the ≥ 1.0.0 floor design.md:320-326 sets, so
 it must come through the unstable overlay (1.1.0), not the default pin. T-2
 must re-verify on 1.3.1, alongside the other prerequisites.
 
@@ -393,8 +393,8 @@ changes.
 
 1. **Transport: the ruled vsock leg is unreachable — awaiting Matt's ruling.**
    The guestd unix→vsock forwarder has no host-side attach point through the
-   CLI, which fires design.md:612-613's escalation trigger against OQ-11's
-   ruling (design.md:712-714). The recommended substitute is `--publish-socket`,
+   CLI, which fires design.md:619-620's escalation trigger against OQ-11's
+   ruling (design.md:719-721). The recommended substitute is `--publish-socket`,
    publishing a per-session socket so the **agent binds in-guest** while the
    **host-side runner dials** — inverting `gateway/socket.go`'s current
    host-listens/guest-dials ordering for this backend. Design consequences if
@@ -402,7 +402,7 @@ changes.
    does not imply guest readiness, so the gateway needs an application-level
    handshake; and the guest-side path must sit in a guest-writable directory
    whose parent already exists. **T-2 holds this leg until Matt rules.**
-2. **T-2's postgres port needs a new socket plan** (design.md:444-450, Matt's
+2. **T-2's postgres port needs a new socket plan** (design.md:451-457, Matt's
    OQ-13 ruling). Postgres's contract is a host unix-socket directory
    bind-mounted into the container *at the same path*, with the host opening the
    byte-identical `host=<SocketDir>` DSN (`go/internal/stack/postgres_container.go:45-48`;
@@ -425,13 +425,13 @@ changes.
 4. **Egress arming runs as root, then drops to the agent user** (T-2). The
    capability matrix shows `CapEff` **`0000000000000000`** for every uid-1000
    invocation, including `--cap-add ALL`, and records `nft: not found` /
-   `arm_as_uid1000=DENIED`. This falsifies design.md:195-197's premise that
+   `arm_as_uid1000=DENIED`. This falsifies design.md:202-204's premise that
    `AgentRuntime.armEgress`'s nft exec path "runs unchanged", because
    capabilities are dropped for any non-zero uid. `AgentRuntime.armEgress`
    (`go/internal/runtime/agent.go:319-328`) is shared across backends and execs
    `NewExecSpec("sh", "-c", egress.NftScript())` with no user parameter. T-2
    must choose a per-backend arming identity or the `inGuestEgressArmer` marker
-   (`agent.go:298-300`) that design.md:454-455 explicitly declines for this
+   (`agent.go:298-300`) that design.md:461-462 explicitly declines for this
    backend. That is a real T-2 design choice. Either branch is contained:
    `NftScript()` and the `egress.go:6-10` integrity model stay byte-for-byte
    on both. Note the asymmetry in blast radius: widening the shared seam also runs
@@ -456,13 +456,13 @@ changes.
    and `$HOME` baked at uid 1000 being usable by the in-guest process — is
    unverified and rides item 6. If it fails on the arm64 agent image, T-2 may
    still need an ownership-fixup or named-volume workspace model
-   (design.md:595-598).
+   (design.md:602-605).
 6. **An arm64 compass-agent image is a prerequisite** for T-2/T-3's live legs.
    `ghcr.io/rigelbuild/compass-agent:latest` has no `linux/arm64` manifest,
    which also leaves T-1(a)'s `/nix` + `$HOME` leg open.
 7. **Re-verify the CLI contract on 1.3.1** (T-2). All probes ran on `container`
    1.1.0 (the nixpkgs-unstable package for `aarch64-darwin`); upstream is
-   1.3.1, and design.md:645-648 requires testing against the current release,
+   1.3.1, and design.md:652-655 requires testing against the current release,
    not docs. The kill/exit-code semantics (OQ-4) and the CLI output-format
    notes for T-2's parsers (OQ-5) are pinned to 1.1.0 and unverified above it.
    The discrete `create`/`start`/`stop`/`rm` argv and stop-timeout semantics
@@ -479,4 +479,4 @@ error)` contract at `podman.go:378-379`). The remaining two, `MountLabel` and
 `Resize`, were not exercised; `Resize` returns `ErrResizeNotImplemented`, and
 at 1.1.0 `container --help` plus `container <verb> --help` exposes no live
 resource-update verb (no `update` or `resize` subcommand), so the stub posture
-design.md:451-454 remains correct.
+design.md:458-461 remains correct.

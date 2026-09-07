@@ -3,6 +3,13 @@
 Status: Active (Matt, 2026-09-05)
 Linear: RIG-3238 (design)
 
+> **Amended by
+> [`transport-slow-roll-amendment.md`](transport-slow-roll-amendment.md).**
+> Matt ruled the transport slow-rolled (2026-09-07, RIG-3490) after the T-1
+> spike returned the vsock leg RED: T-1 is done, **T-2 is held**, and macOS
+> embedded ships on podman-machine. The amendment is the authority where it
+> and this record disagree — including the vsock-gating text below.
+
 Investigation + design record for RIG-3238: whether Apple `container`
 (github.com/apple/container) becomes a supported backend behind the frozen
 `ContainerRuntime`/`SelectBackend` seam for the Compass native app's embedded
