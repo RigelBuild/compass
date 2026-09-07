@@ -98,9 +98,7 @@ type canaryLaunchRecorder struct {
 	shutdownErr           error
 	launchErr             error
 	breakWorkspaceRemoval bool
-	// workspaceCleanup runs synchronously while r.mu is held. It must not touch
-	// the recorder and may only register t.Cleanup; synchronous launch makes
-	// registering cleanup here safe.
+	// workspaceCleanup runs after launch releases r.mu and may inspect the recorder.
 	workspaceCleanup func(string)
 	vms              []*canaryFakeVM
 	calls            int
@@ -110,35 +108,42 @@ type canaryLaunchRecorder struct {
 
 func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfig) (guestVM, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.calls++
 	deadline, ok := ctx.Deadline()
 	r.lastDeadline = deadline
 	r.lastHasDeadln = ok
 	if r.launchErr != nil {
+		r.mu.Unlock()
 		return nil, r.launchErr
 	}
 	nonce, err := parseBootNonce(cfg.Cmdline)
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
+	var blocked string
 	if r.breakWorkspaceRemoval {
-		blocked := filepath.Join(cfg.FSSharedDir, "blocked")
+		blocked = filepath.Join(cfg.FSSharedDir, "blocked")
 		if err := os.Mkdir(blocked, 0o700); err != nil {
+			r.mu.Unlock()
 			return nil, err
 		}
 		if err := os.WriteFile(filepath.Join(blocked, "marker"), []byte("x"), 0o600); err != nil {
+			r.mu.Unlock()
 			return nil, err
 		}
 		if err := os.Chmod(blocked, 0o500); err != nil {
+			r.mu.Unlock()
 			return nil, err
-		}
-		if r.workspaceCleanup != nil {
-			r.workspaceCleanup(blocked)
 		}
 	}
 	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr, shutdownErr: r.shutdownErr, sharedDir: cfg.FSSharedDir}
 	r.vms = append(r.vms, vm)
+	cleanup := r.workspaceCleanup
+	r.mu.Unlock()
+	if blocked != "" && cleanup != nil {
+		cleanup(blocked)
+	}
 	return vm, nil
 }
 
@@ -490,18 +495,35 @@ func TestBootCanaryBodyAndTeardownErrorsJoined(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Errorf("BootCanary error %q does not contain shutdown failure", err)
 	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
 	assertNoTempLeak(t, before)
 }
 
-// breakWorkspaceRemoval arranges a permission failure in the workspace
-// cleanup tests. It restores 0700 before RemoveAll and removes filepath.Dir(path),
-// not path, because blocked is a child of the workspace root. These tests omit
-// assertNoTempLeak deliberately: t.Cleanup reclaims the blocked directory after
-// the assertion point.
+// Root bypasses this local 0500 DAC check. This package runs non-root in the
+// moon battery (go/moon.yml, go test -race ./...) and in the microvm job on a
+// bare runner without a privileged container, so this is a local-root or
+// dev-container guard rather than a CI concession. If a root lane is added,
+// the :327 throwaway-workspace cleanup join loses its only defense: root makes
+// that overwrite mutation pass, while the :347 join and LIFO assertion remain
+// defended.
+//
+// breakWorkspaceRemoval arranges a permission failure in the workspace cleanup
+// tests: the launch fake leaves an unwritable non-empty child inside the
+// throwaway workspace, so BootCanary's deferred os.RemoveAll fails for real.
+//
+// The cleanup restores 0700 before removing, because a 0500 directory is not
+// removable. It then reclaims the workspace ROOT, not just the blocked child:
+// BootCanary's own RemoveAll already failed, so nothing else reclaims the
+// parent and it would leak one temp dir per run. Removing a caller-supplied
+// parent is guarded rather than trusted — a widened mount HostPath would
+// otherwise make this recursively delete a production-chosen directory, so a
+// path outside the canary's own temp workspace fails the test instead.
 func breakWorkspaceRemoval(t *testing.T, rec *canaryLaunchRecorder) {
 	t.Helper()
 	if os.Geteuid() == 0 {
-		t.Skip("root bypasses the 0500 permission check; a non-root process would need CAP_DAC_OVERRIDE")
+		t.Skip("root bypasses the 0500 DAC check; a non-root process would need CAP_DAC_OVERRIDE")
 	}
 	rec.breakWorkspaceRemoval = true
 	rec.workspaceCleanup = func(path string) {
@@ -509,8 +531,12 @@ func breakWorkspaceRemoval(t *testing.T, rec *canaryLaunchRecorder) {
 			if err := os.Chmod(path, 0o700); err != nil {
 				t.Errorf("restoring workspace permissions: %v", err)
 			}
-			if err := os.RemoveAll(filepath.Dir(path)); err != nil {
-				t.Errorf("removing workspace parent: %v", err)
+			workspace := filepath.Dir(path)
+			if !strings.HasPrefix(filepath.Base(workspace), canaryNamePrefix) {
+				t.Fatalf("refusing to remove %s: not a %s* workspace, so the mount HostPath widened", workspace, canaryNamePrefix)
+			}
+			if err := os.RemoveAll(workspace); err != nil {
+				t.Errorf("removing throwaway workspace: %v", err)
 			}
 		})
 	}
@@ -562,6 +588,9 @@ func TestBootCanaryCleanupAndTeardownErrorsJoined(t *testing.T) {
 	}
 	if !errors.Is(err, fs.ErrPermission) {
 		t.Errorf("BootCanary error %q does not contain permission failure", err)
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
 	}
 }
 
