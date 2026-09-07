@@ -180,6 +180,13 @@ function subagentActiveToolNames(cwd: string): Promise<string[]> {
 }
 
 describe("subagent comms/hub tool split (design §T7)", () => {
+	// 30s, not the 5s default: each case boots a real session, and this first one
+	// also pays the one-time module init its siblings inherit warm (measured ~7s
+	// for the file locally, ~1.2-1.6s per sibling case). The default left it
+	// racing a wall clock rather than the work, and it timed out on a loaded
+	// runner while its siblings passed. Not time-gated on purpose: the awaits
+	// below already gate on the session being ready, so this ceiling only bounds
+	// a genuine hang.
 	test("the Manager session carries exactly the Compass native tool set", async () => {
 		const cwd = scratch();
 		const active = new Set(await managerActiveToolNames(cwd));
@@ -192,7 +199,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 		// can spawn peers and post to channels.
 		const missing = [...compass].filter((name) => !active.has(name)).sort();
 		expect(missing).toEqual([]);
-	});
+	}, 30_000);
 
 	test("a subagent session carries NONE of the Compass native tools", async () => {
 		const cwd = scratch();
@@ -205,7 +212,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 		// exact drift an SDK upgrade or an `mcpManager` handoff would introduce.
 		const leaked = [...active].filter((name) => compass.has(name)).sort();
 		expect(leaked).toEqual([]);
-	});
+	}, 30_000);
 
 	test("a subagent session still carries hub (the COOP-advertised peer channel)", async () => {
 		const cwd = scratch();
@@ -220,7 +227,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 		// workers cannot reach the Manager at all. The SDK renamed this tool
 		// `irc` -> `hub`; the gate function kept its original name.
 		expect(active.has("hub")).toBe(true);
-	});
+	}, 30_000);
 
 	test("the Manager carries Compass tools that the subagent drops — the split is real", async () => {
 		const cwd = scratch();
@@ -236,5 +243,5 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 			.filter((name) => managerActive.has(name) && !subagentActive.has(name))
 			.sort();
 		expect(droppedForSubagent).toEqual([...compass].sort());
-	});
+	}, 30_000);
 });
