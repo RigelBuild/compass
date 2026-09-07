@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as connectWeb from "@connectrpc/connect-web";
 import {
 	bearerAuthInterceptor,
 	type CommsClient,
+	CommsService,
 	type CompassClient,
+	CompassService,
+	create,
 	createCommsClient,
 	createCommsClientOverFetch,
 	createCommsWebClient,
@@ -10,8 +14,55 @@ import {
 	createCompassClientOverFetch,
 	createCompassWebClient,
 	createCompassWebTransport,
+	createRouterTransport,
+	GetServerInfoResponseSchema,
+	parseTraceResponse,
+	SubscribeCommsResponseSchema,
+	type TraceIdSink,
 	type Transport,
+	traceResponseInterceptor,
 } from "./index";
+
+// The option bag `createCompassWebTransport` hands the vendor gRPC-Web factory.
+// The composed interceptor list is not readable off a built Transport, so this
+// is the only surface on which "installs nothing when nothing was asked for"
+// is observable at all.
+type GrpcWebOptions = Parameters<typeof connectWeb.createGrpcWebTransport>[0];
+type Interceptors = NonNullable<GrpcWebOptions["interceptors"]>;
+
+// Spy the vendor factory for exactly one construction and report what it was
+// handed — the same spy-the-factory seam apps/ui/src/live/provider.test.ts uses
+// one layer up. Restored in `finally` so no spy leaks into a sibling test.
+function transportOptionsFor(build: () => Transport): GrpcWebOptions {
+	const spy = spyOn(connectWeb, "createGrpcWebTransport");
+	try {
+		build();
+		const args = spy.mock.calls[0];
+		if (args === undefined) {
+			throw new Error(
+				"transportOptionsFor: the transport factory was never called",
+			);
+		}
+		return args[0];
+	} finally {
+		spy.mockRestore();
+	}
+}
+
+// The REAL composed list for (token, sink), read off the production factory
+// rather than hand-assembled, so a composition test cannot pass against an
+// order or membership the shipped path never builds.
+function composedInterceptors(token: string, sink: TraceIdSink): Interceptors {
+	const { interceptors } = transportOptionsFor(() =>
+		createCompassWebTransport("http://compass.localhost", token, {
+			traceSink: sink,
+		}),
+	);
+	if (interceptors === undefined) {
+		throw new Error("composedInterceptors: token and sink installed nothing");
+	}
+	return interceptors;
+}
 
 // The fetch shape the OverFetch factories accept — the request/response call
 // signature, not the full DOM `fetch`. This is the injection point for a mock
@@ -291,5 +342,296 @@ describe("empty token fails loud (misconfigured credential)", () => {
 		expect(() =>
 			createCommsClientOverFetch(unusedFetch, "http://compass.localhost"),
 		).not.toThrow();
+	});
+});
+
+describe("parseTraceResponse", () => {
+	const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+	const spanId = "00f067aa0ba902b7";
+
+	test("returns field 2 of a well-formed version-00 value", () => {
+		expect(parseTraceResponse(`00-${traceId}-${spanId}-01`)).toBe(traceId);
+	});
+
+	test("returns the trace id ALONE, never the whole header value", () => {
+		// The correlation key PostHog joins on is the bare 32-hex id; forwarding
+		// the "00-…-…-…" string would match nothing in the trace backend.
+		const value = `00-${traceId}-${spanId}-01`;
+		expect(parseTraceResponse(value)).not.toBe(value);
+		expect(parseTraceResponse(value)).toHaveLength(32);
+	});
+
+	test("rejects the all-zero trace id (invalid per W3C)", () => {
+		// An unsampled/uninitialized span context renders as all zeros; stamping
+		// it would collapse every such event onto one bogus trace.
+		expect(
+			parseTraceResponse(`00-${"0".repeat(32)}-${spanId}-01`),
+		).toBeUndefined();
+	});
+
+	test("rejects a trace id that is 31 or 33 hex chars (exact-32 boundary)", () => {
+		expect(
+			parseTraceResponse(`00-${"a".repeat(31)}-${spanId}-01`),
+		).toBeUndefined();
+		expect(
+			parseTraceResponse(`00-${"a".repeat(33)}-${spanId}-01`),
+		).toBeUndefined();
+	});
+
+	test("rejects non-hex in the trace id position", () => {
+		expect(
+			parseTraceResponse(`00-${"z".repeat(32)}-${spanId}-01`),
+		).toBeUndefined();
+	});
+
+	const rejected: Array<[string, string]> = [
+		["empty value (header absent)", ""],
+		["too few fields", `00-${traceId}-${spanId}`],
+		["version-00 with an extra field", `00-${traceId}-${spanId}-01-extra`],
+		["malformed span id", `00-${traceId}-abc-01`],
+		["malformed flags", `00-${traceId}-${spanId}-0`],
+		["non-hex version", `zz-${traceId}-${spanId}-01`],
+		["version ff (reserved invalid per W3C)", `ff-${traceId}-${spanId}-01`],
+		// Hex is lowercase per the spec and never normalized: an uppercase id
+		// would be a DIFFERENT key from the one the trace backend indexed, so
+		// accepting it (with or without a downcase) would stamp a key that joins
+		// nothing. The positive lowercase case is covered above.
+		["uppercase hex trace id", `00-${traceId.toUpperCase()}-${spanId}-01`],
+	];
+
+	for (const [label, value] of rejected) {
+		test(`rejects ${label}`, () => {
+			expect(parseTraceResponse(value)).toBeUndefined();
+		});
+	}
+
+	test("accepts a FUTURE version carrying extra fields (forward compat)", () => {
+		// Fields 1-3 are position-stable across versions, so a later version with
+		// appended fields is still readable. A parser that hard-required "00"
+		// would go blind the day the spec advances.
+		expect(parseTraceResponse(`01-${traceId}-${spanId}-01-future`)).toBe(
+			traceId,
+		);
+	});
+
+	test("rejects a malformed FOUR-field value even at a future version", () => {
+		// Forward compatibility is not a license to trust garbage: the trace-id
+		// position must still hold 32 hex chars.
+		expect(parseTraceResponse(`01-nope-${spanId}-01`)).toBeUndefined();
+	});
+});
+
+describe("traceResponseInterceptor round-trips through a real transport", () => {
+	const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+	const spanId = "00f067aa0ba902b7";
+
+	// An in-memory compass.v1 server (the vendor's no-HTTP test path) whose
+	// GetServerInfo handler sets whatever `traceresponse` the test wants — the
+	// same header the Go otel interceptor sets in production. `sink` mirrors the
+	// production choice: supplied, the trace interceptor is installed; omitted,
+	// none is, which is the no-sink case.
+	function fakeServer(
+		traceResponse: string | undefined,
+		sink?: TraceIdSink,
+	): Transport {
+		return createRouterTransport(
+			({ service }) => {
+				service(CompassService, {
+					getServerInfo: (_req, ctx) => {
+						if (traceResponse !== undefined) {
+							ctx.responseHeader.set("traceresponse", traceResponse);
+						}
+						return create(GetServerInfoResponseSchema, {
+							version: "1.2.3",
+							apiVersion: "compass.v1",
+						});
+					},
+				});
+			},
+			sink
+				? { transport: { interceptors: [traceResponseInterceptor(sink)] } }
+				: undefined,
+		);
+	}
+
+	test("a valid traceresponse populates the sink with only the 32-hex id", async () => {
+		const sink: TraceIdSink = { current: undefined };
+		const header = `00-${traceId}-${spanId}-01`;
+
+		await createCompassClient(fakeServer(header, sink)).getServerInfo({});
+
+		expect(sink.current).toBe(traceId);
+		// The whole "00-…" value must NOT leak through: that is the regression
+		// this asserts against, not merely "something was written".
+		expect(sink.current).not.toBe(header);
+	});
+
+	test("an absent header leaves the sink at its prior value", async () => {
+		// A reply that carried no trace id is not evidence the previous trace
+		// ended, so last-known-good stays. A clear-on-absent regression would
+		// blank this and drop correlation for most events.
+		const sink: TraceIdSink = { current: traceId };
+
+		await createCompassClient(fakeServer(undefined, sink)).getServerInfo({});
+
+		expect(sink.current).toBe(traceId);
+	});
+
+	test("an unparseable header leaves the sink at its prior value", async () => {
+		const sink: TraceIdSink = { current: traceId };
+
+		await createCompassClient(fakeServer("garbage", sink)).getServerInfo({});
+
+		expect(sink.current).toBe(traceId);
+	});
+
+	test("the response still reaches the caller unchanged", async () => {
+		// The interceptor observes; it must not swallow or reshape the reply.
+		const sink: TraceIdSink = { current: undefined };
+
+		const resp = await createCompassClient(
+			fakeServer(`00-${traceId}-${spanId}-01`, sink),
+		).getServerInfo({});
+
+		expect(resp.version).toBe("1.2.3");
+		expect(resp.apiVersion).toBe("compass.v1");
+	});
+
+	test("a STREAMING call carries every message AND still records the id", async () => {
+		// The interceptor must read the RESPONSE HEADER only. A refactor that
+		// reached into `res.message` to find the trace id would type-check for
+		// unary and silently break the comms stream — the app's primary data
+		// source — with every other test in this file still green.
+		const sink: TraceIdSink = { current: undefined };
+		const transport = createRouterTransport(
+			({ service }) => {
+				service(CommsService, {
+					subscribeComms: async function* (_req, ctx) {
+						ctx.responseHeader.set(
+							"traceresponse",
+							`00-${traceId}-${spanId}-01`,
+						);
+						for (const seq of [1n, 2n, 3n]) {
+							yield create(SubscribeCommsResponseSchema, { seq });
+						}
+					},
+				});
+			},
+			{ transport: { interceptors: [traceResponseInterceptor(sink)] } },
+		);
+
+		const seqs: bigint[] = [];
+		for await (const msg of createCommsClient(transport).subscribeComms({
+			sinceSeq: 0n,
+		})) {
+			seqs.push(msg.seq);
+		}
+
+		expect(seqs).toEqual([1n, 2n, 3n]);
+		expect(sink.current).toBe(traceId);
+	});
+
+	test("bearer and trace interceptors COMPOSE on one call", async () => {
+		// The two concerns are installed by one composer, and the bearer tests
+		// above never pass a sink. Both halves of a fully-configured client are
+		// asserted here in a single round trip: the request carried the token
+		// outbound and the reply's trace id came back inbound.
+		const sink: TraceIdSink = { current: undefined };
+		// A holder rather than a `let`: assigned only inside the handler closure,
+		// a `let` initialized to null narrows to `null` at the assertion below and
+		// the comparison stops type-checking.
+		const captured: { authorization: string | null } = { authorization: null };
+		const transport = createRouterTransport(
+			({ service }) => {
+				service(CompassService, {
+					getServerInfo: (_req, ctx) => {
+						captured.authorization = ctx.requestHeader.get("authorization");
+						ctx.responseHeader.set(
+							"traceresponse",
+							`00-${traceId}-${spanId}-01`,
+						);
+						return create(GetServerInfoResponseSchema, {
+							version: "1.2.3",
+							apiVersion: "compass.v1",
+						});
+					},
+				});
+			},
+			// The interceptor list the production composer builds for
+			// (token, sink) — read off the transport factory rather than
+			// hand-assembled, so this pins the real composition and its order.
+			{ transport: { interceptors: composedInterceptors("tok", sink) } },
+		);
+
+		await createCompassClient(transport).getServerInfo({});
+
+		expect(captured.authorization).toBe("Bearer tok");
+		expect(sink.current).toBe(traceId);
+	});
+
+	test("a SECOND call overwrites the first call's trace id", async () => {
+		// The sink holds the MOST RECENT reply's id, so the interceptor must
+		// write on every response. A write-once regression (or a one-shot guard)
+		// would leave the first id in place and pass every single-call test here.
+		const first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		const second = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+		const sink: TraceIdSink = { current: undefined };
+
+		await createCompassClient(
+			fakeServer(`00-${first}-${spanId}-01`, sink),
+		).getServerInfo({});
+		expect(sink.current).toBe(first);
+
+		await createCompassClient(
+			fakeServer(`00-${second}-${spanId}-01`, sink),
+		).getServerInfo({});
+
+		expect(sink.current).toBe(second);
+	});
+});
+
+describe("callInterceptors installs only what was asked for", () => {
+	// The behavioral claim of the omitted-means-off rule: neither concern
+	// requested ⇒ the transport is handed `undefined`, NOT an empty list, so an
+	// unconfigured client's transport config is byte-identical to before either
+	// interceptor existed. Nothing but the transport factory's own argument can
+	// witness that, so the factory is spied and its argument read — the same
+	// seam apps/ui/src/live/provider.test.ts uses on this package's factory.
+	test("no token and no sink ⇒ interceptors is undefined, not []", () => {
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost"),
+		);
+
+		expect(opts.interceptors).toBeUndefined();
+	});
+
+	test("a token alone ⇒ exactly one interceptor", () => {
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost", "tok"),
+		);
+
+		expect(opts.interceptors).toHaveLength(1);
+	});
+
+	test("a sink alone ⇒ exactly one interceptor", () => {
+		const sink: TraceIdSink = { current: undefined };
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost", undefined, {
+				traceSink: sink,
+			}),
+		);
+
+		expect(opts.interceptors).toHaveLength(1);
+	});
+
+	test("token and sink ⇒ both, bearer first", () => {
+		const sink: TraceIdSink = { current: undefined };
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost", "tok", {
+				traceSink: sink,
+			}),
+		);
+
+		expect(opts.interceptors).toHaveLength(2);
 	});
 });
