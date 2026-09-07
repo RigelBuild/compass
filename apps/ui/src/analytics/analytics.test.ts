@@ -110,3 +110,134 @@ describe("createAnalytics", () => {
 		expect(identifies[0]?.args).toEqual(["acct-1"]);
 	});
 });
+
+describe("$ai_trace_id stamping", () => {
+	const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+	const config = { key: "phc_abc", host: "https://us.i.posthog.com" };
+
+	// The props of the single capture call, as the fake saw them. Narrowed rather
+	// than cast: a capture that forwarded a non-object (or forwarded nothing)
+	// must fail here, not silently read back as an empty prop bag.
+	function capturedProps(fake: FakePostHog): Record<string, unknown> {
+		const captures = fake.calls.filter((c) => c.method === "capture");
+		expect(captures).toHaveLength(1);
+		const props = captures[0]?.args[1];
+		if (typeof props !== "object" || props === null) {
+			throw new Error(`capture forwarded non-object props: ${String(props)}`);
+		}
+		return { ...props };
+	}
+
+	test("a trace id is stamped onto captured props", () => {
+		const fake = makeFake();
+		const analytics = createAnalytics(config, {
+			posthog: fake as unknown as PostHog,
+			traceId: () => traceId,
+		});
+
+		analytics.capture("evt", { a: 1 });
+
+		expect(capturedProps(fake)).toEqual({ a: 1, $ai_trace_id: traceId });
+	});
+
+	test("no trace id ⇒ props forwarded byte-identically, with NO $ai_trace_id key", () => {
+		const fake = makeFake();
+		const analytics = createAnalytics(config, {
+			posthog: fake as unknown as PostHog,
+			traceId: () => undefined,
+		});
+
+		analytics.capture("evt", { a: 1 });
+
+		const props = capturedProps(fake);
+		// The key must be ABSENT, not present-and-undefined: PostHog ingests an
+		// undefined-valued property as a real null column.
+		expect("$ai_trace_id" in props).toBe(false);
+		expect(props).toEqual({ a: 1 });
+	});
+
+	test("no trace id and no props ⇒ the client is called with props undefined", () => {
+		const fake = makeFake();
+		const analytics = createAnalytics(config, {
+			posthog: fake as unknown as PostHog,
+			traceId: () => undefined,
+		});
+
+		analytics.capture("evt");
+
+		const captures = fake.calls.filter((c) => c.method === "capture");
+		expect(captures[0]?.args).toEqual(["evt", undefined]);
+	});
+
+	test("a caller-supplied $ai_trace_id WINS over the sink's value", () => {
+		// The call site knows the actual trace; the sink only holds the last
+		// reply's. Overwriting the caller would replace a fact with a heuristic.
+		const fake = makeFake();
+		const analytics = createAnalytics(config, {
+			posthog: fake as unknown as PostHog,
+			traceId: () => traceId,
+		});
+
+		analytics.capture("evt", { $ai_trace_id: "caller-owned" });
+
+		expect(capturedProps(fake).$ai_trace_id).toBe("caller-owned");
+	});
+
+	test("a caller-supplied $ai_trace_id of UNDEFINED does not beat the sink", () => {
+		// `{ $ai_trace_id: someMaybeUndefinedVar }` is trivial to write, and its
+		// key is PRESENT with an undefined value. Caller-wins must mean the caller
+		// supplied a VALUE: an undefined one would otherwise land a null-valued
+		// column in PostHog AND throw away correlation that was available.
+		const fake = makeFake();
+		const analytics = createAnalytics(config, {
+			posthog: fake as unknown as PostHog,
+			traceId: () => traceId,
+		});
+
+		analytics.capture("evt", { a: 1, $ai_trace_id: undefined });
+
+		const props = capturedProps(fake);
+		expect(props.$ai_trace_id).toBe(traceId);
+		expect(props).toEqual({ a: 1, $ai_trace_id: traceId });
+	});
+
+	test("a trace id arriving AFTER createAnalytics is picked up by a later capture", () => {
+		// The whole reason the source is a getter over a mutable slot: boot builds
+		// the transport before analytics, so the first trace id lands later. A
+		// read-once-at-construction regression would capture undefined forever.
+		const fake = makeFake();
+		let current: string | undefined;
+		const analytics = createAnalytics(config, {
+			posthog: fake as unknown as PostHog,
+			traceId: () => current,
+		});
+
+		analytics.capture("before", { a: 1 });
+		current = traceId;
+		analytics.capture("after", { a: 2 });
+
+		const captures = fake.calls.filter((c) => c.method === "capture");
+		expect(captures).toHaveLength(2);
+		expect(captures[0]?.args).toEqual(["before", { a: 1 }]);
+		expect(captures[1]?.args).toEqual([
+			"after",
+			{ a: 2, $ai_trace_id: traceId },
+		]);
+	});
+
+	test("disabled config makes ZERO posthog calls even with a live trace id", () => {
+		// The off-by-default gate outranks correlation: a trace id must not drag
+		// the disabled path into calling posthog.
+		const fake = makeFake();
+		const analytics = createAnalytics(undefined, {
+			posthog: fake as unknown as PostHog,
+			traceId: () => traceId,
+		});
+
+		analytics.capture("evt", { a: 1 });
+		analytics.identify("acct-1");
+		analytics.shutdown();
+
+		expect(fake.calls).toHaveLength(0);
+	});
+});
