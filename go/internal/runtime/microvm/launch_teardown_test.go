@@ -43,14 +43,25 @@ func TestLaunchFailClosedTeardown(t *testing.T) {
 	vfsPidFile := filepath.Join(run, "vfs.pid")
 	passtPidFile := filepath.Join(run, "passt.pid")
 
+	// The fakes must OUTLIVE launch, and the only absence this test wants is
+	// cloud-hypervisor's — so `sleep` is resolved on the real PATH now, while it
+	// is still intact, and burned into the stubs as an absolute path. Naming it
+	// bare would make the stubs die on `sleep: command not found` the moment
+	// PATH is narrowed below (there is no `sleep` builtin in /bin/sh), so both
+	// daemons would exit on their own and "teardown reaped them" would be
+	// trivially true — the RIG-3480 defect.
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("resolving sleep on PATH (the fakes need it to stay alive): %v", err)
+	}
 	// virtiofsd: record pid, touch its --socket-path=, then stay alive.
 	writeFake(t, bin, "virtiofsd", `echo $$ > `+vfsPidFile+`
 for a in "$@"; do case "$a" in --socket-path=*) : > "${a#--socket-path=}";; esac; done
-sleep 30`)
+`+sleepBin+` 30`)
 	// passt: record pid, touch the path following --socket, then stay alive.
 	writeFake(t, bin, "passt", `echo $$ > `+passtPidFile+`
 p=""; for a in "$@"; do [ "$p" = --socket ] && : > "$a"; p="$a"; done
-sleep 30`)
+`+sleepBin+` 30`)
 	// cloud-hypervisor deliberately absent → LookPath fails after aux are up.
 	t.Setenv("PATH", bin)
 
@@ -71,8 +82,20 @@ sleep 30`)
 		t.Errorf("expected a nil VM on the error path, got %v", vm)
 	}
 
+	// The failure must be cloud-hypervisor's LookPath, which is the ONLY absence
+	// this test arranges. Anything earlier — notably a fake that exited before
+	// its socket was served — means the daemons never really came up, so the
+	// no-orphan assertion below would pass vacuously. This control is what
+	// caught RIG-3480: it fired on 39/40 runs of the merge result while the
+	// assertion it guards stayed green.
+	if !strings.Contains(err.Error(), "cloud-hypervisor") {
+		t.Fatalf("launch failed before the cloud-hypervisor lookup (%v); the aux daemons never came up, "+
+			"so the no-orphan assertion below would be vacuous", err)
+	}
+
 	// The daemons launch already started must have been reaped by the deferred
-	// cleanup — no orphan left sleeping.
+	// cleanup — no orphan left sleeping. Shutdown's reap Waits each child, so by
+	// the time Launch has returned this is a settled fact, not a race to poll.
 	for name, pidFile := range map[string]string{"virtiofsd": vfsPidFile, "passt": passtPidFile} {
 		pid := readPidFile(t, pidFile)
 		if pidAlive(pid) {
@@ -209,21 +232,21 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 	}
 }
 
-// readPidFile reads a pid a fake wrote, retrying briefly since the fake writes
-// it asynchronously after exec.
+// readPidFile reads the pid a fake recorded. It does NOT poll: each fake writes
+// its pid BEFORE it touches its socket, and the caller has already confirmed
+// launch got past the socket wait, which orders the write before this read. So a
+// missing or malformed pidfile here is a real defect in that ordering rather
+// than a race to wait out, and it fails immediately instead of behind a
+// wall-clock budget that can only ever expire (RIG-3480).
 func readPidFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		raw, err := os.ReadFile(path)
-		if err == nil {
-			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw))); convErr == nil {
-				return pid
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fake never wrote its pid to %s", path)
-		}
-		time.Sleep(10 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the fake writing its pidfile above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the pid the fake recorded at %s: %v", path, err)
 	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("pidfile %s holds %q, not a pid: %v", path, string(raw), err)
+	}
+	return pid
 }
