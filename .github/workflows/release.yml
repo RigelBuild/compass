@@ -115,10 +115,12 @@ jobs:
     # The image closure is the heavy nix build that sizes this timeout, the same
     # cost that motivates ci.yml's 90m.
     timeout-minutes: 90
-    # `run: ./publish.sh` resolves relative to this default, and publish.sh's own
-    # `github:RigelBuild/devenv` container build resolves only from agent-image/. The
-    # skopeo login/verify steps do NOT depend on this cwd — they invoke skopeo by
-    # name off PATH (bootstrapped below as an absolute store path).
+    # `run: ./publish.sh` resolves relative to this default, and publish.sh's
+    # `devenv container build` resolves this image's devenv.yaml/devenv.lock
+    # only from agent-image/. The other steps do NOT depend on this cwd — the
+    # two bootstraps override to the repo root for their repo-root-relative nix
+    # paths, and login/verify invoke skopeo by name off PATH (bootstrapped
+    # below as an absolute store path).
     defaults:
       run:
         working-directory: agent-image
@@ -215,6 +217,28 @@ jobs:
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned bun toolchain on PATH
+        if: steps.gate.outputs.should_publish == 'true'
+        # bun comes from the nix-pinned toolchain, never setup-bun. Resolve it
+        # from gate-tools.nix's langs so it is byte-identical to the dev shell's
+        # bun — the same derivation, not merely the same version. Only bun is
+        # bootstrapped here: publish needs the devenv-CLI resolver, not the
+        # whole language set. `langs.bun` must carry a real store path, and
+        # `jq -r` renders a missing `.store` as the literal string `null` — a
+        # value, not an absence — so the guard tests for `null` explicitly
+        # rather than emptiness alone, the same shape the digest check in
+        # publish.sh uses.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
 
       - name: Put the fork's patched skopeo on PATH
         if: steps.gate.outputs.should_publish == 'true'
