@@ -498,11 +498,19 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 			PROBE_SUBAGENT_NAME: "probeagent",
 		});
 		expect(result.subagentFound).toBe(true);
-		// The probe forks a subprocess that cold-imports the SDK to run the real
-		// discoverAgents walk (no object seam for agents/, per §CP-4). Warm that
-		// is ~1.3s, but a cold, contended CI runner blows the 5s default; a
-		// generous hard bound absorbs the cold-start variance without a retry.
-	}, 20_000);
+		// Event-gated: runProbe awaits the probe subprocess's own proc.exited, so
+		// this completes exactly when the cold SDK discoverAgents walk ends —
+		// never on a fixed ceiling a slow-but-correct cold-start races (the walk
+		// is ~2.5s warm; a contended CI runner is far slower and unbounded). The
+		// 130s per-test bound is NOT a timing budget the healthy path depends on
+		// — it is the sole crash guard for a genuinely hung probe, deliberately
+		// far above any real cold-start. Disabling it (0) is not an option: in
+		// a file with lifecycle hooks (the beforeEach/afterEach above), bun does
+		// not treat 0 as "no timeout" — the test silently falls back to the 5s
+		// default, which kills the probe mid-flight ("killed 1 dangling
+		// process", exit null). An explicit generous bound is the only way to
+		// actually raise the ceiling.
+	}, 130_000);
 
 	// The remove path, end-to-end: an unconfigured mount leaves nothing for
 	// discovery to find (no dangling link, no stale content).
@@ -516,7 +524,9 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 			PROBE_SUBAGENT_NAME: "probeagent",
 		});
 		expect(result.subagentFound).toBe(false);
-	}, 20_000);
+		// 130s is the hung-probe crash guard, not a timing budget — see the
+		// sibling test above; runProbe is event-gated on the probe's exit.
+	}, 130_000);
 });
 
 // ── RIG-1678 T6: the Reload RE-READ (the record's load-bearing acceptance) ─────
