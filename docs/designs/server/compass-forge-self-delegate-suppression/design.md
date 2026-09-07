@@ -8,8 +8,8 @@ When a Compass agent takes a forge action on an artifact it is also subscribed
 to — it comments on its own PR, files-and-watches an issue, transitions its own
 issue — the forge notification pipeline fans the resulting change straight back
 to the acting agent: `NotifyRouter.Route` step 6
-(`go/internal/ingest/notify_router.go:230-243`) dispatches to every subscriber
-returned by `SubscribersForArtifact` (`notify_router.go:225`) with no identity
+(`go/internal/ingest/notify_router.go`) dispatches to every subscriber
+returned by `SubscribersForArtifact` (`go/internal/ingest/notify_router.go`) with no identity
 check, so the agent is notified of its OWN action. This record suppresses that
 self-origin notification (RIG-3326), under Matt's three hard rulings:
 
@@ -27,7 +27,7 @@ self-origin notification (RIG-3326), under Matt's three hard rulings:
 This is the suppression sibling of the frozen Record A ("forge self-delegate
 write path", `docs/designs/server/compass-forge-self-delegate/design.md`,
 PR #900), which is write-path-only and explicitly defers suppression here
-(Record A design.md:298-302). The write path is not re-designed here; Record A
+(Record A `docs/designs/server/compass-forge-self-delegate/design.md`). The write path is not re-designed here; Record A
 is referenced only where the loop risk originates.
 
 ## Approach
@@ -35,17 +35,17 @@ is referenced only where the loop risk originates.
 ### Where the filter lives
 
 One suppression predicate in the notify-router fan-out loop
-(`notify_router.go:230-243`), evaluated per subscriber immediately before
-`r.dispatcher.Notify(ctx, sub.AgentAccountID, n)` (`notify_router.go:233`).
+(`Route` in `go/internal/ingest/notify_router.go`), evaluated per subscriber immediately before
+`r.dispatcher.Notify(ctx, sub.AgentAccountID, n)` (`Route` in `go/internal/ingest/notify_router.go`).
 The router computes the event's ACTOR handle once per `Route` call (it is a
 property of the event, not the subscriber), then per subscriber resolves the
 SUBSCRIBER handle and skips the dispatch when the two are equal and non-empty.
 
 The `ingest` package deliberately never imports the store (the no-store rule,
-`notify_router.go:15-19`), so identity resolution enters through a new
+`go/internal/ingest/notify_router.go`), so identity resolution enters through a new
 package-local seam, mirroring how `NotifyStore` / `NotifyDispatcher` /
-`ChecksRoller` are shaped (`notify_router.go:63-113`) and how `linearagent`
-carved `OwnershipIndex` (`go/internal/linearagent/routing.go:42-44`):
+`ChecksRoller` are shaped (`NotifyTarget` in `go/internal/ingest/notify_router.go`) and how `linearagent`
+carved `OwnershipIndex` (`go/internal/linearagent/routing.go`):
 
 ```go
 // IdentityResolver resolves OWNER-QUALIFIED Compass handles for self-origin
@@ -71,12 +71,12 @@ and all four components are non-empty.
 **The actor's owner is not on the wire today — this record puts it back
 (Matt, 2026-09-05).** The parse already produces it: `StripOwner` yields
 `forge.Author{AgentHandle, OwnerHandle, SessionID}`
-(`go/internal/forge/owner.go:26,:162`). It is then DISCARDED at all three sites
+(`Author` in `go/internal/forge/owner.go`). It is then DISCARDED at all three sites
 that build the `CommentRef` the router reads —
-`githubapp_webhook.go:280`, `linearagent/data_event.go:177`,
-`ingest/notify_detect.go:328` — because the type has nowhere to put it:
+`stripBodyToRef` in `go/internal/forge/githubapp_webhook.go`, `linearCommentRef` in `go/internal/linearagent/data_event.go`,
+`detectArtifact` in `go/internal/ingest/notify_detect.go` — because the type has nowhere to put it:
 `compass.v1.AgentAttribution` is `{agent_handle}` only
-(`proto/compass/v1/compass.proto:909-911`). Left as-is, every COMMENT/REVIEW
+(`proto/compass/v1/compass.proto`). Left as-is, every COMMENT/REVIEW
 actor resolves to `Handle{Owner: "", Agent: …}` → unqualified → the fail-open
 rule DELIVERS, and the record's primary case (an agent commenting on its own PR)
 could never suppress.
@@ -98,21 +98,21 @@ With T0 landed, the actor's owner comes from the event; the OPENED/STATE and
 subscriber sides come from the store.
 
 The go/server adapter (wired in the two sibling lane builders —
-`buildForgeNotifyLane` for GitHub (`go/server/serve.go:1389`, router at `:1406`)
-and `buildLinearNotifyLane` for Linear (`:1431`, router at `:1453`)) binds
+`buildForgeNotifyLane` for GitHub (`go/server/serve.go`, router at `buildForgeNotifyLane`)
+and `buildLinearNotifyLane` for Linear (`buildLinearNotifyLane`, router at `buildLinearNotifyLane`)) binds
 (provider, host) and backs the two methods with existing store reads. Note both
 are TWO PK reads, not one — `GetAccount` returns the owner as an *id*
-(`AgentAccount.OwnerUserID AccountID`, `go/internal/store/types.go:162-164`),
+(`AgentAccount.OwnerUserID AccountID`, `go/internal/store/types.go`),
 not a handle, and no id→handle projection exists (every handle helper in
-`accounts.go:837-897` resolves handle→id, the opposite direction):
+`resolveOneHandle` in `go/internal/store/accounts.go` resolves handle→id, the opposite direction):
 
 - `HandleForAccount` → `store.GetAccount(ctx, id)` for the agent handle +
-  `OwnerUserID` (`go/internal/store/accounts.go:458-468`), then
+  `OwnerUserID` (`GetAccount` in `go/internal/store/accounts.go`), then
   `store.GetAccount(ctx, OwnerUserID)` for the owner's `.Handle`;
   `ErrNotFound` at EITHER step → clean miss.
 - `AuthorHandle` → `store.AuthoredArtifactByCoordinate(...)`
-  (`go/internal/store/forge_authored.go:144`) for the recorded
-  `AgentAccountID` (`forge_authored.go:36-49`), then the same two-read
+  (`AuthoredArtifactByCoordinate` in `go/internal/store/forge_authored.go`) for the recorded
+  `AgentAccountID` (`AuthoredArtifact` in `go/internal/store/forge_authored.go`), then the same two-read
   `HandleForAccount` resolution; `ErrNotFound` at any step → clean miss.
 
 A nil `IdentityResolver` disables suppression entirely (every dispatch
@@ -124,9 +124,9 @@ the existing router tests valid until they opt in.
 The obvious cheap match — `authorRow.AgentAccountID == sub.AgentAccountID` —
 is rejected. Handles are the stable identity the rest of the addressing layer
 keys on (attribution carries `AgentAttribution.AgentHandle`,
-`proto/compass/v1/compass.proto:909-911` — note the message has ONLY that one
+`proto/compass/v1/compass.proto` — note the message has ONLY that one
 field, which is load-bearing below; the handle resolvers in
-`accounts.go:837-897` are the addressing chokepoint), while an account id is an
+`resolveOneHandle` in `go/internal/store/accounts.go` are the addressing chokepoint), while an account id is an
 internal storage key behind the account/handle indirection: an agent identity
 that is re-provisioned, or reached through different id-carrying paths (a
 recorded ownership row vs a live subscription row), can present different ids
@@ -137,8 +137,8 @@ drift excluded by construction.
 
 **Owner-qualified, because a bare handle is not globally unique.** The agent
 handle's uniqueness key is `(tenant_id, owner_user_id, handle)`
-(`account_handles_owner_key`, `go/internal/store/migrations/0001_init.sql:158`
-— contrast the bare user/system key at `:157`, which IS tenant-global; the
+(`account_handles_owner_key`, `go/internal/store/migrations/0001_init.sql`
+— contrast the bare user/system key `account_handles_key`, which IS tenant-global; the
 schema comment there states the two-namespace contract outright: "agent handles
 (owner_user_id IS NOT NULL) are unique only per owner"), so two DIFFERENT
 owners' agents
@@ -159,21 +159,21 @@ cross-agent signal).
 
 | Kind | Actor source | Behavior |
 | --- | --- | --- |
-| COMMENT | `ev.Comment.Agent.AgentHandle` (`go/internal/forge/notify_event.go:36-38`; `CommentRef.Agent` set only for a Compass commenter, `go/internal/gen/compass/v1/forge.pb.go:187-188`) | Suppress on handle match; a human commenter (`Agent` unset) always delivers |
-| REVIEW | same `CommentRef` source (the notification builder treats REVIEW as COMMENT-plus-verdict, `notify_router.go:291-296`) | Suppress on handle match |
-| OPENED | DL-055 ownership row's recorded author → owner-qualified handle (`IdentityResolver.AuthorHandle`); on OPENED the author IS the actor by construction — the row is written strictly after the create that fired the event (`go/server/forge.go:347-360`, DL-205). NOTE the webhook races the row write: the provider's `opened` webhook can reach the router before the DL-055 row commits → `AuthorHandle` clean miss → the self-notification DELIVERS (fail-open, so correct, just intermittently a no-op under real webhook latency) | Suppress on handle match |
-| STATE | `ev.Actor` — the owner-qualified attribution stamped by the RIG-3331 state-transition op onto the `ForgeEvent.Actor` field T0 adds (symmetric with COMMENT/REVIEW's `CommentRef.Agent`), NOT the author-row proxy (§STATE below). Nil on every provider-parsed event, so STATE is interim-open until RIG-3331 lands | Suppress on owner-qualified handle match |
-| CHECKS | none — a CHECKS event carries only the roll-up + head SHA (`notify_event.go:39-43`) | NEVER suppressed (invariant, dedicated test) |
+| COMMENT | `ev.Comment.Agent.AgentHandle` (`ForgeEvent` in `go/internal/forge/notify_event.go`; `CommentRef.Agent` set only for a Compass commenter, `go/internal/gen/compass/v1/forge.pb.go`) | Suppress on handle match; a human commenter (`Agent` unset) always delivers |
+| REVIEW | same `CommentRef` source (the notification builder treats REVIEW as COMMENT-plus-verdict, `notification` in `go/internal/ingest/notify_router.go`) | Suppress on handle match |
+| OPENED | DL-055 ownership row's recorded author → owner-qualified handle (`IdentityResolver.AuthorHandle`); on OPENED the author IS the actor by construction — the row is written strictly after the create that fired the event (`record` in `go/server/forge.go`, DL-205). NOTE the webhook races the row write: the provider's `opened` webhook can reach the router before the DL-055 row commits → `AuthorHandle` clean miss → the self-notification DELIVERS (fail-open, so correct, just intermittently a no-op under real webhook latency) | Suppress on handle match |
+| STATE | the acting agent resolved through RIG-3331's consumable `forge_state_transitions` memo, keyed on the event's forge coordinate and applied state (§STATE below), NOT the author-row proxy and NOT a field on the event. No memo — every provider-parsed event today — resolves no actor, so STATE is interim-open until RIG-3331 lands | Suppress on owner-qualified handle match |
+| CHECKS | none — a CHECKS event carries only the roll-up + head SHA (`ForgeEvent` in `go/internal/forge/notify_event.go`) | NEVER suppressed (invariant, dedicated test) |
 | UPDATE | none | Never suppressed (no actor evidence → fail open) |
 
 **The STATE arm keys on the real transition actor (RIG-3331), not a proxy.**
 Unlike OPENED, a STATE event's actor is NOT necessarily the artifact's author.
 The forge write surface has no state-transition op today (the `forgeService`
 arms are create / comment / review / get / list / subscribe —
-`go/server/forge.go:369,402,442,465,493,536,554,569`), so every STATE event
+`createIssue` in `go/server/forge.go`), so every STATE event
 reaching the router TODAY is human/external-actored (a GitHub `closed`/`reopened`,
-`go/internal/forge/githubapp_webhook.go:175-183`; a Linear workflow-state
-change, `go/internal/linearagent/data_event.go:111-116`). Keying STATE on the
+`gitHubStateOrUpdateKind` in `go/internal/forge/githubapp_webhook.go`; a Linear workflow-state
+change, `parseLinearIssue` in `go/internal/linearagent/data_event.go`). Keying STATE on the
 DL-055 author-row proxy would therefore suppress the authoring agent's
 notification of a HUMAN closing its issue — the exact cross-actor signal
 suppression must never eat. Matt ruled (2026-09-05) the fix is NOT to narrow
@@ -184,21 +184,35 @@ THAT real actor handle — an agent's own transition is suppressed, a human's
 close of the agent's issue is NOT (the human is not a Compass handle, so the
 match fails → deliver).
 
-**The carrier is frozen HERE, not left to RIG-3331 to invent.** `ForgeEvent`
-carries no actor field today (`go/internal/forge/notify_event.go:19-49` is
-Provider / Host / Repo / Kind / Number / Project / URL / Change / Comment /
-Checks / HeadSHA / State / DeliveryID) — COMMENT/REVIEW are "symmetric" only
-because `Comment *CommentRef` exists to hold their actor, and STATE has no
-counterpart. So T0 adds `ForgeEvent.Actor *compassv1.AgentAttribution`,
-owner-qualified by the same T0 proto change, set ONLY by the RIG-3331 op's
-emitted event and nil on every provider-parsed event. T1's `actorHandle` STATE
-arm reads `ev.Actor`.
+**The carrier is RIG-3331's memo, and this record does NOT add a field to the
+event.** An earlier draft of this record froze the carrier as a new
+`ForgeEvent.Actor` field on T0, reasoning that `ForgeEvent`
+(`go/internal/forge/notify_event.go` — Provider / Host / Repo / Kind / Number /
+Project / URL / Change / Comment / Checks / HeadSHA / State / DeliveryID) has
+no actor slot, and that COMMENT/REVIEW are "symmetric" only because
+`Comment *CommentRef` holds their actor. **Matt ruled otherwise on 2026-09-07
+(RIG-3331 OQ-1): the actor travels in a durable, tenant-scoped
+`forge_state_transitions` memo written at the write-path chokepoint and
+consumed on match at the notify lane, not on the emitted event.**
 
-**Dependency:** with the carrier frozen, the interim is true by construction
-rather than by absence — until RIG-3331 populates `ev.Actor`, STATE resolves a
-zero Handle, every match fails, and STATE delivers (the safe interim fail-open,
-not a wrong suppression). RIG-3331 sequences before STATE suppression is
-relied on; nothing here blocks on it.
+The ruling's reason is that a provider webhook is the forge's own statement of
+what happened; stamping a Compass field onto the struct built from it invents
+an event the forge never sent, and that struct is reachable by every provider
+parse site. The memo keeps the fabrication out of the event entirely.
+
+So T0 adds **no** `ForgeEvent` field. `ForgeEvent.Actor` would in fact be
+inert: COMMENT/REVIEW resolve through `CommentRef.Agent`, OPENED through the
+DL-055 row, and STATE — its only remaining client — now resolves through the
+memo, leaving no populator and no consumer (`rule://no-inert-gating`). T1's
+`actorHandle` STATE arm performs the memo lookup at the actor-resolution seam,
+keyed on the event's forge coordinate and applied state.
+
+**Dependency:** the interim is safe either way — until RIG-3331's op writes
+memos, every STATE lookup misses, resolves a zero Handle, and STATE delivers
+(the safe interim fail-open, not a wrong suppression). RIG-3331 is the
+PREREQUISITE and sequences before STATE suppression is relied on; nothing in
+this record blocks on it, and the fail-open miss behaviour T1 ships is
+identical under either carrier.
 
 ### Fail-open, precisely
 
@@ -221,9 +235,9 @@ the latter costs one wasted wake.
 
 Skipping the dispatch alone is not enough. The subscriber's per-artifact
 delivery cursor (`delivered_revision`) advances only via the hub's ack arm (W3,
-`notify_router.go:19-20`), and the reconcile sweep re-notifies any subscriber
+`go/internal/ingest/notify_router.go`), and the reconcile sweep re-notifies any subscriber
 whose `delivered_revision` differs from the shared cursor revision by
-synthesizing a payload-free UPDATE (`SynthesizeUpdate`, `notify_router.go:247-255`;
+synthesizing a payload-free UPDATE (`SynthesizeUpdate`, `Route` in `go/internal/ingest/notify_router.go`;
 the sweep check is inequality-based — the cursor is "last revision told about",
 not an ordered value). A suppressed notification is never acked, so the gap
 persists and the sweep would deliver the self-notification anyway — as a
@@ -231,7 +245,7 @@ synthetic UPDATE, every sweep until acked. Therefore the suppress path advances
 the subscriber's `delivered_revision` to the event's revision, through a new
 method on the `NotifyStore` seam adapted over the existing
 `store.AdvanceForgeDeliveredRevision`
-(`go/internal/store/forge_subscriptions.go:467-478`, today called only from the
+(`go/internal/store/forge_subscriptions.go`, today called only from the
 ack arm). This is a deliberate, narrow amendment to W3's "the router never
 advances delivered_revision": a suppressed notification has no agent to ack it,
 so the advance is the delivery outcome.
@@ -239,7 +253,7 @@ so the advance is the delivery outcome.
 **The advance is CONDITIONAL — advance only when the subscriber was fully
 caught up before this event.** The unconditional advance is UNSAFE: consider a
 real cross-actor event E1 at revision R1 dispatched but never delivered (a
-dispatcher error — the loop logs and continues, `notify_router.go:233-243` — or
+dispatcher error — the loop logs and continues, `Route` in `go/internal/ingest/notify_router.go` — or
 a session that dies before the turn-end ack). W3's safety net is the sweep:
 `delivered != cursor` → synthetic UPDATE. If a later self-origin event E2 at R2
 is suppressed and UNCONDITIONALLY advances `delivered_revision` to R2 (= the
@@ -248,14 +262,14 @@ NEVER learns of E1 (e.g. a human's "please fix X" on its PR) — the exact
 "silently loses work-relevant signal" outcome the fail-open rationale calls
 strictly worse than a redundant wake. So the suppress path advances iff the
 subscriber is CAUGHT UP: `sub.DeliveredRevision` (from step 5,
-`notify_router.go:225`; field at `:30`) equals the PRIOR cursor revision —
+`Route` in `go/internal/ingest/notify_router.go`; field at `NotifySubscriber`) equals the PRIOR cursor revision —
 `cur.Revision` when `cur != nil` (loaded at step 1,
-`notify_router.go:157-158`, field at `:47`), and `""` when `cur` is nil, i.e.
+`Route` in `go/internal/ingest/notify_router.go`, field at `ArtifactCursor`), and `""` when `cur` is nil, i.e.
 the coordinate was never observed (the seam contract at
-`notify_router.go:79-81`, enforced in the adapter at `serve.go:1223`), which
+`NotifyStore` in `go/internal/ingest/notify_router.go`, enforced in the adapter at `LoadArtifactCursor` in `go/server/serve.go`), which
 correctly matches a fresh subscriber's default. `cur` is a `*ArtifactCursor`,
 so that nil guard is REQUIRED, not defensive — follow the existing guard style
-at `notify_router.go:164-165` / `:207-208`. That equality is the caught-up
+at `Route` in `go/internal/ingest/notify_router.go` / `Route`. That equality is the caught-up
 TEST, evaluated in Go: two distinct reads of two tables, five steps apart, not
 one value. If the subscriber trails, skip the advance and accept one synthetic
 UPDATE on the next sweep — which is then CORRECT, because the subscriber
@@ -271,20 +285,20 @@ UPDATE — fail-open degradation, never a route failure).
 **Scope carve-out: the advance is ARTIFACT-scope only.** OPENED is the one kind
 whose fan-out deliberately includes CONTAINER-scope subscribers
 (`SubscribersForArtifact` adds `scope = 2 AND number = 0 AND project = $7` when
-`opened` is true, `store/queries/forge_subscriptions.sql:50-53`). Those cursors
+`opened` is true, `go/internal/store/queries/forge_subscriptions.sql`). Those cursors
 are a different row against a different revision: a container subscriber's
 `delivered_revision` lives on its `number = 0` row and the sweep compares it
 against the CONTAINER cursor's revision (`ListForgeNotifyTargets` collapses
-`scope = 2` to `coord_number 0`, `forge_subscriptions.sql:60-71`; the compare is
-`notify_reconcile.go:201-206`), whereas `Route` computes `revision` for the
-OPENED ARTIFACT's snapshot (`notify_router.go:196-197`). Writing an artifact
+`scope = 2` to `coord_number 0`, `go/internal/store/queries/forge_subscriptions.sql`; the compare is
+`reconcileTarget` in `go/internal/ingest/notify_reconcile.go`), whereas `Route` computes `revision` for the
+OPENED ARTIFACT's snapshot (`go/internal/ingest/notify_router.go`). Writing an artifact
 revision into a container cursor poisons that row — the container sweep would
 then compare its own revision against a value that never equals it, synthesizing
 an UPDATE every sweep. So a suppressed OPENED dispatch to a CONTAINER-scope
 subscriber skips the dispatch and NEVER advances; the next container sweep may
 synthesize one UPDATE, the same fail-open degradation accepted above. This
 requires `NotifySubscriber` to carry its scope, which nothing carries today —
-not the router struct (`notify_router.go:27-32` is SubscriptionID /
+not the router struct (`go/internal/ingest/notify_router.go` is SubscriptionID /
 AgentAccountID / DeliveredRevision / Project), and not the store beneath it —
 NEITHER `SubscribersForArtifact` nor `ListForgeNotifyTargets` projects scope,
 though both reference it in their predicates. T1 widens every hop, both store
@@ -293,9 +307,9 @@ queries and both mappers included; see its Interfaces block.
 ### The DL-050/DL-094 tension on the COMMENT/REVIEW actor
 
 `CommentRef.Agent` is populated by `StripOwner` parsing the owner header out of
-the comment body (`githubapp_webhook.go:272-281`,
-`data_event.go:168-178`), and DL-050/DL-094 forbid a parsed header from
-reaching a ROUTING decision (`routing.go:8-11`). Suppression is not a routing
+the comment body (`gitHubCommentRef` in `go/internal/forge/githubapp_webhook.go`,
+`linearCommentRef` in `go/internal/linearagent/data_event.go`), and DL-050/DL-094 forbid a parsed header from
+reaching a ROUTING decision (`go/internal/linearagent/routing.go`). Suppression is not a routing
 decision — it selects no responder and grants no authority; it is a delivery
 filter whose worst-case abuse is: a non-Compass writer hand-forges a header
 naming agent X, and X misses the notification of that ONE forged comment. The
@@ -318,14 +332,14 @@ unnoticed DL-050 erosion.
 The self-origin case on `internal/linearagent` is: Record A's app-set
 `delegateId` on a compass-authored issue fires a `created` AgentSessionEvent
 back into our own responder, which routes it to the owning Manager
-(`routing.go:91-115`) — a spurious session per self-delegated create. **This
+(`NewResolver` in `go/internal/linearagent/routing.go`) — a spurious session per self-delegated create. **This
 cannot fire in Record A's world**: whether an app-set `delegateId` fires
 `created` at all is unproven (observing it needs the public webhook ingress
-only Record B builds — Record A design.md:127-135, RIG-3271-gated), and Record
+only Record B builds — Record A `docs/designs/server/compass-forge-self-delegate/design.md`, RIG-3271-gated), and Record
 A deliberately wires no production caller to `DelegateSelf: true` until Record
-B answers (Record A design.md:137-142).
+B answers (Record A `docs/designs/server/compass-forge-self-delegate/design.md`).
 
-`SessionEvent` carries NO actor field (`go/internal/linearagent/webhook.go:19-35`)
+`SessionEvent` carries NO actor field (`go/internal/linearagent/webhook.go`)
 and responder routing keys only on the issue coordinate, so surface (2) cannot
 run the handle match at all. The ready seam this record defines (and Record B
 implements, if its probe answers "fires"):
@@ -335,7 +349,7 @@ implements, if its probe answers "fires"):
   skip-before-dispatch.
 - **Signal:** self-origin is known at the SOURCE, not inferred at the sink.
   When the Server's create arm performs a self-delegate write, it already
-  writes the DL-055 row in the same flow (`forge.go:347-360`); the seam
+  writes the DL-055 row in the same flow (`record` in `go/server/forge.go`); the seam
   contract is a "self-delegated by app at T" marker recorded with that write
   (a `self_delegated_at_unix_ms` column on `forge_authored_artifacts` is the
   natural shape), checked by the `created` arm: marker present and fresh →
@@ -398,14 +412,14 @@ already `Superseded by DL-186`, and DL-186 (Active) carried its
 "never restated per artifact" clause forward while freeing the field numbers —
 so DL-186 STAYS Active (its wire-compat-strip clause, the row's actual subject,
 is untouched) and this new row carries the amended-clause scope. That follows
-the DL-308/DL-324 precedent (`DECISIONS.md:209,211`): a row whose OTHER clauses
+the DL-308/DL-324 precedent (`docs/designs/DECISIONS.md`): a row whose OTHER clauses
 stand stays Active, and the amending row carries the narrowed scope — flipping
 DL-186 to Superseded would falsely retire the wire-compat strip:
 
 > DL-339 | `compass.v1.AgentAttribution` regains `owner_handle` (field 2, the
 > slot DL-186's wire-compat strip freed), populated at the three parse sites
-> that already produce it and discard it (`githubapp_webhook.go:280`,
-> `linearagent/data_event.go:177`, `ingest/notify_detect.go:328`) from
+> that already produce it and discard it (`stripBodyToRef` in `go/internal/forge/githubapp_webhook.go`,
+> `linearCommentRef` in `go/internal/linearagent/data_event.go`, `detectArtifact` in `go/internal/ingest/notify_detect.go`) from
 > `forge.Author.OwnerHandle`. AMENDS — does not reverse — the
 > "owner is an account property, resolved server-side, never restated per
 > artifact" clause DL-094 wrote and DL-186 carried forward: that clause was
@@ -431,7 +445,7 @@ changed.
 
 - **Account-id match** (`authorRow.AgentAccountID == sub.AgentAccountID`, plus
   handle→id resolution for the COMMENT source via `globalHandleID`,
-  `accounts.go:870-879`): cheaper (no per-subscriber `GetAccount`), but
+  `go/internal/store/accounts.go`): cheaper (no per-subscriber `GetAccount`), but
   rejected per Matt's explicit ruling — ids are internal storage keys behind
   the account/handle indirection and can drift across re-provisioning and
   across the different id-carrying paths, while handles are the addressing
@@ -463,7 +477,7 @@ changed.
 - Fail OPEN on surface (1): a missing/unresolvable/unqualified handle on either
   side, a store fault, or a nil resolver DELIVERS. Suppression requires a
   positive fully-qualified match. Surface (2) has no actor on its events
-  (`webhook.go:19-35`) and so cannot be fail-open in this sense; its
+  (`SessionEvent` in `go/internal/linearagent/webhook.go`) and so cannot be fail-open in this sense; its
   marker+freshness gate is single-use (§Surface (2)) to collapse its bounded
   fail-closed window to the one event the marker was minted for.
 - CHECKS is NEVER suppressed — an invariant with its own test, not an emergent
@@ -508,17 +522,17 @@ message AgentAttribution {
   string owner_handle = 2;  // the owning user's handle, from the same header parse
 }
 
-// go/internal/forge/notify_event.go — ForgeEvent gains an actor for the kinds
-// whose actor is NOT carried on a CommentRef (STATE today, via RIG-3331):
-//   Actor *compassv1.AgentAttribution
-// Set ONLY by the RIG-3331 state-transition op's emitted event; nil on every
-// provider-parsed event, so STATE fails open until RIG-3331 lands.
+// go/internal/forge/notify_event.go — UNCHANGED by this record. ForgeEvent
+// gains NO actor field: the STATE actor is resolved from RIG-3331's
+// forge_state_transitions memo at the actor-resolution seam, keyed on the
+// event's forge coordinate + applied state. A miss resolves no actor, so
+// STATE fails open until RIG-3331's op is writing memos.
 ```
 
 Populate `owner_handle` at the three sites that already parse it and currently
-discard it — `githubapp_webhook.go:280`, `linearagent/data_event.go:177`,
-`ingest/notify_detect.go:328` — each from `author.OwnerHandle`
-(`forge/owner.go:26,:162`). No new parse, no new store read: the value is in
+discard it — `stripBodyToRef` in `go/internal/forge/githubapp_webhook.go`, `linearCommentRef` in `go/internal/linearagent/data_event.go`,
+`detectArtifact` in `go/internal/ingest/notify_detect.go` — each from `author.OwnerHandle`
+(`Author` in `go/internal/forge/owner.go`). No new parse, no new store read: the value is in
 hand at every one of them.
 
 Ledger: this amends DL-094's "owner … never restated per artifact" clause as
@@ -527,15 +541,15 @@ record's PR beside DL-338.
 
 **One downstream consumer T0 must also update.** The Go render callers are
 genuinely unaffected (they construct/read `AgentHandle` only:
-`board/issue_projection.go:197-198,:219`, `server/forge.go:614-615,:629-630`,
-`ingest/ingest.go:87-88`). The TypeScript UI adapter is NOT: `adaptAgentAttribution`
-(`apps/ui/src/live/adapt.ts:367-376`) hardcodes `ownerHandle: ""` and its doc
+`issueToProto` in `go/internal/board/issue_projection.go`, `translateIssue` in `go/server/forge.go`,
+`translateOne` in `go/internal/ingest/ingest.go`). The TypeScript UI adapter is NOT: `adaptAgentAttribution`
+(`adaptForgeRef` in `apps/ui/src/live/adapt.ts`) hardcodes `ownerHandle: ""` and its doc
 comment justifies that by citing DL-094's reservation — "the domain's
 `ownerHandle`/`verified` have no wire source, so they take honest hedged
 defaults". Once T0 lands there IS a wire source, so the adapter would silently
 discard a real value behind a stale citation. The domain type already carries
-the field (`stub-data.ts:92-96`) and two tests pin the empty default
-(`adapt.test.ts:834,:916`), so this is a live contract, not dead code. T0
+the field (`AgentAttribution` in `apps/ui/src/stub-data.ts`) and two tests pin the empty default
+(`r` in `apps/ui/src/live/adapt.test.ts`), so this is a live contract, not dead code. T0
 threads `ownerHandle: w.ownerHandle`, re-points the comment at DL-339, and
 updates both assertions. (`verified` stays hedged — DL-094's
 attribution-is-not-a-trust-claim core is unchanged, and DL-339 amends only the
@@ -555,9 +569,9 @@ match, and the skip in the fan-out loop. Actor handle computed ONCE per `Route`
 (before the loop); subscriber handle resolved per subscriber, memoized per route
 in a small map. The memo's real win is the OWNER lookup, not the account lookup:
 `agent_forge_subscriptions` is `UNIQUE (agent_account_id, forge_provider,
-forge_host, repo, kind, number, project)` (`0001_init.sql:758`) and a non-OPENED
+forge_host, repo, kind, number, project)` (`go/internal/store/migrations/0001_init.sql`) and a non-OPENED
 route selects only `scope = 1 AND number = $5`
-(`store/queries/forge_subscriptions.sql:51`), so one account appears at most
+(`SubscribersForArtifact` in `go/internal/store/queries/forge_subscriptions.sql`), so one account appears at most
 once and an account-keyed memo never hits (except on OPENED, where an agent can
 hold both an artifact and a container row). Owner lookups DO collapse hard —
 most subscribers on an artifact share an owner — so the memo is keyed on both
@@ -590,44 +604,44 @@ func (r *NotifyRouter) selfOrigin(ctx context.Context, actor Handle, sub NotifyS
 // NotifySubscriber gains its subscription scope, so the suppress path can apply
 // the ARTIFACT-scope-only cursor advance (§advance scope carve-out). Today the
 // struct is SubscriptionID / AgentAccountID / DeliveredRevision / Project
-// (notify_router.go:27-32). NOTE the scope is NOT available to project today:
+// (`NotifySubscriber` in `go/internal/ingest/notify_router.go`). NOTE the scope is NOT available to project today:
 // SubscribersForArtifact FILTERS on scope but does not SELECT it
-// (`queries/forge_subscriptions.sql:47` projects id/agent_account_id/
+// (`SubscribersForArtifact` in `go/internal/store/queries/forge_subscriptions.sql` projects id/agent_account_id/
 // delivered_revision/project only; scope appears just in the WHERE at :51-52),
-// and neither the generated row (`db/forge_subscriptions.sql.go:317-322`) nor
+// and neither the generated row (`SubscribersForArtifactRow` in `go/internal/store/db/forge_subscriptions.sql.go`) nor
 // the store domain type `ForgeNotifySubscriber`
-// (`store/forge_subscriptions.go:229-233`) carries it. So T1 ALSO does the
+// (`go/internal/store/forge_subscriptions.go`) carries it. So T1 ALSO does the
 // store-side widening. `ForgeNotifySubscriber` has TWO producers, and the
 // SELECT-vs-WHERE gap above is present in BOTH, so BOTH are in T1's scope:
 //   (a) `SubscribersForArtifact` (the Route path) — add `scope` to its SELECT
-//       (`queries/forge_subscriptions.sql:47`), regen sqlc, populate the mapper
-//       (`forge_subscriptions.go:302-307`);
+//       (`go/internal/store/queries/forge_subscriptions.sql`), regen sqlc, populate the mapper
+//       (`go/internal/store/forge_subscriptions.go`);
 //   (b) `ListForgeNotifyTargets` (the reconcile-sweep path) — add `s.scope` to
-//       its SELECT (`queries/forge_subscriptions.sql:60-64`, where scope today
-//       drives only the container-collapse `CASE` — projected at `:61`,
-//       repeated in the join at `:71` — and is never selected as a column),
-//       regen sqlc (`db/forge_subscriptions.sql.go:198-213`), populate its
-//       mapper (`forge_subscriptions.go:371-376`);
+//       its SELECT (`go/internal/store/queries/forge_subscriptions.sql`, where scope today
+//       drives only the container-collapse `CASE` — projected at `ListForgeNotifyTargets`,
+//       repeated in the join at `ListForgeNotifyTargets` — and is never selected as a column),
+//       regen sqlc (`ListForgeNotifyTargetsRow` in `go/internal/store/db/forge_subscriptions.sql.go`), populate its
+//       mapper (`ListForgeNotifyTargets` in `go/internal/store/forge_subscriptions.go`);
 // plus `Scope ForgeSubscriptionScope` on the struct
-// (`store/forge_subscriptions.go:229-233`), and a copy across the go/server
+// (`ForgeNotifySubscriber` in `go/internal/store/forge_subscriptions.go`), and a copy across the go/server
 // adapter hop that bridges the store type to this ingest mirror:
-// `toIngestSubscribers` (`serve.go:1280-1294`) is a hand-written field-by-field
+// `toIngestSubscribers` (`go/server/serve.go`) is a hand-written field-by-field
 // copy of exactly SubscriptionID/AgentAccountID/DeliveredRevision/Project —
-// one function, the SOLE feeder of both lanes (`serve.go:1236` Route,
-// `:1253` sweep), so widening it once covers both.
+// one function, the SOLE feeder of both lanes (`SubscribersForArtifact` in `go/server/serve.go` Route,
+// `ListNotifyTargets` sweep), so widening it once covers both.
 // An unnamed field at ANY of those hops arrives as
 // `ForgeSubscriptionScopeUnspecified` (0), never `…Artifact` (1)
-// (`store/forge_subscriptions.go:37-39`), which would
+// (`ForgeSubscriptionScope` in `go/internal/store/forge_subscriptions.go`), which would
 // silently disable T2's artifact-scope gate in production while the hermetic
 // ingest tests — which build `NotifySubscriber` literals directly — still pass.
-// (The store normalizes 0→ARTIFACT on WRITE, `forge_subscriptions.go:71-74`, so
+// (The store normalizes 0→ARTIFACT on WRITE, `normalizeScope` in `go/internal/store/forge_subscriptions.go`, so
 // no persisted row is scope-0; a zero is injected purely by a missing copy.)
 // The INVARIANT T1 owes, stated once so it outlives this enumeration: every
 // `ForgeNotifySubscriber` and every `NotifySubscriber` carries its real scope,
 // on BOTH the Route and sweep lanes — the two mappers must not drift, the same
 // reasoning `toIngestCursor` already documents for cursors
-// (`serve.go:1297-1299`). Note the sweep's current consumer
-// (`notify_reconcile.go:201-206`) does not read Scope, so (b) breaks nothing on
+// (`toIngestSubscribers` in `go/server/serve.go`). Note the sweep's current consumer
+// (`reconcileTarget` in `go/internal/ingest/notify_reconcile.go`) does not read Scope, so (b) breaks nothing on
 // landing; it is required so the frozen invariant is not false for every
 // sweep-produced subscriber. None of this is an assumed freebie.
 type NotifySubscriber struct { /* … existing fields … */ Scope ForgeSubscriptionScope }
@@ -638,11 +652,11 @@ cutover, nil for tests that don't exercise suppression). The binding invariant
 is **every `NewNotifyRouter` caller in `go/internal/ingest` and `go/server`,
 tests included** — the line numbers below go stale against a moving tree, so
 re-grep at execution:
-`go/server/serve.go:1406,1453`, `forge_notify_matrix_test.go:395,436,454,469,503`,
-`forge_notify_pgtest_test.go:183,286,390`, `forge_notify_e2e_pgtest_test.go:156,166`,
+`buildForgeNotifyLane` in `go/server/serve.go`, `TestForgeNotifyMatrix_Route` in `go/server/forge_notify_matrix_test.go`,
+`TestForgeNotifyRoutedAdvancesFetchCursorOnly` in `go/server/forge_notify_pgtest_test.go`, `newNotifyE2EWire` in `go/server/forge_notify_e2e_pgtest_test.go`,
 and the three IN-PACKAGE `ingest` sites the go/server sweep misses:
-`go/internal/ingest/notify_router_test.go:122`,
-`go/internal/ingest/notify_reconcile_test.go:93,414`.
+`newRouter` in `go/internal/ingest/notify_router_test.go`,
+`newReconciler` in `go/internal/ingest/notify_reconcile_test.go`.
 
 Tests (hermetic, `ingest` unit tier + the matrix-test style with a scripted
 resolver): self-comment suppressed; human comment (Agent unset) delivered;
@@ -665,15 +679,15 @@ Interfaces:
 // go/server adapter backs it with a NEW sqlc query + *Store wrapper:
 //   func (s *Store) AdvanceForgeDeliveredRevisionCAS(ctx context.Context, agent AccountID, subscriptionID, prior, next string) (bool, error)
 // backed by a new query AdvanceForgeDeliveredRevisionCAS adding `AND delivered_revision = $prior`
-// to the existing UPDATE (store/queries/forge_subscriptions.sql:92-95), as :execrows;
+// to the existing UPDATE (`AdvanceForgeDeliveredRevision` in `go/internal/store/queries/forge_subscriptions.sql`), as :execrows;
 // the wrapper returns affected-rows>0 as `advanced` (NOT folding zero rows into ErrNotFound),
 // so a lost CAS (advanced=false, err=nil) is distinguishable from a real store fault (err!=nil).
-// The landed non-CAS AdvanceForgeDeliveredRevision (store/forge_subscriptions.go:467, ack-arm
+// The landed non-CAS AdvanceForgeDeliveredRevision (`AdvanceForgeDeliveredRevision` in `go/internal/store/forge_subscriptions.go`, ack-arm
 // only) is left untouched.
 ```
 
 The suppress path in the loop calls the CAS with `prior = sub.DeliveredRevision`
-(from step 5, `notify_router.go:225`; field at `:30`) and `next` = the route's
+(from step 5, `Route` in `go/internal/ingest/notify_router.go`; field at `NotifySubscriber`) and `next` = the route's
 computed `revision`, **and ONLY for an ARTIFACT-scope subscription** (§advance
 covers why a CONTAINER-scope sub is skipped). The CAS predicate
 (`AND delivered_revision = $prior`) means a concurrent route cannot erase a gap
@@ -709,14 +723,14 @@ func (r *forgeIdentityResolver) HandleForAccount(ctx context.Context, accountID 
 func (r *forgeIdentityResolver) AuthorHandle(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64) (ingest.Handle, error)
 ```
 
-`HandleForAccount` = `GetAccount` (`accounts.go:458`) → `(ingest.Handle{Owner,
+`HandleForAccount` = `GetAccount` (`go/internal/store/accounts.go`) → `(ingest.Handle{Owner,
 Agent}, nil)`, `ErrNotFound` → zero `Handle`. `AuthorHandle` =
-`AuthoredArtifactByCoordinate` (`forge_authored.go:144`) then `GetAccount(...)`
+`AuthoredArtifactByCoordinate` (`go/internal/store/forge_authored.go`) then `GetAccount(...)`
 for the recorded author's owner+agent handle, `ErrNotFound` at either step →
 zero `Handle`, kind mapped `compassv1internal.ForgeArtifactKind` →
 `store.ForgeArtifactKind` the same way the lane's `forgeNotifyStore` adapter
 already maps it. Wired into BOTH lanes — `buildForgeNotifyLane`
-(`serve.go:1406`) and its sibling `buildLinearNotifyLane` (`serve.go:1453`).
+(`go/server/serve.go`) and its sibling `buildLinearNotifyLane` (`go/server/serve.go`).
 
 Tests: extend the e2e pgtest (`forge_notify_e2e_pgtest_test.go`) with the real
 store-backed resolver — a seeded agent authors an issue (DL-055 row), holds a
@@ -732,7 +746,7 @@ Freeze the contract Record B implements if its probe shows an app-set
 `delegateId` fires `created`:
 
 - `forge_authored_artifacts` gains `self_delegated_at_unix_ms BIGINT NULL`,
-  written by the create arm's `record` step (`forge.go:347-360`) iff the
+  written by the create arm's `record` step (`go/server/forge.go`) iff the
   create carried `DelegateSelf: true` (Record A's field).
 - The Linear webhook handler's `created` arm checks the coordinate's row
   before `Dispatcher.Enqueue`: marker present and within the freshness bound →
@@ -772,16 +786,17 @@ stays Active.
 ## Tasks
 
 - [ ] T0: `owner_handle` restored on `AgentAttribution` + populated at the three
-      Go parse sites + the UI adapter (`adapt.ts` + its two test assertions) +
-      `ForgeEvent.Actor` carrier added; round-trip tests
+      Go parse sites + the UI adapter (`adapt.ts` + its two test assertions);
+      round-trip tests. NO `ForgeEvent` field is added — the STATE actor comes
+      from RIG-3331's memo (§"The carrier is RIG-3331's memo")
       (prerequisite — without it COMMENT/REVIEW is structurally inert)
 - [ ] T1: `IdentityResolver` seam + `actorHandle`/`selfOrigin` + loop skip +
       `NotifySubscriber.Scope` (INCLUDING the store-side widening on BOTH
       producers: `scope` into the `SubscribersForArtifact` SELECT AND the
       `ListForgeNotifyTargets` SELECT + sqlc regen + `ForgeNotifySubscriber`
-      field + BOTH mappers (`forge_subscriptions.go:302-307`, `:371-376`) + the
+      field + BOTH mappers (`go/internal/store/forge_subscriptions.go`, `ListForgeNotifyTargets`) + the
       `toIngestSubscribers` adapter hop,
-      `serve.go:1280-1294`) + every `NewNotifyRouter` caller in
+      `go/server/serve.go`) + every `NewNotifyRouter` caller in
       `go/internal/ingest` AND `go/server` (tests included) + hermetic matrix
       tests (incl. the CHECKS invariant test, the owner-namespace-collision
       test, and all fail-open tests)
@@ -825,7 +840,7 @@ stays Active.
 
 - **OQ-2 (surface (2) firing) — non-blocking.** Whether an app-set `delegateId`
   fires a `created` AgentSessionEvent is unobservable until Record B's ingress
-  lands (RIG-3271-gated; Record A design.md:127-135). T4's contract is frozen
+  lands (RIG-3271-gated; Record A `docs/designs/server/compass-forge-self-delegate/design.md`). T4's contract is frozen
   here; Record B implements or discards it based on the probe. Not load-bearing
   for this record — nothing here blocks on the answer, so it does not gate the
   freeze.
