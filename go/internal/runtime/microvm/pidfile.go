@@ -16,11 +16,13 @@ package microvm
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // bootIDPath is the kernel's per-boot UUID. It changes on every boot and is
@@ -92,7 +94,7 @@ type pidRecord struct {
 func writePidIntent(path string) error {
 	bootID, err := procBootID()
 	if err != nil {
-		return err
+		return fmt.Errorf("pidfile %s: %w", path, err)
 	}
 	return writePidRecordLine(path, pidIntentToken+" "+bootID+"\n")
 }
@@ -110,29 +112,42 @@ func writePidIntent(path string) error {
 func writePidfile(path string, pid int) error {
 	bootID, err := procBootID()
 	if err != nil {
-		return err
+		return fmt.Errorf("pidfile %s: %w", path, err)
 	}
 	startTime, err := readProcStartTime(pid)
 	if err != nil {
-		return err
+		return fmt.Errorf("pidfile %s: %w", path, err)
 	}
 	line := strconv.Itoa(pid) + " " + strconv.FormatUint(startTime, 10) + " " + bootID + "\n"
 	return writePidRecordLine(path, line)
 }
 
 // writePidRecordLine writes line to path atomically: a temp file in the SAME
-// directory, then os.Rename. A same-directory rename is atomic, so a reader
-// sees the complete record or the previous one, never a torn prefix — and the
-// torn-write window a plain os.WriteFile leaves open is EXACTLY the Runner-crash
-// window the reaper exists for, where a half-written pidfile would demote a
-// recorded live child to the no-pidfile arm and leak it.
+// directory, then os.Rename. A same-directory rename is atomic against a
+// RUNNER PROCESS crash — a concurrent reader, and any reader after the Runner
+// dies, sees the complete record or the previous one, never a torn prefix. That
+// is exactly the window the reaper exists for: a half-written pidfile would
+// demote a recorded live child to the no-pidfile arm and leak it, which the
+// torn-write window a plain os.WriteFile leaves open.
+//
+// It is deliberately NOT durable against a host crash or power loss: tmp.Close
+// does not flush to stable storage and os.Rename is not durable without an
+// fsync of the parent directory, so after a host crash the record may be absent
+// or stale. That durability is not bought on purpose — a host crash changes the
+// boot id, so EVERY surviving record short-circuits dead at pidRecord.alive's
+// boot-id check whether or not the rename landed, and the reaper's verdict is
+// identical either way. Adding an fsync would buy a durability barrier per
+// spawn, on the boot path, for a guarantee the boot-id check already supplies.
 //
 // The temp file is removed on every failure path: the runtime dir is scanned
 // per-file by the reaper, so a stray temp file left behind would be an
 // unparseable extra entry it has to reason about.
 func writePidRecordLine(path, line string) (err error) {
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp")
+	// The pattern's trailing '*' puts os.CreateTemp's random suffix where a
+	// reader expects it (".vmm.pid.tmp1234" reads as a temp of vmm.pid), and
+	// the leading dot keeps the transient file out of a non-dotfile scan.
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp.*")
 	if err != nil {
 		return fmt.Errorf("creating temp pidfile in %s: %w", dir, err)
 	}
@@ -167,14 +182,32 @@ func writePidRecordLine(path, line string) (err error) {
 	return nil
 }
 
+// maxPidfileRecordBytes bounds readPidfile's read. A record is one line of
+// about 60 bytes, so anything longer is not a record at all: bounding the read
+// keeps a pidfile that was replaced by something huge from being pulled into
+// memory whole, and routes it to the malformed arm below instead.
+const maxPidfileRecordBytes = 256
+
 // readPidfile parses either record form from path. Anything else is an error
 // rather than a zero record: an unreadable pidfile is a distinct state from a
 // dead one, and the reaper must not treat "I cannot tell what this says" as
 // "nothing here is alive".
 func readPidfile(path string) (pidRecord, error) {
-	raw, err := os.ReadFile(path) //nolint:gosec // G304: path is a host-built pidfile path in the session runtime dir (<RunRoot>/microvm/<id>/*.pid), not user input
+	f, err := os.Open(path) //nolint:gosec // G304: path is a host-built pidfile path in the session runtime dir (<RunRoot>/microvm/<id>/*.pid), not user input
 	if err != nil {
 		return pidRecord{}, fmt.Errorf("reading pidfile %s: %w", path, err)
+	}
+	defer func() {
+		_ = f.Close() // read-only handle: a close error cannot affect the bytes already read, and the record is returned by value
+	}()
+	// One byte PAST the bound, so an over-long file is detected rather than
+	// silently truncated into a prefix that happens to parse as a record.
+	raw, err := io.ReadAll(io.LimitReader(f, maxPidfileRecordBytes+1))
+	if err != nil {
+		return pidRecord{}, fmt.Errorf("reading pidfile %s: %w", path, err)
+	}
+	if len(raw) > maxPidfileRecordBytes {
+		return pidRecord{}, fmt.Errorf("pidfile %s: record exceeds %d bytes", path, maxPidfileRecordBytes)
 	}
 	text, rest, _ := strings.Cut(string(raw), "\n")
 	if strings.TrimSpace(rest) != "" {
@@ -214,13 +247,27 @@ func readPidfile(path string) (pidRecord, error) {
 // boot-id mismatch means the record predates a reboot and nothing it names can
 // exist, so it is "gone" before any proc read or signal.
 //
-// Within the same boot it re-reads starttime and compares: a mismatch or ENOENT
-// means the recorded process is gone and the pid, if live at all, now belongs to
-// an unrelated process that must NOT be killed. A bare-pid file can make
-// neither distinction.
+// Within the same boot it re-reads starttime and compares: a mismatch, or a
+// /proc read that says the process is gone (procReadMeansGone), means the
+// recorded process is gone and the pid, if live at all, now belongs to an
+// unrelated process that must NOT be killed. A bare-pid file can make neither
+// distinction.
 //
 // A same-boot intent record is the third verdict: false with errPidUnknown (see
 // errPidUnknown). The bool is meaningless when that error is returned.
+//
+// So a non-nil error here is one of TWO kinds and callers MUST discriminate
+// with errors.Is before acting on the bool:
+//
+//   - errPidUnknown is a VERDICT, not a fault: route the dir to the
+//     possibly-live arm — warn, KEEP the dir, never signal and never remove.
+//   - anything else is a genuine fault (the boot id could not be read, or the
+//     /proc read failed for a reason other than the process being gone):
+//     surface it as a named per-dir error and leave the dir alone.
+//
+// The natural-but-wrong handling — `if err != nil { return err }`, or
+// `if !alive { remove }` — converts the possibly-live verdict into exactly the
+// removal it exists to prevent, because the bool is false in that case too.
 func (r pidRecord) alive() (bool, error) {
 	bootID, err := procBootID()
 	if err != nil {
@@ -234,10 +281,11 @@ func (r pidRecord) alive() (bool, error) {
 	}
 	startTime, err := readProcStartTime(r.PID)
 	if err != nil {
-		// The process is gone: its /proc entry (or the whole pid) no longer
-		// exists. Any other read failure is a genuine fault and propagates,
-		// because the reaper must not read "I could not look" as "dead".
-		if errors.Is(err, os.ErrNotExist) {
+		// The process is gone: its /proc entry was already absent, or the task
+		// was reaped between the open and the read. Any OTHER read failure is a
+		// genuine fault and propagates, because the reaper must not read "I
+		// could not look" as "dead".
+		if procReadMeansGone(err) {
 			return false, nil
 		}
 		return false, err
@@ -261,6 +309,16 @@ func readProcStartTime(pid int) (uint64, error) {
 		return 0, fmt.Errorf("%s: %w", statPath, err)
 	}
 	return startTime, nil
+}
+
+// procReadMeansGone reports whether err from a /proc/<pid> read means the
+// process is gone rather than that the read itself failed. Both kinds are
+// reachable: ENOENT when /proc/<pid> was already absent at open time, and
+// ESRCH when the open succeeded but the task was reaped before the read.
+// ESRCH does NOT satisfy errors.Is(err, os.ErrNotExist), so matching only
+// that predicate misses about half the occurrences.
+func procReadMeansGone(err error) bool {
+	return errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ESRCH)
 }
 
 // parseProcStartTime extracts field 22 from one /proc/<pid>/stat line. It is

@@ -20,7 +20,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // deadPID returns a pid that provably names no process: pid_max itself, which
@@ -539,4 +541,307 @@ func perturb(bootID string) string {
 		first = "1"
 	}
 	return first + bootID[1:]
+}
+
+// shutdownGuardBudget bounds the Shutdown-guard test below. It is not a poll
+// budget or a settling delay: the passing path returns as fast as a Kill and a
+// channel receive, so any value merely has to be longer than that. It exists so
+// a regression of the nil-channel guard FAILS instead of wedging the suite
+// forever, which is the exact symptom the guard prevents in production.
+const shutdownGuardBudget = 10 * time.Second
+
+// writeShellFake writes an executable shell stub into dir under name. It is
+// deliberately private to this file rather than shared with the teardown
+// suite's equivalent: these tests must keep compiling and asserting on their
+// own if that fixture moves.
+func writeShellFake(t *testing.T, dir, name, body string) {
+	t.Helper()
+	// 0o755: the stub is exec'd by name through PATH, so it must carry its
+	// exec bits.
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+		t.Fatalf("writing the %s fake: %v", name, err)
+	}
+}
+
+// startedAndReapedChild starts c through the production startChild and blocks
+// until its SOLE reaper has observed the exit. The wait is the whole point:
+// after a receive from c.exited the process has been Wait'd, so it is no longer
+// even a zombie and its /proc/<pid> entry is PROVABLY gone. That makes the
+// "child exited before its pidfile could be recorded" window deterministic —
+// the production race is narrow, but the state it lands in is exactly this one,
+// reached here without a sleep, a retry or a repeat count.
+func startedAndReapedChild(t *testing.T, dir, name string) *child {
+	t.Helper()
+	c := &child{
+		name:    name,
+		logPath: filepath.Join(dir, name+".log"),
+		// Writes a diagnostic to its captured log and exits non-zero, as a
+		// daemon that cannot start does — so the log tail the error carries
+		// has something in it to assert on.
+		cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c", "echo 'could not setup id mappings' >&2; exit 1"),
+	}
+	if err := startChild(c); err != nil {
+		t.Fatalf("startChild(%s fake): %v", name, err)
+	}
+	<-c.exited
+	return c
+}
+
+// TestShutdownDoesNotBlockOnAnUnrecordedVMM pins the nil-channel guard. Between
+// startChild spawning cloud-hypervisor and launch hoisting the reaper's channel
+// onto vm.vmmExited, a startRecordedChild failure leaves the VM holding a LIVE
+// process handle and a NIL channel — and launch's deferred Shutdown runs in
+// exactly that state. Guarding the VMM arm on the process handle alone then
+// receives on a nil channel and blocks FOREVER: a hang with no stack and no
+// diagnostic, which is strictly worse than the launch error it was cleaning up
+// after. Shutdown must skip only the receive, and must still Kill.
+func TestShutdownDoesNotBlockOnAnUnrecordedVMM(t *testing.T) {
+	dir := t.TempDir()
+	vm := &VM{
+		vmm: &child{
+			name:    "cloud-hypervisor",
+			logPath: filepath.Join(dir, "cloud-hypervisor.log"),
+			// Long-lived: the process must still be running when Shutdown is
+			// called, so the Kill below is a real one and the nil receive is
+			// reached rather than short-circuited by an already-dead child.
+			cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c", "sleep 300"),
+		},
+	}
+	if err := startChild(vm.vmm); err != nil {
+		t.Fatalf("startChild(vmm fake): %v", err)
+	}
+	// The state under test: the child is started and reaper-backed, but the
+	// channel was never hoisted onto the VM — precisely what a
+	// startRecordedChild failure after a successful spawn leaves behind.
+	if vm.vmmExited != nil {
+		t.Fatal("vmmExited is set; the test no longer exercises the unrecorded-VMM state")
+	}
+	pid := vm.vmm.cmd.Process.Pid
+
+	done := make(chan error, 1)
+	go func() { done <- vm.Shutdown(t.Context()) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("Shutdown on an unrecorded VMM = %v, want nil", err)
+		}
+	case <-time.After(shutdownGuardBudget):
+		t.Fatalf("Shutdown blocked for %s on an unrecorded VMM: it received on the nil vmmExited channel", shutdownGuardBudget)
+	}
+
+	// The guard must skip the RECEIVE only. The started-but-unrecorded process
+	// is still an orphan-in-waiting, so Kill has to have run: a guard that
+	// skipped the whole arm would leak it.
+	<-vm.vmm.exited // the child's own reaper, which the VM never learned about
+	if pidAlive(pid) {
+		t.Errorf("cloud-hypervisor (pid %d) still alive after Shutdown: the guard skipped the Kill, not just the receive", pid)
+	}
+}
+
+// TestStartRecordedChildNamesADeadChildNotAProcPath is the second half of the
+// same window. writePidfile's step 2 reads /proc/<pid>/stat, so a child that
+// exits fast is reaped out from under it and the read fails — for a reason that
+// is NOT a pidfile fault. Reporting the /proc path there buries the actual
+// cause (the daemon's own diagnostic) behind a path the operator can do nothing
+// with, so a CONFIRMED-dead child must get the same error shape launch uses for
+// a daemon that died before the VMM was started.
+//
+// Both failure kinds are covered by procReadMeansGone: ENOENT when /proc/<pid>
+// is already absent at open time, and ESRCH when the open won but the read
+// lost. ESRCH does NOT satisfy errors.Is(err, os.ErrNotExist), so a predicate
+// keyed on that alone misses roughly half the real occurrences.
+func TestStartRecordedChildNamesADeadChildNotAProcPath(t *testing.T) {
+	dir := t.TempDir()
+	c := startedAndReapedChild(t, dir, "virtiofsd")
+
+	// The production step-2 write against a provably-reaped pid: the same call
+	// startRecordedChild makes, failing the same way.
+	writeErr := writePidfile(filepath.Join(dir, "virtiofsd.pid"), c.cmd.Process.Pid)
+	if writeErr == nil {
+		t.Fatal("writePidfile on a reaped pid = nil; the fixture no longer reaches the dead-child window")
+	}
+	if !procReadMeansGone(writeErr) {
+		t.Fatalf("writePidfile error %v is not classified as the process being gone", writeErr)
+	}
+
+	err := pidfileWriteError(c, writeErr)
+	if err == nil {
+		t.Fatal("pidfileWriteError on a confirmed-dead child = nil, want an error (the boot must still fail)")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "virtiofsd") {
+		t.Errorf("error %q does not name the daemon", msg)
+	}
+	if strings.Contains(msg, "/proc/") {
+		t.Errorf("error %q reports a /proc path; the operator needs the daemon's cause, not the failed read", msg)
+	}
+	// The daemon's own diagnostic is the thing the operator acts on.
+	if !strings.Contains(msg, "could not setup id mappings") {
+		t.Errorf("error %q does not carry the daemon's log tail", msg)
+	}
+}
+
+// TestPidfileWriteErrorKeepsGenuineFaultsFatal is the other arm: only a
+// read failure that means "the process is gone" AND a reaper-confirmed exit may
+// be reshaped. A guard that dropped either condition would swallow a real
+// pidfile fault — an unwritable runtime dir, a full filesystem — as a dead
+// child, and a session whose record cannot be written must not boot, because
+// orphan reapability is load-bearing.
+func TestPidfileWriteErrorKeepsGenuineFaultsFatal(t *testing.T) {
+	dir := t.TempDir()
+	exited := startedAndReapedChild(t, dir, "passt")
+	live := &child{name: "passt", logPath: filepath.Join(dir, "live.log"), exited: make(chan struct{})}
+
+	cases := map[string]struct {
+		c   *child
+		err error
+	}{
+		// Dead child, but the write failed for its own reason: still fatal.
+		"exited child, genuine write fault": {c: exited, err: syscall.EACCES},
+		// The /proc read said gone, but the reaper has not confirmed it: the
+		// claim "this child is dead" is unproven, so it stays fatal.
+		"live child, proc read says gone": {c: live, err: syscall.ESRCH},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			err := pidfileWriteError(tc.c, tc.err)
+			if !strings.Contains(err.Error(), "recording passt pidfile") {
+				t.Errorf("pidfileWriteError = %q, want the fatal pidfile-error shape", err)
+			}
+			if !errors.Is(err, tc.err) {
+				t.Errorf("pidfileWriteError dropped the underlying %v from the chain", tc.err)
+			}
+		})
+	}
+}
+
+// TestWritePidfileErrorStaysClassifiable guards the wrapping added to
+// writePidfile's error paths. The dead-child branch in startRecordedChild is
+// selected by errors.Is against the raw syscall errnos, so a wrap that used
+// anything but %w would silently demote every fast-exiting daemon back to the
+// unhelpful /proc-path error — and nothing else would notice.
+func TestWritePidfileErrorStaysClassifiable(t *testing.T) {
+	err := writePidfile(filepath.Join(t.TempDir(), "vmm.pid"), deadPID(t))
+	if err == nil {
+		t.Fatal("writePidfile against a never-allocated pid = nil, want an error")
+	}
+	if !procReadMeansGone(err) {
+		t.Errorf("writePidfile error %v is not classified as gone; the wrap broke errors.Is matching", err)
+	}
+}
+
+// TestLaunchRecordsAllThreePidfileNames pins the WIRING: that launch records
+// vmm.pid, virtiofsd.pid and passt.pid in the session runtime dir. Every other
+// hermetic test in this file passes its own pidfile name in, so it asserts the
+// name it supplied; the real-pid check lives in the KVM-gated lane, which does
+// not run on the ordinary test lane. Without this, wiring that recorded
+// virtiofsd under vmm.pid — or dropped a spawn site entirely — is caught by
+// NOTHING here. It needs no KVM: which strings launch passes is a property of
+// launch, so all three children are shell fakes.
+func TestLaunchRecordsAllThreePidfileNames(t *testing.T) {
+	bin := t.TempDir()
+	// PATH is narrowed to the fake dir below so LookPath resolves the fakes and
+	// nothing else, which also means a fake's own body cannot resolve a command
+	// by name. So the stay-alive exec is an ABSOLUTE path, found before the
+	// narrowing: a fake that could not resolve `sleep` would exit instantly and
+	// fail the boot at the liveness-aware readiness poll instead of reaching
+	// the VMM spawn this test is about.
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("no sleep on PATH: %v", err)
+	}
+	stayAlive := "exec " + sleepBin + " 300"
+	// Each fake touches the socket path it is told to serve, then stays alive:
+	// launch's readiness poll is liveness-aware, so a fake that exited would
+	// fail the boot before the VMM spawn.
+	writeShellFake(t, bin, "virtiofsd", `for a in "$@"; do case "$a" in --socket-path=*) : > "${a#--socket-path=}";; esac; done
+`+stayAlive)
+	writeShellFake(t, bin, "passt", `p=""; for a in "$@"; do [ "$p" = --socket ] && : > "$a"; p="$a"; done
+`+stayAlive)
+	// The VMM is spawned last and launch waits on no socket of its own, so a
+	// fake that merely stays alive carries the boot to a successful return —
+	// which is what makes vm.pidfiles readable at all (the error path returns
+	// a nil VM by design).
+	writeShellFake(t, bin, "cloud-hypervisor", stayAlive)
+	t.Setenv("PATH", bin)
+
+	dir := t.TempDir()
+	cfg := BootConfig{
+		Kernel: "/nonexistent/kernel", Initrd: "/nonexistent/initrd", Rootfs: "/nonexistent/rootfs",
+		VsockCID: 3, VsockPort: 1024, VsockSocket: filepath.Join(dir, "vsock.sock"),
+		FSTag: "workspace", FSSocket: filepath.Join(dir, "virtiofsd.sock"), FSSharedDir: dir,
+		CPUs: 2, MemoryMB: 1024,
+		Net: NetConfig{VhostUserSocket: filepath.Join(dir, "net.sock"), MAC: "12:34:56:78:9a:bc"},
+	}
+
+	vm, err := Launch(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Launch over shell fakes: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = vm.Shutdown(t.Context()) // teardown of fakes; a reap error here is not what this test asserts
+	})
+
+	want := []string{
+		filepath.Join(dir, "passt.pid"),
+		filepath.Join(dir, "virtiofsd.pid"),
+		filepath.Join(dir, "vmm.pid"),
+	}
+	got := slices.Clone(vm.pidfiles)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("vm.pidfiles = %v, want exactly %v", got, want)
+	}
+	// Each must be a SETTLED record naming a live pid, not a leftover intent:
+	// a spawn site that recorded the intent and never settled would satisfy the
+	// name check above while leaving the reaper unable to identify the child.
+	for _, p := range want {
+		rec, readErr := readPidfile(p)
+		if readErr != nil {
+			t.Errorf("readPidfile(%s): %v", filepath.Base(p), readErr)
+			continue
+		}
+		if rec.Intent {
+			t.Errorf("%s holds the intent record; the settled write never ran", filepath.Base(p))
+			continue
+		}
+		alive, aliveErr := rec.alive()
+		if aliveErr != nil {
+			t.Errorf("%s: alive() = %v", filepath.Base(p), aliveErr)
+		}
+		if !alive {
+			t.Errorf("%s names pid %d, which is not the live child", filepath.Base(p), rec.PID)
+		}
+	}
+}
+
+// TestReadPidfileRejectsAnOverlongFile bounds the read. A pidfile is one line
+// of about 60 bytes, so a file longer than the bound is not a record at all —
+// it must route to the malformed arm (which the reaper treats as "I cannot tell
+// what this says") rather than being pulled into memory whole, and rather than
+// being truncated into a prefix that happens to parse.
+func TestReadPidfileRejectsAnOverlongFile(t *testing.T) {
+	bootID := liveBootID(t)
+	path := filepath.Join(t.TempDir(), "vmm.pid")
+	// A VALID record followed by enough padding to exceed the bound: a read
+	// that truncated instead of erroring would parse the leading record and
+	// report a confident, wrong verdict.
+	line := "1234 5678 " + bootID + "\n"
+	content := line + strings.Repeat("x", maxPidfileRecordBytes+1)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := readPidfile(path)
+	if err == nil {
+		t.Fatalf("readPidfile on a %d-byte file = %+v, nil; want an error", len(content), rec)
+	}
+	// And a record AT the bound still reads, so the bound is not off by one
+	// against the real record size.
+	atBound := line + strings.Repeat(" ", maxPidfileRecordBytes-len(line))
+	if err = os.WriteFile(path, []byte(atBound), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = readPidfile(path); err != nil {
+		t.Errorf("readPidfile on a %d-byte file (at the bound): %v", len(atBound), err)
+	}
 }

@@ -564,20 +564,37 @@ func (vm *VM) Health(ctx context.Context) (*compassv1.HealthResponse, error) {
 // Shutdown tears the guest and its daemons down: the VMM is killed first (a VM
 // gets no graceful drain), then virtiofsd and passt are reaped (SIGTERM, a
 // bounded wait, then SIGKILL), each Wait'd to avoid zombies, and finally the
-// AF_UNIX sockets and the three pidfiles are removed. It runs at most once (guarded
-// by sync.Once) so it is safe to call explicitly AND from t.Cleanup. The serial
-// console log is deliberately NOT removed — the test reads it after teardown.
+// AF_UNIX sockets and the three pidfiles are removed. It runs at most once
+// (guarded by sync.Once) so it is safe to call explicitly AND from t.Cleanup.
+// The serial console log is deliberately NOT removed — the test reads it after
+// teardown.
 func (vm *VM) Shutdown(ctx context.Context) error {
 	vm.shutdownOnce.Do(func() {
 		var errs []error
 		// VMM first: kill outright, then let the sole reaper's single Wait
 		// complete via vmmExited (Shutdown must not Wait the VMM itself — that
 		// would be a second Wait on the same process).
+		//
+		// The RECEIVE carries its own nil guard, because vmmExited is hoisted
+		// onto the VM only AFTER startRecordedChild returns: a
+		// startRecordedChild that fails once startChild has already spawned
+		// the VMM leaves a live process handle beside a NIL channel, and
+		// launch's deferred Shutdown runs in exactly that state. Receiving on
+		// the nil channel there blocks FOREVER — a hang with no stack and no
+		// diagnostic, replacing the launch error it was cleaning up after. It
+		// is the same nil-channel condition WaitVMMExit guards on.
+		//
+		// The guard is on the receive alone and NOT on the arm: such a process
+		// is started, live, and unrecorded, so skipping the Kill would orphan
+		// precisely the child the deferred Shutdown exists to clean up. Its
+		// own reaper still owns the Wait, so nothing is left unreaped.
 		if vm.vmm != nil && vm.vmm.cmd.Process != nil {
 			if killErr := vm.vmm.cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 				errs = append(errs, fmt.Errorf("killing cloud-hypervisor: %w", killErr))
 			}
-			<-vm.vmmExited
+			if vm.vmmExited != nil {
+				<-vm.vmmExited
+			}
 		}
 		// Then the auxiliary daemons: SIGTERM, bounded wait, SIGKILL.
 		for _, c := range []*child{vm.virtiofsd, vm.passt} {
@@ -792,7 +809,34 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 		return fmt.Errorf("microvm: starting %s: %w", c.name, err)
 	}
 	if err := writePidfile(path, c.cmd.Process.Pid); err != nil {
-		return fmt.Errorf("microvm: recording %s pidfile: %w", c.name, err)
+		return pidfileWriteError(c, err)
 	}
 	return nil
+}
+
+// pidfileWriteError shapes a writePidfile failure from startRecordedChild by
+// its actual cause. writePidfile's second step reads /proc/<pid>/stat, and a
+// child that exits fast can be reaped between the spawn and that read — so the
+// read fails for a reason that is NOT a pidfile fault: the child is simply
+// dead. Reporting a /proc path there buries the real cause, which is in the
+// daemon's own log, so a confirmed-dead child gets the SAME error shape launch
+// uses for a daemon that died before the VMM was started (name the daemon,
+// wrap waitResult, carry the log tail).
+//
+// BOTH conditions are required: procReadMeansGone alone could describe a /proc
+// that vanished under a still-live pid (it cannot, but the pairing makes the
+// claim "this child is dead" one the reaper's channel actually proves), and
+// hasExited alone would swallow a genuine write fault on a child that merely
+// happens to have exited. Every other writePidfile failure stays fatal as a
+// pidfile error, because orphan reapability is load-bearing.
+//
+// The on-disk record is deliberately NOT touched on the dead-child branch: the
+// intent record stands and the path stays registered, so Shutdown removes it
+// and no window exists where the dir under-names a child that may have run.
+func pidfileWriteError(c *child, err error) error {
+	if procReadMeansGone(err) && c.hasExited() {
+		return fmt.Errorf("microvm: %s exited before its pidfile could be recorded: %w; log tail:\n%s",
+			c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+	}
+	return fmt.Errorf("microvm: recording %s pidfile: %w", c.name, err)
 }
