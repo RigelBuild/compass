@@ -19,9 +19,9 @@ import posthog, { type PostHog } from "posthog-js";
 import type { AnalyticsConfig } from "./config";
 
 /** The app-facing analytics surface. Deliberately headless: capture events and
- *  identify the caller; no UI. `capture`'s `props` is forwarded as-is — a later
- *  slice merges a correlation key (trace/session id) into it, so the parameter
- *  is present now but nothing correlation-related is wired here. */
+ *  identify the caller; no UI. `capture`'s `props` is the caller's own event
+ *  properties; the implementation merges the correlation key into them, so no
+ *  call site has to know about it. */
 export interface Analytics {
 	/** Record a product event with optional properties. */
 	capture(event: string, props?: Record<string, unknown>): void;
@@ -44,8 +44,21 @@ class NoopAnalytics implements Analytics {
  *  delegates capture/identify/shutdown to it. */
 class PostHogAnalytics implements Analytics {
 	private readonly client: PostHog;
+	/** The trace-id source, read at CAPTURE time rather than construction time:
+	 *  the transport that records trace ids is built before this client exists,
+	 *  so a value read once at construction would always be undefined.
+	 *
+	 *  A getter, not the sink object, on purpose — analytics reads one string and
+	 *  has no business depending on compass-client's transport types, so the
+	 *  layering stays one-directional. */
+	private readonly traceId: () => string | undefined;
 
-	constructor(config: AnalyticsConfig, client: PostHog) {
+	constructor(
+		config: AnalyticsConfig,
+		client: PostHog,
+		traceId: () => string | undefined,
+	) {
+		this.traceId = traceId;
 		this.client = client;
 		// Headless defaults: turn OFF everything that renders UI or captures
 		// beyond explicit events — no autocapture, no automatic pageviews, no
@@ -61,7 +74,32 @@ class PostHogAnalytics implements Analytics {
 	}
 
 	capture(event: string, props?: Record<string, unknown>): void {
-		this.client.capture(event, props);
+		const traceId = this.traceId();
+		if (traceId === undefined) {
+			// No trace id ⇒ forward the caller's props untouched. Not even an
+			// `$ai_trace_id: undefined` key: PostHog would ingest that as a real
+			// property and it would show up as a null-valued column.
+			this.client.capture(event, props);
+			return;
+		}
+		// The caller's explicit `$ai_trace_id` WINS over the sink. The sink holds
+		// the last reply's trace id, which is a good default but only a guess
+		// about which call the event belongs to; a call site that passes one knows
+		// the actual trace (e.g. it held the response), so overwriting it would
+		// replace a fact with a heuristic.
+		//
+		// "Caller wins" means the caller supplied a VALUE, so the key is written
+		// AFTER the spread rather than before it. A plain
+		// `{ $ai_trace_id: traceId, ...props }` lets a caller who passed
+		// `{ $ai_trace_id: someMaybeUndefinedVar }` spread an undefined-valued key
+		// over the sink's good id — leaving the key present-and-undefined (the
+		// null-column defect the no-trace-id branch above exists to avoid) while
+		// also dropping correlation that was available.
+		const callerTraceId = props?.$ai_trace_id;
+		this.client.capture(event, {
+			...props,
+			$ai_trace_id: callerTraceId === undefined ? traceId : callerTraceId,
+		});
 	}
 
 	identify(distinctId: string): void {
@@ -79,13 +117,23 @@ class PostHogAnalytics implements Analytics {
 /** Build the analytics client. When `config` is undefined (analytics disabled)
  *  returns a no-op that never touches posthog. When present, returns the
  *  posthog-backed impl. `deps.posthog` is injectable so tests supply a fake and
- *  assert calls without real network; it defaults to the real posthog-js client. */
+ *  assert calls without real network; it defaults to the real posthog-js client.
+ *
+ *  `deps.traceId` is the correlation source every captured event is stamped
+ *  from. It joins the existing collaborator bag rather than becoming a third
+ *  positional so the boot call site names it (`{ traceId: … }`) instead of
+ *  passing `undefined` for deps, and so every existing caller keeps working
+ *  unchanged. Omitted, nothing is stamped. */
 export function createAnalytics(
 	config: AnalyticsConfig | undefined,
-	deps?: { posthog?: PostHog },
+	deps?: { posthog?: PostHog; traceId?: () => string | undefined },
 ): Analytics {
 	if (!config) {
 		return new NoopAnalytics();
 	}
-	return new PostHogAnalytics(config, deps?.posthog ?? posthog);
+	return new PostHogAnalytics(
+		config,
+		deps?.posthog ?? posthog,
+		deps?.traceId ?? (() => undefined),
+	);
 }
