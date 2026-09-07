@@ -504,8 +504,12 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 		// is ~2.5s warm; a contended CI runner is far slower and unbounded). The
 		// 130s per-test bound is NOT a timing budget the healthy path depends on
 		// — it is the sole crash guard for a genuinely hung probe, deliberately
-		// far above any real cold-start. Disabling it (0) is not an option: bun
-		// reaps the still-settling child at teardown when a test has no timeout.
+		// far above any real cold-start. Disabling it (0) is not an option: in
+		// a file with lifecycle hooks (the beforeEach/afterEach above), bun does
+		// not treat 0 as "no timeout" — the test silently falls back to the 5s
+		// default, which kills the probe mid-flight ("killed 1 dangling
+		// process", exit null). An explicit generous bound is the only way to
+		// actually raise the ceiling.
 	}, 130_000);
 
 	// The remove path, end-to-end: an unconfigured mount leaves nothing for
