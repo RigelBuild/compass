@@ -17,7 +17,7 @@ func (s *Store) PutTokenHash(ctx context.Context, hash [32]byte, subj Subject) e
 	}
 	if err := s.q.InsertTokenHash(ctx, db.InsertTokenHashParams{
 		Hash:        hash[:],
-		SubjectKind: int16(subj.Kind), //nolint:gosec // G115: SubjectKind is a CHECK-constrained 0/1 enum (tokens.subject_kind), always within int16
+		SubjectKind: int16(subj.Kind), //nolint:gosec // G115: SubjectKind is a CHECK-constrained 0/1/2 enum (tokens.subject_kind), always within int16
 		SubjectID:   subj.ID,
 	}); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
