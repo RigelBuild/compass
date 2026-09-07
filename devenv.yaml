@@ -54,3 +54,20 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
+  # secretspec-nixpkgs: a SECOND nixpkgs, pinned by rev in devenv.lock, solely
+  # for the `secretspec` CLI the Go secrets write path spawns by name. The
+  # `age://` provider it needs to write encrypted-at-rest secrets was added in
+  # 0.17.0 (it is a default-on cargo feature), and the rolling channel
+  # this shell's own nixpkgs is locked to still resolves 0.14.0 — a build with
+  # no `age` backend compiled in at all, which fails a write with `Provider
+  # backend 'age' not found` rather than degrading. This input tracks the
+  # channel that carries a version matching the Go SDK pin (go/go.mod's
+  # secretspec module), so the read path (SDK) and the write path (CLI) move
+  # together instead of skewing across an independent seam. It deliberately
+  # does NOT `follows: nixpkgs` — following would defeat the entire purpose by
+  # collapsing it back onto the rev that lacks the provider. Consumed as a
+  # dotted attr in devenv.nix, OUTSIDE the parsed `with pkgs` packages literal,
+  # because the toolchain-parity gate resolves every bare attr in that literal
+  # (the same reason skopeo-nix2container sits outside it).
+  secretspec-nixpkgs:
+    url: github:NixOS/nixpkgs/nixpkgs-unstable

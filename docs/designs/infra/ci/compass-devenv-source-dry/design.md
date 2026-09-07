@@ -18,8 +18,8 @@ grep for `15a81f3e` this session): `agent-image/moon.yml:45` (`command: 'nix run
 github:RigelBuild/devenv/15a81f3e…#devenv -- container build agent'`),
 `agent-image/publish.sh:62` (`BUILD_OUT="$(nix run
 github:RigelBuild/devenv/15a81f3e…#devenv -- container build agent)"`),
-`devenv.nix:537` (the `dogfood:agent-image` task — whose own comment,
-devenv.nix:519-521, claims the pin "cannot diverge from the fork source the
+`devenv.nix:552` (the `dogfood:agent-image` task — whose own comment,
+devenv.nix:534-536, claims the pin "cannot diverge from the fork source the
 agent-image module set is pinned to", precisely the drift this record proves IS
 possible), and `tools/agent-image-env-gate/index.ts:103` (the env gate's `nix
 run … container build`, which runs in the CI moon graph:
@@ -210,7 +210,7 @@ renovate.yml tracks the root lock. bun is on PATH in this job
 (ci.yml:1032-1042's toolchain bootstrap precedes 1153).
 
 **The four other hand-pins** (`agent-image/moon.yml:45`,
-`agent-image/publish.sh:61-62`, `devenv.nix:537`, and
+`agent-image/publish.sh:61-62`, `devenv.nix:552`, and
 `tools/agent-image-env-gate/index.ts:103`) are the same drift class but
 different execution contexts (moon and devenv.nix command strings can't shell
 out to compose a flakeref; publish.sh runs in a workflow with no bun bootstrap,
@@ -347,7 +347,7 @@ comment block (ci.yml:1120-1122) to describe lock-resolution.
 
 Convert all four (own PR, after T2/T3):
 
-- `agent-image/moon.yml:45` and `devenv.nix:537` — command strings that cannot
+- `agent-image/moon.yml:45` and `devenv.nix:552` — command strings that cannot
   compose a flakeref inline; each becomes a small wrapper invocation (a
   `script:`/wrapper entry point that runs `bun … devenv-cli … --mode flakeref`
   then `nix run "$src"`; exact mechanism at impl).
@@ -365,7 +365,7 @@ Convert all four (own PR, after T2/T3):
   - Consumes: `--lock agent-image/devenv.lock --mode flakeref` (shell sites) or
     the `core.ts` exports directly (env-gate).
   - Produces: `agent-image/moon.yml:45`, `agent-image/publish.sh:61` (log) and
-    `:62` (executable), `devenv.nix:537`,
+    `:62` (executable), `devenv.nix:552`,
     `tools/agent-image-env-gate/index.ts:103` all free of literal revs.
 
 ### T2b — (from Alternative (f)) Repo-wide literal-devenv-rev gate
@@ -461,7 +461,7 @@ automatically.
 - [ ] T3 — ci.yml:1153 seed step → resolve via tool
       (`--lock agent-image/devenv.lock --mode flakeref`) + `nix run "$src"`
 - [ ] T2a — (ruled RD-2) de-pin the four remaining sites via the tool:
-      agent-image/moon.yml:45, publish.sh:61 (log) + :62 (exec), devenv.nix:537,
+      agent-image/moon.yml:45, publish.sh:61 (log) + :62 (exec), devenv.nix:552,
       tools/agent-image-env-gate/index.ts:103
 - [ ] T2b — repo-wide literal-devenv-rev gate with a day-one carve-out for
       docs/designs/** + comment/log sites (kills the class; lands after T2a)
@@ -522,8 +522,8 @@ source-of-truth lock, not a hand-pin):
 1. `ci.yml:1153` — dogfood-e2e seed (task T3).
 2. `agent-image/moon.yml:45` — `build.command` (task T2a).
 3. `agent-image/publish.sh:62` — publish build (task T2a).
-4. `devenv.nix:537` — the `dogfood:agent-image` task, whose own comment
-   (`devenv.nix:519-521`) claims the pin "cannot diverge from the fork source
+4. `devenv.nix:552` — the `dogfood:agent-image` task, whose own comment
+   (`devenv.nix:534-536`) claims the pin "cannot diverge from the fork source
    the agent-image module set is pinned to" — a claim this record disproves.
 5. `tools/agent-image-env-gate/index.ts:103` — the env gate's `nix run …
    container build`, which runs in the CI moon graph

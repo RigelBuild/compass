@@ -209,7 +209,7 @@ const (
 	// resolved webhook signing secret for: /webhooks/{github,linear} resolve the
 	// secret on every request before the HMAC check, and a resolve reads the whole
 	// declared-secret registry, writes a manifest temp file, and drives a full
-	// secretspec provider Load (resolver.go:135-165), so an uncached resolve would
+	// secretspec provider Load (resolver.go:146-172), so an uncached resolve would
 	// let a garbage POST force that whole Load ahead of authentication. The cache
 	// bounds the per-request cost to a memcmp; a rotated secret still takes effect
 	// within the TTL.

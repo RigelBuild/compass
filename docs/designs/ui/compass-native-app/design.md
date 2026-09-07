@@ -106,7 +106,7 @@ Source facts the design composes with (`RigelBuild/compass` @ main 2624bcb5):
   cert/key, `devenv.nix:199-205`) → `dogfood:mint-runner-token`
   (`cmd/compass-mint-runner-token`, writes the enrollment token 0600) →
   `compass-runner` (dials `https://127.0.0.1:<port>` with `--ca` = the generated
-  cert, `devenv.nix:277-282`).
+  cert, `devenv.nix:292-297`).
 - **The UI resolves its connection once at boot, at one seam.**
   `apps/ui/src/live/connection.ts:58-79` (`resolveConnection`) requires
   `VITE_COMPASS_BASE_URL` + `VITE_COMPASS_CALLER_ID` (+ optional token);
@@ -225,7 +225,7 @@ env only. The runner spawn MUST carry `--image` (it refuses to boot without one,
 A0; pulled from GHCR per DL-112) and `--runtime-dir` under `$XDG_RUNTIME_DIR` — the `/run/compass`
 default is root-owned and a deep state-dir path overflows the 107-byte AF_UNIX
 `sun_path` cap the runner's per-container sockets live under
-(`devenv.nix:255-259`). Spawn-if-absent + attach: a live `GetServerInfo` on the
+(`devenv.nix:270-274`). Spawn-if-absent + attach: a live `GetServerInfo` on the
 socket means attach, never double-spawn; an O_EXCL state-dir lockfile guards the
 probe→spawn window so two concurrent `up`s (app launch racing a manual CLI `up`)
 cannot both spawn.
@@ -457,7 +457,7 @@ shell (DL-110).
   https://127.0.0.1:<port> --ca <anchor> --image <AgentImage> --runtime-dir
   <RuntimeDir>` with `COMPASS_RUNNER_TOKEN` in env only (`RuntimeDir` under
   `$XDG_RUNTIME_DIR`, validate its length against the 107-byte `sun_path` cap,
-  `devenv.nix:255-259`).
+  `devenv.nix:270-274`).
   Attach-if-live under an O_EXCL state-dir lockfile: a `GetServerInfo` answering
   on the socket short-circuits to attach, and the lockfile closes the
   probe→spawn TOCTOU so two concurrent `up`s cannot both spawn; on attach,

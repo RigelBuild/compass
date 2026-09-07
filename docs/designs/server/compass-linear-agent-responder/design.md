@@ -399,9 +399,9 @@ boundary: the names are declared in the store registry and the values live in
 the human-controlled provider vault, resolved server-side through
 `secrets.Resolver` ("Resolve reads the whole names registry, generates the
 manifest, resolves values from the configured provider",
-`go/internal/secrets/resolver.go:33-36`; "The resolver process (the Server) is
+`go/internal/secrets/resolver.go:40-43`; "The resolver process (the Server) is
 the only place SecretSpec runs — containers receive resolved values, never
-provider access", `resolver.go:53-55`). Matt sets the values once via
+provider access", `resolver.go:63-65`). Matt sets the values once via
 `SetSecret` — user-only by design ("SetSecret … USER-ONLY (record §911-927):
 an agent-token caller is CodePermissionDenied",
 `go/server/secrets_service.go:75-77`) — as `SecretKindGeneric` declarations
@@ -418,10 +418,10 @@ agent container.
 **Degraded mode: fail-open to stale, fail-closed only on never-resolved.**
 `Resolve` is inject-ALL: it "reads the whole registry (inject-all: no
 per-agent filter in the MVP — a names filter is the future grants seam)"
-(`go/internal/secrets/resolver.go:33-36`), every declared name is
+(`go/internal/secrets/resolver.go:40-43`), every declared name is
 `required = true` ("a missing one is a MissingRequiredError at resolve,
-surfaced loudly", `resolver.go:123-125`), and one unresolvable name fails
-the whole `Load` (`resolver.go:165-170`). So a naive TTL-expiry re-resolve
+surfaced loudly", `resolver.go:134-136`), and one unresolvable name fails
+the whole `Load` (`resolver.go:172-177`). So a naive TTL-expiry re-resolve
 would fail the `/webhooks` path the moment Matt declares ANY unrelated
 secret before providing its value — a 503 streak, which is exactly the
 failure mode that gets the Linear category auto-disabled (the incident
@@ -432,7 +432,7 @@ still lands on the next successful resolve). It fails closed (503, never
 accept an unverifiable webhook) only when a secret has NEVER successfully
 resolved. The proper long-term fix is the narrow per-name resolve the
 resolver doc itself anticipates ("a names filter is the future grants
-seam", `resolver.go:35-36`); the stale cache is the scoped decoupling.
+seam", `resolver.go:42-43`); the stale cache is the scoped decoupling.
 
 ### Part 6 — the public URL is per-deployment (Matt ruled OQ-2)
 
@@ -550,7 +550,7 @@ the Linear loop needs and a bespoke injection would have to rebuild.
   defaults to `https://compass.rigel.build`, self-host sets its own, dev/tailnet
   deploys need their own ingress for Linear reachability (Part 6).
 - Secrets follow the declared-by-name / provided-by-value boundary
-  (`go/internal/secrets/resolver.go:33-55`); the three Linear secrets are
+  (`go/internal/secrets/resolver.go:40-65`); the three Linear secrets are
   server-resolved, never container-delivered. Resolve failures serve the
   last-known-good cached value (fail-open to stale; fail closed only when
   never resolved) so an unrelated unprovided declaration can never 503 the
@@ -611,7 +611,7 @@ step explicitly.
 Interfaces: consumes `SecretsService.SetSecret`
 (`go/server/secrets_service.go:92`); produces three resolvable declarations
 the responder reads via `secrets.Resolver.Resolve(ctx, reason) ([]ResolvedSecret, error)`
-(`go/internal/secrets/resolver.go:33-49`).
+(`go/internal/secrets/resolver.go:40-59`).
 
 ### T1 — linearagent: webhook envelope types + signature verification
 
@@ -803,7 +803,7 @@ whether stale-drop / duplicate-ack-thought ever trigger, Part 1); (b) confirm
 the per-deployment webhook URL + deep link resolve correctly for the managed
 deploy.
 
-Interfaces: consumes T1/T4/T5/T6, `secrets.Resolver` (`resolver.go:37-49`),
+Interfaces: consumes T1/T4/T5/T6, `secrets.Resolver` (`resolver.go:44-59`),
 `netMux` (`network_door.go:270`); produces the live `POST /webhooks` endpoint
 at `<public-base-url>/webhooks`.
 

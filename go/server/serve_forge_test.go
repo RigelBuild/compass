@@ -42,8 +42,8 @@ func (r *fakeResolver) Resolve(_ context.Context, _ string) ([]secrets.ResolvedS
 	return r.resolved, nil
 }
 
-func (r *fakeResolver) Set(context.Context, string, string) error { return nil }
-func (r *fakeResolver) Delete(context.Context, string) error      { return nil }
+func (r *fakeResolver) Set(context.Context, string, string, string) error { return nil }
+func (r *fakeResolver) Delete(context.Context, string) error              { return nil }
 
 func TestForgeConfigEnableAndDefaults(t *testing.T) {
 	t.Run("board ingestion disabled by default", func(t *testing.T) {

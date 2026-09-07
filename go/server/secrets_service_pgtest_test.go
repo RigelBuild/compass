@@ -20,6 +20,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -39,6 +40,7 @@ import (
 type recordingResolver struct {
 	setErr      error
 	setNames    []string
+	setReasons  []string
 	deleteNames []string
 	resolveHit  bool
 }
@@ -48,11 +50,12 @@ func (r *recordingResolver) Resolve(_ context.Context, _ string) ([]secrets.Reso
 	return nil, errors.New("ListSecrets must not resolve values")
 }
 
-func (r *recordingResolver) Set(_ context.Context, name, _ string) error {
+func (r *recordingResolver) Set(_ context.Context, name, _, reason string) error {
 	if r.setErr != nil {
 		return r.setErr
 	}
 	r.setNames = append(r.setNames, name)
+	r.setReasons = append(r.setReasons, reason)
 	return nil
 }
 
@@ -80,6 +83,7 @@ type secretsFixture struct {
 	client     compassv1connect.SecretsServiceClient
 	userToken  string
 	agentToken string
+	userID     store.AccountID
 	resolver   *recordingResolver
 	signaler   *recordingSignaler
 }
@@ -126,6 +130,7 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 		client:     newSecretsH2CClient(t, url),
 		userToken:  userTok,
 		agentToken: agentTok,
+		userID:     user.ID,
 		resolver:   resolver,
 		signaler:   signaler,
 	}
@@ -170,12 +175,28 @@ func TestSetSecretUserOnly(t *testing.T) {
 		t.Fatalf("resolver.Set called %v on a rejected agent SetSecret, want none", f.resolver.setNames)
 	}
 
-	// User: succeeds and writes the value.
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "postgres://x")); err != nil {
+	// User: succeeds and writes the value. The literal is hoisted because the
+	// value-absence assertion below asserts on it — inlining it twice lets the
+	// two drift, silently retiring that assertion.
+	const secretValue = "postgres://x"
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", secretValue)); err != nil {
 		t.Fatalf("SetSecret as user = %v, want success", err)
 	}
 	if len(f.resolver.setNames) != 1 || f.resolver.setNames[0] != "DB_URL" {
 		t.Fatalf("resolver.Set names = %v, want [DB_URL]", f.resolver.setNames)
+	}
+	// The handler must hand the resolver a non-empty reason bound to the
+	// AUTHENTICATED caller: the provider's require_reason policy refuses a
+	// reasonless write outright, and the audit record is only useful if it names
+	// which operator wrote the secret. The reason must never carry the value.
+	if len(f.resolver.setReasons) != 1 || strings.TrimSpace(f.resolver.setReasons[0]) == "" {
+		t.Fatalf("resolver.Set reasons = %q, want one non-empty reason", f.resolver.setReasons)
+	}
+	if !strings.Contains(f.resolver.setReasons[0], string(f.userID)) {
+		t.Fatalf("resolver.Set reason = %q, want it to name the calling user %q", f.resolver.setReasons[0], f.userID)
+	}
+	if strings.Contains(f.resolver.setReasons[0], secretValue) {
+		t.Fatalf("resolver.Set reason = %q, must never carry the secret value", f.resolver.setReasons[0])
 	}
 }
 

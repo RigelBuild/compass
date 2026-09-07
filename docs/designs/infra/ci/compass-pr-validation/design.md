@@ -218,7 +218,7 @@ Interfaces:
 Test cycle: red — no build input targets a configured TLS door today; green —
 `bunx vite build` with the env set yields a `dist/` whose `bootConnection`
 reaches WhoAmI against a TLS door (verified against the dev stack's own
-network door, which devenv already binds: `devenv.nix:255-257`
+network door, which devenv already binds: `devenv.nix:270-272`
 `--listen … --tls-cert … --tls-key`).
 
 ### B3 — scenario expansion: multi-peer fan-out, provision/enroll hardening

@@ -638,9 +638,9 @@ design red-team. Kept here as the decision record.
   `WithProvider/WithProfile` → `Load()/Report()`), with no `Set`/`Write`
   primitive — writing a value into a provider is a CLI action, not an SDK one.
   This is grounded in-repo by the seal-side wrapper of that same SDK:
-  `go/internal/secrets/resolver.go:80-81` documents `WithCLI` as pinning "the
+  `go/internal/secrets/resolver.go:91-92` documents `WithCLI` as pinning "the
   secretspec CLI binary used for the write path", and `resolver.go`'s resolve
-  path uses only `b.WithProvider`/`b.WithProfile`/`b.Load()` (`resolver.go:162-164`),
+  path uses only `b.WithProvider`/`b.WithProfile`/`b.Load()` (`resolver.go:169-171`),
   never a `Set`. And it is a SERVER-side manifest-driven
   resolve-a-declared-set surface (DL-026, `internal/secrets`), the wrong layer
   for a client-side single-token write. So T5 takes a direct keyring dep:

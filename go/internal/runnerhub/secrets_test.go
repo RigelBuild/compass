@@ -43,8 +43,8 @@ func (f *fakeResolverSecrets) Resolve(_ context.Context, _ string) ([]secrets.Re
 	return f.set, nil
 }
 
-func (f *fakeResolverSecrets) Set(_ context.Context, _, _ string) error { return nil }
-func (f *fakeResolverSecrets) Delete(_ context.Context, _ string) error { return nil }
+func (f *fakeResolverSecrets) Set(_ context.Context, _, _, _ string) error { return nil }
+func (f *fakeResolverSecrets) Delete(_ context.Context, _ string) error    { return nil }
 
 // runnerResolverForFetch is the token resolver the FetchSecrets door uses: it
 // accepts a single Runner token and rejects everything else, modelling the real

@@ -711,7 +711,7 @@ repo manifest, no grants table). All types redact like `Credentials`
     generic channels; `SecretGH` rows carry `Host string` (default
     `github.com`) so T5 routes them to `GHCredentials.SetupScript`
     (Decision 3's gh placement), never the generic file path.
-  - `type Resolver interface { Resolve(ctx context.Context, reason string) ([]ResolvedSecret, error); Set(ctx context.Context, name, value string) error; Delete(ctx context.Context, name string) error }`
+  - `type Resolver interface { Resolve(ctx context.Context, reason string) ([]ResolvedSecret, error); Set(ctx context.Context, name, value, reason string) error; Delete(ctx context.Context, name string) error }`
     — `Resolve` resolves the **whole registry** (inject-all; a
     `names []string` parameter returns with the future grants seam);
     `Set`/`Delete` are the provider **write** path T7's

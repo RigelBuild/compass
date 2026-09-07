@@ -191,7 +191,7 @@ A new `go/e2e` (name final at implementation) package with a fixture that:
 
 **Real agent image, not alpine.** The capstone's `Config.AgentImage` is
 `compass-agent:latest` built+loaded into containers-storage by the dogfood-loop
-task (`devenv.nix:349-354` `dogfood:agent-image`, opt-in). Because
+task (`devenv.nix:364-369` `dogfood:agent-image`, opt-in). Because
 `EnsureImage` unconditionally `podman pull`s — "no pre-existence check is done
 by deliberate choice — the pull IS the ensure" (`adapters/image.go:52-65`) —
 and a containers-storage-local image is not pullable, this gap has TWO halves.
@@ -416,7 +416,7 @@ harness does NOT wait for T5's CLI to land (the RPC contracts are on main
 now; the sequencing note is OQ4-adjacent, resolved in-plan: no dependency).
 What leg 2 DOES depend on is a runnable `compass-agent:latest` — RIG-1359's
 runtime activation (artifacts merged: `packages/compass-agent/src/cli.ts`,
-`agent-image/`, `devenv.nix:281` `--image compass-agent:latest`; final
+`agent-image/`, `devenv.nix:296` `--image compass-agent:latest`; final
 activation in progress) — flagged in H2's red case, not an open fork.
 
 ## Alternatives considered
@@ -424,9 +424,9 @@ activation in progress) — flagged in H2's red case, not an open fork.
 - **Option B — `devenv up` (RIG-1360) + shell-script orchestration (the T7
   shape).** The dogfood loop's own mechanism: `processes.{compass-server,
   compass-runner}` + `services.postgres` with ordered start and a
-  GetServerInfo readiness probe (`devenv.nix:166-290`), the real
+  GetServerInfo readiness probe (`devenv.nix:166-305`), the real
   `compass-agent:latest` image via the opt-in `dogfood:agent-image` task
-  (`devenv.nix:349-354`). Its genuine strength: it IS leg 1's shipped
+  (`devenv.nix:364-369`). Its genuine strength: it IS leg 1's shipped
   bring-up mechanism, and the sibling record's T7 smoke already rides it. It
   loses to C for an AUTOMATED, scenario-bearing harness: orchestration is
   process-compose/shell, a scenario-authoring API with typed assertions over
@@ -869,7 +869,7 @@ D2 (see §Decisions); OQ3/OQ4 remain open.
 2. **OQ4 — Leg-2 activation dependency (RIG-1359).** Leg 2 needs a runnable
    `compass-agent:latest` doing a real (canned or live) turn. The artifacts
    are on main (`packages/compass-agent/src/cli.ts`, `agent-image/`,
-   `devenv.nix:281` runner `--image compass-agent:latest`) but RIG-1359's
+   `devenv.nix:296` runner `--image compass-agent:latest`) but RIG-1359's
    final runtime activation is In Progress. Is the capstone's H2/H3 sequenced
    strictly after RIG-1359 closes, or may H3's deterministic backend land as
    part of the activation itself (one image change instead of two)?

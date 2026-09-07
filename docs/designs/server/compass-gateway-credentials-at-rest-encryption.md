@@ -107,11 +107,11 @@ key from `crypto/rand` and — serialized against concurrent booters through a
 Postgres advisory lock (T2) — provisions it:
 
 - writes the value into the provider via `secrets.Resolver.Set`
-  (`go/internal/secrets/resolver.go:219`, `func (r *SpecResolver) Set(ctx
-  context.Context, name, value string) error` — "Set writes value into the
-  provider for name via the pinned CLI, feeding the value on stdin (never
+  (`go/internal/secrets/resolver.go:237`, `func (r *SpecResolver) Set(ctx
+  context.Context, name, value, reason string) error` — "Set writes value into
+  the provider for name via the pinned CLI, feeding the value on stdin (never
   argv, so it is not visible in the host process list)",
-  resolver.go:206-207);
+  resolver.go:213-214);
 - registers the name in the SEPARATE `server_secrets` store (D6) via the
   server-internal `DeclareServerSecret` (T0) — a mirror of
   `store.DeclareSecret` (`go/internal/store/secrets.go:82`, `func (s *Store)
@@ -208,11 +208,11 @@ default-open-minus-a-filter.
 Why the table boundary IS the delivery boundary: the delivery surface is the
 resolver's MANIFEST. `SpecResolver` reads its declared set through the
 `declarations` interface — `DeclaredSecrets(ctx context.Context)
-([]store.SecretDeclaration, error)` (`go/internal/secrets/resolver.go:29-31`;
-the `store declarations` struct field, resolver.go:57) — and `buildManifest`
+([]store.SecretDeclaration, error)` (`go/internal/secrets/resolver.go:36-38`;
+the `store declarations` struct field, resolver.go:67) — and `buildManifest`
 "renders the SecretSpec manifest TOML for a declared set: one `[project]`
 block and one `[profiles.<profile>]` block with every declared name as a
-required key" (resolver.go:99-101; the function, resolver.go:105-128);
+required key" (resolver.go:110-112; the function, resolver.go:116-139);
 `Resolve` can only return names present in that manifest. Today ONE resolver
 instance (`resolver := secrets.NewSpecResolver(st, secretsStateDir(cfg))`,
 `go/server/serve.go:528`) serves BOTH the container path (FetchSecrets →
@@ -252,7 +252,7 @@ with the per-tenant defer (RIG-3237).
 C1 keeps the SAME SecretSpec profile for both instances — the shared project
 is `manifestProject = "compass"` (resolver.go:19) and the profile
 `defaultProfile = "default"` (resolver.go:23; `WithProfile` exists,
-resolver.go:78, but C1 does not use it), and BY DEFAULT one provider URI
+resolver.go:89, but C1 does not use it), and BY DEFAULT one provider URI
 configures both resolver instances (F2 WIRING SEAM) — so the provider keyspace
 is shared unless the operator opts Layer B onto a different provider.
 Because the reserved-prefix partition renames the six forge secrets under
@@ -288,7 +288,7 @@ delivery/kind, classified `adminOnly` in `classifyProcedure`
 is treated as adminOnly — fail closed, never admit an unknown method as
 open", admin_gate.go:44-46). Today's user-facing `SetSecret` cannot declare a
 row *as* a server secret — `secretRoutingFromProto` admits only File/Env
-delivery (secrets_service.go:275-284), with no server-only delivery value — so
+delivery (secrets_service.go:286-308), with no server-only delivery value — so
 operators declare server secrets through the new RPC. It CAN, however, mint an
 ordinary `secrets` row under a NAME that collides with a server secret
 (delivery=File/Env), which is exactly why the F1 prefix guard is mandatory on
@@ -338,7 +338,7 @@ rejected branches are the ones a future reader will reach for first.
   contract — where C1's proto delta is two additive `SecretsService` methods.
 - **Mechanism C2: separate table + a separate SecretSpec PROFILE —
   considered, DEFERRED.** The same `server_secrets` table, but the server
-  resolver pinned to its own profile (`WithProfile`, resolver.go:78) so even
+  resolver pinned to its own profile (`WithProfile`, resolver.go:89) so even
   the provider keyspace is isolated. Fullest isolation — but it is NOT the
   cheaper-migration loser it might appear: under the reserved-prefix partition
   BOTH mechanisms now require a provider write under new keys (the six values
@@ -396,7 +396,7 @@ rejected branches are the ones a future reader will reach for first.
 - AES-256-GCM only; nonces from `crypto/rand`, 96-bit, fresh per encryption,
   never counter-derived; key is 256-bit from `crypto/rand`.
 - The master key NEVER appears in the DB, in logs, in argv (Set feeds stdin,
-  resolver.go:206-207), or in error strings.
+  resolver.go:213-214), or in error strings.
 - Auto-provisioning is zero-human-step (rule://no-human-clicks): first boot
   generates, stores, and declares the key with no operator action.
 - The names-only invariant (`secrets.go:20-22`) is preserved for EVERYTHING
@@ -491,7 +491,7 @@ declared into a store that does not exist.
     `ServerDeclaredSecrets(ctx)` —
     a thin store view whose `DeclaredSecrets(ctx context.Context)
     ([]store.SecretDeclaration, error)` method (the `declarations`
-    interface shape, resolver.go:29-31) reads `server_secrets`, mapping
+    interface shape, resolver.go:36-38) reads `server_secrets`, mapping
     rows to `store.SecretDeclaration` with generic kind / zero delivery
     (the resolver uses only the name to build its manifest), so
     `NewSpecResolver` is reused UNCHANGED.
@@ -578,7 +578,7 @@ declared into a store that does not exist.
     every agent container, inverting D6.
   - RPC: `SetServerSecret`/`DeleteServerSecret` on the secrets service —
     mirrors the `SetSecret` declare-then-Set flow and its rollback
-    discipline (secrets_service.go:92-145) minus delivery/kind, targeting
+    discipline (secrets_service.go:92-155) minus delivery/kind, targeting
     `server_secrets`; admin-gated (`adminOnly` in `classifyProcedure`,
     admin_gate.go:47). Carries the F1 PREFIX guard: it REQUIRES the declared
     name to carry a reserved server-secret prefix (`SERVER_` for the six forge
@@ -605,7 +605,7 @@ declared into a store that does not exist.
     door, so the shadow row can never be created at all) MUST REJECT any name
     carrying a reserved server-secret prefix (`SERVER_` or
     `GATEWAY_CREDENTIALS_`) — checked BEFORE `resolver.Set`/`Delete`
-    (secrets_service.go:124/208). A pure string check, not a membership SELECT:
+    (secrets_service.go:134/219). A pure string check, not a membership SELECT:
     it needs no read of `server_secrets` and no cross-tenant visibility. A T0
     deliverable on the existing user path, not only the new
     admin RPC.
@@ -620,35 +620,37 @@ declared into a store that does not exist.
     (`awssm` (any pin) or `awsps` (0.18+) on AWS, `akv` (any pin) or `aac`
     (0.20+) on Azure), and one already running
     Vault/OpenBao uses that — the provider is a per-resolver-INSTANCE config
-    choice (`WithProvider`, resolver.go:73/75), not a hardcode, so this is a
+    choice (`WithProvider`, resolver.go:83/85), not a hardcode, so this is a
     recommended default rather than a fixed backend. Two things make this an
     EXECUTABLE T0 deliverable rather than prose: (1) DEPENDENCY PREREQUISITE —
     `age` is a secretspec 0.17+ provider behind an `age` build feature, but
-    the repo pins `github.com/cachix/secretspec/secretspec-go` at v0.15.0
-    (go/go.mod:22), where `age://` does not resolve and T2's master-key
+    the repo pinned `github.com/cachix/secretspec/secretspec-go` at v0.15.0
+    when this record was written (go/go.mod:22 now reads v0.20.0, bumped by
+    RIG-3320), and at that pin `age://` did not resolve and T2's master-key
     write-back has no writable target. This gates the self-hosted `age://`
-    DEFAULT specifically, NOT T0/T2 wholesale: on the current pin the matrix
-    already marks Write yes for `keyring`, `dotenv`, `pass`, `gopass`
+    DEFAULT specifically, NOT T0/T2 wholesale: even at v0.15 the matrix
+    already marked Write yes for `keyring`, `dotenv`, `pass`, `gopass`
     (0.15+), `awssm`, `akv` and `vault`, so a deployment pointing the
-    SERVER resolver at a cloud store or HashiCorp Vault needs NO bump (OpenBao,
-    like `age`, is 0.17+); what
-    v0.15 lacks is `age` (0.17+), with `pass`/`gopass` the self-hosted
-    encrypted-at-rest alternatives available today (`age://` is the ruled
-    default — a single local identity file rather than a GPG keyring). The
+    SERVER resolver at a cloud store or HashiCorp Vault needed NO bump
+    (OpenBao, like `age`, is 0.17+); what v0.15 lacked is `age` (0.17+), with
+    `pass`/`gopass` the self-hosted encrypted-at-rest alternatives available
+    at that pin (`age://` is the ruled default — a single local identity file
+    rather than a GPG keyring). RIG-3320 has since taken the pin to v0.20.0,
+    so `age://` and `openbao://` both resolve and this prerequisite is MET. The
     bump covers TWO separate closures, since the SDK read path and the CLI
     write path are distinct binaries: (a) the Go module `secretspec-go` `>=
-    0.17` for the READ path (`b.Load()`, resolver.go:165); AND (b) the
+    0.17` for the READ path (`b.Load()`, resolver.go:172); AND (b) the
     `secretspec` CLI BINARY the WRITE path shells via `resolver.Set`
-    (`exec.CommandContext(ctx, r.cli, args...)`, resolver.go:233; `r.cli`
-    defaults to bare `"secretspec"` on PATH, resolver.go:91) — also `>=
+    (`exec.CommandContext(ctx, r.cli, args...)`, resolver.go:273; `r.cli`
+    defaults to bare `"secretspec"` on PATH, resolver.go:30/102) — also `>=
     0.17` built with the `age` feature and pinned explicitly via `WithCLI`
-    (resolver.go:81) into the Server's closure so the read and write halves
+    (resolver.go:92) into the Server's closure so the read and write halves
     cannot drift to different provider capability sets (a separate
     prerequisite PR, Matt-ruled). (2) WIRING SEAM —
     today serve.go:528 constructs the single resolver with NO provider option
     (the SDK default chain); T0 threads the operator-configured URI, from a NEW
     server flag/env (defaulting to the `age://` path), through
-    `secrets.WithProvider(<URI>)` (resolver.go:75). By DEFAULT the SAME URI
+    `secrets.WithProvider(<URI>)` (resolver.go:85). By DEFAULT the SAME URI
     configures BOTH resolver instances — the SERVER (server-secret) resolver
     AND the container/user resolver at serve.go:528 — so the provider
     keyspace is shared by construction and the F1 guard + D2 read-back below are
@@ -666,7 +668,7 @@ declared into a store that does not exist.
     (the T0 CLI below) writes a value through `resolver.Set` for rotation on a
     running server. The prefix RENAMES them (`LINEAR_FORGE_CLIENT_SECRET` →
     `SERVER_LINEAR_FORGE_CLIENT_SECRET`) and the provider keyspace is keyed by
-    NAME (`setArgs`, resolver.go:258-267), so a value is populated under the
+    NAME (`setArgs`, resolver.go:325-331), so a value is populated under the
     prefixed name via the `serverSecretName()` seam (CONSUMER-REPOINT above).
     The NAMES are declared into `server_secrets` at boot from the RESOLVED
     config `cfg.Forge.resolved()` (serve.go:232-246) — the same accessor every
@@ -788,7 +790,7 @@ serves; no import cycle — it depends on nothing in `secrets`).
     auth failure (tamper OR aad mismatch) returns an error naming no
     plaintext/key material.
   - Key encoding for provider storage: base64(std) of the 32 raw bytes
-    (SecretSpec values are strings; `Set` rejects empty, resolver.go:225-227).
+    (SecretSpec values are strings; `Set` rejects empty, resolver.go:242-244).
 - Consumes: `crypto/aes`, `crypto/cipher`, `crypto/rand` only.
 - Tests: round-trip; tamper (flip a ciphertext/nonce byte → error); `Open`
   under a different `aad` → error; nonce uniqueness across calls; redaction
@@ -805,9 +807,10 @@ is declared into it) and T1.
   - `func provisionGatewayMasterKey(ctx context.Context, resolver secrets.Resolver, st *store.Store) (envelope.Key, error)`
     — `resolver` is the SERVER-SECRET resolver instance (T0). Resolve
     `GATEWAY_CREDENTIALS_MASTER_KEY` through it; on absence:
-    `envelope.NewKey()` → `resolver.Set(ctx, name, encodedKey)`
-    (resolver.go:219; the value rides stdin, never argv,
-    resolver.go:206-207) → `st.DeclareServerSecret(ctx, "", name)` with
+    `envelope.NewKey()` → `resolver.Set(ctx, name, encodedKey, "compass:
+    provision gateway credentials master key")`
+    (resolver.go:237; the value rides stdin, never argv,
+    resolver.go:213-214) → `st.DeclareServerSecret(ctx, "", name)` with
     `declared_by = NULL` (server-provisioned; T0's nullable FK). No
     delivery, no kind — those columns do not exist on `server_secrets`.
   - **Concurrency — advisory-lock serialized (mandatory):** the whole
@@ -838,18 +841,17 @@ is declared into it) and T1.
     the fleet):** the provider round-trips inside the lock inherit only the
     caller's ctx, which at boot is long-lived — but the two halves bound
     DIFFERENTLY. `SpecResolver.Set` IS ctx-bounded: it shells out via
-    `exec.CommandContext(ctx, r.cli, …)` (resolver.go:233), so a ctx deadline
+    `exec.CommandContext(ctx, r.cli, …)` (resolver.go:273), so a ctx deadline
     genuinely kills it. `SpecResolver.Resolve` is NOT: it threads ctx only into
-    `DeclaredSecrets` (resolver.go:136); the actual provider round-trip is
-    `b.Load()` (resolver.go:165), whose SDK signature carries NO ctx
+    `DeclaredSecrets` (resolver.go:147); the actual provider round-trip is
+    `b.Load()` (resolver.go:172), whose SDK signature carries NO ctx
     (`func (b *Builder) Load() (*Resolved, error)`, verified against
-    secretspec-go v0.15.0 secretspec.go:245, the current pin — re-verify this
-    signature after the `>= 0.17` bump T0 requires (F2/H-1 prerequisite); if
-    `Load` gains a ctx-carrying form, the goroutine-offload design below
-    simplifies to a plain ctx-bounded call) and which blocks in an uncancellable
+    secretspec-go v0.20.0 secretspec.go:293, the current pin — `Load` still
+    carries no ctx after the bump, so the goroutine-offload design below
+    stands) and which blocks in an uncancellable
     FFI call
-    (`nativeResolve` → `C.secretspec_resolve`, binding_cgo.go:30 /
-    binding_purego.go:118). A hung provider (1Password awaiting biometric
+    (`nativeResolve` → `C.secretspec_resolve`, binding_cgo.go:28 /
+    binding_purego.go:142). A hung provider (1Password awaiting biometric
     approval, an unreachable Vault, a half-open TCP) would otherwise hold the
     transaction-scoped lock indefinitely, and because the key is a shared
     constant EVERY other booting instance blocks on it — one stuck provider
@@ -888,7 +890,7 @@ is declared into it) and T1.
     subsequent boot, re-resolve the name and byte-compare against the key
     the process is about to encrypt with; on mismatch, refuse to serve
     gateway-credential writes (fail closed). This re-resolve is the SAME
-    uncancellable `Load` (resolver.go:165) and uses the SAME bounded-offload
+    uncancellable `Load` (resolver.go:172) and uses the SAME bounded-offload
     path as the provisioning resolve (timeout ctx + own goroutine + buffered
     cap-1 channel), so on a steady-state boot — key already provisioned,
     nothing to serialize — a hung provider still yields a bounded, diagnosable
@@ -922,8 +924,10 @@ is declared into it) and T1.
     master key's provider value unreachable from the user path. The user
     `SetSecret`/`DeleteSecret` RPC (`authenticatedOpen`, any authenticated
     account — admin_gate.go:122-125) declares into `secrets` but then calls
-    `resolver.Set`, which shells `secretspec set <NAME> --profile default`
-    (resolver.go:258-267) against the keyspace that is SHARED under the default
+    `resolver.Set`, which shells
+    `secretspec --file=<manifest> --reason=<reason> set <NAME> --provider=<p>
+    --profile=<P>`
+    (resolver.go:325-331) against the keyspace that is SHARED under the default
     single-URI wiring (F2) — so absent a guard a user
     calling `SetSecret` with name `GATEWAY_CREDENTIALS_MASTER_KEY` would
     OVERWRITE the master key's provider value (the running process keeps its
@@ -942,7 +946,8 @@ is declared into it) and T1.
     unchanged). Rotation is OQ-1's machinery, never a raw overwrite through
     either surface. The name-keyed global user delete ("a row is keyed by name
     alone, not (actor, name)", go/internal/store/secrets.go:150-153) is why the
-    guard covers the delete path too, once a real provider hard-delete lands.
+    guard covers the delete path too, once the provider hard-delete is wired
+    (the `secretspec delete` verb exists at the 0.20 pin; RIG-3436).
   - **Nil-resolver deployment:** a server built with no secrets surface is
     legitimate today ("resolver may be nil on a server built with no
     secrets surface (FetchSecrets then fails CodeFailedPrecondition rather
@@ -1080,7 +1085,7 @@ RPC exactly as the frozen record already specifies.
       WRITABLE SecretSpec provider (self-hosted default `age://` — writable,
       encrypted-at-rest, headless; a cloud store or Vault/OpenBao where
       present — F2) resolved by a SERVER resolver constructed
-      `secrets.WithProvider(<operator-configured URI>)` (resolver.go:75) off a
+      `secrets.WithProvider(<operator-configured URI>)` (resolver.go:85) off a
       NEW server flag/env for that URI (serve.go:528's container resolver
       unchanged), populated by the operator directly (deploy tooling seeds the
       age file) or, for rotation on a running server, through the NEW `compass
@@ -1141,19 +1146,21 @@ RPC exactly as the frozen record already specifies.
       startup with the actionable static error). DEPENDENCY PREREQUISITE
       (gating for the self-hosted `age://` default path only, Matt-ruled
       separate PR): bump `github.com/cachix/secretspec/secretspec-go` from the
-      pinned v0.15.0 (go/go.mod:22) to `>= 0.17` with the `age` build
+      v0.15.0 pinned when this record was written to `>= 0.17` (DONE in
+      RIG-3320: go/go.mod:22 now reads v0.20.0) with the `age` build
       feature, covering BOTH closures the two code paths shell separately —
-      the Go module for the SDK READ path (`b.Load()`, resolver.go:165) AND
+      the Go module for the SDK READ path (`b.Load()`, resolver.go:172) AND
       the `secretspec` CLI BINARY the WRITE path runs (`resolver.Set` shells
-      `r.cli`, resolver.go:233/91), the latter pinned via `WithCLI`
-      (resolver.go:81) into the Server's closure so read and write cannot drift
+      `r.cli`, resolver.go:273/30), the latter pinned via `WithCLI`
+      (resolver.go:92) into the Server's closure so read and write cannot drift
       to different provider capabilities. `age` is a 0.17+ build-feature
-      provider, so on the current pin the `age://` default does not resolve
-      and T2's master-key write-back has no writable target; a deployment on a
-      cloud store (`awssm`/`akv`) or HashiCorp Vault — all Write-capable at
-      the current pin — needs no bump (OpenBao does NOT qualify: `openbao://` is a
-      0.17+ provider, with 0.16 routing it through `vault`, so an OpenBao
-      deployment rides the same bump as `age://`). GATING for T2 ONLY on the `age://`
+      provider, so at the v0.15 pin this record was written against the
+      `age://` default did not resolve and T2's master-key write-back had no
+      writable target; a deployment on a cloud store (`awssm`/`akv`) or
+      HashiCorp Vault — all Write-capable even at v0.15 — needed no bump
+      (OpenBao did NOT qualify: `openbao://` is a 0.17+ provider, with 0.16
+      routing it through `vault`, so an OpenBao deployment rode the same bump
+      as `age://`). RIG-3320 landed that bump at v0.20.0, so both resolve now. GATING for T2 ONLY on the `age://`
       path. Proto
       delta: two additive `SecretsService` methods, no enum change — the
       checked-in public gen trees are drift-gated, so this needs the

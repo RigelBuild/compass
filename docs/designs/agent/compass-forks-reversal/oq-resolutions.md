@@ -85,7 +85,7 @@ raw invocation.
 Impact on **L1** (`design.md:348-386`) and **L2** (`design.md:388-435`):
 
 - The six raw-`nix run` sites — `agent-image/publish.sh:32,50-51`,
-  `agent-image/moon.yml:44`, `devenv.nix:461`, `.github/workflows/ci.yml:812`,
+  `agent-image/moon.yml:44`, `devenv.nix:476`, `.github/workflows/ci.yml:812`,
   `.github/workflows/publish-agent-image.yml:139,160`,
   `tools/agent-image-env-gate/index.ts:100,118` — install and invoke the fork
   tools by explicit name from the `github:RigelBuild/{devenv,nix2container}`

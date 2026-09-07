@@ -27,7 +27,8 @@ type Deps struct {
 	// attach version check.
 	Prober HealthProber
 	// DBProber probes Postgres reachability between starting postgres and
-	// compass-server, so the store opens on the first try (devenv.nix:224-242).
+	// compass-server, so the store opens on the first try (devenv.nix:362 defines
+	// services.postgres, :386 the compass-server process).
 	DBProber DBProber
 	// GroupSignaller signals and liveness-checks a persisted child process
 	// group by pgid for the cross-process teardown (DownDetached). It is the

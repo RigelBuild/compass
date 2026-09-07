@@ -829,9 +829,9 @@ registry** and resolved through the existing resolver:
   encryption-at-rest is the provider's job"
   (`0002_secrets.sql:10-14`). The Server resolves it on demand through
   `Resolver.Resolve(ctx, reason)`
-  (`go/internal/secrets/resolver.go:37-49`), which reads the registry and pulls
+  (`go/internal/secrets/resolver.go:44-59`), which reads the registry and pulls
   values from the configured SecretSpec provider
-  (`resolver.go:135-139`). Values "live only in the provider and this process's
+  (`resolver.go:146-150`). Values "live only in the provider and this process's
   memory during a resolve; they are never persisted by Compass and never
   logged" (`go/internal/secrets/secrets.go:20-22`), and every value-bearing
   type redacts under `%s`/`%v`/`%#v` (`secrets.go:146-156`).
@@ -861,9 +861,9 @@ it quotes name `FetchSecrets` as the seam; grepping `compass` this run
 returns exactly one hit — the comment itself, `0002_secrets.sql:14`. There is
 no such function in the Go tree. The actual declarations seam is
 `declarations interface { DeclaredSecrets(ctx) }`
-(`go/internal/secrets/resolver.go:29-31`), consumed by `SpecResolver.Resolve`
-(`resolver.go:135-139`), whose own doc says it is "inject-all: the whole store,
-no per-agent filter (the future grants seam)" (`resolver.go:130-134`).
+(`go/internal/secrets/resolver.go:36-38`), consumed by `SpecResolver.Resolve`
+(`resolver.go:146-150`), whose own doc says it is "inject-all: the whole store,
+no per-agent filter (the future grants seam)" (`resolver.go:141-145`).
 
 The complication that makes this a design question rather than a rename: **that
 one `Resolve` serves BOTH consumers.** This record needs the Server's own
@@ -887,7 +887,7 @@ makes `gh issue create` a one-liner with no header and no Server involvement.
 
 **Those two comments describe intent, not shipped code.** Verified this run:
 `NewSpecResolver` has zero non-test callers in the Go tree (only its definition
-at `go/internal/secrets/resolver.go:86`); `ResolvedSecret` appears in zero
+at `go/internal/secrets/resolver.go:97`); `ResolvedSecret` appears in zero
 files outside `go/internal/secrets/`; and the only credential that reaches a
 container is `Workspace.Credentials` via `CredentialSetupScript`, which writes
 `$HOME/.git-credentials` and nothing else — no `hosts.yml` anywhere in
@@ -1977,9 +1977,9 @@ the filtered set.
 **Identify and switch the real caller, or this task ships a filter nothing
 calls.** The declarations seam is
 `declarations interface { DeclaredSecrets(ctx) }`
-(`go/internal/secrets/resolver.go:29-31`), consumed by `SpecResolver.Resolve`
-(`resolver.go:135-139`) — documented "inject-all: the whole store, no per-agent
-filter (the future grants seam)" (`resolver.go:130-134`). That one `Resolve`
+(`go/internal/secrets/resolver.go:36-38`), consumed by `SpecResolver.Resolve`
+(`resolver.go:146-150`) — documented "inject-all: the whole store, no per-agent
+filter (the future grants seam)" (`resolver.go:141-145`). That one `Resolve`
 serves **both** the Server's own resolve and container materialization, so
 adding `ContainerSecrets` is only half the change: the container-materialization
 caller must be switched to it while the Server's resolve keeps the unfiltered
@@ -2639,9 +2639,9 @@ is a config change to something already built.
 
 **(i) Which concrete function is the filter point?** The real declarations seam
 is `declarations interface { DeclaredSecrets(ctx) }`
-(`go/internal/secrets/resolver.go:29-31`), consumed by `SpecResolver.Resolve`
-(`resolver.go:135-139`), documented "inject-all: the whole store, no per-agent
-filter (the future grants seam)" (`resolver.go:130-134`). **That one `Resolve`
+(`go/internal/secrets/resolver.go:36-38`), consumed by `SpecResolver.Resolve`
+(`resolver.go:146-150`), documented "inject-all: the whole store, no per-agent
+filter (the future grants seam)" (`resolver.go:141-145`). **That one `Resolve`
 serves both** the Server's own resolve and container materialization — this
 record needs them to diverge. So T5 must name the container-materialization
 caller and switch it to `ContainerSecrets` while the Server's resolve keeps the
@@ -2660,7 +2660,7 @@ live behaviour, a token there makes `gh issue create` a one-liner with no
 header and no Server involvement.
 
 **It is not live behaviour.** Verified: `NewSpecResolver` has zero non-test
-callers (definition only, `resolver.go:86`); `ResolvedSecret` appears in zero
+callers (definition only, `resolver.go:97`); `ResolvedSecret` appears in zero
 files outside `go/internal/secrets/`; and the only credential reaching a
 container is `Workspace.CredentialSetupScript`, which writes
 `$HOME/.git-credentials` and never `hosts.yml`. **There is no materializer, so

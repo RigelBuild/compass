@@ -114,12 +114,12 @@ with that idiom instead of inventing a second toolchain path. `devenv` is the
 one binary that idiom does NOT provide: compass CI never puts a `devenv` on
 PATH — its only devenv invocations run the vendored fork's CLI by path
 (`ci.yml:812` `nix run path:../forks/devenv#devenv -- container copy agent`;
-`agent-image/moon.yml:44`; `devenv.nix:469`). The Renovate job therefore
+`agent-image/moon.yml:44`; `devenv.nix:484`). The Renovate job therefore
 builds that same fork (the flake exports the CLI as
 `packages.<system>.devenv`, `forks/devenv/flake.nix:113-115`) and shims it
 onto PATH. This is FORCED by the frozen fork posture, not a fresh choice: the
 image pipeline pins to "the vendored fork's own CLI … so it cannot diverge
-from the fork source" (`devenv.nix:450-453`;
+from the fork source" (`devenv.nix:465-468`;
 `docs/designs/agent/compass-forks-reversal/design.md:125-134` — "The
 fork's own CLI is invoked by path everywhere the image is built"). A nixpkgs
 devenv doing the relock would be a SECOND, divergent devenv — the exact thing
@@ -435,7 +435,7 @@ one devenv the fork posture allows; zero new infrastructure.
 Rejected: a nixpkgs-built devenv doing the relock would be a SECOND devenv,
 divergent from the vendored fork whose CLI compass pins by path everywhere
 devenv runs ("pinned to the vendored fork's own CLI … so it cannot diverge
-from the fork source", `devenv.nix:450-453`; "The fork's own CLI is invoked
+from the fork source", `devenv.nix:465-468`; "The fork's own CLI is invoked
 by path everywhere the image is built",
 `docs/designs/agent/compass-forks-reversal/design.md:125-134`) — exactly
 the divergence the frozen fork posture exists to eliminate. The vendored-fork

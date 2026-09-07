@@ -238,6 +238,21 @@ in
     pkgs.cloud-hypervisor
     pkgs.virtiofsd
     pkgs.passt
+  ]
+  # secretspec: the CLI the Go secrets write path spawns BY NAME for
+  # `set`/`delete` (go/internal/secrets/resolver.go's `cli` default), so the
+  # write path is unreachable unless this shell puts one on PATH. Resolved from
+  # the `secretspec-nixpkgs` input rather than this shell's own nixpkgs because
+  # that channel's rev still carries 0.14.0, which has no `age` provider
+  # compiled in — the encrypted-at-rest default the server-secret resolver
+  # writes through. This input's version matches the Go SDK pin in go/go.mod, so
+  # the read path (SDK + native lib) and the write path (this CLI) advance
+  # together; `internal/secrets` asserts both halves rather than assuming them.
+  # A dotted input reference, so it is appended OUTSIDE the parsed `with pkgs`
+  # literal (same reason as skopeo-nix2container: the toolchain-parity gate
+  # resolves every bare attr in that literal, including on macOS).
+  ++ [
+    inputs.secretspec-nixpkgs.legacyPackages.${pkgs.stdenv.system}.secretspec
   ];
 
   env = {
