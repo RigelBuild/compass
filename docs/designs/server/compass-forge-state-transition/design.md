@@ -1,6 +1,6 @@
 # Design: Forge state-transition write op (RIG-3331)
 
-Status: Active
+Status: Draft
 
 ## Problem / Intent
 
@@ -13,6 +13,10 @@ an agent sets an issue/PR's state on BOTH GitHub and Linear, through the same
 attribution chokepoint every other forge write rides — and the emitted STATE
 event carries the acting agent's identity, the load-bearing contract the
 RIG-3326 self-origin suppression record keys its STATE arm on.
+
+This record is **Draft**: it holds at two load-bearing Open Questions
+(OQ-1 the actor carrier, OQ-2 the Linear default state) and flips to Active in
+the freeze push that lands their rulings, together with the ledger rows (T8).
 
 ## Approach
 
@@ -107,12 +111,15 @@ message AgentAttribution {
 }
 ```
 
-The attribution's *source* is the stamped owner header in the comment body:
-`translateAttribution` sites such as the one in
-`go/internal/ingest/notify_detect.go` build
+The attribution's *source* is the stamped owner header in the comment body.
+`stripBodyToRef` (`go/internal/forge/githubapp_webhook.go`) splits the owner
+header off the raw body via `StripOwner`, and the detect path
+(`go/internal/ingest/notify_detect.go`) builds
 `ref.Agent = &compassv1.AgentAttribution{AgentHandle: author.AgentHandle}` from
 the parsed header. This is the mechanism a state transition CANNOT reuse — a
-close/reopen carries no body to stamp.
+close/reopen carries no body to stamp, so there is no header to parse an actor
+out of. That absence is why this record must specify a new actor carrier at
+all, and it is the load-bearing premise under OQ-1.
 
 **What a STATE event carries today: no actor at all.** The GitHub webhook arm
 (`gitHubStateOrUpdateKind` in `go/internal/forge/githubapp_webhook.go`) maps
@@ -171,10 +178,30 @@ onto one truth:
 - `close_reason` — OPTIONAL, GitHub-issue refinement: `completed` |
   `not_planned`. Empty means the provider default.
 - `workflow_state` — OPTIONAL, Linear refinement: the target workflow state's
-  NAME, resolved per-team (name → id, cached the way `resolveTeamID` already
-  caches team key → team UUID: "teamIDs caches Linear team key -> team UUID; a
-  key is resolved once via a teams query and reused"). Empty means the
-  provider maps the portable `state` to a default workflow state (rule below).
+  NAME, resolved per-team (name → id). Empty means the provider maps the
+  portable `state` to a default workflow state (rule below).
+
+**Two name-resolution cases the read side never had to face.** Workflow-state
+names are not unique, so naming one is not the same as identifying one:
+
+- **Ambiguous within a team.** Linear does not enforce name uniqueness across
+  a team's states, so `workflow_state: "Done"` may match two distinct state
+  ids on ONE team. This is an in-band `invalid_argument` naming the duplicate
+  — consistent with the fail-loud posture above: the caller asked for
+  something specific and the write cannot know which was meant. (Alternative
+  considered: lowest-position-wins, which silently picks a board column.)
+  Without this ruled here, an implementer would have to invent a rule on the
+  user-visible write path.
+- **The cache cannot be the `teamIDs` cache.** `resolveTeamID` caches a team
+  key → UUID **forever, with no invalidation**, and that is correct precisely
+  because team UUIDs are effectively immutable. Workflow states are not:
+  humans rename, reorder and delete them from the Linear UI, and the default
+  rule below depends on *positions*, which drift too. So the workflow-state
+  cache is specified separately — a TTL, plus invalidate-and-retry-once when
+  an `issueUpdate` fails against an unknown `stateId`. Copying the
+  invalidation-free pattern would leave a renamed or deleted state cached for
+  the process lifetime, failing every later transition to it until restart.
+  This is also the resolve-then-write staleness recovery path.
 
 **When a caller asks for a state one provider cannot express**, the arm fails
 loud, in-band, BEFORE any provider call: a refinement set for the wrong
@@ -293,8 +320,14 @@ TransitionPullRequestState(ctx context.Context, repo string, number uint64, in T
 ### The server arm: what F3 and DL-055 mean for a transition
 
 A state transition **mutates an existing coordinate and mints none**. From the
-code read above, both create-only mechanisms are inapplicable, and the comment
-arm is the precedent, not the create arm:
+code read above, both create-only mechanisms are inapplicable — but the
+transition arm reaches that same conclusion by a **different route than the
+comment arm**, and the distinction is load-bearing enough to state before the
+bullets: the comment arm is excluded because it has no coordinate at all,
+while the transition arm is excluded because the coordinate it targets is an
+authorship row it must leave alone. Same outcome, different reason; citing the
+comment arm as a bare precedent invites an implementer to reuse its reasoning
+where it does not hold:
 
 - **No F3 dedup.** F3 is "create-only per the frozen ruling" (the `record` doc
   comment quoted above), and its memo returns *the recorded coordinate* — a
@@ -305,12 +338,23 @@ arm is the precedent, not the create arm:
   same-state `issueUpdate` on Linear — a retried transition converges on the
   target state rather than duplicating anything, which is exactly the hazard
   class F3 exists to prevent on creates and which transitions do not have.
-- **No DL-055 row.** The DL-055 ownership index records *who authored an
-  artifact* ("Only create_issue / create_pull_request mint an artifact
-  coordinate"); a transition changes no authorship and may act on an artifact
-  the agent never authored (no row exists at the coordinate at all). Writing
-  or touching the author row would corrupt its meaning — and keying anything
-  off it is precisely the author-row-proxy failure RIG-3326 rejects.
+- **No DL-055 row — and this is NOT the comment arm's reason.** The comment
+  arm is excluded because a comment is *unrepresentable* in the index: "the
+  store index has no comment kind", so it "never reach[es] here". A transition
+  is the opposite case. Its coordinate IS representable — `kind` is
+  `CHECK IN (1, 2)` = issue|pull_request, exactly what a transition targets —
+  and when the acting agent created the artifact a row ALREADY EXISTS there.
+  So the transition arm is excluded not for want of a coordinate but because
+  that row is a **write-once authorship fact this operation must not touch**.
+  Concretely, `RecordAuthoredArtifact` (`go/internal/store/db/forge_authored.sql.go`)
+  is an upsert whose `DO UPDATE` sets `session_id`, `client_request_id` and
+  `created_at_unix_ms`. Authorship itself survives (the `DO UPDATE`
+  deliberately omits `agent_account_id` and `owner_user_id`), but
+  `client_request_id` does not — and that column backs the F3 memo through the
+  unique partial index `forge_authored_artifacts_request_memo_idx`. **Routing
+  a transition through `record` would therefore silently destroy the original
+  create's idempotency memo.** Keying suppression off that row is separately
+  the author-row-proxy failure RIG-3326 rejects.
 - **No body, so no stamp and no body limit.** The DL-050 stamp chokepoint
   attributes *bodies*; a transition has none. Attribution rides the mechanism
   in the next section instead.
@@ -336,22 +380,58 @@ agent's issue matches nothing and is delivered.
 
 **The mechanism (recommended): a consumable transition memo.** The write
 chokepoint records, in the same post-success step as above, one row per
-coordinate in a new store table (`forge_state_transitions`): provider, host,
-repo, kind, number, the applied portable state, the acting agent's account id,
-and a written-at timestamp — upserted, latest transition wins. When the STATE
-event for that transition echoes back through the provider (the GitHub webhook
-`closed`/`reopened` arm; the Linear data-change `updatedFrom.stateId` arm) and
-reaches the router, the router resolves the event's actor through a
-package-local seam (the `NotifyStore` / `ChecksRoller` shape — the `ingest`
-package "deliberately never imports the store", so the store enters through a
-go/server-adapted interface): a point read at the coordinate that matches the
-memo's applied state against the event's state within a freshness bound, and
-CONSUMES the memo in the same statement (an `UPDATE … RETURNING`-style
-one-shot, so one memo attributes at most one event). A miss — no memo, stale
-memo, state mismatch — resolves no actor, which is the correct answer for
-every human/external transition and the safe answer for every race
-(fail-open: an unattributed self-transition costs one redundant wake, never a
-lost cross-agent signal).
+coordinate in a new store table (`forge_state_transitions`): **`tenant_id`**,
+provider, host, repo, kind, number, the applied portable state, the acting
+agent's account id, and a written-at timestamp — upserted, latest transition
+wins.
+
+**`tenant_id` is not optional, and the guard cannot catch its absence.** The
+memo maps a forge coordinate to an acting agent, so it is at least as
+tenant-sensitive as its sibling `forge_authored_artifacts`, whose
+tenant-in-key design is defended by `TestForgeAuthoredTwoTenantsSameCoordinate`
+— two tenants legitimately hold the SAME forge coordinate. Without
+`tenant_id`, one tenant's memo could attribute another's STATE event at an
+identical coordinate. The RLS catalog test is self-auditing over tables that
+*carry* a `tenant_id` column, so a table added without one is invisible to it:
+the suite stays green and the leak ships. The column therefore comes with
+three explicit obligations in T4 (the `current_setting('compass.tenant_id',
+TRUE)` default, the RLS DO-loop array entry, and the `tenantOwned` floor-list
+entry), not with a reliance on the pgtest.
+
+When the STATE event for that transition echoes back through the provider (the
+GitHub webhook `closed`/`reopened` arm; the Linear data-change
+`updatedFrom.stateId` arm) and reaches the router, the router resolves the
+event's actor through a package-local seam (the `NotifyStore` / `ChecksRoller`
+shape — the `ingest` package follows the **no-store rule**, so the store
+enters through a go/server-adapted interface): a point read at the coordinate
+that matches the memo's applied state against the event's state within a
+freshness bound, and CONSUMES the memo in the same statement (an
+`UPDATE … RETURNING`-style one-shot, so one memo attributes at most one
+event). A miss — no memo, stale memo, state mismatch — resolves no actor,
+which is the correct answer for every human/external transition and the safe
+answer for every race (fail-open: an unattributed self-transition costs one
+redundant wake, never a lost cross-agent signal).
+
+**Two races decide WHICH event a memo attributes, and both degrade fail-open.**
+(1) A single transition can emit a STATE event from both the webhook arm and
+the reconcile sweep, since `DetectChanges`
+(`go/internal/ingest/notify_detect.go`) emits STATE whenever the fetched state
+differs from the prior snapshot; whichever arrives first consumes the memo and
+the other is delivered unattributed. (2) `Route`
+(`go/internal/ingest/notify_router.go`) upserts the artifact cursor before
+resolving subscribers and dispatching, so a route that errors after the upsert
+advances the cursor without consuming the memo, which then lingers until it
+goes stale. Both cost one redundant wake — the documented safe outcome — so
+"one memo attributes at most one event" holds, but which event it attributes
+is racy. This is also the real justification for OQ-3's freshness bound.
+
+**Tenant context of the memo read.** The resolve runs under the notify lane's
+resolved tenant. `store.WithTenant` has no non-test callers today, so a
+webhook/notify-lane store call falls through `resolveTenant` to the bootstrap
+tenant — correct and documented on the current single-tenant path. This record
+adds the first identity-attribution consumer on that lane, which promotes that
+simplification into an attribution-correctness dependency; stated here so
+whoever wires a per-tenant ingress later sees the assumption.
 
 Why not stamp the actor into the event at the source parser: the webhook
 payload's actor is the forge login (the `whUser` "actor sub-object GitHub
@@ -476,12 +556,25 @@ and the two new `ForgeCallRequest_TransitionIssueState` /
 Tests: none beyond regen compiling (proto-only slice); the arm dispatch test
 lands in T4.
 
-### T1 — Provider interface + fake
+### T1 — Provider interface + fake + all four implementors
 
 Add `TransitionState` and the two methods to `Provider`
 (`go/internal/forge/provider.go`) per §The provider methods; extend `fake.go`
 with scriptable implementations (result + error injection, mirroring the
 existing per-method fake shape).
+
+**This slice MUST also add the methods to `GitHub` and `Linear`, or it does
+not compile.** Four compile-time satisfaction assertions live in the same
+package — `var _ Provider = (*FakeProvider)(nil)` in both `fake.go` and
+`fake_test.go`, `var _ Provider = (*GitHub)(nil)` in `github.go`, and
+`var _ Provider = (*Linear)(nil)` in `linear.go` — so widening the interface
+while extending only the fake breaks the GitHub and Linear assertions
+immediately. T2 and T3 are exactly what would repair that, and they come
+after. So T1 lands the interface together with the Linear PR half as its
+specified one-liner (`return PullRequest{}, ErrUnsupported`) and compiling
+GitHub/Linear bodies that T2/T3 then fill in with real request construction,
+fixtures and error mapping. **No task in this plan may merge red by
+construction.**
 
 Interfaces: produces
 `TransitionIssueState(ctx, repo string, number uint64, in TransitionState) (Issue, error)`
@@ -489,7 +582,8 @@ and
 `TransitionPullRequestState(ctx, repo string, number uint64, in TransitionState) (PullRequest, error)`
 on `forge.Provider`, consumed by T2/T3/T4.
 
-Tests: fake round-trip in the existing `fake_test.go` style.
+Tests: fake round-trip in the existing `fake_test.go` style; the package
+compiles with all four assertions intact.
 
 ### T2 — GitHub implementation + fixtures
 
@@ -506,29 +600,50 @@ PR close / PR reopen / 422-on-merged-PR-reopen.
 Tests: golden replay (untagged) + `livegithub` legs against the testbed
 (close→verify state via `GetIssue`→reopen; PR twin).
 
-### T3 — Linear implementation + fixtures
+### T3 — Linear implementation + fixtures (OQ-2-CONTINGENT)
 
-Workflow-state resolution (per-team name→id + type, cached beside `teamIDs`
-with the same mutex discipline), the default-mapping rule from §The
-cross-provider state model, the consistency check (named state's type must
-agree with the portable target), the `issueUpdate` mutation, and
-`ErrUnsupported` on the PR method.
+**Blocked on OQ-2.** This task implements the default-mapping rule, which is
+exactly what OQ-2 asks Matt to rule. If he picks the stated alternative —
+`workflow_state` REQUIRED on Linear, no default at all — this task's
+default-resolution code disappears and two of its five fixtures
+(close-by-default, reopen-by-default) are wrong. Do not start T3 before OQ-2
+is ruled.
+
+Workflow-state resolution (per-team name→id + type, in its own TTL cache with
+invalidate-and-retry-once — NOT the invalidation-free `teamIDs` cache; see
+§The cross-provider state model), the ambiguous-name rejection, the
+default-mapping rule from §The cross-provider state model, the consistency
+check (named state's type must agree with the portable target), the
+`issueUpdate` mutation, and `ErrUnsupported` on the PR method.
 
 Interfaces: consumes T1; produces fixtures for close-by-default /
 close-by-name / reopen-by-default / unknown-name (`invalid_argument`) /
-type-contradiction (`invalid_argument`).
+duplicate-name-within-team (`invalid_argument`) / type-contradiction
+(`invalid_argument`).
 
 Tests: golden replay + `livegithub` Linear legs (gated on the existing
 `LINEAR_FORGE` app-actor token per DL-324).
 
-### T4 — Server arms + transition memo
+### T4 — Server arms (arms unconditional; memo half OQ-1-CONTINGENT)
+
+**Split by OQ-1.** The two server arms, their validation screens and the
+result flattening are unconditional — they stand under either OQ-1 ruling.
+The memo half (the `forge_state_transitions` table, `RecordStateTransition`,
+`ConsumeStateTransition`) exists ONLY under the memo mechanism; if OQ-1 rules
+the synthetic-event way, that half is discarded and the actor rides the
+emitted event instead. Land the arms first; hold the memo half for the ruling.
 
 The two `forgeService` arms per §The server arm: `resolveTarget`, then arm
 validation (state domain; refinement/provider screen; PR-refinement screen),
 author-client dispatch, `mapForgeError` flattening, memo write on success,
 updated canonical artifact on the result arm (through the existing
 `translateIssue` / `translatePR` helpers). Store side: the
-`forge_state_transitions` table (migration), an upsert write + a
+`forge_state_transitions` table — which lands **in `0001_init.sql`**, not a
+new numbered file: that directory holds exactly one migration by a Matt
+ruling that collapsed the original chain into it, and "the same reasoning
+folds each later migration in as it accretes". The same edit adds the table's
+RLS DO-loop array entry; `tenant_id` and the `tenantOwned` floor-list entry
+are obligations of this task per §Actor attribution. Then an upsert write + a
 consume-on-match read on `*store.Store`, and the `forgeStore` narrow-interface
 widening so the ordering is provable against the fake store.
 
@@ -545,7 +660,11 @@ Tests: unit (fake provider + fake store): dispatch, validation rejections
 failure; pgtest for the store surface (upsert-latest-wins, consume-once,
 freshness bound, miss cases).
 
-### T5 — STATE actor resolution seam (the RIG-3326 contract surface)
+### T5 — STATE actor resolution seam (OQ-1-CONTINGENT — the RIG-3326 contract surface)
+
+**Exists only under OQ-1's memo ruling.** This whole task is the memo's
+read side; if OQ-1 rules the synthetic-event way it has no subject and
+evaporates. Do not start T5 before OQ-1 is ruled.
 
 The go/server-adapted seam through which the notify lane resolves a STATE
 event's actor from the memo: an `ingest`-package-local interface (the
@@ -584,52 +703,78 @@ Interfaces: consumes T2/T3.
 
 ### T8 — Ledger append
 
-Append the rows from §Ledger impact to `docs/designs/DECISIONS.md` in this
-record's freeze PR, re-verifying next-free ids against main AND every open
-design PR at freeze time (the documented DL-264 collision precedent: a
-sibling record "also claimed DL-264 and merged first").
+The DL-342/DL-343 rows land in `docs/designs/DECISIONS.md` in the **freeze
+push of this PR**, not in its first push, and the reason is specific rather
+than procedural: **DL-343's substance is what OQ-1 asks Matt to rule.** The
+sibling records that ship their rows with the record (#900, #932) stamp them
+`Active (Matt, <date>)` because Matt had already ruled their content; writing
+that stamp here — on a mechanism this record explicitly holds open — would
+attribute a decision he has not made. DL-342's wording is likewise partly
+downstream of OQ-2 (the Linear default clause).
+
+So: no ledger edit in this push; on the OQ-1/OQ-2 rulings, append both rows
+with the ruled wording and the real ruling date, re-verifying next-free ids
+against main AND every open design PR (the documented DL-264 collision
+precedent — a sibling record "also claimed DL-264 and merged first") and
+renumbering if a sibling landed first. This satisfies `skill://design`'s
+same-PR ledger flip, because the freeze push IS this PR.
 
 ## Tasks
 
+Two of the Open Questions are load-bearing on the plan, so three tasks are
+contingent and are marked as such. Do not read this list as nine
+unconditional slices.
+
 - [ ] T0: proto arms 14/15 + request messages + regen
 - [ ] T1: `Provider.TransitionIssueState` / `TransitionPullRequestState` +
-      `TransitionState` input + fake
+      `TransitionState` input + fake + GitHub/Linear bodies (the interface
+      widening and all four implementors land together or the package is red)
 - [ ] T2: GitHub PATCH implementations + golden fixtures + livegithub legs
-- [ ] T3: Linear `issueUpdate` implementation, workflow-state name/type
-      resolution + default rule + fixtures + livegithub legs
-- [ ] T4: server arms (validate → write → flatten → memo → result) +
-      `forge_state_transitions` migration + store surface + tests
-- [ ] T5: STATE actor-resolution seam over the memo (the RIG-3326 contract
-      surface) + both-lane wiring + pgtests
+- [ ] T3: **(OQ-2-contingent)** Linear `issueUpdate` implementation,
+      workflow-state name/type resolution + own TTL cache + ambiguity
+      rejection + default rule + fixtures + livegithub legs
+- [ ] T4: server arms (validate → write → flatten → result) — unconditional;
+      **memo half (OQ-1-contingent)**: `forge_state_transitions` in
+      `0001_init.sql` with `tenant_id` + RLS array + `tenantOwned` floor
+      entry, store surface, tests
+- [ ] T5: **(OQ-1-contingent)** STATE actor-resolution seam over the memo (the
+      RIG-3326 contract surface) + both-lane wiring + pgtests
 - [ ] T6: `forge_transition_issue_state` / `forge_transition_pull_request_state`
       tools
 - [ ] T7: live-oracle cross-op sweep
-- [ ] T8: ledger rows appended (id re-verify at freeze)
+- [ ] T8: **(OQ-1/OQ-2-contingent)** append DL-342/DL-343 with the ruled
+      wording + real ruling date, in this PR's freeze push; re-verify
+      next-free ids against main and every open design PR
 
 ## Ledger impact
 
-Ledger-impact: adds two rows to `docs/designs/DECISIONS.md` (Comms & tools
-section, beside DL-241/DL-276):
+Ledger-impact: PROPOSES two rows for `docs/designs/DECISIONS.md` (Comms &
+tools section, beside DL-241/DL-276), appended in this PR's freeze push once
+OQ-1/OQ-2 are ruled — see T8 for why not in the first push:
 
 - **DL-342** — the forge state-transition op: portable `{open, closed}` core +
   per-provider refinements (`close_reason` / `workflow_state`), fail-loud
-  in-band `invalid_argument` on refinement/provider mismatch, `ErrUnsupported`
-  on the Linear PR half; transitions are NOT F3-deduped and NOT
-  DL-055-recorded (mutate-existing-coordinate, comment-arm precedent); amends
-  DL-241's tool count by citation (twelve tools, rule unchanged).
+  in-band `invalid_argument` on refinement/provider mismatch (and on an
+  ambiguous Linear state name), `ErrUnsupported` on the Linear PR half;
+  transitions are NOT F3-deduped and NOT DL-055-recorded — not for the comment
+  arm's reason (no coordinate) but because the coordinate's row is a
+  write-once authorship fact whose `client_request_id` is the create's F3
+  memo; amends DL-241's tool count by citation (twelve tools, rule unchanged).
 - **DL-343** — transition actor attribution via the consumable
-  `forge_state_transitions` memo (write-after-success at the chokepoint,
-  consume-on-match at the notify lane), never a parsed-text or author-row
-  proxy; the contract RIG-3326's STATE suppression arm keys on.
+  `forge_state_transitions` memo (tenant-scoped; write-after-success at the
+  chokepoint, consume-on-match at the notify lane, fail-open on a miss), never
+  a parsed-text or author-row proxy; the contract RIG-3326's STATE suppression
+  arm keys on.
 
-Numbering: the highest row on current main is **DL-337**. Two of my own design
-PRs are open ahead of this one and claim the next four ids: the RIG-3299
-self-delegate record (#900) declares **DL-340**, and the RIG-3326 suppression
-record (#913) declares **DL-338** and **DL-339**. So DL-342/DL-343 are the
-next free pair, and both MUST be re-verified as next-free at freeze against
-main and every open design PR — enumerating *every* open design PR, not just
-the adjacent one (the DL-264 collision precedent; an earlier draft of this
-section counted #913 alone and collided with #900's DL-340).
+Numbering: the highest row on current main is **DL-337**, and four open design
+PRs claim the ids between: **#913** (RIG-3326 suppression) declares DL-338 and
+DL-339, **#900** (RIG-3299 self-delegate) declares DL-340, and **#932**
+(visual-regression gate) declares DL-341. So DL-342/DL-343 are the next free
+pair. Both MUST be re-verified as next-free at freeze against main and every
+open design PR — *every* one, not just the adjacent lane's. An earlier draft
+of this section enumerated PR #913 alone, proposed DL-340, and collided with
+the row PR #900 already claims (the DL-264 collision precedent, reproduced
+in draft).
 
 ## Open Questions
 
