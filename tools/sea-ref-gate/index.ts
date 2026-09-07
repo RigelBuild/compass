@@ -20,9 +20,6 @@
 //     rejects letters, so these stay as generic "some issue number" prose.
 //
 // CARVE-OUTS (never scanned):
-//   - forks/**            vendored upstream subtrees; any SEA-like token there
-//                         is upstream text, not a compass-authored issue ref.
-//                         (First-party forks/README.md is NOT carved out.)
 //   - tools/sea-ref-gate/**  this gate's own source + fixtures name the token to
 //                         describe what it forbids.
 //   - apps/eng-docs/src/content/docs/**, apps/eng-docs/dist/**  generated copies
@@ -48,11 +45,10 @@ export const SEA_REF_RE = /\bSEA-\d+\b/;
 
 /**
  * Repo-relative path prefixes never scanned. A reference under one of these is
- * either upstream text (forks/), a generated copy (eng-docs), or this gate's
- * own description of what it forbids.
+ * either a generated copy (eng-docs) or this gate's own description of what it
+ * forbids.
  */
 export const CARVEOUT_PREFIXES: readonly string[] = [
-	"forks/",
 	"tools/sea-ref-gate/",
 	"apps/eng-docs/src/content/docs/",
 	"apps/eng-docs/dist/",
@@ -82,9 +78,6 @@ export interface Reference {
 /** True when a repo-relative path is carved out of the scan. */
 export function isCarveOut(path: string): boolean {
 	if (path in ALLOWLIST) return true;
-	// forks/README.md is first-party compass prose, not a vendored subtree —
-	// it is scanned like any other authored file.
-	if (path === "forks/README.md") return false;
 	if (CARVEOUT_PATHS.includes(path)) return true;
 	return CARVEOUT_PREFIXES.some((prefix) => path.startsWith(prefix));
 }

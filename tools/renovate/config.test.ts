@@ -341,19 +341,21 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 	});
 });
 
-describe("tools/renovate OSV vuln source honors the fork fence", () => {
+describe("tools/renovate OSV vuln source honors the disable rules", () => {
 	// Renovate owns security remediation. OSV is the config-driven vuln source
-	// that respects the forks/*/** disable packageRule, unlike a repo-wide toggle.
+	// that respects the `enabled: false` packageRules, unlike a repo-wide toggle.
 	test("osvVulnerabilityAlerts is enabled", () => {
 		expect(cfg.osvVulnerabilityAlerts).toBe(true);
 	});
 
 	// INVARIANT: a vuln fix is injected as a packageRule carrying
 	// `force: { ...vulnerabilityAlerts }`, and applyPackageRules clears a prior
-	// skipReason when force.enabled is truthy — which would CANCEL the forks/*/**
-	// disable and re-open fork bumps. The default vulnerabilityAlerts object has no
-	// `enabled` key, so the fence holds; assert it is absent (never true).
-	test("does NOT set vulnerabilityAlerts.enabled (would re-open fork bumps)", () => {
+	// skipReason when force.enabled is truthy — which would CANCEL every
+	// `enabled: false` rule (the postgres CI-service pin, the gomod `go`
+	// directive, biome) and re-open the bumps they exist to hold shut. The
+	// default vulnerabilityAlerts object has no `enabled` key, so those disables
+	// hold; assert it is absent (never true).
+	test("does NOT set vulnerabilityAlerts.enabled (would re-open disabled bumps)", () => {
 		expect(cfg.vulnerabilityAlerts?.enabled).toBeUndefined();
 		expect(cfg.vulnerabilityAlerts?.enabled).not.toBe(true);
 	});
@@ -1010,31 +1012,6 @@ describe("tools/renovate typescript <7 fence", () => {
 	});
 });
 
-describe("tools/renovate fork fence (last packageRule, last-match-wins)", () => {
-	// Vendored fork subtrees (forks/<name>/) are upstream code; Renovate must open
-	// no bump PRs there. A disable packageRule scoped to forks/*/**.
-	const rules = cfg.packageRules;
-	const forkRule = rules.find((r) =>
-		r.matchFileNames?.some((f) => f.startsWith("forks/")),
-	);
-
-	test("a fork-scoped packageRule exists and disables Renovate (enabled: false)", () => {
-		expect(forkRule).toBeDefined();
-		expect(forkRule?.enabled).toBe(false);
-	});
-
-	test("scopes to the subtree glob forks/*/**, not the whole root", () => {
-		expect(forkRule?.matchFileNames).toEqual(["forks/*/**"]);
-	});
-
-	// Renovate is last-match-wins: the fence is only authoritative if it is the
-	// LAST packageRule. A later re-enable (enabled:true or force.enabled:true)
-	// would cancel it — being last makes that structurally impossible.
-	test("the fork fence is the LAST packageRule", () => {
-		expect(rules[rules.length - 1]).toBe(forkRule);
-	});
-});
-
 describe("tools/renovate postgres + gomod go disables", () => {
 	// Postgres service image is coupled to a Go const (pgtest.go); it moves only
 	// via a manual two-file PR, so Renovate is disabled for it.
@@ -1264,7 +1241,7 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 	// entries that ARE catalog deps — i.e. the bun-types pair (@types/bun is a
 	// catalog pin; bun-types is its transitive lockstep). Every other bunfig
 	// exclude is a literal npm pin or an `overrides` pin (@tanstack/virtual-core,
-	// the Solid v2 / @tanstack query RC track, the @rigelbuild forks) — all
+	// the Solid v2 / @tanstack query RC track, the two @rigelbuild/solid-* pins)
 	// outside the catalog manager's reach, so a catalog-scoped rule cannot and
 	// must not list them: a future auto-bump of those still soaks the 5 days.
 	// Deriving the catalog set from the real manifest (not a hard-coded list)

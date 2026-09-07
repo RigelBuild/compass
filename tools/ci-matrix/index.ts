@@ -38,7 +38,7 @@ export type GenInput = {
 };
 
 export type MatrixEntry = {
-	/** "go" | "bun" | "nix" | "forks" (the tag suffix) */
+	/** "go" | "bun" | "nix" (the tag suffix) */
 	group: string;
 	/** 'true' iff this group has >=1 runnable target — an affected ci-task-bearing member, or the ALWAYS_RUN_ON_PR injection (always 'true' on push/schedule for a group with a ci task) */
 	run: "true" | "false";

@@ -1624,16 +1624,26 @@ describe("main", () => {
 	});
 
 	// A compaction round-trip: a fixture body whose file contains a superseded
-	// compaction loads through the SDK's own elision — proving the T5
-	// reconstruction needs no compaction awareness beyond T4's supersession.
-	test("a superseded-compaction fixture loads via the SDK's own elision", async () => {
+	// compaction loads intact — proving the T5 reconstruction needs no compaction
+	// awareness beyond T4's supersession.
+	//
+	// The SDK moved WHERE supersession is applied. It used to elide the superseded
+	// summary at session LOAD (`elideSupersededCompactionEntries`, gone in 18.x);
+	// it now keeps stored entries verbatim and elides only when assembling the
+	// model-facing context (`buildSessionContext`, session-context.ts:174 ->
+	// `active ? entry.summary : SUPERSEDED_COMPACTION_SUMMARY` at :377). So the
+	// loaded entries carry BOTH real summaries, and this asserts the property that
+	// actually matters to compass either way: the round-trip preserves the whole
+	// compaction chain, so reconstruction never has to reason about supersession.
+	test("a superseded-compaction fixture round-trips with its chain intact", async () => {
 		const session = fakeSession();
 		const cwd = process.cwd();
 		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
 		mkdirSync(sessionDir, { recursive: true });
 		const resumeFile = join(sessionDir, "20260101-000000_compacted.jsonl");
-		// Two compactions on the active branch; the earlier one is superseded and
-		// the SDK's elideSupersededCompactionEntries collapses its summary on load.
+		// Two compactions on the active branch; the earlier one is superseded. Both
+		// summaries are stored verbatim — supersession is applied downstream at
+		// context assembly, not at load.
 		writeFileSync(
 			resumeFile,
 			sessionFixture([
@@ -1659,13 +1669,12 @@ describe("main", () => {
 					fakeCarrier(emptyLog(), { control: emptyControlStream }),
 			},
 		);
-		// The session loaded (post-compaction entry present) and the superseded
-		// compaction's summary was elided by the SDK loader.
+		// The session loaded with its full compaction chain intact — both summaries
+		// present, in order. (Supersession is applied downstream at context
+		// assembly, not here; compass never reads the elided form.)
 		const summaries = compactionSummariesOf(entriesAtCreate);
 		expect(summaries).toHaveLength(2);
-		expect(summaries[0]).toBe(
-			"[Superseded compaction summary elided during session load]",
-		);
+		expect(summaries[0]).toBe("first compaction summary");
 		expect(summaries[1]).toBe("second compaction summary");
 		expect(textsOf(entriesAtCreate)).toContain("after compaction");
 	});
@@ -2393,7 +2402,16 @@ interface SeenConfig {
 	skills?: unknown[];
 	additionalExtensionPaths?: string[];
 	disableExtensionDiscovery?: boolean;
-	customTools?: unknown[];
+	// Typed to the fields these tests actually read (name/loadMode plus the
+	// callable surface a stamp must preserve), so the compiler checks the access
+	// instead of an inline assertion fabricating the shape.
+	customTools?: {
+		name?: unknown;
+		loadMode?: unknown;
+		execute?: unknown;
+		renderCall?: unknown;
+		renderResult?: unknown;
+	}[];
 	enableMCP?: boolean;
 	autoApprove?: boolean;
 	customSystemPrompt?: string;
@@ -2439,7 +2457,33 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		);
 
 		const session = fakeSession();
-		const mcpTools = [{ name: "db.query" }];
+		// A CLASS instance with `#private` state, not an object literal. The real
+		// `mcp.tools` are SDK class instances: `MCPTool` (pi-coding-agent
+		// src/mcp/tool-bridge.ts:492) keeps `execute`/`renderCall`/`renderResult`
+		// on the PROTOTYPE, and its sibling `DeferredMCPTool` (:604) also holds
+		// ECMAScript `#private` fields its `execute` reads. Both properties matter
+		// to the fixture: a plain literal spreads losslessly (so it cannot see a
+		// `{ ...tool }` stamp shear the methods off), and a fixture without
+		// `#private` state cannot see an `Object.create` clone re-home `this` —
+		// that break passes a `typeof execute === "function"` check and only
+		// surfaces when the method is actually CALLED, which is why the assertion
+		// below invokes it.
+		class FakeMcpTool {
+			readonly name = "db.query";
+			readonly mcpServerName = "db";
+			readonly mcpToolName = "query";
+			readonly #server = "db";
+			async execute() {
+				return { content: [], server: this.#server };
+			}
+			renderCall() {
+				return "db.query";
+			}
+			renderResult() {
+				return "db.query result";
+			}
+		}
+		const mcpTools = [new FakeMcpTool()];
 		let connectedWith: Record<string, unknown> | undefined;
 		const seen: SeenConfig[] = [];
 		await main(
@@ -2488,7 +2532,41 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// comms/lifecycle tools (merged in main), so this is a containment check,
 		// not identity — the dedicated native-tools test below pins those.
 		expect(connectedWith).toEqual({ db: { command: "db-mcp" } });
-		expect(opts.customTools).toEqual(expect.arrayContaining(mcpTools));
+		// Asserted by PRESENTATION, not bare membership. main stamps the whole
+		// merged array `loadMode: "essential"`, and that stamp is the load-bearing
+		// part for a mounted-MCP tool: without it the SDK's adapter boundary
+		// defaults it to `"discoverable"`, which registers the tool but keeps it
+		// out of the model's top-level callable schema — and the `xd://` transport
+		// does not recover it in this headless session shape. A membership-only
+		// check passes while the tool is silently unreachable, which is the exact
+		// failure the RIG-1741/CD-3 mount contract exists to prevent.
+		for (const tool of mcpTools) {
+			const stamped = opts.customTools?.find((t) => t.name === tool.name);
+			expect(stamped).toEqual(
+				expect.objectContaining({
+					name: tool.name,
+					loadMode: "essential",
+				}),
+			);
+			// The stamp must preserve the tool's callable surface AND its identity.
+			// All three of `execute`/`renderCall`/`renderResult` are prototype
+			// methods, so a `{ ...tool }` stamp drops them outright; an
+			// `Object.create` clone keeps them but re-homes `this`, so a
+			// `#private` read throws only when the method is INVOKED. Presence
+			// checks pass in that second case, so the contract is asserted by
+			// actually calling `execute` — a tool the model can see and cannot
+			// call is worse than one it never sees.
+			expect(typeof stamped?.renderCall).toBe("function");
+			expect(typeof stamped?.renderResult).toBe("function");
+			const execute = stamped?.execute;
+			if (typeof execute !== "function") {
+				throw new Error("the stamp dropped the tool's execute method");
+			}
+			await expect(execute.call(stamped)).resolves.toEqual({
+				content: [],
+				server: "db",
+			});
+		}
 		expect(opts.enableMCP).toBe(false);
 	});
 
@@ -2894,9 +2972,14 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (2) rules survived (the custom template's <rules> list).
 		expect(rendered).toContain("MP1-RULE-SENTINEL");
 		expect(rendered).toContain("<rules>");
-		// (2) the project footer survived as its own block (environment + cwd).
+		// (2) the project footer survived as its own block. The SDK restructured
+		// this block: `project-prompt.md` renders `PROJECT` + `<workstation>` (the
+		// environment list), while the cwd line moved out to its own
+		// `date-cwd-reminder` block (session/date-cwd-reminder.ts) that this render
+		// path does not include. Assert the footer's own markers, not the relocated
+		// cwd text.
 		expect(rendered).toContain("PROJECT");
-		expect(rendered).toContain("current working directory");
+		expect(rendered).toContain("<workstation>");
 		// The read tool stayed in the set (the gate's precondition).
 		expect(systemPrompt.join("\n")).toContain("read");
 	});

@@ -313,6 +313,10 @@ tasks:
     # has no business realizing (ci.yml has no service on the moon job); it is
     # invoked instead by the env-bearing `pgtest` CI job, the same way pgtest/
     # microvm/forge/gtk4 are peeled into their own service-carrying peer jobs.
+    #
+    # The credential-denylist drift gate is deliberately NOT here: its trigger is
+    # the SDK pin moving, which lives on the JS side, and this project has no
+    # dependency edge to it. It belongs to compass-agent, which owns the pin.
     deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses', 'sqlc-drift']
     options:
       cache: false

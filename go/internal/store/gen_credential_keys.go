@@ -4,24 +4,29 @@
 // settings schema. It is the authoritative refresh step for the store door's
 // credential denylist (RIG-1678 T1, OQ-2 (c)): the door rejects a
 // settings/config.yml that sets any SDK credential-marked path, and that path
-// set MUST track the SDK's own isCredential marker across fork bumps.
+// set MUST track the SDK's own isCredential marker across SDK bumps.
 //
-// isCredential (forks/oh-my-pi/packages/coding-agent/src/config/settings-schema.ts,
+// isCredential (@oh-my-pi/pi-coding-agent src/config/settings-schema.ts,
 // `export function isCredential`) marks a path credential when its schema def
 // carries EITHER `credential: true` at the def level OR `ui.secret === true`.
-// This generator reproduces that exact rule by structurally parsing the
-// SETTINGS_SCHEMA object literal — a self-contained scan with no Node/Bun
-// runtime and no native-module load, so it stays reproducible at a fork bump
+// This generator reproduces that exact rule via internal/schemaparse, which
+// structurally parses the SETTINGS_SCHEMA object literal — a self-contained scan with no Node/Bun
+// runtime and no native-module load, so it stays reproducible at an SDK bump
 // (running isCredential itself would drag the SDK's native `@oh-my-pi/pi-*`
 // modules and their platform binaries into the build).
 //
-// Refresh at a fork bump: from go/internal/store, run
+// The schema is read from the INSTALLED package in node_modules rather than a
+// vendored copy, so the denylist tracks the pinned dependency. It resolves
+// through the CONSUMING package's own dependency edge (see schemaRelPath), so
+// the denylist is generated from the schema compass-agent actually runs.
+//
+// Refresh at an SDK bump: from go/internal/store, run
 //
 //	go generate ./...
 //
 // (the //go:generate directive on credentialKeys in agent_config.go invokes
 // this), then commit the regenerated credential_keys_gen.go. This is the
-// fork-bump checklist entry CP-3's prevention property names — any new
+// SDK-bump checklist entry CP-3's prevention property names — any new
 // credential-marked SDK path lands in the denylist here.
 package main
 
@@ -33,13 +38,29 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strings"
+	"strconv"
+
+	"github.com/RigelBuild/compass/go/internal/store/internal/schemaparse"
 )
 
 // schemaRelPath is the settings schema, relative to this generator's own
 // directory (go/internal/store) — resolved from runtime.Caller so `go generate`
 // finds it regardless of the caller's working directory.
-const schemaRelPath = "../../../forks/oh-my-pi/packages/coding-agent/src/config/settings-schema.ts"
+//
+// It deliberately resolves through the CONSUMING workspace package's own
+// node_modules edge rather than bun's `node_modules/.bun/node_modules/` hoist
+// alias. That alias is a flat namespace with one entry per package NAME, so
+// with two dependents on different versions it can resolve to a version the
+// agent does not run — and it would fail silently, since the wrong schema
+// still parses fine. This path expresses the real invariant: the schema
+// belonging to the package that consumes the SDK.
+//
+// The schema lives in gitignored node_modules, so an SDK bump changes this
+// generator's input without touching any tracked file. The
+// `compass-go:credential-keys-drift` CI task is what makes such a bump fail
+// loudly if the denylist was not regenerated; a `bun install` must have run
+// before `go generate`.
+const schemaRelPath = "../../../packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts"
 
 func main() {
 	if err := run(); err != nil {
@@ -59,21 +80,36 @@ func run() error {
 		return fmt.Errorf("read settings schema %q: %w", schemaPath, err)
 	}
 
-	keys, err := extractCredentialKeys(string(src))
+	keys, total, err := schemaparse.ExtractCredentialKeys(string(src))
 	if err != nil {
 		return fmt.Errorf("parse settings schema: %w", err)
 	}
 	if len(keys) == 0 {
 		return fmt.Errorf("no credential-marked paths found — schema shape changed, refusing to emit an empty denylist")
 	}
+	// Guard against UNDER-collection, which the empty-denylist check above
+	// cannot see: a def shape the parser mishandles yields a SHORT list, not an
+	// error, silently dropping a path from the door's denylist. The check is
+	// relative to the count recorded by the previous run (emitted into the
+	// generated file below), so it catches the realistic failure — losing a
+	// handful of keys to one new shape — rather than only a collapse. A
+	// legitimate schema shrink is adopted by regenerating, which makes the new
+	// count a reviewable line in the diff.
+	prev, err := committedSchemaTotal(filepath.Dir(self))
+	if err != nil {
+		return err
+	}
+	if prev > 0 && total < prev-prev/10 {
+		return fmt.Errorf("parsed %d top-level schema paths, down from %d recorded previously (>10%% drop) — either the schema shrank or the parser is under-collecting on a new def shape; refusing to emit a possibly-short denylist. Verify against the schema, then regenerate to adopt the new count", total, prev)
+	}
 	sort.Strings(keys)
 
 	var b bytes.Buffer
 	fmt.Fprintln(&b, "// Code generated by gen_credential_keys.go; DO NOT EDIT.")
 	fmt.Fprintln(&b, "//")
-	fmt.Fprintln(&b, "// Source: forks/oh-my-pi/.../config/settings-schema.ts (isCredential markers:")
-	fmt.Fprintln(&b, "// `credential: true` at the def level OR `ui.secret === true`). Refresh with")
-	fmt.Fprintln(&b, "// `go generate ./...` from go/internal/store at a fork bump.")
+	fmt.Fprintln(&b, "// Source: @oh-my-pi/pi-coding-agent src/config/settings-schema.ts (isCredential")
+	fmt.Fprintln(&b, "// markers: `credential: true` at the def level OR `ui.secret === true`). Refresh")
+	fmt.Fprintln(&b, "// with `cd go/internal/store && go generate ./...` at an SDK bump.")
 	fmt.Fprintln(&b, "")
 	fmt.Fprintln(&b, "package store")
 	fmt.Fprintln(&b, "")
@@ -84,6 +120,11 @@ func run() error {
 		fmt.Fprintf(&b, "\t%q,\n", k)
 	}
 	fmt.Fprintln(&b, "}")
+	fmt.Fprintln(&b, "")
+	fmt.Fprintln(&b, "// schemaTotalPaths is the number of top-level paths the schema carried when")
+	fmt.Fprintln(&b, "// this file was generated. The generator compares against it to catch a")
+	fmt.Fprintln(&b, "// parser that has stopped collecting properly (see gen_credential_keys.go).")
+	fmt.Fprintf(&b, "const schemaTotalPaths = %d\n", total)
 
 	formatted, err := format.Source(b.Bytes())
 	if err != nil {
@@ -93,284 +134,35 @@ func run() error {
 	if err := os.WriteFile(outPath, formatted, 0o644); err != nil {
 		return fmt.Errorf("write %q: %w", outPath, err)
 	}
-	fmt.Fprintf(os.Stderr, "gen_credential_keys: wrote %d credential paths to %s\n", len(keys), outPath)
+	fmt.Fprintf(os.Stderr, "gen_credential_keys: wrote %d credential paths (of %d schema paths) to %s\n", len(keys), total, outPath)
 	return nil
 }
 
-// extractCredentialKeys parses the SETTINGS_SCHEMA object literal in the schema
-// source and returns every top-level key whose def is credential-marked. It
-// mirrors isCredential: a def is credential-marked when it has `credential:
-// true` directly, or a `ui` object with `secret: true`.
-func extractCredentialKeys(src string) ([]string, error) {
-	p := &jsParser{s: src}
-	if err := p.seekSchema(); err != nil {
-		return nil, err
-	}
-	schema, err := p.parseObject()
+// committedSchemaTotal reads the schemaTotalPaths constant recorded by the
+// previous run. A missing file or absent constant returns 0, meaning "no
+// baseline yet" — the caller then skips the relative check rather than
+// failing, so a first generation (or a hand-deleted output) still works.
+func committedSchemaTotal(dir string) (int, error) {
+	src, err := os.ReadFile(filepath.Join(dir, "credential_keys_gen.go"))
 	if err != nil {
-		return nil, err
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read committed denylist: %w", err)
 	}
-	var keys []string
-	for key, val := range schema {
-		def, ok := val.(map[string]any)
-		if !ok {
-			continue
-		}
-		if def["credential"] == "true" {
-			keys = append(keys, key)
-			continue
-		}
-		if ui, ok := def["ui"].(map[string]any); ok && ui["secret"] == "true" {
-			keys = append(keys, key)
-		}
+	const marker = "const schemaTotalPaths = "
+	i := bytes.Index(src, []byte(marker))
+	if i < 0 {
+		return 0, nil
 	}
-	return keys, nil
-}
-
-// jsParser is a minimal structural parser over a JS/TS source string. It reads
-// object literals into map[string]any (nested objects → maps; every other value
-// → its trimmed raw text, so a scalar `true` compares equal to the string
-// "true"), skipping arrays and arbitrary expressions with balanced bracket,
-// string, template, and comment handling. It is not a full JS parser — only
-// enough to walk SETTINGS_SCHEMA's shape.
-type jsParser struct {
-	s string
-	i int
-}
-
-// seekSchema advances past `SETTINGS_SCHEMA` and its `=` to the opening `{` of
-// the schema object literal, leaving the cursor on that brace.
-func (p *jsParser) seekSchema() error {
-	idx := strings.Index(p.s, "SETTINGS_SCHEMA")
-	if idx < 0 {
-		return fmt.Errorf("SETTINGS_SCHEMA not found")
+	rest := src[i+len(marker):]
+	end := bytes.IndexByte(rest, '\n')
+	if end < 0 {
+		end = len(rest)
 	}
-	p.i = idx + len("SETTINGS_SCHEMA")
-	p.skipTrivia()
-	if p.i >= len(p.s) || p.s[p.i] != '=' {
-		return fmt.Errorf("expected '=' after SETTINGS_SCHEMA")
+	n, err := strconv.Atoi(string(bytes.TrimSpace(rest[:end])))
+	if err != nil {
+		return 0, fmt.Errorf("parse schemaTotalPaths: %w", err)
 	}
-	p.i++
-	p.skipTrivia()
-	if p.i >= len(p.s) || p.s[p.i] != '{' {
-		return fmt.Errorf("expected '{' opening SETTINGS_SCHEMA")
-	}
-	return nil
-}
-
-// parseObject parses `{ key: value, ... }` starting at the current `{`,
-// returning key → value (nested object as map[string]any, else raw text).
-func (p *jsParser) parseObject() (map[string]any, error) {
-	if p.i >= len(p.s) || p.s[p.i] != '{' {
-		return nil, fmt.Errorf("parseObject: expected '{' at offset %d", p.i)
-	}
-	p.i++ // consume '{'
-	obj := map[string]any{}
-	for {
-		p.skipTrivia()
-		if p.i >= len(p.s) {
-			return nil, fmt.Errorf("parseObject: unterminated object")
-		}
-		if p.s[p.i] == '}' {
-			p.i++
-			return obj, nil
-		}
-		key, err := p.parseKey()
-		if err != nil {
-			return nil, err
-		}
-		p.skipTrivia()
-		if p.i >= len(p.s) || p.s[p.i] != ':' {
-			return nil, fmt.Errorf("parseObject: expected ':' after key %q", key)
-		}
-		p.i++ // consume ':'
-		val, err := p.parseValue()
-		if err != nil {
-			return nil, err
-		}
-		obj[key] = val
-		p.skipTrivia()
-		if p.i < len(p.s) && p.s[p.i] == ',' {
-			p.i++
-		}
-	}
-}
-
-// parseKey reads a property name: a quoted string or a bare identifier.
-func (p *jsParser) parseKey() (string, error) {
-	p.skipTrivia()
-	if p.i >= len(p.s) {
-		return "", fmt.Errorf("parseKey: unexpected EOF")
-	}
-	c := p.s[p.i]
-	if c == '"' || c == '\'' || c == '`' {
-		return p.parseStringLiteral()
-	}
-	start := p.i
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '$' {
-			p.i++
-			continue
-		}
-		break
-	}
-	if p.i == start {
-		return "", fmt.Errorf("parseKey: no identifier at offset %d", start)
-	}
-	return p.s[start:p.i], nil
-}
-
-// parseValue returns a nested map for an object value, or the trimmed raw text
-// for any other value (array, scalar, or expression), consuming a balanced span
-// up to the next top-level ',' or '}'.
-func (p *jsParser) parseValue() (any, error) {
-	p.skipTrivia()
-	if p.i >= len(p.s) {
-		return nil, fmt.Errorf("parseValue: unexpected EOF")
-	}
-	if p.s[p.i] == '{' {
-		obj, err := p.parseObject()
-		if err != nil {
-			return nil, err
-		}
-		// A nested object value may be followed by a type cast (e.g. `} as
-		// const`); consume and discard it so the enclosing object parse resumes
-		// on the next top-level ',' or '}'.
-		p.skipTrivia()
-		if p.i < len(p.s) && p.s[p.i] != ',' && p.s[p.i] != '}' {
-			if _, err := p.parseRawExpr(); err != nil {
-				return nil, err
-			}
-		}
-		return obj, nil
-	}
-	return p.parseRawExpr()
-}
-
-// parseRawExpr consumes a value expression up to (not including) the next
-// top-level ',' or '}', respecting nested (), [], {}, strings, templates, and
-// comments. Returns the trimmed raw text.
-func (p *jsParser) parseRawExpr() (string, error) {
-	start := p.i
-	depth := 0
-	angle := 0
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		switch c {
-		case '/':
-			if p.i+1 < len(p.s) && (p.s[p.i+1] == '/' || p.s[p.i+1] == '*') {
-				p.skipComment()
-				continue
-			}
-			p.i++
-		case '"', '\'', '`':
-			if _, err := p.parseStringLiteral(); err != nil {
-				return "", err
-			}
-		case '(', '[', '{':
-			depth++
-			p.i++
-		case ')', ']', '}':
-			if depth == 0 {
-				return strings.TrimSpace(p.s[start:p.i]), nil
-			}
-			depth--
-			p.i++
-		case '<':
-			// A generic type-argument list in a cast (e.g. `Record<string,
-			// unknown>`) carries top-level commas that are NOT value
-			// separators; track angle depth so they are skipped.
-			angle++
-			p.i++
-		case '>':
-			if angle > 0 {
-				angle--
-			}
-			p.i++
-		case ',':
-			if depth == 0 && angle == 0 {
-				return strings.TrimSpace(p.s[start:p.i]), nil
-			}
-			p.i++
-		default:
-			p.i++
-		}
-	}
-	return strings.TrimSpace(p.s[start:p.i]), nil
-}
-
-// parseStringLiteral consumes a '...' , "..." , or `...` string starting at the
-// current quote, handling escapes and (for templates) ${ } interpolation with
-// balanced braces. Returns the unescaped-raw inner text for a simple string;
-// for templates the raw inner text (interpolation left as-is) — callers only
-// use it for keys, which are never templates.
-func (p *jsParser) parseStringLiteral() (string, error) {
-	quote := p.s[p.i]
-	p.i++ // consume opening quote
-	start := p.i
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		if c == '\\' {
-			p.i += 2
-			continue
-		}
-		if quote == '`' && c == '$' && p.i+1 < len(p.s) && p.s[p.i+1] == '{' {
-			p.i += 2
-			braces := 1
-			for p.i < len(p.s) && braces > 0 {
-				switch p.s[p.i] {
-				case '{':
-					braces++
-				case '}':
-					braces--
-				}
-				p.i++
-			}
-			continue
-		}
-		if c == quote {
-			inner := p.s[start:p.i]
-			p.i++ // consume closing quote
-			return inner, nil
-		}
-		p.i++
-	}
-	return "", fmt.Errorf("parseStringLiteral: unterminated string")
-}
-
-// skipTrivia skips whitespace and comments.
-func (p *jsParser) skipTrivia() {
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			p.i++
-			continue
-		}
-		if c == '/' && p.i+1 < len(p.s) && (p.s[p.i+1] == '/' || p.s[p.i+1] == '*') {
-			p.skipComment()
-			continue
-		}
-		break
-	}
-}
-
-// skipComment skips a // line or /* block */ comment starting at the current
-// '/'. The caller guarantees the two-char opener.
-func (p *jsParser) skipComment() {
-	if p.s[p.i+1] == '/' {
-		p.i += 2
-		for p.i < len(p.s) && p.s[p.i] != '\n' {
-			p.i++
-		}
-		return
-	}
-	p.i += 2
-	for p.i < len(p.s) {
-		if p.s[p.i] == '*' && p.i+1 < len(p.s) && p.s[p.i+1] == '/' {
-			p.i += 2
-			return
-		}
-		p.i++
-	}
+	return n, nil
 }

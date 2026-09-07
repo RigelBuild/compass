@@ -11,9 +11,9 @@
 // result out, and the captured request asserted verbatim.
 
 import { describe, expect, test } from "bun:test";
+import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
-import { ArkErrors, type Type } from "arktype";
 import {
 	create,
 	DespawnPeerResponseSchema,
