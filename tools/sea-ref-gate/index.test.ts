@@ -39,12 +39,6 @@ describe("lineHasToken — uppercase-numeric SEA-NNN only", () => {
 });
 
 describe("isCarveOut", () => {
-	test("forks/ subtree is carved out", () => {
-		expect(isCarveOut("forks/devenv/src/x.nix")).toBe(true);
-	});
-	test("first-party forks/README.md is NOT carved out", () => {
-		expect(isCarveOut("forks/README.md")).toBe(false);
-	});
 	test("the gate's own source is carved out", () => {
 		expect(isCarveOut("tools/sea-ref-gate/index.ts")).toBe(true);
 	});
@@ -77,7 +71,7 @@ describe("findViolations", () => {
 	test("does NOT flag a carved-out file even when it carries the token", () => {
 		expect(
 			findViolations([
-				"forks/devenv/README.md:3:upstream mentions SEA-1 here",
+				"apps/eng-docs/dist/index.html:3:generated copy mentions SEA-1 here",
 				"tools/sea-ref-gate/index.ts:10:the token SEA-1512",
 			]),
 		).toHaveLength(0);
@@ -111,7 +105,7 @@ describe("findViolations", () => {
 		const v = findViolations([
 			"a.md:1:SEA-1 one",
 			"b.md:2:SEA-2 two",
-			"forks/x:3:SEA-3 carved",
+			"bun.lock:3:SEA-3 carved",
 		]);
 		expect(v).toHaveLength(2);
 	});
@@ -162,7 +156,7 @@ describe("runOnce", () => {
 		const out: string[] = [];
 		const errs: string[] = [];
 		const code = await runOnce(
-			deps(["forks/devenv/x.nix:1:SEA-1 upstream"], out, errs),
+			deps(["apps/eng-docs/dist/index.html:1:SEA-1 generated"], out, errs),
 		);
 		expect(code).toBe(0);
 	});
