@@ -17,7 +17,6 @@ package runtime
 // 0, so BootCanary's echo-nonce round-trip check passes without a real guest.
 
 import (
-	"connectrpc.com/connect"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -30,6 +29,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/RigelBuild/compass/go/internal/runtime/microvm"
@@ -41,12 +42,14 @@ import (
 // map (so GuestRSSBytes is assertable), and Shutdown is recorded (the teardown
 // assertion).
 type canaryFakeVM struct {
-	nonce       []byte
-	pss         map[string]int64
-	pssErr      error
-	shutdownErr error
-	mu          sync.Mutex
-	shutdown    bool
+	nonce                  []byte
+	pss                    map[string]int64
+	pssErr                 error
+	shutdownErr            error
+	sharedDir              string
+	sharedDirPresentOnStop bool
+	mu                     sync.Mutex
+	shutdown               bool
 }
 
 func (f *canaryFakeVM) Health(context.Context) (*compassv1.HealthResponse, error) {
@@ -60,6 +63,8 @@ func (f *canaryFakeVM) Health(context.Context) (*compassv1.HealthResponse, error
 func (f *canaryFakeVM) Shutdown(context.Context) error {
 	f.mu.Lock()
 	f.shutdown = true
+	_, err := os.Stat(f.sharedDir)
+	f.sharedDirPresentOnStop = err == nil
 	f.mu.Unlock()
 	return f.shutdownErr
 }
@@ -74,6 +79,12 @@ func (f *canaryFakeVM) wasShutdown() bool {
 	return f.shutdown
 }
 
+func (f *canaryFakeVM) sharedDirWasPresentOnShutdown() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sharedDirPresentOnStop
+}
+
 var _ guestVM = (*canaryFakeVM)(nil)
 
 // canaryLaunchRecorder is the fake launchFunc: it decodes the boot nonce from
@@ -85,13 +96,16 @@ type canaryLaunchRecorder struct {
 	pss                   map[string]int64
 	pssErr                error
 	shutdownErr           error
-	breakWorkspaceRemoval bool
-	workspaceCleanup      func(string)
 	launchErr             error
-	vms                   []*canaryFakeVM
-	calls                 int
-	lastDeadline          time.Time
-	lastHasDeadln         bool
+	breakWorkspaceRemoval bool
+	// workspaceCleanup runs synchronously while r.mu is held. It must not touch
+	// the recorder and may only register t.Cleanup; synchronous launch makes
+	// registering cleanup here safe.
+	workspaceCleanup func(string)
+	vms              []*canaryFakeVM
+	calls            int
+	lastDeadline     time.Time
+	lastHasDeadln    bool
 }
 
 func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfig) (guestVM, error) {
@@ -123,7 +137,7 @@ func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfi
 			r.workspaceCleanup(blocked)
 		}
 	}
-	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr, shutdownErr: r.shutdownErr}
+	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr, shutdownErr: r.shutdownErr, sharedDir: cfg.FSSharedDir}
 	r.vms = append(r.vms, vm)
 	return vm, nil
 }
@@ -264,6 +278,9 @@ func TestBootCanarySequencing(t *testing.T) {
 	}
 	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
 		t.Error("canary VM was not shut down on teardown")
+	}
+	if !rec.vms[0].sharedDirWasPresentOnShutdown() {
+		t.Error("shared dir was absent during Shutdown; inverted defer order removed it while the VM was live")
 	}
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
@@ -452,14 +469,40 @@ func TestBootCanaryTeardownErrorJoined(t *testing.T) {
 	assertNoTempLeak(t, before)
 }
 
-// TestBootCanaryWorkspaceCleanupErrorJoined pins throwaway-workspace cleanup
-// error composition: an otherwise healthy canary must pass the exec gate and
-// retain the permission failure from removing its workspace (record §(e)).
-func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses the 0500 permission seam this test relies on (CAP_DAC_OVERRIDE)")
+// TestBootCanaryBodyAndTeardownErrorsJoined pins the Remove defer's join of a
+// body failure with the shutdown failure, catching a regression that overwrites
+// the body error at teardown instead of retaining both errors (record §(e)).
+func TestBootCanaryBodyAndTeardownErrorsJoined(t *testing.T) {
+	before := canaryTempDirs(t)
+	m, rec, client := seamCanary(t, nil)
+	wantErr := errors.New("boom: vmm refused to die")
+	rec.shutdownErr = wantErr
+	wrong := "not-the-nonce"
+	client.stdout = &wrong
+
+	_, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want joined body and shutdown failures")
 	}
-	m, rec, _ := seamCanary(t, nil)
+	if !strings.Contains(err.Error(), "does not contain the nonce") {
+		t.Errorf("BootCanary error %q lost the primary body failure", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("BootCanary error %q does not contain shutdown failure", err)
+	}
+	assertNoTempLeak(t, before)
+}
+
+// breakWorkspaceRemoval arranges a permission failure in the workspace
+// cleanup tests. It restores 0700 before RemoveAll and removes filepath.Dir(path),
+// not path, because blocked is a child of the workspace root. These tests omit
+// assertNoTempLeak deliberately: t.Cleanup reclaims the blocked directory after
+// the assertion point.
+func breakWorkspaceRemoval(t *testing.T, rec *canaryLaunchRecorder) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the 0500 permission check; a non-root process would need CAP_DAC_OVERRIDE")
+	}
 	rec.breakWorkspaceRemoval = true
 	rec.workspaceCleanup = func(path string) {
 		t.Cleanup(func() {
@@ -471,6 +514,14 @@ func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBootCanaryWorkspaceCleanupErrorJoined pins throwaway-workspace cleanup
+// error composition: an otherwise healthy canary must pass the exec gate and
+// retain the permission failure from removing its workspace (record §(e)).
+func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
+	m, rec, _ := seamCanary(t, nil)
+	breakWorkspaceRemoval(t, rec)
 
 	report, err := m.BootCanary(t.Context())
 	if err == nil {
@@ -497,23 +548,10 @@ func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
 // cleanup joins: one call must retain independent shutdown and permission
 // failures rather than overwrite either error (record §(e)).
 func TestBootCanaryCleanupAndTeardownErrorsJoined(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses the 0500 permission seam this test relies on (CAP_DAC_OVERRIDE)")
-	}
 	m, rec, _ := seamCanary(t, nil)
 	wantErr := errors.New("boom: vmm refused to die")
 	rec.shutdownErr = wantErr
-	rec.breakWorkspaceRemoval = true
-	rec.workspaceCleanup = func(path string) {
-		t.Cleanup(func() {
-			if err := os.Chmod(path, 0o700); err != nil {
-				t.Errorf("restoring workspace permissions: %v", err)
-			}
-			if err := os.RemoveAll(filepath.Dir(path)); err != nil {
-				t.Errorf("removing workspace parent: %v", err)
-			}
-		})
-	}
+	breakWorkspaceRemoval(t, rec)
 
 	_, err := m.BootCanary(t.Context())
 	if err == nil {
