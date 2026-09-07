@@ -1,6 +1,6 @@
 # Design: Forge state-transition write op (RIG-3331)
 
-Status: Draft
+Status: Active
 
 ## Problem / Intent
 
@@ -10,13 +10,18 @@ transitions an issue or PR between open and closed, and no `forge.Provider`
 method exists for it. Matt ruled (2026-09-05): "we need state transitions 100%.
 if they are missing we need to add immediately." This record designs the op:
 an agent sets an issue/PR's state on BOTH GitHub and Linear, through the same
-attribution chokepoint every other forge write rides — and the emitted STATE
-event carries the acting agent's identity, the load-bearing contract the
-RIG-3326 self-origin suppression record keys its STATE arm on.
+attribution chokepoint every other forge write rides — and the acting
+agent's identity is recoverable when the resulting STATE event arrives, the
+load-bearing contract the RIG-3326 self-origin suppression record keys its
+STATE arm on. Per the OQ-1 ruling that identity travels in a consumable
+`forge_state_transitions` memo, not on the event itself.
 
-This record is **Draft**: it holds at two load-bearing Open Questions
-(OQ-1 the actor carrier, OQ-2 the Linear default state) and flips to Active in
-the freeze push that lands their rulings, together with the ledger rows (T8).
+This record is **frozen**. Both load-bearing Open Questions were ruled by
+Matt on 2026-09-07: OQ-1 selects the consumable memo as the actor carrier, and
+OQ-2 resolved into a reject-when-ambiguous default rule (see §Open Questions
+for both rulings and §The cross-provider state model for the resulting
+contract). The DL-342/DL-343 rows land in this push (T8), so every task below
+is unconditional.
 
 ## Approach
 
@@ -225,16 +230,40 @@ Reopening a merged GitHub PR is whatever the forge says it is — GitHub answers
 
 > \*StatusError{422} → invalid_argument carrying the forge's validation message
 
-**Linear default-state resolution (when `workflow_state` is empty):**
-`state: closed` targets the team's lowest-positioned workflow state of type
-`completed`; `state: open` targets the team's lowest-positioned state of type
-`unstarted` (falling back to `backlog` if the team has no unstarted state).
+**Linear default-state resolution (when `workflow_state` is empty), per the
+OQ-2 ruling (Matt, 2026-09-07): default only where the target is unambiguous, and
+reject otherwise.** `state: closed` targets the team's sole workflow state of
+type `completed`; `state: open` targets its sole state of type `unstarted`,
+falling back to the sole `backlog` state if the team has no unstarted state.
+If the resolved candidate set holds more than one state, the op does NOT
+guess: it fails in-band with `invalid_argument` naming every candidate and
+requiring an explicit `workflow_state`.
+
 This inverts the read-side mapping (`linearClosedStateTypes` = completed,
 canceled ⇒ closed; everything else ⇒ open) with one deliberate asymmetry:
-default-close picks `completed`, never `canceled` — an agent closing its issue
-means "done", and "canceled" is reachable explicitly via `workflow_state`.
-The choice of default rule is surfaced as OQ-2 (it picks a human-visible
-board column on the caller's behalf).
+default-close resolves against `completed`, never `canceled` — an agent
+closing its issue means "done", and "canceled" is reachable explicitly via
+`workflow_state`.
+
+Two rejected alternatives, and why this rule beats both. A **positional
+tie-break** (lowest-positioned candidate) never fails, which is the problem:
+it silently picks a human-visible board column on the caller's behalf, and it
+would start guessing years later — the first day someone adds a second
+`completed` column — with no test watching the change in behaviour. Making
+`workflow_state` **REQUIRED** removes the guess but forces every caller to
+fetch the team's workflow states before it can close a Linear issue,
+dissolving the portable `{open, closed}` core into a provider-aware callsite
+and splitting GitHub/Linear ergonomics. Reject-when-ambiguous keeps the
+portable core for the overwhelmingly common single-candidate board while
+making a silent column-pick structurally impossible.
+
+Measured on the Rigel team at freeze (2026-09-07): eight workflow states, of which
+exactly one is `completed` ("Done"), one `unstarted` ("Todo") and one
+`backlog` ("Backlog") — so the default path is unambiguous today and the
+rejection arm is a guard against future drift, not a routine outcome. That
+measurement is also what retired OQ-2's original framing: the "silent column
+choice" it asked Matt to rule on had, on the one board this ships against, no
+choice to make.
 
 ### The wire shape
 
@@ -600,14 +629,15 @@ PR close / PR reopen / 422-on-merged-PR-reopen.
 Tests: golden replay (untagged) + `livegithub` legs against the testbed
 (close→verify state via `GetIssue`→reopen; PR twin).
 
-### T3 — Linear implementation + fixtures (OQ-2-CONTINGENT)
+### T3 — Linear implementation + fixtures
 
-**Blocked on OQ-2.** This task implements the default-mapping rule, which is
-exactly what OQ-2 asks Matt to rule. If he picks the stated alternative —
-`workflow_state` REQUIRED on Linear, no default at all — this task's
-default-resolution code disappears and two of its five fixtures
-(close-by-default, reopen-by-default) are wrong. Do not start T3 before OQ-2
-is ruled.
+**Unblocked (OQ-2 ruled 2026-09-07).** This task implements the
+reject-when-ambiguous rule: default to the sole candidate of the target type,
+and fail with `invalid_argument` naming the candidates when more than one
+exists. The close-by-default and reopen-by-default fixtures are correct as
+listed, and a multi-candidate fixture is added below to cover the rejection
+arm — the guard is the part with no board to exercise it today, so it must be
+fixture-driven.
 
 Workflow-state resolution (per-team name→id + type, in its own TTL cache with
 invalidate-and-retry-once — NOT the invalidation-free `teamIDs` cache; see
@@ -619,15 +649,18 @@ check (named state's type must agree with the portable target), the
 Interfaces: consumes T1; produces fixtures for close-by-default /
 close-by-name / reopen-by-default / unknown-name (`invalid_argument`) /
 duplicate-name-within-team (`invalid_argument`) / type-contradiction
-(`invalid_argument`).
+(`invalid_argument`) / **two-`completed`-states-with-no-`workflow_state`
+(`invalid_argument` naming both candidates — the OQ-2 rejection arm; no
+current team reproduces it, so the fixture is the only coverage)**.
 
 Tests: golden replay + `livegithub` Linear legs (gated on the existing
 `LINEAR_FORGE` app-actor token per DL-324).
 
-### T4 — Server arms (arms unconditional; memo half OQ-1-CONTINGENT)
+### T4 — Server arms
 
-**Split by OQ-1.** The two server arms, their validation screens and the
-result flattening are unconditional — they stand under either OQ-1 ruling.
+**Fully in scope (OQ-1 ruled 2026-09-07: the memo).** The two server arms,
+their validation screens and the result flattening stand as written, and the
+memo half below is now equally in scope rather than contingent.
 The memo half (the `forge_state_transitions` table, `RecordStateTransition`,
 `ConsumeStateTransition`) exists ONLY under the memo mechanism; if OQ-1 rules
 the synthetic-event way, that half is discarded and the actor rides the
@@ -660,11 +693,12 @@ Tests: unit (fake provider + fake store): dispatch, validation rejections
 failure; pgtest for the store surface (upsert-latest-wins, consume-once,
 freshness bound, miss cases).
 
-### T5 — STATE actor resolution seam (OQ-1-CONTINGENT — the RIG-3326 contract surface)
+### T5 — STATE actor resolution seam (the RIG-3326 contract surface)
 
-**Exists only under OQ-1's memo ruling.** This whole task is the memo's
-read side; if OQ-1 rules the synthetic-event way it has no subject and
-evaporates. Do not start T5 before OQ-1 is ruled.
+**In scope: OQ-1 ruled the memo (2026-09-07).** This task is the memo's read
+side and the surface RIG-3326's STATE arm consumes. Its landing is what lets
+that record's interim-open STATE arm close, so RIG-3326 is the downstream
+consumer of this task specifically.
 
 The go/server-adapted seam through which the notify lane resolves a STATE
 event's actor from the memo: an `ingest`-package-local interface (the
@@ -703,59 +737,66 @@ Interfaces: consumes T2/T3.
 
 ### T8 — Ledger append
 
-The DL-342/DL-343 rows land in `docs/designs/DECISIONS.md` in the **freeze
-push of this PR**, not in its first push, and the reason is specific rather
-than procedural: **DL-343's substance is what OQ-1 asks Matt to rule.** The
-sibling records that ship their rows with the record (#900, #932) stamp them
-`Active (Matt, <date>)` because Matt had already ruled their content; writing
-that stamp here — on a mechanism this record explicitly holds open — would
-attribute a decision he has not made. DL-342's wording is likewise partly
-downstream of OQ-2 (the Linear default clause).
+**Done in this push.** The DL-342/DL-343 rows are appended to
+`docs/designs/DECISIONS.md` with the ruled wording and the real ruling date
+(2026-09-07), which is why they were withheld from the first push: DL-343's
+substance *was* what OQ-1 asked Matt to rule, and DL-342's default clause was
+downstream of OQ-2. The sibling records that ship rows with the
+record (PRs #900 and #932) stamp `Active (Matt, <date>)` because their
+content was already ruled;
+stamping that here before the rulings would have attributed decisions he had
+not made. This satisfies `skill://design`'s same-PR ledger flip, because the
+freeze push IS this PR.
 
-So: no ledger edit in this push; on the OQ-1/OQ-2 rulings, append both rows
-with the ruled wording and the real ruling date, re-verifying next-free ids
-against main AND every open design PR (the documented DL-264 collision
-precedent — a sibling record "also claimed DL-264 and merged first") and
-renumbering if a sibling landed first. This satisfies `skill://design`'s
-same-PR ledger flip, because the freeze push IS this PR.
+Ids re-verified next-free at freeze, against main *and* every open design PR —
+not just the adjacent lane's, per the DL-264 collision precedent (a sibling
+record "also claimed DL-264 and merged first"). Main's highest is DL-337
+(304 rows); #913 holds DL-338/339, #900 holds DL-340, #932 holds DL-341; a
+sweep of every open non-queue PR found no other claimant on 342/343. Note
+that this check decays as main advances — it was re-run at freeze precisely
+because main had moved between the first push and this one.
 
 ## Tasks
 
-Two of the Open Questions are load-bearing on the plan, so three tasks are
-contingent and are marked as such. Do not read this list as nine
-unconditional slices.
+Both load-bearing Open Questions were ruled at freeze (2026-09-07), so all nine
+slices below are unconditional. T3 implements OQ-2's reject-when-ambiguous
+rule; T4's memo half and T5 exist because OQ-1 selected the memo.
 
 - [ ] T0: proto arms 14/15 + request messages + regen
 - [ ] T1: `Provider.TransitionIssueState` / `TransitionPullRequestState` +
       `TransitionState` input + fake + GitHub/Linear bodies (the interface
       widening and all four implementors land together or the package is red)
 - [ ] T2: GitHub PATCH implementations + golden fixtures + livegithub legs
-- [ ] T3: **(OQ-2-contingent)** Linear `issueUpdate` implementation,
-      workflow-state name/type resolution + own TTL cache + ambiguity
-      rejection + default rule + fixtures + livegithub legs
+- [ ] T3: Linear `issueUpdate` implementation, workflow-state name/type
+      resolution + own TTL cache + name-ambiguity rejection + OQ-2's
+      default-or-reject rule (incl. the multi-candidate rejection fixture)
+      + fixtures + livegithub legs
 - [ ] T4: server arms (validate → write → flatten → result) — unconditional;
-      **memo half (OQ-1-contingent)**: `forge_state_transitions` in
+      plus the memo half: `forge_state_transitions` in
       `0001_init.sql` with `tenant_id` + RLS array + `tenantOwned` floor
       entry, store surface, tests
-- [ ] T5: **(OQ-1-contingent)** STATE actor-resolution seam over the memo (the
-      RIG-3326 contract surface) + both-lane wiring + pgtests
+- [ ] T5: STATE actor-resolution seam over the memo (the RIG-3326 contract
+      surface — landing it closes that record's interim-open STATE arm)
+      + both-lane wiring + pgtests
 - [ ] T6: `forge_transition_issue_state` / `forge_transition_pull_request_state`
       tools
 - [ ] T7: live-oracle cross-op sweep
-- [ ] T8: **(OQ-1/OQ-2-contingent)** append DL-342/DL-343 with the ruled
-      wording + real ruling date, in this PR's freeze push; re-verify
-      next-free ids against main and every open design PR
+- [x] T8: DL-342/DL-343 appended to `docs/designs/DECISIONS.md` with the
+      ruled wording and the real ruling date, in this PR's freeze push;
+      next-free ids re-verified against main and every open design PR
 
 ## Ledger impact
 
-Ledger-impact: PROPOSES two rows for `docs/designs/DECISIONS.md` (Comms &
-tools section, beside DL-241/DL-276), appended in this PR's freeze push once
-OQ-1/OQ-2 are ruled — see T8 for why not in the first push:
+Ledger-impact: APPENDS two rows to `docs/designs/DECISIONS.md` (Comms &
+tools section, beside DL-241/DL-276) in this push — see T8 for why they were
+withheld from the first push:
 
 - **DL-342** — the forge state-transition op: portable `{open, closed}` core +
   per-provider refinements (`close_reason` / `workflow_state`), fail-loud
-  in-band `invalid_argument` on refinement/provider mismatch (and on an
-  ambiguous Linear state name), `ErrUnsupported` on the Linear PR half;
+  in-band `invalid_argument` on refinement/provider mismatch, on an ambiguous
+  Linear state name, and on a default resolution with more than one candidate
+  state (default only where the target is unambiguous — never a positional
+  guess), `ErrUnsupported` on the Linear PR half;
   transitions are NOT F3-deduped and NOT DL-055-recorded — not for the comment
   arm's reason (no coordinate) but because the coordinate's row is a
   write-once authorship fact whose `client_request_id` is the create's F3
@@ -778,23 +819,31 @@ in draft).
 
 ## Open Questions
 
-- **OQ-1 (load-bearing): actor-carrier mechanism — memo-consume (recommended)
-  vs synthetic event at the chokepoint.** This record recommends the durable
-  memo consumed at the notify lane (§Actor attribution; alternatives weighed
-  in §Alternatives considered). Needs Matt because the consumer contract
-  crosses two records: the RIG-3326 record's frozen text describes the actor
-  as stamped "onto the emitted event" by this op, which reads as the synthetic
-  shape, while the memo attributes the provider-echoed event instead —
-  equivalent for the suppression outcome, different in mechanism, and only
-  Matt can rule which side's text bends (this is a cross-record contract
-  question, not an implementation detail this record may decide alone).
-- **OQ-2 (load-bearing): the Linear default-state rule.** When
-  `workflow_state` is empty: close ⇒ lowest-positioned `completed`-type state;
-  open ⇒ lowest-positioned `unstarted`-type (fallback `backlog`). Needs Matt
-  because the rule silently chooses a human-visible board column on every
-  default close/reopen an agent performs — a product-behavior call, not a
-  code-shape call. Alternative: make `workflow_state` REQUIRED on Linear
-  (no default at all), trading portability for explicitness.
+- **OQ-1 (load-bearing) — RESOLVED (Matt, 2026-09-07): the consumable memo.**
+  The actor carrier is the durable `forge_state_transitions` memo, written
+  after a successful transition at the chokepoint and consumed on match at the
+  notify lane (§Actor attribution). The synthetic-event alternative is
+  rejected. Because the RIG-3326 record's frozen text describes the actor as
+  stamped "onto the emitted event" — which reads as the synthetic shape — this
+  ruling makes **RIG-3326 the side whose text bends**: its STATE arm resolves
+  the actor through a memo lookup at the actor-resolution seam rather than off
+  the event body. The suppression outcome is identical either way; only the
+  mechanism differs. Consequence for the plan: T5 has a subject, T4's memo
+  half is in scope, and DL-343 carries this mechanism.
+- **OQ-2 (load-bearing) — RESOLVED (Matt, 2026-09-07): default when
+  unambiguous, reject when ambiguous.** With `workflow_state` empty, resolve
+  the sole candidate of the target type and use it; on two or more candidates
+  fail with `invalid_argument` naming them and requiring an explicit
+  `workflow_state` (§The cross-provider state model). Both originally-offered
+  options were rejected — the positional tie-break because it guesses
+  silently, a mandatory `workflow_state` because it forces a provider-aware
+  fetch into every callsite. **This question was also ill-posed as filed**:
+  it was surfaced as a product-behavior call about "silently choosing a
+  human-visible board column", a premise never measured against the target
+  board. Measured at freeze, the Rigel team has exactly one `completed`, one
+  `unstarted` and one `backlog` state, so there was no column choice to make;
+  the ruling therefore converts OQ-2 from a product call into a fail-loud
+  code-shape guard against future drift.
 - **OQ-3 (non-load-bearing, deferred): memo freshness bound.** The
   consume-on-match window (proposed: minutes-scale, exact constant at
   execution) trades a late webhook's missed attribution (fail-open, one
