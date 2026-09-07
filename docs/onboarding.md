@@ -40,12 +40,13 @@ nix profile install github:RigelBuild/compass#compass-app
 > **Note:** the first release has not been cut yet, so there is nothing to
 > download today, and the flake install above currently gives you the app
 > binary without its UI assets or stack binaries, so it will not launch yet.
-> Both are being fixed. To run Compass today, self-host the entry tier below —
-> that path works end to end.
+> Both of those are being fixed. You can still bring a self-hosted stack up
+> today — see the entry tier below — but running a session in it needs the app,
+> so that waits on the same fix.
 
-Launch it, sign in with your own model subscription, and the app is ready. Your
-subscription is the only credential involved; there is no Compass-hosted service
-in this path.
+Once the app installs, you launch it, sign in with your own model subscription,
+and it is ready. Your subscription is the only credential involved; there is no
+Compass-hosted service in this path.
 
 Graduate to a self-hosted stack when you want any of:
 
@@ -180,8 +181,10 @@ This runs the entry tier, which is the default backend.
 > Documented microVM bring-up is pending that packaging; use the entry tier
 > meanwhile.
 
-Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. Point a
-client at the server's TLS door and run a session to confirm the install.
+Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. Check
+the stack came up with `compass-stack status`. Connecting a client and running a
+session needs the app, which has no working install yet — see the note in
+[The app](#the-app).
 
 For a stack that survives reboots, run it under systemd —
 [self-host.md](./self-host.md#running-under-systemd) carries a working unit. To
