@@ -100,12 +100,16 @@ on:
     - cron: '17 7 * * *'
   workflow_dispatch:
     # TWO distinct dispatch lanes, disambiguated by the `pr` input:
-    #   - `pr` EMPTY  → the operator-only forge fixture-regeneration lane
-    #     (regen-forge-fixtures below). The live `-update` capture rewrites the
-    #     golden testdata against the real testbed, whose PATs live only in
-    #     Actions secrets, so a local `-update` is impossible. Its own `if:`
-    #     gates on `workflow_dispatch` AND an empty `pr`, so the gate jobs stay
-    #     off it and this trigger only refreshes fixtures from the Actions tab.
+    #   - `pr` EMPTY  → an operator-only REGENERATION lane; WHICH one is selected
+    #     by the `regen` input below (`forge` → regen-forge-fixtures, `visual` →
+    #     regen-visual-baselines). The forge lane's live `-update` capture
+    #     rewrites the golden testdata against the real testbed, whose PATs live
+    #     only in Actions secrets, so a local `-update` is impossible; the visual
+    #     lane re-captures the Playwright baselines on CI's pinned Chromium, so
+    #     the gate never compares dev-box pixels. Both lanes' own `if:` gates on
+    #     `workflow_dispatch` AND an empty `pr` (plus their `regen` arm), so the
+    #     gate jobs stay off this trigger and it only refreshes committed
+    #     artifacts from the Actions tab.
     #   - `pr` SET (a PR number) → the base-re-point re-trigger. When a stacked
     #     PR's base is re-pointed, pr-base-repoint.yml dispatches this workflow
     #     with `pr=<N>`; the gate jobs below run the FULL battery (as on a
@@ -116,9 +120,27 @@ on:
     #     ref GitHub recomputes against the new base (actions/checkout#919).
     inputs:
       pr:
-        description: 'PR number to re-run against its recomputed merge ref (base re-point); empty = forge fixture regen'
+        description: 'PR number to re-run against its recomputed merge ref (base re-point); empty = a regen dispatch, lane selected by `regen`'
         required: false
         default: ''
+      regen:
+        # Which regeneration lane a bare dispatch (empty `pr`) fires. Both regen
+        # lanes gate on `workflow_dispatch` + an empty `pr`, so that gate alone
+        # cannot tell them apart: without a discriminator every bare dispatch
+        # would fire BOTH, and a visual-baseline refresh would also launch the
+        # 90-minute live forge capture and open a spurious forge bot PR. Each
+        # lane's `if:` therefore adds `&& inputs.regen == '<own>'`, making them
+        # mutually exclusive. `forge` is the default deliberately: it is what a
+        # bare dispatch did before this input existed, so adding the visual lane
+        # changed no existing behaviour — the visual lane fires only on an
+        # explicit `regen: visual`.
+        description: 'Which regen lane a bare dispatch fires (ignored when `pr` is set)'
+        required: false
+        type: choice
+        default: 'forge'
+        options:
+          - forge
+          - visual
 
 # One in-flight run per ref per event action. A superseded push's run is
 # answering a question nobody is asking any more. Both the event and its action
@@ -156,8 +178,8 @@ jobs:
     # guard every gate job carries.
     # Run on every gate event (push, schedule, pull_request) and on a
     # base-re-point re-trigger — a `workflow_dispatch` carrying a non-empty
-    # `pr` input. Stay OFF the fixture-regen dispatch (empty `pr`), which
-    # runs regen-forge-fixtures alone. `github.event.inputs.pr` is '' for
+    # `pr` input. Stay OFF a regen dispatch (empty `pr`), where exactly one
+    # regen lane runs, selected by the `regen` input. `github.event.inputs.pr` is '' for
     # every non-dispatch event, so the left disjunct carries those.
     if: >-
       github.event_name != 'workflow_dispatch' ||
@@ -2253,8 +2275,8 @@ jobs:
     #     i.e. mergeable without a verdict. That takes a deliberate human action
     #     against one's own gating run and is the accepted, standard `!cancelled()`
     #     tradeoff; `always()` would have red'd it instead.
-    #   - the work jobs stay off a fixture-regen dispatch (regen-forge-fixtures
-    #     runs alone there, with an empty `pr` input), so both `needs` skip —
+    #   - the work jobs stay off a regen dispatch (exactly one regen lane runs
+    #     there, selected by `regen`, with an empty `pr` input), so both `needs` skip —
     #     this rollup must skip too, or `!cancelled()` would red the required
     #     check on `skipped != success` for a run that never gates a merge. It
     #     DOES run on a base-re-point re-trigger (workflow_dispatch with a
@@ -2358,9 +2380,25 @@ jobs:
     # normal gate event AND off the base-re-point re-trigger (which carries a
     # non-empty `pr` and drives the gate jobs, not this regen lane), so the
     # required `rollup` check above (which does not `needs:` this job) is untouched.
+    #
+    # The `regen` arm makes this lane mutually exclusive with the sibling
+    # regen-visual-baselines lane below, which shares the identical
+    # workflow_dispatch + empty-`pr` gate: without it, one bare dispatch would
+    # fire both and a visual refresh would drag the 90-minute live capture and a
+    # spurious forge bot PR along with it. It reads the `inputs` context, the
+    # idiomatic one for a typed `choice` input. `github.event.inputs.regen`
+    # would resolve identically here — GitHub materializes a declared
+    # `default:` into both contexts, and the two differ only in that `inputs`
+    # preserves booleans as booleans — but `inputs` is the form to copy for a
+    # future boolean input, where that difference does bite. Either way an API
+    # dispatch omitting `regen` still fires this lane exactly as a bare
+    # dispatch did before the input existed. (The `pr` conjunct stays on
+    # `github.event.inputs` — unchanged, and its default is the empty string
+    # either way.)
     if: >-
       github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.pr == ''
+      github.event.inputs.pr == '' &&
+      inputs.regen == 'forge'
     # The top-level `permissions: contents: read` is the floor; this job widens
     # its own to open a PR: contents:write to push the regen branch,
     # pull-requests:write to open the PR against it.
@@ -2478,3 +2516,158 @@ jobs:
             diff before merging.
           add-paths: go/internal/forge/testdata
 
+  regen-visual-baselines:
+    name: regen-visual-baselines
+    runs-on: ubuntu-latest
+    # The operator-only visual-baseline regeneration lane, the sibling of
+    # regen-forge-fixtures above. `--update-snapshots=all` re-captures every
+    # apps/ui/e2e/__screens__ PNG from the fixture-mode UI under CI's PINNED
+    # Chromium, then opens a BOT PR carrying the rewritten baselines for image
+    # review. It exists because the visual gate compares against committed
+    # pixels: a baseline captured on a dev box differs from CI's Chromium by
+    # font rasterization alone, so the only baselines the gate can trust are
+    # ones this lane produced. Like the forge lane it is a SEPARATE job, never a
+    # step in the moon battery, and the required `rollup` check above does not
+    # `needs:` it — a regen dispatch must not post or disturb gate contexts.
+    #
+    # Same workflow_dispatch + empty-`pr` gate as the forge lane, plus the
+    # `regen` discriminator that keeps the two mutually exclusive (see the
+    # `regen` input at the top of this file). The declared `default: 'forge'`
+    # is what makes a bare dispatch fire ONLY the forge lane and leave this one
+    # off; see the forge lane's `if:` for why the `inputs` context is the form
+    # to copy here.
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.pr == '' &&
+      inputs.regen == 'visual'
+    # The top-level `permissions: contents: read` is the floor; widened exactly
+    # as the forge lane's: contents:write to push the regen branch,
+    # pull-requests:write to open the PR against it.
+    permissions:
+      contents: write
+      pull-requests: write
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the create-pull-request action can branch and diff
+          # cleanly, matching the forge regen lane's checkout.
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The SAME two-cache trust posture as the moon job — the two
+          # substituters the vendored forks use plus their trusted keys, never
+          # `accept-flake-config` (which would trust a PR-supplied substituter +
+          # key). See the moon job's install-nix-action step for the full rationale.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # Phase one of the two-phase bootstrap, identical to the moon job: the
+        # language runtimes (bun/node/moon/go) from gate-tools.nix's `langs`, built
+        # from the devenv.lock pin so this lane re-captures under the same
+        # toolchain the gate replays against. See the moon job for the two-phase
+        # rationale.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Put the dev shell's nixpkgs tools on PATH
+        # Phase two: the nixpkgs tools from the parity script's own parse of
+        # devenv.nix, run under the bun phase one added.
+        run: |
+          attrs=$(bun tools/toolchain/parity.ts --print-nix-attrs)
+          out=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
+          echo "$out/bin" >>"$GITHUB_PATH"
+
+      - name: Realize the pinned Chromium
+        # THE step that makes this lane's output usable as a gate baseline.
+        # Playwright resolves its browser from PLAYWRIGHT_CHROMIUM_PATH and
+        # otherwise falls back to a dev-box path, so without this export the
+        # re-capture would either fail or bake non-CI pixels into the baselines.
+        # chromium is Linux-only in nixpkgs and therefore not in the parity
+        # `attrs` above — it is realized out-of-band from its own pinned helper,
+        # the same mechanism the moon job's phase-two step uses, so both capture
+        # and replay run the byte-identical browser. Written to $GITHUB_ENV (not
+        # $GITHUB_PATH): the payload step needs the absolute binary path, not a
+        # `chromium` on PATH.
+        run: |
+          chromium=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/chromium-e2e-env.nix chromium)
+          echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
+
+      - name: Install the workspace JS dependencies
+        # Unlike the forge regen lane — whose payload is `go test` and needs no
+        # JS deps — this lane's payload is `bunx playwright test`, so
+        # @playwright/test and vite must actually be on disk. One root
+        # `bun install --frozen-lockfile` into the hoisted node_modules, the same
+        # install the moon battery reaches through `root:install` and the docsite
+        # deploy runs directly. `--frozen-lockfile` so a regen dispatch can never
+        # silently resolve a different dependency tree than the gate does.
+        run: bun install --frozen-lockfile
+
+      - name: Re-capture the visual baselines under the pinned Chromium
+        working-directory: apps/ui
+        # `=all` is load-bearing, NOT a default worth omitting. The bare flag
+        # takes the CLI's `preset: "changed"` (playwright/lib/program.js), and
+        # under `changed` a shot is rewritten only once its diff ALREADY
+        # exceeds that shot's ratio budget — a sub-threshold drift leaves the
+        # committed dev-box PNG in place. That would make "the baselines are
+        # CI-captured" conditional on the very threshold it must be independent
+        # of, and would quietly no-op the burn-in (runs 2..N produce an empty
+        # diff and open no PR, reading as "identical" without comparing bytes).
+        # Under `all` the expected buffer is withheld from the comparator, so
+        # every shot is re-captured and any byte difference is written.
+        #
+        # No secrets and no services: the spec boots the UI in fixture mode,
+        # which is offline by construction (no daemon, no base URL), so this
+        # lane needs none of the forge lane's credential machinery. Invoked
+        # directly rather than through moon: the gate's task replays baselines,
+        # and a cached-as-fresh regen would hand back the pixels it was
+        # dispatched to replace.
+        run: bunx playwright test e2e/visual-smoke.spec.ts --update-snapshots=all
+
+      - name: Open a bot PR with the regenerated baselines
+        # The rewritten __screens__ PNGs are a working-tree diff; this opens a
+        # bot PR carrying them for image review, the same bot-opens-a-PR
+        # credential path the forge regen lane uses, on the same SHA pin.
+        #
+        # DELIBERATELY no `base:`. create-pull-request defaults it to the
+        # checked-out branch, and this lane's contract (OQ-2 (b)) is that the bot
+        # PR targets the FEATURE BRANCH the lane was dispatched on — that is how
+        # a red visual gate on a branch gets its baselines refreshed in place,
+        # without laundering an unreviewed UI change onto main. Do NOT "fix" this
+        # to `base: main`.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: visual-baseline-regen-${{ github.run_id }}
+          title: 'test(ui): regenerate visual regression baselines'
+          commit-message: 'test(ui): regenerate visual regression baselines'
+          body: >-
+            Automated `--update-snapshots=all` re-capture of the visual regression
+            baselines (`apps/ui/e2e/__screens__/`) under CI's pinned Chromium,
+            produced by the `regen-visual-baselines` workflow_dispatch lane.
+            Review the baselines in the Files-changed tab: GitHub renders PNG
+            changes as native image diffs, with 2-up, swipe, and onion-skin
+            modes.
+
+
+            jj HAZARD — after merging this PR, run `jj git fetch` and rebase
+            onto the updated bookmark BEFORE your next `jj-vine submit`, then
+            confirm the baseline commit is still in the stack. This commit lands
+            on the GitHub bookmark but is NOT in your local jj working copy, so
+            a rebase (or any bookmark rewrite) can silently drop it and
+            resurrect the red visual gate with no obvious cause.
+          add-paths: apps/ui/e2e/__screens__
