@@ -108,7 +108,7 @@ func (c *child) hasExited() bool {
 
 // VM is a running (or partially-started, on the Launch error path) guest and
 // its two supporting host daemons. It owns their process handles, the captured
-// serial console + per-daemon logs, and the AF_UNIX sockets/pidfile that must
+// serial console + per-daemon logs, and the AF_UNIX sockets/pidfiles that must
 // be removed on teardown. The zero devices (virtiofsd nil under the net-only
 // smoke) are tolerated by Shutdown and PSS.
 type VM struct {
@@ -127,10 +127,13 @@ type VM struct {
 	vsockSocket string // host end of the hybrid vsock (empty under the net-only smoke)
 	vsockPort   uint32
 
-	// Cleanup targets: the AF_UNIX sockets the daemons/VMM serve and passt's
-	// pidfile. Removed by Shutdown after the processes are reaped.
-	sockets []string
-	pidfile string
+	// Cleanup targets: the AF_UNIX sockets the daemons/VMM serve and the three
+	// host-written pidfiles (§(a)). Removed by Shutdown after the processes are
+	// reaped. A pidfile path is appended by startRecordedChild BEFORE its first
+	// write, so a boot that fails between the intent record and the settled one
+	// still has its record cleaned up by the deferred Shutdown.
+	sockets  []string
+	pidfiles []string
 
 	shutdownOnce sync.Once
 	shutdownErr  error
@@ -212,8 +215,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 			//nolint:gosec // G204: the microVM harness seam — virtiofsdPath is LookPath-resolved and the argv is harness-built from BootConfig, neither user-controlled
 			cmd: exec.CommandContext(ctx, virtiofsdPath, virtiofsdArgs(cfg, subUIDBase, subGIDBase)...),
 		}
-		if startErr := startChild(vm.virtiofsd); startErr != nil {
-			return nil, fmt.Errorf("microvm: starting virtiofsd: %w", startErr)
+		if startErr := vm.startRecordedChild(vm.virtiofsd, dir, "virtiofsd.pid"); startErr != nil {
+			return nil, startErr
 		}
 		vm.sockets = append(vm.sockets, cfg.FSSocket)
 	}
@@ -222,7 +225,6 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	if lookErr != nil {
 		return nil, fmt.Errorf("microvm: resolving passt on PATH: %w", lookErr)
 	}
-	vm.pidfile = filepath.Join(dir, "passt.pid")
 	vm.passt = &child{
 		name:    "passt",
 		logPath: filepath.Join(dir, "passt.log"),
@@ -230,19 +232,24 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		// process (default is to daemonize, which would orphan it and make the
 		// Cmd exit immediately). The -a/-g/-n/-D flags fix the host-controlled
 		// address plan passt serves over DHCP (§(c)).
+		//
+		// NO --pid: passt's self-written pidfile is retired (§(a)). Because -f
+		// makes this Cmd the passt process, the host knows passt's pid exactly
+		// as it knows the other two, and a host-written record can carry the
+		// starttime+boot-id reuse defense that a daemon's own bare-pid file
+		// cannot. One writer, one format, three files.
 		//nolint:gosec // G204: the microVM harness seam — passtPath is LookPath-resolved and the argv is harness-built (fixed flags + BootConfig socket), neither user-controlled
 		cmd: exec.CommandContext(ctx, passtPath,
 			"--vhost-user",
 			"--socket", cfg.Net.VhostUserSocket,
-			"--pid", vm.pidfile,
 			"-f",
 			"-a", guestAddr,
 			"-g", guestGW,
 			"-n", guestPrefix,
 			"-D", guestDNS),
 	}
-	if startErr := startChild(vm.passt); startErr != nil {
-		return nil, fmt.Errorf("microvm: starting passt: %w", startErr)
+	if startErr := vm.startRecordedChild(vm.passt, dir, "passt.pid"); startErr != nil {
+		return nil, startErr
 	}
 	vm.sockets = append(vm.sockets, cfg.Net.VhostUserSocket)
 
@@ -282,8 +289,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		//nolint:gosec // G204: the microVM harness seam — vmmPath is LookPath-resolved and vmmArgs is harness-built from BootConfig, neither user-controlled
 		cmd: exec.CommandContext(ctx, vmmPath, vmmArgs(cfg, vm.consolePath, opts)...),
 	}
-	if startErr := startChild(vm.vmm); startErr != nil {
-		return nil, fmt.Errorf("microvm: starting cloud-hypervisor: %w", startErr)
+	if startErr := vm.startRecordedChild(vm.vmm, dir, "vmm.pid"); startErr != nil {
+		return nil, startErr
 	}
 	// startChild installed the sole reaper that owns cloud-hypervisor's single
 	// cmd.Wait; hoist its channel onto the VM so WaitVMMExit observes a guest
@@ -557,7 +564,7 @@ func (vm *VM) Health(ctx context.Context) (*compassv1.HealthResponse, error) {
 // Shutdown tears the guest and its daemons down: the VMM is killed first (a VM
 // gets no graceful drain), then virtiofsd and passt are reaped (SIGTERM, a
 // bounded wait, then SIGKILL), each Wait'd to avoid zombies, and finally the
-// AF_UNIX sockets and passt's pidfile are removed. It runs at most once (guarded
+// AF_UNIX sockets and the three pidfiles are removed. It runs at most once (guarded
 // by sync.Once) so it is safe to call explicitly AND from t.Cleanup. The serial
 // console log is deliberately NOT removed — the test reads it after teardown.
 func (vm *VM) Shutdown(ctx context.Context) error {
@@ -581,15 +588,15 @@ func (vm *VM) Shutdown(ctx context.Context) error {
 				errs = append(errs, reapErr)
 			}
 		}
-		// Remove the sockets and pidfile now that nothing is serving them.
+		// Remove the sockets and pidfiles now that nothing is serving them.
 		for _, s := range vm.sockets {
 			if rmErr := os.Remove(s); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 				errs = append(errs, fmt.Errorf("removing socket %s: %w", s, rmErr))
 			}
 		}
-		if vm.pidfile != "" {
-			if rmErr := os.Remove(vm.pidfile); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-				errs = append(errs, fmt.Errorf("removing pidfile %s: %w", vm.pidfile, rmErr))
+		for _, p := range vm.pidfiles {
+			if rmErr := os.Remove(p); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+				errs = append(errs, fmt.Errorf("removing pidfile %s: %w", p, rmErr))
 			}
 		}
 		vm.shutdownErr = errors.Join(errs...)
@@ -762,4 +769,30 @@ func (vm *VM) childByName(name string) *child {
 	default:
 		return nil
 	}
+}
+
+// startRecordedChild records c's on-disk identity around its spawn, per §(a)'s
+// two-step write: the pre-spawn INTENT record, then startChild, then the
+// SETTLED record naming the pid the spawn returned. pidfileName is the file's
+// name within the session runtime dir (vmm.pid/virtiofsd.pid/passt.pid).
+//
+// Either write failing fails the boot: orphan reapability is load-bearing, so a
+// session that cannot be recorded must not run. launch's deferred vm.Shutdown
+// tears down whatever already started and removes the paths registered here.
+func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
+	path := filepath.Join(dir, pidfileName)
+	// Registered before the first write, not after the last: the intent record
+	// exists precisely to survive a crash between the two writes, so Shutdown
+	// must already know to remove it if the spawn in between fails.
+	vm.pidfiles = append(vm.pidfiles, path)
+	if err := writePidIntent(path); err != nil {
+		return fmt.Errorf("microvm: recording %s pid intent: %w", c.name, err)
+	}
+	if err := startChild(c); err != nil {
+		return fmt.Errorf("microvm: starting %s: %w", c.name, err)
+	}
+	if err := writePidfile(path, c.cmd.Process.Pid); err != nil {
+		return fmt.Errorf("microvm: recording %s pidfile: %w", c.name, err)
+	}
+	return nil
 }

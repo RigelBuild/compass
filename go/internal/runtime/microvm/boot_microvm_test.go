@@ -20,6 +20,7 @@ package microvm
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -117,7 +118,7 @@ func TestNetOnlyBootSmoke(t *testing.T) {
 // 1024 MB), complete the Health handshake with net_provisioned &&
 // workspace_mounted inside the 60 s deadline, record boot latency and
 // per-process PSS, and verify Shutdown leaves no orphan process and removes the
-// unix sockets.
+// unix sockets and the three pidfiles.
 func TestFullBoot(t *testing.T) {
 	env := microvmtest.Require(t)
 	cfg := bootConfig(t, env, 2, 1024)
@@ -141,6 +142,14 @@ func TestFullBoot(t *testing.T) {
 		for _, s := range vm.sockets {
 			if fileExists(s) {
 				t.Errorf("socket %s not removed by Shutdown", s)
+			}
+		}
+		// And the three pidfiles: a record must not outlive the session it
+		// names, or the reaper would find a dir full of dead records for a
+		// session that shut down cleanly.
+		for _, p := range vm.pidfiles {
+			if fileExists(p) {
+				t.Errorf("pidfile %s not removed by Shutdown", p)
 			}
 		}
 	})
@@ -181,6 +190,70 @@ func TestFullBoot(t *testing.T) {
 			t.Logf("PSS %s: %d kB", name, kb)
 		} else {
 			t.Logf("PSS %s: unavailable (sandboxed or exited)", name)
+		}
+	}
+}
+
+// TestFullBootRecordsSettledPidfiles is W1's KVM assertion (§(a)): after a real
+// Launch the runtime dir must hold a SETTLED record for each of the three
+// children — no intent line left behind — and each record must name a process
+// that is actually live with a matching starttime. That is exactly the input
+// the orphan reaper acts on, so the hermetic tier's coverage of the primitives
+// is not enough: this pins that launch wires them to the REAL pids of the REAL
+// children, under the real spawn ordering (virtiofsd, passt, then the VMM).
+func TestFullBootRecordsSettledPidfiles(t *testing.T) {
+	env := microvmtest.Require(t)
+	cfg := bootConfig(t, env, 2, 1024)
+
+	vm, err := Launch(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("Launch failed: %v", err)
+	}
+
+	dir := filepath.Dir(cfg.Net.VhostUserSocket)
+	// The pid each name is expected to carry, from the child handles launch
+	// built — so a record naming SOME live process (or another child's pid)
+	// cannot pass.
+	wantPIDs := map[string]int{
+		"vmm.pid":       vm.vmm.cmd.Process.Pid,
+		"virtiofsd.pid": vm.virtiofsd.cmd.Process.Pid,
+		"passt.pid":     vm.passt.cmd.Process.Pid,
+	}
+	paths := make([]string, 0, len(wantPIDs))
+	for name, wantPID := range wantPIDs {
+		path := filepath.Join(dir, name)
+		paths = append(paths, path)
+
+		rec, readErr := readPidfile(path)
+		if readErr != nil {
+			t.Errorf("readPidfile(%s): %v", name, readErr)
+			continue
+		}
+		if rec.Intent {
+			t.Errorf("%s still holds an intent record after Launch; the settled write did not land", name)
+			continue
+		}
+		if rec.PID != wantPID {
+			t.Errorf("%s records pid %d, want the child's %d", name, rec.PID, wantPID)
+		}
+		// Liveness via the recorded identity, not a bare signal: this is the
+		// starttime comparison the reaper makes before it kills anything.
+		alive, aliveErr := rec.alive()
+		if aliveErr != nil {
+			t.Errorf("%s alive(): %v", name, aliveErr)
+			continue
+		}
+		if !alive {
+			t.Errorf("%s does not name a live process with a matching starttime (%+v)", name, rec)
+		}
+	}
+
+	if shutErr := vm.Shutdown(context.WithoutCancel(t.Context())); shutErr != nil {
+		t.Fatalf("Shutdown: %v", shutErr)
+	}
+	for _, path := range paths {
+		if fileExists(path) {
+			t.Errorf("pidfile %s survived Shutdown", path)
 		}
 	}
 }
