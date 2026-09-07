@@ -369,9 +369,17 @@ func declareServerSecretNames(ctx context.Context, st *store.Store, cfg ServeCon
 	var names []string
 	if fc.boardIngestionEnabled() {
 		names = append(names, fc.App.AppPrivateKeySecret, fc.App.AppWebhookSecretName)
-		if fc.ReviewerApp.AppID != 0 {
-			names = append(names, fc.ReviewerApp.AppPrivateKeySecret)
-		}
+	}
+	// The reviewer App is gated on its OWN AppID, independent of the primary,
+	// because forgeWriteAppsConfigured evaluates the two independently (:277-278).
+	// Nesting this under boardIngestionEnabled — which keys on the PRIMARY App
+	// id — would declare nothing for a reviewer-only deployment, so
+	// warnPartialForgeWriteSecrets would see havePrimary == haveReviewer == false
+	// and stay silent, reading a half-configured deployment as an unconfigured
+	// one. That turns the likely operator typo of configuring one of the two
+	// Apps into a silent misconfiguration instead of a diagnosable one.
+	if fc.ReviewerApp.AppID != 0 {
+		names = append(names, fc.ReviewerApp.AppPrivateKeySecret)
 	}
 	// The Linear gate reads the RAW config, not the resolved one: resolved()
 	// DEFAULTS the two client-credential names, so a deployment running no
@@ -381,8 +389,13 @@ func declareServerSecretNames(ctx context.Context, st *store.Store, cfg ServeCon
 	// configured Linear. The live consumers gate the same way
 	// (buildLinearWebhookWiring on the raw LinearWebhookSecretName).
 	raw := cfg.Forge
+	// Predicate and appended values both read `raw`: whenever the predicate
+	// holds, both raw names are non-empty and resolved() returns them unchanged,
+	// so the two accessors are identical here and mixing them only invites a
+	// later reader to hunt for a difference that does not exist. A half-set pair
+	// declares nothing, matching buildLinearTokenSource's both-absent off-state.
 	if raw.LinearClientIDSecretName != "" && raw.LinearClientSecretName != "" {
-		names = append(names, fc.LinearClientIDSecretName, fc.LinearClientSecretName)
+		names = append(names, raw.LinearClientIDSecretName, raw.LinearClientSecretName)
 	}
 	if raw.LinearWebhookSecretName != "" {
 		names = append(names, raw.LinearWebhookSecretName)
@@ -769,6 +782,13 @@ type serveDoors struct {
 	uds *http.Server
 	dev *http.Server
 	net *http.Server
+	// netResolver is the resolver INSTANCE threaded to the net door, i.e. the
+	// one runnerhub's FetchSecrets delivers from. It must always be the
+	// CONTAINER instance; recorded because buildNetworkServer resolves nothing
+	// at build time, so the wiring is otherwise unobservable and a swap to the
+	// server instance would silently deliver every deployment secret into every
+	// agent container. Asserted by the buildDoors routing test.
+	netResolver secrets.Resolver
 	// linearNotify is the Linear agent-notification lane (RIG-2732 T7), built
 	// beside the webhook handler it feeds; nil when Linear is not configured (its
 	// client-credentials pair undeclared). Serve starts its arm + reconciler on
@@ -925,15 +945,23 @@ func buildDoors(
 	// POST /webhooks/github ingress OUTSIDE the bearer/admin gate. On a build
 	// error the listeners this Serve bound are still ours to close.
 	var netServer *http.Server
+	// One variable feeds both the call and the record below, so the two cannot
+	// drift apart and the recorded instance is always the delivered one.
+	netResolver := resolver
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver, otelIC, webhookSink, webhookSecret, linearWebhookHandler)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, netResolver, otelIC, webhookSink, webhookSecret, linearWebhookHandler)
 		if err != nil {
 			return serveDoors{}, err
 		}
 		netServer = s
 	}
 
-	return serveDoors{uds: udsServer, dev: devServer, net: netServer, linearNotify: linearNotifyLane}, nil
+	// netResolver records WHICH instance reached the container delivery path.
+	// buildNetworkServer resolves nothing at build time, so this threading is
+	// otherwise unobservable and a swap here is silent — and a swap here is the
+	// severe one: runnerhub's FetchSecrets would serve `server_secrets`, handing
+	// every deployment secret to every agent container.
+	return serveDoors{uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver, linearNotify: linearNotifyLane}, nil
 }
 
 // drainSet is the shutdown-side view of what Serve built: the two buses whose
