@@ -2262,6 +2262,10 @@ describe("main activates loop OpenTelemetry", () => {
 		// its parent and fires the capture hook `main` installed on the session's
 		// telemetry option — the real bridge's `onSpanStart` (cli.ts:970-976).
 		async function turnSpanFor(ops: WireAgentControl[]) {
+			// Fail loud on a second call within one test: the shared `traceProvider`
+			// slot would be clobbered and only the last one shut down (afterEach
+			// resets it to undefined between tests).
+			expect(traceProvider).toBeUndefined();
 			process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
 			const exporter = new InMemorySpanExporter();
 			traceProvider = new NodeTracerProvider({
@@ -2336,6 +2340,9 @@ describe("main activates loop OpenTelemetry", () => {
 			// PARENT, not link: the wire traceparent survived the closure intact.
 			expect(span?.parentSpanContext?.traceId).toBe(TP_TRACE_ID);
 			expect(span?.parentSpanContext?.spanId).toBe(TP_SPAN_ID);
+			// PARENT, not link — pin the N=1 topology the comment above claims,
+			// matching agent.test.ts's N=1 arms.
+			expect(span?.links).toHaveLength(0);
 			// And the message actually rode the turn — proof the deliver reached the
 			// agent at all, so a green parent assertion can never be a no-turn
 			// vacuum.
@@ -2355,6 +2362,7 @@ describe("main activates loop OpenTelemetry", () => {
 			const span = await turnSpanFor([steerOp(2n, "m2", "hey", "", TP_HEADER)]);
 			expect(span?.parentSpanContext?.traceId).toBe(TP_TRACE_ID);
 			expect(span?.parentSpanContext?.spanId).toBe(TP_SPAN_ID);
+			expect(span?.links).toHaveLength(0);
 			expect(span?.attributes["compass.message.ids"]).toBe("m2");
 		});
 	});
