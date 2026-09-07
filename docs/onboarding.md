@@ -30,9 +30,18 @@ alongside it, so keep the tree intact rather than copying binaries onto your
 `PATH`. Symlinking `bin/compass-app` into a directory on your `PATH` is fine.
 Each release also publishes a `SHA256SUMS` file to verify what you downloaded.
 
+On Linux you can also install the app straight from the flake, without
+downloading a release:
+
+```console
+nix profile install github:RigelBuild/compass#compass-app
+```
+
 > **Note:** the first release has not been cut yet, so there is nothing to
-> download today. On Linux you can install the app from the flake meanwhile:
-> `nix profile install github:RigelBuild/compass#compass-app`.
+> download today, and the flake install above currently gives you the app
+> binary without its UI assets or stack binaries, so it will not launch yet.
+> Both are being fixed. To run Compass today, self-host the entry tier below —
+> that path works end to end.
 
 Launch it, sign in with your own model subscription, and the app is ready. Your
 subscription is the only credential involved; there is no Compass-hosted service
