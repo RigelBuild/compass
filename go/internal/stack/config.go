@@ -120,7 +120,7 @@ const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 // agentSocketTailWidth is the fixed suffix the runner appends to RuntimeDir to
 // form the widest per-container agent socket path:
 // /containers/compass-agent-<32-hex account id>/agent.sock. It is 69 bytes
-// (devenv.nix:270-278), so on Linux (sunPathMax 107) a RuntimeDir over 38 bytes
+// (devenv.nix:479-480), so on Linux (sunPathMax 107) a RuntimeDir over 38 bytes
 // overflows the cap. Built with the same filepath.Join the runner uses rather
 // than hand-summed, so it tracks the real path construction.
 var agentSocketTailWidth = len(filepath.Join(

@@ -382,7 +382,7 @@ OQ4, not a task.
 - **Tool pins (as of this record):** bun 1.3.13 / node 24.18.0 / moon 2.4.2 /
   go 1.26.5 (.prototools:6-13); biome 2.5.4 (biome.json:2, bun.lock:237);
   vite port 5173 strictPort (apps/ui/vite.config.ts:11); dev-http door 50051,
-  TLS network door 50052 (devenv.nix:275,280).
+  TLS network door 50052 (devenv.nix:403,408).
 - **Never-heavy-on-up:** nothing added to `devenv up` may pull a heavy
   closure (the precedent: `dogfood:agent-image` is deliberately opt-in,
   devenv.nix:412-415).
@@ -564,8 +564,9 @@ co-edits the compass-server process attr T4 unguards (darwin variance via
 guard move; both tasks' interfaces acknowledge the co-edit).
 
 - **Interfaces:** consumes `podman machine ssh/inspect`, the token file
-  `${config.devenv.state}/compass/runner.token` (devenv.nix:343,398), the
-  trust anchor `tls.crt` (devenv.nix:347), and the network door on port
+  `${config.devenv.state}/compass/runner.token` (devenv.nix:548 mints it,
+  :496 reads it), the trust anchor `tls.crt` (devenv.nix:529 mints it, :500
+  trusts it), and the network door on port
   50052 at the spike-resolved VM-reachable host address (the exact address
   and its discovery method are the opening spike's outputs, not assumed
   here); produces a new `compass-gen-cert` flag `--san` (string,
