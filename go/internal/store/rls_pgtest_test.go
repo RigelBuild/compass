@@ -542,9 +542,11 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	// deliberate future exemption is a conscious edit here, not a silent miss.
 	// server_secrets / server_key_state are deployment-global: the master key
 	// decrypts EVERY tenant's credentials and the PEM/webhook/Linear secrets
-	// belong to the deployment, so there is no tenant to scope by. Listed here
-	// to record the exemption deliberately — both tables carry no tenant_id, so
-	// the enumeration below cannot see them either way.
+	// belong to the deployment, so there is no tenant to scope by. The entry is
+	// NOT mere bookkeeping: the bucket-A loop at the end of this test iterates
+	// this map and asserts each listed table has RLS DISABLED, so removing the
+	// entry would let an accidental `ENABLE ROW LEVEL SECURITY` on either table
+	// pass unnoticed.
 	bucketA := map[string]bool{
 		"tenants": true, "tokens": true, "agent_config_bundle": true,
 		"server_secrets": true, "server_key_state": true,

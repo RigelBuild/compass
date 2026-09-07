@@ -42,17 +42,41 @@ func TestT0ServerSecretsShape(t *testing.T) {
 		}
 	}
 
-	// The load-bearing half: grants are NOT inherited from 0001's snapshot.
-	for _, role := range []string{"compass_app", "compass_system"} {
-		for _, priv := range []string{"SELECT", "INSERT", "UPDATE", "DELETE"} {
-			var ok bool
-			if err := s.pool.QueryRow(ctx,
-				`SELECT has_table_privilege($1, (current_schema()||'.server_secrets')::regclass, $2)`,
-				role, priv).Scan(&ok); err != nil {
-				t.Fatal(err)
+	// The load-bearing half: grants are NOT inherited from 0001's snapshot, so
+	// each table needs its own. Both tables are asserted with their OWN expected
+	// privilege set, and server_key_state's withheld DELETE is asserted ABSENT —
+	// that omission is a deliberate least-privilege choice (the tripwire digest
+	// must not be droppable), so it is pinned, not left to chance.
+	for _, tc := range []struct {
+		tbl     string
+		granted []string
+		denied  []string
+	}{
+		{"server_secrets", []string{"SELECT", "INSERT", "UPDATE", "DELETE"}, nil},
+		{"server_key_state", []string{"SELECT", "INSERT", "UPDATE"}, []string{"DELETE"}},
+	} {
+		for _, role := range []string{"compass_app", "compass_system"} {
+			for _, priv := range tc.granted {
+				var ok bool
+				if err := s.pool.QueryRow(ctx,
+					`SELECT has_table_privilege($1, (current_schema()||'.'||$2)::regclass, $3)`,
+					role, tc.tbl, priv).Scan(&ok); err != nil {
+					t.Fatal(err)
+				}
+				if !ok {
+					t.Fatalf("%s: %s lacks %s", tc.tbl, role, priv)
+				}
 			}
-			if !ok {
-				t.Fatalf("server_secrets: %s lacks %s", role, priv)
+			for _, priv := range tc.denied {
+				var ok bool
+				if err := s.pool.QueryRow(ctx,
+					`SELECT has_table_privilege($1, (current_schema()||'.'||$2)::regclass, $3)`,
+					role, tc.tbl, priv).Scan(&ok); err != nil {
+					t.Fatal(err)
+				}
+				if ok {
+					t.Fatalf("%s: %s has %s, which is deliberately withheld", tc.tbl, role, priv)
+				}
 			}
 		}
 	}
@@ -109,13 +133,37 @@ func TestT0KeyspacePartition(t *testing.T) {
 	}
 
 	// The server registry is INVISIBLE to the container-delivery read path.
+	// A legitimate user secret is declared first so this check has something to
+	// iterate: without it the loop ran zero times and would have passed even if
+	// both registries shared one table.
+	if err := s.DeclareSecret(ctx, actor, "PLAIN_USER_TOKEN", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
+		t.Fatalf("declare user secret: %v", err)
+	}
 	userRows, err := s.DeclaredSecrets(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(userRows) == 0 {
+		t.Fatal("user registry is empty, so the leak check below cannot fail — fix the fixture")
+	}
 	for _, r := range userRows {
 		if HasServerSecretPrefix(r.Name) {
 			t.Fatalf("server secret %q leaked into the user registry", r.Name)
+		}
+	}
+	// And the converse: the two server secrets declared above are present in the
+	// server registry, so the isolation is genuinely two-way rather than one
+	// empty set.
+	serverRows, err := s.DeclaredServerSecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(serverRows) != 2 {
+		t.Fatalf("server registry has %d rows, want the 2 declared above", len(serverRows))
+	}
+	for _, r := range serverRows {
+		if !HasServerSecretPrefix(r.Name) {
+			t.Fatalf("unprefixed name %q in the server registry", r.Name)
 		}
 	}
 
@@ -154,5 +202,28 @@ func TestT0ServerProvisionedRowHasNoActor(t *testing.T) {
 	}
 	if len(decls) != 1 || decls[0].Name != "GATEWAY_CREDENTIALS_MASTER_KEY" || decls[0].Kind != SecretKindGeneric {
 		t.Fatalf("view mapping: %+v", decls)
+	}
+}
+
+// TestT0PrefixCheckSurvivesADoorBypass proves the F1 partition holds even for a
+// writer that never calls DeclareServerSecret. The Go guard is the actionable
+// error path; this CHECK is what keeps the invariant true if a future writer
+// (a backfill, a repair path, a new in-package query) reaches the table
+// directly. Note the escapes matter: `_` is a LIKE wildcard, so an unescaped
+// pattern would admit "SERVERX_Y".
+func TestT0PrefixCheckSurvivesADoorBypass(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, name := range []string{"PLAIN_NAME", "SERVERX_Y", "GATEWAY_CREDENTIALSX_K", "server_lowercase"} {
+		_, err := s.pool.Exec(ctx, `INSERT INTO server_secrets (name) VALUES ($1)`, name)
+		if err == nil {
+			t.Fatalf("raw insert of %q succeeded — the reserved-prefix CHECK is not enforcing", name)
+		}
+	}
+	for _, name := range []string{"SERVER_APP_PEM", "GATEWAY_CREDENTIALS_MASTER_KEY"} {
+		if _, err := s.pool.Exec(ctx, `INSERT INTO server_secrets (name) VALUES ($1)`, name); err != nil {
+			t.Fatalf("raw insert of legitimate %q rejected: %v", name, err)
+		}
 	}
 }
