@@ -268,6 +268,28 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 		expect(await readFile(join(repo, GO_ENTRY.file), "utf8")).toBe(goBefore);
 	});
 
+	// The HIGH-finding regression (RIG-3296 review): a devenv-nixpkgs channel bump
+	// that does NOT move biome leaves bun.lock untouched (refresh-devenv-nixpkgs
+	// skips the relock when the catalog pin is static), yet the channel moves
+	// pkgs.bun — the FOD's builder — which may move the recursive outputHash. So
+	// the node-modules entry gates on devenv.lock too: a devenv.lock-only diff
+	// must still refresh the bun outputHash, or a biome-static channel bump ships
+	// the exact `compass-agent-node-modules` hash mismatch this task exists to
+	// prevent. The Go pin is left untouched (its trigger did not change).
+	test("a devenv.lock-only bump refreshes the bun outputHash (channel pkgs.bun move)", async () => {
+		const goBefore = await readFile(join(repo, GO_ENTRY.file), "utf8");
+		await Bun.write(join(repo, "devenv.lock"), "bumped\n");
+
+		const res = await runRefresh(repo);
+		expect(res.exitCode).toBe(0);
+
+		const bunNix = await readFile(join(repo, BUN_ENTRY.file), "utf8");
+		expect(hashOnMarker(bunNix, BUN_ENTRY.marker)).toBe(
+			stubSriForFragment("node-modules"),
+		);
+		expect(await readFile(join(repo, GO_ENTRY.file), "utf8")).toBe(goBefore);
+	});
+
 	// Restore-on-completion: the script fakes the pin to force the mismatch, then
 	// writes the REAL value — never leaving the fake all-A hash in the tree.
 	test("never leaves the fake all-A SRI in a refreshed pin file", async () => {
