@@ -43,14 +43,27 @@ func TestLaunchFailClosedTeardown(t *testing.T) {
 	vfsPidFile := filepath.Join(run, "vfs.pid")
 	passtPidFile := filepath.Join(run, "passt.pid")
 
-	// virtiofsd: record pid, touch its --socket-path=, then stay alive.
-	writeFake(t, bin, "virtiofsd", `echo $$ > `+vfsPidFile+`
-for a in "$@"; do case "$a" in --socket-path=*) : > "${a#--socket-path=}";; esac; done
-sleep 30`)
-	// passt: record pid, touch the path following --socket, then stay alive.
-	writeFake(t, bin, "passt", `echo $$ > `+passtPidFile+`
-p=""; for a in "$@"; do [ "$p" = --socket ] && : > "$a"; p="$a"; done
-sleep 30`)
+	// The fakes must OUTLIVE launch, and the only absence this test wants is
+	// cloud-hypervisor's — so `sleep` is resolved on the real PATH now, while it
+	// is still intact, and burned into the stubs as an absolute path. Naming it
+	// bare would make the stubs die on `sleep: command not found` the moment
+	// PATH is narrowed below (there is no `sleep` builtin in /bin/sh), so both
+	// daemons would exit on their own and "teardown reaped them" would be
+	// trivially true — the RIG-3480 defect.
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("resolving sleep on PATH (the fakes need it to stay alive): %v", err)
+	}
+	// Both fakes record their pid, touch the socket launch waits on, then stay
+	// alive as `sleep`. longLivedFakeBody owns the `exec` that makes the
+	// recorded pid name the surviving process rather than a shell parenting it;
+	// see its doc for why that is load-bearing rather than style.
+	writeFake(t, bin, "virtiofsd", longLivedFakeBody(vfsPidFile,
+		`for a in "$@"; do case "$a" in --socket-path=*) : > "${a#--socket-path=}";; esac; done`,
+		sleepBin, "30"))
+	writeFake(t, bin, "passt", longLivedFakeBody(passtPidFile,
+		`p=""; for a in "$@"; do [ "$p" = --socket ] && : > "$a"; p="$a"; done`,
+		sleepBin, "30"))
 	// cloud-hypervisor deliberately absent → LookPath fails after aux are up.
 	t.Setenv("PATH", bin)
 
@@ -71,13 +84,67 @@ sleep 30`)
 		t.Errorf("expected a nil VM on the error path, got %v", vm)
 	}
 
+	// The failure must be cloud-hypervisor's LookPath, which is the ONLY absence
+	// this test arranges. Anything earlier — notably a fake that exited before
+	// its socket was served — means the daemons never really came up, so the
+	// no-orphan assertion below would pass vacuously. This control is what
+	// caught RIG-3480: it fired on 39/40 runs of the merge result while the
+	// assertion it guards stayed green.
+	//
+	// Match the lookup's own wording, not the bare binary name: the
+	// exited-before-start check that runs between waitForSockets and the lookup
+	// also embeds "cloud-hypervisor" in its message, so a bare-name match would
+	// admit precisely the dead-daemon case this control exists to reject.
+	if !strings.Contains(err.Error(), "resolving cloud-hypervisor on PATH") {
+		t.Fatalf("launch failed before the cloud-hypervisor lookup (%v); the aux daemons never came up, "+
+			"so the no-orphan assertion below would be vacuous", err)
+	}
+
 	// The daemons launch already started must have been reaped by the deferred
-	// cleanup — no orphan left sleeping.
+	// cleanup — no orphan left sleeping. Shutdown's reap blocks on each child's
+	// reaper channel before returning (it does NOT Wait — startChild's sole
+	// reaper owns the single cmd.Wait), so by the time Launch has returned this
+	// is a settled fact, not a race to poll.
 	for name, pidFile := range map[string]string{"virtiofsd": vfsPidFile, "passt": passtPidFile} {
 		pid := readPidFile(t, pidFile)
 		if pidAlive(pid) {
 			t.Errorf("%s (pid %d) still alive after fail-closed launch — teardown orphaned it", name, pid)
 		}
+	}
+}
+
+// longLivedFakeBody builds the body of a shell stub that records its pid, runs
+// setup, and then STAYS ALIVE as the given command.
+//
+// The `exec` is the point of this helper and is why the tail is not written by
+// hand at the callsites. Without it /bin/sh forks the tail and lives on as its
+// parent, so `echo $$` records the SHELL: teardown's SIGTERM then kills the
+// recorded pid, a no-orphan assertion keyed on that pid passes, and the tail is
+// reparented to init and survives its full lifetime. Measured at +10 leaked
+// processes per -count=5 run of TestLaunchFailClosedTeardown before the exec
+// was added, 0 after. Keeping the spelling in one place means a future edit
+// cannot reintroduce that leak by dropping a keyword from a string literal.
+func longLivedFakeBody(pidFile, setup, tailBin string, tailArgs ...string) string {
+	tail := strings.Join(append([]string{tailBin}, tailArgs...), " ")
+	return "echo $$ > " + pidFile + "\n" + setup + "\nexec " + tail
+}
+
+// TestLongLivedFakeBodyExecsItsTail pins the property above at the point it is
+// decided. Asserting it on a running stub is not possible without a poll: the
+// only observable difference is /proc/<pid>/comm after the exec, and there is
+// no happens-before edge to that moment — a readiness signal the stub emits
+// necessarily precedes its own exec. So the invariant is checked where it is
+// actually established, in the string every fake is built from.
+func TestLongLivedFakeBodyExecsItsTail(t *testing.T) {
+	body := longLivedFakeBody("/tmp/x.pid", ": > /tmp/sock", "/bin/sleep", "30")
+	lines := strings.Split(body, "\n")
+	tail := lines[len(lines)-1]
+	if !strings.HasPrefix(tail, "exec ") {
+		t.Errorf("stub tail is %q, want an `exec ` prefix — without it the shell forks the tail and "+
+			"teardown cannot reach the process that stays alive", tail)
+	}
+	if !strings.HasPrefix(body, "echo $$ > /tmp/x.pid\n") {
+		t.Errorf("stub must record its pid first, got %q", body)
 	}
 }
 
@@ -209,21 +276,21 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 	}
 }
 
-// readPidFile reads a pid a fake wrote, retrying briefly since the fake writes
-// it asynchronously after exec.
+// readPidFile reads the pid a fake recorded. It does NOT poll: each fake writes
+// its pid BEFORE it touches its socket, and the caller has already confirmed
+// launch got past the socket wait, which orders the write before this read. So a
+// missing or malformed pidfile here is a real defect in that ordering rather
+// than a race to wait out, and it fails immediately instead of behind a
+// wall-clock budget that can only ever expire (RIG-3480).
 func readPidFile(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		raw, err := os.ReadFile(path)
-		if err == nil {
-			if pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw))); convErr == nil {
-				return pid
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("fake never wrote its pid to %s", path)
-		}
-		time.Sleep(10 * time.Millisecond) //nolint:forbidigo // bounded poll tick; event-gated on the fake writing its pidfile above with a deadline (rule://go-no-sleep-in-test poll-until exemption)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the pid the fake recorded at %s: %v", path, err)
 	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("pidfile %s holds %q, not a pid: %v", path, string(raw), err)
+	}
+	return pid
 }
