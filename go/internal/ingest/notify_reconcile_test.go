@@ -90,7 +90,7 @@ func (r *fakeReader) ListNewArtifacts(_ context.Context, _ string, _ compassv1in
 
 func newReconciler(t *testing.T, rd forge.NotifyReader, st *fakeNotifyStore, d *fakeDispatcher) *NotifyReconciler {
 	t.Helper()
-	router := NewNotifyRouter(st, d, &fakeChecksRoller{}, testRef(), nil)
+	router := NewNotifyRouter(st, d, &fakeChecksRoller{}, nil, testRef(), nil)
 	return NewNotifyReconciler(rd, st, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, "github.com",
 		ReconcileConfig{Pace: -1}) // pacing disabled: no real sleeps in tests
@@ -411,7 +411,7 @@ func TestRunImmediateSweepThenCancel(t *testing.T) {
 	}
 	d := &fakeDispatcher{}
 	synctest.Test(t, func(t *testing.T) {
-		rc := NewNotifyReconciler(rd, st, NewNotifyRouter(st, d, &fakeChecksRoller{}, testRef(), nil),
+		rc := NewNotifyReconciler(rd, st, NewNotifyRouter(st, d, &fakeChecksRoller{}, nil, testRef(), nil),
 			compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, "github.com",
 			ReconcileConfig{Backstop: time.Hour, Pace: -1}) // long backstop: only the immediate sweep fires
 		ctx, cancel := context.WithCancel(context.Background())
