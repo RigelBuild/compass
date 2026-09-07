@@ -1,0 +1,607 @@
+# Design: Compass automated visual-regression gate (RIG-2154)
+
+Status: Draft
+Owner lane: compass-ux (design) → compass-ux (execution)
+Refs: RIG-2154
+Governing spec: docs/designs/ui/compass-ui-fixture-boot/design.md (Decision D7)
+Origin: fixture-boot D7 ruled that the visual-smoke harness graduates from a human before/after PNG-review tool to a real automated visual-regression gate, built on the deterministic fixture-boot substrate (RIG-2124, merged).
+
+## Problem / Intent
+
+The visual-smoke harness captures 11 PNGs of the core surfaces (7 full-page,
+3 element close-ups, 1 clipped strip) but
+asserts nothing — it is "a smoke harness: no pixel-diff gating, no
+computed-style assertions" (`apps/ui/playwright.config.ts:7-8`), and CI never
+runs it: the `ci` task deps are `['typecheck', 'build', 'test', 'stylelint',
+'dev-smoke']` (`apps/ui/moon.yml:86`) and `dev-smoke` runs only
+`bunx playwright test e2e/dev-boot.spec.ts` (`moon.yml:80`). Fixture-boot D7
+ruled the follow-up: "make the harness a real automated visual-regression gate
+(`toHaveScreenshot` + a `maxDiffPixelRatio` threshold + baselines committed to
+git + generated in a pinned CI environment)"
+(`compass-ui-fixture-boot/design.md:510-513`). This record designs that gate.
+
+## Approach
+
+### Oracle: Playwright built-in `toHaveScreenshot`, baselines in-repo (decided)
+
+Built-in `expect(page).toHaveScreenshot()` with committed PNG baselines, not a
+cloud service (Percy/Chromatic). This is decided here, not an open question:
+
+- The whole substrate was built for it. Fixture-boot's determinism knobs
+  (animations disabled, css-scaled raster, `deviceScaleFactor: 1`,
+  `reducedMotion: "reduce"`, `document.fonts.ready` awaited per shot —
+  `playwright.config.ts:60-62`, `visual-smoke.spec.ts:24,28-29`) exist
+  precisely so a raster comparison is stable; a DOM-serialization service
+  makes them redundant while adding an external SaaS dependency, secrets, and
+  cost to a harness that is offline by construction ("no daemon on :50051 and
+  no `VITE_COMPASS_BASE_URL` — offline by construction",
+  `visual-smoke.spec.ts:6-8`).
+- The rendering environment is already pinned end to end:
+  `chromium-e2e-env.nix` "pins nixpkgs to the SAME devenv.lock revision the
+  dev shell and gate-tools.nix resolve, so CI drives byte-for-byte the
+  Chromium a Linux dev box does" (`chromium-e2e-env.nix:19-20`), and the moon
+  CI leg already exports `PLAYWRIGHT_CHROMIUM_PATH` from it
+  (`.github/workflows/ci.yml:369` — `PLAYWRIGHT_CHROMIUM_PATH` export in the
+  `moon` job, `ci.yml:236`). The cross-environment raster drift
+  that motivates cloud services is exactly what this pin removes.
+- The API is available at the pin: `@playwright/test` is `1.62.1`
+  (`apps/ui/package.json:34`); `toHaveScreenshot`, `maxDiffPixels`,
+  `maxDiffPixelRatio`, `expect.toHaveScreenshot` config defaults, and
+  `snapshotPathTemplate` (since v1.28) are all long-stable in that line
+  (verified against upstream Playwright docs this run).
+
+A cloud service stays available as a later escalation if raster maintenance
+cost proves high; nothing in this design forecloses it.
+
+Repo weight is not a concern at snapshot level — the 11 committed baselines
+total ~575 KB (largest `bridge-prs.png` ~95 KB, smallest `state-dot.png`
+~150 B) — but each regen rewrites all 11, so git *history* grows ~0.5 MB per
+baseline-churn event; under active UI development that is plausibly tens of
+MB/year of permanent history. Acceptable, and Git LFS for `e2e/__screens__/`
+was weighed and rejected: it complicates the nix CI checkout and breaks the
+in-diff-view image review the bot-PR baseline workflow (T4) depends on.
+
+### Shape: convert the generator spec in place
+
+`visual-smoke.spec.ts` becomes the gate spec: each capture becomes a
+`toHaveScreenshot` assertion of the **same raster options it captures today**,
+now asserted rather than written. The 11 captures are not uniform — the spec
+takes three shapes, and each converts to its matching `toHaveScreenshot` form:
+
+- **7 full-page** `page.screenshot({ fullPage: true, … })` (bridge,
+  bridge-empty, agent, backlog, done, settings, bridge-prs) →
+  `await expect(page).toHaveScreenshot("<name>.png", { fullPage: true,
+  animations: "disabled", scale: "css" })`.
+- **3 element** `locator.screenshot(…)` (right-sidebar on `aside.right`
+  `visual-smoke.spec.ts:69`, state-dot on `.cx-state-dot` `:140`, bridge-card
+  on `.cx-card` `:204`) → `await expect(locator).toHaveScreenshot("<name>.png",
+  { animations: "disabled", scale: "css" })` — no `fullPage`; the locator
+  bounds the raster.
+- **1 clip** `page.screenshot({ clip: {…} })` (bridge-colheads, a computed
+  union rect over `.bridge-col-head` cells, `:180-191`) →
+  `await expect(page).toHaveScreenshot("bridge-colheads.png", { clip,
+  animations: "disabled", scale: "css" })`, keeping the bounding-box
+  computation untouched.
+
+Converting all 11 to `expect(page).toHaveScreenshot({ fullPage: true })` — as
+an earlier draft of this record did — would compare full pages against the four
+element/clip-sized committed baselines: a guaranteed day-one red, or worse a
+regen that silently erases the close-up coverage D7 asked for. No parallel
+spec: two specs capturing the same surfaces drift, and the human before/after
+review workflow survives unchanged because a passing run leaves the committed
+baselines as the review artifact and a failing run produces `-actual`/`-diff`
+PNGs.
+
+`snapshotPathTemplate` is set so baselines stay at their current names:
+Playwright's default template relocates each baseline into a
+`<specfile>-snapshots/` subdirectory (`apps/ui/e2e/visual-smoke.spec.ts-snapshots/`)
+and appends platform/project suffixes (`bridge-chromium-linux.png`); a template
+of `{testDir}/__screens__/{arg}{ext}` keeps the existing 11 files
+(`apps/ui/e2e/__screens__/`: bridge.png, bridge-empty.png, bridge-card.png,
+bridge-colheads.png, bridge-prs.png, settings.png, done.png, backlog.png,
+agent.png, right-sidebar.png, state-dot.png) as the baselines with no directory
+move or rename.
+The suffix-free template is safe because the config defines a single
+`chromium` project (`playwright.config.ts:73-78`) and the gate only ever runs
+on Linux against the pinned Chromium (Global Constraints); a second
+project/OS would need the template revisited.
+
+### Threshold
+
+`maxDiffPixelRatio: 0.001` (0.1%) as the config-level default via
+`expect: { toHaveScreenshot: { … } }`, per-shot overrides allowed. Zero
+tolerance is wrong even on a pinned stack — fixture-boot's byte-identity bar
+is explicitly a "same-binary, same-box determinism self-test … not a
+cross-environment regression oracle"
+(`compass-ui-fixture-boot/design.md:417-421`), and the gate must survive
+nix-channel Chromium bumps without a fleet-wide red on every anti-aliasing
+shift. 0.1% of a full-page shot is small enough to catch any real layout or
+palette change while absorbing sub-pixel raster noise. Tightening later is a
+one-line PR once the gate has run history.
+
+`maxDiffPixelRatio` is a fraction of **total image area**, and this suite
+spans ~4 orders of magnitude: a full-page shot (~1280×720+, ≥900 K px) at
+0.001 allows ~900 differing pixels, while `state-dot.png` (9×10 = 90 px) gets
+a budget of 0.09 px — effectively byte-exact, the *least* slack on the shot
+most exposed to a single anti-aliasing pixel shift after a Chromium bump. One
+ratio cannot serve both ends, so at the ruled base of 0.001 the 2 *smallest*
+shots (`state-dot`, `bridge-card`) take a per-shot widening, while the two
+larger close-ups (`bridge-colheads`, `right-sidebar`) do not: their
+area-scaled budgets @0.001 are already 35 px and 260 px, comfortably above
+the intended slack. See the per-shot list below.
+
+**The widening knob is a per-shot `maxDiffPixelRatio`, not `maxDiffPixels`.**
+At the 1.62.1 pin the two pixel-count knobs resolve with `Math.min`, not max:
+the explicit `maxDiffPixels` and the area-scaled ratio budget are computed
+independently and, when both are present, the *smaller* wins
+(`playwright-core/lib/coreBundle.js:7556-7562`). A config-level
+`maxDiffPixelRatio` is always present, because the per-call merge is
+`{...filteredConfigOptions, ...this.options}`
+(`playwright/lib/matchers/expect.js:12419-12423`) and `NonConfigProperties`
+(`expect.js:12391-12398`) strips only `clip`, `fullPage`, `mask`, `maskColor`,
+`omitBackground`, `signal` — `maxDiffPixelRatio` is absent from that list, so
+it is never stripped. A per-shot `maxDiffPixels` alongside a config-level
+ratio can therefore only ever *tighten* tolerance, and "floor" is the wrong
+word for it. Measured against the committed baseline dimensions, an earlier
+draft's 10–25 px "floors" resolve to:
+
+| Shot | Baseline | Area (px) | Ratio budget @0.001 | Stated floor | Effective tolerance |
+| --- | --- | --- | --- | --- | --- |
+| `state-dot.png` | 9×10 | 90 | 0.09 px | 10 px | **0 px** — byte-exact; floor fully inert |
+| `bridge-card.png` | 189×113 | 21357 | 21.36 px | 25 px | 21 px — floor inert |
+| `bridge-colheads.png` | 855×41 | 35055 | 35.05 px | 25 px | 25 px — floor *tightens* by ~10 px |
+| `right-sidebar.png` | 400×650 | 260000 | 260 px | 25 px | 25 px — floor *tightens* ~10× |
+
+That inverts exactly what this section set out to prevent: the shot needing
+the most slack would get none at all.
+
+The correct override is a per-shot `maxDiffPixelRatio`, which *does* replace
+the config default (it is a plain key in that spread, not a `Math.min`
+sibling), computed as `max(base, floor / area)` against the ruled base of
+0.001:
+
+- `state-dot.png` — `max(0.001, 10/90)`, prescribed as the **exact fraction
+  `10/90`** (budget exactly 10.0 px, tolerates 10 px). If a decimal is written
+  instead it must be the rounded-UP **0.1112**, never the truncated form.
+- `bridge-card.png` — `max(0.001, 25/21357)`, prescribed as the **exact
+  fraction `25/21357`** (budget exactly 25.0 px, tolerates 25 px). As a decimal
+  it must be the rounded-UP **0.001171**.
+- `bridge-colheads.png` and `right-sidebar.png` — **no override.** At the
+  ruled base their area-scaled budgets (35 px and 260 px @0.001) already
+  exceed the intended ~25 px of slack.
+
+These two overrides are the complete set. The executor writes them as given.
+
+The comparator tests `count > area * ratio` with no rounding
+(`playwright-core/lib/coreBundle.js:7557,7564`), so a per-shot ratio must be
+expressed as the exact fraction — or rounded UP — never truncated: a
+truncated decimal silently tightens the budget by a pixel. The exact
+fraction is not unconditionally safe either: float division can land
+`area * (floor / area)` a hair *under* the floor (it does for ~74,000 of the
+first million areas), so each fraction must be verified to land at or above
+the floor for its own area, and where it lands short the rounded-UP decimal
+is the required form. Both current cells are clean — `90 * (10/90)` is
+exactly 10, and `21357 * (25/21357)` is 25.000000000000004.
+
+The call sites in T2 therefore write the *resolved* literal fraction rather
+than a derived expression: a per-shot `maxDiffPixelRatio` replaces the
+config base instead of combining with it, so the base ratio is not in scope
+at the call site and `max(base, floor / area)` is a derivation the reader
+performs here, not an expression the spec evaluates. At the ruled base it
+resolves to `10/90` and `25/21357`.
+
+The 7 full-page shots likewise take no override. The per-pixel color tolerance
+`threshold` (YIQ distance, Playwright default 0.2) is left at its default
+**as an explicit decision** — it, not the pixel-count knobs, is what absorbs
+anti-aliasing colour drift; a Chromium bump revisits it deliberately.
+
+### Where it runs: a moon task inside the existing moon battery
+
+A new `visual-gate` moon task, added to the `ci` task's deps — not a
+dedicated peer job behind the rollup. The peer-job pattern (gtk4-e2e, microvm)
+exists for legs that "realize a heavy out-of-band … closure the bare moon gate
+has no business building" (`ci.yml:1128` — the `gtk4-e2e` job's own rationale
+for being peeled out of the moon gate; that job starts at `ci.yml:1122`;
+`ci.yml:624`, `microvm` job). This gate has
+no such closure: the moon leg already realizes the pinned Chromium and
+exports `PLAYWRIGHT_CHROMIUM_PATH` for `dev-smoke` (`ci.yml:369`, inside the
+`moon` job — `ci.yml:236`, whose `Moon battery` step is at `ci.yml:378`), and
+the harness's webServer is the same `vite --mode fixture` boot dev-smoke's
+config already drives (`playwright.config.ts:80`). A peer job would
+re-bootstrap nix + toolchain for ~a minute of Playwright. The task mirrors
+`dev-smoke`'s two documented disciplines (`moon.yml:64-84`): explicit
+`inputs` (dev-smoke's list plus the gate spec and `e2e/__screens__/**`) so
+affected-detection schedules it, and `cache: false` because the subject is
+the rendered raster resolved at run time, not a moon-hashable input.
+
+### Baselines: generated in CI's pinned environment, updated by a dispatch lane
+
+The load-bearing rule: **baselines are regenerated only in the pinned CI
+environment, never committed from a dev box.** The repo already has the exact
+machinery pattern: the `regen-forge-fixtures` workflow_dispatch lane runs an
+operator-triggered `-update` capture and "opens a BOT PR carrying the
+rewritten fixtures for human review" (`ci.yml:2314`, `regen-forge-fixtures`: "BOT PR carrying the rewritten fixtures"), SHA-pinned
+`peter-evans/create-pull-request` included (`ci.yml:2423`, `regen-forge-fixtures`: `peter-evans/create-pull-request`). The visual gate
+gets a sibling lane: dispatch → bootstrap the same toolchain + pinned
+Chromium → `bunx playwright test e2e/visual-smoke.spec.ts
+--update-snapshots` → bot PR with `add-paths: apps/ui/e2e/__screens__`. Matt
+reviews the baseline diff as native GitHub before/after images — which is also
+the review surface for intentional visual changes: under the OQ-2 (b) ruling
+the author dispatches the lane **on the feature branch**, so the bot PR
+targets that branch and the feature PR lands green with its own baselines.
+
+### Failure surfacing
+
+Two surfaces, split by failure mode — this is the OQ-3 ruling, and the split
+is load-bearing.
+
+**An intended visual change is reviewed as a native GitHub image diff, with no
+download.** The regen lane rewrites the 11 tracked baselines
+(`apps/ui/e2e/__screens__/*.png`) in place, so GitHub renders them in 2-up,
+swipe, and **onion-skin** modes; onion skin is the instrument for the
+sub-pixel shifts this gate exists to catch. Under the OQ-2 (b) ruling that bot
+PR targets the feature branch, so it is the same surface the author already has
+open.
+
+**The click-path, so execution does not have to rediscover it:** open the bot
+PR → **Files changed** → each changed `__screens__/*.png` renders as an image
+diff with a **2-up / Swipe / Onion skin** control in the file header. 2-up is
+the default and also reports a dimension change, which is the fastest read on
+an accidental viewport or layout-size regression. Two caveats an author will
+hit: GitHub collapses large diffs, so a multi-shot regen may need "Load diff"
+per file; and the two element close-ups are small on screen at natural size
+(`state-dot.png` is 9x10, `bridge-card.png` 189x113), so judge those by
+opening the raw blob at each side of the diff rather than by squinting at the
+inline swipe. Nothing here is committed to by CI — it is browser behaviour,
+recorded so the reviewer knows where to look.
+
+**An unexpected red gate still needs the artifact**, because the native viewer
+diffs committed files at a path and Playwright's failure triplet is not
+committed. On failure Playwright writes `<name>-actual.png`,
+`<name>-expected.png`, and `<name>-diff.png` under `outputDir` (`e2e/.output`,
+`playwright.config.ts:54`), which is untracked. The `moon` job (`ci.yml:236`)
+therefore gets an `if: failure() && matrix.run == 'true'`
+`actions/upload-artifact` step (SHA-pinned, per the house rule every action in
+`ci.yml` follows) scoped to `apps/ui/e2e/.output/**`, so a red gate always
+carries a downloadable actual/expected/diff triplet for diagnosis. The author's
+path out of an unexpected red is to regenerate on the branch, which converts it
+into the image diff above.
+
+### Rollout: hard gate from the first landing (decided, OQ-4)
+
+No advisory period. The determinism substrate is proven (fixture-boot T4's
+byte-identity self-test), the environment is pinned byte-for-byte, the first
+baselines are CI-generated in that same environment, and the 0.1% ratio
+absorbs residual noise. An advisory mode needs real machinery (a
+`continue-on-error` leg outside the moon battery, plus somewhere to look) and
+history shows advisory gates go unread. The rollback lever if it flakes:
+bump `maxDiffPixelRatio` or drop a noisy shot from the gate — each a
+one-line, same-day PR.
+
+### Coverage at v1: all 11 shots (decided, OQ-5)
+
+All 11 existing surfaces gate from day one. The set already exists as
+committed, determinism-hardened baselines; curating a subset means deciding
+per-surface noise levels with zero run history, and the fallback (drop a shot
+that proves noisy, one-line PR) is cheaper than guessing up front.
+
+## Global Constraints
+
+- **Determinism knobs are frozen and must match the substrate exactly**:
+  `screenshot: "off"`, `reducedMotion: "reduce"`, `deviceScaleFactor: 1`
+  (`playwright.config.ts:60-62`); per-shot `animations: "disabled"`,
+  `scale: "css"` on every capture, plus `fullPage: true` on the 7 full-page
+  shots only (the 3 element and 1 clip captures are bounded by their locator /
+  clip rect, not `fullPage` — `visual-smoke.spec.ts:25-30,69,140,180-191,204`);
+  `document.fonts.ready` awaited before every capture
+  (`visual-smoke.spec.ts:24`); content-selector waits, never fixed sleeps
+  (`visual-smoke.spec.ts:8-9`). No task may loosen any of these.
+- **Pinned Chromium only**: the gate runs against the Chromium realized from
+  `tools/toolchain/chromium-e2e-env.nix` (devenv.lock-pinned nixpkgs,
+  `chromium-e2e-env.nix:19-20,41`), resolved via `PLAYWRIGHT_CHROMIUM_PATH`
+  (`playwright.config.ts:68-70`, `ci.yml:369` — the `PLAYWRIGHT_CHROMIUM_PATH`
+  export in the `moon` job, `ci.yml:236`). Single `chromium`
+  project, Linux only.
+- **Baselines from CI only**: `apps/ui/e2e/__screens__/` PNGs are written
+  only by the regen dispatch lane (T4) running in the pinned environment.
+  A local `--update-snapshots` run dirties these tracked files by design, so
+  this CI-only baseline rule is enforced by review, not by tooling. A locally
+  generated baseline is a review-rejection offense — a dev-box Chromium raster
+  differs and would bake local noise into the oracle
+  (`compass-ui-fixture-boot/design.md:419-421`).
+- **API floor**: `@playwright/test 1.62.1` (`apps/ui/package.json:34`); no
+  version bump inside this record. Every API used (`toHaveScreenshot`,
+  `maxDiffPixelRatio`, `expect.toHaveScreenshot` defaults,
+  `snapshotPathTemplate`, `--update-snapshots`) is stable at that pin.
+- **Moon task discipline**: the gate task carries explicit `inputs` and
+  `cache: false`, mirroring `dev-smoke`'s documented rationale
+  (`moon.yml:64-84`). CI actions are SHA-pinned like every action in
+  `ci.yml`.
+- **Threshold default**: `maxDiffPixelRatio: 0.001` set once in
+  `playwright.config.ts` `expect.toHaveScreenshot`; `state-dot` and
+  `bridge-card` additionally carry a per-shot `maxDiffPixelRatio` resolved to
+  a literal fraction (`10/90` and `25/21357`) — the only knob
+  that can widen a small shot's budget, since a per-shot `maxDiffPixels`
+  would resolve to `Math.min` against the config ratio and could only tighten
+  it (see Threshold). No shot carries a `maxDiffPixels`. Per-pixel
+  `threshold` stays at the Playwright default (0.2). Every per-shot override
+  carries a comment justifying it. No task may loosen any of these.
+- House ledger conventions: this record stays `Status: Draft` until merged;
+  markdownlint-clean.
+
+## Plan
+
+### T1 — Gate config: `toHaveScreenshot` defaults + snapshot path
+
+Extend `apps/ui/playwright.config.ts` with:
+`snapshotPathTemplate: "{testDir}/__screens__/{arg}{ext}"` and
+`expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.001 } }` — the
+config-level default; the two per-shot `maxDiffPixelRatio` overrides
+(`10/90`, `25/21357`) are set at their call sites in T2, not here.
+`threshold` is left unset (default
+0.2) as a recorded decision. No project or webServer changes — the determinism
+knobs at :57-72 and the fixture-mode webServer at :79-95 are already the
+substrate.
+
+Interfaces:
+
+- Modifies: `apps/ui/playwright.config.ts` (top-level `snapshotPathTemplate`,
+  `expect` keys on the `defineConfig` object).
+- Consumes: existing `e2e/__screens__/` layout (11 PNG names).
+- Test cycle: `bunx playwright test e2e/visual-smoke.spec.ts` after T2 lands
+  resolves baselines at the unchanged paths (T1+T2 land as one PR — T1 alone
+  changes nothing observable because no spec asserts yet).
+
+### T2 — Convert the generator spec to assertions
+
+In `apps/ui/e2e/visual-smoke.spec.ts`, convert each capture to its matching
+`toHaveScreenshot` form (the 7/3/1 split from the Shape section), preserving
+its exact current raster options:
+
+- **7 full-page** (bridge, bridge-empty, agent, backlog, done, settings,
+  bridge-prs): `page.screenshot({ path, fullPage: true, animations, scale })`
+  → `await expect(page).toHaveScreenshot("<name>.png", { fullPage: true,
+  animations: "disabled", scale: "css" })`.
+- **3 element** (right-sidebar `:69`, state-dot `:140`, bridge-card `:204`):
+  `<locator>.screenshot({ path, animations, scale })` →
+  `await expect(<locator>).toHaveScreenshot("<name>.png", { animations:
+  "disabled", scale: "css" })` on the same locator — no `fullPage` — plus
+  `maxDiffPixelRatio: 10/90` on state-dot and `maxDiffPixelRatio: 25/21357`
+  on bridge-card — exact fractions, per Threshold (as rounded-up decimals,
+  0.1112 and 0.001171). right-sidebar takes **no** override.
+- **1 clip** (bridge-colheads `:189`): keep the bounding-box union computation
+  (`:180-188`), then `await expect(page).toHaveScreenshot("bridge-colheads.png",
+  { clip, animations: "disabled", scale: "css" })` — **no** per-shot
+  override.
+
+Only `state-dot` and `bridge-card` carry a per-shot `maxDiffPixelRatio`, each
+with a justifying comment; `right-sidebar` and `bridge-colheads` have
+area-scaled budgets above the intended slack at the ruled base (260 px and
+35 px). No shot gets a `maxDiffPixels`.
+Keep every navigation, selector wait, and `document.fonts.ready` await
+untouched. Drop the now-unused `SCREENS` const;
+import `expect` alongside `test` from `@playwright/test`
+(`visual-smoke.spec.ts:1` currently imports only `test`). Update the spec
+header comment: it is a gate, not a review-only generator.
+
+Interfaces:
+
+- Modifies: `apps/ui/e2e/visual-smoke.spec.ts` (11 capture blocks, imports,
+  header comment).
+- Consumes: T1's config keys; existing baselines as the initial oracle
+  (superseded by T4's CI regen before the gate wires into CI — see T5
+  ordering).
+- Produces: a spec that exits non-zero on visual drift, writing
+  `-actual`/`-expected`/`-diff` PNGs under `e2e/.output` on failure.
+- Test cycle: local run passes against freshly `--update-snapshots`-generated
+  local baselines (NOT committed); restore the tracked baselines immediately
+  after verification with `jj restore apps/ui/e2e/__screens__` (`git checkout --`
+  is the git equivalent); a deliberate CSS perturbation reds the matching shot;
+  revert restores green.
+
+### T3 — Moon task + battery artifact upload
+
+Add to `apps/ui/moon.yml` a `visual-gate` task:
+`command: 'bunx playwright test e2e/visual-smoke.spec.ts'`,
+`deps: ['install']`, `options: { cache: false }`, and explicit `inputs` =
+`dev-smoke`'s list (`moon.yml:82`) with `e2e/dev-boot.spec.ts` swapped for
+`e2e/visual-smoke.spec.ts` plus `e2e/__screens__/**/*` and `src/**/*.css`
+(already covered by `src/**/*`). Add `'visual-gate'` to the `ci` deps list
+(`moon.yml:86`). In `.github/workflows/ci.yml`, add to the `moon` job
+(`ci.yml:236`) an `actions/upload-artifact` step uploading
+`apps/ui/e2e/.output/**` (short retention) with `if-no-files-found: ignore` —
+the step fires on *any* bun-leg failure (a red typecheck, not just a visual
+diff), and without that knob a no-diff failure emits a spurious
+missing-artifact warning. A red gate still always ships the diff triplet.
+
+Two matrix-shaped requirements on that step, both easy to get wrong:
+
+- **The artifact name must carry the leg:**
+  `visual-gate-diffs-${{ matrix.group }}`, not a fixed `visual-gate-diffs`.
+  The `moon` job is a matrix over the run-time-discovered concern groups
+  (`ci.yml:246-249`), and under `actions/upload-artifact` v4+ two concurrent
+  legs uploading the same artifact name is a hard error, not a merge.
+- **The gate must keep the matrix conjunct:**
+  `if: failure() && matrix.run == 'true'`. Every step in that job is gated on
+  `matrix.run == 'true'` because an unaffected group is a placeholder leg that
+  spins up and no-ops (`ci.yml:275-279`); a bare `if: failure()` drops that
+  invariant and would fire on placeholder legs.
+
+`actions/upload-artifact` appears nowhere in `ci.yml` today, so its 40-hex SHA
+pin must be added fresh — every action currently in the file is SHA-pinned and
+this one is no exception.
+
+Interfaces:
+
+- Modifies: `apps/ui/moon.yml` (new task + `ci` deps), `.github/workflows/ci.yml`
+  (one upload step in the `moon` job — `ci.yml:236`).
+- Consumes: `PLAYWRIGHT_CHROMIUM_PATH` already exported in that job
+  (`ci.yml:369`, the `moon` job's `PLAYWRIGHT_CHROMIUM_PATH` export).
+- Test cycle: a scratch PR with a deliberate visual change reds `ci` via
+  `visual-gate` and carries the `visual-gate-diffs-<group>` artifact; a no-op PR
+  stays green. Verify affected-detection schedules the task on a
+  baseline-only change.
+
+### T4 — Baseline regen dispatch lane
+
+Add a `regen-visual-baselines` workflow_dispatch job to
+`.github/workflows/ci.yml`, modeled on `regen-forge-fixtures`
+(`ci.yml:2308-2434`, `regen-forge-fixtures` job span) but with two corrections the sibling-of-forge framing
+hides:
+
+- **Discriminator input (must-fix):** `regen-forge-fixtures` gates on
+  `workflow_dispatch && inputs.pr == ''` (`ci.yml:2322`, `regen-forge-fixtures`: `github.event.inputs.pr == ''`). A second lane
+  with the *same* gate means every bare `ci.yml` dispatch fires BOTH — a
+  visual regen would also launch the 90-minute live forge capture and open a
+  spurious forge bot PR. Add a `regen` choice dispatch input (`forge` |
+  `visual`, **default `forge`**) and extend each lane's `if:` with
+  `&& inputs.regen == '<own>'`. Default `forge` preserves the existing
+  bare-dispatch behavior of the forge lane; the visual lane fires only on an
+  explicit `regen: visual`.
+- **JS install (must-fix):** `regen-forge-fixtures`' payload is `go test` and
+  installs no JS deps; this lane's payload `bunx playwright test` needs
+  `apps/ui` node_modules (`@playwright/test`, vite), so it adds a
+  `bun install` / `moon :install` step the "same two-phase bootstrap" phrase
+  does not cover.
+- **jj-hazard operator note (required by the OQ-2 (b) ruling):** the lane's
+  bot PR merges a commit onto the GitHub bookmark that the author's local jj
+  working copy does not have. A `sync-before-submit` rebase — or any bookmark
+  rewrite — can then silently drop the baseline commit and resurrect the red
+  gate with no obvious cause. The lane's PR body must carry the counter-step
+  verbatim: after merging a baseline bot PR, run `jj git fetch` and rebase
+  onto the updated bookmark **before** the next `jj-vine submit`, then confirm
+  the baseline commit is still in the stack.
+
+Otherwise as forge: widened `contents: write` + `pull-requests: write`, the
+two-phase toolchain bootstrap (`ci.yml:2352-2376`, `regen-forge-fixtures`: "Phase one"/"Phase two") plus the pinned-Chromium
+realization step (the `moon` job's `PLAYWRIGHT_CHROMIUM_PATH` export pattern at
+`ci.yml:369`), then
+`bunx playwright test e2e/visual-smoke.spec.ts --update-snapshots` under
+`apps/ui`, then SHA-pinned `peter-evans/create-pull-request` with
+`add-paths: apps/ui/e2e/__screens__`. No secrets needed (offline fixture
+boot).
+
+Interfaces:
+
+- Modifies: `.github/workflows/ci.yml` (one new job + a `regen` dispatch input;
+  extends `regen-forge-fixtures`' `if:` with `&& inputs.regen == 'forge'` —
+  the only edit this record makes to an existing lane; still does not join the
+  rollup's `needs`, same as regen-forge-fixtures (`ci.yml:2319`, `regen-forge-fixtures`: "rollup check above ... does not `needs:` this job").
+- Produces: a bot PR carrying the regenerated 11 baselines for Matt's image
+  review.
+- Test cycle: dispatch the lane on a branch; verify the bot PR opens with
+  only `__screens__` changes and the images render in the PR diff view.
+
+### T5 — First CI-generated baselines + cutover ordering
+
+Sequencing task, not a code task. Order: land T1+T2+T4 with the gate NOT yet
+in `ci` deps (T3 lands in full only after the cutover); dispatch T4's lane to
+produce the first pinned-environment baselines; merge that bot PR (replacing the
+11 dev-box PNGs currently committed); **burn in before flipping the gate** —
+re-dispatch T4's lane 5–10 times and diff the resulting bot-PR baselines
+against each other: on a byte-for-byte pinned Chromium they should be
+identical, and this converts the "should be deterministic" claim into
+measured cross-run data at zero extra machinery (the only cross-run evidence
+today is same-box, `compass-ui-fixture-boot/design.md:417-421`); then land T3
+wiring the gate into `ci`. This guarantees the gate never runs against
+dev-box baselines — the first red would otherwise be a false environment-skew
+red on an unrelated PR. **Race window:** between merging the baseline bot PR
+and landing T3, a visually-material UI PR could merge and make T3's first run
+red on main — land T3 immediately after the baseline merge, and re-dispatch
+T4 if any UI-touching PR slipped in between. During that window a local
+`bunx playwright test e2e/visual-smoke.spec.ts` reds against the stale
+dev-box baselines (cosmetic — do not "fix" it). Also update the fixture-boot
+record's D7 cross-reference and the harness docs/comments that describe it as
+review-only (`playwright.config.ts:4-8` header).
+
+Interfaces:
+
+- Modifies: PR sequencing only, plus `playwright.config.ts:4-8` comment and
+  a one-line D7 follow-up note in
+  `docs/designs/ui/compass-ui-fixture-boot/design.md` (Status footnote, not a
+  content change).
+- Test cycle: the 5–10-run burn-in shows identical baselines; after cutover,
+  two consecutive CI runs on main are green; a deliberate-perturbation scratch
+  PR reds.
+
+## Tasks
+
+- [ ] T1 — `snapshotPathTemplate` + `expect.toHaveScreenshot` defaults in
+      `playwright.config.ts` (lands with T2)
+- [ ] T2 — convert `visual-smoke.spec.ts` captures to `toHaveScreenshot`
+      assertions
+- [ ] T3 — `visual-gate` moon task + `ci` dep + failure-artifact upload
+      (lands LAST, after T5's baseline cutover)
+- [ ] T4 — `regen-visual-baselines` workflow_dispatch lane → bot PR
+- [ ] T5 — dispatch T4, merge first CI-generated baselines, then land T3;
+      update harness comments + fixture-boot D7 cross-ref
+
+## Open Questions
+
+All five load-bearing forks were **ruled by Matt on 2026-09-07** at the design-PR
+gate. Recorded here as the frozen contract — execution reads the decided target,
+not a fork.
+
+1. **OQ-1 (RESOLVED — Matt 2026-09-07): base `maxDiffPixelRatio` = 0.001.**
+   The 0.1% base absorbs anti-aliasing noise while still catching layout and
+   palette changes. **Resolution:** config-level default `0.001`, with exactly
+   two per-shot `maxDiffPixelRatio` overrides resolved against
+   `max(base, floor / area)` — `state-dot.png` takes the exact fraction
+   `10/90` and `bridge-card.png` takes `25/21357`. `bridge-colheads` and
+   `right-sidebar` take **no** override at this base (their area-scaled
+   budgets, 35 px and 260 px, already exceed the intended slack), and the 7
+   full-page shots take none. Per-pixel `threshold` stays at the Playwright
+   default 0.2. The Threshold section now states these two overrides as
+   resolved literals: an executor writes them, not the derivation.
+   Revisit with run history.
+2. **OQ-2 (RESOLVED — Matt 2026-09-07): (b) — dispatch the regen lane on the
+   feature branch.** The bot PR targets the feature branch
+   (`peter-evans/create-pull-request` defaults `base` to the checked-out
+   branch), so the feature PR lands green with its own baselines and `main`
+   is never knowingly red. **Resolution:** (b), with the two costs named in
+   this record accepted as known and carried into execution — (i) the
+   per-change dispatch → bootstrap → merge-bot-PR → re-run loop, and (ii) the
+   **jj hazard**: the bot's commit lands on the GitHub bookmark and not in the
+   local jj working copy, so a `sync-before-submit` rebase or any bookmark
+   rewrite can silently drop it and resurrect the red gate. T4 must carry that
+   hazard as an explicit operator note: after merging a baseline bot PR, run
+   `jj git fetch` and rebase onto the updated bookmark **before** the next
+   `jj-vine submit`, and verify the baseline commit survived.
+3. **OQ-3 (RESOLVED — Matt 2026-09-07): GitHub's native image diff on the
+   baseline PR; no manual artifact download as the adjudication path.**
+   Downloading a zip per red gate is too slow to be the review loop.
+   GitHub renders committed PNG changes in three modes — **2-up**, **swipe**,
+   and **onion skin** — and onion skin is the right instrument for the
+   sub-pixel shifts this gate exists to catch
+   ([GitHub docs, "Working with non-code files" → Viewing differences](https://docs.github.com/en/repositories/working-with-files/using-files/working-with-non-code-files#viewing-differences)).
+   **Resolution:** the **regen bot PR is the adjudication surface.** Because
+   the lane rewrites `apps/ui/e2e/__screens__/*.png` in place and those 11
+   baselines are tracked files, every intentional visual change is reviewed as
+   a native before/after image diff with zero downloads — and OQ-2 (b) already
+   routes that bot PR at the feature branch, so this is the same surface the
+   author is already opening.
+   **One honest limit, which execution must not paper over:** the native
+   viewer diffs *committed files at the same path*, and Playwright's
+   `-actual`/`-expected`/`-diff` triplet is written to `apps/ui/e2e/.output/`,
+   which is untracked (`git ls-files apps/ui/e2e/.output` → 0 files). So an
+   *unintended* red gate — a regression the author did not mean to cause — has
+   no committed file to diff and is not visible in the PR image viewer. T3's
+   failure artifact therefore **stays**, as the diagnostic path for an
+   unexpected red, not as the review path for an intended change. The two
+   surfaces split by failure mode: intended change → bot-PR image diff
+   (no download); unexpected red → the author regenerates on the branch, which
+   converts it into that same image diff and shows exactly which surfaces
+   moved. Option (b)'s image-host machinery and (c)'s HTML report are both
+   dropped.
+4. **OQ-4 (RESOLVED — Matt 2026-09-07): (a) hard gate from the first
+   landing.** No advisory period. **Resolution:** the gate blocks `ci` from
+   the moment T3 lands, with T5's cutover ordering as the safety mechanism and
+   a one-line threshold bump (or dropping a noisy shot) as the rollback lever.
+5. **OQ-5 (RESOLVED — Matt 2026-09-07): (a) all 11 shots at v1.** The
+   determinism-hardened baselines already exist; curating a subset would mean
+   guessing per-surface noise levels with zero run history. **Resolution:**
+   all 11 surfaces gate from day one; dropping a shot that proves noisy is a
+   one-line PR.
+
+Non-load-bearing / deferrable: whether the regen lane later folds into a
+label-triggered automation (out of scope here).
