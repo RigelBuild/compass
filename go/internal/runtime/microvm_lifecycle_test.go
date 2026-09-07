@@ -43,7 +43,7 @@ func TestBootConfigAssembly(t *testing.T) {
 	share := Mount{HostPath: "/host/checkout", ContainerPath: "/workspace"}
 	runtimeDir := runRoot + "/microvm/sess1"
 
-	cfg := m.bootConfig(runtimeDir, nonce, share)
+	cfg := m.bootConfig(runtimeDir, nonce, share, 1000)
 
 	if cfg.Kernel != "/img/kernel" || cfg.Initrd != "/img/initrd" || cfg.Rootfs != "/img/rootfs" {
 		t.Fatalf("boot images = %q/%q/%q, want the config paths", cfg.Kernel, cfg.Initrd, cfg.Rootfs)
@@ -53,6 +53,12 @@ func TestBootConfigAssembly(t *testing.T) {
 	}
 	if cfg.FSTag != workspaceFSTag {
 		t.Fatalf("FSTag = %q, want %q", cfg.FSTag, workspaceFSTag)
+	}
+	// The in-guest agent uid rides the BootConfig so virtiofsd can map it back
+	// to the invoking host user (record §(d) host-ownership parity). Dropping it
+	// silently reverts the share to unmapped ownership.
+	if cfg.AgentUID != 1000 {
+		t.Fatalf("AgentUID = %d, want the spec uid 1000", cfg.AgentUID)
 	}
 	if cfg.VsockCID != guestVsockCID || cfg.VsockPort != guestVsockPort {
 		t.Fatalf("CID/port = %d/%d, want %d/%d", cfg.VsockCID, cfg.VsockPort, guestVsockCID, guestVsockPort)
