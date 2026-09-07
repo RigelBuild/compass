@@ -17,13 +17,18 @@ route to it rather than a replacement.
 
 The desktop app is the front door. It carries its own local agent runtime, so a
 single machine needs no server. Agent sessions still run in containers, so the
-app requires **rootless podman** on the host; on macOS the app provisions and
-manages a podman machine for you, and the first launch takes a few minutes while
-that VM image downloads.
+app requires **rootless podman** on the host. On macOS podman runs inside a
+Linux VM, so you need a podman machine running before first launch
+(`podman machine init`, then `podman machine start`); provisioning it from the
+app is not yet implemented.
 
-The app is published as a release build per platform. Download the current one
-from the [releases page](https://github.com/RigelBuild/compass/releases/latest)
-and install it the usual way for your OS.
+The app is published as a per-platform release build: a `.dmg` for macOS, which
+you open and drag to Applications, and a `.tar.gz` for Linux, which you extract
+and put on your `PATH`. Each release also publishes a `SHA256SUMS` file to
+verify what you downloaded.
+
+> **Note:** the first release has not been cut yet, so there is nothing to
+> download today. Build from source in the meantime.
 
 Launch it, sign in with your own model subscription, and the app is ready. Your
 subscription is the only credential involved; there is no Compass-hosted service
@@ -45,7 +50,7 @@ gives each agent session a **microVM** or a **container**.
 | Session isolation | rootless container | hardware-virtualized microVM |
 | Host requirement | any Linux box with rootless podman | `/dev/kvm` openable |
 | Typical host | a cheap VPS | bare-metal or a nested-virt instance |
-| How you select it | the default | `COMPASS_RUNTIME_BACKEND=microvm` |
+| How you select it | the default | `COMPASS_RUNTIME_BACKEND=microvm` (see the bring-up note) |
 
 **The microVM tier is the recommended shape, including for self-host.** A
 microVM gives each session a separate kernel, which is the isolation boundary
@@ -58,9 +63,9 @@ between them is a host change, not a data migration.
 
 **The tier is chosen at bring-up by the `COMPASS_RUNTIME_BACKEND` environment
 variable, not by the host's capabilities.** A KVM-capable host still runs the
-entry tier's containers unless you ask for microVMs, so set the variable
-explicitly on the microVM tier — see [Bringing the stack
-up](#bringing-the-stack-up).
+entry tier's containers unless you ask for microVMs. Note that the microVM tier
+needs guest images that are not packaged yet, so a documented bring-up is not
+available today — see [Bringing the stack up](#bringing-the-stack-up).
 
 ## What to run it on
 
@@ -109,7 +114,8 @@ shape — only the reachable surface differs.
 ## Bringing the stack up
 
 Install the binaries, then bring the stack up. The nix flake is the recommended
-channel because it carries the pinned microVM userspace with it:
+channel for both tiers: it pins every binary to a matched set, needs no manual
+`PATH` placement, and carries the pinned microVM userspace for the microVM tier.
 
 ```console
 nix profile install \
@@ -124,15 +130,15 @@ only used by the microVM tier. A release tarball is also published per release
 and does not carry that userspace either. Both channels are covered in
 [self-host.md](./self-host.md#installing-the-binaries).
 
-On a microVM-tier host, check the prerequisites before the first bring-up:
+On a microVM-tier host, check the host prerequisites before the first bring-up:
 
 ```console
 compass-stack preflight
 ```
 
-Every check must pass on the microVM tier — it verifies `/dev/kvm`, rootless
-podman, and the microVM userspace floors. A failing check names the missing
-dependency and exits non-zero.
+This verifies `/dev/kvm`, rootless podman, and the microVM userspace floors. A
+failing check names the missing dependency and exits non-zero. It covers the
+host, not the whole microVM contract — see the microVM-tier note below.
 
 > **Entry tier:** `compass-stack preflight` currently checks the microVM
 > prerequisites unconditionally, so it reports failures for `/dev/kvm` and the
@@ -141,17 +147,7 @@ dependency and exits non-zero.
 > reports the right verdict per tier is in progress.
 
 Then bring it up. The stack provisions its own PostgreSQL by default, so there
-is no database to install. On the **microVM tier**, set the backend explicitly:
-
-```console
-COMPASS_RUNTIME_BACKEND=microvm compass-stack up \
-    --state-dir /var/lib/compass \
-    --image ghcr.io/rigelbuild/compass-agent:latest \
-    --listen 0.0.0.0:50052
-```
-
-On the **entry tier**, run the same command without that variable — the
-container backend is the default:
+is no database to install:
 
 ```console
 compass-stack up \
@@ -159,6 +155,17 @@ compass-stack up \
     --image ghcr.io/rigelbuild/compass-agent:latest \
     --listen 0.0.0.0:50052
 ```
+
+This runs the entry tier, which is the default backend.
+
+> **microVM tier:** selecting the backend is not sufficient to bring the
+> microVM tier up today. The runner also requires a guest kernel, rootfs, and
+> initrd image plus a run-root, and those images are not yet published through
+> the flake or the release tarball. `compass-stack` has no way to pass them, and
+> `compass-stack up` does not check the runner started, so a microVM-tier
+> bring-up returns success and leaves a stack where no session can start.
+> Documented microVM bring-up is pending that packaging; use the entry tier
+> meanwhile.
 
 Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. Point a
 client at the server's TLS door and run a session to confirm the install.
@@ -173,9 +180,9 @@ use an existing PostgreSQL instead of the bundled one, see
 The stack itself is Linux-only, because agent sessions need KVM or rootless
 podman and neither exists natively on macOS. Two supported paths:
 
-- **Use the app** (the front door above) and let it run sessions locally. The
-  app manages a small Linux VM (a podman machine) for you, so this works on any
-  Mac. This is the answer for most Mac users.
+- **Use the app** (the front door above) and let it run sessions locally. You
+  set up a podman machine once, as described above, and the app runs sessions in
+  it, so this works on any Mac. This is the answer for most Mac users.
 - **Point the client at a remote Linux stack.** The Mac runs the client only and
   connects over the same TLS door as any other client.
 
