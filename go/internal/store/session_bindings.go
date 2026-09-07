@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
@@ -43,10 +45,10 @@ type SessionBinding struct {
 // RecordSessionBinding points an agent account at the live session that speaks
 // for it. It is an UPSERT keyed on the ACCOUNT, not the session: this table
 // replaces the hub's 1:1 in-RAM accountSessions map, where re-pointing an
-// account at a newer session is an assignment, so a re-point here is one atomic
-// statement rather than a conflict to refuse. That matters concretely — the hub
-// promotes a new session onto an account BEFORE unbinding the stale one, and
-// promoteSession returns nothing, so it has nowhere to put a refusal.
+// account at a newer session is an assignment, so a re-point here is a write
+// that always lands rather than a conflict to refuse. That matters concretely —
+// the hub promotes a new session onto an account BEFORE unbinding the stale one,
+// and promoteSession returns nothing, so it has nowhere to put a refusal.
 //
 // It returns the session id this bind DISPLACED — empty when the account held
 // none. That value is load-bearing, not diagnostic: PR3 must reap the displaced
@@ -54,22 +56,52 @@ type SessionBinding struct {
 // DeleteSessionBindingsForRunner's returned rows exist for. A displaced session
 // left unreaped holds deliveries for an account that has already moved on.
 //
-// The read of the previous session and the write of the new one are ONE
-// statement (a CTE, see the query file), so no concurrent bind can land between
-// them and make the caller reap a session that is once again live.
+// So the bind is THREE statements in one explicit transaction, and that is the
+// whole reason this method opens a tx at all: a per-account advisory lock, then
+// the prior-value read under FOR UPDATE, then the write. A concurrent bind for
+// the same account parks on the advisory lock until this transaction commits, so
+// it cannot interleave between this read and this write — the two binds
+// serialize, and each caller is told the session IT actually displaced.
+//
+// A single statement could not give that. The `prev` CTE this replaces read the
+// statement-start snapshot while the upsert's ON CONFLICT DO UPDATE blocked on
+// the row lock and re-read the latest committed row — different versions, so
+// under READ COMMITTED two concurrent re-points away from sess-A both reported
+// sess-A and the genuinely displaced sess-B was never reaped.
+//
+// The advisory lock is what covers the FIRST bind, and it is not redundant with
+// FOR UPDATE. FOR UPDATE on a row that does not yet exist locks NOTHING, so two
+// concurrent first binds would both read no prior value; the PRIMARY KEY does
+// serialize their WRITES (the second INSERT waits on the first's uncommitted
+// tuple, then resolves as ON CONFLICT DO UPDATE), but both have already READ by
+// then, so both would report "displaced nothing" while the second had in fact
+// destroyed the first's live binding — reported to nobody, deliveries stranded.
+// Measured, not assumed. The PK orders writes; the displaced value is a read, so
+// only a lock taken BEFORE the read can make it correct.
+//
+// Both locks are kept. The advisory lock alone serializes binds for one account,
+// and FOR UPDATE alone cannot cover a first bind; together the read is correct
+// whether or not a row already exists, and the row lock still guards against a
+// writer that reaches the row by some path not holding the advisory lock.
 //
 // updated_at is maintained by the set_updated_at() trigger, never here
 // (RIG-3495) — the query file assigns it nowhere.
 //
 // An unknown agent_account_id is ErrInvalidArgument (the FK).
 //
-// ErrConflict now means ONE thing, and it is no longer about the account: the
-// account path is an upsert and cannot conflict. The only unique index left is
-// (tenant_id, session_id), so a violation means this session id is ALREADY BOUND
-// TO A DIFFERENT ACCOUNT. Refusing it is what keeps ResolveSessionAccount
-// single-valued — two accounts sharing a live session id would make the relay's
-// answer depend on which row Postgres returned, and it resolves the principal a
-// comms call runs under.
+// ErrConflict means ONE thing, and it is not about the account: the account path
+// is an upsert and cannot conflict. Both unique indexes on this table can raise
+// 23505, though — the PK (tenant_id, agent_account_id) as well as
+// session_bindings_session_key (tenant_id, session_id) — and the SQLSTATE alone
+// does not say which did, so the mapping branches on the CONSTRAINT NAME rather
+// than assuming. Only the session key is expected here (the PK is the ON CONFLICT
+// arbiter, so it resolves instead of raising); a hit on it means this session id
+// is ALREADY BOUND TO A DIFFERENT ACCOUNT. Refusing that keeps
+// ResolveSessionAccount single-valued — two accounts sharing a live session id
+// would make the relay's answer depend on which row Postgres returned, and it
+// resolves the principal a comms call runs under. Any OTHER unique violation is
+// unexpected, so it falls through to the generic wrap with its own message
+// intact rather than being relabelled as a session collision.
 func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, accountID AccountID, runnerID string) (string, error) {
 	if sessionID == "" {
 		return "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
@@ -87,19 +119,57 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 	if runnerID == "" {
 		return "", fmt.Errorf("%w: runner id is required", ErrInvalidArgument)
 	}
-	displaced, err := s.q.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
+
+	// beginTenantTx, not s.pool.Begin: it arms SET LOCAL ROLE + the
+	// compass.tenant_id GUC at BEGIN, so every statement below is tenant-scoped
+	// by RLS exactly as the single-statement scopedDBTX path is. A raw Begin here
+	// would run as the owner with no GUC and silently disable tenant isolation.
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return "", fmt.Errorf("store: begin record session binding: %w", err)
+	}
+	// No-op after a successful commit; the rollback that matters is on every
+	// error path below, where there is nothing further to report about it.
+	defer func() { _ = tx.Rollback(ctx) }()
+	qtx := s.q.WithTx(tx)
+
+	// FIRST, before reading anything: serialize every bind for this account.
+	// Keyed on (tenant, account) because two tenants may hold bindings for one
+	// account id and those binds are independent. Auto-released at tx end.
+	if err := qtx.LockSessionBindingAccount(ctx, db.LockSessionBindingAccountParams{
+		Column1: pgtype.Text{String: string(s.resolveTenant(ctx)), Valid: true},
+		Column2: pgtype.Text{String: string(accountID), Valid: true},
+	}); err != nil {
+		return "", fmt.Errorf("store: lock session binding account: %w", err)
+	}
+
+	displaced, err := qtx.SessionBindingForUpdate(ctx, string(accountID))
+	if err != nil && !noRows(err) {
+		return "", fmt.Errorf("store: read prior session binding: %w", err)
+	}
+	if noRows(err) {
+		// No prior binding: nothing to displace. Scan left displaced at its zero
+		// value, which is already the empty session id this method reports for
+		// "the account held none".
+		displaced = ""
+	}
+
+	if err := qtx.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
 		SessionID:      sessionID,
 		AgentAccountID: string(accountID),
 		RunnerID:       runnerID,
-	})
-	if err != nil {
+	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return "", fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, accountID)
 		}
-		if pgErrIs(err, pgUniqueViolation) {
+		if pgErrIs(err, pgUniqueViolation) && pgConstraintName(err) == "session_bindings_session_key" {
 			return "", fmt.Errorf("%w: session %q is already bound to a different agent", ErrConflict, sessionID)
 		}
 		return "", fmt.Errorf("store: record session binding: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("store: commit record session binding: %w", err)
 	}
 	return displaced, nil
 }
@@ -129,8 +199,14 @@ func (s *Store) ResolveSessionAccount(ctx context.Context, sessionID string) (Ac
 // SessionForAccount resolves the live session bound to an agent account — the
 // REVERSE of ResolveSessionAccount, and the direction the delivery consumer
 // needs to dispatch a deliver to an already-resolved subscriber
-// (runnerhub/relay_comms.go:179-184). Exactly one row can answer, because the
-// account is the table's key.
+// (runnerhub/relay_comms.go:179-184). Exactly one row can answer PER TENANT: the
+// table's key is (tenant_id, agent_account_id), so the account alone is not
+// unique and the query is single-valued only because RLS has already narrowed
+// the visible rows to the acting tenant's. Under WithSystemRole (BYPASSRLS, no
+// tenant GUC) that narrowing is gone, several tenants' rows can match, and pgx
+// takes whichever comes first — so this method is a REQUEST-PATH read. Nothing
+// calls it under the system role today; a PR3 caller that wants to must scope it
+// itself.
 //
 // An account with no live session is ErrNotFound — never started, stopped, or
 // dropped on a Runner reconnect. Fail-closed for the same reason as above: an

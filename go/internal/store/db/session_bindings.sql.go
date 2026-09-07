@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const deleteSessionBinding = `-- name: DeleteSessionBinding :exec
@@ -64,25 +66,14 @@ func (q *Queries) DeleteSessionBindingsForRunner(ctx context.Context, runnerID s
 	return items, nil
 }
 
-const recordSessionBinding = `-- name: RecordSessionBinding :one
+const lockSessionBindingAccount = `-- name: LockSessionBindingAccount :exec
 
-WITH prev AS (
-    SELECT b.session_id FROM session_bindings b WHERE b.agent_account_id = $1
-), upsert AS (
-    INSERT INTO session_bindings (agent_account_id, session_id, runner_id)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
-        SET session_id = EXCLUDED.session_id,
-            runner_id  = EXCLUDED.runner_id
-    RETURNING session_id
-)
-SELECT COALESCE((SELECT session_id FROM prev), '')::text AS displaced_session_id
+SELECT pg_advisory_xact_lock(hashtext('binding:' || $1 || ':' || $2))
 `
 
-type RecordSessionBindingParams struct {
-	AgentAccountID string
-	SessionID      string
-	RunnerID       string
+type LockSessionBindingAccountParams struct {
+	Column1 pgtype.Text
+	Column2 pgtype.Text
 }
 
 // Session-binding queries (RIG-3108 / RIG-2861 §T4): the durable
@@ -91,37 +82,103 @@ type RecordSessionBindingParams struct {
 // map these rows into the SessionBinding domain struct (the AccountID newtype is
 // done inline in the Go, as agent_placements does).
 //
-// No query here names tenant_id. Tenant scoping is the RLS policy's job
-// (0001_init.sql) — reads see only the acting tenant's rows and the tenant_id
-// column DEFAULTs to the request GUC on insert — which is how every other query
-// file here is written.
+// No query here names tenant_id, and on the REQUEST path that is complete: the
+// store arms every statement with SET LOCAL ROLE compass_app + the
+// compass.tenant_id GUC (tenant_tx.go), so the RLS policy (0001_init.sql) scopes
+// reads to the acting tenant and the tenant_id column DEFAULTs to that GUC on
+// insert. That is how every other query file here is written.
+//
+// It is NOT complete under WithSystemRole (tenant_tx.go), which arms the
+// BYPASSRLS compass_system role and NO tenant GUC. Every query here then runs
+// cross-tenant and unscoped, and each one changes meaning:
+//
+//   - SessionBindingForAccount / SessionBindingAccount / SessionBindingForUpdate
+//     are :one, but with RLS gone their single predicate can match rows in
+//     SEVERAL tenants. pgx's QueryRow takes the first and discards the rest
+//     without error, so the caller gets a plausible answer from an arbitrary
+//     tenant.
+//   - DeleteSessionBindingsForRunner sweeps EVERY tenant's bindings for that
+//     runner id — runner ids are not tenant-unique either.
+//   - RecordSessionBinding does not fail closed. tenant_id DEFAULTs to
+//     current_setting('compass.tenant_id', TRUE); on a pooled connection that
+//     previously served an ARMED statement, the ended SET LOCAL leaves that
+//     custom GUC defined-and-EMPTY rather than undefined, so the DEFAULT
+//     resolves to ” and the NOT NULL is satisfied. The row lands stamped with a
+//     tenant that does not exist — and tenant_id here has no FK to tenants
+//     (accounts.tenant_id does), so nothing catches it. No RLS policy matches
+//     ”, so that row is then invisible to every tenant and releasable by
+//     nothing on the request path. On a connection that never carried an armed
+//     statement the GUC is genuinely undefined, the DEFAULT is NULL, and the
+//     insert fails not-null instead — so which of the two a caller gets depends
+//     on the pooled connection it draws.
+//
+// Nothing calls these under the system role today (WithSystemRole is set at
+// delivery/consumer.go and runnerhub/hub.go); a PR3 caller that wants to must
+// scope them deliberately rather than inherit scoping from here.
+// session_bindings_pgtest_test.go pins the observed behaviour so it is recorded
+// rather than latent.
 //
 // updated_at is NEVER assigned here: the set_updated_at() BEFORE UPDATE trigger
 // (0001_init.sql, RIG-3495) is the one mechanism, and a hand-written
 // `updated_at = now()` is the exact defect that convention removes.
+//
+// The per-account serialization the bind takes FIRST, before it reads anything.
+// Auto-released at transaction end. It mirrors LockOwnerDM / LockOwnerCoordination
+// / AcquireOwnerTreeLock, with a DISTINCT key domain ('binding:') so a bind never
+// serializes behind a DM open, a coordination reconcile, or a reparent. hashtext
+// widens the text key to the int the advisory lock takes; a hash collision across
+// two accounts is a benign redundant wait, never a wrong result.
+//
+// It is keyed on TENANT AND ACCOUNT. Every other lock in this package keys on an
+// account id alone, which is globally unique — but two tenants can legitimately
+// hold bindings for one account id (the PK is folded, see 0001_init.sql), and
+// those two binds are independent operations that must not block each other.
+//
+// Why an advisory lock and not just the row lock below: FOR UPDATE on a row that
+// does NOT exist locks NOTHING, so two concurrent FIRST binds for one account
+// both read no prior value and neither blocks the other. The PK does serialize
+// their WRITES — the second INSERT waits on the first's uncommitted tuple and
+// resolves as ON CONFLICT DO UPDATE — but by then both have already read, so both
+// report "displaced nothing" while the second has in fact destroyed the first's
+// live binding. That session is then reported to NOBODY and its held deliveries
+// are stranded. Measured, not assumed: the PK is a write-ordering guarantee and
+// the displaced value is a READ, so the PK cannot cover it. This lock is taken
+// before the read, so it does.
+func (q *Queries) LockSessionBindingAccount(ctx context.Context, arg LockSessionBindingAccountParams) error {
+	_, err := q.db.Exec(ctx, lockSessionBindingAccount, arg.Column1, arg.Column2)
+	return err
+}
+
+const recordSessionBinding = `-- name: RecordSessionBinding :exec
+INSERT INTO session_bindings (agent_account_id, session_id, runner_id)
+VALUES ($1, $2, $3)
+ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
+    SET session_id = EXCLUDED.session_id,
+        runner_id  = EXCLUDED.runner_id
+`
+
+type RecordSessionBindingParams struct {
+	AgentAccountID string
+	SessionID      string
+	RunnerID       string
+}
+
 // The bind. Keyed on the ACCOUNT (see the table comment): the hub's 1:1
 // accountSessions map this replaces treats re-pointing an account at a newer
 // session as an assignment, not a collision, so this is an upsert on
 // (tenant_id, agent_account_id) and never refuses a re-point.
 //
-// It returns the session id it DISPLACED, or ” when the account held none —
-// because the caller must reap that session from the delivery held-deliver
-// registry, the same side-effect DeleteSessionBindingsForRunner's RETURNING
-// exists for. COALESCE'd to ” rather than left NULL so the generated signature
-// is a plain string: "no displaced session" is the empty string throughout this
-// package, as ResolveSessionAccount's miss is.
-//
-// ONE statement, deliberately. The `prev` CTE reads the pre-update row and the
-// upsert writes the new one in the SAME snapshot, so no concurrent bind can slip
-// between a read and a write and make the caller reap a session that is still
-// live. A read-then-write from Go, or an `OLD`-aliased RETURNING (Postgres 18+
-// only; this targets 16), would each lose that. The upsert CTE is unreferenced
-// on purpose: a data-modifying CTE always executes.
-func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) (string, error) {
-	row := q.db.QueryRow(ctx, recordSessionBinding, arg.AgentAccountID, arg.SessionID, arg.RunnerID)
-	var displaced_session_id string
-	err := row.Scan(&displaced_session_id)
-	return displaced_session_id, err
+// What it DISPLACED comes from SessionBindingForUpdate above, not from a
+// RETURNING here: ON CONFLICT DO UPDATE's RETURNING sees the POST-update row, and
+// the pre-update one is unreachable from this statement (`OLD`-aliased RETURNING
+// is Postgres 18+; this targets 16). The two statements are nonetheless one
+// operation, because they share a transaction and the row lock the read took —
+// which is the property the caller needs. It reaps the displaced session from the
+// delivery held-deliver registry, and reaping a session that is once again live
+// would strand a live agent's deliveries.
+func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error {
+	_, err := q.db.Exec(ctx, recordSessionBinding, arg.AgentAccountID, arg.SessionID, arg.RunnerID)
+	return err
 }
 
 const sessionBindingAccount = `-- name: SessionBindingAccount :one
@@ -141,6 +198,36 @@ SELECT session_id FROM session_bindings WHERE agent_account_id = $1
 
 func (q *Queries) SessionBindingForAccount(ctx context.Context, agentAccountID string) (string, error) {
 	row := q.db.QueryRow(ctx, sessionBindingForAccount, agentAccountID)
+	var session_id string
+	err := row.Scan(&session_id)
+	return session_id, err
+}
+
+const sessionBindingForUpdate = `-- name: SessionBindingForUpdate :one
+SELECT b.session_id
+  FROM session_bindings b
+ WHERE b.agent_account_id = $1
+   FOR UPDATE
+`
+
+// The prior-value read of the bind, and the second of three statements the Store
+// runs in ONE explicit transaction (beginTenantTx): the advisory lock above, this
+// read, then the upsert below. FOR UPDATE takes a row lock on the binding this
+// bind is about to overwrite, so the read and the write cannot be separated by a
+// concurrent bind — that caller is already parked on the advisory lock, and would
+// park here too.
+//
+// The single-statement form this replaces (a `prev` CTE beside the upsert) could
+// not do that: under READ COMMITTED the CTE reads the statement-start snapshot
+// while ON CONFLICT DO UPDATE blocks on the row lock and then re-reads the LATEST
+// committed row, so the two halves saw different versions and the reported
+// displacement was wrong — two concurrent re-points away from sess-A both
+// reported sess-A, so the genuinely displaced sess-B was never reaped.
+//
+// A MISS is not an error: a first-ever bind returns pgx.ErrNoRows and the Store
+// maps that to the empty displaced id.
+func (q *Queries) SessionBindingForUpdate(ctx context.Context, agentAccountID string) (string, error) {
+	row := q.db.QueryRow(ctx, sessionBindingForUpdate, agentAccountID)
 	var session_id string
 	err := row.Scan(&session_id)
 	return session_id, err

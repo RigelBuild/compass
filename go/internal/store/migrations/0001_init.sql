@@ -500,16 +500,35 @@ CREATE UNIQUE INDEX agent_placements_container_key ON agent_placements (containe
 -- and never reads this table.
 --
 -- KEYED ON THE ACCOUNT, tenant folded in: PRIMARY KEY (tenant_id,
--- agent_account_id). The account is the identity because this table replaces the
--- hub's 1:1 in-RAM accountSessions map, where re-pointing an account at a newer
--- session is an assignment, not a collision. So a re-point here is ONE upsert on
--- the account (ON CONFLICT DO UPDATE), never a conflict to be refused: the hub
--- legitimately holds two sessions for one account transiently — it promotes the
--- new session before unbinding the stale one — and RecordSessionBinding's caller
--- has nowhere to put a refusal. The NEWER binding displaces the older, and the
--- displaced session id comes back via RETURNING so the caller can reap it from
--- the held-deliver registry. Keying on the session instead would have made the
--- displacement a unique violation and the reap impossible in one statement.
+-- agent_account_id). The account is the identity because this table represents
+-- the hub's 1:1 in-RAM accountSessions map (account -> its ONE live session),
+-- where re-pointing an account at a newer session is an assignment, not a
+-- collision. So a re-point here is an upsert on the account
+-- (ON CONFLICT DO UPDATE), never a conflict to be refused: the hub legitimately
+-- holds two sessions for one account transiently — it promotes the new session
+-- before unbinding the stale one — and RecordSessionBinding's caller has nowhere
+-- to put a refusal. Keying on the session instead would have made the
+-- displacement a unique violation and the reap below impossible.
+--
+-- It represents accountSessions ONLY. The hub also keeps sessionAccounts
+-- (session -> account, MANY-to-one), and this table is not that map: a re-point
+-- OVERWRITES the row, so the displaced session stops resolving IMMEDIATELY —
+-- ResolveSessionAccount returns not-found for it the moment the newer bind
+-- commits, which the suite asserts directly. There is deliberately no tombstone
+-- and no history: this table answers "which session speaks for this account
+-- NOW", nothing else.
+--
+-- So it cannot answer STALE vs UNKNOWN. A caller that needs to tell "a session
+-- this account used to hold" from "a session id we have never seen" — the hub's
+-- re-point guard at runnerhub/relay_comms.go:112-116 — must keep that
+-- distinction in RAM. Demoting the hub's maps to caches over this table (PR3)
+-- does not change that: the guard's state has no column here to live in.
+--
+-- What a bind DISPLACED is still reported to the caller, so it can reap the
+-- displaced session from the held-deliver registry. It comes from the prior-value
+-- read RecordSessionBinding takes under FOR UPDATE in the same transaction as the
+-- write (queries/session_bindings.sql), not from a RETURNING — ON CONFLICT DO
+-- UPDATE's RETURNING sees the post-update row.
 --
 -- tenant_id leads the key for the reason the RLS header below states: two
 -- tenants may hold the same coordinate without collision. Its declaration text

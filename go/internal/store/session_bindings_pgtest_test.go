@@ -30,7 +30,8 @@ import (
 
 // mustBind records a binding a test only needs to SUCCEED, returning the session
 // id it displaced. Most cases below care about a later assertion, not this call.
-func mustBind(t *testing.T, s *Store, ctx context.Context, sessionID string, accountID AccountID, runnerID string) string {
+// ctx is the SECOND parameter, after t, matching mustTopic (messages_test.go).
+func mustBind(t *testing.T, ctx context.Context, s *Store, sessionID string, accountID AccountID, runnerID string) string {
 	t.Helper()
 	displaced, err := s.RecordSessionBinding(ctx, sessionID, accountID, runnerID)
 	if err != nil {
@@ -42,23 +43,34 @@ func mustBind(t *testing.T, s *Store, ctx context.Context, sessionID string, acc
 // bindingTimes reads a binding row's created_at/updated_at directly, so a test
 // asserts the persisted timestamps rather than trusting a return value — the
 // same posture as tenantOf.
-func bindingTimes(t *testing.T, s *Store, sessionID string) (createdAt, updatedAt time.Time) {
+//
+// It goes through s.pool, which is the OWNER connection: no SET LOCAL ROLE, no
+// GUC, so RLS does not apply and the read is cross-tenant. The tenant_id
+// predicate is therefore explicit and NOT optional — without it a same-session-id
+// row in another tenant would make the scan ambiguous, which is exactly the
+// coexistence the tenant-fold cases below create.
+func bindingTimes(t *testing.T, ctx context.Context, s *Store, sessionID string) (createdAt, updatedAt time.Time) {
 	t.Helper()
-	if err := s.pool.QueryRow(context.Background(),
-		"SELECT created_at, updated_at FROM session_bindings WHERE session_id = $1", sessionID,
+	if err := s.pool.QueryRow(ctx,
+		"SELECT created_at, updated_at FROM session_bindings WHERE session_id = $1 AND tenant_id = $2",
+		sessionID, string(s.resolveTenant(ctx)),
 	).Scan(&createdAt, &updatedAt); err != nil {
 		t.Fatalf("read timestamps of binding %q: %v", sessionID, err)
 	}
 	return createdAt, updatedAt
 }
 
-// countBindings counts binding rows for an account, so a re-point test can prove
-// the row was REPLACED rather than accumulated.
-func countBindings(t *testing.T, s *Store, accountID AccountID) int {
+// countBindings counts binding rows for an account IN ctx's tenant, so a
+// re-point test can prove the row was REPLACED rather than accumulated. Same
+// owner-connection caveat as bindingTimes: the tenant predicate is what keeps
+// "exactly 1" a per-tenant count rather than a cross-tenant one, so a second
+// tenant holding a binding for the SAME account id does not inflate it.
+func countBindings(t *testing.T, ctx context.Context, s *Store, accountID AccountID) int {
 	t.Helper()
 	var n int
-	if err := s.pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM session_bindings WHERE agent_account_id = $1", string(accountID),
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM session_bindings WHERE agent_account_id = $1 AND tenant_id = $2",
+		string(accountID), string(s.resolveTenant(ctx)),
 	).Scan(&n); err != nil {
 		t.Fatalf("count bindings of %q: %v", accountID, err)
 	}
@@ -148,7 +160,7 @@ func TestRecordSessionBindingRePointsAccountAndReportsDisplaced(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	mustBind(t, s, ctx, "sess-old", agent.ID, "runner-1")
+	mustBind(t, ctx, s, "sess-old", agent.ID, "runner-1")
 
 	displaced, err := s.RecordSessionBinding(ctx, "sess-new", agent.ID, "runner-2")
 	if err != nil {
@@ -169,7 +181,7 @@ func TestRecordSessionBindingRePointsAccountAndReportsDisplaced(t *testing.T) {
 
 	// Exactly one row: a re-point REPLACES, it does not accumulate a second
 	// binding whose sweep would retire a session that has already moved.
-	if n := countBindings(t, s, agent.ID); n != 1 {
+	if n := countBindings(t, ctx, s, agent.ID); n != 1 {
 		t.Fatalf("bindings for the agent = %d, want exactly 1 (a re-point must replace, not accumulate)", n)
 	}
 
@@ -207,13 +219,13 @@ func TestRecordSessionBindingRebindsSameSessionOntoANewRunner(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-1")
-	displaced := mustBind(t, s, ctx, "sess-1", agent.ID, "runner-2")
+	mustBind(t, ctx, s, "sess-1", agent.ID, "runner-1")
+	displaced := mustBind(t, ctx, s, "sess-1", agent.ID, "runner-2")
 	if displaced != "sess-1" {
 		t.Fatalf("re-binding the same session displaced %q, want %q — the account's previous session is this same session", displaced, "sess-1")
 	}
 
-	if n := countBindings(t, s, agent.ID); n != 1 {
+	if n := countBindings(t, ctx, s, agent.ID); n != 1 {
 		t.Fatalf("bindings for the agent = %d, want exactly 1 (the rebind must replace, not accumulate)", n)
 	}
 
@@ -241,7 +253,7 @@ func TestRecordSessionBindingRejectsASessionClaimedByAnotherAccount(t *testing.T
 	agentA := mustAgent(t, s, owner.ID, "agent-a")
 	agentB := mustAgent(t, s, owner.ID, "agent-b")
 
-	mustBind(t, s, ctx, "sess-1", agentA.ID, "runner-1")
+	mustBind(t, ctx, s, "sess-1", agentA.ID, "runner-1")
 
 	displaced, err := s.RecordSessionBinding(ctx, "sess-1", agentB.ID, "runner-1")
 	sentinelIs(t, err, ErrConflict, "a session id already bound to a different agent")
@@ -285,7 +297,7 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-1")
+	mustBind(t, ctx, s, "sess-1", agent.ID, "runner-1")
 	if err := s.DeleteSessionBinding(ctx, "sess-1"); err != nil {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
@@ -299,7 +311,7 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 
 	// The released account is bindable again, and displaces nothing — the row is
 	// gone, so this is a fresh insert rather than a re-point.
-	if displaced := mustBind(t, s, ctx, "sess-2", agent.ID, "runner-1"); displaced != "" {
+	if displaced := mustBind(t, ctx, s, "sess-2", agent.ID, "runner-1"); displaced != "" {
 		t.Fatalf("binding after a release displaced %q, want \"\" — the row was deleted, so there is nothing to reap", displaced)
 	}
 
@@ -345,7 +357,7 @@ func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
 		{SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
 		{SessionID: "sess-elsewhere", AccountID: elsewhere.ID, RunnerID: "runner-2"},
 	} {
-		mustBind(t, s, ctx, bind.SessionID, bind.AccountID, bind.RunnerID)
+		mustBind(t, ctx, s, bind.SessionID, bind.AccountID, bind.RunnerID)
 	}
 
 	swept, err := s.DeleteSessionBindingsForRunner(ctx, "runner-1")
@@ -412,14 +424,14 @@ func TestRecordSessionBindingTriggerAdvancesUpdatedAtOnly(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-1")
-	createdBefore, updatedBefore := bindingTimes(t, s, "sess-1")
+	mustBind(t, ctx, s, "sess-1", agent.ID, "runner-1")
+	createdBefore, updatedBefore := bindingTimes(t, ctx, s, "sess-1")
 	if !createdBefore.Equal(updatedBefore) {
 		t.Fatalf("on INSERT created_at = %v and updated_at = %v, want the same DEFAULT now()", createdBefore, updatedBefore)
 	}
 
-	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-2")
-	createdAfter, updatedAfter := bindingTimes(t, s, "sess-1")
+	mustBind(t, ctx, s, "sess-1", agent.ID, "runner-2")
+	createdAfter, updatedAfter := bindingTimes(t, ctx, s, "sess-1")
 
 	if !createdAfter.Equal(createdBefore) {
 		t.Fatalf("created_at moved from %v to %v across a rebind; it must record the row's birth", createdBefore, createdAfter)
@@ -448,7 +460,7 @@ func TestSessionBindingIsTenantIsolated(t *testing.T) {
 
 	ownerA := mustUser(t, s, "owner-a")
 	agentA := mustAgent(t, s, ownerA.ID, "agent-a")
-	mustBind(t, s, ctxA, "sess-a", agentA.ID, "runner-1")
+	mustBind(t, ctxA, s, "sess-a", agentA.ID, "runner-1")
 
 	// Tenant B resolves A's session id: the row is not in B's view, so this must
 	// fail closed rather than hand B tenant A's account.
@@ -481,5 +493,464 @@ func TestSessionBindingIsTenantIsolated(t *testing.T) {
 		t.Fatalf("tenant A cannot see its OWN binding — policy over-blocks: %v", err)
 	} else if gotAccount != agentA.ID {
 		t.Fatalf("tenant A's own binding resolves to %q, want %q", gotAccount, agentA.ID)
+	}
+}
+
+// seedTenantAgent creates an owner user and an owned agent UNDER ctx's tenant,
+// so a multi-tenant case can WRITE as a second tenant rather than only read as
+// one. mustUser/mustAgent are hard-wired to context.Background() (the bootstrap
+// tenant), which is precisely why every pre-existing multi-tenant assertion here
+// could only ever write under tenant A.
+func seedTenantAgent(t *testing.T, ctx context.Context, s *Store, handle string) Account {
+	t.Helper()
+	owner, err := s.CreateUser(ctx, NewUser{Handle: handle + "-owner", DisplayName: handle + "-owner"})
+	if err != nil {
+		t.Fatalf("CreateUser(%s-owner): %v", handle, err)
+	}
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: handle, DisplayName: handle})
+	if err != nil {
+		t.Fatalf("CreateAgent(%s): %v", handle, err)
+	}
+	return agent
+}
+
+// TestSessionBindingSameSessionIDInTwoTenantsCoexist pins the SESSION half of the
+// tenant fold: session_bindings_session_key is (tenant_id, session_id), not
+// (session_id). Two tenants mint session ids independently — nothing coordinates
+// them — so a collision between them is routine, and a global unique index would
+// refuse tenant B's perfectly valid bind because tenant A happened to pick the
+// same string first. That is a cross-tenant denial of service through an id
+// namespace neither tenant can see.
+//
+// This is the case the round-1 fold had NO test for. TestSessionBindingIsTenantIsolated
+// only ever WRITES under tenant A; tenant B appears solely in reads and a
+// returns-nothing sweep, so reverting the index to a global UNIQUE (session_id)
+// left every one of its assertions passing. This one WRITES under tenant B and
+// fails on that mutation with the ErrConflict the un-folded index raises.
+func TestSessionBindingSameSessionIDInTwoTenantsCoexist(t *testing.T) {
+	s := newTestStore(t)
+	tenantB := seedTenant(t, s, "tenant-b")
+	ctxA := context.Background() // no tenant set → the bootstrap tenant
+	ctxB := WithTenant(context.Background(), tenantB)
+
+	ownerA := mustUser(t, s, "owner-a")
+	agentA := mustAgent(t, s, ownerA.ID, "agent-a")
+	agentB := seedTenantAgent(t, ctxB, s, "agent-b")
+
+	mustBind(t, ctxA, s, "sess-shared", agentA.ID, "runner-a")
+
+	// The load-bearing write: tenant B claims the SAME session id. It must
+	// SUCCEED — under a global unique index this is ErrConflict.
+	if displaced := mustBind(t, ctxB, s, "sess-shared", agentB.ID, "runner-b"); displaced != "" {
+		t.Fatalf("tenant B's first bind displaced %q, want \"\" — B's agent held no prior session, and a cross-tenant displaced id would mean B just overwrote A's row", displaced)
+	}
+
+	// Each tenant resolves its OWN account from the shared session id. A single
+	// surviving row would make one of these two answer with the other tenant's
+	// account — the relay resolving a foreign principal.
+	gotA, err := s.ResolveSessionAccount(ctxA, "sess-shared")
+	if err != nil {
+		t.Fatalf("tenant A ResolveSessionAccount(sess-shared) after B's bind: %v (B's write clobbered A's binding)", err)
+	}
+	if gotA != agentA.ID {
+		t.Fatalf("tenant A resolves sess-shared to %q, want its own agent %q", gotA, agentA.ID)
+	}
+	gotB, err := s.ResolveSessionAccount(ctxB, "sess-shared")
+	if err != nil {
+		t.Fatalf("tenant B ResolveSessionAccount(sess-shared): %v", err)
+	}
+	if gotB != agentB.ID {
+		t.Fatalf("tenant B resolves sess-shared to %q, want its own agent %q", gotB, agentB.ID)
+	}
+
+	// And the reverse direction, per tenant.
+	if got, err := s.SessionForAccount(ctxA, agentA.ID); err != nil || got != "sess-shared" {
+		t.Fatalf("tenant A SessionForAccount = (%q, %v), want (sess-shared, nil)", got, err)
+	}
+	if got, err := s.SessionForAccount(ctxB, agentB.ID); err != nil || got != "sess-shared" {
+		t.Fatalf("tenant B SessionForAccount = (%q, %v), want (sess-shared, nil)", got, err)
+	}
+}
+
+// TestSessionBindingSameAccountIDInTwoTenantsCoexist pins the PRIMARY KEY half of
+// the fold: PRIMARY KEY (tenant_id, agent_account_id), not (agent_account_id).
+// Two rows for one account id, one per tenant, must COEXIST — under an un-folded
+// PK the second bind is not a conflict but something worse: it resolves as
+// ON CONFLICT DO UPDATE and OVERWRITES the other tenant's binding, silently
+// moving a foreign tenant's account onto this tenant's session.
+//
+// accounts.id is a GLOBAL primary key, so the two tenants cannot own two distinct
+// agent rows sharing an id; the second tenant necessarily binds the first
+// tenant's account id. The FK to agent_accounts permits it — referential-integrity
+// checks are not RLS-constrained — and that is the point: the DEFENCE against one
+// tenant's write reaching another's binding is the tenant in the KEY, not the FK.
+func TestSessionBindingSameAccountIDInTwoTenantsCoexist(t *testing.T) {
+	s := newTestStore(t)
+	tenantB := seedTenant(t, s, "tenant-b")
+	ctxA := context.Background() // no tenant set → the bootstrap tenant
+	ctxB := WithTenant(context.Background(), tenantB)
+
+	ownerA := mustUser(t, s, "owner-a")
+	shared := mustAgent(t, s, ownerA.ID, "agent-shared")
+
+	mustBind(t, ctxA, s, "sess-a", shared.ID, "runner-a")
+
+	// The load-bearing write: tenant B binds the SAME account id to its own
+	// session. Under PRIMARY KEY (agent_account_id) this upserts over A's row.
+	if displaced := mustBind(t, ctxB, s, "sess-b", shared.ID, "runner-b"); displaced != "" {
+		t.Fatalf("tenant B's bind of the shared account id displaced %q, want \"\" — a non-empty value means it read (and overwrote) tenant A's row", displaced)
+	}
+
+	// Both rows survive, one per tenant, each resolving its own session.
+	if got, err := s.SessionForAccount(ctxA, shared.ID); err != nil || got != "sess-a" {
+		t.Fatalf("tenant A SessionForAccount = (%q, %v), want (sess-a, nil) — B's write reached A's row", got, err)
+	}
+	if got, err := s.SessionForAccount(ctxB, shared.ID); err != nil || got != "sess-b" {
+		t.Fatalf("tenant B SessionForAccount = (%q, %v), want (sess-b, nil)", got, err)
+	}
+
+	// Exactly one row PER TENANT — countBindings carries the tenant predicate,
+	// so this is 1 and 1, not a cross-tenant 2.
+	if n := countBindings(t, ctxA, s, shared.ID); n != 1 {
+		t.Fatalf("tenant A holds %d bindings for the shared account, want 1", n)
+	}
+	if n := countBindings(t, ctxB, s, shared.ID); n != 1 {
+		t.Fatalf("tenant B holds %d bindings for the shared account, want 1", n)
+	}
+
+	// Each tenant's session resolves only in its own tenant.
+	if _, err := s.ResolveSessionAccount(ctxA, "sess-b"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("tenant A resolved B's session err = %v, want ErrNotFound", err)
+	}
+	if _, err := s.ResolveSessionAccount(ctxB, "sess-a"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("tenant B resolved A's session err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestSessionForAccountUnderSystemRoleIsUnscoped PINS A HAZARD rather than a
+// desired property, and the assertions are written to say so.
+//
+// WithSystemRole arms the BYPASSRLS compass_system role with no tenant GUC
+// (tenant_tx.go). SessionBindingForAccount is :one and its only predicate is the
+// account id — single-valued ONLY because RLS normally narrows the visible rows
+// to one tenant's. Strip that and two tenants' rows for one account id both
+// match; pgx's QueryRow takes the first and discards the rest WITHOUT error, so
+// the caller gets a plausible session id from an arbitrary tenant.
+//
+// Nothing calls this under the system role today — WithSystemRole is set at
+// delivery/consumer.go:316 and runnerhub/hub.go:753,:814, i.e. on PR3's path — so
+// this test exists so the behaviour is RECORDED, not discovered later. Deciding
+// what to do about it (a tenant predicate, a :many + explicit refusal, a
+// structural guard) is PR3's call, and this test is what will fail loudly when
+// PR3 changes it.
+func TestSessionForAccountUnderSystemRoleIsUnscoped(t *testing.T) {
+	s := newTestStore(t)
+	tenantB := seedTenant(t, s, "tenant-b")
+	ctxA := context.Background() // no tenant set → the bootstrap tenant
+	ctxB := WithTenant(context.Background(), tenantB)
+
+	ownerA := mustUser(t, s, "owner-a")
+	shared := mustAgent(t, s, ownerA.ID, "agent-shared")
+	mustBind(t, ctxA, s, "sess-a", shared.ID, "runner-a")
+	mustBind(t, ctxB, s, "sess-b", shared.ID, "runner-b")
+
+	// Under the system role BOTH rows are visible, so the :one read is ambiguous.
+	// It does NOT error — that is the hazard. It returns one of the two, and
+	// which one is not something the caller can control or detect.
+	got, err := s.SessionForAccount(WithSystemRole(context.Background()), shared.ID)
+	if err != nil {
+		t.Fatalf("SessionForAccount under the system role: %v — the current behaviour is a SILENT pick, not an error; if this now errors, PR3 changed the contract and this test must be updated deliberately", err)
+	}
+	if got != "sess-a" && got != "sess-b" {
+		t.Fatalf("SessionForAccount under the system role = %q, want one of the two tenants' sessions", got)
+	}
+	t.Logf("system-role SessionForAccount(%q) returned %q with two tenants holding that account id — unscoped and silently single-valued", shared.ID, got)
+
+	// The same read on the REQUEST path is exact in both tenants: the hazard is
+	// the system role's missing scoping, NOT anything about the data.
+	if v, err := s.SessionForAccount(ctxA, shared.ID); err != nil || v != "sess-a" {
+		t.Fatalf("tenant A request-path SessionForAccount = (%q, %v), want (sess-a, nil)", v, err)
+	}
+	if v, err := s.SessionForAccount(ctxB, shared.ID); err != nil || v != "sess-b" {
+		t.Fatalf("tenant B request-path SessionForAccount = (%q, %v), want (sess-b, nil)", v, err)
+	}
+
+	// A system-role WRITE is worse than a refusal: it SUCCEEDS and lands an
+	// ORPHAN. tenant_id DEFAULTs to current_setting('compass.tenant_id', TRUE),
+	// and under this role no GUC is armed — but the pooled connection has served
+	// armed request-path statements before, and a SET LOCAL that has ended leaves
+	// the custom GUC defined-and-EMPTY on that backend rather than undefined. So
+	// the DEFAULT resolves to '' instead of NULL, the NOT NULL is satisfied, and
+	// the row lands stamped with a tenant that does not exist.
+	//
+	// session_bindings.tenant_id has no FK to tenants (only accounts.tenant_id
+	// does), so nothing catches it. The row is then invisible to EVERY tenant —
+	// no RLS policy matches '' — and reachable only by another system-role read
+	// or the owner pool: an unswept binding no request path can see or release.
+	//
+	// It is also NOT deterministic. On a backend that never carried an armed
+	// statement the GUC is genuinely undefined, the DEFAULT is NULL, and the
+	// insert fails not-null instead. Which one a caller gets depends on the
+	// pooled connection it draws, so this asserts the DISJUNCTION rather than
+	// pretending either branch is the contract. Both are defects; PR3 owns the
+	// fix, and this test is what will fail when it lands one.
+	sysDisplaced, sysErr := s.RecordSessionBinding(WithSystemRole(context.Background()), "sess-sys", shared.ID, "runner-sys")
+	switch {
+	case sysErr != nil:
+		t.Logf("system-role RecordSessionBinding failed (connection had no prior armed statement, so the GUC was undefined and the DEFAULT was NULL): %v", sysErr)
+	default:
+		t.Logf("system-role RecordSessionBinding SUCCEEDED, displaced=%q — it landed an untenanted row", sysDisplaced)
+		var orphans int
+		if err := s.pool.QueryRow(ctxA,
+			"SELECT count(*) FROM session_bindings WHERE session_id = $1 AND tenant_id = ''", "sess-sys",
+		).Scan(&orphans); err != nil {
+			t.Fatalf("count untenanted bindings: %v", err)
+		}
+		if orphans != 1 {
+			t.Fatalf("system-role write left %d rows stamped tenant_id = '', want 1 — the observed failure mode is an ORPHAN row, so if it is now stamped with a real tenant the write path grew scoping and this test must be updated deliberately", orphans)
+		}
+		// And it is invisible to every tenant: no policy matches ''.
+		if _, err := s.ResolveSessionAccount(ctxA, "sess-sys"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("tenant A sees the untenanted binding err = %v, want ErrNotFound", err)
+		}
+		if _, err := s.ResolveSessionAccount(ctxB, "sess-sys"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("tenant B sees the untenanted binding err = %v, want ErrNotFound", err)
+		}
+	}
+}
+
+// TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced is the
+// regression test for the round-2 HIGH defect, and it drives the interleaving
+// DETERMINISTICALLY rather than hoping a goroutine race lands on it.
+//
+// The setup: account X is bound to sess-A, then two callers re-point it — one to
+// sess-B, one to sess-C. Exactly two sessions get displaced: sess-A by whichever
+// caller wins, and the WINNER'S session by the loser. Each caller must be told
+// the one IT displaced, because that id is what it reaps from the delivery
+// held-deliver registry, and a session reported to nobody keeps its held
+// deliveries forever.
+//
+// The determinism comes from a THIRD connection holding the SAME per-account
+// advisory lock the bind takes first. Both callers park on it, so both are
+// provably in flight before either can proceed, and releasing it starts the real
+// contention. Without that the two calls would usually just serialize and the
+// test would pass on a schedule that never exercised the bug.
+//
+// The defect this catches: with an unlocked prior-value read (the `prev` CTE this
+// replaced), the second caller's read takes the statement-start snapshot while
+// its write blocks on the first's row lock and then re-reads the latest committed
+// row — so both callers report sess-A and the middle session is destroyed
+// unreported. Removing either lock from the bind fails this test.
+func TestRecordSessionBindingConcurrentRePointsReportDistinctDisplaced(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	mustBind(t, ctx, s, "sess-A", agent.ID, "runner-0")
+
+	// A gate transaction holding the bind's per-account advisory lock, armed
+	// exactly as the store's own transactions are (SET LOCAL ROLE + the tenant
+	// GUC). The lock key is character-identical to the one in
+	// queries/session_bindings.sql — if that key changes, this gate stops
+	// blocking and the test fails loudly rather than silently going green.
+	gate, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate tx: %v", err)
+	}
+	defer func() { _ = gate.Rollback(ctx) }() // no-op once released below
+	if _, err := gate.Exec(ctx, "SET LOCAL ROLE "+appRole); err != nil {
+		t.Fatalf("gate arm role: %v", err)
+	}
+	if _, err := gate.Exec(ctx, "SELECT set_config($1, $2, true)", tenantGUC, string(s.resolveTenant(ctx))); err != nil {
+		t.Fatalf("gate arm guc: %v", err)
+	}
+	if _, err := gate.Exec(ctx,
+		"SELECT pg_advisory_xact_lock(hashtext('binding:' || $1 || ':' || $2))",
+		string(s.resolveTenant(ctx)), string(agent.ID),
+	); err != nil {
+		t.Fatalf("gate advisory lock: %v", err)
+	}
+
+	type outcome struct {
+		session   string
+		displaced string
+		err       error
+	}
+	results := make(chan outcome, 2)
+	launch := func(sessionID, runnerID string) {
+		go func() {
+			d, err := s.RecordSessionBinding(ctx, sessionID, agent.ID, runnerID)
+			results <- outcome{sessionID, d, err}
+		}()
+	}
+	launch("sess-B", "runner-1")
+	launch("sess-C", "runner-2")
+
+	// Both callers must be BLOCKED on the gate's lock. If either completes now,
+	// the bind is not serializing per account and displaced values cannot be
+	// correct under concurrency.
+	select {
+	case r := <-results:
+		t.Fatalf("a re-point completed (session=%q displaced=%q err=%v) while the gate held the per-account advisory lock — the bind is not taking it, so two concurrent binds can read the same prior value", r.session, r.displaced, r.err)
+	case <-time.After(750 * time.Millisecond):
+	}
+
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release gate: %v", err)
+	}
+
+	got := make(map[string]string, 2)
+	for range 2 {
+		r := <-results
+		if r.err != nil {
+			t.Fatalf("concurrent re-point failed: %v (a re-point must never be refused)", r.err)
+		}
+		got[r.session] = r.displaced
+	}
+
+	// Which caller wins the lock is not determined, so the assertion is stated
+	// on the SHAPE, not on a fixed pairing: the winner displaces sess-A (the
+	// seeded binding), and the loser displaces THE WINNER'S session, because
+	// that is what it actually overwrote. So {sess-A, <winner's session>}, one
+	// each. Both callers reporting the SAME id is the unlocked-read defect.
+	b, c := got["sess-B"], got["sess-C"]
+	var winner, loser string
+	switch {
+	case b == "sess-A" && c == "sess-B":
+		winner, loser = "sess-B", "sess-C"
+	case c == "sess-A" && b == "sess-C":
+		winner, loser = "sess-C", "sess-B"
+	default:
+		t.Fatalf("the two concurrent re-points reported displaced sess-B=%q sess-C=%q; want one of them naming sess-A and the OTHER naming the first one's session. Every displaced session must be reported to exactly one caller or its held deliveries are stranded forever; both callers naming the same id is the unlocked-read defect (the prior value must be read under a lock inside the write's transaction)", b, c)
+	}
+	t.Logf("caller %s won the lock (displaced sess-A); caller %s displaced %s", winner, loser, winner)
+
+	// One row survives, holding the LOSER's session — it committed last.
+	if n := countBindings(t, ctx, s, agent.ID); n != 1 {
+		t.Fatalf("bindings after two concurrent re-points = %d, want 1", n)
+	}
+	live, err := s.SessionForAccount(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("SessionForAccount after the race: %v", err)
+	}
+	if live != loser {
+		t.Fatalf("live session is %q, want %q — the caller that committed last owns the binding", live, loser)
+	}
+
+	// Both displaced sessions are gone, and between them they were reported to
+	// exactly the two callers: nothing was destroyed unreported.
+	for _, dead := range []string{"sess-A", winner} {
+		if _, err := s.ResolveSessionAccount(ctx, dead); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("displaced session %q still resolves (err = %v), want ErrNotFound", dead, err)
+		}
+	}
+}
+
+// TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession covers
+// the case the ROW lock cannot cover, and it is why the bind takes a per-account
+// advisory lock as well.
+//
+// SELECT ... FOR UPDATE on a row that does not yet exist locks NOTHING. So two
+// first-ever binds for one account both read no prior value, and the row lock
+// never brings them into contact. The PRIMARY KEY does serialize their WRITES —
+// the second INSERT waits on the first's uncommitted tuple and resolves as
+// ON CONFLICT DO UPDATE — but by then both have already READ, so with only those
+// two mechanisms both callers report "displaced nothing" while the second has
+// destroyed the first's live binding. That session is reported to NOBODY and its
+// held deliveries are stranded: the same failure as the re-point case, reached
+// by a different route. Measured, not assumed — the PK orders writes, and the
+// displaced value is a read.
+//
+// The advisory lock is taken BEFORE the read, so it covers this: exactly one
+// caller reports "" (it genuinely displaced nothing) and the other reports the
+// first caller's session, which it really did overwrite and must reap.
+//
+// Gated the same way as the re-point case, on the same lock, so the interleaving
+// is driven rather than hoped for. Removing the advisory lock from the bind makes
+// this test fail with both callers reporting "".
+func TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	// The gate: hold the bind's per-account advisory lock so both callers are
+	// provably in flight before either reads. No binding row exists yet, which
+	// is the entire point — there is nothing for FOR UPDATE to lock.
+	gate, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin gate tx: %v", err)
+	}
+	defer func() { _ = gate.Rollback(ctx) }() // no-op once released below
+	if _, err := gate.Exec(ctx, "SET LOCAL ROLE "+appRole); err != nil {
+		t.Fatalf("gate arm role: %v", err)
+	}
+	if _, err := gate.Exec(ctx, "SELECT set_config($1, $2, true)", tenantGUC, string(s.resolveTenant(ctx))); err != nil {
+		t.Fatalf("gate arm guc: %v", err)
+	}
+	if _, err := gate.Exec(ctx,
+		"SELECT pg_advisory_xact_lock(hashtext('binding:' || $1 || ':' || $2))",
+		string(s.resolveTenant(ctx)), string(agent.ID),
+	); err != nil {
+		t.Fatalf("gate advisory lock: %v", err)
+	}
+
+	type outcome struct {
+		session   string
+		displaced string
+		err       error
+	}
+	results := make(chan outcome, 2)
+	for _, b := range []struct{ session, runner string }{
+		{"sess-1", "runner-1"},
+		{"sess-2", "runner-2"},
+	} {
+		go func() {
+			d, err := s.RecordSessionBinding(ctx, b.session, agent.ID, b.runner)
+			results <- outcome{b.session, d, err}
+		}()
+	}
+
+	select {
+	case r := <-results:
+		t.Fatalf("a first bind completed (session=%q displaced=%q err=%v) while the gate held the per-account advisory lock — with no row to lock, that lock is the ONLY thing serializing two first binds", r.session, r.displaced, r.err)
+	case <-time.After(750 * time.Millisecond):
+	}
+
+	if err := gate.Rollback(ctx); err != nil {
+		t.Fatalf("release gate: %v", err)
+	}
+
+	got := make(map[string]string, 2)
+	for range 2 {
+		r := <-results
+		if r.err != nil {
+			t.Fatalf("concurrent first bind of %q failed: %v — the PK conflict must resolve as an upsert, never surface to the caller", r.session, r.err)
+		}
+		got[r.session] = r.displaced
+	}
+
+	// Which caller wins is not determined, so accept either assignment and
+	// reject the two broken shapes: both "" (a live session destroyed and
+	// reported to nobody) and both non-empty (one session reaped twice).
+	first, second := got["sess-1"], got["sess-2"]
+	var winner string
+	switch {
+	case first == "" && second == "sess-1":
+		winner = "sess-1"
+	case second == "" && first == "sess-2":
+		winner = "sess-2"
+	default:
+		t.Fatalf("concurrent first binds reported displaced sess-1=%q sess-2=%q; want exactly one \"\" and the other naming the session it overwrote. Both empty means a live session was destroyed and reported to NOBODY — the defect the per-account advisory lock exists to prevent, and one the PK cannot cover because it orders WRITES while the displaced value is a READ", first, second)
+	}
+	t.Logf("caller %s bound first; the other displaced it and can reap it", winner)
+
+	if n := countBindings(t, ctx, s, agent.ID); n != 1 {
+		t.Fatalf("bindings after two concurrent first binds = %d, want 1 — the PK must fold them into one row", n)
+	}
+	// The winner's session is gone, and it WAS reported, so it can be reaped.
+	if _, err := s.ResolveSessionAccount(ctx, winner); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the overwritten session %q still resolves (err = %v), want ErrNotFound", winner, err)
 	}
 }
