@@ -99,11 +99,14 @@
   //   4. the FOD-hash refresh, which recomputes the pinned Nix fixed-output-
   //      derivation hashes a dep bump invalidates — the Go `vendorHash`
   //      (guest-image/default.nix) on a gomod bump, the bun `outputHash`
-  //      (agent-image/entrypoint.nix) on a bun/catalog bump. Left stale the image
-  //      build fails `hash mismatch in fixed-output derivation` (PR #579). Wired at
-  //      both the top-level (branch mode) and catalog-rule (update mode)
-  //      postUpgradeTasks in config.json5 — one command string, so ONE allowlist
-  //      entry covers both sites.
+  //      (agent-image/entrypoint.nix) on a bun/catalog bump OR a devenv-nixpkgs
+  //      channel bump (which moves pkgs.bun, the FOD's builder). Left stale the
+  //      image build fails `hash mismatch in fixed-output derivation` (PR #579).
+  //      Wired at the top-level (branch mode), catalog-rule (update mode),
+  //      devenv-nixpkgs channel rule (branch mode), devenv fork (root) rule
+  //      (branch mode), and go↔go-overlay lockstep rule (branch mode)
+  //      postUpgradeTasks in config.json5 — one command string, so ONE
+  //      allowlist entry covers all five sites.
   //   5. the go↔go-overlay lockstep, which on a go.nix toolchain bump advances
   //      the go-overlay input in devenv.lock to a rev that provides the new go
   //      release and validates it resolves through gate-tools.nix's `langs.go`
