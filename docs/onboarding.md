@@ -22,13 +22,17 @@ Linux VM, so you need a podman machine running before first launch
 (`podman machine init`, then `podman machine start`); provisioning it from the
 app is not yet implemented.
 
-The app is published as a per-platform release build: a `.dmg` for macOS, which
-you open and drag to Applications, and a `.tar.gz` for Linux, which you extract
-and put on your `PATH`. Each release also publishes a `SHA256SUMS` file to
-verify what you downloaded.
+The app is published as a per-platform release build: a `.dmg` for
+Apple-silicon macOS, which you open and drag to Applications, and a `.tar.gz`
+for Linux. Extract the Linux tarball and run `bin/compass-app` from inside the
+extracted directory — the bundle ships the UI assets and the stack binaries
+alongside it, so keep the tree intact rather than copying binaries onto your
+`PATH`. Symlinking `bin/compass-app` into a directory on your `PATH` is fine.
+Each release also publishes a `SHA256SUMS` file to verify what you downloaded.
 
 > **Note:** the first release has not been cut yet, so there is nothing to
-> download today. Build from source in the meantime.
+> download today. On Linux you can install the app from the flake meanwhile:
+> `nix profile install github:RigelBuild/compass#compass-app`.
 
 Launch it, sign in with your own model subscription, and the app is ready. Your
 subscription is the only credential involved; there is no Compass-hosted service
@@ -182,7 +186,7 @@ podman and neither exists natively on macOS. Two supported paths:
 
 - **Use the app** (the front door above) and let it run sessions locally. You
   set up a podman machine once, as described above, and the app runs sessions in
-  it, so this works on any Mac. This is the answer for most Mac users.
+  it. This is the answer for most Mac users.
 - **Point the client at a remote Linux stack.** The Mac runs the client only and
   connects over the same TLS door as any other client.
 
