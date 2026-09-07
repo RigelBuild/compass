@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,11 +42,14 @@ import (
 // map (so GuestRSSBytes is assertable), and Shutdown is recorded (the teardown
 // assertion).
 type canaryFakeVM struct {
-	nonce    []byte
-	pss      map[string]int64
-	pssErr   error
-	mu       sync.Mutex
-	shutdown bool
+	nonce                  []byte
+	pss                    map[string]int64
+	pssErr                 error
+	shutdownErr            error
+	sharedDir              string
+	sharedDirPresentOnStop bool
+	mu                     sync.Mutex
+	shutdown               bool
 }
 
 func (f *canaryFakeVM) Health(context.Context) (*compassv1.HealthResponse, error) {
@@ -59,8 +63,10 @@ func (f *canaryFakeVM) Health(context.Context) (*compassv1.HealthResponse, error
 func (f *canaryFakeVM) Shutdown(context.Context) error {
 	f.mu.Lock()
 	f.shutdown = true
+	_, err := os.Stat(f.sharedDir)
+	f.sharedDirPresentOnStop = err == nil
 	f.mu.Unlock()
-	return nil
+	return f.shutdownErr
 }
 
 func (f *canaryFakeVM) WaitVMMExit(_ time.Duration) bool { return true }
@@ -73,6 +79,12 @@ func (f *canaryFakeVM) wasShutdown() bool {
 	return f.shutdown
 }
 
+func (f *canaryFakeVM) sharedDirWasPresentOnShutdown() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sharedDirPresentOnStop
+}
+
 var _ guestVM = (*canaryFakeVM)(nil)
 
 // canaryLaunchRecorder is the fake launchFunc: it decodes the boot nonce from
@@ -80,32 +92,58 @@ var _ guestVM = (*canaryFakeVM)(nil)
 // the deadline the launch ctx carried (for the ctx-derivation assertions). A
 // non-nil launchErr makes launch fail (the Start-failure case).
 type canaryLaunchRecorder struct {
-	mu            sync.Mutex
-	pss           map[string]int64
-	pssErr        error
-	launchErr     error
-	vms           []*canaryFakeVM
-	calls         int
-	lastDeadline  time.Time
-	lastHasDeadln bool
+	mu                    sync.Mutex
+	pss                   map[string]int64
+	pssErr                error
+	shutdownErr           error
+	launchErr             error
+	breakWorkspaceRemoval bool
+	// workspaceCleanup runs after launch releases r.mu and may inspect the recorder.
+	workspaceCleanup func(string)
+	vms              []*canaryFakeVM
+	calls            int
+	lastDeadline     time.Time
+	lastHasDeadln    bool
 }
 
 func (r *canaryLaunchRecorder) launch(ctx context.Context, cfg microvm.BootConfig) (guestVM, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.calls++
 	deadline, ok := ctx.Deadline()
 	r.lastDeadline = deadline
 	r.lastHasDeadln = ok
 	if r.launchErr != nil {
+		r.mu.Unlock()
 		return nil, r.launchErr
 	}
 	nonce, err := parseBootNonce(cfg.Cmdline)
 	if err != nil {
+		r.mu.Unlock()
 		return nil, err
 	}
-	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr}
+	var blocked string
+	if r.breakWorkspaceRemoval {
+		blocked = filepath.Join(cfg.FSSharedDir, "blocked")
+		if err := os.Mkdir(blocked, 0o700); err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(blocked, "marker"), []byte("x"), 0o600); err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
+		if err := os.Chmod(blocked, 0o500); err != nil {
+			r.mu.Unlock()
+			return nil, err
+		}
+	}
+	vm := &canaryFakeVM{nonce: nonce, pss: r.pss, pssErr: r.pssErr, shutdownErr: r.shutdownErr, sharedDir: cfg.FSSharedDir}
 	r.vms = append(r.vms, vm)
+	cleanup := r.workspaceCleanup
+	r.mu.Unlock()
+	if blocked != "" && cleanup != nil {
+		cleanup(blocked)
+	}
 	return vm, nil
 }
 
@@ -245,6 +283,9 @@ func TestBootCanarySequencing(t *testing.T) {
 	}
 	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
 		t.Error("canary VM was not shut down on teardown")
+	}
+	if !rec.vms[0].sharedDirWasPresentOnShutdown() {
+		t.Error("shared dir was absent during Shutdown; inverted defer order removed it while the VM was live")
 	}
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
@@ -403,6 +444,154 @@ func TestBootCanaryPartialPSSStillReported(t *testing.T) {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
 	}
 	assertNoTempLeak(t, before)
+}
+
+// TestBootCanaryTeardownErrorJoined pins shutdown-error composition: a canary
+// that otherwise succeeds must still invoke VM shutdown, empty the session
+// table, and retain the shutdown error when teardown fails (record §(e)).
+func TestBootCanaryTeardownErrorJoined(t *testing.T) {
+	before := canaryTempDirs(t)
+	m, rec, _ := seamCanary(t, nil)
+	wantErr := errors.New("boom: vmm refused to die")
+	rec.shutdownErr = wantErr
+
+	report, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want shutdown failure")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("BootCanary error %q does not contain shutdown failure", err)
+	}
+	if report.BootLatency <= 0 {
+		t.Errorf("BootLatency = %v, want > 0 after a successful canary", report.BootLatency)
+	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down despite the shutdown error")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
+	assertNoTempLeak(t, before)
+}
+
+// TestBootCanaryBodyAndTeardownErrorsJoined pins the Remove defer's join of a
+// body failure with the shutdown failure, catching a regression that overwrites
+// the body error at teardown instead of retaining both errors (record §(e)).
+func TestBootCanaryBodyAndTeardownErrorsJoined(t *testing.T) {
+	before := canaryTempDirs(t)
+	m, rec, client := seamCanary(t, nil)
+	wantErr := errors.New("boom: vmm refused to die")
+	rec.shutdownErr = wantErr
+	wrong := "not-the-nonce"
+	client.stdout = &wrong
+
+	_, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want joined body and shutdown failures")
+	}
+	if !strings.Contains(err.Error(), "does not contain the nonce") {
+		t.Errorf("BootCanary error %q lost the primary body failure", err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("BootCanary error %q does not contain shutdown failure", err)
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
+	assertNoTempLeak(t, before)
+}
+
+// Root bypasses this local 0500 DAC check. This package runs non-root in the
+// moon battery (go/moon.yml, go test -race ./...) and in the microvm job on a
+// bare runner without a privileged container, so this is a local-root or
+// dev-container guard rather than a CI concession. If a root lane is added,
+// the :327 throwaway-workspace cleanup join loses its only defense: root makes
+// that overwrite mutation pass, while the :347 join and LIFO assertion remain
+// defended.
+//
+// breakWorkspaceRemoval arranges a permission failure in the workspace cleanup
+// tests: the launch fake leaves an unwritable non-empty child inside the
+// throwaway workspace, so BootCanary's deferred os.RemoveAll fails for real.
+//
+// The cleanup restores 0700 before removing, because a 0500 directory is not
+// removable. It then reclaims the workspace ROOT, not just the blocked child:
+// BootCanary's own RemoveAll already failed, so nothing else reclaims the
+// parent and it would leak one temp dir per run. Removing a caller-supplied
+// parent is guarded rather than trusted — a widened mount HostPath would
+// otherwise make this recursively delete a production-chosen directory, so a
+// path outside the canary's own temp workspace fails the test instead.
+func breakWorkspaceRemoval(t *testing.T, rec *canaryLaunchRecorder) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the 0500 DAC check; a non-root process would need CAP_DAC_OVERRIDE")
+	}
+	rec.breakWorkspaceRemoval = true
+	rec.workspaceCleanup = func(path string) {
+		t.Cleanup(func() {
+			if err := os.Chmod(path, 0o700); err != nil {
+				t.Errorf("restoring workspace permissions: %v", err)
+			}
+			workspace := filepath.Dir(path)
+			if !strings.HasPrefix(filepath.Base(workspace), canaryNamePrefix) {
+				t.Fatalf("refusing to remove %s: not a %s* workspace, so the mount HostPath widened", workspace, canaryNamePrefix)
+			}
+			if err := os.RemoveAll(workspace); err != nil {
+				t.Errorf("removing throwaway workspace: %v", err)
+			}
+		})
+	}
+}
+
+// TestBootCanaryWorkspaceCleanupErrorJoined pins throwaway-workspace cleanup
+// error composition: an otherwise healthy canary must pass the exec gate and
+// retain the permission failure from removing its workspace (record §(e)).
+func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
+	m, rec, _ := seamCanary(t, nil)
+	breakWorkspaceRemoval(t, rec)
+
+	report, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want throwaway workspace cleanup failure")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("BootCanary error %q does not contain permission failure", err)
+	}
+	if !strings.Contains(err.Error(), "removing throwaway workspace") {
+		t.Errorf("BootCanary error %q does not name throwaway workspace cleanup failure", err)
+	}
+	if report.BootLatency <= 0 {
+		t.Errorf("BootLatency = %v, want > 0 after a successful canary", report.BootLatency)
+	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down after workspace cleanup failure")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
+}
+
+// TestBootCanaryCleanupAndTeardownErrorsJoined pins composition of both
+// cleanup joins: one call must retain independent shutdown and permission
+// failures rather than overwrite either error (record §(e)).
+func TestBootCanaryCleanupAndTeardownErrorsJoined(t *testing.T) {
+	m, rec, _ := seamCanary(t, nil)
+	wantErr := errors.New("boom: vmm refused to die")
+	rec.shutdownErr = wantErr
+	breakWorkspaceRemoval(t, rec)
+
+	_, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want joined cleanup and shutdown failures")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Errorf("BootCanary error %q does not contain shutdown failure", err)
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("BootCanary error %q does not contain permission failure", err)
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
 }
 
 // TestBootCanaryDerivesDeadlineWhenCallerHasNone: with a deadline-less caller
