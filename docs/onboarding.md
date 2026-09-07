@@ -181,10 +181,20 @@ This runs the entry tier, which is the default backend.
 > Documented microVM bring-up is pending that packaging; use the entry tier
 > meanwhile.
 
-Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. Check
-the stack came up with `compass-stack status`. Connecting a client and running a
-session needs the app, which has no working install yet — see the note in
-[The app](#the-app).
+Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. To
+check on the stack afterwards, `compass-stack status` takes the same
+`--state-dir` and `--image` as `up`:
+
+```console
+compass-stack status \
+    --state-dir /var/lib/compass \
+    --image ghcr.io/rigelbuild/compass-agent:latest
+```
+
+It reports the server's health, which is not the whole stack — the agent runner
+is started last and is not covered, so a ready server does not by itself confirm
+a session can run. Connecting a client and running a session needs the app,
+which has no working install yet — see the note in [The app](#the-app).
 
 For a stack that survives reboots, run it under systemd —
 [self-host.md](./self-host.md#running-under-systemd) carries a working unit. To
