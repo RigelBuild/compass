@@ -392,7 +392,7 @@ func TestForgeNotifyMatrix_Route(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{sub}}
 			d := &matrixDispatcher{}
-			r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, mxRef(), nil)
+			r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, mxRef(), nil)
 			if err := r.Route(t.Context(), tc.ev); err != nil {
 				t.Fatalf("Route: %v", err)
 			}
@@ -433,7 +433,7 @@ func TestForgeNotifyMatrix_ContainerScope(t *testing.T) {
 		container := ingest.NotifySubscriber{SubscriptionID: "repo-sub", AgentAccountID: "acct-repo"}
 		st := &matrixNotifyStore{openedSub: []ingest.NotifySubscriber{container}}
 		d := &matrixDispatcher{}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, mxRef(), nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, mxRef(), nil)
 		ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com", Repo: "octo/repo", Kind: mxIssue, Number: 99, URL: "u", Change: mxOpened}
 		if err := r.Route(t.Context(), ev); err != nil {
 			t.Fatalf("Route: %v", err)
@@ -451,7 +451,7 @@ func TestForgeNotifyMatrix_ContainerScope(t *testing.T) {
 		otherProj := ingest.NotifySubscriber{SubscriptionID: "other-sub", AgentAccountID: "acct-other", Project: "proj-beta"}
 		st := &matrixNotifyStore{openedSub: []ingest.NotifySubscriber{inProj, otherProj}}
 		d := &matrixDispatcher{}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"}, nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"}, nil)
 		ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app", Repo: "SEA", Kind: mxIssue, Number: 42, Project: "proj-alpha", URL: "u", Change: mxOpened}
 		if err := r.Route(t.Context(), ev); err != nil {
 			t.Fatalf("Route: %v", err)
@@ -466,7 +466,7 @@ func TestForgeNotifyMatrix_ContainerScope(t *testing.T) {
 		container := ingest.NotifySubscriber{SubscriptionID: "repo-sub", AgentAccountID: "acct-repo"}
 		st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{exact}, openedSub: []ingest.NotifySubscriber{container}}
 		d := &matrixDispatcher{}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, mxRef(), nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, mxRef(), nil)
 		// A COMMENT (not OPENED) is artifact-scope: no container fan-in.
 		ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com", Repo: "octo/repo", Kind: mxIssue, Number: 7, URL: "u#c", Change: mxComment, Comment: &compassv1internal.CommentRef{Url: "u#c", Body: "x", ForgeAccount: "a"}}
 		if err := r.Route(t.Context(), ev); err != nil {
@@ -478,33 +478,75 @@ func TestForgeNotifyMatrix_ContainerScope(t *testing.T) {
 	})
 }
 
-// TestForgeNotifyMatrix_CheckSuiteZeroNumberRejected pins a real gap surfaced by
-// composing the landed pieces: parseGitHubCheckSuite (githubapp_webhook.go)
-// carries head_sha but NO artifact number, and NotifyRouter.Route guards
-// Number==0 → error. So a check_suite webhook cannot route until a
-// head_sha→PR-number resolution step (T5/T7) sets Number. This asserts the
-// router's zero-number guard fires, documenting the gap as a live contract.
-func TestForgeNotifyMatrix_CheckSuiteZeroNumberRejected(t *testing.T) {
+// matrixPullNumbers scripts the head_sha->PR-number seam, recording the SHA it
+// was asked about so the test proves the number came from the webhook's head
+// SHA and not from the event.
+type matrixPullNumbers struct {
+	number  uint64
+	err     error
+	lastSHA string
+}
+
+func (p *matrixPullNumbers) PullNumberForSHA(_ context.Context, _, headSHA string) (uint64, error) {
+	p.lastSHA = headSHA
+	return p.number, p.err
+}
+
+// TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber closes the CHECKS-via-
+// check_suite cell end to end (RIG-2869). parseGitHubCheckSuite
+// (githubapp_webhook.go) stays pure: it carries head_sha and NO artifact number.
+// The router's step 0 supplies the missing coordinate, resolving the head SHA to
+// its PR number through the PullNumberResolver seam BEFORE the zero-number
+// guard — so a signed check_suite webhook now routes and dispatches.
+//
+// The negative half stays: a head SHA no PR carries has no coordinate to notify
+// against, so the route fails CLOSED with nothing dispatched.
+func TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber(t *testing.T) {
 	secret := []byte("gh-webhook-secret")
 	gh := newFakeGitHubForge(secret, "octo/repo")
-	ev := postGH(t, secret, gh.completeCheckSuite(t, "abc123headsha"))
 
-	// The landed parser produces a CHECKS event with HeadSHA set but Number 0.
-	assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 0, change: mxChecks})
-	if ev.HeadSHA != "abc123headsha" {
-		t.Errorf("HeadSHA = %q, want abc123headsha", ev.HeadSHA)
-	}
+	t.Run("resolves and routes", func(t *testing.T) {
+		ev := postGH(t, secret, gh.completeCheckSuite(t, "abc123headsha"))
 
-	// Routing it must fail on the zero-number guard — the notification lane
-	// needs the head_sha→number resolution (unlanded) before a check_suite can
-	// deliver.
-	st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}}}
-	d := &matrixDispatcher{}
-	r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, mxRef(), nil)
-	if err := r.Route(t.Context(), ev); err == nil {
-		t.Fatal("Route(check_suite with Number=0) = nil error, want the zero-number guard to reject it")
-	}
-	if len(d.sent) != 0 {
-		t.Errorf("dispatched %d, want 0 (rejected before notify)", len(d.sent))
-	}
+		// The parser is unchanged: head_sha set, number still 0.
+		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 0, change: mxChecks})
+		if ev.HeadSHA != "abc123headsha" {
+			t.Errorf("HeadSHA = %q, want abc123headsha", ev.HeadSHA)
+		}
+
+		st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}}}
+		d := &matrixDispatcher{}
+		pulls := &matrixPullNumbers{number: 4242}
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, pulls, mxRef(), nil)
+		if err := r.Route(t.Context(), ev); err != nil {
+			t.Fatalf("Route(check_suite): %v", err)
+		}
+		if pulls.lastSHA != "abc123headsha" {
+			t.Errorf("resolver asked about %q, want the webhook's head sha abc123headsha", pulls.lastSHA)
+		}
+		if len(d.sent) != 1 {
+			t.Fatalf("dispatched %d, want 1 (the resolved coordinate routes)", len(d.sent))
+		}
+		if got := d.sent[0].GetNumber(); got != 4242 {
+			t.Errorf("Number = %d, want the resolved 4242", got)
+		}
+		if got := d.sent[0].GetChange(); got != mxChecks {
+			t.Errorf("Change = %v, want CHECKS", got)
+		}
+	})
+
+	t.Run("no pull request for the head sha fails closed", func(t *testing.T) {
+		ev := postGH(t, secret, gh.completeCheckSuite(t, "orphanheadsha"))
+
+		st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}}}
+		d := &matrixDispatcher{}
+		pulls := &matrixPullNumbers{err: forge.ErrNoPullRequestForSHA}
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, pulls, mxRef(), nil)
+		if err := r.Route(t.Context(), ev); err == nil {
+			t.Fatal("Route(check_suite, no PR for head sha) = nil error, want the route to fail closed")
+		}
+		if len(d.sent) != 0 {
+			t.Errorf("dispatched %d, want 0 (no coordinate to notify against)", len(d.sent))
+		}
+	})
 }

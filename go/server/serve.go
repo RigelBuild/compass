@@ -1373,6 +1373,27 @@ func (r *forgeNotifyChecksRoller) RollUp(ctx context.Context, repo string, numbe
 	return r.client.ChecksConditional(ctx, repo, number, headSHA, etag)
 }
 
+// forgeNotifyPullNumbers adapts a forge.PullRequestResolver to
+// ingest.PullNumberResolver: the head_sha->PR-number step a check_suite webhook
+// needs (RIG-2869). The seam names differ (PullNumberForSHA vs
+// PullRequestForSHA) because the router's seam is named for what it needs — a
+// number for its coordinate — so this is a one-method forwarding adapter, the
+// forgeNotifyChecksRoller pattern.
+//
+// It holds forge.PullRequestResolver, satisfied by *forge.GitHub only: the
+// endpoint is GitHub's commit->pulls association. The Linear lane wires a NIL
+// resolver (Linear is issues-only and never produces a CHECKS event), which the
+// router tolerates — no unreachable ErrUnsupported arm.
+type forgeNotifyPullNumbers struct {
+	client forge.PullRequestResolver
+}
+
+// PullNumberForSHA resolves the head SHA's PR number, forwarding to the client's
+// commit->pulls association read.
+func (p *forgeNotifyPullNumbers) PullNumberForSHA(ctx context.Context, repo, headSHA string) (uint64, error) {
+	return p.client.PullRequestForSHA(ctx, repo, headSHA)
+}
+
 // buildForgeNotifyLane assembles the App-only GitHub agent-notification lane
 // (RIG-2732 T7) over the shared GitHub client. The caller
 // (buildBoardWebhookWiring) owns the App gate, secret validation, and client
@@ -1384,8 +1405,9 @@ func (r *forgeNotifyChecksRoller) RollUp(ctx context.Context, repo string, numbe
 // ErrBudgetExhausted rides — is ONE gate shared across board ingestion and
 // agent notification against the single App installation, not two independent
 // gates. It assembles the pipeline: the (provider, host)-bound store adapter,
-// the hub-backed dispatcher, the checks roller over the shared client, the
-// router, the webhook arm, and the reconciler.
+// the hub-backed dispatcher, the checks roller and the TTL-cached
+// head_sha->PR-number resolver over the shared client, the router, the webhook
+// arm, and the reconciler.
 func buildForgeNotifyLane(
 	cfg ServeConfig,
 	st *store.Store,
@@ -1399,11 +1421,15 @@ func buildForgeNotifyLane(
 	notifyStore := &forgeNotifyStore{st: st, provider: provider, host: fc.Host}
 	dispatcher := &forgeNotifyDispatcher{hub: hub}
 	checks := &forgeNotifyChecksRoller{client: client}
+	// The head_sha->number step a check_suite needs, TTL-cached so the several
+	// check_suite events one push fires (one per installed App, all carrying the
+	// same head SHA) cost ONE commits/{sha}/pulls GET against the shared budget.
+	pulls := ingest.NewCachedPullNumberResolver(&forgeNotifyPullNumbers{client: client})
 	forgeRef := &compassv1.ForgeRef{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 		Host:     fc.Host,
 	}
-	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, forgeRef, log)
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, pulls, forgeRef, log)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
 	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, fc.Host, ingest.ReconcileConfig{
@@ -1450,7 +1476,10 @@ func buildLinearNotifyLane(
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
 		Host:     host,
 	}
-	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, forgeRef, log)
+	// Nil pull-number resolver: Linear is issues-only and never produces a
+	// CHECKS event, so there is no head SHA to resolve (the router tolerates a
+	// nil resolver and keeps the pre-RIG-2869 guard behavior).
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, nil, forgeRef, log)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
 	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host, ingest.ReconcileConfig{

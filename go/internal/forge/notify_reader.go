@@ -19,6 +19,7 @@ package forge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,10 +72,42 @@ type NotifyReader interface {
 	ListNewArtifacts(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, sinceNumber uint64, etag string) (ConditionalResult[[]Issue], error)
 }
 
+// ErrNoPullRequestForSHA is the DISTINGUISHABLE "this commit belongs to no pull
+// request" outcome of PullRequestForSHA — not an infrastructure failure. A
+// check_suite fires for every pushed head, including a branch with no PR open
+// yet and a commit pushed straight to a default branch, so "no PR" is the
+// expected steady-state answer for a large share of CHECKS events. The router
+// fails the route CLOSED on it (nothing to notify against), while an
+// infrastructure error propagates as one — two outcomes the caller must not
+// conflate.
+var ErrNoPullRequestForSHA = errors.New("forge: no pull request associated with commit")
+
+// PullRequestResolver resolves a commit SHA to the pull-request number it
+// belongs to — the capability the notify lane's head_sha->number step needs
+// (RIG-2869), satisfied by *GitHub only.
+//
+// It is deliberately NOT a NotifyReader method. NotifyReader is contractually
+// the ETag-CONDITIONED read surface (every method takes a stored etag and
+// returns a ConditionalResult, notify_reader.go:43-46); this read is
+// unconditional and returns a bare number, so it does not belong to that
+// contract. Linear is also issues-only and never produces a CHECKS event, so a
+// Linear arm would be permanently unreachable ErrUnsupported padding — the
+// notify lane passes a nil resolver on the Linear side instead (the router
+// tolerates nil).
+type PullRequestResolver interface {
+	// PullRequestForSHA returns the pull-request number the commit sha belongs
+	// to, or ErrNoPullRequestForSHA when the commit has no associated PR.
+	PullRequestForSHA(ctx context.Context, repo, sha string) (uint64, error)
+}
+
 // --- GitHub arm --------------------------------------------------------------
 
-// Compile-time proof the GitHub client satisfies the conditional-read surface.
-var _ NotifyReader = (*GitHub)(nil)
+// Compile-time proof the GitHub client satisfies the conditional-read surface
+// and the head_sha->PR-number resolution capability.
+var (
+	_ NotifyReader        = (*GitHub)(nil)
+	_ PullRequestResolver = (*GitHub)(nil)
+)
 
 // getJSONCond is the conditional sibling of getJSON: it sends If-None-Match when
 // etag != "", short-circuits a 304 (recording budget, no body parse — a 304 on
@@ -222,6 +255,57 @@ func (g *GitHub) ChecksConditional(ctx context.Context, repo string, number uint
 		return ConditionalResult[Checks]{}, fmt.Errorf("forge: github checks conditional %q#%d: %w", repo, number, ferr)
 	}
 	return ConditionalResult[Checks]{V: checks, ETag: newETag}, nil
+}
+
+// PullRequestForSHA resolves a commit SHA to the pull-request number it belongs
+// to, via GitHub's "list pull requests associated with a commit" endpoint
+// (/repos/{repo}/commits/{sha}/pulls). It is the notify lane's head_sha->number
+// step (RIG-2869): a check_suite webhook carries only a head SHA, and the
+// router's coordinate needs a number.
+//
+// Unconditional (no ETag) and walked to completion: the association set is tiny
+// (one PR in the overwhelming majority of cases) and a truncated page 1 could
+// hide the only open PR behind a pile of closed ones.
+//
+// Ambiguity is resolved DETERMINISTICALLY, never by response order:
+//   - No rows at all -> 0 + ErrNoPullRequestForSHA (a push to a branch with no
+//     PR, or straight to the default branch: expected, not a failure).
+//   - Exactly one row -> its number.
+//   - Several rows -> the LOWEST-numbered OPEN PR; if none is open, the
+//     LOWEST-numbered row overall. Open wins because a live PR is the one an
+//     agent is subscribed to and acting on; the lowest number breaks a
+//     remaining tie because it is the oldest PR carrying the commit (the one
+//     the head was pushed for — a later PR sharing the head is a re-target or a
+//     stacked descendant). Both halves are total orders over the decoded rows,
+//     so the same association set always resolves to the same number.
+func (g *GitHub) PullRequestForSHA(ctx context.Context, repo, sha string) (uint64, error) {
+	u := g.apiBase() + "/repos/" + repo + "/commits/" + sha + "/pulls"
+	rows, err := getAllPages(ctx, g, u, func(e []ghCommitPull) []ghCommitPull { return e })
+	if err != nil {
+		return 0, fmt.Errorf("forge: github pull for %q@%s: %w", repo, sha, err)
+	}
+	if len(rows) == 0 {
+		return 0, fmt.Errorf("forge: github pull for %q@%s: %w", repo, sha, ErrNoPullRequestForSHA)
+	}
+	best, bestOpen, picked := uint64(0), false, false
+	for _, r := range rows {
+		if r.Number == 0 {
+			continue // a row carrying no number cannot be a coordinate
+		}
+		open := r.State == "open"
+		switch {
+		case !picked, open && !bestOpen: // first usable row, or the first open row displaces a closed pick
+			best, bestOpen, picked = r.Number, open, true
+		case open == bestOpen && r.Number < best: // same openness: lowest number wins
+			best = r.Number
+		}
+	}
+	if !picked {
+		// Rows came back but none carried a number: a malformed body, NOT the
+		// "no PR" answer — do not let it masquerade as the sentinel.
+		return 0, fmt.Errorf("forge: github pull for %q@%s: %d association rows, none carrying a number", repo, sha, len(rows))
+	}
+	return best, nil
 }
 
 // ListNewArtifacts reads the container's artifacts opened above sinceNumber. For

@@ -113,13 +113,39 @@ func (c *fakeChecksRoller) RollUp(_ context.Context, repo string, number uint64,
 	return c.res, c.err
 }
 
+// fakePullNumbers scripts the head_sha->PR-number seam (RIG-2869) and counts
+// every call, so a test can assert BOTH the resolved coordinate and that a
+// non-CHECKS / nil-resolver path never consults it.
+type fakePullNumbers struct {
+	number   uint64
+	err      error
+	calls    int
+	lastRepo string
+	lastSHA  string
+}
+
+func (p *fakePullNumbers) PullNumberForSHA(_ context.Context, repo, headSHA string) (uint64, error) {
+	p.calls++
+	p.lastRepo, p.lastSHA = repo, headSHA
+	return p.number, p.err
+}
+
 func testRef() *compassv1.ForgeRef {
 	return &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com"}
 }
 
+// newRouter builds a router with NO pull-number resolver — the legacy shape
+// every pre-RIG-2869 case exercises (a zero-number event is rejected).
 func newRouter(t *testing.T, st *fakeNotifyStore, d *fakeDispatcher, c *fakeChecksRoller) *NotifyRouter {
 	t.Helper()
-	return NewNotifyRouter(st, d, c, testRef(), nil)
+	return NewNotifyRouter(st, d, c, nil, testRef(), nil)
+}
+
+// newRouterWithPulls builds a router with the head_sha->number resolution seam
+// wired (the RIG-2869 shape the prod GitHub lane uses).
+func newRouterWithPulls(t *testing.T, st *fakeNotifyStore, d *fakeDispatcher, c *fakeChecksRoller, p PullNumberResolver) *NotifyRouter {
+	t.Helper()
+	return NewNotifyRouter(st, d, c, p, testRef(), nil)
 }
 
 const (
