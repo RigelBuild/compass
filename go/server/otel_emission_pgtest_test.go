@@ -205,7 +205,7 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(st, commsBus, admin)
-	secretsSvc := newSecretsService(st, nil, nil)
+	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
