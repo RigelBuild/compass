@@ -318,7 +318,7 @@ a **reserved `@compass` system-sender alias**. Rationale for the split:
 The follow-up record owes: the reserved-alias representation, reserved-handle
 validation, Setup-thread creation trigger (root-manager first
 `StartAgentSession`), thread content/versioning, and its ledger rows. This
-record's DL-187 row (below) freezes the shape so the interim cannot regress
+record's DL-188 row (below) freezes the shape so the interim cannot regress
 into a prompt-field revival. Matt has ruled (OQ-C): the `@compass` reserved
 alias is the frozen system-sender mechanism, used for ANY system-level message
 sender (not just the root-manager Setup thread) — "the @compass alias will be
@@ -370,7 +370,7 @@ flow.
 5. **Frozen records stay frozen.** `compass-agent-spawn-despawn`,
    `compass-spawn-control`, and `compass-dogfood-e2e` contain now-superseded
    `initial_prompt` content; they are NOT edited. Supersession is recorded in
-   the ledger (DL-186) and in this record.
+   the ledger (DL-187) and in this record.
 6. **Event-gated tests only.** The re-modeled harness wait stays no-sleep,
    no-poll (the same bar as today's `AwaitSessionSettled`,
    `agent_ops.go:91-101`), now via `OpenSessionTail` + `AwaitTurnSettled`.
@@ -576,25 +576,27 @@ manager's home channel; `@compass` reserved-alias system sender; no
 `initial_prompt`). This record references RIG-1820 as the case-1 follow-up; it
 files no new issue.
 
-Exact `docs/designs/product/DECISIONS.md` delta (append under a new
-`## First-turn delivery` section; DL-185 already landed on `main` (the RIG-1932
-add-surface drop), so the highest row is now DL-185 and these are DL-186..189):
+Exact `docs/designs/DECISIONS.md` delta, **as landed**. Authored against a
+ledger whose MAX was DL-186, this block proposed DL-186..189 — allocating at
+`max` instead of `max+1`, so it collided with the existing DL-186 (attribution
+simplification). The rows retro-landed correctly at DL-187..190 in `25bcb900`
+(#302); the ids below are re-synced to match the ledger:
 
 ```markdown
 ## First-turn delivery
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-186 | `initial_prompt` is REMOVED from the whole contract (`StartAgentSessionRequest` field 2, `SpawnAgentRequest` field 2, `SpawnPeerRequest` field 3 — numbers AND names reserved; server/runner/SDK/UI/e2e consumers cut over atomically, no fallback): an agent session ALWAYS starts idle and its first turn arrives as a channel message over the RIG-1569 deliver path (`DeliverControl` → the idle-deliver arm starts a turn); a provisioned peer's brief is a post from its provisioning manager into their per-pair DM channel (home channel for human owners) | Active (Matt, 2026-08-10) | [first-turn delivery §Approach](compass-first-turn-delivery/design.md#approach) |
-| DL-187 | The `@compass` reserved alias is FROZEN as the system-sender mechanism for ANY system-level message sender (not just the root-manager Setup thread), requiring reserved-handle validation at account creation; case-1 root-manager boot (a Compass-authored initial Setup thread in the manager's home channel) uses it and is scoped OUT to follow-up RIG-1820, which owes only the sender representation + Setup flow; ratified in shape here so the interim can never revive a prompt field | Active (Matt, 2026-08-10) | [first-turn delivery §Case 1](compass-first-turn-delivery/design.md#case-1--root-manager-boot-scoped-out-to-a-follow-up-record) |
-| DL-188 | Fresh-start barrier-lift: on a FRESH (non-resume) start the Runner sends `AgentControl{replay_complete}` as the first control op after Bind (seq 1, FIFO-first, drains before any deliver) — one mechanism symmetric with the resume path, no agent change; lifts the agent-side replay barrier so the first case-2 deliver is not refused-and-stranded (T-R3) | Active (Matt, 2026-08-10) | [first-turn delivery §the seam](compass-first-turn-delivery/design.md#the-seam-the-first-turn-rides-case-2--the-server--agent-halves-exist-the-runner-middle-leg-is-unbuilt) |
-| DL-189 | The case-2 brief carrier is a PER-PAIR manager↔peer DM channel (`ChannelKindDM`, 2 members: spawning manager + new peer, both owners carried by `expandOwnerMembership` so the operator retains visibility), auto-provisioned on the spawn edge (T-R0) — NOT the manager's coordination channel, which is a broadcast to all reports. Token-minimization: siblings do not receive briefs they don't need. UI channel-proliferation UX is a known deferred problem | Active (Matt, 2026-08-10) | [first-turn delivery §Approach](compass-first-turn-delivery/design.md#approach) |
+| DL-187 | `initial_prompt` is REMOVED from the whole contract (`StartAgentSessionRequest` field 2, `SpawnAgentRequest` field 2, `SpawnPeerRequest` field 3 — numbers AND names reserved; server/runner/SDK/UI/e2e consumers cut over atomically, no fallback): an agent session ALWAYS starts idle and its first turn arrives as a channel message over the RIG-1569 deliver path (`DeliverControl` → the idle-deliver arm starts a turn); a provisioned peer's brief is a post from its provisioning manager into their per-pair DM channel (home channel for human owners) | Active (Matt, 2026-08-10) | [first-turn delivery §Approach](agent/compass-first-turn-delivery/design.md#approach) |
+| DL-188 | The `@compass` reserved alias is FROZEN as the system-sender mechanism for ANY system-level message sender (not just the root-manager Setup thread), requiring reserved-handle validation at account creation; case-1 root-manager boot (a Compass-authored initial Setup thread in the manager's home channel) uses it and is scoped OUT to follow-up RIG-1820, which owes only the sender representation + Setup flow; ratified in shape here so the interim can never revive a prompt field | Active (Matt, 2026-08-10) | [first-turn delivery §Case 1](agent/compass-first-turn-delivery/design.md#case-1--root-manager-boot-scoped-out-to-a-follow-up-record) |
+| DL-189 | Fresh-start barrier-lift: on a FRESH (non-resume) start the Runner sends `AgentControl{replay_complete}` as the first control op after Bind (seq 1, FIFO-first, drains before any deliver) — one mechanism symmetric with the resume path, no agent change; lifts the agent-side replay barrier so the first case-2 deliver is not refused-and-stranded (T-R3) | Active (Matt, 2026-08-10) | [first-turn delivery §the seam](agent/compass-first-turn-delivery/design.md#the-seam-the-first-turn-rides-case-2--the-server--agent-halves-exist-the-runner-middle-leg-is-unbuilt) |
+| DL-190 | The case-2 brief carrier is a PER-PAIR manager↔peer DM channel (`ChannelKindDM`, 2 members: spawning manager + new peer, both owners carried by `expandOwnerMembership` so the operator retains visibility), auto-provisioned on the spawn edge (T-R0) — NOT the manager's coordination channel, which is a broadcast to all reports. Token-minimization: siblings do not receive briefs they don't need. UI channel-proliferation UX is a known deferred problem | Active (Matt, 2026-08-10) | [first-turn delivery §Approach](agent/compass-first-turn-delivery/design.md#approach) |
 ```
 
-Note for the driver: DL-186's "first turn arrives over the RIG-1569 deliver
+Note for the driver: DL-187's "first turn arrives over the RIG-1569 deliver
 path" is a DECISION, but the path's Runner middle leg (and the T-R0 DM
 auto-provision) is unbuilt today — PR-A (T-R0/T-R1/T-R2/T-R3) builds it. Do NOT
-land DL-186 as "verified end-to-end": the Runner leg is PR-A, not yet exercised.
+land DL-187 as "verified end-to-end": the Runner leg is PR-A, not yet exercised.
 
 **Status flips: one (Matt-ruled).** No existing DL row rules on
 `initial_prompt`, start-idle semantics, or first-turn carriage (verified:
@@ -610,7 +612,7 @@ PR at that point, not here.
 
 The superseded content lives in frozen RECORDS, not
 ledger rows. All six records carrying now-superseded `initial_prompt` content
-are superseded-in-part by DL-186 (the citable overturn) — three already noted
+are superseded-in-part by DL-187 (the citable overturn) — three already noted
 plus three the completeness pass adds, so a reader of ANY of the six finds the
 supersession:
 
@@ -627,7 +629,7 @@ supersession:
 - `compass-0.8-threading-and-session-renderer/design.md:594-595,777-778` (the
   request modeled as `container_name` + `initial_prompt`).
 
-Per Constraint 5 those records are NOT edited here — only named, so DL-186 is
+Per Constraint 5 those records are NOT edited here — only named, so DL-187 is
 the single overturn point.
 
 ## Tasks
@@ -652,13 +654,13 @@ PR-B (atomic removal + harness re-model — greens leg-2, lands after PR-A):
 - [ ] T4 — agent SDK: spawn tool loses `initial_prompt?`; tests updated (drop the JSON key as hygiene; NO unknown-key reject assert — see arktype note) (implement)
 - [ ] T5 — UI: promptless `SpawnSpec`/binding, `running`→`idle` dot, delete `StartAgentDialog` + test (OQ-1 Matt-ruled delete; board start affordance calls the spawn action directly; amends DL-185's "Kept" clause after #267/RIG-1932 merges) (implement)
 - [ ] T6 — e2e harness re-model: promptless Start/Resume, home-channel `PostMessage` first turn, split into `OpenSessionTail`(before post) + `AwaitTurnSettled`(WORKING→READY), leg-2/leg-3-4 scenario updates (implement-hard; unblocks RIG-1792 H8 / PR #256)
-- [ ] T7 — ledger rows DL-186/DL-187/DL-188/DL-189 + `Status:` header; references case-1 follow-up RIG-1820 (no new issue filed) (driver)
+- [ ] T7 — ledger rows DL-187/DL-188/DL-189/DL-190 + `Status:` header; references case-1 follow-up RIG-1820 (no new issue filed) (driver)
 
 ## Open Questions
 
 All five design-fork OQs are resolved. The four load-bearing ones (case-1
 scope, deliver-lane carrier, barrier-lift mechanism, system-sender freeze) are
-Matt-ruled and folded above (DL-186..189 + RIG-1820). OQ-1 (`StartAgentDialog`
+Matt-ruled and folded above (DL-187..190 + RIG-1820). OQ-1 (`StartAgentDialog`
 disposition) is Matt-ruled at this design-PR gate:
 
 1. **`StartAgentDialog` disposition — RULED: delete (Matt, design-PR gate).**
