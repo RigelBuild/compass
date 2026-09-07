@@ -40,9 +40,9 @@ export type GenInput = {
 export type MatrixEntry = {
 	/** "go" | "bun" | "nix" | "forks" (the tag suffix) */
 	group: string;
-	/** 'true' iff >=1 affected member in this group (always 'true' on push/schedule) */
+	/** 'true' iff this group has >=1 runnable target — an affected ci-task-bearing member, or the ALWAYS_RUN_ON_PR injection (always 'true' on push/schedule for a group with a ci task) */
 	run: "true" | "false";
-	/** affected members' ciTarget (sorted); [] when run==='false' */
+	/** the group's runnable ciTargets (sorted): affected members plus the ALWAYS_RUN_ON_PR injection; [] when run==='false' */
 	targets: string[];
 };
 
@@ -69,6 +69,30 @@ const CI_GROUP_PREFIX = "ci-group.";
 /** Special-leg project ids the flags key off. */
 const PGTEST_PROJECT = "compass-go";
 const GUEST_IMAGE_PROJECT = "compass-guest-image";
+
+/**
+ * The project whose `ci` target is injected into its group on EVERY pull
+ * request, regardless of the affected closure (RIG-3441).
+ *
+ * A docs/designs-only diff does NOT leave the closure empty: it marks `root`
+ * (whose markdownlint inputs glob every .md) and `flake-gate` with it. The
+ * ledger gate is never among them because its ONLY dependency is a
+ * `scope: 'root'` edge, which `--downstream direct` does not traverse — the
+ * general class: a project whose only edge is `scope: 'root'` is invisible to
+ * the affected closure. So the bun leg DID run, but it ran `root:ci` (deps
+ * exactly `root:lint` + `root:markdownlint`), never the gate guarding
+ * docs/designs/DECISIONS.md. Duplicate DL ids (DL-327..330) reached main and
+ * were attributable only post-merge.
+ *
+ * Unconditional inclusion, NOT a path predicate: the injected target is
+ * `design-ledger-gate:ci` (deps `typecheck`/`test`/`check`, ~1s in total; only
+ * `check` is `cache: false` and reads the whole design corpus every time), so
+ * a predicate would buy back about a second against a 90m ceiling. It also
+ * costs correctness — a path constant would have to track the corpus layout,
+ * and a stale one fails OPEN and silently, which is the failure class being
+ * closed here.
+ */
+export const ALWAYS_RUN_ON_PR = "design-ledger-gate";
 
 /**
  * forge trigger (PR): a changed path under go/internal/forge/ — the forge
@@ -131,6 +155,51 @@ const DARWIN_SIDECAR_PREFIXES = [
 ];
 
 // ── Pure core ──────────────────────────────────────────────────────────────
+
+/**
+ * Inject the always-run gate's `ci` target into its own group's target list on
+ * pull requests (RIG-3441; see ALWAYS_RUN_ON_PR for why it is unconditional).
+ * Mutates `targetsByGroup` in place.
+ *
+ * Injected as a TARGET, never as a leg-level flag: `run` is derived from
+ * `targets.length`, so pushing the target is both what makes the leg run and
+ * what upholds the ci.yml invariant that a running leg has >=1 target. A
+ * leg-level boolean would leave the gate UNRUN on any PR where its group had no
+ * other affected target — this very bug in a new place.
+ *
+ * PR-only: on push/schedule `main()` sets affectedIds to every project id, so
+ * the full sweep already carries this target and injecting would duplicate it.
+ */
+function injectAlwaysRunTarget(
+	event: GenInput["event"],
+	projectById: Map<string, ProjectInput>,
+	groupOf: Map<string, string>,
+	targetsByGroup: Map<string, string[]>,
+): void {
+	if (event !== "pull_request") {
+		return;
+	}
+	const gate = projectById.get(ALWAYS_RUN_ON_PR);
+	// Both the group and the target come from the project data, never a
+	// literal, so the injection follows a retag or a task rename instead of
+	// silently pushing into a group the project has left. An absent project or
+	// a null ciTarget injects nothing: the pure core must not invent a target
+	// for a project that does not exist or has no `ci` task — that would make
+	// `moon run` targetless and break the ci.yml invariant.
+	if (gate === undefined || gate.ciTarget === null) {
+		return;
+	}
+	// biome-ignore lint/style/noNonNullAssertion: groupOf and projectById are both filled from every element of input.projects, so a projectById hit is necessarily a groupOf hit.
+	const gateGroup = groupOf.get(gate.id)!;
+	// biome-ignore lint/style/noNonNullAssertion: gateGroup came from groupOf, so it is in groupUniverse.
+	const gateTargets = targetsByGroup.get(gateGroup)!;
+	// Dedupe: the gate is legitimately in affectedIds when
+	// tools/design-ledger-gate/ itself changed, and the target must not appear
+	// twice. The matrix build loop sorts, so order is unaffected.
+	if (!gateTargets.includes(gate.ciTarget)) {
+		gateTargets.push(gate.ciTarget);
+	}
+}
 
 /**
  * Translate the affected closure + tags into the concern matrix + flags.
@@ -200,6 +269,8 @@ export function generate(input: GenInput): GenOutput {
 		}
 	}
 
+	injectAlwaysRunTarget(input.event, projectById, groupOf, targetsByGroup);
+
 	// Build the matrix: one entry per existing group, sorted by group name.
 	// group == tag-suffix and groupUniverse is a Set, so group names are unique
 	// by construction — the emitted check names cannot collide.
@@ -209,10 +280,12 @@ export function generate(input: GenInput): GenOutput {
 		const targets = targetsByGroup.get(group)!.slice().sort();
 		// A group runs iff it has >=1 runnable target. On a full sweep every id
 		// is affected, so every group with a ci task runs; on a PR only groups
-		// with an affected, ci-task-bearing member run. Deriving `run` from
-		// `targets` (not mere membership) upholds the ci.yml invariant that a
-		// running leg always has >=1 target, so `moon run` is never targetless:
-		// a group whose only affected member has no ci task emits run:'false'.
+		// with an affected, ci-task-bearing member run — plus the group of the
+		// ALWAYS_RUN_ON_PR project, whose target is injected above. Deriving
+		// `run` from `targets` (not mere membership) upholds the ci.yml
+		// invariant that a running leg always has >=1 target, so `moon run` is
+		// never targetless: a group whose only affected member has no ci task
+		// emits run:'false'.
 		const run: "true" | "false" = targets.length > 0 ? "true" : "false";
 		matrix.push({
 			group,
