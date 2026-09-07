@@ -278,6 +278,7 @@ test("changedDocPages drops a non-markdown file", () => {
 		),
 	).toEqual([]);
 });
+
 test("changedDocPages drops a file excluded by the markdownlint ignores", () => {
 	// "config/prompts/example.md" matches the "config/prompts/**" ignore glob →
 	// isExcluded true.

@@ -65,16 +65,16 @@ and a nightly schedule. One job, `CI`, with two parts:
 
 - **The moon battery** — the whole battery over the moon task graph. It runs
   one of two ways by event. On a **pull request** it is `moon ci :ci`, which
-  runs only the projects the PR affects — unrelated projects are not built. On a
-  **push to `main`** and on the **nightly schedule** it is the full
-  `moon run :ci`: every task, every project,
-  no affected filter. Affected detection trusts each task's `inputs` globs, so
-  the full sweep on everything that reaches `main` is the backstop — an
-  incomplete glob that let a task be skipped on a PR is caught the moment the
-  change lands (and re-checked nightly), named rather than hidden. Either way
-  nothing about the workspace is enumerated in the workflow, so a new project
-  is gated the moment it is registered in `.moon/workspace.yml`. This is the same task graph the local gate and the
-  `hk` pre-push hook run.
+  runs only the projects the PR affects — unrelated projects are not built. On
+  a **push to `main`** and on the **nightly schedule** it is the full
+  `moon run :ci`: every task, every project, no affected filter. Affected
+  detection trusts each task's `inputs` globs, so the full sweep on everything
+  that reaches `main` is the backstop — an incomplete glob that let a task be
+  skipped on a PR is caught the moment the change lands (and re-checked
+  nightly), named rather than hidden. Either way nothing about the workspace is
+  enumerated in the workflow, so a new project is gated the moment it is
+  registered in `.moon/workspace.yml`. This is the same task graph the local
+  gate and the `hk` pre-push hook run.
 - **The real-Postgres suites** — build-tagged `pgtest`, and therefore never
   compiled by the moon battery's `go test ./...`. They run as a step in this
   same job, unconditionally (no affected filter and no event filter, so they
@@ -118,6 +118,11 @@ Skipping what it cannot verify would make its green mean nothing.
 
 - **A live UI↔server path.** Every `compass-ui` task runs against fixtures, so
   no check exercises the UI against a running server.
+- **The native app shell and the microVM boot lane.** `compass-app-dev`'s
+  `build`/`run` and `compass-go:test-microvm` are `runInCI: false` — they need a
+  GUI toolchain and KVM respectively. The gtk4 e2e lane and `ci.yml`'s own
+  microVM step cover those paths instead, so neither is unguarded; they are just
+  not gated through the moon battery.
 
 ## Publishing the agent image
 

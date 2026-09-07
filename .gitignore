@@ -41,4 +41,3 @@ result-*
 
 # NOTE: generated clients (go/gen, packages/compass-client/src/gen)
 # are intentionally committed and CI drift-gated — do not ignore them.
-

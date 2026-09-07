@@ -96,8 +96,9 @@ export function classify(sourcePath: string): Classified {
 		}
 	}
 	if (CONTRIBUTING_FILES.has(sourcePath)) {
-		// Root-level sources, so the slug is just the basename; the transform
-		// still runs because the docsite's routes are built from these dest paths.
+		// Identity for every member today — all three are root-level basenames.
+		// Kept general so a future nested member (e.g. `ci/README.md`) slugs to
+		// `ci-README.md` instead of colliding with the root basename.
 		const slug = sourcePath.replace(/^\./, "").replace(/\//g, "-");
 		return { section: "contributing", destRel: `contributing/${slug}` };
 	}

@@ -46,10 +46,11 @@
   // INVARIANT — do NOT add `vulnerabilityAlerts: { enabled: true }`. A vuln fix is
   // injected as a packageRule carrying `force: { ...vulnerabilityAlerts }`, and
   // applyPackageRules clears a prior `skipReason` when `force.enabled` is truthy —
-  // which would CANCEL every `enabled: false` rule below (the postgres CI-service
-  // pin, the gomod `go` directive, biome) and re-open bumps they exist to hold
-  // shut. The default vulnerabilityAlerts object has no `enabled` key, so those
-  // disables hold. `config.test.ts` guards both facts.
+  // which would CANCEL every `enabled: false` rule below (biome, the postgres
+  // CI-service pin, the gomod `go` directive) and re-open bumps they exist to
+  // hold shut. The default vulnerabilityAlerts object has no `enabled` key, so
+  // no `force.enabled` is ever injected and those disables hold.
+  // `config.test.ts` guards that fact.
   osvVulnerabilityAlerts: true,
 
   // 5-day supply-chain cooldown — matches the root bunfig.toml `minimumReleaseAge
