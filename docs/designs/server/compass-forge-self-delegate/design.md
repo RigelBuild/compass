@@ -6,7 +6,7 @@ Status: Active
 
 Compass agents file Linear issues but cannot take delegation of them — mark a
 filed issue as "mine". The forge write path sends neither `assigneeId` nor
-`delegateId` (`go/internal/forge/linear.go:160` builds only
+`delegateId` (`CreateIssue` in `go/internal/forge/linear.go` builds only
 `teamId`/`title`/`description` + attribution). This record adds the **outbound
 self-delegate write path**: an agent-filed issue can be delegated to the acting
 app itself, optionally alongside a human assignee.
@@ -20,10 +20,10 @@ flake class RIG-3271 is escalating). Record A adds no inbound production code an
 changes no responder behavior; T4 asserts the merged create path and the merged
 routing resolver (`ResolveResponder` + the store-backed `OwnershipIndex`) end to
 end, supplying a TEST `ManagerResolver` for the manager-walk seam the RIG-2717
-assembly has not yet implemented in production (`routing.go:54-56`; the only
-`OwningManager` impl in-tree is the test fake, `routing_test.go:70`). Its touched
-files are `forge/provider.go`, `forge/linear.go`, `forge/testdata`,
-`forge/livegithub_test.go`, `tools/forge-linear-token`, `golden_test.go`, plus
+assembly has not yet implemented in production (`go/internal/linearagent/routing.go`; the only
+`OwningManager` impl in-tree is the test fake, `go/internal/linearagent/routing_test.go`). Its touched
+files are `go/internal/forge/provider.go`, `go/internal/forge/linear.go`, `forge/testdata`,
+`go/internal/forge/livegithub_test.go`, `tools/forge-linear-token`, `golden_test.go`, plus
 `go/server/forge.go` (a call site the T2 struct change forces to recompile, not a
 behavior change) and a NEW `go/server` routing e2e (T4) that drives the merged
 create arm + resolver read-only (only `package server` can construct
@@ -57,7 +57,7 @@ so relying on that shape would diverge from how the product is actually used.**
   delegates the issue to that agent while the human teammate remains the primary
   assignee and owner."
 - `createAsUser` is "only available to OAuth applications creating issues in
-  `actor=app` mode" — compass already rides it (`linear.go:606` `applyAttribution`).
+  `actor=app` mode" — compass already rides it (`applyAttribution` in `go/internal/forge/linear.go`).
 - `agentSessionCreateOnIssue(input: {issueId})` lets an app PROACTIVELY open its
   own agent session on an issue without being delegated/mentioned — Linear's
   documented "work on my own issue" path (weighed under Alternatives).
@@ -73,8 +73,8 @@ so relying on that shape would diverge from how the product is actually used.**
 ### The scope question (an assumption the probe TESTS, not a presupposed fact)
 
 The live oracle mints its `LINEAR_FORGE` token with `SCOPES = "read,write"`
-(`tools/forge-linear-token/index.ts:38`); the production Linear client requests
-`"read,write,app:assignable,app:mentionable"` (`go/internal/linearagent/client.go:30`).
+(`SCOPES` in `tools/forge-linear-token/index.ts`); the production Linear client requests
+`"read,write,app:assignable,app:mentionable"` (`tokenScope` in `go/internal/linearagent/client.go`).
 `app:assignable` is documented as "allow the app to be assigned as a delegate on
 issues" — which describes the **inbound** capability (the app appearing in
 Linear's delegate picker so others may delegate TO it), NOT necessarily the
@@ -85,26 +85,26 @@ probe tested. **Probe outcome (2026-09-05):** the probe ran with an
 OAuth app for the RIG-3302 human action) and self-delegate SUCCEEDED. Whether
 plain `read,write` alone would suffice was left untested — re-running to find
 out would only risk a false-negative, and the production Linear client already
-requests `app:assignable` (`client.go:30`). So this record ADOPTS
+requests `app:assignable` (`tokenScope` in `go/internal/linearagent/client.go`). So this record ADOPTS
 `app:assignable` as the confirmed oracle mint scope, and T0 (the mint-scope
 bump) is UNCONDITIONAL.
 
 Note the token-scope hazard on T0's mint change: changing a client-credentials
 mint scope carries a documented revocation hazard — "Linear revokes a
 client-credentials app's existing tokens when a mint requests a different scope
-set" (`client.go:26-29`). Adding `app:assignable` (a superset) to the testbed
+set" (`linearGraphQLURL` in `go/internal/linearagent/client.go`). Adding `app:assignable` (a superset) to the testbed
 app's per-run mint is low blast radius (oracle tokens are per-run and
 short-lived; no concurrent run depends on a specific token surviving), but the
 change lands as its own step (T0) and is called out.
 
 ### Shape of the change
 
-Extend `forge.CreateIssue` (`go/internal/forge/provider.go:175`) with two fields
+Extend `forge.CreateIssue` (`go/internal/forge/provider.go`) with two fields
 — `DelegateSelf bool` and `Assignee string` — consumed only by the Linear
 provider. Per Matt's always-assign ruling the outbound path sets BOTH slots: the
 human owner as `assigneeId` and the acting app as `delegateId`. `Linear.CreateIssue`
 resolves its own app-user id via a `viewer { id }` sibling of the existing
-`viewer { app }` probe (`linear.go:563` `actorAttribution`; the two fields
+`viewer { app }` probe (`actorAttribution` in `go/internal/forge/linear.go`; the two fields
 fetched in ONE query, not a second wire call) and sets
 `input["delegateId"]`/`input["assigneeId"]`. GitHub's provider ignores
 `DelegateSelf` (no delegate concept). Degrade like attribution: a probe failure
@@ -124,14 +124,14 @@ needed in THIS record is T3's live leg, which sources it from the
 
 The delegate/assignee slots are read back only in the live tests' raw reads
 (`issue { delegate { id } assignee { id } }`); `forge.Issue` gains NO public
-fields and the `provider.go:34-37` boundary comment ("Compass machinery
+fields and the `go/internal/forge/provider.go` boundary comment ("Compass machinery
 (id/state-lifecycle/priority/assignee/prs/tracker) is added there, not carried
 here") stays intact. Promoting the slots onto `forge.Issue` is a later record's
 call, when a server path actually consumes them (decision folded from review M6:
 read-only-in-tests, smaller surface, boundary comment unchanged).
 
 No new `Provider` interface method: the interface is "one method per forge
-operation the Server drives" (`provider.go:236`), and nothing server-side drives
+operation the Server drives" (`go/internal/forge/provider.go`), and nothing server-side drives
 delegate-after-create. An `issueUpdate`-based delegate path is out of scope for
 this record (it belongs to Record B's round-trip trigger).
 
@@ -140,12 +140,12 @@ this record (it belongs to Record B's round-trip trigger).
 If an app-set `delegateId` fires a `created` AgentSessionEvent, production
 self-delegation on every compass-filed issue would loop into our own responder
 (`NewLinearWebhookHandler` → `Dispatcher.Enqueue` → `ResolveResponder`; a
-compass-authored issue HAS an ownership row (DL-055), so `routing.go:110-115`
+compass-authored issue HAS an ownership row (DL-055), so `go/internal/linearagent/routing.go`
 walks it to the owning Manager) — a spurious session + Manager prompt per
 self-delegated create. **Whether it fires cannot be observed in Record A** (no
 live webhook ingress exists here; that is DL-309/Record B). Note the loop is
 not live today regardless: production passes a nil `sessionSink`
-(`serve.go:1087`), so Linear session events are logged-and-dropped until the
+(`buildLinearWebhookWiring` in `go/server/serve.go`), so Linear session events are logged-and-dropped until the
 RIG-2717 responder assembly wires a real `Dispatcher` — the deferral below is
 forward-looking, guarding the moment that assembly lands. So:
 
@@ -180,8 +180,8 @@ forward-looking, guarding the moment that assembly lands. So:
   existing `LINEAR_FORGE` app token, no user credential. Any credential question
   belongs to Record B and only if its inbound round-trip cannot be triggered by
   the app token itself (the inbound test surface — `SessionEvent` has no actor
-  field, `webhook.go:19-27`; routing keys only on the issue coordinate,
-  `routing.go:110-115` — cannot distinguish who delegated, so if the app can
+  field, `go/internal/linearagent/webhook.go`; routing keys only on the issue coordinate,
+  `ResolveResponder` in `go/internal/linearagent/routing.go` — cannot distinguish who delegated, so if the app can
   self-delegate-and-trigger, the app token drives the round-trip with zero new
   standing credentials).
 
@@ -193,7 +193,7 @@ forward-looking, guarding the moment that assembly lands. So:
   unverified permission (an explicit app-actor affordance), no assignee-slot
   ambiguity. Cons: does NOT populate `Issue.delegate`, so the issue shows no
   delegate in Linear's UI/board filters; creates a session (10s liveness SLA,
-  `dispatcher.go:14-19`) when the product intent is "mark this issue as mine".
+  `go/internal/linearagent/dispatcher.go`) when the product intent is "mark this issue as mine".
   On the loop axis: `agentSessionCreateOnIssue` fires `created` BY CONSTRUCTION
   (it creates the session); whether self-delegate fires `created` is UNVERIFIED
   (the Record-B question above). So the loop axis is a wash ONLY IF that question
@@ -205,7 +205,7 @@ forward-looking, guarding the moment that assembly lands. So:
   self-delegate.
 - **A new `Provider.UpdateIssue`/`SetDelegate` interface method** instead of
   create-time fields: rejected — the Provider interface is "one method per forge
-  operation the Server drives" (`provider.go:236`); no server path drives
+  operation the Server drives" (`Provider` in `go/internal/forge/provider.go`); no server path drives
   delegate-after-create. Revisit when one does.
 - **Reversing DL-324 to re-add a Linear user credential** (the prior draft's
   bundled choice): rejected for this record — the outbound path needs no user
@@ -215,38 +215,36 @@ forward-looking, guarding the moment that assembly lands. So:
 ## Global Constraints
 
 - Fixture `repo` values reflect the live testbed team key (`LINEAR_FORGE_TEAM`,
-  `livegithub_test.go:66` `envTeam`, sourced from the Actions secret at
-  `ci.yml:2407`), NOT the retired literal `"SEA"`. The `-update` capture table
+  `envTeam` in `go/internal/forge/livegithub_test.go`, sourced from the
+  Actions secret `LINEAR_FORGE_TEAM` in `.github/workflows/ci.yml`), NOT the retired literal `"SEA"`. The `-update` capture table
   already covers all four Linear fixtures (`linearUpdateSpecs`,
-  `livegithub_test.go:1119-1197` — including the `comment_on_issue` spec at
-  `:1176`, `Repo: team`), each writing `repo` from `LINEAR_FORGE_TEAM`, so ONE
+  `go/internal/forge/livegithub_test.go` — including the `comment_on_issue` spec, `Repo: team`), each writing `repo` from `LINEAR_FORGE_TEAM`, so ONE
   regen run normalizes every `repo` field — no fragment-driven selection, no
   manual per-fixture touch. The pre-convention `"SEA"` literals are all six:
-  `create_issue.json:5`, `get_issue.json:5` and `:13`, `list_issues.json:5` and
-  `:15`, `comment_on_issue.json:5`. (No `sea-ref-gate` enforces bare `"SEA"` —
+  `create_issue.json`, `get_issue.json` and, `list_issues.json` and, `comment_on_issue.json`. (No `sea-ref-gate` enforces bare `"SEA"` —
   `tools/sea-ref-gate` matches only the `\bSEA-\d+\b` issue-ref token — so this
   is a hygiene normalization, not a gate requirement.)
 - No planning metadata (issue ids, task labels) inline in code; ledger/record
   references live in doc comments only where the surrounding files already do.
 - Never reference superseded tooling/credential names in NEW code.
-- Tests: NEVER `time.Sleep`. `createWithBackoff` (`livegithub_test.go:646`) is a
+- Tests: NEVER `time.Sleep`. `createWithBackoff` (`go/internal/forge/livegithub_test.go`) is a
   bounded ONE-SHOT ctx-aware backoff for a single create (its doc,
-  `livegithub_test.go:642-643`), NOT a poll-until-condition helper — no
+  `firstWant` in `go/internal/forge/livegithub_test.go`), NOT a poll-until-condition helper — no
   bounded-poll helper exists in the file. A task needing read-after-write polling
   must WRITE one, with its bound and ctx discipline stated as an explicit
   deliverable.
 - Two forge test tiers only (DL-210): hermetic golden-fixture replay
   (untagged) + `//go:build livegithub` live oracle. No third tier.
 - Live Linear legs gate on env `LINEAR_FORGE` + `LINEAR_FORGE_TEAM` via
-  `requireLinear` (`livegithub_test.go:91-99`); the app token is minted per CI
+  `requireLinear` (`go/internal/forge/livegithub_test.go`); the app token is minted per CI
   run by `tools/forge-linear-token/index.ts`. The mint's scope string is
-  load-bearing: a differing mint scope revokes in-flight tokens (`client.go:26-29`).
+  load-bearing: a differing mint scope revokes in-flight tokens (`linearGraphQLURL` in `go/internal/linearagent/client.go`).
 - **The one mint scope** used by T0/T1/T3 is `"read,write,app:assignable"` (no
   `app:mentionable` — the oracle drives no mention path). T0 owns changing it;
   T1/T3 reference this constant, never re-spell it.
 - Live teardown archives every created issue (`archiveLinearIssue`,
-  `livegithub_test.go:861`) — new legs reuse it.
-- Do not vary the `Provider` interface (`provider.go:236`); delegation fields
+  `go/internal/forge/livegithub_test.go`) — new legs reuse it.
+- Do not vary the `Provider` interface (`go/internal/forge/provider.go`); delegation fields
   ride the existing `CreateIssue` input struct.
 
 ## Plan
@@ -272,7 +270,7 @@ Interfaces:
 - A `//go:build livegithub` `TestLiveLinearSelfDelegateProbe` in
   `go/internal/forge/livegithub_test.go` (gated by `requireLinear`, teardown via
   `archiveLinearIssue`), using the file's existing direct-POST pattern
-  (`livegithub_test.go:874`): `viewer { id app }` → `issueCreate` with
+  (`go/internal/forge/livegithub_test.go`): `viewer { id app }` → `issueCreate` with
   `delegateId: <viewer.id>` (no `assigneeId`) → read back
   `issue { delegate { id } assignee { id } }`, asserting the delegate slot is the
   app user and the assignee slot stays empty; plus an `issueUpdate` leg covering
@@ -286,9 +284,9 @@ Interfaces:
 
 Interfaces:
 
-- `tools/forge-linear-token/index.ts:38` — `SCOPES` →
+- `SCOPES` in `tools/forge-linear-token/index.ts` — `SCOPES` →
   `"read,write,app:assignable"` (the Global-Constraints pinned string), with the
-  revocation-hazard callout (`client.go:26-29`) in the change description. Its
+  revocation-hazard callout (`linearGraphQLURL` in `go/internal/linearagent/client.go`) in the change description. Its
   own small step, landed distinctly. Merging it revokes in-flight oracle tokens,
   so it lands ahead of T1/T2/T3 (which need the scope), never mid-run.
 - Human action — DONE (RIG-3302, 2026-09-05): Matt enabled `app:assignable` on
@@ -306,28 +304,28 @@ Interfaces:
 - `go/internal/forge/provider.go` — `type CreateIssue struct` gains
   `DelegateSelf bool` (Linear-only; GitHub ignores) and `Assignee string`
   (Linear user UUID for `assigneeId`; empty = unset; GitHub out of scope,
-  documented on the field). `forge.Issue` and the `provider.go:34-37` boundary
+  documented on the field). `forge.Issue` and the `go/internal/forge/provider.go` boundary
   comment are UNCHANGED (M6 decision: slots read only in live tests).
 - `go/internal/forge/linear.go`:
-  - Extend the `actorAttribution` probe (`linear.go:563`) to fetch
+  - Extend the `actorAttribution` probe (`go/internal/forge/linear.go`) to fetch
     `viewer { id app }` in ONE query; cache the app-user id under the same
     mutex/probe-done discipline. New accessor `appUserID(ctx) (string, bool)`
     returns `ok=false` whenever the probe's `actorCapable` is false (a plain
     user/API-key principal — `viewer.id` is still a valid id but is NOT an app
     user, so delegating to it would delegate to a human or error), not merely
     when the id is empty.
-  - `CreateIssue` (`linear.go:155`): set `input["delegateId"]` ONLY when
+  - `CreateIssue` (`go/internal/forge/linear.go`): set `input["delegateId"]` ONLY when
     `in.DelegateSelf` AND `appUserID` returns `ok=true` (clean probe AND
     `actorCapable`); set `input["assigneeId"]` when `in.Assignee != ""`. Degrade
     like attribution (probe failure OR non-app actor → create without delegate,
     log warn, never fail).
-  - `issueFieldsFragment` (`linear.go:678`) gains `delegate { id displayName }`
+  - `issueFieldsFragment` (`go/internal/forge/linear.go`) gains `delegate { id displayName }`
     (+ `assignee { id displayName }`) so the live tests can read back the slot.
 - **Fixture regen:** the new `issueFieldsFragment` text (delegate/assignee)
   lands in the three fragment-carrying Linear fixtures
-  (`testdata/linear/create_issue.json:17`, `get_issue.json:10`,
-  `list_issues.json:12`); the `-update` capture lane regenerates all four Linear
-  fixtures in ONE pass (`linearUpdateSpecs`, `livegithub_test.go:1119-1197`),
+  (`testdata/linear/create_issue.json`, `get_issue.json`,
+  `list_issues.json`); the `-update` capture lane regenerates all four Linear
+  fixtures in ONE pass (`linearUpdateSpecs`, `go/internal/forge/livegithub_test.go`),
   each writing `repo` from `LINEAR_FORGE_TEAM` — so `comment_on_issue.json`
   (no fragment) is normalized by the same run, not a separate manual touch.
   Budget T2 for the full four-fixture Linear regen.
@@ -359,12 +357,12 @@ Interfaces:
     after itself (the established pattern; no created issue leaks on the TEST
     team).
 - Golden capture: extend the untagged replay harness so the hermetic fixture can
-  express delegation — `fixtureInput` (`golden_test.go:81-88`) gains
+  express delegation — `fixtureInput` (`go/internal/forge/golden_test.go`) gains
   `DelegateSelf bool` + `Assignee string`, threaded through `invoke`'s Linear
-  `create_issue` arm (`golden_test.go:269-271`); the capture reuses `op:
+  `create_issue` arm (`go/internal/forge/golden_test.go`); the capture reuses `op:
   "create_issue"` with delegate inputs (no new op arm) via the `-update` lane
-  (capture table `linearUpdateSpecs`, `livegithub_test.go:1119`; op dispatch
-  `invoke`, `golden_test.go:231`; CI `-update` invocation `ci.yml:2415`).
+  (capture table `linearUpdateSpecs`, `go/internal/forge/livegithub_test.go`; op dispatch
+  `invoke`, `go/internal/forge/golden_test.go`; CI `-update` invocation the `TestLiveUpdateFixtures` regen step in `.github/workflows/ci.yml`).
   Without extending both `fixtureInput` and `invoke` the captured fixture would
   replay a NON-delegate create and assert nothing about the new path. Its capture
   leg cleans up via `t.Cleanup(archiveLinearIssue)`. Adds `golden_test.go` to
@@ -378,32 +376,32 @@ hermetically — the live webhook-FIRES leg (does an app-set `delegateId` actual
 emit a `created` AgentSessionEvent, OQ-4) stays Record B behind the DL-309
 tunnel and RIG-3271. This is a NEW `//go:build pgtest && unix` file in `package
 server` (only `package server` can construct `forgeService` —
-`go/server/forge_e2e_pgtest_test.go:23-28`), alongside the sibling e2e tests,
+`go/server/forge_e2e_pgtest_test.go`), alongside the sibling e2e tests,
 driving the chain deterministically over `forge.FakeProvider`
-(`forge_e2e_pgtest_test.go:34-39`): NO live Linear call, NO token, NO third test
+(`go/server/forge_e2e_pgtest_test.go`): NO live Linear call, NO token, NO third test
 tier (it stays in the pgtest tier the sibling files already use):
 
-1. A create through the Server create arm (`server/forge.go` `createIssue`) over
+1. A create through the Server create arm (`go/server/forge.go` `createIssue`) over
    `FakeProvider` so the owner stamp (`StampOwner`) AND the DL-055 ownership row
    (`s.record` → `RecordAuthoredArtifact`) both land — the same create path
    production uses, NOT a direct `provider.CreateIssue`.
 2. Inject a synthetic `created` `SessionEvent` for that issue's coordinate
    through the responder chain (`NewLinearWebhookHandler` → `Dispatcher` →
    `ResolveResponder`, `internal/linearagent`) wired with a TEST `ManagerResolver`
-   (the manager-walk interface has no production impl yet — `routing.go:54-56`,
+   (the manager-walk interface has no production impl yet — `go/internal/linearagent/routing.go`,
    `NewResolver` :81 has zero non-test callers; T4 supplies its own fake exactly
-   as `routing_test.go:70` does), and assert it resolves to the AUTHORING agent's
+   as `OwningManager` in `go/internal/linearagent/routing_test.go` does), and assert it resolves to the AUTHORING agent's
    OWNING MANAGER + home channel — NOT the supervisor fallback. A companion
    negative: an issue with NO recorded row falls back to the supervisor (guards
    against a resolver that always finds an owner).
 
 **The self-delegate write is NOT exercised here** — T4 asserts routing
 correctness, and `ResolveResponder` keys ONLY on the issue coordinate
-(`routing.go:103`, `:122-127`), never on the delegate slot. Driving a
+(`go/internal/linearagent/routing.go`, `coordinate`), never on the delegate slot. Driving a
 self-delegate through the Server arm would require a proto `CreateIssueRequest`
 field + arm wiring that T2 deliberately does NOT add (the arm builds
 `forge.CreateIssue{Title, Body, Labels}` from proto fields only,
-`server/forge.go:388`, `agent_gateway.proto:316-321`), so the delegate write
+`createIssue` in `go/server/forge.go`, `CreateIssueRequest` in `proto/compass/v1/agent_gateway.proto`), so the delegate write
 stays covered by T2's unit tests + T3's live leg; T4 needs only the create +
 stamp + route legs, which the delegate slot does not touch.
 
@@ -413,14 +411,14 @@ helper is `package forge`, `//go:build livegithub`, unreachable from `package
 server` anyway). It exercises the real create path production uses and the
 merged resolver, with a test `ManagerResolver` for the not-yet-assembled
 manager-walk seam (production wires a nil `sessionSink` today —
-`serve.go:1087`). This asserts the coordinate written at create (`iss.Number`,
+`buildLinearWebhookWiring` in `go/server/serve.go`). This asserts the coordinate written at create (`iss.Number`,
 team-key repo, config host) matches the coordinate the responder parses from the
 webhook identifier ("TEAM-NUMBER") — the alignment routing correctness depends
 on.
 
 ## Tasks
 
-- [ ] T0: `tools/forge-linear-token/index.ts:38` SCOPES →
+- [ ] T0: `SCOPES` in `tools/forge-linear-token/index.ts` SCOPES →
       `"read,write,app:assignable"` (confirmed required; testbed app-config human
       action already done, RIG-3302). Lands first, ahead of T1/T2/T3.
 - [x] T1a gate: manual self-delegate permission probe RESOLVED (2026-09-05) —
