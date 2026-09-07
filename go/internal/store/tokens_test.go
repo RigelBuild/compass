@@ -38,6 +38,40 @@ func TestPutResolveRoundTripCarriesKind(t *testing.T) {
 	}
 }
 
+// A SubjectService row persists and its kind round-trips: the store-level proof
+// that the widened tokens.subject_kind CHECK admits 2.
+func TestPutResolveRoundTripCarriesServiceKind(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	hash := tokenHash("service-token")
+	want := Subject{Kind: SubjectService, ID: "llm-gateway"}
+	if err := s.PutTokenHash(ctx, hash, want); err != nil {
+		t.Fatalf("PutTokenHash(service): %v", err)
+	}
+	got, err := s.ResolveTokenHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("ResolveTokenHash: %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolved = %+v, want %+v (service kind must round-trip)", got, want)
+	}
+}
+
+// The widened CHECK is still a CLOSED set of exactly {0, 1, 2}: an out-of-range
+// kind is rejected by the database, not silently stored. The subject id is
+// non-empty and the hash fresh, so the CHECK violation is the sole possible
+// failure source — hence the assertion is only that it failed. A 23514 has no
+// typed store sentinel by design; it falls through to the bare wrap.
+func TestPutUnknownSubjectKindViolatesCheck(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if err := s.PutTokenHash(ctx, tokenHash("kind-3"), Subject{Kind: SubjectKind(3), ID: "nope"}); err == nil {
+		t.Fatal("PutTokenHash with an out-of-range subject kind must fail the CHECK, got nil")
+	}
+}
+
 func TestTokenKindsDoNotCollideOnSameID(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

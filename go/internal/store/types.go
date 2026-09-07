@@ -87,8 +87,8 @@ const (
 // subject share the token store but never collide — the prefix-separation the
 // auth layer (T4) depends on. A resolved token carries its kind, so a door can
 // reject a cross-kind token (a Runner token on CompassService/CommsService, an
-// account token on RunnerService). Sealed to exactly these two (design.md:
-// 1175-1183).
+// account token on RunnerService). Sealed to exactly these three
+// (docs/designs/server/compass-service-subject-principal.md).
 type SubjectKind int32
 
 const (
@@ -96,15 +96,21 @@ const (
 	SubjectAccount SubjectKind = 0
 	// SubjectRunner is a provisioned-Runner token subject.
 	SubjectRunner SubjectKind = 1
+	// SubjectService is a first-party supervised compute tier (LLM gateway,
+	// future MCP gateway) authenticating back to the Server. One class for all
+	// tiers; instances are distinguished by Subject.ID, isolated per-surface.
+	SubjectService SubjectKind = 2
 )
 
 // Subject is a token's authenticated principal: its kind plus the id of the
-// account or Runner it authenticates. ResolveTokenHash returns it with the kind
-// set so a cross-kind token is rejected at the door, not silently accepted.
+// account, Runner, or service it authenticates. ResolveTokenHash returns it
+// with the kind set so a cross-kind token is rejected at the door, not
+// silently accepted.
 type Subject struct {
 	Kind SubjectKind
-	// ID is the AccountID (SubjectAccount) or the Runner id (SubjectRunner), as
-	// a bare string because it spans two id spaces.
+	// ID is the AccountID (SubjectAccount), the Runner id (SubjectRunner), or a
+	// stable service name such as "llm-gateway" (SubjectService), as a bare
+	// string because it spans those id spaces.
 	ID string
 }
 
