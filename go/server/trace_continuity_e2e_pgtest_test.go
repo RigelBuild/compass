@@ -30,24 +30,38 @@ package server
 // never reaches this wire's recordingRunner, because the two share only the
 // database, never the in-process bus. Pointing serveOTelSocket at the wire's DSN
 // therefore cannot compose the two halves. What DOES compose them is mounting
-// the CommsService handler over THIS wire's comms service behind the production
-// socket-door interceptor chain (serve.go:698-699,709-710: otelconnect first,
-// then the trace-response interceptor, then the ambient-identity pair) — the
-// same shape newH2CTestServerWithInterceptors gives CompassService. That yields
-// a real otelconnect handler span, a real traceresponse header, and the wire's
-// real bus -> consumer -> hub -> recordingRunner spine.
-//
+// the CommsService handler over THIS wire's
+// comms service behind CommsService's real socket-door interceptor chain
+// (serve.go:698-699: otelconnect first, then the trace-response interceptor),
+// plus the ambient-identity pair that CompassService mounts on the same door
+// (serve.go:708-710). This splice is the one deliberate departure from
+// production: the shipped CommsService socket door mounts no actor interceptor
+// and comms instead uses its bootstrap-admin actorFromContext fallback
+// (serve.go:703-705; comms.go:760-763), so it cannot attribute an AGENT author,
+// which assertion (e) requires. The interceptor ORDER still matches production.
+// Parameterizing the ambient pair fabricates no privilege: auth.AmbientIdentity
+// -> withCaller sets exactly the callerKey + comms.WithActor pair that the
+// network door's BearerInterceptor sets after resolving a real token
+// (auth/interceptor.go:35-38 vs :64-68). That yields a real otelconnect handler
+// span, a real traceresponse header, and the wire's real bus -> consumer ->
+// hub -> recordingRunner spine.
+
 // The ambient-identity parameter is what lets an assertion post AS a given
-// account: the shipped socket door parameterizes exactly this interceptor with
-// the bootstrap admin, so a door parameterized with an agent's account id is the
-// production chain, not a bespoke one — and it is the only way to get an
-// agent-authored post that sits under a real handler span (the hold-edge case).
+// account, providing the agent attribution needed for the hold-edge case; it
+// is the only deliberate addition to the CommsService socket-door chain above.
+// The fixture otherwise uses the shipped interceptor order and behavior.
+// The SyncSpanProcessor removes the export-after-End race: a span is readable
+// from exp.GetSpans() the moment it ends. It does NOT order End against a wire
+// observation: a delivery.dispatch hop ends after DispatchControl returns
+// (dispatch.go:373,393), while the frame reaches the fake Runner through a
+// non-blocking enqueue and separate sender goroutine (router.go:243-248), so
+// assertions reading hop spans need a FIFO barrier (as (b) now has). The
+// origin handler span is not exposed to this problem because otelconnect ends
+// it inside the interceptor before the client receives the response. Every wait
+// remains event-gated on an observed wire fact via waitFor* helpers — never a
+// sleep, never a retry loop, never an invented deadline.
 //
-// No flush race by construction: the exporter runs a SyncSpanProcessor, so a
-// span is in exp.GetSpans() the moment it ends. Every wait is event-gated on an
-// observed wire fact via the spine file's waitFor* helpers — never a sleep,
-// never a retry loop, never an invented deadline.
-//
+
 // Spans are selected by NAME + SERVER kind, never by message id alone: the
 // delivery hop span stamps the SAME compass.message.id as the origin handler
 // span (delivery/dispatch.go:375), so the sibling file's spanWithMessageID
@@ -444,7 +458,22 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
 		_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "every hop, one trace")
 
-		waitForControlDelivers(t, w.runner, recipSess, 1)
+		first := waitForControlDelivers(t, w.runner, recipSess, 1)
+		if first[0].messageID != msgID {
+			t.Fatalf("first deliver = %q, want the first message %q", first[0].messageID, msgID)
+		}
+
+		// FIFO BARRIER, not a sleep: the consumer's Run loop drains bus events on
+		// ONE goroutine in order, so observing this later deliver proves the first
+		// dispatch already returned. That matters because gatedDispatch ends its
+		// hop span after DispatchControl returns (dispatch.go:373,393), while the
+		// frame reaches the wire through a non-blocking enqueue and sender goroutine
+		// (consumer.go:353-360; router.go:243-248).
+		barrierMsgID := w.post(t, "barrier: a plain post completes the earlier dispatch")
+		barrier := waitForControlDelivers(t, w.runner, recipSess, 2)
+		if barrier[1].messageID != barrierMsgID {
+			t.Fatalf("second deliver = %q, want the barrier message %q", barrier[1].messageID, barrierMsgID)
+		}
 
 		spans := exp.GetSpans()
 		want := originServerSpan(t, spans, compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
@@ -518,9 +547,12 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 			otel.SetTracerProvider(prevTP)
 			otel.SetTextMapPropagator(prevProp)
 		})
-		// A recorder deliberately NOT made global: any span the disabled path
-		// somehow emitted through an SDK provider would be caught here, yet none
-		// is, because every emission site reads the (no-op) global.
+		// A recorder deliberately NOT made global, mirroring the house idiom at
+		// internal/runner/otel_test.go:98-103: it is a catch-net, not a proof.
+		// Nothing routes spans into a non-global provider, so its emptiness is
+		// vacuous on its own (go/server/otel_emission_pgtest_test.go:184-186).
+		// The real disabled-path proof is the empty traceparent, absent
+		// traceresponse header, and delivery that still lands.
 		offExp := tracetest.NewInMemoryExporter()
 		offTP := sdktrace.NewTracerProvider(sdktrace.WithSyncer(offExp))
 		t.Cleanup(func() {
@@ -707,9 +739,9 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		// ever created for RelayCommsCall, and "the origin span exists" cannot be
 		// driven without adding that production wiring.
 		//
-		// Blocker: T5 move 6 (design.md:705-712) is absent from main. Un-skip
-		// once RelayCommsCall creates its origin span.
-		t.Skip("blocked: no RelayCommsCall origin span exists — runnerhub.NewMountedHandler (internal/runnerhub/handler.go:433-439) mounts no otelconnect interceptor and internal/runnerhub creates no spans (T5 move 6, design.md:705-712, not on main)")
+		// Blocker: T5 move 6 (design.md:705-712) is absent from main. RIG-3499
+		// tracks landing T5 move 6 and un-skipping this assertion.
+		t.Skip("blocked (RIG-3499): no RelayCommsCall origin span exists — runnerhub.NewMountedHandler (internal/runnerhub/handler.go:433-439) mounts no otelconnect interceptor and internal/runnerhub creates no spans (T5 move 6, design.md:705-712, not on main)")
 	})
 
 	// (i) BLOCKED — not implemented on main.
@@ -724,9 +756,9 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		// neither half of the assertion — the new trace id NOR the link target —
 		// has a production mechanism to observe.
 		//
-		// Blocker: T5 move 6 (design.md:705-712) is absent from main. Un-skip once
-		// executeCall's Post arm adds the link.
-		t.Skip("blocked: trigger_traceparent has no reader and no span link exists — GetTriggerTraceparent (internal/gen/compass/v1/agent_gateway.pb.go:269) is unread outside generated code, and no AddLink/trace.WithLinks/trace.LinkFromContext appears in non-generated code (T5 move 6, design.md:705-712, not on main)")
+		// Blocker: T5 move 6 (design.md:705-712) is absent from main. RIG-3499
+		// tracks landing T5 move 6 and un-skipping this assertion.
+		t.Skip("blocked (RIG-3499): trigger_traceparent has no reader and no span link exists — GetTriggerTraceparent (internal/gen/compass/v1/agent_gateway.pb.go:269) is unread outside generated code, and no AddLink/trace.WithLinks/trace.LinkFromContext appears in non-generated code (T5 move 6, design.md:705-712, not on main)")
 	})
 
 	// (j) The op-kind delivery counter increments — and, the load-bearing half,
