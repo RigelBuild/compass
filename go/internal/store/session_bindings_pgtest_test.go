@@ -4,16 +4,22 @@ package store
 
 // Session bindings: the durable (session -> agent account, Runner) record the
 // RunnerHub has so far held only in RAM (RIG-3108 / RIG-2861 §T4). Four things
-// must hold, and all four are DATABASE invariants rather than Go logic — the PK,
-// the unique index on agent_account_id, the FK to agent_accounts, and the RLS
-// policy — so all four are pgtest-backed; a mock would only re-assert the Go.
+// must hold, and all four are DATABASE invariants rather than Go logic — the
+// account-keyed PK, the unique index on (tenant_id, session_id), the FK to
+// agent_accounts, and the RLS policy — so all four are pgtest-backed; a mock
+// would only re-assert the Go.
 //
-// A binding is SINGULAR per session (a rebind replaces it), an account holds AT
-// MOST ONE live session (the unique index), a miss FAILS CLOSED (a comms call
-// resolves its scope through these reads, so an empty AccountID with a nil error
-// would flow onward as a real principal), and the reconnect sweep RETURNS what
-// it removed (the returned rows drive presence DISCONNECTED and the held-deliver
-// reap — a bare DELETE would satisfy the invariant while dropping both).
+// The table is keyed on the ACCOUNT, so re-pointing an account at a newer
+// session is an UPSERT that returns what it displaced (the hub does exactly this
+// and has nowhere to put a refusal), one session id speaks for at most one
+// account (the unique index), a miss FAILS CLOSED (a comms call resolves its
+// scope through these reads, so an empty AccountID with a nil error would flow
+// onward as a real principal), and the reconnect sweep RETURNS what it removed
+// (the returned rows drive presence DISCONNECTED and the held-deliver reap — a
+// bare DELETE would satisfy the invariant while dropping both).
+//
+// context.Background is the test root (the pgtest-suite convention, sibling
+// updated_at_pgtest_test.go and forge_cursors_pgtest_test.go).
 
 import (
 	"context"
@@ -21,6 +27,17 @@ import (
 	"testing"
 	"time"
 )
+
+// mustBind records a binding a test only needs to SUCCEED, returning the session
+// id it displaced. Most cases below care about a later assertion, not this call.
+func mustBind(t *testing.T, s *Store, ctx context.Context, sessionID string, accountID AccountID, runnerID string) string {
+	t.Helper()
+	displaced, err := s.RecordSessionBinding(ctx, sessionID, accountID, runnerID)
+	if err != nil {
+		t.Fatalf("RecordSessionBinding(%q, %q, %q): %v", sessionID, accountID, runnerID, err)
+	}
+	return displaced
+}
 
 // bindingTimes reads a binding row's created_at/updated_at directly, so a test
 // asserts the persisted timestamps rather than trusting a return value — the
@@ -35,7 +52,7 @@ func bindingTimes(t *testing.T, s *Store, sessionID string) (createdAt, updatedA
 	return createdAt, updatedAt
 }
 
-// countBindings counts binding rows for an account, so a rebind test can prove
+// countBindings counts binding rows for an account, so a re-point test can prove
 // the row was REPLACED rather than accumulated.
 func countBindings(t *testing.T, s *Store, accountID AccountID) int {
 	t.Helper()
@@ -51,15 +68,21 @@ func countBindings(t *testing.T, s *Store, accountID AccountID) int {
 // TestRecordSessionBindingRoundTripsBothDirections pins the base contract both
 // reads depend on: what the relay bound is what both directions read back — the
 // account resolvable from the session id (the inbound comms-call read) and the
-// session resolvable from the account (the delivery-dispatch read).
+// session resolvable from the account (the delivery-dispatch read). A FIRST bind
+// displaces nothing, so it must report the empty session id rather than any
+// placeholder the caller would try to reap.
 func TestRecordSessionBindingRoundTripsBothDirections(t *testing.T) {
-	ctx := t.Context()
+	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	if err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1"); err != nil {
+	displaced, err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1")
+	if err != nil {
 		t.Fatalf("RecordSessionBinding: %v", err)
+	}
+	if displaced != "" {
+		t.Fatalf("first bind displaced %q, want \"\" — the account held no prior session, and a caller reaping a phantom id would clear a live registry entry", displaced)
 	}
 
 	gotAccount, err := s.ResolveSessionAccount(ctx, "sess-1")
@@ -85,7 +108,7 @@ func TestRecordSessionBindingRoundTripsBothDirections(t *testing.T) {
 // AccountID or session id with a nil error, which the caller would treat as a
 // real principal and dispatch to.
 func TestSessionBindingLookupsFailClosed(t *testing.T) {
-	ctx := t.Context()
+	ctx := context.Background()
 	s := newTestStore(t)
 
 	account, err := s.ResolveSessionAccount(ctx, "never-bound")
@@ -109,23 +132,85 @@ func TestSessionBindingLookupsFailClosed(t *testing.T) {
 	}
 }
 
-// TestRecordSessionBindingRebindsSessionInPlace pins the ON CONFLICT path: a
-// session id names exactly ONE binding, so rebinding it onto a different Runner
-// must REPLACE the row — updating account and runner TOGETHER — not add a
-// second. If bindings accumulated, the reconnect sweep on the OLD Runner would
-// retire a binding that has already moved, and SessionForAccount would resolve
-// whichever of two rows Postgres happened to return.
-func TestRecordSessionBindingRebindsSessionInPlace(t *testing.T) {
-	ctx := t.Context()
+// TestRecordSessionBindingRePointsAccountAndReportsDisplaced is the reason the
+// table is keyed on the account. The hub promotes a NEW session onto an account
+// while the old one is still bound (relay_comms_test.go's repoint case) and
+// promoteSession returns nothing, so this MUST NOT be a conflict: it is one
+// upsert that moves the account onto the new session and hands back the old
+// session id for the caller to reap from the held-deliver registry.
+//
+// Both halves of the SET list are asserted here — the new session AND the new
+// runner — so dropping either assignment fails: session_id via SessionForAccount
+// and the reap value, runner_id via which Runner's sweep finds the binding.
+func TestRecordSessionBindingRePointsAccountAndReportsDisplaced(t *testing.T) {
+	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	if err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1"); err != nil {
-		t.Fatalf("first RecordSessionBinding: %v", err)
+	mustBind(t, s, ctx, "sess-old", agent.ID, "runner-1")
+
+	displaced, err := s.RecordSessionBinding(ctx, "sess-new", agent.ID, "runner-2")
+	if err != nil {
+		t.Fatalf("re-point onto sess-new: %v (a re-point must never be refused — promoteSession has nowhere to put an error)", err)
 	}
-	if err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-2"); err != nil {
-		t.Fatalf("rebind onto runner-2: %v", err)
+	if displaced != "sess-old" {
+		t.Fatalf("re-point displaced %q, want %q — the caller reaps this session from the held-deliver registry, so a wrong value strands or wrongly clears deliveries", displaced, "sess-old")
+	}
+
+	// The account now resolves to the NEW session (the session_id assignment).
+	gotSession, err := s.SessionForAccount(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("SessionForAccount after the re-point: %v", err)
+	}
+	if gotSession != "sess-new" {
+		t.Fatalf("the agent resolves to session %q, want the re-pointed %q", gotSession, "sess-new")
+	}
+
+	// Exactly one row: a re-point REPLACES, it does not accumulate a second
+	// binding whose sweep would retire a session that has already moved.
+	if n := countBindings(t, s, agent.ID); n != 1 {
+		t.Fatalf("bindings for the agent = %d, want exactly 1 (a re-point must replace, not accumulate)", n)
+	}
+
+	// The displaced session id no longer resolves: it named the same row, which
+	// now carries the new session.
+	if _, err := s.ResolveSessionAccount(ctx, "sess-old"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ResolveSessionAccount(sess-old) err = %v, want ErrNotFound — the displaced session must stop resolving", err)
+	}
+
+	// The runner_id assignment: the binding moved to runner-2, so the OLD
+	// Runner's sweep finds nothing and the new one finds it.
+	stale, err := s.DeleteSessionBindingsForRunner(ctx, "runner-1")
+	if err != nil {
+		t.Fatalf("DeleteSessionBindingsForRunner(runner-1): %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("runner-1 still holds %+v after the re-point, want none — runner_id was not updated with session_id", stale)
+	}
+	swept, err := s.DeleteSessionBindingsForRunner(ctx, "runner-2")
+	if err != nil {
+		t.Fatalf("DeleteSessionBindingsForRunner(runner-2): %v", err)
+	}
+	if len(swept) != 1 || swept[0].SessionID != "sess-new" {
+		t.Fatalf("runner-2 sweep = %+v, want exactly the sess-new binding", swept)
+	}
+}
+
+// TestRecordSessionBindingRebindsSameSessionOntoANewRunner covers the other
+// re-point axis: the SAME session moving Runners (a session id is stable across
+// a re-attach). It must update runner_id in place rather than adding a row, and
+// it displaces itself — the account's previous session IS this session.
+func TestRecordSessionBindingRebindsSameSessionOntoANewRunner(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-1")
+	displaced := mustBind(t, s, ctx, "sess-1", agent.ID, "runner-2")
+	if displaced != "sess-1" {
+		t.Fatalf("re-binding the same session displaced %q, want %q — the account's previous session is this same session", displaced, "sess-1")
 	}
 
 	if n := countBindings(t, s, agent.ID); n != 1 {
@@ -142,36 +227,39 @@ func TestRecordSessionBindingRebindsSessionInPlace(t *testing.T) {
 	}
 }
 
-// TestRecordSessionBindingRejectsASecondSessionForABoundAccount proves the
-// UNIQUE index on agent_account_id. The in-RAM accountSessions map this table
-// replaces is 1:1, so a second concurrent session for one account would split
-// that account's deliveries across two sessions and make SessionForAccount's
-// answer depend on which row Postgres returned. The index refuses the write as
-// ErrConflict rather than letting the double-bind land.
-func TestRecordSessionBindingRejectsASecondSessionForABoundAccount(t *testing.T) {
-	ctx := t.Context()
+// TestRecordSessionBindingRejectsASessionClaimedByAnotherAccount proves the
+// UNIQUE index on (tenant_id, session_id) — the one conflict this table still
+// has, now that the account path is an upsert. Two accounts sharing a live
+// session id would make ResolveSessionAccount's answer depend on which row
+// Postgres returned, and that read resolves the PRINCIPAL a comms call runs
+// under. The index refuses the write as ErrConflict rather than letting the
+// ambiguity land.
+func TestRecordSessionBindingRejectsASessionClaimedByAnotherAccount(t *testing.T) {
+	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
-	agent := mustAgent(t, s, owner.ID, "agent")
+	agentA := mustAgent(t, s, owner.ID, "agent-a")
+	agentB := mustAgent(t, s, owner.ID, "agent-b")
 
-	if err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1"); err != nil {
-		t.Fatalf("first binding: %v", err)
+	mustBind(t, s, ctx, "sess-1", agentA.ID, "runner-1")
+
+	displaced, err := s.RecordSessionBinding(ctx, "sess-1", agentB.ID, "runner-1")
+	sentinelIs(t, err, ErrConflict, "a session id already bound to a different agent")
+	if displaced != "" {
+		t.Fatalf("the refused bind returned displaced = %q, want \"\" — a failed write displaced nothing", displaced)
 	}
 
-	err := s.RecordSessionBinding(ctx, "sess-2", agent.ID, "runner-1")
-	sentinelIs(t, err, ErrConflict, "a second live session for an already-bound account")
-
-	// The refused write changed nothing: the original session still owns the
-	// account, in both directions.
-	gotSession, err := s.SessionForAccount(ctx, agent.ID)
+	// The refused write changed nothing: the session still speaks for agent A,
+	// and agent B still has no live session.
+	gotAccount, err := s.ResolveSessionAccount(ctx, "sess-1")
 	if err != nil {
-		t.Fatalf("SessionForAccount after the refused bind: %v", err)
+		t.Fatalf("ResolveSessionAccount after the refused bind: %v", err)
 	}
-	if gotSession != "sess-1" {
-		t.Fatalf("the agent resolves to session %q, want the original %q", gotSession, "sess-1")
+	if gotAccount != agentA.ID {
+		t.Fatalf("sess-1 resolves to %q, want the original owner %q", gotAccount, agentA.ID)
 	}
-	if _, err := s.ResolveSessionAccount(ctx, "sess-2"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("ResolveSessionAccount(sess-2) err = %v, want ErrNotFound — the refused bind must not have landed", err)
+	if _, err := s.SessionForAccount(ctx, agentB.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionForAccount(agent-b) err = %v, want ErrNotFound — the refused bind must not have landed", err)
 	}
 }
 
@@ -182,24 +270,22 @@ func TestRecordSessionBindingRejectsASecondSessionForABoundAccount(t *testing.T)
 func TestRecordSessionBindingUnknownAgentIsInvalidArgument(t *testing.T) {
 	s := newTestStore(t)
 
-	err := s.RecordSessionBinding(t.Context(), "sess-1", "no-such-agent", "runner-1")
+	_, err := s.RecordSessionBinding(context.Background(), "sess-1", "no-such-agent", "runner-1")
 	sentinelIs(t, err, ErrInvalidArgument, "binding for an unknown agent")
 }
 
 // TestDeleteSessionBindingReleasesAndIsIdempotent covers the single-session
-// release path: the delete removes the row (both directions stop resolving, and
-// the account's unique slot is free for its next session), and a SECOND delete
-// succeeds. Idempotency is load-bearing — a session teardown may be retried, and
-// an error on zero rows would strand the retried teardown mid-way.
+// release path: the delete removes the row (both directions stop resolving), and
+// a SECOND delete succeeds. Idempotency is load-bearing — a session teardown may
+// be retried, and an error on zero rows would strand the retried teardown
+// mid-way.
 func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
-	ctx := t.Context()
+	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	if err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1"); err != nil {
-		t.Fatalf("RecordSessionBinding: %v", err)
-	}
+	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-1")
 	if err := s.DeleteSessionBinding(ctx, "sess-1"); err != nil {
 		t.Fatalf("DeleteSessionBinding: %v", err)
 	}
@@ -211,10 +297,10 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 		t.Fatalf("SessionForAccount after delete err = %v, want ErrNotFound", err)
 	}
 
-	// The released slot is reusable: the same agent may bind a NEW session
-	// without hitting the unique-index conflict.
-	if err := s.RecordSessionBinding(ctx, "sess-2", agent.ID, "runner-1"); err != nil {
-		t.Fatalf("binding a new session after release: %v (want nil — the slot was freed)", err)
+	// The released account is bindable again, and displaces nothing — the row is
+	// gone, so this is a fresh insert rather than a re-point.
+	if displaced := mustBind(t, s, ctx, "sess-2", agent.ID, "runner-1"); displaced != "" {
+		t.Fatalf("binding after a release displaced %q, want \"\" — the row was deleted, so there is nothing to reap", displaced)
 	}
 
 	// A second delete of an already-released session is a no-op, and so is
@@ -238,22 +324,28 @@ func TestDeleteSessionBindingReleasesAndIsIdempotent(t *testing.T) {
 // It must also sweep ONLY the re-enrolling Runner's bindings: too few leaves a
 // stale session resolving a re-minted id to the wrong account; too many drops
 // live sessions on a healthy Runner.
+//
+// The seed order is REVERSE-SORTED on purpose (sess-z, then sess-b, then
+// sess-a). DELETE ... RETURNING emits physical heap order, which for freshly
+// inserted rows is insertion order — so seeding in sorted order would make the
+// sort assertion below pass with slices.SortFunc removed. Seeding backwards is
+// what makes the sort load-bearing.
 func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
-	ctx := t.Context()
+	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	a := mustAgent(t, s, owner.ID, "agent-a")
 	b := mustAgent(t, s, owner.ID, "agent-b")
+	z := mustAgent(t, s, owner.ID, "agent-z")
 	elsewhere := mustAgent(t, s, owner.ID, "agent-elsewhere")
 
 	for _, bind := range []SessionBinding{
-		{SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
+		{SessionID: "sess-z", AccountID: z.ID, RunnerID: "runner-1"},
 		{SessionID: "sess-b", AccountID: b.ID, RunnerID: "runner-1"},
+		{SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
 		{SessionID: "sess-elsewhere", AccountID: elsewhere.ID, RunnerID: "runner-2"},
 	} {
-		if err := s.RecordSessionBinding(ctx, bind.SessionID, bind.AccountID, bind.RunnerID); err != nil {
-			t.Fatalf("RecordSessionBinding(%+v): %v", bind, err)
-		}
+		mustBind(t, s, ctx, bind.SessionID, bind.AccountID, bind.RunnerID)
 	}
 
 	swept, err := s.DeleteSessionBindingsForRunner(ctx, "runner-1")
@@ -262,22 +354,24 @@ func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
 	}
 
 	// The returned rows ARE the side-effect inputs, so assert them exactly —
-	// every swept binding, with the account each DISCONNECTED edge needs.
+	// every swept binding, with the account each DISCONNECTED edge needs, in
+	// sorted order (which is NOT the order they were seeded in).
 	want := []SessionBinding{
 		{SessionID: "sess-a", AccountID: a.ID, RunnerID: "runner-1"},
 		{SessionID: "sess-b", AccountID: b.ID, RunnerID: "runner-1"},
+		{SessionID: "sess-z", AccountID: z.ID, RunnerID: "runner-1"},
 	}
 	if len(swept) != len(want) {
 		t.Fatalf("swept = %+v, want exactly the %d bindings on runner-1 (a :exec sweep would return none)", swept, len(want))
 	}
 	for i, w := range want {
 		if swept[i] != w {
-			t.Fatalf("swept[%d] = %+v, want %+v (sorted by session id)", i, swept[i], w)
+			t.Fatalf("swept[%d] = %+v, want %+v (sorted by session id; the rows were seeded in reverse order, so an unsorted sweep returns them backwards)", i, swept[i], w)
 		}
 	}
 
 	// The swept bindings are actually gone in both directions.
-	for _, sessionID := range []string{"sess-a", "sess-b"} {
+	for _, sessionID := range []string{"sess-a", "sess-b", "sess-z"} {
 		if _, err := s.ResolveSessionAccount(ctx, sessionID); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("ResolveSessionAccount(%s) after the sweep err = %v, want ErrNotFound", sessionID, err)
 		}
@@ -304,7 +398,7 @@ func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
 }
 
 // TestRecordSessionBindingTriggerAdvancesUpdatedAtOnly proves the RIG-3495
-// trigger fires through a real store method: the ON CONFLICT rebind advances
+// trigger fires through a real store method: the ON CONFLICT re-point advances
 // updated_at while created_at stays put. It is also the only proof the column is
 // live at all — secrets.updated_at rotted precisely because no write statement
 // set it, so the value could only ever equal created_at and every reader was
@@ -313,22 +407,18 @@ func TestDeleteSessionBindingsForRunnerReturnsEverySweptBinding(t *testing.T) {
 // No time.Sleep: now() is TRANSACTION time in Postgres, so the read-then-rebind
 // below spans two transactions and the two values differ on their own.
 func TestRecordSessionBindingTriggerAdvancesUpdatedAtOnly(t *testing.T) {
-	ctx := t.Context()
+	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 
-	if err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-1"); err != nil {
-		t.Fatalf("first RecordSessionBinding: %v", err)
-	}
+	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-1")
 	createdBefore, updatedBefore := bindingTimes(t, s, "sess-1")
 	if !createdBefore.Equal(updatedBefore) {
 		t.Fatalf("on INSERT created_at = %v and updated_at = %v, want the same DEFAULT now()", createdBefore, updatedBefore)
 	}
 
-	if err := s.RecordSessionBinding(ctx, "sess-1", agent.ID, "runner-2"); err != nil {
-		t.Fatalf("rebind: %v", err)
-	}
+	mustBind(t, s, ctx, "sess-1", agent.ID, "runner-2")
 	createdAfter, updatedAfter := bindingTimes(t, s, "sess-1")
 
 	if !createdAfter.Equal(createdBefore) {
@@ -353,14 +443,12 @@ func TestRecordSessionBindingTriggerAdvancesUpdatedAtOnly(t *testing.T) {
 func TestSessionBindingIsTenantIsolated(t *testing.T) {
 	s := newTestStore(t)
 	tenantB := seedTenant(t, s, "tenant-b")
-	ctxA := t.Context() // no tenant set → the bootstrap tenant
-	ctxB := WithTenant(t.Context(), tenantB)
+	ctxA := context.Background() // no tenant set → the bootstrap tenant
+	ctxB := WithTenant(context.Background(), tenantB)
 
 	ownerA := mustUser(t, s, "owner-a")
 	agentA := mustAgent(t, s, ownerA.ID, "agent-a")
-	if err := s.RecordSessionBinding(ctxA, "sess-a", agentA.ID, "runner-1"); err != nil {
-		t.Fatalf("RecordSessionBinding under tenant A: %v", err)
-	}
+	mustBind(t, s, ctxA, "sess-a", agentA.ID, "runner-1")
 
 	// Tenant B resolves A's session id: the row is not in B's view, so this must
 	// fail closed rather than hand B tenant A's account.

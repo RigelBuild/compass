@@ -22,6 +22,11 @@ import (
 // (accountForSession), and the delivery consumer resolving the live session of a
 // recipient account it has already authorized (SessionForAccount).
 //
+// Nor is a binding cross-checked against agent_sessions: there is deliberately
+// no FK from session_id, so a binding may name a session with no agent_sessions
+// row, or disagree with one about the owner. agent_sessions remains the authz
+// root, and nothing read from here may stand in for it.
+//
 // PR2 adds the table and these methods only. Demoting the hub's in-RAM maps to
 // caches over this table is PR3; nothing in internal/runnerhub reads this yet.
 
@@ -35,31 +40,42 @@ type SessionBinding struct {
 	RunnerID  string
 }
 
-// RecordSessionBinding persists the binding for a live session. It is an UPSERT
-// keyed on the session, because a session id names exactly one binding: a rebind
-// REPLACES it, updating agent_account_id and runner_id TOGETHER so a row can
-// never pair a fresh Runner with the account from a previous attachment.
+// RecordSessionBinding points an agent account at the live session that speaks
+// for it. It is an UPSERT keyed on the ACCOUNT, not the session: this table
+// replaces the hub's 1:1 in-RAM accountSessions map, where re-pointing an
+// account at a newer session is an assignment, so a re-point here is one atomic
+// statement rather than a conflict to refuse. That matters concretely — the hub
+// promotes a new session onto an account BEFORE unbinding the stale one, and
+// promoteSession returns nothing, so it has nowhere to put a refusal.
+//
+// It returns the session id this bind DISPLACED — empty when the account held
+// none. That value is load-bearing, not diagnostic: PR3 must reap the displaced
+// session from the delivery held-deliver registry, the same side-effect
+// DeleteSessionBindingsForRunner's returned rows exist for. A displaced session
+// left unreaped holds deliveries for an account that has already moved on.
+//
+// The read of the previous session and the write of the new one are ONE
+// statement (a CTE, see the query file), so no concurrent bind can land between
+// them and make the caller reap a session that is once again live.
 //
 // updated_at is maintained by the set_updated_at() trigger, never here
 // (RIG-3495) — the query file assigns it nowhere.
 //
 // An unknown agent_account_id is ErrInvalidArgument (the FK).
 //
-// An account that already holds a DIFFERENT live session is ErrConflict (the
-// unique index on agent_account_id), and unlike agent_placements' container
-// guard this one is a live safety property, not a latent one. The in-RAM
-// accountSessions map this replaces is 1:1, so a second concurrent session for
-// one account would split that account's deliveries across two sessions and let
-// SessionForAccount resolve whichever row Postgres happened to return. Refusing
-// the write makes the double-bind unrepresentable. The caller's remedy is to
-// release the stale binding first — DeleteSessionBinding for a session it knows
-// is gone, or the runner sweep on a re-enroll.
-func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, accountID AccountID, runnerID string) error {
+// ErrConflict now means ONE thing, and it is no longer about the account: the
+// account path is an upsert and cannot conflict. The only unique index left is
+// (tenant_id, session_id), so a violation means this session id is ALREADY BOUND
+// TO A DIFFERENT ACCOUNT. Refusing it is what keeps ResolveSessionAccount
+// single-valued — two accounts sharing a live session id would make the relay's
+// answer depend on which row Postgres returned, and it resolves the principal a
+// comms call runs under.
+func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, accountID AccountID, runnerID string) (string, error) {
 	if sessionID == "" {
-		return fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+		return "", fmt.Errorf("%w: session id is required", ErrInvalidArgument)
 	}
 	if accountID == "" {
-		return fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+		return "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 	// Unlike agent_placements.runner_id, '' is NOT an accepted unknown-runner
 	// sentinel here. A placement must OUTLIVE its Runner's attachment (it is
@@ -69,22 +85,23 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 	// any real Runner's re-enroll, so it would linger as a stale session that
 	// outlives its Runner — the exact leak the sweep exists to prevent.
 	if runnerID == "" {
-		return fmt.Errorf("%w: runner id is required", ErrInvalidArgument)
+		return "", fmt.Errorf("%w: runner id is required", ErrInvalidArgument)
 	}
-	if err := s.q.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
+	displaced, err := s.q.RecordSessionBinding(ctx, db.RecordSessionBindingParams{
 		SessionID:      sessionID,
 		AgentAccountID: string(accountID),
 		RunnerID:       runnerID,
-	}); err != nil {
+	})
+	if err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
-			return fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, accountID)
+			return "", fmt.Errorf("%w: agent account %q does not exist", ErrInvalidArgument, accountID)
 		}
 		if pgErrIs(err, pgUniqueViolation) {
-			return fmt.Errorf("%w: agent %q is already bound to another live session", ErrConflict, accountID)
+			return "", fmt.Errorf("%w: session %q is already bound to a different agent", ErrConflict, sessionID)
 		}
-		return fmt.Errorf("store: record session binding: %w", err)
+		return "", fmt.Errorf("store: record session binding: %w", err)
 	}
-	return nil
+	return displaced, nil
 }
 
 // ResolveSessionAccount resolves the agent account a live session speaks for —
@@ -112,8 +129,8 @@ func (s *Store) ResolveSessionAccount(ctx context.Context, sessionID string) (Ac
 // SessionForAccount resolves the live session bound to an agent account — the
 // REVERSE of ResolveSessionAccount, and the direction the delivery consumer
 // needs to dispatch a deliver to an already-resolved subscriber
-// (runnerhub/relay_comms.go:179-184). At most one row can answer, because the
-// unique index makes the mapping 1:1.
+// (runnerhub/relay_comms.go:179-184). Exactly one row can answer, because the
+// account is the table's key.
 //
 // An account with no live session is ErrNotFound — never started, stopped, or
 // dropped on a Runner reconnect. Fail-closed for the same reason as above: an
@@ -135,10 +152,15 @@ func (s *Store) SessionForAccount(ctx context.Context, accountID AccountID) (str
 }
 
 // DeleteSessionBinding releases the binding for sessionID — the single-session
-// release path a normal session end takes, freeing the account's unique slot for
-// its next session. It is IDEMPOTENT: a session teardown may be retried, and a
-// second release of an already-released session must succeed, so deleting an
-// absent row is not an error (the same posture as DeleteAgentPlacement).
+// release path a normal session end takes. It is IDEMPOTENT: a session teardown
+// may be retried, and a second release of an already-released session must
+// succeed, so deleting an absent row is not an error (the same posture as
+// DeleteAgentPlacement).
+//
+// Note it deletes by SESSION, not by account, which is what makes it safe to
+// call on a session RecordSessionBinding has already displaced: the row now
+// names the newer session, so the stale release matches nothing and leaves the
+// live binding alone.
 func (s *Store) DeleteSessionBinding(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("%w: session id is required", ErrInvalidArgument)

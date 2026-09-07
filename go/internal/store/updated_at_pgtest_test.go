@@ -152,6 +152,76 @@ func TestSecretsUpdatedAtIsLive(t *testing.T) {
 	}
 }
 
+// TestUpdatedAtTriggerCatalogFloor is the catalog guard the three behavioural
+// tests above cannot be: they each pin ONE named table, so a FUTURE table that
+// declares updated_at and forgets its updated_at_tables entry is silently
+// untriggered — the exact rot RIG-3495 exists to prevent, reintroduced by
+// omission rather than by edit. This enumerates the live catalog instead of
+// trusting a hand-maintained list, the same self-auditing posture as
+// TestRLSCatalogEnabledAndForced (rls_pgtest_test.go): every table carrying an
+// updated_at column must carry a set_updated_at trigger.
+//
+// pg_attribute rather than information_schema.columns because a dropped column
+// lingers there as attisdropped, and this must not count one. The LEFT JOIN
+// (not a NOT EXISTS) is deliberate: it reports every offending table in one
+// run, so adding three tables and forgetting all three is one failure listing
+// all three, not three successive red runs.
+func TestUpdatedAtTriggerCatalogFloor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	rows, err := s.pool.Query(ctx,
+		`SELECT c.relname
+		   FROM pg_class c
+		   JOIN pg_namespace n ON n.oid = c.relnamespace
+		   JOIN pg_attribute a ON a.attrelid = c.oid
+		   LEFT JOIN pg_trigger tg
+		          ON tg.tgrelid = c.oid AND tg.tgname = 'set_updated_at'
+		  WHERE n.nspname = current_schema()
+		    AND c.relkind = 'r'
+		    AND a.attname = 'updated_at'
+		    AND NOT a.attisdropped
+		    AND tg.oid IS NULL
+		  ORDER BY c.relname`)
+	if err != nil {
+		t.Fatalf("enumerate updated_at-bearing tables: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tbl string
+		if err := rows.Scan(&tbl); err != nil {
+			t.Fatalf("scan catalog row: %v", err)
+		}
+		t.Errorf("%s: declares updated_at but has no set_updated_at trigger — add it to updated_at_tables in 0001_init.sql, or the column can only ever equal created_at and every reader of it is reading a lie", tbl)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate catalog rows: %v", err)
+	}
+
+	// Floor cross-check, mirroring TestRLSCatalogEnabledAndForced's: the
+	// enumeration above is silent if a table LOSES its updated_at column, which
+	// would drop it out of the query rather than fail it. Assert the tables that
+	// must carry the column still do.
+	for _, tbl := range []string{
+		"secrets", "agent_placements", "session_bindings",
+		"agent_config_bundle", "model_registry", "forge_repo_subscriptions",
+	} {
+		var n int
+		if err := s.pool.QueryRow(ctx,
+			`SELECT count(*)
+			   FROM pg_attribute a
+			  WHERE a.attrelid = format('%I.%I', current_schema(), $1::text)::regclass
+			    AND a.attname = 'updated_at'
+			    AND NOT a.attisdropped`, tbl,
+		).Scan(&n); err != nil {
+			t.Fatalf("check %s.updated_at: %v", tbl, err)
+		}
+		if n != 1 {
+			t.Errorf("%s: expected to carry updated_at but does not — it has dropped out of trigger coverage silently", tbl)
+		}
+	}
+}
+
 // repoSubStamps reads a forge repo subscription's (created_at, updated_at).
 func repoSubStamps(t *testing.T, s *Store, sub ForgeRepoSubscription) (created, updated time.Time) {
 	t.Helper()

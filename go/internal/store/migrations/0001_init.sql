@@ -499,9 +499,33 @@ CREATE UNIQUE INDEX agent_placements_container_key ON agent_placements (containe
 -- still authorizes through agent_sessions -> agent_accounts -> channel_members
 -- and never reads this table.
 --
--- PK on session_id, not a surrogate: a session id names exactly one binding, and
--- that is also the accountForSession read direction the relay resolves on every
--- inbound comms call.
+-- KEYED ON THE ACCOUNT, tenant folded in: PRIMARY KEY (tenant_id,
+-- agent_account_id). The account is the identity because this table replaces the
+-- hub's 1:1 in-RAM accountSessions map, where re-pointing an account at a newer
+-- session is an assignment, not a collision. So a re-point here is ONE upsert on
+-- the account (ON CONFLICT DO UPDATE), never a conflict to be refused: the hub
+-- legitimately holds two sessions for one account transiently — it promotes the
+-- new session before unbinding the stale one — and RecordSessionBinding's caller
+-- has nowhere to put a refusal. The NEWER binding displaces the older, and the
+-- displaced session id comes back via RETURNING so the caller can reap it from
+-- the held-deliver registry. Keying on the session instead would have made the
+-- displacement a unique violation and the reap impossible in one statement.
+--
+-- tenant_id leads the key for the reason the RLS header below states: two
+-- tenants may hold the same coordinate without collision. Its declaration text
+-- is character-identical to every other tenant table's, because the policy
+-- compares it to the same GUC.
+--
+-- session_id is UNIQUE PER TENANT (the index below) but is NOT the identity: it
+-- is the accountForSession read direction the relay resolves on every inbound
+-- comms call, and the uniqueness only says one session speaks for one account.
+--
+-- A binding is NOT cross-checked against agent_sessions: there is deliberately
+-- no FK from session_id, so a binding may name a session with no agent_sessions
+-- row, or disagree with one about the owner. That is intentional — a binding is
+-- independent of the session record's lifetime — and it is why agent_sessions,
+-- not this table, remains the authz root. Nothing here may be read as proof a
+-- session exists or as proof of who owns it.
 --
 -- runner_id is deliberately NOT a FK, for the same reason agent_placements'
 -- isn't: Runners are enrolled in memory under a token subject with no runners
@@ -509,23 +533,23 @@ CREATE UNIQUE INDEX agent_placements_container_key ON agent_placements (containe
 -- swept by the reconnect sweep below, and an unswept binding is a stale session
 -- that outlives its Runner.
 CREATE TABLE session_bindings (
-    session_id       TEXT PRIMARY KEY,
+    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
     agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    session_id       TEXT NOT NULL,
     runner_id        TEXT NOT NULL,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+    PRIMARY KEY (tenant_id, agent_account_id)
 );
 
--- The REVERSE lookup (SessionForAccount, runnerhub/relay_comms.go:179-184): the
--- delivery consumer holds a resolved subscriber account and needs the live
--- session to dispatch to. UNIQUE because the in-RAM accountSessions map it
--- replaces is 1:1 — an account has AT MOST ONE live session — so this index
--- makes a second concurrent session for one account UNREPRESENTABLE rather than
--- merely unlikely. A rebind of an account onto a NEW session id therefore raises
--- a unique violation (mapped to ErrConflict) instead of silently double-binding
--- and letting one account's deliveries split across two sessions.
-CREATE UNIQUE INDEX session_bindings_account_key ON session_bindings (agent_account_id);
+-- The session -> account lookup (ResolveSessionAccount): the relay's read on
+-- every inbound comms call, where the request carries only the session id.
+-- UNIQUE so one session id speaks for exactly one account — a second account
+-- claiming a live session id is refused (mapped to ErrConflict) rather than
+-- letting the relay resolve whichever row Postgres happened to return.
+-- Tenant-folded for the same reason the PK is: two tenants may mint the same
+-- session id without colliding.
+CREATE UNIQUE INDEX session_bindings_session_key ON session_bindings (tenant_id, session_id);
 
 -- The reconnect sweep deletes every binding of a re-enrolling Runner
 -- (DeleteSessionBindingsForRunner), so runner_id is the read direction that

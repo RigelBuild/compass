@@ -19,7 +19,6 @@ func (q *Queries) DeleteSessionBinding(ctx context.Context, sessionID string) er
 }
 
 const deleteSessionBindingsForRunner = `-- name: DeleteSessionBindingsForRunner :many
-
 DELETE FROM session_bindings
  WHERE runner_id = $1
 RETURNING session_id, agent_account_id
@@ -65,33 +64,64 @@ func (q *Queries) DeleteSessionBindingsForRunner(ctx context.Context, runnerID s
 	return items, nil
 }
 
-const recordSessionBinding = `-- name: RecordSessionBinding :exec
+const recordSessionBinding = `-- name: RecordSessionBinding :one
 
-INSERT INTO session_bindings (session_id, agent_account_id, runner_id)
-VALUES ($1, $2, $3)
-ON CONFLICT (session_id) DO UPDATE
-   SET agent_account_id = EXCLUDED.agent_account_id,
-       runner_id        = EXCLUDED.runner_id
+WITH prev AS (
+    SELECT b.session_id FROM session_bindings b WHERE b.agent_account_id = $1
+), upsert AS (
+    INSERT INTO session_bindings (agent_account_id, session_id, runner_id)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (tenant_id, agent_account_id) DO UPDATE
+        SET session_id = EXCLUDED.session_id,
+            runner_id  = EXCLUDED.runner_id
+    RETURNING session_id
+)
+SELECT COALESCE((SELECT session_id FROM prev), '')::text AS displaced_session_id
 `
 
 type RecordSessionBindingParams struct {
-	SessionID      string
 	AgentAccountID string
+	SessionID      string
 	RunnerID       string
 }
 
 // Session-binding queries (RIG-3108 / RIG-2861 §T4): the durable
 // (session -> agent account, Runner) binding the RunnerHub has so far held only
 // in RAM. The hand-written Store methods in internal/store/session_bindings.go
-// keep their signatures and map these rows into the SessionBinding domain struct
-// (the AccountID newtype is done inline in the Go, as agent_placements does).
+// map these rows into the SessionBinding domain struct (the AccountID newtype is
+// done inline in the Go, as agent_placements does).
+//
+// No query here names tenant_id. Tenant scoping is the RLS policy's job
+// (0001_init.sql) — reads see only the acting tenant's rows and the tenant_id
+// column DEFAULTs to the request GUC on insert — which is how every other query
+// file here is written.
 //
 // updated_at is NEVER assigned here: the set_updated_at() BEFORE UPDATE trigger
 // (0001_init.sql, RIG-3495) is the one mechanism, and a hand-written
 // `updated_at = now()` is the exact defect that convention removes.
-func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error {
-	_, err := q.db.Exec(ctx, recordSessionBinding, arg.SessionID, arg.AgentAccountID, arg.RunnerID)
-	return err
+// The bind. Keyed on the ACCOUNT (see the table comment): the hub's 1:1
+// accountSessions map this replaces treats re-pointing an account at a newer
+// session as an assignment, not a collision, so this is an upsert on
+// (tenant_id, agent_account_id) and never refuses a re-point.
+//
+// It returns the session id it DISPLACED, or ” when the account held none —
+// because the caller must reap that session from the delivery held-deliver
+// registry, the same side-effect DeleteSessionBindingsForRunner's RETURNING
+// exists for. COALESCE'd to ” rather than left NULL so the generated signature
+// is a plain string: "no displaced session" is the empty string throughout this
+// package, as ResolveSessionAccount's miss is.
+//
+// ONE statement, deliberately. The `prev` CTE reads the pre-update row and the
+// upsert writes the new one in the SAME snapshot, so no concurrent bind can slip
+// between a read and a write and make the caller reap a session that is still
+// live. A read-then-write from Go, or an `OLD`-aliased RETURNING (Postgres 18+
+// only; this targets 16), would each lose that. The upsert CTE is unreferenced
+// on purpose: a data-modifying CTE always executes.
+func (q *Queries) RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) (string, error) {
+	row := q.db.QueryRow(ctx, recordSessionBinding, arg.AgentAccountID, arg.SessionID, arg.RunnerID)
+	var displaced_session_id string
+	err := row.Scan(&displaced_session_id)
+	return displaced_session_id, err
 }
 
 const sessionBindingAccount = `-- name: SessionBindingAccount :one
