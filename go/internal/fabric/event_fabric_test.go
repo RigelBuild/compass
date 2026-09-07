@@ -1238,3 +1238,77 @@ func TestForgedTenantRefIsParked(t *testing.T) {
 		t.Errorf("parked subject header = %q, want the concrete delivered subject %q", subj, victimSubject)
 	}
 }
+
+// TestLegitimateRefsSurviveTheSubjectCrossCheck pins the symmetry the cross-check
+// depends on. handleEvent parks a ref whose tenant disagrees with its delivered
+// subject, and it decides that by rebuilding the subject with the same
+// CommsSubject call Publish uses. That the two agree is currently emergent — two
+// call sites deriving one string from the same two fields — rather than tested,
+// and a one-sided change (normalizing, lowercasing or trimming the tenant token
+// on one side only) would park every legitimate delivery on every tenant: a
+// silent fleet-wide denial of delivery whose only signal is a filling DLQ.
+//
+// So this asserts the positive direction across the token space
+// ValidSubjectToken actually admits, on a CONCRETE Subscribe — the
+// highest-traffic path, and the one the forged-ref and wildcard tests do not
+// cover.
+func TestLegitimateRefsSurviveTheSubjectCrossCheck(t *testing.T) {
+	t.Parallel()
+	ctx := testCtx(t)
+	url := testServer(t)
+	f := newFabric(t, Config{URL: url, MaxDeliver: 1, Log: quietLogger(t)})
+
+	raw, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(raw.Close)
+	dlq, err := raw.SubscribeSync(DLQSubject)
+	if err != nil {
+		t.Fatalf("SubscribeSync(%q): %v", DLQSubject, err)
+	}
+	if err := raw.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flushing the dlq subscription: %v", err)
+	}
+
+	// Every form ValidSubjectToken admits: it rejects rather than sanitizes, so
+	// case and separators other than . * > are all legal and must round-trip
+	// byte-for-byte through publish and delivery.
+	tenants := []string{"t1", "tenant-with-dashes", "tenant_with_underscores", "MixedCaseTenant", "0f9aaa31-048f-459b-b235-99fcb6e50690"}
+
+	for _, tenant := range tenants {
+		subject, err := CommsSubject(tenant, KindMessagePosted)
+		if err != nil {
+			t.Fatalf("CommsSubject(%q): %v", tenant, err)
+		}
+		delivered := make(chan EventRef, 1)
+		unsub, err := f.Subscribe(ctx, subject, func(ref EventRef) { delivered <- ref })
+		if err != nil {
+			t.Fatalf("Subscribe(%q): %v", subject, err)
+		}
+		ref := EventRef{Tenant: tenant, Kind: KindMessagePosted, RowID: "msg-" + tenant}
+		if err := f.Publish(ctx, subject, ref); err != nil {
+			t.Fatalf("Publish(%q): %v", subject, err)
+		}
+		select {
+		case got := <-delivered:
+			if got.Tenant != tenant || got.RowID != ref.RowID {
+				t.Errorf("delivered %s/%s, want %s/%s", got.Tenant, got.RowID, tenant, ref.RowID)
+			}
+		case <-ctx.Done():
+			t.Fatalf("tenant %q: a legitimate event was never delivered — the subject cross-check is rejecting well-formed traffic", tenant)
+		}
+		unsub()
+	}
+
+	// Nothing legitimate may reach the DLQ. Every delivery above is a completed
+	// round-trip through the cross-check, so a park would already have been
+	// published — this is a check on a settled state, not a poll, and the short
+	// deadline only bounds the "nothing arrived" case.
+	dlqCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if msg, err := dlq.NextMsgWithContext(dlqCtx); err == nil {
+		t.Errorf("a legitimate event was parked on %q: subject header %q, reason %q",
+			DLQSubject, msg.Header.Get(dlqHeaderSubject), msg.Header.Get(dlqHeaderReason))
+	}
+}

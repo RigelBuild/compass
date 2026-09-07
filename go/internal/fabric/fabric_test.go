@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -376,4 +377,94 @@ type testWriter struct{ t *testing.T }
 func (w testWriter) Write(p []byte) (int, error) {
 	w.t.Logf("fabric log: %s", strings.TrimRight(string(p), "\n"))
 	return len(p), nil
+}
+
+// capturingLogger records log output so a test can assert on it. quietLogger
+// routes to t.Logf, which is right for noise but gives a test nothing to read.
+type capturingLogger struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (c *capturingLogger) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.Write(p)
+}
+
+func (c *capturingLogger) String() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.buf.String()
+}
+
+// TestAsyncErrorHandlerReportsSlowConsumers pins the Runner plane's only report
+// of its only lossy path. A full channel subscription is dropped-and-reported by
+// contract, and the reporting half exists solely because New installs an async
+// error handler — nats.go's defaults install none, and its own fallback writes
+// to raw stderr rather than the fabric's logger. If that option is ever dropped,
+// reordered behind a caller option, or broken, the runner plane silently returns
+// to losing events invisibly, so the guarantee needs a test rather than trust.
+//
+// The handler is invoked directly rather than by simulating a stalled receiver:
+// nats.go dispatches it on its own goroutine with no lock held, so calling it is
+// faithful and carries no timing dependence.
+func TestAsyncErrorHandlerReportsSlowConsumers(t *testing.T) {
+	t.Parallel()
+	logs := &capturingLogger{}
+	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	f := newFabric(t, Config{Log: log})
+
+	handler := f.nc.ErrorHandler()
+	if handler == nil {
+		t.Fatal("nc.ErrorHandler() = nil, want the fabric's handler — a slow consumer would drop events with no report")
+	}
+
+	// The nil-subscription branch. Every connection-level error and the whole
+	// drain path pass nil, so this branch runs during teardown and would panic
+	// without its guard.
+	handler(f.nc, nil, nats.ErrSlowConsumer)
+	if out := logs.String(); !strings.Contains(out, nats.ErrSlowConsumer.Error()) {
+		t.Errorf("nil-subscription branch logged %q, want it to name the error", out)
+	}
+
+	// The subscription branch: the subject must appear so an operator knows
+	// WHICH consumer is falling behind.
+	sub, err := f.nc.SubscribeSync("compass.test.slow")
+	if err != nil {
+		t.Fatalf("SubscribeSync: %v", err)
+	}
+	defer func() {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Errorf("Unsubscribe: %v", err)
+		}
+	}()
+	handler(f.nc, sub, nats.ErrSlowConsumer)
+	if out := logs.String(); !strings.Contains(out, "compass.test.slow") {
+		t.Errorf("subscription branch logged %q, want it to name the subject", out)
+	}
+}
+
+// TestCallerErrorHandlerWins defends the documented Config.Options precedence for
+// the async error handler specifically. It is log-only, so a caller overriding it
+// is legitimate — unlike the ClosedHandler, which Close deliberately avoids
+// depending on so a caller cannot disarm the drain signal.
+func TestCallerErrorHandlerWins(t *testing.T) {
+	t.Parallel()
+	var called atomic.Bool
+	f := newFabric(t, Config{
+		Log: quietLogger(t),
+		Options: []nats.Option{
+			nats.ErrorHandler(func(*nats.Conn, *nats.Subscription, error) { called.Store(true) }),
+		},
+	})
+
+	handler := f.nc.ErrorHandler()
+	if handler == nil {
+		t.Fatal("nc.ErrorHandler() = nil, want the caller's handler")
+	}
+	handler(f.nc, nil, nats.ErrSlowConsumer)
+	if !called.Load() {
+		t.Error("the caller's ErrorHandler was not invoked; Config.Options must win over the fabric's default")
+	}
 }
