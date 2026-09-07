@@ -53,7 +53,6 @@ const CONTRIBUTING_FILES = new Set([
 	"README.md",
 	"AGENTS.md",
 	"CONTRIBUTING.md",
-	"forks/README.md",
 ]);
 
 /** A classified source: which section it belongs to and where it renders. */
@@ -85,7 +84,7 @@ function packagePath(sourcePath: string): { id: string; rest: string } {
  * on-disk mirror and (via the dest path) its site route.
  *
  * - `docs/<domain>/…` keeps its natural layout under the matching section.
- * - Root README/AGENTS/CONTRIBUTING/forks-README → `contributing/`.
+ * - Root README/AGENTS/CONTRIBUTING → `contributing/`.
  * - everything else (per-package README/AGENTS) → `packages/<pkg>/…`.
  */
 export function classify(sourcePath: string): Classified {
@@ -97,8 +96,8 @@ export function classify(sourcePath: string): Classified {
 		}
 	}
 	if (CONTRIBUTING_FILES.has(sourcePath)) {
-		// Disambiguate by source location so root README.md and forks/README.md
-		// (both basename README.md) don't collide under contributing/.
+		// Root-level sources, so the slug is just the basename; the transform
+		// still runs because the docsite's routes are built from these dest paths.
 		const slug = sourcePath.replace(/^\./, "").replace(/\//g, "-");
 		return { section: "contributing", destRel: `contributing/${slug}` };
 	}

@@ -188,22 +188,6 @@ describe("classify", () => {
 		);
 	});
 
-	// Regression 1: root README.md and forks/README.md share a basename and must
-	// NOT collide under contributing/ — the slug disambiguates by source path.
-	test("root README.md and forks/README.md land at different contributing dests", () => {
-		const root = classify("README.md");
-		const forks = classify("forks/README.md");
-		expect(root).toEqual({
-			section: "contributing",
-			destRel: "contributing/README.md",
-		});
-		expect(forks).toEqual({
-			section: "contributing",
-			destRel: "contributing/forks-README.md",
-		});
-		expect(root.destRel).not.toBe(forks.destRel);
-	});
-
 	test("routes the other contributing files (AGENTS, CONTRIBUTING) too", () => {
 		expect(classify("AGENTS.md")).toEqual({
 			section: "contributing",
@@ -267,14 +251,12 @@ describe("parseExclusions", () => {
 			'\t"globs": ["**/*.md"],',
 			"\t// exclusions below",
 			'\t"ignores": [',
-			'\t\t"forks/*/**",',
 			'\t\t"config/prompts/**",',
 			'\t\t"config/agents/**"',
 			"\t]",
 			"}",
 		].join("\n");
 		expect(parseExclusions(config)).toEqual([
-			"forks/*/**",
 			"config/prompts/**",
 			"config/agents/**",
 			"**/outputs/**",
@@ -300,25 +282,8 @@ describe("isExcluded", () => {
 
 	test("does not exclude an ordinary package doc", () => {
 		expect(
-			isExcluded("go/README.md", [
-				"forks/*/**",
-				"config/prompts/**",
-				"**/outputs/**",
-			]),
+			isExcluded("go/README.md", ["config/prompts/**", "**/outputs/**"]),
 		).toBe(false);
-	});
-
-	test("excludes a vendored fork subtree via forks/*/**", () => {
-		expect(isExcluded("forks/oh-my-pi/README.md", ["forks/*/**"])).toBe(true);
-		expect(isExcluded("forks/oh-my-pi/src/deep/x.md", ["forks/*/**"])).toBe(
-			true,
-		);
-	});
-
-	test("keeps the first-party forks/README.md (forks/*/** does not match it)", () => {
-		// The glob requires a fork dir between forks/ and the file; forks/README.md
-		// has none, so it stays linted and gathered.
-		expect(isExcluded("forks/README.md", ["forks/*/**"])).toBe(false);
 	});
 
 	test("excludes any outputs/ directory at any depth via **/outputs/**", () => {

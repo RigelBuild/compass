@@ -4,8 +4,8 @@
 // red on a `hash mismatch in fixed-output derivation` build break (the RIG-2432
 // easy-dep-bump goal, PR #579's failure class).
 //
-// Compass pins two FOD hash VALUES outside the vendored forks/ trees, each
-// content-addressing a fetched dependency set that MOVES when a manifest bumps.
+// Compass pins two FOD hash VALUES, each content-addressing a fetched dependency
+// set that MOVES when a manifest bumps.
 // The Go vendorHash is pinned in TWO files that share it by design (below):
 //
 //   guest-image/default.nix   vendorHash   compass-guestd's Go module set

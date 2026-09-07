@@ -214,7 +214,7 @@ test("parsePreviewUrl returns null for empty output", () => {
 const markdownlintConfig = JSON.stringify({
 	globs: ["**/*.md"],
 	gitignore: true,
-	ignores: ["forks/*/**"],
+	ignores: ["config/prompts/**"],
 });
 
 test("changedDocPages maps a docs/ file to its site route", () => {
@@ -278,13 +278,12 @@ test("changedDocPages drops a non-markdown file", () => {
 		),
 	).toEqual([]);
 });
-
 test("changedDocPages drops a file excluded by the markdownlint ignores", () => {
-	// "forks/oh-my-pi/readme.md" matches the "forks/*/**" ignore glob →
+	// "config/prompts/example.md" matches the "config/prompts/**" ignore glob →
 	// isExcluded true.
 	expect(
 		changedDocPages(
-			[{ filename: "forks/oh-my-pi/readme.md", status: "added" }],
+			[{ filename: "config/prompts/example.md", status: "added" }],
 			markdownlintConfig,
 		),
 	).toEqual([]);
@@ -322,7 +321,7 @@ test("changedDocPages returns [] when every file is dropped", () => {
 				{ filename: "docs/designs/repo/diagram.png", status: "added" }, // non-md
 				{ filename: "docs/specs/web/gone.md", status: "removed" }, // removed
 				{ filename: "apps/eng-docs/src/content/x.md", status: "modified" }, // docsite tree
-				{ filename: "forks/oh-my-pi/readme.md", status: "added" }, // markdownlint-excluded
+				{ filename: "config/prompts/example.md", status: "added" }, // markdownlint-excluded
 			],
 			markdownlintConfig,
 		),

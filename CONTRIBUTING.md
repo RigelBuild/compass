@@ -37,7 +37,6 @@ same check. It covers, across the workspace:
   symbols in the public generated trees.
 - **TypeScript:** `tsc --noEmit` and `bun test` per package, plus the UI build.
 - **Whole repo:** `biome check` and `markdownlint`.
-- **Vendored forks:** each fork's own `nix build`.
 - **Toolchain parity:** the versions on PATH must match the dev shell's pins.
 
 Two things run only in CI. The **real-Postgres suites** are build-tagged

@@ -65,16 +65,15 @@ and a nightly schedule. One job, `CI`, with two parts:
 
 - **The moon battery** — the whole battery over the moon task graph. It runs
   one of two ways by event. On a **pull request** it is `moon ci :ci`, which
-  runs only the projects the PR affects — a Go, UI, or docs change never pays
-  for the vendored forks' nix builds. On a **push to `main`** and on the
-  **nightly schedule** it is the full `moon run :ci`: every task, every project,
+  runs only the projects the PR affects — unrelated projects are not built. On a
+  **push to `main`** and on the **nightly schedule** it is the full
+  `moon run :ci`: every task, every project,
   no affected filter. Affected detection trusts each task's `inputs` globs, so
   the full sweep on everything that reaches `main` is the backstop — an
   incomplete glob that let a task be skipped on a PR is caught the moment the
   change lands (and re-checked nightly), named rather than hidden. Either way
   nothing about the workspace is enumerated in the workflow, so a new project
-  (or a newly vendored fork) is gated the moment it is registered in
-  `.moon/workspace.yml`. This is the same task graph the local gate and the
+  is gated the moment it is registered in `.moon/workspace.yml`. This is the same task graph the local gate and the
   `hk` pre-push hook run.
 - **The real-Postgres suites** — build-tagged `pgtest`, and therefore never
   compiled by the moon battery's `go test ./...`. They run as a step in this
@@ -117,8 +116,6 @@ Skipping what it cannot verify would make its green mean nothing.
 
 ### What CI does not gate
 
-- **Upstream test suites inside the vendored forks.** Each fork's registered
-  task is its own `nix build`; the upstream suites it vendors are not run.
 - **A live UI↔server path.** Every `compass-ui` task runs against fixtures, so
   no check exercises the UI against a running server.
 
@@ -156,7 +153,7 @@ first-run pull needs no credential anywhere.
 
 **One derivation, two destinations.** The published `:git-<sha>` and the local
 `dogfood:agent-image` load are copies of the *same* nix derivation — both flow
-through the fork's `container build agent`. They diverge only in the skopeo
+through the image's `container build agent`. They diverge only in the skopeo
 destination (a registry ref versus `containers-storage:`), so what CI publishes
 is byte-for-byte what a developer loads locally.
 
@@ -218,19 +215,20 @@ affects its closure. Before this the image was outside moon and had zero
 pre-merge coverage — an image-build break surfaced only post-merge in the
 publish workflow, while a consumer waited on a tag.
 
-The project's `build` task realises the image with the same fork-pinned
-derivation the publish lane ships
-(`nix run path:../forks/devenv#devenv -- container build agent`), so a green
-build proves the exact artifact that publishes still builds — both an
-eval-time break (a bun-pin drift against the `agent-image/toolchain.nix`
-assert) and a realise-time break (an `agent-image/entrypoint.nix` FOD-hash
-invalidation or a broken bundle), the full class.
+The project's `build` task realises the image with the same pinned devenv
+derivation the publish lane ships (`nix run "$src" -- container build agent`,
+where `$src` is the devenv flakeref that `tools/toolchain/devenv-cli` resolves
+from `agent-image/devenv.lock`), so a green build proves the exact artifact
+that publishes still builds — both an eval-time break (a bun-pin drift against
+the `agent-image/toolchain.nix` assert) and a realise-time break (an
+`agent-image/entrypoint.nix` FOD-hash invalidation or a broken bundle), the
+full class.
 
 The build is heavy — the image closure is the dominant CI cost, the reason
 the gate's timeout is 90m — but it is not paid on every PR. `moon ci` runs a
 PR's *affected* projects only, and the task's `inputs` scope it to the image
-closure: the `agent-image/` tree, the two vendored forks, `packages/compass-agent/`,
-the root `package.json` and `bun.lock`, and `tools/toolchain/versions/bun.nix`.
+closure: the `agent-image/` tree, `packages/compass-agent/`, the root
+`package.json` and `bun.lock`, and `tools/toolchain/versions/bun.nix`.
 A PR that touches none of those never builds the image; every push to main runs
 it unconditionally in the full sweep. Its `inputs` mirror the closure set the
 `publish-image` job's in-job changed-path gate diffs over in `release.yml` (the
@@ -239,7 +237,7 @@ self-gates) — the reviewed source of truth for what changes the published
 artifact — including the bun pin file, since the image now builds bun from that
 pinned derivation, so a pin move there changes the output. As a project in the
 one-job gate it is a required check: a build break blocks merge, the same
-posture as the vendored forks' nix builds.
+posture as every other required build in the gate.
 
 ## Caching
 

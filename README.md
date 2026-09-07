@@ -93,7 +93,6 @@ docs/
   designs/                frozen design records + the decision ledger
   specs/                  the living product/behavior spec
   self-host.md            the self-hosting guide
-forks/                    vendored upstream subtrees (Oh My Pi), each nix-built
 agent-image/ guest-image/ the sandbox image builds
 app-bundle/               the desktop application bundle
 tools/toolchain/          the CI/dev-shell version-parity gate

@@ -39,16 +39,17 @@
   // Renovate owns security remediation for first-party deps (RIG-2432 moves ALL
   // dependency automation off Dependabot, including the hidden GitHub-billed
   // security-update path — disabled explicitly in the migration runbook). OSV
-  // gives Renovate a config-driven vuln source that honors the packageRules fence
-  // below, which the repo-wide Dependabot toggle could not. Direct dependencies
-  // only; queried offline via osv-offline.
+  // gives Renovate a config-driven vuln source that honors the packageRules
+  // disables below, which the repo-wide Dependabot toggle could not. Direct
+  // dependencies only; queried offline via osv-offline.
   //
   // INVARIANT — do NOT add `vulnerabilityAlerts: { enabled: true }`. A vuln fix is
   // injected as a packageRule carrying `force: { ...vulnerabilityAlerts }`, and
   // applyPackageRules clears a prior `skipReason` when `force.enabled` is truthy —
-  // which would CANCEL the forks/*/** disable rule and re-open fork bumps. The
-  // default vulnerabilityAlerts object has no `enabled` key, so the fork fence
-  // holds. `config.test.ts` guards both facts.
+  // which would CANCEL every `enabled: false` rule below (the postgres CI-service
+  // pin, the gomod `go` directive, biome) and re-open bumps they exist to hold
+  // shut. The default vulnerabilityAlerts object has no `enabled` key, so those
+  // disables hold. `config.test.ts` guards both facts.
   osvVulnerabilityAlerts: true,
 
   // 5-day supply-chain cooldown — matches the root bunfig.toml `minimumReleaseAge
@@ -71,11 +72,10 @@
   // the devenv-nixpkgs postUpgradeTask (refresh-devenv-nixpkgs.ts) re-aligns
   // flake.nix + flake.lock whenever that channel bumps. An independent nix
   // manager tracking flake.lock would fight that coupling — bumping nixpkgs out
-  // of step with devenv.lock and reliably reddening flake-parity. The forks/*
-  // flake.lock files stay fenced below. devenv.lock/devenv.yaml are not
-  // flake.lock either (the custom git-refs manager covers them). No `dockerfile`
-  // manager: the only Dockerfiles in tree are under forks/*, also fenced, so it
-  // would be dead config.
+  // of step with devenv.lock and reliably reddening flake-parity.
+  // devenv.lock/devenv.yaml are not flake.lock either (the custom git-refs
+  // manager covers them). No `dockerfile` manager: there are no Dockerfiles in
+  // tree, so it would be dead config.
   enabledManagers: [
     "bun",
     "npm",
@@ -94,8 +94,8 @@
   // it. So this is an upstream gap, not a misconfiguration — drop this manager if
   // the bun manager gains native catalog support.
   //
-  // Scoping: the `^package\.json$` anchor matches the ROOT file only, so the
-  // `forks/*/**` fence below is untouched. `recursive` narrows to the catalog
+  // Scoping: the `^package\.json$` anchor matches the ROOT file only, so no
+  // workspace member's manifest is drawn in. `recursive` narrows to the catalog
   // object FIRST, then extracts its entries. A flat pattern would match every
   // `"key": "value"` pair in the file — including scalar metadata (`name`, `type`,
   // `description`) and the single-entry `overrides` block, i.e. non-packages on
@@ -427,9 +427,7 @@
       // tooling exists; 6.x patch/minor still flows via the rollup above. Remove
       // this + its config.test.ts guard when TS 7.1 ships a stable API and the
       // consumers support it. Sets only `allowedVersions` (no `enabled` key) so it
-      // merges with the rollup above on disjoint keys and leaves the fork fence
-      // below (enabled: false) authoritative for a `typescript` dep inside a fenced
-      // tree.
+      // merges with the rollup above on disjoint keys rather than overriding it.
       matchManagers: ["bun", "npm", "custom.regex"],
       matchPackageNames: ["typescript"],
       allowedVersions: "<7",
@@ -924,20 +922,6 @@
         fileFilters: ["bun.lock", "agent-image/entrypoint.nix"],
         executionMode: "update",
       },
-    },
-    {
-      // Vendored fork subtrees (forks/<name>/) are upstream code, style- and
-      // dependency-exempt. Renovate must not open bump PRs on fork manifests: an
-      // upstream-diverging bump would violate the vendored posture and poison
-      // byte-compatibility with upstream. A packageRules disable (not ignorePaths,
-      // which REPLACES Renovate's safe defaults like node_modules) scoped to the
-      // fork trees. This fence must hold against the OSV vuln path too — see the
-      // `osvVulnerabilityAlerts` invariant above. NOTE: this fence is coupled to
-      // the vendored-devenv shim in .github/workflows/renovate.yml — when
-      // forks-reversal (RIG-2336) removes the forks/ trees, drop this packageRule
-      // together with that shim (they are the migration's post-reversal cleanup).
-      matchFileNames: ["forks/*/**"],
-      enabled: false,
     },
   ],
 

@@ -80,7 +80,7 @@ describe("changedDevenvLock", () => {
 	// same-named lock elsewhere in the tree is not either governed scope, and
 	// treating it as one would relock a file no rule's fileFilters admits.
 	test("does not mistake a same-named lock elsewhere for a governed scope", () => {
-		expect(changedDevenvLock(["forks/devenv/devenv.lock"])).toBeNull();
+		expect(changedDevenvLock(["guest-image/devenv.lock"])).toBeNull();
 		expect(changedDevenvLock(["a/agent-image/devenv.lock"])).toBeNull();
 	});
 

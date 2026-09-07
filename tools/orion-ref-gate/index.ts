@@ -20,11 +20,6 @@
 // that tries to tell a "good" orion from a "bad" one.
 //
 // CARVE-OUTS (never scanned):
-//   - forks/**            vendored upstream subtrees; byte-identity is their
-//                         verification basis, and any `orion` there is upstream
-//                         text, not a compass-authored reference. (First-party
-//                         forks/README.md is NOT carved out — it is compass
-//                         prose.)
 //   - tools/orion-ref-gate/**  this gate's own source + fixtures name the token
 //                         to describe what it forbids.
 //   - apps/eng-docs/src/content/docs/**, apps/eng-docs/dist/**  generated
@@ -53,11 +48,10 @@ export const PRIVATE_TOKEN = "orion";
 
 /**
  * Repo-relative path prefixes never scanned. A reference under one of these is
- * either upstream text (forks/), a generated copy (eng-docs / bun.lock), or
- * this gate's own description of what it forbids.
+ * either a generated copy (eng-docs / bun.lock) or this gate's own description
+ * of what it forbids.
  */
 export const CARVEOUT_PREFIXES: readonly string[] = [
-	"forks/",
 	"tools/orion-ref-gate/",
 	"apps/eng-docs/src/content/docs/",
 	"apps/eng-docs/dist/",
@@ -87,9 +81,6 @@ export interface Reference {
 /** True when a repo-relative path is carved out of the scan. */
 export function isCarveOut(path: string): boolean {
 	if (path in ALLOWLIST) return true;
-	// forks/README.md is first-party compass prose, not a vendored subtree —
-	// it is scanned like any other authored file.
-	if (path === "forks/README.md") return false;
 	if (CARVEOUT_PATHS.includes(path)) return true;
 	return CARVEOUT_PREFIXES.some((prefix) => path.startsWith(prefix));
 }
