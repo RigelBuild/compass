@@ -266,6 +266,21 @@ type Secret struct {
 	TenantID   string
 }
 
+type ServerKeyState struct {
+	ID              int16
+	KeyVersion      int16
+	KeyFingerprint  []byte
+	FingerprintSalt []byte
+	UpdatedAt       pgtype.Timestamptz
+}
+
+type ServerSecret struct {
+	Name       string
+	DeclaredBy pgtype.Text
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type SessionBinding struct {
 	TenantID       string
 	AgentAccountID string
