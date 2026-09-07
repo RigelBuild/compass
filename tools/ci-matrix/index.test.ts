@@ -827,15 +827,16 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 		).not.toContain("orion-ref-gate:ci");
 	});
 
-	test("the ledger gate joins the closure on a docs-only change", () => {
-		// The sibling instance, and the one the design corpus depends on:
-		// design-ledger-gate's `check` declares a workspace-root input glob
-		// over docs/designs, which no project owns, so a docs-only diff leaves
-		// it out of the project walk entirely. Measured on moon 2.5.3 against
-		// docs/designs/DECISIONS.md: the walk yields flake-gate and root; the
-		// task half yields design-ledger-gate. A later change that narrowed the
-		// closure back for the design corpus specifically would leave the
-		// orion-ref-gate cases above green, so this fixture names its own gate.
+	test("a bundle declaring another project's tree joins the closure", () => {
+		// The sibling instance, and the one that stays an instance: the app
+		// bundle declares `/go/**` as a task input (app-bundle/moon.yml:54-57)
+		// precisely so a Go change reschedules it, but it declares no
+		// `dependsOn`, so the project walk can never reach it — a Go-only diff
+		// leaves it out of the walk entirely while the task half selects it.
+		// (design-ledger-gate had this same shape and was the original subject
+		// here; it is now injected unconditionally on PRs, so the always-run
+		// describe block above owns it and this fixture would no longer
+		// discriminate on that gate.)
 		// flake-gate and root are the universal floor of every moon closure, so
 		// they must exist as grouped members for the walk half to be
 		// well-formed input to the generator.
@@ -844,37 +845,37 @@ describe("parseTaskAffectedIds — the cross-tree gate closure", () => {
 			proj("flake-gate", "nix"),
 			proj("root", "bun"),
 		];
-		const gate = proj("design-ledger-gate", "bun");
+		const bundle = proj("compass-app-bundle", "nix");
 		const projectWalk = ["flake-gate", "root"];
 		const union = unionAffectedIds(
 			projectWalk,
 			parseTaskAffectedIds(
-				JSON.stringify({ tasks: { "design-ledger-gate": { check: {} } } }),
+				JSON.stringify({ tasks: { "compass-app-bundle": { build: {} } } }),
 			),
-			new Set([...projects.map((project) => project.id), gate.id]),
+			new Set([...projects.map((project) => project.id), bundle.id]),
 		);
 
 		const out = generate({
-			projects: [...projects, gate],
+			projects: [...projects, bundle],
 			affectedIds: union,
-			changedPaths: ["docs/designs/DECISIONS.md"],
+			changedPaths: ["go/server/serve.go"],
 			event: "pull_request",
 		});
-		expect(out.matrix.find((l) => l.group === "bun")?.targets).toContain(
-			"design-ledger-gate:ci",
+		expect(out.matrix.find((l) => l.group === "nix")?.targets).toContain(
+			"compass-app-bundle:ci",
 		);
 
-		// Control: the project walk alone leaves the ledger unchecked, which is
-		// the pre-union behaviour a docs-only PR actually got.
+		// Control: the project walk alone leaves the bundle unbuilt, which is
+		// the pre-union behaviour a Go-only PR actually got.
 		const without = generate({
-			projects: [...projects, gate],
+			projects: [...projects, bundle],
 			affectedIds: projectWalk,
-			changedPaths: ["docs/designs/DECISIONS.md"],
+			changedPaths: ["go/server/serve.go"],
 			event: "pull_request",
 		});
 		expect(
-			without.matrix.find((l) => l.group === "bun")?.targets ?? [],
-		).not.toContain("design-ledger-gate:ci");
+			without.matrix.find((l) => l.group === "nix")?.targets ?? [],
+		).not.toContain("compass-app-bundle:ci");
 	});
 });
 

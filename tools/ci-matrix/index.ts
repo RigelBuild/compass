@@ -353,10 +353,11 @@ function parseProjects(json: string): ProjectInput[] {
  * project's cross-tree task `inputs`. A gate whose subject lives in other
  * projects' trees is therefore invisible to it: `orion-ref-gate`'s `check`
  * task declares a workspace-root recursive input glob so it scans the whole
- * repo, and `design-ledger-gate`'s reads the design corpus, yet neither is
- * selected unless its own handful of files
- * change, so a PR can introduce exactly what the gate exists to catch and
- * never run it.
+ * repo, yet it is not selected unless its own handful of files change, so a
+ * PR can introduce exactly what the gate exists to catch and never run it.
+ * (`design-ledger-gate` had the same shape and is now injected
+ * unconditionally on PRs instead — see `ALWAYS_RUN_ON_PR` — so it is no
+ * longer an instance of this defect.)
  *
  * `tasks --affected` intersects the PR's changed files with each task's real
  * `inputs`, so it sees those gates. The two closures are genuinely different
