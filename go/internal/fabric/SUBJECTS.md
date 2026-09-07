@@ -1,6 +1,6 @@
 # Fabric subjects and JetStream configuration
 
-The written spec for the NATS eventing substrate: the four subject grammars, the
+The written spec for the NATS eventing substrate: the five subject grammars, the
 dead-letter subject, and the JetStream stream/consumer configuration. Frozen by
 `docs/designs/infra/runtime/compass-managed-multitenancy/design.md` §T3/§Q3;
 this file is the operational restatement that later tasks build against, and
@@ -15,6 +15,8 @@ this file is the operational restatement that later tasks build against, and
 | `compass.runner.<runner_id>.cmd` | core NATS | `RunnerCommandSubject(runnerID)` | Server → one Runner (async command push) |
 | `compass.runner.events` | core NATS, queue group `compass-runner-events` | `RunnerEventsSubject()` | Runners → exactly one Server (event fan-in) |
 | `client.<sessionID>` | core NATS | `ClientSubject(sessionID)` | Server → one live client connection |
+| `compass.routing.binding.<tenant>` | core NATS | `RoutingBindingSubject(tenant)` | Server → ALL Servers (binding-cache invalidation, no queue group) |
+| `compass.routing.binding.*` | core NATS | `RoutingBindingWildcardSubject()` | Servers → every Server (cross-tenant invalidation, **subscribe-side only**) |
 | `compass.dlq.comms` | core NATS | `DLQSubject` | fabric → operator (parked events) |
 
 `client.<sessionID>` sits outside the `compass.` root deliberately — the frozen
@@ -51,6 +53,68 @@ Postgres insert.
 - **Publish cannot target it.** `Publish` derives its subject from the ref via
   `CommsSubject`, and `EventRef.valid` rejects a `*` tenant, so a wildcard
   publish is impossible rather than merely discouraged.
+
+### Binding invalidation: `compass.routing.binding.<tenant>`
+
+The routing plane (§T4). The hub's in-memory binding maps become instance-local
+caches over durable truth, and `RoutingFabric` carries the invalidations that
+keep them honest: `PublishBindingChange(ctx, tenant, change)` on the concrete
+per-tenant subject, `SubscribeBindingChanges(ctx, fn)` on the tenant wildcard.
+
+- **Core NATS, and deliberately droppable.** §T4: "Postgres is the arbiter on
+  any cache miss or conflict; core NATS at-most-once suffices because a dropped
+  invalidation degrades to a cache-miss re-read." A stream here would buy
+  durability for a message whose whole content is "go ask Postgres", and would
+  add a second store of state Postgres already owns. So there is no ack, no
+  retry and **no DLQ** on this plane: a malformed payload is logged and dropped,
+  which is the one visible behavioural difference from the comms path.
+- **No queue group — every instance caches.** Each Server holds its own binding
+  cache, so each must receive every invalidation. A queue group would hand each
+  change to exactly one Server and leave the others serving a stale binding,
+  silently: nothing on a core-NATS plane surfaces an undelivered message.
+  Contrast `compass.runner.events`, which queue-groups on purpose — a Runner
+  event is *work*, and work must be done once.
+- **The literal `binding` precedes the tenant token, and that is a correctness
+  requirement.** The comms stream captures `compass.*.comms.*`, which matches
+  any four-token subject whose **third** token is `comms`. Under the other
+  ordering, `compass.routing.<tenant>.binding`, a tenant literally named `comms`
+  yields `compass.routing.comms.binding` — captured by that wildcard. A stream
+  is an ordinary subscriber in the account sublist, so the capture is *additive*
+  and the hubs would still get the message; the harm is that a best-effort
+  core-NATS invalidation would ALSO be persisted into a durable stream specified
+  to hold only `EventRef`s, burning its storage and `MaxAge` budget for traffic
+  no comms consumer can use (each consumer's `FilterSubject` fixes a concrete
+  kind, and no `EventKind` is `binding`). Pinning `binding` to token 3 makes
+  that unrepresentable for *every* tenant value, because this grammar's token 3
+  is never variable.
+- **The subscribe is tenant-wildcard, publish is concrete.** A Server's cache
+  spans every tenant it has resolved a session for, so one subscription is what
+  the cache needs and tenant creation stays a Postgres insert (the same argument
+  `SubscribeKind` makes for the delivery consumer). `PublishBindingChange`
+  derives its subject via `RoutingBindingSubject`, and `BindingChange.valid`
+  rejects a `*` tenant, so a wildcard publish is impossible rather than merely
+  discouraged.
+- **Payload: a reference, never a copy.** `BindingChange` is JSON
+  `{tenant, session_id, op}` — never the resolved instance. Carrying the
+  resolution would let a reordered or duplicated delivery install an older
+  binding over a newer one, and the cache would then need a version to
+  arbitrate. Carrying only the identity makes every delivery idempotent and
+  every *drop* recoverable by re-reading Postgres. `op` exists so an unbind
+  needs no read at all: the correct action is "drop the entry", and querying
+  Postgres to confirm an absence is a read whose answer is already in the
+  message.
+- **`op` is an OPEN set.** `bound` and `unbound` are the values this version
+  publishes, but a receiver must handle any other value by invalidating and
+  re-reading. The receive path carries an unrecognized `op` through rather than
+  dropping it: the binding genuinely changed, and this plane has no ack, no
+  retry and no dead-letter subject, so a drop would leave a stale entry with
+  nothing to reveal it. The publish path stays strict, because a caller minting
+  an unknown `op` is a bug with a stack.
+- **The tenant rides in both the subject and the payload.** The read side is
+  wildcard and its callback receives no subject, so the payload's tenant is the
+  receiver's only scope. `PublishBindingChange` requires the two to be equal, so
+  they cannot disagree on the wire — the same cross-tenant guard `Publish` gets
+  by deriving its subject from the ref.
 
 ### Token validation: reject, never sanitize
 

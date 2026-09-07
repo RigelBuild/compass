@@ -6,10 +6,10 @@ import (
 )
 
 // TestSubjectBuilders defends the frozen grammar itself: every subject a
-// consumer will ever publish or subscribe to comes from these four builders, so
-// a drift in any one of them silently re-wires a plane. The exact strings are
-// asserted, not a pattern — the grammar is the contract other tasks build
-// against (SUBJECTS.md).
+// consumer will ever publish or subscribe to comes from a builder in
+// subjects.go, so a drift in any one of them silently re-wires a plane. The
+// exact strings are asserted, not a pattern — the grammar is the contract other
+// tasks build against (SUBJECTS.md).
 func TestSubjectBuilders(t *testing.T) {
 	t.Parallel()
 
@@ -56,6 +56,27 @@ func TestSubjectBuilders(t *testing.T) {
 		}
 		if RunnerEventsQueue == "" {
 			t.Fatal("RunnerEventsQueue must be set, or every Server handles every Runner event")
+		}
+	})
+
+	// The routing plane's two builders. Both the publisher
+	// (PublishBindingChange) and the subscriber (SubscribeBindingChanges)
+	// derive their subject from the one routingBindingPrefix constant, so every
+	// integration test on this seam is a round-trip through the same string and
+	// stays green after a typo in it — while the wire grammar silently diverges
+	// from SUBJECTS.md and from any other process on the bus. Pinning the
+	// literals is the only thing that catches that.
+	t.Run("routing binding", func(t *testing.T) {
+		t.Parallel()
+		got, err := RoutingBindingSubject("t1")
+		if err != nil {
+			t.Fatalf("RoutingBindingSubject: %v", err)
+		}
+		if want := "compass.routing.binding.t1"; got != want {
+			t.Fatalf("RoutingBindingSubject = %q, want %q", got, want)
+		}
+		if got, want := RoutingBindingWildcardSubject(), "compass.routing.binding.*"; got != want {
+			t.Fatalf("RoutingBindingWildcardSubject = %q, want %q", got, want)
 		}
 	})
 
@@ -250,6 +271,38 @@ func TestDLQSubjectIsOutsideTheCommsStream(t *testing.T) {
 	if got, want := strings.Count(DLQSubject, "."), 2; got != want {
 		t.Fatalf("DLQSubject = %q has %d separators, want %d (a 4-token dlq subject could be captured by %q)",
 			DLQSubject, got, want, commsStreamSubjects)
+	}
+}
+
+// TestBindingSubjectPutsTheLiteralBeforeTheTenant defends the token ORDER of
+// the routing plane, structurally and without a live server. The COMPASS_COMMS
+// stream captures compass.*.comms.* — any four-token subject whose token 2 is
+// "comms" — so the rejected grammar compass.routing.<tenant>.binding would put
+// a tenant literally named "comms" inside that stream. Keeping the literal
+// "binding" at the VARIABLE-FREE index 2 makes capture impossible for every
+// tenant value rather than for the ones a test happens to try.
+//
+// TestBindingSubjectIsNotCapturedByTheCommsStream proves the same thing through
+// a real server on the one degenerate tenant; this pins the order itself, so a
+// reordered grammar fails here even if the integration test's tenant no longer
+// happens to be the colliding one.
+func TestBindingSubjectPutsTheLiteralBeforeTheTenant(t *testing.T) {
+	t.Parallel()
+	subject, err := RoutingBindingSubject("comms")
+	if err != nil {
+		t.Fatalf("RoutingBindingSubject: %v", err)
+	}
+	tokens := strings.Split(subject, ".")
+	streamTokens := strings.Split(commsStreamSubjects, ".")
+	if len(tokens) != len(streamTokens) {
+		t.Fatalf("RoutingBindingSubject(%q) = %q has %d tokens, want %d — this test compares it against %q token-for-token",
+			"comms", subject, len(tokens), len(streamTokens), commsStreamSubjects)
+	}
+	// Index 2 is where the stream demands the literal "comms", and it is the
+	// only index of this grammar that carries no caller-supplied value.
+	if got, want := tokens[2], "binding"; got != want {
+		t.Fatalf("RoutingBindingSubject(%q) = %q: token 2 is %q, want the literal %q — a variable token there lets a tenant named %q be captured by %q",
+			"comms", subject, got, want, streamTokens[2], commsStreamSubjects)
 	}
 }
 

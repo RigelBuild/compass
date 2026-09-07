@@ -22,6 +22,28 @@ const (
 	// instance (§Q3, "delivery queue groups": the three-hop model's hop 2).
 	RunnerEventsQueue = "compass-runner-events"
 
+	// routingBindingPrefix roots the binding-invalidation plane (§T4):
+	// compass.routing.binding.<tenant>, built by RoutingBindingSubject.
+	//
+	// The literal "binding" precedes the tenant token DELIBERATELY, and the
+	// token order is a correctness requirement rather than a style choice. The
+	// COMPASS_COMMS stream captures commsStreamSubjects — compass.*.comms.* —
+	// which matches any four-token subject whose THIRD token is "comms". Under
+	// the other order, compass.routing.<tenant>.binding, a tenant literally
+	// named "comms" yields compass.routing.comms.binding, which that wildcard
+	// captures.
+	//
+	// A stream is an ordinary subscriber in the account's sublist, so that
+	// capture is ADDITIVE, not exclusive: the hubs would still receive the
+	// message. The harm is that a best-effort core-NATS invalidation would ALSO
+	// be persisted into a durable stream specified to carry only EventRefs,
+	// burning its file storage and MaxAge budget with traffic that no comms
+	// consumer can use (every consumer's FilterSubject fixes a concrete kind,
+	// and no EventKind is "binding"). Pinning "binding" to token 3 makes that
+	// unrepresentable for EVERY tenant value, because the comms wildcard
+	// requires token 3 == "comms" and this grammar's token 3 is never variable.
+	routingBindingPrefix = subjectPrefix + ".routing.binding"
+
 	// DLQSubject is where a comms event that exhausted its delivery attempts is
 	// parked. JetStream has no native dead-letter queue, so the fabric
 	// implements the app-level pattern: publish to this subject, then Term() the
@@ -122,6 +144,37 @@ func RunnerCommandSubject(runnerID string) (string, error) {
 // RunnerEventsQueue so exactly one Server instance claims each event.
 func RunnerEventsSubject() string {
 	return subjectPrefix + ".runner.events"
+}
+
+// RoutingBindingSubject builds the binding-invalidation subject for one tenant:
+// compass.routing.binding.<tenant>. It returns an error if tenant is not a
+// valid single subject token, for the same reason CommsSubject does — a tenant
+// id carrying a reserved character is an upstream bug, and rewriting it would
+// publish an invalidation nobody is subscribed to (see ValidSubjectToken).
+//
+// The tenant is the LAST token, not the third: see routingBindingPrefix for why
+// that ordering is what keeps the subject out of the COMPASS_COMMS stream's
+// compass.*.comms.* capture for every possible tenant value.
+func RoutingBindingSubject(tenant string) (string, error) {
+	if err := ValidSubjectToken("tenant", tenant); err != nil {
+		return "", err
+	}
+	return routingBindingPrefix + "." + tenant, nil
+}
+
+// RoutingBindingWildcardSubject is the TENANT-WILDCARD binding-invalidation
+// subject: compass.routing.binding.*. It takes no token and cannot fail.
+//
+// Subscribe-side only, and it is the only subject the routing plane's read side
+// uses: a Server's binding cache holds entries for every tenant it has resolved
+// a session for, so one subscription across all tenants is what the cache
+// needs, and a per-tenant subscribe would make tenant creation a NATS operation
+// (the same argument CommsWildcardSubject makes for the delivery consumer).
+// Publish derives its subject from the change's tenant via
+// RoutingBindingSubject, and BindingChange.valid rejects a "*" tenant, so no
+// publish can ever target this subject.
+func RoutingBindingWildcardSubject() string {
+	return routingBindingPrefix + "." + wildcardToken
 }
 
 // ClientSubject builds the per-connection delivery subject for a live client:

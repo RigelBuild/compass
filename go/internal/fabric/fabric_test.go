@@ -207,18 +207,24 @@ func TestNewUnreachableURL(t *testing.T) {
 	}
 }
 
-// TestFabricImplementsBothSeamsOverOneConnection defends the record's
-// one-connection-per-party contract. That *Fabric satisfies both interfaces is
-// a compile-time assertion in fabric.go; what a test can add is that the two
-// seams are the SAME object over ONE nats.Conn — if EventFabric and
-// RunnerFabric were ever split into two clients, each Runner and Server would
-// hold two connections, which the record forbids.
-func TestFabricImplementsBothSeamsOverOneConnection(t *testing.T) {
+// TestFabricImplementsEverySeamOverOneConnection defends the record's
+// one-connection-per-party contract. That *Fabric satisfies all three
+// interfaces is a compile-time assertion in fabric.go; what a test can add is
+// that the seams are the SAME object over ONE nats.Conn — if EventFabric,
+// RunnerFabric and RoutingFabric were ever split into separate clients, each
+// Runner and Server would hold several connections, which the record forbids.
+//
+// RoutingFabric is included because it is the seam most likely to be split off:
+// it rides core NATS rather than JetStream, so "give the invalidation plane its
+// own connection" reads as a reasonable change right up until every Server
+// holds two.
+func TestFabricImplementsEverySeamOverOneConnection(t *testing.T) {
 	t.Parallel()
 	f := newFabric(t, Config{})
 	var (
-		ef EventFabric  = f
-		rf RunnerFabric = f
+		ef  EventFabric   = f
+		rf  RunnerFabric  = f
+		rtf RoutingFabric = f
 	)
 	efFabric, ok := ef.(*Fabric)
 	if !ok {
@@ -228,11 +234,15 @@ func TestFabricImplementsBothSeamsOverOneConnection(t *testing.T) {
 	if !ok {
 		t.Fatalf("RunnerFabric is backed by %T, want *Fabric", rf)
 	}
-	if efFabric != rfFabric {
-		t.Fatal("the two seams must be one object, or a party holds two fabrics")
+	rtfFabric, ok := rtf.(*Fabric)
+	if !ok {
+		t.Fatalf("RoutingFabric is backed by %T, want *Fabric", rtf)
 	}
-	if efFabric.nc != rfFabric.nc {
-		t.Fatal("the two seams must share one nats connection")
+	if efFabric != rfFabric || efFabric != rtfFabric {
+		t.Fatal("the three seams must be one object, or a party holds several fabrics")
+	}
+	if efFabric.nc != rfFabric.nc || efFabric.nc != rtfFabric.nc {
+		t.Fatal("the three seams must share one nats connection")
 	}
 }
 
