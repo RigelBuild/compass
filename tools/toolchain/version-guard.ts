@@ -182,7 +182,13 @@ const devenvVerdict = (index: number): Verdict | Error => {
 		"set -u\nshopt -s globasciiranges\nexport LC_ALL=C\n" +
 		// Single-quoted so a scratch path containing `"`, `$`, or a backtick is
 		// inert; `'` itself cannot occur in an mkdtemp path, and the quote-escape
-		// dance would obscure the line for a byte that never appears.
+		// dance would obscure the line for a byte that never appears. This is the
+		// one place the harness diverges textually from the shipped seed
+		// (devenv.nix uses double quotes), and it cannot move a verdict: the
+		// quoting governs how the PATH is resolved, while the candidate content
+		// reaches bash only as file BYTES through `$(cat)`. Both forms strip
+		// trailing newlines identically, which is the only `$(cat)` property the
+		// parity reasoning depends on.
 		`version_base="$(cat '${candidatePath(index)}')"\n` +
 		`${devenvGuard}\nprintf '%s' "$version_base"\n`;
 	const run = spawnSync("bash", ["-c", script], { encoding: "utf8" });

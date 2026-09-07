@@ -93,16 +93,29 @@ export const CANDIDATES: readonly {
 	// includes and ` \t\r\n` does not, so those two rows are what reds the gate
 	// if a lane reaches for a broader whitespace class.
 	//
-	// NARROWING needs a row per trim byte, positioned where that byte can
-	// actually reach the trim loop. The CR, tab and space rows cover their own
-	// bytes. LF needs its own row with the newline LEADING: the devenv lane
-	// seeds `version_base="$(cat ...)"`, and command substitution strips every
-	// TRAILING newline before the loop ever runs, so no trailing-LF row can
-	// carry an LF into it — drop LF from the trim set and every other row still
-	// agrees. A leading newline is the one position that survives `$(cat)`.
+	// NARROWING needs a row per trim byte PER ARM, positioned where that byte can
+	// actually reach the trim loop. devenv's loop is two independently editable
+	// arms — a leading `[$' \t\r\n']*)` and a trailing `*[$' \t\r\n'])` — and the
+	// realistic maintenance edit drops a byte from ONE of them, so a row that
+	// only exercises the trailing arm cannot witness the same byte leaving the
+	// leading arm. The space and tab rows are padded both sides and so cover
+	// both arms. CR and LF each need their own positioned row:
+	//
+	//   - CR reaches the leading arm only from a LEADING position. The `CRLF` and
+	//     `lone CR` rows carry CR trailing, and `CRLF only` is absorbed by the
+	//     empty-string check rather than the trim set, so none of them reds a
+	//     leading-arm CR drop.
+	//   - LF is the reverse, and the constraint is `$(cat)`: the devenv lane seeds
+	//     `version_base="$(cat ...)"`, and command substitution strips every
+	//     trailing newline before the loop runs. So a LEADING newline is what
+	//     reaches the leading arm, while reaching the TRAILING arm needs an LF
+	//     that is not last — an LF followed by another trim byte survives
+	//     `$(cat)` and lands on the trailing arm.
 	{ label: "leading vertical tab only", content: "\v0.1.0\n" },
 	{ label: "trailing form feed only", content: "0.1.0\f\n" },
 	{ label: "leading newline only", content: "\n0.1.0\n" },
+	{ label: "leading carriage return only", content: "\r0.1.0\n" },
+	{ label: "trailing newline before a space", content: "0.1.0\n \n" },
 	// Class-narrowing discriminator. Every other ACCEPTING row's surviving value
 	// is lowercase-or-digits, so dropping `A-Z` from either lane's class —
 	// `[0-9A-Za-z.+-]` -> `[0-9a-z.+-]`, a one-character edit — split the lanes

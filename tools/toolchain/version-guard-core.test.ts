@@ -201,10 +201,15 @@ describe("CANDIDATES", () => {
 		// each must stay a row of its own.
 		["leading vertical tab only", "\v0.1.0\n"],
 		["trailing form feed only", "0.1.0\f\n"],
-		// LF must be positioned LEADING: `$(cat)` strips trailing newlines before
-		// devenv's trim loop runs, so only a leading one can witness LF leaving
-		// the trim set.
+		// devenv's trim loop is two independently editable arms, so CR and LF each
+		// need the position that reaches the arm the other rows miss. LF: `$(cat)`
+		// strips trailing newlines, so a LEADING newline reaches the leading arm,
+		// and reaching the trailing arm needs an LF that is not last. CR: the
+		// CRLF/lone-CR rows are trailing-only, so a leading CR is what witnesses
+		// the leading arm.
 		["leading newline only", "\n0.1.0\n"],
+		["leading carriage return only", "\r0.1.0\n"],
+		["trailing newline before a space", "0.1.0\n \n"],
 		// The class-narrowing discriminator: every other accepting row's surviving
 		// value is lowercase-or-digits, so without an accepting uppercase value
 		// dropping `A-Z` from one lane's class splits the lanes silently.
