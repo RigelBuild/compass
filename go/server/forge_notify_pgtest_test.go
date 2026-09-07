@@ -180,7 +180,7 @@ func TestForgeNotifyRoutedAdvancesFetchCursorOnly(t *testing.T) {
 	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: forgeTestHost}
 	disp := &recordingDispatcher{}
 	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: forgeTestHost}
-	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, forgeRef, nil)
+	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, nil, forgeRef, nil)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{})
 
 	// Precondition: never observed → no fetch cursor, empty delivered_revision.
@@ -283,7 +283,7 @@ func TestForgeNotifyNoLiveSessionIsNonFatal(t *testing.T) {
 	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: forgeTestHost}
 	disp := &recordingDispatcher{noSession: true}
 	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: forgeTestHost}
-	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, forgeRef, nil)
+	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, nil, forgeRef, nil)
 
 	// The route must NOT fail: a per-subscriber dispatch error is logged and
 	// skipped, never propagated (design.md:233-243).
@@ -387,7 +387,7 @@ func TestLinearNotifyRoutedOpenedFansOutToProject(t *testing.T) {
 	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderLinear, host: host}
 	disp := &recordingDispatcher{}
 	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: host}
-	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, forgeRef, nil)
+	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, nil, forgeRef, nil)
 
 	if err := router.Route(ctx, linearOpenedEvent(repo, number, alpha, url)); err != nil {
 		t.Fatalf("Route: %v", err)

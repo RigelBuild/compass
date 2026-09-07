@@ -614,6 +614,15 @@ type ghCombinedStatus struct {
 	Statuses []ghStatus `json:"statuses"`
 }
 
+// ghCommitPull is one row of the commit->pulls association endpoint
+// (/repos/{repo}/commits/{sha}/pulls, "list pull requests associated with a
+// commit"). Only the fields the head_sha->number resolution needs are decoded:
+// the number it resolves to, and the state its tie-break prefers.
+type ghCommitPull struct {
+	Number uint64 `json:"number"`
+	State  string `json:"state"`
+}
+
 // Checks returns the rolled-up CI/status state for a PR head. It first resolves
 // the head SHA (a minimal pull-detail fetch), then delegates to checksForSHA.
 func (g *GitHub) Checks(ctx context.Context, repo string, number uint64) (Checks, error) {
