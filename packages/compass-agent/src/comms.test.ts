@@ -11,8 +11,8 @@
 // result out, and the captured request asserted verbatim.
 
 import { describe, expect, test } from "bun:test";
+import { ArkErrors, type Type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { ArkErrors, type Type } from "arktype";
 import {
 	CommsBroker,
 	type CommsTransport,
@@ -465,12 +465,12 @@ describe("comms parameter schemas", () => {
 	});
 
 	// The bound the model is SHOWN, not the one enforced behind it. A `.narrow`
-	// predicate has no JSON Schema representation, so arktype cannot emit it —
-	// and the harness supplies a fallback that degrades the un-emittable node to
-	// its base rather than throwing, so the model sees a bare string and learns
+	// predicate has no JSON Schema representation, so the schema lib cannot emit
+	// it — and the harness supplies a fallback that degrades the un-emittable node
+	// to its base rather than throwing, so the model sees a bare string and learns
 	// the rule only by being rejected. Asserting the DEGRADED OUTPUT, not a bare
-	// `toThrow()`: the harness never calls it bare, so a throw-assertion pins
-	// arktype's behaviour instead of this contract, and would stay green if the
+	// `toThrow()`: the harness never calls it bare, so a throw-assertion pins the
+	// schema lib's behaviour instead of this contract, and would stay green if the
 	// fallback ever started emitting the narrow — the one change that would
 	// actually make the descriptions redundant. The description is the only place
 	// a caller can read these rules, which is why each is asserted rather than
@@ -496,13 +496,48 @@ describe("comms parameter schemas", () => {
 			"omit entirely for your home channel",
 		);
 
-		// Contrast: an expressible bound survives as real schema, which is what
-		// the asymmetry looks like from the model's side. Read off the numeric
-		// branch — the optional field is a union with `undefined`, and that union,
-		// not the range, is what stops the whole-schema emit here.
-		expect(listParameters.get("limit").expression).toContain("<= 100");
-		expect(listParameters.get("limit").expression).toContain(">= 1");
+		// Contrast: an expressible bound is genuinely ENFORCED, which is what the
+		// asymmetry looks like from the model's side — the `.narrow` non-blank rules
+		// above are silently dropped, while this range actually rejects. Asserted by
+		// enforcement rather than by the schema lib's `.expression` rendering: the
+		// rendering is an introspection detail that differs between schema
+		// implementations (omptype renders this optional node as
+		// `number % 1 | undefined`, folding the range into the compiled check),
+		// whereas rejection IS the contract the model runs into.
+		expect(rejects(listParameters, { limit: 0 })).toBe(true);
+		expect(rejects(listParameters, { limit: 101 })).toBe(true);
+		expect(rejects(listParameters, { limit: 1 })).toBe(false);
+		expect(rejects(listParameters, { limit: 100 })).toBe(false);
 		expect(listParameters.get("limit").description).toContain("default 50");
+	});
+
+	// The rule text must reach the MODEL, not just the validator. This is the
+	// contract a reject/accept boolean cannot defend, and it is
+	// schema-implementation-sensitive: under omptype a `.describe()` SHADOWS the
+	// narrow's `ctx.mustBe(...)` reason in the emitted message (arktype appended
+	// it), so a rule that lives ONLY in the narrow reaches the model through no
+	// channel at all — not the JSON Schema (a `.narrow` has no JSON Schema form),
+	// and not the rejection text. The rejection message is what the harness feeds
+	// back to the model verbatim (`pi-ai/src/utils/validation.ts:1722` maps each
+	// issue to `path: message`), so it is the surface asserted here.
+	test("a violated narrow rule names the RULE in the message the model sees", () => {
+		// `instanceof ArkErrors` is the real narrowing (same idiom as `rejects`
+		// above): it proves the value carries `summary` rather than asserting it.
+		const summaryOf = (params: unknown): string => {
+			const out = postParameters(params);
+			if (!(out instanceof ArkErrors)) {
+				throw new Error("expected the schema to reject these params");
+			}
+			return out.summary;
+		};
+
+		// The violated bound itself, not merely the field's purpose.
+		expect(
+			summaryOf({ text: "hi", topic: "x".repeat(121), channel: "c" }),
+		).toContain("120");
+		expect(summaryOf({ text: "hi", topic: "t", channel: "   " })).toContain(
+			"blank",
+		);
 	});
 
 	// open_dm requires a non-blank peer_handle — the same `.narrow` idiom.
