@@ -518,6 +518,206 @@ describe("null ciTarget member does not make its group run", () => {
 	});
 });
 
+describe("always-run injection — the ledger gate runs on every PR", () => {
+	// Defends RIG-3441: design-ledger-gate's only dependency is a `scope: 'root'`
+	// edge, which `--downstream direct` does not traverse. A docs/designs/**-only
+	// PR therefore marks `root` (markdownlint globs every .md) and `flake-gate`
+	// affected — the bun leg ran, but it ran `root:ci`, never the gate guarding
+	// DECISIONS.md, on exactly the PRs most likely to violate it (duplicate
+	// DL-327..330 reached main).
+	//
+	// The target-vs-flag distinction is load-bearing: the fix injects a TARGET
+	// into the group's target list, not a leg-level boolean, because `run` is
+	// derived from `targets.length`. A flag would leave the gate unrun whenever
+	// its group had no other affected target — the same bug relocated. Hence
+	// every case below asserts `run === 'true'` AND the target's presence.
+	const GATE = "design-ledger-gate";
+	const GATE_TARGET = `${GATE}:ci`;
+
+	/** The canonical workspace plus the gate project (bun group), unmutated. */
+	function withGate(): ProjectInput[] {
+		return [...workspace(), proj(GATE, "bun")];
+	}
+
+	test("a ledger-only PR with an EMPTY affected closure still runs the gate", () => {
+		const out = generate(
+			prInput({
+				projects: withGate(),
+				affectedIds: [],
+				changedPaths: ["docs/designs/DECISIONS.md"],
+			}),
+		);
+		const bun = out.matrix.find((e) => e.group === "bun");
+		// The regression assertion: run:'true' with no affected member at all.
+		expect(bun?.run).toBe("true");
+		expect(bun?.targets).toContain(GATE_TARGET);
+	});
+
+	test("the PRODUCTION-shaped closure: root + flake-gate affected, gate injected", () => {
+		// The case that actually occurs on the target PR class. A
+		// docs/designs/**-only diff marks `root` and `flake-gate` affected, so
+		// the bun leg was already running `root:ci` — the gate simply was not in
+		// the closure. The empty-closure case above is KEPT alongside this one
+		// because it pins the strongest form of the contract (injection with no
+		// affected member at all); this one pins the shape production actually
+		// produces, where a plausible bug — injecting into the wrong group, or
+		// returning early once the group already has targets — would otherwise
+		// ship green.
+		const projects = [
+			...workspace(),
+			proj("root", "bun"),
+			proj("flake-gate", "nix"),
+			proj(GATE, "bun"),
+		];
+		const out = generate(
+			prInput({
+				projects,
+				affectedIds: ["root", "flake-gate"],
+				changedPaths: ["docs/designs/DECISIONS.md"],
+			}),
+		);
+		const bun = out.matrix.find((e) => e.group === "bun");
+		expect(bun?.run).toBe("true");
+		expect(bun?.targets).toEqual([GATE_TARGET, "root:ci"]);
+		expect(out.matrix.find((e) => e.group === "nix")?.run).toBe("true");
+	});
+
+	test("a gate with a null ciTarget injects nothing", () => {
+		// The guard that refuses to invent a target: a gate project with no `ci`
+		// task must not yield a bare `<id>:ci`, which would break the ci.yml
+		// invariant that a running leg has a runnable target.
+		const projects = [
+			...workspace(),
+			{ id: GATE, tags: ["ci-group.bun"], ciTarget: null },
+		];
+		const out = generate(
+			prInput({
+				projects,
+				affectedIds: [],
+				changedPaths: ["docs/designs/DECISIONS.md"],
+			}),
+		);
+		expect(out.matrix.find((e) => e.group === "bun")).toEqual({
+			group: "bun",
+			run: "false",
+			targets: [],
+		});
+	});
+
+	test("schedule full sweep: the target appears exactly once (no double)", () => {
+		// The injection guard is `event !== 'pull_request'`, so `schedule` must
+		// behave like `push`: the sweep already carries the target and the
+		// injection must not double it.
+		const projects = withGate();
+		const out = generate({
+			projects,
+			affectedIds: projects.map((p) => p.id),
+			changedPaths: [],
+			event: "schedule",
+		});
+		const bun = out.matrix.find((e) => e.group === "bun");
+		expect(bun?.targets.filter((t) => t === GATE_TARGET).length).toBe(1);
+	});
+
+	test("the injection FOLLOWS a retag: a go-tagged gate lands in go", () => {
+		// The group comes from the project data, never a literal, so retagging
+		// the gate moves the injection with it and leaves the old group alone.
+		const out = generate(
+			prInput({
+				projects: [...workspace(), proj(GATE, "go")],
+				affectedIds: [],
+				changedPaths: ["docs/designs/DECISIONS.md"],
+			}),
+		);
+		expect(out.matrix.find((e) => e.group === "go")).toEqual({
+			group: "go",
+			run: "true",
+			targets: [GATE_TARGET],
+		});
+		expect(out.matrix.find((e) => e.group === "bun")).toEqual({
+			group: "bun",
+			run: "false",
+			targets: [],
+		});
+	});
+
+	test("the injected target alone makes its group run", () => {
+		const out = generate(
+			prInput({ projects: withGate(), affectedIds: ["compass-go"] }),
+		);
+		const bun = out.matrix.find((e) => e.group === "bun");
+		// No bun member is affected; only the injection is present.
+		expect(bun?.run).toBe("true");
+		expect(bun?.targets).toEqual([GATE_TARGET]);
+	});
+
+	test("dedupe: an affected gate yields exactly one occurrence", () => {
+		const out = generate(
+			prInput({ projects: withGate(), affectedIds: [GATE] }),
+		);
+		const bun = out.matrix.find((e) => e.group === "bun");
+		expect(bun?.run).toBe("true");
+		expect(bun?.targets.filter((t) => t === GATE_TARGET).length).toBe(1);
+	});
+
+	test("push full sweep: the target appears exactly once (no double)", () => {
+		const projects = withGate();
+		const out = generate({
+			projects,
+			affectedIds: projects.map((p) => p.id),
+			changedPaths: [],
+			event: "push",
+		});
+		const bun = out.matrix.find((e) => e.group === "bun");
+		expect(bun?.targets.filter((t) => t === GATE_TARGET).length).toBe(1);
+	});
+
+	test("the injection perturbs no other group", () => {
+		const out = generate(
+			prInput({ projects: withGate(), affectedIds: ["compass-go"] }),
+		);
+		expect(out.matrix.find((e) => e.group === "go")).toEqual({
+			group: "go",
+			run: "true",
+			targets: ["compass-go:ci"],
+		});
+		expect(out.matrix.find((e) => e.group === "nix")).toEqual({
+			group: "nix",
+			run: "false",
+			targets: [],
+		});
+	});
+
+	test("gate project absent from projects: output unchanged (no phantom)", () => {
+		// The stock workspace() fixture has no gate project. The pure core must
+		// not invent a target for a project that does not exist.
+		const out = generate(
+			prInput({ affectedIds: [], changedPaths: ["docs/designs/DECISIONS.md"] }),
+		);
+		expect(out.matrix).toEqual([
+			{ group: "bun", run: "false", targets: [] },
+			{ group: "forks", run: "false", targets: [] },
+			{ group: "go", run: "false", targets: [] },
+			{ group: "nix", run: "false", targets: [] },
+		]);
+	});
+
+	test("determinism: targets stay sorted with the injected member present", () => {
+		const out = generate(
+			prInput({
+				projects: withGate(),
+				affectedIds: ["ci-matrix", "compass-agent"],
+			}),
+		);
+		const bun = out.matrix.find((e) => e.group === "bun");
+		expect(bun?.targets).toEqual([
+			"ci-matrix:ci",
+			"compass-agent:ci",
+			GATE_TARGET,
+		]);
+	});
+});
+
 describe("empty affected closure — matrix still non-empty (fromJSON safe)", () => {
 	test("a docs-only PR touching no grouped project yields all placeholders", () => {
 		const out = generate(
