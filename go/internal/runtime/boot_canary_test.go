@@ -17,18 +17,18 @@ package runtime
 // 0, so BootCanary's echo-nonce round-trip check passes without a real guest.
 
 import (
+	"connectrpc.com/connect"
 	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -424,21 +424,27 @@ func TestBootCanaryPartialPSSStillReported(t *testing.T) {
 	assertNoTempLeak(t, before)
 }
 
+// TestBootCanaryTeardownErrorJoined pins shutdown-error composition: a canary
+// that otherwise succeeds must still invoke VM shutdown, empty the session
+// table, and retain the shutdown error when teardown fails (record §(e)).
 func TestBootCanaryTeardownErrorJoined(t *testing.T) {
 	before := canaryTempDirs(t)
 	m, rec, _ := seamCanary(t, nil)
 	wantErr := errors.New("boom: vmm refused to die")
 	rec.shutdownErr = wantErr
 
-	_, err := m.BootCanary(t.Context())
+	report, err := m.BootCanary(t.Context())
 	if err == nil {
 		t.Fatal("BootCanary = nil, want shutdown failure")
 	}
 	if !errors.Is(err, wantErr) {
 		t.Errorf("BootCanary error %q does not contain shutdown failure", err)
 	}
+	if report.BootLatency <= 0 {
+		t.Errorf("BootLatency = %v, want > 0 after a successful canary", report.BootLatency)
+	}
 	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
-		t.Error("canary VM was not shut down after a successful canary")
+		t.Error("canary VM was not shut down despite the shutdown error")
 	}
 	if n := sessionCount(m); n != 0 {
 		t.Errorf("session table has %d entries after BootCanary, want 0", n)
@@ -446,19 +452,78 @@ func TestBootCanaryTeardownErrorJoined(t *testing.T) {
 	assertNoTempLeak(t, before)
 }
 
+// TestBootCanaryWorkspaceCleanupErrorJoined pins throwaway-workspace cleanup
+// error composition: an otherwise healthy canary must pass the exec gate and
+// retain the permission failure from removing its workspace (record §(e)).
 func TestBootCanaryWorkspaceCleanupErrorJoined(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the 0500 permission seam this test relies on (CAP_DAC_OVERRIDE)")
+	}
 	m, rec, _ := seamCanary(t, nil)
 	rec.breakWorkspaceRemoval = true
 	rec.workspaceCleanup = func(path string) {
-		t.Cleanup(func() { _ = os.Chmod(path, 0o700) })
+		t.Cleanup(func() {
+			if err := os.Chmod(path, 0o700); err != nil {
+				t.Errorf("restoring workspace permissions: %v", err)
+			}
+			if err := os.RemoveAll(filepath.Dir(path)); err != nil {
+				t.Errorf("removing workspace parent: %v", err)
+			}
+		})
+	}
+
+	report, err := m.BootCanary(t.Context())
+	if err == nil {
+		t.Fatal("BootCanary = nil, want throwaway workspace cleanup failure")
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("BootCanary error %q does not contain permission failure", err)
+	}
+	if !strings.Contains(err.Error(), "removing throwaway workspace") {
+		t.Errorf("BootCanary error %q does not name throwaway workspace cleanup failure", err)
+	}
+	if report.BootLatency <= 0 {
+		t.Errorf("BootLatency = %v, want > 0 after a successful canary", report.BootLatency)
+	}
+	if len(rec.vms) != 1 || !rec.vms[0].wasShutdown() {
+		t.Error("canary VM was not shut down after workspace cleanup failure")
+	}
+	if n := sessionCount(m); n != 0 {
+		t.Errorf("session table has %d entries after BootCanary, want 0", n)
+	}
+}
+
+// TestBootCanaryCleanupAndTeardownErrorsJoined pins composition of both
+// cleanup joins: one call must retain independent shutdown and permission
+// failures rather than overwrite either error (record §(e)).
+func TestBootCanaryCleanupAndTeardownErrorsJoined(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the 0500 permission seam this test relies on (CAP_DAC_OVERRIDE)")
+	}
+	m, rec, _ := seamCanary(t, nil)
+	wantErr := errors.New("boom: vmm refused to die")
+	rec.shutdownErr = wantErr
+	rec.breakWorkspaceRemoval = true
+	rec.workspaceCleanup = func(path string) {
+		t.Cleanup(func() {
+			if err := os.Chmod(path, 0o700); err != nil {
+				t.Errorf("restoring workspace permissions: %v", err)
+			}
+			if err := os.RemoveAll(filepath.Dir(path)); err != nil {
+				t.Errorf("removing workspace parent: %v", err)
+			}
+		})
 	}
 
 	_, err := m.BootCanary(t.Context())
 	if err == nil {
-		t.Fatal("BootCanary = nil, want throwaway workspace cleanup failure")
+		t.Fatal("BootCanary = nil, want joined cleanup and shutdown failures")
 	}
-	if !strings.Contains(err.Error(), "removing throwaway workspace") {
-		t.Errorf("BootCanary error %q does not name throwaway workspace cleanup failure", err)
+	if !errors.Is(err, wantErr) {
+		t.Errorf("BootCanary error %q does not contain shutdown failure", err)
+	}
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("BootCanary error %q does not contain permission failure", err)
 	}
 }
 
