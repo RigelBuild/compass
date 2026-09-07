@@ -54,14 +54,16 @@ func TestLaunchFailClosedTeardown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolving sleep on PATH (the fakes need it to stay alive): %v", err)
 	}
-	// virtiofsd: record pid, touch its --socket-path=, then stay alive.
-	writeFake(t, bin, "virtiofsd", `echo $$ > `+vfsPidFile+`
-for a in "$@"; do case "$a" in --socket-path=*) : > "${a#--socket-path=}";; esac; done
-`+sleepBin+` 30`)
-	// passt: record pid, touch the path following --socket, then stay alive.
-	writeFake(t, bin, "passt", `echo $$ > `+passtPidFile+`
-p=""; for a in "$@"; do [ "$p" = --socket ] && : > "$a"; p="$a"; done
-`+sleepBin+` 30`)
+	// Both fakes record their pid, touch the socket launch waits on, then stay
+	// alive as `sleep`. longLivedFakeBody owns the `exec` that makes the
+	// recorded pid name the surviving process rather than a shell parenting it;
+	// see its doc for why that is load-bearing rather than style.
+	writeFake(t, bin, "virtiofsd", longLivedFakeBody(vfsPidFile,
+		`for a in "$@"; do case "$a" in --socket-path=*) : > "${a#--socket-path=}";; esac; done`,
+		sleepBin, "30"))
+	writeFake(t, bin, "passt", longLivedFakeBody(passtPidFile,
+		`p=""; for a in "$@"; do [ "$p" = --socket ] && : > "$a"; p="$a"; done`,
+		sleepBin, "30"))
 	// cloud-hypervisor deliberately absent → LookPath fails after aux are up.
 	t.Setenv("PATH", bin)
 
@@ -88,19 +90,61 @@ p=""; for a in "$@"; do [ "$p" = --socket ] && : > "$a"; p="$a"; done
 	// no-orphan assertion below would pass vacuously. This control is what
 	// caught RIG-3480: it fired on 39/40 runs of the merge result while the
 	// assertion it guards stayed green.
-	if !strings.Contains(err.Error(), "cloud-hypervisor") {
+	//
+	// Match the lookup's own wording, not the bare binary name: the
+	// exited-before-start check that runs between waitForSockets and the lookup
+	// also embeds "cloud-hypervisor" in its message, so a bare-name match would
+	// admit precisely the dead-daemon case this control exists to reject.
+	if !strings.Contains(err.Error(), "resolving cloud-hypervisor on PATH") {
 		t.Fatalf("launch failed before the cloud-hypervisor lookup (%v); the aux daemons never came up, "+
 			"so the no-orphan assertion below would be vacuous", err)
 	}
 
 	// The daemons launch already started must have been reaped by the deferred
-	// cleanup — no orphan left sleeping. Shutdown's reap Waits each child, so by
-	// the time Launch has returned this is a settled fact, not a race to poll.
+	// cleanup — no orphan left sleeping. Shutdown's reap blocks on each child's
+	// reaper channel before returning (it does NOT Wait — startChild's sole
+	// reaper owns the single cmd.Wait), so by the time Launch has returned this
+	// is a settled fact, not a race to poll.
 	for name, pidFile := range map[string]string{"virtiofsd": vfsPidFile, "passt": passtPidFile} {
 		pid := readPidFile(t, pidFile)
 		if pidAlive(pid) {
 			t.Errorf("%s (pid %d) still alive after fail-closed launch — teardown orphaned it", name, pid)
 		}
+	}
+}
+
+// longLivedFakeBody builds the body of a shell stub that records its pid, runs
+// setup, and then STAYS ALIVE as the given command.
+//
+// The `exec` is the point of this helper and is why the tail is not written by
+// hand at the callsites. Without it /bin/sh forks the tail and lives on as its
+// parent, so `echo $$` records the SHELL: teardown's SIGTERM then kills the
+// recorded pid, a no-orphan assertion keyed on that pid passes, and the tail is
+// reparented to init and survives its full lifetime. Measured at +10 leaked
+// processes per -count=5 run of TestLaunchFailClosedTeardown before the exec
+// was added, 0 after. Keeping the spelling in one place means a future edit
+// cannot reintroduce that leak by dropping a keyword from a string literal.
+func longLivedFakeBody(pidFile, setup, tailBin string, tailArgs ...string) string {
+	tail := strings.Join(append([]string{tailBin}, tailArgs...), " ")
+	return "echo $$ > " + pidFile + "\n" + setup + "\nexec " + tail
+}
+
+// TestLongLivedFakeBodyExecsItsTail pins the property above at the point it is
+// decided. Asserting it on a running stub is not possible without a poll: the
+// only observable difference is /proc/<pid>/comm after the exec, and there is
+// no happens-before edge to that moment — a readiness signal the stub emits
+// necessarily precedes its own exec. So the invariant is checked where it is
+// actually established, in the string every fake is built from.
+func TestLongLivedFakeBodyExecsItsTail(t *testing.T) {
+	body := longLivedFakeBody("/tmp/x.pid", ": > /tmp/sock", "/bin/sleep", "30")
+	lines := strings.Split(body, "\n")
+	tail := lines[len(lines)-1]
+	if !strings.HasPrefix(tail, "exec ") {
+		t.Errorf("stub tail is %q, want an `exec ` prefix — without it the shell forks the tail and "+
+			"teardown cannot reach the process that stays alive", tail)
+	}
+	if !strings.HasPrefix(body, "echo $$ > /tmp/x.pid\n") {
+		t.Errorf("stub must record its pid first, got %q", body)
 	}
 }
 
