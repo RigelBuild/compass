@@ -34,16 +34,35 @@
 # affected members' `:ci` targets (an unaffected group's leg no-ops) plus a
 # per-special-leg affected flag (pgtest/microvm/forge/gtk4), so a Go, UI, or
 # docs PR never pays for the vendored forks' nix builds (the dominant cost, and
-# the reason the forks leg's timeout is 90m). The tradeoff is real and named:
-# affected detection trusts each task's `inputs` globs to be complete, so an
-# inputs glob that misses a file would skip a task that should have run. The
-# backstop is that main is never gated by affected: every push to main AND a
-# nightly `schedule` run the FULL set — every group, every special leg, no
-# filter (setup emits every group with run:true and every flag true). So an
-# inputs gap a PR skipped is caught the moment the change lands on main (named
-# and attributable), not left to hide; the nightly sweep re-checks main even on
-# a quiet day. Fast affected path on PRs, exhaustive sweep on everything that
-# reaches main.
+# the reason the forks leg's timeout is 90m). The tradeoff is real and named,
+# and it has TWO failure modes, not one: affected detection trusts each task's
+# `inputs` globs to be complete, so an inputs glob that misses a file would
+# skip a task that should have run; and it trusts the affected CLOSURE to
+# select the project at all, so a project the closure never reaches is skipped
+# however correct its globs are (a project depending only on `root:root` is
+# never selected — a scope moon does not traverse). The ledger gate was the
+# live instance of the second mode: on a docs/designs/**-only PR the closure is
+# NOT empty (it marks `root`, whose markdownlint inputs glob every .md, and
+# `flake-gate` with it), so the bun leg ran — but it ran `root:ci`, and the
+# gate, whose only edge is a `scope: 'root'` one `--downstream direct` never
+# traverses, was not in the closure. The gate governing docs/designs/
+# DECISIONS.md therefore never ran on the PRs most likely to violate it. It is
+# therefore now injected into its group's targets unconditionally on every PR
+# (RIG-3441) — the injected target is `design-ledger-gate:ci` (typecheck +
+# test + check, ~1s; `check` is uncached and so truly diff-independent, the
+# other two are cached and vary with the diff; `ci` itself is uncached but its
+# command is a noop, so it aggregates deps rather than doing work), about a
+# second against a 90m ceiling. The
+# named cost: on a PR whose affected closure is genuinely empty (a
+# .github/**-only or .gitignore-only change) the bun leg now bootstraps where
+# it previously no-op'd, trading a few runner-minutes on that PR class for
+# closing the fail-open. The backstop is that main is never gated by affected:
+# every push to main AND a nightly `schedule` run the FULL set — every group,
+# every special leg, no filter (setup emits every group with run:true and every
+# flag true). So an inputs gap a PR skipped is caught the moment the change
+# lands on main (named and attributable), not left to hide; the nightly sweep
+# re-checks main even on a quiet day. Fast affected path on PRs, exhaustive
+# sweep on everything that reaches main.
 #
 # pgtest — the real-Postgres suites — runs as its own peer job (below), behind
 # the `rollup` check, rather than as a step in the moon battery. It was peeled out
@@ -379,15 +398,16 @@ jobs:
         if: matrix.run == 'true'
         # `moon run <targets>`, NOT `moon ci`: setup already computed the affected
         # set and this leg's `matrix.targets` are exactly the affected members'
-        # `:ci` targets for this group (full set on push/schedule). Re-running
-        # `moon ci` here would recompute affected — redundant on a PR and, on a
-        # push where GITHUB_BASE_REF is unset, an empty-diff no-op that runs
-        # nothing. Passing the precomputed targets keeps discovery in one place
-        # (setup) and makes each leg run exactly its share. `matrix.targets` is a
-        # JSON array; `join(...)` renders it as the space-separated argument list
-        # `moon run` expects (a bare `${{ matrix.targets }}` would inline the raw
-        # JSON, not a target list). A running leg always has >=1 target, so this
-        # is never an empty `moon run`.
+        # `:ci` targets for this group, plus the always-run ledger gate on a PR
+        # (full set on push/schedule). Re-running `moon ci` here would recompute
+        # affected — redundant on a PR and, on a push where GITHUB_BASE_REF is
+        # unset, an empty-diff no-op that runs nothing. Passing the precomputed
+        # targets keeps discovery in one place (setup) and makes each leg run
+        # exactly its share. `matrix.targets` is a JSON array; `join(...)`
+        # renders it as the space-separated argument list `moon run` expects (a
+        # bare `${{ matrix.targets }}` would inline the raw JSON, not a target
+        # list). A running leg always has >=1 target, so this is never an empty
+        # `moon run`.
         run: moon run ${{ join(matrix.targets, ' ') }}
 
       - name: Retrospect
