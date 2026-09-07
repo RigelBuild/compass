@@ -97,7 +97,7 @@ func TestForgeWriteAppsGate(t *testing.T) {
 		App:         ForgeAppConfig{AppID: 1, InstallationID: 2, AppPrivateKeySecret: "PRIMARY_KEY", AppWebhookSecretName: "WH"},
 		ReviewerApp: ForgeAppConfig{AppID: 3, InstallationID: 4, AppPrivateKeySecret: "REVIEWER_KEY"},
 	}
-	bothDeclared := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}, {Name: "REVIEWER_KEY"}}
+	bothDeclared := []secrets.ResolvedSecret{{Name: serverSecretName("PRIMARY_KEY")}, {Name: serverSecretName("REVIEWER_KEY")}}
 
 	t.Run("both Apps configured + both keys declared -> writes enabled", func(t *testing.T) {
 		if !bothApps.forgeWritesEnabled(bothDeclared) {
@@ -119,7 +119,7 @@ func TestForgeWriteAppsGate(t *testing.T) {
 	t.Run("both App ids set but a key secret undeclared -> writes disabled", func(t *testing.T) {
 		// The reviewer key is missing from the declared set: configured means
 		// AppID != 0 AND key declared, so this is a partial (disabled) state.
-		onlyPrimaryKey := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}}
+		onlyPrimaryKey := []secrets.ResolvedSecret{{Name: serverSecretName("PRIMARY_KEY")}}
 		if bothApps.forgeWritesEnabled(onlyPrimaryKey) {
 			t.Fatal("a configured reviewer App with its key undeclared must NOT enable writes")
 		}
@@ -175,7 +175,10 @@ func TestBuildLinearNotifyLaneGate(t *testing.T) {
 func TestBuildLinearTokenSourceGate(t *testing.T) {
 	ctx := context.Background() // test root
 	cfg := ServeConfig{}        // Forge zero -> resolved() defaults the two client-cred names.
-	idName, secretName := defaultForgeLinearClientIDSecretName, defaultForgeLinearClientSecretName
+	// The RESOLVED names carry the server prefix (the six forge secrets live in
+	// server_secrets); the config still names them unprefixed, which is what the
+	// operator sets and what the partial-config Warn must report.
+	idName, secretName := serverSecretName(defaultForgeLinearClientIDSecretName), serverSecretName(defaultForgeLinearClientSecretName)
 
 	t.Run("neither secret declared -> nil source (off-state), no Warn", func(t *testing.T) {
 		h := &capWarnHandler{}
@@ -214,11 +217,16 @@ func TestBuildLinearTokenSourceGate(t *testing.T) {
 		if h.warns != 1 {
 			t.Fatalf("Warn count = %d, want exactly 1 on a partial (id-only) misconfig", h.warns)
 		}
-		if h.lastAttr["declared"] != idName {
-			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], idName)
+		// The Warn names the OPERATOR-FACING (unprefixed) secret, not the
+		// prefixed name the resolver matched: the operator configures
+		// LINEAR_FORGE_CLIENT_ID and must be told about that name.
+		if h.lastAttr["declared"] != defaultForgeLinearClientIDSecretName {
+			t.Fatalf("declared attr = %q, want the unprefixed %q",
+				h.lastAttr["declared"], defaultForgeLinearClientIDSecretName)
 		}
-		if h.lastAttr["missing"] != secretName {
-			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], secretName)
+		if h.lastAttr["missing"] != defaultForgeLinearClientSecretName {
+			t.Fatalf("missing attr = %q, want the unprefixed %q",
+				h.lastAttr["missing"], defaultForgeLinearClientSecretName)
 		}
 	})
 
@@ -235,11 +243,13 @@ func TestBuildLinearTokenSourceGate(t *testing.T) {
 		if h.warns != 1 {
 			t.Fatalf("Warn count = %d, want exactly 1 on a partial (secret-only) misconfig", h.warns)
 		}
-		if h.lastAttr["declared"] != secretName {
-			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], secretName)
+		if h.lastAttr["declared"] != defaultForgeLinearClientSecretName {
+			t.Fatalf("declared attr = %q, want the unprefixed %q",
+				h.lastAttr["declared"], defaultForgeLinearClientSecretName)
 		}
-		if h.lastAttr["missing"] != idName {
-			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], idName)
+		if h.lastAttr["missing"] != defaultForgeLinearClientIDSecretName {
+			t.Fatalf("missing attr = %q, want the unprefixed %q",
+				h.lastAttr["missing"], defaultForgeLinearClientIDSecretName)
 		}
 	})
 }
@@ -288,7 +298,7 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 	})
 
 	t.Run("name present -> nil", func(t *testing.T) {
-		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "APP_KEY", Value: "x"}}}
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("APP_KEY"), Value: "x"}}}
 		if err := validateForgeSecret(ctx, res, "forge write", "APP_KEY"); err != nil {
 			t.Fatalf("validateForgeSecret with the name present = %v, want nil", err)
 		}
@@ -328,9 +338,9 @@ func (h *capWarnHandler) WithGroup(string) slog.Handler      { return h }
 func TestWarnPartialForgeWriteSecrets(t *testing.T) {
 	primary := ForgeAppConfig{AppID: 1, InstallationID: 2, AppPrivateKeySecret: "PRIMARY_KEY"}
 	reviewer := ForgeAppConfig{AppID: 3, InstallationID: 4, AppPrivateKeySecret: "REVIEWER_KEY"}
-	primaryDeclared := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}}
-	reviewerDeclared := []secrets.ResolvedSecret{{Name: "REVIEWER_KEY"}}
-	bothDeclared := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}, {Name: "REVIEWER_KEY"}}
+	primaryDeclared := []secrets.ResolvedSecret{{Name: serverSecretName("PRIMARY_KEY")}}
+	reviewerDeclared := []secrets.ResolvedSecret{{Name: serverSecretName("REVIEWER_KEY")}}
+	bothDeclared := []secrets.ResolvedSecret{{Name: serverSecretName("PRIMARY_KEY")}, {Name: serverSecretName("REVIEWER_KEY")}}
 
 	t.Run("primary-App-only -> one Warn naming configured+missing", func(t *testing.T) {
 		h := &capWarnHandler{}
@@ -406,7 +416,7 @@ func TestNormalizeGitHubRepo(t *testing.T) {
 // secretspec provider Load) per request. Within the TTL a garbage flood costs at
 // most one resolve; a rotated secret still takes over after the TTL.
 func TestCachedWebhookSecretCachesUntilTTL(t *testing.T) {
-	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "WEBHOOK_SECRET", Value: "sec-1"}}}
+	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("WEBHOOK_SECRET"), Value: "sec-1"}}}
 	c := &cachedWebhookSecret{base: newDeclaredSecretResolver(res, "WEBHOOK_SECRET"), ttl: time.Minute}
 	now := time.Unix(0, 0)
 	c.now = func() time.Time { return now }
@@ -461,5 +471,159 @@ func TestCachedWebhookSecretDoesNotCacheErrors(t *testing.T) {
 	}
 	if res.calls != 2 {
 		t.Fatalf("resolve calls = %d, want 2 (errors are never cached)", res.calls)
+	}
+}
+
+// TestServerSecretNameInvariant pins the two halves of the resolve-side naming
+// rule that the T0 consumer re-point turns on. Both directions are silent when
+// broken, which is why each gets an explicit assertion rather than being left
+// to the callers' correctness.
+func TestServerSecretNameInvariant(t *testing.T) {
+	t.Run("an unset name stays unset, not a bare prefix", func(t *testing.T) {
+		// A zero App key-secret name means "not configured". Mapping it to
+		// "SERVER_" would make secretDeclared compare against a real-looking
+		// name and could match a secret literally called SERVER_.
+		if got := serverSecretName(""); got != "" {
+			t.Fatalf("serverSecretName(\"\") = %q, want empty", got)
+		}
+	})
+
+	t.Run("write-Apps gate matches only the PREFIXED resolved name", func(t *testing.T) {
+		cfg := ForgeConfig{
+			App:         ForgeAppConfig{AppID: 1, InstallationID: 2, AppPrivateKeySecret: "PRIMARY_KEY"},
+			ReviewerApp: ForgeAppConfig{AppID: 3, InstallationID: 4, AppPrivateKeySecret: "REVIEWER_KEY"},
+		}
+
+		// This is failure mode (c): the UNPREFIXED resolved set is what a
+		// half-done re-point leaves behind. Both predicates must read false,
+		// and — the dangerous part — warnPartialForgeWriteSecrets stays SILENT
+		// because both-absent looks like "writes deliberately off", so nothing
+		// in the logs would reveal that forge writes died fleet-wide.
+		unprefixed := []secrets.ResolvedSecret{{Name: "PRIMARY_KEY"}, {Name: "REVIEWER_KEY"}}
+		if havePrimary, haveReviewer := cfg.forgeWriteAppsConfigured(unprefixed); havePrimary || haveReviewer {
+			t.Fatalf("unprefixed resolved set matched the write-Apps gate (primary=%v reviewer=%v); the comparison is not wrapped",
+				havePrimary, haveReviewer)
+		}
+		if cfg.forgeWritesEnabled(unprefixed) {
+			t.Fatal("forge writes enabled off an unprefixed resolved set")
+		}
+
+		// And the positive arm: the prefixed set is what the SERVER resolver
+		// actually returns, and it must enable the write path.
+		prefixed := []secrets.ResolvedSecret{
+			{Name: serverSecretName("PRIMARY_KEY")},
+			{Name: serverSecretName("REVIEWER_KEY")},
+		}
+		havePrimary, haveReviewer := cfg.forgeWriteAppsConfigured(prefixed)
+		if !havePrimary || !haveReviewer {
+			t.Fatalf("prefixed resolved set did NOT satisfy the write-Apps gate (primary=%v reviewer=%v)",
+				havePrimary, haveReviewer)
+		}
+		if !cfg.forgeWritesEnabled(prefixed) {
+			t.Fatal("forge writes disabled despite both prefixed App keys resolved")
+		}
+	})
+
+	t.Run("validateForgeSecret compares prefixed but reports unprefixed", func(t *testing.T) {
+		ctx := context.Background()
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("APP_KEY"), Value: "x"}}}
+		if err := validateForgeSecret(ctx, res, "forge write", "APP_KEY"); err != nil {
+			t.Fatalf("prefixed resolved name not accepted: %v", err)
+		}
+
+		// The error must name BOTH: the unprefixed name the operator set (so
+		// they can find it in their config) and the prefixed provider key they
+		// must populate. The record requires the actionable
+		// "set SERVER_<NAME> in the provider" form.
+		absent := validateForgeSecret(ctx, &fakeResolver{}, "forge write", "APP_KEY")
+		if absent == nil {
+			t.Fatal("absent secret accepted")
+		}
+		got := absent.Error()
+		if !strings.Contains(got, `"APP_KEY"`) {
+			t.Fatalf("error = %q, want it to name the unprefixed APP_KEY the operator configured", got)
+		}
+		if !strings.Contains(got, serverSecretName("APP_KEY")) {
+			t.Fatalf("error = %q, want it to name the %s provider key to set", got, serverSecretName("APP_KEY"))
+		}
+	})
+
+	t.Run("forgeSecretDeclared matches only the prefixed name", func(t *testing.T) {
+		ctx := context.Background()
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("LWH")}}}
+		got, err := forgeSecretDeclared(ctx, res, "LWH")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got {
+			t.Fatal("prefixed resolved name not seen as declared")
+		}
+
+		// Failure mode (b): an unprefixed resolved set reads as "not declared",
+		// which buildLinearWebhookWiring maps to a legitimate off-state — the
+		// webhook silently unmounts instead of erroring.
+		stale := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "LWH"}}}
+		if got, err := forgeSecretDeclared(ctx, stale, "LWH"); err != nil || got {
+			t.Fatalf("unprefixed name matched (got=%v err=%v); the comparison is not wrapped", got, err)
+		}
+	})
+}
+
+// TestBuildDoorsRoutesEachResolverToItsOwnConsumer covers the OTHER seam of the
+// re-point: which resolver INSTANCE each consumer receives. The name-wrapping
+// tests above would all stay green if Serve threaded the container resolver
+// where the server one belongs, so this asserts the routing directly by giving
+// the two instances DISTINGUISHABLE sets and observing which one was read.
+//
+// Getting this backwards is the severe direction: pointing the container
+// FetchSecrets path at server_secrets delivers every deployment secret into
+// every agent container.
+func TestBuildDoorsRoutesEachResolverToItsOwnConsumer(t *testing.T) {
+	ctx := context.Background()
+
+	// Only the SERVER instance carries the Linear webhook secret; only the
+	// container instance carries a user secret. Neither set overlaps.
+	container := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "USER_ONLY", Value: "u"}}}
+	server := &fakeResolver{resolved: []secrets.ResolvedSecret{
+		{Name: serverSecretName("LWH"), Value: "shh"},
+	}}
+
+	cfg := ServeConfig{Forge: ForgeConfig{LinearWebhookSecretName: "LWH"}}
+
+	// buildLinearWebhookWiring is the consumer buildDoors routes the SERVER
+	// instance to. Fed the server set it mounts a handler; fed the container
+	// set it silently returns the off-state, which is failure mode (b).
+	handler, err := buildLinearWebhookWiring(ctx, cfg, server, &recordingSink{}, nil)
+	if err != nil {
+		t.Fatalf("buildLinearWebhookWiring(server): %v", err)
+	}
+	if handler == nil {
+		t.Fatal("server resolver did not mount the Linear webhook handler")
+	}
+
+	offHandler, err := buildLinearWebhookWiring(ctx, cfg, container, &recordingSink{}, nil)
+	if err != nil {
+		t.Fatalf("buildLinearWebhookWiring(container): %v", err)
+	}
+	if offHandler != nil {
+		t.Fatal("container resolver mounted the Linear webhook handler; the secret is not in the user registry, so this can only mean the wrong instance would work by accident")
+	}
+
+	// And the container instance must still be the one that can see a USER
+	// secret — proof the two sets are genuinely distinguishable rather than
+	// both empty, which would make the assertions above vacuous.
+	userDeclared, err := container.Resolve(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secretDeclared(userDeclared, "USER_ONLY") {
+		t.Fatal("container fake does not carry USER_ONLY; the fixtures are not distinguishable")
+	}
+	serverDeclared, err := server.Resolve(ctx, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secretDeclared(serverDeclared, "USER_ONLY") {
+		t.Fatal("server fake carries the user secret; the fixtures overlap")
 	}
 }
