@@ -492,6 +492,47 @@ CREATE INDEX agent_placements_runner_idx ON agent_placements (runner_id);
 -- owner.
 CREATE UNIQUE INDEX agent_placements_container_key ON agent_placements (container_name);
 
+-- Session bindings (RIG-3108 / RIG-2861 §T4): the DURABLE (session -> agent
+-- account, Runner) binding the RunnerHub has so far held only in RAM. Placement
+-- (above) is where an agent RUNS; a binding is which LIVE session speaks for it,
+-- so the two are siblings and neither is authorization: SubscribeAgentSession
+-- still authorizes through agent_sessions -> agent_accounts -> channel_members
+-- and never reads this table.
+--
+-- PK on session_id, not a surrogate: a session id names exactly one binding, and
+-- that is also the accountForSession read direction the relay resolves on every
+-- inbound comms call.
+--
+-- runner_id is deliberately NOT a FK, for the same reason agent_placements'
+-- isn't: Runners are enrolled in memory under a token subject with no runners
+-- table to reference. It stays NOT NULL — a binding with no Runner cannot be
+-- swept by the reconnect sweep below, and an unswept binding is a stale session
+-- that outlives its Runner.
+CREATE TABLE session_bindings (
+    session_id       TEXT PRIMARY KEY,
+    agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    runner_id        TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE)
+);
+
+-- The REVERSE lookup (SessionForAccount, runnerhub/relay_comms.go:179-184): the
+-- delivery consumer holds a resolved subscriber account and needs the live
+-- session to dispatch to. UNIQUE because the in-RAM accountSessions map it
+-- replaces is 1:1 — an account has AT MOST ONE live session — so this index
+-- makes a second concurrent session for one account UNREPRESENTABLE rather than
+-- merely unlikely. A rebind of an account onto a NEW session id therefore raises
+-- a unique violation (mapped to ErrConflict) instead of silently double-binding
+-- and letting one account's deliveries split across two sessions.
+CREATE UNIQUE INDEX session_bindings_account_key ON session_bindings (agent_account_id);
+
+-- The reconnect sweep deletes every binding of a re-enrolling Runner
+-- (DeleteSessionBindingsForRunner), so runner_id is the read direction that
+-- needs an index — the same direction, and the same reason, as
+-- agent_placements_runner_idx above. Non-unique: one Runner holds many sessions.
+CREATE INDEX session_bindings_runner_idx ON session_bindings (runner_id);
+
 -- ── Agent session transcripts (two-tier store) ───────────────────────────────
 -- The durable TWO-TIER transcript store (RIG-1667 T4): a Postgres HOT TAIL
 -- holding [latest checkpoint .. now] = the normal resume set, plus a manifest of
@@ -941,7 +982,7 @@ DECLARE
         'user_accounts', 'agent_accounts', 'system_accounts', 'account_handles',
         'channel_groups', 'channels', 'channel_members', 'agent_workspaces',
         'topics', 'messages', 'channel_pins', 'secrets',
-        'agent_sessions', 'agent_placements',
+        'agent_sessions', 'agent_placements', 'session_bindings',
         'agent_session_transcript_entries', 'agent_session_archive_segments',
         'agent_delivery_cursors', 'owed_mentions', 'agent_activity',
         'agent_forge_subscriptions', 'forge_authored_artifacts',
@@ -1022,6 +1063,7 @@ DECLARE
     updated_at_tables text[] := ARRAY[
         'secrets',
         'agent_placements',
+        'session_bindings',
         'agent_config_bundle',
         'model_registry',
         'forge_repo_subscriptions'

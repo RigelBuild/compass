@@ -91,6 +91,23 @@ type Querier interface {
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
 	DeleteModelRegistry(ctx context.Context) error
 	DeleteSecret(ctx context.Context, name string) (int64, error)
+	DeleteSessionBinding(ctx context.Context, sessionID string) error
+	// The reconnect sweep. Hub.enroll (internal/runnerhub/hub.go:905-957) clears
+	// every binding when a Runner (re-)enrolls: a reconnecting Runner has no live
+	// sessions, so a surviving binding would resolve a re-minted session id to a
+	// stale account. A durable table does not forget on reconnect, so the sweep must
+	// be explicit.
+	//
+	// :many with RETURNING, deliberately NOT :exec. enroll snapshots the bindings
+	// BEFORE clearing them (hub.go:912-928) because each cleared binding drives a
+	// presence DISCONNECTED edge (RIG-1569 T8) and each cleared session id must be
+	// reaped from the delivery held-deliver registry (RIG-1569 T3). A bare DELETE
+	// would satisfy the invariant while silently dropping both side-effects, leaving
+	// a long-WORKING agent stuck WORKING in the projection forever. RETURNING is
+	// what preserves them, so the returned rows are load-bearing, not diagnostic.
+	// A DELETE ... RETURNING takes no ORDER BY, so the Store method sorts the
+	// returned slice by session id to keep a sweep pass deterministic and diffable.
+	DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]DeleteSessionBindingsForRunnerRow, error)
 	DeleteTopic(ctx context.Context, id string) error
 	// Agent-forge-subscription / artifact-cursor queries (sqlc adoption T6,
 	// RIG-3034). These replace the inline SQL literals in
@@ -335,6 +352,16 @@ type Querier interface {
 	// there is the NORMAL replay case, not a drop), so asserting rows-affected here
 	// would wrongly fail an idempotent re-fire.
 	RecordOwedMention(ctx context.Context, arg RecordOwedMentionParams) error
+	// Session-binding queries (RIG-3108 / RIG-2861 §T4): the durable
+	// (session -> agent account, Runner) binding the RunnerHub has so far held only
+	// in RAM. The hand-written Store methods in internal/store/session_bindings.go
+	// keep their signatures and map these rows into the SessionBinding domain struct
+	// (the AccountID newtype is done inline in the Go, as agent_placements does).
+	//
+	// updated_at is NEVER assigned here: the set_updated_at() BEFORE UPDATE trigger
+	// (0001_init.sql, RIG-3495) is the one mechanism, and a hand-written
+	// `updated_at = now()` is the exact defect that convention removes.
+	RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error
 	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
 	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)
@@ -368,6 +395,8 @@ type Querier interface {
 	SeedHomeChannelMembers(ctx context.Context, arg SeedHomeChannelMembersParams) error
 	SelfAuthoredSeqsAbove(ctx context.Context, arg SelfAuthoredSeqsAboveParams) ([]int64, error)
 	SessionBase(ctx context.Context, sessionID string) (int64, error)
+	SessionBindingAccount(ctx context.Context, sessionID string) (string, error)
+	SessionBindingForAccount(ctx context.Context, agentAccountID string) (string, error)
 	SessionMaxEntrySeq(ctx context.Context, sessionID string) (int64, error)
 	SessionTranscript(ctx context.Context, sessionID string) ([]SessionTranscriptRow, error)
 	// Agent-activity queries (sqlc adoption T5, RIG-3034). These replace the inline
