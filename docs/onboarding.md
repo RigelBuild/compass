@@ -182,8 +182,8 @@ This runs the entry tier, which is the default backend.
 > meanwhile.
 
 Drop `--listen` for the one-box shape; the default is `127.0.0.1:50052`. To
-check on the stack afterwards, `compass-stack status` takes the same flags as
-`up`:
+check on the stack afterwards, `compass-stack status` takes the same
+`--state-dir`, `--image`, and `--listen` as `up`:
 
 ```console
 compass-stack status \
@@ -192,14 +192,17 @@ compass-stack status \
     --listen 0.0.0.0:50052
 ```
 
+The `--listen` above is the dedicated-box value; on the one-box shape drop it
+here too, exactly as you did for `up`.
+
 It attaches to a running stack and reports the server's health. Note that it is
 not a read-only probe: against a stack that is not running it brings one up
-rather than reporting it down, which is why it takes the same flags — pass the
-same `--listen` you brought the stack up with. The health it reports is the
-server's, not the whole stack's; the agent runner is started last and is not
-covered, so a ready server does not by itself confirm a session can run.
-Connecting a client and running a session needs the app, which has no working
-install yet — see the note in [The app](#the-app).
+rather than reporting it down, which is why it takes the same `--listen` — pass
+the one you brought the stack up with. The health it reports is the server's,
+not the whole stack's; the agent runner is started last and is not covered, so
+a ready server does not by itself confirm a session can run. Connecting a
+client and running a session needs the app, which has no working install yet —
+see the note in [The app](#the-app).
 
 For a stack that survives reboots, run it under systemd —
 [self-host.md](./self-host.md#running-under-systemd) carries a working unit. To
