@@ -17,8 +17,8 @@ import (
 )
 
 // okProbes returns a preflightProbes whose every axis passes: KVM opens, the
-// trio resolves at floor, and images stat + hash cleanly. Individual rows
-// override the axis they exercise.
+// trio resolves at floor, images stat + hash cleanly, and the volume quota
+// reads as an active bound. Individual rows override the axis they exercise.
 func okProbes() preflightProbes {
 	return preflightProbes{
 		openKVM:  func() error { return nil },
@@ -34,6 +34,20 @@ func okProbes() preflightProbes {
 		},
 		statImage: func(string) error { return nil },
 		hashImage: func(string) (string, error) { return "deadbeef", nil },
+		// An active project quota by default (path totals below the mount
+		// root's = the kernel's projection), so only a row that overrides this
+		// axis exercises the D7 quota leg.
+		readQuota: func(path string) (QuotaReading, error) {
+			return QuotaReading{
+				Path: path, MountRoot: "/",
+				LimitBytes: 10 << 30, UsedBytes: 1 << 30,
+				LimitInodes: 1 << 20, UsedInodes: 512,
+				FilesystemBytes: 1 << 40, FilesystemInodes: 1 << 26,
+			}, nil
+		},
+		// The invoking user's /etc/subuid range: all-green by default, so only
+		// the row exercising that axis fails it.
+		verifySubordinateIDs: func() error { return nil },
 	}
 }
 
@@ -64,16 +78,58 @@ func okConfig(t *testing.T) MicroVMConfig {
 		RootfsImage: rootfs,
 		InitrdImage: initrd,
 		RunRoot:     runRoot,
+		// A VolumeRoot distinct from RunRoot is the production shape: the
+		// session-volume filesystem is the durable D9 volume, while RunRoot is
+		// the short /tmp socket dir. The quota axis targets THIS path.
+		VolumeRoot: dir,
+	}
+}
+
+// preflightRow is one verifyMicroVMSupport failure-axis case: mutate the
+// all-green config/probes to break (or re-pose) exactly one axis, then assert
+// the verdict. Shared by the capability table and the D7 quota table, which are
+// separate functions only because one table covering every axis outgrows the
+// funlen budget.
+type preflightRow struct {
+	name      string
+	mutate    func(cfg *MicroVMConfig, p *preflightProbes)
+	wantOK    bool
+	wantParts []string
+}
+
+// runPreflightRows drives each row from the all-green baseline: an OK row must
+// return nil, and a failing row must name every wantParts fragment so the D3
+// "name the missing capability and the fix" contract is asserted, not just the
+// existence of an error.
+func runPreflightRows(t *testing.T, rows []preflightRow) {
+	t.Helper()
+	for _, tt := range rows {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := okConfig(t)
+			probes := okProbes()
+			tt.mutate(&cfg, &probes)
+			m := NewMicroVMRuntime(cfg)
+			err := m.verifyMicroVMSupport(t.Context(), probes)
+			if tt.wantOK {
+				if err != nil {
+					t.Fatalf("verifyMicroVMSupport = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("verifyMicroVMSupport = nil, want error mentioning %v", tt.wantParts)
+			}
+			for _, part := range tt.wantParts {
+				if !strings.Contains(err.Error(), part) {
+					t.Errorf("error %q does not name %q", err.Error(), part)
+				}
+			}
+		})
 	}
 }
 
 func TestVerifyMicroVMSupport(t *testing.T) {
-	tests := []struct {
-		name      string
-		mutate    func(cfg *MicroVMConfig, p *preflightProbes)
-		wantOK    bool
-		wantParts []string
-	}{
+	runPreflightRows(t, []preflightRow{
 		{
 			name:   "all green",
 			mutate: func(_ *MicroVMConfig, _ *preflightProbes) {},
@@ -170,30 +226,127 @@ func TestVerifyMicroVMSupport(t *testing.T) {
 			},
 			wantParts: []string{"not creatable/writable"},
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := okConfig(t)
-			probes := okProbes()
-			tt.mutate(&cfg, &probes)
-			m := NewMicroVMRuntime(cfg)
-			err := m.verifyMicroVMSupport(t.Context(), probes)
-			if tt.wantOK {
-				if err != nil {
-					t.Fatalf("verifyMicroVMSupport = %v, want nil", err)
+		{
+			// The /etc/subuid axis: virtiofsd's mapping is validated by
+			// newuidmap against the invoking user's subordinate range, so a
+			// host without one must fail HERE rather than at the first boot as
+			// an opaque daemon-socket timeout.
+			name: "no subordinate uid range for the invoking user",
+			mutate: func(_ *MicroVMConfig, p *preflightProbes) {
+				p.verifySubordinateIDs = func() error {
+					return errors.New("virtiofsd id-mapping requires a subordinate uid range for mattw in /etc/subuid")
 				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("verifyMicroVMSupport = nil, want error mentioning %v", tt.wantParts)
-			}
-			for _, part := range tt.wantParts {
-				if !strings.Contains(err.Error(), part) {
-					t.Errorf("error %q does not name %q", err.Error(), part)
-				}
-			}
-		})
+			},
+			wantParts: []string{"/etc/subuid", "subordinate uid range"},
+		},
+	})
+}
+
+// TestVerifyMicroVMSupportQuota is the D7 session-volume quota axis: with
+// QuotaRequired set, an active project quota passes and an absent one is a
+// startup error naming the volume and the operator fix; with it unset (Dogfood's
+// single trusted tenant) neither an absent quota nor an unreadable one gates.
+// The unquota'd readings below are the real shape a plain filesystem produces —
+// statfs at the path and at its mount root report the same totals, so nothing is
+// projected.
+func TestVerifyMicroVMSupportQuota(t *testing.T) {
+	unquotad := func(path string) (QuotaReading, error) {
+		return QuotaReading{
+			Path: path, MountRoot: "/",
+			LimitBytes: 1 << 40, UsedBytes: 1 << 30,
+			FilesystemBytes: 1 << 40,
+		}, nil
 	}
+	unreadable := func(string) (QuotaReading, error) {
+		return QuotaReading{}, errors.New("statfs: permission denied")
+	}
+
+	runPreflightRows(t, []preflightRow{
+		{
+			name: "quota present and under limit, required, passes",
+			mutate: func(cfg *MicroVMConfig, _ *preflightProbes) {
+				cfg.QuotaRequired = true
+			},
+			wantOK: true,
+		},
+		{
+			name: "quota absent and required fails naming the volume and the fix",
+			mutate: func(cfg *MicroVMConfig, p *preflightProbes) {
+				cfg.QuotaRequired = true
+				p.readQuota = unquotad
+			},
+			wantParts: []string{"no enforced project quota", "prjquota", "quota-required off"},
+		},
+		{
+			name: "quota absent and NOT required passes (Dogfood single tenant)",
+			mutate: func(_ *MicroVMConfig, p *preflightProbes) {
+				p.readQuota = unquotad
+			},
+			wantOK: true,
+		},
+		{
+			name: "quota probe failure with required set fails with the read cause",
+			mutate: func(cfg *MicroVMConfig, p *preflightProbes) {
+				cfg.QuotaRequired = true
+				p.readQuota = unreadable
+			},
+			wantParts: []string{"permission denied"},
+		},
+		{
+			name: "quota probe failure without required set passes",
+			mutate: func(_ *MicroVMConfig, p *preflightProbes) {
+				p.readQuota = unreadable
+			},
+			wantOK: true,
+		},
+		{
+			// FAIL CLOSED: with no VolumeRoot the session-volume filesystem is
+			// unidentified, and the RunRoot is NOT an acceptable proxy — it is
+			// the short /tmp socket dir, routinely a different filesystem. A
+			// verdict about a filesystem that was never probed is worse than a
+			// refusal, so the required profile refuses.
+			name: "quota required but the volume root is unknown fails closed",
+			mutate: func(cfg *MicroVMConfig, p *preflightProbes) {
+				cfg.QuotaRequired = true
+				cfg.VolumeRoot = ""
+				p.readQuota = func(string) (QuotaReading, error) {
+					t.Error("readQuota must NOT be called with no volume root: probing the run-root proxy " +
+						"would report a verdict about a filesystem the session volumes do not live on")
+					return QuotaReading{}, nil
+				}
+			},
+			wantParts: []string{"cannot be identified at startup", "--microvm-volume-root", "COMPASS_MICROVM_VOLUME_ROOT"},
+		},
+		{
+			name: "no volume root without required set passes with a warning",
+			mutate: func(cfg *MicroVMConfig, _ *preflightProbes) {
+				cfg.VolumeRoot = ""
+			},
+			wantOK: true,
+		},
+		{
+			// The probe must target VolumeRoot, never RunRoot: they are
+			// different filesystems in production, and a quota verdict read on
+			// the socket dir says nothing about the durable volume.
+			name: "the quota probe targets the volume root, not the run root",
+			mutate: func(cfg *MicroVMConfig, p *preflightProbes) {
+				cfg.QuotaRequired = true
+				wantPath := cfg.VolumeRoot
+				runRoot := cfg.RunRoot
+				p.readQuota = func(path string) (QuotaReading, error) {
+					if path != wantPath {
+						t.Errorf("readQuota probed %q, want the volume root %q (run root is %q)", path, wantPath, runRoot)
+					}
+					return QuotaReading{
+						Path: path, MountRoot: "/",
+						LimitBytes: 10 << 30, UsedBytes: 1 << 30,
+						FilesystemBytes: 1 << 40,
+					}, nil
+				}
+			},
+			wantOK: true,
+		},
+	})
 }
 
 // TestVerifyMicroVMSupportManifest covers the (d) hash-verification axis: a
