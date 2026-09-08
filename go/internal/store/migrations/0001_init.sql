@@ -492,6 +492,90 @@ CREATE INDEX agent_placements_runner_idx ON agent_placements (runner_id);
 -- owner.
 CREATE UNIQUE INDEX agent_placements_container_key ON agent_placements (container_name);
 
+-- Session bindings (RIG-3108 / RIG-2861 §T4): the DURABLE (session -> agent
+-- account, Runner) binding the RunnerHub has so far held only in RAM. Placement
+-- (above) is where an agent RUNS; a binding is which LIVE session speaks for it,
+-- so the two are siblings and neither is authorization: SubscribeAgentSession
+-- still authorizes through agent_sessions -> agent_accounts -> channel_members
+-- and never reads this table.
+--
+-- KEYED ON THE ACCOUNT, tenant folded in: PRIMARY KEY (tenant_id,
+-- agent_account_id). The account is the identity because this table represents
+-- the hub's 1:1 in-RAM accountSessions map (account -> its ONE live session),
+-- where re-pointing an account at a newer session is an assignment, not a
+-- collision. So a re-point here is an upsert on the account
+-- (ON CONFLICT DO UPDATE), never a conflict to be refused: the hub legitimately
+-- holds two sessions for one account transiently — it promotes the new session
+-- before unbinding the stale one — and RecordSessionBinding's caller has nowhere
+-- to put a refusal. Keying on the session instead would have made the
+-- displacement a unique violation and the reap below impossible.
+--
+-- It represents accountSessions ONLY. The hub also keeps sessionAccounts
+-- (session -> account, MANY-to-one), and this table is not that map: a re-point
+-- OVERWRITES the row, so the displaced session stops resolving IMMEDIATELY —
+-- ResolveSessionAccount returns not-found for it the moment the newer bind
+-- commits, which the suite asserts directly. There is deliberately no tombstone
+-- and no history: this table answers "which session speaks for this account
+-- NOW", nothing else.
+--
+-- So it cannot answer STALE vs UNKNOWN. A caller that needs to tell "a session
+-- this account used to hold" from "a session id we have never seen" — the hub's
+-- re-point guard at runnerhub/relay_comms.go:112-116 — must keep that
+-- distinction in RAM. Demoting the hub's maps to caches over this table (PR3)
+-- does not change that: the guard's state has no column here to live in.
+--
+-- What a bind DISPLACED is still reported to the caller, so it can reap the
+-- displaced session from the held-deliver registry. It comes from the prior-value
+-- read RecordSessionBinding takes under FOR UPDATE in the same transaction as the
+-- write (queries/session_bindings.sql), not from a RETURNING — ON CONFLICT DO
+-- UPDATE's RETURNING sees the post-update row.
+--
+-- tenant_id leads the key for the reason the RLS header below states: two
+-- tenants may hold the same coordinate without collision. Its declaration text
+-- is character-identical to every other tenant table's, because the policy
+-- compares it to the same GUC.
+--
+-- session_id is UNIQUE PER TENANT (the index below) but is NOT the identity: it
+-- is the accountForSession read direction the relay resolves on every inbound
+-- comms call, and the uniqueness only says one session speaks for one account.
+--
+-- A binding is NOT cross-checked against agent_sessions: there is deliberately
+-- no FK from session_id, so a binding may name a session with no agent_sessions
+-- row, or disagree with one about the owner. That is intentional — a binding is
+-- independent of the session record's lifetime — and it is why agent_sessions,
+-- not this table, remains the authz root. Nothing here may be read as proof a
+-- session exists or as proof of who owns it.
+--
+-- runner_id is deliberately NOT a FK, for the same reason agent_placements'
+-- isn't: Runners are enrolled in memory under a token subject with no runners
+-- table to reference. It stays NOT NULL — a binding with no Runner cannot be
+-- swept by the reconnect sweep below, and an unswept binding is a stale session
+-- that outlives its Runner.
+CREATE TABLE session_bindings (
+    tenant_id        TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    session_id       TEXT NOT NULL,
+    runner_id        TEXT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, agent_account_id)
+);
+
+-- The session -> account lookup (ResolveSessionAccount): the relay's read on
+-- every inbound comms call, where the request carries only the session id.
+-- UNIQUE so one session id speaks for exactly one account — a second account
+-- claiming a live session id is refused (mapped to ErrConflict) rather than
+-- letting the relay resolve whichever row Postgres happened to return.
+-- Tenant-folded for the same reason the PK is: two tenants may mint the same
+-- session id without colliding.
+CREATE UNIQUE INDEX session_bindings_session_key ON session_bindings (tenant_id, session_id);
+
+-- The reconnect sweep deletes every binding of a re-enrolling Runner
+-- (DeleteSessionBindingsForRunner), so runner_id is the read direction that
+-- needs an index — the same direction, and the same reason, as
+-- agent_placements_runner_idx above. Non-unique: one Runner holds many sessions.
+CREATE INDEX session_bindings_runner_idx ON session_bindings (runner_id);
+
 -- ── Agent session transcripts (two-tier store) ───────────────────────────────
 -- The durable TWO-TIER transcript store (RIG-1667 T4): a Postgres HOT TAIL
 -- holding [latest checkpoint .. now] = the normal resume set, plus a manifest of
@@ -941,7 +1025,7 @@ DECLARE
         'user_accounts', 'agent_accounts', 'system_accounts', 'account_handles',
         'channel_groups', 'channels', 'channel_members', 'agent_workspaces',
         'topics', 'messages', 'channel_pins', 'secrets',
-        'agent_sessions', 'agent_placements',
+        'agent_sessions', 'agent_placements', 'session_bindings',
         'agent_session_transcript_entries', 'agent_session_archive_segments',
         'agent_delivery_cursors', 'owed_mentions', 'agent_activity',
         'agent_forge_subscriptions', 'forge_authored_artifacts',
@@ -1022,6 +1106,7 @@ DECLARE
     updated_at_tables text[] := ARRAY[
         'secrets',
         'agent_placements',
+        'session_bindings',
         'agent_config_bundle',
         'model_registry',
         'forge_repo_subscriptions'
