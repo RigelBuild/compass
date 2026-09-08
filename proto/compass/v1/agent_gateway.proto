@@ -258,6 +258,8 @@ message ForgeCallRequest {
     SubscribeForgeRequest subscribe = 9;      // DL-053
     UnsubscribeForgeRequest unsubscribe = 10; // DL-053
     SubmitReviewRequest submit_review = 11;
+    TransitionIssueStateRequest transition_issue_state = 14;
+    TransitionPullRequestStateRequest transition_pull_request_state = 15;
   }
   // Which forge the call addresses. UNSET selects the default (configured
   // GitHub) forge — additive, existing callers unchanged. An unknown/unconfigured
@@ -271,7 +273,7 @@ message ForgeCallRequest {
   // join + Provision dedup)"). A retried create with the same key returns the
   // ORIGINAL artifact, never a duplicate. Distinct from call_id, which is
   // correlation-only. Ignored on non-create arms. Field 13 is collision-free:
-  // call_id=1, oneof arms 2-11, forge=12.
+  // call_id=1, oneof arms 2-11 and 14-15, forge=12.
   string client_request_id = 13;
 }
 
@@ -284,10 +286,10 @@ message ForgeCallRequest {
 message ForgeCallResult {
   string call_id = 1;
   oneof result {
-    compass.v1.Issue issue = 2;             // create_issue / get_issue
+    compass.v1.Issue issue = 2;             // create_issue / get_issue / transition_issue_state
     CommentRef issue_comment = 3;           // comment_on_issue (write ack: url + comment_id)
     ListIssuesResponse issues = 4;          // list_issues
-    compass.v1.PullRequest pull_request = 5; // create_pull_request / get_pull_request
+    compass.v1.PullRequest pull_request = 5; // create_pull_request / get_pull_request / transition_pull_request_state
     CommentRef pr_comment = 6;              // comment_on_pull_request (write ack)
     SubscribeForgeResponse subscribed = 7;
     UnsubscribeForgeResponse unsubscribed = 8;
@@ -305,7 +307,7 @@ message ForgeCallError {
   uint32 retry_after_ms = 3;  // time until a retry stops fail-fasting; 0 = no hint
 }
 
-// The seven forge operation requests. Every field is a scalar — no forge domain
+// The forge operation requests. Every field is a scalar — no forge domain
 // type appears in any request shape, so the request wire is identical under
 // either forge read model. `repo` is "<owner>/<name>" on GitHub and the team
 // key on Linear, REQUIRED on every call — an empty `repo` is an invalid_argument
@@ -366,6 +368,34 @@ message ReviewCommentInput {
   uint32 line = 2;               // new-file line number (GitHub `line`)
   string side = 3;               // "LEFT" | "RIGHT"; "" = RIGHT
   string body = 4;               // NOT stamped (rides inside the stamped review)
+}
+
+// Move an existing artifact between forge states. Mutates a coordinate and
+// mints none, so neither create-only mechanism applies: no client_request_id
+// (a repeated transition to the same state is already idempotent at the forge)
+// and no owner stamp (there is no body to stamp). `state` is the raw forge
+// state string the whole read path already speaks (forge.Issue.State,
+// ForgeNotification.state), not a new enum — DL-069's no-forge-shape rule
+// concerns message types, which these add none of. Named on the *transition*
+// stem because the board lane already owns SetIssueStateRequest, which
+// operates on the Compass-local Issue.id + compass.v1.IssueState instead.
+// A successful transition returns the UPDATED artifact on the existing
+// ForgeCallResult.issue / .pull_request arms, so the caller sees
+// post-transition truth exactly as a create's caller sees the created one.
+message TransitionIssueStateRequest {
+  string repo = 1;            // REQUIRED; "<owner>/<name>" on GitHub, team key on Linear
+  uint64 issue_number = 2;
+  string state = 3;           // REQUIRED: "open" | "closed" (the forge.Issue.State domain)
+  string close_reason = 4;    // GitHub only: "completed" | "not_planned"; "" = provider default
+  string workflow_state = 5;  // Linear only: target workflow state NAME; "" = default mapping
+}
+
+// The PR twin. No refinement fields: `close_reason` is a GitHub *issue*
+// concept, and merge is a separate concern never expressed as a transition.
+message TransitionPullRequestStateRequest {
+  string repo = 1;            // REQUIRED
+  uint64 pr_number = 2;
+  string state = 3;           // "open" | "closed"
 }
 
 // Subscribe/unsubscribe a forge artifact for change notifications (DL-053). The
