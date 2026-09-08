@@ -30,14 +30,14 @@ package server
 // never reaches this wire's recordingRunner, because the two share only the
 // database, never the in-process bus. Pointing serveOTelSocket at the wire's DSN
 // therefore cannot compose the two halves. What DOES compose them is mounting
-// the CommsService handler over THIS wire's
-// comms service behind CommsService's real socket-door interceptor chain
+// the CommsService handler over THIS wire's comms service, behind CommsService's
+// real socket-door interceptor chain
 // (serve.go:698-699: otelconnect first, then the trace-response interceptor),
 // plus the ambient-identity pair that CompassService mounts on the same door
 // (serve.go:708-710). This splice is the one deliberate departure from
 // production: the shipped CommsService socket door mounts no actor interceptor
 // and comms instead uses its bootstrap-admin actorFromContext fallback
-// (serve.go:703-705; comms.go:760-763), so it cannot attribute an AGENT author,
+// (serve.go:703-705; comms.go:760-765), so it cannot attribute an AGENT author,
 // which assertion (e) requires. The interceptor ORDER still matches production.
 // Parameterizing the ambient pair fabricates no privilege: auth.AmbientIdentity
 // -> withCaller sets exactly the callerKey + comms.WithActor pair that the
@@ -45,15 +45,11 @@ package server
 // (auth/interceptor.go:35-38 vs :64-68). That yields a real otelconnect handler
 // span, a real traceresponse header, and the wire's real bus -> consumer ->
 // hub -> recordingRunner spine.
-
-// The ambient-identity parameter is what lets an assertion post AS a given
-// account, providing the agent attribution needed for the hold-edge case; it
-// is the only deliberate addition to the CommsService socket-door chain above.
-// The fixture otherwise uses the shipped interceptor order and behavior.
+//
 // The SyncSpanProcessor removes the export-after-End race: a span is readable
 // from exp.GetSpans() the moment it ends. It does NOT order End against a wire
 // observation: a delivery.dispatch hop ends after DispatchControl returns
-// (dispatch.go:373,393), while the frame reaches the fake Runner through a
+// (dispatch.go:373,390), while the frame reaches the fake Runner through a
 // non-blocking enqueue and separate sender goroutine (router.go:243-248), so
 // assertions reading hop spans need a FIFO barrier (as (b) now has). The
 // origin handler span is not exposed to this problem because otelconnect ends
@@ -61,7 +57,6 @@ package server
 // remains event-gated on an observed wire fact via waitFor* helpers — never a
 // sleep, never a retry loop, never an invented deadline.
 //
-
 // Spans are selected by NAME + SERVER kind, never by message id alone: the
 // delivery hop span stamps the SAME compass.message.id as the origin handler
 // span (delivery/dispatch.go:375), so the sibling file's spanWithMessageID
@@ -79,6 +74,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -111,7 +107,7 @@ const (
 // --- fixtures ----------------------------------------------------------------
 
 // serveTracedCommsDoor mounts the CommsService over commsSvc behind the
-// PRODUCTION socket-door interceptor chain (serve.go:698-699,709-710) on an h2c
+// PRODUCTION socket-door interceptor chain (serve.go:698-699,708-710) on an h2c
 // httptest server, attributing every RPC to actor via the ambient-identity pair
 // — so a post over this door is authored by actor and runs under a real
 // otelconnect handler span whose trace id the response's traceresponse header
@@ -217,8 +213,30 @@ func postAsk(t *testing.T, w *mentionE2EWire, question string) (msgID, askID str
 //
 // Called BEFORE any post in a fixture: doing it after would contend with the
 // wake path's own Start for the same FIFO entry.
-func bringSessionLive(t *testing.T, w *mentionE2EWire, account store.AccountID, container, session string) {
+//
+// Returns only once this session's START-EDGE SWEEP has finished, which is what
+// keeps the wire quiet for the assertions. hub.Start fires OnSessionStarted
+// synchronously (runnerhub/relay_comms.go:75-76), but that only ENQUEUES the
+// edge (delivery/settle.go:51-65); the sweep itself runs later, on the Run
+// loop's OTHER select arm (delivery/consumer.go:355-357). Left ungated it can
+// land AFTER the first post commits and deliver that message a SECOND time —
+// the recordingRunner never acks, so the cursor never advances and sweepSession
+// still sees it owed — and because sweepSession dispatches directly
+// (settle.go:343) rather than through gatedDispatch, the duplicate carries no
+// delivery.dispatch hop span and a different, fresh-rooted traceparent. That
+// breaks tracedOpFor's exactly-one contract in (a)/(c)/(d)/(e)/(g)/(j) and
+// shifts any position-based wire assertion. Gating here removes the race at its
+// source instead of loosening the readers, which would let a swept op with the
+// WRONG trace satisfy an assertion.
+func bringSessionLive(t *testing.T, w *mentionE2EWire, exp *tracetest.InMemoryExporter, account store.AccountID, container, session string) {
 	t.Helper()
+	// A nil exporter means the caller pinned tracing OFF, so no sweep span can
+	// ever be recorded and a span gate could only time out; such a fixture must
+	// not depend on the wire being quiet. See (d).
+	sweepsBefore := 0
+	if exp != nil {
+		sweepsBefore = countSpansNamed(exp, startSweepSpanName)
+	}
 	w.runner.setContainerNames(container)
 	w.runner.setStartIDs(session)
 	presp, _, err := w.hub.Provision(w.ctx, "", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(account)})
@@ -234,6 +252,48 @@ func bringSessionLive(t *testing.T, w *mentionE2EWire, account store.AccountID, 
 	}
 	if got, ok := w.hub.SessionForAccount(account); !ok || got != session {
 		t.Fatalf("SessionForAccount(%s) = (%q, %v), want (%q, true) — the hold/fan-out arms resolve through this binding", account, got, ok, session)
+	}
+	if exp != nil {
+		waitForStartSweep(t, exp, sweepsBefore+1)
+	}
+}
+
+// startSweepSpanName is the LAST of the three sweeps drainStarts runs per start
+// edge (delivery/settle.go:134-142: sweepSession, sweepPins, then this one), so
+// observing it end means the whole start edge for one session is drained.
+const startSweepSpanName = "delivery.sweep.owedMentions"
+
+func countSpansNamed(exp *tracetest.InMemoryExporter, name string) int {
+	n := 0
+	for _, s := range exp.GetSpans() {
+		if s.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+// waitForStartSweep event-gates until at least n start-edge sweeps have ENDED.
+// Counting is sound even with several live sessions because drainStarts pops
+// the queue one edge at a time on a single goroutine (settle.go:124-134), so
+// the nth completed sweep means n edges are fully drained. The SyncSpanProcessor
+// makes a span readable the moment it ends, and GetSpans locks internally.
+// Same deadline + Gosched idiom as the other waiters: no sleep, no retry loop.
+func waitForStartSweep(t *testing.T, exp *tracetest.InMemoryExporter, n int) {
+	t.Helper()
+	deadline := timeAfter()
+	for {
+		if countSpansNamed(exp, startSweepSpanName) >= n {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("saw %d %q spans, want >= %d — the session-start sweep never drained, so the wire is not quiet",
+				countSpansNamed(exp, startSweepSpanName), startSweepSpanName, n)
+			return
+		default:
+		}
+		runtime.Gosched()
 	}
 }
 
@@ -309,6 +369,33 @@ func tracedOpFor(t *testing.T, r *recordingRunner, sessionID, messageID string) 
 		t.Fatalf("session %q saw %d ops carrying message %q, want exactly 1 (ops: %+v)", sessionID, len(match), messageID, tracedOps(r))
 	}
 	return match[0]
+}
+
+// waitForDeliverOfMessage event-gates until sessionID has been pushed a deliver
+// carrying messageID — an IDENTITY predicate, never a count or an index, so a
+// duplicate dispatch of some OTHER message cannot satisfy it and cannot shift
+// the awaited one off a fixed position. The start-edge sweep the wire enqueues
+// is exactly such a duplicate source (consumer.go:355-357 drains it on the Run
+// loop's other select arm, and the recordingRunner never acks, so
+// sweepSession's owed set still holds the message). Same deadline primitive and
+// Gosched yield as the spine's waitFor* helpers: no sleep, no retry loop.
+func waitForDeliverOfMessage(t *testing.T, r *recordingRunner, sessionID, messageID string) {
+	t.Helper()
+	deadline := timeAfter()
+	for {
+		for _, op := range tracedOps(r) {
+			if op.sessionID == sessionID && op.messageID == messageID {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("session %q never saw a deliver carrying message %q (ops: %+v)", sessionID, messageID, tracedOps(r))
+			return
+		default:
+		}
+		runtime.Gosched()
+	}
 }
 
 // traceIDOfTraceparent parses a W3C traceparent through the shipped
@@ -417,7 +504,7 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 
 		recip := w.seedAgentMember(t, "seamrecip", true)
 		const recipSess = "sess-seamrecip-1"
-		bringSessionLive(t, w, recip.ID, containerFor("seamrecip"), recipSess)
+		bringSessionLive(t, w, exp, recip.ID, containerFor("seamrecip"), recipSess)
 
 		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
 		resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "one turn, one trace")
@@ -453,27 +540,30 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 
 		recip := w.seedAgentMember(t, "hoprecip", true)
 		const recipSess = "sess-hoprecip-1"
-		bringSessionLive(t, w, recip.ID, containerFor("hoprecip"), recipSess)
+		bringSessionLive(t, w, exp, recip.ID, containerFor("hoprecip"), recipSess)
 
 		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
 		_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "every hop, one trace")
 
-		first := waitForControlDelivers(t, w.runner, recipSess, 1)
-		if first[0].messageID != msgID {
-			t.Fatalf("first deliver = %q, want the first message %q", first[0].messageID, msgID)
-		}
+		waitForDeliverOfMessage(t, w.runner, recipSess, msgID)
 
-		// FIFO BARRIER, not a sleep: the consumer's Run loop drains bus events on
-		// ONE goroutine in order, so observing this later deliver proves the first
-		// dispatch already returned. That matters because gatedDispatch ends its
-		// hop span after DispatchControl returns (dispatch.go:373,393), while the
-		// frame reaches the wire through a non-blocking enqueue and sender goroutine
-		// (consumer.go:353-360; router.go:243-248).
+		// FIFO BARRIER, not a sleep: `gatedDispatch` runs to completion on the
+		// consumer's Run goroutine, ending its hop span as it returns
+		// (dispatch.go:373, after the DispatchControl at :390) — and only then does
+		// the loop take the next bus event. So observing a LATER post's deliver
+		// proves the first dispatch already returned, which the first message's own
+		// wire fact does not: the frame reaches the Runner through a non-blocking
+		// enqueue plus a separate sender goroutine (router.go:243-248).
+		//
+		// Waited for BY IDENTITY, never by index. The start-edge sweep the wire's
+		// bringSessionLive enqueues runs on the Run loop's other select arm
+		// (consumer.go:355-357) and can deliver the first message a second time —
+		// the recordingRunner never acks, so the cursor never advances and
+		// sweepSession (settle.go:326-348) still sees it owed. That duplicate would
+		// shift the barrier off any fixed index; its POSITION was never what
+		// carried the happens-before, only its presence.
 		barrierMsgID := w.post(t, "barrier: a plain post completes the earlier dispatch")
-		barrier := waitForControlDelivers(t, w.runner, recipSess, 2)
-		if barrier[1].messageID != barrierMsgID {
-			t.Fatalf("second deliver = %q, want the barrier message %q", barrier[1].messageID, barrierMsgID)
-		}
+		waitForDeliverOfMessage(t, w.runner, recipSess, barrierMsgID)
 
 		spans := exp.GetSpans()
 		want := originServerSpan(t, spans, compassv1connect.CommsServicePostMessageProcedure).SpanContext.TraceID()
@@ -501,7 +591,7 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 
 		recip := w.seedAgentMember(t, "hdrrecip", true)
 		const recipSess = "sess-hdrrecip-1"
-		bringSessionLive(t, w, recip.ID, containerFor("hdrrecip"), recipSess)
+		bringSessionLive(t, w, exp, recip.ID, containerFor("hdrrecip"), recipSess)
 
 		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
 		resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "header carries the trace")
@@ -562,7 +652,13 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		w := newMentionE2EWire(t)
 		recip := w.seedAgentMember(t, "offrecip", true)
 		const recipSess = "sess-offrecip-1"
-		bringSessionLive(t, w, recip.ID, containerFor("offrecip"), recipSess)
+		// nil exporter: (d) runs with the global provider pinned to NOOP, so no
+		// sweep span is ever recorded anywhere (offExp is deliberately non-global)
+		// and a span-based gate could only time out. (d) is unexposed to the
+		// duplicate anyway — its assertions are the empty traceparent, the absent
+		// traceresponse header, and that delivery still lands, none of which a
+		// second copy of the same message can falsify.
+		bringSessionLive(t, w, nil, recip.ID, containerFor("offrecip"), recipSess)
 
 		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
 		resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "delivery survives tracing being off")
@@ -600,8 +696,8 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		// BOTH live before any post: the author's live session is what makes the
 		// post take the hold arm, and the recipient's is what lets the fired
 		// deliver reach the wire.
-		bringSessionLive(t, w, author.ID, containerFor("heldauthor"), authorSess)
-		bringSessionLive(t, w, recip.ID, containerFor("heldrecip"), recipSess)
+		bringSessionLive(t, w, exp, author.ID, containerFor("heldauthor"), authorSess)
+		bringSessionLive(t, w, exp, recip.ID, containerFor("heldrecip"), recipSess)
 
 		// The author posts over a door attributed to the AGENT, so the post has a
 		// real handler span AND an agent author (the hold arm's precondition).
@@ -689,7 +785,7 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 
 		recip := w.seedAgentMember(t, "askrecip", true)
 		const recipSess = "sess-askrecip-1"
-		bringSessionLive(t, w, recip.ID, containerFor("askrecip"), recipSess)
+		bringSessionLive(t, w, exp, recip.ID, containerFor("askrecip"), recipSess)
 
 		// The ask itself needs no span — only the ANSWER's handler span is under
 		// test — so it is posted in-process.
@@ -769,7 +865,7 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		// The meter provider MUST precede the wire: the counter is created once at
 		// delivery.NewConsumer from the then-global meter.
 		reader := installGlobalMetricReader(t)
-		installGlobalSpanExporter(t)
+		exp := installGlobalSpanExporter(t)
 		w := newMentionE2EWire(t)
 
 		// One recipient of each op kind: a MENTIONED member is steered, a plain
@@ -778,8 +874,8 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		delivered := w.seedAgentMember(t, "metricdeliver", true)
 		const steerSess = "sess-metricsteer-1"
 		const deliverSess = "sess-metricdeliver-1"
-		bringSessionLive(t, w, steered.ID, containerFor("metricsteer"), steerSess)
-		bringSessionLive(t, w, delivered.ID, containerFor("metricdeliver"), deliverSess)
+		bringSessionLive(t, w, exp, steered.ID, containerFor("metricsteer"), steerSess)
+		bringSessionLive(t, w, exp, delivered.ID, containerFor("metricdeliver"), deliverSess)
 
 		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
 		_, msgID := postOverTracedDoor(t, ctx, client, w.channel, "@metricsteer counted once, by kind")
