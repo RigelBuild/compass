@@ -225,8 +225,8 @@ func postAsk(t *testing.T, w *mentionE2EWire, question string) (msgID, askID str
 // still sees it owed — and because sweepSession dispatches directly
 // (settle.go:343) rather than through gatedDispatch, the duplicate carries no
 // delivery.dispatch hop span and a different, fresh-rooted traceparent. That
-// breaks tracedOpFor's exactly-one contract in (a)/(c)/(d)/(e)/(g)/(j) and
-// shifts any position-based wire assertion. Gating here removes the race at its
+// breaks tracedOpFor's exactly-one contract in (a)/(c)/(d)/(e)/(g) and shifts
+// (j)'s position-based wire assertions. Gating here removes the race at its
 // source instead of loosening the readers, which would let a swept op with the
 // WRONG trace satisfy an assertion.
 func bringSessionLive(t *testing.T, w *mentionE2EWire, exp *tracetest.InMemoryExporter, account store.AccountID, container, session string) {
@@ -280,8 +280,8 @@ func countSpansNamed(exp *tracetest.InMemoryExporter, name string) int {
 // start edges in these fixtures are strictly sequential on the test goroutine:
 // bringSessionLive is the only producer, and it is called before any post. The
 // wake path cannot slip an extra edge in between, because promoteSession deletes
-// the container binding as it promotes (runnerhub/relay_comms.go:66-68) and
-// returns early when the lookup misses, so a wake's re-Start on the same
+// the container binding as it promotes (runnerhub/relay_comms.go:65) and returns
+// early when the lookup misses (:55-57), so a wake's re-Start on the same
 // placement container promotes nothing. A future fixture that starts a session
 // concurrently would break that precondition, which is why the wait below
 // demands an EXACT count: an unaccounted interleaved edge then fails loudly
@@ -310,7 +310,7 @@ func waitForStartSweep(t *testing.T, exp *tracetest.InMemoryExporter, n int) {
 			// miss: either the sweep really never drained, or it drained fine and
 			// nothing recorded a span because the global provider is not the SDK
 			// one feeding exp. A total of zero exported spans points at the latter.
-			t.Fatalf("saw %d %q spans (%d exported spans total), want %d — either the session-start sweep never drained, or the global tracer provider is not the SDK provider feeding this exporter (installGlobalSpanExporter must run before the wire is built)",
+			t.Fatalf("saw %d %q spans (%d exported spans total), want %d — either the session-start sweep never drained, or the global TracerProvider was not the SDK one feeding this exporter while bringSessionLive ran (the sweep resolves otel.Tracer PER CALL at delivery/settle.go:219, so a no-op provider pinned before the gate — as (d) deliberately pins AFTER it — records nothing)",
 				got, startSweepSpanName, len(exp.GetSpans()), n)
 			return
 		default:
@@ -689,6 +689,11 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		t.Cleanup(func() {
 			_ = offTP.Shutdown(context.Background()) // deferred test cleanup: the sync exporter already holds any spans, so this error is not actionable
 		})
+		// Non-vacuous counterpart to offExp: exp IS fed by a global SDK provider,
+		// right up to the pin above. Freezing its count here means the post below
+		// can be asserted to add NOTHING, which proves the pin actually took
+		// effect — the one absence claim in (d) that does not rely on offExp.
+		spansAtPin := len(exp.GetSpans())
 
 		client := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, w.adminID))
 		resp, msgID := postOverTracedDoor(t, ctx, client, w.channel, "delivery survives tracing being off")
@@ -707,6 +712,9 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		}
 		if got := offExp.GetSpans(); len(got) != 0 {
 			t.Fatalf("disabled path recorded %d spans, want 0", len(got))
+		}
+		if got := len(exp.GetSpans()); got != spansAtPin {
+			t.Fatalf("disabled path added %d spans to the global-fed exporter (%d -> %d), want none — the no-op pin did not take effect", got-spansAtPin, spansAtPin, got)
 		}
 	})
 
