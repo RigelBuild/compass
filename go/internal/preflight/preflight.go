@@ -27,10 +27,15 @@ type Deps struct {
 	// front door instead (design §A3 delta 4).
 	PodmanVersion func(ctx context.Context) error
 	// MachineReady probes that the darwin podman machine (the Linux VM podman
-	// runs inside on macOS) is up. Consulted ONLY on darwin; nil on linux (there
-	// is no machine to check). A nil error means ready; a non-nil error explains
-	// why not. The darwin adapter that supplies it lands in T-6 (design §A5); a
-	// nil MachineReady on darwin leaves the check absent until then.
+	// runs inside on macOS) is up, provisioning it if needed. Consulted ONLY on
+	// darwin; nil on linux (there is no machine to check). A nil error means
+	// ready; a non-nil error explains why not.
+	//
+	// On darwin it is REQUIRED: a nil MachineReady there is a wiring defect, and
+	// Run reports it as a FAILED machine check rather than omitting the check.
+	// Omitting it is the worse outcome — a Mac with no machine would pass
+	// preflight all-green and then fail somewhere downstream with nothing
+	// pointing at the cause.
 	MachineReady func(ctx context.Context) error
 	// ImagePresent probes that the given agent image ref is present in the local
 	// container store. A nil error means present; a non-nil error means it is not
@@ -110,13 +115,21 @@ func (d Deps) Run(ctx context.Context, p Params) Results {
 	}
 	results = append(results, pvRes)
 
-	// (4) Darwin podman machine ready. macOS runs podman inside a Linux VM; the
-	// check is consulted ONLY on darwin, and only when an adapter is wired (the
-	// darwin adapter lands in T-6). On linux there is no machine, so the check
-	// is absent.
-	if d.GOOS == "darwin" && d.MachineReady != nil {
+	// (4) Darwin podman machine ready. macOS runs podman inside a Linux VM. On
+	// linux there is no machine, so the check is correctly absent. On darwin the
+	// check ALWAYS appears: a missing adapter is reported as a failure, never
+	// skipped, so a wiring regression cannot turn a broken host into a green
+	// preflight. It is reported rather than panicked because the caller's
+	// failure path already surfaces legible copy, and a panic in a GUI binary
+	// would replace that copy with a stack trace.
+	if d.GOOS == "darwin" {
 		machineRes := Result{Name: checkMachine, OK: true}
-		if err := d.MachineReady(ctx); err != nil {
+		if d.MachineReady == nil {
+			machineRes.OK = false
+			machineRes.Detail = "no podman machine adapter is wired on darwin; " +
+				"embedded mode cannot verify the Linux VM podman runs inside " +
+				"(this is a build/wiring defect, not a host condition)"
+		} else if err := d.MachineReady(ctx); err != nil {
 			machineRes.OK = false
 			machineRes.Detail = fmt.Sprintf("the podman machine is not ready: %v", err)
 		}

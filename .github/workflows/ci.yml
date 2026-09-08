@@ -1674,21 +1674,44 @@ jobs:
           # Run the darwin-tagged unit suite for the shell entrypoint — this is
           # the ONLY lane that executes it. The moon `compass-go:test` lane runs
           # untagged (`go test ./...`), which compiles the non-gtk4 stub and
-          # excludes main_test.go; the gtk4-e2e lane compiles the gtk4 build but
-          # `-run E2E`-filters, so it never executes TestDistDirForExecutable.
-          # That test defends the .app dist-resolution contract (the resolver
-          # returns Contents/Resources/dist under a Contents/MacOS executable,
-          # else dist beside it), which is exactly the behavioral change this
-          # lane ships — so its regression guard lives here or nowhere.
+          # excludes main_test.go, machine_test.go and embedded_test.go; the
+          # gtk4-e2e lane compiles the gtk4 build but `-run E2E`-filters, so it
+          # never reaches any of them. These tests defend contracts that ARE the
+          # darwin behaviour this lane ships, so their regression guards live
+          # here or nowhere:
+          #   - DistDirForExecutable: the .app dist-resolution contract
+          #     (Contents/Resources/dist under a Contents/MacOS executable,
+          #     else dist beside it).
+          #   - Machine*/EnsureMachine*: the podman-machine probe + ensure step,
+          #     including that an unclassifiable CLI answer provisions nothing.
+          #   - RealPreflightDeps*/ClassifyPreflight*: that the darwin machine
+          #     adapter is actually WIRED and that an unmet machine check is
+          #     fatal. This is the pair that catches the silent-skip regression
+          #     (a nil adapter making the check vanish into an all-green
+          #     preflight), so it is the last thing that should run nowhere.
+          #   - BringUpTimeout*: that darwin keeps a window a cold
+          #     `podman machine init` can fit inside.
           # `-run` alone exits 0 when it matches nothing (a rename → false
-          # green), so require the test's own PASS line — a rename or skip reds.
+          # green), so require each group's own PASS line — a rename or skip
+          # reds. The filter is explicit rather than the whole package because
+          # the package also holds GUI E2E tests that need a display.
           CGO_ENABLED=1 go -C go test -trimpath \
-            -run 'TestDistDirForExecutable' -count=1 -v \
+            -run 'TestDistDirForExecutable|TestMachineReady|TestEnsureMachineReady|TestMachineResourceFloorIsExplicit|TestRealPreflightDeps|TestClassifyPreflight|TestBringUpTimeout' \
+            -count=1 -v \
             ./cmd/compass-app/ | tee /tmp/darwin-unit.log
-          grep -q '^--- PASS: TestDistDirForExecutable' /tmp/darwin-unit.log || {
-            echo "::error::darwin: TestDistDirForExecutable did not run+pass (renamed or skipped?)"
-            exit 1
-          }
+          for t in TestDistDirForExecutable \
+                   TestMachineReadyRunning \
+                   TestMachineReadyNoMachine \
+                   TestEnsureMachineReadyNoMachineProvisions \
+                   TestEnsureMachineReadyUnclassifiedDoesNotProvision \
+                   TestRealPreflightDepsWiresDarwinMachineAdapter \
+                   TestClassifyPreflightUnwiredDarwinMachineIsFatal \
+                   TestBringUpTimeoutBudgetsDarwinColdProvisioning; do
+            grep -q "^--- PASS: $t" /tmp/darwin-unit.log || {
+              echo "::error::darwin: $t did not run+pass (renamed or skipped?)"
+              exit 1
+            }
+          done
 
           # The UI dist the .app stages into Contents/Resources/dist.
           moon run compass-ui:build
