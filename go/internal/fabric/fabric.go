@@ -44,6 +44,42 @@ type RunnerFabric interface {
 	Events(ctx context.Context) (<-chan RunnerEvent, error)
 }
 
+// RoutingFabric is the binding-invalidation seam (§T4). It rides core NATS —
+// best-effort at-most-once, deliberately: the hub's binding maps become
+// instance-local caches over durable truth, and "Postgres is the arbiter on any
+// cache miss or conflict; core NATS at-most-once suffices because a dropped
+// invalidation degrades to a cache-miss re-read".
+//
+// A THIRD seam rather than a method on EventFabric because the two delivery
+// contracts are opposites. EventFabric promises durable at-least-once fan-out
+// and every one of its read paths is a durable queue-group consumer, so each
+// event is claimed by exactly one instance. An invalidation must reach EVERY
+// instance that might hold the stale entry, and must be droppable. Neither
+// property can be expressed on the other seam without breaking it for its own
+// callers.
+//
+// So: no ack, no retry, and NO DLQ on this plane. A malformed received payload
+// is logged and dropped — there is nothing to Nak and nowhere to park — which
+// is the one visible behavioural difference from the JetStream path, where an
+// undecodable payload lands on DLQSubject.
+type RoutingFabric interface {
+	PublishBindingChange(ctx context.Context, tenant string, b BindingChange) error
+	// SubscribeBindingChanges is a PLAIN core-NATS subscribe with NO queue
+	// group, and that is the whole point of the seam. Every Server caches
+	// bindings independently, so every Server must receive every invalidation;
+	// joining a queue group would hand each invalidation to exactly one
+	// instance and leave the rest serving a stale binding — silently, since
+	// there is no error and no missing ack to notice. Contrast
+	// RunnerEventsQueue, which queue-groups on purpose: a Runner event is WORK,
+	// and work must be done once.
+	//
+	// fn may be handed a BindingOp outside the declared constants, published
+	// by a newer process; treat any unrecognized op as invalidate-and-re-read
+	// (see BindingOp). A switch with no default silently discards a real
+	// change on a plane with no ack, no retry and no dead-letter subject.
+	SubscribeBindingChanges(ctx context.Context, fn func(BindingChange)) (Unsubscribe, error)
+}
+
 // Config configures a Fabric. Only URL is required; every other field has a
 // documented default from stream.go, so the common case is
 // fabric.New(fabric.Config{URL: natsURL}).
@@ -178,8 +214,8 @@ func (c Config) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// Fabric is the one NATS client: it implements both EventFabric and
-// RunnerFabric over a single connection, because the record gives each party
+// Fabric is the one NATS client: it implements EventFabric, RunnerFabric and
+// RoutingFabric over a single connection, because the record gives each party
 // exactly one ("Each Runner holds ONE fabric connection … each Server
 // likewise"). Safe for concurrent use.
 type Fabric struct {
@@ -215,11 +251,12 @@ type Fabric struct {
 	teardown chan struct{}
 }
 
-// Compile-time proof Fabric satisfies both frozen seams. Cheap here, and it
-// fails the build rather than a consumer's wiring if a signature drifts.
+// Compile-time proof Fabric satisfies every seam. Cheap here, and it fails the
+// build rather than a consumer's wiring if a signature drifts.
 var (
-	_ EventFabric  = (*Fabric)(nil)
-	_ RunnerFabric = (*Fabric)(nil)
+	_ EventFabric   = (*Fabric)(nil)
+	_ RunnerFabric  = (*Fabric)(nil)
+	_ RoutingFabric = (*Fabric)(nil)
 )
 
 // New connects to NATS and returns the fabric. It does not create the JetStream
