@@ -57,17 +57,36 @@ On the DL-325 trust-model axis
 (`docs/designs/DECISIONS.md:158`: "untrusted multi-tenant operation requires
 the microVM hardware boundary (KVM, unchanged); self-host single-tenant
 deployments keep podman as a permanent, supported entry tier"), the host tier
-sits **below** podman: a self-host single-tenant onboarding tier for a user
-running their own agents on their own machine. It is never valid for untrusted
-or multi-tenant operation. Guidance stays "prefer container/microVM" — the
-docs recommend graduating — but the tier is not gated or crippled to force it.
+sits **below** podman. DL-325's rule is that **the boundary follows the trust
+model, not the deployment shape** — so the host tier is scoped by *whose
+machine and whose trust*, not by which product a user bought.
+
+The agent runs on the operator's own machine, under their own uid, on work
+they already trust themselves with. That is a **single-trust-domain** tier:
+the operator is the only principal, so there is no boundary for the tier to
+enforce. It is never a valid backend for **untrusted** work or for isolating
+**mutually-distrusting** principals from each other — a shared kernel and a
+shared `$HOME` cannot separate parties, whatever the deployment shape.
+
+Nothing in that scoping is about the *number of tenants a deployment serves*.
+A user still has their own machine whatever shape their Server runs in, and
+running an agent on it — for onboarding, or for a task that genuinely needs
+that box (below) — puts exactly one trust domain on the host: theirs. So the
+tier is available to any user running an agent on their own machine, and the
+deployment topology their Server sits in does not change the analysis.
+Applying the tier to *someone else's* work, on a machine serving more than one
+principal, is what DL-325 forbids — and that is a property of the trust
+domain, not of the product.
+
+Guidance stays "prefer container/microVM" — the docs recommend graduating —
+but the tier is not gated or crippled to force it.
 
 The tier's second motivation is host capability the container cannot provide
 at all: workflows that need the user's real session bus, display, or
 device access (e.g. window-management tooling driving the live desktop
-session). See Open Questions — this record ships the tier for onboarding and
-raises the permanent-host-capability framing as a question rather than ruling
-it.
+session). This is not onboarding scaffolding — it is a permanent capability,
+and it is the same need whichever deployment a user's Server belongs to: the
+work has to run where the hardware and the session are. See Open Questions.
 
 #### `ContainerRuntime` implementation
 
@@ -588,8 +607,12 @@ probe leg is necessary but not sufficient, and the record takes both.
   T0–T5 are all unimplemented
   (`docs/designs/server/compass-gateway-credentials-at-rest-encryption.md`,
   tasks unchecked); nothing here waits on or assumes it.
-- **The host tier is self-host single-tenant only** — never a valid backend
-  for untrusted or multi-tenant operation (DL-325's axis).
+- **The host tier is a single-trust-domain backend** — valid only for an
+  operator running their own agents on their own machine, never for untrusted
+  work and never to isolate mutually-distrusting principals from each other
+  (DL-325's axis: the boundary follows the trust model, not the deployment
+  shape). It is **not** scoped by deployment topology: a user of any
+  deployment shape may run an agent on their own box.
 - **Agent proposes, user disposes** — the import review never mutates the
   user's source corpus and never pushes without an explicit user decision.
 - **Bundle grammar and door checks are authoritative and unchanged** — the
@@ -717,17 +740,29 @@ probe leg is necessary but not sufficient, and the record takes both.
 
 ## Open Questions
 
-- **Two motivations, one feature?** (load-bearing for scope, not for the
-  T1/T1a/T1b–T4 backend correctness) Onboarding convenience and permanent host
-  capability (workflows
-  needing the real session bus/display, which no container tier can provide)
-  are two motivations wearing one backend. This record ships the tier framed as
-  the onboarding wedge and treats host-capability use as a supported
-  consequence, not a designed-for product surface. If host-capability is a
-  first-class permanent use case, it likely wants its own follow-up record
-  (device/session-bus documentation, multi-agent-on-host story). Recommendation:
-  accept the onboarding framing here; revisit host-capability as its own record
-  when a concrete workflow demands it.
+- **Two motivations, one feature — RULED: both are permanent, and the tier is
+  not deployment-scoped.** (Was: does host-capability want its own record?)
+  Onboarding convenience and host capability (workflows needing the real
+  session bus/display, which no container tier can provide) are two
+  motivations wearing one backend, and the second is **not** onboarding
+  scaffolding that a user graduates off. Some work simply has to run on the
+  user's own box: the hardware, the display, and the live session are there
+  and nowhere else. The tier therefore ships as a **permanent capability**,
+  not a wedge, and the earlier framing ("a supported consequence, not a
+  designed-for surface") is withdrawn as too weak.
+
+  The same ruling settles the scope question: **availability follows the trust
+  domain, not the deployment shape.** A user whose Server sits in any
+  deployment topology still has their own machine, and running an agent there
+  puts one trust domain on that host — theirs. So the tier is not restricted
+  to a single-tenant deployment; what DL-325 forbids is applying it to
+  untrusted work or to separate mutually-distrusting principals, which is a
+  property of the trust domain (see Approach § Placement).
+
+  Still open, narrowly: whether the device/session-bus surface (which devices,
+  which sockets, how documented) wants its own follow-up record once a
+  concrete workflow pins the requirements. That is a documentation and
+  surface-area question, not a tier-existence question.
 - **Concurrent host-tier agents** (non-load-bearing, deferred): v1 documents
   the tier as effectively single-agent (no inter-agent isolation exists;
   process-group stop cannot contain a double-forked escapee). Whether to add a
@@ -742,15 +777,20 @@ Proposed rows for the coordinator to mint at freeze (described, ids not
 invented here):
 
 - **Host tier row**: a `host` backend joins `SelectBackend`
-  (`""`/`podman`/`microvm`/`host`) as the self-host single-tenant onboarding
-  tier — agent as a host process at the user's existing CLI-agent exposure;
-  egress explicitly unenforced (a declared posture, visible in session state,
-  never `EgressArmedInGuest`); blast-radius protections (host filesystem,
-  inter-agent isolation, egress) structurally absent and declared. **AMENDS
-  DL-325's trust-model axis** with a third tier below podman: microVM required
-  for untrusted multi-tenant, podman the permanent self-host container tier,
-  host the self-host onboarding tier — never valid for untrusted or
-  multi-tenant operation.
+  (`""`/`podman`/`microvm`/`host`) as a permanent tier for an operator running
+  agents on their own machine — agent as a host process at the user's existing
+  CLI-agent exposure; egress explicitly unenforced (a declared posture,
+  visible in session state, never `EgressArmedInGuest`); blast-radius
+  protections (host filesystem, inter-agent isolation, egress) structurally
+  absent and declared. It serves two permanent cases, onboarding and
+  host-capability work no container tier can reach (real session bus, display,
+  device access). **AMENDS DL-325's trust-model axis** with a third tier below
+  podman: microVM required for untrusted multi-tenant, podman the permanent
+  self-host container tier, host the single-trust-domain tier. Per DL-325's
+  own rule the boundary follows the **trust model, not the deployment shape**,
+  so the host tier is **not scoped by deployment topology** — it is available
+  to any user running an agent on their own machine, and is never valid for
+  untrusted work or for isolating mutually-distrusting principals.
   The tier also pins two mechanism decisions: `Workspace.UID` is derived from
   the Runner's `os.Geteuid()` rather than the baked `agentuid.AgentUID`, and the
   agent's socket/config rendezvous paths become env-overridable (defaults

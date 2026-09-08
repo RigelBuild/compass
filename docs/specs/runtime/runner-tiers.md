@@ -52,7 +52,7 @@ today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
 
 | Tier | Isolation boundary | Egress enforcement | Trust model served |
 | --- | --- | --- | --- |
-| **host** *(not yet built)* | None — the agent runs as a process on the operator's own machine | **Explicitly unenforced** (see below) | Single-tenant only: the operator's own box, own code, own agents |
+| **host** *(not yet built)* | None — the agent runs as a process on the operator's own machine | **Explicitly unenforced** (see below) | Single **trust domain**: the operator's own box, own code, own agents. Not scoped by deployment shape — available to any user running an agent on their own machine |
 | **podman** | Rootless container (shared host kernel) | Enforced: default-deny nftables in the container's own netns | Self-host single-tenant — the permanent supported entry tier |
 | **microVM** | Hardware virtualization (cloud-hypervisor/KVM) | Enforced: armed in-guest by the backend | Required for untrusted multi-tenant; recommended self-host upgrade |
 
@@ -72,13 +72,22 @@ today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
   { EgressArmedInGuest() bool }`), because that marker means a backend armed
   egress itself — claiming it would be false. Host mode states plainly that
   egress policy is not enforced.
-- **When to use:** onboarding — near-zero setup, replicating the user's
-  existing CLI-agent posture with Compass's server, comms, and config
-  machinery on top; and host-capability work that a container cannot reach.
-- **When NOT to use:** any deployment with an untrusted tenant, and any
-  deployment where egress policy must actually bind. It is also not the
-  preferred steady state for anyone (see
-  [Standing guidance](#standing-guidance)).
+- **When to use:** two permanent cases, on the operator's own machine.
+  **Onboarding** — near-zero setup, replicating the user's existing CLI-agent
+  posture with Compass's server, comms, and config machinery on top. And
+  **host-capability work a container cannot reach** — the real session bus,
+  display, or device access (window-management tooling driving the live
+  desktop, for instance). The second is not a transitional case a user
+  graduates off: that work has to run where the hardware and the session are.
+- **Scope:** the tier is bounded by **trust domain, not deployment shape**.
+  Any user running an agent on their own machine puts exactly one principal
+  on that host — themselves — whatever topology their Server sits in. The
+  deployment a Server serves does not enter the analysis.
+- **When NOT to use:** untrusted work, and any case that needs to isolate
+  mutually-distrusting principals from each other — a shared kernel and a
+  shared `$HOME` cannot separate parties. Also unsuitable wherever egress
+  policy must actually bind. It is not the preferred steady state for
+  general agent work (see [Standing guidance](#standing-guidance)).
 - **What it does and does not protect:** per DL-024 the container was never
   credential avoidance — agents receive the user's own secrets on every tier.
   The host tier gives up only the blast-radius boundary; it does not hand the
