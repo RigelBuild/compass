@@ -7,8 +7,11 @@
 # lint/format are whole-repo tasks on the root project (/moon.yml), so this
 # leaf has no own bun.lock and never runs its own install.
 #
-# Compass CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
-# `moon run :ci`), so the `ci` aggregate below is swept automatically.
+# Compass CI runs a per-concern matrix, not one job: tools/ci-matrix computes
+# the targets and .github/workflows/ci.yml runs `moon run <targets>`, so this
+# project's `ci` aggregate is swept only when the matrix selects it. The
+# task-level half of the affected union selects this gate when a file in another
+# project's tree matches the whole-repo `check` scan.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
@@ -19,7 +22,20 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    # `/docs/concepts/self-host-and-managed.md` is a real input: a test asserts
+    # the doc cited in the failure hint still exists, so the cache key must
+    # track it. Without it moon replays a green after the doc is deleted —
+    # the same silent-pointer-death this gate's hint was repaired for. Scoped
+    # to the one cited file, not `/docs/**`, so unrelated docs edits don't
+    # re-run the suite. Keep in sync with `REMEDIATION_DOC` in index.ts.
+    #
+    inputs:
+      - '*.ts'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/docs/concepts/self-host-and-managed.md'
   check:
     # The boundary gate: scan the whole tracked tree (via git grep) for any
     # reference to the private monorepo. Run from the workspace root so the
