@@ -32,7 +32,13 @@ func relayRoster(sessionID, callID string, roster *compassv1.GetRosterRequest) *
 }
 
 // relaySetStatus builds a RelayCommsCallRequest carrying a set_status variant.
-func relaySetStatus(sessionID, callID, activity string) *compassv1internal.RelayCommsCallRequest { //nolint:unparam // read-clarity signature: sessionID names WHICH session the call is relayed for at each call site, and every sibling relay* builder in this package takes it — dropping it here alone would break that symmetry and hide the session→account binding this leg's assertions turn on.
+//
+// sessionID is retained though every current call site passes "sess-1": it names
+// WHICH session the call is relayed for, every sibling relay* builder takes it,
+// and dropping it here alone would hide the session→account binding this leg's
+// assertions turn on (relay_comms_test.go passes "never-bound" to relayPost for
+// exactly that reason).
+func relaySetStatus(sessionID, callID, activity string) *compassv1internal.RelayCommsCallRequest { //nolint:unparam // read-clarity signature: see above
 	return &compassv1internal.RelayCommsCallRequest{
 		SessionId: sessionID,
 		Call: &compassv1internal.CommsCallRequest{

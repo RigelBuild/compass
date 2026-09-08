@@ -88,6 +88,12 @@ func TestRelayCommsPinToolErrorIsInBandNotStreamError(t *testing.T) {
 // make the seed load-bearing: without the identity assertion an arm could wrap
 // nil and still pass, because WhichOneof reports an arm as set whenever the
 // wrapper struct exists even when the inner message pointer is nil.
+//
+// A row omits seed/gotResp/wantResp ONLY when the production arm returns a FRESH
+// response rather than the caller's, so there is no instance to be identical to
+// — today that is set_status alone, whose CommsCaller method returns a string.
+// Such a row still pays the sweep's generic non-nil (IsValid) gate, which is why
+// declining the pair cannot silently drop an arm's payload coverage.
 type armCase struct {
 	name     string
 	request  *compassv1internal.RelayCommsCallRequest
@@ -209,13 +215,13 @@ func commsArmCases() []armCase {
 	}
 }
 
-// TestRelayCommsEveryArmAttributesToBoundAccount: every CommsCallRequest arm
-// forwards its exact request under the session's bound account and returns the
-// caller's own response wrapped in the matching result arm. Coverage is gated on
-// the oneof descriptor in both directions, so a newly added arm fails here until
-// it is listed in commsArmCases.
-func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
-	cases := commsArmCases()
+// requireEveryArmCovered gates the hand-maintained table against the oneof
+// descriptor in BOTH directions: every declared arm has a case, and no case
+// names an arm the oneof no longer declares. Both are needed — the forward loop
+// alone passes a table that lost an arm to a duplicate name, and the count alone
+// passes a table covering the wrong nine.
+func requireEveryArmCovered(t *testing.T, cases []armCase) {
+	t.Helper()
 	arms := commsCallOneofArms(t)
 	for i := range arms.Len() {
 		name := string(arms.Get(i).Name())
@@ -230,11 +236,19 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 			t.Fatalf("CommsCallRequest oneof arm %q is not covered; add a table case", name)
 		}
 	}
-	// The converse direction: a table case naming an arm the oneof no longer
-	// has would otherwise sit here forever, asserting nothing.
 	if len(cases) != arms.Len() {
 		t.Fatalf("table covers %d arms but the oneof declares %d — remove the stale case(s)", len(cases), arms.Len())
 	}
+}
+
+// TestRelayCommsEveryArmAttributesToBoundAccount: every CommsCallRequest arm
+// forwards its exact request under the session's bound account and returns the
+// caller's own response wrapped in the matching result arm. Coverage is gated on
+// the oneof descriptor in both directions, so a newly added arm fails here until
+// it is listed in commsArmCases.
+func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
+	cases := commsArmCases()
+	requireEveryArmCovered(t, cases)
 
 	for _, arm := range cases {
 		t.Run(arm.name, func(t *testing.T) {
@@ -253,29 +267,40 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 				t.Fatalf("%s attributed to %q, want bound %q", arm.name, calls[0].account, testAgentAccount)
 			}
 			if got := arm.field(calls[0]); got != arm.want {
-				t.Fatalf("%s recorded field = %v, want %v", arm.name, got, arm.want)
+				t.Fatalf("%s recorded field = %#v, want %#v", arm.name, got, arm.want)
 			}
 			// The result must be wrapped in the arm MATCHING the request.
 			// Attribution and forwarding both pass under a mis-wrapped
 			// response, so without this a swapped result oneof is invisible.
-			// CommsCallResult reuses the request's arm names
-			// (agent_gateway.proto:144-155), so the check is generic.
+			// CommsCallResult reuses CommsCallRequest.call's arm names
+			// (agent_gateway.proto, `message CommsCallResult`), so the check is
+			// generic over the oneof rather than per-arm.
 			result := resp.GetResult().ProtoReflect()
-			set := result.WhichOneof(result.Descriptor().Oneofs().ByName("result"))
+			resultOneof := result.Descriptor().Oneofs().ByName("result")
+			if resultOneof == nil {
+				t.Fatal(`CommsCallResult has no oneof named "result" — the arm-coverage gate lost its descriptor and is measuring nothing`)
+			}
+			set := result.WhichOneof(resultOneof)
 			if set == nil {
 				t.Fatalf("%s returned no result arm set", arm.name)
 			}
 			if got := string(set.Name()); got != arm.name {
 				t.Fatalf("%s wrapped its response in the %q result arm, want %q", arm.name, got, arm.name)
 			}
-			// The arm name alone is not enough: WhichOneof reports an arm as
-			// set whenever the wrapper struct exists, even wrapping a NIL
-			// message — so an arm that drops the caller's response passes the
-			// name check. Asserting the payload is the seeded instance is what
-			// makes each seed load-bearing and kills a dropped-response bug.
+			// The floor EVERY arm pays, including one that declines wantResp:
+			// WhichOneof reports an arm as set whenever the wrapper struct
+			// exists, even wrapping a NIL message, so the name check alone
+			// passes an arm that drops the caller's response. IsValid is what
+			// separates a real empty message from a nil pointer — Has cannot.
+			if !result.Get(set).Message().IsValid() {
+				t.Fatalf("%s wrapped a NIL message in the %q result arm", arm.name, arm.name)
+			}
+			// The ceiling the eight arms with a caller-owned response reach:
+			// the payload is the seeded instance, which is what makes each
+			// seed load-bearing and kills a wrong-instance swap.
 			if arm.gotResp != nil {
 				if got := arm.gotResp(resp.GetResult()); got != arm.wantResp {
-					t.Fatalf("%s returned response %v, want the caller's seeded instance %v", arm.name, got, arm.wantResp)
+					t.Fatalf("%s returned response %p, want the caller's seeded instance %p", arm.name, got, arm.wantResp)
 				}
 			}
 		})
