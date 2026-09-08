@@ -64,8 +64,8 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 	if calls[0].roster != req {
 		t.Fatalf("caller received a different GetRosterRequest than relayed")
 	}
-	if resp.GetResult().GetRoster() == nil {
-		t.Fatalf("result oneof = %T, want a roster result", resp.GetResult().GetResult())
+	if resp.GetResult().GetRoster() != comms.rosterResp {
+		t.Fatalf("result oneof = %T, want the caller's roster response", resp.GetResult().GetResult())
 	}
 	if got := resp.GetResult().GetCallId(); got != "tc-r" {
 		t.Fatalf("response call_id = %q, want tc-r", got)
