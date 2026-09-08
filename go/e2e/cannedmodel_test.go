@@ -587,3 +587,287 @@ func TestCannedCustomMarkerRoutesOffScript(t *testing.T) {
 		t.Fatalf("post-marker normal POST finish_reason = %q, want stop", first.finish)
 	}
 }
+
+// TestCannedMarkerScriptAdvancesAndTerminalRepeats is the LOAD-BEARING teeth for
+// the marker-routed multi-turn script (newCannedMarkerScript, RIG-3528 T1), and
+// it is the assertion the naive one-turn-per-marker implementation cannot pass.
+//
+// The hazard: a tool-call turn needs TWO model round-trips to settle (the
+// tool-call turn, then the follow-up that settles on text), while a marker route
+// matches a substring of the WHOLE request body and returns unconditionally. So
+// a marker route that always serves its single turn NEVER TERMINATES — every
+// POST re-matches and re-serves the tool call forever, and the agent loop spins.
+//
+// Three consecutive marker-matching POSTs against a [CannedToolCall, CannedText]
+// marker script therefore must yield: POST 1 the tool call, POST 2 the text
+// SETTLE (not a repeat of the tool call — this is what reddens on the naive
+// implementation), and POST 3 still the settle (the terminal element repeats
+// once exhausted, so a re-match is never a 500 and never rewinds to the call).
+func TestCannedMarkerScriptAdvancesAndTerminalRepeats(t *testing.T) {
+	const (
+		marker   = "please post that for me"
+		toolName = "comms_post_message"
+		argsJSON = `{"channel":"c1","text":"hi"}`
+		settle   = "posted it"
+	)
+	host, err := hostRoutableAddr()
+	if err != nil {
+		t.Fatalf("hostRoutableAddr: %v", err)
+	}
+	// The positional script is a single unrelated text turn; the marker script
+	// carries the two-turn tool-call sequence. Both coexist on one backend, which
+	// is the shape a leg uses (its own ordered script + a marker-routed peer).
+	srv, err := startCannedModelServer(
+		host+":0",
+		[]CannedTurn{CannedText("the one positional turn")},
+		newCannedMarkerScript(marker, CannedToolCall(toolName, argsJSON), CannedText(settle)),
+	)
+	if err != nil {
+		t.Fatalf("startCannedModelServer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("canned model server Close: %v", err)
+		}
+	})
+
+	// context.Background() as the test root (rule://go-thread-context's test
+	// exemption), matching every sibling test in this file.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url := srv.BaseURL(host) + "/chat/completions"
+	markerBody := `{"model":"x","messages":[{"role":"user","content":"` + marker + `"}]}`
+
+	first := readCannedTurnBody(ctx, t, url, markerBody)
+	if len(first.toolCalls) != 1 || first.toolCalls[0].name != toolName {
+		t.Fatalf("marker POST#1 = %+v, want a single %q tool call", first, toolName)
+	}
+	if first.toolCalls[0].args != argsJSON {
+		t.Fatalf("marker POST#1 tool args = %q, want %q verbatim", first.toolCalls[0].args, argsJSON)
+	}
+	if first.finish != "tool_calls" {
+		t.Fatalf("marker POST#1 finish_reason = %q, want tool_calls", first.finish)
+	}
+
+	// THE assertion the naive implementation fails: the SAME marker body, POSTed
+	// again (exactly what the agent's tool-result follow-up looks like on the
+	// wire), must draw turns[1] — the text settle — not turns[0] again.
+	second := readCannedTurnBody(ctx, t, url, markerBody)
+	if len(second.toolCalls) != 0 {
+		t.Fatalf("marker POST#2 carried %d tool calls, want the text SETTLE: a marker script that re-serves its tool call never terminates (the agent loop spins forever)", len(second.toolCalls))
+	}
+	if second.content != settle {
+		t.Fatalf("marker POST#2 content = %q, want the settle %q", second.content, settle)
+	}
+	if second.finish != "stop" {
+		t.Fatalf("marker POST#2 finish_reason = %q, want stop", second.finish)
+	}
+
+	// The terminal element repeats: a third match stays settled rather than
+	// 500ing on exhaustion (the positional path's behaviour) or rewinding to the
+	// tool call. A re-steer or an extra loop iteration must not error the agent
+	// out.
+	third := readCannedTurnBody(ctx, t, url, markerBody)
+	if len(third.toolCalls) != 0 {
+		t.Fatalf("marker POST#3 carried %d tool calls, want the repeated terminal settle", len(third.toolCalls))
+	}
+	if third.content != settle {
+		t.Fatalf("marker POST#3 content = %q, want the terminal element repeated (%q)", third.content, settle)
+	}
+	if third.finish != "stop" {
+		t.Fatalf("marker POST#3 finish_reason = %q, want stop", third.finish)
+	}
+
+	// The marker invariant survives a SCRIPT route as it does a reply route: none
+	// of the three matches consumed a positional slot, so the single positional
+	// turn is still at index 0 and an unmarked POST draws it (not a 500).
+	positional := readCannedTurn(ctx, t, url)
+	if positional.content != "the one positional turn" {
+		t.Fatalf("post-marker unmarked POST content = %q, want the positional turn (a marker script must not consume a positional slot)", positional.content)
+	}
+	if positional.finish != "stop" {
+		t.Fatalf("post-marker unmarked POST finish_reason = %q, want stop", positional.finish)
+	}
+}
+
+// TestCannedMarkerScriptRejectsEmptyTurns pins the construction guard: a marker
+// route with no turns can never settle a matching request, so it is a caller bug
+// startCannedModelServer refuses rather than a 500 discovered mid-leg.
+func TestCannedMarkerScriptRejectsEmptyTurns(t *testing.T) {
+	host, err := hostRoutableAddr()
+	if err != nil {
+		t.Fatalf("hostRoutableAddr: %v", err)
+	}
+	srv, err := startCannedModelServer(
+		host+":0",
+		[]CannedTurn{CannedText("x")},
+		newCannedMarkerScript("no-turns-marker"),
+	)
+	if err == nil {
+		if closeErr := srv.Close(); closeErr != nil {
+			t.Errorf("canned model server Close: %v", closeErr)
+		}
+		t.Fatal("startCannedModelServer accepted a marker with no turns, want a construction error")
+	}
+	if !strings.Contains(err.Error(), "no-turns-marker") {
+		t.Fatalf("error = %v, want it to name the offending marker", err)
+	}
+}
+
+// TestCannedMarkerScriptsAreIndependentPerMarker pins the PER-MARKER keying of
+// the marker-script counter (RIG-3528 T1, review F3). Every other marker test
+// registers exactly ONE marker, so markerServed is only ever exercised at i=0
+// and a mis-keyed counter is invisible: with `seq := c.markerServed[0]` hard-coded
+// (ignoring the route index) the whole canned suite still passes, while marker B's
+// FIRST match silently serves B's SETTLE instead of its opening tool call — the
+// design record's named hazard, a marker that "silently serves the wrong agent's
+// turn and the test still passes".
+//
+// Two marker scripts on ONE backend is what the feature is FOR (fixture.go's
+// WithCannedMarkerScript: "repeat the option to register several marker
+// scripts") — one route per marker-driven agent in a multi-actor leg. So: drive
+// marker A through its full [toolcall, settle] pair, then assert marker B's FIRST
+// match is still B.turns[0], its own tool call. A shared or mis-keyed counter
+// reddens here.
+func TestCannedMarkerScriptsAreIndependentPerMarker(t *testing.T) {
+	const (
+		markerA   = "agent-a please post that"
+		toolA     = "comms_post_message"
+		argsA     = `{"channel":"a1","text":"from a"}`
+		settleA   = "a-settle"
+		markerB   = "agent-b please post that"
+		toolB     = "comms_deliver_message"
+		argsB     = `{"channel":"b1","text":"from b"}`
+		settleB   = "b-settle"
+		positiona = "the one positional turn"
+	)
+	host, err := hostRoutableAddr()
+	if err != nil {
+		t.Fatalf("hostRoutableAddr: %v", err)
+	}
+	srv, err := startCannedModelServer(
+		host+":0",
+		[]CannedTurn{CannedText(positiona)},
+		newCannedMarkerScript(markerA, CannedToolCall(toolA, argsA), CannedText(settleA)),
+		newCannedMarkerScript(markerB, CannedToolCall(toolB, argsB), CannedText(settleB)),
+	)
+	if err != nil {
+		t.Fatalf("startCannedModelServer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("canned model server Close: %v", err)
+		}
+	})
+
+	// context.Background() as the test root (rule://go-thread-context's test
+	// exemption), matching every sibling test in this file.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url := srv.BaseURL(host) + "/chat/completions"
+	bodyA := `{"model":"x","messages":[{"role":"user","content":"` + markerA + `"}]}`
+	bodyB := `{"model":"x","messages":[{"role":"user","content":"` + markerB + `"}]}`
+
+	// Marker A, driven through its whole pair: the tool call, then the settle.
+	// This is what advances A's counter to 2 and would leak into B's first match
+	// under a shared counter.
+	a1 := readCannedTurnBody(ctx, t, url, bodyA)
+	if len(a1.toolCalls) != 1 || a1.toolCalls[0].name != toolA {
+		t.Fatalf("marker A POST#1 = %+v, want a single %q tool call", a1, toolA)
+	}
+	a2 := readCannedTurnBody(ctx, t, url, bodyA)
+	if a2.content != settleA {
+		t.Fatalf("marker A POST#2 content = %q, want A's settle %q", a2.content, settleA)
+	}
+
+	// THE assertion: marker B's FIRST match draws B.turns[0]. Under a counter
+	// keyed by a constant index instead of the route index, A's two matches have
+	// already advanced past B's tool call, so this POST serves b-settle with ZERO
+	// tool calls and the agent's opening call never happens.
+	b1 := readCannedTurnBody(ctx, t, url, bodyB)
+	if len(b1.toolCalls) != 1 {
+		t.Fatalf("marker B POST#1 carried %d tool calls, want B's OPENING tool call: marker B's counter must be independent of marker A's (A was driven through its full pair first)", len(b1.toolCalls))
+	}
+	if b1.toolCalls[0].name != toolB || b1.toolCalls[0].args != argsB {
+		t.Fatalf("marker B POST#1 tool call = %q(%q), want B's own %q(%q) — a mis-keyed marker serves the wrong agent's turn", b1.toolCalls[0].name, b1.toolCalls[0].args, toolB, argsB)
+	}
+	if b1.finish != "tool_calls" {
+		t.Fatalf("marker B POST#1 finish_reason = %q, want tool_calls", b1.finish)
+	}
+
+	// B's own counter then advances on its OWN matches: its second match is B's
+	// settle (not A's), so the two routes neither share a counter nor cross-serve.
+	b2 := readCannedTurnBody(ctx, t, url, bodyB)
+	if b2.content != settleB {
+		t.Fatalf("marker B POST#2 content = %q, want B's settle %q (not A's %q)", b2.content, settleB, settleA)
+	}
+
+	// Neither route consumed a positional slot, so the single positional turn is
+	// still at index 0 — the invariant that keeps this non-vacuous (a 500 here
+	// would mean the marker routing never engaged at all).
+	positional := readCannedTurn(ctx, t, url)
+	if positional.content != positiona {
+		t.Fatalf("post-marker unmarked POST content = %q, want the positional turn %q", positional.content, positiona)
+	}
+}
+
+// TestCannedMarkerScriptCallIDsStayDistinct pins the ONLY thing claimMarkerTurn's
+// returned seq does (RIG-3528 T1, review F6): keep successive marker-served
+// tool-call ids DISTINCT. Nothing else reads it, so passing a constant instead
+// (`c.writeCannedTurn(w, flusher, turn, 0)`) is otherwise undetectable — and a
+// transcript that cannot tell two served calls apart cannot pin which call a
+// tool result answers.
+//
+// The distinctness the counter guarantees is WITHIN one marker route across
+// successive matches, which is exactly why the counter keeps climbing past the
+// end of the script (claimMarkerTurn). Two DIFFERENT routes both legitimately
+// start at seq 0, so cross-marker ids are equal by design and asserting they
+// differ would red on correct production. So: a single-turn tool-call marker
+// script, whose terminal element repeats, matched twice.
+func TestCannedMarkerScriptCallIDsStayDistinct(t *testing.T) {
+	const (
+		marker   = "please call the tool again"
+		toolName = "comms_post_message"
+		argsJSON = `{"channel":"c1","text":"hi"}`
+	)
+	host, err := hostRoutableAddr()
+	if err != nil {
+		t.Fatalf("hostRoutableAddr: %v", err)
+	}
+	srv, err := startCannedModelServer(
+		host+":0",
+		[]CannedTurn{CannedText("the one positional turn")},
+		newCannedMarkerScript(marker, CannedToolCall(toolName, argsJSON)),
+	)
+	if err != nil {
+		t.Fatalf("startCannedModelServer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("canned model server Close: %v", err)
+		}
+	})
+
+	// context.Background() as the test root (rule://go-thread-context's test
+	// exemption), matching every sibling test in this file.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url := srv.BaseURL(host) + "/chat/completions"
+	body := `{"model":"x","messages":[{"role":"user","content":"` + marker + `"}]}`
+
+	first := readCannedTurnBody(ctx, t, url, body)
+	second := readCannedTurnBody(ctx, t, url, body)
+	for i, turn := range []sseTurn{first, second} {
+		if len(turn.toolCalls) != 1 {
+			t.Fatalf("marker POST#%d carried %d tool calls, want 1 (the terminal tool-call turn repeats)", i+1, len(turn.toolCalls))
+		}
+		if turn.toolCalls[0].id == "" {
+			t.Fatalf("marker POST#%d tool-call id is empty", i+1)
+		}
+	}
+	// THE assertion: the second match's id must not repeat the first's. The
+	// per-marker counter climbs past the end of the script for exactly this.
+	if first.toolCalls[0].id == second.toolCalls[0].id {
+		t.Fatalf("both marker-served tool calls carry id %q; successive marker-served call ids must be DISTINCT (claimMarkerTurn's seq), or a transcript cannot tell two served calls apart", first.toolCalls[0].id)
+	}
+}

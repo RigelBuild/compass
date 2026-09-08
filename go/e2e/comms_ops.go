@@ -79,6 +79,48 @@ func (f *Fixture) SubscribeComms(ctx context.Context, sinceSeq uint64) (*connect
 	return stream, nil
 }
 
+// PostMessageAsObserver is PostMessage threaded through an EXPLICIT comms client
+// rather than the fixture's admin one, so a leg can post AS a specific
+// observer account (the client AsObserver returned) and prove the post is
+// authored by — and authorized against — that account rather than the
+// bootstrap admin. Identical request shape to PostMessage, including CreateTopic
+// (a trusted internal minter); only the credential differs. Returns an error
+// rather than panicking so the caller (a test) decides fatality; the per-call
+// deadline is threaded from ctx.
+func (f *Fixture) PostMessageAsObserver(ctx context.Context, comms commsServiceClient, channelID, topicName, text string) (messageID string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := comms.PostMessage(rctx, connect.NewRequest(&compassv1.PostMessageRequest{
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: channelID},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: topicName},
+		CreateTopic: true,
+		Blocks:      []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
+	}))
+	if err != nil {
+		return "", fmt.Errorf("PostMessage RPC (observer): %w", err)
+	}
+	return resp.Msg.GetMessage().GetId(), nil
+}
+
+// SubscribeCommsAsObserver is SubscribeComms threaded through an EXPLICIT comms
+// client rather than the fixture's admin one — the seam that makes a NEGATIVE
+// visibility assertion possible at all, since the admin stream sees everything.
+// The per-event D9 filter runs against the STREAM's authenticated account, so an
+// observer stream carries only what that account may see. sinceSeq, lifetime,
+// and Close ownership are exactly SubscribeComms' (the stream is bound to ctx and
+// the caller MUST Close it); AwaitDelivery consumes the returned stream
+// unchanged. Returns an error rather than panicking so the caller (a test)
+// decides fatality.
+func (f *Fixture) SubscribeCommsAsObserver(ctx context.Context, comms commsServiceClient, sinceSeq uint64) (*connect.ServerStreamForClient[compassv1.SubscribeCommsResponse], error) {
+	stream, err := comms.SubscribeComms(ctx, connect.NewRequest(&compassv1.SubscribeCommsRequest{
+		SinceSeq: sinceSeq,
+	}))
+	if err != nil {
+		return nil, fmt.Errorf("SubscribeComms RPC (observer): %w", err)
+	}
+	return stream, nil
+}
+
 // AwaitDelivery blocks until a MessagePosted whose Message satisfies match fans
 // onto stream, returning that message; it fails fast on ctx deadline or stream
 // close. It is FULLY EVENT-GATED: a goroutine pumps stream.Receive() and the
