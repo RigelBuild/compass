@@ -225,10 +225,13 @@ func postAsk(t *testing.T, w *mentionE2EWire, question string) (msgID, askID str
 // still sees it owed — and because sweepSession dispatches directly
 // (settle.go:343) rather than through gatedDispatch, the duplicate carries no
 // delivery.dispatch hop span and a different, fresh-rooted traceparent. That
-// breaks tracedOpFor's exactly-one contract in (a)/(c)/(d)/(e)/(g) and shifts
-// (j)'s position-based wire assertions. Gating here removes the race at its
-// source instead of loosening the readers, which would let a swept op with the
-// WRONG trace satisfy an assertion.
+// breaks tracedOpFor's exactly-one contract in (a)/(c)/(d)/(e)/(g) — this
+// helper's callers that read by identity — and shifts EVERY position-based wire
+// read, including (e):753 and (g):834, and (j), whose reads are positional only.
+// (f) calls tracedOpFor but never this helper: it drives the start edge itself,
+// so its swept deliver is the subject under test, not a contaminant.
+// Gating here removes the race at its source instead of loosening the readers,
+// which would let a swept op with the WRONG trace satisfy an assertion.
 func bringSessionLive(t *testing.T, w *mentionE2EWire, exp *tracetest.InMemoryExporter, account store.AccountID, container, session string) {
 	t.Helper()
 	// Baseline BEFORE Start: the edge it enqueues is the one we wait on. exp is
