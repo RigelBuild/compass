@@ -1,5 +1,5 @@
 {
-  # Compass distribution flake (docs/designs/platform/compass-distribution/design.md
+  # Compass distribution flake (docs/designs/infra/release/compass-distribution/design.md
   # §T6). Packages the four backend binaries + the native gtk4 app + the
   # microVM stack-env from a bare checkout, so
   # `nix profile install github:RigelBuild/compass#<pkg>` and
@@ -108,12 +108,26 @@
               # suite in the nix build would only re-pay it.
               doCheck = false;
             };
+
+          # The web UI built to a static dist (apps/ui/dist.nix, which carries the
+          # rationale). Bound in the `let` because it has TWO consumers below: its
+          # own package output, and compass-app's bin/dist staging.
+          compass-ui = import ./apps/ui/dist.nix {
+            inherit pkgs version;
+            inherit (pkgs) lib;
+          };
         in
         {
           compass = goBin "compass";
           compass-server = goBin "compass-server";
           compass-runner = goBin "compass-runner";
           compass-stack = goBin "compass-stack";
+
+          # Exposed on its own, not only as compass-app's input: it is the
+          # gate-able unit for the bun-workspace FOD pin (a `checks` alias, so
+          # `nix flake check` realizes it), and app-bundle can stage this store
+          # path instead of requiring a working-tree `apps/ui/dist`.
+          inherit compass-ui;
 
           # The Linux gtk4 cgo native shell (Wails v3). Links the
           # WebKitGTK closure through cgo — the same gtk-closure.nix the dev shell
@@ -138,6 +152,29 @@
             tags = [ "gtk4" ];
             ldflags = [ "-X main.version=${version}" ];
             doCheck = false;
+
+            # THE UI (RIG-3474). The gtk4 shell loads its front-end off disk:
+            # `distDirForExecutable` (go/cmd/compass-app/main.go:353-366) resolves
+            # `dist` BESIDE the executable, so a bare buildGoModule emitting only
+            # `bin/compass-app` installs a shell with no UI — which is what
+            # `nix profile install github:RigelBuild/compass#compass-app` did.
+            # Staging `bin/dist` next to `bin/compass-app` is the SAME layout the
+            # release tarball builds (app-bundle/build.sh:97), so the two
+            # distribution channels resolve the UI identically.
+            #
+            # A real copy, not a `ln -s`: the resolver joins `dist` onto the
+            # binary's own directory and reads through it, and a `nix profile`
+            # install materializes `$out/bin` as symlinks into this store path —
+            # so the directory has to BE there, and a copy keeps the served tree
+            # independent of how the profile is linked. `compass-ui`'s output IS
+            # the dist contents (apps/ui/dist.nix's trailing `cp -R
+            # apps/ui/dist/. $out/`), so the store path is staged as `dist`
+            # itself. `chmod -R u+w` because store sources are read-only and
+            # nothing downstream (fixup, strip) should trip on that.
+            postInstall = ''
+              cp -R ${compass-ui} $out/bin/dist
+              chmod -R u+w $out/bin/dist
+            '';
           };
 
           # The microVM stack runtime trio (cloud-hypervisor + virtiofsd + passt)
