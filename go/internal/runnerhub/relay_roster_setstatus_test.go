@@ -32,7 +32,13 @@ func relayRoster(sessionID, callID string, roster *compassv1.GetRosterRequest) *
 }
 
 // relaySetStatus builds a RelayCommsCallRequest carrying a set_status variant.
-func relaySetStatus(sessionID, callID, activity string) *compassv1internal.RelayCommsCallRequest {
+//
+// sessionID is retained though every current call site passes "sess-1": it names
+// WHICH session the call is relayed for, every sibling relay* builder takes it,
+// and dropping it here alone would hide the session→account binding this leg's
+// assertions turn on (relay_comms_test.go passes "never-bound" to relayPost for
+// exactly that reason).
+func relaySetStatus(sessionID, callID, activity string) *compassv1internal.RelayCommsCallRequest { //nolint:unparam // read-clarity signature: see above
 	return &compassv1internal.RelayCommsCallRequest{
 		SessionId: sessionID,
 		Call: &compassv1internal.CommsCallRequest{
@@ -64,8 +70,8 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 	if calls[0].roster != req {
 		t.Fatalf("caller received a different GetRosterRequest than relayed")
 	}
-	if resp.GetResult().GetRoster() == nil {
-		t.Fatalf("result oneof = %T, want a roster result", resp.GetResult().GetResult())
+	if resp.GetResult().GetRoster() != comms.rosterResp {
+		t.Fatalf("result oneof = %T, want the caller's roster response", resp.GetResult().GetResult())
 	}
 	if got := resp.GetResult().GetCallId(); got != "tc-r" {
 		t.Fatalf("response call_id = %q, want tc-r", got)
