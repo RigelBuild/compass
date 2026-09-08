@@ -7,8 +7,9 @@
 # lint/format are whole-repo tasks on the root project (/moon.yml), so this
 # leaf has no own bun.lock and never runs its own install.
 #
-# Compass CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
-# `moon run :ci`), so the `ci` aggregate below is swept automatically.
+# Compass CI runs a per-concern matrix, not one job: tools/ci-matrix computes
+# the targets and .github/workflows/ci.yml runs `moon run <targets>`, so this
+# project's `ci` aggregate is swept only when the matrix selects it.
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']
@@ -19,7 +20,37 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    # `/docs/concepts/self-host-and-managed.md` is a real input: a test asserts
+    # the doc cited in the failure hint still exists, so the cache key must
+    # track it. Without it moon replays a green after the doc is deleted —
+    # the same silent-pointer-death this gate's hint was repaired for. Scoped
+    # to the one cited file, not `/docs/**`, so unrelated docs edits don't
+    # re-run the suite. Keep in sync with `REMEDIATION_DOC` in index.ts.
+    #
+    # That declaration governs moon's CACHE, not CI's task selection: on a
+    # pull_request, tools/ci-matrix selects targets via `moon query projects
+    # --affected`, which walks the project graph and never consults a
+    # cross-tree input (see the discriminator note in
+    # .github/workflows/ci.yml). KNOWN GAP, and it is not docs-specific: ANY
+    # PR that does not touch this project's own tree fails to select it, since
+    # the `check` scan's `/**/*` input is cross-tree the same way. A Go-only
+    # or docs-only PR that ADDS a private-repo reference is therefore not
+    # gated on that PR; the doc pointer going stale is the mild case. The
+    # backstop is ci.yml's unconditional push + nightly full sweep, which does
+    # run the scan to a real verdict. `dependsOn: ['root']` would close the
+    # PR-time gap — root's source is `.`, so every path marks it affected and
+    # `--downstream direct` would pull this project in — but for the same
+    # reason it would run the gate on EVERY PR, since moon edges are
+    # project-level rather than file-level. sql-migration-gate declines the
+    # same edge, though its gap is narrower (two root-level configs).
+    # Tracked as RIG-3381.
+    inputs:
+      - '*.ts'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/docs/concepts/self-host-and-managed.md'
   check:
     # The boundary gate: scan the whole tracked tree (via git grep) for any
     # reference to the private monorepo. Run from the workspace root so the
