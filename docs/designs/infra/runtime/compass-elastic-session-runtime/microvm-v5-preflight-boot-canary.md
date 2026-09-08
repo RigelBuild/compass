@@ -86,20 +86,20 @@ broken engine isn't sent chasing tokens first):
    *per selected backend*;
 4. everything else unchanged.
 
-**How main picks the preflight.** The frozen `ContainerRuntime` interface
+**How main picks the preflight.** The frozen `WorkloadRuntime` interface
 gains nothing (the V3/V4-ratified discipline: capability probes are unexported
 single-method interface assertions, never interface verbs —
 microvm-v4-gateway-over-vsock.md § Global Constraints, "Frozen
-`ContainerRuntime` interface untouched"). `main.go` grows one extracted,
+`WorkloadRuntime` interface untouched"). `main.go` grows one extracted,
 hermetically testable helper:
 
 ```go
 // verifyBackendPreflight runs the selected engine's startup preflight: the
 // podman userns-remap check iff the engine is the podman backend, the microVM
 // support check iff it is the microVM backend. Probed via unexported
-// single-method interfaces so the frozen ContainerRuntime interface is
+// single-method interfaces so the frozen WorkloadRuntime interface is
 // untouched and a test fake can present either capability.
-func verifyBackendPreflight(ctx context.Context, engine runtime.ContainerRuntime) error
+func verifyBackendPreflight(ctx context.Context, engine runtime.WorkloadRuntime) error
 ```
 
 with two unexported probe interfaces in `package main`:
@@ -326,7 +326,7 @@ Two candidate shapes for the canary's boot path:
   - **Teardown is Remove's, not a second copy.** Start already tears down its
     own partial boot on any failure (`microvm_lifecycle.go:374-383`), and
     Remove is the idempotent teardown; the canary adds no new cleanup path.
-  Mechanics: a canary `ContainerSpec` with a reserved name
+  Mechanics: a canary `WorkloadSpec` with a reserved name
   (`compass-canary-<8-hex random>` — outside the agent-session prefix so it
   cannot collide with `runner.AgentContainerNamePrefix` sessions), a **single
   throwaway workspace mount** — a freshly `os.MkdirTemp`'d host dir mounted
@@ -477,7 +477,7 @@ Every task below inherits these.
   today's `VerifyUsernsRemapSupport` call with today's semantics; no podman
   argv, check, or message changes. Existing hermetic runner suites run
   unchanged.
-- **Frozen `ContainerRuntime` interface untouched.** Preflight and canary are
+- **Frozen `WorkloadRuntime` interface untouched.** Preflight and canary are
   `*MicroVMRuntime` methods reached from `main` via unexported single-method
   probe interfaces — the V3/V4-ratified discipline
   (microvm-v4-gateway-over-vsock.md § Global Constraints).
@@ -569,7 +569,7 @@ added by W3.
   - the reorder: `backends.selectEngine()` moved ahead of the preflight
     (currently `main.go:153` and `main.go:94-104` respectively); the
     legibility comment rewritten for the per-backend contract;
-  - `func verifyBackendPreflight(ctx context.Context, engine runtime.ContainerRuntime) error`
+  - `func verifyBackendPreflight(ctx context.Context, engine runtime.WorkloadRuntime) error`
     in `package main`, with unexported probes
     `type microVMPreflighter interface { VerifyMicroVMSupport(context.Context) error }` and
     `type podmanPreflighter interface { VerifyUsernsRemapSupport(context.Context) error }`;

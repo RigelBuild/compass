@@ -97,7 +97,7 @@ func TestRefreshSecretsMaterializesForBoundSession(t *testing.T) {
 	}
 }
 
-// recordingExecRuntime is a ContainerRuntime whose ExecStreaming delegates to a
+// recordingExecRuntime is a WorkloadRuntime whose ExecStreaming delegates to a
 // real terminatable child (so Start's agent relay works) and whose one-shot Exec
 // records the spec (so a materialize's exec is observable). It composes the
 // stub-streaming child with an exec recorder.
@@ -113,7 +113,7 @@ func newRecordingExecRuntime(t *testing.T) *recordingExecRuntime {
 	return &recordingExecRuntime{stubStreamingRuntime: newStubStreamingRuntime(t)}
 }
 
-func (r *recordingExecRuntime) Exec(_ context.Context, _ runtime.ContainerID, spec runtime.ExecSpec) (runtime.ExecOutput, error) {
+func (r *recordingExecRuntime) Exec(_ context.Context, _ runtime.WorkloadID, spec runtime.ExecSpec) (runtime.ExecOutput, error) {
 	r.mu.Lock()
 	r.execSpecsOneShot = append(r.execSpecsOneShot, spec)
 	err := r.execErr

@@ -44,7 +44,7 @@ func agentRemapImageExists() bool {
 // createStartExec creates + starts a container from spec, execs command inside
 // it (as the container's default user), and returns the trimmed stdout. It
 // registers teardown so a leaked container never collides with the next run.
-func createStartExec(t *testing.T, ctx context.Context, cli *PodmanCLI, spec ContainerSpec, command ...string) ExecOutput {
+func createStartExec(t *testing.T, ctx context.Context, cli *PodmanCLI, spec WorkloadSpec, command ...string) ExecOutput {
 	t.Helper()
 
 	// Force-remove any leftover from a crashed run so the name is free, then
@@ -90,7 +90,7 @@ func TestKeepIDRemapMapsHostUIDToSpecUID(t *testing.T) {
 		t.Fatalf("target uid %d must differ from the host uid %d for the mapping to be observable", targetUID, hostUID)
 	}
 
-	spec := ContainerSpec{
+	spec := WorkloadSpec{
 		Image:   "docker.io/library/alpine:latest",
 		Name:    "compass-usernsremap-map-" + strconv.Itoa(os.Getpid()),
 		UID:     targetUID,
@@ -118,7 +118,7 @@ func TestKeepIDRemapBindMountRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	dir := t.TempDir()
-	spec := ContainerSpec{
+	spec := WorkloadSpec{
 		Image:   "docker.io/library/alpine:latest",
 		Name:    "compass-usernsremap-mount-" + strconv.Itoa(os.Getpid()),
 		UID:     2000,
@@ -156,7 +156,7 @@ func TestKeepIDRemapAgentOwnsNix(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	spec := ContainerSpec{
+	spec := WorkloadSpec{
 		Image:   agentRemapImage,
 		Name:    "compass-usernsremap-nix-" + strconv.Itoa(os.Getpid()),
 		UID:     1000,

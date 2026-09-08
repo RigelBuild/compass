@@ -142,13 +142,13 @@ func (e SecretEnv) GoString() string { return e.String() }
 // RIG-1327 T5, driven from the SecretsVersion dispatch hook (initial materialize
 // and rotation ride the same signal path).
 type SecretMaterializer struct {
-	runtime ContainerRuntime
+	runtime WorkloadRuntime
 	log     *slog.Logger
 }
 
 // NewSecretMaterializer builds a materializer over the container engine. A nil
 // log falls back to slog.Default.
-func NewSecretMaterializer(runtime ContainerRuntime, log *slog.Logger) *SecretMaterializer {
+func NewSecretMaterializer(runtime WorkloadRuntime, log *slog.Logger) *SecretMaterializer {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -358,7 +358,7 @@ func EnvFileScript(homeDir string, envs []SecretEnv) (string, error) {
 // install per host, and generic file-delivery secrets write to
 // $HOME/.compass/secrets/<NAME>. Each setup script is fed to `sh -s` over stdin
 // as the agent uid in the agent's $HOME, the git-credential posture.
-func (m *SecretMaterializer) Install(ctx context.Context, id ContainerID, homeDir string, uid uint32, resolved []secrets.ResolvedSecret) error {
+func (m *SecretMaterializer) Install(ctx context.Context, id WorkloadID, homeDir string, uid uint32, resolved []secrets.ResolvedSecret) error {
 	seed := ProviderSeed{Entries: map[string]ProviderSeedEntry{}}
 	var files []SecretFile
 	var ghCreds []GHCredentials
@@ -431,7 +431,7 @@ func (m *SecretMaterializer) Install(ctx context.Context, id ContainerID, homeDi
 // runScript feeds one setup script to `sh -s` over stdin as the agent uid in the
 // agent's $HOME — never `sh -c`, never argv (the secret is in the script body,
 // and argv is visible in the container's process list while stdin is not).
-func (m *SecretMaterializer) runScript(ctx context.Context, id ContainerID, homeDir string, uid uint32, stage, script string) error {
+func (m *SecretMaterializer) runScript(ctx context.Context, id WorkloadID, homeDir string, uid uint32, stage, script string) error {
 	spec := NewExecSpec("sh", "-s").
 		AsUser(strconv.FormatUint(uint64(uid), 10)).
 		InDir(homeDir).

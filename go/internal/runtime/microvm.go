@@ -1,6 +1,6 @@
 package runtime
 
-// microvm.go is the microVM ContainerRuntime backend seam: the operator config,
+// microvm.go is the microVM WorkloadRuntime backend seam: the operator config,
 // the MicroVMRuntime type + its per-session state table, and the config-driven
 // backend selection the Runner startup uses to choose between the microVM and
 // podman backends. The lifecycle method bodies — which boot a VMM, wire the
@@ -87,20 +87,20 @@ type BackendConfig struct {
 	MicroVM MicroVMConfig
 }
 
-// MicroVMRuntime is a ContainerRuntime that isolates each agent in its own
+// MicroVMRuntime is a WorkloadRuntime that isolates each agent in its own
 // microVM instead of a rootless container. It holds the operator wiring plus a
-// per-session state table (keyed by the ContainerID Create mints), guarded by
+// per-session state table (keyed by the WorkloadID Create mints), guarded by
 // mu against concurrent lifecycle calls. Its method bodies live in
 // microvm_lifecycle.go (//go:build unix); the microvmSession type they operate
 // on is declared there too.
 type MicroVMRuntime struct {
 	config MicroVMConfig
 	mu     sync.Mutex
-	// sessions maps each live ContainerID to its session state. Every read and
+	// sessions maps each live WorkloadID to its session state. Every read and
 	// write is guarded by mu. Name lookups (Exists, duplicate-name refusal) scan
 	// this map for a matching spec.Name — a scan is cheap at one-VM-per-session
 	// scale and keeps a single source of truth.
-	sessions map[ContainerID]*microvmSession
+	sessions map[WorkloadID]*microvmSession
 	// launchFunc boots a session guest behind the guestVM seam; newGuestClient
 	// dials the guest control plane. Both default to the real microvm
 	// implementations (installSeamDefaults, //go:build unix) and are overridden
@@ -115,7 +115,7 @@ type MicroVMRuntime struct {
 func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
 	m := &MicroVMRuntime{
 		config:   cfg,
-		sessions: make(map[ContainerID]*microvmSession),
+		sessions: make(map[WorkloadID]*microvmSession),
 	}
 	m.installSeamDefaults()
 	return m
@@ -133,7 +133,7 @@ func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
 // collapses to microVM guarded by a VerifyMicroVMSupport hard gate at startup —
 // a legible refusal when the host cannot run microVMs, with no fallback to the
 // container path.
-func SelectBackend(cfg BackendConfig) (ContainerRuntime, error) {
+func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
 	switch strings.TrimSpace(cfg.Backend) {
 	case "", "podman":
 		return NewPodmanCLI(), nil

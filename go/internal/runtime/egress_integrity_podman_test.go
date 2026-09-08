@@ -37,7 +37,7 @@ import (
 // ExecSpec identity and returns the hex effective-capability mask (the token
 // after "CapEff:"). It drives the real PodmanCLI.Exec so the --user plumbing
 // under test is the one exercised in production.
-func capEffOf(t *testing.T, ctx context.Context, cli *PodmanCLI, id ContainerID, spec ExecSpec) string {
+func capEffOf(t *testing.T, ctx context.Context, cli *PodmanCLI, id WorkloadID, spec ExecSpec) string {
 	t.Helper()
 	out, err := cli.Exec(ctx, id, spec)
 	if err != nil {
@@ -73,7 +73,7 @@ func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
 	// A NET_ADMIN container remapped to the baked agent uid, mirroring a real
 	// agent container's create (agent.go createAndStart).
 	const agentUID uint32 = agentuid.AgentUID
-	spec := ContainerSpec{
+	spec := WorkloadSpec{
 		Image:   "docker.io/library/alpine:latest",
 		Name:    "compass-egress-integrity-" + strconv.Itoa(os.Getpid()),
 		UID:     agentUID,

@@ -20,7 +20,7 @@ Amends: RIG-1717 elastic session runtime record (PR #446)
 
 The frozen record's task **S1** lists the `vfs.VirtualFS` source-of-tree seam
 (interface + git-checkout backend + provision wiring) as a deliverable
-alongside the `compute.ComputeRuntime` seam and the `ContainerRuntime.Resize`
+alongside the `compute.ComputeRuntime` seam and the `WorkloadRuntime.Resize`
 freeze. During S1 execution, building `VirtualFS` surfaced that the seam has
 **no production caller at S1** and quietly bakes in an unsettled architectural
 decision. This amendment descopes `VirtualFS` from S1 to **P2**, where it
@@ -74,7 +74,7 @@ Three findings drive the descope:
 **What S1 ships instead (unchanged by this amendment):** the
 `compute.ComputeRuntime` seam + its in-environment passthrough backend + the
 fail-closed routing-policy shell (`go/internal/compute`, PR #457), and the
-additively-reserved `ContainerRuntime.Resize` verb + `ResourceLimits`
+additively-reserved `WorkloadRuntime.Resize` verb + `ResourceLimits`
 (`go/internal/runtime`, PR #454). These are the two seams with teeth now and
 carry no clone/credential entanglement. The agent-self-clone-in-container model
 is left untouched (Global Constraint 8: the existing session path stays green;
@@ -103,7 +103,7 @@ new code task — S1 shrinks, P2 grows.
 
 ### S1 (RIG-2393) — remove the `VirtualFS` deliverable
 
-- S1's deliverables are **`ContainerRuntime.Resize` freeze** (PR #454) and
+- S1's deliverables are **`WorkloadRuntime.Resize` freeze** (PR #454) and
   **`compute.ComputeRuntime`** seam + in-place backend + fail-closed routing
   (PR #457). The `vfs.VirtualFS` seam, its git-checkout backend, the
   `WorkspaceSource` variant, and the provision-materialize wiring are **removed

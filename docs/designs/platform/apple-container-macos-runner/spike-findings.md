@@ -470,7 +470,7 @@ changes.
 
 Unaffected: the exec/kill contract, the host-side-runner topology, and T-5's
 flip criteria — now backed by real numbers. On the
-`SelectBackend`/`ContainerRuntime` seam, all nine verbs are accounted for: six
+`SelectBackend`/`WorkloadRuntime` seam, all nine verbs are accounted for: six
 were exercised incidentally through the `run`/`exec` probes (Create, Start,
 Exec, ExecStreaming, Stop, and Remove), and `Exists` was driven directly
 (`container inspect <name>` exits 0 in any state and 1 with a distinguishable

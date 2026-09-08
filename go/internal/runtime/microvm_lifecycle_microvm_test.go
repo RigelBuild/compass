@@ -82,7 +82,7 @@ func TestMicroVMStartFailureLeavesNoState(t *testing.T) {
 	m := NewMicroVMRuntime(cfg)
 
 	workspace := t.TempDir()
-	id, err := m.Create(t.Context(), ContainerSpec{
+	id, err := m.Create(t.Context(), WorkloadSpec{
 		Name:   "e2e-badboot",
 		UID:    1000,
 		Mounts: []Mount{{HostPath: workspace, ContainerPath: "/workspace"}},

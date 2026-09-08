@@ -648,7 +648,7 @@ func (r *e2eResolver) resolve(_ context.Context, presented string, want store.Su
 	return r.subj, nil
 }
 
-// e2eStubRuntime is the fake ContainerRuntime backing the Runner: ExecStreaming
+// e2eStubRuntime is the fake WorkloadRuntime backing the Runner: ExecStreaming
 // spawns a real, terminatable child (a shell-stub `podman` exec-ing `sleep`) so
 // the session's exec reaps on ctx cancel / Stop and StartAgent's pipe drains end
 // on that reap. Post-#16 nothing rides stdout/stderr — the agent's protocol
@@ -682,36 +682,36 @@ func newE2EStubRuntime(t *testing.T) *e2eStubRuntime {
 	return &e2eStubRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog), removed: map[string]bool{}}
 }
 
-func (f *e2eStubRuntime) Create(_ context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
+func (f *e2eStubRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	// Per-call-unique engine id: the container name (NamePrefix+accountID), which
 	// already differs per account — see the type doc for why a fixed id collides.
-	return runtime.ContainerID(spec.Name), nil
+	return runtime.WorkloadID(spec.Name), nil
 }
-func (f *e2eStubRuntime) Start(context.Context, runtime.ContainerID) error { return nil }
-func (f *e2eStubRuntime) Exec(context.Context, runtime.ContainerID, runtime.ExecSpec) (runtime.ExecOutput, error) {
+func (f *e2eStubRuntime) Start(context.Context, runtime.WorkloadID) error { return nil }
+func (f *e2eStubRuntime) Exec(context.Context, runtime.WorkloadID, runtime.ExecSpec) (runtime.ExecOutput, error) {
 	return runtime.ExecOutput{}, nil
 }
-func (f *e2eStubRuntime) ExecStreaming(ctx context.Context, id runtime.ContainerID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
+func (f *e2eStubRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	// A real streaming exec against the shell stub: a live, terminatable Process
 	// whose stdout/stderr pipes StartAgent drains. The stub just sleeps, so the
 	// pipes stay empty until the exec's context cancels (loop teardown) or Stop
 	// terminates it (despawn/Stop).
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
-func (f *e2eStubRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
+func (f *e2eStubRuntime) Stop(context.Context, runtime.WorkloadID, time.Duration) error {
 	return nil
 }
-func (f *e2eStubRuntime) Remove(_ context.Context, id runtime.ContainerID) error {
+func (f *e2eStubRuntime) Remove(_ context.Context, id runtime.WorkloadID) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.removed[string(id)] = true
 	return nil
 }
 func (f *e2eStubRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
-func (f *e2eStubRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+func (f *e2eStubRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil
 }
-func (f *e2eStubRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+func (f *e2eStubRuntime) Resize(context.Context, runtime.WorkloadID, runtime.ResourceLimits) error {
 	return nil
 }
 

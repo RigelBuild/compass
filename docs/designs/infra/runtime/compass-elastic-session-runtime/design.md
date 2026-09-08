@@ -73,7 +73,7 @@ Compass makes infra cost first-order. Nothing in Dogfood blocks on this.
 Compass ships as two products over one shared core:
 
 - **OSS core (AGPL, `RigelBuild/compass` — this repo).** The agent runtime and
-  every seam this record touches — `AgentRuntime` plus the `ContainerRuntime` /
+  every seam this record touches — `AgentRuntime` plus the `WorkloadRuntime` /
   `VirtualFS` / `ComputeRuntime` seams, the volume lifecycle, and the microVM
   boundary.
   All of this record's `go/internal/*` and `agent-image/*` citations are
@@ -191,13 +191,13 @@ The agent gets the **same working copy the customer's own humans get**:
 ### The three seams
 
 The package layering (`go/internal/runtime/podman.go:10-20`) already isolates
-the engine behind the `ContainerRuntime` interface
+the engine behind the `WorkloadRuntime` interface
 (`go/internal/runtime/podman.go:286-324`) — "everything above depends on the
 interface, so a libpod-REST backend can replace it without touching a caller."
 The hardening work reuses that discipline:
 
-- **`ContainerRuntime` — existing verbs frozen, extended additively.** It
-  remains the engine seam (create/start/exec/stop against a `ContainerID`,
+- **`WorkloadRuntime` — existing verbs frozen, extended additively.** It
+  remains the engine seam (create/start/exec/stop against a `WorkloadID`,
   `go/internal/runtime/podman.go:286-324`), including `ExecStreaming`
   (`go/internal/runtime/podman.go:299-307`) for the long-lived agent process.
   Resize-in-place adds one verb — `Resize(ctx, id, ResourceLimits)` (a
@@ -221,15 +221,15 @@ The hardening work reuses that discipline:
 - **`ComputeRuntime` — the elastic-compute seam (the one genuinely new
   abstraction).** Named `ComputeRuntime` (over `ExecRuntime`) because what it
   abstracts is the compute *capacity* an exec runs against, not the exec
-  mechanics `ContainerRuntime` already owns. It routes a heavy op to a
+  mechanics `WorkloadRuntime` already owns. It routes a heavy op to a
   backend: **run-in-place** (the session's own environment, optionally
   resized) vs **burst** (a bigger transient environment sharing the session's
   volume). It is justified by a capability no existing seam carries:
-  `ContainerRuntime.Exec` (`go/internal/runtime/podman.go:286-324`) models an
+  `WorkloadRuntime.Exec` (`go/internal/runtime/podman.go:286-324`) models an
   exec against a fixed, already-sized container, while a heavy op needs an
   exec whose *sizing and placement* are chosen by policy at call time.
   `Exec` is completion-shaped; a **streaming variant is reserved in the seam
-  now** (live stdio + kill/wait handle, mirroring how `ContainerRuntime`
+  now** (live stdio + kill/wait handle, mirroring how `WorkloadRuntime`
   splits `Exec`/`ExecStreaming`, `go/internal/runtime/podman.go:293-307`) for
   RIG-1720's agent-launched dev servers, even if unimplemented, so freezing
   the seam does not force a breaking change later.
@@ -422,7 +422,7 @@ inside a real environment, never the absence of one.
    backend, never define one.
 2. **Go through the seams (hard rule).** Every working-tree materialization
    goes through `VirtualFS`; every heavy-op exec goes through
-   `ComputeRuntime`; the engine stays behind `ContainerRuntime`. No direct
+   `ComputeRuntime`; the engine stays behind `WorkloadRuntime`. No direct
    `exec` for a heavy op, no raw-disk path outside the session volume. Every
    bypass deletes the incremental-hardening migration path; a bypass is a
    design violation, not a shortcut.
@@ -507,7 +507,7 @@ built:
 ### S1 — the seams, landed with their fused in-container configurations (lane: infra)
 
 Freeze the two new Go seams and land their trivial fused-model
-configurations end to end, with `ContainerRuntime`'s existing verbs frozen:
+configurations end to end, with `WorkloadRuntime`'s existing verbs frozen:
 
 - **`VirtualFS`** — the thin source-of-tree seam plus its checkout backend.
   At S1 the destination is **today's clone-dir workspace** (the genuinely
@@ -550,8 +550,8 @@ configurations end to end, with `ContainerRuntime`'s existing verbs frozen:
   fully buffered stdout/stderr, an accepted limit for whole-suite output
   until the streaming variant lands. `SpecBuilder`
   (`go/internal/runner/host.go:46-48`) derives the `WorkspaceSource`.
-  `ContainerRuntime` also gains the additively-reserved
-  `Resize(ctx, id ContainerID, limits ResourceLimits) error` — frozen here,
+  `WorkloadRuntime` also gains the additively-reserved
+  `Resize(ctx, id WorkloadID, limits ResourceLimits) error` — frozen here,
   unimplemented until C3 — so I1's microVM backend and every fake carry the
   full surface from the start and C3 lands no interface change.
   `ResourceLimits{CPUShares int, MemoryBytes int64}` is the concrete
@@ -573,7 +573,7 @@ and — since winning that customer depends on having it — it is built early,
 not deferred behind the customer. The descoping of the split and the
 content-addressed VFS is what frees the capacity to build it now.
 
-- **Backend behind `ContainerRuntime`:** slot a microVM OCI runtime
+- **Backend behind `WorkloadRuntime`:** slot a microVM OCI runtime
   (krun/libkrun or kata) via podman's `--runtime` selection, so the engine
   seam (`go/internal/runtime/podman.go:286-324`) is reused rather than
   replaced where possible. The real work is above the seam: a microVM-bootable
@@ -587,7 +587,7 @@ content-addressed VFS is what frees the capacity to build it now.
   stable absolute path, preserving the no-copy invariant P2/C3 rely on.
 
 - **Interfaces:** produces the microVM runtime binding behind
-  `runtime.ContainerRuntime` (runtime selection + the rootfs image build +
+  `runtime.WorkloadRuntime` (runtime selection + the rootfs image build +
   guest egress arming); consumes `runtime.EgressPolicy.NftScript()`
   (`go/internal/runtime/egress.go:71-107`). No new caller-facing seam — the
   boundary is an engine/runtime configuration behind the existing interface.
@@ -658,7 +658,7 @@ The two elastic backends behind `ComputeRuntime`, and the routing policy that
 picks one:
 
 - **Resize-in-place:** raise the session environment's CPU/memory limits for
-  the op's duration, then restore, via `ContainerRuntime.Resize`. Available
+  the op's duration, then restore, via `WorkloadRuntime.Resize`. Available
   where the runtime supports live limit changes (rootless podman on cgroups
   v2); under the microVM boundary (I1) live memory hotplug is limited, so
   resize covers CPU/headroom cases and otherwise falls back to burst. The
@@ -685,7 +685,7 @@ picks one:
   `ResourceClass ∈ {ClassInner, ClassResized, ClassBurst}`; consumes the P2
   volume attach (burst mount), `runtime.EgressPolicy.NftScript()`
   (`go/internal/runtime/egress.go:87`) to arm the burst environment, and
-  `runtime.ContainerRuntime` for the transient environment's lifecycle.
+  `runtime.WorkloadRuntime` for the transient environment's lifecycle.
   Produces the routing-policy table + its config surface + the startup
   reconciliation pass.
 - **Depends:** S1, P2, I1 (the burst environment is I1's microVM boundary);
@@ -782,7 +782,7 @@ relaunch on activity.
   (incremental-build probe); cold-idle archive→restore round-trip
   reconstructs the tree + `target/` byte-for-byte from the object store and
   the incremental-build probe still hits warm; a suspend leaks no container
-  (engine reconcile via `ContainerRuntime.Exists`) and a cold idle leaves no
+  (engine reconcile via `WorkloadRuntime.Exists`) and a cold idle leaves no
   local disk footprint; warm-start and rehydration latency asserted against a
   budget this task produces — D4's own measurement round sets the envelope
   (there is no pre-existing number), and E5's managed-user behavior suite
@@ -821,9 +821,9 @@ order):
       `compute.ComputeRuntime` elastic-compute seam (in-environment
       passthrough backend, reserved streaming variant, fail-closed
       routing-policy shell) + provision wiring + `WorkspaceSource` variant;
-      `ContainerRuntime` existing verbs frozen, `Resize` added additively.
+      `WorkloadRuntime` existing verbs frozen, `Resize` added additively.
 - [ ] **I1** [infra] — microVM inter-tenant boundary: microVM OCI runtime
-      (krun/libkrun or kata) behind `ContainerRuntime` via podman `--runtime`,
+      (krun/libkrun or kata) behind `WorkloadRuntime` via podman `--runtime`,
       microVM-bootable rootfs image, guest-netns egress arming, virtio-fs
       volume mount, KVM-absent degrade-to-container path (parallel with
       M0/S1; consumed by C3).
@@ -876,7 +876,7 @@ Nothing pinned in the Approach is re-opened here.
    reserves a streaming variant (live stdio + kill/wait handle) for
    agent-launched dev servers; the port-exposure and lifecycle wiring are
    RIG-1720's scope. **Recommendation:** freeze the reserved signature in S1
-   mirroring `ContainerRuntime.ExecStreaming`
+   mirroring `WorkloadRuntime.ExecStreaming`
    (`go/internal/runtime/podman.go:299-307`); implement nothing here.
 5. **[resolved — decided, now task I1] Inter-tenant isolation boundary =
    microVM.** The session environment and its bursts run model-written,
@@ -886,7 +886,7 @@ Nothing pinned in the Approach is re-opened here.
    customer *depends on* having the boundary, deferring it behind the customer
    is circular. **Decision:** commit to a microVM inter-tenant boundary as the
    end-state (session and burst), built early (task I1) while the descoping of
-   split/VFS frees the capacity. The boundary slots behind `ContainerRuntime`
+   split/VFS frees the capacity. The boundary slots behind `WorkloadRuntime`
    as a microVM OCI runtime (krun/libkrun or kata via podman `--runtime`), so
    the seam is expected to hold; the image/boot/egress plumbing above it is
    the real work I1 owns. Through Dogfood + trusted-tenant Beta the rootless

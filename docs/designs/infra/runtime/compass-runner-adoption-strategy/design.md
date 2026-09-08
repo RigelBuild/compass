@@ -162,10 +162,10 @@ Grounding the current state:
 - The seam is exactly what makes the permanent split cheap. The podman
   implementation is explicitly a thin seam
   (`go/internal/runtime/podman.go:10-13`: "podman.go — a thin
-  ContainerRuntime over the podman CLI: the only place a subprocess is
+  WorkloadRuntime over the podman CLI: the only place a subprocess is
   spawned. Everything above depends on the interface"), backend selection is
   constructor-time (`go/internal/runtime/microvm.go:117`:
-  `func SelectBackend(cfg BackendConfig) (ContainerRuntime, error)`), and
+  `func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error)`), and
   the frozen record pins byte-identical container behavior during
   coexistence
   (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md:397-402`:
@@ -232,7 +232,7 @@ removes the KVM premium at the self-host front door — cheap VPS tiers
 mostly do not expose `/dev/kvm`, and a single-tenant operator gains little
 from a hardware boundary that exists to isolate untrusted tenants. The
 standing two-backend maintenance surface is the acknowledged price, bounded
-by the frozen `ContainerRuntime` seam and the now-permanent byte-identical
+by the frozen `WorkloadRuntime` seam and the now-permanent byte-identical
 parity constraint.
 
 ### Guided onboarding: embedded-local front door, then self-host
@@ -352,7 +352,7 @@ task (T2), not frozen prose here.
   (`go/internal/runtime/microvm.go:110-113`) — and, per the trust-model
   split, stays permanently for self-host.
 - **Other runtime backends behind the seam — deferred, not declined-forever.**
-  The `ContainerRuntime` interface is frozen precisely so a new backend is one
+  The `WorkloadRuntime` interface is frozen precisely so a new backend is one
   `SelectBackend` case plus an implementation, no caller churn
   (`go/internal/runtime/podman.go`: "Everything above depends on the
   interface, so a libpod-REST backend can replace it without touching a
@@ -459,8 +459,8 @@ in this record.
   (`go/cmd/compass-stack/preflight.go`). This is the green-preflight
   deliverable that §Guided onboarding names as T1's, and on which T2's
   podman-tier `preflight` instructions are blocked until it lands.
-- **Interfaces:** consumes the frozen `ContainerRuntime` interface and
-  `SelectBackend(cfg BackendConfig) (ContainerRuntime, error)`
+- **Interfaces:** consumes the frozen `WorkloadRuntime` interface and
+  `SelectBackend(cfg BackendConfig) (WorkloadRuntime, error)`
   (`go/internal/runtime/microvm.go:117`); consumes the landed startup
   preflight surface (`verifyBackendPreflight`, above) and the microVM e2e/CI
   suites
@@ -588,7 +588,7 @@ freeze-time delta shape the directory's amendments use
    client-only charter) is designed in the compass-native lane's
    embedded-revival record and carries its own ledger row there. AMENDS
    the frozen KVM-only amendment (`microvm-kvm-only-amendment.md:96-97`)
-   with the self-host carve-out; the `ContainerRuntime` interface stays
+   with the self-host carve-out; the `WorkloadRuntime` interface stays
    frozen.
 2. **Proposed (2026-09, spec split + host tier — no DL id minted here; the
    coordinator assigns one at freeze).** The living runner tier strategy

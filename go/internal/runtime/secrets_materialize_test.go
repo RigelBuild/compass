@@ -29,7 +29,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
-// scriptRunner is a ContainerRuntime whose Exec actually runs the setup script
+// scriptRunner is a WorkloadRuntime whose Exec actually runs the setup script
 // through /bin/sh over stdin (as the real container would run `sh -s`), against
 // the host filesystem — so the files a script writes are real and inspectable.
 // AsUser is ignored (a test can't setuid); every other effect is genuine. The
@@ -39,12 +39,12 @@ type scriptRunner struct {
 	specs []ExecSpec
 }
 
-func (r *scriptRunner) Create(context.Context, ContainerSpec) (ContainerID, error) {
-	return ContainerID("fake"), nil
+func (r *scriptRunner) Create(context.Context, WorkloadSpec) (WorkloadID, error) {
+	return WorkloadID("fake"), nil
 }
-func (r *scriptRunner) Start(context.Context, ContainerID) error { return nil }
+func (r *scriptRunner) Start(context.Context, WorkloadID) error { return nil }
 
-func (r *scriptRunner) Exec(ctx context.Context, _ ContainerID, spec ExecSpec) (ExecOutput, error) {
+func (r *scriptRunner) Exec(ctx context.Context, _ WorkloadID, spec ExecSpec) (ExecOutput, error) {
 	r.mu.Lock()
 	r.specs = append(r.specs, spec)
 	r.mu.Unlock()
@@ -58,7 +58,7 @@ func (r *scriptRunner) Exec(ctx context.Context, _ ContainerID, spec ExecSpec) (
 	err := cmd.Run()
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		// A non-zero script exit is a successful runtime call returning a failed
-		// command (the ContainerRuntime contract), never a spawn error.
+		// command (the WorkloadRuntime contract), never a spawn error.
 		return ExecOutput{Stderr: stderr.String(), ExitCode: exitErr.ExitCode()}, nil
 	}
 	if err != nil {
@@ -67,16 +67,16 @@ func (r *scriptRunner) Exec(ctx context.Context, _ ContainerID, spec ExecSpec) (
 	return ExecOutput{}, nil
 }
 
-func (r *scriptRunner) ExecStreaming(context.Context, ContainerID, StreamingExecSpec) (*StreamingExec, error) {
+func (r *scriptRunner) ExecStreaming(context.Context, WorkloadID, StreamingExecSpec) (*StreamingExec, error) {
 	return nil, errors.New("scriptRunner does not support streaming exec")
 }
-func (r *scriptRunner) Stop(context.Context, ContainerID, time.Duration) error { return nil }
-func (r *scriptRunner) Remove(context.Context, ContainerID) error              { return nil }
-func (r *scriptRunner) Exists(context.Context, string) (bool, error)           { return false, nil }
-func (r *scriptRunner) MountLabel(context.Context, ContainerID) (string, error) {
+func (r *scriptRunner) Stop(context.Context, WorkloadID, time.Duration) error { return nil }
+func (r *scriptRunner) Remove(context.Context, WorkloadID) error              { return nil }
+func (r *scriptRunner) Exists(context.Context, string) (bool, error)          { return false, nil }
+func (r *scriptRunner) MountLabel(context.Context, WorkloadID) (string, error) {
 	return "", nil
 }
-func (r *scriptRunner) Resize(context.Context, ContainerID, ResourceLimits) error {
+func (r *scriptRunner) Resize(context.Context, WorkloadID, ResourceLimits) error {
 	return nil
 }
 
@@ -224,7 +224,7 @@ func TestInstallRejectsBadGenericName(t *testing.T) {
 	home := t.TempDir()
 	rt := &scriptRunner{}
 	m := NewSecretMaterializer(rt, discardLog())
-	err := m.Install(context.Background(), ContainerID("c"), home, 1000, []secrets.ResolvedSecret{
+	err := m.Install(context.Background(), WorkloadID("c"), home, 1000, []secrets.ResolvedSecret{
 		{Name: "../evil", Value: "v", Kind: secrets.SecretGeneric, Delivery: secrets.DeliveryFile},
 	})
 	if err == nil {
@@ -272,7 +272,7 @@ func TestInstallRoutesByKind(t *testing.T) {
 		{Name: "GH", Value: "gho_token", Kind: secrets.SecretGH, Host: "github.com", Delivery: secrets.DeliveryFile},
 		{Name: "DB_URL", Value: "postgres://db", Kind: secrets.SecretGeneric, Delivery: secrets.DeliveryFile},
 	}
-	if err := m.Install(context.Background(), ContainerID("c"), home, 1000, resolved); err != nil {
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, resolved); err != nil {
 		t.Fatalf("Install = %v, want nil", err)
 	}
 
@@ -338,7 +338,7 @@ func TestInstallWritesEnvDeliveryToEnvFile(t *testing.T) {
 		{Name: "ENV_ONLY", Value: "env-secret", Kind: secrets.SecretGeneric, Delivery: secrets.DeliveryEnv},
 		{Name: "FILE_ONE", Value: "file-secret", Kind: secrets.SecretGeneric, Delivery: secrets.DeliveryFile},
 	}
-	if err := m.Install(context.Background(), ContainerID("c"), home, 1000, resolved); err != nil {
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, resolved); err != nil {
 		t.Fatalf("Install with an env secret = %v, want nil", err)
 	}
 
@@ -405,7 +405,7 @@ func TestInstallMultipleGHHostsAllLand(t *testing.T) {
 		{Name: "GH_DOTCOM", Value: "gho_dotcom", Kind: secrets.SecretGH, Host: "github.com", Delivery: secrets.DeliveryFile},
 		{Name: "GH_ENTERPRISE", Value: "gho_ghe", Kind: secrets.SecretGH, Host: "ghe.example.com", Delivery: secrets.DeliveryFile},
 	}
-	if err := m.Install(context.Background(), ContainerID("c"), home, 1000, resolved); err != nil {
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, resolved); err != nil {
 		t.Fatalf("Install = %v, want nil", err)
 	}
 
@@ -507,7 +507,7 @@ func TestInstallMultipleProvidersAllLand(t *testing.T) {
 		{Name: "OPENAI", Value: "sk-openai", Kind: secrets.SecretProvider, Provider: "openai", Delivery: secrets.DeliveryFile},
 		{Name: "ANTHROPIC", Value: "sk-anthropic", Kind: secrets.SecretProvider, Provider: "anthropic", Delivery: secrets.DeliveryFile},
 	}
-	if err := m.Install(context.Background(), ContainerID("c"), home, 1000, resolved); err != nil {
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, resolved); err != nil {
 		t.Fatalf("Install = %v, want nil", err)
 	}
 
@@ -530,7 +530,7 @@ func TestInstallEmptySetWritesOnlyTheEmptyEnvFile(t *testing.T) {
 	rt := &scriptRunner{}
 	m := NewSecretMaterializer(rt, discardLog())
 
-	if err := m.Install(context.Background(), ContainerID("c"), home, 1000, nil); err != nil {
+	if err := m.Install(context.Background(), WorkloadID("c"), home, 1000, nil); err != nil {
 		t.Fatalf("Install(empty) = %v, want nil", err)
 	}
 	// Exactly one exec: the env-file write.

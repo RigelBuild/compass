@@ -3,7 +3,7 @@
 package runtime
 
 // microvm_lifecycle.go fills the eight MicroVMRuntime lifecycle verbs behind the
-// frozen ContainerRuntime signatures (microvm.go holds the type + config +
+// frozen WorkloadRuntime signatures (microvm.go holds the type + config +
 // SelectBackend). It is //go:build unix because the microvm package it drives
 // (Launch/GuestExec/VM/GuestClient, all //go:build unix) is unix-only; keeping
 // the bodies here lets the untagged runtime package still type-check backend
@@ -143,8 +143,8 @@ func (m *MicroVMRuntime) installSeamDefaults() {
 // Start, and dropped by Remove. All fields are read/written under
 // MicroVMRuntime.mu.
 type microvmSession struct {
-	// id is the ContainerID Create minted (also the runtime-dir leaf name).
-	id ContainerID
+	// id is the WorkloadID Create minted (also the runtime-dir leaf name).
+	id WorkloadID
 	// name is spec.Name — the Runner's stable handle, answered by Exists and
 	// used to refuse a duplicate-name Create (matching podman's engine).
 	name string
@@ -159,7 +159,7 @@ type microvmSession struct {
 	nonce []byte
 	// nftScript is the egress ruleset delivered to guestd on Start's Provision
 	// RPC (as ProvisionRequest.nft_script). Recorded at Create from
-	// spec.Egress.NftScript(); NEVER empty for a ContainerSpec-created session,
+	// spec.Egress.NftScript(); NEVER empty for a WorkloadSpec-created session,
 	// since the zero-value EgressPolicy still emits the full default-deny base
 	// ruleset (design §(e), egress.go). guestd arms it as guest root before the
 	// exec gate opens.
@@ -207,7 +207,7 @@ func (e *UnsupportedMountError) Error() string {
 // keep-alive is the VMM + guestd PID 1, not a sleep-loop entrypoint, and
 // CAP_NET_ADMIN is never granted to the workload boundary (record §(c)). No VM
 // is booted here; Start does that.
-func (m *MicroVMRuntime) Create(_ context.Context, spec ContainerSpec) (ContainerID, error) {
+func (m *MicroVMRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadID, error) {
 	shared, err := workspaceShare(spec.Mounts)
 	if err != nil {
 		return "", err
@@ -235,7 +235,7 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec ContainerSpec) (Containe
 		env:   spec.Env,
 		nonce: nonce,
 		// Never empty: the zero-value EgressPolicy still emits the default-deny
-		// base ruleset, so every ContainerSpec-created session boots armed (§(e)).
+		// base ruleset, so every WorkloadSpec-created session boots armed (§(e)).
 		nftScript:  spec.Egress.NftScript(),
 		runtimeDir: runtimeDir,
 	}
@@ -333,15 +333,15 @@ func workspaceShare(mounts []Mount) (Mount, error) {
 	}
 }
 
-// mintSessionID mints a random 16-byte hex session id used as the ContainerID
+// mintSessionID mints a random 16-byte hex session id used as the WorkloadID
 // and the runtime-dir leaf. There is no engine to print an id, so the backend
 // generates one; hex keeps it filesystem-safe.
-func mintSessionID() (ContainerID, error) {
+func mintSessionID() (WorkloadID, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", fmt.Errorf("microvm: minting session id: %w", err)
 	}
-	return ContainerID(hex.EncodeToString(b[:])), nil
+	return WorkloadID(hex.EncodeToString(b[:])), nil
 }
 
 // mintNonce mints a random 16-byte boot nonce (raw bytes; the cmdline carries
@@ -362,7 +362,7 @@ func mintNonce() ([]byte, error) {
 // before returning — on this backend the boot IS Start, so Start cleans its own
 // partial boot and Remove stays idempotent (record §(c)). On success the VM
 // handle + GuestExec are stored on the session under the lock.
-func (m *MicroVMRuntime) Start(ctx context.Context, id ContainerID) error {
+func (m *MicroVMRuntime) Start(ctx context.Context, id WorkloadID) error {
 	session, err := m.session(id)
 	if err != nil {
 		return err
@@ -424,7 +424,7 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id ContainerID) error {
 // before the exec gate opens (§(b)/(c)). AgentRuntime.provision probes for this
 // marker (the unexported inGuestEgressArmer, agent.go) and skips its host-side
 // armEgress exec — which on this backend would run capability-less and fail.
-// Deliberately NOT a verb on the frozen ContainerRuntime interface (podman.go).
+// Deliberately NOT a verb on the frozen WorkloadRuntime interface (podman.go).
 func (m *MicroVMRuntime) EgressArmedInGuest() bool { return true }
 
 // awaitHealthy polls the guest's Health until it reports net_provisioned &&
@@ -477,7 +477,7 @@ func bootPollContext(ctx context.Context) (context.Context, context.CancelFunc) 
 // refusal or transport failure is an error, and a host-side timeout is mapped
 // to a *runtime.TimeoutError so requireSuccess/atStage callers behave
 // identically to the podman path (record §(c)).
-func (m *MicroVMRuntime) Exec(ctx context.Context, id ContainerID, spec ExecSpec) (ExecOutput, error) {
+func (m *MicroVMRuntime) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (ExecOutput, error) {
 	guestExec, err := m.startedExec(id)
 	if err != nil {
 		return ExecOutput{}, err
@@ -567,7 +567,7 @@ func exitError(st microvm.ExitStatus) error {
 // blocking teardown), and waitFunc maps the guest exit onto nil / a
 // *runtime.ExitStatusError so the runner's isDeliberateKill recognizes a
 // signalled exit as a deliberate kill (OQ-G/U3b, record §(c)).
-func (m *MicroVMRuntime) ExecStreaming(ctx context.Context, id ContainerID, spec StreamingExecSpec) (*StreamingExec, error) {
+func (m *MicroVMRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error) {
 	guestExec, err := m.startedExec(id)
 	if err != nil {
 		return nil, err
@@ -607,7 +607,7 @@ func (m *MicroVMRuntime) ExecStreaming(ctx context.Context, id ContainerID, spec
 // real VMM exit up to timeout. Past the timeout it kills the VMM outright via
 // vm.Shutdown (which also reaps the daemons and removes the sockets). A session
 // that never started (no VM handle) is a no-op success (record §(d)).
-func (m *MicroVMRuntime) Stop(ctx context.Context, id ContainerID, timeout time.Duration) error {
+func (m *MicroVMRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
 	session, err := m.session(id)
 	if err != nil {
 		return err
@@ -657,7 +657,7 @@ func stopGuest(ctx context.Context, client compassv1internalconnect.GuestControl
 // the session-table entry. It is idempotent: a Remove of an unknown or
 // already-removed id is not an error (matching `podman rm --force`), and a
 // session that never started is torn down to just its dir + entry (record §(d)).
-func (m *MicroVMRuntime) Remove(ctx context.Context, id ContainerID) error {
+func (m *MicroVMRuntime) Remove(ctx context.Context, id WorkloadID) error {
 	m.mu.Lock()
 	session, ok := m.sessions[id]
 	if !ok {
@@ -699,7 +699,7 @@ func (m *MicroVMRuntime) Exists(_ context.Context, name string) (bool, error) {
 // the session's own vsock socket base and the fixed gateway port (record
 // §(b)/§(c)/§(e)). An unknown name returns ("", false). It keys on spec.Name
 // like Exists, so the Runner's stable handle resolves. Deliberately NOT a verb
-// on the frozen ContainerRuntime interface: agentHost probes for it via an
+// on the frozen WorkloadRuntime interface: agentHost probes for it via an
 // unexported single-method assertion, so the podman backend (which lacks it) is
 // unaffected (record §(c), Global Constraints).
 func (m *MicroVMRuntime) AgentGatewayEndpoint(name string) (string, bool) {
@@ -718,7 +718,7 @@ func (m *MicroVMRuntime) AgentGatewayEndpoint(name string) (string, bool) {
 // relabeled bind mount), and the config materializer treats an empty label as
 // skip-chcon (the parent's Q-mountlabel deferral, record §(c)). An unknown id
 // is not distinguished — the empty answer is correct for it too.
-func (m *MicroVMRuntime) MountLabel(_ context.Context, _ ContainerID) (string, error) {
+func (m *MicroVMRuntime) MountLabel(_ context.Context, _ WorkloadID) (string, error) {
 	return "", nil
 }
 
@@ -726,13 +726,13 @@ func (m *MicroVMRuntime) MountLabel(_ context.Context, _ ContainerID) (string, e
 // sentinel until C3 fills in resize-in-place behind the S1-frozen seam (the
 // C3/D5 deferral, record §(c)). It is not a microVM-specific unimplemented
 // verb, so it shares the podman backend's sentinel.
-func (m *MicroVMRuntime) Resize(_ context.Context, _ ContainerID, _ ResourceLimits) error {
+func (m *MicroVMRuntime) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) error {
 	return ErrResizeNotImplemented
 }
 
 // session looks up a session by id under the lock, returning a stage-agnostic
 // error if it is absent.
-func (m *MicroVMRuntime) session(id ContainerID) (*microvmSession, error) {
+func (m *MicroVMRuntime) session(id WorkloadID) (*microvmSession, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session, ok := m.sessions[id]
@@ -745,7 +745,7 @@ func (m *MicroVMRuntime) session(id ContainerID) (*microvmSession, error) {
 // startedExec looks up a session's GuestExec client under the lock, erroring if
 // the session is absent or not yet started (Exec/ExecStreaming both require a
 // booted, provisioned guest).
-func (m *MicroVMRuntime) startedExec(id ContainerID) (*microvm.GuestExec, error) {
+func (m *MicroVMRuntime) startedExec(id WorkloadID) (*microvm.GuestExec, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	session, ok := m.sessions[id]
@@ -758,4 +758,4 @@ func (m *MicroVMRuntime) startedExec(id ContainerID) (*microvm.GuestExec, error)
 	return session.guestExec, nil
 }
 
-var _ ContainerRuntime = (*MicroVMRuntime)(nil)
+var _ WorkloadRuntime = (*MicroVMRuntime)(nil)

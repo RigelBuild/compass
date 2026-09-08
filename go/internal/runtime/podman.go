@@ -8,7 +8,7 @@
 // container, so neither the image build nor the clone is the Runner's job.
 //
 // The layering, bottom to top:
-//   - podman.go — a thin ContainerRuntime over the podman CLI: the only place a
+//   - podman.go — a thin WorkloadRuntime over the podman CLI: the only place a
 //     subprocess is spawned. Everything above depends on the interface, so a
 //     libpod-REST backend can replace it without touching a caller.
 //   - egress.go — the default-deny + allowlist firewall applied inside the
@@ -19,7 +19,7 @@
 //   - registry.go — AgentRegistry, the Runner's live-container handle cache the
 //     session RPCs resolve a launched container by name through.
 //
-// This file is the container-runtime seam: a ContainerRuntime interface plus
+// This file is the container-runtime seam: a WorkloadRuntime interface plus
 // PodmanCLI, its rootless-podman-CLI implementation. Rootless is a hard
 // requirement (design: architecture-lineage): no daemon, no root, no rootful fallback.
 // Containers run with --userns=keep-id:uid=<agent-uid>,gid=<agent-gid> so the
@@ -50,12 +50,13 @@ import (
 	"time"
 )
 
-// ContainerID is a running (or created) container, identified by the full id
-// podman prints.
-type ContainerID string
+// WorkloadID identifies a running (or created) workload — a container, a
+// microVM guest, or a host process group — as the backend that made it names
+// it. The podman backend uses the full id podman prints.
+type WorkloadID string
 
-// String returns the raw container id.
-func (c ContainerID) String() string { return string(c) }
+// String returns the raw workload id.
+func (c WorkloadID) String() string { return string(c) }
 
 // Mount is a host→container bind mount. ReadOnly maps to :ro and every mount
 // gets SELinux relabelling (:Z) so the substrate works on enforcing hosts.
@@ -82,10 +83,10 @@ type ResourceLimits struct {
 	MemoryBytes int64
 }
 
-// ContainerSpec is everything needed to create one agent container. Kept
-// engine-agnostic: the podman-specific argv is assembled in PodmanCLI.Create,
+// WorkloadSpec is everything needed to create one agent workload. Kept
+// backend-agnostic: the podman-specific argv is assembled in PodmanCLI.Create,
 // not here.
-type ContainerSpec struct {
+type WorkloadSpec struct {
 	// Image reference in local container storage (e.g. compass-agent:latest —
 	// one shared base image, not a per-repo tag).
 	Image string
@@ -340,67 +341,71 @@ func (e *TimeoutError) Error() string {
 	return fmt.Sprintf("%q timed out after %ds", e.Summary, int(e.Timeout.Seconds()))
 }
 
-// ContainerRuntime is the container engine seam. Every operation is a subprocess
-// (or, later, a socket round-trip), so each threads the caller's context for
-// cancellation and carries the per-command timeout the implementation applies.
-// An interface so the Runner can hold a ContainerRuntime and tests can
-// substitute a fake.
-type ContainerRuntime interface {
-	// Create makes a container from spec without starting it, returning its id.
-	Create(ctx context.Context, spec ContainerSpec) (ContainerID, error)
+// WorkloadRuntime is the execution-backend seam: the interface every runtime
+// backend implements, whatever it actually runs — a podman container, a microVM
+// guest, or a direct host process. Every operation is a subprocess (or, later, a
+// socket round-trip), so each threads the caller's context for cancellation and
+// carries the per-command timeout the implementation applies. An interface so
+// the Runner can hold a WorkloadRuntime and tests can substitute a fake.
+type WorkloadRuntime interface {
+	// Create makes a workload from spec without starting it, returning its id.
+	Create(ctx context.Context, spec WorkloadSpec) (WorkloadID, error)
 
-	// Start starts a created container.
-	Start(ctx context.Context, id ContainerID) error
+	// Start starts a created workload.
+	Start(ctx context.Context, id WorkloadID) error
 
-	// Exec runs a command in a running container, capturing its output. A
+	// Exec runs a command in a running workload, capturing its output. A
 	// non-zero exit is a successful runtime call returning a failed command
 	// (ExecOutput.ExitCode), not an error; only a spawn failure or timeout is an
 	// error.
-	Exec(ctx context.Context, id ContainerID, spec ExecSpec) (ExecOutput, error)
+	Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (ExecOutput, error)
 
 	// ExecStreaming starts a long-lived streaming command in a running
-	// container, returning its live stdio pipes plus a kill/wait handle rather
+	// workload, returning its live stdio pipes plus a kill/wait handle rather
 	// than awaiting completion. The transport for the long-running agent
 	// process: its stdout/stderr stay open and are drained as diagnostics for
-	// the process's life (the agent's protocol rides the per-container socket).
+	// the process's life (the agent's protocol rides the per-workload socket).
 	// Unlike Exec there is no wall-clock timeout — the process is meant to run
 	// indefinitely — but the exec is still bound to ctx, so cancelling it
 	// terminates the process.
-	ExecStreaming(ctx context.Context, id ContainerID, spec StreamingExecSpec) (*StreamingExec, error)
+	ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error)
 
-	// Stop stops a running container, allowing timeout for graceful exit before
-	// podman kills it.
-	Stop(ctx context.Context, id ContainerID, timeout time.Duration) error
+	// Stop stops a running workload, allowing timeout for graceful exit before
+	// the backend kills it.
+	Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error
 
-	// Remove removes a container (force-kills if still running).
-	Remove(ctx context.Context, id ContainerID) error
+	// Remove removes a workload (force-kills if still running).
+	Remove(ctx context.Context, id WorkloadID) error
 
-	// Exists reports whether a container with name currently exists (any state).
+	// Exists reports whether a workload with name currently exists (any state).
 	Exists(ctx context.Context, name string) (bool, error)
 
-	// MountLabel reports the container's SELinux mount label (its private MCS
-	// category), read from `podman inspect`. The config-update path relabels a
-	// freshly materialized version dir into this category so a confined agent
-	// can read it (agentHost.RefreshConfig -> ConfigMaterializer relabel).
-	MountLabel(ctx context.Context, id ContainerID) (string, error)
+	// MountLabel reports the workload's SELinux mount label (its private MCS
+	// category); the podman backend reads it from `podman inspect`. The
+	// config-update path relabels a freshly materialized version dir into this
+	// category so a confined agent can read it (agentHost.RefreshConfig ->
+	// ConfigMaterializer relabel). A backend with no SELinux confinement
+	// reports an empty label.
+	MountLabel(ctx context.Context, id WorkloadID) (string, error)
 
-	// Resize changes a live container's cgroup resource limits in place (a
-	// `podman update`-class operation) — the resize-in-place elastic-compute
-	// path (C3). The verb is frozen into the interface at S1 (additively
+	// Resize changes a live workload's cgroup resource limits in place (a
+	// `podman update`-class operation on the container backend) — the
+	// resize-in-place elastic-compute path (C3). The verb is frozen into the
+	// interface at S1 (additively
 	// reserved, the same discipline as ExecStreaming) so every backend and fake
 	// carries the full surface from the start and no interface change lands
 	// after S1; the resize BEHAVIOR — actually applying and later restoring the
 	// limits around a heavy op — is C3's to fill in behind this signature.
 	// PodmanCLI.Resize therefore returns ErrResizeNotImplemented until C3, and
 	// no caller invokes it yet, so the existing session path is unchanged.
-	Resize(ctx context.Context, id ContainerID, limits ResourceLimits) error
+	Resize(ctx context.Context, id WorkloadID, limits ResourceLimits) error
 }
 
-// ContainerRuntime is frozen (the Resize reservation above): a backend that
+// WorkloadRuntime is frozen (the Resize reservation above): a backend that
 // self-arms egress does NOT grow a verb here. Instead MicroVMRuntime carries an
 // off-interface marker method, EgressArmedInGuest(), and AgentRuntime.provision
 // type-asserts the unexported inGuestEgressArmer (agent.go) to skip armEgress on
-// such a backend (design §(c)). A future backend — or any ContainerRuntime
+// such a backend (design §(c)). A future backend — or any WorkloadRuntime
 // decorator, which would otherwise swallow the marker and silently re-enable
 // armEgress on the microVM backend — must re-expose EgressArmedInGuest to keep
 // the probe working.
@@ -418,7 +423,7 @@ const (
 	argFormat      = "--format"
 )
 
-// PodmanCLI is a ContainerRuntime over the podman CLI.
+// PodmanCLI is a WorkloadRuntime over the podman CLI.
 type PodmanCLI struct {
 	program string
 	timeout time.Duration
@@ -444,18 +449,18 @@ func (p *PodmanCLI) WithTimeout(timeout time.Duration) *PodmanCLI {
 }
 
 // Create assembles and runs `podman create`, returning the new container id.
-func (p *PodmanCLI) Create(ctx context.Context, spec ContainerSpec) (ContainerID, error) {
+func (p *PodmanCLI) Create(ctx context.Context, spec WorkloadSpec) (WorkloadID, error) {
 	stdout, err := p.run(ctx, "podman create", createArgs(spec))
 	if err != nil {
 		return "", err
 	}
-	return ContainerID(strings.TrimSpace(string(stdout))), nil
+	return WorkloadID(strings.TrimSpace(string(stdout))), nil
 }
 
 // createArgs assembles the argv for `podman create`. Split out so the argv
 // assembly is unit-testable without spawning podman, mirroring
 // execStreamingArgs.
-func createArgs(spec ContainerSpec) []string {
+func createArgs(spec WorkloadSpec) []string {
 	// Preallocate: 4 fixed tokens (create, --name+value, --userns) + 2 per
 	// cap/mount/env pair + image + command tokens, so the appends below don't
 	// reallocate.
@@ -541,7 +546,7 @@ func parsePodmanVersion(s string) (major, minor int, err error) {
 }
 
 // Start starts a created container.
-func (p *PodmanCLI) Start(ctx context.Context, id ContainerID) error {
+func (p *PodmanCLI) Start(ctx context.Context, id WorkloadID) error {
 	_, err := p.run(ctx, "podman start", []string{"start", id.String()})
 	return err
 }
@@ -549,7 +554,7 @@ func (p *PodmanCLI) Start(ctx context.Context, id ContainerID) error {
 // Exec runs a command in a running container, capturing its output. A non-zero
 // exit is captured in ExecOutput, not folded into an error (a denied firewall
 // probe is an expected non-zero); a spawn failure or timeout is an error.
-func (p *PodmanCLI) Exec(ctx context.Context, id ContainerID, spec ExecSpec) (ExecOutput, error) {
+func (p *PodmanCLI) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (ExecOutput, error) {
 	args := []string{argExec}
 	// Forward stdin only when there's input to feed, so `sh -s` reads the script
 	// from the pipe rather than the argv.
@@ -584,7 +589,7 @@ func (p *PodmanCLI) Exec(ctx context.Context, id ContainerID, spec ExecSpec) (Ex
 // Cancel SIGKILLs the process and WaitDelay bounds the reap, so cancelling the
 // parent context or calling ChildHandle.Kill terminates the in-container agent
 // even without a Go Drop.
-func (p *PodmanCLI) ExecStreaming(ctx context.Context, id ContainerID, spec StreamingExecSpec) (*StreamingExec, error) {
+func (p *PodmanCLI) ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error) {
 	execCtx, cancel := context.WithCancel(ctx)
 	//nolint:gosec // G204: the container-engine seam — see spawnCapture. The
 	// engine binary is operator-set and the exec argv is Runner-assembled.
@@ -632,7 +637,7 @@ func stopGraceSeconds(timeout time.Duration) int64 {
 }
 
 // Stop stops a running container, allowing timeout for graceful exit.
-func (p *PodmanCLI) Stop(ctx context.Context, id ContainerID, timeout time.Duration) error {
+func (p *PodmanCLI) Stop(ctx context.Context, id WorkloadID, timeout time.Duration) error {
 	// podman's --time is whole seconds; the interface takes a Duration for idiom
 	// and callsite clarity, converted at this CLI boundary.
 	_, err := p.run(ctx, "podman stop", []string{
@@ -644,7 +649,7 @@ func (p *PodmanCLI) Stop(ctx context.Context, id ContainerID, timeout time.Durat
 }
 
 // Remove removes a container (force-kills if still running).
-func (p *PodmanCLI) Remove(ctx context.Context, id ContainerID) error {
+func (p *PodmanCLI) Remove(ctx context.Context, id WorkloadID) error {
 	_, err := p.run(ctx, "podman rm", removeArgs(id))
 	return err
 }
@@ -655,7 +660,7 @@ func (p *PodmanCLI) Remove(ctx context.Context, id ContainerID) error {
 // exhaust podman's num_locks and wedge the host. Harmless when the container
 // has none. Sister argv in internal/pgtest (removeContainerArgs); the two are
 // deliberately independent (no prod->test-harness dependency) — keep in sync.
-func removeArgs(id ContainerID) []string {
+func removeArgs(id WorkloadID) []string {
 	return []string{"rm", "--force", "--volumes", id.String()}
 }
 
@@ -665,14 +670,14 @@ func removeArgs(id ContainerID) []string {
 // lands no interface change); the podman `container update` wiring is C3's, so
 // calling it today is a programming error the sentinel names explicitly rather
 // than a silent no-op that would fake a limit change that never happened.
-var ErrResizeNotImplemented = errors.New("runtime: ContainerRuntime.Resize is reserved at S1 and implemented in C3")
+var ErrResizeNotImplemented = errors.New("runtime: WorkloadRuntime.Resize is reserved at S1 and implemented in C3")
 
 // Resize is the S1-frozen resize-in-place verb, unimplemented until C3. It
 // returns ErrResizeNotImplemented rather than silently succeeding: a no-op that
 // reported success would let a future caller believe a container was resized
 // when its cgroup limits never moved. C3 replaces this body with the real
 // `podman update`-class limit change.
-func (p *PodmanCLI) Resize(_ context.Context, _ ContainerID, _ ResourceLimits) error {
+func (p *PodmanCLI) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) error {
 	return ErrResizeNotImplemented
 }
 
@@ -732,7 +737,7 @@ func (p *PodmanCLI) ImageExists(ctx context.Context, image string) (bool, error)
 // MountLabel reads the container's SELinux mount label via `podman inspect`,
 // trimming the trailing newline the CLI prints. A one-shot fire-and-check like
 // Start/Remove: a non-zero exit becomes a CommandError through run.
-func (p *PodmanCLI) MountLabel(ctx context.Context, id ContainerID) (string, error) {
+func (p *PodmanCLI) MountLabel(ctx context.Context, id WorkloadID) (string, error) {
 	out, err := p.run(ctx, "podman inspect", inspectMountLabelArgs(id))
 	if err != nil {
 		return "", err
@@ -815,7 +820,7 @@ func (p *PodmanCLI) run(ctx context.Context, summary string, args []string) ([]b
 // --interactive keeps stdin open for the process's life; there is deliberately
 // no --tty (the agent is a headless process draining diagnostic pipes, not a
 // terminal session).
-func execStreamingArgs(id ContainerID, spec StreamingExecSpec) []string {
+func execStreamingArgs(id WorkloadID, spec StreamingExecSpec) []string {
 	args := []string{argExec, argInteractive}
 	if spec.User != nil {
 		args = append(args, "--user", *spec.User)
@@ -834,7 +839,7 @@ func execStreamingArgs(id ContainerID, spec StreamingExecSpec) []string {
 // inspectMountLabelArgs assembles the argv for reading a container's SELinux
 // mount label. Split out so the argv assembly is unit-testable without spawning
 // podman, mirroring execStreamingArgs.
-func inspectMountLabelArgs(id ContainerID) []string {
+func inspectMountLabelArgs(id WorkloadID) []string {
 	return []string{"inspect", argFormat, "{{.MountLabel}}", id.String()}
 }
 

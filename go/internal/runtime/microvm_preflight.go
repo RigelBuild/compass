@@ -410,7 +410,7 @@ func (m *MicroVMRuntime) BootCanary(ctx context.Context) (report CanaryReport, e
 		}
 	}()
 
-	id, err := m.Create(ctx, ContainerSpec{
+	id, err := m.Create(ctx, WorkloadSpec{
 		Name:   name,
 		UID:    agentuid.AgentUID,
 		Mounts: []Mount{{HostPath: workspace, ContainerPath: workspaceMountPath}},

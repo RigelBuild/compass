@@ -82,14 +82,14 @@ const (
 // failed assertion still tears the VM down. The volume is a t.TempDir() child so
 // it is removed with the test; the SHORT runroot comes from e2eConfig (the
 // AF_UNIX sun_path budget, microvm_lifecycle_microvm_test.go).
-func isolationSession(t *testing.T, env microvmtest.Env, name string) (*MicroVMRuntime, ContainerID, string) {
+func isolationSession(t *testing.T, env microvmtest.Env, name string) (*MicroVMRuntime, WorkloadID, string) {
 	t.Helper()
 	m := NewMicroVMRuntime(e2eConfig(t, env))
 	volume := filepath.Join(t.TempDir(), "volume")
 	if err := os.MkdirAll(volume, 0o700); err != nil {
 		t.Fatalf("creating session volume %s: %v", volume, err)
 	}
-	id, err := m.Create(t.Context(), ContainerSpec{
+	id, err := m.Create(t.Context(), WorkloadSpec{
 		Name:   name,
 		UID:    agentuid.AgentUID,
 		Mounts: []Mount{{HostPath: volume, ContainerPath: workspaceMountPath}},
@@ -112,7 +112,7 @@ func isolationSession(t *testing.T, env microvmtest.Env, name string) (*MicroVMR
 // combined stdout+stderr and exit code. A transport/refusal error is fatal; a
 // NON-ZERO EXIT IS NOT — a denied escape attempt is expected to exit non-zero,
 // and that is the outcome under test (mirrors rowExecExitCodes' posture).
-func guestSh(t *testing.T, m *MicroVMRuntime, id ContainerID, script string) (string, int) {
+func guestSh(t *testing.T, m *MicroVMRuntime, id WorkloadID, script string) (string, int) {
 	t.Helper()
 	out, err := m.Exec(t.Context(), id,
 		NewExecSpec("sh", "-s").WithStdin(script).AsUser(strconv.Itoa(int(agentuid.AgentUID))))
@@ -680,7 +680,7 @@ func TestMicroVMVolumeQuotaEnforcedInGuest(t *testing.T) {
 	}
 
 	m := NewMicroVMRuntime(e2eConfig(t, env))
-	id, err := m.Create(t.Context(), ContainerSpec{
+	id, err := m.Create(t.Context(), WorkloadSpec{
 		Name:   "iso-quota",
 		UID:    agentuid.AgentUID,
 		Mounts: []Mount{{HostPath: volume, ContainerPath: workspaceMountPath}},

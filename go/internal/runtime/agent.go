@@ -60,12 +60,12 @@ type AgentSpec struct {
 // created from, so callers can exec as the agent user without re-deriving the
 // workspace.
 type AgentHandle struct {
-	id   ContainerID
+	id   WorkloadID
 	spec AgentSpec
 }
 
 // ID returns the resolved container id.
-func (h *AgentHandle) ID() ContainerID { return h.id }
+func (h *AgentHandle) ID() WorkloadID { return h.id }
 
 // Name returns the stable container name.
 func (h *AgentHandle) Name() string { return h.spec.Name }
@@ -107,16 +107,16 @@ func (e *StageError) Error() string {
 // Unwrap exposes the underlying runtime error for errors.Is/As.
 func (e *StageError) Unwrap() error { return e.Err }
 
-// InContainerError is an in-container exec that ran but exited non-zero, tagged
-// with the lifecycle stage and carrying the captured stderr.
-type InContainerError struct {
+// InWorkloadError is an exec inside the workload that ran but exited non-zero,
+// tagged with the lifecycle stage and carrying the captured stderr.
+type InWorkloadError struct {
 	Stage    string
 	ExitCode int
 	Stderr   string
 }
 
-func (e *InContainerError) Error() string {
-	return fmt.Sprintf("%s failed inside the container (exit %d): %s", e.Stage, e.ExitCode, e.Stderr)
+func (e *InWorkloadError) Error() string {
+	return fmt.Sprintf("%s failed inside the workload (exit %d): %s", e.Stage, e.ExitCode, e.Stderr)
 }
 
 // InvalidConfigError is an agent configuration the lifecycle rejected before
@@ -138,35 +138,35 @@ func atStage(stage string, err error) error {
 	return &StageError{Stage: stage, Err: err}
 }
 
-// requireSuccess turns a non-zero in-container exec into an InContainerError
+// requireSuccess turns a non-zero in-container exec into an InWorkloadError
 // tagged with the stage, surfacing its captured stderr.
 func requireSuccess(stage string, out ExecOutput) error {
 	if out.Success() {
 		return nil
 	}
-	return &InContainerError{Stage: stage, ExitCode: out.ExitCode, Stderr: out.Stderr}
+	return &InWorkloadError{Stage: stage, ExitCode: out.ExitCode, Stderr: out.Stderr}
 }
 
-// AgentRuntime drives the per-agent container lifecycle over a ContainerRuntime.
+// AgentRuntime drives the per-agent container lifecycle over a WorkloadRuntime.
 //
 // When constructed with an AgentRegistry via NewAgentRuntimeWithRegistry, a
 // successful Launch registers the handle and Teardown deregisters it, so the
 // Runner's session RPCs can resolve a launched container by name.
 type AgentRuntime struct {
-	runtime  ContainerRuntime
+	runtime  WorkloadRuntime
 	registry *AgentRegistry
 }
 
 // NewAgentRuntime builds a lifecycle façade with no registry: Launch/Teardown
 // manage containers but register nothing.
-func NewAgentRuntime(runtime ContainerRuntime) *AgentRuntime {
+func NewAgentRuntime(runtime WorkloadRuntime) *AgentRuntime {
 	return &AgentRuntime{runtime: runtime}
 }
 
 // NewAgentRuntimeWithRegistry builds a façade that registers each launched
 // handle in registry so StartAgentSession can resolve the container by name, and
 // deregisters it on teardown.
-func NewAgentRuntimeWithRegistry(runtime ContainerRuntime, registry *AgentRegistry) *AgentRuntime {
+func NewAgentRuntimeWithRegistry(runtime WorkloadRuntime, registry *AgentRegistry) *AgentRuntime {
 	return &AgentRuntime{runtime: runtime, registry: registry}
 }
 
@@ -244,7 +244,7 @@ func (r *AgentRuntime) Teardown(ctx context.Context, handle *AgentHandle) error 
 // as the aggregate env file. The path components are positional args to a fixed
 // sh script, never interpolated into the script text, so a crafted path cannot
 // inject shell.
-func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id ContainerID, uid uint32, homeDir, relPath, body string) error {
+func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id WorkloadID, uid uint32, homeDir, relPath, body string) error {
 	script := `set -eu; umask 077; dir=$(dirname "$1"); mkdir -p "$dir"; cat > "$1"; chmod 600 "$1"`
 	spec := NewExecSpec("sh", "-c", script, "sh", filepath.Join(homeDir, relPath)).
 		AsUser(strconv.FormatUint(uint64(uid), 10)).
@@ -259,8 +259,8 @@ func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id ContainerID, uid u
 
 // createAndStart creates then starts the container, cleaning up a created but
 // unstarted container so a retry with the same name starts clean.
-func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (ContainerID, error) {
-	container := ContainerSpec{
+func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (WorkloadID, error) {
+	container := WorkloadSpec{
 		Image:  spec.Image,
 		Name:   spec.Name,
 		CapAdd: []string{capNetAdmin},
@@ -291,7 +291,7 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Cont
 // inGuestEgressArmer is a backend that arms the egress firewall itself, inside
 // its isolation boundary (as guest root, before the exec gate opens), so the
 // host-side armEgress exec must be skipped. It is a marker, deliberately NOT a
-// verb on the frozen ContainerRuntime interface (podman.go): AgentRuntime probes
+// verb on the frozen WorkloadRuntime interface (podman.go): AgentRuntime probes
 // for it and skips arming when a backend self-arms (design §(c)). Only
 // MicroVMRuntime implements it; PodmanCLI and the test fakes do not, so the
 // host-side arm runs byte-identically for them.
@@ -304,7 +304,7 @@ type inGuestEgressArmer interface {
 // backend that self-arms egress in-guest (inGuestEgressArmer, the microVM
 // backend) has already armed by Start, so the host-side armEgress exec — which
 // on that backend would run capability-less and fail — is skipped.
-func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec AgentSpec) error {
+func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
 	if armer, ok := r.runtime.(inGuestEgressArmer); !ok || !armer.EgressArmedInGuest() {
 		if err := r.armEgress(ctx, id, spec.Egress); err != nil {
 			return err
@@ -319,7 +319,7 @@ func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec Agent
 // armEgress arms the egress firewall as the image's default user (uid 1000)
 // with CAP_NET_ADMIN. After this, an agent exec — run as the agent uid with no
 // capabilities — cannot alter the ruleset.
-func (r *AgentRuntime) armEgress(ctx context.Context, id ContainerID, egress EgressPolicy) error {
+func (r *AgentRuntime) armEgress(ctx context.Context, id WorkloadID, egress EgressPolicy) error {
 	out, err := r.runtime.Exec(ctx, id, NewExecSpec("sh", "-c", egress.NftScript()))
 	if err != nil {
 		return atStage("arm egress", err)
@@ -329,7 +329,7 @@ func (r *AgentRuntime) armEgress(ctx context.Context, id ContainerID, egress Egr
 
 // installCredentials installs the scoped git credential helper into the agent's
 // $HOME, as the agent user. A no-op when the workspace has no credentials.
-func (r *AgentRuntime) installCredentials(ctx context.Context, id ContainerID, workspace Workspace) error {
+func (r *AgentRuntime) installCredentials(ctx context.Context, id WorkloadID, workspace Workspace) error {
 	script, err := workspace.CredentialSetupScript()
 	if err != nil {
 		return &InvalidConfigError{Err: err}
@@ -355,7 +355,7 @@ func (r *AgentRuntime) installCredentials(ctx context.Context, id ContainerID, w
 // user, so an agent that self-clones post-launch has an owned working dir. Run
 // as the agent uid (not root) so the directory is owned by the agent. Its
 // precondition: CheckoutDir's parent must be writable by the agent uid.
-func (r *AgentRuntime) ensureCheckoutDir(ctx context.Context, id ContainerID, workspace Workspace) error {
+func (r *AgentRuntime) ensureCheckoutDir(ctx context.Context, id WorkloadID, workspace Workspace) error {
 	spec := NewExecSpec("mkdir", "-p", workspace.CheckoutDir).
 		AsUser(strconv.FormatUint(uint64(workspace.UID), 10))
 	out, err := r.runtime.Exec(ctx, id, spec)

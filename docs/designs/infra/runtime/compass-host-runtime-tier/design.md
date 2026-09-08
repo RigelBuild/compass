@@ -770,31 +770,38 @@ probe leg is necessary but not sufficient, and the record takes both.
 - **`Resize` future** (non-load-bearing, deferred): a systemd user-scope /
   cgroup v2 delegation could make host `Resize` real; deferred until C3's
   resize behavior lands anywhere.
-- **The `Container*` vocabulary is a known misnomer** (deferred, tracked
-  separately): this tier makes `ContainerRuntime` span a third backend that is
-  not a container — direct host processes — after `MicroVMRuntime` already made
-  it span a second (`go/internal/runtime/microvm.go:71`). `SelectBackend`'s own
-  comment states the endgame (`microvm.go:110-116`): once microVM is the sole
-  runtime the container path goes away entirely, leaving an interface named
-  `ContainerRuntime` with no container implementation. The misnomer is not the
-  interface alone: `ContainerID` (214 refs) already keys microVM sessions
-  (`microvm.go:84`) and would key host process groups here, and `ContainerSpec`
-  (58 refs) is likewise backend-neutral in practice.
+- **The `Container*` vocabulary — RULED and DONE (Matt): renamed to
+  `Workload*` in this change.** Not deferred. The interface is named for one of
+  its backends, and it now has four: podman containers, microVM guests
+  (`MicroVMRuntime`, `go/internal/runtime/microvm.go:71`), Apple `container` on
+  macOS (`AppleContainerCLI`, DL-330), and the direct host processes this tier
+  adds. `SelectBackend`'s own comment (`microvm.go:110-116`) says the podman
+  path eventually goes away entirely, which would leave an interface named
+  `ContainerRuntime` with no container implementation at all.
 
-  Ruled name: **`Workload*`** (`WorkloadRuntime`/`WorkloadID`/`WorkloadSpec`) —
-  verified unused in Go and proto, and true of a container, a microVM guest,
-  and a host process group alike. `Session*` was rejected: a session is already
-  the user-facing conversational stream (`SessionEvent` and siblings in
-  `proto/compass/v1/compass.proto`), one environment outlives many sessions, so
-  the name would assert a one-to-one relation that does not hold. `Sandbox` was
-  rejected as asserting isolation the host tier explicitly does not provide.
-  `AgentRuntime` (`go/internal/runtime/agent.go:155`) is **not** renamed — it is
-  the per-agent lifecycle façade over a backend, and that name is accurate.
+  Applied: `ContainerRuntime` → `WorkloadRuntime` (85 refs), `ContainerID` →
+  `WorkloadID` (198), `ContainerSpec` → `WorkloadSpec` (58), `InContainerError`
+  → `InWorkloadError` (8). `Session*` was rejected — a session is already the
+  user-facing conversational stream (`SessionEvent` and siblings in
+  `proto/compass/v1/compass.proto`), and one workload outlives many sessions,
+  so the name would assert a one-to-one relation that does not hold.
+  `Sandbox` was rejected as asserting isolation the host tier explicitly does
+  not provide.
 
-  Deliberately **not** in this record's scope: a ~365-reference mechanical
-  rename would swamp the design content here, and the freeze at S1 covers the
-  method set, not the identifier. Sequenced after the microVM default flip,
-  when the vocabulary is forced by reality rather than argued.
+  Deliberately NOT renamed, because these are genuinely containers:
+  `ContainerController` (the podman-only stack supervisor,
+  `go/internal/stack/deps.go:219`), `ContainerRef` (a *message* container,
+  `go/internal/store/types.go:268`), the testcontainer specs
+  (`PostgresContainerSpec`, `NatsContainerSpec`, `CollectorContainerSpec`), and
+  the `container_name` wire field (`proto/compass/v1/compass.proto:645,653,666,708`),
+  which is a compatibility boundary. `AgentRuntime`
+  (`go/internal/runtime/agent.go:155`) also keeps its name — it is the
+  per-agent lifecycle façade over a backend, and that name is accurate.
+
+  The S1 freeze (`go/internal/runtime/podman.go` freeze comment) reserves the
+  **method set** — "a backend that self-arms egress does NOT grow a verb here"
+  — not the identifier, so the rename is legal under it. No signature, method
+  set, or behaviour changed.
 
 ## Ledger delta
 
@@ -829,3 +836,11 @@ invented here):
   onboarding task (semantic overlap in scope, agent-proposes/user-disposes),
   not a deterministic gate; the deterministic door checks (grammar, credential
   denylist) remain the sole automatic enforcement.
+- **Runtime-vocabulary row**: the backend seam is renamed from `Container*` to
+  `Workload*` (`WorkloadRuntime`/`WorkloadID`/`WorkloadSpec`/`InWorkloadError`)
+  because the interface spans four backends — podman, microVM, Apple
+  `container`, host process — only some of which are containers, and the podman
+  path is slated to go away. Ruled by Matt. The S1 freeze covers the method
+  set, not the identifier; no signature or behaviour changed. Genuine
+  containers keep the old vocabulary (`ContainerController`, `ContainerRef`,
+  the testcontainer specs, the `container_name` wire field).

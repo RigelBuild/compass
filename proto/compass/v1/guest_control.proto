@@ -182,10 +182,10 @@ message ProvisionRequest {
   // skips the arm and is a hermetic test seam (the host production path always
   // sends a non-empty default-deny ruleset).
   string nft_script = 1;
-  // default_exec_uid is the session's agent uid (ContainerSpec.UID), the
+  // default_exec_uid is the session's agent uid (WorkloadSpec.UID), the
   // default for an exec with no uid. Validated non-zero.
   uint32 default_exec_uid = 2;
-  // base_env is the base environment every exec inherits (ContainerSpec.Env).
+  // base_env is the base environment every exec inherits (WorkloadSpec.Env).
   map<string, string> base_env = 3;
 }
 

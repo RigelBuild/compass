@@ -306,7 +306,7 @@ flow under volume-backed: resolve-or-create volume → `Attach` → `Materialize
 writable session volume at P2)". This is a **doc-comment change, not a shape
 change**: `Mount.ReadOnly` is already a per-mount bool
 (`podman.go:62-66`) and the `:ro` suffix is already conditional
-(`podman.go:846-850`). The downstream `ContainerSpec.Mounts` already documents
+(`podman.go:846-850`). The downstream `WorkloadSpec.Mounts` already documents
 a **read-write** bind mount in the shipped tree — "Not all read-only … the
 per-container agent gateway socket is mounted read-write (the agent must
 connect() to it)" (`podman.go:100-103`) — so a writable mount at the layer the
@@ -582,7 +582,7 @@ The package skeleton mirrors `go/internal/compute`'s layering
   byte-identical (GC 8). Under `SourceVolume`, `ensureCheckoutDir` still
   runs (idempotent `mkdir -p` on the mounted path, same uid-ownership
   intent, `agent.go:354-358`). The `AgentSpec.Mounts` doc comment is amended
-  per P2-GC-a. No `ContainerRuntime` change (the interface stays frozen,
+  per P2-GC-a. No `WorkloadRuntime` change (the interface stays frozen,
   `podman.go:399-403`).
 - **Depends:** W1 (the mount it documents); parallel with W3.
 - **Test cycle:** existing launch-path regression suite green with zero-value

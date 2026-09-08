@@ -209,7 +209,7 @@ type canaryBooter interface {
 // startup error naming the concrete type — never a silent skip, so a backend
 // added without a preflight surfaces loudly at launch rather than running
 // unchecked.
-func verifyBackendPreflight(ctx context.Context, engine runtime.ContainerRuntime) error {
+func verifyBackendPreflight(ctx context.Context, engine runtime.WorkloadRuntime) error {
 	switch e := engine.(type) {
 	case microVMPreflighter:
 		return runMicroVMPreflight(ctx, e, engine)
@@ -226,7 +226,7 @@ func verifyBackendPreflight(ctx context.Context, engine runtime.ContainerRuntime
 // satisfies microVMPreflighter but not canaryBooter is a fail-closed startup
 // error naming the type, never a silent skip (same posture as the neither-probe
 // default). Split out so verifyBackendPreflight stays within funlen.
-func runMicroVMPreflight(ctx context.Context, pre microVMPreflighter, engine runtime.ContainerRuntime) error {
+func runMicroVMPreflight(ctx context.Context, pre microVMPreflighter, engine runtime.WorkloadRuntime) error {
 	if err := pre.VerifyMicroVMSupport(ctx); err != nil {
 		return err
 	}
@@ -330,7 +330,7 @@ func registerBackendFlags() backendFlags {
 
 // selectEngine resolves the configured runtime backend from the parsed flags
 // and their environment fallbacks.
-func (f backendFlags) selectEngine() (runtime.ContainerRuntime, error) {
+func (f backendFlags) selectEngine() (runtime.WorkloadRuntime, error) {
 	cfg, err := f.backendConfig()
 	if err != nil {
 		return nil, err
