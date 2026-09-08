@@ -92,8 +92,11 @@ func TestRelayCommsPinToolErrorIsInBandNotStreamError(t *testing.T) {
 // A row omits seed/gotResp/wantResp ONLY when the production arm returns a FRESH
 // response rather than the caller's, so there is no instance to be identical to
 // — today that is set_status alone, whose CommsCaller method returns a string.
-// Such a row still pays the sweep's generic non-nil (IsValid) gate, which is why
-// declining the pair cannot silently drop an arm's payload coverage.
+// That opt-out is EARNED, not taken on trust: the sweep rejects a row that
+// declines the pair while its result type has any field, because IsValid alone
+// cannot tell a fresh empty message from the caller's and such a row could drop
+// a real payload silently. set_status qualifies because SetAgentStatusResponse
+// has zero fields.
 type armCase struct {
 	name     string
 	request  *compassv1internal.RelayCommsCallRequest
@@ -266,8 +269,16 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 			if calls[0].account != testAgentAccount {
 				t.Fatalf("%s attributed to %q, want bound %q", arm.name, calls[0].account, testAgentAccount)
 			}
+			// One verb cannot serve both row shapes: the eight message rows are
+			// pointer-identity, and %#v renders two zero-valued proto pointers
+			// byte-identically (a 446-char wall reading "got = X, want = X");
+			// set_status's row is a string VALUE, for which %p is an error
+			// token. Split on the row's kind so the failure names the mismatch.
 			if got := arm.field(calls[0]); got != arm.want {
-				t.Fatalf("%s recorded field = %#v, want %#v", arm.name, got, arm.want)
+				if want, ok := arm.want.(string); ok {
+					t.Fatalf("%s recorded activity = %#v, want %#v", arm.name, got, want)
+				}
+				t.Fatalf("%s recorded request %p, want the relayed instance %p", arm.name, got, arm.want)
 			}
 			// The result must be wrapped in the arm MATCHING the request.
 			// Attribution and forwarding both pass under a mis-wrapped
@@ -294,6 +305,17 @@ func TestRelayCommsEveryArmAttributesToBoundAccount(t *testing.T) {
 			// separates a real empty message from a nil pointer — Has cannot.
 			if !result.Get(set).Message().IsValid() {
 				t.Fatalf("%s wrapped a NIL message in the %q result arm", arm.name, arm.name)
+			}
+			// The opt-out must be EARNED, not asserted in a comment: IsValid
+			// separates non-nil from nil and cannot tell the caller's instance
+			// from a fresh empty one, so a row that declines the identity check
+			// while its result type HAS fields could drop the whole response
+			// silently. Only a zero-field response type has nothing to lose,
+			// which is why set_status alone qualifies — and a future arm that
+			// forgets the pair fails here instead of going uncovered.
+			if arm.gotResp == nil && set.Message().Fields().Len() != 0 {
+				t.Fatalf("%s declines the identity check but its result type %s has %d field(s) that could be silently dropped; add gotResp/wantResp",
+					arm.name, set.Message().FullName().Name(), set.Message().Fields().Len())
 			}
 			// The ceiling the eight arms with a caller-owned response reach:
 			// the payload is the seeded instance, which is what makes each
