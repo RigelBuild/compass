@@ -19,7 +19,7 @@
 //   - registry.go — AgentRegistry, the Runner's live-container handle cache the
 //     session RPCs resolve a launched container by name through.
 //
-// This file is the container-runtime seam: a WorkloadRuntime interface plus
+// This file is the workload-runtime seam: a WorkloadRuntime interface plus
 // PodmanCLI, its rootless-podman-CLI implementation. Rootless is a hard
 // requirement (design: architecture-lineage): no daemon, no root, no rootful fallback.
 // Containers run with --userns=keep-id:uid=<agent-uid>,gid=<agent-gid> so the

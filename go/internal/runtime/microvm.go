@@ -76,7 +76,7 @@ type MicroVMConfig struct {
 	VolumeRoot string
 }
 
-// BackendConfig selects and configures the container runtime backend. Backend
+// BackendConfig selects and configures the workload runtime backend. Backend
 // is the chosen backend name ("podman" or "microvm"); MicroVM carries the
 // microVM-specific wiring, consulted only when Backend selects it.
 type BackendConfig struct {
@@ -121,7 +121,7 @@ func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
 	return m
 }
 
-// SelectBackend chooses the container runtime backend from cfg. An empty or
+// SelectBackend chooses the workload runtime backend from cfg. An empty or
 // "podman" backend returns the podman CLI runtime; "microvm" returns the
 // microVM runtime; any other value is an error naming the unknown backend and
 // the accepted values.

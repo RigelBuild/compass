@@ -138,7 +138,7 @@ func atStage(stage string, err error) error {
 	return &StageError{Stage: stage, Err: err}
 }
 
-// requireSuccess turns a non-zero in-container exec into an InWorkloadError
+// requireSuccess turns a non-zero in-workload exec into an InWorkloadError
 // tagged with the stage, surfacing its captured stderr.
 func requireSuccess(stage string, out ExecOutput) error {
 	if out.Success() {
@@ -147,7 +147,7 @@ func requireSuccess(stage string, out ExecOutput) error {
 	return &InWorkloadError{Stage: stage, ExitCode: out.ExitCode, Stderr: out.Stderr}
 }
 
-// AgentRuntime drives the per-agent container lifecycle over a WorkloadRuntime.
+// AgentRuntime drives the per-agent workload lifecycle over a WorkloadRuntime.
 //
 // When constructed with an AgentRegistry via NewAgentRuntimeWithRegistry, a
 // successful Launch registers the handle and Teardown deregisters it, so the
