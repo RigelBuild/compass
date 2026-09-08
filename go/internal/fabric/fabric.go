@@ -23,6 +23,11 @@ type Unsubscribe func()
 type EventFabric interface {
 	Publish(ctx context.Context, subject string, ref EventRef) error
 	Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error)
+	// SubscribeKind is the tenant-wildcard read side: one durable queue-group
+	// consumer receiving one kind across EVERY tenant, which is what the
+	// per-Server delivery singleton needs (§T3). Publish stays per-tenant and
+	// concrete.
+	SubscribeKind(ctx context.Context, kind EventKind, fn func(EventRef)) (Unsubscribe, error)
 }
 
 // RunnerFabric is the Server↔Runner async seam (frozen, §T3): per-Runner
@@ -257,6 +262,20 @@ func New(cfg Config) (*Fabric, error) {
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			log.Info("fabric: nats reconnected", "url", nc.ConnectedUrl())
 		}),
+		// The Runner plane's safety argument is that a stalled receiver is
+		// dropped AND reported, with the cursor sweep recovering what was
+		// dropped (see RunnerEventBuffer). nats.go reports a full channel
+		// subscription through the async error callback, and the default
+		// options install none — so without this the one lossy path in the
+		// fabric drops events with no log line, no metric and no error.
+		nats.ErrorHandler(func(_ *nats.Conn, sub *nats.Subscription, err error) {
+			if sub == nil {
+				log.Warn("fabric: nats async error", "error", err)
+				return
+			}
+			log.Warn("fabric: nats async error; a slow consumer drops events until it keeps up",
+				"subject", sub.Subject, "dropped", subDropped(sub), "error", err)
+		}),
 	}, cfg.Options...)
 
 	nc, err := nats.Connect(cfg.URL, opts...)
@@ -270,6 +289,18 @@ func New(cfg Config) (*Fabric, error) {
 	}
 	f.nc, f.js = nc, js
 	return f, nil
+}
+
+// subDropped reports a subscription's dropped-message count for logging.
+// Subscription.Dropped returns an error once the subscription is invalid, which
+// is exactly the moment an error handler may run — so a failed read degrades to
+// -1 rather than losing the log line that names the slow consumer.
+func subDropped(sub *nats.Subscription) int {
+	n, err := sub.Dropped()
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // Close drains and closes the connection: Drain flushes pending publishes and
