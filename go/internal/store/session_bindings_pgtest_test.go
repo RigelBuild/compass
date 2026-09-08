@@ -24,6 +24,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -953,4 +955,161 @@ func TestRecordSessionBindingConcurrentFirstBindsReportTheDestroyedSession(t *te
 	if _, err := s.ResolveSessionAccount(ctx, winner); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("the overwritten session %q still resolves (err = %v), want ErrNotFound", winner, err)
 	}
+}
+
+// TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep is what
+// makes the FOR UPDATE row lock on the bind's prior-value read load-bearing, and
+// it is the only case in this file that can be.
+//
+// The two concurrency tests above cannot reach that lock AT ALL. Both pit a bind
+// against another BIND, and the bind takes the per-account advisory lock FIRST,
+// before it reads — so the two callers are already serialized by the time either
+// one evaluates SELECT ... FOR UPDATE. Remove FOR UPDATE and both still pass:
+// the advisory lock alone is sufficient for bind-vs-bind. The row lock earns its
+// place only against a writer that reaches the row WITHOUT holding the advisory
+// lock, and DeleteSessionBindingsForRunner is exactly that writer — the reconnect
+// sweep is a single :many DELETE and takes no advisory lock at all.
+//
+// So this pits a re-point against a sweep of the account's CURRENT Runner. Both
+// destroy the same binding, and the displaced session id drives PR3's reap from
+// the delivery held-deliver registry, so it must be handed to EXACTLY ONE of
+// them:
+//
+//   - reported to BOTH is a double reap — the bind returns sess-old AND the
+//     sweep returns sess-old, so PR3 reaps the same session twice.
+//   - reported to NEITHER strands it — its held deliveries are kept forever,
+//     the mirror of the defect the advisory lock covers.
+//
+// With the row lock, one side blocks on the other's uncommitted tuple and sees
+// the committed truth: if the sweep commits first the row is gone, the bind's
+// read misses, and it reports "" while the sweep reports sess-old; if the bind
+// commits first it reports sess-old and the sweep — re-reading the latest
+// committed row, which now names sess-new on runner-2 — matches nothing. Without
+// it the bind's read runs on the statement-start snapshot and still sees
+// sess-old while the sweep concurrently deletes and returns it, so both report.
+//
+// WHICH side wins is not asserted and must not be: the assertion is on the SHAPE
+// (exactly one reporter), so it holds on every iteration regardless of schedule.
+// No gate transaction drives the interleaving here — unlike the two tests above,
+// the contended resource IS the row lock under test, so a gate holding it would
+// beg the question. An unsynchronized loop is enough at this iteration count:
+// measured 108/120 and 113/120 iterations reporting the double-reap with
+// FOR UPDATE removed, and 0/120 with it present. A SINGLE iteration would be a
+// ~90% test, which is why the count is 120 rather than one.
+func TestRecordSessionBindingReportsDisplacedExactlyOnceAgainstARunnerSweep(t *testing.T) {
+	// context.Background is the test root, the pgtest-suite convention.
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	const iterations = 120
+	var doubleReported, unreported int
+	for i := range iterations {
+		old := fmt.Sprintf("sess-old-%d", i)
+		fresh := fmt.Sprintf("sess-new-%d", i)
+
+		// Fresh session ids every iteration, and the seed bind RE-POINTS the
+		// account's one row back onto runner-1. That is what keeps each
+		// iteration independent AND non-vacuous: the previous iteration leaves a
+		// row on runner-2 (which the runner-1 sweep below would not see), so
+		// without this re-point iteration i+1 would race a bind against a sweep
+		// that had nothing to find and "exactly one reporter" would hold
+		// trivially. After this call there is exactly one binding, it names
+		// `old`, and it sits on the Runner the sweep targets.
+		mustBind(t, ctx, s, old, agent.ID, "runner-1")
+
+		type bindResult struct {
+			displaced string
+			err       error
+		}
+		type sweepResult struct {
+			swept []SessionBinding
+			err   error
+		}
+		binds := make(chan bindResult, 1)
+		sweeps := make(chan sweepResult, 1)
+
+		// Both goroutines park on `start` until each is scheduled and ready, so
+		// they are released together rather than sequentially. This narrows the
+		// window, it does not close it — the interleaving stays up to Postgres
+		// and the scheduler, which is why the loop runs many iterations instead
+		// of trusting one.
+		start := make(chan struct{})
+		var ready sync.WaitGroup
+		ready.Add(2)
+		go func() {
+			ready.Done()
+			<-start
+			displaced, err := s.RecordSessionBinding(ctx, fresh, agent.ID, "runner-2")
+			binds <- bindResult{displaced, err}
+		}()
+		go func() {
+			ready.Done()
+			<-start
+			swept, err := s.DeleteSessionBindingsForRunner(ctx, "runner-1")
+			sweeps <- sweepResult{swept, err}
+		}()
+		ready.Wait()
+		close(start)
+
+		bind, sweep := <-binds, <-sweeps
+		if bind.err != nil {
+			t.Fatalf("iteration %d: RecordSessionBinding(%q, runner-2): %v — a re-point must never be refused, whatever a concurrent sweep is doing", i, fresh, bind.err)
+		}
+		if sweep.err != nil {
+			t.Fatalf("iteration %d: DeleteSessionBindingsForRunner(runner-1): %v", i, sweep.err)
+		}
+
+		// The bind may only ever name the session it actually displaced or ""
+		// (the sweep beat it to the row). Anything else is a wrong id handed to
+		// the reap, which is worse than either failure counted below.
+		if bind.displaced != old && bind.displaced != "" {
+			t.Fatalf("iteration %d: the bind reported displaced %q; the only correct answers are %q (it overwrote the seeded binding) or \"\" (the sweep removed it first)", i, bind.displaced, old)
+		}
+		// Likewise the sweep: the account holds one binding and it is the only
+		// row on runner-1, so the sweep returns that row or nothing.
+		if len(sweep.swept) > 1 {
+			t.Fatalf("iteration %d: the runner-1 sweep returned %d bindings, want at most 1 — the account holds a single binding", i, len(sweep.swept))
+		}
+		for _, b := range sweep.swept {
+			if b.SessionID != old {
+				t.Fatalf("iteration %d: the runner-1 sweep returned session %q, want %q", i, b.SessionID, old)
+			}
+		}
+
+		reportedByBind := bind.displaced == old
+		reportedBySweep := len(sweep.swept) == 1
+		switch {
+		case reportedByBind && reportedBySweep:
+			doubleReported++
+		case !reportedByBind && !reportedBySweep:
+			unreported++
+		}
+
+		// Whoever won, the account ends the iteration holding exactly the new
+		// binding. This is the per-iteration proof the race actually ran: a
+		// no-op iteration could not move the account onto `fresh`.
+		if n := countBindings(t, ctx, s, agent.ID); n != 1 {
+			t.Fatalf("iteration %d: bindings after the race = %d, want 1 — the bind must land whether or not the sweep removed the prior row", i, n)
+		}
+		live, err := s.SessionForAccount(ctx, agent.ID)
+		if err != nil {
+			t.Fatalf("iteration %d: SessionForAccount after the race: %v", i, err)
+		}
+		if live != fresh {
+			t.Fatalf("iteration %d: live session is %q, want %q — the bind commits last in both orderings, so its session owns the binding", i, live, fresh)
+		}
+		// And the displaced session is gone in every ordering, which is what
+		// makes "reported to nobody" a genuine strand rather than a deferral.
+		if _, err := s.ResolveSessionAccount(ctx, old); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("iteration %d: displaced session %q still resolves (err = %v), want ErrNotFound", i, old, err)
+		}
+	}
+
+	if doubleReported > 0 || unreported > 0 {
+		t.Fatalf("over %d iterations of a re-point racing a sweep of the account's Runner: %d reported the displaced session to BOTH callers (a double reap — PR3 reaps it from the held-deliver registry twice) and %d reported it to NEITHER (stranded held deliveries). Every displaced session must be reported to exactly one caller. The prior-value read must take a ROW LOCK (SELECT ... FOR UPDATE in queries/session_bindings.sql): the per-account advisory lock cannot cover this, because the sweep is a bare DELETE that never takes it",
+			iterations, doubleReported, unreported)
+	}
+	t.Logf("%d iterations: the displaced session was reported to exactly one caller every time", iterations)
 }
