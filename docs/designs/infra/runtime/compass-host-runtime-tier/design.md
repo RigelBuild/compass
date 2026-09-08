@@ -770,6 +770,31 @@ probe leg is necessary but not sufficient, and the record takes both.
 - **`Resize` future** (non-load-bearing, deferred): a systemd user-scope /
   cgroup v2 delegation could make host `Resize` real; deferred until C3's
   resize behavior lands anywhere.
+- **The `Container*` vocabulary is a known misnomer** (deferred, tracked
+  separately): this tier makes `ContainerRuntime` span a third backend that is
+  not a container — direct host processes — after `MicroVMRuntime` already made
+  it span a second (`go/internal/runtime/microvm.go:71`). `SelectBackend`'s own
+  comment states the endgame (`microvm.go:110-116`): once microVM is the sole
+  runtime the container path goes away entirely, leaving an interface named
+  `ContainerRuntime` with no container implementation. The misnomer is not the
+  interface alone: `ContainerID` (214 refs) already keys microVM sessions
+  (`microvm.go:84`) and would key host process groups here, and `ContainerSpec`
+  (58 refs) is likewise backend-neutral in practice.
+
+  Ruled name: **`Workload*`** (`WorkloadRuntime`/`WorkloadID`/`WorkloadSpec`) —
+  verified unused in Go and proto, and true of a container, a microVM guest,
+  and a host process group alike. `Session*` was rejected: a session is already
+  the user-facing conversational stream (`SessionEvent` and siblings in
+  `proto/compass/v1/compass.proto`), one environment outlives many sessions, so
+  the name would assert a one-to-one relation that does not hold. `Sandbox` was
+  rejected as asserting isolation the host tier explicitly does not provide.
+  `AgentRuntime` (`go/internal/runtime/agent.go:155`) is **not** renamed — it is
+  the per-agent lifecycle façade over a backend, and that name is accurate.
+
+  Deliberately **not** in this record's scope: a ~365-reference mechanical
+  rename would swamp the design content here, and the freeze at S1 covers the
+  method set, not the identifier. Sequenced after the microVM default flip,
+  when the vocabulary is forced by reality rather than argued.
 
 ## Ledger delta
 
