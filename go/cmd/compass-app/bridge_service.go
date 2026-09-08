@@ -508,8 +508,7 @@ type connectResult struct {
 // *connect.Error (CodeUnavailable) wrapping the net/tls error; errors.As reaches
 // the underlying cause THROUGH the connect wrapper.
 func classifyConnectErr(err error) (kind, message string) {
-	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
+	if _, ok := errors.AsType[*tls.CertificateVerificationError](err); ok {
 		return connectKindBadCert, "The server's certificate is not trusted"
 	}
 

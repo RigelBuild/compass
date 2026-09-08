@@ -237,14 +237,13 @@ func (s *AgentStream) endDrains() {
 //     "terminated by SIGKILL"; that branch is unchanged, so the podman
 //     byte-path is byte-identical (OQ-G/U3b).
 func isDeliberateKill(err error) bool {
-	var exitStatus *runtime.ExitStatusError
-	if errors.As(err, &exitStatus) {
+	if exitStatus, ok := errors.AsType[*runtime.ExitStatusError](err); ok {
 		// The two branches are deliberately asymmetric (OQ-G): the portable
 		// branch counts ANY signalled exit as a kill, while the podman branch
 		// below pins SIGKILL. That is intentional — the guest reports a
 		// deliberate teardown as SIGKILL (Kill) or SIGTERM (Stop), and OQ-G
-		// blessed Signal!=0 rather than enumerating signals. Do NOT "align" the
-		// two by narrowing this to SIGKILL: the microVM path has no os.ProcessState
+		// blessed Signal!=0 rather than enumerating signals. Do NOT "align"
+		// the two by narrowing this to SIGKILL: the microVM path has no os.ProcessState
 		// to inspect, and Stop's SIGTERM teardown must still classify as a kill.
 		return exitStatus.Signal != 0
 	}

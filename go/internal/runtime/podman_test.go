@@ -276,8 +276,7 @@ func TestSpawnCaptureWaitDelayBoundsLeakedPipeHang(t *testing.T) {
 	case <-time.After(safety):
 		t.Fatalf("Exec did not return within %s — spawnCapture blocked on the leaked stdout pipe past its timeout; cmd.WaitDelay is not set", safety)
 	case err := <-done:
-		var timeout *TimeoutError
-		if !errors.As(err, &timeout) {
+		if _, ok := errors.AsType[*TimeoutError](err); !ok {
 			t.Fatalf("Exec error = %v (%T), want *TimeoutError", err, err)
 		}
 	}

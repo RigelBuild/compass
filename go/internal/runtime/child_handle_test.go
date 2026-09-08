@@ -75,8 +75,7 @@ func TestNewChildHandleFuncs_TerminateReturnsWaitError(t *testing.T) {
 		func() error { return &ExitStatusError{Signal: syscall.SIGKILL} },
 	)
 	err := h.Terminate()
-	var exitStatus *ExitStatusError
-	if !errors.As(err, &exitStatus) {
+	if _, ok := errors.AsType[*ExitStatusError](err); !ok {
 		t.Fatalf("Terminate error = %T, want *ExitStatusError (the wait error)", err)
 	}
 }

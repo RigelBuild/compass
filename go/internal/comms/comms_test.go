@@ -219,7 +219,7 @@ func TestSearchMessagesAuthorizationScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("peregrine falcon")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: new("peregrine falcon")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestListMessagesVisibilityScopedAtEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("private plans")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: new("private plans")}}}, string(chA.ID), store.TopicRef{Name: "general", Create: true}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -828,8 +828,6 @@ func pendingAskStore(id string) store.MessageBlock {
 		}},
 	}}
 }
-
-func ptr(s string) *string { return &s }
 
 func containsString(ids []string, want string) bool {
 	for _, id := range ids {

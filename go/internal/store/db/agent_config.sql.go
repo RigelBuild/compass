@@ -39,7 +39,7 @@ const putAgentConfig = `-- name: PutAgentConfig :exec
 INSERT INTO agent_config_bundle (singleton, version, bundle)
 VALUES (TRUE, $1, $2)
 ON CONFLICT (singleton)
-DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle, updated_at = now()
+DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle
 `
 
 type PutAgentConfigParams struct {

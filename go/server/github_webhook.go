@@ -146,8 +146,7 @@ func (h *githubWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
+		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
