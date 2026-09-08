@@ -4,8 +4,8 @@
 # on the /flake.nix distribution surface:
 #
 #   flake-check   `nix flake check` — the flake evaluates and every package
-#                 (compass{,-server,-runner,-stack}, compass-app, the
-#                 compass-stack-env) builds from a bare checkout.
+#                 (compass{,-server,-runner,-stack}, compass-app, compass-ui,
+#                 the compass-stack-env) builds from a bare checkout.
 #   flake-parity  the nixpkgs-pin parity gate (tools/toolchain/flake-parity.ts):
 #                 flake.lock's nixpkgs rev must equal devenv.lock's. The flake
 #                 carries its OWN lock, a SECOND independent nixpkgs pin, so a
@@ -44,6 +44,19 @@ dependsOn:
   - 'root'
   - 'compass-go'
   - 'toolchain-parity'
+  # `nix flake check` now also realizes `compass-ui` (apps/ui/dist.nix — the web
+  # UI dist the flake stages into compass-app's bin/dist, RIG-3474), so that
+  # derivation's source projects are owners of this gate exactly as compass-go is
+  # for the backend packages. Only `compass-client` can be declared: moon's
+  # layer constraints forbid a `tool` project depending on an `application`, and
+  # `compass-ui` is `layer: 'application'` (apps/ui/moon.yml:9) — the edge is
+  # rejected as `project_constraints::invalid_layer_relationship`. So a
+  # UI-source-only PR is caught by flake-check's `inputs` rather than by
+  # project-graph affected detection, which never consults task inputs (see the
+  # note above). Those inputs must therefore enumerate every path the compass-ui
+  # derivation reads — including all 21 workspace manifests, argued at the entry
+  # itself; the two member globs alone are NOT the closure.
+  - 'compass-client'
 
 workspace:
   inheritedTasks:
@@ -75,6 +88,52 @@ tasks:
       - '/tools/toolchain/gtk-closure.nix'
       - '/tools/toolchain/flake-parity.ts'
       - '/tools/toolchain/flake-parity-core.ts'
+      # The compass-ui closure (apps/ui/dist.nix): the two members' source, the
+      # root manifest + lockfile the pinned FOD installs from, and the shared
+      # tsconfig the build copies in. `bun.lock` earns its slot twice over — it
+      # is both a build input and the trigger that invalidates the derivation's
+      # `outputHash`, so a lockfile bump reddens this gate until the pin is
+      # refreshed, which is precisely when it must run.
+      - '/apps/ui/**'
+      - '/packages/compass-client/**'
+      - '/package.json'
+      - '/bun.lock'
+      - '/tsconfig.base.json'
+      # EVERY workspace member's package.json, not just the two members that get
+      # installed. dist.nix:83-99 reads `workspaces.packages` from the root
+      # manifest and globs all 21 manifests into the FOD source, because bun
+      # resolves the whole workspace graph before installing a filtered member
+      # (omit one and it aborts with `Workspace not found`). Undeclared, a
+      # manifest-only commit does not schedule this gate at all — measured with
+      # `moon query tasks --affected --project flake-gate`, which returned no
+      # task for packages/compass-agent, apps/eng-docs, and every tools/* member
+      # before these three globs were added.
+      #
+      # The consequence depends on whether the FOD's output is already in the
+      # local store, and the two cases differ:
+      #
+      # WARM (a dev box that already built it): the FOD is content-addressed by
+      # `outputHash`, so its output path is a function of the pinned hash and
+      # NOT of its inputs. A drifted manifest changes the .drv but resolves to
+      # the same store path, which nix serves from cache without re-running
+      # `bun install` — building `.#compass-ui` clean and with an added
+      # dependency gives an identical out-path. Drift cannot change what ships.
+      #
+      # COLD (every CI runner — ci.yml:215 adds only devenv/cachix substituters,
+      # neither carrying this FOD, and the workflow pushes to no cache): the
+      # install really runs, and a dependency-graph drift fails closed with
+      # `error: lockfile had changes, but lockfile is frozen`. A COSMETIC
+      # manifest edit still builds clean and reproduces the pinned hash, so it
+      # is specifically the dependency graph that trips this, not any manifest
+      # byte.
+      #
+      # So the gate must be scheduled for a manifest-only commit: cold, it can
+      # genuinely redden, with an error naming the LOCKFILE rather than the
+      # manifest that caused it. It also catches a hash needing a refresh
+      # (RIG-3514).
+      - '/packages/*/package.json'
+      - '/apps/*/package.json'
+      - '/tools/*/package.json'
 
   flake-parity:
     # The nixpkgs-pin parity gate. bun runs the thin shell from the workspace
