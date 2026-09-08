@@ -422,6 +422,10 @@ jobs:
           # would find nothing and silently fall back to the dev-box path.
           chromium=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix chromium)
+          [ -n "$chromium" ] || {
+            echo "::error::chromium-e2e-env.nix chromium produced no store path"
+            exit 1
+          }
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
           # secretspec: the CLI the Go secrets WRITE path spawns BY NAME
           # (go/internal/secrets/resolver.go's `defaultCLI = "secretspec"`,
@@ -440,6 +444,27 @@ jobs:
           secretspec=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/secretspec-env.nix secretspec)
           echo "$secretspec/bin" >>"$GITHUB_PATH"
+
+          # The visual-regression gate's fonts, from the same pinned helper.
+          # Without this the runner rasterizes with whatever faces its image
+          # ships, making the committed baselines a function of the runner
+          # image rather than of the repo — a base-image bump would then red
+          # every apps/ui PR at once, and no agent could reproduce it locally.
+          # The config deliberately sees ONLY the pinned faces, so a box with
+          # extra fonts installed renders identically to one without.
+          fonts=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/chromium-e2e-env.nix fontconfig)
+          # Fail closed: the two malformed values fail in opposite directions
+          # and BOTH stay green. An EMPTY FONTCONFIG_FILE is not "use the
+          # system config" — fontconfig reads it as a config with no font dirs
+          # at all, and every string then measures zero width. A path that does
+          # not exist falls back to the full host set, which is the undeclared
+          # input this whole step exists to remove.
+          [ -n "$fonts" ] || {
+            echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
+            exit 1
+          }
+          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
         if: matrix.run == 'true'
@@ -2700,7 +2725,27 @@ jobs:
         run: |
           chromium=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix chromium)
+          [ -n "$chromium" ] || {
+            echo "::error::chromium-e2e-env.nix chromium produced no store path"
+            exit 1
+          }
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
+          # The same pinned fontconfig the moon job's gate replays with. The
+          # capture lane MUST rasterize with it too: the gate compares these
+          # bytes against a run that has it set, so a capture without it bakes
+          # the runner image's own faces into the baselines and reds every
+          # text-bearing shot permanently.
+          fonts=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/chromium-e2e-env.nix fontconfig)
+          # Fail closed HERE above all: an empty or bogus value in the capture
+          # lane writes zero-width or host-font pixels into committed baselines,
+          # and the bot PR then presents them for image review as a legitimate
+          # capture. A red gate is recoverable; a poisoned baseline is not.
+          [ -n "$fonts" ] || {
+            echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
+            exit 1
+          }
+          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Install the workspace JS dependencies
         # Unlike the forge regen lane — whose payload is `go test` and needs no
