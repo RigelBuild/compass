@@ -8,7 +8,7 @@
 INSERT INTO agent_config_bundle (singleton, version, bundle)
 VALUES (TRUE, $1, $2)
 ON CONFLICT (singleton)
-DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle, updated_at = now();
+DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle;
 
 -- name: CurrentAgentConfig :one
 SELECT version, bundle FROM agent_config_bundle WHERE singleton = TRUE;

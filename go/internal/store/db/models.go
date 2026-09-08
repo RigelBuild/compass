@@ -266,6 +266,15 @@ type Secret struct {
 	TenantID   string
 }
 
+type SessionBinding struct {
+	TenantID       string
+	AgentAccountID string
+	SessionID      string
+	RunnerID       string
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type SystemAccount struct {
 	AccountID string
 	TenantID  string

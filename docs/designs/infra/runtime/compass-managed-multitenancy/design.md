@@ -770,9 +770,12 @@ the async command-push and event fan-in ride `RunnerFabric`.
   (`go/internal/runnerhub/hub.go:925-938`), and
   `github.com/nats-io/nats.go`. Produces:
   `package fabric` with
-  `type EventFabric interface { Publish(ctx context.Context, subject string, ref EventRef) error; Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error) }`
+  `type EventFabric interface { Publish(ctx context.Context, subject string, ref EventRef) error; Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error); SubscribeKind(ctx context.Context, kind EventKind, fn func(EventRef)) (Unsubscribe, error) }`
   where `EventRef` is a compact reference (event kind + row id + tenant),
-  never a payload copy — subscribers re-read Postgres;
+  never a payload copy — subscribers re-read Postgres; `SubscribeKind` is the
+  tenant-wildcard read side (`compass.*.comms.<kind>`, one durable queue-group
+  consumer across every tenant) the per-Server delivery singleton needs, while
+  `Publish` stays per-tenant and concrete;
   `type RunnerFabric interface { SendCommand(ctx context.Context, runnerID string, cmd *compassv1internal.SessionsResponse) error; Events(ctx context.Context) (<-chan RunnerEvent, error) }`;
   `fabric.New(cfg Config) (*Fabric, error)` where `Config` carries the NATS
   connection (`nats.Connect(url, opts...)`) — one implementation, one client,
@@ -782,7 +785,8 @@ the async command-push and event fan-in ride `RunnerFabric`.
   Also produces: the JetStream delivery stream (durable at-least-once
   fan-out, `sync_interval: 100ms`, explicit acks, `max_deliver` + DLQ
   subject); and the subject-naming doc
-  (`compass.<tenant>.comms.<kind>`, `compass.runner.<runner_id>.cmd`,
+  (`compass.<tenant>.comms.<kind>` plus its subscribe-side
+  `compass.*.comms.<kind>`, `compass.runner.<runner_id>.cmd`,
   `compass.runner.events` queue-grouped, `client.<sessionID>` per-connection
   delivery) as a supporting file beside this record. Gate instrumentation:
   the delivery-backlog OTel emitter (scale-out gate signal) rides this task.

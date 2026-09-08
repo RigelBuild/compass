@@ -783,8 +783,7 @@ func (p *PodmanCLI) spawnCapture(ctx context.Context, summary string, args []str
 			// The caller cancelled: propagate the context error.
 			return nil, nil, 0, ctx.Err()
 		default:
-			var exitErr *exec.ExitError
-			if errors.As(runErr, &exitErr) {
+			if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
 				// Ran to completion but exited non-zero: not an error here.
 				return out.Bytes(), errBuf.Bytes(), exitErr.ExitCode(), nil
 			}

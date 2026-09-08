@@ -152,7 +152,7 @@ func (q *Queries) LoadForgeRepoWatermark(ctx context.Context, arg LoadForgeRepoW
 
 const setForgeRepoSubscriptionEnabled = `-- name: SetForgeRepoSubscriptionEnabled :execrows
 UPDATE forge_repo_subscriptions
-   SET enabled = $4, updated_at = now()
+   SET enabled = $4
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3
 `
 
@@ -178,7 +178,7 @@ func (q *Queries) SetForgeRepoSubscriptionEnabled(ctx context.Context, arg SetFo
 
 const storeForgeRepoWatermark = `-- name: StoreForgeRepoWatermark :execrows
 UPDATE forge_repo_subscriptions
-   SET swept_updated_at = $4, list_etag = $5, updated_at = now()
+   SET swept_updated_at = $4, list_etag = $5
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3
 `
 

@@ -686,8 +686,7 @@ func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 		return forgeErr(connect.CodeUnimplemented, fmt.Sprintf("forge: operation %q is unsupported by provider %q", op.op, op.provider))
 	case errors.Is(err, forge.ErrBudgetExhausted):
 		fe := &compassv1internal.ForgeCallError{Code: connect.CodeResourceExhausted.String(), Message: err.Error()}
-		var rle *forge.RateLimitError
-		if errors.As(err, &rle) {
+		if rle, ok := errors.AsType[*forge.RateLimitError](err); ok {
 			// Clamp to [0, math.MaxUint32] BEFORE the uint32 cast: a negative
 			// hint (clock skew / stale gate) becomes 0 ("no hint") and an
 			// oversized one saturates rather than silently wrapping.
@@ -702,8 +701,7 @@ func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 		}
 		return fe
 	}
-	var se *forge.StatusError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*forge.StatusError](err); ok {
 		switch se.Status {
 		case 403, 404:
 			return forgeErr(connect.CodeNotFound, "forge: artifact not found")

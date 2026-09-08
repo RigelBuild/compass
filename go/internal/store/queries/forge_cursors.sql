@@ -13,7 +13,7 @@ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3;
 
 -- name: StoreForgeRepoWatermark :execrows
 UPDATE forge_repo_subscriptions
-   SET swept_updated_at = $4, list_etag = $5, updated_at = now()
+   SET swept_updated_at = $4, list_etag = $5
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3;
 
 -- name: EnsureForgeRepoSubscription :exec
@@ -40,5 +40,5 @@ ORDER BY repo ASC;
 
 -- name: SetForgeRepoSubscriptionEnabled :execrows
 UPDATE forge_repo_subscriptions
-   SET enabled = $4, updated_at = now()
+   SET enabled = $4
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3;
