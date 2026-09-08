@@ -84,8 +84,7 @@ INSERT INTO agent_placements (agent_account_id, runner_id, container_name)
 VALUES ($1, $2, $3)
 ON CONFLICT (agent_account_id) DO UPDATE
    SET runner_id      = EXCLUDED.runner_id,
-       container_name = EXCLUDED.container_name,
-       updated_at     = now()
+       container_name = EXCLUDED.container_name
 `
 
 type RecordAgentPlacementParams struct {

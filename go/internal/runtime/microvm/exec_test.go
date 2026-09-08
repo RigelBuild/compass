@@ -136,8 +136,7 @@ func TestGuestExec_OneShot_Timeout(t *testing.T) {
 	})
 
 	_, err := ge.Exec(context.Background(), ExecCall{Command: []string{"sleep"}, TimeoutSeconds: 1})
-	var timeoutErr *TimeoutError
-	if !errors.As(err, &timeoutErr) {
+	if _, ok := errors.AsType[*TimeoutError](err); !ok {
 		t.Fatalf("error = %v (%T), want *TimeoutError", err, err)
 	}
 }

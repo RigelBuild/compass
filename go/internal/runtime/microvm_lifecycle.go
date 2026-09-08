@@ -485,8 +485,7 @@ func (m *MicroVMRuntime) Exec(ctx context.Context, id ContainerID, spec ExecSpec
 
 	result, err := guestExec.Exec(ctx, call)
 	if err != nil {
-		var timeout *microvm.TimeoutError
-		if errors.As(err, &timeout) {
+		if timeout, ok := errors.AsType[*microvm.TimeoutError](err); ok {
 			return ExecOutput{}, &TimeoutError{
 				Summary: "microvm exec",
 				Timeout: timeout.Timeout,
