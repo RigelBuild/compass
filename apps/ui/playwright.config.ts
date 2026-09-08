@@ -3,9 +3,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 // The repo's first browser harness (RIG-2034 T1). Drives `vite dev` against the
 // in-memory stub store (the app boots fully on stub-data.ts — no daemon, no
-// Tauri IPC) and captures full-page screenshots of the core surfaces for Matt's
-// human review. This is a smoke harness: no pixel-diff gating, no computed-style
-// assertions.
+// Tauri IPC) and asserts full-page screenshots of the core surfaces against
+// committed in-repo baselines. This is a pixel-diff gate; computed-style
+// assertions remain out of scope.
 // Browser resolution (approach (b)): the browsers cached at
 // ~/.cache/ms-playwright (chromium-1234 / chromium_headless_shell-1234, the
 // revision @playwright/test 1.62.1 bundles) are the upstream prebuilt binaries
@@ -54,6 +54,13 @@ export default defineConfig({
 	outputDir: "./e2e/.output",
 	fullyParallel: false,
 	reporter: [["list"]],
+	snapshotPathTemplate: "{testDir}/__screens__/{arg}{ext}",
+	expect: {
+		toHaveScreenshot: {
+			maxDiffPixelRatio: 0.001,
+			// Deliberately leave threshold unset; Playwright's default is 0.2.
+		},
+	},
 	use: {
 		baseURL,
 		headless: true,
