@@ -1558,6 +1558,30 @@ jobs:
             echo "$store/bin" >>"$GITHUB_PATH"
           done
 
+      - name: Stack supervision unit tests (native darwin)
+        # The ONLY lane that EXECUTES the darwin process start-time identity
+        # reader. That reader is what lets `compass-stack up` run on macOS at
+        # all, and it is a two-site swap: the core records a token at spawn and
+        # the teardown adapter reads one back independently, with
+        # GroupSignaller.Alive comparing the two for uint64 equality. If the two
+        # darwin encodings ever drift, `down` matches nothing and SILENTLY skips
+        # every live child — no error, no signal, just an orphaned stack. Cross
+        # compiling from ubuntu type-checks those readers but never runs them,
+        # and the sysctl they call has no Linux equivalent to stand in, so this
+        # step is the only thing standing between a drifted encoding and a green
+        # PR. The suite is untagged: internal/stack is `//go:build unix`, which
+        # darwin satisfies, so a bare `go test` selects the _darwin.go readers
+        # and their mirrored packing tests with no `-tags` flag.
+        #
+        # It runs BEFORE the compile+bundle gate so an identity-reader
+        # regression reds fast rather than after the ~minutes-long bundle wrap.
+        # Deliberately NOT affected-guarded like that gate: this is seconds of
+        # pure-Go test on a runner the job already paid to boot, and the guard's
+        # own path list is the thing most likely to go stale.
+        env:
+          CGO_ENABLED: '0'
+        run: go -C go test -count=1 ./internal/stack/...
+
       - name: macOS compile + bundle gate
         # The ONE CI lane that compiles the native shell on darwin + exercises
         # the macos-bundle tool end to end (compass-distribution T3). It is a
