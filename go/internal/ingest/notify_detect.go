@@ -325,7 +325,7 @@ func detectArtifact(prev *ArtifactSnapshot, fetched FetchedArtifact) (ArtifactSn
 		clean, author, ok := forge.StripOwner(c.Body)
 		ref := &compassv1internal.CommentRef{Url: c.URL, CommentKey: c.Key, Body: clean, ForgeAccount: c.ForgeAccount}
 		if ok {
-			ref.Agent = &compassv1.AgentAttribution{AgentHandle: author.AgentHandle}
+			ref.Agent = &compassv1.AgentAttribution{AgentHandle: author.AgentHandle, OwnerHandle: author.OwnerHandle}
 		}
 		changes = append(changes, forge.ForgeEvent{
 			Provider: fetched.Provider, Host: fetched.Host, Repo: fetched.Repo,

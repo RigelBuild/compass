@@ -4870,15 +4870,12 @@ func (*DeleteModelRegistryResponse) Descriptor() ([]byte, []int) {
 // plain display fact (DL-094, compass-attribution-simplification, Active). If a
 // header names an agent, that is the displayed author: NO forge-login
 // cross-check, NO verified bit, NO population gating. It never reaches an authz,
-// routing, or ownership decision (DL-050). Owner is a property of the agent
-// account (AgentAccount.owner_user_id in comms.proto), resolved
-// server-side, never restated per artifact — so no owner_handle. Field numbers
-// 2,3 are simply reclaimable pre-dogfood (DL-186): no wire build ever shipped
-// the frozen #1018 owner_handle/verified shape, and nothing on disk is
-// proto-encoded, so the numbers carry no compatibility obligation.
+// routing, or ownership decision (DL-050). Owner is carried from the same
+// stamped header parse for downstream display and suppression (DL-339).
 type AgentAttribution struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AgentHandle   string                 `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"` // the authoring agent's handle, from the header
+	OwnerHandle   string                 `protobuf:"bytes,2,opt,name=owner_handle,json=ownerHandle,proto3" json:"owner_handle,omitempty"` // the owning user's handle, from the same header parse
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4916,6 +4913,13 @@ func (*AgentAttribution) Descriptor() ([]byte, []int) {
 func (x *AgentAttribution) GetAgentHandle() string {
 	if x != nil {
 		return x.AgentHandle
+	}
+	return ""
+}
+
+func (x *AgentAttribution) GetOwnerHandle() string {
+	if x != nil {
+		return x.OwnerHandle
 	}
 	return ""
 }
@@ -6053,9 +6057,10 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\x125\n" +
 	"\bregistry\x18\x02 \x01(\v2\x19.compass.v1.ModelRegistryR\bregistry\"\x1c\n" +
 	"\x1aDeleteModelRegistryRequest\"\x1d\n" +
-	"\x1bDeleteModelRegistryResponse\"5\n" +
+	"\x1bDeleteModelRegistryResponse\"X\n" +
 	"\x10AgentAttribution\x12!\n" +
-	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\"U\n" +
+	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\x12!\n" +
+	"\fowner_handle\x18\x02 \x01(\tR\vownerHandle\"U\n" +
 	"\bForgeRef\x125\n" +
 	"\bprovider\x18\x01 \x01(\x0e2\x19.compass.v1.ForgeProviderR\bprovider\x12\x12\n" +
 	"\x04host\x18\x02 \x01(\tR\x04host\"\xed\x04\n" +

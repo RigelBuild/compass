@@ -174,7 +174,7 @@ func linearCommentRef(d dataPayload) *compassv1internal.CommentRef {
 		ForgeAccount: linearAccount(d.User),
 	}
 	if ok {
-		ref.Agent = &compassv1.AgentAttribution{AgentHandle: author.AgentHandle}
+		ref.Agent = &compassv1.AgentAttribution{AgentHandle: author.AgentHandle, OwnerHandle: author.OwnerHandle}
 	}
 	return ref
 }
