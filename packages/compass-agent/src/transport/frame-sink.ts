@@ -109,6 +109,20 @@ function isInjection(frame: OutboundFrame): boolean {
 	);
 }
 
+// A "session" frame carrying a SessionError trace event is NOT loss-tolerable
+// (DL-323): the surfaced failure content is observation-critical — for a
+// reason=aborted failure it is the SOLE signal (no lifecycle frame accompanies
+// it), and for reason=error the paired ERRORED transition survives on the
+// priority lane but the content itself would still vanish off the bounded trace
+// queue under backlog. So it rides the never-drop priority lane, matching the
+// SessionInjection carve-out, even though its board state is UNSPECIFIED.
+function isSessionError(frame: OutboundFrame): boolean {
+	return (
+		frame.kind === "session" &&
+		frame.value.typedEvent?.event.case === "sessionError"
+	);
+}
+
 export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	const spine = transport.publishSpine();
 	// Borrow the single transport-owned ManagedRuntime through the module-private
@@ -266,7 +280,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				const request = create(PublishFrameRequestSchema, {
 					frame: toAgentFrame(frame),
 				});
-				if (isLifecycle(frame) || isInjection(frame)) {
+				if (isLifecycle(frame) || isInjection(frame) || isSessionError(frame)) {
 					spine.enqueuePriority(request);
 				} else {
 					spine.enqueueTrace(request);
