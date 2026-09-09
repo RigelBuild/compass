@@ -2,6 +2,7 @@ package hostcheck
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -123,5 +124,59 @@ func TestDecideVersion(t *testing.T) {
 				t.Errorf("DecideVersion name = %q, want %q", got.Name, floor.Binary)
 			}
 		})
+	}
+}
+
+// TestDecideVersionSecretSpecFloor covers the secretspec CLI verdict against the
+// exported floor: `secretspec --version` prints "secretspec <semver>", so the
+// shared VersionGroups/FirstLine parse handles it unchanged. It pins the cases
+// that must actually fail — below the floor (including 0.2.0, which a naive
+// string compare would read as above 0.20.0), absent from PATH, and unparseable
+// output — alongside the at/above-floor passes.
+func TestDecideVersionSecretSpecFloor(t *testing.T) {
+	lookErr := errors.New("not found in $PATH")
+	tests := []struct {
+		name       string
+		lookErr    error
+		output     string
+		wantOK     bool
+		wantDetail string
+	}{
+		{name: "at floor", output: "secretspec 0.20.0", wantOK: true, wantDetail: "0.20.0"},
+		{name: "below floor on minor", output: "secretspec 0.19.0", wantOK: false, wantDetail: "below the floor 0.20.0"},
+		{name: "below floor numerically despite longer string", output: "secretspec 0.2.0", wantOK: false, wantDetail: "below the floor 0.20.0"},
+		{name: "above floor on minor", output: "secretspec 0.21.0", wantOK: true},
+		{name: "above floor on major", output: "secretspec 1.0.0", wantOK: true},
+		{name: "absent", lookErr: lookErr, wantOK: false, wantDetail: "not found on PATH"},
+		{name: "unparseable output", output: "secretspec unknown", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DecideVersion(SecretSpecFloor, tt.lookErr, nil, tt.output)
+			if got.OK != tt.wantOK {
+				t.Errorf("DecideVersion(SecretSpecFloor, %q).OK = %v, want %v (detail: %q)", tt.output, got.OK, tt.wantOK, got.Detail)
+			}
+			if got.Name != "secretspec" {
+				t.Errorf("DecideVersion name = %q, want %q", got.Name, "secretspec")
+			}
+			if tt.wantDetail != "" && !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Errorf("DecideVersion detail = %q, want it to contain %q", got.Detail, tt.wantDetail)
+			}
+		})
+	}
+}
+
+// TestSecretSpecFloorNotInMicroVMFloors pins the separation the preflight loop
+// depends on: secretspec is a secrets-write-path dependency, not a microVM
+// userspace binary, so it must never be iterated by the microVM trio loop. The
+// non-obvious half is the SECOND consumer: internal/runtime/microvm_preflight.go
+// also walks MicroVMFloors, inside VerifyMicroVMSupport, which REFUSES Runner
+// startup on any failure — so adding secretspec here would make a missing
+// secrets CLI block boot, though boot reads through the SDK and never needs it.
+func TestSecretSpecFloorNotInMicroVMFloors(t *testing.T) {
+	for _, f := range MicroVMFloors {
+		if f.Binary == SecretSpecFloor.Binary {
+			t.Errorf("MicroVMFloors contains %q; the secretspec CLI is not a microVM userspace binary", f.Binary)
+		}
 	}
 }

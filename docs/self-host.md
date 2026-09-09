@@ -25,6 +25,24 @@ rootless container, so the host needs:
   cloud-hypervisor, virtiofsd, and passt. The nix flake channel provides these
   at the sanctioned pin; the release tarball assumes you supply them (they are
   packaged in most distributions).
+- **The `secretspec` CLI**, at or above 0.20.0. The secrets *write* path (the
+  admin `SetSecret` RPC) spawns it by name to write values into
+  your configured provider. Reading secrets at boot does not need it — the
+  server links the SecretSpec library directly — so a missing CLI does not stop
+  the stack starting; it fails the first secret write instead. Unlike the
+  microVM trio, the nix flake channel does NOT carry it — the flake's nixpkgs
+  pin resolves 0.14.0, below the floor above — so install it on every shape:
+
+  ```sh
+  brew install secretspec
+  ```
+
+  It is in `homebrew/core` with bottles for macOS arm64 and Linux (x86_64 and
+  arm64); on Linux the bottle pulls `dbus`, which the keyring provider needs.
+  Prebuilt tarballs per platform are also published on each
+  [upstream release](https://github.com/cachix/secretspec/releases). The floor
+  tracks the library version the server links, so the two halves of the secrets
+  path cannot drift.
 
 Run the preflight check before your first bring-up to surface any missing
 prerequisite at install time rather than mid-`up`:
@@ -36,6 +54,7 @@ $ compass-stack preflight
 [PASS] cloud-hypervisor reported "cloud-hypervisor v53.0.0" at/above floor 53.0.0
 [PASS] virtiofsd        reported "virtiofsd 1.14.0" at/above floor 1.14.0
 [PASS] passt            reported "passt 2025_09_19.623dbf6" at/above floor 2025_09_19
+[PASS] secretspec       reported "secretspec 0.20.0" at/above floor 0.20.0
 ```
 
 A failing check prints a `[FAIL]` line naming the missing or below-floor
