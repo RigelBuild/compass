@@ -414,7 +414,9 @@ func transcriptCommitError(err error) error {
 
 // linkKindAttr marks the link linkTrigger adds, so a reader selects the
 // cross-turn causal edge by attribute instead of by position — the span also
-// carries otelconnect's transport link.
+// carries otelconnect's transport link. The mark lives in the link's
+// ATTRIBUTES, so a deployment that zeroes OTEL_LINK_ATTRIBUTE_COUNT_LIMIT
+// exports the edge but strips its kind — present, and unselectable.
 var linkKindAttr = attribute.String("compass.link.kind", "cross_turn_trigger")
 
 // linkTrigger records the cross-turn causal edge from the agent's reply to the

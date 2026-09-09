@@ -70,7 +70,8 @@ package server
 // (h) and (i) drive the RunnerService door directly (newRelayRunnerClient): the
 // agent-authored leg's origin span is otelconnect's RelayCommsCall handler span,
 // and the cross-turn causal edge is the LINK executeCall's Post arm adds from
-// the call's trigger_traceparent (runnerhub/relay_comms.go:428-438,458).
+// the call's trigger_traceparent (linkTrigger, called from executeCall's Post
+// arm in runnerhub/relay_comms.go).
 
 import (
 	"context"
@@ -171,8 +172,9 @@ func newTracedCommsClient(t *testing.T, baseURL string) compassv1connect.CommsSe
 // A second door rather than a change to attachFakeRunner: that helper's door
 // carries the recordingRunner's live Sessions stream, and RelayCommsCall needs
 // none of it — the hub resolves session_id -> account from its own binding
-// (relay_comms.go:259), which bringSessionLive has already promoted. Mounting
-// here also keeps this door's interceptor construction inside the subtest,
+// (runnerhub/relay_comms.go, Hub.RelayCommsCall), which bringSessionLive has
+// already promoted. Mounting here also keeps this door's interceptor
+// construction inside the subtest,
 // AFTER installGlobalSpanExporter, which is the load-bearing half:
 // otelconnect captures the global tracer provider once, at NewInterceptor()
 // (otelconnect interceptor.go:56-60).
@@ -1058,9 +1060,12 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 
 	// (h) An agent-authored post arrives over the RunnerService door, so its
 	// origin span is the otelconnect RelayCommsCall handler span. This proves it
-	// EXISTS (the door is traced at all) and that it is a FRESH ROOT: the Runner
-	// propagates no traceparent, so the reply's trace starts here rather than
-	// continuing whatever trace the agent was woken by.
+	// EXISTS (the door is traced at all) and that it is a FRESH ROOT — and the
+	// root-ness is the door REFUSING an offered parent, not nobody offering one.
+	// The Runner DOES propagate a traceparent (runner.go mounts otelconnect on
+	// the ServerLink client, which this fixture mirrors); the span is a root
+	// because otelconnect's trustRemote defaults false, so it mints the span
+	// WithNewRoot plus a link to that transport context.
 	t.Run("h: an agent-authored post's RelayCommsCall origin span is a fresh root", func(t *testing.T) {
 		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 		exp := installGlobalSpanExporter(t)
@@ -1082,6 +1087,16 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		if origin.Parent.IsValid() {
 			t.Fatalf("RelayCommsCall origin span parent = %s (trace %s), want NO valid parent — the agent-authored post's trace must start at this door, not continue an inbound one",
 				origin.Parent.SpanID(), origin.Parent.TraceID())
+		}
+		// The fixture must actually be the shipped topology: the client
+		// interceptor propagates a traceparent, which otelconnect's server
+		// branch turns into exactly one transport link. Drop the client
+		// interceptor and the parent check above still passes — vacuously,
+		// because nothing offered a parent — so this is what keeps that
+		// assertion honest. The post carried no trigger_traceparent, so
+		// linkTrigger added nothing and the count isolates the transport link.
+		if len(origin.Links) != 1 {
+			t.Fatalf("origin span carries %d links, want 1 (otelconnect's transport link) — no traceparent reached the door, so this is not the shipped topology and the fresh-root assertion above is vacuous", len(origin.Links))
 		}
 		if !origin.SpanContext.TraceID().IsValid() {
 			t.Fatal("RelayCommsCall origin span has an invalid trace id; it recorded nothing, so 'fresh root' would be vacuous")
