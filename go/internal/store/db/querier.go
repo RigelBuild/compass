@@ -81,6 +81,7 @@ type Querier interface {
 	// a write only lands if the row still holds the version the caller read.
 	CurrentModelRegistry(ctx context.Context) (CurrentModelRegistryRow, error)
 	DeclaredSecrets(ctx context.Context) ([]DeclaredSecretsRow, error)
+	DeclaredServerSecrets(ctx context.Context) ([]ServerSecret, error)
 	DeleteAgentConfig(ctx context.Context) error
 	// Scoped to the calling agent (id AND agent). RETURNING the coordinate drives the
 	// one-tx GC of the artifact cursor when this was the last subscription.
@@ -91,6 +92,7 @@ type Querier interface {
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
 	DeleteModelRegistry(ctx context.Context) error
 	DeleteSecret(ctx context.Context, name string) (int64, error)
+	DeleteServerSecret(ctx context.Context, name string) (int64, error)
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
 	// The reconnect sweep. Hub.enroll (internal/runnerhub/hub.go:905-957) clears
 	// every binding when a Runner (re-)enrolls: a reconnecting Runner has no live
@@ -247,6 +249,17 @@ type Querier interface {
 	// (DeleteSecretDeclaration is :execrows). DeclaredSecrets maps the generated row
 	// back to the domain SecretDeclaration (delivery/kind ints -> named types).
 	InsertSecret(ctx context.Context, arg InsertSecretParams) error
+	// Server-secrets registry queries (design record T0, mechanism C1/D6). The
+	// SERVER-owned half of the names-only secret registry, physically separate from
+	// `secrets` so the inject-all container delivery path can never see these rows.
+	// The hand-written Store methods keep the door-side validation (name grammar,
+	// reserved-prefix guard) and the ErrConflict/ErrInvalidArgument/ErrNotFound
+	// mapping, mirroring the `secrets` methods minus delivery/kind/provider/host.
+	//
+	// declared_by is NULLABLE here: a server-provisioned row (the master key) has no
+	// human actor, so it is written as NULL rather than attributed to the
+	// bootstrap-admin account.
+	InsertServerSecret(ctx context.Context, arg InsertServerSecretParams) error
 	InsertSystemAccount(ctx context.Context, accountID string) error
 	// Tenant-bootstrap queries (sqlc adoption T6, RIG-3034). These replace the inline
 	// SQL literals in internal/store/tenant.go; the hand-written Store methods keep

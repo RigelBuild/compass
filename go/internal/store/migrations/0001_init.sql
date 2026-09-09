@@ -426,6 +426,76 @@ CREATE TABLE secrets (
 
 CREATE INDEX secrets_declared_by_idx ON secrets (declared_by);
 
+-- server_secrets: the physically separate registry for SERVER-owned secret
+-- names (mechanism C1, design record D6). Server secrets are never delivered
+-- into an agent container; keeping them in their own table means the
+-- inject-all container path (which reads `secrets`) can NEVER see them, by
+-- construction rather than by a filter someone can forget to apply.
+--
+-- Mirrors `secrets` above minus the container-delivery routing: no `delivery`
+-- column (server secrets are never container-delivered — that IS the point) and
+-- no `kind` column (they never reach the T5 materializer).
+--
+-- Names-only, like `secrets`: a row records that a name is declared, never its
+-- VALUE. Values live in the SecretSpec provider keyspace.
+CREATE TABLE server_secrets (
+    -- The secret's name, validated at the store door against SecretSpec's
+    -- env-var-name grammar (^[A-Za-z_][A-Za-z0-9_]*$) before it can reach a
+    -- row, and additionally required to carry a reserved server-secret prefix
+    -- (SERVER_ or GATEWAY_CREDENTIALS_) so this table can never hold a name
+    -- the user keyspace owns.
+    name        TEXT PRIMARY KEY,
+    -- declared_by: the account that declared this secret, or NULL for a
+    -- server-provisioned row (the master key). Contrast `secrets.declared_by`,
+    -- which is NOT NULL: the boot provisioner declares the master key with no
+    -- human actor, so NULL is honest provenance — attributing the row to the
+    -- bootstrap-admin account would falsify the audit trail and couple key
+    -- provisioning to account-bootstrap ordering. ON DELETE RESTRICT still
+    -- protects operator-declared rows.
+    declared_by TEXT REFERENCES accounts (id) ON DELETE RESTRICT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- The reserved-prefix half of the F1 keyspace partition, enforced (not
+    -- merely documented) — the same belt-and-braces shape `secrets` uses for
+    -- its kind-routing invariant above. DeclareServerSecret guards the same
+    -- rule at the store door so a caller gets an actionable ErrInvalidArgument
+    -- rather than a raw constraint violation; this CHECK is what keeps the
+    -- partition standing if a future writer reaches the table without going
+    -- through that door. Violating it is not a mere bad row: an unprefixed name
+    -- here (or a reserved one in `secrets`) is what ships a deployment secret
+    -- into every agent container.
+    --
+    -- The backslash escapes are REQUIRED: `_` is a LIKE single-character
+    -- wildcard, so the unescaped 'SERVER_%' also matches 'SERVERX_Y' —
+    -- precisely the near-miss the guard must reject. Verified on the pinned
+    -- image: 'SERVERX_Y' LIKE 'SERVER_%' is TRUE, LIKE 'SERVER\_%' is FALSE,
+    -- and 'SERVER_Y' LIKE 'SERVER\_%' is TRUE.
+    CONSTRAINT server_secrets_reserved_prefix CHECK (
+        name LIKE 'SERVER\_%' OR name LIKE 'GATEWAY\_CREDENTIALS\_%'
+    )
+);
+
+CREATE INDEX server_secrets_declared_by_idx ON server_secrets (declared_by);
+
+-- server_key_state: the master-key tripwire substrate. Single-row by
+-- construction (CHECK (id = 1)), holding a NON-SECRET salted digest of the
+-- active master key plus its version. This is NOT a declared-name registry, so
+-- the names-only invariant is untouched — a salted digest of a key is not that
+-- key's value. Boot recomputes the digest and fails closed on a mismatch,
+-- which is what catches a swapped key before it decrypts anything.
+--
+-- DELETE is revoked below, after the schema-wide grant: the tripwire row is
+-- written once at provision and updated in place on rotation, so DELETE is
+-- never needed — and withholding it means the digest cannot be dropped to
+-- defeat the key-swap check.
+CREATE TABLE server_key_state (
+    id               SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    key_version      SMALLINT NOT NULL DEFAULT 1,
+    key_fingerprint  BYTEA NOT NULL,
+    fingerprint_salt BYTEA NOT NULL,
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ── Agent session ownership & placement ──────────────────────────────────────
 -- The durable session-ownership chain (RIG-1342 / RIG-1516): SubscribeAgentSession
 -- resolves a session_id to the home channel it must authorize the caller against,
@@ -1012,6 +1082,15 @@ BEGIN
     EXECUTE format('GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA %I TO compass_app, compass_system', sch);
 END $$;
 
+-- server_key_state withholds DELETE, revoked here because the schema-wide grant
+-- above hands it out with everything else. The tripwire row is written once at
+-- provision and updated in place on rotation, so DELETE is never needed — and
+-- withholding it means the digest cannot be dropped to defeat the key-swap
+-- check, which is a security property worth keeping. The pgtest asserts the
+-- three remaining privileges AND the absence of DELETE, so this asymmetry is
+-- pinned rather than incidental.
+REVOKE DELETE ON server_key_state FROM compass_app, compass_system;
+
 -- ENABLE + FORCE RLS + the per-tenant policy on every tenant-owned table. The
 -- policy shape is the frozen T2 form: a scalar-subquery GUC read (evaluated once
 -- per statement), a non-empty guard (fail-closed on an unset/empty GUC), and
@@ -1109,7 +1188,9 @@ DECLARE
         'session_bindings',
         'agent_config_bundle',
         'model_registry',
-        'forge_repo_subscriptions'
+        'forge_repo_subscriptions',
+        'server_secrets',
+        'server_key_state'
     ];
 BEGIN
     FOREACH t IN ARRAY updated_at_tables LOOP

@@ -83,6 +83,15 @@ func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string,
 	if !secretNamePattern.MatchString(name) {
 		return fmt.Errorf("%w: secret name %q must match %s", ErrInvalidArgument, name, secretNamePattern.String())
 	}
+	// F1 (design record D6): the user keyspace REJECTS reserved server-secret
+	// prefixes. Without this a user-path declare could mint a shadow `secrets`
+	// row under a server-secret name, which the inject-all delivery path then
+	// hands to every agent container. With it, the two doors partition the
+	// keyspace by name: a reserved-prefix name can only live in
+	// `server_secrets`, an unprefixed one only in `secrets`.
+	if HasServerSecretPrefix(name) {
+		return fmt.Errorf("%w: secret name %q uses a reserved server-secret prefix", ErrInvalidArgument, name)
+	}
 	if actor == "" {
 		return fmt.Errorf("%w: declaring account id is required", ErrInvalidArgument)
 	}
