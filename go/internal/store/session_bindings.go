@@ -199,7 +199,7 @@ func (s *Store) ResolveSessionAccount(ctx context.Context, sessionID string) (Ac
 // SessionForAccount resolves the live session bound to an agent account — the
 // REVERSE of ResolveSessionAccount, and the direction the delivery consumer
 // needs to dispatch a deliver to an already-resolved subscriber
-// (runnerhub/relay_comms.go:179-184). Exactly one row can answer PER TENANT: the
+// (runnerhub/relay_comms.go, Hub.SessionForAccount). Exactly one row can answer PER TENANT: the
 // table's key is (tenant_id, agent_account_id), so the account alone is not
 // unique and the query is single-valued only because RLS has already narrowed
 // the visible rows to the acting tenant's. Under WithSystemRole (BYPASSRLS, no

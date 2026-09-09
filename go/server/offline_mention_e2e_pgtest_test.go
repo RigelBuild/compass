@@ -82,6 +82,9 @@ type mentionE2EWire struct {
 	dsn      string
 	adminID  store.AccountID // the human author of every posted message
 	channel  store.ChannelID // the shared channel the test posts into
+	// channelName is that channel's NAME — what the agent-tool post path
+	// (PostAsAccountByName) resolves, as opposed to the id the human path takes.
+	channelName string
 }
 
 // newMentionE2EWire stands up the store + hub + fake Runner door (via the shared
@@ -111,18 +114,25 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 		t.Fatalf("PutTokenHash(runner): %v", err)
 	}
 
-	// The hub over a discard board + tail, no CommsCaller (the wake path never
-	// relays a comms call) — the same shape newPlacementFixtureWith builds.
+	// The comms service comes FIRST, before the hub: the hub's RelayCommsCall leg
+	// executes an agent-initiated comms call through it as its CommsCaller, so it
+	// cannot be constructed after the hub — the exact ordering and reason
+	// production assembles them in (serve.go:635-637). It was previously nil here
+	// ("the wake path never relays a comms call"), which left executeCall's arms
+	// unreachable in this wire; a real caller makes the agent-authored leg
+	// drivable (T6 (h)/(i)) and changes nothing on the paths that never relay.
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+
+	// The hub over a discard board + tail — otherwise the same shape
+	// newPlacementFixtureWith builds.
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	brd := board.NewProjection(bus)
 	tail := newSessionTail()
-	hub := newRunnerHub(st, brd, tail, nil, slog.New(slog.DiscardHandler))
+	hub := newRunnerHub(st, brd, tail, commsSvc, slog.New(slog.DiscardHandler))
 	runner := attachFakeRunner(t, st, hub, false)
-
-	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
-	t.Cleanup(commsBus.Close)
-	commsSvc := comms.NewComms(st, commsBus, admin.ID)
 
 	// The production delivery wire (sinks.go:142-155), assembled inline with the
 	// REAL resume-based waker (newLifecycleService), not a fake.
@@ -162,6 +172,10 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 		dsn:      dsn,
 		adminID:  admin.ID,
 		channel:  ch.ID,
+		// The name the agent-tool post path resolves; ch.Name is the leaf name
+		// CreateChannel stored, so it round-trips through
+		// ChannelByNameForViewer.
+		channelName: ch.Name,
 	}
 }
 
