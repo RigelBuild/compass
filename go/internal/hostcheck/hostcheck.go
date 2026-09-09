@@ -45,6 +45,18 @@ var MicroVMFloors = []VersionFloor{
 	{Binary: "passt", Fields: []int{2025, 9, 19}, Display: "2025_09_19"},
 }
 
+// SecretSpecFloor pins the minimum acceptable version of the secretspec CLI —
+// the binary the Go secrets WRITE path spawns by name (internal/secrets:
+// SpecResolver.Set resolves it off PATH; Delete is a validate-only no-op until
+// the provider hard-delete is wired), so it is an install-time
+// dependency of every shipped surface even though boot never touches it. The
+// floor tracks the secretspec-go SDK pin in go/go.mod so the read half (SDK)
+// and the write half (CLI) cannot drift apart across a release. Unlike the
+// microVM trio this is a single VersionFloor rather than a []VersionFloor: it
+// is one binary consumed by a different check, and it must NOT be iterated by
+// the microVM loop.
+var SecretSpecFloor = VersionFloor{Binary: "secretspec", Fields: []int{0, 20, 0}, Display: "0.20.0"}
+
 // digitRun matches one run of decimal digits; VersionGroups splits on it.
 var digitRun = regexp.MustCompile(`[0-9]+`)
 

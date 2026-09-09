@@ -165,7 +165,22 @@ tasks:
       CGO_ENABLED: '1'
     options:
       runFromWorkspaceRoot: false
-    inputs: *go_sources
+    # Can't use the *go_sources anchor: this lane also depends on the pinned
+    # secretspec helper, because TestSecretSpecCLIVersionFloor now FAILS CLOSED
+    # and CI resolves the binary from that file. Moving the pin inside it must
+    # reschedule this battery, or a stale cache would report green against a
+    # version the floor no longer accepts. Same reason lint: spells its own
+    # inputs to add .golangci.yml.
+    inputs:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '**/testdata/**'
+      - '/tools/toolchain/secretspec-env.nix'
+      - 'go.work'
+      - 'go.work.sum'
+      - '/go.work'
+      - '/go.work.sum'
 
   test-microvm:
     # The KVM-gated microVM boot suite (RIG-2591, record §T4). It compiles only

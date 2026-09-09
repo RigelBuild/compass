@@ -12,9 +12,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/hostcheck"
 )
 
-// preflight is the T9 host bring-up gate: it surfaces the KVM/podman/microVM
-// prerequisites at install-time rather than at first `up`, printing a legible
-// pass/fail line per check. It is deliberately MINIMAL and a thin consumer.
+// preflight is the T9 host bring-up gate: it surfaces the KVM/podman/microVM and
+// secretspec-CLI prerequisites at install-time rather than at first `up`,
+// printing a legible pass/fail line per check. It is deliberately MINIMAL and a
+// thin consumer.
 //
 // DEPENDENCY HONESTY: the host-capability check logic now lives in the runtime
 // lane's internal/hostcheck (the /dev/kvm probe, the version-floor comparator,
@@ -24,8 +25,13 @@ import (
 // later V5 wave. This command is a thin consumer of that shared core — no
 // longer a placeholder to be replaced — and keeps only what is stack-specific:
 // the podman rootless-capability check (postgres runs as a rootless container)
-// and the print/exit surface. Do
-// not grow this into a capability framework.
+// and the print/exit surface. It also reports the secretspec CLI: the secrets
+// WRITE path (internal/secrets SpecResolver.Set) spawns it by name, so it is an
+// install-time dependency the operator must have even though boot, which reads
+// through the SDK, never touches it — surfacing it here is what turns "the first
+// admin write fails" into an install-time line. That is one more entry in this
+// same list, not a new abstraction. Do not grow this into a capability
+// framework.
 
 // podmanBinary is the podman executable name, resolved on PATH. It is the check
 // name and the LookPath target, so it is named once here (goconst).
@@ -66,9 +72,10 @@ func checkPodman() hostcheck.Result {
 	return decidePodman(nil, infoErr, rootless)
 }
 
-// checkMicroVMBinary resolves one trio binary on PATH and runs its --version,
-// then returns the version verdict against the floor.
-func checkMicroVMBinary(f hostcheck.VersionFloor) hostcheck.Result {
+// checkBinaryVersion resolves one external binary on PATH and runs its
+// --version, then returns the version verdict against the floor. It is generic
+// over any VersionFloor — the microVM trio and the secretspec CLI alike.
+func checkBinaryVersion(f hostcheck.VersionFloor) hostcheck.Result {
 	path, lookErr := exec.LookPath(f.Binary)
 	if lookErr != nil {
 		return hostcheck.DecideVersion(f, lookErr, nil, "")
@@ -93,8 +100,12 @@ func runPreflight(args []string) error {
 
 	checks := []hostcheck.Result{checkKVM(), checkPodman()}
 	for _, f := range hostcheck.MicroVMFloors {
-		checks = append(checks, checkMicroVMBinary(f))
+		checks = append(checks, checkBinaryVersion(f))
 	}
+	// After the trio so the microVM group stays contiguous and the output order
+	// is stable: secretspec is the secrets write path's dependency, not a microVM
+	// userspace binary.
+	checks = append(checks, checkBinaryVersion(hostcheck.SecretSpecFloor))
 
 	var failed []string
 	for _, c := range checks {
