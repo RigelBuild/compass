@@ -21,6 +21,7 @@ import (
 	"maps"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -411,6 +412,11 @@ func transcriptCommitError(err error) error {
 	}
 }
 
+// linkKindAttr marks the link linkTrigger adds, so a reader selects the
+// cross-turn causal edge by attribute instead of by position — the span also
+// carries otelconnect's transport link.
+var linkKindAttr = attribute.String("compass.link.kind", "cross_turn_trigger")
+
 // linkTrigger records the cross-turn causal edge from the agent's reply to the
 // turn that triggered it: a span LINK on the current RelayCommsCall origin span
 // (the otelconnect handler span mounted in handler.go) pointing at the remote
@@ -425,6 +431,18 @@ func transcriptCommitError(err error) error {
 // context.Context deliberately stripped of any span. That keeps a bad
 // traceparent from linking the span to itself, and keeps one traceparent parser
 // in the tree.
+//
+// Only the traceparent crosses this seam: the proto carries no trigger_tracestate
+// half, so any vendor tracestate the trigger held is not on the link.
+//
+// The link is STAMPED with linkKindAttr so a reader can find it by attribute
+// rather than by position. It is not the only link on this span: otelconnect's
+// server branch mints one from the inbound transport context whenever the
+// caller propagated a traceparent, which the production Runner's client
+// interceptor always does (internal/runner/runner.go:112-115, otelconnect
+// interceptor.go:110-117). So the trigger link is neither the only nor
+// reliably the first element of Links, and a positional or count-based read of
+// it is wrong.
 func linkTrigger(ctx context.Context, tp string) {
 	if tp == "" {
 		return
@@ -434,7 +452,10 @@ func linkTrigger(ctx context.Context, tp string) {
 	if !remote.IsValid() {
 		return
 	}
-	trace.SpanFromContext(ctx).AddLink(trace.Link{SpanContext: remote})
+	trace.SpanFromContext(ctx).AddLink(trace.Link{
+		SpanContext: remote,
+		Attributes:  []attribute.KeyValue{linkKindAttr},
+	})
 }
 
 // executeCall dispatches one comms call to the CommsCaller under account,

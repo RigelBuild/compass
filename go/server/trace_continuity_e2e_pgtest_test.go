@@ -154,9 +154,19 @@ func newTracedCommsClient(t *testing.T, baseURL string) compassv1connect.CommsSe
 
 // newRelayRunnerClient mounts a SECOND RunnerService door over the wire's OWN
 // hub — the production mount (runnerhub.NewMountedHandler: otelconnect
-// outermost, then the bearer pair) — and returns a RunnerService client
-// presenting the fake Runner's bearer, so a RelayCommsCall traverses a real
-// door and runs under a real otelconnect handler span.
+// outermost, then the bearer pair) — and returns a RunnerService client that
+// mounts otelconnect outermost of the fake Runner's bearer, mirroring the real
+// ServerLink client (internal/runner/runner.go:112-115), so a RelayCommsCall
+// traverses a real door and runs under a real otelconnect handler span.
+//
+// The CLIENT interceptor is load-bearing, not decoration. otelconnect's client
+// branch injects a traceparent request header, and its server branch then
+// extracts it and — because trustRemote defaults false — mints the span with
+// WithNewRoot + a link to that transport context (otelconnect interceptor.go:
+// 110-117). Omit it and the door sees no inbound traceparent at all: the span
+// is a root because nobody offered a parent, so (h)'s fresh-root assertion
+// passes for a trivial reason, and the origin span's link set holds only what
+// linkTrigger put there — a topology that never ships.
 //
 // A second door rather than a change to attachFakeRunner: that helper's door
 // carries the recordingRunner's live Sessions stream, and RelayCommsCall needs
@@ -188,9 +198,13 @@ func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) com
 		return d.DialContext(ctx, network, addr)
 	})
 	t.Cleanup(tr.CloseIdleConnections)
+	clientIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor (client): %v", err)
+	}
 	return compassv1internalconnect.NewRunnerServiceClient(
 		&http.Client{Transport: tr}, srv.URL,
-		connect.WithInterceptors(runnerBearer(fakeRunnerToken)),
+		connect.WithInterceptors(clientIC, runnerBearer(fakeRunnerToken)),
 	)
 }
 
@@ -563,6 +577,58 @@ func relayOriginSpanForMessage(t *testing.T, spans tracetest.SpanStubs, msgID st
 	}
 	return match[0]
 }
+
+// triggerLinkOf returns the span context of the ONE cross-turn trigger link on
+// span, selected by the compass.link.kind attribute linkTrigger stamps
+// (runnerhub/relay_comms.go). Selecting by attribute rather than by index is
+// required: otelconnect's server branch mints its own link from the inbound
+// transport context, so the trigger link is neither the only nor reliably the
+// first element of Links.
+func triggerLinkOf(t *testing.T, span tracetest.SpanStub) trace.SpanContext {
+	t.Helper()
+	var match []trace.SpanContext
+	for _, l := range span.Links {
+		if linkIsTrigger(l) {
+			match = append(match, l.SpanContext)
+		}
+	}
+	if len(match) != 1 {
+		t.Fatalf("found %d links carrying %s=%q, want exactly 1 (links on the span: %+v)",
+			len(match), triggerLinkKindKey, triggerLinkKindValue, span.Links)
+	}
+	return match[0]
+}
+
+// countTriggerLinks counts the cross-turn trigger links on span. Used for the
+// zero case, where triggerLinkOf's t.Fatalf would be the wrong shape.
+func countTriggerLinks(span tracetest.SpanStub) int {
+	n := 0
+	for _, l := range span.Links {
+		if linkIsTrigger(l) {
+			n++
+		}
+	}
+	return n
+}
+
+func linkIsTrigger(l sdktrace.Link) bool {
+	for _, a := range l.Attributes {
+		if a.Key == triggerLinkKindKey && a.Value.AsString() == triggerLinkKindValue {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	// The attribute linkTrigger stamps on the cross-turn causal link
+	// (runnerhub/relay_comms.go). Duplicated here rather than exported from
+	// runnerhub: it is an OBSERVABLE contract a trace consumer selects on, so a
+	// test that reads it through the same constant it is written from could not
+	// catch a rename that breaks every existing consumer.
+	triggerLinkKindKey   = attribute.Key("compass.link.kind")
+	triggerLinkKindValue = "cross_turn_trigger"
+)
 
 // originServerSpan returns the single SERVER-kind span named procedure — the
 // otelconnect handler span, whose name is the procedure path with the leading
@@ -1059,22 +1125,24 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 			t.Fatalf("reply span parent = %s, want none — a trigger_traceparent must produce a LINK, never a parent", linked.Parent.SpanID())
 		}
 
-		// Half 2 — the causal edge is recorded, and points at the trigger.
-		if len(linked.Links) != 1 {
-			t.Fatalf("reply span carries %d links, want exactly 1 (the cross-turn causal edge back to the trigger)", len(linked.Links))
-		}
-		link := linked.Links[0].SpanContext
+		// Half 2 — the causal edge is recorded, and points at the trigger. The
+		// trigger link is selected BY ATTRIBUTE, never by position or count:
+		// otelconnect's server branch mints its own link from the inbound
+		// transport context (the client interceptor above propagates one), so
+		// this span legitimately carries more than one link.
+		link := triggerLinkOf(t, linked)
 		if link.TraceID() != trigger.TraceID() || link.SpanID() != trigger.SpanID() {
-			t.Fatalf("reply span link = (trace %s, span %s), want the trigger's (trace %s, span %s)",
+			t.Fatalf("reply span trigger link = (trace %s, span %s), want the trigger's (trace %s, span %s)",
 				link.TraceID(), link.SpanID(), trigger.TraceID(), trigger.SpanID())
 		}
 
-		// The negative: with no trigger_traceparent there is NO link. Without
-		// this, half 2 would also pass against an implementation that links
-		// unconditionally to something.
+		// The negative: with no trigger_traceparent there is no CROSS-TURN link.
+		// Without this, half 2 would also pass against an implementation that
+		// links unconditionally to something. Counted by attribute, so
+		// otelconnect's transport link does not mask the assertion.
 		plain := relayOriginSpanForMessage(t, spans, plainMsgID)
-		if len(plain.Links) != 0 {
-			t.Fatalf("a post with an EMPTY trigger_traceparent carries %d links, want 0 (links=%+v)", len(plain.Links), plain.Links)
+		if n := countTriggerLinks(plain); n != 0 {
+			t.Fatalf("a post with an EMPTY trigger_traceparent carries %d cross-turn trigger links, want 0 (links=%+v)", n, plain.Links)
 		}
 	})
 

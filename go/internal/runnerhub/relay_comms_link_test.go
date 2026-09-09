@@ -71,6 +71,20 @@ func TestLinkTriggerAddsLinkForValidTraceparent(t *testing.T) {
 	if parent := span.Parent(); parent.IsValid() {
 		t.Errorf("reply span has parent %s, want a fresh root", parent.SpanID())
 	}
+	// The discriminator is the contract a trace consumer selects the cross-turn
+	// edge by: in production this span also carries otelconnect's transport
+	// link, so an unstamped link is indistinguishable from that one. Asserted
+	// against literals, not against linkKindAttr, so a rename of either half
+	// reddens here instead of silently agreeing with itself.
+	var stamped bool
+	for _, a := range links[0].Attributes {
+		if string(a.Key) == "compass.link.kind" && a.Value.AsString() == "cross_turn_trigger" {
+			stamped = true
+		}
+	}
+	if !stamped {
+		t.Errorf("link attributes = %+v, want compass.link.kind=cross_turn_trigger", links[0].Attributes)
+	}
 }
 
 // TestLinkTriggerAddsNoLinkWithoutValidTrigger asserts the rejection half: an
