@@ -137,6 +137,13 @@ func (s *Store) DeclaredServerSecrets(ctx context.Context) ([]ServerSecretDeclar
 // SecretDeclaration with a generic kind and zero delivery — the resolver uses
 // only the NAME to build its manifest, so NewSpecResolver is reused UNCHANGED
 // against a different table.
+//
+// Note the zero Delivery is NOT an "unset" marker: SecretDelivery(0) is the
+// named constant SecretDeliveryFile. It is inert here because the manifest
+// builder reads only Name, and a server secret is never container-delivered at
+// all — so any future consumer that reads Delivery off a server-secret
+// declaration is reading a value that was never meaningfully set, not a claim
+// that the secret wants file delivery.
 type ServerDeclaredSecrets struct {
 	Store *Store
 }
