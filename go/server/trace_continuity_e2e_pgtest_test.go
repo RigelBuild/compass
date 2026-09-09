@@ -318,8 +318,8 @@ func postAsk(t *testing.T, w *mentionE2EWire, question string) (msgID, askID str
 // wake path's own Start for the same FIFO entry.
 //
 // Returns only once this session's START-EDGE SWEEP has finished, which is what
-// keeps the wire quiet for the assertions. hub.Start fires OnSessionStarted
-// synchronously (runnerhub/relay_comms.go:75-76), but that only ENQUEUES the
+// keeps the wire quiet for the assertions. The hub fires OnSessionStarted
+// synchronously (runnerhub/relay_comms.go, Hub.promoteSession), but that only ENQUEUES the
 // edge (delivery/settle.go:51-65); the sweep itself runs later, on the Run
 // loop's OTHER select arm (delivery/consumer.go:355-357). Left ungated it can
 // land AFTER the first post commits and deliver that message a SECOND time —
@@ -385,8 +385,8 @@ func countSpansNamed(exp *tracetest.InMemoryExporter, name string) int {
 // start edges in these fixtures are strictly sequential on the test goroutine:
 // bringSessionLive is the only producer, and it is called before any post. The
 // wake path cannot slip an extra edge in between, because promoteSession deletes
-// the container binding as it promotes (runnerhub/relay_comms.go:65) and returns
-// early when the lookup misses (:55-57), so a wake's re-Start on the same
+// the container binding as it promotes and returns early when the lookup misses
+// (runnerhub/relay_comms.go, Hub.promoteSession), so a wake's re-Start on the same
 // placement container promotes nothing. A future fixture that starts a session
 // concurrently would break that precondition, which is why the wait below
 // demands an EXACT count: an unaccounted interleaved edge then fails loudly
