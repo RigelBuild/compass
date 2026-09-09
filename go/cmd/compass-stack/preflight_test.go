@@ -54,3 +54,26 @@ func TestPreflightDispatch(t *testing.T) {
 		t.Errorf("unknown-subcommand error %q does not name preflight", got)
 	}
 }
+
+// TestPreflightReportsSecretSpec pins the WIRING (separately from the verdict
+// logic, which hostcheck.DecideVersion owns): runPreflight must actually run a
+// secretspec check, and must run it AFTER the microVM trio. PATH is pointed at
+// an empty dir so every binary check fails deterministically on any host, which
+// makes runPreflight's error enumerate the failed check names in check order —
+// so it witnesses both presence and position.
+func TestPreflightReportsSecretSpec(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := runPreflight(nil)
+	if err == nil {
+		t.Fatal("expected preflight to fail with an empty PATH, got nil")
+	}
+	got := err.Error()
+	if !strings.Contains(got, "secretspec") {
+		t.Fatalf("preflight failure %q does not name the secretspec check; the install-time secrets-write-path dependency is unreported", got)
+	}
+	// The trio is printed as a group; secretspec is appended after it.
+	if last := strings.LastIndex(got, "passt"); last > strings.Index(got, "secretspec") {
+		t.Errorf("preflight failure %q reports secretspec before the microVM trio; the trio must stay grouped first", got)
+	}
+}

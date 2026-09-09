@@ -313,16 +313,17 @@ func TestSecretSpecVersionPin(t *testing.T) {
 // pin, so without this assertion the CLI could drift arbitrarily far while
 // every other test stayed green.
 //
-// This guard is dev-shell-only: no CI lane stages the secretspec binary. It is
-// resolved from a pinned input outside the parsed `packages` literal, so this
-// test always skips in CI; the CLI half of the seam is asserted on a developer's
-// machine instead.
+// This guard FAILS CLOSED: an absent CLI is a FAILURE, not a skip. The binary is
+// an install-time dependency (packaged per platform, reported by `compass-stack
+// preflight`), and at runtime an absent CLI is indistinguishable from a broken
+// write path — both surface only as the first admin write failing — so a skip
+// would let the seam pass silently on exactly the lanes that do not stage it.
 func TestSecretSpecCLIVersionFloor(t *testing.T) {
 	const minMajor, minMinor = 0, 20
 
 	bin, err := exec.LookPath(defaultCLI)
 	if err != nil {
-		t.Skipf("%s not on PATH; skipping the CLI floor guard", defaultCLI)
+		t.Fatalf("%s not found on PATH (%v): the secrets write path (SpecResolver.Set) spawns it by name, so the binary must be installed — it is an install-time dependency of every shipped surface, reported by `compass-stack preflight`, required at >= %d.%d", defaultCLI, err, minMajor, minMinor)
 	}
 
 	out, err := exec.CommandContext(context.Background(), bin, "--version").Output()

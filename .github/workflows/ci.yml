@@ -423,6 +423,23 @@ jobs:
           chromium=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix chromium)
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
+          # secretspec: the CLI the Go secrets WRITE path spawns BY NAME
+          # (go/internal/secrets/resolver.go's `defaultCLI = "secretspec"`,
+          # exec.CommandContext). TestSecretSpecCLIVersionFloor now FAILS CLOSED
+          # rather than skipping when exec.LookPath finds nothing — secrets not
+          # working is a failure either way — so `compass-go:test` needs the
+          # binary present. It is realized out-of-band from its own pinned
+          # helper, NOT the parity `attrs` above, for the same dotted-input
+          # reason chromium and skopeo are: it comes from the second
+          # `secretspec-nixpkgs` input, so it lives outside devenv.nix's parsed
+          # `packages` literal (devenv.nix:251-253) and parity.ts never emits it.
+          # $GITHUB_PATH (not $GITHUB_ENV): the binary must be found by
+          # exec.LookPath, not read from a variable the way chromium's absolute
+          # path is. Both only affect SUBSEQUENT steps, which is where the Moon
+          # battery runs.
+          secretspec=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/secretspec-env.nix secretspec)
+          echo "$secretspec/bin" >>"$GITHUB_PATH"
 
       - name: Toolchain parity
         if: matrix.run == 'true'
@@ -570,6 +587,20 @@ jobs:
           for store in $stores; do
             echo "$store/bin" >>"$GITHUB_PATH"
           done
+          # secretspec: the CLI the Go secrets WRITE path spawns BY NAME
+          # (go/internal/secrets/resolver.go's `defaultCLI`). The Real-Postgres
+          # step below runs `go test -tags pgtest ./...`, which INCLUDES
+          # internal/secrets, and TestSecretSpecCLIVersionFloor now FAILS CLOSED
+          # rather than skipping when exec.LookPath finds nothing — so this job
+          # needs the binary too, not just the moon battery. Realized from the
+          # same pinned helper for the same dotted-input reason (it comes from the
+          # second `secretspec-nixpkgs` input, outside devenv.nix's parsed
+          # `packages` literal, so parity.ts never emits it — devenv.nix:251-253).
+          # Staged HERE, not in the later sqlc-vet bootstrap: $GITHUB_PATH only
+          # affects SUBSEQUENT steps, and the consumer is the very next one.
+          secretspec=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/secretspec-env.nix secretspec)
+          echo "$secretspec/bin" >>"$GITHUB_PATH"
 
       - name: Real-Postgres suites
         working-directory: go
@@ -857,6 +888,22 @@ jobs:
             echo "$out/bin" >>"$GITHUB_PATH"
             PATH="$out/bin:$PATH"
           done
+          export PATH
+
+          # secretspec: the CLI the Go secrets WRITE path spawns by name
+          # (internal/secrets' `defaultCLI`). The `go test` below is an UNSCOPED
+          # `./...`, so it walks internal/secrets too — a build tag selects which
+          # FILES compile, not which PACKAGES `./...` visits, and
+          # resolver_test.go carries no tag. TestSecretSpecCLIVersionFloor now
+          # FAILS CLOSED rather than skipping, so this job needs the binary as
+          # much as the moon and pgtest lanes do. Same out-of-band helper and the
+          # same in-process `export PATH` as the VMM trio above: the consumer is
+          # this very step, which a $GITHUB_PATH append alone would not reach.
+          # Absolute -f for the working-directory reason documented above.
+          secretspec=$(nix build --no-link --print-out-paths \
+            -f "$GITHUB_WORKSPACE/tools/toolchain/secretspec-env.nix" secretspec)
+          echo "$secretspec/bin" >>"$GITHUB_PATH"
+          PATH="$secretspec/bin:$PATH"
           export PATH
 
           rc=0
