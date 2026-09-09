@@ -586,6 +586,10 @@ func relayOriginSpanForMessage(t *testing.T, spans tracetest.SpanStubs, msgID st
 // required: otelconnect's server branch mints its own link from the inbound
 // transport context, so the trigger link is neither the only nor reliably the
 // first element of Links.
+//
+// Selection presupposes a non-zero OTEL_LINK_ATTRIBUTE_COUNT_LIMIT: zeroing it
+// keeps the link and drops its attributes, so this finds nothing. See
+// linkKindAttr's doc (runnerhub/relay_comms.go).
 func triggerLinkOf(t *testing.T, span tracetest.SpanStub) trace.SpanContext {
 	t.Helper()
 	var match []trace.SpanContext
@@ -1062,8 +1066,10 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 	// origin span is the otelconnect RelayCommsCall handler span. This proves it
 	// EXISTS (the door is traced at all) and that it is a FRESH ROOT — and the
 	// root-ness is the door REFUSING an offered parent, not nobody offering one.
-	// The Runner DOES propagate a traceparent (runner.go mounts otelconnect on
-	// the ServerLink client, which this fixture mirrors); the span is a root
+	// The Runner propagates a traceparent whenever tracing is enabled (runner.go
+	// mounts otelconnect on the ServerLink client and the propagator is
+	// installed on that same enabled path, internal/otel/provider.go), which
+	// this fixture mirrors; the span is a root
 	// because otelconnect's trustRemote defaults false, so it mints the span
 	// WithNewRoot plus a link to that transport context.
 	t.Run("h: an agent-authored post's RelayCommsCall origin span is a fresh root", func(t *testing.T) {
