@@ -26,6 +26,9 @@ package e2e
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -35,7 +38,9 @@ import (
 
 // The two tenants, their agents, and the two channels. Handles obey the account
 // handle grammar (store/handle.go:15 `^[a-z0-9][a-z0-9._-]*$`) and are t4-scoped
-// so nothing collides with a sibling leg's fixture.
+// so they stay mutually distinct WITHIN this leg and name their subject in a
+// failure message. Cross-leg isolation is not theirs to provide: each test gets
+// its own NewFixture, hence its own stack, cluster and state dir.
 const (
 	t4Owner1Handle = "t4-owner-1"
 	t4Owner2Handle = "t4-owner-2"
@@ -62,12 +67,14 @@ const (
 //     private channel on the LIVE tail (subscribed before the post).
 //  2. NEGATIVE (load-bearing) — owner-2, subscribed at sinceSeq=0 AFTER the
 //     private post, receives the globally-visible canary as its FIRST matching
-//     event and never the private post.
-//  3. Cross-owner OpenDM collapses to NOT_FOUND byte-identically to an unknown
-//     handle — BOTH arms asserted, because indistinguishability is the contract.
+//     event, with the private post never delivered AHEAD of it. Scoped to
+//     MessagePosted; the full payload-arm matrix is the DB tier's.
+//  3. Cross-owner OpenDM collapses to the SAME rejection an unknown handle gets
+//     — same code AND, once the submitted handle is redacted, the same message.
+//     Both arms asserted, because indistinguishability is the contract.
 //
-// Every wait is event-gated and ctx-bounded (AwaitDelivery, comms_ops.go:132) —
-// no sleeps, no polling, no retry loops.
+// Every wait is event-gated and ctx-bounded (AwaitDelivery, comms_ops.go:132;
+// awaitSubscriptionLive below) — no sleeps, no polling, no retry loops.
 func TestCommsTenantVisibilityTransport(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
@@ -108,10 +115,22 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 	// about. So each agent is created over its OWN owner's observer client — the
 	// same "call the generated client AsObserver returned" shape assertion 3
 	// uses for OpenDM, not a new fixture primitive.
-	agent1ID := createAgentAs(ctx, t, owner1Comms, t4Agent1Handle, "T4 Agent One")
-	agent2ID := createAgentAs(ctx, t, owner2Comms, t4Agent2Handle, "T4 Agent Two")
+	agent1ID, agent1Owner := createAgentAs(ctx, t, owner1Comms, t4Agent1Handle, "T4 Agent One")
+	agent2ID, agent2Owner := createAgentAs(ctx, t, owner2Comms, t4Agent2Handle, "T4 Agent Two")
 	if agent1ID == agent2ID {
 		t.Fatalf("the two owners' agents share account id %q; the per-owner agent namespaces are not distinct", agent1ID)
+	}
+	// The load-bearing precondition for assertion 3, checked rather than assumed.
+	// Distinct account ids hold for any two accounts, INCLUDING two agents under
+	// one owner — so id-distinctness alone would let assertion 3's cross-owner arm
+	// silently degrade into a second copy of its unknown-handle arm (both return
+	// NOT_FOUND) and stay green while the cross-owner authz branch
+	// (comms/comms.go:683) never executed. Assert the placement the arm depends on.
+	if agent1Owner != owner1ID {
+		t.Fatalf("agent %s landed under owner %q, want owner-1 %q; the cross-owner arm would not be cross-owner", t4Agent1Handle, agent1Owner, owner1ID)
+	}
+	if agent2Owner != owner2ID {
+		t.Fatalf("agent %s landed under owner %q, want owner-2 %q; the cross-owner arm would not be cross-owner", t4Agent2Handle, agent2Owner, owner2ID)
 	}
 
 	// owner-1's PRIVATE channel: ungrouped, so membership-only visibility
@@ -121,11 +140,12 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel(%s, private): %v", t4PrivateChannel, err)
 	}
-	// The canary channel: SHARED-grouped AND owner-2 is a founding member. Both
-	// halves matter — a MessagePosted is gated on channel MEMBERSHIP
-	// (subscribe.go:294 IsTopicChannelMember), so a merely globally-VISIBLE
-	// channel owner-2 was not a member of would carry no message to it and the
-	// high-water mark would never arrive.
+	// The canary channel. What carries the canary to owner-2 is its founding
+	// MEMBERSHIP: a MessagePosted is gated on channel membership
+	// (subscribe.go:294 IsTopicChannelMember), and CreateChannel threads the
+	// owner into MemberHandles (fixture.go:342). The SHARED grouping is
+	// incidental to delivery here — membership alone suffices — and is kept only
+	// to mirror T1's shared-channel surface.
 	canaryID, err := f.CreateChannel(ctx, owner2ID, t4CanaryChannel, false)
 	if err != nil {
 		t.Fatalf("CreateChannel(%s, shared canary): %v", t4CanaryChannel, err)
@@ -136,15 +156,23 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 
 	// ---- assertion 1: owner-1's stream receives its own private post (LIVE) ----
 
-	// Subscribed BEFORE the post, so the event travels the live tail rather than
-	// the replay snapshot: the two paths are filtered by separate loops
-	// (forwardComms, subscribe.go:118), and a regression that filtered only
-	// replay would ship green against a replay-only positive.
+	// Subscribed BEFORE the post AND gated live, so the event travels the live
+	// tail rather than the replay snapshot: the two paths are filtered by
+	// separate loops (forwardComms, subscribe.go:118), and a regression that
+	// filtered only replay would ship green against a replay-only positive.
+	//
+	// The gate is what makes that true. SubscribeCommsAsObserver returns as soon
+	// as the request is sent — connect's CallServerStream does not wait for a
+	// response frame — so returning from it establishes NOTHING about the server
+	// having registered the subscriber. Without draining the snapshot-boundary
+	// frame the post below could commit first and be served from the replay
+	// snapshot, satisfying this assertion while proving the weaker property.
 	owner1Live, err := f.SubscribeCommsAsObserver(ctx, owner1Comms, 0)
 	if err != nil {
 		t.Fatalf("SubscribeCommsAsObserver(owner-1, live): %v", err)
 	}
 	defer owner1Live.Close()
+	awaitSubscriptionLive(ctx, t, owner1Live)
 
 	privMsgID, err := f.PostMessageAsObserver(ctx, owner1Comms, privateID, t4Topic, t4PrivateBody)
 	if err != nil {
@@ -205,7 +233,7 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 		t.Fatalf("SubscribeCommsAsObserver(owner-2): %v", err)
 	}
 	defer owner2Stream.Close()
-	awaitSubscriptionLive(t, owner2Stream)
+	awaitSubscriptionLive(ctx, t, owner2Stream)
 
 	// The high-water mark: a post owner-2 IS entitled to, published strictly
 	// after its subscription went live. Posted by the admin, a founding member of
@@ -255,7 +283,7 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 	}
 
 	crossOwnerPeer := t4Owner2Handle + "/" + t4Agent2Handle
-	crossCode := openDMCode(ctx, t, agent1Comms, crossOwnerPeer)
+	crossCode, crossMsg := openDMRejection(ctx, t, agent1Comms, crossOwnerPeer)
 	if crossCode != connect.CodeNotFound {
 		t.Fatalf("OpenDM(cross-owner peer %q) = %v, want %v (a foreign owner's agent must never be reachable)",
 			crossOwnerPeer, crossCode, connect.CodeNotFound)
@@ -265,8 +293,8 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 	// the cross-owner code would pass even if an unknown handle returned
 	// something else, and the contract is that the two are INDISTINGUISHABLE —
 	// a caller must not be able to probe a foreign peer's existence by
-	// comparing codes.
-	unknownCode := openDMCode(ctx, t, agent1Comms, t4GhostHandle)
+	// comparing rejections.
+	unknownCode, unknownMsg := openDMRejection(ctx, t, agent1Comms, t4GhostHandle)
 	if unknownCode != connect.CodeNotFound {
 		t.Fatalf("OpenDM(unknown peer %q) = %v, want %v", t4GhostHandle, unknownCode, connect.CodeNotFound)
 	}
@@ -274,15 +302,40 @@ func TestCommsTenantVisibilityTransport(t *testing.T) {
 		t.Fatalf("OpenDM cross-owner (%q) = %v but unknown (%q) = %v; the two must be indistinguishable so a foreign peer's existence never leaks",
 			crossOwnerPeer, crossCode, t4GhostHandle, unknownCode)
 	}
+
+	// The MESSAGE axis, which the codes cannot cover. Both arms reach NOT_FOUND
+	// through DIFFERENT branches — cross-owner through OpenDM's same-owner check
+	// (comms.go:683), unknown through the resolver miss (resolve.go:86-90) — and
+	// they share a code only by funnelling into the same edgeError arm
+	// (context.go:58). What actually closes the oracle is notFoundHandle
+	// re-keying both to the SUBMITTED handle (resolve.go:137). So a
+	// regression that drops that re-key on either arm — leaking a resolved owner
+	// id, the store's own handle spelling, or a "different owner" phrase — keeps
+	// both codes NOT_FOUND and is invisible to a code compare. Normalize away the
+	// submitted handle, the one field that legitimately differs, then require the
+	// remainder to match exactly.
+	//
+	// Comparing the full remainder is deliberate: a leak's shape cannot be
+	// enumerated in advance, so anything weaker (a prefix, or just asserting the
+	// owner id is absent) reopens the hole. The coupling is to one shared
+	// template, notFoundHandle at resolve.go:137 — reword that and update here.
+	crossRedacted := strings.ReplaceAll(crossMsg, crossOwnerPeer, "<peer>")
+	unknownRedacted := strings.ReplaceAll(unknownMsg, t4GhostHandle, "<peer>")
+	if crossRedacted != unknownRedacted {
+		t.Fatalf("OpenDM rejection messages are distinguishable once the submitted handle is redacted:\n cross-owner (%q): %q\n unknown     (%q): %q\nthe two must be byte-identical or a caller can probe a foreign peer's existence by comparing messages (shared template: notFoundHandle, resolve.go:137)",
+			crossOwnerPeer, crossRedacted, t4GhostHandle, unknownRedacted)
+	}
 }
 
 // createAgentAs creates an agent over an EXPLICIT comms client (an observer's),
 // so the agent is owned by that client's account rather than by the fixture's
 // bootstrap admin — CreateAgent places the new agent under the CALLER's resolved
-// owner (comms/comms.go:109). Fatal on failure: a setup miss makes every
-// assertion below meaningless. The per-call deadline is derived from ctx, the
-// same shape every fixture RPC uses.
-func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, handle, displayName string) string {
+// owner (comms/comms.go:109). Returns the new account id AND the owner the
+// server actually resolved, because per-owner ownership is an emergent property
+// of which client was passed: nothing in the request names an owner, so the
+// caller cannot assume it landed where intended and must check. Fatal on
+// failure: a setup miss makes every assertion below meaningless.
+func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, handle, displayName string) (accountID, ownerID string) {
 	t.Helper()
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -293,11 +346,18 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 	if err != nil {
 		t.Fatalf("CreateAgent(%s) as the owning tenant: %v", handle, err)
 	}
-	id := resp.Msg.GetAccount().GetId()
+	account := resp.Msg.GetAccount()
+	id := account.GetId()
 	if id == "" {
 		t.Fatalf("CreateAgent(%s) returned an empty account id", handle)
 	}
-	return id
+	// mapping.go:33 populates OwnerUserId from the stored agent, so this is the
+	// owner the server resolved for the caller — not an echo of the request.
+	owner := account.GetAgent().GetOwnerUserId()
+	if owner == "" {
+		t.Fatalf("CreateAgent(%s) returned account %q with no agent owner id; cannot verify which tenant it landed under", handle, id)
+	}
+	return id, owner
 }
 
 // awaitSubscriptionLive drains the leading control frame a sinceSeq=0
@@ -308,21 +368,57 @@ func createAgentAs(ctx context.Context, t *testing.T, comms commsServiceClient, 
 // stream is provably live server-side and a post published afterwards cannot be
 // missed. That is what lets the canary ordering below stand on a server
 // guarantee rather than on a race the client hopes to win.
-func awaitSubscriptionLive(t *testing.T, stream *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse]) {
+//
+// Receive is a blocking network read and the stream rides the test-root ctx,
+// which has no deadline, so the read is pumped in a goroutine raced against a
+// derived one — the shape AwaitDelivery uses (comms_ops.go:132) and for the
+// same reason: a server that registers the subscriber but never sends the
+// boundary frame fails legibly here instead of blocking to the go-test timeout.
+func awaitSubscriptionLive(ctx context.Context, t *testing.T, stream *connect.ServerStreamForClient[compassv1.SubscribeCommsResponse]) {
 	t.Helper()
-	if !stream.Receive() {
-		t.Fatalf("subscription ended before its leading control frame: %v", stream.Err())
+	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+
+	type frame struct {
+		payload any
+		err     error
 	}
-	if payload := stream.Msg().GetPayload(); payload != nil {
-		t.Fatalf("first frame of a sinceSeq=0 subscription carries payload %T, want the payload-free snapshot-boundary control frame", payload)
+	// Buffered: the pump sends once and exits, so it cannot block after this
+	// helper has already returned on the ctx deadline.
+	out := make(chan frame, 1)
+	go func() {
+		if !stream.Receive() {
+			out <- frame{err: fmt.Errorf("subscription ended before its leading control frame: %w", stream.Err())}
+			return
+		}
+		out <- frame{payload: stream.Msg().GetPayload()}
+	}()
+
+	select {
+	case f := <-out:
+		if f.err != nil {
+			t.Fatalf("%v", f.err)
+		}
+		if f.payload != nil {
+			t.Fatalf("first frame of a sinceSeq=0 subscription carries payload %T, want the payload-free snapshot-boundary control frame", f.payload)
+		}
+	case <-ctx.Done():
+		t.Fatalf("awaiting the snapshot-boundary frame: %v — the subscription never went live", ctx.Err())
 	}
 }
 
-// openDMCode calls OpenDM for peerHandle on comms and returns the connect code
-// of the result, failing the test if the call unexpectedly SUCCEEDED — a
-// successful open is not a code and must not be silently reported as
-// CodeUnknown, which would let a real cross-tenant DM pass the code comparison.
-func openDMCode(ctx context.Context, t *testing.T, comms commsServiceClient, peerHandle string) connect.Code {
+// openDMRejection calls OpenDM for peerHandle on comms and returns BOTH the
+// connect code and the wire message of the rejection, failing the test if the
+// call unexpectedly SUCCEEDED — a successful open is not a rejection and must
+// not be silently reported as CodeUnknown, which would let a real cross-tenant
+// DM pass the comparison below.
+//
+// The message matters as much as the code: the oracle the two notFoundHandle
+// call sites exist to close is a MESSAGE oracle (comms.go:677 "never leaking
+// the peer's existence"), and both arms already share the code by arriving at
+// the same edgeError branch. Comparing codes alone cannot see a regression that
+// leaks the peer's existence through the message text.
+func openDMRejection(ctx context.Context, t *testing.T, comms commsServiceClient, peerHandle string) (connect.Code, string) {
 	t.Helper()
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -331,5 +427,33 @@ func openDMCode(ctx context.Context, t *testing.T, comms commsServiceClient, pee
 		t.Fatalf("OpenDM(peer %q) succeeded and opened channel %q, want a NOT_FOUND rejection",
 			peerHandle, resp.Msg.GetChannel().GetId())
 	}
-	return connect.CodeOf(err)
+	return connect.CodeOf(err), rejectionMessage(t, peerHandle, err)
+}
+
+// rejectionMessage returns a connect error's message with its code prefix
+// stripped (connect.Error.Message, unlike Error, omits it), so two rejections
+// can be compared on text alone.
+//
+// A non-connect error is FATAL rather than degraded to err.Error(), because a
+// degraded return would be worse than useless: two arms failing identically
+// yield two equal strings containing neither submitted handle, the redaction
+// removes nothing, and the message compare PASSES having observed no rejection.
+// The branch should be unreachable — connect codes every client-side error
+// (wrapIfUncoded, connect@v1.20.0/error.go:279-287, falling back to
+// CodeUnknown) — so it fires only if that guarantee changes.
+//
+// Transport faults are NOT caught here; they arrive already coded
+// (CodeUnavailable, CodeDeadlineExceeded, CodeInternal) and so pass errors.As.
+// What stops them is the absolute NOT_FOUND assertion at each call site, which
+// fatals before the message compare runs. Do not weaken those to a bare
+// cross-vs-unknown code compare: two identical transport faults would satisfy
+// it, and this helper would not save you.
+func rejectionMessage(t *testing.T, peerHandle string, err error) string {
+	t.Helper()
+	var cerr *connect.Error
+	if !errors.As(err, &cerr) {
+		t.Fatalf("OpenDM(peer %q) failed with an uncoded error %T (%v); connect is expected to code every client error, and without a connect message the comparison below would be vacuous",
+			peerHandle, err, err)
+	}
+	return cerr.Message()
 }
