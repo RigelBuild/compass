@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -594,10 +595,16 @@ func newMountedH2CServerWithConfig(t *testing.T, hub *Hub, resolve TokenResolver
 }
 
 // newMountedH2CServerWith mounts the handler with both delegate surfaces (either
-// may be nil) on an httptest h2c server and returns its base URL.
+// may be nil) on an httptest h2c server and returns its base URL. The
+// otelconnect interceptor is real (NewMountedHandler forbids nil) but inert:
+// these tests install no tracer provider, so it reads the no-op global.
 func newMountedH2CServerWith(t *testing.T, hub *Hub, resolve TokenResolver, resolver secrets.Resolver, configStore AgentConfigStore) string {
 	t.Helper()
-	path, handler := NewMountedHandler(hub, resolve, resolver, configStore)
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	path, handler := NewMountedHandler(hub, resolve, resolver, configStore, otelIC)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)

@@ -67,8 +67,11 @@ package server
 // context.Background() is the test root (rule://go-thread-context _test.go
 // exemption): threaded into the wire, the doors, and every RPC below.
 //
-// (h) and (i) are BLOCKED on production code that is not on main; each is a
-// t.Skip naming the exact missing symbol. See their subtests.
+// (h) and (i) drive the RunnerService door directly (newRelayRunnerClient): the
+// agent-authored leg's origin span is otelconnect's RelayCommsCall handler span,
+// and the cross-turn causal edge is the LINK executeCall's Post arm adds from
+// the call's trigger_traceparent (linkTrigger, called from executeCall's Post
+// arm in runnerhub/relay_comms.go).
 
 import (
 	"context"
@@ -93,7 +96,10 @@ import (
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/comms"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -145,6 +151,102 @@ func newTracedCommsClient(t *testing.T, baseURL string) compassv1connect.CommsSe
 	})
 	t.Cleanup(tr.CloseIdleConnections)
 	return compassv1connect.NewCommsServiceClient(&http.Client{Transport: tr}, baseURL)
+}
+
+// newRelayRunnerClient mounts a SECOND RunnerService door over the wire's OWN
+// hub — the production mount (runnerhub.NewMountedHandler: otelconnect
+// outermost, then the bearer pair) — and returns a RunnerService client that
+// mounts otelconnect outermost of the fake Runner's bearer, mirroring the real
+// ServerLink client (internal/runner/runner.go:112-115), so a RelayCommsCall
+// traverses a real door and runs under a real otelconnect handler span.
+//
+// The CLIENT interceptor is load-bearing, not decoration. otelconnect's client
+// branch injects a traceparent request header, and its server branch then
+// extracts it and — because trustRemote defaults false — mints the span with
+// WithNewRoot + a link to that transport context (otelconnect interceptor.go:
+// 110-117). Omit it and the door sees no inbound traceparent at all: the span
+// is a root because nobody offered a parent, so (h)'s fresh-root assertion
+// passes for a trivial reason, and the origin span's link set holds only what
+// linkTrigger put there — a topology that never ships.
+//
+// A second door rather than a change to attachFakeRunner: that helper's door
+// carries the recordingRunner's live Sessions stream, and RelayCommsCall needs
+// none of it — the hub resolves session_id -> account from its own binding
+// (runnerhub/relay_comms.go, Hub.RelayCommsCall), which bringSessionLive has
+// already promoted. Mounting here also keeps this door's interceptor
+// construction inside the subtest,
+// AFTER installGlobalSpanExporter, which is the load-bearing half:
+// otelconnect captures the global tracer provider once, at NewInterceptor()
+// (otelconnect interceptor.go:56-60).
+func newRelayRunnerClient(t *testing.T, hub *runnerhub.Hub, st *store.Store) compassv1internalconnect.RunnerServiceClient {
+	t.Helper()
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	path, handler := runnerhub.NewMountedHandler(hub,
+		func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
+			return auth.ResolveToken(ctx, st, presented, want)
+		}, nil, nil, otelIC)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = cleartextHTTP2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	tr := h2cTransport(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	})
+	t.Cleanup(tr.CloseIdleConnections)
+	clientIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor (client): %v", err)
+	}
+	return compassv1internalconnect.NewRunnerServiceClient(
+		&http.Client{Transport: tr}, srv.URL,
+		connect.WithInterceptors(clientIC, runnerBearer(fakeRunnerToken)),
+	)
+}
+
+// relayAgentPost issues ONE agent-initiated RelayCommsCall Post through client,
+// under sessionID, carrying triggerTP as the request's trigger_traceparent (""
+// for the no-trigger case), and returns the id of the message the post created.
+// It fails on a transport error AND on the in-band CommsCallError variant — the
+// arm the hub renders a tool failure into — so a call that never reached the
+// Post arm can never pass for one that did.
+//
+// The post addresses the channel by NAME: PostAsAccountByName is the agent-tool
+// entry executeCall's Post arm dispatches to, and it resolves the name within
+// the AGENT's visible set (comms/agent_caller.go:201-227).
+func relayAgentPost(t *testing.T, ctx context.Context, client compassv1internalconnect.RunnerServiceClient, sessionID, channelName, body, triggerTP string) string {
+	t.Helper()
+	resp, err := client.RelayCommsCall(ctx, connect.NewRequest(&compassv1internal.RelayCommsCallRequest{
+		SessionId: sessionID,
+		Call: &compassv1internal.CommsCallRequest{
+			CallId:             "tc-relay-" + body,
+			TriggerTraceparent: triggerTP,
+			Call: &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{
+				Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: channelName},
+				Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+				CreateTopic: true,
+				Blocks:      textBlock(body),
+			}},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("RelayCommsCall(post %q): %v", body, err)
+	}
+	result := resp.Msg.GetResult()
+	if e := result.GetError(); e != nil {
+		t.Fatalf("RelayCommsCall(post %q) rendered an in-band tool error {code=%q message=%q}; the Post arm did not complete", body, e.GetCode(), e.GetMessage())
+	}
+	msgID := result.GetPost().GetMessage().GetId()
+	if msgID == "" {
+		t.Fatalf("RelayCommsCall(post %q) returned no message id; the Post arm did not persist a message", body)
+	}
+	return msgID
 }
 
 // postOverTracedDoor posts one text message into the wire's shared channel over
@@ -216,8 +318,8 @@ func postAsk(t *testing.T, w *mentionE2EWire, question string) (msgID, askID str
 // wake path's own Start for the same FIFO entry.
 //
 // Returns only once this session's START-EDGE SWEEP has finished, which is what
-// keeps the wire quiet for the assertions. hub.Start fires OnSessionStarted
-// synchronously (runnerhub/relay_comms.go:75-76), but that only ENQUEUES the
+// keeps the wire quiet for the assertions. The hub fires OnSessionStarted
+// synchronously (runnerhub/relay_comms.go, Hub.promoteSession), but that only ENQUEUES the
 // edge (delivery/settle.go:51-65); the sweep itself runs later, on the Run
 // loop's OTHER select arm (delivery/consumer.go:355-357). Left ungated it can
 // land AFTER the first post commits and deliver that message a SECOND time —
@@ -283,8 +385,8 @@ func countSpansNamed(exp *tracetest.InMemoryExporter, name string) int {
 // start edges in these fixtures are strictly sequential on the test goroutine:
 // bringSessionLive is the only producer, and it is called before any post. The
 // wake path cannot slip an extra edge in between, because promoteSession deletes
-// the container binding as it promotes (runnerhub/relay_comms.go:65) and returns
-// early when the lookup misses (:55-57), so a wake's re-Start on the same
+// the container binding as it promotes and returns early when the lookup misses
+// (runnerhub/relay_comms.go, Hub.promoteSession), so a wake's re-Start on the same
 // placement container promotes nothing. A future fixture that starts a session
 // concurrently would break that precondition, which is why the wait below
 // demands an EXACT count: an unaccounted interleaved edge then fails loudly
@@ -430,6 +532,15 @@ func waitForDeliverOfMessage(t *testing.T, r *recordingRunner, sessionID, messag
 // grammar the agent seam carries.
 func traceIDOfTraceparent(t *testing.T, ctx context.Context, what, tp string) trace.TraceID {
 	t.Helper()
+	return spanContextOfTraceparent(t, ctx, what, tp).TraceID()
+}
+
+// spanContextOfTraceparent is traceIDOfTraceparent's whole-span-context form:
+// (i) asserts a link's SPAN id as well as its trace id, so it needs both halves
+// of the parsed remote context, and it parses through the same one shipped
+// helper.
+func spanContextOfTraceparent(t *testing.T, ctx context.Context, what, tp string) trace.SpanContext {
+	t.Helper()
 	if tp == "" {
 		t.Fatalf("%s carried an EMPTY traceparent, want a W3C 00-… value (the turn's trace never reached the agent seam)", what)
 	}
@@ -437,8 +548,93 @@ func traceIDOfTraceparent(t *testing.T, ctx context.Context, what, tp string) tr
 	if !sc.IsValid() {
 		t.Fatalf("%s traceparent %q did not parse to a valid span context", what, tp)
 	}
-	return sc.TraceID()
+	return sc
 }
+
+// relayOriginSpanForMessage returns the single SERVER-kind RelayCommsCall
+// handler span that carries compass.message.id == msgID — the origin span of ONE
+// agent-authored post relayed through the runner door.
+//
+// originServerSpan cannot serve here: it demands exactly one span of the
+// procedure in the whole export, and (i) deliberately drives TWO relayed posts
+// (the linked one and the empty-trigger control) into one fixture. The message id
+// is the discriminator because comms stamps it on the CURRENT span at append
+// (comms/comms.go:424) — which on this path IS the otelconnect RelayCommsCall
+// handler span. Name + kind still gate the match, so a delivery hop span
+// carrying the same id (delivery/dispatch.go:375) is never a candidate.
+func relayOriginSpanForMessage(t *testing.T, spans tracetest.SpanStubs, msgID string) tracetest.SpanStub {
+	t.Helper()
+	want := compassv1internalconnect.RunnerServiceRelayCommsCallProcedure[1:] // trim the leading "/"
+	var match []tracetest.SpanStub
+	for _, s := range spans {
+		if s.Name != want || s.SpanKind != trace.SpanKindServer {
+			continue
+		}
+		if got, ok := spanAttr(s, messageIDAttr); ok && got == msgID {
+			match = append(match, s)
+		}
+	}
+	if len(match) != 1 {
+		t.Fatalf("found %d SERVER spans named %q carrying %s=%q, want exactly 1 (spans exported: %d)", len(match), want, messageIDAttr, msgID, len(spans))
+	}
+	return match[0]
+}
+
+// triggerLinkOf returns the span context of the ONE cross-turn trigger link on
+// span, selected by the compass.link.kind attribute linkTrigger stamps
+// (runnerhub/relay_comms.go). Selecting by attribute rather than by index is
+// required: otelconnect's server branch mints its own link from the inbound
+// transport context, so the trigger link is neither the only nor reliably the
+// first element of Links.
+//
+// Selection presupposes a non-zero OTEL_LINK_ATTRIBUTE_COUNT_LIMIT: zeroing it
+// keeps the link and drops its attributes, so this finds nothing. See
+// linkKindAttr's doc (runnerhub/relay_comms.go).
+func triggerLinkOf(t *testing.T, span tracetest.SpanStub) trace.SpanContext {
+	t.Helper()
+	var match []trace.SpanContext
+	for _, l := range span.Links {
+		if linkIsTrigger(l) {
+			match = append(match, l.SpanContext)
+		}
+	}
+	if len(match) != 1 {
+		t.Fatalf("found %d links carrying %s=%q, want exactly 1 (links on the span: %+v)",
+			len(match), triggerLinkKindKey, triggerLinkKindValue, span.Links)
+	}
+	return match[0]
+}
+
+// countTriggerLinks counts the cross-turn trigger links on span. Used for the
+// zero case, where triggerLinkOf's t.Fatalf would be the wrong shape.
+func countTriggerLinks(span tracetest.SpanStub) int {
+	n := 0
+	for _, l := range span.Links {
+		if linkIsTrigger(l) {
+			n++
+		}
+	}
+	return n
+}
+
+func linkIsTrigger(l sdktrace.Link) bool {
+	for _, a := range l.Attributes {
+		if a.Key == triggerLinkKindKey && a.Value.AsString() == triggerLinkKindValue {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	// The attribute linkTrigger stamps on the cross-turn causal link
+	// (runnerhub/relay_comms.go). Duplicated here rather than exported from
+	// runnerhub: it is an OBSERVABLE contract a trace consumer selects on, so a
+	// test that reads it through the same constant it is written from could not
+	// catch a rename that breaks every existing consumer.
+	triggerLinkKindKey   = attribute.Key("compass.link.kind")
+	triggerLinkKindValue = "cross_turn_trigger"
+)
 
 // originServerSpan returns the single SERVER-kind span named procedure — the
 // otelconnect handler span, whose name is the procedure path with the leading
@@ -866,36 +1062,109 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		}
 	})
 
-	// (h) BLOCKED — not implemented on main.
+	// (h) An agent-authored post arrives over the RunnerService door, so its
+	// origin span is the otelconnect RelayCommsCall handler span. This proves it
+	// EXISTS (the door is traced at all) and that it is a FRESH ROOT — and the
+	// root-ness is the door REFUSING an offered parent, not nobody offering one.
+	// The Runner propagates a traceparent whenever tracing is enabled (runner.go
+	// mounts otelconnect on the ServerLink client and the propagator is
+	// installed on that same enabled path, internal/otel/provider.go), which
+	// this fixture mirrors; the span is a root
+	// because otelconnect's trustRemote defaults false, so it mints the span
+	// WithNewRoot plus a link to that transport context.
 	t.Run("h: an agent-authored post's RelayCommsCall origin span is a fresh root", func(t *testing.T) {
-		// The assertion needs a RelayCommsCall origin span to exist. It does not:
-		// the RunnerService door is mounted by runnerhub.NewMountedHandler
-		// (handler.go:433-439), whose ONLY interceptors are the bearer pair —
-		// there is no otelconnect on that door, and package internal/runnerhub
-		// contains no otelconnect import and no tracer call at all. So no span is
-		// ever created for RelayCommsCall, and "the origin span exists" cannot be
-		// driven without adding that production wiring.
-		//
-		// Blocker: T5 move 6 (design.md:705-712) is absent from main. RIG-3499
-		// tracks landing T5 move 6 and un-skipping this assertion.
-		t.Skip("blocked (RIG-3499): no RelayCommsCall origin span exists — runnerhub.NewMountedHandler (internal/runnerhub/handler.go:433-439) mounts no otelconnect interceptor and internal/runnerhub creates no spans (T5 move 6, design.md:705-712, not on main)")
+		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+		exp := installGlobalSpanExporter(t)
+		w := newMentionE2EWire(t)
+
+		author := w.seedAgentMember(t, "relayauthor", true)
+		const authorSess = "sess-relayauthor-1"
+		bringSessionLive(t, w, exp, author.ID, containerFor("relayauthor"), authorSess)
+
+		// The door is built HERE, after the exporter: otelconnect captures the
+		// global tracer provider once, at NewInterceptor().
+		relay := newRelayRunnerClient(t, w.hub, w.store)
+		msgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "agent speaks first", "")
+
+		origin := relayOriginSpanForMessage(t, exp.GetSpans(), msgID)
+		// A fresh root is a statement about the recorded PARENT, not about trace
+		// ids: a trace-id comparison can pass by accident (two independent roots
+		// differ trivially), while a nested span would carry a valid parent.
+		if origin.Parent.IsValid() {
+			t.Fatalf("RelayCommsCall origin span parent = %s (trace %s), want NO valid parent — the agent-authored post's trace must start at this door, not continue an inbound one",
+				origin.Parent.SpanID(), origin.Parent.TraceID())
+		}
+		// The fixture must actually be the shipped topology: the client
+		// interceptor propagates a traceparent, which otelconnect's server
+		// branch turns into exactly one transport link. Drop the client
+		// interceptor and the parent check above still passes — vacuously,
+		// because nothing offered a parent — so this is what keeps that
+		// assertion honest. The post carried no trigger_traceparent, so
+		// linkTrigger added nothing and the count isolates the transport link.
+		if len(origin.Links) != 1 {
+			t.Fatalf("origin span carries %d links, want 1 (otelconnect's transport link) — no traceparent reached the door, so this is not the shipped topology and the fresh-root assertion above is vacuous", len(origin.Links))
+		}
+		if !origin.SpanContext.TraceID().IsValid() {
+			t.Fatal("RelayCommsCall origin span has an invalid trace id; it recorded nothing, so 'fresh root' would be vacuous")
+		}
 	})
 
-	// (i) BLOCKED — not implemented on main.
+	// (i) TERMINATION. A reply whose call carries a trigger_traceparent starts a
+	// NEW trace and merely LINKS back to the trigger — never nests under it,
+	// which is what stops a conversation from growing one unbounded tree. Both
+	// halves are asserted, plus the negative control (an EMPTY trigger adds no
+	// link at all) that makes the positive non-vacuous.
 	t.Run("i: a reply carrying a trigger_traceparent starts a NEW trace linked to the trigger", func(t *testing.T) {
-		// The termination mechanism is the span LINK T5 move 6 builds from
-		// CommsCallRequest.trigger_traceparent at the RelayCommsCall Post arm. The
-		// proto field is generated and reachable
-		// (internal/gen/compass/v1/agent_gateway.pb.go:139,269 GetTriggerTraceparent),
-		// but NOTHING outside generated code reads it, and the repository contains
-		// no span-link construction whatsoever: no AddLink, no trace.WithLinks, no
-		// trace.LinkFromContext in any non-generated, non-vendored Go file. So
-		// neither half of the assertion — the new trace id NOR the link target —
-		// has a production mechanism to observe.
-		//
-		// Blocker: T5 move 6 (design.md:705-712) is absent from main. RIG-3499
-		// tracks landing T5 move 6 and un-skipping this assertion.
-		t.Skip("blocked (RIG-3499): trigger_traceparent has no reader and no span link exists — GetTriggerTraceparent (internal/gen/compass/v1/agent_gateway.pb.go:269) is unread outside generated code, and no AddLink/trace.WithLinks/trace.LinkFromContext appears in non-generated code (T5 move 6, design.md:705-712, not on main)")
+		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+		exp := installGlobalSpanExporter(t)
+		w := newMentionE2EWire(t)
+
+		author := w.seedAgentMember(t, "linkauthor", true)
+		const authorSess = "sess-linkauthor-1"
+		bringSessionLive(t, w, exp, author.ID, containerFor("linkauthor"), authorSess)
+
+		// A synthetic-but-VALID remote trigger context, parsed through the one
+		// shipped W3C helper (never string-sliced) so trigger names exactly what
+		// production's linkTrigger will parse out of the same bytes.
+		const triggerTP = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+		trigger := spanContextOfTraceparent(t, ctx, "the synthetic trigger", triggerTP)
+
+		relay := newRelayRunnerClient(t, w.hub, w.store)
+		linkedMsgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "reply to the trigger", triggerTP)
+		// The negative control, same fixture and same door: no trigger at all.
+		plainMsgID := relayAgentPost(t, ctx, relay, authorSess, w.channelName, "unprompted post", "")
+
+		spans := exp.GetSpans()
+		linked := relayOriginSpanForMessage(t, spans, linkedMsgID)
+
+		// Half 1 — TERMINATION: the reply is a new trace, not a continuation.
+		if got := linked.SpanContext.TraceID(); got == trigger.TraceID() {
+			t.Fatalf("reply span trace id = %s, want a trace DIFFERENT from the trigger's %s — the reply NESTED into the trigger's trace instead of terminating it", got, trigger.TraceID())
+		}
+		// And not a child by any other route: a link is not a parent.
+		if linked.Parent.IsValid() {
+			t.Fatalf("reply span parent = %s, want none — a trigger_traceparent must produce a LINK, never a parent", linked.Parent.SpanID())
+		}
+
+		// Half 2 — the causal edge is recorded, and points at the trigger. The
+		// trigger link is selected BY ATTRIBUTE, never by position or count:
+		// otelconnect's server branch mints its own link from the inbound
+		// transport context (the client interceptor above propagates one), so
+		// this span legitimately carries more than one link.
+		link := triggerLinkOf(t, linked)
+		if link.TraceID() != trigger.TraceID() || link.SpanID() != trigger.SpanID() {
+			t.Fatalf("reply span trigger link = (trace %s, span %s), want the trigger's (trace %s, span %s)",
+				link.TraceID(), link.SpanID(), trigger.TraceID(), trigger.SpanID())
+		}
+
+		// The negative: with no trigger_traceparent there is no CROSS-TURN link.
+		// Without this, half 2 would also pass against an implementation that
+		// links unconditionally to something. Counted by attribute, so
+		// otelconnect's transport link does not mask the assertion.
+		plain := relayOriginSpanForMessage(t, spans, plainMsgID)
+		if n := countTriggerLinks(plain); n != 0 {
+			t.Fatalf("a post with an EMPTY trigger_traceparent carries %d cross-turn trigger links, want 0 (links=%+v)", n, plain.Links)
+		}
 	})
 
 	// (j) The op-kind delivery counter increments — and, the load-bearing half,
