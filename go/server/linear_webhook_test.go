@@ -362,9 +362,14 @@ func TestLinearWebhookHandler_VerifiedUnparseable(t *testing.T) {
 // secret, exactly as Serve wires it.
 func TestBuildLinearWebhookWiring_DeliversToInjectedSink(t *testing.T) {
 	ctx := context.Background() // test root
+	// The CONFIG names the secret unprefixed (what the operator sets); the
+	// RESOLVED set carries the server prefix, because the Linear webhook secret
+	// is declared in server_secrets. If these two ever disagree the handler
+	// silently unmounts rather than failing loudly, which is what this test
+	// guards.
 	const secretName = "LINEAR_WEBHOOK_SECRET"
 	secret := []byte("shh")
-	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: secretName, Value: string(secret)}}}
+	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName(secretName), Value: string(secret)}}}
 	cfg := ServeConfig{Forge: ForgeConfig{LinearWebhookSecretName: secretName}}
 	sink := &recordingSink{}
 

@@ -269,8 +269,13 @@ func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool 
 // pre-resolve.
 func (c ForgeConfig) forgeWriteAppsConfigured(declared []secrets.ResolvedSecret) (havePrimary, haveReviewer bool) {
 	fc := c.resolved()
-	havePrimary = fc.App.AppID != 0 && secretDeclared(declared, fc.App.AppPrivateKeySecret)
-	haveReviewer = fc.ReviewerApp.AppID != 0 && secretDeclared(declared, fc.ReviewerApp.AppPrivateKeySecret)
+	// serverSecretName-wrapped: these are COMPARISONS against the SERVER
+	// resolver's resolved set. Unwrapped, both stay false forever and forge
+	// writes fail closed fleet-wide with no error at boot — the silent
+	// capability loss, which warnPartialForgeWriteSecrets cannot surface
+	// because both-absent reads as "not configured", not as partial.
+	havePrimary = fc.App.AppID != 0 && secretDeclared(declared, serverSecretName(fc.App.AppPrivateKeySecret))
+	haveReviewer = fc.ReviewerApp.AppID != 0 && secretDeclared(declared, serverSecretName(fc.ReviewerApp.AppPrivateKeySecret))
 	return havePrimary, haveReviewer
 }
 
@@ -287,6 +292,114 @@ func secretDeclared(declared []secrets.ResolvedSecret, name string) bool {
 		}
 	}
 	return false
+}
+
+// serverSecretName maps one of the six forge secret NAMEs onto the reserved
+// server-secret keyspace the SERVER resolver declares them under.
+//
+// This is the resolve-side half of an INVARIANT, not a hand-listed set of call
+// sites. The provider keyspace is keyed by name, so the declare side
+// (SetServerSecret, which applies the same prefix) and every resolve-side
+// comparison must agree on the prefixed name or the resolve silently misses.
+// The rule, applied without exception:
+//
+//   - Every name compared against a resolved secrets.ResolvedSecret.Name is
+//     wrapped in serverSecretName.
+//   - Every name that reaches a log line, an error string, or operator-facing
+//     config is NOT wrapped — the operator configured the unprefixed name and
+//     must see the name they wrote.
+//
+// Getting this wrong is silent in both directions, which is why it is a helper
+// with a stated rule rather than a set of ad-hoc string concatenations: an
+// unwrapped comparison leaves the write-Apps gate false forever (forge writes
+// disabled fleet-wide with no boot error), and a wrapped log line tells the
+// operator to set a name that is not the one they configure.
+func serverSecretName(name string) string {
+	if name == "" {
+		// An unset name is "not configured", not a secret called "SERVER_".
+		return ""
+	}
+	return store.ServerSecretPrefix + name
+}
+
+// buildSecretResolvers constructs the TWO SpecResolver instances the Server
+// runs, returning (container, server) in that order.
+//
+// The first reads the store's user names registry and is the single place
+// SecretSpec runs for container delivery — the RunnerService FetchSecrets
+// handler and the user SecretsService write path both delegate to it. Its state
+// dir is a "secrets" subdirectory of the state dir the bootstrap-admin token is
+// written under; NewSpecResolver creates it 0700 if absent.
+//
+// The second has the same project and profile but builds its manifest from the
+// SEPARATE server_secrets registry, via the ServerDeclaredSecrets view. Two
+// instances rather than one filtered instance: the container path keeps reading
+// the user registry, so a server secret cannot be delivered into an agent
+// container even if a future caller forgets a filter. Its own state dir keeps
+// the two manifests from overwriting each other on disk.
+func buildSecretResolvers(st *store.Store, cfg ServeConfig) (container, server secrets.Resolver) {
+	return secrets.NewSpecResolver(st, secretsStateDir(cfg)),
+		secrets.NewSpecResolver(
+			store.ServerDeclaredSecrets{Store: st},
+			filepath.Join(secretsStateDir(cfg), "server"),
+		)
+}
+
+// declareServerSecretNames declares the six forge secret NAMEs into
+// server_secrets, under their reserved prefix, from the RESOLVED forge config —
+// the same accessor every live forge consumer reads, so the declared set and
+// the resolved set cannot drift.
+//
+// This runs on EVERY boot and is idempotent by construction: DeclareServerSecret
+// is not idempotent, so an already-declared name comes back ErrConflict and is
+// tolerated as the no-op it is (the same tolerated-conflict arm SetSecret uses).
+//
+// It is gated on the SAME predicates that enable the forge lanes, so a
+// deployment running neither the GitHub App nor Linear declares nothing and
+// requires nothing. Without this declare the server resolver's registry is
+// EMPTY, and Resolve short-circuits an empty registry to (nil, nil) with no
+// provider call — so every re-pointed consumer would see an absent name and a
+// configured App would hard-fail its boot.
+//
+// It declares NAMES only. The operator populates the VALUES in the provider
+// directly, before the server runs, which is what dissolves the
+// chicken-and-egg of needing a running server to reach the provisioning RPC.
+func declareServerSecretNames(ctx context.Context, st *store.Store, cfg ServeConfig) error {
+	fc := cfg.Forge.resolved()
+	var names []string
+	if fc.boardIngestionEnabled() {
+		names = append(names, fc.App.AppPrivateKeySecret, fc.App.AppWebhookSecretName)
+		if fc.ReviewerApp.AppID != 0 {
+			names = append(names, fc.ReviewerApp.AppPrivateKeySecret)
+		}
+	}
+	// The Linear gate reads the RAW config, not the resolved one: resolved()
+	// DEFAULTS the two client-credential names, so a deployment running no
+	// Linear at all still has non-empty resolved names. Gating on those would
+	// declare Linear secrets for every deployment, make the server registry
+	// non-empty, and force a real provider Load on a server that never
+	// configured Linear. The live consumers gate the same way
+	// (buildLinearWebhookWiring on the raw LinearWebhookSecretName).
+	raw := cfg.Forge
+	if raw.LinearClientIDSecretName != "" && raw.LinearClientSecretName != "" {
+		names = append(names, fc.LinearClientIDSecretName, fc.LinearClientSecretName)
+	}
+	if raw.LinearWebhookSecretName != "" {
+		names = append(names, raw.LinearWebhookSecretName)
+	}
+
+	for _, name := range names {
+		if name == "" {
+			// An unset name is "not configured", never a bare prefix.
+			continue
+		}
+		err := st.DeclareServerSecret(ctx, "", serverSecretName(name))
+		if err == nil || errors.Is(err, store.ErrConflict) {
+			continue
+		}
+		return fmt.Errorf("declaring server secret name %q: %w", name, err)
+	}
+	return nil
 }
 
 // The bootstrap-admin identity the local-socket door attributes callers to until
@@ -518,26 +631,14 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// before serving; the store invokes it on its own tx.
 	commsSvc.RegisterCoordinationHook(st)
 
-	// The Server-side secret resolver: reads the store's names registry, generates
-	// the SecretSpec manifest under a Server-owned state dir, and resolves values
-	// from the configured provider. It is the single place SecretSpec runs — the
-	// RunnerService FetchSecrets handler and the SecretsService write path both
-	// delegate to this one instance. The state dir is a "secrets" subdirectory of
-	// the same state dir the bootstrap-admin token is written under (secretsStateDir);
-	// NewSpecResolver creates it 0700 if absent.
-	resolver := secrets.NewSpecResolver(st, secretsStateDir(cfg))
+	resolver, serverResolver := buildSecretResolvers(st, cfg)
 
-	// The SECOND resolver instance: same project and profile, but its manifest
-	// is built from the SEPARATE server_secrets registry (the
-	// ServerDeclaredSecrets view) rather than the user registry. Two instances,
-	// not one filtered instance — the container-delivery path keeps reading the
-	// user registry through `resolver` above, so a server secret can never be
-	// delivered into an agent container. Its own state dir keeps the two
-	// manifests from overwriting each other on disk.
-	serverResolver := secrets.NewSpecResolver(
-		store.ServerDeclaredSecrets{Store: st},
-		filepath.Join(secretsStateDir(cfg), "server"),
-	)
+	// Declare the six forge secret NAMEs into server_secrets before any
+	// consumer resolves them: the re-pointed consumers read the SERVER
+	// registry, and an empty registry short-circuits Resolve to (nil, nil).
+	if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+		return failStartup(udsListener, listeners, err)
+	}
 
 	// One sessionTail instance is the hub's session-tail sink (writer) and the
 	// service's SubscribeAgentSession source (reader) — a frame the hub relays
@@ -576,7 +677,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// the shared cleanup path. Board fields are nil when the GitHub App is absent;
 	// forge.linearTokens is nil when Linear is not configured. Serve starts each
 	// lane's arm + reconciler below.
-	forgeWiring, err := buildForgeReadWiring(ctx, cfg, st, issueBrd, hub, resolver, hubLog)
+	// serverResolver: see buildSecretResolvers. The container instance stays on
+	// the FetchSecrets delivery path.
+	forgeWiring, err := buildForgeReadWiring(ctx, cfg, st, issueBrd, hub, serverResolver, hubLog)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
@@ -585,7 +688,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// loopback, optional authenticated network) plus the Linear notify lane the
 	// net door's /webhooks/linear handler feeds. On a net-door build error the
 	// listeners this Serve bound are still ours to close.
-	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver,
+	// buildDoors takes BOTH instances — see its parameter docs for why they
+	// must not be collapsed.
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver, serverResolver,
 		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
@@ -596,7 +701,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// primary App client (forgeWiring.primaryClient) so it rides the one budget
 	// gate; the reviewer leg gets its own App client; the Linear coordinate rides
 	// the shared forgeWiring.linearTokens instance.
-	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, resolver, hub, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners); err != nil {
+	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners); err != nil {
 		return err
 	}
 
@@ -686,7 +791,13 @@ func buildDoors(
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
+	// resolver is the CONTAINER instance (reads `secrets`), threaded to
+	// buildNetworkServer -> the FetchSecrets delivery path. serverResolver reads
+	// `server_secrets` and is threaded ONLY to the Linear webhook wiring. Do not
+	// collapse these into one parameter: that is how every server secret ends up
+	// delivered into every agent container.
 	resolver secrets.Resolver,
+	serverResolver secrets.Resolver,
 	devListener net.Listener,
 	netListener net.Listener,
 	netTLS *tls.Config,
@@ -797,7 +908,10 @@ func buildDoors(
 	// gates the sink. Its session arm is left unwired (nil sessionSink -> logged-drop)
 	// until the RIG-2717 responder assembly wires a *linearagent.Dispatcher here.
 	// The handler is mounted only on the net door below, when one exists.
-	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, resolver, linearDataSink, slog.Default())
+	// serverResolver: the Linear webhook secret is a SERVER secret. Note
+	// buildNetworkServer below keeps the CONTAINER resolver — that one feeds
+	// FetchSecrets, which must keep reading `secrets`.
+	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, serverResolver, linearDataSink, slog.Default())
 	if err != nil {
 		return serveDoors{}, err
 	}
@@ -1517,14 +1631,20 @@ func buildLinearNotifyLane(
 // an absent name is an error the caller surfaces (a per-mint auth failure for the
 // token source; a 503 for the ingress). It threads the caller's ctx into the
 // resolve, never re-rooting.
+// name is the OPERATOR-FACING (unprefixed) name: the comparison uses the
+// serverSecretName-wrapped one (these secrets live in the server keyspace) and
+// the error reports the unprefixed one. This closure mints the GitHub App token
+// and verifies webhook HMACs, so an unwrapped comparison here fails every
+// resolve at runtime, not at boot.
 func newDeclaredSecretResolver(resolver secrets.Resolver, name string) func(ctx context.Context) ([]byte, error) {
+	want := serverSecretName(name)
 	return func(ctx context.Context) ([]byte, error) {
 		resolved, err := resolver.Resolve(ctx, "board webhook")
 		if err != nil {
 			return nil, fmt.Errorf("board webhook secret resolve: %w", err)
 		}
 		for _, s := range resolved {
-			if s.Name == name {
+			if s.Name == want {
 				return []byte(s.Value), nil
 			}
 		}
@@ -1587,17 +1707,28 @@ func (c *cachedWebhookSecret) get(ctx context.Context) ([]byte, error) {
 // ("forge secret resolve failed at startup: %w"); a name ABSENT from the
 // resolved set is a permanent misconfiguration ("forge secret %q not declared").
 // The two are distinguishable so a crash-loop is diagnosable.
+//
+// name is the OPERATOR-FACING (unprefixed) name. This function owns both halves
+// of the invariant so no caller has to: it compares against the
+// serverSecretName-wrapped name, because the six forge secrets are declared in
+// the server keyspace, but reports the UNPREFIXED name in the error — the
+// operator must be told to declare the name they actually configure.
 func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason, name string) error {
 	resolved, err := resolver.Resolve(ctx, reason)
 	if err != nil {
 		return fmt.Errorf("forge secret resolve failed at startup: %w", err)
 	}
+	want := serverSecretName(name)
 	for _, s := range resolved {
-		if s.Name == name {
+		if s.Name == want {
 			return nil
 		}
 	}
-	return fmt.Errorf("forge secret %q not declared", name)
+	// Names BOTH: the unprefixed name the operator configured (so they can find
+	// it in their config) and the prefixed provider key they must actually
+	// populate. The record requires the actionable "set SERVER_<NAME> in the
+	// provider" form; naming only one of the two leaves the operator guessing.
+	return fmt.Errorf("forge secret %q not declared: set %s in the provider", name, serverSecretName(name))
 }
 
 // wireForgeWriteCaller builds the write chokepoint and mounts it on the hub via
@@ -1754,11 +1885,15 @@ func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secre
 		return nil, fmt.Errorf("forge secret resolve failed at startup: %w", err)
 	}
 	var clientID, clientSecret string
+	// COMPARISON side: matched against the SERVER resolver's resolved names, so
+	// both cases are serverSecretName-wrapped. The Warn below reports the
+	// UNWRAPPED names, because that is what the operator configures.
+	wantID, wantSecret := serverSecretName(fc.LinearClientIDSecretName), serverSecretName(fc.LinearClientSecretName)
 	for _, s := range declared {
 		switch s.Name {
-		case fc.LinearClientIDSecretName:
+		case wantID:
 			clientID = s.Value
-		case fc.LinearClientSecretName:
+		case wantSecret:
 			clientSecret = s.Value
 		}
 	}
@@ -1794,13 +1929,19 @@ func buildLinearTokenSource(ctx context.Context, cfg ServeConfig, resolver secre
 // iff its secret is declared). A resolve fault fails fast the same way
 // validateForgeSecret's does; unlike validateForgeSecret an absent name is NOT an
 // error (Linear is the optional additive coordinate, not the required path).
+// name is the OPERATOR-FACING (unprefixed) name; the comparison is against the
+// serverSecretName-wrapped one, since the Linear credentials live in the server
+// keyspace. Unwrapped, this returns (false, nil) forever — which
+// buildLinearWebhookWiring maps to a legitimate off-state, so the Linear
+// webhook ingress would silently unmount rather than fail loudly.
 func forgeSecretDeclared(ctx context.Context, resolver secrets.Resolver, name string) (bool, error) {
 	resolved, err := resolver.Resolve(ctx, "forge write")
 	if err != nil {
 		return false, fmt.Errorf("forge secret resolve failed at startup: %w", err)
 	}
+	want := serverSecretName(name)
 	for _, s := range resolved {
-		if s.Name == name {
+		if s.Name == want {
 			return true, nil
 		}
 	}

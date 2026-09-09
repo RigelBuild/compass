@@ -308,13 +308,93 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	// App key declared but the webhook signing secret absent -> the SECOND
 	// validateForgeSecret must fail (both secrets required, checked separately).
 	t.Run("app key present but webhook secret undeclared fails on the webhook secret", func(t *testing.T) {
-		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "APP_KEY", Value: "pem"}}}
+		// The RESOLVED name carries the server prefix; the config and the
+		// assertion below stay unprefixed. Unwrapped here, the FIRST validation
+		// (the app key) fails instead and this subtest silently degrades into a
+		// duplicate of its sibling, losing the per-secret discrimination it
+		// exists to prove.
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("APP_KEY"), Value: "pem"}}}
 		_, _, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
 		if err == nil {
 			t.Fatal("buildBoardWebhookWiring with the webhook secret undeclared = nil, want a startup error")
 		}
 		if !strings.Contains(err.Error(), "APP_WEBHOOK") {
 			t.Fatalf("error = %q, want it to name the missing webhook secret APP_WEBHOOK", err)
+		}
+	})
+}
+
+// TestDeclareServerSecretNamesIsIdempotentAndGated proves the boot declare that
+// makes the consumer re-point work. Without it the server registry is empty,
+// Resolve short-circuits an empty registry to (nil, nil), and a configured App
+// hard-fails its boot at validateForgeSecret.
+func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
+	st := forgeTestStore(t)
+	ctx := context.Background()
+
+	t.Run("neither App nor Linear configured declares nothing", func(t *testing.T) {
+		if err := declareServerSecretNames(ctx, st, ServeConfig{}); err != nil {
+			t.Fatalf("declare with nothing configured: %v", err)
+		}
+		rows, err := st.DeclaredServerSecrets(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// NOTHING may be declared. resolved() defaults the two Linear
+		// client-credential names, so gating on the RESOLVED config would
+		// declare them for a deployment running no Linear — which makes the
+		// server registry non-empty and forces a real provider Load on a server
+		// that never configured Linear (it broke every full-boot test).
+		if len(rows) != 0 {
+			t.Fatalf("declared %d names with nothing configured, want 0: %+v", len(rows), rows)
+		}
+	})
+
+	t.Run("configured App declares its secrets, prefixed, and re-declares cleanly", func(t *testing.T) {
+		cfg := ServeConfig{Forge: ForgeConfig{
+			App: ForgeAppConfig{
+				AppID: 1, InstallationID: 2,
+				AppPrivateKeySecret:  "APP_KEY",
+				AppWebhookSecretName: "APP_WEBHOOK",
+			},
+		}}
+		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+			t.Fatalf("first declare: %v", err)
+		}
+		// Every boot re-runs this, so a second call must be a clean no-op
+		// rather than a duplicate-name startup failure.
+		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+			t.Fatalf("second declare (idempotence): %v", err)
+		}
+
+		rows, err := st.DeclaredServerSecrets(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			got[r.Name] = true
+			// Everything in this table must carry the reserved prefix, or the
+			// CHECK constraint would have rejected it.
+			if !store.HasServerSecretPrefix(r.Name) {
+				t.Fatalf("unprefixed name %q in server_secrets", r.Name)
+			}
+		}
+		for _, want := range []string{serverSecretName("APP_KEY"), serverSecretName("APP_WEBHOOK")} {
+			if !got[want] {
+				t.Fatalf("%q not declared; have %v", want, got)
+			}
+		}
+
+		// The end-to-end point: the SERVER resolver's registry is now non-empty
+		// and carries exactly the names the re-pointed consumers look for.
+		view := store.ServerDeclaredSecrets{Store: st}
+		decls, err := view.DeclaredSecrets(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(decls) == 0 {
+			t.Fatal("server resolver view is empty; Resolve would short-circuit to (nil, nil)")
 		}
 	})
 }
