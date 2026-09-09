@@ -111,6 +111,12 @@ const (
 	// SecretsServiceDeleteSecretProcedure is the fully-qualified name of the SecretsService's
 	// DeleteSecret RPC.
 	SecretsServiceDeleteSecretProcedure = "/compass.v1.SecretsService/DeleteSecret"
+	// SecretsServiceSetServerSecretProcedure is the fully-qualified name of the SecretsService's
+	// SetServerSecret RPC.
+	SecretsServiceSetServerSecretProcedure = "/compass.v1.SecretsService/SetServerSecret"
+	// SecretsServiceDeleteServerSecretProcedure is the fully-qualified name of the SecretsService's
+	// DeleteServerSecret RPC.
+	SecretsServiceDeleteServerSecretProcedure = "/compass.v1.SecretsService/DeleteServerSecret"
 )
 
 // CompassServiceClient is a client for the compass.v1.CompassService service.
@@ -931,6 +937,16 @@ type SecretsServiceClient interface {
 	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
 	// Remove a secret's registry row + value. User-only.
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	// Declare a SERVER secret's registry row in the separate server_secrets
+	// registry and write its value via the server resolver. Admin-only. The
+	// name MUST carry a reserved server-secret prefix (SERVER_ or
+	// GATEWAY_CREDENTIALS_); an unprefixed name is rejected. `value` is never
+	// logged. Server secrets are never delivered into an agent container.
+	SetServerSecret(context.Context, *connect.Request[v1.SetServerSecretRequest]) (*connect.Response[v1.SetServerSecretResponse], error)
+	// Remove a SERVER secret's registry row + value. Admin-only. The reserved
+	// master-key name is rejected (rotation is separate machinery, never a raw
+	// overwrite or delete).
+	DeleteServerSecret(context.Context, *connect.Request[v1.DeleteServerSecretRequest]) (*connect.Response[v1.DeleteServerSecretResponse], error)
 }
 
 // NewSecretsServiceClient constructs a client for the compass.v1.SecretsService service. By
@@ -962,14 +978,28 @@ func NewSecretsServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
 			connect.WithClientOptions(opts...),
 		),
+		setServerSecret: connect.NewClient[v1.SetServerSecretRequest, v1.SetServerSecretResponse](
+			httpClient,
+			baseURL+SecretsServiceSetServerSecretProcedure,
+			connect.WithSchema(secretsServiceMethods.ByName("SetServerSecret")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteServerSecret: connect.NewClient[v1.DeleteServerSecretRequest, v1.DeleteServerSecretResponse](
+			httpClient,
+			baseURL+SecretsServiceDeleteServerSecretProcedure,
+			connect.WithSchema(secretsServiceMethods.ByName("DeleteServerSecret")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // secretsServiceClient implements SecretsServiceClient.
 type secretsServiceClient struct {
-	setSecret    *connect.Client[v1.SetSecretRequest, v1.SetSecretResponse]
-	listSecrets  *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
-	deleteSecret *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
+	setSecret          *connect.Client[v1.SetSecretRequest, v1.SetSecretResponse]
+	listSecrets        *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
+	deleteSecret       *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
+	setServerSecret    *connect.Client[v1.SetServerSecretRequest, v1.SetServerSecretResponse]
+	deleteServerSecret *connect.Client[v1.DeleteServerSecretRequest, v1.DeleteServerSecretResponse]
 }
 
 // SetSecret calls compass.v1.SecretsService.SetSecret.
@@ -987,6 +1017,16 @@ func (c *secretsServiceClient) DeleteSecret(ctx context.Context, req *connect.Re
 	return c.deleteSecret.CallUnary(ctx, req)
 }
 
+// SetServerSecret calls compass.v1.SecretsService.SetServerSecret.
+func (c *secretsServiceClient) SetServerSecret(ctx context.Context, req *connect.Request[v1.SetServerSecretRequest]) (*connect.Response[v1.SetServerSecretResponse], error) {
+	return c.setServerSecret.CallUnary(ctx, req)
+}
+
+// DeleteServerSecret calls compass.v1.SecretsService.DeleteServerSecret.
+func (c *secretsServiceClient) DeleteServerSecret(ctx context.Context, req *connect.Request[v1.DeleteServerSecretRequest]) (*connect.Response[v1.DeleteServerSecretResponse], error) {
+	return c.deleteServerSecret.CallUnary(ctx, req)
+}
+
 // SecretsServiceHandler is an implementation of the compass.v1.SecretsService service.
 type SecretsServiceHandler interface {
 	// Declare a secret's registry row (name/delivery/kind/routing) and write its
@@ -997,6 +1037,16 @@ type SecretsServiceHandler interface {
 	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
 	// Remove a secret's registry row + value. User-only.
 	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+	// Declare a SERVER secret's registry row in the separate server_secrets
+	// registry and write its value via the server resolver. Admin-only. The
+	// name MUST carry a reserved server-secret prefix (SERVER_ or
+	// GATEWAY_CREDENTIALS_); an unprefixed name is rejected. `value` is never
+	// logged. Server secrets are never delivered into an agent container.
+	SetServerSecret(context.Context, *connect.Request[v1.SetServerSecretRequest]) (*connect.Response[v1.SetServerSecretResponse], error)
+	// Remove a SERVER secret's registry row + value. Admin-only. The reserved
+	// master-key name is rejected (rotation is separate machinery, never a raw
+	// overwrite or delete).
+	DeleteServerSecret(context.Context, *connect.Request[v1.DeleteServerSecretRequest]) (*connect.Response[v1.DeleteServerSecretResponse], error)
 }
 
 // NewSecretsServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -1024,6 +1074,18 @@ func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.Handler
 		connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
 		connect.WithHandlerOptions(opts...),
 	)
+	secretsServiceSetServerSecretHandler := connect.NewUnaryHandler(
+		SecretsServiceSetServerSecretProcedure,
+		svc.SetServerSecret,
+		connect.WithSchema(secretsServiceMethods.ByName("SetServerSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
+	secretsServiceDeleteServerSecretHandler := connect.NewUnaryHandler(
+		SecretsServiceDeleteServerSecretProcedure,
+		svc.DeleteServerSecret,
+		connect.WithSchema(secretsServiceMethods.ByName("DeleteServerSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.SecretsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SecretsServiceSetSecretProcedure:
@@ -1032,6 +1094,10 @@ func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.Handler
 			secretsServiceListSecretsHandler.ServeHTTP(w, r)
 		case SecretsServiceDeleteSecretProcedure:
 			secretsServiceDeleteSecretHandler.ServeHTTP(w, r)
+		case SecretsServiceSetServerSecretProcedure:
+			secretsServiceSetServerSecretHandler.ServeHTTP(w, r)
+		case SecretsServiceDeleteServerSecretProcedure:
+			secretsServiceDeleteServerSecretHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1051,4 +1117,12 @@ func (UnimplementedSecretsServiceHandler) ListSecrets(context.Context, *connect.
 
 func (UnimplementedSecretsServiceHandler) DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.DeleteSecret is not implemented"))
+}
+
+func (UnimplementedSecretsServiceHandler) SetServerSecret(context.Context, *connect.Request[v1.SetServerSecretRequest]) (*connect.Response[v1.SetServerSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.SetServerSecret is not implemented"))
+}
+
+func (UnimplementedSecretsServiceHandler) DeleteServerSecret(context.Context, *connect.Request[v1.DeleteServerSecretRequest]) (*connect.Response[v1.DeleteServerSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.DeleteServerSecret is not implemented"))
 }

@@ -527,6 +527,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// NewSpecResolver creates it 0700 if absent.
 	resolver := secrets.NewSpecResolver(st, secretsStateDir(cfg))
 
+	// The SECOND resolver instance: same project and profile, but its manifest
+	// is built from the SEPARATE server_secrets registry (the
+	// ServerDeclaredSecrets view) rather than the user registry. Two instances,
+	// not one filtered instance — the container-delivery path keeps reading the
+	// user registry through `resolver` above, so a server secret can never be
+	// delivered into an agent container. Its own state dir keeps the two
+	// manifests from overwriting each other on disk.
+	serverResolver := secrets.NewSpecResolver(
+		store.ServerDeclaredSecrets{Store: st},
+		filepath.Join(secretsStateDir(cfg), "server"),
+	)
+
 	// One sessionTail instance is the hub's session-tail sink (writer) and the
 	// service's SubscribeAgentSession source (reader) — a frame the hub relays
 	// fans to that session's stream subscribers.
@@ -556,7 +568,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// door admits any authenticated account and the handler enforces the user-only
 	// writes / user-or-agent list. The hub is its SecretsVersion signaler (a Set/Delete
 	// notifies live sessions to re-fetch); it shares the one resolver with FetchSecrets.
-	secretsSvc := newSecretsService(st, resolver, hub)
+	secretsSvc := newSecretsService(st, resolver, serverResolver, hub)
 
 	// The forge read-side credentials, built BEFORE the doors because the network
 	// door mounts the board lane's webhook ingress (sink + secret resolver) and
