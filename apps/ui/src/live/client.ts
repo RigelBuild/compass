@@ -41,9 +41,9 @@ export interface LiveClients {
 	 *
 	 *  It rides on LiveClients because this is the one place that owns transport
 	 *  construction — the sink is WRITTEN by the transport layer and READ above
-	 *  it (analytics stamps it on captured events), and boot builds the clients
-	 *  before analytics exists, so a shared mutable slot handed out here is what
-	 *  connects a writer and a reader that can never meet at construction. */
+	 *  it (analytics stamps it on captured events). A shared mutable slot is what
+	 *  connects them because the trace id arrives on a REPLY: the writer has no
+	 *  value to hand over at construction time, whatever order boot runs in. */
 	readonly traceId: TraceIdSink;
 }
 
@@ -54,11 +54,15 @@ export interface LiveClients {
  *  cache-coherent with the clients' calls. `conn.fetchImpl` threads the resolved
  *  transport fetch through: undefined (browser dev) uses the platform fetch; a
  *  shell-provided fetch tunnels over IPC — the seam is invisible above here. */
-export function createLiveClients(conn: ResolvedConnection): LiveClients {
+export function createLiveClients(
+	conn: ResolvedConnection,
+	deps?: { sessionId?: () => string | undefined },
+): LiveClients {
 	const traceId: TraceIdSink = { current: undefined };
 	const transport = createCompassWebTransport(conn.baseUrl, conn.token, {
 		fetch: conn.fetchImpl,
 		traceSink: traceId,
+		...(deps?.sessionId === undefined ? {} : { sessionId: deps.sessionId }),
 	});
 	return {
 		comms: createCommsClient(transport),

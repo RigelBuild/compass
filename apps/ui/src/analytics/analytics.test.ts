@@ -14,6 +14,7 @@ interface FakePostHog {
 	capture: (...args: unknown[]) => void;
 	identify: (...args: unknown[]) => void;
 	reset: (...args: unknown[]) => void;
+	get_session_id: (...args: unknown[]) => string;
 }
 
 function makeFake(): FakePostHog {
@@ -29,6 +30,10 @@ function makeFake(): FakePostHog {
 		capture: record("capture"),
 		identify: record("identify"),
 		reset: record("reset"),
+		get_session_id: () => {
+			calls.push({ method: "get_session_id", args: [] });
+			return "";
+		},
 	};
 }
 
@@ -44,6 +49,38 @@ describe("createAnalytics", () => {
 		analytics.shutdown();
 
 		expect(fake.calls).toHaveLength(0);
+	});
+
+	test("disabled sessionId returns undefined with ZERO posthog calls", () => {
+		const fake = makeFake();
+		const analytics = createAnalytics(undefined, {
+			posthog: fake as unknown as PostHog,
+		});
+
+		expect(analytics.sessionId()).toBeUndefined();
+		expect(fake.calls).toHaveLength(0);
+	});
+
+	test("enabled sessionId delegates to posthog", () => {
+		const fake = makeFake();
+		fake.get_session_id = () => "session-123";
+		const analytics = createAnalytics(
+			{ key: "phc_abc", host: "https://us.i.posthog.com" },
+			{ posthog: fake as unknown as PostHog },
+		);
+
+		expect(analytics.sessionId()).toBe("session-123");
+	});
+
+	test("enabled sessionId maps an empty posthog id to undefined", () => {
+		const fake = makeFake();
+		fake.get_session_id = () => "";
+		const analytics = createAnalytics(
+			{ key: "phc_abc", host: "https://us.i.posthog.com" },
+			{ posthog: fake as unknown as PostHog },
+		);
+
+		expect(analytics.sessionId()).toBeUndefined();
 	});
 
 	test("disabled with NO deps (the production shape) is a callable no-op", () => {
@@ -108,6 +145,30 @@ describe("createAnalytics", () => {
 		const identifies = fake.calls.filter((c) => c.method === "identify");
 		expect(identifies).toHaveLength(1);
 		expect(identifies[0]?.args).toEqual(["acct-1"]);
+	});
+
+	// The session id ROTATES under the app (posthog mints a new one on idle and
+	// at max length), so the value must be re-read per call and never memoized.
+	// The interceptor side is pinned for this too, but a memo added HERE would
+	// defeat that: the interceptor would faithfully re-read a stale cache.
+	test("enabled sessionId re-reads posthog on every call, never memoizing", () => {
+		const fake = makeFake();
+		const ids = ["sess-1", "sess-2"];
+		let call = 0;
+		fake.get_session_id = () => {
+			fake.calls.push({ method: "get_session_id", args: [] });
+			return ids[call++] ?? "";
+		};
+		const analytics = createAnalytics(
+			{ key: "phc_abc", host: "https://us.i.posthog.com" },
+			{ posthog: fake as unknown as PostHog },
+		);
+
+		expect(analytics.sessionId()).toBe("sess-1");
+		expect(analytics.sessionId()).toBe("sess-2");
+		expect(
+			fake.calls.filter((c) => c.method === "get_session_id"),
+		).toHaveLength(2);
 	});
 });
 
