@@ -68,7 +68,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 		StateDir:          t.TempDir(), // bootstrap-admin token file lands here (0600)
 		CORSAllowedOrigin: corsOrigin,
 	}
-	secretsSvc := newSecretsService(st, nil, nil)
+	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)

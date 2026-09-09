@@ -540,7 +540,17 @@ func TestRLSCatalogEnabledAndForced(t *testing.T) {
 	// tenant_id enumeration below; any tenant_id-bearing table NOT in this exempt
 	// set must be RLS-enabled+forced. Kept as an explicit allow-list so a
 	// deliberate future exemption is a conscious edit here, not a silent miss.
-	bucketA := map[string]bool{"tenants": true, "tokens": true, "agent_config_bundle": true}
+	// server_secrets / server_key_state are deployment-global: the master key
+	// decrypts EVERY tenant's credentials and the PEM/webhook/Linear secrets
+	// belong to the deployment, so there is no tenant to scope by. The entry is
+	// NOT mere bookkeeping: the bucket-A loop at the end of this test iterates
+	// this map and asserts each listed table has RLS DISABLED, so removing the
+	// entry would let an accidental `ENABLE ROW LEVEL SECURITY` on either table
+	// pass unnoticed.
+	bucketA := map[string]bool{
+		"tenants": true, "tokens": true, "agent_config_bundle": true,
+		"server_secrets": true, "server_key_state": true,
+	}
 
 	// Enumerate every table in the current (per-test) schema that carries a
 	// tenant_id column, straight from the live catalog — the authoritative set of

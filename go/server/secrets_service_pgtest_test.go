@@ -84,8 +84,14 @@ type secretsFixture struct {
 	userToken  string
 	agentToken string
 	userID     store.AccountID
+	adminToken string
 	resolver   *recordingResolver
-	signaler   *recordingSignaler
+	// serverResolver is the SECOND fake, standing in for the server-secret
+	// resolver. Kept distinct from resolver so a test can prove a server-secret
+	// write lands ONLY on this one — the container-delivery registry must never
+	// see it.
+	serverResolver *recordingResolver
+	signaler       *recordingSignaler
 }
 
 func newSecretsFixture(t *testing.T) secretsFixture {
@@ -119,20 +125,27 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 	}
 
 	resolver := &recordingResolver{}
+	serverResolver := &recordingResolver{}
 	signaler := &recordingSignaler{}
-	svc := newSecretsService(st, resolver, signaler)
+	svc := newSecretsService(st, resolver, serverResolver, signaler)
 	url := newSecretsH2CServer(t, svc,
 		auth.BearerInterceptor(st),
 		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(admin.ID),
 	)
+	adminTok, err := auth.IssueAccountToken(ctx, st, admin.ID)
+	if err != nil {
+		t.Fatalf("IssueAccountToken(admin): %v", err)
+	}
 	return secretsFixture{
-		client:     newSecretsH2CClient(t, url),
-		userToken:  userTok,
-		agentToken: agentTok,
-		userID:     user.ID,
-		resolver:   resolver,
-		signaler:   signaler,
+		client:         newSecretsH2CClient(t, url),
+		userToken:      userTok,
+		agentToken:     agentTok,
+		adminToken:     adminTok,
+		userID:         user.ID,
+		resolver:       resolver,
+		serverResolver: serverResolver,
+		signaler:       signaler,
 	}
 }
 
@@ -367,5 +380,148 @@ func TestListSecretsUserAndAgent(t *testing.T) {
 	// The is_set-without-resolve invariant: ListSecrets never resolved any value.
 	if f.resolver.resolveHit {
 		t.Fatal("ListSecrets resolved values to compute is_set — must not fetch secrets to list them")
+	}
+}
+
+func setServerReq(bearer, name, value string) *connect.Request[compassv1.SetServerSecretRequest] {
+	req := connect.NewRequest(&compassv1.SetServerSecretRequest{Name: name, Value: value})
+	req.Header().Set("Authorization", "Bearer "+bearer)
+	return req
+}
+
+func delServerReq(bearer, name string) *connect.Request[compassv1.DeleteServerSecretRequest] {
+	req := connect.NewRequest(&compassv1.DeleteServerSecretRequest{Name: name})
+	req.Header().Set("Authorization", "Bearer "+bearer)
+	return req
+}
+
+// TestSetServerSecretAdminOnly is the door-gate contract: the server-secret
+// writes are ADMIN-only, unlike their user-facing siblings. A plain user token
+// is refused even though it is a perfectly valid caller for SetSecret — a
+// non-admin must never write a deployment-owned secret.
+func TestSetServerSecretAdminOnly(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct{ name, token string }{
+		{"user", f.userToken},
+		{"agent", f.agentToken},
+	} {
+		_, err := f.client.SetServerSecret(ctx, setServerReq(tc.token, "SERVER_WEBHOOK_SECRET", "v"))
+		if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
+			t.Fatalf("%s token: want CodePermissionDenied, got %v (err=%v)", tc.name, got, err)
+		}
+	}
+
+	if _, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "SERVER_WEBHOOK_SECRET", "v")); err != nil {
+		t.Fatalf("admin token: %v", err)
+	}
+}
+
+// TestSetServerSecretWritesOnlyTheServerResolver is the isolation proof (D6): a
+// server-secret write must land on the SERVER resolver and never on the user
+// resolver, whose manifest feeds the inject-all container-delivery path. A
+// single shared resolver would deliver the deployment's App PEMs into every
+// agent container.
+func TestSetServerSecretWritesOnlyTheServerResolver(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "SERVER_LINEAR_FORGE_CLIENT_SECRET", "v")); err != nil {
+		t.Fatalf("SetServerSecret: %v", err)
+	}
+	if len(f.serverResolver.setNames) != 1 || f.serverResolver.setNames[0] != "SERVER_LINEAR_FORGE_CLIENT_SECRET" {
+		t.Fatalf("server resolver sets = %v, want the one server secret", f.serverResolver.setNames)
+	}
+	if len(f.resolver.setNames) != 0 {
+		t.Fatalf("user resolver was written: %v — a server secret must never reach the container registry", f.resolver.setNames)
+	}
+
+	// And it must not appear in the user-facing list, which is what the
+	// container-delivery path and the CLI both read.
+	resp, err := f.client.ListSecrets(ctx, listReq(f.userToken))
+	if err != nil {
+		t.Fatalf("ListSecrets: %v", err)
+	}
+	for _, s := range resp.Msg.GetSecrets() {
+		if s.GetName() == "SERVER_LINEAR_FORGE_CLIENT_SECRET" {
+			t.Fatal("server secret leaked into ListSecrets")
+		}
+	}
+}
+
+// TestServerSecretRejectsUnprefixedAndMasterKey pins the two argument guards:
+// an unprefixed name cannot enter the server registry (it belongs to the user
+// keyspace), and the reserved master key is never settable or deletable through
+// the operator door — clobbering it would strand every encrypted row.
+func TestServerSecretRejectsUnprefixedAndMasterKey(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	_, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "PLAIN_NAME", "v"))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("unprefixed: want CodeInvalidArgument, got %v (err=%v)", got, err)
+	}
+	if len(f.serverResolver.setNames) != 0 {
+		t.Fatalf("unprefixed name reached the resolver: %v", f.serverResolver.setNames)
+	}
+
+	for _, call := range []struct {
+		name string
+		do   func() error
+	}{
+		{"set", func() error {
+			_, e := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "GATEWAY_CREDENTIALS_MASTER_KEY", "v"))
+			return e
+		}},
+		{"delete", func() error {
+			_, e := f.client.DeleteServerSecret(ctx, delServerReq(f.adminToken, "GATEWAY_CREDENTIALS_MASTER_KEY"))
+			return e
+		}},
+	} {
+		if got := connect.CodeOf(call.do()); got != connect.CodeInvalidArgument {
+			t.Fatalf("master-key %s: want CodeInvalidArgument, got %v", call.name, got)
+		}
+	}
+	if len(f.serverResolver.setNames) != 0 || len(f.serverResolver.deleteNames) != 0 {
+		t.Fatalf("master key reached the resolver: sets=%v deletes=%v",
+			f.serverResolver.setNames, f.serverResolver.deleteNames)
+	}
+}
+
+// TestSetServerSecretRollsBackDeclarationOnWriteFailure mirrors the user path's
+// rollback discipline: a failed FRESH provider write must leave no orphan
+// declaration behind, because an orphan is required=true in the resolve
+// manifest and would fail the server's own boot resolve.
+func TestSetServerSecretRollsBackDeclarationOnWriteFailure(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+	f.serverResolver.setErr = errors.New("provider unreachable")
+
+	_, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "SERVER_APP_PEM", "v"))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("want CodeUnavailable, got %v (err=%v)", got, err)
+	}
+
+	// The declaration must be gone: a second attempt sees a FRESH declare, not a
+	// conflict, which is only true if the rollback happened.
+	f.serverResolver.setErr = nil
+	if _, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "SERVER_APP_PEM", "v")); err != nil {
+		t.Fatalf("retry after rollback: %v", err)
+	}
+}
+
+// TestSetServerSecretDoesNotBumpSecretsVersion pins the deliberate asymmetry
+// with SetSecret: a server secret never reaches a live session's FetchSecrets,
+// so waking every session to re-fetch would be pure churn.
+func TestSetServerSecretDoesNotBumpSecretsVersion(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "SERVER_WEBHOOK_SECRET", "v")); err != nil {
+		t.Fatalf("SetServerSecret: %v", err)
+	}
+	if n := f.signaler.calls; n != 0 {
+		t.Fatalf("signaler fired %d times, want 0 for a server secret", n)
 	}
 }

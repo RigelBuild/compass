@@ -41,6 +41,7 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/comms"
+	compassotel "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -52,6 +53,7 @@ const (
 	messageIDAttr     = "compass.message.id"
 	traceResponseHdr  = "traceresponse"
 	exposeHeadersHdr  = "Access-Control-Expose-Headers"
+	allowHeadersHdr   = "Access-Control-Allow-Headers"
 	corsOriginForTest = "https://app.example.com"
 )
 
@@ -205,7 +207,7 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(st, commsBus, admin)
-	secretsSvc := newSecretsService(st, nil, nil)
+	secretsSvc := newSecretsService(st, nil, nil, nil)
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
 		t.Fatalf("otelconnect.NewInterceptor: %v", err)
@@ -232,6 +234,138 @@ func TestNetworkDoorExposesTraceResponseHeader(t *testing.T) {
 	}
 	if !headerListContains(exposed, traceResponseHdr) {
 		t.Fatalf("%s = %q, want it to include %q so a browser can read the trace-response header", exposeHeadersHdr, exposed, traceResponseHdr)
+	}
+}
+
+// TestNetworkDoorAllowsPostHogSessionRequestHeader asserts the browser can
+// actually SEND the session-id header, which the span-stamping test cannot see:
+// that one calls srv.Handler directly on the RPC path, while a real browser is
+// gated by the CORS PREFLIGHT first. A request header missing from
+// Access-Control-Allow-Headers fails the preflight, so the browser blocks the
+// WHOLE request — the feature would be inert for the UI that is its only
+// source, while every span-side test stayed green.
+//
+// This is the inbound mirror of the traceresponse exposure asserted above.
+func TestNetworkDoorAllowsPostHogSessionRequestHeader(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	st, admin, _ := newNetworkStore(t)
+
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	svc := newService("otel-cors-session-test", bus, st, nil, nil, nil, nil)
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	commsSvc := comms.NewComms(st, commsBus, admin)
+	secretsSvc := newSecretsService(st, nil, nil, nil)
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	srv, err := buildNetworkServer(ctx, ServeConfig{
+		StateDir:          t.TempDir(),
+		CORSAllowedOrigin: corsOriginForTest,
+	}, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildNetworkServer: %v", err)
+	}
+
+	// preflight sends an OPTIONS with the given requested headers and returns
+	// the Allow-Headers response value. rs/cors matches its allow-list against a
+	// sorted, lowercased set, so the request list is built that way or the
+	// comparison silently fails to discriminate.
+	preflight := func(t *testing.T, requested string) (string, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodOptions, compassv1connect.CompassServiceGetServerInfoProcedure, nil)
+		req.Header.Set("Origin", corsOriginForTest)
+		req.Header.Set("Access-Control-Request-Method", http.MethodPost)
+		req.Header.Set("Access-Control-Request-Headers", requested)
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+		res := rec.Result()
+		return res.Header.Get(allowHeadersHdr), res.Header.Get("Access-Control-Allow-Origin")
+	}
+
+	// Baseline: the headers the UI already sends must pass, or a failure below
+	// would prove nothing about the session header specifically.
+	const baseline = "authorization,connect-protocol-version,content-type"
+	if _, origin := preflight(t, baseline); origin == "" {
+		t.Fatal("baseline preflight was rejected; this test cannot discriminate the session header")
+	}
+
+	requested := baseline + "," + strings.ToLower(compassotel.PostHogSessionHeader)
+	allowed, origin := preflight(t, requested)
+	if origin == "" {
+		t.Fatalf("preflight REJECTED with the session header requested (%s = %q): a browser would block the whole request, so the UI can never send the J1 key", allowHeadersHdr, allowed)
+	}
+	if !headerListContains(allowed, compassotel.PostHogSessionHeader) {
+		t.Fatalf("%s = %q, want it to include %q so a browser may send the J1 session-id key", allowHeadersHdr, allowed, compassotel.PostHogSessionHeader)
+	}
+}
+
+// TestNetworkDoorStampsPostHogSessionIDOnTheSpan asserts the J1 inbound half is
+// MOUNTED, not merely implemented: it drives a real RPC through the real
+// buildNetworkServer chain with the UI's X-POSTHOG-SESSION-ID header set and
+// reads session.id off the exported span. The request is deliberately
+// unauthenticated, so it also pins the interceptor's position AHEAD of the auth
+// chain — the key lands on a rejected request too.
+//
+// The interceptor's own unit tests cannot see this. They construct it directly,
+// so they stay green if it is never added to the chain — and an unmounted
+// interceptor is indistinguishable from a working one until someone tries to
+// pivot from a PostHog funnel to a trace and finds no key.
+func TestNetworkDoorStampsPostHogSessionIDOnTheSpan(t *testing.T) {
+	ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
+	st, admin, _ := newNetworkStore(t)
+	exp := installGlobalSpanExporter(t)
+
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	svc := newService("otel-session-test", bus, st, nil, nil, nil, nil)
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	commsSvc := comms.NewComms(st, commsBus, admin)
+	secretsSvc := newSecretsService(st, nil, nil, nil)
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	srv, err := buildNetworkServer(ctx, ServeConfig{StateDir: t.TempDir()},
+		svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildNetworkServer: %v", err)
+	}
+
+	// The network door requires a bearer, so this request is REJECTED — and that
+	// is the stronger case to assert: the interceptor sits ahead of the auth
+	// chain, so the key must be on the span even when the RPC never reaches a
+	// handler. A failed request is precisely what someone pivots from a product
+	// funnel to diagnose, so a key that only appears on success is the wrong
+	// half of the seam.
+	const wantSession = "0198f2c1-7b3a-7000-8b1e-2f9d4c5a6e70"
+	req := httptest.NewRequest(http.MethodPost, compassv1connect.CompassServiceGetServerInfoProcedure, strings.NewReader("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-POSTHOG-SESSION-ID", wantSession)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("GetServerInfo = %d %q, want 401: this test asserts the key survives an auth rejection, so a different code means it is measuring something else", rec.Code, rec.Body.String())
+	}
+
+	var got []string
+	for _, span := range exp.GetSpans() {
+		for _, attr := range span.Attributes {
+			if attr.Key == "session.id" {
+				got = append(got, attr.Value.AsString())
+			}
+		}
+	}
+	if len(got) == 0 {
+		t.Fatal("no span carries session.id: the session-id interceptor is not mounted on the network door, so a PostHog funnel cannot pivot to the backend trace")
+	}
+	for _, id := range got {
+		if id != wantSession {
+			t.Fatalf("session.id = %q, want %q", id, wantSession)
+		}
 	}
 }
 

@@ -158,9 +158,14 @@ func networkProtocols() *http.Protocols {
 // can read grpc-status.
 func networkCORS(origin string) *cors.Cors {
 	return cors.New(cors.Options{
-		AllowedOrigins:   []string{origin},
-		AllowedMethods:   connectcors.AllowedMethods(),
-		AllowedHeaders:   append(connectcors.AllowedHeaders(), "Authorization"),
+		AllowedOrigins: []string{origin},
+		AllowedMethods: connectcors.AllowedMethods(),
+		// otel.PostHogSessionHeader is the INBOUND mirror of the traceresponse
+		// exposure below: a browser cannot SEND a request header absent from
+		// Access-Control-Allow-Headers — the preflight fails and the whole
+		// request is blocked, not just the header stripped — so without it the
+		// J1 session-id interceptor is unreachable from the UI.
+		AllowedHeaders:   append(connectcors.AllowedHeaders(), "Authorization", otel.PostHogSessionHeader),
 		ExposedHeaders:   append(connectcors.ExposedHeaders(), "traceresponse"),
 		AllowCredentials: false,
 	})
@@ -292,9 +297,15 @@ func buildNetworkServer(
 	// no-ops when no provider is installed (empty OtelEndpoint). Ordering: otel
 	// first keeps the security-critical Bearer→AdminGate order unchanged relative
 	// to itself.
+	// NewSessionIDInterceptor is the inbound half of the same J1 seam: it reads
+	// the UI's X-POSTHOG-SESSION-ID and stamps semconv session.id on the handler
+	// span, so a product funnel in PostHog pivots to the backend trace. It sits
+	// after otelIC because otelIC is what CREATES the span it stamps, and before
+	// the auth chain so an unauthenticated failure still carries the key.
 	interceptors := connect.WithInterceptors(
 		otelIC,
 		otel.NewTraceResponseInterceptor(),
+		otel.NewSessionIDInterceptor(),
 		auth.BearerInterceptor(st),
 		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(adminID),

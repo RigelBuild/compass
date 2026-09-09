@@ -24,6 +24,9 @@ package server
 import (
 	"context"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +34,7 @@ import (
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
@@ -308,7 +312,12 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 	// App key declared but the webhook signing secret absent -> the SECOND
 	// validateForgeSecret must fail (both secrets required, checked separately).
 	t.Run("app key present but webhook secret undeclared fails on the webhook secret", func(t *testing.T) {
-		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "APP_KEY", Value: "pem"}}}
+		// The RESOLVED name carries the server prefix; the config and the
+		// assertion below stay unprefixed. Unwrapped here, the FIRST validation
+		// (the app key) fails instead and this subtest silently degrades into a
+		// duplicate of its sibling, losing the per-secret discrimination it
+		// exists to prove.
+		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName("APP_KEY"), Value: "pem"}}}
 		_, _, _, _, _, err := buildBoardWebhookWiring(ctx, cfg, st, nil, nil, res, slog.Default())
 		if err == nil {
 			t.Fatal("buildBoardWebhookWiring with the webhook secret undeclared = nil, want a startup error")
@@ -317,4 +326,267 @@ func TestBoardIngestLaneFailsFastOnMissingAppSecret(t *testing.T) {
 			t.Fatalf("error = %q, want it to name the missing webhook secret APP_WEBHOOK", err)
 		}
 	})
+}
+
+// TestDeclareServerSecretNamesIsIdempotentAndGated proves the boot declare that
+// makes the consumer re-point work. Without it the server registry is empty,
+// Resolve short-circuits an empty registry to (nil, nil), and a configured App
+// hard-fails its boot at validateForgeSecret.
+func TestDeclareServerSecretNamesIsIdempotentAndGated(t *testing.T) {
+	st := forgeTestStore(t)
+	ctx := context.Background()
+
+	t.Run("neither App nor Linear configured declares nothing", func(t *testing.T) {
+		if err := declareServerSecretNames(ctx, st, ServeConfig{}); err != nil {
+			t.Fatalf("declare with nothing configured: %v", err)
+		}
+		rows, err := st.DeclaredServerSecrets(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// NOTHING may be declared. resolved() defaults the two Linear
+		// client-credential names, so gating on the RESOLVED config would
+		// declare them for a deployment running no Linear — which makes the
+		// server registry non-empty and forces a real provider Load on a server
+		// that never configured Linear (it broke every full-boot test).
+		if len(rows) != 0 {
+			t.Fatalf("declared %d names with nothing configured, want 0: %+v", len(rows), rows)
+		}
+	})
+
+	t.Run("configured App declares its secrets, prefixed, and re-declares cleanly", func(t *testing.T) {
+		cfg := ServeConfig{Forge: ForgeConfig{
+			App: ForgeAppConfig{
+				AppID: 1, InstallationID: 2,
+				AppPrivateKeySecret:  "APP_KEY",
+				AppWebhookSecretName: "APP_WEBHOOK",
+			},
+		}}
+		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+			t.Fatalf("first declare: %v", err)
+		}
+		// Every boot re-runs this, so a second call must be a clean no-op
+		// rather than a duplicate-name startup failure.
+		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+			t.Fatalf("second declare (idempotence): %v", err)
+		}
+
+		rows, err := st.DeclaredServerSecrets(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := make(map[string]bool, len(rows))
+		for _, r := range rows {
+			got[r.Name] = true
+			// Everything in this table must carry the reserved prefix, or the
+			// CHECK constraint would have rejected it.
+			if !store.HasServerSecretPrefix(r.Name) {
+				t.Fatalf("unprefixed name %q in server_secrets", r.Name)
+			}
+		}
+		for _, want := range []string{serverSecretName("APP_KEY"), serverSecretName("APP_WEBHOOK")} {
+			if !got[want] {
+				t.Fatalf("%q not declared; have %v", want, got)
+			}
+		}
+
+		// The end-to-end point: the SERVER resolver's registry is now non-empty
+		// and carries exactly the names the re-pointed consumers look for.
+		view := store.ServerDeclaredSecrets{Store: st}
+		decls, err := view.DeclaredSecrets(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(decls) == 0 {
+			t.Fatal("server resolver view is empty; Resolve would short-circuit to (nil, nil)")
+		}
+	})
+
+	// The production write-enabled topology is TWO Apps, and the reviewer PEM is
+	// a consumed name (buildForgeWriteService validates it), so a regression
+	// that stops declaring it is a hard boot failure for every such deployment.
+	t.Run("both Apps declare all three names, reviewer PEM included", func(t *testing.T) {
+		st := forgeTestStore(t)
+		cfg := ServeConfig{Forge: ForgeConfig{
+			App: ForgeAppConfig{
+				AppID: 1, InstallationID: 2,
+				AppPrivateKeySecret:  "APP_KEY",
+				AppWebhookSecretName: "APP_WEBHOOK",
+			},
+			ReviewerApp: ForgeAppConfig{
+				AppID: 3, InstallationID: 4,
+				AppPrivateKeySecret: "REVIEWER_KEY",
+			},
+		}}
+		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+			t.Fatalf("declare: %v", err)
+		}
+		assertDeclaredExactly(ctx, t, st,
+			serverSecretName("APP_KEY"),
+			serverSecretName("APP_WEBHOOK"),
+			serverSecretName("REVIEWER_KEY"),
+		)
+	})
+
+	// A reviewer-only deployment is a misconfiguration (writes need both Apps),
+	// but it must be a DIAGNOSABLE one: declaring the reviewer PEM is what lets
+	// warnPartialForgeWriteSecrets see haveReviewer != havePrimary and warn.
+	// Gating the reviewer under the primary's boardIngestionEnabled would
+	// declare nothing here and the operator would get no boot warning at all.
+	t.Run("reviewer App alone still declares its PEM, so the partial config is diagnosable", func(t *testing.T) {
+		st := forgeTestStore(t)
+		cfg := ServeConfig{Forge: ForgeConfig{
+			ReviewerApp: ForgeAppConfig{
+				AppID: 3, InstallationID: 4,
+				AppPrivateKeySecret: "REVIEWER_KEY",
+			},
+		}}
+		if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+			t.Fatalf("declare: %v", err)
+		}
+		assertDeclaredExactly(ctx, t, st, serverSecretName("REVIEWER_KEY"))
+
+		// And the diagnostic actually fires: with the reviewer declared and the
+		// primary absent, the two halves differ, which is the warn condition.
+		declared := []secrets.ResolvedSecret{{Name: serverSecretName("REVIEWER_KEY"), Value: "k"}}
+		havePrimary, haveReviewer := cfg.Forge.forgeWriteAppsConfigured(declared)
+		if havePrimary || !haveReviewer {
+			t.Fatalf("forgeWriteAppsConfigured = (primary %v, reviewer %v), want (false, true) — the partial-config warn cannot fire unless these differ", havePrimary, haveReviewer)
+		}
+	})
+}
+
+// assertDeclaredExactly asserts server_secrets holds precisely the given names.
+// Exactness matters in both directions: a missing name is a hard boot failure
+// for that deployment, and an extra one pollutes the registry and can force a
+// provider Load for a lane the deployment never configured.
+func assertDeclaredExactly(ctx context.Context, t *testing.T, st *store.Store, want ...string) {
+	t.Helper()
+	rows, err := st.DeclaredServerSecrets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		got[r.Name] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("declared %v, want exactly %v", rows, want)
+	}
+	for _, w := range want {
+		if !got[w] {
+			t.Fatalf("%q not declared; have %v", w, got)
+		}
+	}
+}
+
+// TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph drives the REAL
+// buildDoors and asserts which resolver INSTANCE reached which consumer.
+//
+// This is the seam a leaf-level test cannot hold. Passing a hand-built resolver
+// straight to buildLinearWebhookWiring re-proves name-wrapping, not routing:
+// swap the two arguments inside buildDoors and every such test stays green. So
+// the assertions here are over buildDoors' own threading, with two fakes whose
+// identity is observable.
+//
+// The severe direction is buildNetworkServer's: it feeds runnerhub's
+// FetchSecrets delivery path, so pointing it at server_secrets would hand every
+// deployment secret — App PEMs, webhook secrets, Linear credentials — to every
+// agent container. The webhook direction is the milder inverse: the container
+// instance cannot see a SERVER_ name, so the handler silently never mounts
+// (failure mode (b)).
+func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) {
+	ctx := context.Background()
+	st := forgeTestStore(t)
+
+	// Distinct, non-overlapping sets: only the server fake carries the
+	// SERVER_-prefixed webhook secret the Linear wiring needs, so a handler
+	// exists if and only if that instance was the one threaded there.
+	container := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "USER_ONLY", Value: "u"}}}
+	server := &fakeResolver{resolved: []secrets.ResolvedSecret{
+		{Name: serverSecretName("LWH"), Value: "shh"},
+	}}
+
+	// StateDir must be set: buildNetworkServer mints and writes the bootstrap
+	// admin token under it, and an empty StateDir defaults to the socket's
+	// parent — here the package directory, which leaves an admin-token file in
+	// the source tree.
+	cfg := ServeConfig{
+		StateDir: t.TempDir(),
+		Forge:    ForgeConfig{LinearWebhookSecretName: "LWH"},
+	}
+
+	// A net listener is required for the buildNetworkServer arm to be built at
+	// all — with netListener nil the D6 direction is never exercised.
+	netListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = netListener.Close() })
+
+	bus := events.NewBus[busPayload]()
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	admin, err := st.CreateUser(ctx, store.NewUser{Handle: "routing-admin", DisplayName: "Routing Admin"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+	brd := board.NewProjection(bus)
+	issueBrd := board.NewIssueProjection(bus, st)
+	tail := newSessionTail()
+	hub := newRunnerHub(st, brd, tail, commsSvc, slog.Default())
+	svc := newService("test", bus, st, hub, brd, issueBrd, tail)
+	secretsSvc := newSecretsService(st, container, server, nil)
+
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID,
+		container, server, nil, netListener, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildDoors: %v", err)
+	}
+	t.Cleanup(func() {
+		if doors.net != nil {
+			_ = doors.net.Close()
+		}
+	})
+
+	// The net door must exist, or the D6 assertion below is vacuous.
+	if doors.net == nil {
+		t.Fatal("no net door built; the container-delivery arm was never exercised")
+	}
+
+	// The Linear webhook mounted at all proves the SERVER instance reached
+	// buildLinearWebhookWiring: the secret lives only in that fake, and the
+	// consumer reads it through the resolver it was handed. Threading the
+	// container instance instead yields a nil handler and no mounted route.
+	if !hasLinearWebhookRoute(t, doors.net) {
+		t.Fatal("Linear webhook not mounted: buildDoors did not thread the SERVER resolver to buildLinearWebhookWiring, so a deployment's webhook would silently never mount (failure mode (b))")
+	}
+
+	// D6: the net door — runnerhub's FetchSecrets delivery path — must have
+	// received the CONTAINER instance. Pointer identity is the assertion: this
+	// is the swap that leaks every deployment secret into every agent container,
+	// and buildNetworkServer resolves nothing at build time, so nothing else
+	// about the built door reveals which instance it holds.
+	if doors.netResolver != secrets.Resolver(container) {
+		t.Fatal("net door did not receive the CONTAINER resolver: runnerhub FetchSecrets would serve server_secrets, delivering every deployment secret (App PEMs, webhook secrets, Linear credentials) into every agent container")
+	}
+
+	// Both fakes must have been read. A fake with zero calls means its consumer
+	// never ran, which would make the routing assertions above accidental.
+	if server.calls == 0 {
+		t.Fatal("server resolver was never read; the webhook assertion is vacuous")
+	}
+}
+
+// hasLinearWebhookRoute reports whether the net door actually serves the Linear
+// webhook path. It probes the mounted mux rather than inspecting wiring structs,
+// so it answers the operator-visible question: is the ingress reachable.
+func hasLinearWebhookRoute(t *testing.T, srv *http.Server) bool {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/linear", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	// An unmounted path 404s. A mounted handler rejects an unsigned body
+	// (401/400) — either way it is NOT a 404, which is the distinction here.
+	return rec.Code != http.StatusNotFound
 }
