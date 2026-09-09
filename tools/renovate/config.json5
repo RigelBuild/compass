@@ -908,6 +908,12 @@
       // Omit the latter and Renovate would run the refresh but silently DROP
       // it, shipping a channel bump whose outputHash never moved.
       //
+      // Step 3 also REALISES tools/renovate/agent-image-fod-vehicle.nix, to check
+      // the same outputHash through the bun this lock resolves. That file is only
+      // read, never written, so it must NOT be listed: the allowlist governs what
+      // Renovate commits, and adding a file the task cannot modify is dead
+      // surface that reads as a claim the task writes it.
+      //
       // Self-hosted bot config MUST allow the command:
       //   allowedCommands: [… , "^bun tools/renovate/refresh-agent-image-nixpkgs\\.ts$"]
       // see tools/renovate/bot-config.json5 (config.test.ts pins the two
