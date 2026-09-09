@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -539,10 +540,14 @@ func connectPG(t *testing.T, ctx context.Context, dsn string) *pgx.Conn {
 // fake Runner, runs its Sessions loop, and returns once the router is live.
 func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withholdStop bool) *recordingRunner {
 	t.Helper()
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
 	path, handler := runnerhub.NewMountedHandler(hub,
 		func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 			return auth.ResolveToken(ctx, st, presented, want)
-		}, nil, nil)
+		}, nil, nil, otelIC)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)
