@@ -3,6 +3,7 @@ package otel
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -10,9 +11,16 @@ import (
 	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
+
+// passthrough is the inner handler for interceptor tests: it returns an empty
+// response and no error, so the assertion is about the interceptor alone.
+func passthrough(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+	return connect.NewResponse(&struct{}{}), nil
+}
 
 // w3cTraceparent matches the W3C traceparent grammar: 00-<32hex>-<16hex>-<2hex>.
 var w3cTraceparent = regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$`)
@@ -266,6 +274,196 @@ func TestTraceResponseInterceptor(t *testing.T) {
 		_, err := interceptor(next)(ctx, connect.NewRequest(&struct{}{}))
 		if err != wantErr {
 			t.Errorf("interceptor err = %v, want the handler's error unchanged", err)
+		}
+	})
+}
+
+// TestSessionIDInterceptor covers the inbound J1 half: the PostHog session id
+// header must land on the handler span as semconv session.id.
+//
+// The assertions read the RECORDED span out of a SpanRecorder rather than
+// trusting the call: a span attribute is only useful if it reaches the exporter,
+// and stamping a non-recording span silently drops it.
+func TestSessionIDInterceptor(t *testing.T) {
+	interceptor := NewSessionIDInterceptor()
+
+	// stampedSessionIDs runs one request through the interceptor against a real
+	// recording provider and returns the session.id values on the exported span.
+	stampedSessionIDs := func(t *testing.T, header string, set bool) []string {
+		t.Helper()
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
+
+		req := connect.NewRequest(&struct{}{})
+		if set {
+			req.Header().Set("X-POSTHOG-SESSION-ID", header)
+		}
+		if _, err := interceptor(passthrough)(ctx, req); err != nil {
+			t.Fatalf("interceptor: %v", err)
+		}
+		span.End()
+
+		ended := rec.Ended()
+		if len(ended) != 1 {
+			t.Fatalf("recorded %d spans, want 1", len(ended))
+		}
+		var got []string
+		for _, attr := range ended[0].Attributes() {
+			if attr.Key == "session.id" {
+				got = append(got, attr.Value.AsString())
+			}
+		}
+		return got
+	}
+
+	t.Run("a session id header lands on the span as session.id", func(t *testing.T) {
+		got := stampedSessionIDs(t, "0198f2c1-7b3a-7000-8b1e-2f9d4c5a6e70", true)
+		if len(got) != 1 || got[0] != "0198f2c1-7b3a-7000-8b1e-2f9d4c5a6e70" {
+			t.Fatalf("session.id = %v, want the header value once", got)
+		}
+	})
+
+	t.Run("no header stamps nothing", func(t *testing.T) {
+		// The analytics-off path: the UI sends no header, and the span must not
+		// carry an empty session.id that would join to nothing.
+		if got := stampedSessionIDs(t, "", false); len(got) != 0 {
+			t.Fatalf("session.id = %v, want none", got)
+		}
+	})
+
+	t.Run("a blank header stamps nothing", func(t *testing.T) {
+		if got := stampedSessionIDs(t, "   ", true); len(got) != 0 {
+			t.Fatalf("session.id = %v, want none for a whitespace-only header", got)
+		}
+	})
+
+	t.Run("surrounding whitespace is trimmed", func(t *testing.T) {
+		got := stampedSessionIDs(t, "  sess-42\t", true)
+		if len(got) != 1 || got[0] != "sess-42" {
+			t.Fatalf("session.id = %v, want the trimmed value", got)
+		}
+	})
+
+	t.Run("an oversized header is refused, not truncated", func(t *testing.T) {
+		// The bound caps a single attribute's size and refuses payload-shaped
+		// values; per-request volume is governed by the door's own limits. A
+		// truncated id joins to nothing in PostHog, so refusing beats
+		// half-stamping.
+		got := stampedSessionIDs(t, strings.Repeat("a", maxSessionIDLen+1), true)
+		if len(got) != 0 {
+			t.Fatalf("session.id = %v, want none for an oversized header", got)
+		}
+		// The boundary itself is admitted, so the cap is off-by-none.
+		atCap := stampedSessionIDs(t, strings.Repeat("a", maxSessionIDLen), true)
+		if len(atCap) != 1 {
+			t.Fatalf("session.id = %v, want the value at exactly the cap", atCap)
+		}
+	})
+
+	t.Run("an invalid-UTF8 header is refused, so it cannot poison the export batch", func(t *testing.T) {
+		// Go's HTTP parser rejects control bytes but admits high bytes, and OTLP
+		// attributes are proto3 strings: the marshaller fails the WHOLE
+		// ExportTraceServiceRequest on an invalid one, dropping every span
+		// batched alongside it. This interceptor runs ahead of auth, so
+		// admitting it would be an unauthenticated way to blind the trace
+		// backend for everyone.
+		for _, bad := range []string{"sess-\xff\xfe-1", "sess-\xe9-1", "\xc3"} {
+			if got := stampedSessionIDs(t, bad, true); len(got) != 0 {
+				t.Fatalf("session.id = %q for invalid-UTF8 header %q, want none", got, bad)
+			}
+		}
+		// A multi-byte but VALID id is still admitted, so the check rejects bad
+		// encoding rather than everything non-ASCII.
+		if got := stampedSessionIDs(t, "sess-é-1", true); len(got) != 1 {
+			t.Fatalf("session.id = %v, want a valid multi-byte id admitted", got)
+		}
+	})
+
+	t.Run("no active span is a no-op, not a panic", func(t *testing.T) {
+		// The provider-absent path: SpanFromContext returns a non-recording
+		// span, and stamping it must be harmless.
+		req := connect.NewRequest(&struct{}{})
+		req.Header().Set("X-POSTHOG-SESSION-ID", "sess-noop")
+		if _, err := interceptor(passthrough)(context.Background(), req); err != nil {
+			t.Fatalf("interceptor with no span: %v", err)
+		}
+	})
+}
+
+// TestSessionIDInterceptorStampOrdering pins WHEN the stamp happens, which the
+// value-handling subtests above cannot see: they read the ended span, and both
+// a before-handler and an after-handler stamp leave the attribute there.
+func TestSessionIDInterceptorStampOrdering(t *testing.T) {
+	interceptor := NewSessionIDInterceptor()
+
+	t.Run("stamps before the handler runs, so an erroring RPC keeps the key", func(t *testing.T) {
+		// The traces most worth pivoting to from a product funnel are the
+		// failures, so the key must not depend on the handler succeeding.
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
+
+		req := connect.NewRequest(&struct{}{})
+		req.Header().Set("X-POSTHOG-SESSION-ID", "sess-err")
+		failing := func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+			return nil, errSentinel
+		}
+		if _, err := interceptor(failing)(ctx, req); err != errSentinel {
+			t.Fatalf("interceptor swallowed the handler error: %v", err)
+		}
+		span.End()
+
+		var got []string
+		for _, attr := range rec.Ended()[0].Attributes() {
+			if attr.Key == "session.id" {
+				got = append(got, attr.Value.AsString())
+			}
+		}
+		if len(got) != 1 || got[0] != "sess-err" {
+			t.Fatalf("session.id = %v on a failed RPC, want it stamped anyway", got)
+		}
+	})
+
+	t.Run("the key is already on the span WHILE the handler runs", func(t *testing.T) {
+		// The subtest above proves an erroring RPC keeps the key, but it cannot
+		// tell "stamped before next" from "stamped unconditionally after next" —
+		// both leave the attribute on the ended span. This one pins the ordering
+		// itself by reading the LIVE span from inside the handler, which is the
+		// property the interceptor's doc comment actually claims. It matters for
+		// any handler, sampler, or span processor that reads session.id while the
+		// span is open: under a post-handler stamp they would all see nothing.
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		ctx, span := tp.Tracer("test").Start(context.Background(), "rpc")
+
+		req := connect.NewRequest(&struct{}{})
+		req.Header().Set("X-POSTHOG-SESSION-ID", "sess-live")
+
+		var seen []string
+		observing := func(hctx context.Context, _ connect.AnyRequest) (connect.AnyResponse, error) {
+			live := trace.SpanFromContext(hctx)
+			if !live.IsRecording() {
+				t.Fatal("handler span is not recording; the observation would be vacuous")
+			}
+			ro, ok := live.(sdktrace.ReadOnlySpan)
+			if !ok {
+				t.Fatal("handler span is not a ReadOnlySpan; cannot observe live attributes")
+			}
+			for _, attr := range ro.Attributes() {
+				if attr.Key == "session.id" {
+					seen = append(seen, attr.Value.AsString())
+				}
+			}
+			return connect.NewResponse(&struct{}{}), nil
+		}
+		if _, err := interceptor(observing)(ctx, req); err != nil {
+			t.Fatalf("interceptor: %v", err)
+		}
+		span.End()
+
+		if len(seen) != 1 || seen[0] != "sess-live" {
+			t.Fatalf("session.id visible inside the handler = %v, want [sess-live]: the stamp must happen BEFORE next, not after", seen)
 		}
 	})
 }

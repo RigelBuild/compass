@@ -1030,9 +1030,12 @@ func publishReady(bus *events.Bus[busPayload]) {
 // read grpc-status.
 func devCORS() *cors.Cors {
 	return cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   connectcors.AllowedMethods(),
-		AllowedHeaders:   connectcors.AllowedHeaders(),
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: connectcors.AllowedMethods(),
+		// Same inbound mirror as the network door: the dev door is what a
+		// browser dev server dials, so the session header has to be allowed
+		// here too or the preflight blocks the request outright.
+		AllowedHeaders:   append(connectcors.AllowedHeaders(), otel.PostHogSessionHeader),
 		ExposedHeaders:   append(connectcors.ExposedHeaders(), "traceresponse"),
 		AllowCredentials: false,
 	})
