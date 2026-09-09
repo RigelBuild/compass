@@ -569,16 +569,17 @@ func TestServerSecretNameInvariant(t *testing.T) {
 	})
 }
 
-// TestBuildDoorsRoutesEachResolverToItsOwnConsumer covers the OTHER seam of the
-// re-point: which resolver INSTANCE each consumer receives. The name-wrapping
-// tests above would all stay green if Serve threaded the container resolver
-// where the server one belongs, so this asserts the routing directly by giving
-// the two instances DISTINGUISHABLE sets and observing which one was read.
+// TestLinearWebhookWiringResolvesFromTheServerKeyspace covers the CONSUMER
+// half: fed a set carrying the SERVER_-prefixed webhook secret the wiring
+// mounts a handler, and fed a container set that cannot contain such a name it
+// returns the off-state (failure mode (b)).
 //
-// Getting this backwards is the severe direction: pointing the container
-// FetchSecrets path at server_secrets delivers every deployment secret into
-// every agent container.
-func TestBuildDoorsRoutesEachResolverToItsOwnConsumer(t *testing.T) {
+// It does NOT cover the routing seam — it hands the resolver to the leaf
+// directly, so buildDoors' own threading is not exercised and swapping the two
+// arguments there leaves this green. That seam is
+// TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph, in the pgtest
+// lane because buildDoors needs a real store.
+func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 	ctx := context.Background()
 
 	// Only the SERVER instance carries the Linear webhook secret; only the
