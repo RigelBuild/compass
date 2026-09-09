@@ -352,7 +352,11 @@ func buildNetworkServer(
 	// A nil here would fail FetchAgentConfig CodeFailedPrecondition ("no config
 	// surface") and every agent would provision with no materialized config — no
 	// model provider, no skills — even with a bundle published to the store.
-	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st)
+	// otelIC is threaded in as the door's outermost interceptor (the same one the
+	// services above mount): it creates the RelayCommsCall origin span the agent
+	// reply's cross-turn link hangs off. No trace-response interceptor here — the
+	// Runner is not a browser and reads no traceresponse header.
+	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st, otelIC)
 	netMux.Handle(runnerPath, runnerHandler)
 
 	// The internet-facing GitHub App webhook ingress (RIG-2883 T5, OQ-7), mounted

@@ -21,9 +21,12 @@ import (
 	"maps"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -409,6 +412,54 @@ func transcriptCommitError(err error) error {
 	}
 }
 
+// linkKindAttr marks the link linkTrigger adds, so a reader selects the
+// cross-turn causal edge by attribute instead of by position — the span also
+// carries otelconnect's transport link. The mark lives in the link's
+// ATTRIBUTES, so a deployment that zeroes OTEL_LINK_ATTRIBUTE_COUNT_LIMIT
+// exports the edge but strips its kind — present, and unselectable.
+var linkKindAttr = attribute.String("compass.link.kind", "cross_turn_trigger")
+
+// linkTrigger records the cross-turn causal edge from the agent's reply to the
+// turn that triggered it: a span LINK on the current RelayCommsCall origin span
+// (the otelconnect handler span mounted in handler.go) pointing at the remote
+// span context tp names. A LINK, never a parent — the reply is a fresh root that
+// REFERENCES its trigger instead of nesting under it, which is what lets a
+// conversation's traces terminate rather than growing one unbounded tree.
+//
+// An empty tp adds no link at all. A malformed tp adds none either: parsing goes
+// through the one shipped W3C helper (otelx.ContextWithTraceparent), and because
+// that helper returns its INPUT context unchanged on a parse failure — whose span
+// context here would be the local handler span — the parse is run against a
+// context.Context deliberately stripped of any span. That keeps a bad
+// traceparent from linking the span to itself, and keeps one traceparent parser
+// in the tree.
+//
+// Only the traceparent crosses this seam: the proto carries no trigger_tracestate
+// half, so any vendor tracestate the trigger held is not on the link.
+//
+// The link is STAMPED with linkKindAttr so a reader can find it by attribute
+// rather than by position. It is not the only link on this span: otelconnect's
+// server branch mints one from the inbound transport context whenever the
+// caller propagated a traceparent, which the production Runner's client
+// interceptor always does (internal/runner/runner.go:112-115, otelconnect
+// interceptor.go:110-117). So the trigger link is neither the only nor
+// reliably the first element of Links, and a positional or count-based read of
+// it is wrong.
+func linkTrigger(ctx context.Context, tp string) {
+	if tp == "" {
+		return
+	}
+	bare := trace.ContextWithSpanContext(ctx, trace.SpanContext{})
+	remote := trace.SpanContextFromContext(otelx.ContextWithTraceparent(bare, tp))
+	if !remote.IsValid() {
+		return
+	}
+	trace.SpanFromContext(ctx).AddLink(trace.Link{
+		SpanContext: remote,
+		Attributes:  []attribute.KeyValue{linkKindAttr},
+	})
+}
+
 // executeCall dispatches one comms call to the CommsCaller under account,
 // returning the typed success result (call_id unset — the caller stamps it) or a
 // non-nil error to be rendered in-band. An unset or unrecognized call oneof is an
@@ -427,6 +478,7 @@ func (h *Hub) executeCall(
 	}
 	switch c := oneof.(type) {
 	case *compassv1internal.CommsCallRequest_Post:
+		linkTrigger(ctx, call.GetTriggerTraceparent())
 		resp, err := h.comms.PostAsAccountByName(ctx, account, c.Post)
 		if err != nil {
 			return nil, err

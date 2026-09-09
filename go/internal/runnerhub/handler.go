@@ -16,6 +16,7 @@ import (
 	"net/http"
 
 	"connectrpc.com/connect"
+	"connectrpc.com/otelconnect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -430,10 +431,29 @@ func kindToProto(k secrets.SecretKind) compassv1.SecretKind {
 // resolve surface FetchSecrets delegates to; configStore the fleet config-bundle
 // surface FetchAgentConfig delegates to (either may be nil on a server built
 // without that surface).
-func NewMountedHandler(hub *Hub, resolve TokenResolver, resolver secrets.Resolver, configStore AgentConfigStore) (string, http.Handler) {
+//
+// otelIC produces the server RPC span every handler on this door runs under —
+// notably the RelayCommsCall origin span the cross-turn causal link hangs off
+// (relay_comms.go). It is mounted FIRST (outermost) so the span envelopes the
+// security-critical bearer pair, matching every other door's chain
+// (server/serve.go, server/network_door.go); the bearer pair's order relative to
+// itself is unchanged. It is inert when no tracer provider is installed (a
+// no-op global ⇒ no recording span), so it mounts unconditionally.
+//
+// otelIC must be non-nil. connect's chain skips only a nil INTERFACE element
+// (connect interceptor.go:87); a typed-nil *otelconnect.Interceptor is a
+// non-nil interface whose WrapUnary dereferences i.config and panics on the
+// first RPC (otelconnect interceptor.go:86). Callers construct their own.
+func NewMountedHandler(
+	hub *Hub,
+	resolve TokenResolver,
+	resolver secrets.Resolver,
+	configStore AgentConfigStore,
+	otelIC *otelconnect.Interceptor,
+) (string, http.Handler) {
 	auth := &bearerAuth{resolve: resolve}
 	return compassv1internalconnect.NewRunnerServiceHandler(
 		NewHandler(hub, resolver, configStore),
-		connect.WithInterceptors(auth.unaryInterceptor(), auth.streamInterceptor()),
+		connect.WithInterceptors(otelIC, auth.unaryInterceptor(), auth.streamInterceptor()),
 	)
 }
