@@ -485,8 +485,8 @@ Interfaces:
   secret rows (reviewer-App PEM, Linear client id/secret). Merge B (T4 proper,
   after T3.5 verifies writes on Apps): delete the PAT rows — and if those rows
   are `protect: true`, merge B itself splits into the unprotect-merge and the
-  delete-merge per rule://pulumi-protected-teardown (never one PR, never a
-  manual state unprotect).
+  delete-merge (never one PR, never a manual state unprotect: the unprotect must
+  be merged AND applied before the removal previews green).
 
 ### T5 — Live tests onto the Apps (Linear user cred SUPERSEDED — app-actor only, DL-324)
 
