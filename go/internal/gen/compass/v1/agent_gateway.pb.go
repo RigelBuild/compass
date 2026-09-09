@@ -2135,7 +2135,7 @@ func (x *CreatePullRequestRequest) GetDraft() bool {
 type CommentOnPullRequestRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Repo          string                 `protobuf:"bytes,1,opt,name=repo,proto3" json:"repo,omitempty"`
-	PullNumber    uint64                 `protobuf:"varint,2,opt,name=pull_number,json=pullNumber,proto3" json:"pull_number,omitempty"`
+	PrNumber      uint64                 `protobuf:"varint,2,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
 	Body          string                 `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"` // WITHOUT the owner header
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2178,9 +2178,9 @@ func (x *CommentOnPullRequestRequest) GetRepo() string {
 	return ""
 }
 
-func (x *CommentOnPullRequestRequest) GetPullNumber() uint64 {
+func (x *CommentOnPullRequestRequest) GetPrNumber() uint64 {
 	if x != nil {
-		return x.PullNumber
+		return x.PrNumber
 	}
 	return 0
 }
@@ -2195,7 +2195,7 @@ func (x *CommentOnPullRequestRequest) GetBody() string {
 type GetPullRequestRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Repo          string                 `protobuf:"bytes,1,opt,name=repo,proto3" json:"repo,omitempty"`
-	PullNumber    uint64                 `protobuf:"varint,2,opt,name=pull_number,json=pullNumber,proto3" json:"pull_number,omitempty"`
+	PrNumber      uint64                 `protobuf:"varint,2,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2237,9 +2237,9 @@ func (x *GetPullRequestRequest) GetRepo() string {
 	return ""
 }
 
-func (x *GetPullRequestRequest) GetPullNumber() uint64 {
+func (x *GetPullRequestRequest) GetPrNumber() uint64 {
 	if x != nil {
-		return x.PullNumber
+		return x.PrNumber
 	}
 	return 0
 }
@@ -2247,7 +2247,7 @@ func (x *GetPullRequestRequest) GetPullNumber() uint64 {
 type SubmitReviewRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Repo          string                 `protobuf:"bytes,1,opt,name=repo,proto3" json:"repo,omitempty"` // REQUIRED; empty is invalid_argument
-	PullNumber    uint64                 `protobuf:"varint,2,opt,name=pull_number,json=pullNumber,proto3" json:"pull_number,omitempty"`
+	PrNumber      uint64                 `protobuf:"varint,2,opt,name=pr_number,json=prNumber,proto3" json:"pr_number,omitempty"`
 	Verdict       string                 `protobuf:"bytes,3,opt,name=verdict,proto3" json:"verdict,omitempty"`   // "approve" | "request_changes" | "comment"
 	Body          string                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`         // WITHOUT the owner header; the Server stamps it
 	Comments      []*ReviewCommentInput  `protobuf:"bytes,5,rep,name=comments,proto3" json:"comments,omitempty"` // inline comments; may be empty
@@ -2292,9 +2292,9 @@ func (x *SubmitReviewRequest) GetRepo() string {
 	return ""
 }
 
-func (x *SubmitReviewRequest) GetPullNumber() uint64 {
+func (x *SubmitReviewRequest) GetPrNumber() uint64 {
 	if x != nil {
-		return x.PullNumber
+		return x.PrNumber
 	}
 	return 0
 }
@@ -3426,20 +3426,17 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\x04body\x18\x03 \x01(\tR\x04body\x12\x19\n" +
 	"\bhead_ref\x18\x04 \x01(\tR\aheadRef\x12\x19\n" +
 	"\bbase_ref\x18\x05 \x01(\tR\abaseRef\x12\x14\n" +
-	"\x05draft\x18\x06 \x01(\bR\x05draft\"f\n" +
+	"\x05draft\x18\x06 \x01(\bR\x05draft\"b\n" +
 	"\x1bCommentOnPullRequestRequest\x12\x12\n" +
-	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x1f\n" +
-	"\vpull_number\x18\x02 \x01(\x04R\n" +
-	"pullNumber\x12\x12\n" +
-	"\x04body\x18\x03 \x01(\tR\x04body\"L\n" +
+	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x1b\n" +
+	"\tpr_number\x18\x02 \x01(\x04R\bprNumber\x12\x12\n" +
+	"\x04body\x18\x03 \x01(\tR\x04body\"H\n" +
 	"\x15GetPullRequestRequest\x12\x12\n" +
-	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x1f\n" +
-	"\vpull_number\x18\x02 \x01(\x04R\n" +
-	"pullNumber\"\xb4\x01\n" +
+	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x1b\n" +
+	"\tpr_number\x18\x02 \x01(\x04R\bprNumber\"\xb0\x01\n" +
 	"\x13SubmitReviewRequest\x12\x12\n" +
-	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x1f\n" +
-	"\vpull_number\x18\x02 \x01(\x04R\n" +
-	"pullNumber\x12\x18\n" +
+	"\x04repo\x18\x01 \x01(\tR\x04repo\x12\x1b\n" +
+	"\tpr_number\x18\x02 \x01(\x04R\bprNumber\x12\x18\n" +
 	"\averdict\x18\x03 \x01(\tR\averdict\x12\x12\n" +
 	"\x04body\x18\x04 \x01(\tR\x04body\x12:\n" +
 	"\bcomments\x18\x05 \x03(\v2\x1e.compass.v1.ReviewCommentInputR\bcomments\"d\n" +

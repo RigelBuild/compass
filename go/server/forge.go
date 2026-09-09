@@ -481,7 +481,7 @@ func (s *forgeService) commentOnPullRequest(ctx context.Context, caller store.Ac
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_pull_request", bodyLen: len(req.GetBody()), bodyLimit: rf.bodyLimit}))
 	}
-	cm, err := rf.author.CommentOnPullRequest(ctx, req.GetRepo(), req.GetPullNumber(), body)
+	cm, err := rf.author.CommentOnPullRequest(ctx, req.GetRepo(), req.GetPrNumber(), body)
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "comment_on_pull_request"}))
 	}
@@ -523,7 +523,7 @@ func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID,
 		})
 	}
 
-	sr, err := rf.reviewer.SubmitReview(ctx, req.GetRepo(), req.GetPullNumber(), forge.SubmitReview{
+	sr, err := rf.reviewer.SubmitReview(ctx, req.GetRepo(), req.GetPrNumber(), forge.SubmitReview{
 		Verdict:  req.GetVerdict(),
 		Body:     body,
 		Comments: comments,
@@ -693,7 +693,7 @@ func (s *forgeService) getPullRequest(ctx context.Context, call *compassv1intern
 	if fe != nil {
 		return forgeErrorResult(fe)
 	}
-	pr, err := rf.author.GetPullRequest(ctx, req.GetRepo(), req.GetPullNumber())
+	pr, err := rf.author.GetPullRequest(ctx, req.GetRepo(), req.GetPrNumber())
 	if err != nil {
 		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "get_pull_request"}))
 	}

@@ -163,7 +163,7 @@ export const getIssueParameters = type({
 export const getPullRequestParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
-	pull_number: type("number.integer >= 1"),
+	pr_number: type("number.integer >= 1"),
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
@@ -193,7 +193,7 @@ export const commentOnIssueParameters = type({
 export const commentOnPullRequestParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
-	pull_number: type("number.integer >= 1"),
+	pr_number: type("number.integer >= 1"),
 	body: nonBlank(STAMP_DESC),
 });
 
@@ -206,7 +206,7 @@ export const commentOnPullRequestParameters = type({
 export const submitReviewParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
-	pull_number: type("number.integer >= 1"),
+	pr_number: type("number.integer >= 1"),
 	verdict: type("'approve' | 'request_changes' | 'comment'"),
 	"body?": type("string").describe(
 		"Review summary; required unless verdict is 'approve'. Do NOT include an attribution header — the server stamps it",
@@ -292,7 +292,7 @@ export const transitionIssueStateParameters = type({
 export const transitionPullRequestStateParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
-	pull_number: type("number.integer >= 1"),
+	pr_number: type("number.integer >= 1"),
 	state: type("'open' | 'closed'").describe("Target pull-request state"),
 });
 
@@ -511,7 +511,7 @@ function framedRead(records: string[]): string {
 // well-formed URL and slug). No fence: a single line names none.
 
 function reviewAck(
-	pullNumber: bigint,
+	prNumber: bigint,
 	review: ReviewRef,
 	fallbackVerdict: string,
 ): string {
@@ -519,7 +519,7 @@ function reviewAck(
 		review.verdict.length > 0
 			? normalizeVerdict(review.verdict)
 			: fallbackVerdict;
-	return `Submitted ${attr(verdict)} review on PR #${attr(String(pullNumber))}: ${ref(review.url)}`;
+	return `Submitted ${attr(verdict)} review on PR #${attr(String(prNumber))}: ${ref(review.url)}`;
 }
 
 // DL-206 dedup-hit: a replayed create returns a skeletal artifact carrying only
@@ -606,7 +606,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 						case: "getPullRequest",
 						value: create(GetPullRequestRequestSchema, {
 							repo: params.repo,
-							pullNumber: BigInt(params.pull_number),
+							prNumber: BigInt(params.pr_number),
 						}),
 					},
 					forge: forgeRef(params),
@@ -713,7 +713,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 							case: "commentOnPullRequest",
 							value: create(CommentOnPullRequestRequestSchema, {
 								repo: params.repo,
-								pullNumber: BigInt(params.pull_number),
+								prNumber: BigInt(params.pr_number),
 								body: params.body,
 							}),
 						},
@@ -730,7 +730,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 					content: [
 						{
 							type: "text",
-							text: `Commented on PR #${attr(String(BigInt(params.pull_number)))}: ${ref(result.result.value.url)}`,
+							text: `Commented on PR #${attr(String(BigInt(params.pr_number)))}: ${ref(result.result.value.url)}`,
 						},
 					],
 				};
@@ -751,7 +751,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 						case: "submitReview",
 						value: create(SubmitReviewRequestSchema, {
 							repo: params.repo,
-							pullNumber: BigInt(params.pull_number),
+							prNumber: BigInt(params.pr_number),
 							verdict: params.verdict,
 							body: params.body ?? "",
 							comments: (params.comments ?? []).map((c) =>
@@ -774,7 +774,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 					{
 						type: "text",
 						text: reviewAck(
-							BigInt(params.pull_number),
+							BigInt(params.pr_number),
 							result.result.value,
 							params.verdict,
 						),
@@ -916,7 +916,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 						case: "transitionPullRequestState",
 						value: create(TransitionPullRequestStateRequestSchema, {
 							repo: params.repo,
-							prNumber: BigInt(params.pull_number),
+							prNumber: BigInt(params.pr_number),
 							state: params.state,
 						}),
 					},
