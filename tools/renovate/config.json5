@@ -254,6 +254,63 @@
       datasourceTemplate: "git-refs",
     },
     {
+      // ── devenv nixpkgs channel: agent base image ──
+      // The agent base image resolves the same rolling channel the root dev
+      // shell does (agent-image/devenv.yaml `inputs.nixpkgs.url =
+      // github:cachix/devenv-nixpkgs/rolling`), so its concrete rev lives only
+      // in agent-image/devenv.lock — and until this manager existed nothing
+      // moved it: it only advanced when someone relocked by hand, while the
+      // three sibling pins (root channel, root fork, agent-image fork) all
+      // tracked. This manager surfaces it as a git-refs digest so Renovate
+      // opens a reviewable branch, and the coupled packageRule below relocks
+      // the file properly on that branch.
+      //
+      // WHAT THIS REV GOVERNS. It resolves the image's toolchain closure:
+      // agent-image/toolchain.nix overlays the repo's own vendored bun, but
+      // `pkgs.cacert`, `pkgs.devenv`, and `getent` come straight from this pin
+      // — and agent-image/entrypoint.nix's FOD builder takes
+      // `nativeBuildInputs = [ pkgs.bun ]` from it too, which is why the rule
+      // below must also refresh that `outputHash` (see its note).
+      //
+      // WHY NOT JUST WIDEN THE ROOT CHANNEL MANAGER'S managerFilePatterns. RD-1
+      // unifies the devenv SOURCE across the two scopes but deliberately does
+      // NOT reconcile the two locks — each tracks the channel on its OWN
+      // cadence, and the two revs are legitimately skewed today. A widened
+      // pattern would collapse both files into ONE dep carrying two
+      // conflicting digests. So this is a second manager over the second file,
+      // and its `depNameTemplate` is DISTINCT
+      // (`cachix/devenv-nixpkgs-agent-image`, not the upstream slug) so the two
+      // rules are independently governed and, crucially, land in DIFFERENT
+      // groups/branches — the same distinct-name fencing idiom the agent-image
+      // FORK manager above and the `postgres-stack` manager below use. The
+      // lockFileMaintenance-is-unimplementable reasoning on the fork managers
+      // applies verbatim here.
+      //
+      // Anchor: `"repo": "devenv-nixpkgs"` immediately followed by `"rev"`.
+      // devenv writes alphabetized keys inside each `locked` block (…owner,
+      // repo, rev, type…), so this pair is unique in the file — the `original`
+      // block repeats `"repo": "devenv-nixpkgs"` but is followed by `"ref"`,
+      // never `"rev"`, so the regex cannot mis-bind. The trailing `-nixpkgs`
+      // also keeps it off the `"devenv"` fork node the manager above owns (and
+      // that manager's closing `"devenv",` quote+comma keeps it off this one).
+      // The inner `nixpkgs-src` node (upstream NixOS/nixpkgs) is deliberately
+      // NOT matched: the relock refreshes it from this outer rev.
+      // config.test.ts pins the extraction against the real lock.
+      customType: "regex",
+      // The interior slash is escaped so the whole value reads unambiguously as
+      // a `/…/`-delimited regex, matching the agent-image fork manager above
+      // (behaviourally identical under Renovate's parseRegexMatch;
+      // config.test.ts pins the literal).
+      managerFilePatterns: ["/^agent-image\\/devenv\\.lock$/"],
+      matchStrings: [
+        "\"repo\": \"devenv-nixpkgs\",\\s*\"rev\": \"(?<currentDigest>[a-f0-9]{40})\"",
+      ],
+      depNameTemplate: "cachix/devenv-nixpkgs-agent-image",
+      packageNameTemplate: "https://github.com/cachix/devenv-nixpkgs",
+      currentValueTemplate: "rolling",
+      datasourceTemplate: "git-refs",
+    },
+    {
       // ── bun toolchain pin ──
       // tools/toolchain/versions/bun.nix pins the vendored bun version; the native
       // managers can't read a nix attr, so a regex manager surfaces it. bun tags
@@ -779,9 +836,85 @@
       groupName: "devenv fork (agent-image)",
       schedule: ["before 4am"],
       minimumReleaseAge: null,
+      // The FOD refresh rides LAST, after the relock: `agent-image/devenv.lock`
+      // is a declared trigger of the `agent-image/entrypoint.nix` entry (it
+      // supplies that consumer's `pkgs.bun`), so a branch that commits this lock
+      // must recompute the pin against the WRITTEN lock, not the still-at-base
+      // one. `agent-image/entrypoint.nix` is listed because fileFilters is an
+      // INCLUDE allowlist over what Renovate commits: without it the refreshed
+      // pin would be computed and then silently dropped.
       postUpgradeTasks: {
-        commands: ["bun tools/renovate/refresh-devenv-lock.ts"],
-        fileFilters: ["agent-image/devenv.lock"],
+        commands: [
+          "bun tools/renovate/refresh-devenv-lock.ts",
+          "bun tools/renovate/refresh-fod-hashes.ts",
+        ],
+        fileFilters: ["agent-image/devenv.lock", "agent-image/entrypoint.nix"],
+        executionMode: "branch",
+      },
+    },
+    {
+      // ── devenv nixpkgs channel currency: agent base image ──
+      // The agent-image sibling of the root channel rule above, scoped by the
+      // DISTINCT depName its manager stamps
+      // (`cachix/devenv-nixpkgs-agent-image`) and carrying its OWN groupName.
+      // Both properties are load-bearing: the distinct name keeps the two
+      // channel rules independently governed, and the distinct groupName is
+      // what puts the two locks on independent cadences (RD-1: unify the
+      // source, do NOT reconcile the locks) AND guarantees the branch-mode
+      // tasks never contend for one branch's single task slot. The rollup
+      // cannot capture this dep regardless — its update type is `digest` and
+      // the rollup admits only patch/minor. `minimumReleaseAge: null` for the
+      // same git-refs-carries-no-release-age reason as its siblings: a strict
+      // cooldown would peg the digest permanently `pending` and cut zero PRs
+      // (the RIG-1220 silent-no-updates shape), and the compensating control is
+      // the mandatory human review of the PR before merge (no automerge is
+      // configured). Daily, in the same before-4am-ET window the daily cron
+      // lands in — matching the root channel rule's cadence, since `rolling`
+      // moves near-daily.
+      matchManagers: ["custom.regex"],
+      matchDepNames: ["cachix/devenv-nixpkgs-agent-image"],
+      groupName: "devenv nixpkgs channel (agent-image)",
+      schedule: ["before 4am"],
+      minimumReleaseAge: null,
+      // ── The relock task. ──
+      // A SEPARATE script from the root channel's lockstep, deliberately: that
+      // one's tail is root-only (eval biome from the resolved raw nixpkgs,
+      // rewrite the biome catalog pin, re-resolve bun.lock, lockstep
+      // flake.nix/flake.lock), and NEITHER coupling exists in this scope —
+      // agent-image/devenv.nix is `packages = [ ]` (it bakes nothing into a
+      // dev shell; the devenv exists only to express the container) and there
+      // is no agent-image/flake.nix. This script relocks the channel input in
+      // agent-image/ under that lock's OWN devenv, then refreshes the FOD hash.
+      //
+      // WHY THE FOD REFRESH IS PRESENT HERE (unlike the root channel rule, which
+      // documents its exemption): this rev resolves the bun that
+      // agent-image/entrypoint.nix's FOD builder uses (`nativeBuildInputs = [
+      // pkgs.bun ]`), and that install tree IS what its `outputHash`
+      // content-addresses. So a channel advance here can move the hash with no
+      // manifest change at all — left stale, the image build fails
+      // `hash mismatch in fixed-output derivation`.
+      //
+      // `executionMode: "branch"` runs it once after the digest update is
+      // applied; safe because this dep never shares a branch (its own groupName
+      // above), so it owns the single branch-mode task slot Renovate builds per
+      // branch. Rule-level postUpgradeTasks REPLACE the top-level one for
+      // matching branches; the evicted top-level task self-gates on the
+      // versions/*.nix pins + go.mod/bun.lock and would be a no-op here anyway
+      // — but note its FOD leg is exactly what this script re-does in step 3,
+      // which is why the refresh must be wired here rather than relied upon
+      // from the evicted slot. fileFilters is an INCLUDE allowlist — Renovate
+      // commits ONLY files matching it — so it names EXACTLY the two files this
+      // task writes: the lock (the relock) and entrypoint.nix (the FOD hash).
+      // Omit the latter and Renovate would run the refresh but silently DROP
+      // it, shipping a channel bump whose outputHash never moved.
+      //
+      // Self-hosted bot config MUST allow the command:
+      //   allowedCommands: [… , "^bun tools/renovate/refresh-agent-image-nixpkgs\\.ts$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins the two
+      // together).
+      postUpgradeTasks: {
+        commands: ["bun tools/renovate/refresh-agent-image-nixpkgs.ts"],
+        fileFilters: ["agent-image/devenv.lock", "agent-image/entrypoint.nix"],
         executionMode: "branch",
       },
     },
