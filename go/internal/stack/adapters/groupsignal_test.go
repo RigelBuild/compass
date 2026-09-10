@@ -78,10 +78,11 @@ func TestGroupSignallerUnknownSignal(t *testing.T) {
 // of the /proc/<pid>/stat field-22 parse against the parenthesized-comm gotcha:
 // a comm with embedded spaces AND parens must not throw off the field count. It
 // mirrors stack.TestReadStartTimeProcParsesParenthesizedComm so the two parsers
-// (deliberately duplicated, groupsignal.go:93-97) cannot drift on the
+// (deliberately duplicated, see readGroupLeaderStartTime) cannot drift on the
 // load-bearing identity token — a "simplify to strings.Fields(line)" regression
 // here would be caught rather than only by the real-/proc integration test whose
-// comm has no embedded spaces.
+// comm has no embedded spaces. The darwin encoding has its own mirrored pair,
+// TestPackGroupLeaderTimevalMatchesSpawnSide, for the same reason.
 func TestParseGroupLeaderStatParsesParenthesizedComm(t *testing.T) {
 	// comm is "(weird )(name)" — embedded spaces and parens; starttime (field 22)
 	// is 987654.

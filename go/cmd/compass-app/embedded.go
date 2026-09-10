@@ -373,18 +373,34 @@ func resolveImage(flagValue string) string {
 // the app-side DSN duplicate are gone (§A2 reconciliation 1): under DL-260
 // postgres is a container the stack itself starts, so a pre-`up` reachability
 // probe has no signal on the cold-start path — `up`-Ready is the DB
-// verification. On darwin the machine adapter is wired by T-6; a nil
-// MachineReady here leaves that check absent until then (design §A5).
+// verification. MachineReady comes from the per-OS machineReadyAdapter: on
+// darwin it is the podman-machine ensure step (provision or start the Linux VM,
+// then re-probe — design §A5), and on linux it is nil because there is no
+// machine. The preflight core keys the check off GOOS and FAILS on darwin when
+// the adapter is nil, so this wiring cannot regress into a silently-skipped
+// check.
 func realPreflight(image string) func(ctx context.Context) error {
-	deps := preflight.Deps{
-		GOOS:           runtime.GOOS,
-		PodmanRootless: podmanRootless,
-		PodmanVersion:  podmanVersionAtLeastFloor,
-		ImagePresent:   imagePresent,
-	}
+	deps := realPreflightDeps(runtime.GOOS)
 	params := preflight.Params{AgentImage: image}
 	return func(ctx context.Context) error {
 		return classifyPreflight(deps.Run(ctx, params))
+	}
+}
+
+// realPreflightDeps assembles the Deps literal for the given host OS. It takes
+// goos as an argument, rather than reading runtime.GOOS itself, so a test
+// running on ANY host can assert what the darwin wiring carries — the machine
+// check going missing on darwin is the exact regression this seam exists to
+// catch, and it is unobservable from a linux test if the builder resolves its
+// own OS. The one goos value feeds both the core's check selection and the
+// machine adapter, so the two cannot disagree about which host this is.
+func realPreflightDeps(goos string) preflight.Deps {
+	return preflight.Deps{
+		GOOS:           goos,
+		PodmanRootless: podmanRootless,
+		PodmanVersion:  podmanVersionAtLeastFloor,
+		MachineReady:   machineReadyAdapter(goos),
+		ImagePresent:   imagePresent,
 	}
 }
 
