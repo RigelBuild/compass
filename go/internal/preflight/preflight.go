@@ -81,10 +81,15 @@ const (
 	CheckImage         = checkImage
 )
 
-// Run executes every host precondition in order and returns one Result per
-// check. It does NOT short-circuit: an operator should see every failing
-// precondition at once, so all checks run even after an earlier failure. Call
-// the returned Results' Err method to fold the failures into one legible error.
+// Run executes every host precondition and returns one Result per check. It
+// does NOT short-circuit: an operator should see every failing precondition at
+// once, so all checks run even after an earlier failure. Call the returned
+// Results' Err method to fold the failures into one legible error.
+//
+// Execution order is load-bearing on darwin: the machine check provisions the
+// Linux VM that the podman probes talk to, so it runs first. The order results
+// are APPENDED in is separate, and is the reporting order Err formats — the
+// machine result is appended after the podman probes so a root cause leads.
 func (d Deps) Run(ctx context.Context, p Params) Results {
 	results := make(Results, 0, 5)
 
@@ -95,7 +100,60 @@ func (d Deps) Run(ctx context.Context, p Params) Results {
 	}
 	results = append(results, osRes)
 
-	// (2) Rootless podman present.
+	// (2) Darwin podman machine ready. macOS runs podman inside a Linux VM. On
+	// linux there is no machine, so the check is correctly absent. On darwin the
+	// check ALWAYS appears: a missing adapter is reported as a failure, never
+	// skipped, so a wiring regression cannot turn a broken host into a green
+	// preflight. It is reported rather than panicked because the caller's
+	// failure path already surfaces legible copy, and a panic in a GUI binary
+	// would replace that copy with a stack trace.
+	//
+	// This runs BEFORE the podman probes below, and the order is load-bearing
+	// on darwin. Every podman command that reaches the container ENGINE talks
+	// to the Linux VM (the `podman machine ...` subcommands are exactly the
+	// ones that do not, which is why this check's adapter can provision it), so
+	// with no machine those probes fail outright. Measured on macOS 26.5.1 with
+	// podman 5.8.6 and no machine, both exit 125 with "Cannot connect to Podman
+	// ... try `podman machine init`", on the exact argv each check runs:
+	//
+	//	podman info                                 -> 125
+	//	podman version --format {{.Client.Version}} -> 125
+	//
+	// Since this check's adapter PROVISIONS the machine, running it first turns
+	// those two probes from guaranteed failures into real checks. Ordered the
+	// other way a fresh Mac, the exact host this check exists to serve, failed
+	// preflight with "rootless podman is required" even though provisioning
+	// then succeeded: Run deliberately does not short-circuit, and both probes
+	// are fatal.
+	//
+	// The cost of this order: provisioning is minutes long and creates state,
+	// so a host running a below-floor podman now pays a full machine init
+	// before check (4) refuses it. That is accepted because the alternative is
+	// worse — the version probe cannot run at all without a machine (measured
+	// above), so ordering it first would refuse EVERY fresh Mac rather than
+	// only the below-floor ones.
+	//
+	// Execution order and REPORTING order differ deliberately. Err formats
+	// failures in slice order, so the machine result is appended AFTER the two
+	// podman results below: on a Mac with no podman installed at all, the root
+	// cause ("rootless podman is required") should lead the message rather than
+	// the symptom it causes ("the podman machine is not ready").
+	darwin := d.GOOS == "darwin"
+	var machineRes Result
+	if darwin {
+		machineRes = Result{Name: checkMachine, OK: true}
+		if d.MachineReady == nil {
+			machineRes.OK = false
+			machineRes.Detail = "no podman machine adapter is wired on darwin; " +
+				"embedded mode cannot verify the Linux VM podman runs inside " +
+				"(this is a build/wiring defect, not a host condition)"
+		} else if err := d.MachineReady(ctx); err != nil {
+			machineRes.OK = false
+			machineRes.Detail = fmt.Sprintf("the podman machine is not ready: %v", err)
+		}
+	}
+
+	// (3) Rootless podman present.
 	podmanRes := Result{Name: checkPodman, OK: true}
 	if err := d.PodmanRootless(ctx); err != nil {
 		podmanRes.OK = false
@@ -103,7 +161,7 @@ func (d Deps) Run(ctx context.Context, p Params) Results {
 	}
 	results = append(results, podmanRes)
 
-	// (3) Podman is new enough for the userns remap (>= 4.3). The runner
+	// (4) Podman is new enough for the userns remap (>= 4.3). The runner
 	// enforces this at startup, but that refusal is swallowed on the embedded
 	// fire-and-return path (design §A3 delta 4), so it is surfaced here at the
 	// front door. The probe's error already carries the "podman N.N or newer is
@@ -115,24 +173,9 @@ func (d Deps) Run(ctx context.Context, p Params) Results {
 	}
 	results = append(results, pvRes)
 
-	// (4) Darwin podman machine ready. macOS runs podman inside a Linux VM. On
-	// linux there is no machine, so the check is correctly absent. On darwin the
-	// check ALWAYS appears: a missing adapter is reported as a failure, never
-	// skipped, so a wiring regression cannot turn a broken host into a green
-	// preflight. It is reported rather than panicked because the caller's
-	// failure path already surfaces legible copy, and a panic in a GUI binary
-	// would replace that copy with a stack trace.
-	if d.GOOS == "darwin" {
-		machineRes := Result{Name: checkMachine, OK: true}
-		if d.MachineReady == nil {
-			machineRes.OK = false
-			machineRes.Detail = "no podman machine adapter is wired on darwin; " +
-				"embedded mode cannot verify the Linux VM podman runs inside " +
-				"(this is a build/wiring defect, not a host condition)"
-		} else if err := d.MachineReady(ctx); err != nil {
-			machineRes.OK = false
-			machineRes.Detail = fmt.Sprintf("the podman machine is not ready: %v", err)
-		}
+	// The darwin machine result RAN above, before both podman probes; it is
+	// reported here so a genuine "podman is not installed" leads the message.
+	if darwin {
 		results = append(results, machineRes)
 	}
 
