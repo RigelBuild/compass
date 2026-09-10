@@ -261,14 +261,12 @@ tasks:
     # runs identically in CI and in a secondary jj workspace; a `git status`
     # check would false-green where the workspace is not a git checkout.
     #
-    # WHY OUT-OF-TREE (RIG-3591): this regenerated IN PLACE, and moon schedules
-    # it in PARALLEL with build/nilaway/test, which compile the same directory.
-    # A reader caught a generated file mid-write and failed with
-    # `expected 'package', found 'EOF'` on a different random file each run,
-    # aborting the whole push. sqlc has no output-redirect flag, so the scratch
-    # dir carries the inputs (sqlc.yaml + queries + migrations) and `out:`
-    # resolves relative to it, leaving the working tree untouched.
-    script: 'tmp=$(mktemp -d); trap ''rm -rf "$tmp"'' EXIT; mkdir -p "$tmp/internal/store"; cp -R internal/store/queries "$tmp/internal/store/queries"; cp -R internal/store/migrations "$tmp/internal/store/migrations"; cp sqlc.yaml "$tmp/sqlc.yaml"; (cd "$tmp" && sqlc generate); if ! git diff --no-index --quiet internal/store/db "$tmp/internal/store/db"; then echo "sqlc drift: internal/store/db is stale — run \`moon run compass-go:sqlc-gen\` and commit:"; git diff --no-index internal/store/db "$tmp/internal/store/db"; exit 1; fi'
+    # Generate OUT OF TREE (RIG-3591): moon runs this in parallel with
+    # build/nilaway/test, so an in-place regenerate raced their reads. sqlc has
+    # no output-redirect flag, so the scratch dir carries the inputs and `out:`
+    # resolves relative to it. `set -e` so a failing sqlc aborts here instead of
+    # reporting its empty output as drift.
+    script: 'set -e; tmp=$(mktemp -d); trap ''rm -rf "$tmp"'' EXIT; mkdir -p "$tmp/internal/store"; cp -R internal/store/queries "$tmp/internal/store/queries"; cp -R internal/store/migrations "$tmp/internal/store/migrations"; cp sqlc.yaml "$tmp/sqlc.yaml"; (cd "$tmp" && sqlc generate); if ! git diff --no-index --quiet internal/store/db "$tmp/internal/store/db"; then echo "sqlc drift: internal/store/db is stale — run \`moon run compass-go:sqlc-gen\` and commit:"; git diff --no-index internal/store/db "$tmp/internal/store/db"; exit 1; fi'
     options:
       runFromWorkspaceRoot: false
     inputs: *sqlc_sources
