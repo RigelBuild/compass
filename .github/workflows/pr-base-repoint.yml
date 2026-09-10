@@ -35,8 +35,13 @@ permissions:
 
 # One re-trigger in flight per PR. A second base re-point supersedes the first;
 # the older dispatch is answering a question about a base that no longer holds.
+#
+# The group is partitioned by event class because a body edit arrives ~2s after
+# a base re-point on the same PR: sharing one group, it cancelled the re-point
+# run before its dispatch step and then skipped itself, leaving the PR on stale
+# checks with nothing red to show for it.
 concurrency:
-  group: pr-base-repoint-${{ github.event.pull_request.number }}
+  group: pr-base-repoint-${{ github.event.pull_request.number }}-${{ github.event.changes.base != null && 'repoint' || 'edit' }}
   cancel-in-progress: true
 
 jobs:
