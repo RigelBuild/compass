@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
@@ -42,9 +43,33 @@ import (
 // context-bound. It is generous because a cold first run pulls THREE images —
 // the agent image from GHCR plus the stock postgres and collector images
 // (DL-260) — before the stack reaches Ready, so the window covers three
-// sequential registry pulls, not one. (darwin machine-init time is A5/T-6's
-// concern and not folded in here.)
-const bringUpTimeout = 180 * time.Second
+// sequential registry pulls, not one.
+//
+// On darwin the window is wider still. The machine ensure step runs inside it,
+// and a cold `podman machine init` downloads a VM image before any of the
+// above starts — minutes on its own, on a link whose speed we do not control.
+// A budget that cannot fit the work it wraps is not a backstop; it is a
+// deadline the first launch on a fresh Mac loses every time, and the error it
+// produces names the timeout rather than the download. So darwin gets a window
+// sized for cold provisioning plus the same three pulls. Both remain backstops
+// against a wedge, not performance targets.
+//
+// The bring-up runs entirely BEFORE the window opens, so on darwin a genuinely
+// wedged provision is now a silent wait of this length with no UI at all. The
+// provisioning state that would make a long-but-healthy first run legible is
+// not built yet; until it is, this number buys a working first launch at the
+// cost of a worse failure mode for a hung one.
+var bringUpTimeout = bringUpTimeoutFor(runtime.GOOS)
+
+// bringUpTimeoutFor returns the bring-up budget for the given host OS. It takes
+// the OS as a parameter rather than reading runtime.GOOS so the per-OS choice
+// is unit-testable from any host.
+func bringUpTimeoutFor(goos string) time.Duration {
+	if goos == "darwin" {
+		return 15 * time.Minute
+	}
+	return 180 * time.Second
+}
 
 func main() {
 	if err := run(); err != nil {

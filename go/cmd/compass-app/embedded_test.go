@@ -489,6 +489,72 @@ func TestClassifyPreflightHostCapFatalEvenWithAdvisoryUnmet(t *testing.T) {
 	}
 }
 
+// TestRealPreflightDepsWiresDarwinMachineAdapter is the regression guard for the
+// silent skip: realPreflightDeps must carry a non-nil MachineReady on darwin. It
+// asserts the WIRING, not a probe result, so it fails on a linux CI host the
+// moment the adapter is dropped from the Deps literal — the defect was
+// invisible precisely because a missing adapter produced no failing check.
+func TestRealPreflightDepsWiresDarwinMachineAdapter(t *testing.T) {
+	deps := realPreflightDeps("darwin")
+	if deps.MachineReady == nil {
+		t.Fatal("realPreflightDeps left MachineReady nil on darwin; the machine check would be a wiring failure")
+	}
+	if deps.GOOS != "darwin" {
+		t.Errorf("GOOS = %q, want the injected darwin", deps.GOOS)
+	}
+}
+
+// TestRealPreflightDepsLeavesLinuxMachineUnwired: linux podman is native, so
+// there is no machine adapter — the core keys the check off GOOS and omits it
+// here. This pins that closing the darwin hole did not add a bogus linux check.
+// It asserts only the WIRING: running deps here would shell the real podman
+// probes, and the core package already owns the absent-on-linux assertion
+// hermetically (preflight.TestRunMachineCheckAbsentOnLinux).
+func TestRealPreflightDepsLeavesLinuxMachineUnwired(t *testing.T) {
+	deps := realPreflightDeps("linux")
+	if deps.MachineReady != nil {
+		t.Fatal("realPreflightDeps wired a machine adapter on linux; there is no machine to check")
+	}
+	if deps.GOOS != "linux" {
+		t.Errorf("GOOS = %q, want the injected linux", deps.GOOS)
+	}
+}
+
+// TestClassifyPreflightMachineUnmetIsFatal verifies — rather than assumes — that
+// a failing machine check reaches the FATAL fold. classifyPreflight special-cases
+// only CheckImage as advisory, so the machine check falls to the default arm;
+// this exercises that path end-to-end so the doc comment's "fatal on darwin"
+// claim is enforced by a test rather than by reading the switch.
+func TestClassifyPreflightMachineUnmetIsFatal(t *testing.T) {
+	machineErr := errors.New("no podman machine exists")
+	deps := classifyDeps()
+	deps.GOOS = "darwin"
+	deps.MachineReady = func(context.Context) error { return machineErr }
+	err := classify(t, deps)
+	if err == nil {
+		t.Fatal("machine unmet on darwin: classify err = nil, want fatal")
+	}
+	if !strings.Contains(err.Error(), machineErr.Error()) {
+		t.Errorf("fatal error %q does not carry the machine failure", err.Error())
+	}
+}
+
+// TestClassifyPreflightUnwiredDarwinMachineIsFatal: the wiring defect itself is
+// fatal, not advisory — a darwin build whose machine adapter went missing
+// refuses to launch instead of proceeding on an unverified host.
+func TestClassifyPreflightUnwiredDarwinMachineIsFatal(t *testing.T) {
+	deps := classifyDeps()
+	deps.GOOS = "darwin"
+	deps.MachineReady = nil
+	err := classify(t, deps)
+	if err == nil {
+		t.Fatal("unwired machine adapter on darwin: classify err = nil, want fatal")
+	}
+	if !strings.Contains(err.Error(), "no podman machine adapter is wired") {
+		t.Errorf("fatal error %q does not name the wiring defect", err.Error())
+	}
+}
+
 // TestRunStackUpDeadlineExceededNamesBringUpWindow: when the child fails because
 // the context deadline was exceeded, the error names the bring-up window (the
 // likely cause) rather than surfacing a bare deadline error. Driven with an

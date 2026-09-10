@@ -5,6 +5,7 @@ package main
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestDistDirForExecutable pins the packaging-layout dist resolution: a macOS
@@ -49,4 +50,31 @@ func TestDistDirForExecutable(t *testing.T) {
 			t.Errorf("got %q, want %q (bare MacOS dir is not a .app bundle)", got, want)
 		}
 	})
+}
+
+// TestBringUpTimeoutBudgetsDarwinColdProvisioning pins that darwin gets a
+// materially wider bring-up window than linux. The machine ensure step runs
+// inside this budget, and a cold `podman machine init` downloads a VM image
+// before the stack pulls a single container image, so a linux-sized window
+// would deadline every first launch on a fresh Mac and report the timeout
+// instead of the download. The assertion is a floor and a relation, not the
+// literal figures: re-tuning either budget is fine, collapsing the darwin one
+// back onto the linux one is the regression.
+func TestBringUpTimeoutBudgetsDarwinColdProvisioning(t *testing.T) {
+	linux := bringUpTimeoutFor("linux")
+	darwin := bringUpTimeoutFor("darwin")
+
+	if darwin <= linux {
+		t.Errorf("bringUpTimeoutFor(darwin) = %v, not greater than linux %v; a cold "+
+			"podman machine init cannot fit a linux-sized window", darwin, linux)
+	}
+	// A cold VM-image download plus three registry pulls does not fit in five
+	// minutes on an ordinary connection.
+	if darwin < 10*time.Minute {
+		t.Errorf("bringUpTimeoutFor(darwin) = %v, too tight for a cold machine init "+
+			"plus three image pulls", darwin)
+	}
+	if linux <= 0 {
+		t.Errorf("bringUpTimeoutFor(linux) = %v, want a positive backstop", linux)
+	}
 }

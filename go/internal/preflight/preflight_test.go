@@ -120,20 +120,44 @@ func TestRunMachineNotReadyOnDarwin(t *testing.T) {
 	assertErrContains(t, rs.Err(), "machine stopped")
 }
 
-// TestRunMachineAbsentOnDarwinWithoutAdapter: on darwin with no MachineReady
-// adapter wired (the pre-T-6 state), the machine check is absent rather than a
-// spurious failure — the seam is wired, the adapter lands in T-6.
-func TestRunMachineAbsentOnDarwinWithoutAdapter(t *testing.T) {
+// TestRunMachineCheckFailsOnDarwinWithoutAdapter: a nil MachineReady on darwin
+// is a wiring defect, and the check FAILS rather than vanishing. Omitting it
+// would hand a Mac with no podman machine an all-green preflight followed by an
+// undiagnosable downstream failure — the silent skip this behavior removes.
+func TestRunMachineCheckFailsOnDarwinWithoutAdapter(t *testing.T) {
 	ctx := context.Background()
 	rs := okDeps("darwin").Run(ctx, testParams)
 
-	for _, r := range rs {
-		if r.Name == checkMachine {
-			t.Fatalf("machine check present on darwin without an adapter: %v", rs)
-		}
+	got := resultByName(t, rs, checkMachine)
+	if got.OK {
+		t.Fatal("machine check passed on darwin with no adapter wired; it must fail, never be skipped")
 	}
-	if err := rs.Err(); err != nil {
-		t.Errorf("want nil error on darwin with no machine adapter, got %v", err)
+	if !strings.Contains(got.Detail, "no podman machine adapter is wired") {
+		t.Errorf("machine detail %q does not name the missing adapter", got.Detail)
+	}
+	assertErrContains(t, rs.Err(), "no podman machine adapter is wired")
+}
+
+// TestRunMachineCheckAlwaysPresentOnDarwin: the machine check is present in the
+// results on darwin for EVERY adapter state — ready, failing, or unwired. The
+// regression this pins is the check being absent from a darwin run, which reads
+// as a pass to any caller that classifies by result.
+func TestRunMachineCheckAlwaysPresentOnDarwin(t *testing.T) {
+	ctx := context.Background()
+	adapters := map[string]func(context.Context) error{
+		"ready":   func(context.Context) error { return nil },
+		"failing": func(context.Context) error { return errors.New("machine down") },
+		"unwired": nil,
+	}
+	for name, adapter := range adapters {
+		t.Run(name, func(t *testing.T) {
+			d := okDeps("darwin")
+			d.MachineReady = adapter
+			rs := d.Run(ctx, testParams)
+			// resultByName t.Fatalf's when the check is missing, which IS the
+			// assertion: an absent machine check fails this test.
+			resultByName(t, rs, checkMachine)
+		})
 	}
 }
 
