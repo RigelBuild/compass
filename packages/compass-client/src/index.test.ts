@@ -17,7 +17,9 @@ import {
 	createRouterTransport,
 	GetServerInfoResponseSchema,
 	parseTraceResponse,
+	posthogSessionHeader,
 	SubscribeCommsResponseSchema,
+	sessionIdInterceptor,
 	type TraceIdSink,
 	type Transport,
 	traceResponseInterceptor,
@@ -78,7 +80,11 @@ type FetchLike = (
 // transport has already invoked fetch and the capture is populated.
 async function captureRequest(
 	run: (fetch: FetchLike) => Promise<unknown>,
-): Promise<{ url: string; authorization: string | null }> {
+): Promise<{
+	url: string;
+	authorization: string | null;
+	sessionId: string | null;
+}> {
 	let url = "";
 	let headers = new Headers();
 	const fetch: FetchLike = async (input, init) => {
@@ -87,7 +93,14 @@ async function captureRequest(
 		throw new Error("captureRequest: short-circuit before response");
 	};
 	await expect(run(fetch)).rejects.toThrow();
-	return { url, authorization: headers.get("authorization") };
+	return {
+		url,
+		authorization: headers.get("authorization"),
+		// Reported so the session-id cases can assert PRESENCE with a value and
+		// ABSENCE as `null` — an empty-string header would read back as "" and is
+		// a distinct (and forbidden) outcome from absent.
+		sessionId: headers.get(posthogSessionHeader),
+	};
 }
 
 describe("bearerAuthInterceptor", () => {
@@ -590,6 +603,278 @@ describe("traceResponseInterceptor round-trips through a real transport", () => 
 	});
 });
 
+// A counting `next` returning a Symbol sentinel, plus a REAL `Headers` request
+// — the direct-interceptor seam, following the bearerAuthInterceptor precedent
+// above. The real `Headers` is what makes a `Headers.set` TypeError reachable,
+// and the sentinel is what proves nothing threw.
+//
+// This seam exists because `captureRequest` CANNOT witness a would-throw case:
+// its capturing fetch always throws, so it must gate on
+// `rejects.toThrow()` — which a broken interceptor's own TypeError satisfies —
+// and its header readback is a pre-initialized empty `Headers`, so absence also
+// passes. Both assertions go green on exactly the defect. Never route a
+// would-throw value onto the capture seam.
+function directSeam() {
+	let calls = 0;
+	const sentinel = Symbol("next-response");
+	const next = (_req: unknown) => {
+		calls++;
+		return Promise.resolve(sentinel);
+	};
+	const req = { header: new Headers() };
+	return {
+		req,
+		sentinel,
+		next,
+		get calls() {
+			return calls;
+		},
+	};
+}
+
+describe("sessionIdInterceptor stamps only a sendable session id", () => {
+	const validId = "0199a1b2-3c4d-7e8f-9012-3456789abcde";
+
+	// The header name is a WIRE CONTRACT with the server's J1 interceptor
+	// (go/internal/otel/interceptor.go, PostHogSessionHeader) and is CORS-allowed
+	// by exactly that string in the network door. Every other case reads the
+	// header through the exported const, so all of them would stay green under a
+	// rename; only this pins the literal both ends must agree on.
+	test("the header name is exactly X-POSTHOG-SESSION-ID", () => {
+		expect(posthogSessionHeader).toBe("X-POSTHOG-SESSION-ID");
+	});
+
+	test("a valid id is carried on the request as X-POSTHOG-SESSION-ID", async () => {
+		const { url, sessionId } = await captureRequest((fetch) =>
+			createCompassClient(
+				createCompassWebTransport("http://compass.localhost", undefined, {
+					fetch: fetch as typeof globalThis.fetch,
+					sessionId: () => validId,
+				}),
+			).getServerInfo({}),
+		);
+
+		expect(url).toBe(
+			"http://compass.localhost/compass.v1.CompassService/GetServerInfo",
+		);
+		expect(sessionId).toBe(validId);
+	});
+
+	// Analytics off (NoopAnalytics.sessionId() ⇒ undefined) must send NO header
+	// at all, not an empty one: an empty header spends wire bytes asserting a
+	// correlation that does not exist, and the server trim-drops it anyway.
+	test("getter returns undefined ⇒ the header is absent, not empty", async () => {
+		const { sessionId } = await captureRequest((fetch) =>
+			createCompassClient(
+				createCompassWebTransport("http://compass.localhost", undefined, {
+					fetch: fetch as typeof globalThis.fetch,
+					sessionId: () => undefined,
+				}),
+			).getServerInfo({}),
+		);
+
+		expect(sessionId).toBeNull();
+	});
+
+	// posthog-js's get_session_id() legitimately returns "" before it is fully
+	// initialized; the guard's `+` quantifier rejects it.
+	test('getter returns "" ⇒ the header is absent', async () => {
+		const { sessionId } = await captureRequest((fetch) =>
+			createCompassClient(
+				createCompassWebTransport("http://compass.localhost", undefined, {
+					fetch: fetch as typeof globalThis.fetch,
+					sessionId: () => "",
+				}),
+			).getServerInfo({}),
+		);
+
+		expect(sessionId).toBeNull();
+	});
+
+	test("201 ASCII chars ⇒ over the cap, the header is absent", async () => {
+		const { sessionId } = await captureRequest((fetch) =>
+			createCompassClient(
+				createCompassWebTransport("http://compass.localhost", undefined, {
+					fetch: fetch as typeof globalThis.fetch,
+					sessionId: () => "a".repeat(201),
+				}),
+			).getServerInfo({}),
+		);
+
+		expect(sessionId).toBeNull();
+	});
+
+	// The boundary the `<=` in `id.length <= MAX_SESSION_ID_LEN` owns: a `<`
+	// typo reddens HERE and nowhere else, because the 201 case stays green under
+	// both operators. 200 is legal on the server too — its check is
+	// `len(id) > maxSessionIDLen` — so refusing it would be needlessly stricter
+	// than the wire contract.
+	test("exactly 200 ASCII chars ⇒ at the cap, the header is PRESENT", async () => {
+		const atCap = "a".repeat(200);
+		const { sessionId } = await captureRequest((fetch) =>
+			createCompassClient(
+				createCompassWebTransport("http://compass.localhost", undefined, {
+					fetch: fetch as typeof globalThis.fetch,
+					sessionId: () => atCap,
+				}),
+			).getServerInfo({}),
+		);
+
+		expect(sessionId).toBe(atCap);
+	});
+
+	// A Latin-1 value does NOT throw — `Headers.set` accepts U+0080–U+00FF — so
+	// the capture seam is the right one here and the readback IS the whole
+	// assertion. What the ASCII guard buys: without it a browser emits this as
+	// a single raw high byte, which fails the server's utf8.ValidString check,
+	// so the id is silently DROPPED. Not asserting transmitted bytes here —
+	// that is a transport-encoding property, not this interceptor's contract.
+	test("a Latin-1 value (sess-é) ⇒ the header is absent", async () => {
+		const { sessionId } = await captureRequest((fetch) =>
+			createCompassClient(
+				createCompassWebTransport("http://compass.localhost", undefined, {
+					fetch: fetch as typeof globalThis.fetch,
+					sessionId: () => "sess-é",
+				}),
+			).getServerInfo({}),
+		);
+
+		expect(sessionId).toBeNull();
+	});
+
+	// ONE transport, hence ONE interceptor instance, driven across two requests
+	// with a different capturing fetch each time. Building a fresh transport per
+	// request would let a construction-time memo re-read the getter and pass
+	// both multi-request cases below, which is exactly the defect they exist to
+	// catch — so the fetch is indirected through a mutable slot instead.
+	function oneClientAcrossRequests(sessionId: () => string | undefined) {
+		let currentFetch: FetchLike = () =>
+			Promise.reject(new Error("oneClientAcrossRequests: no fetch installed"));
+		const client = createCompassClient(
+			createCompassWebTransport("http://compass.localhost", undefined, {
+				fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+					currentFetch(input, init)) as typeof globalThis.fetch,
+				sessionId,
+			}),
+		);
+		return (fetch: FetchLike) => {
+			currentFetch = fetch;
+			return client.getServerInfo({});
+		};
+	}
+
+	test("the getter is called per request, so a fresh value is sent", async () => {
+		const ids = ["sess-first", "sess-second"];
+		let call = 0;
+		const build = oneClientAcrossRequests(() => ids[call++]);
+
+		const first = await captureRequest(build);
+		const second = await captureRequest(build);
+
+		expect(first.sessionId).toBe("sess-first");
+		expect(second.sessionId).toBe("sess-second");
+	});
+
+	// Self-healing, the direction forward-propagation does NOT cover: a
+	// construction-time cache or a first-value memo still passes the laziness
+	// case above while failing this one, because it would pin the early empty
+	// value forever.
+	test('"" on the first call then a valid id on the second ⇒ only the second carries the header', async () => {
+		const ids: (string | undefined)[] = ["", validId];
+		let call = 0;
+		const build = oneClientAcrossRequests(() => ids[call++]);
+
+		const first = await captureRequest(build);
+		const second = await captureRequest(build);
+
+		expect(first.sessionId).toBeNull();
+		expect(second.sessionId).toBe(validId);
+	});
+
+	// The guard is deliberately NARROWER than `Headers.set`: set accepts a space,
+	// a tab, and DEL, and this rejects all three. Nothing else asserts that extra
+	// narrowing, so widening the class one codepoint (0x20 for 0x21) would put a
+	// space-bearing value on the wire unnoticed. Capture seam is correct here —
+	// none of these makes `Headers.set` throw, so the readback IS the assertion.
+	const narrowerThanHeadersSet: [string, string][] = [
+		["a space", "sess id"],
+		["a tab", "sess\tid"],
+		["a DEL byte", "sess\x7f"],
+	];
+
+	for (const [label, value] of narrowerThanHeadersSet) {
+		test(`${label} ⇒ the header is absent, though Headers.set would take it`, async () => {
+			const { sessionId } = await captureRequest((fetch) =>
+				createCompassClient(
+					createCompassWebTransport("http://compass.localhost", undefined, {
+						fetch: fetch as typeof globalThis.fetch,
+						sessionId: () => value,
+					}),
+				).getServerInfo({}),
+			);
+
+			expect(sessionId).toBeNull();
+		});
+	}
+});
+
+// Three values that make `Headers.set` THROW a TypeError, so a missing guard
+// would fail the whole RPC rather than merely lose a correlation key. Each case
+// asserts the full triple: header absent, `next` ran exactly once, and the
+// awaited result IS the sentinel — the third is load-bearing, since it cannot
+// pass if the interceptor threw before reaching `next`. Values are kept SHORT
+// on purpose: a long non-ASCII value is rejected by the length cap first and
+// never reaches `header.set`, so it could not exercise the throw at all.
+describe("sessionIdInterceptor rejects would-throw values without failing the request", () => {
+	const wouldThrow: [string, string][] = [
+		["a non-Latin-1 id (> U+00FF)", "sess-日本語"],
+		["a value containing CRLF", "sess\r\nx"],
+		["a lone surrogate", "\uD800"],
+	];
+
+	for (const [label, value] of wouldThrow) {
+		test(`${label} ⇒ no header, next still ran, nothing threw`, async () => {
+			const seam = directSeam();
+
+			const result = await sessionIdInterceptor(() => value)(
+				seam.next as never,
+			)(seam.req as never);
+
+			expect(seam.req.header.get(posthogSessionHeader)).toBeNull();
+			expect(seam.calls).toBe(1);
+			expect(result as unknown).toBe(seam.sentinel);
+		});
+	}
+});
+
+// `undefined` and `""` are absent-value cases rather than values `Headers.set`
+// rejects — but the GUARD can throw on them, which puts them in the class above:
+// a bare `SENDABLE.test(undefined)` coerces to the string "undefined" and
+// PASSES, so evaluation reaches `id.length` on undefined and throws. So the
+// capture seam cannot witness them either, and `undefined` is the case that
+// matters most: it is the shipped default (`NoopAnalytics.sessionId()`), so a
+// guard that throws on it fails EVERY request whenever analytics is off.
+describe("sessionIdInterceptor survives an absent session id", () => {
+	const absent: [string, string | undefined][] = [
+		["undefined — analytics off, the shipped default", undefined],
+		['"" — posthog before it has initialized', ""],
+	];
+
+	for (const [label, value] of absent) {
+		test(`${label} ⇒ no header, next still ran, nothing threw`, async () => {
+			const seam = directSeam();
+
+			const result = await sessionIdInterceptor(() => value)(
+				seam.next as never,
+			)(seam.req as never);
+
+			expect(seam.req.header.get(posthogSessionHeader)).toBeNull();
+			expect(seam.calls).toBe(1);
+			expect(result as unknown).toBe(seam.sentinel);
+		});
+	}
+});
+
 describe("callInterceptors installs only what was asked for", () => {
 	// The behavioral claim of the omitted-means-off rule: neither concern
 	// requested ⇒ the transport is handed `undefined`, NOT an empty list, so an
@@ -633,5 +918,73 @@ describe("callInterceptors installs only what was asked for", () => {
 		);
 
 		expect(opts.interceptors).toHaveLength(2);
+	});
+
+	// The direction that catches an append placed inside the old early return:
+	// `callInterceptors` used to be `const bearer = ...; if (!traceSink) return
+	// bearer;`, so a session interceptor appended after that guard is skipped
+	// entirely whenever no trace sink is configured — and every OTHER
+	// membership direction below still passes. This is the only one that reddens.
+	test("a sessionId getter alone ⇒ exactly one interceptor", () => {
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost", undefined, {
+				sessionId: () => "sess-1",
+			}),
+		);
+
+		expect(opts.interceptors).toHaveLength(1);
+	});
+
+	test("sessionId and sink ⇒ exactly two interceptors", () => {
+		const sink: TraceIdSink = { current: undefined };
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost", undefined, {
+				traceSink: sink,
+				sessionId: () => "sess-1",
+			}),
+		);
+
+		expect(opts.interceptors).toHaveLength(2);
+	});
+
+	test("token, sink and sessionId ⇒ exactly three interceptors", () => {
+		const sink: TraceIdSink = { current: undefined };
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost", "tok", {
+				traceSink: sink,
+				sessionId: () => "sess-1",
+			}),
+		);
+
+		expect(opts.interceptors).toHaveLength(3);
+	});
+
+	// Composition ORDER, not just membership. The restructure from an early
+	// return to an accumulating list made order a fresh degree of freedom, and
+	// every case above is order-blind (`toHaveLength` counts). Order is benign
+	// TODAY — the session interceptor writes a request header and the trace one
+	// reads a response header, so they commute — and this pins it so the suite
+	// notices if that stops being true. Each interceptor is identified by its
+	// observable effect: position 0 stamps authorization, position 2 stamps the
+	// session header, so trace is the middle by elimination.
+	test("token, sink and sessionId ⇒ bearer first, session last", async () => {
+		const sink: TraceIdSink = { current: undefined };
+		const opts = transportOptionsFor(() =>
+			createCompassWebTransport("http://compass.localhost", "tok", {
+				traceSink: sink,
+				sessionId: () => "sess-1",
+			}),
+		);
+		const interceptors = opts.interceptors ?? [];
+
+		const first = directSeam();
+		await interceptors[0]?.(first.next as never)(first.req as never);
+		expect(first.req.header.get("authorization")).toBe("Bearer tok");
+		expect(first.req.header.get(posthogSessionHeader)).toBeNull();
+
+		const last = directSeam();
+		await interceptors[2]?.(last.next as never)(last.req as never);
+		expect(last.req.header.get(posthogSessionHeader)).toBe("sess-1");
+		expect(last.req.header.get("authorization")).toBeNull();
 	});
 });
