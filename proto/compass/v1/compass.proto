@@ -219,6 +219,14 @@ service SecretsService {
   // master-key name is rejected (rotation is separate machinery, never a raw
   // overwrite or delete).
   rpc DeleteServerSecret(DeleteServerSecretRequest) returns (DeleteServerSecretResponse);
+  // List declared SERVER secrets by name with set/unset — names only, NEVER
+  // values. Admin-only, like its server-secret siblings: the rows are
+  // deployment-owned, so there is no per-account authorization to fall back on.
+  // Unlike ListSecrets, `is_set` is a PROVIDER PROBE, not a registry read: a
+  // server secret's row is self-declared at every boot while its value lives in
+  // the SecretSpec provider and is populated separately, so a declared name is
+  // routinely unset and the two states must be distinguishable.
+  rpc ListServerSecrets(ListServerSecretsRequest) returns (ListServerSecretsResponse);
 }
 
 message SetSecretRequest {
@@ -260,6 +268,20 @@ message DeleteServerSecretRequest {
   string name = 1;
 }
 message DeleteServerSecretResponse {}
+
+message ListServerSecretsRequest {}
+message ListServerSecretsResponse {
+  repeated ServerSecretStatus server_secrets = 1;
+}
+// A declared server secret's status — the name plus set/unset ONLY, and NEVER
+// the value. A server secret is deployment-owned and never container-delivered,
+// so there is no delivery/kind routing to carry either. `name` is the STORED
+// name, carrying its reserved server-secret prefix; stripping the prefix for
+// display is the client's job, so the wire form stays unambiguous.
+message ServerSecretStatus {
+  string name = 1;
+  bool is_set = 2;
+}
 
 message GetServerInfoRequest {}
 

@@ -155,6 +155,20 @@ func (s ResolvedSecret) String() string {
 // GoString redacts Value under %#v as well, so a struct dump can't leak it.
 func (s ResolvedSecret) GoString() string { return s.String() }
 
+// SecretStatus is one declared secret's value-free status: its name and whether
+// the provider currently holds a value for it. It carries NO value field by
+// construction, so a status can never leak one however it is logged or
+// formatted — the reason the status path exists alongside ResolvedSecret rather
+// than being derived from it.
+type SecretStatus struct {
+	Name string
+	// IsSet reports whether the provider holds a value for Name. False means
+	// the name is declared in the registry but unpopulated in the provider —
+	// a normal state for a server secret, whose row is self-declared at boot
+	// while the operator populates the value separately.
+	IsSet bool
+}
+
 // deliveryFromStore maps the persisted store delivery enum to this package's.
 func deliveryFromStore(d store.SecretDelivery) DeliveryKind {
 	if d == store.SecretDeliveryEnv {

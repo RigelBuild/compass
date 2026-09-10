@@ -352,6 +352,64 @@ func (s *secretsService) DeleteServerSecret(
 	return connect.NewResponse(&compassv1.DeleteServerSecretResponse{}), nil
 }
 
+// ListServerSecrets returns every declared SERVER secret's name with its
+// set/unset state — names only, NEVER a value. Admin-only at the door
+// (classifyProcedure), the same gate as its Set/Delete siblings and for the
+// same reason: the rows are deployment-owned, so there is no per-account
+// authorization to fall back on.
+//
+// is_set is a PROVIDER PROBE here, unlike ListSecrets which hardcodes true.
+// That asymmetry is structural, not an inconsistency: on the user path declare
+// and set are ONE operation (declare-then-set in SetSecret), so a declared row
+// implies a written value. Server-secret names are instead SELF-DECLARED at
+// every boot (declareServerSecretNames) while the operator populates the values
+// separately, so declared-but-unset is a routine state — and telling the two
+// apart is the entire purpose of this verb. The probe reads the value-free
+// SecretSpec report (serverResolver.Statuses), so no value is ever resolved to
+// answer it.
+//
+// A provider fault is CodeInternal, deliberately NOT an all-unset list: the
+// caller must be able to tell a broken provider from an unprovisioned one,
+// since the remedy for each is the opposite of the other.
+func (s *secretsService) ListServerSecrets(
+	ctx context.Context,
+	_ *connect.Request[compassv1.ListServerSecretsRequest],
+) (*connect.Response[compassv1.ListServerSecretsResponse], error) {
+	if _, err := s.requireCaller(ctx); err != nil {
+		return nil, err
+	}
+	if s.serverResolver == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errNoServerResolver)
+	}
+	decls, err := s.store.DeclaredServerSecrets(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("listing declared server secrets: %w", err))
+	}
+	if len(decls) == 0 {
+		return connect.NewResponse(&compassv1.ListServerSecretsResponse{}), nil
+	}
+	// The audit reason names this RPC specifically, matching the Set path's
+	// form, so the provider's log distinguishes a status probe from a write.
+	statuses, err := s.serverResolver.Statuses(ctx, "compass: server secret status probe via ListServerSecrets RPC")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("probing server secret values: %w", err))
+	}
+	isSet := make(map[string]bool, len(statuses))
+	for _, st := range statuses {
+		isSet[st.Name] = st.IsSet
+	}
+	// The REGISTRY drives the output, not the probe: the declared set is what
+	// this verb enumerates, and a declared name the probe did not report is
+	// unset rather than omitted.
+	out := make([]*compassv1.ServerSecretStatus, 0, len(decls))
+	for _, d := range decls {
+		// Name goes out EXACTLY as stored, carrying its reserved prefix. The
+		// prefix strip is the CLI's, so the wire form stays unambiguous.
+		out = append(out, &compassv1.ServerSecretStatus{Name: d.Name, IsSet: isSet[d.Name]})
+	}
+	return connect.NewResponse(&compassv1.ListServerSecretsResponse{ServerSecrets: out}), nil
+}
+
 // requireCaller returns the authenticated caller id, or CodeUnauthenticated when
 // none is in context (a door-wiring bug: an interceptor must attach one on every
 // door — fail closed, mirroring SubscribeAgentSession).

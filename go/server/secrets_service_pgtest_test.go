@@ -36,13 +36,26 @@ import (
 // recordingResolver is a fake secrets.Resolver for the SecretsService tests. Set
 // and Delete record their calls and succeed; Resolve fails loudly, so a test that
 // wires this into ListSecrets proves the list path never resolves values to
-// compute is_set (record §906-908 / brief item 7).
+// compute is_set (record §906-908 / brief item 7). Statuses returns a scripted
+// value-free report — the server-secret list path's probe — and can be scripted
+// to fail so a test proves a provider fault is not flattened into all-unset.
 type recordingResolver struct {
 	setErr      error
 	setNames    []string
 	setReasons  []string
 	deleteNames []string
 	resolveHit  bool
+	statuses    []secrets.SecretStatus
+	statusesErr error
+	statusHit   bool
+}
+
+func (r *recordingResolver) Statuses(_ context.Context, _ string) ([]secrets.SecretStatus, error) {
+	r.statusHit = true
+	if r.statusesErr != nil {
+		return nil, r.statusesErr
+	}
+	return r.statuses, nil
 }
 
 func (r *recordingResolver) Resolve(_ context.Context, _ string) ([]secrets.ResolvedSecret, error) {
@@ -523,5 +536,110 @@ func TestSetServerSecretDoesNotBumpSecretsVersion(t *testing.T) {
 	}
 	if n := f.signaler.calls; n != 0 {
 		t.Fatalf("signaler fired %d times, want 0 for a server secret", n)
+	}
+}
+
+func listServerReq(bearer string) *connect.Request[compassv1.ListServerSecretsRequest] {
+	req := connect.NewRequest(&compassv1.ListServerSecretsRequest{})
+	req.Header().Set("Authorization", "Bearer "+bearer)
+	return req
+}
+
+// TestListServerSecretsReportsDeclaredButUnset is the core contract of the verb
+// and the regression guard on HOW is_set is computed. A server secret's names
+// are self-declared at boot while the operator populates values separately, so
+// declared-but-unset is routine — and distinguishing it from set is the entire
+// point.
+//
+// This is written to FAIL under the naive "resolve the declared set" route: the
+// generated manifest marks every declared name required=true, so a value-
+// resolving probe fails WHOLESALE (MissingRequiredError, nil set) the moment one
+// declared name is unpopulated, erroring the whole call instead of reporting the
+// mixed state below. A value-free report has no such failure mode.
+func TestListServerSecretsReportsDeclaredButUnset(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	// Declare two names through the real write path, then script the provider
+	// probe so exactly one of them holds a value.
+	for _, name := range []string{"SERVER_APP_PEM", "SERVER_WEBHOOK_SECRET"} {
+		if _, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, name, "v")); err != nil {
+			t.Fatalf("SetServerSecret(%s): %v", name, err)
+		}
+	}
+	f.serverResolver.statuses = []secrets.SecretStatus{
+		{Name: "SERVER_APP_PEM", IsSet: true},
+		{Name: "SERVER_WEBHOOK_SECRET", IsSet: false},
+	}
+
+	resp, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken))
+	if err != nil {
+		t.Fatalf("ListServerSecrets: %v", err)
+	}
+	got := map[string]bool{}
+	for _, s := range resp.Msg.GetServerSecrets() {
+		got[s.GetName()] = s.GetIsSet()
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d statuses, want 2: %v", len(got), got)
+	}
+	// Names go out in their STORED, prefixed form — the CLI does the strip.
+	if !got["SERVER_APP_PEM"] {
+		t.Error("SERVER_APP_PEM reported unset; the provider holds its value")
+	}
+	if got["SERVER_WEBHOOK_SECRET"] {
+		t.Error("SERVER_WEBHOOK_SECRET reported set; it is declared but unpopulated")
+	}
+	if !f.serverResolver.statusHit {
+		t.Error("is_set was not computed from a provider probe; a declared server secret's value is populated separately, so the registry row alone cannot answer it")
+	}
+	if f.serverResolver.resolveHit {
+		t.Error("ListServerSecrets resolved VALUES to compute is_set — the probe must be value-free")
+	}
+}
+
+// TestListServerSecretsProviderFailureIsNotAllUnset pins the distinction an
+// operator's remedy depends on: a broken provider must not look like an
+// unprovisioned one. Reporting everything unset on a probe fault would send the
+// operator to re-populate secrets that are in fact already there.
+func TestListServerSecretsProviderFailureIsNotAllUnset(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "SERVER_APP_PEM", "v")); err != nil {
+		t.Fatalf("SetServerSecret: %v", err)
+	}
+	f.serverResolver.statusesErr = errors.New("provider unreachable")
+
+	resp, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken))
+	if err == nil {
+		t.Fatalf("want an error on a provider fault, got a list: %v", resp.Msg.GetServerSecrets())
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("want CodeInternal, got %v (err=%v)", got, err)
+	}
+}
+
+// TestListServerSecretsAdminOnly gates the LIST as tightly as the writes: the
+// declared server-secret names are the deployment's own inventory, not
+// something a plain user or an agent token may enumerate.
+func TestListServerSecretsAdminOnly(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"user", f.userToken},
+		{"agent", f.agentToken},
+	} {
+		_, err := f.client.ListServerSecrets(ctx, listServerReq(tc.token))
+		if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
+			t.Fatalf("%s token: want CodePermissionDenied, got %v (err=%v)", tc.name, got, err)
+		}
+	}
+	if _, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken)); err != nil {
+		t.Fatalf("admin token: %v", err)
 	}
 }
