@@ -5,7 +5,6 @@ package adapters
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"syscall"
@@ -64,10 +63,10 @@ func (g *GroupSignaller) Signal(pgid int, sig stack.ProcessSignal) error {
 // gone-or-recycled group as if it were the original child.
 //
 // The two checks are ordered existence-then-identity: the kill(0) probe cheaply
-// rules out the ESRCH case, then the /proc start-time read confirms the leader
-// is the same process. A start-time read failure (the leader vanished between
-// the two syscalls, or /proc is unavailable) is treated as not-alive — the safe
-// verdict is never to signal.
+// rules out the ESRCH case, then the start-time read confirms the leader is the
+// same process. A start-time read failure (the leader vanished between the two
+// syscalls, or the kernel's process table is unreadable) is treated as
+// not-alive — the safe verdict is never to signal.
 func (g *GroupSignaller) Alive(pgid int, startTime uint64) bool {
 	// A degenerate pgid is never a live compass child: kill(-1, 0) probes the
 	// whole session and kill(0, 0) the caller's own group, both of which would
@@ -90,27 +89,12 @@ func (g *GroupSignaller) Alive(pgid int, startTime uint64) bool {
 	return got == startTime
 }
 
-// readGroupLeaderStartTime reads field 22 (starttime) of /proc/<pgid>/stat — the
-// group leader, since pid == pgid for a Setpgid child. It duplicates the core's
-// parser (rather than exporting it across the package boundary) because the
-// parenthesized-comm gotcha is the same on both sides and the two are read-only
-// leaf helpers; see stack.parseStatStartTime for the full explanation.
-func readGroupLeaderStartTime(pgid int) (uint64, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pgid))
-	if err != nil {
-		return 0, fmt.Errorf("read /proc/%d/stat: %w", pgid, err)
-	}
-	startTime, err := parseGroupLeaderStat(string(data))
-	if err != nil {
-		return 0, fmt.Errorf("/proc/%d/stat: %w", pgid, err)
-	}
-	return startTime, nil
-}
-
 // parseGroupLeaderStat extracts field 22 (starttime) from a /proc/<pid>/stat
-// line. Split out from readGroupLeaderStartTime so the parenthesized-comm parse
-// is unit-tested against synthesized lines without a live process — the same
-// split (and the same gotcha) as stack.parseStatStartTime.
+// line. Split out from the Linux reader (groupsignal_linux.go) so the
+// parenthesized-comm parse is unit-tested against synthesized lines without a
+// live process — the same split (and the same gotcha) as
+// stack.parseStatStartTime. It stays in the unix-built file so that test
+// compiles on every unix: the parse rule is pure text handling.
 func parseGroupLeaderStat(line string) (uint64, error) {
 	// comm (field 2) is parenthesized and may contain spaces AND parens, so
 	// count fields from the LAST ')'; field[0] after it is state (field 3), so

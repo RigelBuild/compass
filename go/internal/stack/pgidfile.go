@@ -331,40 +331,30 @@ func removePgidFile(stateDir string) error {
 }
 
 // readStartTime is the package-internal seam that reads a process's start time
-// (the identity token). It is a var, not a func, so tests can stub it without a
-// live process. The wired implementation reads /proc/<pid>/stat, which exists
-// only on Linux — and the embedded stack is Linux/podman-only at runtime anyway
-// (the runner loop, compass-native-app design.md:247,346-348), so the seam is a
-// test seam, not a cross-OS portability claim: on a non-Linux unix this reader
-// fails and up refuses, which is the correct outcome on an unsupported host.
-var readStartTime = readStartTimeProc
-
-// readStartTimeProc reads field 22 (starttime, in clock ticks since boot) of
-// /proc/<pid>/stat.
+// — the identity token that closes the pid-recycling window. It is a var, not a
+// func, so tests can stub it without a live process.
 //
-// The parse gotcha: field 2 (comm) is the executable name wrapped in
-// parentheses and MAY itself contain spaces AND parentheses (e.g. a process
-// named "(ec) foo"), so splitting the whole line on whitespace miscounts. The
-// robust parse the kernel documents (proc(5)) is to find the LAST ')' — comm is
-// the only parenthesized field and everything after it is space-separated
-// fixed-position fields — then count fields from there. After the last ')':
-// field[0] is state (field 3), so starttime (field 22) is field[22-3] = index
-// 19 of the post-comm split.
-func readStartTimeProc(pid int) (uint64, error) {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, fmt.Errorf("read /proc/%d/stat: %w", pid, err)
-	}
-	startTime, err := parseStatStartTime(string(data))
-	if err != nil {
-		return 0, fmt.Errorf("/proc/%d/stat: %w", pid, err)
-	}
-	return startTime, nil
-}
+// It is BOTH a test seam and a cross-OS seam. The wired implementation is
+// per-OS (readstarttime_linux.go reads /proc/<pid>/stat, readstarttime_darwin.go
+// reads the KinfoProc start timeval via sysctl), and each OS's encoding is its
+// own: Linux clock-ticks-since-boot and darwin microseconds-since-epoch are
+// never compared against each other, because a token is written and read on one
+// host.
+//
+// The invariant that IS load-bearing: this spawn-side reader and the down-side
+// reader (adapters.readGroupLeaderStartTime) must produce the IDENTICAL encoding
+// on a given OS. GroupSignaller.Alive compares the two for uint64 equality, so a
+// disagreement would report every live child as not-alive and silently skip it
+// at teardown. The two darwin readers therefore share one packing rule
+// (sec*1e6 + usec), pinned by mirrored unit tests in both packages.
+var readStartTime = readProcessStartTime
 
 // parseStatStartTime extracts field 22 (starttime) from a /proc/<pid>/stat line.
-// Split out from readStartTimeProc so the parenthesized-comm parse is unit-tested
-// against synthesized lines without a live process.
+// Split out from the Linux reader (readstarttime_linux.go) so the
+// parenthesized-comm parse is unit-tested against synthesized lines without a
+// live process. It stays in the unix-built file, not the _linux one, so that
+// test compiles and runs on every unix — the parse rule is pure text handling
+// with no /proc dependency of its own.
 func parseStatStartTime(line string) (uint64, error) {
 	rparen := strings.LastIndexByte(line, ')')
 	if rparen < 0 {
