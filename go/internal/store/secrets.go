@@ -89,7 +89,7 @@ func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string,
 	// hands to every agent container. With it, the two doors partition the
 	// keyspace by name: a reserved-prefix name can only live in
 	// `server_secrets`, an unprefixed one only in `secrets`.
-	if HasServerSecretPrefix(name) {
+	if ShadowsServerSecretPrefix(name) {
 		return fmt.Errorf("%w: secret name %q uses a reserved server-secret prefix", ErrInvalidArgument, name)
 	}
 	if actor == "" {

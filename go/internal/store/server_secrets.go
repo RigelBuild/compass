@@ -31,11 +31,30 @@ const (
 var serverSecretPrefixes = [...]string{ServerSecretPrefix, GatewayCredentialsPrefix}
 
 // HasServerSecretPrefix reports whether name carries a reserved server-secret
-// prefix. Both secret doors consult it: `server_secrets` requires it, and the
-// user-facing `secrets` path rejects it.
+// prefix, byte-exact. This is the ADMIT check: `server_secrets` requires it, and
+// the DB CHECK behind that table is itself case-sensitive (LIKE 'SERVER\_%'), so
+// admitting a case variant here would pass the Go door and then fail in
+// Postgres. Use ShadowsServerSecretPrefix to REJECT on the user path.
 func HasServerSecretPrefix(name string) bool {
 	for _, p := range serverSecretPrefixes {
 		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// ShadowsServerSecretPrefix reports whether name carries a reserved prefix in ANY
+// case. The user-facing doors reject on this, not on the byte-exact check: a
+// provider keyspace's case sensitivity is provider-dependent (1Password-style
+// item lookup is commonly case-insensitive), so on such a provider a lowercase
+// `gateway_credentials_master_key` would reach the same stored value as the real
+// master key — whose loss strands every encrypted credential row. Reject wide,
+// admit narrow.
+func ShadowsServerSecretPrefix(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, p := range serverSecretPrefixes {
+		if strings.HasPrefix(upper, p) {
 			return true
 		}
 	}

@@ -20,6 +20,7 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,14 +41,22 @@ import (
 // value-free report — the server-secret list path's probe — and can be scripted
 // to fail so a test proves a provider fault is not flattened into all-unset.
 type recordingResolver struct {
-	setErr      error
-	setNames    []string
-	setReasons  []string
-	deleteNames []string
-	resolveHit  bool
-	statuses    []secrets.SecretStatus
-	statusesErr error
-	statusHit   bool
+	setErr        error
+	setNames      []string
+	setReasons    []string
+	deleteErr     error
+	deleteNames   []string
+	deleteReasons []string
+	// declSeen, when set, is consulted at the START of every Delete and its
+	// answer appended to deleteSawDecl. It makes the handler's ORDERING
+	// observable: with declaration-first, the row must already be gone by the
+	// time the provider delete runs.
+	declSeen      func(ctx context.Context, name string) bool
+	deleteSawDecl []bool
+	resolveHit    bool
+	statuses      []secrets.SecretStatus
+	statusesErr   error
+	statusHit     bool
 }
 
 func (r *recordingResolver) Statuses(_ context.Context, _ string) ([]secrets.SecretStatus, error) {
@@ -72,8 +81,15 @@ func (r *recordingResolver) Set(_ context.Context, name, _, reason string) error
 	return nil
 }
 
-func (r *recordingResolver) Delete(_ context.Context, name string) error {
+func (r *recordingResolver) Delete(ctx context.Context, name, reason string) error {
+	if r.declSeen != nil {
+		r.deleteSawDecl = append(r.deleteSawDecl, r.declSeen(ctx, name))
+	}
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
 	r.deleteNames = append(r.deleteNames, name)
+	r.deleteReasons = append(r.deleteReasons, reason)
 	return nil
 }
 
@@ -98,7 +114,11 @@ type secretsFixture struct {
 	agentToken string
 	userID     store.AccountID
 	adminToken string
-	resolver   *recordingResolver
+	// store is the live store the handler writes through, so a test can read the
+	// declaration registry directly — including from inside the fake resolver,
+	// which is how the delete ORDERING becomes observable.
+	store    *store.Store
+	resolver *recordingResolver
 	// serverResolver is the SECOND fake, standing in for the server-secret
 	// resolver. Kept distinct from resolver so a test can prove a server-secret
 	// write lands ONLY on this one — the container-delivery registry must never
@@ -155,6 +175,7 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 		userToken:      userTok,
 		agentToken:     agentTok,
 		adminToken:     adminTok,
+		store:          st,
 		userID:         user.ID,
 		resolver:       resolver,
 		serverResolver: serverResolver,
@@ -352,6 +373,170 @@ func TestDeleteSecretNotFound(t *testing.T) {
 	}
 }
 
+// declared reports whether name is still in the user declaration registry.
+// t.Errorf, never t.Fatalf: the ordering probe calls this from inside the fake
+// resolver's Delete, i.e. on the handler's goroutine, and FailNow off the test
+// goroutine would Goexit the handler mid-request and misreport a store fault as
+// an ordering failure.
+func declared(ctx context.Context, t *testing.T, st *store.Store, name string) bool {
+	t.Helper()
+	decls, err := st.DeclaredSecrets(ctx)
+	if err != nil {
+		t.Errorf("DeclaredSecrets: %v", err)
+		return false
+	}
+	for _, d := range decls {
+		if d.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDeleteSecretRejectsReservedPrefix is the F1 guard on the DELETE door
+// (record D6). SetSecret reaches the prefix check through DeclareSecret, but
+// DeleteSecret never declares — so without an explicit guard a user delete of
+// GATEWAY_CREDENTIALS_MASTER_KEY would hard-delete the master key and strand
+// every encrypted credential row. The guard must run BEFORE the store and the
+// resolver: neither may be touched.
+func TestDeleteSecretRejectsReservedPrefix(t *testing.T) {
+	for _, name := range []string{"GATEWAY_CREDENTIALS_MASTER_KEY", "SERVER_APP_PEM"} {
+		t.Run(name, func(t *testing.T) {
+			f := newSecretsFixture(t)
+			ctx := context.Background()
+			// Seed the reserved name into the SERVER registry so a store row by
+			// that name genuinely exists: the guard must refuse on the NAME, not
+			// merely fall through to a not-found. Seeded through the store because
+			// SetServerSecret itself refuses the master key.
+			if err := f.store.DeclareServerSecret(ctx, f.userID, name); err != nil {
+				t.Fatalf("seed DeclareServerSecret: %v", err)
+			}
+
+			_, err := f.client.DeleteSecret(ctx, delReq(f.userToken, name))
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("DeleteSecret(%q) code = %v, want InvalidArgument", name, got)
+			}
+			if len(f.resolver.deleteNames) != 0 || len(f.serverResolver.deleteNames) != 0 {
+				t.Fatalf("reserved name reached a resolver delete: user=%v server=%v",
+					f.resolver.deleteNames, f.serverResolver.deleteNames)
+			}
+			// The server declaration must survive: the user door must not be able
+			// to remove a deployment-owned row.
+			rows, err := f.store.DeclaredServerSecrets(ctx)
+			if err != nil {
+				t.Fatalf("DeclaredServerSecrets: %v", err)
+			}
+			if !slices.ContainsFunc(rows, func(r store.ServerSecretDeclaration) bool { return r.Name == name }) {
+				t.Fatalf("server declaration %q was removed by a user DeleteSecret; registry = %v", name, rows)
+			}
+		})
+	}
+}
+
+// TestDeleteSecretRejectsReservedPrefixCaseVariants: the reject side of the F1
+// guard is case-INSENSITIVE. A provider keyspace's case sensitivity is
+// provider-dependent (1Password-style item lookup is commonly
+// case-insensitive), so on such a provider a lowercase
+// gateway_credentials_master_key resolves to the same stored value as the real
+// master key — whose loss strands every encrypted credential row. The name
+// grammar admits lowercase, so nothing else stops it.
+func TestDeleteSecretRejectsReservedPrefixCaseVariants(t *testing.T) {
+	for _, name := range []string{
+		"gateway_credentials_master_key",
+		"Gateway_Credentials_Master_Key",
+		"server_app_pem",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSecretsFixture(t)
+			ctx := context.Background()
+
+			_, err := f.client.DeleteSecret(ctx, delReq(f.userToken, name))
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("DeleteSecret(%q) code = %v, want InvalidArgument", name, got)
+			}
+			if len(f.resolver.deleteNames) != 0 || len(f.serverResolver.deleteNames) != 0 {
+				t.Fatalf("case-variant reserved name reached a resolver delete: user=%v server=%v",
+					f.resolver.deleteNames, f.serverResolver.deleteNames)
+			}
+		})
+	}
+}
+
+// TestDeleteSecretDeletesDeclarationBeforeValue pins the ORDERING the provider
+// hard-delete requires: the declaration is what Resolve reads, so it must be
+// gone before the value is removed — otherwise a required=true row points at a
+// missing value and poisons EVERY live session's resolve. Observable because the
+// fake resolver reads the registry from inside its own Delete.
+func TestDeleteSecretDeletesDeclarationBeforeValue(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+	f.resolver.declSeen = func(ctx context.Context, name string) bool {
+		return declared(ctx, t, f.store, name)
+	}
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+		t.Fatalf("seed SetSecret = %v", err)
+	}
+
+	if _, err := f.client.DeleteSecret(ctx, delReq(f.userToken, "DB_URL")); err != nil {
+		t.Fatalf("DeleteSecret = %v, want success", err)
+	}
+	if len(f.resolver.deleteSawDecl) != 1 {
+		t.Fatalf("resolver.Delete ran %d times, want 1", len(f.resolver.deleteSawDecl))
+	}
+	if f.resolver.deleteSawDecl[0] {
+		t.Fatal("the declaration still existed when resolver.Delete ran — value deleted before the declaration, leaving a required=true row pointing at a missing value")
+	}
+	// And the whole delete really happened: row gone, provider delete recorded
+	// once with a reason naming the caller.
+	if declared(ctx, t, f.store, "DB_URL") {
+		t.Fatal("declaration survived a successful DeleteSecret")
+	}
+	if len(f.resolver.deleteNames) != 1 || f.resolver.deleteNames[0] != "DB_URL" {
+		t.Fatalf("resolver.Delete names = %v, want [DB_URL]", f.resolver.deleteNames)
+	}
+	if len(f.resolver.deleteReasons) != 1 || strings.TrimSpace(f.resolver.deleteReasons[0]) == "" {
+		t.Fatalf("resolver.Delete reasons = %q, want one non-empty reason", f.resolver.deleteReasons)
+	}
+	if !strings.Contains(f.resolver.deleteReasons[0], string(f.userID)) {
+		t.Fatalf("resolver.Delete reason = %q, want it to name the calling user %q", f.resolver.deleteReasons[0], f.userID)
+	}
+}
+
+// TestDeleteSecretProviderFailureKeepsDeclarationDeleted: a provider fault after
+// the row is gone is CodeUnavailable and is deliberately NOT rolled back —
+// re-creating the declaration would point a required=true row at a value that
+// may already be gone. The residue is an unreferenced provider value, which no
+// longer resolves.
+func TestDeleteSecretProviderFailureKeepsDeclarationDeleted(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+		t.Fatalf("seed SetSecret = %v", err)
+	}
+	f.resolver.deleteErr = errors.New("provider down")
+
+	_, err := f.client.DeleteSecret(ctx, delReq(f.userToken, "DB_URL"))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("DeleteSecret with a failing provider delete code = %v, want Unavailable", got)
+	}
+	if declared(ctx, t, f.store, "DB_URL") {
+		t.Fatal("declaration was rolled back after a failed provider delete; it must stay deleted so the name no longer resolves")
+	}
+}
+
+// TestDeleteSecretNotFoundSkipsResolver: an undeclared name never reaches the
+// provider — the store's not-found short-circuits before the destructive write.
+func TestDeleteSecretNotFoundSkipsResolver(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+	if _, err := f.client.DeleteSecret(ctx, delReq(f.userToken, "NEVER_DECLARED")); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("DeleteSecret of an undeclared name = %v, want NotFound", err)
+	}
+	if len(f.resolver.deleteNames) != 0 {
+		t.Fatalf("resolver.Delete called %v for a never-declared name, want none", f.resolver.deleteNames)
+	}
+}
+
 // TestListSecretsUserAndAgent: both a user and an agent token succeed and get
 // value-free SecretStatus with is_set=true for a declared row — and the resolver's
 // Resolve is NEVER called (is_set is computed without fetching values).
@@ -406,6 +591,47 @@ func delServerReq(bearer, name string) *connect.Request[compassv1.DeleteServerSe
 	req := connect.NewRequest(&compassv1.DeleteServerSecretRequest{Name: name})
 	req.Header().Set("Authorization", "Bearer "+bearer)
 	return req
+}
+
+// TestDeleteServerSecretRefusesUserKeyspaceName is the other half of the F1
+// guard. The provider keyspace is ONE namespace partitioned only by name, and
+// SpecResolver.Delete writes a one-name manifest for whatever it is handed — so
+// an unprefixed name on the ADMIN door would hard-delete a USER secret's value
+// and leave its required=true declaration pointing at nothing, poisoning every
+// live session's resolve. The value-side proof is that the server resolver is
+// never reached and the user's declaration survives intact.
+func TestDeleteServerSecretRefusesUserKeyspaceName(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+		t.Fatalf("seed SetSecret = %v", err)
+	}
+
+	_, err := f.client.DeleteServerSecret(ctx, delServerReq(f.adminToken, "DB_URL"))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("DeleteServerSecret of an unprefixed name code = %v, want InvalidArgument", got)
+	}
+	if len(f.serverResolver.deleteNames) != 0 {
+		t.Fatalf("server resolver deleted %v; a user-keyspace name must never reach the provider", f.serverResolver.deleteNames)
+	}
+	if !declared(ctx, t, f.store, "DB_URL") {
+		t.Fatal("the user's declaration was removed by an admin server-secret delete")
+	}
+}
+
+// TestDeleteServerSecretNotFoundSkipsResolver: declaration-first means a
+// never-declared server secret never reaches the destructive provider call.
+func TestDeleteServerSecretNotFoundSkipsResolver(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	_, err := f.client.DeleteServerSecret(ctx, delServerReq(f.adminToken, "SERVER_NEVER_DECLARED"))
+	if got := connect.CodeOf(err); got != connect.CodeNotFound {
+		t.Fatalf("DeleteServerSecret of an undeclared name code = %v, want NotFound", got)
+	}
+	if len(f.serverResolver.deleteNames) != 0 {
+		t.Fatalf("server resolver deleted %v for a never-declared name, want none", f.serverResolver.deleteNames)
+	}
 }
 
 // TestSetServerSecretAdminOnly is the door-gate contract: the server-secret

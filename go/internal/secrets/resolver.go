@@ -61,8 +61,10 @@ type Resolver interface {
 	// before the CLI is spawned, so the audit reason travels with every write
 	// exactly as it does on the read path.
 	Set(ctx context.Context, name, value, reason string) error
-	// Delete removes a value from the provider for a name.
-	Delete(ctx context.Context, name string) error
+	// Delete removes a name's value from the provider. reason is recorded in
+	// the SecretSpec audit log and is required, exactly as on Set: an empty
+	// reason is rejected before the CLI is spawned.
+	Delete(ctx context.Context, name, reason string) error
 	// Statuses reports, per declared secret, whether the provider currently
 	// holds a value for it — names + set/unset, NEVER a value. It is the
 	// value-free counterpart to Resolve, for the caller that needs to
@@ -375,18 +377,56 @@ func (r *SpecResolver) Set(ctx context.Context, name, value, reason string) erro
 	return nil
 }
 
-// Delete removes name's value from the provider. See the package/record note:
-// with a manifest-driven resolver only declared names ever resolve, so removing
-// the store declaration (store.DeleteSecretDeclaration) is the effective MVP
-// delete. A provider-value hard-delete IS available at this pin (`secretspec
-// delete`, 0.18+); wiring it is a deliberate deferral (RIG-3436), not an
-// upstream gap — it makes the operation destructive against a keyspace shared
-// by default, so it needs its own F1-guard and ordering analysis. This method
-// is the seam for that write; today it validates the name and is a no-op
-// success so the T7 handler can call one uniform surface.
-func (r *SpecResolver) Delete(ctx context.Context, name string) error {
+// Delete removes name's value from the provider through the pinned CLI. name
+// must be a valid secret name and an empty reason is rejected up front; reason
+// is recorded in the SecretSpec audit log and can be required by the provider
+// policy, so it travels with the destructive write exactly as it does with a
+// Set or a resolve.
+//
+// Like Set, the delete is pointed at a generated manifest through the global
+// --file flag rather than letting the CLI walk up from the process cwd for a
+// secretspec.toml that is never committed. The generated manifest declares
+// exactly the name being deleted, so `--all` can never widen the blast radius
+// even if it were passed.
+//
+// Callers must keep the store declaration ahead of this write: the declaration
+// is what Resolve reads, so removing the value first would leave a
+// required=true declaration pointing at nothing (see DeleteSecret).
+func (r *SpecResolver) Delete(ctx context.Context, name, reason string) error {
 	if err := ValidateName(name); err != nil {
 		return err
+	}
+	// The CLI's require_reason policy is an environment heuristic (it gates on
+	// agent-env detection), so an omitted reason makes the same delete succeed
+	// on one host and be refused on another. Screen it here for a deterministic
+	// caller error instead.
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("secrets: delete %q: reason is empty", name)
+	}
+	// One resolved profile feeds both the manifest header and the argv below, so
+	// the two cannot describe different profiles.
+	profile := r.resolvedProfile()
+	manifestPath, err := r.writeManifest(profile, []store.SecretDeclaration{{Name: name}})
+	if err != nil {
+		return err
+	}
+	// A transient input to the CLI, exactly as on the Set path — remove it once
+	// the write returns. The remove error is not actionable: the file is a temp
+	// input we are done with, and the delete's own outcome is what the caller needs.
+	defer func() { _ = os.Remove(manifestPath) }()
+	args := r.deleteArgs(name, reason, manifestPath, profile)
+	//nolint:gosec // G204: the SecretSpec write seam — spawns the operator-pinned
+	// secretspec CLI (r.cli) with an argv slice passed straight to exec, so no
+	// shell interprets any of it. Three variables ride it: name, validated
+	// against the env-var-name grammar (ValidateName) above; and reason plus
+	// manifestPath, each a single joined --flag=value token, so neither can
+	// introduce a new argv element or be re-parsed as a flag. No stdin: delete
+	// consumes no value.
+	cmd := exec.CommandContext(ctx, r.cli, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("secrets: delete %q via %s: %w (%s)", name, r.cli, err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -419,6 +459,22 @@ func (r *SpecResolver) resolvedProfile() string {
 // built-in default and agreeing only by coincidence.
 func (r *SpecResolver) setArgs(name, reason, manifestPath, profile string) []string {
 	args := []string{"--file=" + manifestPath, "--reason=" + reason, "set", name}
+	if r.provider != "" {
+		args = append(args, "--provider="+r.provider)
+	}
+	return append(args, "--profile="+profile)
+}
+
+// deleteArgs builds the argv for the provider hard-delete (pure, so it is
+// unit-testable without executing the binary). Mirrors setArgs in shape and
+// flag order — the same leading globals, the same single positional name, the
+// same unconditional --profile — so the two write paths cannot drift.
+//
+// Every flag uses the joined form for the same reason setArgs documents: the
+// two-token form parses a leading-dash value as the next flag and exits 2, a
+// property of the value's shape rather than of which flag carries it.
+func (r *SpecResolver) deleteArgs(name, reason, manifestPath, profile string) []string {
+	args := []string{"--file=" + manifestPath, "--reason=" + reason, "delete", name}
 	if r.provider != "" {
 		args = append(args, "--provider="+r.provider)
 	}

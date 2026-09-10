@@ -392,20 +392,89 @@ func TestSecretSpecCLIVersionFloor(t *testing.T) {
 	}
 }
 
-// TestDeleteValidatesName pins the Delete write-path seam's one observable
-// contract: it gates on ValidateName before its no-op success. An invalid name
-// (dash — fails the grammar) must surface a non-nil error; a valid name returns
-// nil. Delete needs no store or FFI lib (it never reads the registry or shells
-// the CLI), so a bare resolver over a temp state dir exercises it fully.
-func TestDeleteValidatesName(t *testing.T) {
-	ctx := context.Background()
-	r := NewSpecResolver(nil, t.TempDir())
+// TestDeleteArgs pins the hard-delete argv: the same shape as setArgs (leading
+// globals, one positional name, unconditional --profile), that --all never
+// appears, and that every value rides a joined --flag=value token.
+func TestDeleteArgs(t *testing.T) {
+	const reason = "compass: unit test delete"
+	const manifest = "/tmp/state/secretspec-123.toml"
 
-	if err := r.Delete(ctx, "bad-name"); err == nil {
-		t.Error("Delete with invalid name = nil, want an error")
+	// No provider pinned, and an explicit WithProfile("") still resolves to
+	// defaultProfile: --profile is emitted unconditionally so the CLI acts under
+	// exactly the profile the generated manifest declares.
+	bare := NewSpecResolver(nil, "/tmp/state", WithProfile(""))
+	got := bare.deleteArgs("API_KEY", reason, manifest, bare.resolvedProfile())
+	want := []string{
+		"--file=" + manifest, "--reason=" + reason, "delete", "API_KEY",
+		"--profile=" + defaultProfile,
 	}
-	if err := r.Delete(ctx, "API_KEY"); err != nil {
-		t.Errorf("Delete with valid name = %v, want nil", err)
+	if !equalArgs(got, want) {
+		t.Errorf("deleteArgs bare = %v, want %v", got, want)
+	}
+
+	full := NewSpecResolver(nil, "/tmp/state", WithProvider("keyring://"), WithProfile("production"))
+	gotFull := full.deleteArgs("API_KEY", reason, manifest, full.resolvedProfile())
+	wantFull := []string{
+		"--file=" + manifest, "--reason=" + reason, "delete", "API_KEY",
+		"--provider=keyring://", "--profile=production",
+	}
+	if !equalArgs(gotFull, wantFull) {
+		t.Errorf("deleteArgs full = %v, want %v", gotFull, wantFull)
+	}
+
+	// --all must never appear: it would widen a single-name delete to the whole
+	// profile.
+	if slices.Contains(gotFull, "--all") {
+		t.Errorf("deleteArgs emitted --all: %v", gotFull)
+	}
+
+	// The joined form binds each value to its own flag: the two-token form
+	// parses a leading-dash value as the next flag and exits 2. Holds for the
+	// caller-supplied reason and for the operator-configured provider/profile
+	// alike (ValidateProfile admits a leading dash; the provider is unvalidated).
+	dashCfg := NewSpecResolver(nil, "/tmp/state", WithProvider("--reason=evil"), WithProfile("-prod"))
+	gotDash := dashCfg.deleteArgs("API_KEY", "--provider=evil://", manifest, dashCfg.resolvedProfile())
+	for _, want := range []string{"--reason=--provider=evil://", "--profile=-prod", "--provider=--reason=evil"} {
+		if !slices.Contains(gotDash, want) {
+			t.Errorf("deleteArgs dash-leading = %v, want a joined %q token", gotDash, want)
+		}
+	}
+	for _, a := range gotDash {
+		if a == "-prod" || a == "--reason=evil" || a == "--provider=evil://" {
+			t.Errorf("a dash-leading value became its own argv token: %v", gotDash)
+		}
+	}
+}
+
+// TestDeleteScreensArgumentsBeforeExec pins that Delete rejects an empty reason
+// WITHOUT spawning anything: the screen is there so the failure is a
+// deterministic caller error rather than a shelled-out exit (the CLI's
+// require_reason policy is an environment heuristic), and because this path is
+// destructive there must be no chance of a partially-formed invocation reaching
+// the provider. WithCLI points at a binary that cannot exist, so any exec would
+// surface as a DIFFERENT error than the screen's.
+//
+// A bad NAME is deliberately not a row here: ValidateName and buildManifest
+// return the same message, so such a row passes with or without Delete's own
+// screen. Name validation is covered by ValidateName's own test, with
+// buildManifest as defence in depth.
+func TestDeleteScreensArgumentsBeforeExec(t *testing.T) {
+	ctx := context.Background()
+	r := NewSpecResolver(nil, t.TempDir(), WithCLI(filepath.Join(t.TempDir(), "no-such-secretspec")))
+
+	for _, tc := range []struct{ what, name, reason, wantSubstr string }{
+		{"empty reason", "API_KEY", "", "reason is empty"},
+		{"whitespace reason", "API_KEY", "  \t\n ", "reason is empty"},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			err := r.Delete(ctx, tc.name, tc.reason)
+			if err == nil {
+				t.Fatalf("Delete(%q, %q) = nil, want an error", tc.name, tc.reason)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Fatalf("Delete(%q, %q) = %v, want an error mentioning %q — a different error means the screen was bypassed and the CLI was spawned", tc.name, tc.reason, err, tc.wantSubstr)
+			}
+		})
 	}
 }
 

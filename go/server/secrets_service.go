@@ -207,9 +207,10 @@ func (s *secretsService) ListSecrets(
 	return connect.NewResponse(&compassv1.ListSecretsResponse{Secrets: out}), nil
 }
 
-// DeleteSecret removes a secret's provider value and registry row, then bumps the
-// secrets version. USER-ONLY (record §915-918): an agent-token caller is
-// CodePermissionDenied. A name that was never declared is CodeNotFound.
+// DeleteSecret removes a secret's registry row and its provider value, then
+// bumps the secrets version. USER-ONLY (record §915-918): an agent-token caller
+// is CodePermissionDenied. A name that was never declared is CodeNotFound, and a
+// reserved server-secret prefix is CodeInvalidArgument.
 func (s *secretsService) DeleteSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.DeleteSecretRequest],
@@ -222,22 +223,42 @@ func (s *secretsService) DeleteSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
 	name := req.Msg.GetName()
-	// Ordering note: resolver.Delete is a validate-only no-op today, so calling
-	// it before DeleteSecretDeclaration is inert. The provider verb it would
-	// shell EXISTS at this pin (`secretspec delete`, 0.18+); wiring it is a
-	// deferral (RIG-3436), not an upstream gap. When it lands, this MUST flip to
-	// declaration-first: the declaration is the source of truth Resolve reads, and
-	// deleting the provider value before the row would leave a required=true
-	// declaration pointing at a missing value — the same global resolve-poison as a
-	// failed Set, in reverse.
-	if err := s.resolver.Delete(ctx, name); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("deleting secret value: %w", err))
+	// F1 structural partition (record D6): the user door REJECTS the reserved
+	// server-secret prefixes, before any store or provider call. SetSecret reaches
+	// this guard through DeclareSecret; DeleteSecret never declares, so without an
+	// explicit check here a user delete of GATEWAY_CREDENTIALS_MASTER_KEY would
+	// hard-delete the master key and strand every encrypted credential row.
+	if store.ShadowsServerSecretPrefix(name) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("secret name %q carries a reserved server-secret prefix; use the server-secret RPCs", name))
 	}
+	// Declaration FIRST, then the provider value: the declaration is the source
+	// of truth Resolve reads, so deleting the value first would leave a
+	// required=true declaration pointing at a missing value — the same global
+	// resolve-poison as a failed Set, in reverse.
 	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("secret %q", name))
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("deleting secret declaration: %w", err))
+	}
+	// Same audit-reason discipline and injection reasoning as the write path:
+	// callerID comes from the bearer token, never a request field.
+	reason := fmt.Sprintf("compass: operator secret delete via DeleteSecret RPC (caller %s)", callerID)
+	if err := s.resolver.Delete(ctx, name, reason); err != nil {
+		// The name was validated at the store door and the reason is non-empty by
+		// construction, so a Delete failure is a provider/exec fault — retryable
+		// and operator-side, never the caller's argument. Deliberately NO
+		// declaration rollback: re-creating it would point a required=true row at
+		// a value that may already be gone, poisoning every live session's
+		// resolve. The residue is an unreferenced provider value, which no longer
+		// resolves. Report it so the operator learns the value may remain.
+		slog.ErrorContext(ctx, "deleting secret value", "err", err)
+		// Name the recovery: the row is gone, so re-running this delete returns
+		// NotFound and never re-attempts the provider.
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New(
+			"secret declaration removed but deleting its provider value failed; "+
+				"the value may remain in the provider — re-declare it with `compass secret set` and delete again, or remove it from the provider directly"))
 	}
 	s.bumpSecretsVersion(ctx)
 	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
@@ -319,12 +340,14 @@ func (s *secretsService) SetServerSecret(
 
 // DeleteServerSecret removes a SERVER secret's registry row and its provider
 // value. Admin-only at the door. The reserved master-key name is refused for the
-// same reason SetServerSecret refuses it.
+// same reason SetServerSecret refuses it, and a name WITHOUT a reserved prefix
+// is refused so this door can never delete a user secret's value.
 func (s *secretsService) DeleteServerSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.DeleteServerSecretRequest],
 ) (*connect.Response[compassv1.DeleteServerSecretResponse], error) {
-	if _, err := s.requireCaller(ctx); err != nil {
+	callerID, err := s.requireCaller(ctx)
+	if err != nil {
 		return nil, err
 	}
 	if s.serverResolver == nil {
@@ -335,19 +358,33 @@ func (s *secretsService) DeleteServerSecret(
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("%s is provisioned and rotated by the server, never deleted through this RPC", masterKeyName))
 	}
-
-	// Provider value first, then the declaration: the same order as DeleteSecret,
-	// so a failure leaves the declaration intact rather than orphaning a value
-	// with no row naming it.
-	if err := s.serverResolver.Delete(ctx, name); err != nil {
-		slog.ErrorContext(ctx, "deleting server secret value", "err", err)
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("deleting server secret value failed"))
+	// The provider keyspace is ONE namespace partitioned only by name, and
+	// SpecResolver.Delete writes a one-name manifest for whatever it is handed —
+	// nothing scopes it to server_secrets. So an unprefixed name here would
+	// hard-delete a USER secret's value and leave its required=true declaration
+	// pointing at nothing, poisoning every live session's resolve.
+	if !store.HasServerSecretPrefix(name) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("server secret name %q must carry a reserved server-secret prefix", name))
 	}
+
+	// Declaration FIRST, as on the user path. The server resolver resolves its
+	// declared set wholesale (validateForgeSecret at boot, the webhook/token
+	// lanes at request time), so an orphaned declaration pointing at a deleted
+	// value fails those resolves outright; a stranded value is inert.
 	if err := s.store.DeleteServerSecretDeclaration(ctx, name); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, err)
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("deleting server secret declaration: %w", err))
+	}
+	reason := fmt.Sprintf("compass: server secret delete via DeleteServerSecret RPC (caller %s)", callerID)
+	if err := s.serverResolver.Delete(ctx, name, reason); err != nil {
+		// No declaration rollback, for the same reason as the user path: the
+		// residue is an unreferenced value that no longer resolves.
+		slog.ErrorContext(ctx, "deleting server secret value", "err", err)
+		return nil, connect.NewError(connect.CodeUnavailable,
+			errors.New("server secret declaration removed but deleting its provider value failed"))
 	}
 	return connect.NewResponse(&compassv1.DeleteServerSecretResponse{}), nil
 }
