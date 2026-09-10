@@ -76,8 +76,9 @@ afterEach(() => {
 	}
 	// Recursive /tmp deletes of the deep mount fixtures; under the parallel
 	// pre-push gate (worktree also in /tmp, bun 2x) this outruns bun's 5s hook
-	// default. Generous crash-guard bound, not a timing budget — see (g) at 130s.
-}, 30_000);
+	// default. A slow-cleanup detector, not a timing budget — bun cannot preempt
+	// the sync rmSync, so this bounds a returning-but-slow delete (see (g), 130s).
+}, 60_000);
 
 // A mount fixture: <mount>/current/<rel> holding `body`, parents created.
 function writeMember(mount: string, rel: string, body: string): string {
