@@ -40,7 +40,10 @@ func testKey(t *testing.T) envelope.Key {
 func upsertValue(t *testing.T, s *Store, key envelope.Key, actor AccountID, name string, scopeKind int16, scopeID, value string) {
 	t.Helper()
 	ctx := context.Background()
-	aad := envelope.UserSecretAAD("", scopeKind, scopeID, name, 1)
+	aad, err := envelope.UserSecretAAD("", scopeKind, scopeID, name, 1)
+	if err != nil {
+		t.Fatalf("AAD %s@%d/%s: %v", name, scopeKind, scopeID, err)
+	}
 	nonce, ct, err := key.Encrypt([]byte(value), aad)
 	if err != nil {
 		t.Fatalf("encrypt %s@%d/%s: %v", name, scopeKind, scopeID, err)
@@ -109,7 +112,10 @@ func TestSecretScopePrecedence(t *testing.T) {
 		if r.ScopeKind != want.scope || r.ScopeID != want.id {
 			t.Errorf("%s: resolved scope (%d,%q), want (%d,%q)", name, r.ScopeKind, r.ScopeID, want.scope, want.id)
 		}
-		aad := envelope.UserSecretAAD("", r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
+		aad, err := envelope.UserSecretAAD("", r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
+		if err != nil {
+			t.Fatalf("%s: AAD: %v", name, err)
+		}
 		pt, err := key.Decrypt(r.ValueNonce, r.ValueCiphertext, aad)
 		if err != nil {
 			t.Fatalf("%s: decrypt winner: %v", name, err)
@@ -181,7 +187,10 @@ func TestSecretScopeTenantSharing(t *testing.T) {
 		if r.ScopeKind != SecretScopeTenant {
 			t.Errorf("agent %s resolved SHARED at scope %d, want tenant", ag.ID, r.ScopeKind)
 		}
-		aad := envelope.UserSecretAAD("", r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
+		aad, err := envelope.UserSecretAAD("", r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
+		if err != nil {
+			t.Fatalf("agent %s: AAD: %v", ag.ID, err)
+		}
 		pt, err := key.Decrypt(r.ValueNonce, r.ValueCiphertext, aad)
 		if err != nil || string(pt) != "one-shared-value" {
 			t.Errorf("agent %s: shared value = %q,%v, want one-shared-value", ag.ID, pt, err)
@@ -238,7 +247,10 @@ func decryptRow(t *testing.T, s *Store, key envelope.Key, name string, scopeKind
 		name, scopeKind, scopeID).Scan(&ct, &nonce, &kv); err != nil {
 		t.Fatalf("read row %s@%d/%s: %v", name, scopeKind, scopeID, err)
 	}
-	aad := envelope.UserSecretAAD("", scopeKind, scopeID, name, kv)
+	aad, err := envelope.UserSecretAAD("", scopeKind, scopeID, name, kv)
+	if err != nil {
+		t.Fatalf("AAD row %s@%d/%s: %v", name, scopeKind, scopeID, err)
+	}
 	pt, err := key.Decrypt(nonce, ct, aad)
 	if err != nil {
 		t.Fatalf("decrypt row %s@%d/%s: %v", name, scopeKind, scopeID, err)
@@ -399,5 +411,51 @@ func TestShadowsServerSecretPrefix(t *testing.T) {
 	// The two predicates differ: lowercase is admitted byte-exact, rejected fold.
 	if HasServerSecretPrefix("server_x") || !ShadowsServerSecretPrefix("server_x") {
 		t.Error("admit/reject predicates should differ on lowercase server_x")
+	}
+}
+
+// TestSecretUpsertDeliveryRangeDoorValidation proves the door rejects an
+// out-of-range delivery with ErrInvalidArgument rather than letting it reach the
+// secrets.delivery CHECK and surface as a bare CodeInternal at the RPC edge.
+func TestSecretUpsertDeliveryRangeDoorValidation(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	// delivery 2 is outside the file(0)/env(1) range the CHECK enforces.
+	err := s.UpsertSecret(ctx, owner.ID, "BADDEL", SecretScopeTenant, "",
+		SecretDelivery(2), SecretKindGeneric, "", "", []byte("ct"), []byte("nonce"), 1)
+	sentinelIs(t, err, ErrInvalidArgument, "out-of-range delivery")
+}
+
+// TestSecretRecordsForAgentUnknownPrincipal pins the read-side authz gate: the
+// INNER JOIN agent_accounts means a non-agent or unknown principal resolves zero
+// rows even against a tenant-scoped secret. A regression to LEFT JOIN would hand
+// every tenant secret to an unknown principal; this fails on that.
+func TestSecretRecordsForAgentUnknownPrincipal(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	key := testKey(t)
+	owner := mustUser(t, s, "owner")
+
+	// A tenant-scoped row any real agent would resolve — the bait the gate must
+	// withhold from a principal that is not an agent account.
+	upsertValue(t, s, key, owner.ID, "SHARED", SecretScopeTenant, "", "tenant-val")
+
+	// A real account that is not an agent (a user), and a wholly unknown id.
+	for _, tc := range []struct {
+		name      string
+		principal AccountID
+	}{
+		{"user account is not an agent", owner.ID},
+		{"non-existent account id", AccountID("acc_does_not_exist")},
+	} {
+		recs, err := s.SecretRecordsForAgent(ctx, tc.principal)
+		if err != nil {
+			t.Fatalf("%s: SecretRecordsForAgent: %v", tc.name, err)
+		}
+		if len(recs) != 0 {
+			t.Errorf("%s: got %d records, want 0 — read-side authz gate leaked", tc.name, len(recs))
+		}
 	}
 }

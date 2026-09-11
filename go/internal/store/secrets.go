@@ -245,6 +245,19 @@ func validateScopeShape(scopeKind int16, scopeID string) error {
 	return nil
 }
 
+// validateDelivery enforces the delivery range at the store door, mirroring the
+// secrets.delivery CHECK (0=file, 1=env). Without it an out-of-range delivery
+// sails past the door and surfaces as a bare wrapped error at the RPC edge
+// (CodeInternal) rather than the ErrInvalidArgument UpsertSecret's doc promises.
+func validateDelivery(delivery SecretDelivery) error {
+	switch delivery {
+	case SecretDeliveryFile, SecretDeliveryEnv:
+		return nil
+	default:
+		return fmt.Errorf("%w: unknown secret delivery %d", ErrInvalidArgument, delivery)
+	}
+}
+
 // UpsertSecret validates name grammar, the reserved-prefix partition, kind
 // routing, and the A9 scope shape at the door, resolves the scope_id against the
 // right account subtype in the writing transaction (no FK exists, A9), then
@@ -267,6 +280,9 @@ func (s *Store) UpsertSecret(ctx context.Context, actor AccountID, name string, 
 		return err
 	}
 	if err := validateScopeShape(scopeKind, scopeID); err != nil {
+		return err
+	}
+	if err := validateDelivery(delivery); err != nil {
 		return err
 	}
 
@@ -314,6 +330,11 @@ func (s *Store) UpsertSecret(ctx context.Context, actor AccountID, name string, 
 	}); err != nil {
 		if pgErrIs(err, pgForeignKeyViolation) {
 			return fmt.Errorf("%w: writing account %q does not exist", ErrInvalidArgument, actor)
+		}
+		// Backstop the door checks: a CHECK violation (e.g. a delivery/kind out of
+		// range) is an invalid argument, not an internal fault.
+		if pgErrIs(err, pgCheckViolation) {
+			return fmt.Errorf("%w: secret write violates a table constraint", ErrInvalidArgument)
 		}
 		return fmt.Errorf("store: upsert secret: %w", err)
 	}

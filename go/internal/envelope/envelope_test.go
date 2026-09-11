@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -148,34 +150,44 @@ func TestDecryptWrongLengthNonce(t *testing.T) {
 }
 
 func TestKeyDoesNotLeakBytes(t *testing.T) {
-	secret := repeat(0xAB)
+	const b = 0xAB
+	secret := repeat(b)
 	k := mustKey(t, secret)
-	needle := fmt.Sprintf("%02x", secret[0]) // "ab"
 
-	// %v / %+v / %#v must not render the key bytes.
-	for _, s := range []string{
-		fmt.Sprintf("%v", k),
-		fmt.Sprintf("%+v", k),
-		fmt.Sprintf("%#v", k),
-		fmt.Sprintf("%s", k),
-	} {
-		if bytes.Contains(bytes.ToLower([]byte(s)), []byte(needle+needle)) {
-			t.Fatalf("formatted Key leaks key bytes: %q", s)
+	// Needles built from the ACTUAL renderings, not a guessed hex string:
+	// fmt emits a byte as decimal for %v/%+v and as 0xNN for %#v. A run of two
+	// catches the [32]byte array without matching incidental single occurrences.
+	dec := strconv.Itoa(b)    // "171"
+	decRun := dec + " " + dec // "171 171"
+	hexRun := "0xab, 0xab"    // %#v array element form
+	rawNeedles := [][]byte{[]byte(decRun), []byte(hexRun), secret}
+
+	assertClean := func(label, out string) {
+		low := bytes.ToLower([]byte(out))
+		for _, n := range rawNeedles {
+			if bytes.Contains(low, bytes.ToLower(n)) {
+				t.Fatalf("%s leaks key bytes (needle %q): %q", label, n, out)
+			}
 		}
 	}
+
+	assertClean("%v", fmt.Sprintf("%v", k))
+	assertClean("%+v", fmt.Sprintf("%+v", k))
+	assertClean("%#v", fmt.Sprintf("%#v", k))
+	assertClean("%s", k.String())
 
 	j, err := json.Marshal(k) //nolint:staticcheck // marshaling a no-exported-field Key to prove it yields no key bytes IS the test
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	if bytes.Contains(bytes.ToLower(j), []byte(needle)) {
-		t.Fatalf("json.Marshal(Key) leaks key bytes: %s", j)
-	}
-	// The bytes must not appear as a base64/array either: marshaling an all-0xAB
-	// key should not embed a run of the raw value in any form.
-	if bytes.Contains(j, secret) {
-		t.Fatalf("json.Marshal(Key) embeds raw key: %s", j)
-	}
+	assertClean("json.Marshal", string(j))
+
+	// slog is the vector the type must close: both handlers, key as an attr value.
+	var textBuf, jsonBuf bytes.Buffer
+	slog.New(slog.NewTextHandler(&textBuf, nil)).Info("m", "master_key", k)
+	slog.New(slog.NewJSONHandler(&jsonBuf, nil)).Info("m", "master_key", k)
+	assertClean("slog TextHandler", textBuf.String())
+	assertClean("slog JSONHandler", jsonBuf.String())
 }
 
 func TestFingerprintStableAndDistinct(t *testing.T) {
@@ -202,26 +214,36 @@ func TestFingerprintStableAndDistinct(t *testing.T) {
 	}
 }
 
+// mustAAD builds an AAD the encoding must accept; a NUL-free tuple never errors.
+func mustAAD(t *testing.T, tenantID string, scopeKind int16, scopeID, name string, keyVersion int16) []byte {
+	t.Helper()
+	aad, err := UserSecretAAD(tenantID, scopeKind, scopeID, name, keyVersion)
+	if err != nil {
+		t.Fatalf("UserSecretAAD(%q,%d,%q,%q,%d): %v", tenantID, scopeKind, scopeID, name, keyVersion, err)
+	}
+	return aad
+}
+
 func TestUserSecretAADInjective(t *testing.T) {
-	// Adjacent-field ambiguity: without the \x00 separators, moving the "\x00B"
+	// Adjacent-field ambiguity: without the \x00 separators, moving the "B"
 	// from the name into the scopeID boundary would collide.
-	a := UserSecretAAD("tenant", 1, "", "A\x00B", 1)
-	b := UserSecretAAD("tenant", 1, "B", "A", 1)
+	a := mustAAD(t, "tenant", 1, "", "AB", 1)
+	b := mustAAD(t, "tenant", 1, "B", "A", 1)
 	if bytes.Equal(a, b) {
 		t.Fatal("UserSecretAAD not injective across name/scopeID field boundary")
 	}
 
 	// Numeric run-together: a trailing-digit name plus keyVersion must not
 	// concatenate into the same bytes as a shorter name and a longer version.
-	c := UserSecretAAD("t", 0, "", "KEY1", 2)
-	d := UserSecretAAD("t", 0, "", "KEY", 12)
+	c := mustAAD(t, "t", 0, "", "KEY1", 2)
+	d := mustAAD(t, "t", 0, "", "KEY", 12)
 	if bytes.Equal(c, d) {
 		t.Fatal("UserSecretAAD not injective across name/keyVersion digit boundary")
 	}
 
 	// scopeKind is bound: same everything else, different scope kind differs.
-	e := UserSecretAAD("t", 1, "acct", "N", 1)
-	f := UserSecretAAD("t", 2, "acct", "N", 1)
+	e := mustAAD(t, "t", 1, "acct", "N", 1)
+	f := mustAAD(t, "t", 2, "acct", "N", 1)
 	if bytes.Equal(e, f) {
 		t.Fatal("UserSecretAAD does not bind scopeKind")
 	}
@@ -237,8 +259,8 @@ func TestScopeBinding(t *testing.T) {
 	k := mustKey(t, repeat(0x33))
 	// User scope shadows tenant scope for the same name/tenant. An AAD that
 	// differs in ONLY the scope field must fail to decrypt.
-	aadUser := UserSecretAAD("tenant-x", 1, "acct-1", "OPENAI_API_KEY", 1)
-	aadAgent := UserSecretAAD("tenant-x", 2, "acct-1", "OPENAI_API_KEY", 1)
+	aadUser := mustAAD(t, "tenant-x", 1, "acct-1", "OPENAI_API_KEY", 1)
+	aadAgent := mustAAD(t, "tenant-x", 2, "acct-1", "OPENAI_API_KEY", 1)
 
 	nonce, ct, err := k.Encrypt([]byte("sk-live"), aadUser)
 	if err != nil {
@@ -250,5 +272,78 @@ func TestScopeBinding(t *testing.T) {
 	// Same AAD still round-trips.
 	if pt, err := k.Decrypt(nonce, ct, aadUser); err != nil || string(pt) != "sk-live" {
 		t.Fatalf("same-AAD round-trip failed: pt=%q err=%v", pt, err)
+	}
+}
+
+func TestZeroValueKeyFailsClosed(t *testing.T) {
+	var zero Key // never through NewKey: 32 zero bytes would be a publicly-known key
+	aad := []byte("aad")
+
+	if _, _, err := zero.Encrypt([]byte("secret"), aad); !errors.Is(err, ErrUnsetKey) {
+		t.Fatalf("zero-value Encrypt: want ErrUnsetKey, got %v", err)
+	}
+	// An unset key is a wiring bug, not a tamper: it must NOT masquerade as ErrDecrypt.
+	if _, err := zero.Decrypt(make([]byte, nonceLen), []byte("ct"), aad); !errors.Is(err, ErrUnsetKey) {
+		t.Fatalf("zero-value Decrypt: want ErrUnsetKey, got %v", err)
+	}
+	if errors.Is(ErrUnsetKey, ErrDecrypt) {
+		t.Fatal("ErrUnsetKey must be distinct from ErrDecrypt")
+	}
+
+	// A NewKey-built key still works end to end.
+	k := mustKey(t, repeat(0x5A))
+	nonce, ct, err := k.Encrypt([]byte("secret"), aad)
+	if err != nil {
+		t.Fatalf("NewKey Encrypt: %v", err)
+	}
+	if pt, err := k.Decrypt(nonce, ct, aad); err != nil || string(pt) != "secret" {
+		t.Fatalf("NewKey round-trip: pt=%q err=%v", pt, err)
+	}
+}
+
+func TestUserSecretAADRejectsNUL(t *testing.T) {
+	// The \x00 separator makes an in-field \x00 a boundary shifter, so the
+	// boundary must refuse it rather than emit a colliding AAD.
+	for _, tc := range []struct {
+		field                   string
+		tenantID, scopeID, name string
+	}{
+		{"tenantID", "t\x00x", "s", "N"},
+		{"scopeID", "t", "s\x00y", "N"},
+		{"name", "t", "s", "N\x00M"},
+	} {
+		aad, err := UserSecretAAD(tc.tenantID, 1, tc.scopeID, tc.name, 1)
+		if aad != nil {
+			t.Errorf("%s: want nil AAD on NUL, got %q", tc.field, aad)
+		}
+		if !errors.Is(err, ErrAADField) {
+			t.Fatalf("%s: want ErrAADField, got %v", tc.field, err)
+		}
+		if !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("%s: error must name the field, got %q", tc.field, err)
+		}
+		// The rejected value carries attacker-controlled bytes: it must never
+		// appear in the error string.
+		for _, v := range []string{tc.tenantID, tc.scopeID, tc.name} {
+			if strings.Contains(v, "\x00") && strings.Contains(err.Error(), v) {
+				t.Errorf("%s: error leaked the offending value %q", tc.field, err)
+			}
+		}
+	}
+
+	// The exact reproduced collision pair is now refused rather than equal:
+	// a NUL in name vs. a NUL in scopeID both error instead of colliding.
+	if _, err := UserSecretAAD("t", 1, "a", "b\x00c", 1); !errors.Is(err, ErrAADField) {
+		t.Fatalf("collision pair (name NUL): want ErrAADField, got %v", err)
+	}
+	if _, err := UserSecretAAD("t", 1, "a\x00b", "c", 1); !errors.Is(err, ErrAADField) {
+		t.Fatalf("collision pair (scopeID NUL): want ErrAADField, got %v", err)
+	}
+
+	// The accepted (NUL-free) domain stays injective: distinct tuples differ.
+	c := mustAAD(t, "tenant", 1, "a1b2c3", "OPENAI_API_KEY", 1)
+	d := mustAAD(t, "tenant", 1, "a1b2", "c3OPENAI_API_KEY", 1)
+	if bytes.Equal(c, d) {
+		t.Fatal("distinct NUL-free tuples must not collide")
 	}
 }

@@ -261,7 +261,7 @@ type Querier interface {
 	// InsertSecret/DeclaredSecrets are the retained value-free path (T5 caller); the
 	// scoped, encrypted path is UpsertSecret + SecretRecordsForAgent (A1/A9).
 	// InsertSecret writes the value-free declaration at the tenant coordinate
-	// (scope_kind 0, scope_id ''); the value columns stay NULL. Retained for the T5
+	// (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
 	// SetSecret caller, removed with it in T5.
 	InsertSecret(ctx context.Context, arg InsertSecretParams) error
 	// Server-secrets registry queries (design record T0, mechanism C1/D6). The

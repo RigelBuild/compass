@@ -102,7 +102,7 @@ type InsertSecretParams struct {
 // InsertSecret/DeclaredSecrets are the retained value-free path (T5 caller); the
 // scoped, encrypted path is UpsertSecret + SecretRecordsForAgent (A1/A9).
 // InsertSecret writes the value-free declaration at the tenant coordinate
-// (scope_kind 0, scope_id ”); the value columns stay NULL. Retained for the T5
+// (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
 // SetSecret caller, removed with it in T5.
 func (q *Queries) InsertSecret(ctx context.Context, arg InsertSecretParams) error {
 	_, err := q.db.Exec(ctx, insertSecret,

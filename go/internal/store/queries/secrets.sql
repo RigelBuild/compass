@@ -8,7 +8,7 @@
 -- scoped, encrypted path is UpsertSecret + SecretRecordsForAgent (A1/A9).
 
 -- InsertSecret writes the value-free declaration at the tenant coordinate
--- (scope_kind 0, scope_id ''); the value columns stay NULL. Retained for the T5
+-- (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
 -- SetSecret caller, removed with it in T5.
 -- name: InsertSecret :exec
 INSERT INTO secrets (name, scope_kind, delivery, kind, provider, host, declared_by)
