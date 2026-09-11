@@ -1780,6 +1780,25 @@ jobs:
             exit 1
           fi
           mnt="$(mktemp -d)"
+          # Release the mount on ANY step exit — errexit mid-verify or the job's
+          # timeout signal must not leak the attachment (a reused runner then
+          # hits "Resource busy" on the next hdiutil create). Idempotent and
+          # error-swallowing: a failing trap during exit would mask the real
+          # status.
+          trap 'hdiutil detach "$mnt" >/dev/null 2>&1 || hdiutil detach "$mnt" -force >/dev/null 2>&1 || true' EXIT
+          # Force-detach any Compass attachment a prior job on this reused runner
+          # left behind. Narrow by design: only mount points whose basename is
+          # exactly "Compass" or a "Compass N" duplicate, so an unrelated volume
+          # (e.g. /Volumes/CompassUnrelated) is never touched. The mount path is
+          # cut from the tab-delimited entity line rather than taken as the last
+          # field, so a path containing spaces survives intact.
+          hdiutil info 2>/dev/null \
+            | sed -n 's#^/dev/[^	]*		*\(/Volumes/Compass.*\)$#\1#p' \
+            | while read -r stale; do
+            case "$(basename "$stale")" in
+              Compass|Compass\ [0-9]*) hdiutil detach "$stale" -force >/dev/null 2>&1 || true ;;
+            esac
+          done
           hdiutil attach "$out" -mountpoint "$mnt" -nobrowse -readonly
           rc=0
           BINARIES=(
@@ -1810,7 +1829,7 @@ jobs:
               rc=1
             fi
           done
-          hdiutil detach "$mnt" || hdiutil detach "$mnt" -force || true
+          # Detach runs via the EXIT trap installed above, unconditionally.
           if [ "$rc" != 0 ]; then
             exit 1
           fi
