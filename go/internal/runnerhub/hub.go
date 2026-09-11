@@ -33,7 +33,7 @@ import (
 type RunnerEvent struct {
 	// RunnerSeq is the Runner-assigned monotonic sequence across the Runner's
 	// whole event stream. A gap in the sequence the hub observes is in-transit
-	// loss (OQ6 Runner-sequenced, go-toolchain-default.md:1389-1392).
+	// loss (OQ6 Runner-sequenced).
 	RunnerSeq uint64
 	// SessionID is the Server-side session id the frame belongs to.
 	SessionID string
@@ -357,8 +357,8 @@ type Hub struct {
 	runnerReadyHook func()
 
 	mu sync.Mutex
-	// runner is the single attached Runner (single-Runner MVP, OQ6
-	// go-toolchain-default.md:1392). A second enrollment re-attaches rather than
+	// runner is the single attached Runner (single-Runner MVP, OQ6).
+	// A second enrollment re-attaches rather than
 	// registering a second entry.
 	runner *attachedRunner
 	// containerAccounts binds a provisioned container_name to the agent account
@@ -893,7 +893,7 @@ type promotedPair struct {
 // enroll registers (or re-attaches) a Runner under its authenticated subject,
 // returning whether it re-attached an existing Runner (OQ6 duplicate enrollment:
 // a second enrollment re-attaches the same Runner rather than registering a
-// second, single-Runner MVP, go-toolchain-default.md:1392).
+// second, single-Runner MVP).
 //
 // Enroll drops ALL agent-comms bindings (OQ-2, ratified). session_id /
 // container_name are Runner-minted, so a restarted Runner could re-mint an id

@@ -1,10 +1,10 @@
 # yaml-language-server: $schema=https://golangci-lint.run/jsonschema/golangci.jsonschema.json
 #
 # golangci-lint config for the Compass backend Go module (go/).
-# Realizes the F1 posture from docs/designs/platform/go-idioms-and-libraries.md:
-# enable EVERY linter by default, then argue specific ones OUT with a reason —
-# so a version bump arrives with its new linters enabled and each must be
-# justified to disable, never justified to add. The golangci-lint version is
+# The F1 posture: enable EVERY linter by default, then argue specific ones OUT
+# with a reason — so a version bump arrives with its new linters enabled and
+# each must be justified to disable, never justified to add. The
+# golangci-lint version is
 # pinned (devenv.nix + ci/ci-toolchain.nix) so an upgrade is a deliberate act
 # that re-reviews the newly-shipped linters (the F1 ratchet).
 #

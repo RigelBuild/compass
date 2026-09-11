@@ -11,7 +11,7 @@
 // is Runner-initiated. Enroll is the handshake; Sessions is Runner-opened with
 // the Server pushing commands on the response half; PublishEvents is a
 // Runner->Server client-stream. This is the dial-out model the established proto
-// shape realizes (go-toolchain-default.md:929-934).
+// shape realizes.
 package runner
 
 import (

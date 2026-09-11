@@ -1,4 +1,4 @@
-// The Compass backend Go module (docs/designs/platform/go-toolchain-default.md).
+// The Compass backend Go module.
 // One module for the whole backend: the compass-server binary (served on
 // server.sock), the comms packages, and the generated compass.v1 stubs (gen/).
 //
