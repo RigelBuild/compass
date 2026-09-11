@@ -193,7 +193,7 @@ func (ServerState) EnumDescriptor() ([]byte, []int) {
 // Scope: T4 (RIG-1243) ships the DISCONNECTED *signal* only. The server-side
 // reattach-window enforcement — the per-session registry, the bounded timer,
 // the expiry→ERRORED transition, and GetAgentStatus reconciliation on reattach
-// — is T9 (go-toolchain-default.md:979). Until T9 lands, a dropped Runner link
+// — is T9. Until T9 lands, a dropped Runner link
 // surfaces as an in-flight-command failure; the window/expiry state machine is
 // not yet enforced.
 type AgentSessionState int32

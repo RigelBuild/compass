@@ -6,7 +6,7 @@
 // and blocks for the matching result on the Runner's request stream, correlated
 // by request id.
 //
-// OQ6 idempotency (go-toolchain-default.md:1388-1389): a command carries a
+// OQ6 idempotency: a command carries a
 // request id; a retry after a timeout reuses that id, and the router returns the
 // original in-flight/completed result rather than pushing a duplicate command —
 // so a relay-Start retried after a timeout creates no duplicate container and no

@@ -158,7 +158,7 @@ tasks:
     # Run the module's unit + transport tests under the race detector. The race
     # detector requires cgo (CGO_ENABLED=1), so this lane opts back in — Global
     # Constraint 5's release-build CGO_ENABLED=0 governs the shipped binary, not
-    # the test lane (go-toolchain-default.md T10, :1074-1076).
+    # the test lane.
     command: 'go test -race ./...'
     env:
       CGO_ENABLED: '1'

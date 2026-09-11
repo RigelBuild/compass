@@ -6,7 +6,7 @@
 // request half. Request-id idempotency (OQ6): a command whose request id was
 // already handled returns the recorded result rather than re-executing — so a
 // relay-Start retried after a timeout creates no duplicate container and no
-// spurious ALREADY_RUNNING (go-toolchain-default.md:1388-1389). The Runner is
+// spurious ALREADY_RUNNING. The Runner is
 // authoritative for live session truth (OQ6): it holds the session set and a
 // Status command answers from it.
 package runner

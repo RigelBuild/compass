@@ -1,6 +1,6 @@
 //go:build unix
 
-// The per-Runner token mint (OQ7, go-toolchain-default.md:1410-1423). A
+// The per-Runner token mint (OQ7). A
 // dedicated Runner-subject mint path — NOT the Client-door IssueToken — issues a
 // token against store.Subject{Kind: SubjectRunner}, reusing T3's hash-only token
 // store under the distinct SubjectRunner keyspace so a Runner subject and an
