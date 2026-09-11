@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/exec" //nolint:depguard // e2e harness: LookPath-resolved stack child binaries + podman image probe
@@ -13,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
+
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/stack"
 	"github.com/RigelBuild/compass/go/internal/stack/adapters"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -128,6 +132,25 @@ func WithCannedMarkerReply(marker, reply string) fixtureOption {
 	}
 }
 
+// WithCannedMarkerScript adds an off-script body-marker route serving an ORDERED
+// SEQUENCE of turns (newCannedMarkerScript, RIG-3528 T1) rather than the single
+// text reply WithCannedMarkerReply registers: matching request N of this marker
+// draws turns[N], and the terminal element repeats once the sequence is
+// exhausted. Like WithCannedMarkerReply it never advances the positional script
+// counter, so it composes with WithCannedScript and with the built-in Setup
+// marker; repeat the option to register several marker scripts.
+//
+// This is what lets a marker-routed turn issue a TOOL CALL: a tool-call turn
+// needs two model round-trips to settle (the call, then the follow-up that
+// settles on text), and the follow-up re-matches the same marker — so a
+// single-turn marker route would re-serve the tool call forever. Pass
+// [CannedToolCall(...), CannedText(...)] and the second round-trip settles.
+func WithCannedMarkerScript(marker string, turns ...CannedTurn) fixtureOption {
+	return func(fc *fixtureConfig) {
+		fc.cannedMarkers = append(fc.cannedMarkers, newCannedMarkerScript(marker, turns...))
+	}
+}
+
 // WithSite makes NewFixture reuse a persistent site (root/stateDir/ports) rather
 // than minting fresh ephemeral ones — the RIG-1790 H6 cross-restart substrate.
 // Two NewFixture calls over the SAME site drive two stack lifecycles that share
@@ -173,6 +196,173 @@ func (f *Fixture) AdminToken() string { return f.adminToken }
 // so a process-hygiene assertion can scope its /proc scan to this fixture's own
 // child processes rather than matching unrelated host processes.
 func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
+
+// AsObserver mints a NON-ADMIN bearer for an existing account and returns the
+// two Connect clients scoped to it, so a leg can assert what that account CAN
+// and CANNOT see over the real TLS door (RIG-3528 T1). Every other fixture RPC
+// rides the bootstrap-admin bearer (newAuthedClients), which is why no existing
+// leg can prove a NEGATIVE — an admin sees everything.
+//
+// It mints a CLIENT/observer credential, NOT an agent identity. Agent
+// authorship needs no credential at all: the Runner asserts no account and the
+// server resolves session_id → account from its own binding
+// (runnerhub/relay_comms.go:7-15, the ratified OQ-2 trust model). Do not reach
+// for this to author an agent's post — script the agent's turn instead.
+//
+// IssueToken is admin-gated (server/service.go:407-415), so the mint rides the
+// fixture's admin client; the returned clients then dial the SAME door through
+// newAuthedClients with the minted bearer, so there is exactly one dial path.
+// An account the server cannot resolve is NOT_FOUND, surfaced as the returned
+// error (never a panic — the caller, a test, decides fatality).
+//
+// The argument accepts EITHER spelling — an account id or a handle — because the
+// two surfaces disagree: IssueTokenRequest.account_handle is documented as a
+// handle (compass.proto:758-763) but the server consumes it as an account ID
+// (service.go:420-425 feeds store.AccountID(...) straight into GetAccount, which
+// keys on accounts.id), while CommsService's member/owner fields resolve strictly
+// through account_handles.handle. So this resolves the ref to an id over
+// ListAccounts first. An unresolvable ref is passed through UNCHANGED so the
+// SERVER decides the code — that keeps NOT_FOUND the server's answer rather than
+// a locally-synthesized one.
+func (f *Fixture) AsObserver(ctx context.Context, handle string) (compassServiceClient, commsServiceClient, error) {
+	// Best-effort id resolution; a miss (unknown ref, or a list error) leaves the
+	// caller's spelling intact for the server to reject.
+	target := handle
+	if acc, err := f.lookupAccount(ctx, handle); err == nil {
+		target = acc.GetId()
+	}
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Compass().IssueToken(rctx, connect.NewRequest(&compassv1.IssueTokenRequest{
+		AccountHandle: target,
+	}))
+	if err != nil {
+		return nil, nil, fmt.Errorf("IssueToken RPC: %w", err)
+	}
+	token := resp.Msg.GetToken()
+	if token == "" {
+		return nil, nil, fmt.Errorf("IssueToken for %q returned an empty token", handle)
+	}
+	compass, comms, err := newAuthedClients(f.caPath, f.serverURL, token)
+	if err != nil {
+		return nil, nil, fmt.Errorf("observer clients for %q: %w", handle, err)
+	}
+	return compass, comms, nil
+}
+
+// lookupAccount resolves an account ref — an id OR a handle — to its Account
+// over ListAccounts (the only account read CommsService exposes; there is no
+// GetAccount RPC). It exists because the id/handle spelling required differs per
+// request field (see AsObserver), so a fixture wrapper taking one spelling has to
+// be able to reach the other. An unmatched ref is store-shaped ErrNotFound-like:
+// a plain error naming the ref, for the caller to wrap or ignore.
+func (f *Fixture) lookupAccount(ctx context.Context, ref string) (*compassv1.Account, error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().ListAccounts(rctx, connect.NewRequest(&compassv1.ListAccountsRequest{}))
+	if err != nil {
+		return nil, fmt.Errorf("ListAccounts RPC: %w", err)
+	}
+	for _, acc := range resp.Msg.GetAccounts() {
+		if acc.GetId() == ref || acc.GetHandle() == ref {
+			return acc, nil
+		}
+	}
+	return nil, fmt.Errorf("no visible account matching %q (by id or handle)", ref)
+}
+
+// CreateUser creates a human user account over CommsService and returns its
+// account id — the owner-tier setup primitive a multi-tenant leg needs (two
+// owner users, each with its own agents). Thin client-RPC primitive in the style
+// of CreateAgent; returns an error rather than panicking so the caller (a test)
+// decides fatality, and the per-call deadline is threaded from ctx.
+func (f *Fixture) CreateUser(ctx context.Context, handle, displayName string) (ownerID string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().CreateUser(rctx, connect.NewRequest(&compassv1.CreateUserRequest{
+		Handle:      handle,
+		DisplayName: displayName,
+	}))
+	if err != nil {
+		return "", fmt.Errorf("CreateUser RPC: %w", err)
+	}
+	return resp.Msg.GetAccount().GetId(), nil
+}
+
+// CreateChannel creates a plain (kind=CHANNEL) channel over CommsService with
+// ownerID as a founding member, and returns its channel id.
+//
+// private selects the channel's D9 VISIBILITY, which in this schema is a
+// property of the channel's GROUP, not of ChannelKind — the ChannelKind enum is
+// CHANNEL / DM / (retired) GROUP_DM and carries no private member
+// (comms.proto:289-295), and a DM is a two-party conversation the manual create
+// path is server-FORBIDDEN from minting (store/channels.go:126-139), so it is
+// not the private form of a channel. Both cases are therefore
+// CHANNEL_KIND_CHANNEL and differ in placement:
+//   - private=true → UNGROUPED (empty group_id): membership-only visibility.
+//     comms.proto:237-239 ("empty for an ungrouped channel, which is
+//     owner-scoped to its creating caller (the OWNER default), not global"), and
+//     the read predicate agrees — its group arm requires group_id NOT NULL with
+//     effective visibility SHARED (store/db/channels.sql.go:495-505), so an
+//     ungrouped channel is reachable only through channel_members.
+//   - private=false → created inside a freshly minted SHARED channel group, so
+//     every account can see it (the globally-visible canary surface).
+//
+// ownerID is threaded as a MEMBER, not an owner field: CreateChannelRequest has
+// NO owner field (name/group_id/kind/member_handles, comms.proto:654-664) and the
+// store derives owner scoping from the CALLER plus transitive owner-membership
+// (store/channels.go:76-83) — a user is added automatically for any of its agents
+// in the member set. Membership is what makes the channel readable by that
+// account, which is the property a leg asserts. The creating caller is the
+// fixture's admin client, so the admin is a founding member by construction.
+//
+// member_handles resolves strictly through account_handles.handle (an account id
+// never resolves — store/db/accounts.sql.go:248-265), while the signature takes
+// an id, so the id is converted to its handle first via lookupAccount. An
+// unresolvable ownerID is passed through unchanged so the SERVER answers
+// NOT_FOUND rather than a locally-synthesized error.
+func (f *Fixture) CreateChannel(ctx context.Context, ownerID, name string, private bool) (channelID string, err error) {
+	ownerHandle := ownerID
+	if acc, lookupErr := f.lookupAccount(ctx, ownerID); lookupErr == nil {
+		ownerHandle = acc.GetHandle()
+	}
+	var groupID string
+	if !private {
+		groupID, err = f.createSharedGroup(ctx, name+"-group")
+		if err != nil {
+			return "", err
+		}
+	}
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().CreateChannel(rctx, connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name:          name,
+		GroupId:       groupID,
+		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberHandles: []string{ownerHandle},
+	}))
+	if err != nil {
+		return "", fmt.Errorf("CreateChannel RPC: %w", err)
+	}
+	return resp.Msg.GetChannel().GetId(), nil
+}
+
+// createSharedGroup mints a top-level SHARED-visibility channel group and
+// returns its id — the container that makes a channel globally visible (see
+// CreateChannel's private=false arm). Top-level, so no parent visibility
+// ceiling applies (store/channels.go:13-22).
+func (f *Fixture) createSharedGroup(ctx context.Context, name string) (groupID string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Comms().CreateChannelGroup(rctx, connect.NewRequest(&compassv1.CreateChannelGroupRequest{
+		Name:       name,
+		Visibility: compassv1.ChannelGroupVisibility_CHANNEL_GROUP_VISIBILITY_SHARED,
+	}))
+	if err != nil {
+		return "", fmt.Errorf("CreateChannelGroup RPC: %w", err)
+	}
+	return resp.Msg.GetGroup().GetId(), nil
+}
 
 // NewFixture stands up the real embedded stack over stack.Up with the real
 // adapter set and returns a Fixture with authenticated Connect clients. It
