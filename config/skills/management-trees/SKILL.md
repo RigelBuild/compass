@@ -193,10 +193,9 @@ for a PR worker is merge, not push. (This mirrors the `hold-your-lane` rule.)
   approval first** — propose it on your home channel, wait for a yes, then spawn.
   The approval gate governs tree *growth*, not day-to-day dispatch.
 
-## Deferred affordances
+## Reading the tree
 
-These are referenced only; the tools are not live yet:
-
-- Tree navigation / visualizing the tree — [TODO compass_tree].
-- Fresh-read of the roster and your parent (re-parenting can change it) —
-  [TODO RIG-1721].
+- `compass_tree` renders your subtree (or your owner's whole set) as an indented
+  parent→child tree, each node showing its live presence and activity.
+  `compass_roster` is the same live read as a flat list. Read either fresh — your
+  parent can change (re-parenting), so never cache it.

@@ -76,6 +76,6 @@ first-level Managers and hand the workspace off.
   then spawn. Until the approval gate is a tool-enforced primitive, this holds
   as a behavioral rule you must follow.
 - Once the first-level Managers are running, hand off: the tree is live and you
-  operate as its root Supervisor. Tree navigation and re-parenting are not yet a
-  tool `[TODO compass_tree]`; until then, track the shape you proposed in Step 1
-  as the source of truth for who reports to whom.
+  operate as its root Supervisor. `compass_tree` shows the tree shape with each
+  agent's presence; re-parenting is not yet a tool, so to restructure who reports
+  to whom, track the shape you proposed in Step 1 as the source of truth.

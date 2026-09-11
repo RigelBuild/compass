@@ -2444,6 +2444,33 @@ describe("compass_tree", () => {
 		).toBe(1);
 	});
 
+	test("an empty-id entry does not demote real roots under it (M1 regression)", async () => {
+		// An entry with an empty agentAccountId must not swallow the other roots:
+		// pre-fix the children/roots predicates disagreed on the empty key, nesting
+		// r1/r2 under `ghostly`. All three must render at depth 0.
+		const ghostly = create(RosterEntrySchema, {
+			...treeEntry("ghostly", "", "haunting"),
+			agentAccountId: "",
+		});
+		const r1 = treeEntry("r1", "", "one");
+		const r2 = treeEntry("r2", "", "two");
+		const text = textOf(
+			await exec(
+				tool(
+					new CommsBroker(new FakeTransport(rosterResult(ghostly, r1, r2))),
+					"compass_tree",
+				),
+				"tc-m1",
+				{},
+			),
+		);
+		expect(text.split("\n").slice(1)).toEqual([
+			"- ghostly (ghostly) [working]: haunting",
+			"- r1 (r1) [working]: one",
+			"- r2 (r2) [working]: two",
+		]);
+	});
+
 	test("never renders account ids", async () => {
 		const entry = create(RosterEntrySchema, {
 			...treeEntry("alice", "", "working"),
