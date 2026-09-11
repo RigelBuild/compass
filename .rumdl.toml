@@ -46,19 +46,37 @@ enabled = false
 [MD046]
 style = "fenced"
 
-# ── Disabled rules ──
-# Each is a rumdl-only rule markdownlint never had, verified false on compass's
-# own files. Reasons recorded so a future reader need not re-derive them.
-
-# MD057 (relative-link existence): ALL 28 findings are the DECISIONS.md
-# paste-ready-row convention — a design record quotes a `| DL-N | … | [record
-# §x](compass-<record>/design.md#…) |` row whose link is relative to the
-# destination ledger (`docs/designs/<domain>/DECISIONS.md`), not the record
-# quoting it. Correct as written, only apparently broken when resolved from the
-# record's own directory. Zero genuine broken links on this corpus, so the rule
-# buys nothing here and misfires on a house convention across 11 records.
-[MD057]
-enabled = false
+# ── MD057 (relative-link existence) is ENABLED: adopted with this swap ──
+# A rule markdownlint never had. It stays on repo-wide to catch genuine broken
+# relative links; the per-file exemptions below are its only carve-outs.
+#
+# Every current finding (28 across 11 records) is the same house convention: a
+# design record's `## Ledger delta` section quotes its paste-ready
+# `DECISIONS.md` row, whose link is written relative to the ledger's directory
+# (`docs/designs/`) — e.g. `[board view §Approach](ui/compass-board-view/…)`.
+# That link resolves correctly from `DECISIONS.md` (which lives in
+# `docs/designs/` and passes MD057), but rumdl resolves a relative link from the
+# RECORD's own directory, where the ledger-relative path does not exist. The
+# domain-prefixed and bare forms both misfire this way — it is the resolution
+# root, not a missing segment. So these are false positives from the record's
+# vantage, not broken links: the authored ledger copies resolve.
+#
+# `[per-file-ignores]` scopes the MD057 exemption to exactly those records,
+# leaving MD057 live on every other file (and every OTHER rule live on these).
+# These are frozen/Active records; the Ledger-delta rows are append-only, so a
+# per-file exemption is the right tool rather than editing the rows.
+[per-file-ignores]
+"docs/designs/agent/compass-agent-trees/design.md" = ["MD057"]
+"docs/designs/infra/ci/compass-ci-check-naming/design.md" = ["MD057"]
+"docs/designs/server/compass-comms-multi-actor-test-coverage/design.md" = ["MD057"]
+"docs/designs/server/compass-forge-write-path/design.md" = ["MD057"]
+"docs/designs/server/compass-issue-model/design.md" = ["MD057"]
+"docs/designs/server/compass-linear-agent-responder/design.md" = ["MD057"]
+"docs/designs/server/compass-server-ownership-layer-amendment/design.md" = ["MD057"]
+"docs/designs/ui/compass-board-view/design.md" = ["MD057"]
+"docs/designs/ui/compass-native-packaging/design.md" = ["MD057"]
+"docs/designs/ui/compass-sidebar-pins/design.md" = ["MD057"]
+"docs/designs/ui/compass-sidebar-pins-unreachable-amendment/design.md" = ["MD057"]
 
 # False: flags a list item's own continuation line (indented prose wrapping one
 # bullet) as an unpadded list — the auto-fix inserts a blank line mid-sentence.
