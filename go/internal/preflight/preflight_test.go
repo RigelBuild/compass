@@ -303,3 +303,71 @@ func assertErrContains(t *testing.T, err error, tok string) {
 		t.Errorf("error %q missing token %q", err.Error(), tok)
 	}
 }
+
+// TestRunProvisionsMachineBeforeProbingPodman pins the ORDER of the darwin
+// checks, which is load-bearing rather than cosmetic.
+//
+// Every podman command that reaches the container ENGINE talks to the Linux
+// VM, so with no machine provisioned they fail. Measured on macOS 26.5.1 with
+// podman 5.8.6 and no machine, `podman info` and
+// `podman version --format {{.Client.Version}}` — the exact argv the two
+// probes run — both exit 125. The machine check's adapter is what provisions
+// that VM, so it has to run first or those two probes are guaranteed failures
+// on the exact host the check exists to serve. Run does not short-circuit and
+// both probes are fatal, so the wrong order fails a fresh Mac that
+// provisioning would have fixed.
+//
+// The fakes below reproduce that coupling: the podman probes fail until the
+// machine adapter has run.
+func TestRunProvisionsMachineBeforeProbingPodman(t *testing.T) {
+	ctx := context.Background()
+
+	provisioned := false
+	d := okDeps("darwin")
+	d.MachineReady = func(context.Context) error {
+		provisioned = true
+		return nil
+	}
+	needsMachine := func(context.Context) error {
+		if !provisioned {
+			// The real copy podman 5.8.6 emits, trimmed.
+			return errors.New("Cannot connect to Podman: unable to connect to Podman socket")
+		}
+		return nil
+	}
+	d.PodmanRootless = needsMachine
+	d.PodmanVersion = needsMachine
+	// imagePresent shells `podman image exists`, which also reaches the engine
+	// inside the VM, so it carries the same precondition and belongs in the
+	// same latch. Without this, a future edit hoisting the image check above
+	// the machine block would be caught by nothing.
+	d.ImagePresent = func(ctx context.Context, _ string) error { return needsMachine(ctx) }
+
+	rs := d.Run(ctx, testParams)
+
+	for _, name := range []string{checkMachine, checkPodman, checkPodmanVersion, checkImage} {
+		res := resultByName(t, rs, name)
+		if !res.OK {
+			t.Errorf("check %q failed on a host where provisioning succeeds: %s\n"+
+				"the machine must be provisioned before the podman probes run",
+				name, res.Detail)
+		}
+	}
+
+	// The machine result must be REPORTED after the podman probes even though
+	// it RAN first, so Err leads with a root cause rather than its symptom.
+	posOf := func(name string) int {
+		for i, r := range rs {
+			if r.Name == name {
+				return i
+			}
+		}
+		t.Fatalf("check %q missing from results", name)
+		return -1
+	}
+	if posOf(checkMachine) < posOf(checkPodman) {
+		t.Errorf("machine result is reported at %d, before podman at %d; "+
+			"Err would lead with the symptom instead of the root cause",
+			posOf(checkMachine), posOf(checkPodman))
+	}
+}
