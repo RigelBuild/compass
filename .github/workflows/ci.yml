@@ -506,6 +506,56 @@ jobs:
         # the same dependabot config as the other pinned actions), never drift it.
         uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
 
+      - name: Upload visual-gate diffs
+        # A red visual-gate is unreadable from the log alone: Playwright's
+        # failure text names the ratio that exceeded the threshold, not WHICH
+        # pixels moved. The expected/actual/diff triplet it writes to
+        # apps/ui/e2e/.output-visual (the gate's own --output, kept separate
+        # from dev-smoke's outputDir because moon runs sibling `ci` deps in
+        # parallel and Playwright wipes its output dir at run start) is the
+        # only artifact that makes the adjudication possible, so it ships on
+        # failure.
+        #
+        # Two matrix-shaped requirements, both easy to get wrong:
+        #  - The artifact name carries `matrix.group`. This job is a matrix over
+        #    run-time-discovered concern groups; under upload-artifact v4+ two
+        #    concurrent legs uploading one name is a hard error, not a merge.
+        #  - `matrix.run == 'true'` stays ANDed in, matching every other step in
+        #    this job. A bare `if: failure()` would also fire on the placeholder
+        #    legs an unaffected group spins up.
+        #
+        # This fires on ANY failure in the bun leg (a red typecheck too, not just
+        # a visual diff), so the directory is often absent — `if-no-files-found:
+        # ignore` keeps that from emitting a spurious missing-artifact warning.
+        # Retention is short: these are large PNGs whose only reader is whoever
+        # is triaging the run that produced them.
+        if: failure() && matrix.run == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visual-gate-diffs-${{ matrix.group }}
+          path: apps/ui/e2e/.output-visual/**
+          retention-days: 7
+          if-no-files-found: ignore
+          # Both of these are load-bearing, and both defaults are wrong here.
+          #
+          # `include-hidden-files` defaults to 'false', and the gate's output
+          # dir is `.output-visual` — a dot-directory. The action treats
+          # anything under a folder beginning with `.` as hidden and its walk
+          # skips the directory before descending, so at the default this step
+          # uploads ZERO files while still reporting success — and the
+          # `if-no-files-found: ignore` above suppresses the one warning that
+          # would reveal it. An empty artifact is indistinguishable from the
+          # legitimate absent-directory case that `ignore` exists for.
+          #
+          # `overwrite` defaults to 'false', and at that default a second
+          # upload under an existing name FAILS the step. "Re-run failed jobs"
+          # re-runs a leg inside the same run, where the prior attempt's
+          # artifact still exists — and the bun leg is exactly the one an
+          # author re-runs after a suspected-flaky visual red. The re-run's
+          # triplets supersede the old ones; nothing reads the older artifact.
+          include-hidden-files: true
+          overwrite: true
+
   pgtest:
     name: pgtest
     runs-on: ubuntu-latest
