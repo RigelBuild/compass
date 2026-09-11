@@ -229,7 +229,7 @@ we can swap out on the managed service for a bigger dep."** So:
 
 - **Class 2 store = Postgres in the core, day-1, both products. The core never
   bundles a bigger dep.** The firehose that would justify ClickHouse is Class 1
-  (lives on the LGTM backend we point at) and Class 3 (lives in the private
+  (lives on the LGTM backend we point at) and Class 3 (lives on the managed
   plane) — NEVER Class 2. So the honest answer to "bigger dep early?" is NO for
   everything the OSS core builds: Postgres is the sole Class-2 implementation the
   core ships, and a bigger dep, if managed ever needs one, is swapped in behind
@@ -433,7 +433,7 @@ getting the data anyway").
   vendor-neutrality hard rule (`compass-elastic-session-runtime/design.md:418-422`).
 - **OSS-core vs managed seam governs scope**: this record designs the OSS
   core; managed control-plane obs (cross-tenant aggregate, billing, OLAP
-  adoption) is private-monorepo, named + deferred — per
+  adoption) is a managed-plane concern, named + deferred — per
   [`self-host-and-managed.md`](../../../concepts/self-host-and-managed.md).
 - **The store abstraction is the day-1 commitment, not the store choice** —
   the append-only write contract + tenant-scoped read API (D1) precede and
@@ -474,7 +474,7 @@ embeds Grafana panels in-app.
 Drags a heavy OLAP dep (Keeper/ZooKeeper etc.) into every self-host bundle for
 volume the core's Class-2 data never reaches; violates the S4
 anti-standup-pain posture and the vendor-neutrality hard rule. The genuine
-PostHog-scale need is Class 3, which is private-plane — so day-1 OLAP in the
+PostHog-scale need is Class 3, which is managed-plane — so day-1 OLAP in the
 core buys nothing the D1 seam doesn't already enable later, at real cost now.
 PostHog/Sentry/GitLab do run ClickHouse — for exactly the cross-tenant,
 all-events analytics that is Class 3 here, and GitLab notably keeps it a

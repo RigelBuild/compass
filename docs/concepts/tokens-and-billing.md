@@ -80,4 +80,4 @@ seam (Decision D1), the append-only event log is the durable billing-grade
 contract with derived rollups (Decision D5), and the managed plane builds its
 billing exporter on that committed event shape. Product analytics on the UI
 side (how Rigel instruments the managed UI, and how a self-hosted deploy keeps
-its data local) is tracked there too.
+its data local) is tracked in that record too.
