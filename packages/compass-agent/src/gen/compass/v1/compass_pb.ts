@@ -2727,13 +2727,12 @@ export const ServerStateSchema: GenEnum<ServerState> = /*@__PURE__*/
  * dropped, so live session truth is temporarily unreachable but not lost — a
  * bounded reattach window governs recovery (reattach within it resumes;
  * expiry falls to `ERRORED`, and the no-auto-reconnect policy above then
- * applies as written). OQ6, design docs/designs/platform/go-toolchain-default.md
- * :1378-1396.
+ * applies as written).
  *
  * Scope: T4 (RIG-1243) ships the DISCONNECTED *signal* only. The server-side
  * reattach-window enforcement — the per-session registry, the bounded timer,
  * the expiry→ERRORED transition, and GetAgentStatus reconciliation on reattach
- * — is T9 (go-toolchain-default.md:979). Until T9 lands, a dropped Runner link
+ * — is T9. Until T9 lands, a dropped Runner link
  * surfaces as an in-flight-command failure; the window/expiry state machine is
  * not yet enforced.
  *

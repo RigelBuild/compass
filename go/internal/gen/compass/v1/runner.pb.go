@@ -1,6 +1,4 @@
-// The compass.v1 Server<->Runner seam (design: architecture-lineage;
-// wire shape frozen by the platform record
-// docs/designs/platform/go-toolchain-default.md:925-943).
+// The compass.v1 Server<->Runner seam (design: architecture-lineage).
 //
 // INTERNAL-ONLY surface. Like agent.proto (the in-container agent stdio
 // envelopes) and unlike compass.proto / comms.proto (the public generated-client
@@ -8,8 +6,8 @@
 // protocol spoken only between the Server and the Runner binaries. It is
 // generated ONLY into the internal Go consumers (internal/server handler +
 // internal/runner client), never the module-root exported `gen/` nor the public
-// TS client, so the `@compass/client` server-door fence stays intact
-// (go-toolchain-default.md:330-338, :1303-1307). The gen fan-out that enforces
+// TS client, so the `@compass/client` server-door fence stays intact.
+// The gen fan-out that enforces
 // this is a separate path-filtered lane; the public buf.gen.yaml never takes
 // this file as input.
 //
@@ -18,7 +16,7 @@
 // (they glob `compass/**/*.proto`).
 //
 // Frozen, not re-decided here: the three-RPC shape and directions are fixed by
-// the platform record (go-toolchain-default.md:931-937). Because the Runner
+// the platform record. Because the Runner
 // dials OUT to the Server, the Server has no inbound route to call the Runner:
 // command delivery cannot be a unary Server->Runner RPC, so it rides the
 // Server's *response* half of a Runner-opened bidi stream. Cutting the concrete
@@ -177,7 +175,7 @@ func (x *EnrollRequest) GetRunnerId() string {
 
 // Enroll response: the handshake ack. `reattached` distinguishes a fresh
 // enrollment from a re-attach of an already-registered Runner (OQ6 duplicate
-// enrollment, go-toolchain-default.md:1392) — the wire-level evidence a
+// enrollment) — the wire-level evidence a
 // reattach test asserts on.
 type EnrollResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1300,7 +1298,7 @@ type PublishEventsRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Runner-assigned monotonic sequence across this Runner's whole event stream
 	// (not per session). A gap in the sequence the Server observes is detectable
-	// in-transit loss (OQ6, go-toolchain-default.md:1389-1392).
+	// in-transit loss (OQ6).
 	RunnerSeq uint64 `protobuf:"varint,1,opt,name=runner_seq,json=runnerSeq,proto3" json:"runner_seq,omitempty"`
 	// The session this event belongs to (the Server-side session id the Runner
 	// was handed at Start).
