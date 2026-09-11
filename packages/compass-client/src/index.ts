@@ -46,12 +46,11 @@ const traceResponseHeader = "traceresponse";
 /**
  * A one-slot mailbox holding the trace id of the most recent server reply.
  *
- * Mutable on purpose, and the mutability is the whole point: the transport is
- * constructed during boot BEFORE the analytics client exists, so the writer
- * (this package's response interceptor) and the reader (the analytics wrapper,
- * layers above) cannot be introduced to each other at construction time. A
- * stable reference handed to both closes that gap without reordering boot and
- * without the transport layer taking a dependency on analytics.
+ * Mutable on purpose, and the mutability is the whole point: the trace id
+ * arrives on a REPLY, so the writer (this package's response interceptor) has
+ * no value to hand the reader (the analytics wrapper, layers above) at
+ * construction time, whatever order boot runs in. A stable reference handed to
+ * both closes that gap without the transport layer depending on analytics.
  *
  * The write discipline — the transport interceptor writes, everything above it
  * only reads — is a CONVENTION, not a type guarantee: `current` is structurally
@@ -161,21 +160,104 @@ export function traceResponseInterceptor(sink: TraceIdSink): Interceptor {
 	};
 }
 
+/** The PostHog session-id REQUEST header the server's J1 interceptor reads
+ *  (go/internal/otel/interceptor.go, PostHogSessionHeader). Already CORS-allowed
+ *  by the network door, so a browser may send it cross-origin. */
+export const posthogSessionHeader = "X-POSTHOG-SESSION-ID";
+
+// Printable ASCII only — no space (0x20), no control byte, nothing above 0x7E.
+const SENDABLE = /^[\x21-\x7E]+$/;
+
+// Mirrors the server's maxSessionIDLen (go/internal/otel/interceptor.go), whose
+// check is `len(id) > maxSessionIDLen`, so 200 is legal on both sides and the
+// cap here is inclusive too. On input this guard accepts, `.length` IS the
+// UTF-8 byte count, so no TextEncoder is needed to mean the same thing as Go's
+// `len()`.
+const MAX_SESSION_ID_LEN = 200;
+
+/**
+ * Whether `id` can be put on the wire as a session-id header value at all.
+ *
+ * Deliberately printable-ASCII rather than UTF-8-shaped, because `req.header`
+ * is a fetch `Headers` and `Headers.set` takes a WebIDL ByteString:
+ *
+ * - A perfectly well-formed id containing any code point above U+00FF makes
+ *   `Headers.set` THROW a `TypeError`, which would fail the whole RPC. An
+ *   analytics nicety that can kill every request is worse than any
+ *   sender-side rejection, so such a value must be rejected BEFORE `set`.
+ * - U+0080–U+00FF does not throw: `set` accepts it and a browser emits it as a
+ *   single raw high byte, which the server then rejects as invalid UTF-8 and
+ *   silently DROPS — the same lost key, harder to notice.
+ * - A value containing CRLF also throws in `Headers.set`; `\x21-\x7E` excludes
+ *   it, so it fails quietly here instead of failing the request.
+ *
+ * That makes this a strict SUBSET of what `Headers.set` accepts (`set` takes
+ * space and tab; this does not) and strictly stronger than the server's own
+ * `<=200 bytes` + valid-UTF-8 pair. Whitespace-only and empty values are
+ * rejected by the regex, which the server would trim-and-drop anyway. No
+ * `isWellFormed` either: a lone surrogate is non-ASCII, so it is already out.
+ */
+export function isSendableSessionId(id: string): boolean {
+	return SENDABLE.test(id) && id.length <= MAX_SESSION_ID_LEN;
+}
+
+/**
+ * Sets `X-POSTHOG-SESSION-ID` on every request from a lazy session-id source.
+ *
+ * No usable value (undefined, empty, oversized, non-ASCII) ⇒ the header is not
+ * set at all — never an empty header, which would spend wire bytes asserting a
+ * correlation that does not exist and be trim-dropped by the server regardless.
+ *
+ * `sessionId` is called PER REQUEST and never cached: posthog-js's
+ * `get_session_id()` can legitimately return `""` before it is fully
+ * initialized, so an early request simply carries no header and the next one
+ * self-heals once a session exists. A construction-time read would pin that
+ * degraded state forever.
+ *
+ * Sent on ALL requests, unary and stream alike (`req.stream` is deliberately
+ * not inspected). The server reads the header only on unary — its
+ * `NewSessionIDInterceptor` is a `connect.UnaryInterceptorFunc` — so a stream
+ * request carries an unread header, which costs bytes, not correctness. Gating
+ * on `req.stream` would couple this client to a server-side interceptor kind it
+ * cannot observe, for a few bytes per stream.
+ */
+export function sessionIdInterceptor(
+	sessionId: () => string | undefined,
+): Interceptor {
+	return (next) => (req) => {
+		const id = sessionId();
+		if (id !== undefined && isSendableSessionId(id)) {
+			req.header.set(posthogSessionHeader, id);
+		}
+		return next(req);
+	};
+}
+
 // The full interceptor list every client/transport factory installs, and the one
-// place the two concerns compose. The bearer rule is unchanged (and still throws
-// first on a misconfigured credential). The trace sink follows the same
-// omitted-means-off discipline: no sink ⇒ no trace interceptor at all, so a
-// caller that does not ask for correlation gets byte-identical behavior —
-// including `undefined` rather than an empty list when neither is asked for.
+// place the three concerns compose. The bearer rule is unchanged (and still
+// throws first on a misconfigured credential). The trace sink and the session-id
+// source follow the same omitted-means-off discipline: no sink ⇒ no trace
+// interceptor at all and no getter ⇒ no session interceptor at all, so a caller
+// that does not ask for correlation gets byte-identical behavior — including
+// `undefined` rather than an empty list when nothing is asked for.
+//
+// Built as one list with no early return on purpose: an append placed after an
+// `if (!traceSink) return bearer` guard would be skipped entirely whenever no
+// trace sink is configured, so `sessionId` alone would silently install nothing.
 function callInterceptors(
 	token?: string,
 	traceSink?: TraceIdSink,
+	sessionId?: () => string | undefined,
 ): Interceptor[] | undefined {
 	const bearer = bearerInterceptors(token);
-	if (!traceSink) {
-		return bearer;
+	const interceptors = [...(bearer ?? [])];
+	if (traceSink) {
+		interceptors.push(traceResponseInterceptor(traceSink));
 	}
-	return [...(bearer ?? []), traceResponseInterceptor(traceSink)];
+	if (sessionId) {
+		interceptors.push(sessionIdInterceptor(sessionId));
+	}
+	return interceptors.length > 0 ? interceptors : undefined;
 }
 
 /** A typed client for the Compass server over a given transport. */
@@ -205,11 +287,21 @@ export function createCompassClient(transport: Transport): CompassClient {
  * `opts.traceSink` opts this transport into recording each reply's
  * `traceresponse` trace id; omitted, no trace interceptor is installed and the
  * transport behaves exactly as before.
+ *
+ * `opts.sessionId` opts this transport into stamping the PostHog session id on
+ * every outgoing request, read fresh from the getter per request; omitted, no
+ * session interceptor is installed and the transport behaves exactly as before.
+ * This is the shipped path for the header — see the note on the per-client
+ * factories below.
  */
 export function createCompassWebTransport(
 	baseUrl: string,
 	token?: string,
-	opts?: { fetch?: typeof globalThis.fetch; traceSink?: TraceIdSink },
+	opts?: {
+		fetch?: typeof globalThis.fetch;
+		traceSink?: TraceIdSink;
+		sessionId?: () => string | undefined;
+	},
 ): Transport {
 	return createGrpcWebTransport({
 		baseUrl,
@@ -218,7 +310,7 @@ export function createCompassWebTransport(
 		// truthiness guard keeps the browser dev path (no injected fetch) building
 		// the same `{ baseUrl, interceptors }` config as before.
 		...(opts?.fetch ? { fetch: opts.fetch } : {}),
-		interceptors: callInterceptors(token, opts?.traceSink),
+		interceptors: callInterceptors(token, opts?.traceSink, opts?.sessionId),
 	});
 }
 
@@ -232,6 +324,17 @@ export type { Transport } from "@connectrpc/connect";
 // fake transport is the vendor's documented no-HTTP test path for the query
 // layer. Dev/test-only; the shipped app dials `createCompassWebTransport`.
 export { createRouterTransport } from "@connectrpc/connect";
+
+// The four per-client factories below — `createCompassWebClient`,
+// `createCompassClientOverFetch`, `createCommsWebClient`,
+// `createCommsClientOverFetch` — deliberately do NOT take a `sessionId`
+// option, so a client built through any of them sends NO
+// `X-POSTHOG-SESSION-ID` header. That is not an oversight: the shipped path
+// for the session-id header is `createLiveClients` → `createCompassWebTransport`
+// (the sole production transport construction; both native-shell modes route
+// through it via `conn.fetchImpl`), and these four have no production caller.
+// A future caller that needs the header must dial `createCompassWebTransport`
+// with `opts.sessionId` rather than assume it rides along here.
 
 /**
  * Create a compass.v1 client over gRPC-Web at `baseUrl` — the door the web UI

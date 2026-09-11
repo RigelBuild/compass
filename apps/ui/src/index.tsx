@@ -88,7 +88,43 @@ async function main(
 	root: HTMLElement,
 	connection: ResolvedConnection,
 ): Promise<void> {
-	const clients = createLiveClients(connection);
+	// Product analytics, OFF by default: analyticsConfigFromEnv returns undefined
+	// unless a PostHog project key is configured, and createAnalytics then hands
+	// back a no-op that never touches posthog — an unconfigured deployment emits
+	// zero analytics.
+	//
+	// Built FIRST, before the clients, because correlation now runs in both
+	// directions and the outbound half needs a real analytics object to read
+	// from. Both directions are lazy getters, and they point opposite ways:
+	//
+	//   inbound   `clients.traceId` → analytics: the transport records each
+	//             reply's server trace id into that slot, and analytics reads it
+	//             at capture time. `clients` is a forward reference from inside
+	//             this getter, which is safe because the getter only runs once
+	//             an event is captured — long after the next statement binds it.
+	//   outbound  `analytics.sessionId()` → the transport: every request asks
+	//             for the current PostHog session id and sends it as
+	//             X-POSTHOG-SESSION-ID, so backend spans carry the same session
+	//             the frontend recorded.
+	//
+	// The inbound half is best-effort by construction, on two counts. The slot
+	// holds the LAST reply's trace id, so an event fired before any call has
+	// returned carries nothing, and one fired between calls carries the previous
+	// call's trace rather than its own. And the server sets `traceresponse` only
+	// on UNARY replies, and only when an OTel provider is installed — an
+	// unconfigured deployment (empty exporter endpoint ⇒ no span ⇒ no header)
+	// stamps nothing at all.
+	//
+	// The outbound half is best-effort too: the getter returns undefined until a
+	// PostHog session exists, and the interceptor then sends no header and
+	// self-heals on the next request. Only the TLS network door reads the header.
+	const analytics = createAnalytics(analyticsConfigFromEnv(), {
+		traceId: () => clients.traceId.current,
+	});
+
+	const clients = createLiveClients(connection, {
+		sessionId: () => analytics.sessionId(),
+	});
 
 	const callerId = await bootCaller(root, () => resolveCaller(clients.compass));
 	// Undefined is bootCaller's stop signal — it already painted the WhoAmI
@@ -97,30 +133,8 @@ async function main(
 		return;
 	}
 
-	// Product analytics, OFF by default: analyticsConfigFromEnv returns undefined
-	// unless a PostHog project key is configured, and createAnalytics then hands
-	// back a no-op that never touches posthog — an unconfigured deployment emits
-	// zero analytics. Identify the caller we just learned via WhoAmI so events
-	// attach to a stable distinct id.
-	//
-	// The inbound half of correlation is wired here: `clients.traceId` is the slot
-	// the transport records each reply's server trace id into, and analytics reads
-	// it at capture time. Reading through a getter is what makes the ordering work
-	// — the clients exist before this line, but the first trace id only lands once
-	// a call has returned.
-	//
-	// Best-effort by construction, on two counts. The slot holds the LAST reply's
-	// trace id, so an event fired before any call has returned carries nothing,
-	// and one fired between calls carries the previous call's trace rather than
-	// its own. And the server sets `traceresponse` only on UNARY replies, and
-	// only when an OTel provider is installed — an unconfigured deployment
-	// (empty exporter endpoint ⇒ no span ⇒ no header) stamps nothing at all.
-	//
-	// The OUTBOUND half (sending the PostHog session id to the server so its
-	// spans carry it) is deliberately not wired here.
-	const analytics = createAnalytics(analyticsConfigFromEnv(), {
-		traceId: () => clients.traceId.current,
-	});
+	// Identify the caller we just learned via WhoAmI so events attach to a stable
+	// distinct id. This stays AFTER bootCaller: the id is its output.
 	analytics.identify(callerId);
 
 	// One app-lifetime QueryClient — the server-state cache the query layer keys
