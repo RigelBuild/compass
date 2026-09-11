@@ -13,7 +13,9 @@
 //
 // WorkloadSpec field map on this backend:
 //   - Name        honored: the handle's stable name (Exists lookup key).
-//   - Env         honored: recorded on the handle for the launch path.
+//   - Env         ignored here: Exec/ExecStreaming take their environment
+//                 from the ExecSpec, and the launch leg that would apply this
+//                 field does not exist yet.
 //   - UID         interpreted: the process runs as the Runner's own euid; the
 //                 AsUser rule (below) enforces that, so this field is not a
 //                 second uid source here.
@@ -24,8 +26,9 @@
 //                 and writes the real host filesystem directly.
 //   - Command     ignored: the long-lived agent is launched by ExecStreaming
 //                 with its own command, not a container entrypoint.
-//   - Egress      ignored: no per-workload firewall exists on the host; the
-//                 unenforced-egress posture is armed elsewhere.
+//   - Egress      ignored: egress is UNENFORCED on this tier. There is no
+//                 per-workload firewall and nothing here arms one, so this
+//                 backend never claims otherwise.
 
 package runtime
 
@@ -53,9 +56,10 @@ import (
 var ErrResizeUnsupportedOnHost = errors.New("runtime: WorkloadRuntime.Resize is unsupported on the host backend (no cgroup ownership)")
 
 // defaultHostStateRoot is where HostRuntime handles keep their per-agent state
-// dirs when SelectBackend builds the backend with no explicit root. The host
-// Provision leg supplies the real root later; this default keeps the backend
-// usable on its own.
+// dirs when SelectBackend builds the backend with no explicit root. This is a
+// shared tmpdir: MkdirAll will not tighten an existing dir, so on a multi-user
+// box a local user could pre-create it with looser permissions. Deployments
+// pass their own private root instead.
 func defaultHostStateRoot() string {
 	return filepath.Join(os.TempDir(), "compass-host")
 }
@@ -95,14 +99,13 @@ type hostProcess struct {
 }
 
 // hostHandle is one per-agent workload: its synthetic id and name, its private
-// state dir, its lifecycle state, the WorkloadSpec env recorded for launch, and
-// the live streaming process (nil until ExecStreaming spawns it).
+// state dir, its lifecycle state, and the live streaming process (nil until
+// ExecStreaming spawns it).
 type hostHandle struct {
 	id       WorkloadID
 	name     string
 	stateDir string
 	state    hostState
-	env      map[string]string
 	proc     *hostProcess
 }
 
@@ -174,7 +177,6 @@ func (h *HostRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadID, 
 		name:     spec.Name,
 		stateDir: stateDir,
 		state:    hostCreated,
-		env:      spec.Env,
 	}
 	return id, nil
 }
@@ -382,21 +384,26 @@ func (h *HostRuntime) Stop(ctx context.Context, id WorkloadID, timeout time.Dura
 func (h *HostRuntime) Remove(_ context.Context, id WorkloadID) error {
 	h.mu.Lock()
 	handle, ok := h.handles[id]
+	// Capture the process in the same critical section that drops the handle:
+	// ExecStreaming writes handle.proc under this lock, so reading it after
+	// unlocking both races and can miss a child that is about to be spawned.
+	var proc *hostProcess
 	if ok {
+		proc = handle.proc
 		delete(h.handles, id)
 	}
 	h.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	if handle.proc != nil {
+	if proc != nil {
 		select {
-		case <-handle.proc.done:
+		case <-proc.done:
 		default:
-			if killErr := killGroup(handle.proc.pgid, syscall.SIGKILL); killErr != nil {
+			if killErr := killGroup(proc.pgid, syscall.SIGKILL); killErr != nil {
 				return killErr
 			}
-			<-handle.proc.done
+			<-proc.done
 		}
 	}
 	return os.RemoveAll(handle.stateDir)

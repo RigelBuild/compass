@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -402,5 +403,36 @@ func readLine(t *testing.T, r io.Reader) string {
 	case <-time.After(10 * time.Second):
 		t.Fatal("readLine: no line within 10s")
 		return ""
+	}
+}
+
+// TestHostRemoveConcurrentWithExecStreaming drives Remove against a concurrent
+// ExecStreaming on the same handle. handle.proc is written under the mutex, so
+// reading it unlocked is both a data race and a missed kill: Remove can see nil
+// and drop the handle while the child is still being spawned, leaving a live
+// process nothing owns. Run under -race.
+func TestHostRemoveConcurrentWithExecStreaming(t *testing.T) {
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep not on PATH: %v", err)
+	}
+	for range 40 {
+		h := newHostRuntime(t)
+		id := createStarted(t, h, "agent-race")
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			stream, execErr := h.ExecStreaming(t.Context(), id, NewStreamingExecSpec(sleepBin, "300"))
+			if execErr == nil {
+				_ = stream.Process.Kill()
+				_ = stream.Process.Wait()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_ = h.Remove(t.Context(), id)
+		}()
+		wg.Wait()
 	}
 }

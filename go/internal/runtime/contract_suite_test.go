@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -120,6 +121,12 @@ type backendCaps struct {
 	// as.
 	execUID string
 
+	// inheritsRunnerCaps: the workload inherits the Runner's own capability set
+	// rather than starting from an empty container set (host). It changes what
+	// "CapAdd granted nothing" means in rowCommandCapAddIgnored; the engine legs
+	// leave it false and keep the all-zero assertion.
+	inheritsRunnerCaps bool
+
 	// rejectedUID is a uid the host backend must REFUSE (any uid other than its
 	// euid); used only when euidOnly is set. The engine legs leave it empty.
 	rejectedUID string
@@ -146,6 +153,30 @@ func (c backendCaps) resize() error {
 		return c.resizeErr
 	}
 	return ErrResizeNotImplemented
+}
+
+// wantCapEff is the CapEff the workload must show for spec.CapAdd to have
+// granted nothing. The engine legs start from an empty container capability
+// set, so they expect all-zero. A host child inherits the Runner's own
+// capabilities, so "added nothing" there means "the same set the Runner has" —
+// expecting zero would instead assert the Runner is unprivileged, which is a
+// property of how CI launches the test, not of this backend.
+func (c backendCaps) wantCapEff(t *testing.T) string {
+	t.Helper()
+	if !c.inheritsRunnerCaps {
+		return "0000000000000000"
+	}
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Skipf("reading own /proc/self/status: %v", err)
+	}
+	for line := range strings.SplitSeq(string(status), "\n") {
+		if rest, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	t.Fatal("no CapEff line in own /proc/self/status")
+	return ""
 }
 
 // runContractSuite runs the shared rows against one backend, created via
@@ -421,8 +452,9 @@ func rowCommandCapAddIgnored(t *testing.T, rt WorkloadRuntime, caps backendCaps)
 			capEff = strings.TrimSpace(rest)
 		}
 	}
-	if capEff != "0000000000000000" {
-		t.Fatalf("workload CapEff = %q, want the empty set (spec.CapAdd must grant the workload nothing)", capEff)
+	want := caps.wantCapEff(t)
+	if capEff != want {
+		t.Fatalf("workload CapEff = %q, want %q (spec.CapAdd must grant the workload nothing)", capEff, want)
 	}
 }
 

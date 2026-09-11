@@ -63,6 +63,9 @@ func TestContractSuite_Host(t *testing.T) {
 		// spec.CapAdd (an unprivileged host child carries no added capability), so
 		// this divergence row runs here and proves both truthfully.
 		ignoresCommandAndCapAdd: true,
+		// A host child inherits the Runner's capabilities; "CapAdd added nothing"
+		// means the child's set equals the Runner's, not that it is empty.
+		inheritsRunnerCaps: true,
 		// microVM-specific divergences: all OFF, so those rows self-skip. Host
 		// capture is unbounded (no 8 MiB cap), it does not resolve user names
 		// (checkUser is euid-only, covered by euidOnly above), MountLabel is a
