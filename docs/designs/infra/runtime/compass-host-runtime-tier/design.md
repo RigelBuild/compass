@@ -37,7 +37,7 @@ The host tier is a third `SelectBackend` value, joining `""`/`podman`/
 (`go/internal/runtime/microvm.go:117-125`):
 
 ```go
-func SelectBackend(cfg BackendConfig) (ContainerRuntime, error) {
+func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
     switch strings.TrimSpace(cfg.Backend) {
     case "", "podman":
         return NewPodmanCLI(), nil
@@ -88,17 +88,17 @@ session). This is not onboarding scaffolding — it is a permanent capability,
 and it is the same need whichever deployment a user's Server belongs to: the
 work has to run where the hardware and the session are. See Open Questions.
 
-#### `ContainerRuntime` implementation
+#### `WorkloadRuntime` implementation
 
-`ContainerRuntime` is frozen at S1 (`go/internal/runtime/podman.go:348-396`;
-the closing comment at `:399`: "ContainerRuntime is frozen (the Resize
+`WorkloadRuntime` is frozen at S1 (`go/internal/runtime/podman.go:348-396`;
+the closing comment at `:399`: "WorkloadRuntime is frozen (the Resize
 reservation above)"). The host backend implements it; it does not amend it.
 The nine methods, per the interface doc comments, and their host-process
 semantics — including where the mapping is degenerate:
 
 | Method | Interface contract (quoted) | Host semantics |
 | --- | --- | --- |
-| `Create(ctx, spec) (ContainerID, error)` | "makes a container from spec without starting it, returning its id" (`podman.go:349-350`) | Allocates a per-agent **handle**: mints a synthetic `ContainerID`, creates the agent's private state dir (workspace root, home overlay dir, socket dir) from `ContainerSpec`. No process is spawned. Spec fields that configure container machinery (image, mounts as bind specs, network) are interpreted or ignored per a documented field map — see T1. |
+| `Create(ctx, spec) (WorkloadID, error)` | "makes a container from spec without starting it, returning its id" (`podman.go:349-350`) | Allocates a per-agent **handle**: mints a synthetic `WorkloadID`, creates the agent's private state dir (workspace root, home overlay dir, socket dir) from `WorkloadSpec`. No process is spawned. Spec fields that configure container machinery (image, mounts as bind specs, network) are interpreted or ignored per a documented field map — see T1. |
 | `Start(ctx, id)` | "starts a created container" (`podman.go:352-353`) | **Degenerate.** There is no init process to start; the agent process itself is launched later by `ExecStreaming`. `Start` transitions the handle `created → started` and validates the state dir. It must not be pretended to be more: a "started" host handle is bookkeeping, not a running boundary. |
 | `Exec(ctx, id, spec) (ExecOutput, error)` | "runs a command in a running container, capturing its output. A non-zero exit is a successful runtime call returning a failed command" (`podman.go:355-359`) | Runs the command as a **direct host subprocess** of the Runner, under the Runner's own uid, with `ExecSpec`'s env/cwd/stdin and the per-command timeout. `ExecSpec.AsUser` cannot switch user — the process runs as whoever runs the Runner — so the backend honors exactly one value, the Runner's own effective uid, and rejects (errors on) an `AsUser` naming **any other** uid rather than silently running it wrong. That strict rejection is only launchable because the host tier derives `Workspace.UID` from `os.Geteuid()` instead of the baked fleet constant, so every provision-path `AsUser` already carries the euid it will run as — see "The host-tier uid contract" below. Without that derivation this rule would error on every provision exec and no host agent could launch. |
 | `ExecStreaming(ctx, id, spec) (*StreamingExec, error)` | "starts a long-lived streaming command … returning its live stdio pipes plus a kill/wait handle" (`podman.go:361-369`) | The one clean mapping: spawns the agent as a host child process in its own process group, stdio piped, bound to ctx. This is where the host-tier agent actually comes to life. |
@@ -191,10 +191,10 @@ Two consequences the plan carries (T1a):
 
 #### Agent transport: the socket and config paths
 
-`ContainerRuntime` does not deliver the agent its gateway socket or its config;
+`WorkloadRuntime` does not deliver the agent its gateway socket or its config;
 the Runner's `Provision` does, by bind-mount, to two paths that are frozen
 constants on **both** sides of the rendezvous. A host process has no bind
-mounts, so this is the one part of the tier that no `ContainerRuntime`
+mounts, so this is the one part of the tier that no `WorkloadRuntime`
 implementation can supply — it needs its own Provision leg.
 
 Runner side (`go/internal/runner/host.go:33-38`, tabs expanded):
@@ -318,7 +318,7 @@ tell `AgentRuntime.provision` to skip the host-side arm exec
 (`go/internal/runtime/agent.go:307-312`):
 
 ```go
-func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec AgentSpec) error {
+func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
     if armer, ok := r.runtime.(inGuestEgressArmer); !ok || !armer.EgressArmedInGuest() {
         if err := r.armEgress(ctx, id, spec.Egress); err != nil {
             return err
@@ -552,15 +552,15 @@ tell the user something true about their own setup.
 
 ## Alternatives considered
 
-### A dedicated `HostRuntime` interface instead of implementing `ContainerRuntime`
+### A dedicated `HostRuntime` interface instead of implementing `WorkloadRuntime`
 
-Rejected. `ContainerRuntime` is frozen at S1 and `SelectBackend` is the sole
+Rejected. `WorkloadRuntime` is frozen at S1 and `SelectBackend` is the sole
 selection point; a parallel interface would fork the `AgentRuntime` lifecycle
 façade (Launch → provision → credentials) that all tiers share, for no gain —
 the degenerate methods are few and honestly documentable. The microVM backend
 already set the precedent of a non-podman backend behind the same interface.
 The interface layer was never the hard part, and this record does not argue the
-tier's feasibility there: the load-bearing work is outside `ContainerRuntime`
+tier's feasibility there: the load-bearing work is outside `WorkloadRuntime`
 entirely — the uid derivation and the Provision transport leg above, neither of
 which a parallel interface would have made easier.
 
@@ -600,7 +600,7 @@ probe leg is necessary but not sufficient, and the record takes both.
 - **Do not weaken the container tiers.** The podman/microVM egress path
   (`armEgress`, `EgressArmedInGuest`) is untouched; the host tier adds a
   distinct unenforced posture beside it, never a change to arming.
-- **`ContainerRuntime` is frozen at S1.** The host backend implements the
+- **`WorkloadRuntime` is frozen at S1.** The host backend implements the
   9-method interface as-is (`go/internal/runtime/podman.go:348-396`); no
   interface amendment.
 - **No dependency on gateway-credentials at-rest encryption.** That record's
@@ -637,9 +637,9 @@ probe leg is necessary but not sufficient, and the record takes both.
 - **T1 — `HostRuntime` backend** (`go/internal/runtime/host_backend.go`).
   The 9-method implementation per the table above: state-dir handle model,
   process-group spawn/stop, degenerate `MountLabel`/`Resize`/`AsUser`
-  documented at the method. Includes the `ContainerSpec` field map (which
+  documented at the method. Includes the `WorkloadSpec` field map (which
   fields are honored, interpreted, or rejected on host).
-  Interfaces: implements `ContainerRuntime`
+  Interfaces: implements `WorkloadRuntime`
   (`go/internal/runtime/podman.go:348-396`) exactly; registered in
   `SelectBackend` (`go/internal/runtime/microvm.go:117-125`) as `case "host"`,
   error string extended. Unit tests with a real short-lived process
@@ -719,7 +719,7 @@ probe leg is necessary but not sufficient, and the record takes both.
 
 ## Tasks
 
-- [ ] T1 — `HostRuntime` backend implementing the frozen `ContainerRuntime`,
+- [ ] T1 — `HostRuntime` backend implementing the frozen `WorkloadRuntime`,
       registered in `SelectBackend` as `host`
 - [ ] T1a — host-tier uid derivation: `Workspace.UID` from `os.Geteuid()`, not
       `agentuid.AgentUID`; `AsUser` rejects any other uid; launch proven on a
@@ -777,10 +777,10 @@ probe leg is necessary but not sufficient, and the record takes both.
   macOS (`AppleContainerCLI`, DL-330), and the direct host processes this tier
   adds. `SelectBackend`'s own comment (`microvm.go:110-116`) says the podman
   path eventually goes away entirely, which would leave an interface named
-  `ContainerRuntime` with no container implementation at all.
+  `WorkloadRuntime` with no container implementation at all.
 
-  Applied: `ContainerRuntime` → `WorkloadRuntime` (85 refs), `ContainerID` →
-  `WorkloadID` (198), `ContainerSpec` → `WorkloadSpec` (58), `InContainerError`
+  Applied: `WorkloadRuntime` → `WorkloadRuntime` (85 refs), `WorkloadID` →
+  `WorkloadID` (198), `WorkloadSpec` → `WorkloadSpec` (58), `InWorkloadError`
   → `InWorkloadError` (8). `Session*` was rejected — a session is already the
   user-facing conversational stream (`SessionEvent` and siblings in
   `proto/compass/v1/compass.proto`), and one workload outlives many sessions,

@@ -43,7 +43,7 @@ what the agent is trusted with.
 
 Tiers are selected at constructor time through the single backend seam,
 `SelectBackend` (`go/internal/runtime/microvm.go:117`:
-`func SelectBackend(cfg BackendConfig) (ContainerRuntime, error)`), which
+`func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error)`), which
 today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
 (`go/internal/runtime/microvm.go:124`: `accepted values are "podman"
 (default) and "microvm"`). The **host** tier joins that seam as a third
@@ -98,7 +98,7 @@ today accepts `""`/`"podman"` and `"microvm"` and rejects anything else
 - **Boundary:** a rootless per-agent container over the podman CLI — a
   shared-kernel namespace boundary, no `/dev/kvm` required. The backend is
   the thin seam implementation (`go/internal/runtime/podman.go:11-12`:
-  "a thin ContainerRuntime over the podman CLI: the only place a subprocess
+  "a thin WorkloadRuntime over the podman CLI: the only place a subprocess
   is spawned. Everything above depends on the interface").
 - **Egress:** enforced. The host-side arm execs the nftables script inside
   the container before the agent runs (`go/internal/runtime/agent.go:319-321`:
