@@ -310,21 +310,34 @@ adds a span **Link** from `trigger_traceparent` — a LINK, never a parent. The
 Link is attached to the ALREADY-STARTED otelconnect span via `Span.AddLink`
 (OTel Go SDK floor **≥ v1.23.0**, which the fresh `go.mod` deps pull) — NOT at
 span creation, because otelconnect owns the span factory and exposes no
-link-at-creation hook. Empty `trigger_traceparent` (a human-seeded first turn,
-or no active trigger) adds no link, per the never-block posture.
+link-at-creation hook. The link carries `compass.link.kind=cross_turn_trigger`,
+which is what identifies it as the cross-turn causal link. Empty
+`trigger_traceparent` (a human-seeded first turn, or no active trigger) adds no
+*cross-turn causal* link, per the never-block posture — it does not leave the
+span linkless, because otelconnect adds a transport link of its own (below).
+Consumers MUST select the causal link by that attribute, never by position or
+by total link count.
 
 **Fresh-root invariant (load-bearing for termination).** The `RelayCommsCall`
-origin span MUST be a fresh root with respect to its trigger. This holds because
-causality crosses ONLY via the `trigger_traceparent` proto field + the explicit
-`Span.AddLink` — NEVER via transport propagation. The corollary constraint: the
-runner's outbound `RelayCommsCall` dial must not run under an active span whose
-context W3C-propagates as a `traceparent` REQUEST header, or otelconnect on the
-server would PARENT the origin span on it and silently extend the trigger's
-trace instead of linking. The runner satisfies this today (it relays the op
-verbatim and does not execute under the delivered message's OTel ctx); T3's
-outbound client interceptor covers the enroll/Sessions dials, and the
-`RelayCommsCall` dial must not inject a delivered-trace header (stated so an
-implementer preserves it).
+origin span MUST be a fresh root with respect to its trigger. This holds
+because otelconnect mints the server span with `trace.WithNewRoot()` whenever
+no span context is already in ctx and `trustRemote` is false — the repo default,
+with no `WithTrustRemote` anywhere in `go/` — so `Parent` stays invalid and the
+reply never nests into the trigger's trace
+(`connectrpc.com/otelconnect@v0.9.0`, `interceptor.go`, unary and streaming
+branches alike).
+
+**Transport propagation happens, and is harmless.** The Runner dials
+`RelayCommsCall` through a client that mounts otelconnect outermost
+(`go/internal/runner/runner.go`), whose client branch injects a traceparent
+REQUEST header unconditionally. The server extracts that remote context and —
+on the same `!trustRemote` branch — adds `WithLinks(LinkFromContext(ctx))`, a
+transport link recording which runner process relayed the call. It does NOT
+parent the origin span on it: `WithNewRoot()` applies on that same branch, so
+the reply is still a fresh root. Measured on the production-shaped path: **2
+links with a trigger, 1 link with an empty trigger.** Termination rests on
+fresh-rooting, never on the absence of a propagated header. T3's outbound
+client interceptor covers the enroll/Sessions dials.
 
 Agent-side attachment is compass-agent's lane (a task beside their #649 T3
 decode); the field and the server-side link are this record's.
@@ -407,8 +420,10 @@ server-minted, never client-minted. This is a produced surface of T2 below.
   two-value domain.
 - **Trace termination.** One trace = one turn. A reply is a fresh server-minted
   root LINKED to its trigger, never a child — so no trace grows without bound
-  however long agents relay. A missing/empty `trigger_traceparent` adds no link
-  and never blocks the post.
+  however long agents relay. Termination rests on otelconnect's
+  `WithNewRoot()`, not on link count. A missing/empty `trigger_traceparent`
+  adds no `cross_turn_trigger` link and never blocks the post (otelconnect's
+  own transport link is still present).
 - **Interceptor order.** otelconnect prepends; the AdminGate→AmbientIdentity
   relative order (`serve.go:642-668`) is untouched. otelconnect mints a span
   for a request AdminGate then rejects on the dev/network door — bounded, and
@@ -706,10 +721,12 @@ The propagation leg proper, in seven moves:
    (`relay_comms.go:416`), after otelconnect has created the `RelayCommsCall`
    origin span on the handler ctx, add a span **Link** built from
    `CommsCallRequest.trigger_traceparent` via the OTel link API
-   (`trace.SpanFromContext(ctx)` + a link from the parsed remote context) — a
-   LINK, never a parent, so the reply's fresh root references its trigger without
-   nesting. Empty `trigger_traceparent` adds no link. This is the mechanism that
-   keeps traces terminating (§Trace lifetime and termination).
+   (`trace.SpanFromContext(ctx)` + a link from the parsed remote context),
+   stamped `compass.link.kind=cross_turn_trigger` — a LINK, never a parent, so
+   the reply's fresh root references its trigger without nesting. Empty
+   `trigger_traceparent` adds no such link. Termination is guaranteed by
+   otelconnect's `WithNewRoot()`, which this link never overrides
+   (§Trace lifetime and termination).
 7. **Op-kind delivery metric.** A single Int64Counter
    (`compass.delivery.dispatched`) CREATED ONCE at meter setup / consumer
    construction and held as a field (never re-created inside the hot path —
@@ -733,7 +750,11 @@ relayed op reaches `host.Deliver` with the traceparent unmodified; a
 causal-link test asserting a `RelayCommsCall` with a non-empty
 `trigger_traceparent` produces an origin span that is a fresh root (trace id ≠
 the trigger's) carrying a Link to the trigger's context, and that an empty
-`trigger_traceparent` produces a root with no link; a metric test asserting
+`trigger_traceparent` produces a root with no link carrying
+`compass.link.kind=cross_turn_trigger`. Both assertions MUST select the link by
+that attribute, never by index or by total link count — otelconnect
+independently adds a transport link, so the counts are 2 and 1, not 1 and 0,
+and link order is not a stable contract; a metric test asserting
 `compass.delivery.dispatched` increments with the op-kind attribute and no
 session/channel labels.
 
