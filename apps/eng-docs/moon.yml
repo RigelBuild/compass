@@ -26,7 +26,7 @@ tasks:
     inputs:
       - 'scripts/gather.ts'
       - '/**/*.md'
-      - '/.markdownlint-cli2.jsonc'
+      - '/.rumdl.toml'
     outputs: ['src/content/docs', 'src/sidebar.generated.ts']
 
   build:

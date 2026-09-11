@@ -6,7 +6,7 @@
 // GitHub blobs.
 //
 // Coverage is the whole monorepo: every tracked `*.md` except the canonical
-// top-level exclusion set (`.markdownlint-cli2.jsonc` `ignores`, the single
+// top-level exclusion set (`.rumdl.toml` `[global] exclude`, the single
 // source of truth) and generated `outputs/`. Each file is classified into one
 // nav SECTION (Designs, Specs, Architecture, Packages, Contributing); the
 // section drives both its dest path under the content root and the generated
@@ -114,17 +114,14 @@ export function classify(sourcePath: string): Classified {
 }
 
 /**
- * The top-level exclusion globs, read from the canonical `.markdownlint-cli2.jsonc`
- * `ignores` list (the single source of truth) plus the one the gather always
- * adds: generated `outputs/`. Declared once there, not duplicated here — a new
- * excluded dir is added in that config.
+ * The top-level exclusion globs, read from the canonical `.rumdl.toml`
+ * `[global] exclude` list (the single source of truth — the markdown gate's own
+ * exclusion set) plus the one the gather always adds: generated `outputs/`.
+ * Declared once there, not duplicated here — a new excluded dir is added in
+ * that config.
  */
-export function parseExclusions(markdownlintConfig: string): string[] {
-	// The file is JSONC; strip // line comments before parsing.
-	const stripped = markdownlintConfig.replace(/^\s*\/\/.*$/gm, "");
-	const parsed = JSON.parse(stripped) as { ignores?: string[] };
-	const ignores = parsed.ignores ?? [];
-	return [...ignores, "**/outputs/**"];
+export function parseExclusions(exclude: readonly string[]): string[] {
+	return [...exclude, "**/outputs/**"];
 }
 
 // ── Pure construction ───────────────────────────────────────────────────────
@@ -414,11 +411,13 @@ async function main(): Promise<void> {
 	// Idempotent rebuild: clear the generated mirror, then repopulate.
 	await rm(contentRoot, { recursive: true, force: true });
 
-	// The canonical exclusion set lives in .markdownlint-cli2.jsonc (+ the one
-	// the gather always adds); read it so a new excluded dir is declared once.
-	const exclusions = parseExclusions(
-		await readFile(join(repoRoot, ".markdownlint-cli2.jsonc"), "utf8"),
-	);
+	// The canonical exclusion set is the markdown gate's own `.rumdl.toml`
+	// `[global] exclude` (+ the one the gather always adds); read it so a new
+	// excluded dir is declared once. Bun parses TOML natively.
+	const rumdlConfig = Bun.TOML.parse(
+		await readFile(join(repoRoot, ".rumdl.toml"), "utf8"),
+	) as { global?: { exclude?: string[] } };
+	const exclusions = parseExclusions(rumdlConfig.global?.exclude ?? []);
 
 	// All markdown under the repo, minus node_modules/build output and the
 	// exclusion set. Sorted for deterministic per-section "first page" + output.

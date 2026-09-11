@@ -36,7 +36,7 @@ same check. It covers, across the workspace:
   drift gate (regenerate + `git diff`), and a fence rejecting internal-only
   symbols in the public generated trees.
 - **TypeScript:** `tsc --noEmit` and `bun test` per package, plus the UI build.
-- **Whole repo:** `biome check` and `markdownlint`.
+- **Whole repo:** `biome check` and `rumdl` (the `root:markdownlint` task).
 - **Toolchain parity:** the versions on PATH must match the dev shell's pins.
 
 Two things run only in CI. The **real-Postgres suites** are build-tagged
