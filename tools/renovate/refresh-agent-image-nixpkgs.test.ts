@@ -101,8 +101,16 @@ describe("agent-image scope geometry", () => {
 
 	// The single named input, not a bare `devenv update`: relocking every input
 	// would bloat the PR's diff past the channel advance the branch is about.
-	test("the relocked input is the channel input alone", () => {
-		expect(NIXPKGS_INPUT).toBe("nixpkgs");
+	// Asserted against the real devenv.yaml rather than against the constant's own
+	// literal — the hazard is the input being RENAMED upstream, which a
+	// self-referential equality check cannot see.
+	test("the relocked input names a real input of this scope", () => {
+		const yaml = Bun.YAML.parse(
+			readFileSync(join(repoRoot, AGENT_IMAGE_DIR, "devenv.yaml"), "utf8"),
+		) as { inputs?: Record<string, { url?: string }> };
+		const inputs = yaml.inputs ?? {};
+		expect(Object.keys(inputs)).toContain(NIXPKGS_INPUT);
+		expect(inputs[NIXPKGS_INPUT]?.url).toContain("devenv-nixpkgs");
 	});
 
 	// Ground truth: the lock the config's manager governs must exist at this
@@ -114,18 +122,42 @@ describe("agent-image scope geometry", () => {
 
 	// The rev read here is the one the FOD refresh hangs off: the channel
 	// resolves the bun entrypoint.nix's builder uses, so the FOD table must gate
-	// that entry on this lock. If the table and this task disagree, the entry
-	// point throws rather than shipping a possibly-stale outputHash — assert the
-	// agreement here too so the drift fails in a unit test, not on a branch.
-	test("the FOD entry for entrypoint.nix is gated on this lock", () => {
-		const entry = FOD_ENTRIES.find(
+	// EVERY entry over that pin on this lock. If the table and this task disagree,
+	// the entry point throws rather than shipping a possibly-stale outputHash —
+	// assert the agreement here too so the drift fails in a unit test, not on a
+	// branch.
+	test("every FOD entry for entrypoint.nix is gated on this lock", () => {
+		const entries = FOD_ENTRIES.filter(
 			(e) => e.file === "agent-image/entrypoint.nix",
 		);
-		expect(entry).toBeDefined();
-		expect(entry?.triggers).toContain(AGENT_IMAGE_LOCK);
-		// And still on bun.lock — the manifest trigger that already existed; this
-		// task ADDS a cause, it does not replace one.
-		expect(entry?.triggers).toContain("bun.lock");
+		expect(entries.length).toBeGreaterThan(0);
+		for (const entry of entries) {
+			expect(entry.triggers).toContain(AGENT_IMAGE_LOCK);
+			// And still on bun.lock — the manifest trigger that already existed; this
+			// task ADDS a cause, it does not replace one.
+			expect(entry.triggers).toContain("bun.lock");
+		}
+	});
+
+	// This lock resolves the bun the OCI image build uses, so the shared
+	// outputHash is only actually CHECKED for that builder if some entry realises
+	// a vehicle whose pkgs come from this lock. Without one, the refresh reverts
+	// to a one-builder rewrite whose divergence surfaces only on the image build.
+	// The vehicle file must exist too — a table naming a deleted file would fail
+	// at realise time on a branch, not here.
+	test("a FOD entry realises entrypoint.nix through this lock's own pkgs", () => {
+		const viaThisLock = FOD_ENTRIES.filter(
+			(e) =>
+				e.file === "agent-image/entrypoint.nix" &&
+				e.vehicleChannelLock === AGENT_IMAGE_LOCK,
+		);
+		expect(viaThisLock.length).toBe(1);
+		const [entry] = viaThisLock;
+		if (!entry) throw new Error("expected exactly one entry via this lock");
+		// It VERIFIES; the authoritative write stays with the root-pkgs vehicle, or
+		// two writers over one marker would be last-write-wins.
+		expect(entry.verifyOf).toBeDefined();
+		expect(existsSync(join(repoRoot, entry.buildFile))).toBe(true);
 	});
 });
 
@@ -277,9 +309,10 @@ async function buildEntryRepo(): Promise<string> {
 		join(repo, "agent-image", "entrypoint.nix"),
 		`{ pkgs, lib }:\n  outputHash = "${STUB_SRI}";\n`,
 	);
-	// The single realise vehicle this scope's refresh drives.
-	await mkdir(join(repo, "guest-image"), { recursive: true });
-	await Bun.write(join(repo, "guest-image", "default.nix"), "{ }\n");
+	for (const entry of FOD_ENTRIES) {
+		await mkdir(join(repo, entry.buildFile, ".."), { recursive: true });
+		await Bun.write(join(repo, entry.buildFile), "{ }\n");
+	}
 	await Bun.write(join(repo, "stubbin", "nix"), STUB_NIX);
 	await chmod(join(repo, "stubbin", "nix"), 0o755);
 

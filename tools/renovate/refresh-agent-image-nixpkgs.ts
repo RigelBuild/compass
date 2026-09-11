@@ -50,18 +50,24 @@
 // deliberate). One hash for two builders is safe only while both revs resolve to
 // a bun producing a byte-identical install tree.
 //
-// The refresh has a REACH LIMIT worth stating plainly, because it is not what
-// the coupling suggests. refresh-fod-hashes.ts realises exactly one vehicle,
-// `guest-image/default.nix`, and that vehicle takes ROOT's `pkgs`. Nothing in
-// the repo builds `agent-image/devenv.nix`. So on a branch that moves ONLY the
-// agent-image channel, the recomputed SRI is derived through root's bun and
-// equals the committed value: the step is a correct, cheap no-op rewrite rather
-// than a verification of this scope's builder. It is wired anyway so the pin is
-// recomputed whenever the shared hash's inputs move for any reason, and so the
-// coupling is declared where a reader looks for it. The consequence to keep in
-// view: if the two channel revs diverge onto bun versions with different install
-// trees, this hash stays right for guest-image and is silently wrong for the
-// agent image, and that break surfaces on the agent-image OCI build.
+// BOTH builders are checked, and that is what makes this step a verification
+// rather than a bookkeeping rewrite. refresh-fod-hashes.ts's table carries the
+// entrypoint pin TWICE: an AUTHORITATIVE entry realised through
+// `guest-image/default.nix` (ROOT's pkgs), which writes the canonical SRI, and a
+// VERIFY entry realised through `tools/renovate/agent-image-fod-vehicle.nix` —
+// a plain-nix file that imports the SAME entrypoint.nix with the pkgs resolved
+// from THIS lock, i.e. the bun the OCI image build actually uses. The verify
+// entry recomputes and compares; it never writes.
+//
+// So on a branch that moves ONLY the agent-image channel, the two vehicles are
+// realised in order and their SRIs must agree. Agreement is the quiet path (the
+// authoritative rewrite is a no-op and the check logs a confirmation).
+// Disagreement means the two channel revs' buns produce different install trees,
+// so NO single `outputHash` literal can satisfy both consumers: the refresh
+// throws, naming both SRIs, both vehicles and both channel revs, and this task
+// exits non-zero. That is a red `renovate/artifacts` on the very PR that moved
+// the pin — instead of a green PR whose break waits for the agent-image OCI
+// build to find it.
 //
 // Steps:
 //   1. Self-gate — exit 0 unless agent-image/devenv.lock differs from the base
@@ -72,11 +78,14 @@
 //      lock (narHash + lastModified + the transitive nixpkgs-src node), not just
 //      the rev the regex bumped. Networked, but light: it re-locks inputs, it
 //      does NOT build the image.
-//   3. FOD refresh — recompute agent-image/entrypoint.nix's `outputHash` through
-//      refresh-fod-hashes.ts's own machinery (its exported table entry +
-//      refreshEntry), so there is ONE realise-and-parse implementation rather
-//      than a second copy that drifts from its got:-attribution and
-//      restore-on-failure discipline.
+//   3. FOD refresh + cross-builder verify — recompute agent-image/entrypoint.nix's
+//      `outputHash` through refresh-fod-hashes.ts's own machinery (its exported
+//      table entries + refreshFodEntries), so there is ONE realise-and-parse
+//      implementation rather than a second copy that drifts from its
+//      got:-attribution and restore-on-failure discipline. refreshFodEntries
+//      writes the authoritative value first, then verifies it through the
+//      agent-image vehicle; it fails loud if either build reports no `got:`, or
+//      if the two vehicles disagree.
 //
 // Invoked by the agent-image channel packageRule's postUpgradeTasks
 // (config.json5) as `bun tools/renovate/refresh-agent-image-nixpkgs.ts`,
@@ -100,10 +109,11 @@
 // that block still names both caches + keys.
 //
 // Exit codes:
-//   0 - the lock was relocked and the FOD hash refreshed (or a no-op branch: the
-//       lock does not differ from base).
+//   0 - the lock was relocked, the FOD hash refreshed, and both builders agreed
+//       on it (or a no-op branch: the lock does not differ from base).
 //   1 - a step failed (the relock itself, a lock-shape change, a relock that
-//       wrote nothing, an unresolvable base ref, or the FOD realise).
+//       wrote nothing, an unresolvable base ref, a FOD realise, or the two
+//       vehicles disagreeing about the shared outputHash).
 //
 // What a non-zero exit actually BUYS — do NOT overclaim it. It does NOT abort
 // the Renovate branch: the failure is caught in Renovate's post-upgrade command
@@ -124,35 +134,55 @@ import {
 	agentImageNixpkgsRev,
 	NIXPKGS_INPUT,
 } from "./refresh-agent-image-nixpkgs.core.ts";
-import { FOD_ENTRIES, refreshEntry } from "./refresh-fod-hashes.ts";
+import {
+	FOD_ENTRIES,
+	type FodEntry,
+	refreshFodEntries,
+} from "./refresh-fod-hashes.ts";
 
-// The FOD whose `outputHash` this scope's bun realises. Resolved from
-// refresh-fod-hashes.ts's SHIPPED table (by the file it pins) rather than
-// restated here, so a table edit that moves or renames the entry fails LOUD at
-// this lookup instead of silently skipping the refresh — the half-refreshed PR
-// this step exists to prevent.
+// The FOD entries over the pin this scope's bun realises — BOTH of them: the
+// authoritative one (realised through guest-image/default.nix, root's pkgs) and
+// the verify one (realised through the agent-image vehicle, THIS lock's pkgs).
+// Resolved from refresh-fod-hashes.ts's SHIPPED table by the file they pin,
+// rather than restated here, so a table edit that moves or renames an entry
+// fails LOUD at this lookup instead of silently skipping the refresh — the
+// half-refreshed PR this step exists to prevent.
 const ENTRYPOINT_NIX = "agent-image/entrypoint.nix";
-function agentImageFodEntry() {
-	const entry = FOD_ENTRIES.find((e) => e.file === ENTRYPOINT_NIX);
-	if (!entry) {
+function agentImageFodEntries(): FodEntry[] {
+	const entries = FOD_ENTRIES.filter((e) => e.file === ENTRYPOINT_NIX);
+	if (entries.length === 0) {
 		throw new Error(
 			`refresh-agent-image-nixpkgs: no FOD_ENTRIES entry pins ${ENTRYPOINT_NIX} — ` +
 				"refresh-fod-hashes.ts's table moved, so this relock cannot refresh the outputHash " +
 				"its new bun may have invalidated. Refusing to ship a possibly-stale FOD pin.",
 		);
 	}
-	// The entry must ALSO be gated on this lock, or a real Renovate run of
-	// refresh-fod-hashes.ts on this branch would no-op while we refresh here —
-	// two sites disagreeing about what invalidates the pin.
-	if (!entry.triggers.includes(AGENT_IMAGE_LOCK)) {
+	// One of them must realise a vehicle resolved from THIS lock, or the relock
+	// below would move a bun that nothing then builds against — exactly the blind
+	// spot the verify entry was added to close. Checked here rather than assumed,
+	// so dropping the vehicle from the table reds this task instead of quietly
+	// reverting it to a one-builder rewrite.
+	if (!entries.some((e) => e.vehicleChannelLock === AGENT_IMAGE_LOCK)) {
 		throw new Error(
-			`refresh-agent-image-nixpkgs: the ${ENTRYPOINT_NIX} FOD entry does not list ` +
-				`${AGENT_IMAGE_LOCK} among its triggers, so refresh-fod-hashes.ts no longer agrees ` +
-				"that an agent-image channel relock can move that outputHash. Reconcile the table " +
-				"with this task before shipping.",
+			`refresh-agent-image-nixpkgs: no ${ENTRYPOINT_NIX} FOD entry realises a vehicle ` +
+				`resolved from ${AGENT_IMAGE_LOCK}, so this relock's new bun would never build the ` +
+				"pin it can invalidate. Restore the agent-image verification vehicle before shipping.",
 		);
 	}
-	return entry;
+	// Every entry must ALSO be gated on this lock, or a real Renovate run of
+	// refresh-fod-hashes.ts on this branch would no-op while we refresh here —
+	// two sites disagreeing about what invalidates the pin.
+	for (const entry of entries) {
+		if (!entry.triggers.includes(AGENT_IMAGE_LOCK)) {
+			throw new Error(
+				`refresh-agent-image-nixpkgs: the ${ENTRYPOINT_NIX} FOD entry '${entry.id}' does not ` +
+					`list ${AGENT_IMAGE_LOCK} among its triggers, so refresh-fod-hashes.ts no longer ` +
+					"agrees that an agent-image channel relock can move that outputHash. Reconcile the " +
+					"table with this task before shipping.",
+			);
+		}
+	}
+	return entries;
 }
 
 async function main(): Promise<number> {
@@ -206,10 +236,10 @@ async function main(): Promise<number> {
 		return 0;
 	}
 
-	// Resolve the FOD entry BEFORE the relock: a table drift must fail the task
+	// Resolve the FOD entries BEFORE the relock: a table drift must fail the task
 	// without having networked or rewritten the lock, so the branch is left in
 	// the state Renovate handed it rather than half-processed.
-	const fodEntry = agentImageFodEntry();
+	const fodEntries = agentImageFodEntries();
 
 	// ── Step 2: relock the channel input in the agent-image scope. ──
 	// The regex update moved only the rev string, leaving the lock's narHash /
@@ -251,23 +281,33 @@ async function main(): Promise<number> {
 		`refresh-agent-image-nixpkgs: ${AGENT_IMAGE_LOCK} relocked — '${NIXPKGS_INPUT}' now at ${agentImageNixpkgsRev(after)}.`,
 	);
 
-	// ── Step 3: recompute the shared FOD hash. ──
+	// ── Step 3: recompute the shared FOD hash, and check BOTH builders. ──
 	// entrypoint.nix's `outputHash` content-addresses the installed node_modules
 	// tree, and a stale value fails the image build with `hash mismatch in
-	// fixed-output derivation`. This realises the build vehicle against a faked
-	// pin and writes back the SRI nix reports — refresh-fod-hashes.ts's own
-	// machinery, unchanged, so got:-attribution and restore-on-failure are shared
-	// rather than re-implemented. It fails loud if the build reports no `got:`.
+	// fixed-output derivation`. refreshFodEntries drives refresh-fod-hashes.ts's
+	// own machinery, unchanged, so got:-attribution and restore-on-failure are
+	// shared rather than re-implemented. It fails loud if a build reports no
+	// `got:`.
 	//
-	// Expect a no-op on an agent-image-channel-only branch: the vehicle is
-	// guest-image/default.nix, which resolves through ROOT's pkgs, so it cannot
-	// see this scope's bun move (the header's REACH LIMIT). Recomputing anyway
-	// keeps the pin correct whenever the shared hash's inputs do move, and costs
-	// one realise.
+	// Two entries, one pin, in a fixed order refreshFodEntries enforces:
+	//
+	//   * the authoritative realise through guest-image/default.nix (ROOT's pkgs)
+	//     WRITES the canonical SRI. On an agent-image-channel-only branch that
+	//     rewrite is a no-op — root's bun did not move — which is expected.
+	//   * the verify realise through tools/renovate/agent-image-fod-vehicle.nix
+	//     re-derives the same pin with the pkgs from the lock JUST relocked above,
+	//     i.e. the bun this image actually builds with, and COMPARES. This is the
+	//     leg that makes the relock's effect on the pin observable at all.
+	//
+	// Agreement is the quiet path. Disagreement throws — one `outputHash` literal
+	// cannot serve two buns with different install trees — reddening
+	// `renovate/artifacts` on the branch that moved the pin, rather than letting
+	// the break wait for the agent-image OCI build.
 	console.log(
-		`refresh-agent-image-nixpkgs: recomputing the ${fodEntry.file} outputHash (vehicle resolves through root's pkgs; a no-op unless the shared inputs moved) ...`,
+		`refresh-agent-image-nixpkgs: recomputing the ${ENTRYPOINT_NIX} outputHash and verifying it ` +
+			`through this scope's own bun (${fodEntries.length} vehicle(s)) ...`,
 	);
-	await refreshEntry(fodEntry);
+	await refreshFodEntries(fodEntries);
 
 	console.log("refresh-agent-image-nixpkgs: done.");
 	return 0;

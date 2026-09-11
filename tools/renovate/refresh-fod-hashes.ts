@@ -30,20 +30,48 @@
 // Neither is a URL hash a `nix store prefetch-file` can recompute (that is
 // refresh-toolchain-hashes.ts's job for the vendored-binary pins). A vendorHash /
 // outputHash is only knowable by REALISING the derivation: build it, read the SRI
-// Nix reports on the mismatch. Both FODs live in the guest-image rootfs closure
-// (guest-image/default.nix imports agent-image/entrypoint.nix with root's pkgs),
-// so ONE build vehicle realises both — and with a deliberately-wrong pin the
-// build fails FAST at the FOD, never proceeding to the heavy guestd compile or
-// erofs pack.
+// Nix reports on the mismatch. Each entry names its OWN build vehicle, and with a
+// deliberately-wrong pin the build fails FAST at the FOD, never proceeding to the
+// heavy guestd compile, the erofs pack, or the agent bundle.
+//
+// ── ONE outputHash, TWO builders: why some entries WRITE and some VERIFY ──
+// `agent-image/entrypoint.nix` carries a SINGLE `outputHash` literal and is
+// imported by TWO consumers with two different nixpkgs pins:
+//
+//   guest-image/default.nix:66   with ROOT's `pkgs`   (root devenv.lock)
+//   agent-image/devenv.nix:34    with AGENT-IMAGE's `pkgs` (agent-image/devenv.lock)
+//
+// The FOD's builder takes `nativeBuildInputs = [ pkgs.bun ]`, so the two consumers
+// realise it with two bun derivations. One hash satisfies both only while those
+// two buns produce a byte-identical install tree. The table therefore carries the
+// entrypoint pin TWICE:
+//
+//   * an AUTHORITATIVE entry, realised through guest-image/default.nix (root's
+//     pkgs), which WRITES the canonical SRI; and
+//   * a VERIFY entry (`verifyOf`), realised through the agent-image vehicle
+//     (agent-image's pkgs), which recomputes and COMPARES against what the
+//     authoritative entry just wrote. Equal → log and no-op. Different → throw,
+//     naming both SRIs, both vehicles and both channel revs.
+//
+// A verify entry must never write: two entries writing one marker would be
+// last-write-wins, and the second value would silently overwrite the first —
+// hiding the very divergence this pair exists to catch. The write-then-verify
+// ORDER is therefore load-bearing, and refreshFodEntries() enforces it
+// structurally (it partitions the run set; it never trusts table order), backed
+// by the table invariants below (a verify entry must share its authoritative
+// entry's file+marker+triggers and use a DIFFERENT vehicle).
 //
 // Mechanism, per gated entry:
 //   1. Rewrite the entry's hash to a fixed FAKE value.
-//   2. `nix build` the rootfs vehicle (--keep-going so a co-stale sibling FOD
+//   2. `nix build` the entry's vehicle (--keep-going so a co-stale sibling FOD
 //      does not mask this one) — it fails with the entry's real `got:` SRI.
 //   3. Parse the `got:` for THIS entry's derivation (matched by a drv-name
-//      fragment, so a sibling FOD's mismatch can never be misattributed).
-//   4. Write the real SRI back. Fail LOUD (exit 1) if no `got:` is found — a
-//      silent no-op would ship the stale pin this task exists to fix.
+//      fragment, so a sibling FOD's mismatch in the same vehicle can never be
+//      misattributed).
+//   4. Write the real SRI back (authoritative), or compare it against the
+//      committed value and throw on divergence (verify). Fail LOUD (exit 1) if no
+//      `got:` is found — a silent no-op would ship the stale pin this task exists
+//      to fix.
 //
 // Self-gating: for each entry, act only when one of its trigger manifests differs
 // from the base branch (mirrors refresh-toolchain-hashes.ts's versions/*.nix
@@ -74,34 +102,51 @@
 // Design: docs/designs/repo/compass-renovate-migration.md
 //
 // Exit codes:
-//   0 - hash(es) refreshed, or a no-op branch (no trigger manifest changed).
-//   1 - a step failed (build produced no `got:`, or a marker was missing) —
-//       fail loud, never ship a half-refreshed pin set.
+//   0 - hash(es) refreshed and every verify entry agreed, or a no-op branch (no
+//       trigger manifest changed).
+//   1 - a step failed (build produced no `got:`, a marker was missing, or a
+//       verify entry's vehicle disagreed with the committed pin) — fail loud,
+//       never ship a half-refreshed or one-builder-only pin set.
 
 import { $ } from "bun";
-
-// The build vehicle that realises both FODs, and the Nix file it is expressed in.
-// Repo-root-relative (the runner cwd = repo root; main() chdirs there).
-export const BUILD_FILE = "guest-image/default.nix";
-export const BUILD_TARGET = "compass-guest-rootfs";
 
 // A syntactically-valid but deliberately-wrong SRI. Building any FOD against it
 // forces the `hash mismatch … got: <real>` error we parse. All-A base64 is a
 // canonical fake (matches the lib.fakeHash convention the nix files document).
 const FAKE_SRI = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
-// The two pinned FODs. Exported so the test derives its fixtures from the shipped
+// The pinned FODs. Exported so the test derives its fixtures from the shipped
 // table rather than restating it — a rebase that edits the table keeps the test
 // honest with no second edit.
 export type FodEntry = {
+	// Stable identity of this table row, used by `verifyOf` and by every log line
+	// and error message. Unique across the table.
+	id: string;
 	// Nix file carrying the pinned hash (repo-root-relative).
 	file: string;
 	// Unique substring on the hash line — the attr name + `= "sha256-` prefix, so
 	// it matches exactly one line and cannot bind a comment or a sibling attr.
 	marker: string;
 	// A fragment of this FOD's derivation name, used to attribute the correct
-	// `got:` when --keep-going reports multiple mismatches. Distinct per entry.
+	// `got:` when --keep-going reports multiple mismatches. Distinct per entry
+	// WITHIN one vehicle; two entries realising different vehicles may share it
+	// (that is exactly the two-builders-one-hash case above).
 	drvFragment: string;
+	// The build vehicle that realises this entry's FOD: the Nix file and the attr
+	// in it, both repo-root-relative (the runner cwd = repo root; main() chdirs
+	// there). Per ENTRY, not per module: the same pinned hash is realised through
+	// two vehicles resolving two different nixpkgs revs, and a shared global would
+	// make one of those unreachable.
+	buildFile: string;
+	buildTarget: string;
+	// The devenv lock whose `nodes.nixpkgs.locked.rev` supplies `buildFile`'s
+	// `pkgs` (repo-root-relative). Load-bearing, not decorative: a scope-specific
+	// refresher selects its entries by this field, the table invariants below
+	// check it names the lock `buildFile` actually reads, and the divergence error
+	// quotes both revs so the reader does not have to go find them. Rewriting it
+	// to an equivalent-looking spelling (a leading `./`, an absolute path) breaks
+	// those lookups.
+	vehicleChannelLock: string;
 	// Manifests whose change invalidates this FOD (repo-root-relative). The
 	// per-entry self-gate fires when any of these differs from the base branch.
 	triggers: string[];
@@ -110,59 +155,208 @@ export type FodEntry = {
 	// proxyVendor set over the same go/. They are NOT separately realised (the
 	// build vehicle content-addresses only `file`'s FOD, so a faked mirror pin
 	// would never surface in its output); each is rewritten to the SRI `file`'s
-	// realise reports. Absent for a lone pin.
+	// realise reports. Absent for a lone pin. Never set on a verify entry — a
+	// verify entry writes nothing at all.
 	mirrorFiles?: string[];
+	// Set => this entry VERIFIES the pin another entry writes, and never writes
+	// itself. The value is that authoritative entry's `id`. See the header: it
+	// exists to check a SECOND builder's view of one shared hash.
+	verifyOf?: string;
 };
 
 export const FOD_ENTRIES: FodEntry[] = [
 	{
+		id: "guestd-go-vendor",
 		file: "guest-image/default.nix",
 		marker: 'vendorHash = "sha256-',
 		drvFragment: "go-modules",
+		buildFile: "guest-image/default.nix",
+		buildTarget: "compass-guest-rootfs",
+		vehicleChannelLock: "devenv.lock",
 		triggers: ["go/go.mod", "go/go.sum"],
 		mirrorFiles: ["flake.nix"],
 	},
 	{
+		id: "agent-node-modules-root-pkgs",
 		file: "agent-image/entrypoint.nix",
 		marker: 'outputHash = "sha256-',
 		drvFragment: "node-modules",
-		// `bun.lock` moves the installed tree's version set, and it is the trigger
-		// that actually moves this pin today. `devenv.lock` is the ROOT scope's
-		// channel pin: `guest-image/default.nix` imports entrypoint.nix with root's
-		// `pkgs`, so that lock supplies this FOD's `nativeBuildInputs = [ pkgs.bun ]`
-		// on the vehicle realised below. `agent-image/devenv.lock` is declared
-		// beside them because it moves the BUILDER in the OTHER consumer:
-		// `agent-image/devenv.nix` imports the SAME entrypoint.nix with the
-		// agent-image scope's own `pkgs`.
-		//
-		// Note the asymmetry this table cannot express. The vehicle realised below
-		// is `guest-image/default.nix`, so a relock of the agent-image channel alone
-		// recomputes a value derived through ROOT's bun, which will equal the
-		// committed one: the refresh is correct but cannot observe that consumer.
-		// The trigger is declared here so the coupling sits where a reader looks for
-		// it; the agent-image builder is verified by the image build, not by this
-		// refresh. All three paths are repo-root-relative, as the gate's `git diff`
-		// pathspec expects.
+		// The AUTHORITATIVE realise of the shared outputHash, through
+		// guest-image/default.nix — which imports the very same entrypoint.nix with
+		// ROOT's `pkgs` (that file documents the divergence as deliberate). This is
+		// the entry that WRITES the canonical value; the sibling below re-derives it
+		// through the agent-image scope and only compares.
+		buildFile: "guest-image/default.nix",
+		buildTarget: "compass-guest-rootfs",
+		vehicleChannelLock: "devenv.lock",
+		// `bun.lock` moves the installed tree's version set. The two channel locks
+		// are declared beside it because each moves a BUILDER of this same FOD:
+		// `devenv.lock` supplies root's `pkgs` to the vehicle realised here, and
+		// `agent-image/devenv.lock` supplies the agent-image scope's `pkgs` to
+		// `agent-image/devenv.nix`, the OTHER importer of entrypoint.nix. All paths
+		// are repo-root-relative, as the gate's `git diff` pathspec expects. The
+		// verify entry below carries the IDENTICAL trigger list, which is what makes
+		// the two always gate together.
 		triggers: ["bun.lock", "devenv.lock", "agent-image/devenv.lock"],
+	},
+	{
+		id: "agent-node-modules-agent-image-pkgs",
+		file: "agent-image/entrypoint.nix",
+		marker: 'outputHash = "sha256-',
+		// The SAME drv name as the entry above — it is literally the same
+		// derivation expression, evaluated against a different nixpkgs. Sharing the
+		// fragment is safe because attribution is scoped to a vehicle's own build
+		// output, and the two entries realise different vehicles (the table
+		// invariants below enforce exactly that).
+		drvFragment: "node-modules",
+		// The agent-image scope's own view of the shared hash. This vehicle exists
+		// solely for this check: it imports entrypoint.nix with the pkgs resolved
+		// from agent-image/devenv.lock, which is the bun the OCI image build
+		// actually uses. Without it, a channel-rev divergence that changes bun's
+		// install tree would leave this pin right for guest-image, silently wrong
+		// for the agent image, and unobservable until the image build.
+		buildFile: "tools/renovate/agent-image-fod-vehicle.nix",
+		buildTarget: "compass-agent",
+		vehicleChannelLock: "agent-image/devenv.lock",
+		triggers: ["bun.lock", "devenv.lock", "agent-image/devenv.lock"],
+		verifyOf: "agent-node-modules-root-pkgs",
 	},
 ];
 
-// Fragment attribution (parseGotForFragment) matches a mismatch block by
-// `drvName.includes(fragment)`, so two fragments where one contains the other
-// (e.g. "modules" vs "node-modules") would let one entry's got: bind the other's
-// block and write the WRONG hash. The current two fragments are mutually
-// disjoint; assert it at load time so a future table edit that reintroduces an
-// ambiguous fragment fails loud here rather than silently misattributing at run.
-for (const a of FOD_ENTRIES) {
-	for (const b of FOD_ENTRIES) {
-		if (a !== b && b.drvFragment.includes(a.drvFragment)) {
+// ── Table invariants, asserted at load so a bad edit fails HERE, not at run. ──
+// Each one closes a way the write/verify pairing could silently do the wrong
+// thing. One function per rule, so a failure's stack names the rule broken and
+// each stays readable whole; assertFodTableInvariants below composes them in the
+// order their diagnostics are most useful. Exported (the composer) so the test
+// can prove each guard is real by feeding it a table that violates exactly one
+// rule, rather than restating the properties in assertions that would drift.
+
+// Ids identify a row to `verifyOf` and to every diagnostic.
+function assertUniqueIds(entries: FodEntry[]): void {
+	const seenIds = new Set<string>();
+	for (const entry of entries) {
+		if (seenIds.has(entry.id)) {
 			throw new Error(
-				`renovate-fod: ambiguous drvFragment '${a.drvFragment}' is a substring of ` +
-					`'${b.drvFragment}' — fragments must be mutually disjoint for got: attribution`,
+				`renovate-fod: duplicate FodEntry id '${entry.id}' — ids identify a row to ` +
+					"`verifyOf` and to every diagnostic, so they must be unique",
 			);
+		}
+		seenIds.add(entry.id);
+	}
+}
+
+// One writer per pin. Two authoritative entries over the same file+marker would
+// be last-write-wins: the second realise's value would overwrite the first with
+// no diagnostic, which is precisely the divergence-hiding failure the verify
+// entry exists to prevent.
+function assertOneWriterPerPin(entries: FodEntry[]): void {
+	const writers = new Map<string, FodEntry>();
+	for (const entry of entries) {
+		if (entry.verifyOf) continue;
+		const key = `${entry.file}\u0000${entry.marker}`;
+		const prior = writers.get(key);
+		if (prior) {
+			throw new Error(
+				`renovate-fod: '${entry.id}' and '${prior.id}' both WRITE ${entry.marker} in ` +
+					`${entry.file} — a second writer silently clobbers the first; the later one ` +
+					"must carry `verifyOf` instead",
+			);
+		}
+		writers.set(key, entry);
+	}
+}
+
+// A verify entry must actually verify the pin it claims to, through a DIFFERENT
+// builder, and must be gated identically so the two can never fire apart (a
+// verify run whose authoritative sibling did not run would compare against a
+// pre-write baseline).
+function assertVerifyPairing(entries: FodEntry[]): void {
+	for (const entry of entries) {
+		if (!entry.verifyOf) continue;
+		const target = entries.find((e) => e.id === entry.verifyOf);
+		if (!target || target.verifyOf) {
+			throw new Error(
+				`renovate-fod: verify entry '${entry.id}' names verifyOf='${entry.verifyOf}', ` +
+					"which is not an authoritative (writing) entry in this table",
+			);
+		}
+		assertVerifiesTarget(entry, target);
+	}
+}
+
+// The four properties one verify/authoritative PAIR must hold, split out so each
+// rule reads on its own and the enclosing scan stays a scan.
+function assertVerifiesTarget(entry: FodEntry, target: FodEntry): void {
+	if (entry.file !== target.file || entry.marker !== target.marker) {
+		throw new Error(
+			`renovate-fod: verify entry '${entry.id}' must check the SAME pin as '${target.id}' ` +
+				`— got ${entry.file}:${entry.marker} vs ${target.file}:${target.marker}`,
+		);
+	}
+	if (
+		entry.buildFile === target.buildFile &&
+		entry.buildTarget === target.buildTarget
+	) {
+		throw new Error(
+			`renovate-fod: verify entry '${entry.id}' realises the SAME vehicle as '${target.id}' ` +
+				`(${entry.buildFile}#${entry.buildTarget}) — it would re-derive the identical value ` +
+				"and check nothing; a verify entry exists to exercise a SECOND builder",
+		);
+	}
+	const sameTriggers =
+		entry.triggers.length === target.triggers.length &&
+		new Set(entry.triggers).size === new Set(target.triggers).size &&
+		entry.triggers.every((t) => target.triggers.includes(t));
+	if (!sameTriggers) {
+		throw new Error(
+			`renovate-fod: verify entry '${entry.id}' and '${target.id}' must declare the SAME ` +
+				"triggers, or the gate could open one without the other and the verify would " +
+				`compare against an unrefreshed pin — got [${entry.triggers}] vs [${target.triggers}]`,
+		);
+	}
+	if (entry.mirrorFiles?.length) {
+		throw new Error(
+			`renovate-fod: verify entry '${entry.id}' declares mirrorFiles — a verify entry ` +
+				"writes nothing, so mirrors would never be propagated from it",
+		);
+	}
+}
+
+// got: attribution. parseGotForFragment matches a mismatch block by
+// `drvName.includes(fragment)`, so within ONE vehicle's output two fragments
+// where one contains the other (e.g. "modules" vs "node-modules") would let one
+// entry's got: bind the other's block and write the WRONG hash. Scoped to the
+// vehicle because that is the only place the ambiguity can arise: entries
+// realising different vehicles never read each other's output.
+function assertDisjointFragmentsPerVehicle(entries: FodEntry[]): void {
+	for (const a of entries) {
+		for (const b of entries) {
+			if (a === b) continue;
+			if (a.buildFile !== b.buildFile || a.buildTarget !== b.buildTarget) {
+				continue;
+			}
+			if (b.drvFragment.includes(a.drvFragment)) {
+				throw new Error(
+					`renovate-fod: ambiguous drvFragment '${a.drvFragment}' (${a.id}) is a substring ` +
+						`of '${b.drvFragment}' (${b.id}) and both realise ${a.buildFile}#${a.buildTarget} — ` +
+						"fragments must be mutually disjoint within a vehicle for got: attribution",
+				);
+			}
 		}
 	}
 }
+
+export function assertFodTableInvariants(entries: FodEntry[]): void {
+	assertUniqueIds(entries);
+	assertOneWriterPerPin(entries);
+	assertVerifyPairing(entries);
+	// LAST, so the pairing rules above give their specific diagnosis first: a
+	// verify entry wrongly sharing its target's vehicle also trips the fragment
+	// rule, and "same vehicle" is the message that names the actual mistake.
+	assertDisjointFragmentsPerVehicle(entries);
+}
+
+assertFodTableInvariants(FOD_ENTRIES);
 
 // ── Pure rewrite: replace the `sha256-…` SRI on the line carrying `marker`. ──
 // Unlike refresh-toolchain-hashes.ts (whose hash sits on the line AFTER the URL
@@ -193,14 +387,37 @@ export function rewriteInlineHash(
 	return lines.join("\n");
 }
 
+// ── Pure read: the `sha256-…` SRI currently on the line carrying `marker`. ──
+// The inverse of rewriteInlineHash, and the baseline a verify entry compares its
+// recomputed value against. Throws rather than returning undefined: a verify that
+// cannot find the pin must fail loud, never "no mismatch observed".
+export function hashOnMarker(
+	fileText: string,
+	marker: string,
+	file: string,
+): string {
+	const line = fileText.split("\n").find((l) => l.includes(marker));
+	if (line === undefined) {
+		throw new Error(`renovate-fod: marker '${marker}' not found in ${file}`);
+	}
+	const sri = line.match(/sha256-[^"]*/)?.[0];
+	if (!sri) {
+		throw new Error(
+			`renovate-fod: no sha256- SRI on the '${marker}' line in ${file}`,
+		);
+	}
+	return sri;
+}
+
 // ── Parse the `got:` SRI for the derivation whose name contains `fragment`. ──
 // Nix prints, per mismatching FOD:
 //     error: hash mismatch in fixed-output derivation '/nix/store/…-<frag>.drv':
 //              specified: sha256-<fake>
 //                 got:    sha256-<real>
-// Scoping to the fragment means a co-stale sibling FOD's mismatch (only possible
-// defensively — the two triggers never change on one branch) is never
-// misattributed. Returns undefined if this FOD did not report a mismatch.
+// Scoping to the fragment means a co-stale sibling FOD's mismatch in the same
+// vehicle (only possible defensively — the two triggers never change on one
+// branch) is never misattributed. Returns undefined if this FOD did not report a
+// mismatch.
 export function parseGotForFragment(
 	nixOutput: string,
 	fragment: string,
@@ -227,10 +444,10 @@ export function parseGotForFragment(
 	return undefined;
 }
 
-// Recompute one entry's SRI: fake the pin, build the vehicle, read the reported
-// `got:` for this FOD, then restore the file to the ORIGINAL text (the caller
-// writes the real SRI). Restores on every path so a failure never leaves a fake
-// pin in the tree.
+// Recompute one entry's SRI: fake the pin, build THIS entry's vehicle, read the
+// reported `got:` for this FOD, then restore the file to the ORIGINAL text (the
+// caller decides whether to write the value or merely compare it). Restores on
+// every path so a failure never leaves a fake pin in the tree.
 async function recompute(entry: FodEntry, origText: string): Promise<string> {
 	await Bun.write(
 		entry.file,
@@ -238,7 +455,7 @@ async function recompute(entry: FodEntry, origText: string): Promise<string> {
 	);
 	try {
 		const res =
-			await $`nix build -f ${BUILD_FILE} ${BUILD_TARGET} --no-link --keep-going`
+			await $`nix build -f ${entry.buildFile} ${entry.buildTarget} --no-link --keep-going`
 				.nothrow()
 				.quiet();
 		const out = `${res.stdout.toString()}\n${res.stderr.toString()}`;
@@ -246,8 +463,8 @@ async function recompute(entry: FodEntry, origText: string): Promise<string> {
 		if (!got) {
 			throw new Error(
 				`renovate-fod: no 'got:' SRI for '${entry.drvFragment}' after building ` +
-					`${BUILD_TARGET} with a faked ${entry.marker} — build output:\n` +
-					out.split("\n").slice(-30).join("\n"),
+					`${entry.buildTarget} (${entry.buildFile}) with a faked ${entry.marker} — ` +
+					`build output:\n${out.split("\n").slice(-30).join("\n")}`,
 			);
 		}
 		return got;
@@ -256,19 +473,46 @@ async function recompute(entry: FodEntry, origText: string): Promise<string> {
 	}
 }
 
-// Refresh ONE entry's pin (and its mirrors) in place: read the current text,
-// recompute the SRI by realising the vehicle against a faked pin, write the real
-// value back, then propagate it to every declared mirror. This is the per-entry
-// body of main()'s gated loop, factored out so a scope-specific refresher can
-// drive a single FOD directly — refresh-agent-image-nixpkgs.ts calls it after its
-// own relock, having already established (by its own base diff) that the
-// agent-image entry's trigger moved. Extracting it keeps ONE realise-and-parse
+const isObj = (v: unknown): v is Record<string, unknown> =>
+	typeof v === "object" && v !== null;
+
+// The nixpkgs channel rev a vehicle's `pkgs` resolves from, for DIAGNOSTICS only.
+// Never throws: it is called while building an error message, and losing the
+// real failure to a secondary parse error would be strictly worse than printing
+// a placeholder.
+async function vehicleChannelRev(lockFile: string): Promise<string> {
+	try {
+		let cur: unknown = JSON.parse(await Bun.file(lockFile).text());
+		for (const key of ["nodes", "nixpkgs", "locked", "rev"]) {
+			if (!isObj(cur)) return `<unreadable: ${lockFile} has no ${key}>`;
+			cur = cur[key];
+		}
+		return typeof cur === "string" ? cur : `<unreadable: ${lockFile}>`;
+	} catch (error) {
+		return `<unreadable: ${lockFile} (${String(error)})>`;
+	}
+}
+
+// Refresh ONE authoritative entry's pin (and its mirrors) in place: read the
+// current text, recompute the SRI by realising the entry's vehicle against a
+// faked pin, write the real value back, then propagate it to every declared
+// mirror. This is the per-entry body of main()'s gated loop, factored out so a
+// scope-specific refresher can drive a single FOD directly —
+// refresh-agent-image-nixpkgs.ts drives it (via refreshFodEntries) after its own
+// relock, having already established by its own base diff that the agent-image
+// entry's trigger moved. Extracting it keeps ONE realise-and-parse
 // implementation: a second copy would drift from the got:-attribution and
 // restore-on-failure discipline above.
 export async function refreshEntry(entry: FodEntry): Promise<void> {
+	if (entry.verifyOf) {
+		throw new Error(
+			`renovate-fod: '${entry.id}' is a verify entry and must never write ${entry.file} — ` +
+				`route it through verifyEntry (its write would clobber '${entry.verifyOf}'s value)`,
+		);
+	}
 	const origText = await Bun.file(entry.file).text();
 	console.log(
-		`renovate-fod: ${entry.file} (${entry.drvFragment}) trigger changed; recomputing ${entry.marker.replace(/ = .*/, "")} ...`,
+		`renovate-fod: ${entry.file} (${entry.drvFragment}) trigger changed; recomputing ${entry.marker.replace(/ = .*/, "")} via ${entry.buildTarget} (${entry.buildFile}) ...`,
 	);
 	const got = await recompute(entry, origText);
 	await Bun.write(
@@ -283,6 +527,93 @@ export async function refreshEntry(entry: FodEntry): Promise<void> {
 			rewriteInlineHash(mirrorText, entry.marker, got, mirror),
 		);
 		console.log(`renovate-fod: ${mirror} (mirror) -> ${got}`);
+	}
+}
+
+// Check ONE verify entry: recompute the shared pin through the SECOND builder and
+// compare it against what is on disk — which, by refreshFodEntries' ordering, is
+// the value `authoritative` has already written. Writes nothing on either path
+// (recompute restores the file it faked), so the authoritative value survives
+// intact whatever this finds.
+//
+// Equal is the expected outcome and the only quiet one. A difference means the
+// two vehicles' bun derivations produce different install trees, so NO single
+// `outputHash` literal can satisfy both consumers: throwing reds
+// `renovate/artifacts` on the branch that moved the pin, which is the whole point
+// of realising this second vehicle.
+export async function verifyEntry(
+	entry: FodEntry,
+	authoritative: FodEntry,
+): Promise<void> {
+	if (entry.verifyOf !== authoritative.id) {
+		throw new Error(
+			`renovate-fod: '${entry.id}' verifies '${entry.verifyOf}', not '${authoritative.id}'`,
+		);
+	}
+	// Read AFTER the authoritative write, so the baseline is the refreshed pin —
+	// comparing against the pre-write text would report every ordinary refresh as
+	// a divergence. ONE read serves both roles: it is the value being checked AND
+	// the text recompute restores after faking the pin, so the file cannot end in
+	// a state neither of them intended.
+	const currentText = await Bun.file(entry.file).text();
+	const committed = hashOnMarker(currentText, entry.marker, entry.file);
+	console.log(
+		`renovate-fod: verifying ${entry.file} ${entry.marker.replace(/ = .*/, "")} against ${entry.buildTarget} (${entry.buildFile}) ...`,
+	);
+	const got = await recompute(entry, currentText);
+	if (got === committed) {
+		console.log(
+			`renovate-fod: ${entry.file} verified — ${entry.buildFile} and ${authoritative.buildFile} ` +
+				`agree on ${committed}`,
+		);
+		return;
+	}
+	const [verifyRev, authRev] = await Promise.all([
+		vehicleChannelRev(entry.vehicleChannelLock),
+		vehicleChannelRev(authoritative.vehicleChannelLock),
+	]);
+	throw new Error(
+		`renovate-fod: ${entry.file}'s ${entry.marker.replace(/ = .*/, "")} cannot satisfy both of ` +
+			"its builders — one outputHash literal, two nixpkgs revs whose bun produces a " +
+			"different installed tree.\n" +
+			`  ${authoritative.id} (authoritative, wrote it): ${committed}\n` +
+			`    vehicle: ${authoritative.buildTarget} (${authoritative.buildFile})\n` +
+			`    channel: ${authoritative.vehicleChannelLock} @ ${authRev}\n` +
+			`  ${entry.id} (verify): ${got}\n` +
+			`    vehicle: ${entry.buildTarget} (${entry.buildFile})\n` +
+			`    channel: ${entry.vehicleChannelLock} @ ${verifyRev}\n` +
+			"The committed value is the authoritative one, so the agent-image OCI build would " +
+			"fail `hash mismatch in fixed-output derivation`. Reconcile the two channel revs " +
+			"onto one bun, or split the pin so each consumer carries its own.",
+	);
+}
+
+// Drive a set of gated entries in the ONE order that is correct: every
+// authoritative write first, then every verify. The ordering is structural — the
+// run set is partitioned here, never read in table order — because a verify that
+// ran first would compare the second builder's value against the STALE pin and
+// throw on an ordinary refresh, and a verify that was skipped would ship the
+// unverified pin this pairing exists to catch.
+export async function refreshFodEntries(entries: FodEntry[]): Promise<void> {
+	const authoritative = entries.filter((e) => !e.verifyOf);
+	const verifiers = entries.filter((e) => e.verifyOf);
+
+	for (const entry of authoritative) {
+		await refreshEntry(entry);
+	}
+	for (const entry of verifiers) {
+		// Resolve against the RUN SET, not the whole table: if the caller gated the
+		// verify entry without its writer, nothing refreshed the pin above and the
+		// comparison would be against a pre-write baseline. The table invariants
+		// make the two gate together, so reaching this is a caller bug — fail loud.
+		const target = authoritative.find((e) => e.id === entry.verifyOf);
+		if (!target) {
+			throw new Error(
+				`renovate-fod: verify entry '${entry.id}' was gated without its authoritative ` +
+					`entry '${entry.verifyOf}', so there is no refreshed value to verify against`,
+			);
+		}
+		await verifyEntry(entry, target);
 	}
 }
 
@@ -304,7 +635,7 @@ async function main(): Promise<void> {
 	}
 
 	// Per-entry gate: act only on FODs whose trigger manifests this branch changed
-	// vs base. A gomod bump opens the Go entry alone; a bun bump the bun entry
+	// vs base. A gomod bump opens the Go entry alone; a bun bump the bun entries
 	// alone; a branch touching neither manifest no-ops with no build.
 	const gated: FodEntry[] = [];
 	for (const entry of FOD_ENTRIES) {
@@ -328,9 +659,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	for (const entry of gated) {
-		await refreshEntry(entry);
-	}
+	await refreshFodEntries(gated);
 
 	console.log("renovate-fod: FOD hashes refreshed.");
 }
