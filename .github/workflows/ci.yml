@@ -219,9 +219,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -229,9 +229,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -298,7 +298,7 @@ jobs:
       github.event_name != 'workflow_dispatch' ||
       github.event.inputs.pr != ''
     # 90m is an INHERITED ceiling, not a measured one. It was sized for the
-    # vendored forks' nix worst case
+    # since-removed forks group's nix worst case
     # (infra/ci/compass-ci-job-decomposition/design.md:77-78), and that group is
     # now gone — the monolith's real wall-clock on main was ~20m even before it
     # left (same record, :377-378). `agent-image/moon.yml` used to point back
@@ -346,9 +346,9 @@ jobs:
       - if: matrix.run == 'true'
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -356,9 +356,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -566,9 +566,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -576,9 +576,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -767,9 +767,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -777,9 +777,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -1011,9 +1011,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -1021,9 +1021,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -1285,9 +1285,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -1295,9 +1295,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -2010,8 +2010,7 @@ jobs:
         #     host runner uid, but the podman user reads it — without this, git
         #     (and moon's affected-detection, which shells git) fails with
         #     `detected dubious ownership`. `--system` so the podman user sees it;
-        #     `*` covers the vendored forks under the tree (each a git-aware moon
-        #     project).
+        #     `*` covers every git-aware moon project under the tree.
         #   - /usr/bin/podman-step: the wrapper `defaults.run.shell` runs every
         #     other step through (see the job's `defaults.run` comment). GitHub
         #     resolves a custom shell's command via $PATH, so it is named bare
@@ -2145,7 +2144,7 @@ jobs:
           # the system /etc/nix/nix.conf the installer writes is not consulted for a
           # single-user install run as a normal user). Mirrors the moon job's
           # install-nix-action config exactly — the SAME two cache substituters +
-          # trusted keys the vendored forks use, never `accept-flake-config` (which
+          # trusted keys the nix builds use, never `accept-flake-config` (which
           # would trust a PR-supplied substituter + key).
           conf=$(mktemp)
           cat >"$conf" <<'NIXCONF'
@@ -2558,7 +2557,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           # The SAME two-cache trust posture as the moon job — the two
-          # substituters the vendored forks use plus their trusted keys, never
+          # substituters the nix builds use plus their trusted keys, never
           # `accept-flake-config` (which would trust a PR-supplied substituter +
           # key). See the moon job's install-nix-action step for the full rationale.
           extra_nix_config: |
@@ -2695,7 +2694,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           # The SAME two-cache trust posture as the moon job — the two
-          # substituters the vendored forks use plus their trusted keys, never
+          # substituters the nix builds use plus their trusted keys, never
           # `accept-flake-config` (which would trust a PR-supplied substituter +
           # key). See the moon job's install-nix-action step for the full rationale.
           extra_nix_config: |
