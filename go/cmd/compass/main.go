@@ -54,6 +54,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newAgentConfigCmd())
 	root.AddCommand(newMessageCmd())
 	root.AddCommand(newSecretCmd())
+	root.AddCommand(newServerSecretCmd())
 	root.AddCommand(newTokenCmd())
 	return root
 }

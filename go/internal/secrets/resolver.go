@@ -29,6 +29,13 @@ const defaultProfile = "default"
 // that floor guard and the resolver agree on which binary that is.
 const defaultCLI = "secretspec"
 
+// reportStatusResolved is the SecretSpec report status meaning the provider
+// holds a value for a declared secret. The report's other statuses
+// ("missing_required", "missing_optional") both mean no value is present, so
+// the status path tests for this one rather than enumerating the misses — a new
+// miss status upstream then reads as unset, which is the safe direction.
+const reportStatusResolved = "resolved"
+
 // declarations is the read surface the Resolver needs from the store: the whole
 // declared set. store.Store satisfies it. An interface (not the concrete
 // *store.Store) so the pure resolve logic is unit-testable with a fake, without
@@ -56,6 +63,17 @@ type Resolver interface {
 	Set(ctx context.Context, name, value, reason string) error
 	// Delete removes a value from the provider for a name.
 	Delete(ctx context.Context, name string) error
+	// Statuses reports, per declared secret, whether the provider currently
+	// holds a value for it — names + set/unset, NEVER a value. It is the
+	// value-free counterpart to Resolve, for the caller that needs to
+	// distinguish "declared" from "populated" without reading any value.
+	//
+	// Unlike Resolve it does NOT fail when a declared secret is unpopulated: an
+	// absent required value is reported as IsSet=false, not an error. That is
+	// the whole point — a server secret's row is self-declared at boot while its
+	// value is populated separately, so declared-but-unset is a normal state
+	// that must be observable rather than a resolve fault.
+	Statuses(ctx context.Context, reason string) ([]SecretStatus, error)
 }
 
 // SpecResolver is the SecretSpec-backed Resolver. It reads the names registry
@@ -206,6 +224,83 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 			Host:     d.Host,
 			Provider: d.Provider,
 		})
+	}
+	return out, nil
+}
+
+// Statuses reports each declared secret's value-free set/unset state, reading
+// the SecretSpec RESOLUTION REPORT rather than resolving values. reason is
+// recorded in the SecretSpec audit log exactly as on the resolve path. An empty
+// registry reports an empty set with no provider call.
+//
+// Report, not Load, is the primitive this needs, for two independent reasons:
+//
+//   - buildManifest declares every name required = true, so Load fails
+//     WHOLESALE with a MissingRequiredError (and a nil set) the moment ONE
+//     declared secret is unpopulated. That is the common state for a server
+//     secret — the row is self-declared at boot, the value populated
+//     separately — so a Load-based status path would error out in precisely the
+//     case it exists to describe. Report instead reports a missing required
+//     secret as a per-secret status, so it describes a profile even when its
+//     secrets are not all available.
+//   - Report never returns a value. Load would pull every deployment secret's
+//     VALUE into this process just to answer a names-and-flags question, the
+//     same read the user-facing list path deliberately refuses.
+//
+// Report is a SecretSpec 0.20+ surface (both the SDK method and the underlying
+// libsecretspec report mode); hostcheck.SecretSpecFloor is the floor that keeps
+// it available, so it is not an optional capability to feature-detect here.
+//
+// A genuine provider fault (a *secretspec.Error — provider unreachable, bad
+// manifest, reason policy refused) is returned as an error, never flattened
+// into an all-unset report: a broken provider must not read as an
+// unprovisioned one.
+func (r *SpecResolver) Statuses(ctx context.Context, reason string) ([]SecretStatus, error) {
+	decls, err := r.store.DeclaredSecrets(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("secrets: read registry: %w", err)
+	}
+	if len(decls) == 0 {
+		return nil, nil
+	}
+	profile := r.resolvedProfile()
+	manifestPath, err := r.writeManifest(profile, decls)
+	if err != nil {
+		return nil, err
+	}
+	// Same transient-input discipline as Resolve: a per-call temp manifest, so
+	// concurrent callers never share one path. The remove error is discarded
+	// deliberately — the file is already abandoned and the registry, not this
+	// file, is the durable source, so a failed unlink of a temp file is not
+	// actionable to the caller.
+	defer func() { _ = os.Remove(manifestPath) }()
+
+	b := secretspec.New().WithPath(manifestPath).WithReason(reason)
+	if r.provider != "" {
+		b = b.WithProvider(r.provider)
+	}
+	b = b.WithProfile(profile)
+	report, err := b.Report()
+	if err != nil {
+		// *secretspec.Error carries a value-free message (kind + message), so
+		// wrapping cannot leak a value.
+		return nil, fmt.Errorf("secrets: report: %w", err)
+	}
+
+	// Index the report by name: it is a slice, and the declared set is the
+	// authority on WHICH names to answer for, so this reports one status per
+	// declaration rather than whatever order the provider enumerated.
+	set := make(map[string]bool, len(report.Secrets))
+	for _, s := range report.Secrets {
+		set[s.Name] = s.Status == reportStatusResolved
+	}
+	out := make([]SecretStatus, 0, len(decls))
+	for _, d := range decls {
+		// A declared name absent from the report is unset, not an error: the
+		// report enumerates the manifest we just wrote from these same
+		// declarations, so an absence means the provider holds nothing for it —
+		// which is exactly what IsSet=false says.
+		out = append(out, SecretStatus{Name: d.Name, IsSet: set[d.Name]})
 	}
 	return out, nil
 }

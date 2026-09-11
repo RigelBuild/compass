@@ -45,6 +45,12 @@ func (r *fakeResolver) Resolve(_ context.Context, _ string) ([]secrets.ResolvedS
 func (r *fakeResolver) Set(context.Context, string, string, string) error { return nil }
 func (r *fakeResolver) Delete(context.Context, string) error              { return nil }
 
+// Statuses is unused on the forge paths, which read values; it exists to satisfy
+// secrets.Resolver.
+func (r *fakeResolver) Statuses(context.Context, string) ([]secrets.SecretStatus, error) {
+	return nil, nil
+}
+
 func TestForgeConfigEnableAndDefaults(t *testing.T) {
 	t.Run("board ingestion disabled by default", func(t *testing.T) {
 		if (ForgeConfig{}).boardIngestionEnabled() {

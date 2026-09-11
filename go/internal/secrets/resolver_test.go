@@ -9,6 +9,7 @@ package secrets
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -184,6 +185,42 @@ func TestResolveEmptyRegistry(t *testing.T) {
 	// The short-circuit means the SDK/provider was never reached (no FFI lib
 	// dlopen, no manifest written) — proven by the fact this test runs at all
 	// without the cdylib staged.
+}
+
+// TestStatusesEmptyRegistry mirrors TestResolveEmptyRegistry for the status
+// path: an empty registry short-circuits to an empty report with no provider
+// call, so listing a fleet that has declared nothing never touches the FFI
+// library or writes a manifest.
+func TestStatusesEmptyRegistry(t *testing.T) {
+	fake := &fakeDeclarations{decls: nil}
+	r := NewSpecResolver(fake, "/tmp/state-does-not-need-to-exist")
+
+	out, err := r.Statuses(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("Statuses on empty registry: %v", err)
+	}
+	if out != nil {
+		t.Errorf("Statuses on empty registry = %v, want nil", out)
+	}
+	if !fake.called {
+		t.Error("Statuses did not read the declared set")
+	}
+}
+
+// TestStatusesRegistryReadFailurePropagates asserts a registry fault surfaces as
+// an error rather than an empty status set. An empty list is indistinguishable
+// from "nothing declared", which would read as a healthy fleet with no secrets.
+func TestStatusesRegistryReadFailurePropagates(t *testing.T) {
+	fake := &fakeDeclarations{err: errors.New("registry boom")}
+	r := NewSpecResolver(fake, "/tmp/state-does-not-need-to-exist")
+
+	out, err := r.Statuses(context.Background(), "test")
+	if err == nil {
+		t.Fatal("Statuses swallowed a registry read failure; an empty set reads as a healthy empty fleet")
+	}
+	if out != nil {
+		t.Errorf("Statuses = %v on error, want nil", out)
+	}
 }
 
 // TestWriteManifestConcurrentDistinctPaths guards the F4 fix: each writeManifest
