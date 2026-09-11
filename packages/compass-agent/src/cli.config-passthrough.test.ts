@@ -74,7 +74,11 @@ afterEach(() => {
 	for (const dir of tmpdirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
-});
+	// Recursive /tmp deletes of the deep mount fixtures; under the parallel
+	// pre-push gate (worktree also in /tmp, bun 2x) this outruns bun's 5s hook
+	// default. A slow-cleanup detector, not a timing budget — bun cannot preempt
+	// the sync rmSync, so this bounds a returning-but-slow delete (see (g), 130s).
+}, 60_000);
 
 // A mount fixture: <mount>/current/<rel> holding `body`, parents created.
 function writeMember(mount: string, rel: string, body: string): string {
