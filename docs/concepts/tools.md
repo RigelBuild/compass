@@ -36,6 +36,9 @@ a turn open waiting (a foreground wait makes you deaf to everything but steers).
 - **`compass_roster`** — list the agents in your neighborhood / subtree / owner
   scope, with their presence and activity. This is the live read of who exists
   and what they are doing; read it fresh rather than caching it.
+- **`compass_tree`** — the same live read rendered as an indented parent→child
+  tree (subtree or owner scope), when you need the shape of the fleet rather
+  than a flat list.
 - **`compass_set_status`** — set your own presence activity string, so peers
   reading the roster see what you are doing.
 
@@ -67,7 +70,7 @@ a subagent spawn.
 ## Approval
 
 Each tool declares whether it is a **read** or a **write**. Reads
-(`comms_list_messages`, `compass_roster`) run freely; writes
+(`comms_list_messages`, `compass_roster`, `compass_tree`) run freely; writes
 (`comms_post_message`, `comms_post_ask`, `compass_set_status`,
 `agents_spawn_peer`, `agents_despawn_peer`) are the mutating surface. In a
 headless container the write natives auto-approve (there is no human in the
