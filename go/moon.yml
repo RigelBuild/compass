@@ -1,9 +1,8 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 # The Compass backend Go module (go/). This lane keeps the generated compass.v1
-# Go stubs compiling + drift-free AND runs the full Go gate battery
-# (docs/designs/platform/go-toolchain-default.md T10 +
-# go-idioms-and-libraries.md L1/L2): gofmt + go vet + golangci-lint (with the
-# gochecksumtype/exhaustive exhaustiveness gate on), a CGO -race test lane, go
+# Go stubs compiling + drift-free AND runs the full Go gate battery:
+# gofmt + go vet + golangci-lint (with the gochecksumtype/exhaustive
+# exhaustiveness gate on), a CGO -race test lane, go
 # build, the supply-chain fence (govulncheck + go-licenses), and nilaway
 # nil-flow analysis (gating, zero baseline — see the nilaway task below).
 #
@@ -159,7 +158,7 @@ tasks:
     # Run the module's unit + transport tests under the race detector. The race
     # detector requires cgo (CGO_ENABLED=1), so this lane opts back in — Global
     # Constraint 5's release-build CGO_ENABLED=0 governs the shipped binary, not
-    # the test lane (go-toolchain-default.md T10, :1074-1076).
+    # the test lane.
     command: 'go test -race ./...'
     env:
       CGO_ENABLED: '1'
