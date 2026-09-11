@@ -206,6 +206,48 @@ function assertSidecarBasenamesDistinct(sidecars: string[]): void {
 	}
 }
 
+/** Extract one image block's `mount-point` values, in document order. */
+function blockMountPoints(block: string): string[] {
+	const mountRe = /<key>mount-point<\/key>\s*<string>([^<]*)<\/string>/g;
+	const mounts: string[] = [];
+	for (let m = mountRe.exec(block); m; m = mountRe.exec(block)) {
+		if (m[1]) mounts.push(m[1]);
+	}
+	return mounts;
+}
+
+/**
+ * Parse `hdiutil info -plist` text and return the mount points that a stale
+ * attachment of THIS build holds — so the caller can force-detach them before
+ * `hdiutil create`, which fails with "Resource busy" when an earlier run on a
+ * reused runner leaked the attachment of our image path or volume. Pure: it
+ * only reads text, so the parsing (where a bug would hide) is unit-testable.
+ *
+ * Conservative by construction: a block is selected ONLY when its image-path
+ * equals `imagePath` or one of its mount points is named `volumeName`, so an
+ * unrelated volume is never returned. Unparseable/empty input yields `[]`.
+ */
+export function staleMountPoints(
+	hdiutilInfoPlist: string,
+	target: { imagePath: string; volumeName: string },
+): string[] {
+	// Each attached image is a block introduced by its <key>image-path</key>;
+	// splitting on that key isolates one image's system-entities per chunk.
+	const blocks = hdiutilInfoPlist.split("<key>image-path</key>").slice(1);
+	const found = new Set<string>();
+	for (const block of blocks) {
+		const imagePath = /^\s*<string>([^<]*)<\/string>/.exec(block)?.[1];
+		const mounts = blockMountPoints(block);
+		const matches =
+			imagePath === target.imagePath ||
+			mounts.some((mp) => basename(mp) === target.volumeName);
+		if (matches) {
+			for (const mp of mounts) found.add(mp);
+		}
+	}
+	return [...found];
+}
+
 // ── The edge (impure) ──────────────────────────────────────────────────────
 
 /** Fail loud if a required input path does not exist (build.sh sanity posture). */
@@ -215,6 +257,24 @@ async function assertExists(path: string, what: string): Promise<void> {
 	// index.html sentinel, matching build.sh's index.html assertion.
 	if (!(await Bun.file(path).exists())) {
 		throw new Error(`macos-bundle: ${what} not found at ${path}`);
+	}
+}
+
+/**
+ * Force-detach any stale attachment of our volume/image left by an earlier run
+ * on a reused runner, so `hdiutil create` does not hit "Resource busy". Never
+ * throws: a clean system (nothing to detach) and an unavailable/unparseable
+ * `hdiutil info` both leave the build untouched — a cleanup that reds a green
+ * system is worse than the leak.
+ */
+async function detachStaleAttachments(target: {
+	imagePath: string;
+	volumeName: string;
+}): Promise<void> {
+	const probe = await $`hdiutil info -plist`.quiet().nothrow();
+	if (probe.exitCode !== 0) return;
+	for (const mount of staleMountPoints(probe.stdout.toString(), target)) {
+		await $`hdiutil detach ${mount} -force`.quiet().nothrow();
 	}
 }
 
@@ -276,8 +336,10 @@ async function main(): Promise<void> {
 	await $`codesign --sign - --force --deep ${appDir}`;
 
 	// Wrap the staging dir into a compressed (UDZO) .dmg. -ov overwrites an
-	// existing image so a re-run is idempotent.
+	// existing image so a re-run is idempotent. Detach any stale attachment of
+	// this volume first — on a reused runner a leaked mount makes create EBUSY.
 	await rm(args.out, { force: true });
+	await detachStaleAttachments({ imagePath: args.out, volumeName: "Compass" });
 	await $`hdiutil create -volname Compass -srcfolder ${stageRoot} -ov -format UDZO ${args.out}`;
 
 	console.log(`macos-bundle: wrote ${args.out}`);

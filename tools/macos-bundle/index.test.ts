@@ -11,7 +11,7 @@
 // import.meta.main-guarded, so importing index.ts never runs it.
 
 import { describe, expect, test } from "bun:test";
-import { parseArgs, renderInfoPlist } from "./index.ts";
+import { parseArgs, renderInfoPlist, staleMountPoints } from "./index.ts";
 
 /** The canonical render inputs used across the plist cases. */
 function plistOpts() {
@@ -271,5 +271,60 @@ describe("parseArgs — fails loud on malformed input", () => {
 		expect(() => parseArgs(["--binary", "--dist", "d"])).toThrow(
 			/expects a value/,
 		);
+	});
+});
+
+/**
+ * Build one `hdiutil info -plist` image block for an image at `imagePath` with
+ * the given mount points. The real plist is larger; these are the only keys
+ * staleMountPoints reads, in the order hdiutil emits them.
+ */
+function imageBlock(imagePath: string, mountPoints: string[]): string {
+	const entities = mountPoints
+		.map((mp) => `<dict><key>mount-point</key><string>${mp}</string></dict>`)
+		.join("");
+	return `<key>image-path</key><string>${imagePath}</string><key>system-entities</key><array>${entities}</array>`;
+}
+
+const TARGET = {
+	imagePath: "/tmp/compass-app-darwin-arm64.dmg",
+	volumeName: "Compass",
+};
+
+describe("staleMountPoints — selects only this build's leaked attachment", () => {
+	test("no attachments → empty", () => {
+		expect(staleMountPoints("<dict></dict>", TARGET)).toEqual([]);
+	});
+
+	test("empty input → empty, does not throw", () => {
+		expect(staleMountPoints("", TARGET)).toEqual([]);
+	});
+
+	test("malformed input → empty, does not throw", () => {
+		expect(staleMountPoints("not a plist <<< >>>", TARGET)).toEqual([]);
+	});
+
+	test("matches by image path", () => {
+		const info = imageBlock(TARGET.imagePath, ["/Volumes/Compass"]);
+		expect(staleMountPoints(info, TARGET)).toEqual(["/Volumes/Compass"]);
+	});
+
+	test("matches by Compass volume name even when the image path differs", () => {
+		const info = imageBlock("/tmp/some-other-run.dmg", [
+			"/private/tmp/Compass",
+		]);
+		expect(staleMountPoints(info, TARGET)).toEqual(["/private/tmp/Compass"]);
+	});
+
+	test("does NOT select an unrelated volume", () => {
+		const info = imageBlock("/tmp/unrelated.dmg", ["/Volumes/SomethingElse"]);
+		expect(staleMountPoints(info, TARGET)).toEqual([]);
+	});
+
+	test("selects only the matching block when both are attached", () => {
+		const info =
+			imageBlock("/tmp/unrelated.dmg", ["/Volumes/SomethingElse"]) +
+			imageBlock(TARGET.imagePath, ["/Volumes/Compass"]);
+		expect(staleMountPoints(info, TARGET)).toEqual(["/Volumes/Compass"]);
 	});
 });
