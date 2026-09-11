@@ -27,6 +27,8 @@ export interface Analytics {
 	capture(event: string, props?: Record<string, unknown>): void;
 	/** Associate subsequent events with a stable distinct id (the caller). */
 	identify(distinctId: string): void;
+	/** Return the current PostHog session id, when one exists. */
+	sessionId(): string | undefined;
 	/** Tear down the identified session (logout / app teardown). */
 	shutdown(): void;
 }
@@ -36,6 +38,9 @@ export interface Analytics {
 class NoopAnalytics implements Analytics {
 	capture(): void {}
 	identify(): void {}
+	sessionId(): string | undefined {
+		return undefined;
+	}
 	shutdown(): void {}
 }
 
@@ -45,8 +50,10 @@ class NoopAnalytics implements Analytics {
 class PostHogAnalytics implements Analytics {
 	private readonly client: PostHog;
 	/** The trace-id source, read at CAPTURE time rather than construction time:
-	 *  the transport that records trace ids is built before this client exists,
-	 *  so a value read once at construction would always be undefined.
+	 *  boot builds analytics BEFORE the transport, so this getter closes over a
+	 *  `clients` binding that is not yet initialized — reading it at construction
+	 *  would throw a ReferenceError, while reading it at capture time is long
+	 *  after boot bound it.
 	 *
 	 *  A getter, not the sink object, on purpose — analytics reads one string and
 	 *  has no business depending on compass-client's transport types, so the
@@ -104,6 +111,11 @@ class PostHogAnalytics implements Analytics {
 
 	identify(distinctId: string): void {
 		this.client.identify(distinctId);
+	}
+
+	sessionId(): string | undefined {
+		const sessionId = this.client.get_session_id();
+		return sessionId === "" ? undefined : sessionId;
 	}
 
 	shutdown(): void {
