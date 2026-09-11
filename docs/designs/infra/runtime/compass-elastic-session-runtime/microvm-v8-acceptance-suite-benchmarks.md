@@ -54,7 +54,7 @@ Three gaps V8 closes:
    guest).
 
 2. **The contract and failure-mode proofs stop below the session lifecycle.**
-   The shared `ContainerRuntime` contract suite runs on the microVM backend
+   The shared `WorkloadRuntime` contract suite runs on the microVM backend
    (`contract_microvm_test.go:34-69`), but the S1-frozen seam contract the
    parent's design demands — "a session and a burst both boot on the microVM
    runtime and pass the S1/C3 contract tests unchanged" (design.md:596-597)
@@ -165,7 +165,7 @@ assembled-backend layer; cycles marked *new* have no existing coverage.
 | --- | --- | --- | --- |
 | 1 | Inter-tenant probe (volume, vsock, host fs, host metadata/net) | *escalate + new* — PR #912 already boots two sessions for the volume surface (`microvm_isolation_microvm_test.go:391-395`, `TestMicroVMCrossSessionVolumeUnreachable`) and confines a single session's traversal (`:302-304`); net-new are the host-network legs and the vsock leg (OQ-8) | W1 |
 | 2 | Egress fail-closed inside the guest netns | *escalate* — `egress_inguest_microvm_test.go:37-42` already runs under the full backend and names itself V8 row (2) | W3 |
-| 3 | S1 contract tests pass unchanged | *escalate* — `contract_microvm_test.go:34-69` covers `ContainerRuntime`; the `AgentRuntime.Launch` layer is podman-only (`lifecycle_test.go:1`) | W3 |
+| 3 | S1 contract tests pass unchanged | *escalate* — `contract_microvm_test.go:34-69` covers `WorkloadRuntime`; the `AgentRuntime.Launch` layer is podman-only (`lifecycle_test.go:1`) | W3 |
 | 4 | Boot timeout killed + cleaned | *escalate + new* — `microvm_lifecycle_microvm_test.go:62-118` proves the corrupt-rootfs deadline is **fail-closed** (Start errors `:98-100`, no exec client `:108-110`, runtime dir removable `:111-116`); it asserts NOTHING about processes — "no orphan processes" is doc-comment text only (`:57-61`), read by no assertion. V8's delta is therefore the orphan-freedom assertion *itself*, pidfile-identity-verified, plus the caller-deadline cancel leg | W4 |
 | 5 | Mid-session VMM death under the session lifecycle | *new* at this layer — V7 (PR #931 §(c)) designs runtime-layer detection; gateway streams above it are unproven | W4 |
 | 6 | KVM-absent hard-fail (D3) | *escalate* — `microvm_preflight_test.go:82-88` unit-tests the axis; no acceptance-level assertion of the capability-naming error text | W5 |
@@ -482,7 +482,7 @@ the CID-1 dial complete an HTTP exchange (exit 0) and the test MUST go red.
   mutations). W3 also adds the one missing leg: the same allow/deny
   probe pair run through `AgentRuntime.Launch`-provisioned sessions rather
   than direct `Create`/`Start` calls.
-- **S1 contract (cycle 3).** The `ContainerRuntime` contract suite already
+- **S1 contract (cycle 3).** The `WorkloadRuntime` contract suite already
   runs with every divergence cap ON (`contract_microvm_test.go:47-55`). The
   missing layer is `AgentRuntime`: the podman lifecycle e2e
   (`lifecycle_test.go:5-16` — create, checkout-dir ownership, uid-1000 exec,
@@ -1032,8 +1032,8 @@ delta is the one-runtime topology and the symlink-in-A's-volume shape; its
 net-new content is the host-network leg and the vsock leg (OQ-8).
 
 - **Interfaces:** consumes `NewMicroVMRuntime(cfg MicroVMConfig)
-  *MicroVMRuntime`, the `ContainerRuntime` verbs
-  (`Create(ctx, ContainerSpec) (ContainerID, error)`, `Start`, `Exec`,
+  *MicroVMRuntime`, the `WorkloadRuntime` verbs
+  (`Create(ctx, WorkloadSpec) (WorkloadID, error)`, `Start`, `Exec`,
   `Remove`), `e2eConfig(t, env) MicroVMConfig`
   (`microvm_lifecycle_microvm_test.go:33-55`), and PR #912's isolation
   helpers including `TestMicroVMCrossSessionVolumeUnreachable`'s session
@@ -1908,7 +1908,7 @@ Extends the existing `microvm` job (`ci.yml:624-850`) per § Approach (h).
   construction (`go/internal/delivery/trace_test.go:209-220`). Watch
   cardinality: no per-session attributes in any assertion helper.
 - **No production-code changes.** V8's Go deliverables are test files, test
-  data, and CI workflow edits; the frozen `ContainerRuntime` interface and
+  data, and CI workflow edits; the frozen `WorkloadRuntime` interface and
   all backend behavior are untouched. Where a proof requires a mutation, the
   mutation is transient (local build), recorded in the PR description, and
   never merged.

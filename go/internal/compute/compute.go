@@ -14,7 +14,7 @@
 //     touching a caller.
 //   - inplace.go — the S1 backend: an in-environment local-exec passthrough that
 //     runs the op in the session's own environment at its current size, by
-//     delegating to the injected runtime.ContainerRuntime against the session
+//     delegating to the injected runtime.WorkloadRuntime against the session
 //     container. The genuinely trivial fused configuration the design lands S1
 //     end to end with.
 //   - routing.go — the fail-closed routing-policy shell (Global Constraint 3): a
@@ -24,7 +24,7 @@
 //     invariants and are implemented and tested now.
 //
 // Reserved-not-implemented surface: ExecStreaming is declared in the interface
-// now (mirroring runtime.ContainerRuntime.ExecStreaming) so a later streaming
+// now (mirroring runtime.WorkloadRuntime.ExecStreaming) so a later streaming
 // consumer lands no interface change, but the S1 backend returns an honest
 // not-implemented sentinel rather than a silent no-op.
 //
@@ -105,7 +105,7 @@ type ComputeRuntime interface {
 
 	// ExecStreaming is reserved: it will run a long-lived streaming op returning
 	// its live stdio pipes plus a kill/wait handle, mirroring
-	// runtime.ContainerRuntime.ExecStreaming. It is declared in the interface now
+	// runtime.WorkloadRuntime.ExecStreaming. It is declared in the interface now
 	// so a later streaming consumer lands no interface change; the S1 backend
 	// returns ErrExecStreamingNotImplemented rather than silently succeeding.
 	ExecStreaming(ctx context.Context, spec ComputeSpec) (*runtime.StreamingExec, error)

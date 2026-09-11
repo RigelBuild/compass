@@ -22,7 +22,7 @@ package runnerhub_test
 // Post under it through the SAME PostMessage handler a human takes — so it
 // commits a Message row to Postgres (observed by reading it back under the agent
 // account) AND fans MessagePosted onto the comms bus (observed on a live
-// subscription). The container is a stub ContainerRuntime (no real compass-agent
+// subscription). The container is a stub WorkloadRuntime (no real compass-agent
 // image exists in CI) whose ExecStreaming spawns a live, terminatable child so
 // host.Stop reaps a real process. This is the seam terminating a real
 // agent-initiated wire and committing to a real store — an external-package
@@ -353,7 +353,7 @@ func (r *integResolver) resolve(_ context.Context, presented string, want store.
 	return r.subj, nil
 }
 
-// integStubRuntime is the fake ContainerRuntime backing the Runner: its
+// integStubRuntime is the fake WorkloadRuntime backing the Runner: its
 // ExecStreaming spawns a real, terminatable child (a shell-stub `podman`
 // exec-ing `sleep`) so host.Stop's Terminate reaps a live process and
 // StartAgent's pipe drains end on that reap. Post-#16 nothing rides
@@ -375,28 +375,28 @@ func newIntegStubRuntime(t *testing.T) *integStubRuntime {
 	return &integStubRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog)}
 }
 
-func (f *integStubRuntime) Create(context.Context, runtime.ContainerSpec) (runtime.ContainerID, error) {
-	return runtime.ContainerID("fake-id"), nil
+func (f *integStubRuntime) Create(context.Context, runtime.WorkloadSpec) (runtime.WorkloadID, error) {
+	return runtime.WorkloadID("fake-id"), nil
 }
-func (f *integStubRuntime) Start(context.Context, runtime.ContainerID) error { return nil }
-func (f *integStubRuntime) Exec(context.Context, runtime.ContainerID, runtime.ExecSpec) (runtime.ExecOutput, error) {
+func (f *integStubRuntime) Start(context.Context, runtime.WorkloadID) error { return nil }
+func (f *integStubRuntime) Exec(context.Context, runtime.WorkloadID, runtime.ExecSpec) (runtime.ExecOutput, error) {
 	return runtime.ExecOutput{}, nil
 }
-func (f *integStubRuntime) ExecStreaming(ctx context.Context, id runtime.ContainerID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
+func (f *integStubRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	// A real streaming exec against the shell stub: a live, terminatable Process
 	// (host.Stop → Terminate) whose stdout/stderr pipes StartAgent drains. The
 	// stub just sleeps, so the pipes stay empty until Terminate closes them.
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
-func (f *integStubRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
+func (f *integStubRuntime) Stop(context.Context, runtime.WorkloadID, time.Duration) error {
 	return nil
 }
-func (f *integStubRuntime) Remove(context.Context, runtime.ContainerID) error { return nil }
-func (f *integStubRuntime) Exists(context.Context, string) (bool, error)      { return false, nil }
-func (f *integStubRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+func (f *integStubRuntime) Remove(context.Context, runtime.WorkloadID) error { return nil }
+func (f *integStubRuntime) Exists(context.Context, string) (bool, error)     { return false, nil }
+func (f *integStubRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil
 }
-func (f *integStubRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+func (f *integStubRuntime) Resize(context.Context, runtime.WorkloadID, runtime.ResourceLimits) error {
 	return nil
 }
 

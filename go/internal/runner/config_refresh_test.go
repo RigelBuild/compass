@@ -26,7 +26,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// configFanoutRuntime is a ContainerRuntime for the RefreshConfig fan-out tests.
+// configFanoutRuntime is a WorkloadRuntime for the RefreshConfig fan-out tests.
 // Create returns the container NAME as its engine id (per-container-unique, so a
 // per-container label and a per-container Reload count are distinguishable —
 // stubStreamingRuntime's fixed "fake-id" would alias every container onto one),
@@ -50,15 +50,15 @@ func newConfigFanoutRuntime(t *testing.T) *configFanoutRuntime {
 	}
 }
 
-func (r *configFanoutRuntime) Create(_ context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
+func (r *configFanoutRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, "create")
 	r.created = append(r.created, spec)
 	r.mu.Unlock()
-	return runtime.ContainerID(spec.Name), nil
+	return runtime.WorkloadID(spec.Name), nil
 }
 
-func (r *configFanoutRuntime) MountLabel(_ context.Context, id runtime.ContainerID) (string, error) {
+func (r *configFanoutRuntime) MountLabel(_ context.Context, id runtime.WorkloadID) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.labelErrs[string(id)]; err != nil {
@@ -67,7 +67,7 @@ func (r *configFanoutRuntime) MountLabel(_ context.Context, id runtime.Container
 	return r.labels[string(id)], nil
 }
 
-func (r *configFanoutRuntime) ExecStreaming(ctx context.Context, id runtime.ContainerID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
+func (r *configFanoutRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	r.mu.Lock()
 	r.execByID[string(id)]++
 	r.mu.Unlock()

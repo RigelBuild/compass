@@ -833,10 +833,10 @@ type ProvisionRequest struct {
 	// skips the arm and is a hermetic test seam (the host production path always
 	// sends a non-empty default-deny ruleset).
 	NftScript string `protobuf:"bytes,1,opt,name=nft_script,json=nftScript,proto3" json:"nft_script,omitempty"`
-	// default_exec_uid is the session's agent uid (ContainerSpec.UID), the
+	// default_exec_uid is the session's agent uid (WorkloadSpec.UID), the
 	// default for an exec with no uid. Validated non-zero.
 	DefaultExecUid uint32 `protobuf:"varint,2,opt,name=default_exec_uid,json=defaultExecUid,proto3" json:"default_exec_uid,omitempty"`
-	// base_env is the base environment every exec inherits (ContainerSpec.Env).
+	// base_env is the base environment every exec inherits (WorkloadSpec.Env).
 	BaseEnv       map[string]string `protobuf:"bytes,3,rep,name=base_env,json=baseEnv,proto3" json:"base_env,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

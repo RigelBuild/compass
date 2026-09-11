@@ -41,7 +41,7 @@ type RunnerConfig struct {
 	// Token is the per-Runner bearer token presented on every RPC.
 	Token string
 	// Engine is the container runtime seam the Runner hosts agents on.
-	Engine runtime.ContainerRuntime
+	Engine runtime.WorkloadRuntime
 	// RuntimeDir is the Runner-owned base directory under which per-container
 	// agent sockets live (RuntimeDir/containers/<container>/agent.sock, OQ-5).
 	// Owner-only; the socket is a local hop that never touches the network.

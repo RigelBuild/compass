@@ -442,7 +442,7 @@ type probeResult struct {
 // single line `RESULT <json>` the host parses for the echoed call id. A
 // transport/exec error is a harness fault (t.Fatalf); a completed exec whose
 // body carries the result is the round-trip proof.
-func runInGuestProbe(t *testing.T, m *runtime.MicroVMRuntime, id runtime.ContainerID, callID string) probeResult {
+func runInGuestProbe(t *testing.T, m *runtime.MicroVMRuntime, id runtime.WorkloadID, callID string) probeResult {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), inGuestProbeTimeout)
 	defer cancel()
@@ -526,7 +526,7 @@ func parseProbeResult(t *testing.T, stdout string) probeResult {
 // dropped SYN hangs until the guest timeout fires (exit 124, unreachable); an
 // allowed host completes (exit 0, "connected"). Any exec/transport error is a
 // harness fault.
-func inGuestCanReachIP(t *testing.T, m *runtime.MicroVMRuntime, id runtime.ContainerID, ip string) bool {
+func inGuestCanReachIP(t *testing.T, m *runtime.MicroVMRuntime, id runtime.WorkloadID, ip string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), inGuestProbeTimeout)
 	defer cancel()
@@ -540,10 +540,10 @@ func inGuestCanReachIP(t *testing.T, m *runtime.MicroVMRuntime, id runtime.Conta
 	return reached
 }
 
-// resolveContainerID reads the engine ContainerID the registry bound for the
+// resolveContainerID reads the engine WorkloadID the registry bound for the
 // provisioned name — the id in-guest execs address. White-box: the registry is
 // the runner's own, and the id is otherwise unexported from Provision's return.
-func resolveContainerID(t *testing.T, h *agentHost, name string) runtime.ContainerID {
+func resolveContainerID(t *testing.T, h *agentHost, name string) runtime.WorkloadID {
 	t.Helper()
 	handle, ok := h.registry.Resolve(name)
 	if !ok {

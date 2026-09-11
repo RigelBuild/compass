@@ -133,7 +133,7 @@ func (s *AgentStream) SessionID() string { return s.sessionID }
 // carries the identity and configuration the exec runs with. The returned
 // AgentStream lives until Stop or ctx cancellation terminates the in-container
 // agent.
-func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtime.ContainerID, engine runtime.ContainerRuntime, env AgentEnv, log *slog.Logger) (*AgentStream, error) {
+func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtime.WorkloadID, engine runtime.WorkloadRuntime, env AgentEnv, log *slog.Logger) (*AgentStream, error) {
 	if log == nil {
 		log = slog.Default()
 	}

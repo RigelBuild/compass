@@ -3,7 +3,7 @@
 package runner
 
 // Shared scaffolding for the Runner-side seam tests: a pipe-backed fake
-// ContainerRuntime (the existing runtime.fakeRuntime.ExecStreaming is a nil-pipe
+// WorkloadRuntime (the existing runtime.fakeRuntime.ExecStreaming is a nil-pipe
 // stub — this one returns a StreamingExec whose IO.Stdout/IO.Stderr are
 // io.PipeReaders the test writes into), a recording fake runtime for the
 // Provision→Launch path, a capturing slog handler for the drain's log lines, a
@@ -58,7 +58,7 @@ type nopWriteCloser struct{}
 func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
 
-// pipeRuntime is a ContainerRuntime whose ExecStreaming returns a StreamingExec
+// pipeRuntime is a WorkloadRuntime whose ExecStreaming returns a StreamingExec
 // backed by real in-memory pipes: the test writes lines into stdoutW / stderrW
 // and the drains read them off IO.Stdout / IO.Stderr. Its
 // lifecycle methods (Create/Start/Exec/…) are recording no-ops so it also serves
@@ -80,19 +80,19 @@ func newPipeRuntime() *pipeRuntime {
 	return &pipeRuntime{stdoutW: outW, stderrW: errW, stdoutR: outR, stderrR: errR}
 }
 
-func (f *pipeRuntime) Create(context.Context, runtime.ContainerSpec) (runtime.ContainerID, error) {
+func (f *pipeRuntime) Create(context.Context, runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	f.record("create")
-	return runtime.ContainerID("fake-id"), nil
+	return runtime.WorkloadID("fake-id"), nil
 }
-func (f *pipeRuntime) Start(context.Context, runtime.ContainerID) error {
+func (f *pipeRuntime) Start(context.Context, runtime.WorkloadID) error {
 	f.record("start")
 	return nil
 }
-func (f *pipeRuntime) Exec(context.Context, runtime.ContainerID, runtime.ExecSpec) (runtime.ExecOutput, error) {
+func (f *pipeRuntime) Exec(context.Context, runtime.WorkloadID, runtime.ExecSpec) (runtime.ExecOutput, error) {
 	f.record("exec")
 	return runtime.ExecOutput{}, nil
 }
-func (f *pipeRuntime) ExecStreaming(_ context.Context, _ runtime.ContainerID, _ runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
+func (f *pipeRuntime) ExecStreaming(_ context.Context, _ runtime.WorkloadID, _ runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	f.record("exec_streaming")
 	if f.execErr != nil {
 		return nil, f.execErr
@@ -103,19 +103,19 @@ func (f *pipeRuntime) ExecStreaming(_ context.Context, _ runtime.ContainerID, _ 
 		// fake must not call AgentStream.Stop.
 	}, nil
 }
-func (f *pipeRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
+func (f *pipeRuntime) Stop(context.Context, runtime.WorkloadID, time.Duration) error {
 	f.record("stop")
 	return nil
 }
-func (f *pipeRuntime) Remove(context.Context, runtime.ContainerID) error {
+func (f *pipeRuntime) Remove(context.Context, runtime.WorkloadID) error {
 	f.record("remove")
 	return nil
 }
 func (f *pipeRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
-func (f *pipeRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+func (f *pipeRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil
 }
-func (f *pipeRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+func (f *pipeRuntime) Resize(context.Context, runtime.WorkloadID, runtime.ResourceLimits) error {
 	return nil
 }
 
@@ -129,7 +129,7 @@ func (f *pipeRuntime) record(call string) {
 // exit / EOF).
 func (f *pipeRuntime) closeStdout() { _ = f.stdoutW.Close() }
 
-// stubStreamingRuntime is a ContainerRuntime whose lifecycle methods are
+// stubStreamingRuntime is a WorkloadRuntime whose lifecycle methods are
 // recording no-ops and whose ExecStreaming delegates to a real PodmanCLI driving
 // a shell stub — so it returns a StreamingExec with a REAL, terminatable
 // Process (the host's Reload / live-session Stop call Process.Terminate, which a
@@ -142,14 +142,14 @@ type stubStreamingRuntime struct {
 	calls       []string
 	execSpecs   []runtime.StreamingExecSpec
 	cli         *runtime.PodmanCLI
-	stopErr     error                            // when set, engine Stop fails — models a Teardown partial failure
-	stopErrByID map[runtime.ContainerID]error    // per-container Stop error; overrides stopErr for the keyed id
-	stopGate    chan struct{}                    // when non-nil, Stop blocks on it (after recording) — test-controlled teardown parking
-	stopEntered chan runtime.ContainerID         // when non-nil, Stop sends id after recording, before parking — a real "reached Stop" event for a test to gate on
-	callsByID   map[runtime.ContainerID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
-	execGate    chan struct{}                    // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md)
-	execEntered chan runtime.ContainerID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
-	created     []runtime.ContainerSpec
+	stopErr     error                           // when set, engine Stop fails — models a Teardown partial failure
+	stopErrByID map[runtime.WorkloadID]error    // per-container Stop error; overrides stopErr for the keyed id
+	stopGate    chan struct{}                   // when non-nil, Stop blocks on it (after recording) — test-controlled teardown parking
+	stopEntered chan runtime.WorkloadID         // when non-nil, Stop sends id after recording, before parking — a real "reached Stop" event for a test to gate on
+	callsByID   map[runtime.WorkloadID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
+	execGate    chan struct{}                   // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md)
+	execEntered chan runtime.WorkloadID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
+	created     []runtime.WorkloadSpec
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -163,22 +163,22 @@ func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
 	return &stubStreamingRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog)}
 }
 
-func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
+func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "create")
 	f.created = append(f.created, spec)
 	f.mu.Unlock()
-	return runtime.ContainerID("fake-id"), nil
+	return runtime.WorkloadID("fake-id"), nil
 }
-func (f *stubStreamingRuntime) Start(context.Context, runtime.ContainerID) error {
+func (f *stubStreamingRuntime) Start(context.Context, runtime.WorkloadID) error {
 	f.record("start")
 	return nil
 }
-func (f *stubStreamingRuntime) Exec(context.Context, runtime.ContainerID, runtime.ExecSpec) (runtime.ExecOutput, error) {
+func (f *stubStreamingRuntime) Exec(context.Context, runtime.WorkloadID, runtime.ExecSpec) (runtime.ExecOutput, error) {
 	f.record("exec")
 	return runtime.ExecOutput{}, nil
 }
-func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.ContainerID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
+func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.WorkloadID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, "exec_streaming")
 	f.execSpecs = append(f.execSpecs, spec)
@@ -202,7 +202,7 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Con
 	}
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
-func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.ContainerID, _ time.Duration) error {
+func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.WorkloadID, _ time.Duration) error {
 	f.record("stop")
 	f.recordForID(id, "stop")
 	f.mu.Lock()
@@ -226,16 +226,16 @@ func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.ContainerID, _
 	f.mu.Unlock()
 	return err
 }
-func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.ContainerID) error {
+func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.WorkloadID) error {
 	f.record("remove")
 	f.recordForID(id, "remove")
 	return nil
 }
 func (f *stubStreamingRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
-func (f *stubStreamingRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+func (f *stubStreamingRuntime) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", nil
 }
-func (f *stubStreamingRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+func (f *stubStreamingRuntime) Resize(context.Context, runtime.WorkloadID, runtime.ResourceLimits) error {
 	return nil
 }
 
@@ -248,11 +248,11 @@ func (f *stubStreamingRuntime) record(call string) {
 // recordForID records a lifecycle call against a specific container id, so a
 // fan-out isolation assertion can prove one container reached remove while
 // another aborted at stop.
-func (f *stubStreamingRuntime) recordForID(id runtime.ContainerID, call string) {
+func (f *stubStreamingRuntime) recordForID(id runtime.WorkloadID, call string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.callsByID == nil {
-		f.callsByID = map[runtime.ContainerID][]string{}
+		f.callsByID = map[runtime.WorkloadID][]string{}
 	}
 	f.callsByID[id] = append(f.callsByID[id], call)
 }
@@ -260,7 +260,7 @@ func (f *stubStreamingRuntime) recordForID(id runtime.ContainerID, call string) 
 // countCallForID reports how many times the named lifecycle call was recorded
 // for a specific container id, taken under the lock — mirrors countCall for the
 // per-container fan-out assertions.
-func (f *stubStreamingRuntime) countCallForID(id runtime.ContainerID, call string) int {
+func (f *stubStreamingRuntime) countCallForID(id runtime.WorkloadID, call string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := 0
@@ -306,10 +306,10 @@ func (f *stubStreamingRuntime) countCall(call string) int {
 
 // createdSpecs returns a copy of the ContainerSpecs the host has created
 // containers with so far, taken under the lock.
-func (f *stubStreamingRuntime) createdSpecs() []runtime.ContainerSpec {
+func (f *stubStreamingRuntime) createdSpecs() []runtime.WorkloadSpec {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]runtime.ContainerSpec(nil), f.created...)
+	return append([]runtime.WorkloadSpec(nil), f.created...)
 }
 
 // --- capturing PublishEvents server ------------------------------------------

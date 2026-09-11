@@ -1,8 +1,8 @@
 package runtime
 
-// The shared ContainerRuntime contract suite (record §U5, the V2b acceptance
+// The shared WorkloadRuntime contract suite (record §U5, the V2b acceptance
 // gate): one table-driven body proving MicroVMRuntime and PodmanCLI behave
-// identically through the runtime.ContainerRuntime interface, run against BOTH
+// identically through the runtime.WorkloadRuntime interface, run against BOTH
 // backends. It is UNTAGGED (package runtime, no build tag) so it compiles on
 // every platform: it references ONLY untagged production symbols plus the
 // backendCaps descriptor, never a KVM/podman-only symbol (microvmtest,
@@ -12,7 +12,7 @@ package runtime
 // //go:build microvm && unix) supply the factory + caps and gate on their
 // backend's availability.
 //
-// The suite drives ContainerRuntime DIRECTLY — a different, lower layer than
+// The suite drives WorkloadRuntime DIRECTLY — a different, lower layer than
 // TestPerAgentContainerLifecycle (lifecycle_test.go), which drives
 // AgentRuntime.Launch. The two do not overlap.
 //
@@ -40,12 +40,12 @@ type backendCaps struct {
 	// name identifies the backend under test, for subtest / failure messages.
 	name string
 
-	// makeSpec builds a ContainerSpec for the backend: the podman leg bakes an
+	// makeSpec builds a WorkloadSpec for the backend: the podman leg bakes an
 	// Image + a `sleep infinity` keep-alive Command, the microVM leg a
 	// /workspace virtio-fs mount; both bake UID 1000. Backend-specific container
 	// creation is encapsulated HERE, never in the shared body (record 122-123).
 	// t supplies t.TempDir() for a per-session workspace.
-	makeSpec func(t *testing.T, name string) ContainerSpec
+	makeSpec func(t *testing.T, name string) WorkloadSpec
 
 	// refusesRootExec: a uid-0 exec is refused with a host/guest error (microVM
 	// §(b) uid enforcement, record 576). When false (podman) the equivalent
@@ -115,7 +115,7 @@ var _ = runContractSuite
 // lifecycle rows (duplicate-name, idempotence, exists, stop-grace) each manage
 // their own so an identity/teardown row never perturbs another. A thin
 // dispatcher: each row is its own helper.
-func runContractSuite(t *testing.T, newRuntime func(t *testing.T) ContainerRuntime, caps backendCaps) {
+func runContractSuite(t *testing.T, newRuntime func(t *testing.T) WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	rt := newRuntime(t)
 	primary := startRunning(t, rt, caps, "contract-primary")
@@ -149,7 +149,7 @@ func runContractSuite(t *testing.T, newRuntime func(t *testing.T) ContainerRunti
 // echoed body; a non-zero exit is a SUCCESSFUL call returning the code, NEVER an
 // error. A regression that folded a non-zero exit into err would turn every
 // expected-failure probe (a denied firewall check) into a fatal.
-func rowExecExitCodes(t *testing.T, rt ContainerRuntime, primary ContainerID) {
+func rowExecExitCodes(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	t.Helper()
 	out, err := rt.Exec(t.Context(), primary, NewExecSpec("sh", "-c", "echo hello-body").AsUser("1000"))
 	if err != nil {
@@ -176,7 +176,7 @@ func rowExecExitCodes(t *testing.T, rt ContainerRuntime, primary ContainerID) {
 // rowExecStdin — row 2 (record 567-569, agent.go:238-246): the script-over-stdin
 // shape end to end (the secret-safe channel). `sh -s` reads the script from
 // stdin, so the body never appears in the argv / process list.
-func rowExecStdin(t *testing.T, rt ContainerRuntime, primary ContainerID) {
+func rowExecStdin(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	t.Helper()
 	out, err := rt.Exec(t.Context(), primary, NewExecSpec("sh", "-s").WithStdin("echo from-stdin").AsUser("1000"))
 	if err != nil {
@@ -194,7 +194,7 @@ func rowExecStdin(t *testing.T, rt ContainerRuntime, primary ContainerID) {
 // Stdout, proving live bidirectional interleaving over the pipes; then
 // Terminate. stderr is drained in a goroutine so a full pipe never deadlocks the
 // terminate.
-func rowStreamingStdio(t *testing.T, rt ContainerRuntime, caps backendCaps, primary ContainerID) {
+func rowStreamingStdio(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec("cat").AsUser("1000"))
 	if err != nil {
@@ -225,7 +225,7 @@ func rowStreamingStdio(t *testing.T, rt ContainerRuntime, caps backendCaps, prim
 // portable *ExitStatusError, podman the byte-identical *exec.ExitError — both
 // prove a signalled exit isDeliberateKill accepts, so the podman byte-path stays
 // unregressed AND the microVM portable path works.
-func rowKillWait(t *testing.T, rt ContainerRuntime, caps backendCaps, primary ContainerID) {
+func rowKillWait(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec("sleep", "300").AsUser("1000"))
 	if err != nil {
@@ -244,7 +244,7 @@ func rowKillWait(t *testing.T, rt ContainerRuntime, caps backendCaps, primary Co
 // no orphan survives a host-side cancel. Wait returning IS the reap signal (Wait
 // reaps). A bounded select fails loudly rather than hanging the suite if the
 // child is never reaped.
-func rowCtxCancelReaps(t *testing.T, rt ContainerRuntime, primary ContainerID) {
+func rowCtxCancelReaps(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	t.Helper()
 	cctx, cancel := context.WithCancel(t.Context())
 	stream, err := rt.ExecStreaming(cctx, primary, NewStreamingExecSpec("sleep", "300").AsUser("1000"))
@@ -268,7 +268,7 @@ func rowCtxCancelReaps(t *testing.T, rt ContainerRuntime, primary ContainerID) {
 // exec is refused on the microVM backend; the podman row asserts its equivalent
 // posture — a directed unprivileged exec runs as the requested uid, never
 // silently escalated to root.
-func rowUIDEnforcement(t *testing.T, rt ContainerRuntime, caps backendCaps, primary ContainerID) {
+func rowUIDEnforcement(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	if caps.refusesRootExec {
 		if _, err := rt.Exec(t.Context(), primary, NewExecSpec("id", "-u").AsUser("0")); err == nil {
@@ -288,7 +288,7 @@ func rowUIDEnforcement(t *testing.T, rt ContainerRuntime, caps backendCaps, prim
 // rowResize — row 11 (record 577-578): Resize returns ErrResizeNotImplemented on
 // both backends until C3. The S1-frozen verb must refuse legibly, never fake a
 // limit change that never happened.
-func rowResize(t *testing.T, rt ContainerRuntime, primary ContainerID) {
+func rowResize(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	t.Helper()
 	if err := rt.Resize(t.Context(), primary, ResourceLimits{CPUShares: 512}); !errors.Is(err, ErrResizeNotImplemented) {
 		t.Fatalf("Resize err = %v, want ErrResizeNotImplemented", err)
@@ -298,7 +298,7 @@ func rowResize(t *testing.T, rt ContainerRuntime, primary ContainerID) {
 // rowMountLabel — row 12: "" on microVM (record 587, capability-gated); podman
 // returns its real label, which may legitimately be "" on a non-SELinux host, so
 // there the row asserts only a no-error read.
-func rowMountLabel(t *testing.T, rt ContainerRuntime, caps backendCaps, primary ContainerID) {
+func rowMountLabel(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	label, err := rt.MountLabel(t.Context(), primary)
 	if err != nil {
@@ -312,7 +312,7 @@ func rowMountLabel(t *testing.T, rt ContainerRuntime, caps backendCaps, primary 
 // rowNonNumericUser — divergence 2 (microVM only, record 585-587): a non-numeric
 // ExecSpec.User is a host-side error. Asserting the refusal fails a backend that
 // started resolving names (silently widening).
-func rowNonNumericUser(t *testing.T, rt ContainerRuntime, primary ContainerID) {
+func rowNonNumericUser(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	t.Helper()
 	if _, err := rt.Exec(t.Context(), primary, NewExecSpec("id", "-u").AsUser("not-a-number")); err == nil {
 		t.Fatal("a non-numeric ExecSpec.User must be a host-side error on this backend; got no error")
@@ -323,7 +323,7 @@ func rowNonNumericUser(t *testing.T, rt ContainerRuntime, primary ContainerID) {
 // one-shot exec returns the truncation error, not a clipped tail. A backend that
 // started truncating silently (widening) would pass a caller a partial output as
 // if whole — this row fails that.
-func rowOutputCap(t *testing.T, rt ContainerRuntime, primary ContainerID) {
+func rowOutputCap(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	t.Helper()
 	// 9 MiB > the 8 MiB cap; content is irrelevant, only the byte count.
 	if _, err := rt.Exec(t.Context(), primary, NewExecSpec("sh", "-c", "head -c 9437184 /dev/zero").AsUser("1000")); err == nil {
@@ -336,7 +336,7 @@ func rowOutputCap(t *testing.T, rt ContainerRuntime, primary ContainerID) {
 // Command and an added capability still boots (Command is not the keep-alive),
 // still execs, and the workload has an EMPTY capability set (CapAdd granted
 // nothing). A backend that started honoring either would widen the divergence.
-func rowCommandCapAddIgnored(t *testing.T, rt ContainerRuntime, caps backendCaps) {
+func rowCommandCapAddIgnored(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	spec := caps.makeSpec(t, "contract-cmd-capadd")
 	spec.Command = []string{"/nonexistent-entrypoint-must-be-ignored"}
@@ -372,7 +372,7 @@ func rowCommandCapAddIgnored(t *testing.T, rt ContainerRuntime, caps backendCaps
 // refused with the backend's typed collision error keyed on spec.Name. The
 // second Create of a live name must fail, and with the expected type (gated via
 // caps).
-func rowDuplicateName(t *testing.T, rt ContainerRuntime, caps backendCaps) {
+func rowDuplicateName(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	const name = "contract-dup"
 	id, err := rt.Create(t.Context(), caps.makeSpec(t, name))
@@ -390,7 +390,7 @@ func rowDuplicateName(t *testing.T, rt ContainerRuntime, caps backendCaps) {
 // rowStopRemoveIdempotence — row 8 (record 577): a double Stop is not an error, a
 // Remove of an already-removed id is nil, and a Remove of a never-created id is
 // nil.
-func rowStopRemoveIdempotence(t *testing.T, rt ContainerRuntime, caps backendCaps) {
+func rowStopRemoveIdempotence(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	id := startRunning(t, rt, caps, "contract-idem")
 	if err := rt.Stop(t.Context(), id, 5*time.Second); err != nil {
@@ -405,14 +405,14 @@ func rowStopRemoveIdempotence(t *testing.T, rt ContainerRuntime, caps backendCap
 	if err := rt.Remove(t.Context(), id); err != nil {
 		t.Fatalf("Remove of an already-removed id must be nil: %v", err)
 	}
-	if err := rt.Remove(t.Context(), ContainerID("contract-never-created")); err != nil {
+	if err := rt.Remove(t.Context(), WorkloadID("contract-never-created")); err != nil {
 		t.Fatalf("Remove of a never-created id must be nil: %v", err)
 	}
 }
 
 // rowExistsBeforeAfterRemove — row 10 (record 587-590 lineage): Exists is true
 // after Create, false after Remove, keyed on spec.Name.
-func rowExistsBeforeAfterRemove(t *testing.T, rt ContainerRuntime, caps backendCaps) {
+func rowExistsBeforeAfterRemove(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	const name = "contract-exists"
 	id, err := rt.Create(t.Context(), caps.makeSpec(t, name))
@@ -444,7 +444,7 @@ func rowExistsBeforeAfterRemove(t *testing.T, rt ContainerRuntime, caps backendC
 // escalation, proving the graceful preamble is not dead weight that always burns
 // the full timeout. Observable through the interface as Stop completing far under
 // its grace.
-func rowStopGrace(t *testing.T, rt ContainerRuntime, caps backendCaps) {
+func rowStopGrace(t *testing.T, rt WorkloadRuntime, caps backendCaps) {
 	t.Helper()
 	id := startRunning(t, rt, caps, "contract-stopgrace")
 	const grace = 30 * time.Second
@@ -462,7 +462,7 @@ func rowStopGrace(t *testing.T, rt ContainerRuntime, caps backendCaps) {
 // startRunning Creates + Starts a container from caps.makeSpec and registers a
 // Remove backstop, the shared happy-path setup for the exec/stream rows. A Create
 // or Start failure is fatal (the row cannot run).
-func startRunning(t *testing.T, rt ContainerRuntime, caps backendCaps, name string) ContainerID {
+func startRunning(t *testing.T, rt WorkloadRuntime, caps backendCaps, name string) WorkloadID {
 	t.Helper()
 	id, err := rt.Create(t.Context(), caps.makeSpec(t, name))
 	if err != nil {
@@ -480,7 +480,7 @@ func startRunning(t *testing.T, rt ContainerRuntime, caps backendCaps, name stri
 // the test's own ctx is cancelled (t.Context() is cancelled before cleanups run)
 // — a leaked container would collide with the next run's name (the existing e2e
 // pattern, brief §Go house rules).
-func registerRemove(t *testing.T, rt ContainerRuntime, id ContainerID, label string) {
+func registerRemove(t *testing.T, rt WorkloadRuntime, id WorkloadID, label string) {
 	t.Helper()
 	t.Cleanup(func() {
 		if err := rt.Remove(context.WithoutCancel(t.Context()), id); err != nil {

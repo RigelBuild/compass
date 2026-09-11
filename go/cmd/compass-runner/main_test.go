@@ -75,9 +75,9 @@ func TestParseMount(t *testing.T) {
 }
 
 // podmanOnlyEngine exposes only the podman probe; its embedded nil
-// ContainerRuntime satisfies the param type but is never called.
+// WorkloadRuntime satisfies the param type but is never called.
 type podmanOnlyEngine struct {
-	runtime.ContainerRuntime
+	runtime.WorkloadRuntime
 	called *bool
 	err    error
 }
@@ -92,7 +92,7 @@ func (e podmanOnlyEngine) VerifyUsernsRemapSupport(context.Context) error {
 // static check passes, so a fake missing BootCanary would trip the fail-closed
 // canary assertion rather than exercise the static-probe dispatch.
 type microVMOnlyEngine struct {
-	runtime.ContainerRuntime
+	runtime.WorkloadRuntime
 	called       *bool
 	canaryCalled *bool
 	err          error
@@ -116,7 +116,7 @@ func (e microVMOnlyEngine) BootCanary(context.Context) (runtime.CanaryReport, er
 // a microVM backend that cannot boot-canary. The gate must fail closed on it,
 // naming the type, never silently skipping the canary.
 type microVMNoCanaryEngine struct {
-	runtime.ContainerRuntime
+	runtime.WorkloadRuntime
 	called *bool
 	err    error
 }
@@ -126,16 +126,16 @@ func (e microVMNoCanaryEngine) VerifyMicroVMSupport(context.Context) error {
 	return e.err
 }
 
-// neitherEngine exposes no probe: only the embedded (nil) ContainerRuntime.
+// neitherEngine exposes no probe: only the embedded (nil) WorkloadRuntime.
 type neitherEngine struct {
-	runtime.ContainerRuntime
+	runtime.WorkloadRuntime
 }
 
 // bothProbesEngine exposes BOTH probes. No real engine does today, but it locks
 // the microVM-first precedence of verifyBackendPreflight's type switch: the
 // microVM branch must win and the podman branch must not run.
 type bothProbesEngine struct {
-	runtime.ContainerRuntime
+	runtime.WorkloadRuntime
 	microVMCalled *bool
 	podmanCalled  *bool
 	err           error

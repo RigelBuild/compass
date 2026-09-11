@@ -575,7 +575,7 @@ merges.
    record, no cross-package split.** Matt ruled fold-it-in; compass-runner
    confirmed the injection path is the TS CLI env-file sourcing
    (`packages/compass-agent/src/cli.ts:96-105,500-523`) — the compass-agent TS
-   package (this lane), sitting ABOVE the Go `ContainerRuntime` seam, NOT the
+   package (this lane), sitting ABOVE the Go `WorkloadRuntime` seam, NOT the
    Runner's Go lane and NOT in the microVM record's scope. The endpoint key is
    not `COMPASS_*`-prefixed, so `isReservedEnvKey` (`cli.ts:103-105`) does not
    drop it and it flows through the generic env-file sourcing

@@ -418,7 +418,7 @@ survives in this record.
 
 ### A second env surface (container `Env` at create)
 
-`ContainerSpec.Env` exists (`podman.go:85-86`) and setting it at `Create`
+`WorkloadSpec.Env` exists (`podman.go:85-86`) and setting it at `Create`
 would be easy — and wrong: env fixed at create cannot rotate, values ride
 `-e KEY=VALUE` into host-visible podman argv (the exposure RIG-1327 T5
 eliminates, `compass-agent-container-runtime.md:828-833`), and it forks

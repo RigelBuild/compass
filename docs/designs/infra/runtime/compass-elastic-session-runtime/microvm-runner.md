@@ -33,7 +33,7 @@ Runner depends on:
    (`agent.go:304`) — is a post-start `Exec`. With no exec into the guest,
    none of this runs.
 2. **The agent's AF_UNIX gateway socket does not cross a VM boundary.** The
-   `ContainerSpec.Mounts` doc: "the per-container agent gateway socket is
+   `WorkloadSpec.Mounts` doc: "the per-container agent gateway socket is
    mounted read-write (the agent must connect() to it)"
    (`go/internal/runtime/podman.go:100-102`). Package
    `go/internal/runner/gateway` is "the Runner side of the agent->Runner call
@@ -51,7 +51,7 @@ speaking a protocol over virtio-vsock**, with the host Runner driving
 create/exec/stdio/signal *and* the gateway control plane through that vsock
 channel. That is real Runner control-plane work regardless of VMM choice, and
 it is the honest scope of this record: a **dedicated microVM Runner backend**
-— a second implementation behind `runtime.ContainerRuntime` — rather than a
+— a second implementation behind `runtime.WorkloadRuntime` — rather than a
 config swap.
 
 This record details *under* the parent's frozen decisions (Decision 5: the
@@ -66,11 +66,11 @@ permanent second runtime.
 
 ## Approach
 
-A microVM backend as a **sibling `ContainerRuntime` implementation** beside
+A microVM backend as a **sibling `WorkloadRuntime` implementation** beside
 `PodmanCLI`, selected by Runner config. `podman.go`'s own layering note
 anticipated exactly this seam use: "Everything above depends on the interface,
 so a libpod-REST backend can replace it without touching a caller"
-(`go/internal/runtime/podman.go:11-13`). The `ContainerRuntime` interface
+(`go/internal/runtime/podman.go:11-13`). The `WorkloadRuntime` interface
 (`podman.go:303-352`: Create/Start/Exec/ExecStreaming/Stop/Remove/Exists/
 MountLabel/Resize) is the contract; `AgentRuntime`, the gateway, and the
 session lifecycle above it stay untouched.
@@ -337,7 +337,7 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   ([CH README](https://github.com/cloud-hypervisor/cloud-hypervisor#objectives)),
   Rust, security-focused, runs rootless as an ordinary process, proven as a
   Kata VMM. Hotplug directly serves the S1-reserved
-  `ContainerRuntime.Resize` (`podman.go:342-351`, D5). Runs on KVM/MSHV, not
+  `WorkloadRuntime.Resize` (`podman.go:342-351`, D5). Runs on KVM/MSHV, not
   macOS HVF — acceptable because native-macOS-embedded is dropped (D2). Cost:
   we build the guest supervisor ourselves (would have been shared with the
   libkrun option).
@@ -416,7 +416,7 @@ availability) surface first with minimal code.
 
 ### V1 — backend seam + selection + startup gate
 
-A `MicroVMRuntime` skeleton implementing `runtime.ContainerRuntime`, plus the
+A `MicroVMRuntime` skeleton implementing `runtime.WorkloadRuntime`, plus the
 config-driven backend selection in Runner startup. Through the transitional
 period (D2) both backends exist and selection resolves to the configured one,
 defaulting to the container path while microVM is proven; once microVM is the
@@ -424,13 +424,13 @@ sole runtime the selection collapses to microVM with `VerifyMicroVMSupport`
 (V5) as a hard startup gate (D3 — no container fallback to select).
 
 - **Interfaces:** produces `runtime.MicroVMRuntime` satisfying
-  `runtime.ContainerRuntime` (`Create(ctx, ContainerSpec) (ContainerID,
-  error)`, `Start`, `Exec(ctx, ContainerID, ExecSpec) (ExecOutput, error)`,
-  `ExecStreaming(ctx, ContainerID, StreamingExecSpec) (*StreamingExec,
+  `runtime.WorkloadRuntime` (`Create(ctx, WorkloadSpec) (WorkloadID,
+  error)`, `Start`, `Exec(ctx, WorkloadID, ExecSpec) (ExecOutput, error)`,
+  `ExecStreaming(ctx, WorkloadID, StreamingExecSpec) (*StreamingExec,
   error)`, `Stop`, `Remove`, `Exists`, `MountLabel`, `Resize` —
   `podman.go:303-352`), every method returning a typed
   `ErrMicroVMNotImplemented` until V2b/V3 fill them in; produces
-  `runtime.SelectBackend(cfg RunnerConfig) (ContainerRuntime, error)`.
+  `runtime.SelectBackend(cfg RunnerConfig) (WorkloadRuntime, error)`.
   Consumes `RunnerConfig` (new fields `Backend string`,
   `MicroVM struct{ VMMPath, VirtiofsdPath, KernelImage, RootfsImage string }`).
 - **Test cycle:** selection unit tests (transitional: configured backend
@@ -483,7 +483,7 @@ non-zero-exit-is-not-an-error contract (`podman.go:310-314`) and the
   over vsock; produces the filled `MicroVMRuntime` methods. Consumes V2a's
   artifacts and `BootConfig`.
 - **Test cycle:** contract tests asserting `MicroVMRuntime` and `PodmanCLI`
-  behave identically through the `ContainerRuntime` surface (shared
+  behave identically through the `WorkloadRuntime` surface (shared
   table-driven contract suite, KVM-gated for the microVM rows): exec exit
   codes, stdin feeding (`WriteAgentFile`'s stdin-not-argv invariant,
   `agent.go:241-248`), streaming stdio, kill/wait, uid enforcement (uid-0

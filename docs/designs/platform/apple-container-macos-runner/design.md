@@ -12,7 +12,7 @@ Linear: RIG-3238 (design)
 
 Investigation + design record for RIG-3238: whether Apple `container`
 (github.com/apple/container) becomes a supported backend behind the frozen
-`ContainerRuntime`/`SelectBackend` seam for the Compass native app's embedded
+`WorkloadRuntime`/`SelectBackend` seam for the Compass native app's embedded
 macOS front door, and if so, the adoption sequencing. This record carries
 Matt's RIG-3246 ruling plus an adoption plan whose BUILD (not direction) is
 gated on the T-1 spike; it does not implement the backend.
@@ -130,16 +130,16 @@ Reasoning, in order of weight:
    no podman", OQ-13 resolved), so the "no machine / no podman" win covers the
    WHOLE macOS stack, not only the agent containers — the DL-260 podman shell
    for postgres is swapped for apple-container on macOS (T-2 scope).
-3. **The seam was built for this.** `ContainerRuntime` is a frozen interface
-   (`go/internal/runtime/podman.go:343-348`: "ContainerRuntime is the
+3. **The seam was built for this.** `WorkloadRuntime` is a frozen interface
+   (`go/internal/runtime/podman.go:343-348`: "WorkloadRuntime is the
    container engine seam … An interface so the Runner can hold a
-   ContainerRuntime and tests can substitute a fake") and `SelectBackend`
+   WorkloadRuntime and tests can substitute a fake") and `SelectBackend`
    is an explicit switch (`go/internal/runtime/microvm.go:117-126`) whose
    error copy already anticipates growth ("accepted values are \"podman\"
    (default) and \"microvm\"", `microvm.go:124`). A third case + impl type
    is the designed extension path. Apple `container` is a DISTINCT non-podman
    CLI (its own argv grammar, its own `container-apiserver` service), so it
-   is a new `ContainerRuntime` implementation — NOT a
+   is a new `WorkloadRuntime` implementation — NOT a
    `PodmanCLI.WithProgram` swap, which only substitutes a podman-compatible
    binary path (`podman.go:433-435`: "WithProgram uses an explicit engine
    binary (e.g. an absolute path, or `docker` in a pinch)").
@@ -177,7 +177,7 @@ Why spike-first, then flip (not default-the-instant-it-builds):
   (`microvm.go:63-69`) gains an `AppleContainer AppleContainerConfig` field
   mirroring how `MicroVM MicroVMConfig` rides beside `Backend`.
 - **The impl type** is `AppleContainerCLI`, a subprocess-driving
-  `ContainerRuntime` shaped like `PodmanCLI` (program + timeout,
+  `WorkloadRuntime` shaped like `PodmanCLI` (program + timeout,
   `podman.go:421-425`), speaking the `container` CLI: `create`/`start`/
   `exec`/`stop`/`rm`/`inspect` exist with familiar semantics
   (<https://github.com/apple/container/blob/main/docs/command-reference.md>).
@@ -334,8 +334,8 @@ trivially satisfiable (a version-floor probe on one binary, like
   `container system start` command") — inside the invariant. The installer
   requiring admin once to place files under /usr/local is an install-time
   cost, not a runtime posture.
-- **The `ContainerRuntime` interface stays frozen.** The new backend
-  implements all nine `ContainerRuntime` verbs, Resize included as the
+- **The `WorkloadRuntime` interface stays frozen.** The new backend
+  implements all nine `WorkloadRuntime` verbs, Resize included as the
   additively-reserved one (`podman.go:348-397`), and adds NO verbs. Any
   backend-specific need rides the off-interface marker pattern
   (`podman.go:399-406`) or the config struct, never an interface change.
@@ -437,7 +437,7 @@ Matt ruled OQ-9 A (the mac mini on Woodpecker, ssh access provisioned).**
   plain Go): type `AppleContainerCLI{program string, timeout time.Duration}`
   mirroring `PodmanCLI` (`podman.go:421-425`), argv builders split from
   spawning (the `createArgs` discipline, `podman.go:455-462`), implementing
-  all nine `ContainerRuntime` verbs (`podman.go:348-397`): Create/Start/
+  all nine `WorkloadRuntime` verbs (`podman.go:348-397`): Create/Start/
   Exec/ExecStreaming/Stop/Remove/Exists/MountLabel/Resize. Additionally the
   two OFF-interface podman surfaces the embedded stack drives on macOS. (1)
   The image adapter's `imageCLI` requires `ImageExists` + `Pull`
@@ -467,10 +467,10 @@ Matt ruled OQ-9 A (the mac mini on Woodpecker, ssh access provisioned).**
   `container --version`, the `VerifyUsernsRemapSupport` shape
   (`podman.go:497-518`).
 - **Interfaces:** produces `NewAppleContainerCLI(cfg AppleContainerConfig)
-  *AppleContainerCLI` satisfying `runtime.ContainerRuntime`
+  *AppleContainerCLI` satisfying `runtime.WorkloadRuntime`
   (`podman.go:348-397`), `func (a *AppleContainerCLI)
   VerifyAppleContainerSupport(ctx context.Context) error`, and the widened
-  `SelectBackend(cfg BackendConfig) (ContainerRuntime, error)`. Consumes
+  `SelectBackend(cfg BackendConfig) (WorkloadRuntime, error)`. Consumes
   T-1's findings for argv specifics.
 - **Test cycle:** unit tests over the argv builders (no binary spawned —
   the `TestCreateArgsRemapsUserns` pattern, `podman_test.go:99-104`);

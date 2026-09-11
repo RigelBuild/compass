@@ -30,7 +30,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// vsockGatewayFakeRuntime is a ContainerRuntime that ALSO implements the
+// vsockGatewayFakeRuntime is a WorkloadRuntime that ALSO implements the
 // vsockGatewayEngine probe (AgentGatewayEndpoint), so agentHost drives its
 // microVM Provision leg. Create returns the container name as its engine id (so
 // each container is distinguishable), and AgentGatewayEndpoint hands back a real
@@ -57,12 +57,12 @@ func newVsockGatewayFakeRuntime(t *testing.T) *vsockGatewayFakeRuntime {
 	}
 }
 
-func (r *vsockGatewayFakeRuntime) Create(_ context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
+func (r *vsockGatewayFakeRuntime) Create(_ context.Context, spec runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, "create")
 	r.created = append(r.created, spec)
 	r.mu.Unlock()
-	return runtime.ContainerID(spec.Name), nil
+	return runtime.WorkloadID(spec.Name), nil
 }
 
 func (r *vsockGatewayFakeRuntime) AgentGatewayEndpoint(name string) (string, bool) {

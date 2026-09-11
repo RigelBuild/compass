@@ -36,22 +36,22 @@ The load-bearing arm-routing fork is (a)-(c); every resolution is also listed
 in `## Open Questions` for the pre-freeze batch, and the body designs against
 the recommended option.
 
-### (a) How `NftScript()` reaches the backend: `ContainerSpec.Egress`
+### (a) How `NftScript()` reaches the backend: `WorkloadSpec.Egress`
 
 Today the policy stops at the `AgentRuntime` layer: `AgentSpec.Egress`
 (`go/internal/runtime/agent.go:40-42`) is consumed only by
 `AgentRuntime.armEgress`, which execs the script into the running container
-(`agent.go:303-309`). `ContainerSpec` — the only thing a `ContainerRuntime`
+(`agent.go:303-309`). `WorkloadSpec` — the only thing a `WorkloadRuntime`
 backend ever sees (`go/internal/runtime/podman.go:88-114`) — carries no egress
 field. The V2b record already recorded this exact gap as V3's inheritance:
-"the intended data path is `ContainerSpec` growing an egress field captured at
+"the intended data path is `WorkloadSpec` growing an egress field captured at
 Create and delivered by Start's Provision call"
 (microvm-v2b-guest-supervisor-exec.md:214-226).
 
-**Resolution: `ContainerSpec` grows `Egress EgressPolicy`.**
+**Resolution: `WorkloadSpec` grows `Egress EgressPolicy`.**
 
 - `AgentRuntime.createAndStart` sets it from `spec.Egress` when assembling the
-  `ContainerSpec` (`agent.go:262-272`).
+  `WorkloadSpec` (`agent.go:262-272`).
 - `PodmanCLI` **ignores** the field entirely: `createArgs` is untouched, so the
   podman argv — and the whole podman path — stays byte-identical. Podman keeps
   arming via the post-start `armEgress` exec as before ((c)).
@@ -86,7 +86,7 @@ Two candidate owners for issuing the arm:
   transactional step (`microvm_lifecycle.go:269-310`); V3 adds
   `NftScript: session.nftScript` to that same request. One RPC provisions
   *and* arms; the gate opens only when both succeed.
-  - Pro: the `ContainerRuntime` contract identity holds — on podman,
+  - Pro: the `WorkloadRuntime` contract identity holds — on podman,
     `Start` then `Exec` works with no intermediate call, and the V2b contract
     suite asserts exactly that identity on both backends
     (contract_microvm_test.go:5-9, microvm_lifecycle_test.go's
@@ -119,7 +119,7 @@ would **fail** (nft as a capability-less uid), failing every microVM provision.
 It
 must not run on this backend. Three candidates:
 
-- **Option A (rejected): grow `ContainerRuntime` with an
+- **Option A (rejected): grow `WorkloadRuntime` with an
   `ArmEgress(ctx, id, EgressPolicy) error` verb** (podman impl = today's exec
   moved verbatim; microVM impl = no-op). Clean in the abstract, but it
   violates the interface's freeze discipline — the surface was deliberately
@@ -138,7 +138,7 @@ must not run on this backend. Three candidates:
 - **Option C (recommended): a backend capability probe in
   `AgentRuntime.provision`.** `MicroVMRuntime` gains one exported marker
   method, `EgressArmedInGuest() bool` (returns true), NOT on the
-  `ContainerRuntime` interface. `AgentRuntime.provision` type-asserts an
+  `WorkloadRuntime` interface. `AgentRuntime.provision` type-asserts an
   unexported single-method interface and skips `armEgress` when the backend
   self-arms:
 
@@ -146,7 +146,7 @@ must not run on this backend. Three candidates:
   // in agent.go
   type inGuestEgressArmer interface{ EgressArmedInGuest() bool }
 
-  func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec AgentSpec) error {
+  func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
       if armer, ok := r.runtime.(inGuestEgressArmer); !ok || !armer.EgressArmedInGuest() {
           if err := r.armEgress(ctx, id, spec.Egress); err != nil {
               return err
@@ -228,8 +228,8 @@ is the full default-drop base ruleset with an empty allowlist
 (`egress.go:29-34,109-115`) — there is no "no policy" representation.
 `MicroVMRuntime.Start` therefore **always** sends
 `session.nftScript` (never empty for a session created through
-`ContainerSpec`), and every microVM session boots default-deny even when a
-direct `ContainerRuntime` caller never set `Egress`. That is a deliberate
+`WorkloadSpec`), and every microVM session boots default-deny even when a
+direct `WorkloadRuntime` caller never set `Egress`. That is a deliberate
 divergence from podman, where a caller that skips `armEgress` gets an
 unfirewalled container: on this backend a silent open-egress VM is
 structurally impossible, which is the stronger reading of the parent's
@@ -290,14 +290,14 @@ Every task below inherits these.
   stays ignored on this backend (`microvm_lifecycle.go:140-143`).
 - **The podman path is byte-identical.** No change to `createArgs`, to
   `armEgress`'s exec (`agent.go:300-309`), or to any podman argv; `PodmanCLI`
-  ignores `ContainerSpec.Egress` and does not implement the (c) probe. The
+  ignores `WorkloadSpec.Egress` and does not implement the (c) probe. The
   existing podman suites run unchanged.
 - **`EgressPolicy`/`NftScript()` consumed unchanged** (`egress.go:71-107`) —
   same script on both backends, per the parent's V3 Interfaces
   (microvm-runner.md:498-502).
 - **No proto wire change.** Doc-comment updates only (§(f)); `buf lint` +
   `buf breaking` green; internal-go lane only.
-- **Frozen `ContainerRuntime` interface untouched.** The (c) probe is a marker
+- **Frozen `WorkloadRuntime` interface untouched.** The (c) probe is a marker
   method on `MicroVMRuntime` + an unexported assertion in `AgentRuntime`,
   never an interface verb (`podman.go:379-388` discipline).
 - **KVM-gated vs hermetic split** (V2b GC, microvm-v2b-guest-supervisor-exec.md:
@@ -362,11 +362,11 @@ and the `Provision` handler comment (`supervisor.go:137-140`).
 
 ### W2 — host: thread `spec.Egress` to `ProvisionRequest.nft_script`; probe-and-skip `armEgress`
 
-The §(a)+(c) host half: `ContainerSpec.Egress`, the session capture, the
+The §(a)+(c) host half: `WorkloadSpec.Egress`, the session capture, the
 Start-intrinsic delivery, the `AgentRuntime` probe.
 
 - **Interfaces:** produces
-  - `ContainerSpec.Egress EgressPolicy` (new field, `podman.go:88-114`;
+  - `WorkloadSpec.Egress EgressPolicy` (new field, `podman.go:88-114`;
     doc-comment states podman ignores it — the podman arm rides
     `AgentRuntime.armEgress`);
   - `microvmSession.nftScript string` recorded in `MicroVMRuntime.Create` as
@@ -419,19 +419,19 @@ Start-intrinsic delivery, the `AgentRuntime` probe.
     independent hermetic proof of the script-delivery + fail-Start contract, so
     the seams are preferred;
   - `func (m *MicroVMRuntime) EgressArmedInGuest() bool { return true }`
-    (marker, NOT on `ContainerRuntime`);
+    (marker, NOT on `WorkloadRuntime`);
   - the unexported probe in `agent.go`:
     `type inGuestEgressArmer interface{ EgressArmedInGuest() bool }`, checked
     at the top of `AgentRuntime.provision` (`agent.go:290-293`) to skip
     `armEgress` when satisfied; `armEgress` itself unchanged
     (`agent.go:300-309`); plus a one-line pointer comment beside the
-    `ContainerRuntime` freeze note (`podman.go:379-388`) naming
-    `inGuestEgressArmer`, so a future backend — or a `ContainerRuntime`
+    `WorkloadRuntime` freeze note (`podman.go:379-388`) naming
+    `inGuestEgressArmer`, so a future backend — or a `WorkloadRuntime`
     decorator, which would otherwise swallow the marker and silently re-enable
     `armEgress` on the microVM backend (a loud but hard-to-diagnose launch
     failure) — discovers the probe;
   - `AgentRuntime.createAndStart` setting `Egress: spec.Egress` in the
-    `ContainerSpec` literal (`agent.go:263-272`).
+    `WorkloadSpec` literal (`agent.go:263-272`).
   Consumes `EgressPolicy`/`NftScript()` unchanged.
 - **Test cycle (hermetic):** (1) a fake runtime WITHOUT the marker still
   receives the `armEgress` exec (existing
@@ -464,7 +464,7 @@ opening with `microvmtest.Require(t)`.
   pattern) — no new production code. Produces the KVM-gated test files only.
 - **Test cycle (KVM-gated):**
   1. **Allowlisted reachable / non-allowlisted blocked, both families:** boot
-     a session whose `ContainerSpec.Egress` allowlists one real host; in-guest
+     a session whose `WorkloadSpec.Egress` allowlists one real host; in-guest
      execs (agent uid) show the allowlisted host connects and a
      non-allowlisted raw IPv4 and IPv6 destination time out — mirroring the
      podman lifecycle proof (lifecycle_test.go:137-140) inside the guest
@@ -494,7 +494,7 @@ opening with `microvmtest.Require(t)`.
 
 - [ ] W1 — guestd `Provision` arms `nft_script` as guest root (replaces
       `CodeUnimplemented`), fail-closed, gate stays closed on failure
-- [ ] W2 — `ContainerSpec.Egress` threaded Create→Start→`ProvisionRequest`;
+- [ ] W2 — `WorkloadSpec.Egress` threaded Create→Start→`ProvisionRequest`;
       `AgentRuntime.provision` probe-and-skips `armEgress` on self-arming
       backends (podman path byte-identical)
 - [ ] W3 — KVM-gated in-guest egress integration suite (allow/deny both
@@ -519,14 +519,14 @@ recommendation.
   because the parent record is frozen and the literal routing differs.
   **Recommendation:** ratify Start-intrinsic arming as the correct reading.
 - **OQ-2 (load-bearing) — the (c) probe mechanism.** Marker-method probe
-  (recommended, §(c) Option C) vs growing the frozen `ContainerRuntime`
+  (recommended, §(c) Option C) vs growing the frozen `WorkloadRuntime`
   interface (Option A). The probe keeps the interface frozen and the blast
   radius at one call site; the interface verb is the more discoverable shape
   but contradicts the S1 no-interface-change discipline
   (`podman.go:379-388`) and touches every fake. **Recommendation:** Option C.
 - **OQ-3 (load-bearing) — always-arm on the microVM backend (§(e)).** Every
   microVM Start arms at least default-deny, including direct
-  `ContainerRuntime` callers (the KVM contract/e2e suites), a conceded
+  `WorkloadRuntime` callers (the KVM contract/e2e suites), a conceded
   divergence (7) from podman. Risk: an existing KVM row that needs external
   egress would start failing — believed none (exec traffic is
   loopback/vsock), verified on hardware by W3(4) before freeze is exercised.

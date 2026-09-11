@@ -322,7 +322,7 @@ func TestProvisionPerContainerConfigRootsAreDistinct(t *testing.T) {
 		t.Fatalf("engine created %d containers, want 2", len(created))
 	}
 
-	configMount := func(spec runtime.ContainerSpec) *runtime.Mount {
+	configMount := func(spec runtime.WorkloadSpec) *runtime.Mount {
 		for i := range spec.Mounts {
 			if spec.Mounts[i].ContainerPath == agentConfigMountPath {
 				return &spec.Mounts[i]
@@ -675,11 +675,11 @@ func TestCloseIsBestEffortOnStopError(t *testing.T) {
 
 	nameA := provisionAndStart(t, host, "a")
 	nameB := provisionAndStart(t, host, "b")
-	// The engine keys container ids by name (Create returns ContainerID(spec.Name)),
+	// The engine keys container ids by name (Create returns WorkloadID(spec.Name)),
 	// so fail exactly container A's Stop and leave B healthy.
-	idA := runtime.ContainerID(nameA)
-	idB := runtime.ContainerID(nameB)
-	engine.stopErrByID = map[runtime.ContainerID]error{idA: errors.New("engine stop failed")}
+	idA := runtime.WorkloadID(nameA)
+	idB := runtime.WorkloadID(nameB)
+	engine.stopErrByID = map[runtime.WorkloadID]error{idA: errors.New("engine stop failed")}
 
 	host.Close(ctx)
 
@@ -727,7 +727,7 @@ func TestCloseJoinsConcurrentTeardowns(t *testing.T) {
 	// and then park without waiting for the test to read. The gate is released on
 	// every exit path (including a failing assertion) so the suite can't hang.
 	gate := make(chan struct{})
-	entered := make(chan runtime.ContainerID, 2)
+	entered := make(chan runtime.WorkloadID, 2)
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(gate) }) }
 	t.Cleanup(release)

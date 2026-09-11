@@ -76,7 +76,7 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 	spec.Env["COMPASS_WORKDIR"] = "/work"
 	spec.Env["COMPASS_MODEL"] = "test-model"
 
-	args := execStreamingArgs(ContainerID("ctr123"), spec)
+	args := execStreamingArgs(WorkloadID("ctr123"), spec)
 
 	want := []string{
 		"exec", "--interactive",
@@ -97,7 +97,7 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 // --userns=keep-id token silently reintroduces the arbitrary-host-uid defect
 // (the agent ends up as the host uid, not 1000, and cannot own /nix).
 func TestCreateArgsRemapsUserns(t *testing.T) {
-	args := createArgs(ContainerSpec{Name: "c", Image: "img", UID: 1000})
+	args := createArgs(WorkloadSpec{Name: "c", Image: "img", UID: 1000})
 	if !slices.Contains(args, "--userns=keep-id:uid=1000,gid=1000") {
 		t.Fatalf("createArgs = %q, want it to contain %q", args, "--userns=keep-id:uid=1000,gid=1000")
 	}
@@ -145,7 +145,7 @@ func TestParsePodmanVersion(t *testing.T) {
 func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
 	spec := NewStreamingExecSpec("compass-agent")
 
-	args := execStreamingArgs(ContainerID("c"), spec)
+	args := execStreamingArgs(WorkloadID("c"), spec)
 
 	want := []string{"exec", "--interactive", "c", "compass-agent"}
 	if !slices.Equal(args, want) {
@@ -158,7 +158,7 @@ func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
 // wrong Go template would silently read the wrong field (or the whole inspect
 // JSON), so the relabel would target the wrong MCS category.
 func TestInspectMountLabelArgsPinsFormat(t *testing.T) {
-	args := inspectMountLabelArgs(ContainerID("ctr123"))
+	args := inspectMountLabelArgs(WorkloadID("ctr123"))
 
 	want := []string{"inspect", "--format", "{{.MountLabel}}", "ctr123"}
 	if !slices.Equal(args, want) {
@@ -172,7 +172,7 @@ func TestInspectMountLabelArgsPinsFormat(t *testing.T) {
 // wedge the host. A dropped --volumes silently reintroduces that leak on the
 // production removal path, which has no other guard.
 func TestRemoveArgsCarriesVolumes(t *testing.T) {
-	args := removeArgs(ContainerID("ctr123"))
+	args := removeArgs(WorkloadID("ctr123"))
 
 	want := []string{"rm", "--force", "--volumes", "ctr123"}
 	if !slices.Equal(args, want) {
@@ -180,7 +180,7 @@ func TestRemoveArgsCarriesVolumes(t *testing.T) {
 	}
 }
 
-// Resize is frozen into the ContainerRuntime seam at S1 but its behavior is
+// Resize is frozen into the WorkloadRuntime seam at S1 but its behavior is
 // C3's: PodmanCLI.Resize must return ErrResizeNotImplemented, never a silent
 // nil. A no-op success would let a future caller believe a container's cgroup
 // limits were raised when they never moved — the exact false-positive the
@@ -188,7 +188,7 @@ func TestRemoveArgsCarriesVolumes(t *testing.T) {
 // so C3 (which replaces the body with the real `podman update` change)
 // deliberately deletes this test rather than silently regressing past it.
 func TestResizeReservedUntilC3(t *testing.T) {
-	err := NewPodmanCLI().Resize(context.Background(), ContainerID("ctr123"), ResourceLimits{CPUShares: 512, MemoryBytes: 1 << 30})
+	err := NewPodmanCLI().Resize(context.Background(), WorkloadID("ctr123"), ResourceLimits{CPUShares: 512, MemoryBytes: 1 << 30})
 	if !errors.Is(err, ErrResizeNotImplemented) {
 		t.Fatalf("Resize err = %v, want ErrResizeNotImplemented", err)
 	}
@@ -201,7 +201,7 @@ func TestExecStreamingArgsCarriesInlineEnvNotEnvFile(t *testing.T) {
 	spec := NewStreamingExecSpec("compass-agent").AsUser("1000").InDir("/work")
 	spec.Env["HOME"] = "/home/agent"
 
-	args := execStreamingArgs(ContainerID("ctr123"), spec)
+	args := execStreamingArgs(WorkloadID("ctr123"), spec)
 
 	want := []string{
 		"exec", "--interactive",
@@ -265,7 +265,7 @@ func TestSpawnCaptureWaitDelayBoundsLeakedPipeHang(t *testing.T) {
 	// goroutine once the test has already failed on the safety deadline.
 	done := make(chan error, 1)
 	go func() {
-		_, err := cli.Exec(ctx, ContainerID("c"), NewExecSpec("true"))
+		_, err := cli.Exec(ctx, WorkloadID("c"), NewExecSpec("true"))
 		done <- err
 	}()
 
@@ -340,7 +340,7 @@ func TestChildHandleTerminateKillsAndReaps(t *testing.T) {
 	cli := NewPodmanCLI().WithProgram(prog)
 	ctx := t.Context()
 
-	se, err := cli.ExecStreaming(ctx, ContainerID("c"), NewStreamingExecSpec("compass-agent"))
+	se, err := cli.ExecStreaming(ctx, WorkloadID("c"), NewStreamingExecSpec("compass-agent"))
 	if err != nil {
 		t.Fatalf("ExecStreaming: %v", err)
 	}

@@ -606,7 +606,7 @@ Remove(ctx context.Context, containerName string) error
 
 Red-first: dispatch table test (`dispatch_test.go` pattern,
 `dispatch_test.go:160-177`) + host test: Remove tears down a launched
-container (fake ContainerRuntime records Stop+Remove), retires the bound
+container (fake WorkloadRuntime records Stop+Remove), retires the bound
 session, closes the socket; a second Remove is a no-op.
 
 ### T4 — runnerhub: `Remove` relay + `RelayLifecycleCall` resolution edge

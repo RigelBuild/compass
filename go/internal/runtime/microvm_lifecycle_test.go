@@ -84,7 +84,7 @@ func TestBootConfigAssembly(t *testing.T) {
 // booting (no VM handle, no exec client), and the returned id resolves.
 func TestCreateAllocatesWithoutBoot(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	id, err := m.Create(context.Background(), ContainerSpec{Name: "agent-1", UID: 1000})
+	id, err := m.Create(context.Background(), WorkloadSpec{Name: "agent-1", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -107,10 +107,10 @@ func TestCreateAllocatesWithoutBoot(t *testing.T) {
 // table is refused with a typed DuplicateNameError naming the collision.
 func TestCreateRefusesDuplicateName(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	if _, err := m.Create(context.Background(), ContainerSpec{Name: "dup", UID: 1000}); err != nil {
+	if _, err := m.Create(context.Background(), WorkloadSpec{Name: "dup", UID: 1000}); err != nil {
 		t.Fatalf("first Create: %v", err)
 	}
-	_, err := m.Create(context.Background(), ContainerSpec{Name: "dup", UID: 1000})
+	_, err := m.Create(context.Background(), WorkloadSpec{Name: "dup", UID: 1000})
 	var dupErr *DuplicateNameError
 	if !errors.As(err, &dupErr) {
 		t.Fatalf("second Create err = %v, want *DuplicateNameError", err)
@@ -151,7 +151,7 @@ func TestCreateRefusesInexpressibleMount(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := m.Create(context.Background(), ContainerSpec{Name: tt.name, UID: 1000, Mounts: tt.mounts})
+			_, err := m.Create(context.Background(), WorkloadSpec{Name: tt.name, UID: 1000, Mounts: tt.mounts})
 			var mountErr *UnsupportedMountError
 			if !errors.As(err, &mountErr) {
 				t.Fatalf("Create err = %v, want *UnsupportedMountError", err)
@@ -266,7 +266,7 @@ func TestParseUID(t *testing.T) {
 // session id is NOT a name match.
 func TestExistsByName(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	id, err := m.Create(context.Background(), ContainerSpec{Name: "agent-x", UID: 1000})
+	id, err := m.Create(context.Background(), WorkloadSpec{Name: "agent-x", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -290,11 +290,11 @@ func TestExistsByName(t *testing.T) {
 // of a never-started session tears down its dir + table entry without error.
 func TestRemoveIdempotent(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	if err := m.Remove(context.Background(), ContainerID("never-existed")); err != nil {
+	if err := m.Remove(context.Background(), WorkloadID("never-existed")); err != nil {
 		t.Fatalf("Remove(unknown) = %v, want nil", err)
 	}
 
-	id, err := m.Create(context.Background(), ContainerSpec{Name: "agent-r", UID: 1000})
+	id, err := m.Create(context.Background(), WorkloadSpec{Name: "agent-r", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestRemoveIdempotent(t *testing.T) {
 // id, per the parent's Q-mountlabel deferral.
 func TestMountLabelEmpty(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	label, err := m.MountLabel(context.Background(), ContainerID("anything"))
+	label, err := m.MountLabel(context.Background(), WorkloadID("anything"))
 	if err != nil || label != "" {
 		t.Fatalf("MountLabel = (%q, %v), want (\"\", nil)", label, err)
 	}
@@ -324,7 +324,7 @@ func TestMountLabelEmpty(t *testing.T) {
 // sentinel, matching PodmanCLI.Resize (the C3/D5 deferral).
 func TestResizeNotImplemented(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	if err := m.Resize(context.Background(), ContainerID("c"), ResourceLimits{}); !errors.Is(err, ErrResizeNotImplemented) {
+	if err := m.Resize(context.Background(), WorkloadID("c"), ResourceLimits{}); !errors.Is(err, ErrResizeNotImplemented) {
 		t.Fatalf("Resize err = %v, want ErrResizeNotImplemented", err)
 	}
 }
@@ -333,7 +333,7 @@ func TestResizeNotImplemented(t *testing.T) {
 // booting.
 func TestStartUnknownSession(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	if err := m.Start(context.Background(), ContainerID("ghost")); err == nil {
+	if err := m.Start(context.Background(), WorkloadID("ghost")); err == nil {
 		t.Fatal("Start(unknown) err = nil, want a no-session error")
 	}
 }
@@ -342,7 +342,7 @@ func TestStartUnknownSession(t *testing.T) {
 // (no exec client yet) rather than panicking.
 func TestExecUnstartedSession(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	id, err := m.Create(context.Background(), ContainerSpec{Name: "agent-e", UID: 1000})
+	id, err := m.Create(context.Background(), WorkloadSpec{Name: "agent-e", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestExitErrorMapping(t *testing.T) {
 // agentHost's vsock leg relies on (record §(b)/§(c)/§(e)).
 func TestAgentGatewayEndpoint(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: t.TempDir()})
-	id, err := m.Create(context.Background(), ContainerSpec{Name: "agent-1", UID: 1000})
+	id, err := m.Create(context.Background(), WorkloadSpec{Name: "agent-1", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestCreateRejectsOverLongGatewaySocketPath(t *testing.T) {
 				t.Fatalf("creating runroot: %v", err)
 			}
 			m := NewMicroVMRuntime(MicroVMConfig{RunRoot: runRoot})
-			_, createErr := m.Create(context.Background(), ContainerSpec{Name: "agent-1", UID: 1000})
+			_, createErr := m.Create(context.Background(), WorkloadSpec{Name: "agent-1", UID: 1000})
 			if tt.wantReject {
 				if createErr == nil {
 					t.Fatal("Create succeeded; want the pre-boot budget error")
