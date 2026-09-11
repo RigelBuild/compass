@@ -638,8 +638,9 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 }
 
 // TestForgeLinearLanesShareOneTokenSource proves the notify lane and the write
-// coordinate ride ONE shared *linearagent.TokenSource (DEC-4's one-instance
-// rule, RIG-3135). Unlike the GitHub lanes, which share a whole *forge.GitHub,
+// coordinate ride ONE shared *linearagent.TokenSource (the one-instance rule,
+// RIG-3135; the directive is the compass-forge-app-credentials T4 task text).
+// Unlike the GitHub lanes, which share a whole *forge.GitHub,
 // the two Linear sinks each build their OWN *forge.Linear — so the only shared
 // object is the source inside, and pointer identity on the client would prove
 // nothing. The test therefore reads the source each BUILDER threaded into the
@@ -647,16 +648,18 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 // never a handle the test holds: a builder that minted its own source would
 // satisfy every existing test and fail only this one.
 //
-// Why one instance is load-bearing: Linear revokes a client-credentials app's
-// tokens when its scope set changes, and the mint singleflight coalesces only
-// WITHIN an instance. Two sources means two independent mints racing one
-// credential — each revoking the other's live token.
+// Why one instance is load-bearing: the mint singleflight coalesces only
+// WITHIN an instance, so two sources mint independently against the same app.
+// The record (compass-forge-app-credentials T4) marks same-scope coexistence
+// UNVERIFIED rather than harmless, and one instance removes the question. The
+// documented revocation trigger is a scope-set CHANGE, which cannot fire here:
+// tokenScope is a pinned const, so both sources mint identical scope.
+//
+// Nil store/hub/board are safe: both builders only stash them into structs and
+// adapters, and this test never starts the arms/reconcilers that read them.
 func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 	ctx := context.Background() // test root
 	tokens := linearagent.NewTokenSource("cid", "csecret", nil, "")
-	if tokens == nil {
-		t.Fatal("NewTokenSource returned nil, want a source to thread")
-	}
 
 	// (1) The notify lane's Linear reader must wrap the source it was handed.
 	notifyLane := buildLinearNotifyLane(nil, nil, tokens, slog.Default())
@@ -707,5 +710,17 @@ func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
 	// would make the pair trivially true.
 	if notifyLinear == writeLinear {
 		t.Fatal("notify and write clients are the same *forge.Linear; the shared-source assertions prove nothing")
+	}
+
+	// (4) The GitHub author role is the primaryClient this builder was PASSED,
+	// not one it minted. RIG-3135's secondary bullet: the budget test calls
+	// registerGitHubForgeCoordinate directly, so this pass-through was the one
+	// hop covered by inspection alone.
+	ghResolved, ok := svc.providers.resolve(nil)
+	if !ok {
+		t.Fatal("no default GitHub write coordinate registered")
+	}
+	if ghResolved.author != forge.Provider(primary) {
+		t.Fatal("GitHub coordinate author is not the primaryClient passed to buildForgeWriteService")
 	}
 }
