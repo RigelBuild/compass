@@ -167,10 +167,10 @@ func TestEnrollDuplicateReattaches(t *testing.T) {
 	hub := newHubOnly()
 	subj := store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}
 
-	if reattached := hub.enroll("runner-1", subj); reattached {
+	if reattached := hub.enroll(context.Background(), "runner-1", subj); reattached {
 		t.Fatal("first enroll reattached = true, want false (fresh registration)")
 	}
-	if reattached := hub.enroll("runner-1", subj); !reattached {
+	if reattached := hub.enroll(context.Background(), "runner-1", subj); !reattached {
 		t.Fatal("second enroll reattached = false, want true (single-Runner MVP re-attaches)")
 	}
 	// A router is resolvable after enrollment (a session command has a Runner to

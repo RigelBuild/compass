@@ -12,6 +12,7 @@ package runnerhub
 // synchronously-recorded fact.
 
 import (
+	"context"
 	"slices"
 	"sync"
 	"testing"
@@ -52,11 +53,11 @@ func TestEnrollFiresReapSinkWithClearedSessionIDs(t *testing.T) {
 	hub.SetSessionReapSink(fake)
 
 	// A first enroll binds the Runner, then two live sessions promote onto it.
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession("c1", "sess-a")
+	hub.promoteSession(context.Background(), "c1", "sess-a")
 	hub.bindContainer("c2", "acct-b")
-	hub.promoteSession("c2", "sess-b")
+	hub.promoteSession(context.Background(), "c2", "sess-b")
 
 	// The first enroll fired the reap edge once with no ids (nothing was bound);
 	// drop it so the assertion below covers only the re-enroll's reap.
@@ -65,7 +66,7 @@ func TestEnrollFiresReapSinkWithClearedSessionIDs(t *testing.T) {
 	}
 
 	// The Runner reconnects: enroll clears both bindings and reaps both ids.
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 
 	calls := fake.snapshot()
 	if len(calls) != 2 {
@@ -84,14 +85,14 @@ func TestEnrollFiresReapSinkWithClearedSessionIDs(t *testing.T) {
 func TestEnrollNilReapSinkStillClears(t *testing.T) {
 	hub := newHubOnly() // no SetSessionReapSink
 
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession("c1", "sess-a")
+	hub.promoteSession(context.Background(), "c1", "sess-a")
 
 	// A re-enroll with no reap sink clears the binding without panicking.
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 
-	if sess, ok := hub.SessionForAccount("acct-a"); ok {
+	if sess, ok := hub.SessionForAccount(context.Background(), "acct-a"); ok {
 		t.Fatalf("SessionForAccount(acct-a) = %q ok=true after re-enroll, want ok=false (binding cleared)", sess)
 	}
 }

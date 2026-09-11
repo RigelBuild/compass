@@ -99,7 +99,7 @@ func TestStartRelaySurfacesAlreadyRunningAsAlreadyExists(t *testing.T) {
 	hub := newHubOnly()
 	// Enroll a Runner and bind a send that answers every command with an
 	// ALREADY_RUNNING error result correlated by the pushed request id.
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
@@ -130,7 +130,7 @@ func TestStartRelaySurfacesAlreadyRunningAsAlreadyExists(t *testing.T) {
 // exercised.
 func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, _ := hub.routerFor("any")
 	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
 		go router.complete(&compassv1internal.SessionsRequest{
@@ -156,7 +156,7 @@ func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 // from. A non-zero count means the initial-signal path was re-introduced.
 func TestStartEmitsNoInitialSignal(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	hub.bindContainer("c1", testAgentAccount)
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
@@ -187,7 +187,7 @@ func TestStartEmitsNoInitialSignal(t *testing.T) {
 // variant, and the typed result flows back.
 func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, _ := hub.routerFor("any")
 	var sawRemove bool
 	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
@@ -223,7 +223,7 @@ func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
 // true after teardown and reddens this.
 func TestRemoveClearsContainerBinding(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	hub.bindContainer("c1", testAgentAccount)
 	if !hub.HasContainerBinding("c1") {
 		t.Fatal("precondition: container c1 should be bound after bindContainer")
@@ -250,7 +250,7 @@ func TestRemoveClearsContainerBinding(t *testing.T) {
 // the pushed request id — the seam the SessionState fallback tests drive.
 func attachStatusResponder(t *testing.T, hub *Hub, statuses []*compassv1.AgentSessionStatus) {
 	t.Helper()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)

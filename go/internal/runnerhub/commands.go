@@ -78,7 +78,7 @@ func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartA
 	// id the Runner minted, so RelayCommsCall for this session resolves the
 	// agent account (comms-tools design T2). A container with no recorded
 	// account leaves no session binding, and its comms calls fail closed.
-	h.promoteSession(req.GetContainerName(), resp.GetSessionId())
+	h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId())
 	// The initial secret materialize no longer rides a signal: the Runner
 	// materializes the container's set pre-exec at Start (host.Start,
 	// FetchSecretsByContainer authorized on the Provision-time container→account
@@ -99,7 +99,7 @@ func (h *Hub) Stop(ctx context.Context, requestID string, req *compassv1.StopAge
 	// Drop the session's account binding: a RelayCommsCall for a stopped session
 	// fails closed CodeNotFound, the same answer as a never-seen session — never
 	// a stale reuse.
-	h.unbindSession(req.GetSessionId())
+	h.unbindSession(ctx, req.GetSessionId())
 	return result.GetStop(), nil
 }
 

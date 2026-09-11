@@ -24,7 +24,7 @@ import (
 // See docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
 func TestProvisionRelaySurfacesOperatorFaultAsFailedPrecondition(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)

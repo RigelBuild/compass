@@ -83,7 +83,7 @@ func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compa
 // from the CodeUnavailable of a transient transport fault.
 func TestFetchAgentConfigNoConfigStoreFailsPrecondition(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, nil)
 	client := newRawRunnerClient(t, url, "runner-tok")
 
@@ -108,7 +108,7 @@ func TestFetchAgentConfigNoConfigStoreFailsPrecondition(t *testing.T) {
 // loop is exercised (a bug that sent one frame, or dropped the tail, reds).
 func TestFetchAgentConfigStreamsVersionThenChunks(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	// A bundle spanning multiple chunk frames.
 	want := bytes.Repeat([]byte("compass-config-"), configChunkBytes/10)
 	cfg := &fakeConfigStore{version: "v-1", bundle: want}
@@ -137,7 +137,7 @@ func TestFetchAgentConfigStreamsVersionThenChunks(t *testing.T) {
 // state (the Runner materializes an empty dir), never an error.
 func TestFetchAgentConfigUnconfiguredEmptyVersion(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	cfg := &fakeConfigStore{err: store.ErrNotFound}
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
@@ -161,7 +161,7 @@ func TestFetchAgentConfigUnconfiguredEmptyVersion(t *testing.T) {
 // not read as "no config".
 func TestFetchAgentConfigStoreErrorMapsToInternal(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	cfg := &fakeConfigStore{err: errors.New("db boom")}
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
@@ -186,7 +186,7 @@ func TestFetchAgentConfigStoreErrorMapsToInternal(t *testing.T) {
 // that streamed the bundle anyway (wasting the reconnect) reds.
 func TestFetchAgentConfigIfVersionMatchStreamsVersionOnly(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	cfg := &fakeConfigStore{version: "v-held", bundle: []byte("should-not-be-sent")}
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
@@ -210,7 +210,7 @@ func TestFetchAgentConfigIfVersionMatchStreamsVersionOnly(t *testing.T) {
 // a stale Runner reconnecting with an old version still gets the new bytes.
 func TestFetchAgentConfigIfVersionMismatchStreamsBundle(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	cfg := &fakeConfigStore{version: "v-new", bundle: []byte("new-bytes")}
 	url := newMountedH2CServerWithConfig(t, hub, runnerResolverForFetch().resolve, cfg)
 	client := newRawRunnerClient(t, url, "runner-tok")
