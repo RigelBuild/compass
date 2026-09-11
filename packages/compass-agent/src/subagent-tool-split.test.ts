@@ -143,7 +143,9 @@ afterEach(() => {
 	for (const dir of scratchDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
-});
+	// Recursive /tmp scratch deletes outrun bun's 5s hook default under the
+	// parallel pre-push gate; bound as a slow-cleanup detector, not a budget (RIG-3611).
+}, 60_000);
 
 // Both shapes disable ambient discovery so the active toolset reflects only the
 // explicit config, exactly as the container entrypoint (Manager, cli.ts:889-897)
