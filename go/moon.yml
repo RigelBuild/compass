@@ -251,18 +251,22 @@ tasks:
 
   sqlc-drift:
     # Fail if the checked-in internal/store/db tree is stale vs the query +
-    # schema sources: snapshot the committed tree, regenerate in place, and fail
-    # on any byte diff (a query edit committed without regeneration). Unlike
-    # `drift` above — which delegates to the compass-proto schema pipeline and is
-    # scheduled through the gen tree, so it is deliberately kept OUT of `ci` —
-    # sqlc-drift is fully local (no cross-project delegation, no DB), so it joins
-    # `ci` directly. `git diff --no-index` compares raw file trees (reads no
+    # schema sources: stage the sources into a scratch dir, generate THERE, and
+    # fail on any byte diff against the committed tree. Unlike `drift` above —
+    # which delegates to the compass-proto schema pipeline and is scheduled
+    # through the gen tree, so it is deliberately kept OUT of `ci` — sqlc-drift
+    # is fully local (no cross-project delegation, no DB), so it joins `ci`
+    # directly. `git diff --no-index` compares raw file trees (reads no
     # index/worktree state, and git is always on PATH — unlike `diff`), so it
     # runs identically in CI and in a secondary jj workspace; a `git status`
-    # check would false-green where the workspace is not a git checkout. sqlc has
-    # no output-redirect flag, so the regenerate is in place and idempotent (a
-    # no-drift run leaves the byte-identical tree).
-    script: 'tmp=$(mktemp -d); trap ''rm -rf "$tmp"'' EXIT; cp -R internal/store/db "$tmp/db-committed"; sqlc generate; if ! git diff --no-index --quiet "$tmp/db-committed" internal/store/db; then echo "sqlc drift: internal/store/db is stale — run \`moon run compass-go:sqlc-gen\` and commit:"; git diff --no-index "$tmp/db-committed" internal/store/db; exit 1; fi'
+    # check would false-green where the workspace is not a git checkout.
+    #
+    # Generate OUT OF TREE (RIG-3591): moon runs this in parallel with
+    # build/nilaway/test, so an in-place regenerate raced their reads. sqlc has
+    # no output-redirect flag, so the scratch dir carries the inputs and `out:`
+    # resolves relative to it. `set -e` so a failing sqlc aborts here instead of
+    # reporting its empty output as drift.
+    script: 'set -e; tmp=$(mktemp -d); trap ''rm -rf "$tmp"'' EXIT; mkdir -p "$tmp/internal/store"; cp -R internal/store/queries "$tmp/internal/store/queries"; cp -R internal/store/migrations "$tmp/internal/store/migrations"; cp sqlc.yaml "$tmp/sqlc.yaml"; (cd "$tmp" && sqlc generate); if ! git diff --no-index --quiet internal/store/db "$tmp/internal/store/db"; then echo "sqlc drift: internal/store/db is stale — run \`moon run compass-go:sqlc-gen\` and commit:"; git diff --no-index internal/store/db "$tmp/internal/store/db"; exit 1; fi'
     options:
       runFromWorkspaceRoot: false
     inputs: *sqlc_sources
