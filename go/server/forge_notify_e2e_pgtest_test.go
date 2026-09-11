@@ -254,7 +254,7 @@ func (w *notifyE2EWire) goLive(t *testing.T, account store.AccountID, container,
 	}
 	// The account->session binding must resolve, or the dispatcher would fall to
 	// errNoLiveSession and drop the notification.
-	if got, ok := w.hub.SessionForAccount(account); !ok || got != session {
+	if got, ok := w.hub.SessionForAccount(context.Background(), account); !ok || got != session {
 		t.Fatalf("SessionForAccount(%s) = (%q, %v), want (%q, true)", account, got, ok, session)
 	}
 }
