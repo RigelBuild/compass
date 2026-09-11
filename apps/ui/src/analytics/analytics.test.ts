@@ -263,9 +263,8 @@ describe("$ai_trace_id stamping", () => {
 	});
 
 	test("a trace id arriving AFTER createAnalytics is picked up by a later capture", () => {
-		// The whole reason the source is a getter over a mutable slot: boot builds
-		// the transport before analytics, so the first trace id lands later. A
-		// read-once-at-construction regression would capture undefined forever.
+		// Boot builds analytics BEFORE the transport, so no trace id exists yet at
+		// construction; reading once here would capture undefined forever.
 		const fake = makeFake();
 		let current: string | undefined;
 		const analytics = createAnalytics(config, {
