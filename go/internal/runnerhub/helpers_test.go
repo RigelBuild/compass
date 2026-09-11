@@ -169,7 +169,7 @@ const testAgentAccount store.AccountID = "acct-agent"
 func bindSession(hub *Hub, sessionID string) {
 	container := "container-for-" + sessionID
 	hub.bindContainer(container, testAgentAccount)
-	hub.promoteSession(container, sessionID)
+	hub.promoteSession(context.Background(), container, sessionID)
 }
 
 // commsCall records one CommsCaller invocation: the account the hub resolved

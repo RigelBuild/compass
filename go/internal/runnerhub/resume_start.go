@@ -40,6 +40,6 @@ func (h *Hub) StartResume(ctx context.Context, requestID string, req *compassv1.
 		return nil, err
 	}
 	resp := result.GetStart()
-	h.promoteSession(req.GetContainerName(), resp.GetSessionId())
+	h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId())
 	return resp, nil
 }

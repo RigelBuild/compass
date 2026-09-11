@@ -82,7 +82,7 @@ func (h *Handler) Enroll(ctx context.Context, req *connect.Request[compassv1inte
 		// enroll under an identity other than its token's.
 		return nil, errUnauthenticated
 	}
-	reattached := h.hub.enroll(subj.ID, subj)
+	reattached := h.hub.enroll(ctx, subj.ID, subj)
 	return connect.NewResponse(&compassv1internal.EnrollResponse{Reattached: reattached}), nil
 }
 

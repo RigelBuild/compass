@@ -353,7 +353,7 @@ func bringSessionLive(t *testing.T, w *mentionE2EWire, exp *tracetest.InMemoryEx
 	if got := sresp.GetSessionId(); got != session {
 		t.Fatalf("Start session id = %q, want %q", got, session)
 	}
-	if got, ok := w.hub.SessionForAccount(account); !ok || got != session {
+	if got, ok := w.hub.SessionForAccount(context.Background(), account); !ok || got != session {
 		t.Fatalf("SessionForAccount(%s) = (%q, %v), want (%q, true) — the hold/fan-out arms resolve through this binding", account, got, ok, session)
 	}
 	waitForStartSweep(t, exp, sweepsBefore+1)

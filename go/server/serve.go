@@ -1491,7 +1491,7 @@ var errNoLiveSession = errors.New("forge notify: no live session for account")
 // miss branches and the AgentControl wrapping without a live hub or Postgres.
 // It mirrors the delivery package's SessionResolver + ControlDispatcher split.
 type notifySessionDispatcher interface {
-	SessionForAccount(account store.AccountID) (sessionID string, ok bool)
+	SessionForAccount(ctx context.Context, account store.AccountID) (sessionID string, ok bool)
 	DispatchControl(ctx context.Context, sessionID string, op *compassv1internal.AgentControl) error
 }
 
@@ -1508,7 +1508,7 @@ type forgeNotifyDispatcher struct {
 // a live session dispatches the notification wrapped as an AgentControl and
 // returns the dispatch error.
 func (d *forgeNotifyDispatcher) Notify(ctx context.Context, account string, n *compassv1internal.ForgeNotification) error {
-	sessionID, ok := d.hub.SessionForAccount(store.AccountID(account))
+	sessionID, ok := d.hub.SessionForAccount(ctx, store.AccountID(account))
 	if !ok {
 		return errNoLiveSession
 	}

@@ -66,7 +66,7 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	// otherwise deliver now, re-reading the settled blocks from the store (no
 	// live turn to wait on) — mirroring fireHeld, never the posted (possibly
 	// partial) wire message (design.md:177-178, :306).
-	authorSession, live := c.resolver.SessionForAccount(author)
+	authorSession, live := c.resolver.SessionForAccount(ctx, author)
 	if !live {
 		wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
 		if err != nil {
@@ -128,7 +128,7 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 		if mentioned[agent] {
 			continue // steer-only precedence: a mentioned agent never also gets a deliver
 		}
-		sessionID, live := c.resolver.SessionForAccount(agent)
+		sessionID, live := c.resolver.SessionForAccount(ctx, agent)
 		if !live {
 			c.wake(ctx, agent) // best-effort resume; the D2 sweep is the durable backstop
 			continue
@@ -166,7 +166,7 @@ func (c *Consumer) routeMentionsFor(ctx context.Context, channel store.ChannelID
 	mentioned := c.resolveMentioned(ctx, channel, author, handles)
 	fromHandle := c.authorHandle(ctx, msg)
 	for agent := range mentioned {
-		sessionID, live := c.resolver.SessionForAccount(agent)
+		sessionID, live := c.resolver.SessionForAccount(ctx, agent)
 		if live {
 			c.dispatchSteerTo(ctx, sessionID, msg, fromHandle)
 			continue
@@ -183,7 +183,7 @@ func (c *Consumer) routeMentionsFor(ctx context.Context, channel store.ChannelID
 				// The no-loss edge: an owed mention that fails to record is lost.
 				c.log.ErrorContext(ctx, "delivery: record owed mention for offline out-of-sweep-set member", "error", err,
 					"agent", string(agent), "channel", string(channel), "message_id", msg.GetId())
-			} else if sessionID, live := c.resolver.SessionForAccount(agent); live {
+			} else if sessionID, live := c.resolver.SessionForAccount(ctx, agent); live {
 				// Now-live between the first resolve and the record: steer directly,
 				// closing the record-vs-wake race.
 				c.dispatchSteerTo(ctx, sessionID, msg, fromHandle)
@@ -259,7 +259,7 @@ func (c *Consumer) routeAskAnswerFor(ctx context.Context, channel store.ChannelI
 	// this is the latency path). The owed sweep dispatches as a STEER, so the
 	// direct dispatch matches — both render through the same T6 ask_answer arm
 	// and dedup by msg.id absorbs any overlap.
-	if sessionID, live := c.resolver.SessionForAccount(asker); live {
+	if sessionID, live := c.resolver.SessionForAccount(ctx, asker); live {
 		c.dispatchSteerTo(ctx, sessionID, msg, c.authorHandle(ctx, msg))
 	}
 }

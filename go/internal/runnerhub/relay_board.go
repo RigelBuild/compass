@@ -65,7 +65,7 @@ func (h *Hub) RelayBoardCall( //nolint:dupl // deliberate structural mirror of R
 	if caller == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errBoardUnavailable)
 	}
-	account, ok := h.accountForSession(req.GetSessionId())
+	account, ok := h.accountForSession(ctx, req.GetSessionId())
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.

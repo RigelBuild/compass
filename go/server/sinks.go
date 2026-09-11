@@ -65,6 +65,16 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 		log,
 	)
 	hub.SetTranscriptStore(st)
+	// RIG-3108 T4: the same store is the durable session-binding surface the
+	// hub's in-RAM maps are demoted to a read-through cache over — the write path
+	// (record on promote, delete on unbind, sweep on re-enroll) and the two
+	// request-scoped cache-miss reads. Wired here beside the transcript seam so
+	// the one store instance backs the binding cache too. No RoutingFabric is
+	// wired: this is the single-Server MVP, so the hub's own writes keep its own
+	// cache honest and a cross-instance invalidation plane is not yet mounted
+	// (RIG-3107/T3 lands the NATS fabric; startDeliveryConsumer's subscribe
+	// wiring rides that).
+	hub.SetSessionBindingStore(st)
 	// RIG-1667 T5: the same store backs the resume-body reconstructor's read
 	// seam (SessionResumeSnapshot + ReadArchiveSegment), wired here beside the
 	// write seam so the one store instance serves both legs.

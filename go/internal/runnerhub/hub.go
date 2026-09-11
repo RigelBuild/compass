@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -169,6 +170,61 @@ type DeliveryStore interface {
 	// (unknown id, foreign agent, or unsubscribed mid-flight) -> store.ErrNotFound
 	// (RIG-2732 W3; forge_subscriptions.go).
 	AdvanceForgeDeliveredRevision(ctx context.Context, agent store.AccountID, subscriptionID, revision string) error
+}
+
+// SessionBindingStore is the durable session-binding surface the hub's maps are
+// demoted to a read-through cache over (RIG-3108 / RIG-2861 §T4): the write path
+// (record on promote, delete on unbind, sweep on re-enroll) and the two
+// request-scoped reads a cache miss falls through to. *store.Store implements
+// it; the hub depends only on this narrow surface (pattern: DeliveryStore).
+// Wired via SetSessionBindingStore after construction so no NewHub caller
+// signature changes, and nil-safe: a hub with no binding store keeps its maps as
+// truth (today's behaviour, and every existing hub test) — writes and cache-miss
+// reads simply do not touch a table.
+type SessionBindingStore interface {
+	// RecordSessionBinding upserts the (account -> session, runner) binding and
+	// returns the session id it DISPLACED (empty when the account held none) —
+	// the prior session the hub must evict from both maps. It runs on the
+	// request ctx (tenant-scoped), so the write lands under the acting tenant.
+	RecordSessionBinding(ctx context.Context, sessionID string, accountID store.AccountID, runnerID string) (displaced string, err error)
+	// ResolveSessionAccount resolves the agent account a live session speaks
+	// for — the cache-miss read behind accountForSession. store.ErrNotFound is
+	// the fail-closed miss (mapped to ok=false), byte-identical to today's
+	// CodeNotFound.
+	ResolveSessionAccount(ctx context.Context, sessionID string) (store.AccountID, error)
+	// SessionForAccount resolves the live session bound to an account — the
+	// cache-miss read behind SessionForAccount (the reverse direction). Same
+	// fail-closed store.ErrNotFound contract.
+	SessionForAccount(ctx context.Context, accountID store.AccountID) (string, error)
+	// DeleteSessionBinding releases one session's binding — the unbind write.
+	// Idempotent: releasing an already-released session is a no-op success.
+	DeleteSessionBinding(ctx context.Context, sessionID string) error
+	// DeleteSessionBindingsForRunner is the reconnect sweep: it releases every
+	// binding attached to runnerID and RETURNS the rows it removed, driving the
+	// re-enroll reap (offline edges + held-deliver reap) from durable truth
+	// rather than the in-RAM snapshots.
+	DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]store.SessionBinding, error)
+	// EffectiveTenant names the tenant a request-scoped call resolves against,
+	// so a post-write BindingChange publishes on that tenant's routing subject.
+	EffectiveTenant(ctx context.Context) store.TenantID
+}
+
+// RoutingFabric is the binding-cache invalidation seam (RIG-3108 / §T4): a
+// post-write PublishBindingChange fans an invalidation to every OTHER Server
+// instance, and SubscribeBindingChanges receives every instance's changes so
+// this hub evicts a cached entry a peer re-pointed. fabric.Fabric implements it;
+// the hub depends only on this narrow surface (pattern: DeliveryStore). It rides
+// core NATS — best-effort at-most-once — because Postgres is the arbiter on any
+// cache miss, so a dropped invalidation degrades to a cache-miss re-read.
+//
+// Wired via SetRoutingFabric after construction so no NewHub caller signature
+// changes, and nil-safe: a single-instance hub (the MVP, and every existing
+// test) wires none, so a binding change publishes nothing and this hub receives
+// none — its own writes already keep its own cache honest. The subscribe wiring
+// is the caller's (server assembly), so the hub exposes only the two verbs it
+// drives.
+type RoutingFabric interface {
+	PublishBindingChange(ctx context.Context, tenant string, b fabric.BindingChange) error
 }
 
 // TranscriptStore is the durable transcript surface the hub's commit arm writes
@@ -322,6 +378,31 @@ type Hub struct {
 	// ReconstructSessionBody closed CodeUnavailable — the resume read leg is not
 	// mounted.
 	reader TranscriptReader
+	// bindings is the durable session-binding store the maps below are a
+	// read-through cache over (RIG-3108 §T4). Nil until SetSessionBindingStore
+	// wires it; read under mu. Nil-safe: a hub with none wired keeps its maps as
+	// truth (today's behaviour) — no write and no cache-miss read touches a
+	// table, so every existing hub test is unchanged.
+	bindings SessionBindingStore
+	// routing is the binding-cache invalidation fabric a post-write
+	// PublishBindingChange fans over (RIG-3108 §T4). Nil until SetRoutingFabric
+	// wires it; read under mu. Nil-safe: a single-instance hub wires none, so a
+	// binding change publishes nothing — its own writes keep its own cache
+	// honest without a fabric round-trip.
+	routing RoutingFabric
+	// reapStale records that the table may still hold rows for sessions this
+	// hub has already declared dead: it is raised with the re-enroll map-clear
+	// and lowered only by a reap that succeeds. A read-through in between would
+	// resurrect one and break fail-closed, so readThroughAllowed refuses while
+	// it is set. Read and written under mu.
+	//
+	// Hub-wide is correct only under the single-Runner-id MVP (h.runner is
+	// never nilled and the id is the pinned token subject). A future
+	// multi-Runner change MUST key this by runner id: DeleteSessionBindingsForRunner
+	// targets one id, so a second runner's successful reap would otherwise
+	// lower the flag while the first runner's un-reaped rows survive and
+	// become readable again.
+	reapStale bool
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall
 	// delegates a resolved lifecycle call to (spawn/despawn record T4). Nil until
 	// SetLifecycleCaller wires it (after both hub and lifecycleService exist,
@@ -503,6 +584,27 @@ func (h *Hub) SetDeliveryStore(delivery DeliveryStore) {
 	h.delivery = delivery
 }
 
+// SetSessionBindingStore wires the durable session-binding store the hub's maps
+// are a read-through cache over (RIG-3108 §T4), after construction so no NewHub
+// caller signature changes. Called once at server assembly; nil-safe (a hub with
+// none wired keeps its maps as truth — today's behaviour). Wired under mu; read
+// under mu.
+func (h *Hub) SetSessionBindingStore(bindings SessionBindingStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.bindings = bindings
+}
+
+// SetRoutingFabric wires the binding-cache invalidation fabric a post-write
+// PublishBindingChange fans over (RIG-3108 §T4), after construction so no NewHub
+// caller signature changes. Called once at server assembly; nil-safe (a
+// single-instance hub wires none). Wired under mu; read under mu.
+func (h *Hub) SetRoutingFabric(routing RoutingFabric) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.routing = routing
+}
+
 // SetTranscriptStore wires the durable transcript store the commit arm writes a
 // relayed transcript_entry frame to (RIG-1667 T4), after construction so no
 // NewHub caller signature changes. Called once at server assembly; nil-safe (a
@@ -569,7 +671,7 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	}
 	switch f := oneof.(type) {
 	case *compassv1internal.AgentFrame_Session:
-		h.deliverSession(ev.SessionID, f.Session)
+		h.deliverSession(ctx, ev.SessionID, f.Session)
 		return nil
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
@@ -686,7 +788,7 @@ func (h *Hub) fireRunnerReady() {
 // the frame carries a lifecycle transition, extracts the AgentSessionStatus onto
 // SubscribeEvents. A session frame can carry a trace event, a lifecycle
 // transition, or both; UNSPECIFIED means "trace only, no transition".
-func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFrame) {
+func (h *Hub) deliverSession(ctx context.Context, sessionID string, sf *compassv1internal.SessionFrame) {
 	h.tail.RelaySessionFrame(sessionID, sf)
 	state := sf.GetState()
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
@@ -699,7 +801,7 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 	// unbindSession has not yet dropped it) carries its account; one published
 	// after a Runner reconnect cleared the maps carries none (the stated residual
 	// gap). accountForSession takes h.mu; deliverSession holds no lock here.
-	account, hasAccount := h.accountForSession(sessionID)
+	account, hasAccount := h.accountForSession(ctx, sessionID)
 	status := &compassv1.AgentSessionStatus{SessionId: sessionID, State: state}
 	if hasAccount {
 		status.AgentAccountId = string(account)
@@ -746,11 +848,6 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 // ack must not kill the Runner's whole event stream. A nil delivery store (a
 // Deliver-only hub) drops the ack silently: no cursor exists to advance.
 func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1internal.DeliveryAck) {
-	// N5/OQ-4: the delivery-ack cursor advance is a cross-tenant system path —
-	// the ack resolves the acking agent's tenant only implicitly, and the cursor
-	// tables are RLS-policied, so this runs under the BYPASSRLS system role
-	// rather than a fail-closed request scope that would drop every ack.
-	ctx = store.WithSystemRole(ctx)
 	h.mu.Lock()
 	delivery := h.delivery
 	h.mu.Unlock()
@@ -762,25 +859,41 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 		h.countDroppedAck(ev, "delivery_ack carries no message id")
 		return
 	}
-	agent, ok := h.accountForSession(ev.SessionID)
+	// RIG-3108 hazard fix: resolve the acking session's account on the REQUEST
+	// ctx — BEFORE the system-role escalation below. The binding read is a
+	// read-through cache over session_bindings, whose row is single-valued only
+	// because RLS narrows it to one tenant; a BYPASSRLS (system-role) read could
+	// return a plausible row from an ARBITRARY tenant
+	// (store/session_bindings_pgtest_test.go::TestSessionForAccountUnderSystemRoleIsUnscoped).
+	// Resolving here keeps the binding read tenant-scoped and fail-closed; only
+	// the cursor advance below — a cross-tenant system path by N5/OQ-4 — runs
+	// under the system role. A cache miss with the ctx still request-scoped is
+	// exactly the correct scoping for the fallback table read.
+	agent, ok := h.accountForSession(ctx, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")
 		return
 	}
+	// N5/OQ-4: the delivery-ack cursor advance is a cross-tenant system path —
+	// the cursor tables are RLS-policied and the ack's tenant is only implicit,
+	// so the advance runs under the BYPASSRLS system role rather than a
+	// fail-closed request scope that would drop every ack. Escalate ONLY now,
+	// after the binding is resolved, so the binding read never inherited it.
+	sysCtx := store.WithSystemRole(ctx)
 	// MessageChannel only resolves ANY message's channel; it is NOT the
 	// membership/owed clamp. store.AckDelivery is the clamp: it resolves
 	// messageID WHERE id=$1 AND channel_id=$2 and only UPDATEs an existing
 	// seeded cursor (never inserts), so the message must resolve for this
 	// (agent, channel) there or the ack is a no-op — a future reader must not
 	// mistake MessageChannel for the guard.
-	channel, err := delivery.MessageChannel(ctx, messageID)
+	channel, err := delivery.MessageChannel(sysCtx, messageID)
 	if err != nil {
 		// An unknown or foreign message id: fail-closed no-op, never a teardown.
 		// A fabricated id cannot advance a cursor; the resolution IS the guard.
 		h.countDroppedAck(ev, "delivery_ack for an unresolvable message: "+err.Error())
 		return
 	}
-	if err := delivery.AckDelivery(ctx, agent, channel, messageID); err != nil {
+	if err := delivery.AckDelivery(sysCtx, agent, channel, messageID); err != nil {
 		// A store fault advancing the cursor: log + count and drop. A missed ack
 		// costs only a redundant redeliver on the recipient's next reconnect
 		// sweep (the cursor stays where it was), so it never justifies tearing
@@ -807,11 +920,6 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 // from the durable gap. A nil delivery store (a Deliver-only hub) drops the ack
 // silently: no cursor exists to advance.
 func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *compassv1internal.ForgeNotificationAck) {
-	// N5/OQ-4: like deliverAck, the forge-delivery cursor advance is a
-	// cross-tenant system path — RLS-policied agent_forge_subscriptions rows
-	// advanced from a Runner event whose tenant is only implicit. Run under the
-	// BYPASSRLS system role rather than a fail-closed request scope.
-	ctx = store.WithSystemRole(ctx)
 	h.mu.Lock()
 	delivery := h.delivery
 	h.mu.Unlock()
@@ -823,12 +931,21 @@ func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *com
 		h.countDroppedAck(ev, "forge_notification_ack carries no subscription id")
 		return
 	}
-	agent, ok := h.accountForSession(ev.SessionID)
+	// RIG-3108 hazard fix (mirrors deliverAck): resolve the acking session's
+	// account on the REQUEST ctx, BEFORE the system-role escalation, so the
+	// binding read stays tenant-scoped and cannot return a foreign tenant's row
+	// under BYPASSRLS. Only the cursor advance below runs under the system role.
+	agent, ok := h.accountForSession(ctx, ev.SessionID)
 	if !ok {
 		h.countDroppedAck(ev, "no agent account bound to the acking session")
 		return
 	}
-	if err := delivery.AdvanceForgeDeliveredRevision(ctx, agent, subscriptionID, ack.GetRevision()); err != nil {
+	// N5/OQ-4: the forge-delivery cursor advance is a cross-tenant system path —
+	// RLS-policied agent_forge_subscriptions rows advanced from a Runner event
+	// whose tenant is only implicit. Escalate ONLY now, after the binding is
+	// resolved on the request ctx.
+	sysCtx := store.WithSystemRole(ctx)
+	if err := delivery.AdvanceForgeDeliveredRevision(sysCtx, agent, subscriptionID, ack.GetRevision()); err != nil {
 		// A store fault (or the ErrNotFound of a subscription unsubscribed
 		// mid-flight / owned by a different agent) advancing the cursor: log +
 		// count and drop. A missed advance costs only a redundant re-notify on
@@ -902,21 +1019,47 @@ type promotedPair struct {
 // re-minted id under the fresh Runner session resolves CodeNotFound until it is
 // bound anew, never a stale account. Single-Runner MVP — every binding belongs
 // to the one enrolled Runner, so a reconnect clears the whole map.
-func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
+//
+// RIG-3108 — durable reap vs durable survival, the invariant conflict this
+// method resolves. The maps are now a read-through cache over session_bindings,
+// and the rows SURVIVE a process death. Two cases, distinguished by reattached:
+//
+//   - A RE-ENROLL (reattached: this live hub already had a Runner, and it
+//     reconnected). Its sessions are dead, so fail-closed requires the rows gone
+//     too — otherwise a cache miss would fall through to the table and resolve a
+//     dead session (the naive read-through breaks fail-closed). So a re-enroll
+//     DURABLY reaps: DeleteSessionBindingsForRunner deletes every row for this
+//     Runner and RETURNS them, and those returned rows — not the in-RAM snapshot
+//     — drive the presence-OFFLINE edges and the held-deliver reap. The durable
+//     delete is what makes the durable read safe.
+//   - A FIRST enroll (!reattached: a fresh hub, i.e. a Server restart with the
+//     Runner and its sessions still live). Here the pre-restart rows are VALID
+//     and must survive so a comms call resolves the session from the durable
+//     binding — the availability property this whole PR exists for. So a first
+//     enroll does NOT durably reap; it only clears the (empty) maps.
+//
+// The reap runs under the request ctx (the Enroll RPC's), tenant-scoped by RLS
+// — the one binding mutation not already inside a request read, made an
+// explicitly request-scoped call rather than the system role, so it cannot reach
+// another tenant's rows.
+//
+// A hub with no binding store wired keeps the original in-RAM snapshot behaviour
+// (every existing enroll test), driving offline/reapedSessions from the maps.
+func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject) (reattached bool) {
 	h.mu.Lock()
 	reattached = h.runner != nil
 	router := newCommandRouter()
 	router.log = h.log
 	h.runner = &attachedRunner{id: id, subject: subject, router: router}
-	// Snapshot the live (account -> session) bindings BEFORE clearing them: each
-	// previously-bound account loses its live session on this re-enroll and must
-	// be driven to presence OFFLINE (RIG-1569 T8). enroll emits no lifecycle
-	// frames of its own, so without this a long-WORKING agent whose Runner
-	// reconnected would stay WORKING in the projection forever. A first-ever
-	// enroll (empty maps) snapshots nothing and fires nothing.
-	offline := make([]promotedPair, 0, len(h.accountSessions))
+	// Snapshot the live (account -> session) bindings BEFORE clearing them, for
+	// the no-store path: each previously-bound account loses its live session on
+	// this re-enroll and must be driven to presence OFFLINE (RIG-1569 T8). enroll
+	// emits no lifecycle frames of its own, so without this a long-WORKING agent
+	// whose Runner reconnected would stay WORKING in the projection forever. A
+	// first-ever enroll (empty maps) snapshots nothing and fires nothing.
+	ramOffline := make([]promotedPair, 0, len(h.accountSessions))
 	for account, sessionID := range h.accountSessions {
-		offline = append(offline, promotedPair{account: account, sessionID: sessionID})
+		ramOffline = append(ramOffline, promotedPair{account: account, sessionID: sessionID})
 	}
 	// Snapshot the session ids whose bindings are about to be cleared, so the
 	// delivery consumer can reap any held-deliver registry entries a no-frame
@@ -924,16 +1067,58 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	// is keyed by session id, and Consumer.held is keyed by that same author
 	// session id, so these are exactly the keys to drop. A first-ever enroll
 	// (empty map) snapshots nothing.
-	reapedSessions := make([]string, 0, len(h.sessionAccounts))
+	ramReaped := make([]string, 0, len(h.sessionAccounts))
 	for sessionID := range h.sessionAccounts {
-		reapedSessions = append(reapedSessions, sessionID)
+		ramReaped = append(ramReaped, sessionID)
 	}
+	bindings := h.bindings
 	presence := h.presence
 	reap := h.reap
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	clear(h.accountSessions)
+	// Refuse read-through from the instant the maps are cleared, not after the
+	// reap returns: the reap is a round-trip that can block for seconds, and a
+	// concurrent resolver in that gap would miss the cleared cache and read a
+	// not-yet-deleted row back, resurrecting a session this reconnect just
+	// declared dead. Pessimistic-true costs nothing even when the reap
+	// succeeds — the maps are empty, so the only durable-but-uncached rows are
+	// the dead survivors, and a session promoted after the reconnect writes its
+	// cache entry and hits.
+	if bindings != nil && reattached {
+		h.reapStale = true
+	}
 	h.mu.Unlock()
+
+	// Choose the reap set. A re-enroll with a durable store reaps the ROWS and
+	// drives the edges from what it removed (the authoritative set); everything
+	// else falls back to the in-RAM snapshot taken above.
+	offline := ramOffline
+	reapedSessions := ramReaped
+	if bindings != nil && reattached {
+		rows, err := bindings.DeleteSessionBindingsForRunner(ctx, id)
+		if err != nil {
+			// A durable-reap fault must not wedge the reconnect: log it and fall
+			// back to the in-RAM snapshot (still cleared above), so the presence
+			// edges and held-deliver reap fire from what the cache last knew.
+			// The rows SURVIVE, and they name sessions just declared dead, so
+			// the pessimistic reapStale raised with the clear STAYS raised: a
+			// read-through would resurrect one and defeat fail-closed.
+			h.log.Error("durable session-binding reap failed on re-enroll; using in-RAM snapshot, read-through disabled until a reap succeeds",
+				"runner_id", id, "error", err)
+		} else {
+			offline = make([]promotedPair, 0, len(rows))
+			reapedSessions = make([]string, 0, len(rows))
+			for _, b := range rows {
+				offline = append(offline, promotedPair{account: b.AccountID, sessionID: b.SessionID})
+				reapedSessions = append(reapedSessions, b.SessionID)
+			}
+			// The table now agrees with the cleared cache again.
+			h.mu.Lock()
+			h.reapStale = false
+			h.mu.Unlock()
+		}
+	}
 
 	// Fire the terminal edges AFTER releasing the lock (the sink enqueues into
 	// the presence loop and returns promptly, so it must not run under h.mu) —

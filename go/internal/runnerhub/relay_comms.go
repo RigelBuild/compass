@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/fabric"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -49,7 +50,18 @@ func (h *Hub) bindContainer(containerName string, agentAccountID store.AccountID
 // session id. If the container had no recorded account (a provision that named
 // none, or a container from before this leg existed), no session binding is
 // created and a later comms call for that session fails closed CodeNotFound.
-func (h *Hub) promoteSession(containerName, sessionID string) {
+//
+// RIG-3108: the maps are a read-through cache, so the durable binding is written
+// FIRST (RecordSessionBinding, on the request ctx so it lands tenant-scoped),
+// and only then are the maps updated under h.mu. The store returns the session
+// this account DISPLACED — the prior session now resolving nowhere — which is
+// evicted from the forward map here (without it, sess-old would keep resolving
+// to the account it no longer speaks for) and invalidated on peer instances via
+// a BindingUnbound publish. A BindingBound publish for the new session lets peer
+// instances drop any stale cache entry for it. The store write and the publish
+// both run with h.mu RELEASED — never hold the lock across a store call or a
+// sink — exactly the lock-then-store-then-map discipline the design requires.
+func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID string) {
 	if containerName == "" || sessionID == "" {
 		return
 	}
@@ -59,6 +71,43 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 		h.mu.Unlock()
 		return
 	}
+	// Capture the store handle, the routing fabric, and the enrolled Runner id
+	// under the lock, then release BEFORE the store write: the binding row names
+	// the Runner the session is attached to (the sweep key a re-enroll retires
+	// it by), and a promote always follows a relay through that Runner, so one is
+	// enrolled. A nil store or an (unexpected) empty runner id keeps the maps as
+	// truth — today's behaviour — writing no durable row.
+	bindings := h.bindings
+	routing := h.routing
+	var runnerID string
+	if h.runner != nil {
+		runnerID = h.runner.id
+	}
+	h.mu.Unlock()
+
+	// Write the durable binding first (h.mu released). The store upsert is keyed
+	// on the account, so it lands whether or not the account held a prior
+	// session, and it returns the displaced session id.
+	var displaced string
+	tenant := ""
+	if bindings != nil && runnerID != "" {
+		d, err := bindings.RecordSessionBinding(ctx, sessionID, account, runnerID)
+		if err != nil {
+			// A durable-write fault must not fail the Start that already
+			// succeeded on the Runner: log it and fall back to the in-RAM cache
+			// so the session resolves at least on this instance. The next
+			// re-enroll sweep or a cache-miss re-read reconciles against the
+			// table.
+			h.log.Error("record session binding failed; falling back to in-RAM cache",
+				"session_id", sessionID, "account", string(account), "error", err)
+		} else {
+			displaced = d
+			tenant = string(bindings.EffectiveTenant(ctx))
+		}
+	}
+
+	// Now update the maps under h.mu (store already written).
+	h.mu.Lock()
 	h.sessionAccounts[sessionID] = account
 	h.accountSessions[account] = sessionID
 	// The container->account entry has served its purpose; the session binding
@@ -66,6 +115,13 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 	// Runner's life cannot resurrect a stale account (reconnect clears both maps
 	// anyway; this keeps the pre-Start map tight in the meantime).
 	delete(h.containerAccounts, containerName)
+	// Evict the displaced session from the forward map: the account moved off it,
+	// so it now resolves nowhere. Guard displaced != sessionID for the rebind
+	// case (an account re-pointed onto the SAME session displaces itself, and
+	// dropping the entry just written would unbind the live session).
+	if displaced != "" && displaced != sessionID {
+		delete(h.sessionAccounts, displaced)
+	}
 	// Read both after-binding sinks under mu so a setter and this arm never race,
 	// then release BEFORE firing either: each sink only enqueues into its own
 	// consumer/component loop and returns promptly, so promoteSession never blocks
@@ -75,6 +131,18 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 	sessionStart := h.sessionStart
 	presence := h.presence
 	h.mu.Unlock()
+
+	// Invalidate peer instances' caches (h.mu released, nil-safe, best-effort):
+	// the displaced session has no row any more (BindingUnbound), and the new
+	// session's binding changed (BindingBound). A single-instance hub wires no
+	// routing fabric, so this is a no-op there.
+	if routing != nil && tenant != "" {
+		if displaced != "" && displaced != sessionID {
+			h.publishBindingChange(ctx, routing, tenant, displaced, fabric.BindingUnbound)
+		}
+		h.publishBindingChange(ctx, routing, tenant, sessionID, fabric.BindingBound)
+	}
+
 	if sessionStart != nil {
 		sessionStart.OnSessionStarted(sessionID, account)
 	}
@@ -87,6 +155,22 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 	// Status relay + the open-ask overlay, so it must not run under h.mu).
 	if presence != nil {
 		presence.OnSessionPromoted(account, sessionID)
+	}
+}
+
+// publishBindingChange fans one binding invalidation to peer instances over the
+// routing fabric (RIG-3108 §T4), logging a publish failure rather than
+// propagating it: the fabric rides core NATS (at-most-once), and a dropped
+// invalidation degrades to a peer's cache-miss re-read against Postgres — the
+// arbiter — so a publish failure never fails the operation that caused it.
+func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, tenant, sessionID string, op fabric.BindingOp) {
+	if err := routing.PublishBindingChange(ctx, tenant, fabric.BindingChange{
+		Tenant:    tenant,
+		SessionID: sessionID,
+		Op:        op,
+	}); err != nil {
+		h.log.Warn("publish binding change failed (peers re-read on cache miss)",
+			"tenant", tenant, "session_id", sessionID, "op", string(op), "error", err)
 	}
 }
 
@@ -106,7 +190,32 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 // Capture the account under mu, release, then fire the sink — the exact
 // lock-then-release-then-fire discipline promoteSession uses, so the sink (which
 // enqueues into the presence loop) never runs under h.mu.
-func (h *Hub) unbindSession(sessionID string) {
+func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
+	// RIG-3108: the maps are a cache, so the durable row is deleted FIRST
+	// (DeleteSessionBinding, on the request ctx so it stays tenant-scoped), then
+	// the maps are evicted under h.mu. DeleteSessionBinding is by session id and
+	// idempotent — a session promoteSession already displaced has no row (the
+	// account row now names the newer session), so a stale release matches
+	// nothing and leaves the live binding alone, exactly the re-point guard the
+	// map eviction below keeps.
+	h.mu.Lock()
+	bindings := h.bindings
+	routing := h.routing
+	h.mu.Unlock()
+
+	tenant := ""
+	if bindings != nil {
+		if err := bindings.DeleteSessionBinding(ctx, sessionID); err != nil {
+			// A durable-delete fault must not fail the Stop that already
+			// succeeded on the Runner: log and continue to evict the cache. The
+			// next re-enroll sweep retires any surviving row.
+			h.log.Error("delete session binding failed; evicting cache anyway",
+				"session_id", sessionID, "error", err)
+		} else {
+			tenant = string(bindings.EffectiveTenant(ctx))
+		}
+	}
+
 	h.mu.Lock()
 	var (
 		account     store.AccountID
@@ -125,6 +234,13 @@ func (h *Hub) unbindSession(sessionID string) {
 	delete(h.sessionAccounts, sessionID)
 	presence := h.presence
 	h.mu.Unlock()
+
+	// Invalidate peer instances' caches (h.mu released, nil-safe, best-effort):
+	// this session has no binding any more (BindingUnbound), so a peer can drop
+	// its entry outright. A single-instance hub wires no routing fabric.
+	if routing != nil && tenant != "" {
+		h.publishBindingChange(ctx, routing, tenant, sessionID, fabric.BindingUnbound)
+	}
 
 	// The account now has NO live session: drive its presence OFFLINE. Skipped
 	// when the account was re-pointed to a newer session (wentOffline is false).
@@ -163,11 +279,68 @@ func (h *Hub) unbindContainer(containerName string) {
 // false when no live binding exists (never provisioned, stopped, or dropped on a
 // Runner reconnect) — the fail-closed signal RelayCommsCall turns into
 // CodeNotFound.
-func (h *Hub) accountForSession(sessionID string) (store.AccountID, bool) {
+//
+// RIG-3108: the map is a read-through cache. A hit returns immediately. A miss
+// falls through to the durable binding table ONLY when a Runner is currently
+// enrolled AND the ctx is request-scoped — so a Server restart resolves a
+// pre-restart session from the durable row, while a miss after a reconnect
+// (which durably reaps every binding at enroll) stays a fail-closed miss. The
+// enrolled-Runner gate is what keeps fail-closed correct across a reconnect: the
+// reap deletes the rows, so even the table read would miss, but the gate makes
+// the miss free of a table round-trip. store.ErrNotFound (and any store fault)
+// maps to ok=false, so CodeNotFound behaviour is byte-identical to today.
+//
+// The read-through is refused under a system-role ctx: SessionBindingStore's
+// reads are single-valued only because RLS narrows them to the acting tenant,
+// and a BYPASSRLS read could return a plausible row from an ARBITRARY tenant
+// (store/session_bindings_pgtest_test.go::TestSessionForAccountUnderSystemRoleIsUnscoped).
+// The ack arms resolve BEFORE escalating to the system role, so they never reach
+// this refusal; the guard is defence in depth against a future system-role
+// caller.
+func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.AccountID, bool) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	account, ok := h.sessionAccounts[sessionID]
-	return account, ok
+	if account, ok := h.sessionAccounts[sessionID]; ok {
+		h.mu.Unlock()
+		return account, true
+	}
+	bindings := h.bindings
+	enrolled := h.runner != nil
+	reapStale := h.reapStale
+	h.mu.Unlock()
+
+	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
+		return "", false
+	}
+	account, err := bindings.ResolveSessionAccount(ctx, sessionID)
+	if err != nil {
+		// store.ErrNotFound (an unbound session) and any store fault both fail
+		// closed — the same CodeNotFound the caller mints today.
+		return "", false
+	}
+	// Populate the forward cache so a subsequent comms call for this restarted
+	// session hits without a table round-trip. Re-check under the lock: a
+	// concurrent promote/unbind may have run between the release and here, so a
+	// live map entry wins over the row just read (avoids clobbering a fresher
+	// binding with a staler one).
+	h.mu.Lock()
+	if live, ok := h.sessionAccounts[sessionID]; ok {
+		h.mu.Unlock()
+		return live, true
+	}
+	h.sessionAccounts[sessionID] = account
+	h.mu.Unlock()
+	return account, true
+}
+
+// readThroughAllowed reports whether a cache-miss binding read may fall through
+// to the durable table: a store must be wired, a Runner must be currently
+// enrolled (a miss with none enrolled means the reconnect reap cleared every
+// binding — fail closed), the ctx must be request-scoped (a system-role read
+// is the unscoped-row hazard, refused), and the last re-enroll's durable reap
+// must not have faulted — rows it failed to delete name sessions this hub has
+// already declared dead, so reading them back would resurrect them.
+func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingStore, enrolled, reapStale bool) bool {
+	return bindings != nil && enrolled && !reapStale && !store.IsSystemRole(ctx)
 }
 
 // SessionForAccount resolves the LIVE session bound to an agent account — the
@@ -179,11 +352,40 @@ func (h *Hub) accountForSession(sessionID string) (store.AccountID, bool) {
 // delivery.SessionResolver interface the consumer holds, kept separate from the
 // ControlDispatcher (DispatchControl) so that stays the established dispatch-only
 // shape.
-func (h *Hub) SessionForAccount(account store.AccountID) (string, bool) {
+//
+// RIG-3108: a read-through cache exactly as accountForSession is. A miss falls
+// through to the durable table only when a Runner is enrolled AND the ctx is
+// request-scoped. The delivery consumer's loop runs under the system role
+// (delivery/consumer.go Run), so its resolve REFUSES the read-through and falls
+// to the D2 cursor sweep — the consumer's own miss contract, unchanged. A
+// request-scoped caller (a Server restart resolving a pre-restart recipient)
+// resolves from the row. store.ErrNotFound and any store fault map to ok=false.
+func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (string, bool) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	sessionID, ok := h.accountSessions[account]
-	return sessionID, ok
+	if sessionID, ok := h.accountSessions[account]; ok {
+		h.mu.Unlock()
+		return sessionID, true
+	}
+	bindings := h.bindings
+	enrolled := h.runner != nil
+	reapStale := h.reapStale
+	h.mu.Unlock()
+
+	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
+		return "", false
+	}
+	sessionID, err := bindings.SessionForAccount(ctx, account)
+	if err != nil {
+		return "", false
+	}
+	h.mu.Lock()
+	if live, ok := h.accountSessions[account]; ok {
+		h.mu.Unlock()
+		return live, true
+	}
+	h.accountSessions[account] = sessionID
+	h.mu.Unlock()
+	return sessionID, true
 }
 
 // LiveAgentSessions snapshots every live (agent account -> session) binding — the
@@ -197,6 +399,46 @@ func (h *Hub) LiveAgentSessions() map[store.AccountID]string {
 	out := make(map[store.AccountID]string, len(h.accountSessions))
 	maps.Copy(out, h.accountSessions)
 	return out
+}
+
+// OnBindingChange evicts this instance's cache entry for the session named in a
+// binding change received from a PEER instance over the routing fabric (RIG-3108
+// §T4). It is the subscribe-side counterpart to promoteSession/unbindSession's
+// PublishBindingChange: a peer that re-pointed or released a session tells every
+// other Server to drop its now-stale cache, and the next resolution re-reads the
+// durable truth (Postgres is the arbiter).
+//
+// It NEVER trusts the change's contents as data (reference-never-payload): the
+// change carries only a session id and an op, never the resolved account, so
+// this drops the cached entry and lets the next accountForSession/SessionForAccount
+// cache-miss re-read the table. BindingOp is an OPEN SET, so this handles ANY op
+// — known or not — as the same invalidate-and-re-read: an unrecognized op still
+// means the binding genuinely changed, and on a plane with no ack a drop would
+// leave the entry stale with nothing to reveal it (fabric.BindingOp). There is
+// no switch on the op here precisely because every value means the same thing.
+//
+// It never publishes: this is the RECEIVE side, so re-publishing would loop an
+// invalidation around the fabric forever.
+func (h *Hub) OnBindingChange(change fabric.BindingChange) {
+	sessionID := change.SessionID
+	if sessionID == "" {
+		// A change naming no session would invalidate cache key "" and read as
+		// "nothing changed"; the fabric decode already rejects this, so it is
+		// defence in depth.
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// Evict the forward entry and, if it still points back at this session, the
+	// reverse entry too — so neither direction serves a stale binding a peer just
+	// changed. The re-point guard mirrors unbindSession: a reverse entry the
+	// account has already moved onto a newer session is left alone.
+	if account, ok := h.sessionAccounts[sessionID]; ok {
+		if h.accountSessions[account] == sessionID {
+			delete(h.accountSessions, account)
+		}
+		delete(h.sessionAccounts, sessionID)
+	}
 }
 
 // HasLiveSession reports whether sessionID names a live session bound in the
@@ -257,7 +499,7 @@ func (h *Hub) RelayCommsCall(
 	if h.comms == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
 	}
-	account, ok := h.accountForSession(req.GetSessionId())
+	account, ok := h.accountForSession(ctx, req.GetSessionId())
 	if !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
@@ -331,7 +573,7 @@ func (h *Hub) CommitConversationFrame(
 		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable)
 	}
 	sessionID := req.GetSessionId()
-	if _, ok := h.accountForSession(sessionID); !ok {
+	if _, ok := h.accountForSession(ctx, sessionID); !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
 		return nil, connect.NewError(

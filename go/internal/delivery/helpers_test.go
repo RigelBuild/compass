@@ -206,7 +206,7 @@ func newFakeResolver() *fakeResolver {
 	return &fakeResolver{sessions: map[store.AccountID]string{}}
 }
 
-func (r *fakeResolver) SessionForAccount(account store.AccountID) (string, bool) {
+func (r *fakeResolver) SessionForAccount(_ context.Context, account store.AccountID) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s, ok := r.sessions[account]

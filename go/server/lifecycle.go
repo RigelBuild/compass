@@ -101,7 +101,7 @@ func (l *lifecycleService) WakeAgent(ctx context.Context, agent store.AccountID)
 	// 1. Not-live pre-check (cost control): a live agent is already awake, so
 	// there is nothing to resume. No-op, no log line — a wake is only an attempt
 	// against an OFFLINE agent.
-	if _, live := l.hub.SessionForAccount(agent); live {
+	if _, live := l.hub.SessionForAccount(ctx, agent); live {
 		return
 	}
 
@@ -336,7 +336,7 @@ func (l *lifecycleService) DespawnAsAccount(
 
 	// Authorized. Stop the target's live session first (best-effort, bounded so a
 	// wedged Runner cannot starve the Remove below); skip if none is live.
-	if sessionID, ok := l.hub.SessionForAccount(target); ok {
+	if sessionID, ok := l.hub.SessionForAccount(ctx, target); ok {
 		stopCtx, stopCancel := context.WithTimeout(ctx, rollbackStopTimeout)
 		if _, err := l.hub.Stop(stopCtx, "", &compassv1.StopAgentSessionRequest{SessionId: sessionID}); err != nil {
 			slog.ErrorContext(ctx, "despawn: stopping target session failed; continuing to remove", "session_id", sessionID, "error", err)
@@ -420,7 +420,7 @@ func (l *lifecycleService) resumeOrReject(
 		// Already spawned and placed: idempotent success. Return the existing
 		// container and its live session (if any) rather than provisioning a
 		// second — a completed-call retry gets its original answer.
-		sessionID, _ := l.hub.SessionForAccount(existing.ID)
+		sessionID, _ := l.hub.SessionForAccount(ctx, existing.ID)
 		return &compassv1internal.SpawnPeerResponse{
 			AgentAccountId: string(existing.ID),
 			ContainerName:  container,
