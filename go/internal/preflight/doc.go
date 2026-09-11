@@ -6,7 +6,7 @@
 //
 // The checker core is inverted over injected effect functions (see Deps),
 // mirroring the go/internal/stack idiom: every genuine external effect —
-// probing rootless podman, the podman version floor, the darwin podman machine,
+// the darwin podman machine, rootless podman, the podman version floor,
 // and the local image store — is a func the caller supplies. The core imports
 // none of those subsystems, so unit tests supply stubs and no test shells out.
 //
