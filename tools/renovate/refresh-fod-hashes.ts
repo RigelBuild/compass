@@ -126,7 +126,24 @@ export const FOD_ENTRIES: FodEntry[] = [
 		file: "agent-image/entrypoint.nix",
 		marker: 'outputHash = "sha256-',
 		drvFragment: "node-modules",
-		triggers: ["bun.lock", "devenv.lock"],
+		// `bun.lock` moves the installed tree's version set, and it is the trigger
+		// that actually moves this pin today. `devenv.lock` is the ROOT scope's
+		// channel pin: `guest-image/default.nix` imports entrypoint.nix with root's
+		// `pkgs`, so that lock supplies this FOD's `nativeBuildInputs = [ pkgs.bun ]`
+		// on the vehicle realised below. `agent-image/devenv.lock` is declared
+		// beside them because it moves the BUILDER in the OTHER consumer:
+		// `agent-image/devenv.nix` imports the SAME entrypoint.nix with the
+		// agent-image scope's own `pkgs`.
+		//
+		// Note the asymmetry this table cannot express. The vehicle realised below
+		// is `guest-image/default.nix`, so a relock of the agent-image channel alone
+		// recomputes a value derived through ROOT's bun, which will equal the
+		// committed one: the refresh is correct but cannot observe that consumer.
+		// The trigger is declared here so the coupling sits where a reader looks for
+		// it; the agent-image builder is verified by the image build, not by this
+		// refresh. All three paths are repo-root-relative, as the gate's `git diff`
+		// pathspec expects.
+		triggers: ["bun.lock", "devenv.lock", "agent-image/devenv.lock"],
 	},
 ];
 
@@ -239,6 +256,36 @@ async function recompute(entry: FodEntry, origText: string): Promise<string> {
 	}
 }
 
+// Refresh ONE entry's pin (and its mirrors) in place: read the current text,
+// recompute the SRI by realising the vehicle against a faked pin, write the real
+// value back, then propagate it to every declared mirror. This is the per-entry
+// body of main()'s gated loop, factored out so a scope-specific refresher can
+// drive a single FOD directly — refresh-agent-image-nixpkgs.ts calls it after its
+// own relock, having already established (by its own base diff) that the
+// agent-image entry's trigger moved. Extracting it keeps ONE realise-and-parse
+// implementation: a second copy would drift from the got:-attribution and
+// restore-on-failure discipline above.
+export async function refreshEntry(entry: FodEntry): Promise<void> {
+	const origText = await Bun.file(entry.file).text();
+	console.log(
+		`renovate-fod: ${entry.file} (${entry.drvFragment}) trigger changed; recomputing ${entry.marker.replace(/ = .*/, "")} ...`,
+	);
+	const got = await recompute(entry, origText);
+	await Bun.write(
+		entry.file,
+		rewriteInlineHash(origText, entry.marker, got, entry.file),
+	);
+	console.log(`renovate-fod: ${entry.file} -> ${got}`);
+	for (const mirror of entry.mirrorFiles ?? []) {
+		const mirrorText = await Bun.file(mirror).text();
+		await Bun.write(
+			mirror,
+			rewriteInlineHash(mirrorText, entry.marker, got, mirror),
+		);
+		console.log(`renovate-fod: ${mirror} (mirror) -> ${got}`);
+	}
+}
+
 async function main(): Promise<void> {
 	// Resolve the repo root from git, not a hardcoded depth: Renovate invokes this
 	// as a postUpgradeTask and the paths above are repo-root-relative, so a wrong
@@ -282,24 +329,7 @@ async function main(): Promise<void> {
 	}
 
 	for (const entry of gated) {
-		const origText = await Bun.file(entry.file).text();
-		console.log(
-			`renovate-fod: ${entry.file} (${entry.drvFragment}) trigger changed; recomputing ${entry.marker.replace(/ = .*/, "")} ...`,
-		);
-		const got = await recompute(entry, origText);
-		await Bun.write(
-			entry.file,
-			rewriteInlineHash(origText, entry.marker, got, entry.file),
-		);
-		console.log(`renovate-fod: ${entry.file} -> ${got}`);
-		for (const mirror of entry.mirrorFiles ?? []) {
-			const mirrorText = await Bun.file(mirror).text();
-			await Bun.write(
-				mirror,
-				rewriteInlineHash(mirrorText, entry.marker, got, mirror),
-			);
-			console.log(`renovate-fod: ${mirror} (mirror) -> ${got}`);
-		}
+		await refreshEntry(entry);
 	}
 
 	console.log("renovate-fod: FOD hashes refreshed.");
