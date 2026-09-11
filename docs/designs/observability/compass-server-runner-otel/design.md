@@ -329,15 +329,20 @@ branches alike).
 
 **Transport propagation happens, and is harmless.** The Runner dials
 `RelayCommsCall` through a client that mounts otelconnect outermost
-(`go/internal/runner/runner.go`), whose client branch injects a traceparent
-REQUEST header unconditionally. The server extracts that remote context and —
-on the same `!trustRemote` branch — adds `WithLinks(LinkFromContext(ctx))`, a
-transport link recording which runner process relayed the call. It does NOT
-parent the origin span on it: `WithNewRoot()` applies on that same branch, so
-the reply is still a fresh root. Measured on the production-shaped path: **2
-links with a trigger, 1 link with an empty trigger.** Termination rests on
-fresh-rooting, never on the absence of a propagated header. T3's outbound
-client interceptor covers the enroll/Sessions dials.
+(`go/internal/runner/runner.go`), whose client branch always calls the
+propagator's `Inject` — so whenever tracing is enabled a traceparent REQUEST
+header rides the dial. (With tracing off no provider is installed, the client
+span is non-recording, `Inject` writes nothing, and no spans or links exist to
+reason about.) The server extracts that remote context and — on the same
+`!trustRemote` branch — adds `WithLinks(LinkFromContext(ctx))`, a transport
+link recording which runner process relayed the call. It does NOT parent the
+origin span on it: `WithNewRoot()` applies on that same branch, so the reply is
+still a fresh root. On the enabled path the empty-trigger case is **asserted**
+at exactly one link (otelconnect's transport link); the trigger case asserts
+exactly one link carrying `compass.link.kind=cross_turn_trigger`, so its total
+of two is an inference from the same topology, not an asserted count.
+Termination rests on fresh-rooting, never on the absence of a propagated
+header. T3's outbound client interceptor covers the enroll/Sessions dials.
 
 Agent-side attachment is compass-agent's lane (a task beside their #649 T3
 decode); the field and the server-side link are this record's.
@@ -753,8 +758,8 @@ the trigger's) carrying a Link to the trigger's context, and that an empty
 `trigger_traceparent` produces a root with no link carrying
 `compass.link.kind=cross_turn_trigger`. Both assertions MUST select the link by
 that attribute, never by index or by total link count — otelconnect
-independently adds a transport link, so the counts are 2 and 1, not 1 and 0,
-and link order is not a stable contract; a metric test asserting
+independently adds a transport link, so neither case is linkless and link
+order is not a stable contract; a metric test asserting
 `compass.delivery.dispatched` increments with the op-kind attribute and no
 session/channel labels.
 
