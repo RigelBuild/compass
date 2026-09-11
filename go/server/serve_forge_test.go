@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/linearagent"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 )
@@ -632,5 +634,93 @@ func TestLinearWebhookWiringResolvesFromTheServerKeyspace(t *testing.T) {
 	}
 	if secretDeclared(serverDeclared, "USER_ONLY") {
 		t.Fatal("server fake carries the user secret; the fixtures overlap")
+	}
+}
+
+// TestForgeLinearLanesShareOneTokenSource proves the notify lane and the write
+// coordinate ride ONE shared *linearagent.TokenSource (the one-instance rule,
+// RIG-3135; the directive is the compass-forge-app-credentials T4 task text).
+// Unlike the GitHub lanes, which share a whole *forge.GitHub,
+// the two Linear sinks each build their OWN *forge.Linear — so the only shared
+// object is the source inside, and pointer identity on the client would prove
+// nothing. The test therefore reads the source each BUILDER threaded into the
+// client it produced (notifyLane.reader and the registry's resolved author),
+// never a handle the test holds: a builder that minted its own source would
+// satisfy every existing test and fail only this one.
+//
+// Why one instance is load-bearing: the mint singleflight coalesces only
+// WITHIN an instance, so two sources mint independently against the same app.
+// The record (compass-forge-app-credentials T4) marks same-scope coexistence
+// UNVERIFIED rather than harmless, and one instance removes the question. The
+// documented revocation trigger is a scope-set CHANGE, which cannot fire here:
+// tokenScope is a pinned const, so both sources mint identical scope.
+//
+// Nil store/hub/board are safe: both builders only stash them into structs and
+// adapters, and this test never starts the arms/reconcilers that read them.
+func TestForgeLinearLanesShareOneTokenSource(t *testing.T) {
+	ctx := context.Background() // test root
+	tokens := linearagent.NewTokenSource("cid", "csecret", nil, "")
+
+	// (1) The notify lane's Linear reader must wrap the source it was handed.
+	notifyLane := buildLinearNotifyLane(nil, nil, tokens, slog.Default())
+	if notifyLane == nil {
+		t.Fatal("buildLinearNotifyLane returned nil, want an assembled lane")
+	}
+	notifyLinear, ok := notifyLane.reader.(*forge.Linear)
+	if !ok {
+		t.Fatalf("notify lane reader is %T, want *forge.Linear", notifyLane.reader)
+	}
+	if notifyLinear.TokenSourceForTest() != forge.TokenSource(tokens) {
+		t.Fatal("notify lane's Linear client rides a different TokenSource than the one passed in")
+	}
+
+	// (2) The write coordinate must wrap the SAME source. Reaching it means
+	// driving the real builder: a reviewer-app key the fake resolver satisfies,
+	// and a non-nil primary client (both are fail-fast gates ahead of the Linear
+	// registration).
+	const reviewerKey = "REVIEWER_APP_KEY"
+	cfg := ServeConfig{Forge: ForgeConfig{
+		Host:        "github.com",
+		App:         ForgeAppConfig{AppID: 42, InstallationID: 7, AppPrivateKeySecret: "APP_KEY"},
+		ReviewerApp: ForgeAppConfig{AppID: 43, InstallationID: 8, AppPrivateKeySecret: reviewerKey},
+	}}
+	resolver := &fakeResolver{resolved: []secrets.ResolvedSecret{
+		{Name: serverSecretName(reviewerKey), Value: "key"},
+	}}
+	primary := forge.NewGitHub(forge.GitHubConfig{Host: "github.com", Token: staticTokenSource{}})
+
+	svc, err := buildForgeWriteService(ctx, cfg, nil, nil, resolver, primary, tokens, slog.Default())
+	if err != nil {
+		t.Fatalf("buildForgeWriteService: %v", err)
+	}
+	resolved, ok := svc.providers.resolve(&compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR})
+	if !ok {
+		t.Fatal("no Linear write coordinate registered with a configured token source")
+	}
+	writeLinear, ok := resolved.author.(*forge.Linear)
+	if !ok {
+		t.Fatalf("Linear coordinate author is %T, want *forge.Linear", resolved.author)
+	}
+	if writeLinear.TokenSourceForTest() != forge.TokenSource(tokens) {
+		t.Fatal("Linear write coordinate rides a different TokenSource than the notify lane")
+	}
+
+	// (3) The two clients are genuinely distinct objects, so (1) and (2) are two
+	// independent reads of one shared source -- not the same client twice, which
+	// would make the pair trivially true.
+	if notifyLinear == writeLinear {
+		t.Fatal("notify and write clients are the same *forge.Linear; the shared-source assertions prove nothing")
+	}
+
+	// (4) The GitHub author role is the primaryClient this builder was PASSED,
+	// not one it minted. RIG-3135's secondary bullet: the budget test calls
+	// registerGitHubForgeCoordinate directly, so this pass-through was the one
+	// hop covered by inspection alone.
+	ghResolved, ok := svc.providers.resolve(nil)
+	if !ok {
+		t.Fatal("no default GitHub write coordinate registered")
+	}
+	if ghResolved.author != forge.Provider(primary) {
+		t.Fatal("GitHub coordinate author is not the primaryClient passed to buildForgeWriteService")
 	}
 }
