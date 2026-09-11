@@ -13,9 +13,9 @@ lives under [`docs/concepts/`](./docs/concepts/README.md):
 - **[Self-hosted and managed](./docs/concepts/self-host-and-managed.md)** —
   Compass is two products over one shared core: the open-source self-hosted core
   (this repo, any deployer URL) and the private, commercially-licensed managed
-  multi-tenant service (private monorepo, `compass.rigel.build`). A design record
-  here designs the core; managed control-plane concerns are named and deferred,
-  never designed in this repo.
+  multi-tenant service (`compass.rigel.build`). A design record here designs the
+  core; managed control-plane concerns are named and deferred, never designed
+  in this repo.
 - **[Tokens and billing](./docs/concepts/tokens-and-billing.md)** — the user
   brings the tokens (BYOK or their own cloud subscription); Rigel bills for the
   compute the managed service brings, never for tokens. All tokens flow through

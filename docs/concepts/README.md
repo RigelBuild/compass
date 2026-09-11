@@ -10,9 +10,8 @@ concept; the tool and prompt material carry the detail, these carry the model.
 - **[Self-hosted and managed](./self-host-and-managed.md)** — Compass ships as
   two products over one shared core: the open-source self-hosted core (this
   repo, any deployer URL) and the private, commercially-licensed managed
-  multi-tenant service (private monorepo, `compass.rigel.build`, reuses the
-  core). Which product a change lives in, and what a design record here may
-  assume.
+  multi-tenant service (`compass.rigel.build`, reuses the core). Which product a
+  change lives in, and what a design record here may assume.
 - **[Tokens and billing](./tokens-and-billing.md)** — the user brings the
   tokens (BYOK or their own cloud subscription); Rigel bills for the compute the
   managed service brings, never for tokens. What gets recorded off the bundled
