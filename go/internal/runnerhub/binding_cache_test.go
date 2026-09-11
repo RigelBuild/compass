@@ -26,6 +26,8 @@ package runnerhub
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -37,7 +39,9 @@ import (
 // id, modelling the durable table's account-keyed UPSERT: RecordSessionBinding
 // displaces any prior binding for the same account and returns that session, and
 // DeleteSessionBindingsForRunner returns the rows it removed (the reconnect
-// sweep's authoritative reap set). resolveCtxSystemRole records whether the LAST
+// sweep's authoritative reap set). It also models session_bindings_session_key:
+// re-binding a session id that belongs to a DIFFERENT account is ErrConflict,
+// never a silent steal. resolveCtxSystemRole records whether the LAST
 // ResolveSessionAccount ran under the system role — the direct probe for the
 // ack-path hazard fix. Concurrency-safe for parity with the real store.
 type fakeBindingStore struct {
@@ -63,6 +67,14 @@ func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID str
 	if f.recordErr != nil {
 		return "", f.recordErr
 	}
+	// session_bindings_session_key: this session id already belongs to a
+	// DIFFERENT account. The real store raises ErrConflict rather than
+	// stealing the id, which is what keeps ResolveSessionAccount
+	// single-valued; a fake that silently overwrote would hide the whole
+	// class (a Runner restart re-mints "sess-1", so id reuse is routine).
+	if b, ok := f.bindings[sessionID]; ok && b.AccountID != accountID {
+		return "", fmt.Errorf("%w: session %q is already bound to a different agent", store.ErrConflict, sessionID)
+	}
 	var displaced string
 	// Account-keyed UPSERT: a prior binding for this account is displaced.
 	for sid, b := range f.bindings {
@@ -72,7 +84,7 @@ func (f *fakeBindingStore) RecordSessionBinding(_ context.Context, sessionID str
 			break
 		}
 	}
-	f.bindings[sessionID] = store.SessionBinding{SessionID: sessionID, AccountID: accountID, RunnerID: testRunnerID}
+	f.bindings[sessionID] = store.SessionBinding{SessionID: sessionID, AccountID: accountID, RunnerID: runnerID}
 	return displaced, nil
 }
 
@@ -156,7 +168,22 @@ type fakeRoutingFabric struct {
 	published []fabric.BindingChange
 }
 
-func (f *fakeRoutingFabric) PublishBindingChange(_ context.Context, _ string, b fabric.BindingChange) error {
+// PublishBindingChange mirrors the real fabric's REJECTION contract before
+// recording: (*Fabric).PublishBindingChange drops a change that fails
+// BindingChange.valid() (empty tenant or session id, an op outside
+// bound/unbound) and one whose Tenant disagrees with the subject tenant, and
+// the hub only LOGS that error — so a malformed publish would silently leave
+// every peer cache stale. A fake that accepted anything could not see it.
+func (f *fakeRoutingFabric) PublishBindingChange(_ context.Context, tenant string, b fabric.BindingChange) error {
+	if tenant == "" || b.Tenant != tenant {
+		return fmt.Errorf("publish on tenant %q with change tenant %q: must agree and be non-empty", tenant, b.Tenant)
+	}
+	if b.SessionID == "" {
+		return fmt.Errorf("binding change for tenant %q has an empty session id", tenant)
+	}
+	if b.Op != fabric.BindingBound && b.Op != fabric.BindingUnbound {
+		return fmt.Errorf("binding change %s/%s has op %q, want %q or %q", b.Tenant, b.SessionID, b.Op, fabric.BindingBound, fabric.BindingUnbound)
+	}
 	f.mu.Lock()
 	f.published = append(f.published, b)
 	recv := make([]func(fabric.BindingChange), len(f.receivers))
@@ -425,4 +452,114 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 			t.Fatalf("forge cursor advances = %+v, want exactly one (%s, sub-1, rev-1)", adv, testAgentAccount)
 		}
 	})
+}
+
+// TestStoreFaultsFallBackWithoutLosingFailClosed drives the four durable-fault
+// branches the design's fail-closed reasoning rests on. Each fallback is a
+// deliberate availability choice (a store fault must not fail a Start that
+// already succeeded on the Runner, nor wedge a reconnect), and each is only
+// safe because it degrades toward the in-RAM truth rather than toward an
+// unbound session resolving. Nothing else in the suite sets these error fields.
+func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
+	faultErr := errors.New("durable fault")
+
+	t.Run("promote with a record fault still resolves on this instance", func(t *testing.T) {
+		hub := newHubOnly()
+		bindings := newFakeBindingStore()
+		bindings.recordErr = faultErr
+		routing := &fakeRoutingFabric{}
+		hub.SetSessionBindingStore(bindings)
+		hub.SetRoutingFabric(routing)
+		hub.enroll(context.Background(), "runner-1", runnerSubject())
+
+		hub.bindContainer("cont-1", testAgentAccount)
+		hub.promoteSession(context.Background(), "cont-1", "sess-1")
+
+		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); !ok || acct != testAgentAccount {
+			t.Fatalf("accountForSession(sess-1) = (%q, %v), want (%s, true): a durable fault must not lose the live session", acct, ok, testAgentAccount)
+		}
+		// The write never landed, so there is nothing for a peer to invalidate.
+		if pub := routing.publishedSnapshot(); len(pub) != 0 {
+			t.Fatalf("published = %+v, want none: a failed durable write must not announce a binding that does not exist", pub)
+		}
+	})
+
+	t.Run("re-enroll with a reap fault still clears and fires offline", func(t *testing.T) {
+		hub := newHubOnly()
+		bindings := newFakeBindingStore()
+		hub.SetSessionBindingStore(bindings)
+		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.bindContainer("cont-1", testAgentAccount)
+		hub.promoteSession(context.Background(), "cont-1", "sess-1")
+
+		// The reconnect sweep now faults; the in-RAM snapshot must still drive it.
+		bindings.deleteForRunnerErr = faultErr
+		hub.enroll(context.Background(), "runner-1", runnerSubject())
+
+		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
+			t.Fatalf("accountForSession(sess-1) = (%q, true) after a reconnect, want fail-closed: a reap fault must not leave a dead session resolvable", acct)
+		}
+	})
+
+	t.Run("a resolve fault fails closed", func(t *testing.T) {
+		hub := newHubOnly()
+		bindings := newFakeBindingStore()
+		bindings.seed("sess-1")
+		bindings.resolveErr = faultErr
+		hub.SetSessionBindingStore(bindings)
+		hub.enroll(context.Background(), "runner-1", runnerSubject())
+
+		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
+			t.Fatalf("accountForSession(sess-1) = (%q, true), want fail-closed: a store fault must never resolve", acct)
+		}
+	})
+
+	t.Run("a reverse-resolve fault fails closed", func(t *testing.T) {
+		hub := newHubOnly()
+		bindings := newFakeBindingStore()
+		bindings.seed("sess-1")
+		bindings.reverseErr = faultErr
+		hub.SetSessionBindingStore(bindings)
+		hub.enroll(context.Background(), "runner-1", runnerSubject())
+
+		if sess, ok := hub.SessionForAccount(context.Background(), testAgentAccount); ok {
+			t.Fatalf("SessionForAccount = (%q, true), want fail-closed: a store fault must never resolve", sess)
+		}
+	})
+}
+
+// TestReusedSessionIDConflictIsSwallowed WITNESSES a known gap rather than a
+// guarantee: production mints session ids with a counter that resets on every
+// Runner restart, so a joint Server+Runner restart re-mints "sess-1" over a
+// surviving row. The store answers ErrConflict to keep the binding
+// single-valued; promoteSession currently treats it as a transient fault and
+// falls back to RAM, leaving the durable row pointing at the OLD account. The
+// single-instance MVP shadows that row and later retires it, but a second
+// Server instance would read the stale durable truth. Pinned so the behaviour
+// cannot change silently while the fix is decided (RIG-3108 review F1).
+func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-1", runnerSubject())
+
+	// A row from before the joint restart, under a DIFFERENT account.
+	bindings.mu.Lock()
+	bindings.bindings["sess-1"] = store.SessionBinding{SessionID: "sess-1", AccountID: "acct-stale", RunnerID: "runner-1"}
+	bindings.mu.Unlock()
+
+	hub.bindContainer("cont-1", testAgentAccount)
+	hub.promoteSession(context.Background(), "cont-1", "sess-1")
+
+	// This instance resolves the NEW account from RAM.
+	if acct, ok := hub.accountForSession(context.Background(), "sess-1"); !ok || acct != testAgentAccount {
+		t.Fatalf("accountForSession(sess-1) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
+	}
+	// ...but the durable row still names the stale account: the divergence.
+	bindings.mu.Lock()
+	got := bindings.bindings["sess-1"].AccountID
+	bindings.mu.Unlock()
+	if got != "acct-stale" {
+		t.Fatalf("durable binding for sess-1 = %q, want %q — if this now agrees with the cache, the ErrConflict gap was fixed and this witness test should become a real assertion", got, "acct-stale")
+	}
 }

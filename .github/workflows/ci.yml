@@ -219,9 +219,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -229,9 +229,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -298,7 +298,7 @@ jobs:
       github.event_name != 'workflow_dispatch' ||
       github.event.inputs.pr != ''
     # 90m is an INHERITED ceiling, not a measured one. It was sized for the
-    # vendored forks' nix worst case
+    # since-removed forks group's nix worst case
     # (infra/ci/compass-ci-job-decomposition/design.md:77-78), and that group is
     # now gone — the monolith's real wall-clock on main was ~20m even before it
     # left (same record, :377-378). `agent-image/moon.yml` used to point back
@@ -346,9 +346,9 @@ jobs:
       - if: matrix.run == 'true'
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -356,9 +356,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -422,6 +422,10 @@ jobs:
           # would find nothing and silently fall back to the dev-box path.
           chromium=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix chromium)
+          [ -n "$chromium" ] || {
+            echo "::error::chromium-e2e-env.nix chromium produced no store path"
+            exit 1
+          }
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
           # secretspec: the CLI the Go secrets WRITE path spawns BY NAME
           # (go/internal/secrets/resolver.go's `defaultCLI = "secretspec"`,
@@ -440,6 +444,27 @@ jobs:
           secretspec=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/secretspec-env.nix secretspec)
           echo "$secretspec/bin" >>"$GITHUB_PATH"
+
+          # The visual-regression gate's fonts, from the same pinned helper.
+          # Without this the runner rasterizes with whatever faces its image
+          # ships, making the committed baselines a function of the runner
+          # image rather than of the repo — a base-image bump would then red
+          # every apps/ui PR at once, and no agent could reproduce it locally.
+          # The config deliberately sees ONLY the pinned faces, so a box with
+          # extra fonts installed renders identically to one without.
+          fonts=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/chromium-e2e-env.nix fontconfig)
+          # Fail closed: the two malformed values fail in opposite directions
+          # and BOTH stay green. An EMPTY FONTCONFIG_FILE is not "use the
+          # system config" — fontconfig reads it as a config with no font dirs
+          # at all, and every string then measures zero width. A path that does
+          # not exist falls back to the full host set, which is the undeclared
+          # input this whole step exists to remove.
+          [ -n "$fonts" ] || {
+            echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
+            exit 1
+          }
+          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
         if: matrix.run == 'true'
@@ -480,6 +505,56 @@ jobs:
         # into an exfiltration or write path. Bump the pin deliberately (it rides
         # the same dependabot config as the other pinned actions), never drift it.
         uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
+
+      - name: Upload visual-gate diffs
+        # A red visual-gate is unreadable from the log alone: Playwright's
+        # failure text names the ratio that exceeded the threshold, not WHICH
+        # pixels moved. The expected/actual/diff triplet it writes to
+        # apps/ui/e2e/.output-visual (the gate's own --output, kept separate
+        # from dev-smoke's outputDir because moon runs sibling `ci` deps in
+        # parallel and Playwright wipes its output dir at run start) is the
+        # only artifact that makes the adjudication possible, so it ships on
+        # failure.
+        #
+        # Two matrix-shaped requirements, both easy to get wrong:
+        #  - The artifact name carries `matrix.group`. This job is a matrix over
+        #    run-time-discovered concern groups; under upload-artifact v4+ two
+        #    concurrent legs uploading one name is a hard error, not a merge.
+        #  - `matrix.run == 'true'` stays ANDed in, matching every other step in
+        #    this job. A bare `if: failure()` would also fire on the placeholder
+        #    legs an unaffected group spins up.
+        #
+        # This fires on ANY failure in the bun leg (a red typecheck too, not just
+        # a visual diff), so the directory is often absent — `if-no-files-found:
+        # ignore` keeps that from emitting a spurious missing-artifact warning.
+        # Retention is short: these are large PNGs whose only reader is whoever
+        # is triaging the run that produced them.
+        if: failure() && matrix.run == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: visual-gate-diffs-${{ matrix.group }}
+          path: apps/ui/e2e/.output-visual/**
+          retention-days: 7
+          if-no-files-found: ignore
+          # Both of these are load-bearing, and both defaults are wrong here.
+          #
+          # `include-hidden-files` defaults to 'false', and the gate's output
+          # dir is `.output-visual` — a dot-directory. The action treats
+          # anything under a folder beginning with `.` as hidden and its walk
+          # skips the directory before descending, so at the default this step
+          # uploads ZERO files while still reporting success — and the
+          # `if-no-files-found: ignore` above suppresses the one warning that
+          # would reveal it. An empty artifact is indistinguishable from the
+          # legitimate absent-directory case that `ignore` exists for.
+          #
+          # `overwrite` defaults to 'false', and at that default a second
+          # upload under an existing name FAILS the step. "Re-run failed jobs"
+          # re-runs a leg inside the same run, where the prior attempt's
+          # artifact still exists — and the bun leg is exactly the one an
+          # author re-runs after a suspected-flaky visual red. The re-run's
+          # triplets supersede the old ones; nothing reads the older artifact.
+          include-hidden-files: true
+          overwrite: true
 
   pgtest:
     name: pgtest
@@ -541,9 +616,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -551,9 +626,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -742,9 +817,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -752,9 +827,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -986,9 +1061,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -996,9 +1071,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -1260,9 +1335,9 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The forks' functional CI is `nix build` of their own flakes, and the
-          # whole toolchain — language runtimes AND the nixpkgs tools — is built
-          # from nix below. Flakes are needed for the former; nix-command for both.
+          # The whole toolchain — language runtimes AND the nixpkgs tools — is
+          # built from nix below, and the devenv flake it fetches needs flakes, so
+          # both experimental features are on.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -1270,9 +1345,9 @@ jobs:
           # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
-          # by the key the same PR supplied. Naming the two caches the forks
+          # by the key the same PR supplied. Naming the two caches we
           # legitimately use keeps that trust in a reviewed file: adding a third
-          # is a change to this workflow, not to a vendored tree.
+          # is a change to this workflow, which is reviewed.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -1985,8 +2060,7 @@ jobs:
         #     host runner uid, but the podman user reads it — without this, git
         #     (and moon's affected-detection, which shells git) fails with
         #     `detected dubious ownership`. `--system` so the podman user sees it;
-        #     `*` covers the vendored forks under the tree (each a git-aware moon
-        #     project).
+        #     `*` covers every git-aware moon project under the tree.
         #   - /usr/bin/podman-step: the wrapper `defaults.run.shell` runs every
         #     other step through (see the job's `defaults.run` comment). GitHub
         #     resolves a custom shell's command via $PATH, so it is named bare
@@ -2120,7 +2194,7 @@ jobs:
           # the system /etc/nix/nix.conf the installer writes is not consulted for a
           # single-user install run as a normal user). Mirrors the moon job's
           # install-nix-action config exactly — the SAME two cache substituters +
-          # trusted keys the vendored forks use, never `accept-flake-config` (which
+          # trusted keys the nix builds use, never `accept-flake-config` (which
           # would trust a PR-supplied substituter + key).
           conf=$(mktemp)
           cat >"$conf" <<'NIXCONF'
@@ -2533,7 +2607,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           # The SAME two-cache trust posture as the moon job — the two
-          # substituters the vendored forks use plus their trusted keys, never
+          # substituters the nix builds use plus their trusted keys, never
           # `accept-flake-config` (which would trust a PR-supplied substituter +
           # key). See the moon job's install-nix-action step for the full rationale.
           extra_nix_config: |
@@ -2670,7 +2744,7 @@ jobs:
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           # The SAME two-cache trust posture as the moon job — the two
-          # substituters the vendored forks use plus their trusted keys, never
+          # substituters the nix builds use plus their trusted keys, never
           # `accept-flake-config` (which would trust a PR-supplied substituter +
           # key). See the moon job's install-nix-action step for the full rationale.
           extra_nix_config: |
@@ -2719,7 +2793,27 @@ jobs:
         run: |
           chromium=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/chromium-e2e-env.nix chromium)
+          [ -n "$chromium" ] || {
+            echo "::error::chromium-e2e-env.nix chromium produced no store path"
+            exit 1
+          }
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
+          # The same pinned fontconfig the moon job's gate replays with. The
+          # capture lane MUST rasterize with it too: the gate compares these
+          # bytes against a run that has it set, so a capture without it bakes
+          # the runner image's own faces into the baselines and reds every
+          # text-bearing shot permanently.
+          fonts=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/chromium-e2e-env.nix fontconfig)
+          # Fail closed HERE above all: an empty or bogus value in the capture
+          # lane writes zero-width or host-font pixels into committed baselines,
+          # and the bot PR then presents them for image review as a legitimate
+          # capture. A red gate is recoverable; a poisoned baseline is not.
+          [ -n "$fonts" ] || {
+            echo "::error::chromium-e2e-env.nix fontconfig produced no store path"
+            exit 1
+          }
+          echo "FONTCONFIG_FILE=$fonts" >>"$GITHUB_ENV"
 
       - name: Install the workspace JS dependencies
         # Unlike the forge regen lane — whose payload is `go test` and needs no

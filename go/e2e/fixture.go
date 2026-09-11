@@ -82,6 +82,10 @@ type fixtureConfig struct {
 	// (WithSite) instead of minting fresh ephemeral ones — the RIG-1790 H6
 	// cross-restart substrate. nil is the default ephemeral fixture.
 	site *fixtureSite
+	// onUp, when non-nil, receives the live stack immediately after a successful
+	// Up (WithStackObserver), so a caller with a detached t can still reap the
+	// children if a later construction gate aborts. nil is the default.
+	onUp func(*stack.Stack)
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
@@ -162,6 +166,17 @@ func WithCannedMarkerScript(marker string, turns ...CannedTurn) fixtureOption {
 func WithSite(site fixtureSite) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.site = &site
+	}
+}
+
+// WithStackObserver hands the live stack to onUp the moment Up succeeds, before
+// any later gate can abort construction. A caller whose t is detached — whose
+// t.Cleanup Down is therefore unreachable — needs this to reap the children when
+// a post-Up gate t.Fatalf's, since NewFixture returns its *Fixture only at the
+// very end and a Goexit means it never returns at all.
+func WithStackObserver(onUp func(*stack.Stack)) fixtureOption {
+	return func(fc *fixtureConfig) {
+		fc.onUp = onUp
 	}
 }
 
@@ -494,6 +509,12 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	t.Cleanup(func() {
 		_ = st.Down(ctx) // best-effort teardown guard; a Down error here is not actionable during cleanup
 	})
+	// A detached-t caller's cleanup above is unreachable, so hand it the live
+	// stack here — the only point that is both after a successful Up and before
+	// any gate that can Goexit without ever returning a *Fixture.
+	if fc.onUp != nil {
+		fc.onUp(st)
+	}
 
 	// The TLS anchor lives under StateDir (cert.go: tls.crt/tls.key). The
 	// bootstrap-admin token is written by the network door under the server

@@ -579,7 +579,13 @@ Cases:
 
 - getter returns a valid id ⇒ request carries `X-POSTHOG-SESSION-ID: <id>`
   (capture seam).
-- getter returns `undefined` ⇒ header **absent** (not empty) — capture seam.
+- getter returns `undefined` ⇒ header **absent** (not empty) — **direct seam,
+  all three assertions above**. The guard can throw on this input, so absence
+  alone is not enough. `captureRequest`'s capturing `fetch` always `throw`s
+  (`"captureRequest: short-circuit before response"`), so its gate
+  `rejects.toThrow()` cannot tell "threw early" from "reached `next`" — it goes
+  green on the very defect the case exists to catch. Assertion 3 (`result` is
+  the sentinel) is what proves nothing threw.
 - getter returns `""` ⇒ header absent — capture seam.
 - oversized value (201 ASCII chars) ⇒ header absent — capture seam.
 - **exactly 200 ASCII chars ⇒ header PRESENT** (capture seam). This is the

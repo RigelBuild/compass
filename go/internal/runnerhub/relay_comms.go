@@ -305,9 +305,10 @@ func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.Ac
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
+	reapStale := h.reapStale
 	h.mu.Unlock()
 
-	if !h.readThroughAllowed(ctx, bindings, enrolled) {
+	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
 		return "", false
 	}
 	account, err := bindings.ResolveSessionAccount(ctx, sessionID)
@@ -334,10 +335,12 @@ func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.Ac
 // readThroughAllowed reports whether a cache-miss binding read may fall through
 // to the durable table: a store must be wired, a Runner must be currently
 // enrolled (a miss with none enrolled means the reconnect reap cleared every
-// binding — fail closed), and the ctx must be request-scoped (a system-role read
-// is the unscoped-row hazard, refused).
-func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingStore, enrolled bool) bool {
-	return bindings != nil && enrolled && !store.IsSystemRole(ctx)
+// binding — fail closed), the ctx must be request-scoped (a system-role read
+// is the unscoped-row hazard, refused), and the last re-enroll's durable reap
+// must not have faulted — rows it failed to delete name sessions this hub has
+// already declared dead, so reading them back would resurrect them.
+func (h *Hub) readThroughAllowed(ctx context.Context, bindings SessionBindingStore, enrolled, reapStale bool) bool {
+	return bindings != nil && enrolled && !reapStale && !store.IsSystemRole(ctx)
 }
 
 // SessionForAccount resolves the LIVE session bound to an agent account — the
@@ -365,9 +368,10 @@ func (h *Hub) SessionForAccount(ctx context.Context, account store.AccountID) (s
 	}
 	bindings := h.bindings
 	enrolled := h.runner != nil
+	reapStale := h.reapStale
 	h.mu.Unlock()
 
-	if !h.readThroughAllowed(ctx, bindings, enrolled) {
+	if !h.readThroughAllowed(ctx, bindings, enrolled, reapStale) {
 		return "", false
 	}
 	sessionID, err := bindings.SessionForAccount(ctx, account)

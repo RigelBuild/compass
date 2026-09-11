@@ -82,7 +82,50 @@ tasks:
     inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', 'e2e/dev-boot.spec.ts', 'playwright.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     options:
       cache: false
+  visual-gate:
+    # The visual-regression gate: renders the 11 committed shots and compares
+    # them against apps/ui/e2e/__screens__ at the ratio thresholds in
+    # playwright.config.ts. Baselines are captured BY CI, not on a dev box —
+    # a dev-box capture differs from CI's Chromium in font rasterization and
+    # anti-aliasing on 10 of the 11 shots (measured, RIG-2154 T5), so a
+    # locally-regenerated baseline reds this task on CI for a change that
+    # altered nothing. Regenerate via the `regen-visual-baselines` dispatch
+    # lane and merge the bot PR it opens.
+    #
+    # `cache: false` for the same reason `dev-smoke` sets it: a cached green
+    # would survive a real rendering change whose inputs moon cannot hash
+    # (the browser binary comes from nix at run time, not from `inputs`).
+    #
+    # `--output` is NOT cosmetic. playwright.config.ts sets one `outputDir`
+    # for the whole project, and Playwright deletes that directory during
+    # global setup on every run. `dev-smoke` and `visual-gate` are sibling
+    # deps of `ci` with no ordering edge between them and moon runs them in
+    # parallel, so a shared dir means dev-smoke's startup can delete the diff
+    # triplets visual-gate just wrote — destroying the evidence for a real
+    # red. Separate dirs remove the coupling; a mutex would only serialize it.
+    command: 'bunx playwright test e2e/visual-smoke.spec.ts --output e2e/.output-visual'
+    deps: ['install']
+    # `dev-smoke`'s list with the spec swapped, plus two additions.
+    #
+    # `e2e/__screens__/**/*`: a baseline-only PR (the regen bot's, exactly)
+    # must re-schedule this gate, and PNGs live outside `src/**/*`.
+    #
+    # `/devenv.lock`: it pins the nixpkgs that builds the Chromium this gate
+    # rasterizes against (tools/toolchain/chromium-e2e-env.nix reads it, and
+    # ci.yml realizes that derivation into PLAYWRIGHT_CHROMIUM_PATH). Renovate
+    # opens devenv.lock-only PRs, which move the renderer while touching no
+    # other input here — so without this the gate does not run on the change
+    # class most likely to shift rasterization, the bump lands green, and the
+    # next unrelated apps/ui PR eats the skew red. `cache: false` does not
+    # help: it forces a real run when scheduled, and scheduling is what is
+    # missing. Same reasoning and shape as tools/stamp-gate/moon.yml.
+    #
+    # `src/**/*.css` is already covered by `src/**/*`; naming it separately
+    # would be redundant, not additive.
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', '/tsconfig.base.json', 'package.json', 'vite.config.ts', 'e2e/visual-smoke.spec.ts', 'e2e/__screens__/**/*', 'playwright.config.ts', '/bun.lock', '/devenv.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    options:
+      cache: false
   ci:
-    deps: ['typecheck', 'build', 'test', 'stylelint', 'dev-smoke']
+    deps: ['typecheck', 'build', 'test', 'stylelint', 'dev-smoke', 'visual-gate']
     options:
       cache: false

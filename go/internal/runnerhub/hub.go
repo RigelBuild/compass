@@ -34,7 +34,7 @@ import (
 type RunnerEvent struct {
 	// RunnerSeq is the Runner-assigned monotonic sequence across the Runner's
 	// whole event stream. A gap in the sequence the hub observes is in-transit
-	// loss (OQ6 Runner-sequenced, go-toolchain-default.md:1389-1392).
+	// loss (OQ6 Runner-sequenced).
 	RunnerSeq uint64
 	// SessionID is the Server-side session id the frame belongs to.
 	SessionID string
@@ -390,6 +390,11 @@ type Hub struct {
 	// binding change publishes nothing — its own writes keep its own cache
 	// honest without a fabric round-trip.
 	routing RoutingFabric
+	// reapStale records that a re-enroll's durable reap FAILED, so the table
+	// still holds rows for sessions this hub has already declared dead. A
+	// read-through would resurrect them and break fail-closed, so it is
+	// refused until a later reap succeeds and clears this. Read under mu.
+	reapStale bool
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall
 	// delegates a resolved lifecycle call to (spawn/despawn record T4). Nil until
 	// SetLifecycleCaller wires it (after both hub and lifecycleService exist,
@@ -425,8 +430,8 @@ type Hub struct {
 	runnerReadyHook func()
 
 	mu sync.Mutex
-	// runner is the single attached Runner (single-Runner MVP, OQ6
-	// go-toolchain-default.md:1392). A second enrollment re-attaches rather than
+	// runner is the single attached Runner (single-Runner MVP, OQ6).
+	// A second enrollment re-attaches rather than
 	// registering a second entry.
 	runner *attachedRunner
 	// containerAccounts binds a provisioned container_name to the agent account
@@ -997,7 +1002,7 @@ type promotedPair struct {
 // enroll registers (or re-attaches) a Runner under its authenticated subject,
 // returning whether it re-attached an existing Runner (OQ6 duplicate enrollment:
 // a second enrollment re-attaches the same Runner rather than registering a
-// second, single-Runner MVP, go-toolchain-default.md:1392).
+// second, single-Runner MVP).
 //
 // Enroll drops ALL agent-comms bindings (OQ-2, ratified). session_id /
 // container_name are Runner-minted, so a restarted Runner could re-mint an id
@@ -1076,10 +1081,15 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject) (rea
 		if err != nil {
 			// A durable-reap fault must not wedge the reconnect: log it and fall
 			// back to the in-RAM snapshot (still cleared above), so the presence
-			// edges and held-deliver reap fire from what the cache last knew. A
-			// surviving row is retired on the next successful reap.
-			h.log.Error("durable session-binding reap failed on re-enroll; using in-RAM snapshot",
+			// edges and held-deliver reap fire from what the cache last knew.
+			// The rows SURVIVE, though, and they name sessions just declared
+			// dead — so read-through is refused until a reap succeeds, or a
+			// miss would resurrect one and defeat fail-closed.
+			h.log.Error("durable session-binding reap failed on re-enroll; using in-RAM snapshot, read-through disabled until a reap succeeds",
 				"runner_id", id, "error", err)
+			h.mu.Lock()
+			h.reapStale = true
+			h.mu.Unlock()
 		} else {
 			offline = make([]promotedPair, 0, len(rows))
 			reapedSessions = make([]string, 0, len(rows))
@@ -1087,6 +1097,10 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject) (rea
 				offline = append(offline, promotedPair{account: b.AccountID, sessionID: b.SessionID})
 				reapedSessions = append(reapedSessions, b.SessionID)
 			}
+			// The table now agrees with the cleared cache again.
+			h.mu.Lock()
+			h.reapStale = false
+			h.mu.Unlock()
 		}
 	}
 

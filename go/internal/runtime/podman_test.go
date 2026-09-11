@@ -435,3 +435,41 @@ func TestStopGraceSeconds(t *testing.T) {
 		})
 	}
 }
+
+// podmanStubExit builds a PodmanCLI whose engine binary is a shell stub that
+// ignores the podman argv and exits with code. It exercises the shared spawn
+// seam end to end without a real podman: the child RUNS to completion, so the
+// path under test is the ran-but-non-zero exit mapping, not a spawn failure.
+func podmanStubExit(t *testing.T, code int) *PodmanCLI {
+	t.Helper()
+	prog := filepath.Join(t.TempDir(), "podman-stub.sh")
+	script := "#!/bin/sh\nexit " + strconv.Itoa(code) + "\n"
+	if err := os.WriteFile(prog, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing stub: %v", err)
+	}
+	return NewPodmanCLI().WithProgram(prog).WithTimeout(10 * time.Second)
+}
+
+// A ran child's exit status comes back as data, and Exists/ImageExists key
+// presence off the exact code (0 present, 1 absent). So an off-by-one here, or
+// folding a non-zero exit into an error, silently corrupts every presence check.
+func TestExecPassesThroughChildExitCode(t *testing.T) {
+	// The seam branches only on zero vs non-zero, so one arbitrary non-zero
+	// code past 1 is enough to prove the status is plumbed, not defaulted.
+	for _, code := range []int{0, 1, 42} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			out, err := podmanStubExit(t, code).Exec(t.Context(), WorkloadID("c"), NewExecSpec("ignored"))
+			// A ran child's non-zero exit is data, not a spawn failure: the
+			// error must be nil and specifically never a *SpawnError.
+			if _, ok := errors.AsType[*SpawnError](err); ok {
+				t.Fatalf("Exec err = %v, want not a *SpawnError for a ran-but-exit-%d child", err, code)
+			}
+			if err != nil {
+				t.Fatalf("Exec err = %v, want nil for a ran-but-exit-%d child", err, code)
+			}
+			if out.ExitCode != code {
+				t.Fatalf("Exec ExitCode = %d, want %d", out.ExitCode, code)
+			}
+		})
+	}
+}

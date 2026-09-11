@@ -265,6 +265,7 @@ in
     # toolchain. Platform-independent, so it lives in the base set, not the
     # Linux-only merge below.
     MOON_TOOLCHAIN_FORCE_GLOBALS = "true";
+
   }
   # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
   # GTK4/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
@@ -298,6 +299,20 @@ in
         (lib.makeSearchPathOutput "dev" "lib/pkgconfig" pcClosure)
         (lib.makeSearchPathOutput "dev" "share/pkgconfig" pcClosure)
       ];
+
+    # The visual-regression gate (apps/ui:visual-gate) rasterizes text with
+    # these faces, pinned to the same devenv.lock nixpkgs CI resolves, and the
+    # config also pins hinting/antialiasing, so a local run and a CI run
+    # rasterize identically and a red gate is reproducible off-CI. The config
+    # sees ONLY the pinned faces, so the host's own font set — which previously
+    # decided which substitute the CSS stack fell through to, with no declared
+    # cause — cannot affect the output.
+    #
+    # Linux-only despite the fonts themselves building everywhere: chromium is
+    # Linux-only in nixpkgs, so a darwin shell cannot run this gate at all, and
+    # FONTCONFIG_FILE is process-tree-wide — it would replace the font universe
+    # for everything launched from the shell in exchange for nothing.
+    FONTCONFIG_FILE = (import tools/toolchain/chromium-e2e-env.nix).fontconfig;
   };
 
   enterShell = ''

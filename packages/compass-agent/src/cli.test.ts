@@ -103,7 +103,9 @@ afterEach(() => {
 	for (const dir of tmpdirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
-});
+	// Recursive /tmp scratch deletes outrun bun's 5s hook default under the
+	// parallel pre-push gate; bound as a slow-cleanup detector, not a budget (RIG-3611).
+}, 60_000);
 
 // The socket path is a CONTRACT with the Runner, not a preference: host.go:33
 // bind-mounts the per-container socket at this fixed path precisely "so the
@@ -2862,7 +2864,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			...createForgeTools(new ForgeBroker(fakeTransport)),
 			...createBoardTools(new BoardBroker(fakeTransport)),
 		];
-		expect(natives).toHaveLength(20);
+		expect(natives).toHaveLength(21);
 		for (const tool of natives) {
 			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
 				name: tool.name,
@@ -2912,7 +2914,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// board natives are ALWAYS merged in (RIG-1741/RIG-2672/RIG-3191) — so
 		// customTools carries exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(20);
+		expect(seen[0].customTools).toHaveLength(21);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -2945,7 +2947,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (RIG-1741/RIG-2672/RIG-3191) — so customTools is exactly the comms/
 		// lifecycle/forge/board natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(20);
+		expect(seen[0].customTools).toHaveLength(21);
 	});
 
 	// ── RIG-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──
