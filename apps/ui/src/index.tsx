@@ -87,36 +87,12 @@ async function main(
 	root: HTMLElement,
 	connection: ResolvedConnection,
 ): Promise<void> {
-	// Product analytics, OFF by default: analyticsConfigFromEnv returns undefined
-	// unless a PostHog project key is configured, and createAnalytics then hands
-	// back a no-op that never touches posthog — an unconfigured deployment emits
-	// zero analytics.
-	//
-	// Built FIRST, before the clients, because correlation now runs in both
-	// directions and the outbound half needs a real analytics object to read
-	// from. Both directions are lazy getters, and they point opposite ways:
-	//
-	//   inbound   `clients.traceId` → analytics: the transport records each
-	//             reply's server trace id into that slot, and analytics reads it
-	//             at capture time. `clients` is a forward reference from inside
-	//             this getter, which is safe because the getter only runs once
-	//             an event is captured — long after the next statement binds it.
-	//   outbound  `analytics.sessionId()` → the transport: every request asks
-	//             for the current PostHog session id and sends it as
-	//             X-POSTHOG-SESSION-ID, so backend spans carry the same session
-	//             the frontend recorded.
-	//
-	// The inbound half is best-effort by construction, on two counts. The slot
-	// holds the LAST reply's trace id, so an event fired before any call has
-	// returned carries nothing, and one fired between calls carries the previous
-	// call's trace rather than its own. And the server sets `traceresponse` only
-	// on UNARY replies, and only when an OTel provider is installed — an
-	// unconfigured deployment (empty exporter endpoint ⇒ no span ⇒ no header)
-	// stamps nothing at all.
-	//
-	// The outbound half is best-effort too: the getter returns undefined until a
-	// PostHog session exists, and the interceptor then sends no header and
-	// self-heals on the next request. Only the TLS network door reads the header.
+	// Product analytics, OFF by default: an unconfigured deployment (no PostHog
+	// project key) gets a no-op that never touches posthog. Correlation runs both
+	// ways and is best-effort in both: the inbound trace id is the LAST reply's
+	// (and absent entirely without an OTel provider), and the outbound session id
+	// is absent until a PostHog session exists. See composeBoot for why the
+	// construction order is load-bearing.
 	const { analytics, clients } = composeBoot({ connection });
 
 	const callerId = await bootCaller(root, () => resolveCaller(clients.compass));
