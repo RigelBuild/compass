@@ -382,18 +382,24 @@ CREATE TABLE tokens (
 
 CREATE INDEX tokens_subject_idx ON tokens (subject_kind, subject_id);
 
--- ── Secrets names registry ──────────────────────────────────────────────────
--- The Server-side secrets NAMES registry (RIG-1327 T3): the DECLARED set of
--- secrets — their names and how each is delivered/routed — and NOTHING about
--- their values. Values live only in the SecretSpec provider (keyring/1Password/
--- Vault/…); the Server resolves them at fetch time and never persists them.
--- Deliberately absent and load-bearing: NO value column (encryption-at-rest is
--- the provider's job) and NO per-agent grant column (the MVP injects the whole
--- store into every agent; per-agent scoping is a named FUTURE seam).
+-- ── Secrets registry (scoped, encrypted at rest) ────────────────────────────
+-- The user-secret store: a declared secret's name + routing AND its value,
+-- AES-256-GCM-encrypted at rest (design record compass-user-secret-store, A1).
+-- Values were formerly provider-held and this table names-only; ruling D1 moved
+-- them here, encrypted, so a DB dump/replica/operator SELECT is not a
+-- compromise. Rows are scoped tenant/user/agent with most-specific-wins
+-- resolution (A9); a tenant row is a real shared value several users resolve,
+-- not a placeholder.
 CREATE TABLE secrets (
     -- The secret's name, validated at the store door against SecretSpec's
     -- env-var-name grammar (^[A-Za-z_][A-Za-z0-9_]*$) before it can reach a row.
-    name        TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    -- scope_kind: 0 tenant, 1 user, 2 agent. scope_id is '' for a tenant row,
+    -- else the owning accounts.id. No FK: a tenant row's '' can never satisfy
+    -- one, and Postgres has no partial FK (A9) — the store door resolves the
+    -- account instead.
+    scope_kind  SMALLINT NOT NULL CHECK (scope_kind IN (0, 1, 2)),
+    scope_id    TEXT NOT NULL DEFAULT '',
     -- delivery: the file-vs-env split that determines how a secret rotates
     -- (0 file, 1 env). CHECK-pinned so a bad value can never reach a row.
     delivery    SMALLINT NOT NULL CHECK (delivery IN (0, 1)),
@@ -405,12 +411,24 @@ CREATE TABLE secrets (
     provider    TEXT NOT NULL DEFAULT '',
     -- host: the forge host for a gh secret. Empty for non-gh kinds.
     host        TEXT NOT NULL DEFAULT '',
+    -- value_ciphertext/value_nonce: the AES-256-GCM ciphertext and its fresh
+    -- 96-bit nonce. NULLABLE in T2 only — the retained value-free
+    -- InsertSecret/DeclareSecret path writes no value through T5, which then
+    -- tightens both to NOT NULL once the upsert is the sole writer (A1).
+    value_ciphertext BYTEA,
+    value_nonce      BYTEA,
+    -- key_version: which master-key generation encrypted this row (A3, reserved
+    -- for the deferred rotation record).
+    key_version SMALLINT NOT NULL DEFAULT 1,
     -- declared_by: the account that declared this secret. FK ON DELETE RESTRICT
     -- so a referenced account cannot be orphaned out from under a declaration.
     declared_by TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     tenant_id   TEXT NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    -- (name, scope_kind, scope_id) is the identity: the same name resolves to a
+    -- different value at each tier, so the value store cannot key on name alone.
+    PRIMARY KEY (name, scope_kind, scope_id),
     -- kind↔provider/host invariant, enforced (not merely documented): a provider
     -- row (kind=1) carries a non-empty provider and no host; a gh row (kind=2) a
     -- non-empty host and no provider; a generic row (kind=0) neither. Without
@@ -421,6 +439,12 @@ CREATE TABLE secrets (
         (kind = 0 AND provider = '' AND host = '')
         OR (kind = 1 AND provider <> '' AND host = '')
         OR (kind = 2 AND host <> '' AND provider = '')
+    ),
+    -- scope↔id shape, mirrored at the UpsertSecret door so a caller gets
+    -- ErrInvalidArgument: a tenant row carries no id; a user/agent row must.
+    CONSTRAINT secrets_scope_shape CHECK (
+        (scope_kind = 0 AND scope_id = '')
+        OR (scope_kind IN (1, 2) AND scope_id <> '')
     )
 );
 

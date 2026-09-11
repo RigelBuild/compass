@@ -150,25 +150,23 @@ func validateKindRouting(kind SecretKind, provider, host string) error {
 	return nil
 }
 
-// DeleteSecretDeclaration removes a names-only registry row. Deleting a name
-// that was never declared is ErrNotFound, so a caller learns a bad delete
-// target rather than silently succeeding (matching RevokeToken's unknown-target
-// posture). The provider-side value deletion is a separate write path
-// (internal/secrets Resolver.Delete); this only drops the declaration.
+// DeleteSecretDeclaration removes the secret row at (name, scopeKind, scopeID).
+// Deleting a coordinate that was never declared is ErrNotFound, so a caller
+// learns a bad delete target rather than silently succeeding. Deleting the row
+// deletes its value with it (declaration and value are the same row post-A1).
 //
-// The registry is a single global namespace (name is the PRIMARY KEY, inject-all
-// MVP — no per-declaration owner, the frozen record's D-decisions), so a row is
-// keyed by name alone, not (actor, name): any declared name is a legal delete
-// target regardless of who declared it. This is contract-correct only under the
-// single-user Server MVP (OQ7, Matt-ruled): the secrets table has no user
-// dimension, so no other user's declaration exists for a name-keyed delete to
-// cross; per-owner scoping (an owner_user_id column + a scoped delete) is the
-// named post-MVP seam, not a gap here. actor is carried for the audit trail and
-// so the signature matches DeclareSecret; write authorization is user-only and
-// enforced at the T7 RPC edge, not re-litigated per row here.
-func (s *Store) DeleteSecretDeclaration(ctx context.Context, actor AccountID, name string) error {
-	_ = actor // see doc: name-keyed global registry; actor is audit context, not a filter
-	affected, err := s.q.DeleteSecret(ctx, name)
+// The scope pair is required because a name alone no longer identifies a row
+// (composite PK, A9): the same name may hold a distinct value at tenant, user,
+// and agent scope, so a name-keyed delete would be ambiguous. actor is carried
+// for the audit trail and so the signature matches the write door; write
+// authorization is enforced at the RPC edge, not re-litigated per row here.
+func (s *Store) DeleteSecretDeclaration(ctx context.Context, actor AccountID, name string, scopeKind int16, scopeID string) error {
+	_ = actor // audit context, not a filter — see doc
+	affected, err := s.q.DeleteSecret(ctx, db.DeleteSecretParams{
+		Name:      name,
+		ScopeKind: scopeKind,
+		ScopeID:   scopeID,
+	})
 	if err != nil {
 		return fmt.Errorf("store: delete secret declaration: %w", err)
 	}
@@ -198,6 +196,159 @@ func (s *Store) DeclaredSecrets(ctx context.Context) ([]SecretDeclaration, error
 			DeclaredBy: AccountID(r.DeclaredBy),
 			CreatedAt:  r.CreatedAt.Time,
 			UpdatedAt:  r.UpdatedAt.Time,
+		})
+	}
+	return out, nil
+}
+
+// Secret scope tiers (A9): a secret resolves most-specific-wins, agent > user >
+// tenant. The int16 encoding IS the resolution precedence (SecretRecordsForAgent
+// orders by scope_kind DESC), so the values are load-bearing, not arbitrary.
+const (
+	// SecretScopeTenant is a shared value several users resolve; scope_id is "".
+	SecretScopeTenant int16 = 0
+	// SecretScopeUser is owned by a user; scope_id is that user's account id.
+	SecretScopeUser int16 = 1
+	// SecretScopeAgent is owned by an agent; scope_id is that agent's account id.
+	SecretScopeAgent int16 = 2
+)
+
+// SecretRecord is a SecretDeclaration plus the at-rest value columns and the
+// scope coordinate. It carries CIPHERTEXT only — the store never sees plaintext
+// (crypto lives in the envelope/secrets layer).
+type SecretRecord struct {
+	SecretDeclaration
+	ScopeKind       int16
+	ScopeID         string
+	ValueCiphertext []byte
+	ValueNonce      []byte
+	KeyVersion      int16
+}
+
+// validateScopeShape enforces the A9 scope↔id shape at the store door, mirroring
+// the secrets_scope_shape CHECK: a tenant row carries no id; a user/agent row
+// must. A caller that violates it gets ErrInvalidArgument here rather than a raw
+// constraint violation from the write.
+func validateScopeShape(scopeKind int16, scopeID string) error {
+	switch scopeKind {
+	case SecretScopeTenant:
+		if scopeID != "" {
+			return fmt.Errorf("%w: tenant-scoped secret carries no scope id", ErrInvalidArgument)
+		}
+	case SecretScopeUser, SecretScopeAgent:
+		if scopeID == "" {
+			return fmt.Errorf("%w: user/agent-scoped secret requires a scope id", ErrInvalidArgument)
+		}
+	default:
+		return fmt.Errorf("%w: unknown secret scope kind %d", ErrInvalidArgument, scopeKind)
+	}
+	return nil
+}
+
+// UpsertSecret validates name grammar, the reserved-prefix partition, kind
+// routing, and the A9 scope shape at the door, resolves the scope_id against the
+// right account subtype in the writing transaction (no FK exists, A9), then
+// transactionally upserts declaration+value at (name, scopeKind, scopeID). A
+// fresh coordinate inserts; an existing one is a value rewrite. It carries
+// CIPHERTEXT — the caller encrypts before this door.
+func (s *Store) UpsertSecret(ctx context.Context, actor AccountID, name string, scopeKind int16, scopeID string, delivery SecretDelivery, kind SecretKind, provider, host string, ciphertext, nonce []byte, keyVersion int16) error {
+	if !secretNamePattern.MatchString(name) {
+		return fmt.Errorf("%w: secret name %q must match %s", ErrInvalidArgument, name, secretNamePattern.String())
+	}
+	// F1: the user keyspace rejects reserved server-secret prefixes case-fold
+	// (ShadowsServerSecretPrefix), the wide reject side of the partition.
+	if ShadowsServerSecretPrefix(name) {
+		return fmt.Errorf("%w: secret name %q uses a reserved server-secret prefix", ErrInvalidArgument, name)
+	}
+	if actor == "" {
+		return fmt.Errorf("%w: writing account id is required", ErrInvalidArgument)
+	}
+	if err := validateKindRouting(kind, provider, host); err != nil {
+		return err
+	}
+	if err := validateScopeShape(scopeKind, scopeID); err != nil {
+		return err
+	}
+
+	tx, err := s.beginTenantTx(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin upsert secret: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after commit; safe on every non-commit path
+	qtx := s.q.WithTx(tx)
+
+	// Referential integrity for a user/agent scope_id, in lieu of an FK (A9): the
+	// scope_id must name a real account of the scope's subtype. Resolved in this
+	// transaction so a concurrent account delete cannot race the write.
+	switch scopeKind {
+	case SecretScopeUser:
+		ok, err := qtx.IsUserAccount(ctx, scopeID)
+		if err != nil {
+			return fmt.Errorf("store: resolve user scope: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("%w: user scope %q is not a user account", ErrInvalidArgument, scopeID)
+		}
+	case SecretScopeAgent:
+		ok, err := qtx.IsAgentAccount(ctx, scopeID)
+		if err != nil {
+			return fmt.Errorf("store: resolve agent scope: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("%w: agent scope %q is not an agent account", ErrInvalidArgument, scopeID)
+		}
+	}
+
+	if err := qtx.UpsertSecret(ctx, db.UpsertSecretParams{
+		Name:            name,
+		ScopeKind:       scopeKind,
+		ScopeID:         scopeID,
+		Delivery:        int16(delivery), //nolint:gosec // G115: SecretDelivery is a CHECK-constrained 0/1 enum, always within int16
+		Kind:            int16(kind),     //nolint:gosec // G115: SecretKind is a CHECK-constrained 0/1/2 enum, always within int16
+		Provider:        provider,
+		Host:            host,
+		ValueCiphertext: ciphertext,
+		ValueNonce:      nonce,
+		KeyVersion:      keyVersion,
+		DeclaredBy:      string(actor),
+	}); err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return fmt.Errorf("%w: writing account %q does not exist", ErrInvalidArgument, actor)
+		}
+		return fmt.Errorf("store: upsert secret: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit upsert secret: %w", err)
+	}
+	return nil
+}
+
+// SecretRecordsForAgent returns the one most-specific row per name visible to
+// agent (the A9 DISTINCT ON collapse), name-ordered, ciphertext only — the
+// StoreResolver.ResolveFor read. Shadowed rows never leave Postgres.
+func (s *Store) SecretRecordsForAgent(ctx context.Context, agent AccountID) ([]SecretRecord, error) {
+	rows, err := s.q.SecretRecordsForAgent(ctx, string(agent))
+	if err != nil {
+		return nil, fmt.Errorf("store: secret records for agent: %w", err)
+	}
+	out := make([]SecretRecord, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, SecretRecord{
+			SecretDeclaration: SecretDeclaration{
+				Name:       r.Name,
+				Delivery:   SecretDelivery(r.Delivery),
+				Kind:       SecretKind(r.Kind),
+				Provider:   r.Provider,
+				Host:       r.Host,
+				DeclaredBy: AccountID(r.DeclaredBy),
+				CreatedAt:  r.CreatedAt.Time,
+				UpdatedAt:  r.UpdatedAt.Time,
+			},
+			ScopeKind:       r.ScopeKind,
+			ScopeID:         r.ScopeID,
+			ValueCiphertext: r.ValueCiphertext,
+			ValueNonce:      r.ValueNonce,
+			KeyVersion:      r.KeyVersion,
 		})
 	}
 	return out, nil

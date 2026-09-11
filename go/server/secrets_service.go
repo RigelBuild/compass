@@ -157,7 +157,9 @@ func (s *secretsService) SetSecret(
 		// name/cli/stderr, never the value, so logging it server-side is safe; the
 		// client-facing error is value-free.
 		if declErr == nil {
-			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName()); delErr != nil {
+			// Tenant coordinate (scope 0, "") is a T5 placeholder: this handler still
+			// declares at tenant scope pending the write-surface scope ruling (A9 OQ).
+			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName(), 0, ""); delErr != nil {
 				slog.ErrorContext(ctx, "rolling back secret declaration after failed write", "err", delErr)
 			}
 		}
@@ -233,7 +235,9 @@ func (s *secretsService) DeleteSecret(
 	if err := s.resolver.Delete(ctx, name); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("deleting secret value: %w", err))
 	}
-	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name); err != nil {
+	// Tenant coordinate (scope 0, "") is a T5 placeholder: this handler deletes at
+	// tenant scope pending the write-surface scope ruling (A9 OQ).
+	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name, 0, ""); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("secret %q", name))
 		}
