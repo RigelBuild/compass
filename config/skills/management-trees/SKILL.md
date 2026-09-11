@@ -51,9 +51,9 @@ From that one field every agent derives its standing instructions:
 This is exactly how a running wave already behaves — hierarchical
 report-to-parent, today held entirely in prompt text. The tree turns "who do I
 report to" from per-prompt convention into a fact the instruction layer states
-mechanically: read your `parent_agent_id`, report there. (Reading *your own*
-current parent fresh — re-read because `ReparentAgent` can change it — is a
-deferred affordance; see *Deferred affordances* below.)
+mechanically: read your `parent_agent_id`, report there. Re-read your current
+parent rather than caching it — `ReparentAgent` can change it; see *Reading the
+tree* below.
 
 ## Tenet — name a Manager for what it DOES, not the tool it uses
 
@@ -193,10 +193,12 @@ for a PR worker is merge, not push. (This mirrors the `hold-your-lane` rule.)
   approval first** — propose it on your home channel, wait for a yes, then spawn.
   The approval gate governs tree *growth*, not day-to-day dispatch.
 
-## Deferred affordances
+## Reading the tree
 
-These are referenced only; the tools are not live yet:
-
-- Tree navigation / visualizing the tree — [TODO compass_tree].
-- Fresh-read of the roster and your parent (re-parenting can change it) —
-  [TODO RIG-1721].
+- `compass_tree` renders your subtree (default) or your owner's whole set
+  (`scope: owner`) as an indented parent→child tree, each node showing its live
+  presence and activity. `compass_roster` is the same underlying read rendered as
+  a flat list, but it defaults to your neighborhood (parent, siblings, children)
+  rather than your subtree. To read your own parent fresh — re-parenting can
+  change it, so never cache it — call `compass_tree` with `scope: owner` and find
+  the node your own handle is nested under.
