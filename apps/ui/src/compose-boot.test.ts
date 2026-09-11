@@ -11,12 +11,9 @@ import { composeBoot } from "./compose-boot";
 import type { LiveClients } from "./live/client";
 import type { ResolvedConnection } from "./live/provider";
 
-// composeBoot must build analytics BEFORE the clients: the analytics `traceId`
-// getter is a forward reference to `clients`, safe only because it fires at
-// capture time — after the clients bind. A wrong order still typechecks and
-// renders; it only fails at the network door as a missing X-POSTHOG-SESSION-ID
-// header, so the order is untestable in production. These fakes record the
-// observable consequences of the order and the two lazy getters.
+// A wrong order still typechecks and renders; it fails only at the network door
+// as a missing X-POSTHOG-SESSION-ID header. These fakes record the order and
+// both lazy getters, which is the only place that defect is observable.
 
 const connection: ResolvedConnection = {
 	baseUrl: "https://compass.example:8443",

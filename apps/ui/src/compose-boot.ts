@@ -6,12 +6,9 @@ import {
 import { createLiveClients, type LiveClients } from "./live/client";
 import type { ResolvedConnection } from "./live/provider";
 
-// The analytics+clients construction pair, lifted out of `index.tsx main()`
-// behind injectable factories so the boot ORDER is testable. Production only
-// fails a wrong order at the network door (a missing X-POSTHOG-SESSION-ID
-// header), so recording fakes substituted here are the sole way to pin it — and
-// this module is importable without the App/mount render graph that index.tsx
-// drags in. The order and the lazy forward reference are load-bearing.
+// A wrong boot order fails only at the network door (a missing
+// X-POSTHOG-SESSION-ID header), so injectable factories are the sole way to
+// pin it — and unlike index.tsx, this module imports without the render graph.
 export interface ComposeBootDeps {
 	connection: ResolvedConnection;
 	createAnalytics?: typeof createAnalytics;
