@@ -333,7 +333,19 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 		close(proc.done)
 	}()
 
+	// The child is already running, so a Remove that landed during the spawn
+	// would have found no process to kill. Detect that and reap our own child
+	// rather than hand back a live workload the backend can no longer reach.
 	h.mu.Lock()
+	if _, live := h.handles[id]; !live {
+		h.mu.Unlock()
+		cancel()
+		<-proc.done
+		return nil, errors.Join(
+			fmt.Errorf("runtime: host workload %q was removed during spawn", id),
+			closePipes(stdinW, stdoutR, stderrR),
+		)
+	}
 	handle.proc = proc
 	h.mu.Unlock()
 

@@ -408,9 +408,8 @@ func readLine(t *testing.T, r io.Reader) string {
 
 // TestHostRemoveConcurrentWithExecStreaming drives Remove against a concurrent
 // ExecStreaming on the same handle. handle.proc is written under the mutex, so
-// reading it unlocked is both a data race and a missed kill: Remove can see nil
-// and drop the handle while the child is still being spawned, leaving a live
-// process nothing owns. Run under -race.
+// reading it unlocked is a data race. This guards that race only — it is
+// meaningful under -race and asserts nothing about which of the two wins.
 func TestHostRemoveConcurrentWithExecStreaming(t *testing.T) {
 	sleepBin, err := exec.LookPath("sleep")
 	if err != nil {
