@@ -577,6 +577,16 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withhol
 	loopDone := make(chan error, 1)
 	go rec.serve(stream, loopDone)
 	t.Cleanup(func() {
+		// Latch the loop out of sending BEFORE closing the request half. A
+		// CloseRequest issued under an in-flight Send makes connect-go fail that
+		// write with "write envelope: EOF" (CodeUnknown) and the loop reports a
+		// dirty end — the RIG-3606 flake. A cancelled wake is exactly when a reply
+		// is still being written: the server abandons hub.Start mid-answer, and
+		// the consumer's own shutdown wait bounds its Run goroutine, never this
+		// one. Taking sendMu waits out any Send already running; closing under it
+		// means no later Send can start.
+		rec.stopSending()
+
 		// Close the request half: the loop's Receive then sees a clean EOF and
 		// the server's Sessions handler detaches the router — the seam test's
 		// proven teardown. (Cancelling ctx alone does not unblock a client-side
@@ -631,6 +641,16 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withhol
 type recordingRunner struct {
 	// attached closes once the bootstrap Send has flushed the stream open.
 	attached chan struct{}
+
+	// sendMu serializes every reply the loop writes against teardown's
+	// CloseRequest, and closing latches the loop out of sending once teardown
+	// holds it. Closing the request half under an in-flight Send fails that write
+	// with "write envelope: EOF" and the loop reports a dirty end (RIG-3606), so
+	// teardown takes this lock to wait out a running Send and to bar any later
+	// one. Deliberately NOT mu: a Send must not serialize against commands() and
+	// startCount(), which test goroutines poll in tight deadline loops.
+	sendMu  sync.Mutex
+	closing bool
 
 	// withholdStop makes the loop record a Stop but never answer its result —
 	// the wedged-but-connected Runner that hangs an unbounded rollback Stop.
@@ -714,7 +734,7 @@ func (r *recordingRunner) serve(
 		if cmd.GetStart() != nil && r.failStarted() {
 			// Answer Start with a RunnerError instead of a session id: the
 			// mid-chain spawn failure the rollback test drives.
-			if err := stream.Send(&compassv1internal.SessionsRequest{
+			if err := r.send(stream, &compassv1internal.SessionsRequest{
 				RequestId: cmd.GetRequestId(),
 				Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 					Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING,
@@ -728,7 +748,7 @@ func (r *recordingRunner) serve(
 		}
 		if cmd.GetStart() != nil {
 			if id, ok := r.nextStartID(); ok {
-				if err := stream.Send(&compassv1internal.SessionsRequest{
+				if err := r.send(stream, &compassv1internal.SessionsRequest{
 					RequestId: cmd.GetRequestId(),
 					Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: id}},
 				}); err != nil {
@@ -740,7 +760,7 @@ func (r *recordingRunner) serve(
 		}
 		if cmd.GetProvision() != nil {
 			if name, ok := r.nextContainerName(); ok {
-				if err := stream.Send(&compassv1internal.SessionsRequest{
+				if err := r.send(stream, &compassv1internal.SessionsRequest{
 					RequestId: cmd.GetRequestId(),
 					Result:    &compassv1internal.SessionsRequest_Provision{Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: name}},
 				}); err != nil {
@@ -751,7 +771,7 @@ func (r *recordingRunner) serve(
 			}
 		}
 		if cmd.GetStatus() != nil {
-			if err := stream.Send(&compassv1internal.SessionsRequest{
+			if err := r.send(stream, &compassv1internal.SessionsRequest{
 				RequestId: cmd.GetRequestId(),
 				Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{Statuses: r.statusSet()}},
 			}); err != nil {
@@ -760,11 +780,37 @@ func (r *recordingRunner) serve(
 			}
 			continue
 		}
-		if err := stream.Send(answer(cmd)); err != nil {
+		if err := r.send(stream, answer(cmd)); err != nil {
 			done <- err
 			return
 		}
 	}
+}
+
+// send writes one reply under sendMu, so a reply and teardown's CloseRequest can
+// never overlap. Once stopSending has latched closing, it drops the reply and
+// reports success: the stream is being torn down, the test is over, and a
+// dropped answer is not a loop fault. Returning an error instead would report a
+// teardown artifact as a dirty end — the RIG-3606 failure in a new spelling.
+func (r *recordingRunner) send(
+	stream *connect.BidiStreamForClient[compassv1internal.SessionsRequest, compassv1internal.SessionsResponse],
+	req *compassv1internal.SessionsRequest,
+) error {
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
+	if r.closing {
+		return nil
+	}
+	return stream.Send(req)
+}
+
+// stopSending bars every future reply and waits out one already running, so the
+// caller may close the request half knowing no Send is in flight. Taking sendMu
+// IS the wait: a Send holds it for the whole write.
+func (r *recordingRunner) stopSending() {
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
+	r.closing = true
 }
 
 func (r *recordingRunner) record(cmd *compassv1internal.SessionsResponse) {
