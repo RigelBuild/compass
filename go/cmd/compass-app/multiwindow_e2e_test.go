@@ -105,7 +105,6 @@ func reapChildren(exitCode int) int {
 
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
-	escalated := false
 	for {
 		remaining := liveChildren()
 		if len(remaining) == 0 {
@@ -123,9 +122,10 @@ func reapChildren(exitCode int) int {
 			}
 			return exitCode
 		}
-		if !escalated && time.Since(start) >= reapEscalate {
+		// Re-signal each pass rather than latching: a helper first seen after
+		// the grace would otherwise get neither SIGTERM nor SIGKILL.
+		if time.Since(start) >= reapEscalate {
 			signalChildren(remaining, syscall.SIGKILL)
-			escalated = true
 		}
 		<-ticker.C
 	}

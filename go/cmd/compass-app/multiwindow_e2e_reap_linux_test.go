@@ -46,15 +46,20 @@ func liveChildren() []procInfo {
 	return out
 }
 
-// readStat parses ppid and comm out of /proc/<pid>/stat. comm can hold spaces
-// and parens, so key off the final ')': the two space-separated fields after it
-// are state then ppid.
+// readStat reads ppid and comm for one pid, tolerating a process that exits
+// mid-scan.
 func readStat(pid int) (ppid int, comm string, ok bool) {
 	raw, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
 		return 0, "", false
 	}
-	s := string(raw)
+	return parseStat(string(raw))
+}
+
+// parseStat pulls ppid and comm out of a /proc/<pid>/stat line. comm can hold
+// spaces and parens, so key off the final ')': the two fields after it are
+// state then ppid.
+func parseStat(s string) (ppid int, comm string, ok bool) {
 	open := strings.IndexByte(s, '(')
 	shut := strings.LastIndexByte(s, ')')
 	if open < 0 || shut < 0 || shut < open {
@@ -65,7 +70,7 @@ func readStat(pid int) (ppid int, comm string, ok bool) {
 	if len(fields) < 2 {
 		return 0, "", false
 	}
-	ppid, err = strconv.Atoi(fields[1])
+	ppid, err := strconv.Atoi(fields[1])
 	if err != nil {
 		return 0, "", false
 	}
