@@ -1,9 +1,8 @@
 import { createRoot } from "solid-js";
-import { createAnalytics } from "./analytics/analytics";
-import { analyticsConfigFromEnv } from "./analytics/config";
 import { bootCaller, renderBootError } from "./boot";
 import { bootForMode } from "./boot-mode";
-import { createLiveClients, resolveCaller } from "./live/client";
+import { composeBoot } from "./compose-boot";
+import { resolveCaller } from "./live/client";
 import type { ResolvedConnection } from "./live/provider";
 import { mountShell, newAppQueryClient } from "./mount";
 import { shellMode } from "./shell-globals";
@@ -118,13 +117,7 @@ async function main(
 	// The outbound half is best-effort too: the getter returns undefined until a
 	// PostHog session exists, and the interceptor then sends no header and
 	// self-heals on the next request. Only the TLS network door reads the header.
-	const analytics = createAnalytics(analyticsConfigFromEnv(), {
-		traceId: () => clients.traceId.current,
-	});
-
-	const clients = createLiveClients(connection, {
-		sessionId: () => analytics.sessionId(),
-	});
+	const { analytics, clients } = composeBoot({ connection });
 
 	const callerId = await bootCaller(root, () => resolveCaller(clients.compass));
 	// Undefined is bootCaller's stop signal — it already painted the WhoAmI
