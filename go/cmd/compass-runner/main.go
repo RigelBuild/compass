@@ -194,6 +194,13 @@ type podmanPreflighter interface {
 	VerifyUsernsRemapSupport(ctx context.Context) error
 }
 
+// appleContainerPreflighter is the apple-container backend's static
+// host-capability probe: the `container` CLI is present and meets the version
+// floor this backend's command contract relies on.
+type appleContainerPreflighter interface {
+	VerifyAppleContainerSupport(ctx context.Context) error
+}
+
 // canaryBooter is the microVM backend's dynamic host-capability probe: it really
 // boots a throwaway VM through the backend's own verbs, proving the whole boot
 // chain. Kept a DISTINCT single-method interface from microVMPreflighter (not a
@@ -204,17 +211,19 @@ type canaryBooter interface {
 
 // verifyBackendPreflight runs the selected engine's static host-capability
 // preflight. It dispatches on the engine's concrete type, first match wins,
-// probing the microVM backend before podman; no engine satisfies both today, so
-// dispatch is deterministic. An engine exposing neither probe is a fail-closed
-// startup error naming the concrete type — never a silent skip, so a backend
-// added without a preflight surfaces loudly at launch rather than running
-// unchecked.
+// probing the microVM backend before podman and apple-container; no engine
+// satisfies two of them today, so dispatch is deterministic. An engine exposing
+// no probe is a fail-closed startup error naming the concrete type — never a
+// silent skip, so a backend added without a preflight surfaces loudly at launch
+// rather than running unchecked.
 func verifyBackendPreflight(ctx context.Context, engine runtime.WorkloadRuntime) error {
 	switch e := engine.(type) {
 	case microVMPreflighter:
 		return runMicroVMPreflight(ctx, e, engine)
 	case podmanPreflighter:
 		return e.VerifyUsernsRemapSupport(ctx)
+	case appleContainerPreflighter:
+		return e.VerifyAppleContainerSupport(ctx)
 	default:
 		return fmt.Errorf("backend %T exposes no startup preflight probe", engine)
 	}
@@ -293,8 +302,8 @@ type backendFlags struct {
 func registerBackendFlags() backendFlags {
 	return backendFlags{
 		backend: flag.String("backend", "",
-			"Container runtime backend: 'podman' (default, transitional) or "+
-				"'microvm'. Defaults to $COMPASS_RUNTIME_BACKEND."),
+			"Container runtime backend: 'podman' (default, transitional), "+
+				"'microvm' or 'apple-container'. Defaults to $COMPASS_RUNTIME_BACKEND."),
 		vmm: flag.String("microvm-vmm", "",
 			"Path to the microVM monitor binary (microvm backend). Defaults to $COMPASS_MICROVM_VMM."),
 		virtiofsd: flag.String("microvm-virtiofsd", "",
@@ -371,6 +380,10 @@ func (f backendFlags) backendConfig() (runtime.BackendConfig, error) {
 			DefaultMemoryMB: memoryMB,
 			QuotaRequired:   quotaRequired,
 		},
+		// Zero, explicitly: the runner exposes no program/timeout flags for
+		// this backend, and NewAppleContainerCLI reads a zero field as "use the
+		// default" (`container` on PATH, the shared command timeout).
+		AppleContainer: runtime.AppleContainerConfig{},
 	}, nil
 }
 
