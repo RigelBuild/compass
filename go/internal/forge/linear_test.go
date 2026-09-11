@@ -770,8 +770,10 @@ func TestLinearActorProbeTransientErrorReprobed(t *testing.T) {
 func TestMapLinearStateCoversEverySDLType(t *testing.T) {
 	t.Parallel()
 
-	// The full SDL enum, not just the ones we branch on: a new Linear type
-	// arriving is the failure mode this table is here to catch.
+	// All seven SDL types, not just the ones in the closed set: this pins the
+	// verdict for each by name, so narrowing the set fails with the type named.
+	// It does NOT detect enum drift — an eighth type would take the open
+	// fallback and stay green. RIG-3590 was a KNOWN type left unhandled.
 	for _, tc := range []struct {
 		stateType string
 		want      string
@@ -783,6 +785,8 @@ func TestMapLinearStateCoversEverySDLType(t *testing.T) {
 		{"completed", stateClosed},
 		{"canceled", stateClosed},
 		{"duplicate", stateClosed},
+		// The documented fallback: an unrecognised type maps to open.
+		{"no_such_type", stateOpen},
 	} {
 		if got := mapLinearState(tc.stateType); got != tc.want {
 			t.Errorf("mapLinearState(%q) = %q, want %q", tc.stateType, got, tc.want)
