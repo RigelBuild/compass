@@ -10,10 +10,9 @@ Products framing: [`docs/concepts/self-host-and-managed.md`](../../../concepts/s
 Compass needs its full observability and in-product data architecture captured
 durably: the in-product usage/metrics/graphs surface, the OTLP ops-export path,
 and both crossed with the two products — the self-hosted OSS core in this repo
-and the private, commercially-licensed managed multi-tenant service in the
-private monorepo — including per-user/org paths on the managed side and Rigel's
-observability over
-the whole managed service. Today only fragments exist (agent-side OTLP emission
+and the private, commercially-licensed managed multi-tenant service — including
+per-user/org paths on the managed side and Rigel's observability over the whole
+managed service. Today only fragments exist (agent-side OTLP emission
 is shipped; the UI usage strip renders stub data; there is no fan-in, no
 in-product data store, and no recorded resolution of the "bigger store for
 managed scale?" question). This record lays out the whole architecture and
@@ -44,13 +43,13 @@ canonical framing is `docs/designs/infra/runtime/compass-elastic-session-runtime
 | | Plane A — in-product data surface | Plane B — OTLP ops export |
 | --- | --- | --- |
 | **Self-hosted (OSS core, this repo)** | In-app charts from the deployment's own bundled Postgres. Single-team/single-org scope. | Emission off by default; operator points `OTEL_EXPORTER_OTLP_ENDPOINT` at THEIR backend; bundled fan-in collector with `--otel-external` opt-out; dashboard JSON shipped in-repo. |
-| **Managed (private, commercially-licensed; private monorepo, compass.rigel.build) — per user/org** | The SAME in-app data surface, **tenant-scoped**: identical read API, scoped to the org. Each org's data is separated. Plane A is authoritative for usage/spend (see D5). | Per-tenant telemetry export (an operator/enterprise ask) is a named managed-plane deferral, not designed here; whole-service export is row 3. |
-| **Managed — Rigel over the whole service** | **Cross-tenant fleet analytics + billing** — built in the private monorepo on the core's seams: analytics over the tenant-scoped rollup reads, billing over the tenant-scoped raw-event export (D1/D5). Named here, designed there. | The fan-in collector exports whole-service telemetry to Rigel's own Grafana — Rigel consumes Plane B "just like a user", plus managed control-plane obs designed in the private monorepo. |
+| **Managed (private, commercially-licensed; compass.rigel.build) — per user/org** | The SAME in-app data surface, **tenant-scoped**: identical read API, scoped to the org. Each org's data is separated. Plane A is authoritative for usage/spend (see D5). | Per-tenant telemetry export (an operator/enterprise ask) is a named managed-plane deferral, not designed here; whole-service export is row 3. |
+| **Managed — Rigel over the whole service** | **Cross-tenant fleet analytics + billing** — built on the core's seams: analytics over the tenant-scoped rollup reads, billing over the tenant-scoped raw-event export (D1/D5). A managed-plane concern, named here and deferred. | The fan-in collector exports whole-service telemetry to Rigel's own Grafana — Rigel consumes Plane B "just like a user". Managed control-plane obs is a separate managed-plane concern, out of scope here. |
 
 Cross-tenant analytics, billing, and control-plane observability are
-managed-plane concerns: they live in **the private monorepo** and are designed
-there when the managed service is built. This record's job is to make sure the
-core's seams support them — tenant-scopable rollup reads (D2), a raw-event
+managed-plane concerns: they are out of scope here, and are taken up when the
+managed service is built. This record's job is to make sure the core's seams
+support them — tenant-scopable rollup reads (D2), a raw-event
 export contract for billing (D5), and an export path Rigel can point at itself
 (D3) — not to design them.
 
@@ -506,14 +505,14 @@ Grafana) is the posture Matt explicitly declined.
 yet): bundling the OMP gateway into the Server.** The gateway is the Class-2
 event source; T1-T3 depend on it. Its design record must land first.
 
-**Out of scope (private monorepo — named, deferred):** the managed control
+**Out of scope (managed-plane — named, deferred):** the managed control
 plane — cross-tenant analytics and aggregate observability, billing, any
 OLAP-backend adoption (Class 3), tenant scheduling, per-tenant telemetry export.
 UI product analytics is RESOLVED as its own plane (OQ-B': PostHog embedded in the
 UI, off-by-default self-hosted / the deployer's own PostHog, managed → Rigel's
 PostHog), added when the UI work lands, not an OTel task here; browser OTel/RUM is
-a named follow-up. Managed-plane items are designed in the private monorepo when
-the managed service is built, on top of this record's seams. (The Tasks
+a named follow-up. Managed-plane items are taken up when the managed service
+is built, on top of this record's seams. (The Tasks
 Out-of-scope list carries the same set.)
 
 ### T1 — Usage/event store + write contract
@@ -719,7 +718,7 @@ Track A — blocked on the OMP-gateway prerequisite:
       component renders — never a PostHog widget. The native first-run product tour
       itself is a separate compass-ui/ux product concern, tracked outside this
       record. Its own plane; sequences after the core emission/store work.
-- Out of scope (private monorepo, deferred): cross-tenant analytics /
+- Out of scope (managed-plane, deferred): cross-tenant analytics /
   aggregate obs, billing exporter, Class-3 OLAP adoption, tenant scheduling,
   per-tenant telemetry export. UI product analytics is RESOLVED (OQ-B'): PostHog
   embedded in the UI, off-by-default on self-hosted / the deployer's own PostHog,

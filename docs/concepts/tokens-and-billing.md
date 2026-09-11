@@ -43,8 +43,8 @@ The two products bill differently because they bring different things.
   that compute is the billable resource: per-tenant **usage caps and
   extra-usage/overage charges** on Manager and agent activity. Tokens stay the
   user's (BYOK / BYO cloud subscription); Rigel meters and charges for compute,
-  not for the model calls themselves. This is a managed-plane concern and lives
-  in the private monorepo, but the core must expose the usage it needs.
+  not for the model calls themselves. This is a managed-plane concern, out of
+  scope here, but the core must expose the usage it needs.
 
 ## What gets recorded (and why), in both products
 
@@ -77,7 +77,7 @@ the observability and in-product-data design record,
 [`compass-observability-architecture`](../designs/observability/compass-observability-architecture/design.md):
 the gateway-recorded usage lands in the core's own store behind a store-swap
 seam (Decision D1), the append-only event log is the durable billing-grade
-contract with derived rollups (Decision D5), and the managed plane builds the
-billing exporter on the committed event shape in the private monorepo. Product
-analytics on the UI side (how Rigel instruments the managed UI, and how a
-self-hosted deploy keeps its data local) is tracked there too.
+contract with derived rollups (Decision D5), and the managed plane builds its
+billing exporter on that committed event shape. Product analytics on the UI
+side (how Rigel instruments the managed UI, and how a self-hosted deploy keeps
+its data local) is tracked there too.
