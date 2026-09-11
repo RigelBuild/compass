@@ -390,10 +390,18 @@ type Hub struct {
 	// binding change publishes nothing — its own writes keep its own cache
 	// honest without a fabric round-trip.
 	routing RoutingFabric
-	// reapStale records that a re-enroll's durable reap FAILED, so the table
-	// still holds rows for sessions this hub has already declared dead. A
-	// read-through would resurrect them and break fail-closed, so it is
-	// refused until a later reap succeeds and clears this. Read under mu.
+	// reapStale records that the table may still hold rows for sessions this
+	// hub has already declared dead: it is raised with the re-enroll map-clear
+	// and lowered only by a reap that succeeds. A read-through in between would
+	// resurrect one and break fail-closed, so readThroughAllowed refuses while
+	// it is set. Read and written under mu.
+	//
+	// Hub-wide is correct only under the single-Runner-id MVP (h.runner is
+	// never nilled and the id is the pinned token subject). A future
+	// multi-Runner change MUST key this by runner id: DeleteSessionBindingsForRunner
+	// targets one id, so a second runner's successful reap would otherwise
+	// lower the flag while the first runner's un-reaped rows survive and
+	// become readable again.
 	reapStale bool
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall
 	// delegates a resolved lifecycle call to (spawn/despawn record T4). Nil until
@@ -1069,6 +1077,17 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject) (rea
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	clear(h.accountSessions)
+	// Refuse read-through from the instant the maps are cleared, not after the
+	// reap returns: the reap is a round-trip that can block for seconds, and a
+	// concurrent resolver in that gap would miss the cleared cache and read a
+	// not-yet-deleted row back, resurrecting a session this reconnect just
+	// declared dead. Pessimistic-true costs nothing even when the reap
+	// succeeds — the maps are empty, so the only durable-but-uncached rows are
+	// the dead survivors, and a session promoted after the reconnect writes its
+	// cache entry and hits.
+	if bindings != nil && reattached {
+		h.reapStale = true
+	}
 	h.mu.Unlock()
 
 	// Choose the reap set. A re-enroll with a durable store reaps the ROWS and
@@ -1082,14 +1101,11 @@ func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject) (rea
 			// A durable-reap fault must not wedge the reconnect: log it and fall
 			// back to the in-RAM snapshot (still cleared above), so the presence
 			// edges and held-deliver reap fire from what the cache last knew.
-			// The rows SURVIVE, though, and they name sessions just declared
-			// dead — so read-through is refused until a reap succeeds, or a
-			// miss would resurrect one and defeat fail-closed.
+			// The rows SURVIVE, and they name sessions just declared dead, so
+			// the pessimistic reapStale raised with the clear STAYS raised: a
+			// read-through would resurrect one and defeat fail-closed.
 			h.log.Error("durable session-binding reap failed on re-enroll; using in-RAM snapshot, read-through disabled until a reap succeeds",
 				"runner_id", id, "error", err)
-			h.mu.Lock()
-			h.reapStale = true
-			h.mu.Unlock()
 		} else {
 			offline = make([]promotedPair, 0, len(rows))
 			reapedSessions = make([]string, 0, len(rows))

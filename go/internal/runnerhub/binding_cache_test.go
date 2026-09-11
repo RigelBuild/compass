@@ -563,3 +563,56 @@ func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
 		t.Fatalf("durable binding for sess-1 = %q, want %q — if this now agrees with the cache, the ErrConflict gap was fixed and this witness test should become a real assertion", got, "acct-stale")
 	}
 }
+
+// TestConcurrentResolveDuringAFaultingReapCannotResurrect fences the window
+// between the re-enroll map-clear and the reap's return. The reap is a store
+// round-trip that can block for seconds, and a resolver arriving in that gap
+// misses the just-cleared cache — so if read-through were still permitted it
+// would read back a row the failing reap never deleted, resurrecting a
+// session the reconnect declared dead. blockingBindingStore holds the reap
+// open until the concurrent resolve has run, which makes the interleaving
+// deterministic rather than hoping the scheduler produces it.
+func TestConcurrentResolveDuringAFaultingReapCannotResurrect(t *testing.T) {
+	hub := newHubOnly()
+	bindings := &blockingBindingStore{
+		fakeBindingStore: newFakeBindingStore(),
+		entered:          make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+	hub.SetSessionBindingStore(bindings)
+	hub.enroll(context.Background(), "runner-1", runnerSubject())
+	hub.bindContainer("cont-1", testAgentAccount)
+	hub.promoteSession(context.Background(), "cont-1", "sess-1")
+
+	// The reconnect's reap will fault, leaving the sess-1 row in place.
+	bindings.deleteForRunnerErr = errors.New("durable fault")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		hub.enroll(context.Background(), "runner-1", runnerSubject())
+	}()
+
+	<-bindings.entered // maps are cleared; the reap is in flight and will fail
+	acct, ok := hub.accountForSession(context.Background(), "sess-1")
+	close(bindings.release)
+	<-done
+
+	if ok {
+		t.Fatalf("accountForSession(sess-1) = (%q, true) while a faulting reap was in flight, want fail-closed: the surviving row must not be readable between the map-clear and the reap's return", acct)
+	}
+}
+
+// blockingBindingStore parks DeleteSessionBindingsForRunner so a test can act
+// inside the reap window; every other method is the plain fake's.
+type blockingBindingStore struct {
+	*fakeBindingStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingBindingStore) DeleteSessionBindingsForRunner(ctx context.Context, runnerID string) ([]store.SessionBinding, error) {
+	close(b.entered)
+	<-b.release
+	return b.fakeBindingStore.DeleteSessionBindingsForRunner(ctx, runnerID)
+}
