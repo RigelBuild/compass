@@ -45,21 +45,31 @@ The user registry table `secrets` (`go/internal/store/migrations/0001_init.sql`,
 `CREATE TABLE secrets`) gains three columns; no separate values table:
 
 ```sql
-value_ciphertext BYTEA    NOT NULL,   -- AES-256-GCM ciphertext of the UTF-8 value
-value_nonce      BYTEA    NOT NULL,   -- 96-bit nonce, fresh per encryption
+value_ciphertext BYTEA,               -- AES-256-GCM ciphertext of the UTF-8 value
+value_nonce      BYTEA,               -- 96-bit nonce, fresh per encryption
 key_version      SMALLINT NOT NULL DEFAULT 1  -- which key generation encrypted this row
 ```
 
-`NOT NULL` is load-bearing and correct because on the user path declare and
-set are ONE operation: `ListSecrets` already documents "a declared row means
-SetSecret declared AND wrote it (the flow is declare-then-set), so is_set=true
-for every declared row" (`go/server/secrets_service.go`, `ListSecrets`). A
-user row is born with its value; declared-but-unset does not exist on this
-path (it is a server-secret state only). One row per secret also collapses
-the documented non-atomic declare/set/rollback trio (`SetSecret` doc: "The
-declare/set/rollback trio is not atomic and assumes no concurrent same-name
-writer") into a single transactional upsert — the rollback machinery and the
-orphaned-declaration hazard are deleted, not ported.
+`value_ciphertext`/`value_nonce` are `NOT NULL` in the FINAL schema (declare and
+set are ONE operation on the user path: `ListSecrets` already documents "a
+declared row means SetSecret declared AND wrote it (the flow is
+declare-then-set), so is_set=true for every declared row" —
+`go/server/secrets_service.go`, `ListSecrets`; a user row is born with its
+value, and declared-but-unset is a server-secret state only). But the NOT NULL
+is added in T5, NOT T2. **Transitional posture (see T2):** T2 lands the two
+value columns NULLABLE, because T2 deliberately KEEPS the value-free
+`InsertSecret` query and `DeclareSecret` store method (their caller, the
+`SetSecret` handler, does not migrate until T5). That retained value-free insert
+writes no value columns, so an unconditional NOT NULL in T2 would make every
+live `SetSecret` RPC and the existing DeclareSecret pgtests hit a NOT NULL
+violation at runtime through T2–T4. T5 removes `InsertSecret`/`DeclareSecret`,
+cuts `SetSecret` over to the upsert (which always writes both value columns),
+and tightens the two columns to NOT NULL in the same task — so the constraint
+arrives exactly when every writer satisfies it. One row per secret also
+collapses the documented non-atomic declare/set/rollback trio (`SetSecret` doc:
+"The declare/set/rollback trio is not atomic and assumes no concurrent
+same-name writer") into a single transactional upsert — the rollback machinery
+and the orphaned-declaration hazard are deleted, not ported.
 
 The `0001_init.sql` comment "Deliberately absent and load-bearing: NO value
 column (encryption-at-rest is the provider's job)" is rewritten in the same
@@ -172,7 +182,8 @@ it is now shared with the future `gateway_credentials` store rather than
 owned by it). The claim that the master key's guards "already exist" is FALSE:
 they exist for the OLD spelling only, and two of them actively REJECT the new
 one. The `server_secrets_reserved_prefix` CHECK in `0001_init.sql` admits only
-`SERVER_%` and `GATEWAY_CREDENTIALS_%`; `serverSecretPrefixes`
+`SERVER\_%` and `GATEWAY\_CREDENTIALS\_%` (the backslash escapes the LIKE `_`
+wildcard so a near-miss like `SERVERX_Y` is rejected); `serverSecretPrefixes`
 (`go/internal/store/server_secrets.go`) holds those same two prefixes, so
 `HasServerSecretPrefix` rejects a `COMPASS_`-prefixed name and
 `DeclareServerSecret` errors on it; and `SpecResolver.Resolve` builds its
@@ -180,8 +191,10 @@ manifest from the DECLARED registry, so an undeclared name never resolves.
 `COMPASS_MASTER_KEY` carries neither existing prefix, so its row is
 unconstructible, the key never resolves, and boot fails closed FOREVER — even
 after the seed verb runs. The fix is the smallest change honoring Matt's
-rename: add a `COMPASS_` reserved prefix alongside the existing two and keep the
-neutral spelling. That reserved-name machinery — the CHECK, the prefix set,
+rename: add a `COMPASS_` reserved prefix alongside the existing two (as
+`name LIKE 'COMPASS\_%'` in the CHECK, escaped in the same style so it never
+admits a near-miss like `COMPASSX_Y`) and keep the neutral spelling. That
+reserved-name machinery — the CHECK, the prefix set,
 `masterKeyName`, `masterKeyCLIName`, and the tripwire — lands in T4 (see Plan);
 the `server_key_state` tripwire ("Boot recomputes the digest and fails closed
 on a mismatch", `0001_init.sql`) is updated for the new name there. One master
@@ -287,10 +300,13 @@ func (r *StoreResolver) Resolve(ctx context.Context, reason string) ([]ResolvedS
 // construction (NOT NULL value), so it maps rows to IsSet=true without
 // decrypting.
 func (r *StoreResolver) Statuses(ctx context.Context, reason string) ([]SecretStatus, error)
-// Set validates, encrypts, and transactionally upserts declaration+value.
-func (r *StoreResolver) Set(ctx context.Context, actor store.AccountID, name, value string, delivery DeliveryKind, kind SecretKind, provider, host string) error
-// Delete transactionally removes declaration+value; ErrNotFound maps out.
-func (r *StoreResolver) Delete(ctx context.Context, actor store.AccountID, name string) error
+// Upsert validates, encrypts, and transactionally upserts declaration+value.
+// Named Upsert (not Set) so StoreResolver does not accidentally satisfy the
+// deleted write half of the old Resolver interface — the read pair is all it
+// shares with Resolver.
+func (r *StoreResolver) Upsert(ctx context.Context, actor store.AccountID, name, value string, delivery DeliveryKind, kind SecretKind, provider, host string) error
+// Remove transactionally removes declaration+value; ErrNotFound maps out.
+func (r *StoreResolver) Remove(ctx context.Context, actor store.AccountID, name string) error
 ```
 
 Crypto stays in the `secrets`/`envelope` layer; `store` sees only
@@ -324,7 +340,7 @@ semantics are unchanged: a same-value re-set still hashes identically.
 - **`SetSecret`** (`go/server/secrets_service.go`): the declare-then-Set
   two-system flow (`s.store.DeclareSecret` + `s.resolver.Set`) with its
   ErrConflict re-set branch and rollback-on-fresh-write-failure collapses
-  into one `StoreResolver.Set` upsert transaction. Re-set of an existing name
+  into one `StoreResolver.Upsert` upsert transaction. Re-set of an existing name
   stays a value rewrite (UPSERT). The user-only gate (`requireUser`), empty
   value rejection, `secretRoutingFromProto`, and `bumpSecretsVersion` are
   unchanged.
@@ -346,7 +362,7 @@ semantics are unchanged: a same-value re-set still hashes identically.
   threat it guarded is gone from the user path: the F1 name partition is
   still what keeps a reserved-prefix name out of the container-delivered
   table, so the user door keeps rejecting reserved names case-insensitively
-  (defense in depth at both `Set` and `Delete`).
+  (defense in depth at both `Upsert` and `Remove`).
 
 ### A6 — Removing the boot write path (D4)
 
@@ -471,11 +487,14 @@ suffices.
 ### Keep the four-method `Resolver` with a DB-backed second implementation
 
 Rejected: after D4 no caller uses `Set`/`Delete` on the spec side (the boot
-path is read-only) and the user side's write signatures are wrong for the
-interface anyway — the DB write needs `actor` and routing parameters the
-provider write never had. Keeping the wide interface would force dead
-methods on `SpecResolver` and lossy signatures on `StoreResolver`. Shrink
-the interface to what both sides share: reads.
+path is read-only), and the user side's writes take `actor` and routing
+parameters the provider write never had — so `StoreResolver` names them
+`Upsert`/`Remove`, distinct concrete methods that share only the read pair with
+`Resolver`. Keeping the wide interface would force dead `Set`/`Delete` methods
+on `SpecResolver` and mismatched signatures no `StoreResolver` write could
+satisfy. The resolved design shrinks the interface to what both sides share —
+reads — and lets the user path keep its own richer write surface off the
+interface.
 
 ## Plan
 
@@ -537,15 +556,23 @@ with ErrDecrypt; wrong key fails; `String`/`GoString`/`json.Marshal` of Key
 leak nothing; UserSecretAAD is injective across (name, version) pairs that
 concatenate ambiguously (the `\x00` separator test).
 
-Amend `0001_init.sql` (`secrets` table + comment rewrite, A1). Extend
-`go/internal/store/queries/secrets.sql` ADDITIVELY: add `UpsertSecret :exec`
-(INSERT … ON CONFLICT (name) DO UPDATE on value/nonce/key_version/delivery/
-kind/provider/host/updated_at) and `SecretRecords :many` (rows with the value
-columns). `InsertSecret`, `DeclaredSecrets`, and the `DeclareSecret` store
-method STAY in T2 — their caller is the T5 `SetSecret` handler, so deleting
-them here would break code that still compiles against them; they are removed
-in T5 once that caller migrates (F2 re-sequence). `DeleteSecret :execrows`
-keeps its shape. Regenerate sqlc. Add the ported case-folding predicate.
+### T2 — Store: value columns + upsert/read queries + `ShadowsServerSecretPrefix`
+
+Amend `0001_init.sql` (`secrets` table + comment rewrite, A1). The two value
+columns `value_ciphertext`/`value_nonce` land NULLABLE here (A1 transitional
+posture): T2 keeps the value-free `InsertSecret`/`DeclareSecret` path live for
+its T5 caller, and that path writes no value columns, so an unconditional NOT
+NULL now would fail every live `SetSecret` and the existing DeclareSecret
+pgtests at runtime. T5 tightens the two columns to NOT NULL once the upsert is
+the only writer. Extend `go/internal/store/queries/secrets.sql` ADDITIVELY: add
+`UpsertSecret :exec` (INSERT … ON CONFLICT (name) DO UPDATE on
+value/nonce/key_version/delivery/kind/provider/host/updated_at) and
+`SecretRecords :many` (rows with the value columns). `InsertSecret`,
+`DeclaredSecrets`, and the `DeclareSecret` store method STAY in T2 — their
+caller is the T5 `SetSecret` handler, so deleting them here would break code
+that still compiles against them; they are removed in T5 once that caller
+migrates (F2 re-sequence). `DeleteSecret :execrows` keeps its shape. Regenerate
+sqlc. Add the ported case-folding predicate.
 
 Interfaces:
 
@@ -593,9 +620,12 @@ live through T2 (removed in T5 with their caller), so no retirement test here.
 
 ### T3 — `StoreResolver` + interface split
 
-Land `StoreResolver` (signatures in A4) ADDITIVELY: it implements all four
-`Resolver` methods. `secrets.Resolver` KEEPS its full four-method shape in T3
-(`Resolve`, `Statuses`, `Set`, `Delete`) so every existing caller still
+Land `StoreResolver` (signatures in A4) ADDITIVELY: it implements the two
+`Resolver` read methods (`Resolve`, `Statuses`) plus its own concrete
+`Upsert`/`Remove` writes, whose signatures deliberately do NOT match the old
+`Resolver.Set`/`Delete` — so `StoreResolver` satisfies exactly the read pair and
+nothing of the write half. `secrets.Resolver` KEEPS its full four-method shape
+in T3 (`Resolve`, `Statuses`, `Set`, `Delete`) so every existing caller still
 compiles, and `SpecResolver` keeps its write half. The shrink to the read pair
 and the deletion of `SpecResolver.Set`/`Delete`/`setArgs`/`WithCLI` are deferred
 to T6 (F2 re-sequence). `DeclareServerSecret` and the server `declarations`
@@ -606,8 +636,11 @@ Tests (red first): `StoreResolver.Resolve` returns decrypted values with
 ciphertext was swapped with another row's fails Resolve with an error naming
 the row, not a wrong value; `Statuses` reports IsSet=true per row without
 decrypt (assert by corrupting a ciphertext and observing Statuses still
-succeed); `Set` round-trips through a real store; compile-time: `var _
-Resolver = (*StoreResolver)(nil)` and `(*SpecResolver)(nil)`.
+succeed); `Upsert` round-trips through a real store; compile-time: `var _
+Resolver = (*SpecResolver)(nil)` (the spec side still satisfies the wide
+interface in T3). No `var _ Resolver = (*StoreResolver)(nil)` assertion — the
+store resolver is not the wide interface, only the read pair, so that assertion
+would fail to compile.
 
 ### T4 — Boot wiring: master-key resolve + tripwire + resolver swap + reserved-name rename
 
@@ -622,7 +655,8 @@ Reserved-name rename (F1 — the row is unconstructible without this). Add a
 resolvable:
 
 - Extend the `server_secrets_reserved_prefix` CHECK in `0001_init.sql` to admit
-  `COMPASS_%` alongside `SERVER_%` and `GATEWAY_CREDENTIALS_%` (edited in the
+  `COMPASS\_%` (escaped in the existing style, so `_` is a literal not a LIKE
+  wildcard) alongside `SERVER\_%` and `GATEWAY\_CREDENTIALS\_%` (edited in the
   same squashed file T2 amended).
 - Add the `COMPASS_` prefix constant to `serverSecretPrefixes`
   (`go/internal/store/server_secrets.go`); `HasServerSecretPrefix` and the
@@ -631,7 +665,13 @@ resolvable:
   `go/cmd/compass/server_secret.go` to strip `COMPASS_` too.
 - Rename `masterKeyName` (`go/server/secrets_service.go`) and `masterKeyCLIName`
   (`go/cmd/compass/server_secret.go`) from `GATEWAY_CREDENTIALS_MASTER_KEY` to
-  `COMPASS_MASTER_KEY`.
+  `COMPASS_MASTER_KEY`. Its post-T6 home: `resolveMasterKey` (below, in
+  `serve.go`) still needs the constant, but `masterKeyName`'s only current
+  consumers are the `SetServerSecret`/`DeleteServerSecret` master-key-refusal
+  guards, which T6 deletes — so `masterKeyName` leaves `secrets_service.go` when
+  those guards go, and the constant lives beside the other reserved-name
+  constants in `go/internal/store/server_secrets.go` (next to `ServerSecretPrefix`
+  / `GatewayCredentialsPrefix`), which `resolveMasterKey` reads.
 
 Interfaces:
 
@@ -658,15 +698,20 @@ The fail-closed assertions sit AFTER the pgtest fixture (A8 ordering).
 ### T5 — Service cutover: SetSecret/DeleteSecret on the DB
 
 Rewrite the user handlers in `go/server/secrets_service.go` onto
-`StoreResolver` (A5): `SetSecret` one upsert (rollback machinery deleted),
-`DeleteSecret` one delete with the reserved-prefix reject
+`StoreResolver` (A5): the `SetSecret` handler calls `StoreResolver.Upsert` (one
+upsert, rollback machinery deleted); the `DeleteSecret` handler calls
+`StoreResolver.Remove`, with the reserved-prefix reject
 (`ShadowsServerSecretPrefix` → CodeInvalidArgument) ahead of any store
 call. `secretsService.resolver` field becomes `*secrets.StoreResolver`;
 `serverResolver` stays `secrets.Resolver`.
 
 Once `SetSecret` no longer calls `s.store.DeclareSecret`, remove the now-unused
 `DeclareSecret` store method and its `InsertSecret` query (kept live through
-T2–T4 per the F2 re-sequence).
+T2–T4 per the F2 re-sequence). With the value-free insert gone and the upsert —
+which always writes both value columns — the sole writer, amend `0001_init.sql`
+in the same task to tighten `value_ciphertext`/`value_nonce` to `NOT NULL` (the
+final-schema constraint A1 defers out of T2). Regenerate sqlc for the tightened
+columns.
 
 Interfaces:
 
@@ -690,6 +735,10 @@ a stub left returning an unimplemented code (D4). Delete
 `newServerSecretSetCmd`/`runServerSecretSet`/`serverSecretWireName` and the
 set-verb wiring in `newServerSecretCmd` (`go/cmd/compass/server_secret.go`),
 and the two `server-secret` procedures in `go/internal/auth/admin_gate.go`.
+With the `SetServerSecret`/`DeleteServerSecret` guards gone, `masterKeyName`
+loses its last consumer in `secrets_service.go`; move the renamed constant to
+`go/internal/store/server_secrets.go` beside `ServerSecretPrefix` /
+`GatewayCredentialsPrefix`, where `resolveMasterKey` reads it (T4).
 `server-secret list` / `ListServerSecrets` SURVIVE, as does the value-free
 `Statuses` probe. The store-layer `DeleteServerSecret` sqlc query is a
 DIFFERENT thing (declaration removal) and is untouched.
@@ -727,18 +776,21 @@ ledger rows (below) to `docs/designs/DECISIONS.md` in the design PR itself
 ## Tasks
 
 - [ ] T1 — `go/internal/envelope`: AES-256-GCM seam, unit-tested, no Postgres.
-- [ ] T2 — Store: value columns on `secrets`, transactional upsert/delete,
-      sqlc regen, `ShadowsServerSecretPrefix`.
-- [ ] T3 — Additive interface split: `StoreResolver` lands implementing all
-      four `Resolver` methods; `Resolver` keeps its full shape (the shrink and
-      `SpecResolver` write-half deletion defer to T6, F2).
+- [ ] T2 — Store: value columns on `secrets` (NULLABLE in T2, tightened to NOT
+      NULL in T5), transactional upsert/delete, sqlc regen,
+      `ShadowsServerSecretPrefix`.
+- [ ] T3 — Additive interface split: `StoreResolver` lands implementing the two
+      `Resolver` read methods plus its own `Upsert`/`Remove`; `Resolver` keeps
+      its full shape (the shrink and `SpecResolver` write-half deletion defer to
+      T6, F2).
 - [ ] T4 — Boot: master-key resolve, `server_key_state` tripwire,
       `buildSecretResolvers` swap, and the `COMPASS_` reserved-name rename
       machinery (CHECK, prefix set, `masterKeyName`/`masterKeyCLIName`, strip
       list) that makes `COMPASS_MASTER_KEY` constructible and resolvable (F1).
 - [ ] T5 — Service cutover: `SetSecret`/`DeleteSecret` on the DB, PR #1066
       delete semantics folded; `DeclareSecret`/`InsertSecret` removed with
-      their caller.
+      their caller; `value_ciphertext`/`value_nonce` tightened to NOT NULL now
+      the upsert is the sole writer.
 - [ ] T6 — D4: server-secret write path removed (the two RPCs and their four
       messages DELETED, not stubbed; RPC deletion is D4), CLI `set` verb
       deleted, `list` survives; the deferred `Resolver` shrink + `SpecResolver`
@@ -772,26 +824,28 @@ ledger rows (below) to `docs/designs/DECISIONS.md` in the design PR itself
 ## Ledger delta
 
 `Ledger-impact: adds DL-350..DL-356 to docs/designs/DECISIONS.md (Server &
-store section); FLIPS the Status cell of DL-328 (key-custody clause
-superseded, envelope crypto retained).`
+store section); FLIPS the Status cell of DL-328 to Superseded by DL-355.`
 
 Highest existing id verified this session: DL-349.
 
-DL-328's `Status` becomes `Partially superseded by DL-355
-(key custody/provisioning); envelope crypto retained` — it is the only
-existing row this record touches. Its record header
-(`compass-gateway-credentials-at-rest-encryption.md`) moves from `Active` to
-`Active (key-custody clause superseded by the user-secret store record)`.
+DL-328's `Status` becomes `Superseded by DL-355 (Matt, 2026-09-11)` — it is the
+only existing row this record touches. The full-supersession form loses no
+truth: DL-328's key-custody/provisioning half is replaced by DL-355, and its
+envelope crypto (AES-256-GCM, the `value_ciphertext`/`value_nonce`/`key_version`
+columns, row-binding AAD) is carried forward as a live decision in its own right
+by DL-351, so nothing DL-328 decided is lost when the row flips. DL-328's record
+header (`compass-gateway-credentials-at-rest-encryption.md`) moves from `Active`
+to `Active (key-custody clause superseded by the user-secret store record)`.
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-350 | User-provided secret VALUES move into the Postgres `secrets` table as AES-256-GCM ciphertext columns (`value_ciphertext`, `value_nonce`, `key_version`) on the existing declaration row — one row per secret, single-transaction Set/Delete, the declare/set/rollback trio deleted. Values never transit secretspec on the user path again | Proposed (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md) |
-| DL-351 | At-rest crypto is the new `go/internal/envelope` package: AES-256-GCM, single master key (no per-row DEKs), internally-generated random 96-bit nonce per encryption (no caller nonce parameter), AAD = domain label + tenant_id + name + key_version binding each ciphertext to its row and its tenant; the master key is the `COMPASS_MASTER_KEY` boot secret (renamed per DL-355) resolved via secretspec, tripwired through `server_key_state` | Proposed (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md) |
-| DL-352 | Key rotation is deferred to a later record; the schema reserves it now via per-row `key_version`, `server_key_state.key_version`, version-carrying AAD, and a key-as-parameter envelope API — rotation lands as an online row-at-a-time re-encrypt with no schema change | Proposed (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md) |
-| DL-353 | `secrets.Resolver` shrinks to the read pair (`Resolve`+`Statuses`); the user path is the concrete `StoreResolver` (DB-backed, no interface for its writes); `SpecResolver`'s Set/Delete/CLI write machinery is deleted outright (D4 makes boot secrets read-only) | Proposed (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md) |
-| DL-354 | PR #1066's delete semantics fold in transformed: the `HasServerSecretPrefix` (byte-exact admit) vs `ShadowsServerSecretPrefix` (case-folding reject) predicate split is carried to every user-path door; the declaration-first ordering and no-rollback/CodeUnavailable recovery-hint posture are SUBSUMED by the single-row transactional delete (no two-system half-failure exists to recover from) | Proposed (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md) |
-| DL-355 | Master-key custody is operator-seeded, not compass-written: DL-328's zero-human-step auto-provision into a WRITABLE provider is SUPERSEDED (D4 removes the write path it needs, and it was never implemented). First-run generation is a standalone `compass` CLI verb that mints a 256-bit key and seeds the configured provider; the nix/devenv seed script invokes that same verb, so a standard deploy needs no explicit step and a hand-rolled one needs a single documented command. Boot only reads, failing closed naming the verb. The key is renamed `GATEWAY_CREDENTIALS_MASTER_KEY` → `COMPASS_MASTER_KEY`, shared with the future `gateway_credentials` store with AAD domain labels keeping the ciphertext domains disjoint | Proposed (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md) |
-| DL-356 | `SetServerSecret`/`DeleteServerSecret` and their four request/response messages are DELETED from `proto/compass/v1/compass.proto`, together with the `compass server-secret set` verb and the two procedures in the admin gate — a clean public-API cutover, not a CodeUnimplemented stub. Grounded on no server secret needing a runtime WRITE: the runtime READERS (`newDeclaredSecretResolver`'s per-call `Resolve` closure, the webhook-secret resolver invoked on every unauthenticated `POST /webhooks/github` before the HMAC check, the App-key PEM read per token mint) all go through the resolver, so provider-side rotation (secretspec CLI write plus lazy re-resolve within the TTL) replaces the write RPCs; the value-free `Statuses` and `ListServerSecrets` survive. The store-layer `DeleteServerSecret` sqlc query is unrelated and untouched | Proposed (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md) |
+| DL-350 | User-provided secret VALUES move into the Postgres `secrets` table as AES-256-GCM ciphertext columns (`value_ciphertext`, `value_nonce`, `key_version`) on the existing declaration row — one row per secret, single-transaction Set/Delete, the non-atomic declare/set/rollback trio deleted. Values never transit secretspec on the user path again. Grounded in a primary-source survey of comparable OSS projects (Woodpecker CI and Drone CI both persist user-set secrets in their own DB; Drone's external secret plugin interface is read-only `Find` with writes landing in its own store) | Active (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md#resolved-decisions) |
+| DL-351 | At-rest crypto is the new `go/internal/envelope` package: AES-256-GCM, single master key (no per-row DEKs), internally-generated random 96-bit nonce per encryption (no caller nonce parameter, so reuse is structurally impossible), AAD = domain label + tenant_id + name + key_version binding each ciphertext to its row and its tenant; the master key is the `COMPASS_MASTER_KEY` boot secret (renamed per DL-355) resolved via secretspec, tripwired through `server_key_state`. Go stdlib crypto only — the first cryptography in the Go tree. Accepted leaks, stated not silent: GCM is length-preserving so a dump reveals each value's byte length, and Go offers no guaranteed key zeroization | Active (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md#resolved-decisions) |
+| DL-352 | Key rotation is deferred to a later record; the schema reserves it now via per-row `key_version`, `server_key_state.key_version`, version-carrying AAD, and a key-as-parameter envelope API, so rotation lands as an online row-at-a-time re-encrypt with no schema change. Interim key-incident procedure until that record lands: wipe and re-set every secret, acceptable only under the pre-production single-operator posture — the `server_key_state` tripwire otherwise turns an out-of-band key change into a permanent boot failure | Active (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md#resolved-decisions) |
+| DL-353 | `secrets.Resolver` shrinks to the read pair (`Resolve`+`Statuses`); the user path is the concrete `StoreResolver` (DB-backed, no interface for its writes); `SpecResolver`'s Set/Delete/CLI write machinery is deleted outright, since boot secrets become read-only. Every deletion is sequenced AFTER its last caller is gone, so each task compiles standalone | Active (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md#resolved-decisions) |
+| DL-354 | PR #1066's reviewed delete semantics fold in transformed: the `HasServerSecretPrefix` (byte-exact admit) vs `ShadowsServerSecretPrefix` (case-folding reject) predicate split is carried to every user-path door; the declaration-first ordering and no-rollback/CodeUnavailable recovery-hint posture are SUBSUMED by the single-row transactional delete, because no two-system half-failure exists to recover from once the value lives in the same row as its declaration | Active (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md#resolved-decisions) |
+| DL-355 | Master-key custody is operator-seeded, not compass-written: DL-328's zero-human-step auto-provision into a WRITABLE provider is superseded, because making boot secrets read-only removes the write path it needs (and it was never implemented — `go/internal/envelope` was absent and `server_key_state` had no non-test readers). First-run generation is a standalone `compass` CLI verb that mints a 256-bit key and seeds the configured provider; the nix/devenv seed script invokes that same verb, so a standard deploy needs no explicit step and a hand-rolled one needs a single documented command. Boot only reads, failing closed naming the verb. The key is renamed `GATEWAY_CREDENTIALS_MASTER_KEY` → `COMPASS_MASTER_KEY` and shared with the future `gateway_credentials` store, which MUST adopt its own distinct AAD domain label; a new `COMPASS_` reserved prefix joins the existing two in the CHECK constraint and both prefix predicates, without which the renamed key is undeclarable and therefore unresolvable | Active (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md#resolved-decisions) |
+| DL-356 | `SetServerSecret`/`DeleteServerSecret` and their four request/response messages are DELETED from `proto/compass/v1/compass.proto`, together with the `compass server-secret set` verb, the two admin-gate procedures, and the generated Go connect + both TypeScript surfaces — a clean public-API cutover, not a CodeUnimplemented stub. Grounded on no consumer needing a runtime WRITE: server secret VALUES are in fact read at runtime (`newDeclaredSecretResolver` returns a per-call `Resolve` closure; the webhook secret is resolved on every unauthenticated `POST /webhooks/github` before the HMAC check, TTL-cached at `forgeTokenTTL`), which is precisely why provider-side rotation with the secretspec CLI suffices without any RPC. `ListServerSecrets`/`Statuses` survive; the unrelated store-layer `DeleteServerSecret` sqlc query (declaration removal) is untouched | Active (Matt, 2026-09-11) | [user-secret store](server/compass-user-secret-store.md#resolved-decisions) |
 
 ## Resolved decisions
 
@@ -804,13 +858,16 @@ the draft argued for, and because D1 supersedes part of a frozen record.
   operator-chosen WRITABLE SecretSpec provider" and rotated through
   `SetServerSecret` / the `compass server-secret` CLI. D4 (boot secrets
   read-only) removes the write path all three of those need, so the clause is
-  unimplementable as frozen. This record supersedes the **custody and
-  provisioning half only**; DL-328's envelope crypto (AES-256-GCM,
+  unimplementable as frozen. This record supersedes the custody and
+  provisioning half of DL-328; DL-328's envelope crypto (AES-256-GCM,
   `value_ciphertext`/`value_nonce`/`key_version`, row-binding AAD) is kept and
-  reused verbatim. Nothing regresses: DL-328's provisioner was never
-  implemented (`go/internal/envelope` absent; `server_key_state` has no
-  non-test readers outside generated `models.go`). The ledger delta below
-  flips DL-328's `Status` cell accordingly.
+  reused verbatim, carried forward as DL-351, a live decision in its own right.
+  Nothing regresses: DL-328's provisioner was never implemented
+  (`go/internal/envelope` absent; `server_key_state` has no non-test readers
+  outside generated `models.go`). Because the crypto survives as DL-351, the
+  ledger flips DL-328's `Status` cell to `Superseded by DL-355` outright — there
+  is no partial-status form, and nothing DL-328 decided is lost by the full
+  flip.
 - **D2 — First-run key generation is a CLI verb, invoked by the seed script.**
   The key must exist before the server boots, so the server cannot mint it.
   One implementation — a standalone `compass` verb that generates a 256-bit
