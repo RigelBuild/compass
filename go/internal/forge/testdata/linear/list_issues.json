@@ -13,7 +13,7 @@
 			"variables": {
 				"filter": {
 					"team": { "key": { "eq": "SEA" } },
-					"state": { "type": { "nin": ["completed", "canceled"] } }
+					"state": { "type": { "nin": ["completed", "canceled", "duplicate"] } }
 				}
 			}
 		}

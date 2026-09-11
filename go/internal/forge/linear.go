@@ -73,8 +73,11 @@ const (
 // linearClosedStateTypes are the Linear workflow-state `type` values that map
 // to the forge's "closed" truth. Every other type maps to "open". Verified
 // against Linear SDL WorkflowState.type: "triage", "backlog", "unstarted",
-// "started", "completed", "canceled", "duplicate".
-var linearClosedStateTypes = []string{"completed", "canceled"}
+// "started", "completed", "canceled", "duplicate". "duplicate" is its own
+// system-managed terminal category (not a member of "completed"), applied when
+// an issue is marked a duplicate; Linear's own Active view is unstarted+started
+// only, so a duplicate is never live work (RIG-3590).
+var linearClosedStateTypes = []string{"completed", "canceled", "duplicate"}
 
 // LinearConfig configures a Linear client.
 type LinearConfig struct {
