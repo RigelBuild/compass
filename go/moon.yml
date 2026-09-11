@@ -1,8 +1,7 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 # The Compass backend Go module (go/). This lane keeps the generated compass.v1
-# Go stubs compiling + drift-free AND runs the full Go gate battery
-# (docs/designs/platform/go-toolchain-default.md T10 +
-# go-idioms-and-libraries.md L1/L2): gofmt + go vet + golangci-lint (with the
+# Go stubs compiling + drift-free AND runs the full Go gate battery:
+# gofmt + go vet + golangci-lint (with the
 # gochecksumtype/exhaustive exhaustiveness gate on), a CGO -race test lane, go
 # build, the supply-chain fence (govulncheck + go-licenses), and nilaway
 # nil-flow analysis (gating, zero baseline — see the nilaway task below).

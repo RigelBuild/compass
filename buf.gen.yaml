@@ -5,8 +5,8 @@
 #   TS    — protoc-gen-es v2 (messages + Connect-capable service defs) →
 #           packages/compass-client, consumed by @connectrpc/connect
 #   Go    — protoc-gen-go (messages) + protoc-gen-connect-go (Connect service
-#           handlers + clients) → go/gen, consumed by the Go backend
-#           (docs/designs/platform/go-toolchain-default.md). Go is the backend;
+#           handlers + clients) → go/gen, consumed by the Go backend.
+#           Go is the backend;
 #           the Rust lane that once generated here was removed at the cutover.
 version: v2
 clean: true

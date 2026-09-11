@@ -9,7 +9,7 @@
 #
 # Language-neutral (no crate, no language toolchain of its own): tagged `oss`
 # for the import boundary. The Rust backend that once co-owned this schema was
-# deleted at the Go cutover (docs/designs/platform/go-toolchain-default.md); the
+# deleted at the Go cutover; the
 # schema outlives it as the sole source of truth the Go and TS clients generate
 # from.
 layer: 'library'

@@ -37,7 +37,8 @@ import (
 
 // defaultAgentImage is the canonical agent image ref the embedded stack runs
 // when no --image/$COMPASS_AGENT_IMAGE is supplied. The ref is locked
-// (docs/designs/platform/compass-agent-image-publish.md §Ref); the native app
+// (docs/designs/infra/ci/compass-agent-image-publish/design.md, "the name/tag
+// contract"); the native app
 // does not bundle the image (DL-112) — compass-stack podman-pulls it from GHCR
 // at first run.
 const defaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"

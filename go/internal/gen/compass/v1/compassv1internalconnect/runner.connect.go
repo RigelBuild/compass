@@ -1,6 +1,4 @@
-// The compass.v1 Server<->Runner seam (design: architecture-lineage;
-// wire shape frozen by the platform record
-// docs/designs/platform/go-toolchain-default.md:925-943).
+// The compass.v1 Server<->Runner seam (design: architecture-lineage).
 //
 // INTERNAL-ONLY surface. Like agent.proto (the in-container agent stdio
 // envelopes) and unlike compass.proto / comms.proto (the public generated-client

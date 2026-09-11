@@ -32,7 +32,7 @@
 // the handler and the admin gate fail-closes — a silent authorization gap rather
 // than a compile error, so the server stack must wire each pair together.
 //
-// Per docs/designs/platform/go-idioms-and-libraries.md the Rust is the spec, not
+// The Rust is the spec, not
 // a template: the wire contract, invariants, and error semantics carry over
 // exactly while the implementation is written as native Go. The store keeps only
 // the SHA-256 hash of each issued token, never the plaintext, so reading it
