@@ -8,9 +8,11 @@
 // container, so neither the image build nor the clone is the Runner's job.
 //
 // The layering, bottom to top:
-//   - podman.go — a thin WorkloadRuntime over the podman CLI: the only place a
-//     subprocess is spawned. Everything above depends on the interface, so a
-//     libpod-REST backend can replace it without touching a caller.
+//   - clispawn.go — the shared subprocess seam (cliEngine): the only place a
+//     CLI-backend process is spawned.
+//   - podman.go — a thin WorkloadRuntime over the podman CLI, driving that
+//     seam. Everything above depends on the interface, so a libpod-REST
+//     backend can replace it without touching a caller.
 //   - egress.go — the default-deny + allowlist firewall applied inside the
 //     container before the agent runs.
 //   - workspace.go — clone-per-container plus the scoped $HOME and its git
@@ -37,7 +39,6 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -423,16 +424,17 @@ const (
 	argFormat      = "--format"
 )
 
-// PodmanCLI is a WorkloadRuntime over the podman CLI.
+// PodmanCLI is a WorkloadRuntime over the podman CLI. The subprocess seam
+// (spawn/capture/streaming) is the shared cliEngine, embedded so podman's
+// verb methods keep calling run/spawnCapture directly.
 type PodmanCLI struct {
-	program string
-	timeout time.Duration
+	cliEngine
 }
 
 // NewPodmanCLI builds a PodmanCLI invoking `podman` on PATH with the default
 // per-command timeout.
 func NewPodmanCLI() *PodmanCLI {
-	return &PodmanCLI{program: "podman", timeout: defaultCommandTimeout}
+	return &PodmanCLI{cliEngine{program: "podman", timeout: defaultCommandTimeout}}
 }
 
 // WithProgram uses an explicit engine binary (e.g. an absolute path, or
@@ -584,47 +586,10 @@ func (p *PodmanCLI) Exec(ctx context.Context, id WorkloadID, spec ExecSpec) (Exe
 	}, nil
 }
 
-// ExecStreaming starts a streaming `podman exec -i`, returning the live pipes
-// plus a kill/wait handle. The exec is bound to a cancellable child of ctx: its
-// Cancel SIGKILLs the process and WaitDelay bounds the reap, so cancelling the
-// parent context or calling ChildHandle.Kill terminates the in-container agent
-// even without a Go Drop.
+// ExecStreaming starts a streaming `podman exec -i` through the shared
+// subprocess seam, returning the live pipes plus a kill/wait handle.
 func (p *PodmanCLI) ExecStreaming(ctx context.Context, id WorkloadID, spec StreamingExecSpec) (*StreamingExec, error) {
-	execCtx, cancel := context.WithCancel(ctx)
-	//nolint:gosec // G204: the container-engine seam — see spawnCapture. The
-	// engine binary is operator-set and the exec argv is Runner-assembled.
-	cmd := exec.CommandContext(execCtx, p.program, execStreamingArgs(id, spec)...)
-	// A dropped session must kill the exec, or the in-container agent keeps
-	// running after the Runner lets go of the handle. No command timeout: a
-	// streaming session is long-lived by design.
-	cmd.Cancel = func() error { return cmd.Process.Kill() }
-	cmd.WaitDelay = 10 * time.Second
-
-	spawnErr := func(err error) (*StreamingExec, error) {
-		cancel()
-		return nil, &SpawnError{Program: p.program, Err: err}
-	}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return spawnErr(err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return spawnErr(err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return spawnErr(err)
-	}
-	if err := cmd.Start(); err != nil {
-		return spawnErr(err)
-	}
-
-	return &StreamingExec{
-		IO:      StreamingIO{Stdin: stdin, Stdout: stdout, Stderr: stderr},
-		Process: &ChildHandle{cmd: cmd, cancel: cancel},
-	}, nil
+	return p.spawnStreaming(ctx, execStreamingArgs(id, spec))
 }
 
 // stopGraceSeconds converts a graceful-stop timeout to podman's whole-second
@@ -743,76 +708,6 @@ func (p *PodmanCLI) MountLabel(ctx context.Context, id WorkloadID) (string, erro
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
-}
-
-// spawnCapture spawns `podman <args>`, optionally writing stdin, and captures
-// output under the command timeout. The single subprocess seam: a spawn
-// failure, a timeout, and a captured non-zero exit are all mapped here. summary
-// names the operation for error context without leaking the full argv (which may
-// hold env values or a token on stdin).
-//
-// A non-zero exit is returned as (stdout, stderr, code, nil) — the caller
-// decides whether that is an error (run) or an expected result (Exec, Exists).
-// Only a spawn failure, this call's own timeout, or parent-context cancellation
-// is a non-nil error.
-func (p *PodmanCLI) spawnCapture(ctx context.Context, summary string, args []string, stdin *string) (stdout, stderr []byte, exitCode int, err error) {
-	cctx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
-
-	//nolint:gosec // G204: this is the container-engine seam — spawning the
-	// configured engine binary (p.program) with caller-supplied argv is the
-	// module's entire purpose. Host/allowlist inputs are validated upstream
-	// (isValidHost) before reaching an argv, and the program is operator-set,
-	// not attacker-controlled.
-	cmd := exec.CommandContext(cctx, p.program, args...)
-	// A killed process that leaked a child still holding the output pipe would
-	// keep Run blocked on that pipe indefinitely; WaitDelay bounds that wait so a
-	// leaked-pipe hang can't outlive this call's timeout by more than WaitDelay.
-	cmd.WaitDelay = 10 * time.Second
-	var out, errBuf bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errBuf
-	if stdin != nil {
-		// A strings.Reader hits EOF when the script is exhausted, so the child
-		// never blocks waiting for more input.
-		cmd.Stdin = strings.NewReader(*stdin)
-	}
-
-	if runErr := cmd.Run(); runErr != nil {
-		switch {
-		case cctx.Err() == context.DeadlineExceeded && ctx.Err() == nil:
-			// This call's own timeout fired (not the parent): the process was
-			// killed, so surface a timeout rather than a bogus exit code.
-			return nil, nil, 0, &TimeoutError{Summary: summary, Timeout: p.timeout}
-		case ctx.Err() != nil:
-			// The caller cancelled: propagate the context error.
-			return nil, nil, 0, ctx.Err()
-		default:
-			if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {
-				// Ran to completion but exited non-zero: not an error here.
-				return out.Bytes(), errBuf.Bytes(), exitErr.ExitCode(), nil
-			}
-			return nil, nil, 0, &SpawnError{Program: p.program, Err: runErr}
-		}
-	}
-	return out.Bytes(), errBuf.Bytes(), 0, nil
-}
-
-// run runs `podman <args>`, requiring a zero exit (a non-zero becomes a
-// CommandError). For fire-and-check operations like create/start/stop/remove.
-func (p *PodmanCLI) run(ctx context.Context, summary string, args []string) ([]byte, error) {
-	stdout, stderr, exitCode, err := p.spawnCapture(ctx, summary, args, nil)
-	if err != nil {
-		return nil, err
-	}
-	if exitCode != 0 {
-		return nil, &CommandError{
-			Summary:  summary,
-			ExitCode: exitCode,
-			Stderr:   strings.TrimSpace(string(stderr)),
-		}
-	}
-	return stdout, nil
 }
 
 // execStreamingArgs assembles the argv for a streaming `podman exec -i`. Split
