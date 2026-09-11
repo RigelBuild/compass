@@ -94,7 +94,7 @@ runtimes (bun, node, moon, go) from `tools/toolchain/versions/*.nix`; the Go
 analysis battery (golangci-lint, govulncheck, go-licenses, nilaway), each rebuilt
 against that go toolchain so analyzer and compiler share one Go version
 (`tools/toolchain/go-analysis.nix`); and the remaining nixpkgs-provided tools —
-buf, protoc, biome, markdownlint — from the nixpkgs revision `devenv.lock` pins
+buf, protoc, biome, rumdl — from the nixpkgs revision `devenv.lock` pins
 (`tools/toolchain/gate-tools.nix`). Their `bin/` dirs go on PATH; there are no
 `setup-*` actions. One owner, one activation path, remotely and locally.
 

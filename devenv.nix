@@ -95,13 +95,13 @@ in
     # sqlc 1.31.1.
     sqlc
 
-    # Lint gate. biome + markdownlint-cli2 are nixpkgs derivations here, not
-    # `bunx` — one nixpkgs pin means `moon run root:lint` / `root:markdownlint`
-    # resolve the identical binary and version for everyone, with no drift
-    # between a contributor's node_modules and anyone else's. `@biomejs/biome`
-    # stays a package.json devDep for the editor LSP.
+    # Lint gate. biome + rumdl are nixpkgs derivations here, not `bunx` — one
+    # nixpkgs pin means `moon run root:lint` / `root:markdownlint` resolve the
+    # identical binary and version for everyone, with no drift between a
+    # contributor's node_modules and anyone else's. `@biomejs/biome` stays a
+    # package.json devDep for the editor LSP.
     biome
-    markdownlint-cli2
+    rumdl
 
     # actionlint: static checker for the GitHub Actions workflows under
     # .github/workflows/ (ci, eng-docs-deploy, publish-agent-image, renovate).

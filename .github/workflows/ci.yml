@@ -394,7 +394,7 @@ jobs:
 
       - name: Put the dev shell's nixpkgs tools on PATH
         if: matrix.run == 'true'
-        # Phase two. buf, protoc, biome and markdownlint have no `setup-*` action
+        # Phase two. buf, protoc, biome and rumdl have no `setup-*` action
         # that could reproduce a nixpkgs pin. Rather than pick a close-enough
         # release from some other channel and hope, CI resolves the SAME
         # derivations the dev shell does, from the nixpkgs revision devenv.lock
@@ -572,7 +572,7 @@ jobs:
         #
         # Unlike the moon gate, this job carries no phase-two nixpkgs-tools step:
         # the real-Postgres suite runs only `go test`, which needs no buf/protoc/
-        # biome/markdownlint, so the language toolchains are the whole bootstrap.
+        # biome/rumdl, so the language toolchains are the whole bootstrap.
         run: |
           stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
             | jq -r '.[].store')

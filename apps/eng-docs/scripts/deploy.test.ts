@@ -208,14 +208,10 @@ test("parsePreviewUrl returns null for empty output", () => {
 
 // ── changedDocPages ──────────────────────────────────────────────────────────
 
-// Hermetic markdownlint config literal mirroring the real .markdownlint-cli2.jsonc
-// shape (no file/network read). parseExclusions() reads `ignores` and appends
-// `**/outputs/**`; isExcluded() additionally hard-excludes `apps/eng-docs/**`.
-const markdownlintConfig = JSON.stringify({
-	globs: ["**/*.md"],
-	gitignore: true,
-	ignores: ["config/prompts/**"],
-});
+// Hermetic exclusion set mirroring the real `.rumdl.toml` `[global] exclude`
+// (no file/network read). parseExclusions() appends `**/outputs/**`;
+// isExcluded() additionally hard-excludes `apps/eng-docs/**`.
+const exclude = ["config/prompts/**"];
 
 test("changedDocPages maps a docs/ file to its site route", () => {
 	// classify("docs/designs/repo/foo.md") → destRel "designs/repo/foo.md"
@@ -224,7 +220,7 @@ test("changedDocPages maps a docs/ file to its site route", () => {
 	expect(
 		changedDocPages(
 			[{ filename: "docs/designs/repo/foo.md", status: "modified" }],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([
 		{
@@ -247,7 +243,7 @@ test("changedDocPages slugifies a dotted directory segment", () => {
 					status: "modified",
 				},
 			],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([
 		{
@@ -262,10 +258,7 @@ test("changedDocPages maps a package doc via packages/", () => {
 	// packagePath → { id: "go", rest: "README.md" } → destRel
 	// "packages/go/README.md"; routeSlug lowercases → "/packages/go/readme".
 	expect(
-		changedDocPages(
-			[{ filename: "go/README.md", status: "added" }],
-			markdownlintConfig,
-		),
+		changedDocPages([{ filename: "go/README.md", status: "added" }], exclude),
 	).toEqual([{ sourcePath: "go/README.md", route: "/packages/go/readme" }]);
 });
 
@@ -274,18 +267,18 @@ test("changedDocPages drops a non-markdown file", () => {
 	expect(
 		changedDocPages(
 			[{ filename: "docs/designs/repo/diagram.png", status: "added" }],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([]);
 });
 
-test("changedDocPages drops a file excluded by the markdownlint ignores", () => {
-	// "config/prompts/example.md" matches the "config/prompts/**" ignore glob →
+test("changedDocPages drops a file excluded by the rumdl exclude set", () => {
+	// "config/prompts/example.md" matches the "config/prompts/**" exclude glob →
 	// isExcluded true.
 	expect(
 		changedDocPages(
 			[{ filename: "config/prompts/example.md", status: "added" }],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([]);
 });
@@ -296,7 +289,7 @@ test("changedDocPages drops the docsite's own tree (apps/eng-docs/**)", () => {
 	expect(
 		changedDocPages(
 			[{ filename: "apps/eng-docs/src/content/x.md", status: "modified" }],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([]);
 });
@@ -306,13 +299,13 @@ test("changedDocPages drops a deleted (removed) markdown file", () => {
 	expect(
 		changedDocPages(
 			[{ filename: "docs/specs/web/gone.md", status: "removed" }],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([]);
 });
 
 test("changedDocPages returns [] for empty input", () => {
-	expect(changedDocPages([], markdownlintConfig)).toEqual([]);
+	expect(changedDocPages([], exclude)).toEqual([]);
 });
 
 test("changedDocPages returns [] when every file is dropped", () => {
@@ -322,9 +315,9 @@ test("changedDocPages returns [] when every file is dropped", () => {
 				{ filename: "docs/designs/repo/diagram.png", status: "added" }, // non-md
 				{ filename: "docs/specs/web/gone.md", status: "removed" }, // removed
 				{ filename: "apps/eng-docs/src/content/x.md", status: "modified" }, // docsite tree
-				{ filename: "config/prompts/example.md", status: "added" }, // markdownlint-excluded
+				{ filename: "config/prompts/example.md", status: "added" }, // exclude-set match
 			],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([]);
 });
@@ -342,7 +335,7 @@ test("changedDocPages preserves input order and multiplicity, dropping in place"
 				{ filename: "docs/designs/repo/foo.md", status: "added" }, // duplicate
 				{ filename: "docs/specs/web/api.md", status: "modified" },
 			],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([
 		{
@@ -364,7 +357,7 @@ test("changedDocPages drops an uppercase .MD file (case-SENSITIVE extension gate
 	expect(
 		changedDocPages(
 			[{ filename: "docs/designs/repo/FOO.MD", status: "added" }],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([]);
 });
@@ -375,7 +368,7 @@ test("changedDocPages keeps a renamed markdown file (only 'removed' is dropped)"
 	expect(
 		changedDocPages(
 			[{ filename: "docs/designs/repo/foo.md", status: "renamed" }],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([
 		{
@@ -394,7 +387,7 @@ test("changedDocPages drops node_modules/ and /dist/ paths (gather secondary ski
 				{ filename: "node_modules/p/readme.md", status: "added" },
 				{ filename: "packages/x/dist/gen.md", status: "modified" },
 			],
-			markdownlintConfig,
+			exclude,
 		),
 	).toEqual([]);
 });
@@ -416,7 +409,7 @@ for (const dir of [
 		expect(
 			changedDocPages(
 				[{ filename: `.${dir}/notes.md`, status: "added" }],
-				markdownlintConfig,
+				exclude,
 			),
 		).toEqual([]);
 	});

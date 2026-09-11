@@ -147,7 +147,7 @@
     },
     {
       // ── devenv nixpkgs channel ──
-      // The dev shell bakes biome + markdownlint-cli2 from nixpkgs
+      // The dev shell bakes biome + rumdl from nixpkgs
       // (devenv.nix:75-81), whose versions are governed by devenv's nixpkgs channel
       // (devenv.yaml → github:cachix/devenv-nixpkgs/rolling), locked by git rev in
       // devenv.lock. The native `nix` manager can't see it — there is no root
@@ -158,7 +158,7 @@
       // Renovate tracks it; the coupled postUpgradeTasks rule below re-locks
       // devenv.lock and rewrites the biome catalog pin to the version the new rev
       // bakes, so parity holds in one PR. (Only biome is dual-sourced here —
-      // markdownlint-cli2 has no catalog pin — so the relock rewrites one catalog
+      // rumdl has no catalog pin — so the relock rewrites one catalog
       // pin, not two.)
       //
       // Anchor: `"repo": "devenv-nixpkgs"` immediately followed by `"rev"`.
@@ -447,7 +447,7 @@
       // fences the OSV security path for biome: a biome CVE is remediated only when
       // the channel bakes a fixed version, not by an immediate security PR — an
       // acceptable tradeoff for a build-time devDependency with no runtime attack
-      // surface. (markdownlint-cli2 is baked from the channel too but has no catalog
+      // surface. (rumdl is baked from the channel too but has no catalog
       // pin, so no generic manager reaches it — no rule needed.) Remove only if
       // biome ever stops being baked from the channel.
       matchManagers: ["bun", "npm", "custom.regex"],
