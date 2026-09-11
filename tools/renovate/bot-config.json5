@@ -82,7 +82,7 @@
   // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
   // quietly.)
   //
-  // Six entries, all load-bearing:
+  // Seven entries, all load-bearing:
   //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
   //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
   //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
@@ -121,9 +121,18 @@
   //      regex-bumped rev beside a stale hash. Both devenv-fork packageRules
   //      declare this ONE command — the script self-gates on WHICH lock
   //      changed — so one entry covers both (RIG-2815).
-  // (1), (3), (4), (5), and (6) are `bun <script>.ts` — the Renovate hooks are
-  // TypeScript run via bun (AGENTS.md "Scripts: TypeScript over bash"); bun is on
-  // the runner PATH.
+  //   7. the agent-image devenv-nixpkgs CHANNEL relock, the fourth devenv pin:
+  //      on that lock's channel digest bump it runs `devenv update nixpkgs` in
+  //      agent-image/ under that lock's own devenv, then refreshes
+  //      agent-image/entrypoint.nix's bun `outputHash` — the channel rev
+  //      resolves the bun that FOD's builder uses, so an advance can invalidate
+  //      the pin with no manifest change. SEPARATE from (3) because the root
+  //      channel script's tail (biome eval, catalog pin, bun.lock, flake
+  //      lockstep) has no counterpart in this scope: agent-image bakes no dev
+  //      shell (`packages = [ ]`) and has no flake.
+  // (1), (3), (4), (5), (6), and (7) are `bun <script>.ts` — the Renovate hooks
+  // are TypeScript run via bun (AGENTS.md "Scripts: TypeScript over bash"); bun
+  // is on the runner PATH.
   allowedCommands: [
     "^bun tools/renovate/refresh-toolchain-hashes\\.ts$",
     "^bun install --lockfile-only$",
@@ -131,5 +140,6 @@
     "^bun tools/renovate/refresh-fod-hashes\\.ts$",
     "^bun tools/renovate/refresh-go-overlay\\.ts$",
     "^bun tools/renovate/refresh-devenv-lock\\.ts$",
+    "^bun tools/renovate/refresh-agent-image-nixpkgs\\.ts$",
   ],
 }
