@@ -13,7 +13,7 @@ parent's schedule-critical milestone (microvm-runner.md:466-476): grow
 seed, `proto/compass/v1/guest_control.proto:20-22`), and implement
 `MicroVMRuntime`'s Create/Start/Exec/ExecStreaming/Stop/Remove against it so
 the microVM backend behaves identically to `PodmanCLI` through the
-`ContainerRuntime` surface (`go/internal/runtime/podman.go:303-352`). Every
+`WorkloadRuntime` surface (`go/internal/runtime/podman.go:303-352`). Every
 method today is a typed stub ("returned by every MicroVMRuntime method until
 the in-guest control plane lands", `go/internal/runtime/microvm.go:48-55`);
 V2b fills them. Egress arming stays V3's; the gateway transport stays V4's.
@@ -169,8 +169,8 @@ the nft-script branch errors as unimplemented until V3:
 ```proto
 message ProvisionRequest {
   string nft_script = 1;                // V3: EgressPolicy.NftScript(); empty in V2b
-  uint32 default_exec_uid = 2;          // the session's agent uid (ContainerSpec.UID)
-  map<string, string> base_env = 3;     // ContainerSpec.Env, the base env every exec inherits
+  uint32 default_exec_uid = 2;          // the session's agent uid (WorkloadSpec.UID)
+  map<string, string> base_env = 3;     // WorkloadSpec.Env, the base env every exec inherits
 }
 message ProvisionResponse {}
 ```
@@ -218,7 +218,7 @@ carries no spec, yet Start is where V2b buries the `Provision` call, so V3's
 podman the arm rides a post-Start root-capable `Exec` from
 `AgentRuntime.provision` (`agent.go:293-307`) — an exec path the microVM
 backend REFUSES (uid-0/caps). So V3 cannot reuse that seam: the intended data
-path is `ContainerSpec` growing an egress field captured at Create and
+path is `WorkloadSpec` growing an egress field captured at Create and
 delivered by Start's Provision call (podman.go:89-116 has no egress field
 today). V2b does not build that field, but it records the assumption here so
 V3's designer inherits it explicitly rather than discovering the gap; if the
@@ -250,7 +250,7 @@ refuses exec specs requesting uid 0 or capabilities"
 (microvm-runner.md:358-360). guestd rejects any `Exec`/`StartExec` whose `uid`
 is 0 with a typed Connect error, before spawning anything. An *absent* uid
 resolves to the session's default exec uid delivered by `Provision`
-(`default_exec_uid`, the `ContainerSpec.UID` — the baked agent uid,
+(`default_exec_uid`, the `WorkloadSpec.UID` — the baked agent uid,
 `podman.go:109-113`) — mirroring podman's "Nil runs as the image's default
 user (for the compass-agent image that is uid 1000, not root)"
 (`podman.go:119-121`), with the default supplied per session instead of baked
@@ -269,7 +269,7 @@ a non-host CID is closed immediately. This lands in V2b (not V8, which only
 *probes* it) because V2b is what turns the port from a Health responder into
 an exec surface worth escalating to.
 
-**Env base.** `ContainerSpec.Env` on podman is set on the container and thus
+**Env base.** `WorkloadSpec.Env` on podman is set on the container and thus
 visible to execs; on the microVM backend the same base env arrives via
 `Provision.base_env` and guestd merges it under each exec's own `env` map
 (exec-specific keys win). Host-side assembly stays deterministic exactly as
@@ -278,17 +278,17 @@ the wire, so determinism matters only for logging/tests.
 
 ### (c) `MicroVMRuntime` methods against the vsock service
 
-The nine frozen signatures (`microvm.go:71-116`, `var _ ContainerRuntime =
+The nine frozen signatures (`microvm.go:71-116`, `var _ WorkloadRuntime =
 (*MicroVMRuntime)(nil)`) are filled by translating each verb onto V2a's
 harness + the (a) service. `MicroVMRuntime` grows a per-session state table
-(`ContainerID → *session`), where a `session` holds the V2a `BootConfig`
+(`WorkloadID → *session`), where a `session` holds the V2a `BootConfig`
 (`go/internal/runtime/microvm/config.go:21-35`), the running `*microvm.VM`
 handle, the `GuestControl` client, and the runtime dir. The `microvm` package
 "depends on nothing in go/internal/runtime, so importing it there introduces
 no cycle" (`config.go:5-7`) — V2b is the planned importer.
 
-- **`Create(ctx, ContainerSpec) (ContainerID, error)`** allocates without
-  booting (mirroring `podman create`): mint a session id (the `ContainerID` —
+- **`Create(ctx, WorkloadSpec) (WorkloadID, error)`** allocates without
+  booting (mirroring `podman create`): mint a session id (the `WorkloadID` —
   there is no engine to print one, so the backend generates a random hex id
   and derives the runtime dir from it), create the per-session runtime dir
   (`<runroot>/microvm/<session>/` — the layout V7 formalizes with pidfiles,
@@ -553,7 +553,7 @@ execution, stdio, networking, and observability, plus a `rustjail` embedded
 OCI runtime); V2b is one exec session per VM (~4 RPCs), so adopting the agent
 would mean importing an order of magnitude more surface than the design needs,
 against the "guest supervisor is a thin exec supervisor" non-goal. (4) *Host
-interface* — the acceptance bar is our frozen `runtime.ContainerRuntime`
+interface* — the acceptance bar is our frozen `runtime.WorkloadRuntime`
 (`microvm.go:71-116`); no external agent implements it, so the host-side
 translation layer §(c) is ours regardless. The prior art proves the shape and
 the correctness model; the code stays a reference.
@@ -563,7 +563,7 @@ the correctness model; the code stays a reference.
 Every task below inherits these; they restate the parent's binding decisions
 in V2b-concrete form.
 
-- **The `ContainerRuntime` contract is the acceptance bar.** Every filled
+- **The `WorkloadRuntime` contract is the acceptance bar.** Every filled
   method behaves identically to `PodmanCLI` through the interface
   (`podman.go:303-352`), specifically: a non-zero exec exit is a successful
   call returning `ExecOutput.ExitCode`, never an error (`podman.go:310-313`);
@@ -787,7 +787,7 @@ U3, graceful Stop, idempotent Remove, `Exists` from the session table,
   (the per-session dir root), `DefaultCPUs int`, `DefaultMemoryMB int` —
   flagged OQ-D. Consumes U2 (guest behavior), U3 (`GuestExec`), the V2a
   harness (`Launch`/`Shutdown`/`BootConfig`, `launch.go`, `config.go`), and
-  `ContainerSpec`/`ExecSpec`/`StreamingExecSpec` unchanged.
+  `WorkloadSpec`/`ExecSpec`/`StreamingExecSpec` unchanged.
 - **Test cycle:** hardware-independent: spec→BootConfig assembly (paths, CID/
   port allocation, mount→FSSharedDir, refusal of inexpressible specs per
   OQ-C), spec→ExecRequest mapping incl. numeric-uid parsing and env merge,
@@ -801,14 +801,14 @@ U3, graceful Stop, idempotent Remove, `Exists` from the session table,
   exits before the kill escalation — proving the graceful preamble is not dead
   weight that always burns the full timeout.
 
-### U5 — the shared `ContainerRuntime` contract suite
+### U5 — the shared `WorkloadRuntime` contract suite
 
 The parent's V2b acceptance (microvm-runner.md:485-490): one table-driven
 suite asserting `MicroVMRuntime` and `PodmanCLI` behave identically through
 the interface, run against both backends.
 
 - **Interfaces:** produces `go/internal/runtime/contract_test.go`-class
-  shared suite parameterized over a `ContainerRuntime` factory; the podman
+  shared suite parameterized over a `WorkloadRuntime` factory; the podman
   rows gate on rootless podman availability (the existing suite's pattern),
   the microVM rows on `microvmtest.Require` (`microvmtest.go:107-128`).
   Consumes U4 and the existing `PodmanCLI`.
@@ -848,7 +848,7 @@ the interface, run against both backends.
 - [ ] U4 — `MicroVMRuntime` lifecycle: Create/Start/Exec/ExecStreaming/
       Stop/Remove/Exists/MountLabel behind the frozen signatures (Exists +
       dup-name Create keyed on `spec.Name`)
-- [ ] U5 — shared ContainerRuntime contract suite (podman + microVM rows;
+- [ ] U5 — shared WorkloadRuntime contract suite (podman + microVM rows;
       microVM rows KVM-gated) + Q-budget numbers
 
 ## Open Questions
@@ -889,9 +889,9 @@ The non-load-bearing OQ-E/OQ-F stand at their recommendations.
   sketch, forced by buf lint regardless, not a contradiction of a decision.
 - **OQ-C (load-bearing) — mount expressiveness in V2b, and who owns the real
   mount shapes.** podman accepts arbitrary bind mounts
-  (`ContainerSpec.Mounts`, `podman.go:100-103`); the microVM backend has
+  (`WorkloadSpec.Mounts`, `podman.go:100-103`); the microVM backend has
   exactly one virtio-fs share in the V2a harness (the `workspace` tag,
-  `config.go:29-31`). The current producer of `ContainerSpec.Mounts` is
+  `config.go:29-31`). The current producer of `WorkloadSpec.Mounts` is
   `agentHost.Provision`, which on EVERY launch unconditionally appends two
   mounts — the gateway socket (`host.go:177`) and the read-only agent-config
   tree (`host.go:193`) — plus any operator `SpecDefaults.Mounts` (`spec.go:30`).
@@ -958,7 +958,7 @@ The non-load-bearing OQ-E/OQ-F stand at their recommendations.
   both backends' Wait errors satisfy it (podman by the fallback, microVM by
   constructing it in `waitFunc`). ~10 host-side lines, guarded by a podman-row
   regression test, owned by U3b. This widens one runner-side symbol above the
-  `ContainerRuntime` interface — sanctioned because the prototype holds no
+  `WorkloadRuntime` interface — sanctioned because the prototype holds no
   interface immutable; the alternative (leave `isDeliberateKill` alone and
   accept that microVM Stop cannot distinguish deliberate kill from crash) was
   rejected as it breaks the crash-vs-stop signal D4 depends on
@@ -974,7 +974,7 @@ teardown, D4's supervisor split) and resolves them within the parent's
 decisions. Two resolutions are genuinely new cross-record calls: OQ-A's
 no-credential-plus-boot-nonce auth resolution of the proto header's flagged
 question, and OQ-G's shared deliberate-kill error taxonomy on the
-`ContainerRuntime` surface. Both are candidates for DL rows if Matt wants them
+`WorkloadRuntime` surface. Both are candidates for DL rows if Matt wants them
 citable outside this record's lineage; both bind surfaces this record and its
 parent own (the GuestControl transport; the runtime error contract), so the
 recommendation is to keep them here. The caller owns the ledger delta at PR

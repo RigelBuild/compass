@@ -54,7 +54,7 @@ type SpecBuilder interface {
 // RefreshConfig type-assert h.engine against it to gate the microVM-specific
 // serving/refresh legs; podman and every test fake lack the method, so their
 // paths stay byte-identical (record §(c), Global Constraints — never a verb on
-// the frozen ContainerRuntime interface).
+// the frozen WorkloadRuntime interface).
 type vsockGatewayEngine interface {
 	AgentGatewayEndpoint(name string) (endpoint string, ok bool)
 }
@@ -65,7 +65,7 @@ type agentHost struct {
 	link       *ServerLink
 	runtime    *runtime.AgentRuntime
 	registry   *runtime.AgentRegistry
-	engine     runtime.ContainerRuntime
+	engine     runtime.WorkloadRuntime
 	specs      SpecBuilder
 	log        *slog.Logger
 	runtimeDir string
@@ -110,7 +110,7 @@ type agentHost struct {
 type liveSession struct {
 	sessionID     string
 	containerName string
-	containerID   runtime.ContainerID
+	containerID   runtime.WorkloadID
 	stream        *AgentStream
 	state         compassv1.AgentSessionState
 	// agentAccountID is the owned agent account this session belongs to, copied
@@ -136,7 +136,7 @@ type AgentHostConfig struct {
 // runtime + registry (so a launched container resolves by name), the container
 // engine, the spec builder Provision derives its AgentSpec from, and the host's
 // own config. newID mints session ids; nil uses a monotonic counter.
-func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtime.AgentRegistry, engine runtime.ContainerRuntime, specs SpecBuilder, cfg AgentHostConfig, log *slog.Logger, newID func() string) SessionHost {
+func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtime.AgentRegistry, engine runtime.WorkloadRuntime, specs SpecBuilder, cfg AgentHostConfig, log *slog.Logger, newID func() string) SessionHost {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -765,7 +765,7 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	type target struct {
 		sessionID     string
 		containerName string
-		containerID   runtime.ContainerID
+		containerID   runtime.WorkloadID
 		lastVersion   string
 	}
 	h.mu.Lock()
@@ -857,7 +857,7 @@ func (h *agentHost) teardownContainer(ctx context.Context, containerName string)
 // without aborting the fleet; the tracked version advances only after a
 // successful reload. Split out of RefreshConfig so the container lock scopes to
 // exactly one leg via defer.
-func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containerName string, containerID runtime.ContainerID, lastVersion string) error {
+func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containerName string, containerID runtime.WorkloadID, lastVersion string) error {
 	unlock := h.lockContainer(containerName)
 	defer unlock()
 

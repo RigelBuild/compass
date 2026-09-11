@@ -78,18 +78,18 @@ func TestInPlaceSatisfiesContract(t *testing.T) {
 	for _, tc := range contractCases {
 		t.Run(tc.name, func(t *testing.T) {
 			eng := &recordingEngine{output: runtime.ExecOutput{ExitCode: 0}}
-			cr := NewInPlace(eng, runtime.ContainerID("sess-container"), runtime.EgressPolicy{})
+			cr := NewInPlace(eng, runtime.WorkloadID("sess-container"), runtime.EgressPolicy{})
 			tc.run(t, cr)
 		})
 	}
 }
 
-// recordingEngine is a runtime.ContainerRuntime that records the id and ExecSpec
+// recordingEngine is a runtime.WorkloadRuntime that records the id and ExecSpec
 // its Exec receives, so the in-place backend's mapping (command, workdir, env)
 // and its target container can be asserted without a real container. Every other
 // method is an unused stub — the in-place backend only ever calls Exec.
 type recordingEngine struct {
-	gotID   runtime.ContainerID
+	gotID   runtime.WorkloadID
 	gotSpec runtime.ExecSpec
 	gotCtx  context.Context
 	execN   int
@@ -97,7 +97,7 @@ type recordingEngine struct {
 	execErr error
 }
 
-func (e *recordingEngine) Exec(ctx context.Context, id runtime.ContainerID, spec runtime.ExecSpec) (runtime.ExecOutput, error) {
+func (e *recordingEngine) Exec(ctx context.Context, id runtime.WorkloadID, spec runtime.ExecSpec) (runtime.ExecOutput, error) {
 	e.gotID = id
 	e.gotSpec = spec
 	e.gotCtx = ctx
@@ -105,25 +105,25 @@ func (e *recordingEngine) Exec(ctx context.Context, id runtime.ContainerID, spec
 	return e.output, e.execErr
 }
 
-func (e *recordingEngine) Create(context.Context, runtime.ContainerSpec) (runtime.ContainerID, error) {
+func (e *recordingEngine) Create(context.Context, runtime.WorkloadSpec) (runtime.WorkloadID, error) {
 	return "", errors.New("recordingEngine: Create unused")
 }
-func (e *recordingEngine) Start(context.Context, runtime.ContainerID) error {
+func (e *recordingEngine) Start(context.Context, runtime.WorkloadID) error {
 	return errors.New("recordingEngine: Start unused")
 }
-func (e *recordingEngine) ExecStreaming(context.Context, runtime.ContainerID, runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
+func (e *recordingEngine) ExecStreaming(context.Context, runtime.WorkloadID, runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
 	return nil, errors.New("recordingEngine: ExecStreaming unused")
 }
-func (e *recordingEngine) Stop(context.Context, runtime.ContainerID, time.Duration) error {
+func (e *recordingEngine) Stop(context.Context, runtime.WorkloadID, time.Duration) error {
 	return errors.New("recordingEngine: Stop unused")
 }
-func (e *recordingEngine) Remove(context.Context, runtime.ContainerID) error {
+func (e *recordingEngine) Remove(context.Context, runtime.WorkloadID) error {
 	return errors.New("recordingEngine: Remove unused")
 }
 func (e *recordingEngine) Exists(context.Context, string) (bool, error) {
 	return false, errors.New("recordingEngine: Exists unused")
 }
-func (e *recordingEngine) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+func (e *recordingEngine) MountLabel(context.Context, runtime.WorkloadID) (string, error) {
 	return "", errors.New("recordingEngine: MountLabel unused")
 }
 
@@ -131,7 +131,7 @@ func (e *recordingEngine) MountLabel(context.Context, runtime.ContainerID) (stri
 // Resize verb the in-place backend never calls, so the fake carries it to stay
 // a total implementation of the engine interface as that interface freezes the
 // verb in.
-func (e *recordingEngine) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+func (e *recordingEngine) Resize(context.Context, runtime.WorkloadID, runtime.ResourceLimits) error {
 	return errors.New("recordingEngine: Resize unused")
 }
 
@@ -141,7 +141,7 @@ func (e *recordingEngine) Resize(context.Context, runtime.ContainerID, runtime.R
 // targeted the wrong container would fail here.
 func TestInPlaceExecMapsSpecAndDelegatesToSessionContainer(t *testing.T) {
 	eng := &recordingEngine{output: runtime.ExecOutput{Stdout: "ok", ExitCode: 0}}
-	cr := NewInPlace(eng, runtime.ContainerID("sess-container"), runtime.EgressPolicy{})
+	cr := NewInPlace(eng, runtime.WorkloadID("sess-container"), runtime.EgressPolicy{})
 
 	spec := ComputeSpec{
 		Command: []string{"go", "test", "./..."},
@@ -158,7 +158,7 @@ func TestInPlaceExecMapsSpecAndDelegatesToSessionContainer(t *testing.T) {
 	if eng.execN != 1 {
 		t.Fatalf("engine.Exec called %d times, want 1", eng.execN)
 	}
-	if eng.gotID != runtime.ContainerID("sess-container") {
+	if eng.gotID != runtime.WorkloadID("sess-container") {
 		t.Fatalf("delegated to container %q, want session container", eng.gotID)
 	}
 	if !slices.Equal(eng.gotSpec.Command, spec.Command) {
@@ -182,7 +182,7 @@ func TestInPlaceExecMapsSpecAndDelegatesToSessionContainer(t *testing.T) {
 // directory is the intended behavior.
 func TestInPlaceExecOmitsWorkdirWhenDirEmpty(t *testing.T) {
 	eng := &recordingEngine{}
-	cr := NewInPlace(eng, runtime.ContainerID("sess-container"), runtime.EgressPolicy{})
+	cr := NewInPlace(eng, runtime.WorkloadID("sess-container"), runtime.EgressPolicy{})
 
 	if _, err := cr.Exec(context.Background(), ComputeSpec{Command: []string{"true"}}); err != nil {
 		t.Fatalf("Exec returned error: %v", err)
@@ -200,7 +200,7 @@ func TestInPlaceExecOmitsWorkdirWhenDirEmpty(t *testing.T) {
 func TestInPlaceExecAppliesTimeoutAsContextDeadline(t *testing.T) {
 	t.Run("positive timeout sets a deadline", func(t *testing.T) {
 		eng := &recordingEngine{}
-		cr := NewInPlace(eng, runtime.ContainerID("sess-container"), runtime.EgressPolicy{})
+		cr := NewInPlace(eng, runtime.WorkloadID("sess-container"), runtime.EgressPolicy{})
 
 		if _, err := cr.Exec(context.Background(), ComputeSpec{Command: []string{"go", "test"}, Timeout: 30 * time.Second}); err != nil {
 			t.Fatalf("Exec returned error: %v", err)
@@ -215,7 +215,7 @@ func TestInPlaceExecAppliesTimeoutAsContextDeadline(t *testing.T) {
 	})
 	t.Run("zero timeout leaves ctx untouched", func(t *testing.T) {
 		eng := &recordingEngine{}
-		cr := NewInPlace(eng, runtime.ContainerID("sess-container"), runtime.EgressPolicy{})
+		cr := NewInPlace(eng, runtime.WorkloadID("sess-container"), runtime.EgressPolicy{})
 
 		if _, err := cr.Exec(context.Background(), ComputeSpec{Command: []string{"true"}}); err != nil {
 			t.Fatalf("Exec returned error: %v", err)
@@ -226,7 +226,7 @@ func TestInPlaceExecAppliesTimeoutAsContextDeadline(t *testing.T) {
 	})
 	t.Run("caller deadline shorter than timeout wins", func(t *testing.T) {
 		eng := &recordingEngine{}
-		cr := NewInPlace(eng, runtime.ContainerID("sess-container"), runtime.EgressPolicy{})
+		cr := NewInPlace(eng, runtime.WorkloadID("sess-container"), runtime.EgressPolicy{})
 
 		// A caller ctx already bounded tighter than spec.Timeout: the effective
 		// deadline must stay the caller's, never be pushed out to now+Timeout.
@@ -249,7 +249,7 @@ func TestInPlaceExecAppliesTimeoutAsContextDeadline(t *testing.T) {
 // fake and the real backend (a compile-time check that would break if the
 // interface drifted from the implementations).
 var (
-	_ ComputeRuntime           = fakeCompute{}
-	_ ComputeRuntime           = (*InPlace)(nil)
-	_ runtime.ContainerRuntime = (*recordingEngine)(nil)
+	_ ComputeRuntime          = fakeCompute{}
+	_ ComputeRuntime          = (*InPlace)(nil)
+	_ runtime.WorkloadRuntime = (*recordingEngine)(nil)
 )

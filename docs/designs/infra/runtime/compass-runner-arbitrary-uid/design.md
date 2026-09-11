@@ -119,7 +119,7 @@ The rationale for bare `keep-id` is `podman.go:25-26`: "Containers run with
 --userns=keep-id so files the agent writes in a bind-mount map back to the
 invoking user on the host" (restated at the flag itself, `:363-364`). The
 runner's bind-mounts are two kinds: the read-only config/cache mounts
-(`ContainerSpec.Mounts`, `podman.go:82-84` — whose "read-only" field comment
+(`WorkloadSpec.Mounts`, `podman.go:82-84` — whose "read-only" field comment
 is now stale, see P1; the materialized config tree,
 `go/internal/runner/config_materialize.go:199-201`), and one **read-write**
 mount — the per-container agent gateway socket
@@ -233,28 +233,28 @@ unchanged by ordering.
 ### P1 — Remap the userns flag in `Create`
 
 Switch `PodmanCLI.Create` from the bare token to the remap, threading the
-agent uid into `ContainerSpec` so the flag derives from the same value every
+agent uid into `WorkloadSpec` so the flag derives from the same value every
 exec already uses (the T1/T2 invariant).
 
 - Changes:
-  - `go/internal/runtime/podman.go`: add `UID uint32` to `ContainerSpec`
-    (`:70-90`; note `ContainerSpec` has no `User` field — `:92-97` is
+  - `go/internal/runtime/podman.go`: add `UID uint32` to `WorkloadSpec`
+    (`:70-90`; note `WorkloadSpec` has no `User` field — `:92-97` is
     `ExecSpec`), documented as the container uid the invoking
     host user is mapped to. `Create` (`:355-366`) emits
     `fmt.Sprintf("--userns=keep-id:uid=%d,gid=%d", spec.UID, spec.UID)` in
     place of `"--userns=keep-id"` — gid is collapsed to uid because the image
     bakes gid==uid==1000 (`containers.nix:55-56`); a distinct GID field is not
     threaded until an image diverges. Extract the argv assembly into
-    `createArgs(spec ContainerSpec) []string` (mirroring
+    `createArgs(spec WorkloadSpec) []string` (mirroring
     `execStreamingArgs`, `:635`, "split out so the argv assembly is
     unit-testable without spawning podman").
   - `go/internal/runtime/agent.go` `createAndStart` (`:245-254`): set
-    `UID: spec.Workspace.UID` on the `ContainerSpec`.
+    `UID: spec.Workspace.UID` on the `WorkloadSpec`.
   - Update the stale comments: `podman.go:25-26` and `:363-364` (the
     "maps back to the invoking user" rationale now reads "the invoking host
     user is mapped to the baked agent uid; files the agent writes in a
     bind-mount still map back to the invoking user"); `podman.go:82-84`
-    (`ContainerSpec.Mounts` "read-only host bind mounts" — false, the agent
+    (`WorkloadSpec.Mounts` "read-only host bind mounts" — false, the agent
     socket is read-write, see §(c)); `podman.go:95-96` (`ExecSpec.User` "Nil
     runs as the image's default user (root)" — the image default is uid 1000,
     not root); `agent.go:282-283` (`armEgress` "as root" — it runs as the
@@ -262,12 +262,12 @@ exec already uses (the T1/T2 invariant).
     `agent-image/devenv.nix:69-82` identity comment (it cites bare keep-id
     and the verifyRunnerUID guard).
 - Interfaces:
-  - `type ContainerSpec struct { ...; UID uint32 }` (new field).
-  - `func createArgs(spec ContainerSpec) []string` (new, package-private).
-  - `func (p *PodmanCLI) Create(ctx context.Context, spec ContainerSpec) (ContainerID, error)` — unchanged signature.
+  - `type WorkloadSpec struct { ...; UID uint32 }` (new field).
+  - `func createArgs(spec WorkloadSpec) []string` (new, package-private).
+  - `func (p *PodmanCLI) Create(ctx context.Context, spec WorkloadSpec) (WorkloadID, error)` — unchanged signature.
 - Test cycle: new `TestCreateArgsRemapsUserns` in
   `go/internal/runtime/podman_test.go` pinning the exact token
-  `--userns=keep-id:uid=1000,gid=1000` for `ContainerSpec{UID: 1000}`.
+  `--userns=keep-id:uid=1000,gid=1000` for `WorkloadSpec{UID: 1000}`.
   Order within P1: extract `createArgs` first (still emitting the bare token),
   commit the test red against the bare token, then flip the flag to green.
   Run `go test ./go/internal/runtime/ -run TestCreateArgs`.
@@ -311,7 +311,7 @@ exercises the identical mechanism an arbitrary-host-uid deployment relies on.
   `podmanUsable()` (the existing skip helper, `lifecycle_test.go:54-59`),
   alpine-based like `config_mount_test.go` (no compass-agent image
   dependency):
-  1. `Create`/`Start` a container with `ContainerSpec{UID: <target ≠
+  1. `Create`/`Start` a container with `WorkloadSpec{UID: <target ≠
      host-uid>}` shape — i.e. drive the real `PodmanCLI.Create` with a `UID`
      distinct from `os.Getuid()` — and assert `id -u` inside equals the
      spec'd UID (the remap maps host→spec'd uid).
@@ -336,7 +336,7 @@ it implements the preflight per that ruling.
 
 ## Tasks
 
-- [ ] P1 — `ContainerSpec.UID` + `createArgs` extraction +
+- [ ] P1 — `WorkloadSpec.UID` + `createArgs` extraction +
       `--userns=keep-id:uid=,gid=` in `Create`; comment sweep
       (`podman.go:25,363`, `agent-image/devenv.nix:69-82`);
       `TestCreateArgsRemapsUserns` green.

@@ -178,7 +178,7 @@ microvm-v3-egress-in-guest.md:138-163):
 - `MicroVMRuntime` gains one exported method,
   `AgentGatewayEndpoint(name string) (socketPath string, ok bool)`, returning
   `microvm.GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort)`
-  for the named session — NOT on the frozen `ContainerRuntime` interface.
+  for the named session — NOT on the frozen `WorkloadRuntime` interface.
 - `agentHost` probes its engine via an unexported single-method interface,
   `type vsockGatewayEngine interface { AgentGatewayEndpoint(string) (string, bool) }`.
   - Probe **absent** (podman, every fake): today's path byte-identical —
@@ -384,7 +384,7 @@ Every task below inherits these.
   mount list Provision builds on podman, `AGENT_SOCKET_PATH`, or any podman
   argv; fakes don't implement the (c) probe, so every existing hermetic runner
   suite runs unchanged.
-- **Frozen `ContainerRuntime` interface untouched.** The (c) probe is a
+- **Frozen `WorkloadRuntime` interface untouched.** The (c) probe is a
   marker/endpoint method on `MicroVMRuntime` + an unexported assertion in
   `agentHost`, never an interface verb — the V3-ratified discipline
   (microvm-v3-egress-in-guest.md:300-302).
@@ -473,7 +473,7 @@ byte-identical.
   - `func (m *MicroVMRuntime) AgentGatewayEndpoint(name string) (string, bool)`
     — resolves the session by `name` (the `Exists` lookup shape) and returns
     `GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort)`;
-    `(“”, false)` for an unknown name. NOT on `ContainerRuntime`;
+    `(“”, false)` for an unknown name. NOT on `WorkloadRuntime`;
   - in `go/internal/runner/host.go`:
     `type vsockGatewayEngine interface { AgentGatewayEndpoint(string) (string, bool) }`,
     asserted on `h.engine` at the top of `Provision`

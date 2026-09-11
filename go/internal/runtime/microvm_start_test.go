@@ -120,7 +120,7 @@ var _ compassv1internalconnect.GuestControlClient = (*fakeGuestClient)(nil)
 // and creates one session, returning the runtime, the created id, and the fakes.
 // The Create records the zero-value default-deny script (unless spec overrides),
 // which Start must then deliver verbatim.
-func seamStart(t *testing.T, spec ContainerSpec, provErr error) (*MicroVMRuntime, ContainerID, *fakeGuestVM, *fakeGuestClient) {
+func seamStart(t *testing.T, spec WorkloadSpec, provErr error) (*MicroVMRuntime, WorkloadID, *fakeGuestVM, *fakeGuestClient) {
 	t.Helper()
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: shortRunRoot(t)})
 	id, err := m.Create(t.Context(), spec)
@@ -161,10 +161,10 @@ func shortRunRoot(t *testing.T) string {
 
 // TestCreateRecordsDefaultDenyScript pins §(e): Create records the zero-value
 // EgressPolicy's full default-deny base ruleset on the session (never empty), so
-// every ContainerSpec-created session boots armed even with no allowlist set.
+// every WorkloadSpec-created session boots armed even with no allowlist set.
 func TestCreateRecordsDefaultDenyScript(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: shortRunRoot(t)})
-	id, err := m.Create(t.Context(), ContainerSpec{Name: "agent-1", UID: 1000})
+	id, err := m.Create(t.Context(), WorkloadSpec{Name: "agent-1", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestCreateRecordsDefaultDenyScript(t *testing.T) {
 // Start's Provision RPC carries the exact script Create recorded — the host→guest
 // egress delivery contract (§(a)), hermetic with no real VMM or vsock dial.
 func TestStartDeliversScriptVerbatim(t *testing.T) {
-	spec := ContainerSpec{Name: "agent-1", UID: 1000, Egress: MustAllowEgress("github.com")}
+	spec := WorkloadSpec{Name: "agent-1", UID: 1000, Egress: MustAllowEgress("github.com")}
 	m, id, vm, client := seamStart(t, spec, nil)
 
 	want := spec.Egress.NftScript()
@@ -220,7 +220,7 @@ func TestStartDeliversScriptVerbatim(t *testing.T) {
 // booted by launchFunc must not be left running when the arm/provision fails.
 func TestStartProvisionErrorFailsAndTearsDown(t *testing.T) {
 	provErr := connect.NewError(connect.CodeInternal, errors.New("arm failed"))
-	spec := ContainerSpec{Name: "agent-1", UID: 1000}
+	spec := WorkloadSpec{Name: "agent-1", UID: 1000}
 	m, id, vm, _ := seamStart(t, spec, provErr)
 
 	err := m.Start(t.Context(), id)
@@ -247,7 +247,7 @@ func TestStartProvisionErrorFailsAndTearsDown(t *testing.T) {
 // so this guards only against a broken test seam, but it must fail loud.
 func TestStartNilGuestHandleFailsClosed(t *testing.T) {
 	m := NewMicroVMRuntime(MicroVMConfig{RunRoot: shortRunRoot(t)})
-	id, err := m.Create(t.Context(), ContainerSpec{Name: "agent-1", UID: 1000})
+	id, err := m.Create(t.Context(), WorkloadSpec{Name: "agent-1", UID: 1000})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}

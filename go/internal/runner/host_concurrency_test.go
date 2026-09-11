@@ -78,7 +78,7 @@ func TestStartSameContainerSerializesClosingTOCTOU(t *testing.T) {
 	// launch never blocks the send). Released on every exit path so a failing
 	// assertion cannot hang the suite.
 	gate := make(chan struct{})
-	entered := make(chan runtime.ContainerID, 2)
+	entered := make(chan runtime.WorkloadID, 2)
 	engine.mu.Lock()
 	engine.execGate = gate
 	engine.execEntered = entered
@@ -170,7 +170,7 @@ func TestStartDifferentContainersOverlap(t *testing.T) {
 	}
 
 	gate := make(chan struct{})
-	entered := make(chan runtime.ContainerID, 2)
+	entered := make(chan runtime.WorkloadID, 2)
 	engine.mu.Lock()
 	engine.execGate = gate
 	engine.execEntered = entered
@@ -190,7 +190,7 @@ func TestStartDifferentContainersOverlap(t *testing.T) {
 	// overlap, so both entry events fire while both are parked on the shared gate.
 	// A GLOBAL lock would admit only one; the second event never fires and this
 	// times out on the ceiling.
-	seen := map[runtime.ContainerID]bool{}
+	seen := map[runtime.WorkloadID]bool{}
 	for range 2 {
 		select {
 		case id := <-entered:

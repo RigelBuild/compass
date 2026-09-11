@@ -78,13 +78,13 @@ const (
 // execs. It registers teardown. The session is armed in-guest by guestd during
 // Start (the Provision RPC carries the recorded nft_script), so by the time this
 // returns the firewall is live.
-func startEgressSession(t *testing.T, egress EgressPolicy, name string) (*MicroVMRuntime, ContainerID) {
+func startEgressSession(t *testing.T, egress EgressPolicy, name string) (*MicroVMRuntime, WorkloadID) {
 	t.Helper()
 	env := microvmtest.Require(t)
 	m := NewMicroVMRuntime(e2eConfig(t, env))
 
 	workspace := t.TempDir()
-	id, err := m.Create(t.Context(), ContainerSpec{
+	id, err := m.Create(t.Context(), WorkloadSpec{
 		Name:   name,
 		UID:    agentuid.AgentUID,
 		Egress: egress,
@@ -119,7 +119,7 @@ func startEgressSession(t *testing.T, egress EgressPolicy, name string) (*MicroV
 // unreachable; an allowed host completes (exit 0, "connected"). A non-zero exit
 // with no "connected" is unreachable; any transport/exec error fails the test
 // (that is a harness fault, not a firewall verdict).
-func canReachIPv4(t *testing.T, m *MicroVMRuntime, id ContainerID, ip string) bool {
+func canReachIPv4(t *testing.T, m *MicroVMRuntime, id WorkloadID, ip string) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), egressProbeTimeout)
 	defer cancel()
@@ -190,7 +190,7 @@ func TestInGuestEgressAgentCannotAlterRuleset(t *testing.T) {
 // TestInGuestEgressAlwaysArmedDefaultDeny is W3(4) / the §(e)/OQ-3 always-arm
 // verification: a session created with the ZERO-VALUE egress policy still boots
 // armed default-deny, so external egress is blocked even though no allowlist was
-// set. This is the load-bearing always-arm claim — every ContainerSpec-created
+// set. This is the load-bearing always-arm claim — every WorkloadSpec-created
 // microVM session is firewalled at Start whether or not a caller set Egress —
 // proven live. A regression that skipped the arm on an empty policy (a silent
 // open-egress VM) fails here: the deniedIP would become reachable.

@@ -622,7 +622,7 @@ package's timeout onto `*runtime.TimeoutError` at this exact seam,
 // because the session's VM died mid-session — the VMM exited or virtiofsd
 // died (fatal, no remount-and-hope; microvm-runner.md:249-253).
 type SessionDeadError struct {
-    ID    ContainerID
+    ID    WorkloadID
     Cause string // "vmm" | "virtiofsd"
 }
 
@@ -1089,7 +1089,7 @@ Every task below inherits these.
   message changes; the one shared touchpoint (the `backend`-labelled session
   counter in the Runner host) reads the backend name through an unexported
   probe and changes no podman behavior.
-- **Frozen `ContainerRuntime` interface untouched.** `ReapOrphans` and the
+- **Frozen `WorkloadRuntime` interface untouched.** `ReapOrphans` and the
   backend-name probe are `*MicroVMRuntime` methods / unexported interface
   assertions — the V3/V4-ratified single-method-probe discipline
   (`main.go:185-203`).
@@ -1295,7 +1295,7 @@ assertion; see the Plan preamble).
   - `func (vm *VM) VMMExited() bool` — nil-safe delegation to the VMM
     child's `hasExited()` (PR #912 `launch.go:96-107`; a channel read, not
     a zombie-blind signal-0 probe), for `Exec`'s in-flight wrap (§(c));
-  - `type SessionDeadError struct { ID ContainerID; Cause string }` with
+  - `type SessionDeadError struct { ID WorkloadID; Cause string }` with
     `Error()` in `go/internal/runtime` (untagged file, beside
     `CommandError`);
   - `microvmSession.deadCause` + `microvmSession.deadEpoch` +
@@ -1475,13 +1475,13 @@ The §(d) main.go ordering fix and the `backend`-labelled session metric.
     ```go
     type startupHooks struct {
         setupOtel func(ctx context.Context) (func(), error)
-        selectEngine func() (runtime.ContainerRuntime, error)
-        preflight func(ctx context.Context, engine runtime.ContainerRuntime) error
-        lockRunRoot func(engine runtime.ContainerRuntime) (runtime.RunRootLock, func(), error)
-        reap func(ctx context.Context, engine runtime.ContainerRuntime, held runtime.RunRootLock) error
+        selectEngine func() (runtime.WorkloadRuntime, error)
+        preflight func(ctx context.Context, engine runtime.WorkloadRuntime) error
+        lockRunRoot func(engine runtime.WorkloadRuntime) (runtime.RunRootLock, func(), error)
+        reap func(ctx context.Context, engine runtime.WorkloadRuntime, held runtime.RunRootLock) error
     }
 
-    func startup(ctx context.Context, h startupHooks) (runtime.ContainerRuntime, func(), error)
+    func startup(ctx context.Context, h startupHooks) (runtime.WorkloadRuntime, func(), error)
     ```
 
     which calls them in the order `setupOtel` → `selectEngine` →

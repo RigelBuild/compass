@@ -71,7 +71,7 @@ func TestStderrFloodDoesNotStallTheAgent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-flood", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-flood", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestStdoutFrameIsNotPublishedAfterCutover(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-cutover", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-cutover", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -180,7 +180,7 @@ func TestStdoutIsDrainedToDiagnosticLog(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-drain", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-drain", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestStderrIsDrainedUnderItsOwnLabel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-err", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-err", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestBareTrailingCarriageReturnIsPayload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-cr", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-cr", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -294,7 +294,7 @@ func TestOverlongLineTruncatesButKeepsDraining(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-long", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-long", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -407,7 +407,7 @@ func TestCleanStopEmitsNoDrainWarning(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	stream, err := link.StartAgent(ctx, "sess-quiet", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger())
+	stream, err := link.StartAgent(ctx, "sess-quiet", runtime.WorkloadID("c1"), engine, testAgentEnv(), logs.logger())
 	if err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
@@ -446,7 +446,7 @@ func TestStopArmsTheStoppingDiscriminator(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	stream, err := link.StartAgent(ctx, "sess-armed", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner())
+	stream, err := link.StartAgent(ctx, "sess-armed", runtime.WorkloadID("c1"), engine, testAgentEnv(), discardLoggerRunner())
 	if err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
@@ -483,7 +483,7 @@ func TestSelfExitReleasesTheDrainCtx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	stream, err := link.StartAgent(ctx, "sess-selfexit", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner())
+	stream, err := link.StartAgent(ctx, "sess-selfexit", runtime.WorkloadID("c1"), engine, testAgentEnv(), discardLoggerRunner())
 	if err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}

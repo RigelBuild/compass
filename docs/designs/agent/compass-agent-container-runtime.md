@@ -820,7 +820,7 @@ declared secrets (file under `$HOME/.compass/secrets/<NAME>` or env, per
     aggregate env file at `$HOME/.compass/env` (a **sibling** of the
     `secrets/` dir, so no secret named `env` can collide with it), rejecting
     values with newline/NUL (the env-file line grammar).
-  - `type SecretMaterializer struct { runtime ContainerRuntime }`;
+  - `type SecretMaterializer struct { runtime WorkloadRuntime }`;
     `func (m *SecretMaterializer) Install(ctx context.Context, handle *AgentHandle, secrets []secrets.ResolvedSecret) error`
     — routes by `Kind`: provider → `ProviderSeedScript`; gh (`SecretGH`) →
     `GHCredentials.SetupScript` (using `ResolvedSecret.Host`); generic

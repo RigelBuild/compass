@@ -2,7 +2,7 @@
 
 package runtime
 
-// The microVM leg of the shared ContainerRuntime contract suite (record §U5):
+// The microVM leg of the shared WorkloadRuntime contract suite (record §U5):
 // runs runContractSuite against a real MicroVMRuntime on live hardware, gated on
 // microvmtest.Require(t) (skip-on-absent-KVM, hard-fail under
 // COMPASS_REQUIRE_MICROVM=1). It supplies the microVM caps encoding all 6
@@ -26,7 +26,7 @@ import (
 )
 
 // TestContractSuite_MicroVM drives the shared contract rows against a live
-// MicroVMRuntime through the ContainerRuntime interface. The factory builds a
+// MicroVMRuntime through the WorkloadRuntime interface. The factory builds a
 // runtime from the resolved test env; sessions are created with a single
 // /workspace virtio-fs share and uid 1000. All divergence caps are ON, so the
 // microVM-specific rows (output cap, non-numeric user, empty MountLabel, ignored
@@ -36,9 +36,9 @@ func TestContractSuite_MicroVM(t *testing.T) {
 
 	caps := backendCaps{
 		name: "microvm",
-		makeSpec: func(t *testing.T, name string) ContainerSpec {
+		makeSpec: func(t *testing.T, name string) WorkloadSpec {
 			t.Helper()
-			return ContainerSpec{
+			return WorkloadSpec{
 				Name:   name,
 				UID:    1000,
 				Mounts: []Mount{{HostPath: t.TempDir(), ContainerPath: "/workspace"}},
@@ -62,7 +62,7 @@ func TestContractSuite_MicroVM(t *testing.T) {
 		},
 	}
 
-	runContractSuite(t, func(t *testing.T) ContainerRuntime {
+	runContractSuite(t, func(t *testing.T) WorkloadRuntime {
 		t.Helper()
 		return NewMicroVMRuntime(e2eConfig(t, env))
 	}, caps)
@@ -80,7 +80,7 @@ func TestMicroVMQBudget(t *testing.T) {
 	m := NewMicroVMRuntime(e2eConfig(t, env))
 
 	workspace := t.TempDir()
-	id, err := m.Create(t.Context(), ContainerSpec{
+	id, err := m.Create(t.Context(), WorkloadSpec{
 		Name:   "qbudget-agent",
 		UID:    1000,
 		Mounts: []Mount{{HostPath: workspace, ContainerPath: "/workspace"}},

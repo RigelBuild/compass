@@ -27,14 +27,14 @@ var ErrExecStreamingNotImplemented = errors.New("compute: ExecStreaming not impl
 // handle is exercised (the passthrough runs in place, arming nothing new); the
 // engine and egress are held for the heavier backends behind the same seam.
 type InPlace struct {
-	engine    runtime.ContainerRuntime
-	container runtime.ContainerID
+	engine    runtime.WorkloadRuntime
+	container runtime.WorkloadID
 	egress    runtime.EgressPolicy
 }
 
 // NewInPlace builds the S1 in-place backend bound to a session's container-
 // runtime engine, its container handle, and its egress policy.
-func NewInPlace(engine runtime.ContainerRuntime, container runtime.ContainerID, egress runtime.EgressPolicy) *InPlace {
+func NewInPlace(engine runtime.WorkloadRuntime, container runtime.WorkloadID, egress runtime.EgressPolicy) *InPlace {
 	return &InPlace{engine: engine, container: container, egress: egress}
 }
 

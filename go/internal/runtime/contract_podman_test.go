@@ -2,7 +2,7 @@
 
 package runtime
 
-// The podman leg of the shared ContainerRuntime contract suite (record §U5):
+// The podman leg of the shared WorkloadRuntime contract suite (record §U5):
 // runs runContractSuite against a real rootless-podman PodmanCLI, gated on
 // podmanUsable() (skip-not-fail where podman is absent, the existing suite's
 // pattern, lifecycle_test.go:54-60). It supplies the podman caps: the
@@ -18,7 +18,7 @@ import (
 )
 
 // TestContractSuite_Podman drives the shared contract rows against rootless
-// podman through the ContainerRuntime interface. It builds the agent image once
+// podman through the WorkloadRuntime interface. It builds the agent image once
 // (buildImage) and hands runContractSuite a factory minting a fresh PodmanCLI,
 // with containers created from that image running `sleep infinity` as uid 1000
 // — the production keep-alive-plus-exec shape (lifecycle_test.go).
@@ -30,9 +30,9 @@ func TestContractSuite_Podman(t *testing.T) {
 
 	caps := backendCaps{
 		name: "podman",
-		makeSpec: func(t *testing.T, name string) ContainerSpec {
+		makeSpec: func(t *testing.T, name string) WorkloadSpec {
 			t.Helper()
-			return ContainerSpec{
+			return WorkloadSpec{
 				Image:   imageTag,
 				Name:    name,
 				Command: []string{"sleep", "infinity"},
@@ -62,7 +62,7 @@ func TestContractSuite_Podman(t *testing.T) {
 		},
 	}
 
-	runContractSuite(t, func(t *testing.T) ContainerRuntime {
+	runContractSuite(t, func(t *testing.T) WorkloadRuntime {
 		t.Helper()
 		return NewPodmanCLI()
 	}, caps)

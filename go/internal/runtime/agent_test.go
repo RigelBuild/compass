@@ -34,21 +34,21 @@ func newFakeRuntime(t *testing.T) *fakeRuntime {
 	return &fakeRuntime{t: t}
 }
 
-func (f *fakeRuntime) Create(_ context.Context, spec ContainerSpec) (ContainerID, error) {
+func (f *fakeRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadID, error) {
 	f.record("create:" + spec.Name)
 	// The container must carry NET_ADMIN so the entrypoint can arm nft.
 	if !slices.Contains(spec.CapAdd, "NET_ADMIN") {
 		f.t.Errorf("Create spec.CapAdd = %v, must contain NET_ADMIN so the entrypoint can arm the firewall", spec.CapAdd)
 	}
-	return ContainerID("fake-id"), nil
+	return WorkloadID("fake-id"), nil
 }
 
-func (f *fakeRuntime) Start(_ context.Context, _ ContainerID) error {
+func (f *fakeRuntime) Start(_ context.Context, _ WorkloadID) error {
 	f.record("start")
 	return nil
 }
 
-func (f *fakeRuntime) Exec(_ context.Context, _ ContainerID, spec ExecSpec) (ExecOutput, error) {
+func (f *fakeRuntime) Exec(_ context.Context, _ WorkloadID, spec ExecSpec) (ExecOutput, error) {
 	joined := strings.Join(spec.Command, " ")
 	f.mu.Lock()
 	f.calls = append(f.calls, "exec:"+joined)
@@ -61,21 +61,21 @@ func (f *fakeRuntime) Exec(_ context.Context, _ ContainerID, spec ExecSpec) (Exe
 	return ExecOutput{}, nil
 }
 
-func (f *fakeRuntime) ExecStreaming(_ context.Context, _ ContainerID, spec StreamingExecSpec) (*StreamingExec, error) {
+func (f *fakeRuntime) ExecStreaming(_ context.Context, _ WorkloadID, spec StreamingExecSpec) (*StreamingExec, error) {
 	f.record("exec_streaming:" + strings.Join(spec.Command, " "))
 	// No T6 lifecycle test drives a streaming exec. Rather than synthesize pipe
 	// handles it can't honestly back (or spawn a real `sh -c cat` the way the
-	// Rust fake does), the fake refuses — keeping the ContainerRuntime interface
+	// Rust fake does), the fake refuses — keeping the WorkloadRuntime interface
 	// satisfied without leaking a real process.
 	return nil, errors.New("fakeRuntime does not support streaming exec")
 }
 
-func (f *fakeRuntime) Stop(_ context.Context, _ ContainerID, _ time.Duration) error {
+func (f *fakeRuntime) Stop(_ context.Context, _ WorkloadID, _ time.Duration) error {
 	f.record("stop")
 	return nil
 }
 
-func (f *fakeRuntime) Remove(_ context.Context, _ ContainerID) error {
+func (f *fakeRuntime) Remove(_ context.Context, _ WorkloadID) error {
 	f.record("remove")
 	return nil
 }
@@ -84,11 +84,11 @@ func (f *fakeRuntime) Exists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
 
-func (f *fakeRuntime) MountLabel(_ context.Context, _ ContainerID) (string, error) {
+func (f *fakeRuntime) MountLabel(_ context.Context, _ WorkloadID) (string, error) {
 	return "", nil
 }
 
-func (f *fakeRuntime) Resize(_ context.Context, _ ContainerID, _ ResourceLimits) error {
+func (f *fakeRuntime) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) error {
 	return nil
 }
 
@@ -260,12 +260,12 @@ func TestFailedProvisionRemovesThePartialContainer(t *testing.T) {
 
 	_, err := rt.Launch(t.Context(), specWithCreds(true))
 
-	var inContainer *InContainerError
+	var inContainer *InWorkloadError
 	if !errors.As(err, &inContainer) {
-		t.Fatalf("Launch error = %v, want *InContainerError", err)
+		t.Fatalf("Launch error = %v, want *InWorkloadError", err)
 	}
 	if inContainer.Stage != "arm egress" {
-		t.Fatalf("InContainerError.Stage = %q, want %q", inContainer.Stage, "arm egress")
+		t.Fatalf("InWorkloadError.Stage = %q, want %q", inContainer.Stage, "arm egress")
 	}
 	if !slices.Contains(fake.callsSnapshot(), "remove") {
 		t.Errorf("a failed launch must remove the partial container; calls = %v", fake.callsSnapshot())
@@ -338,11 +338,11 @@ func TestInGuestArmerSkipsHostArmEgress(t *testing.T) {
 }
 
 // TestCreateArgsIgnoresEgress pins the podman byte-identical constraint: setting
-// ContainerSpec.Egress must not change the `podman create` argv at all. The
+// WorkloadSpec.Egress must not change the `podman create` argv at all. The
 // podman backend arms via AgentRuntime.armEgress, never from the spec field, so
 // createArgs output for a spec with Egress set equals its output without.
 func TestCreateArgsIgnoresEgress(t *testing.T) {
-	base := ContainerSpec{Name: "c", Image: "img", UID: 1000, CapAdd: []string{capNetAdmin}}
+	base := WorkloadSpec{Name: "c", Image: "img", UID: 1000, CapAdd: []string{capNetAdmin}}
 	withEgress := base
 	withEgress.Egress = MustAllowEgress("github.com", "example.com")
 
