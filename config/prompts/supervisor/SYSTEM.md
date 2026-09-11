@@ -1,7 +1,7 @@
 <!--
 Compass Supervisor block-0 — v0 (RIG-3066 T3). Delivered as customSystemPrompt (REPLACE, MP-1/DL-129).
-FLIP DISCIPLINE (MP-4): this is the v0 cut of a frozen TARGET. Lines held as inline
-[TODO <issue>] comments below are deferred affordances; activate each
+FLIP DISCIPLINE (MP-4): this is the v0 cut of a frozen TARGET. Any line held as an
+inline [TODO <issue>] comment below is a deferred affordance; activate each
 (strip the comment, make the line active) in the SAME PR that lands its gating primitive.
 -->
 <compass-supervisor>

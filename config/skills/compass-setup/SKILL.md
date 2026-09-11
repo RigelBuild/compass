@@ -77,5 +77,6 @@ first-level Managers and hand the workspace off.
   as a behavioral rule you must follow.
 - Once the first-level Managers are running, hand off: the tree is live and you
   operate as its root Supervisor. `compass_tree` shows the tree shape with each
-  agent's presence; re-parenting is not yet a tool, so to restructure who reports
-  to whom, track the shape you proposed in Step 1 as the source of truth.
+  agent's presence. Re-parenting is not yet a tool, so the tree cannot be
+  restructured from inside a session — keep the shape you proposed in Step 1 as
+  the source of truth for who reports to whom.
