@@ -50,7 +50,9 @@ afterEach(() => {
 		const dir = tmpdirs.pop();
 		if (dir) rmSync(dir, { recursive: true, force: true });
 	}
-});
+	// Recursive /tmp scratch deletes outrun bun's 5s hook default under the
+	// parallel pre-push gate; bound as a slow-cleanup detector, not a budget (RIG-3611).
+}, 60_000);
 
 // A recording FrameSink. `emitDurable` captures each frame and resolves; a test
 // can swap in test controls: `failAll` (every send rejects — a definitive

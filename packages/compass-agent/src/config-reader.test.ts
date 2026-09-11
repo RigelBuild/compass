@@ -40,7 +40,9 @@ afterEach(() => {
 	for (const dir of tmpdirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
-});
+	// Recursive /tmp scratch deletes outrun bun's 5s hook default under the
+	// parallel pre-push gate; bound as a slow-cleanup detector, not a budget (RIG-3611).
+}, 60_000);
 
 // Write a file under `<mount>/current/<rel>`, creating parents. Returns the
 // mount root so a test threads it into the reader.
