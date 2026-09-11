@@ -46,6 +46,13 @@ func (f *fakeResolverSecrets) Resolve(_ context.Context, _ string) ([]secrets.Re
 func (f *fakeResolverSecrets) Set(_ context.Context, _, _, _ string) error { return nil }
 func (f *fakeResolverSecrets) Delete(_ context.Context, _ string) error    { return nil }
 
+// Statuses satisfies the Resolver interface. These tests exercise the container
+// secrets-delivery seam, which never lists set/unset state, so it returns
+// nothing rather than modelling a provider probe.
+func (f *fakeResolverSecrets) Statuses(_ context.Context, _ string) ([]secrets.SecretStatus, error) {
+	return nil, nil
+}
+
 // runnerResolverForFetch is the token resolver the FetchSecrets door uses: it
 // accepts a single Runner token and rejects everything else, modelling the real
 // kind-gate contract the seam tests already rely on.

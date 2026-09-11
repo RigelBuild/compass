@@ -120,6 +120,28 @@ func newSecretDeleteCmd() *cobra.Command {
 // required and it is read from stdin.
 var errEmptySecretValue = errors.New("a secret value is required: pipe it on stdin (it is never taken from the command line)")
 
+// readSecretValue reads a secret value from stdin, the ONE place both the user
+// and server-secret set paths get it — so the size cap, the trailing-newline
+// trim (a bare `echo` adds one and it is not part of the value), and the
+// empty-value rejection cannot drift between the two verbs.
+//
+// stdin is the only source by design: a value on argv would be visible in the
+// host process list.
+func readSecretValue(in io.Reader) (string, error) {
+	raw, err := io.ReadAll(io.LimitReader(in, maxSecretBytes+2))
+	if err != nil {
+		return "", fmt.Errorf("reading secret value from stdin: %w", err)
+	}
+	value := strings.TrimSuffix(string(raw), "\n")
+	if len(value) > maxSecretBytes {
+		return "", fmt.Errorf("secret value exceeds the %d-byte limit: pipe a smaller value on stdin", maxSecretBytes)
+	}
+	if value == "" {
+		return "", errEmptySecretValue
+	}
+	return value, nil
+}
+
 // secretSetArgs is the resolved `secret set` input: the name and the routing
 // flags, parsed and validated before any RPC.
 type secretSetArgs struct {
@@ -196,16 +218,9 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 	if err != nil {
 		return err
 	}
-	raw, err := io.ReadAll(io.LimitReader(in, maxSecretBytes+2))
+	value, err := readSecretValue(in)
 	if err != nil {
-		return fmt.Errorf("reading secret value from stdin: %w", err)
-	}
-	value := strings.TrimSuffix(string(raw), "\n")
-	if len(value) > maxSecretBytes {
-		return fmt.Errorf("secret value exceeds the %d-byte limit: pipe a smaller value on stdin", maxSecretBytes)
-	}
-	if value == "" {
-		return errEmptySecretValue
+		return err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
