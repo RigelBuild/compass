@@ -9,9 +9,8 @@
 #
 # Language-neutral (no crate, no language toolchain of its own): tagged `oss`
 # for the import boundary. The Rust backend that once co-owned this schema was
-# deleted at the Go cutover; the
-# schema outlives it as the sole source of truth the Go and TS clients generate
-# from.
+# deleted at the Go cutover; the schema outlives it as the sole source of
+# truth the Go and TS clients generate from.
 layer: 'library'
 language: 'bash'
 tags: ['oss', 'ci-group.go']
