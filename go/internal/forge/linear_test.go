@@ -762,3 +762,70 @@ func TestLinearActorProbeTransientErrorReprobed(t *testing.T) {
 			attributionUser, vars2["input"])
 	}
 }
+
+// TestMapLinearStateCoversEverySDLType pins the open/closed mapping for every
+// workflow-state `type` Linear's SDL can return. A type absent from
+// linearClosedStateTypes silently reads as open, so an issue closed as a
+// duplicate would be re-served as live work.
+func TestMapLinearStateCoversEverySDLType(t *testing.T) {
+	t.Parallel()
+
+	// All seven SDL types, not just the ones in the closed set: this pins the
+	// verdict for each by name, so narrowing the set fails with the type named.
+	// It does NOT detect enum drift — an eighth type would take the open
+	// fallback and stay green. RIG-3590 was a KNOWN type left unhandled.
+	for _, tc := range []struct {
+		stateType string
+		want      string
+	}{
+		{"triage", stateOpen},
+		{"backlog", stateOpen},
+		{"unstarted", stateOpen},
+		{"started", stateOpen},
+		{"completed", stateClosed},
+		{"canceled", stateClosed},
+		{"duplicate", stateClosed},
+		// The documented fallback: an unrecognised type maps to open.
+		{"no_such_type", stateOpen},
+	} {
+		if got := mapLinearState(tc.stateType); got != tc.want {
+			t.Errorf("mapLinearState(%q) = %q, want %q", tc.stateType, got, tc.want)
+		}
+	}
+}
+
+// TestTeamIssueFilterExcludesDuplicateFromOpen proves the query filter and the
+// read mapping agree. They share linearClosedStateTypes, so a state missing
+// from it both mis-maps a fetched issue AND makes the server's open-issue query
+// return it — the mapping test alone would not catch a divergence here.
+func TestTeamIssueFilterExcludesDuplicateFromOpen(t *testing.T) {
+	t.Parallel()
+
+	openTypes := extractStateTypes(t, teamIssueFilter("RIG", IssueFilter{State: stateOpen}), "nin")
+	if !slices.Contains(openTypes, "duplicate") {
+		t.Errorf("open-issue filter must exclude duplicate; nin = %v", openTypes)
+	}
+	closedTypes := extractStateTypes(t, teamIssueFilter("RIG", IssueFilter{State: stateClosed}), "in")
+	if !slices.Contains(closedTypes, "duplicate") {
+		t.Errorf("closed-issue filter must include duplicate; in = %v", closedTypes)
+	}
+}
+
+// extractStateTypes digs the state-type list out of a teamIssueFilter result
+// under the given set operator ("in" or "nin").
+func extractStateTypes(t *testing.T, filter map[string]any, op string) []string {
+	t.Helper()
+	state, ok := filter["state"].(map[string]any)
+	if !ok {
+		t.Fatalf("filter has no state clause: %#v", filter)
+	}
+	typ, ok := state["type"].(map[string]any)
+	if !ok {
+		t.Fatalf("state clause has no type clause: %#v", state)
+	}
+	got, ok := typ[op].([]string)
+	if !ok {
+		t.Fatalf("type clause has no %q list: %#v", op, typ)
+	}
+	return got
+}
