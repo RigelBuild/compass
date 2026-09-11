@@ -46,6 +46,9 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
+	// Down the shared fixture before exiting: its children hold this binary's
+	// stdout, so leaving them up strands the run in an I/O-incomplete wait.
+	shutdownShared()
 	_ = os.RemoveAll(binDir)
 	os.Exit(code)
 }
