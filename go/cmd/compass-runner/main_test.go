@@ -18,9 +18,10 @@ import (
 // podman branch also depends on it NOT satisfying microVMPreflighter; that
 // precedence is exercised by TestVerifyBackendPreflight, not asserted here.
 var (
-	_ microVMPreflighter = (*runtime.MicroVMRuntime)(nil)
-	_ podmanPreflighter  = (*runtime.PodmanCLI)(nil)
-	_ canaryBooter       = (*runtime.MicroVMRuntime)(nil)
+	_ microVMPreflighter        = (*runtime.MicroVMRuntime)(nil)
+	_ podmanPreflighter         = (*runtime.PodmanCLI)(nil)
+	_ canaryBooter              = (*runtime.MicroVMRuntime)(nil)
+	_ appleContainerPreflighter = (*runtime.AppleContainerCLI)(nil)
 )
 
 // parseMount is the operator surface for --mount: a malformed value must be
@@ -155,6 +156,18 @@ func (e bothProbesEngine) BootCanary(context.Context) (runtime.CanaryReport, err
 	return runtime.CanaryReport{}, nil
 }
 
+// appleOnlyEngine exposes only the apple-container probe.
+type appleOnlyEngine struct {
+	runtime.WorkloadRuntime
+	called *bool
+	err    error
+}
+
+func (e appleOnlyEngine) VerifyAppleContainerSupport(context.Context) error {
+	*e.called = true
+	return e.err
+}
+
 // verifyBackendPreflight dispatches on the selected engine's concrete type
 // (RIG-2496): microVM first, then podman, first match wins; the matched probe
 // runs and its error is returned verbatim; an engine exposing neither probe is a
@@ -267,6 +280,35 @@ func TestVerifyBackendPreflight(t *testing.T) {
 		}
 		if podmanCalled {
 			t.Error("podman probe was called; microVM-first precedence broken")
+		}
+	})
+}
+
+// The apple-container arm of the same dispatch, kept a separate function rather
+// than two more subtests on TestVerifyBackendPreflight: that one is already at
+// the gocognit ceiling, and these two cases stand on their own.
+func TestVerifyBackendPreflightAppleContainer(t *testing.T) {
+	t.Run("apple-container probe dispatched, not the fail-closed default", func(t *testing.T) {
+		sentinel := errors.New("preflight refused")
+		called := false
+		err := verifyBackendPreflight(context.Background(), appleOnlyEngine{called: &called, err: sentinel})
+		if !errors.Is(err, sentinel) {
+			t.Errorf("verifyBackendPreflight = %v, want the apple probe's sentinel error", err)
+		}
+		if !called {
+			t.Error("apple-container probe was not called")
+		}
+	})
+
+	t.Run("selected apple-container backend reaches its probe", func(t *testing.T) {
+		engine, err := runtime.SelectBackend(runtime.BackendConfig{Backend: "apple-container"})
+		if err != nil {
+			t.Fatalf("SelectBackend(apple-container) = %v, want the apple engine", err)
+		}
+		// Do NOT invoke the real probe (it shells out to `container
+		// --version`); only assert the selected engine routes to its branch.
+		if _, ok := engine.(appleContainerPreflighter); !ok {
+			t.Errorf("apple-container backend %T does not satisfy appleContainerPreflighter", engine)
 		}
 	})
 }

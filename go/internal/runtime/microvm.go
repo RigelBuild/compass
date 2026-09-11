@@ -77,14 +77,18 @@ type MicroVMConfig struct {
 }
 
 // BackendConfig selects and configures the workload runtime backend. Backend
-// is the chosen backend name ("podman" or "microvm"); MicroVM carries the
-// microVM-specific wiring, consulted only when Backend selects it.
+// is the chosen backend name ("podman", "microvm" or "apple-container");
+// MicroVM and AppleContainer carry the backend-specific wiring, each consulted
+// only when Backend selects it.
 type BackendConfig struct {
 	// Backend names the runtime backend: "podman" (or empty, the transitional
-	// default) or "microvm".
+	// default), "microvm", or "apple-container".
 	Backend string
-	// MicroVM configures the microVM backend; ignored for podman.
+	// MicroVM configures the microVM backend; ignored for the others.
 	MicroVM MicroVMConfig
+	// AppleContainer configures the apple-container backend; ignored for the
+	// others. Appended, never reordered.
+	AppleContainer AppleContainerConfig
 }
 
 // MicroVMRuntime is a WorkloadRuntime that isolates each agent in its own
@@ -123,7 +127,8 @@ func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
 
 // SelectBackend chooses the workload runtime backend from cfg. An empty or
 // "podman" backend returns the podman CLI runtime; "microvm" returns the
-// microVM runtime; any other value is an error naming the unknown backend and
+// microVM runtime; "apple-container" returns the Apple `container` CLI runtime
+// (the macOS arm); any other value is an error naming the unknown backend and
 // the accepted values.
 //
 // During the transitional period both backends ship and the default is podman:
@@ -139,7 +144,9 @@ func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
 		return NewPodmanCLI(), nil
 	case "microvm":
 		return NewMicroVMRuntime(cfg.MicroVM), nil
+	case "apple-container":
+		return NewAppleContainerCLI(cfg.AppleContainer), nil
 	default:
-		return nil, fmt.Errorf("runtime: unknown backend %q: accepted values are \"podman\" (default) and \"microvm\"", cfg.Backend)
+		return nil, fmt.Errorf("runtime: unknown backend %q: accepted values are \"podman\" (default), \"microvm\" and \"apple-container\"", cfg.Backend)
 	}
 }
