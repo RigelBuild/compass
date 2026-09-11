@@ -52,7 +52,7 @@ type provisionOutcome struct {
 // Hub.Provision through the real router.
 func enrollAttached(t *testing.T, hub *Hub, send *recordingSend) *commandRouter {
 	t.Helper()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want the live router", err)

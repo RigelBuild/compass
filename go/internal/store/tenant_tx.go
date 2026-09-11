@@ -55,6 +55,15 @@ func isSystemRole(ctx context.Context) bool {
 	return v
 }
 
+// IsSystemRole reports whether ctx is the cross-tenant system path (the exported
+// form of isSystemRole). A caller that must NOT run a request-scoped read under
+// the system role — the RIG-3108 binding cache, whose reads resolve the
+// principal a comms call runs under and must stay tenant-scoped — gates on this
+// rather than reading the table unscoped under BYPASSRLS.
+func IsSystemRole(ctx context.Context) bool {
+	return isSystemRole(ctx)
+}
+
 // scopedDBTX is the db.DBTX the store's *db.Queries is bound to in place of the
 // bare pool. It wraps the pgxpool and, on EVERY statement, prepends the tenant
 // scoping — SET LOCAL ROLE + (on the request path) set_config(tenantGUC, ...) —

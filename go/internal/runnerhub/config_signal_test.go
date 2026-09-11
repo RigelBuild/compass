@@ -11,6 +11,7 @@ package runnerhub
 //   - No live sessions, and no Runner enrolled, are clean no-op successes.
 
 import (
+	"context"
 	"testing"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -24,7 +25,7 @@ import (
 // version), never a minted token.
 func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	bindSession(hub, "sess-a")
 	bindSession(hub, "sess-b")
 	router, _, err := hub.routerFor("any")
@@ -59,7 +60,7 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 // fleet-cleared marker the Runner reads as "materialize an empty dir".
 func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	bindSession(hub, "sess-a")
 	router, _, err := hub.routerFor("any")
 	if err != nil {
@@ -86,7 +87,7 @@ func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 // (nothing bound) pushes nothing and is a clean success.
 func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
 	router.attach(rec.send)

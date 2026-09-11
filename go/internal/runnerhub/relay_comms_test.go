@@ -63,7 +63,7 @@ func bindLiveSession(hub *Hub) {
 		account       = store.AccountID("acct-agent")
 	)
 	hub.bindContainer(containerName, account)
-	hub.promoteSession(containerName, sessionID)
+	hub.promoteSession(context.Background(), containerName, sessionID)
 }
 
 // 1. An unknown session fails closed CodeNotFound and NEVER reaches the caller —
@@ -270,7 +270,7 @@ func TestRelayCommsCallDropsBindingOnRunnerReconnect(t *testing.T) {
 	}
 
 	// The Runner reconnects (re-enroll), which drops ALL agent-comms bindings.
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 
 	// The SAME session_id now fails closed — the binding is gone, so no stale
 	// account is reachable.
@@ -307,7 +307,7 @@ func TestRelayCommsCallStoppedSessionFailsClosedNotFound(t *testing.T) {
 	}
 
 	// Stop unbinds the session.
-	hub.unbindSession("sess-1")
+	hub.unbindSession(context.Background(), "sess-1")
 
 	_, err := hub.RelayCommsCall(context.Background(), relayPost("sess-1", "tc-9", &compassv1.PostMessageRequest{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "after stop"}}},
@@ -330,7 +330,7 @@ func TestRelayCommsCallStoppedSessionFailsClosedNotFound(t *testing.T) {
 // helper.
 func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
@@ -363,7 +363,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 		t.Fatalf("Start = %v, want success", err)
 	}
 
-	account, ok := hub.accountForSession("sess-live")
+	account, ok := hub.accountForSession(context.Background(), "sess-live")
 	if !ok {
 		t.Fatal("accountForSession(sess-live) = not bound, want the provisioned account after Provision->Start")
 	}
@@ -377,7 +377,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 // RelayCommsCall fails closed CodeNotFound — never an empty-account attribution.
 func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	hub, comms := newHubWithComms()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
@@ -408,7 +408,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 		t.Fatalf("Start = %v, want success", err)
 	}
 
-	if _, ok := hub.accountForSession("sess-live"); ok {
+	if _, ok := hub.accountForSession(context.Background(), "sess-live"); ok {
 		t.Fatal("accountForSession(sess-live) resolved a binding, want none (empty account must not bind)")
 	}
 	// And the fail-closed consequence: RelayCommsCall for that session is
@@ -439,19 +439,19 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 // re-enrolls, and asserts the reverse map is empty.
 func TestEnrollClearsReverseAccountSessions(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	bindLiveSession(hub) // acct-agent -> sess-1, via the real Provision->Start path
 
 	// Sanity: the reverse map is populated before the re-enroll.
-	if _, ok := hub.SessionForAccount("acct-agent"); !ok {
+	if _, ok := hub.SessionForAccount(context.Background(), "acct-agent"); !ok {
 		t.Fatal("SessionForAccount(acct-agent) not bound before re-enroll; the test setup is wrong")
 	}
 
 	// A Runner reconnect: enroll re-attaches and MUST drop every stale binding,
 	// forward AND reverse.
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 
-	if sess, ok := hub.SessionForAccount("acct-agent"); ok {
+	if sess, ok := hub.SessionForAccount(context.Background(), "acct-agent"); ok {
 		t.Fatalf("SessionForAccount(acct-agent) = %q, ok=true after re-enroll; want ok=false — enroll left a stale reverse entry, so a dead session resolves as live", sess)
 	}
 	if live := hub.LiveAgentSessions(); len(live) != 0 {
@@ -470,9 +470,9 @@ func TestUnbindSessionFiresTerminalPresenceEdge(t *testing.T) {
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession("c1", "sess-a") // fires one promoted edge, not a lifecycle one
+	hub.promoteSession(context.Background(), "c1", "sess-a") // fires one promoted edge, not a lifecycle one
 
-	hub.unbindSession("sess-a")
+	hub.unbindSession(context.Background(), "sess-a")
 
 	life := pres.lifecycleSnapshot()
 	if len(life) != 1 {
@@ -494,21 +494,21 @@ func TestUnbindStaleSessionFiresNoTerminalEdgeWhenRepointed(t *testing.T) {
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession("c1", "sess-old")
+	hub.promoteSession(context.Background(), "c1", "sess-old")
 	// A new container/session promotes onto the SAME account, re-pointing the
 	// reverse entry to sess-new (the newer live session).
 	hub.bindContainer("c2", "acct-a")
-	hub.promoteSession("c2", "sess-new")
+	hub.promoteSession(context.Background(), "c2", "sess-new")
 
 	// Unbind the stale session: its forward entry is dropped, but the reverse
 	// entry now points at sess-new, so no terminal edge fires.
-	hub.unbindSession("sess-old")
+	hub.unbindSession(context.Background(), "sess-old")
 
 	if life := pres.lifecycleSnapshot(); len(life) != 0 {
 		t.Fatalf("lifecycle edges after stale unbind = %d, want 0 (account re-pointed, not offline): %+v", len(life), life)
 	}
 	// The live session's reverse binding survives the stale unbind.
-	if sess, ok := hub.SessionForAccount("acct-a"); !ok || sess != "sess-new" {
+	if sess, ok := hub.SessionForAccount(context.Background(), "acct-a"); !ok || sess != "sess-new" {
 		t.Fatalf("SessionForAccount(acct-a) = %q ok=%v after stale unbind, want sess-new (live binding must survive)", sess, ok)
 	}
 }
@@ -523,15 +523,15 @@ func TestEnrollFiresTerminalPresenceEdgePerBoundAccountAndClears(t *testing.T) {
 	hub := newHubOnly()
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	hub.bindContainer("c1", "acct-a")
-	hub.promoteSession("c1", "sess-a")
+	hub.promoteSession(context.Background(), "c1", "sess-a")
 	hub.bindContainer("c2", "acct-b")
-	hub.promoteSession("c2", "sess-b")
+	hub.promoteSession(context.Background(), "c2", "sess-b")
 
 	// A Runner reconnect: enroll drops every binding and drives each previously-
 	// bound account OFFLINE.
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 
 	life := pres.lifecycleSnapshot()
 	if len(life) != 2 {
@@ -563,7 +563,7 @@ func TestFirstEnrollFiresNoTerminalPresenceEdge(t *testing.T) {
 	pres := &fakePresenceSink{}
 	hub.SetPresenceSink(pres)
 
-	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 
 	if life := pres.lifecycleSnapshot(); len(life) != 0 {
 		t.Fatalf("lifecycle edges after first enroll = %d, want 0 (nothing was bound): %+v", len(life), life)

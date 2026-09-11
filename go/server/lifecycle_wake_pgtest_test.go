@@ -56,7 +56,7 @@ func TestWakeAgentLiveIsNoOp(t *testing.T) {
 	if _, err := f.hub.Start(ctx, "start-live", &compassv1.StartAgentSessionRequest{ContainerName: fakeContainer}); err != nil {
 		t.Fatalf("Start = %v, want success", err)
 	}
-	if _, live := f.hub.SessionForAccount(f.agentID); !live {
+	if _, live := f.hub.SessionForAccount(context.Background(), f.agentID); !live {
 		t.Fatal("precondition: agent should be live after Provision+Start")
 	}
 	f.runner.forget() // drop the setup commands; assert only on the wake

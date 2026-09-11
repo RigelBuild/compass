@@ -52,8 +52,11 @@ type ControlDispatcher interface {
 // runnerhub.Hub implements it.
 type SessionResolver interface {
 	// SessionForAccount returns the live session bound to account, or ok=false
-	// when the account has no live session (deliver falls to the D2 sweep).
-	SessionForAccount(account store.AccountID) (sessionID string, ok bool)
+	// when the account has no live session (deliver falls to the D2 sweep). ctx
+	// is threaded so the hub's read-through binding cache (RIG-3108) can scope a
+	// cache-miss table read: under the consumer's system-role ctx the read-through
+	// is refused and the miss falls to the sweep, exactly this method's contract.
+	SessionForAccount(ctx context.Context, account store.AccountID) (sessionID string, ok bool)
 	// LiveAgentSessions snapshots every live (account -> session) binding — the
 	// set the lag-resync sweep iterates so it redelivers to every live recipient.
 	LiveAgentSessions() map[store.AccountID]string

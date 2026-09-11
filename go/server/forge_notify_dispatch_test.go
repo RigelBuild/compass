@@ -30,7 +30,7 @@ type fakeSessionDispatcher struct {
 	dispatchErr  error // returned by DispatchControl (nil = success)
 }
 
-func (f *fakeSessionDispatcher) SessionForAccount(account store.AccountID) (string, bool) {
+func (f *fakeSessionDispatcher) SessionForAccount(_ context.Context, account store.AccountID) (string, bool) {
 	s, ok := f.binding[account]
 	return s, ok
 }

@@ -12,6 +12,7 @@ package runnerhub
 // synchronously-recorded fact.
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -61,7 +62,7 @@ func TestPromoteSessionFiresStartSink(t *testing.T) {
 	// The Provision->Start promotion path: record the container's account, then
 	// promote it onto the minted session id.
 	hub.bindContainer("c1", testAgentAccount)
-	hub.promoteSession("c1", "sess-1")
+	hub.promoteSession(context.Background(), "c1", "sess-1")
 
 	got := sink.snapshot()
 	if len(got) != 1 {
@@ -82,13 +83,13 @@ func TestPromoteSessionNoBindingFiresNothing(t *testing.T) {
 	hub.SetSessionStartSink(sink)
 
 	// No bindContainer: the container has no recorded account.
-	hub.promoteSession("c-unknown", "sess-1")
+	hub.promoteSession(context.Background(), "c-unknown", "sess-1")
 
 	if got := sink.snapshot(); len(got) != 0 {
 		t.Fatalf("start edges = %d, want 0 (a non-binding promotion sweeps nothing)", len(got))
 	}
 	// And no live binding was created.
-	if _, ok := hub.SessionForAccount(testAgentAccount); ok {
+	if _, ok := hub.SessionForAccount(context.Background(), testAgentAccount); ok {
 		t.Fatal("a non-binding promotion created a live session binding, want none")
 	}
 }
@@ -100,14 +101,14 @@ func TestPromoteSessionNilStartSinkStillBinds(t *testing.T) {
 	hub := newHubOnly() // no SetSessionStartSink
 
 	hub.bindContainer("c1", testAgentAccount)
-	hub.promoteSession("c1", "sess-1")
+	hub.promoteSession(context.Background(), "c1", "sess-1")
 
 	// The binding is live in both directions — promoteSession did its job with no
 	// sink wired.
-	if acct, ok := hub.accountForSession("sess-1"); !ok || acct != testAgentAccount {
+	if acct, ok := hub.accountForSession(context.Background(), "sess-1"); !ok || acct != testAgentAccount {
 		t.Fatalf("accountForSession(sess-1) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
-	if sess, ok := hub.SessionForAccount(testAgentAccount); !ok || sess != "sess-1" {
+	if sess, ok := hub.SessionForAccount(context.Background(), testAgentAccount); !ok || sess != "sess-1" {
 		t.Fatalf("SessionForAccount(%s) = (%q, %v), want (sess-1, true)", testAgentAccount, sess, ok)
 	}
 }

@@ -57,3 +57,16 @@ func (s *Store) resolveTenant(ctx context.Context) TenantID {
 	}
 	return s.bootstrapTenantID
 }
+
+// EffectiveTenant returns the tenant a request-scoped call resolves against:
+// the context tenant if the auth layer set one, else the bootstrap tenant (the
+// OSS single-tenant degenerate path). It is the exported form of resolveTenant,
+// for a caller that must name the tenant a binding was written under — the
+// RIG-3108 hub, which publishes a BindingChange on the per-tenant routing
+// subject after recording a binding on the request ctx. A system-role ctx
+// carries no tenant, so the bootstrap fallback applies there too; the hub never
+// records a binding under the system role, so that degenerate value is never
+// published.
+func (s *Store) EffectiveTenant(ctx context.Context) TenantID {
+	return s.resolveTenant(ctx)
+}
