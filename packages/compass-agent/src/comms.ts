@@ -50,8 +50,8 @@
 // `ask_answer` block on the deliver lane, rendered to the model on a subsequent
 // turn. See packages/compass-agent/AGENTS.md for the package contract.
 //
-// Seven tools ship: post, post_ask, list, roster, set_status, open_dm, and dm;
-// search is deferred (OQ-3).
+// Eight tools ship: post, post_ask, list, roster, set_status, open_dm, dm, and
+// compass_tree; search is deferred (OQ-3).
 
 // The tool-parameter schema builder comes from the SDK's OWN schema stack
 // (`@oh-my-pi/omptype`, pinned to the same release as the SDK), via its `/ark`
@@ -294,10 +294,11 @@ export const rosterParameters = type({
 		"Roster vantage: neighborhood (default; parent, siblings, children), subtree (you and all descendants), or owner (every agent your owner owns)",
 	),
 });
+
 /** Exported so a test can validate the wire contract the agent loop enforces. */
-export const agentsTreeParameters = type({
+export const compassTreeParameters = type({
 	"scope?": type("'subtree'|'owner'").describe(
-		"Tree vantage: subtree (default; you and all your descendants) or owner (every agent your owner owns).",
+		"Tree vantage: subtree (default; you and all your descendants) or owner (every agent your owner owns)",
 	),
 });
 
@@ -420,16 +421,19 @@ function presenceLabel(presence: AgentPresence): string {
  */
 function renderAgentTree(entries: RosterEntry[]): string {
 	const byId = new Map(entries.map((entry) => [entry.agentAccountId, entry]));
+	// One predicate for both grouping and root-selection, so they cannot
+	// disagree: an entry has a parent only if that parent is a non-empty id
+	// present in the set. Otherwise it is a root (empty or unknown parent).
+	const hasParent = (entry: RosterEntry): boolean =>
+		entry.parentAgentId !== "" && byId.has(entry.parentAgentId);
 	const children = new Map<string, RosterEntry[]>();
 	for (const entry of entries) {
-		if (!byId.has(entry.parentAgentId)) continue;
+		if (!hasParent(entry)) continue;
 		const siblings = children.get(entry.parentAgentId) ?? [];
 		siblings.push(entry);
 		children.set(entry.parentAgentId, siblings);
 	}
-	const roots = entries.filter(
-		(entry) => entry.parentAgentId === "" || !byId.has(entry.parentAgentId),
-	);
+	const roots = entries.filter((entry) => !hasParent(entry));
 	const visited = new Set<string>();
 	const rows: string[] = [];
 	const render = (entry: RosterEntry, depth: number): void => {
@@ -897,14 +901,14 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		},
 	};
 
-	const agentsTree: AgentTool<typeof agentsTreeParameters> = {
-		name: "agents_tree",
+	const compassTree: AgentTool<typeof compassTreeParameters> = {
+		name: "compass_tree",
 		label: "Show agent tree",
 		approval: "read",
 		description:
 			"Render the agents around you as a tree with each agent's current activity. " +
 			"Scope defaults to your subtree; pass owner for every agent your owner owns.",
-		parameters: agentsTreeParameters,
+		parameters: compassTreeParameters,
 		execute: async (toolCallId, params) => {
 			// The session resolves the vantage; only the scope crosses this boundary.
 			const scope =
@@ -919,7 +923,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 				}),
 			);
 			if (result.result.case !== "roster")
-				throw commsFailure(result, "agents_tree", "roster");
+				throw commsFailure(result, "compass_tree", "roster");
 			const { entries } = result.result.value;
 			if (entries.length === 0) {
 				return {
@@ -1078,6 +1082,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 			};
 		},
 	};
+
 	return [
 		postMessage,
 		postAsk,
@@ -1086,6 +1091,6 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		setStatus,
 		commsOpenDm,
 		commsDm,
-		agentsTree,
+		compassTree,
 	];
 }
