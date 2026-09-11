@@ -147,6 +147,15 @@ var _ Provider = (*Linear)(nil)
 
 // --- Provider: exported methods ----------------------------------------------
 
+// TokenSourceForTest exposes the TokenSource this client was built over, so a
+// server-package test can assert two independently-built Linear clients ride
+// ONE shared source (the one-instance rule, DEC-4). Production reads it never.
+// The mint singleflight coalesces only WITHIN an instance, so a second source
+// mints independently against the same app; whether concurrent same-scope
+// mints from independent instances coexist is unverified, and sharing one
+// instance removes the question (RIG-3135).
+func (l *Linear) TokenSourceForTest() TokenSource { return l.token }
+
 // Name identifies this provider.
 func (l *Linear) Name() string { return "linear" }
 
