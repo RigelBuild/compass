@@ -43,6 +43,27 @@ describe("createLiveClients (query record T1)", () => {
 		expect(compassTransport).toBe(clients.transport);
 		expect(commsTransport).toBe(compassTransport);
 	});
+
+	test("passes the session id getter through to the transport factory", () => {
+		const transportSpy = spyOn(compassClient, "createCompassWebTransport");
+		spies.push(transportSpy);
+		const sessionId = () => "session-id";
+
+		createLiveClients(conn, { sessionId });
+
+		const opts = transportSpy.mock.calls[0]?.[2];
+		expect(opts?.sessionId).toBe(sessionId);
+	});
+
+	test("omits the session id option when deps are omitted", () => {
+		const transportSpy = spyOn(compassClient, "createCompassWebTransport");
+		spies.push(transportSpy);
+
+		createLiveClients(conn);
+
+		const opts = transportSpy.mock.calls[0]?.[2];
+		expect(opts).not.toHaveProperty("sessionId");
+	});
 });
 
 describe("resolveCaller (WhoAmI boot probe)", () => {
