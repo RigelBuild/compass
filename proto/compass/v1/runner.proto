@@ -1,6 +1,4 @@
-// The compass.v1 Server<->Runner seam (design: architecture-lineage;
-// wire shape frozen by the platform record
-// docs/designs/platform/go-toolchain-default.md:925-943).
+// The compass.v1 Server<->Runner seam (design: architecture-lineage).
 //
 // INTERNAL-ONLY surface. Like agent.proto (the in-container agent stdio
 // envelopes) and unlike compass.proto / comms.proto (the public generated-client
@@ -8,8 +6,8 @@
 // protocol spoken only between the Server and the Runner binaries. It is
 // generated ONLY into the internal Go consumers (internal/server handler +
 // internal/runner client), never the module-root exported `gen/` nor the public
-// TS client, so the `@compass/client` server-door fence stays intact
-// (go-toolchain-default.md:330-338, :1303-1307). The gen fan-out that enforces
+// TS client, so the `@compass/client` server-door fence stays intact.
+// The gen fan-out that enforces
 // this is a separate path-filtered lane; the public buf.gen.yaml never takes
 // this file as input.
 //
@@ -18,7 +16,7 @@
 // (they glob `compass/**/*.proto`).
 //
 // Frozen, not re-decided here: the three-RPC shape and directions are fixed by
-// the platform record (go-toolchain-default.md:931-937). Because the Runner
+// the platform record. Because the Runner
 // dials OUT to the Server, the Server has no inbound route to call the Runner:
 // command delivery cannot be a unary Server->Runner RPC, so it rides the
 // Server's *response* half of a Runner-opened bidi stream. Cutting the concrete
@@ -53,27 +51,26 @@ service RunnerService {
   // handshake. A valid Runner-subject token (OQ7: store.Subject{Kind:
   // SubjectRunner}) that reaches the handler is enrolled; an account-subject
   // token is rejected here with CodeUnauthenticated (the RunnerService side of
-  // the two mandatory cross-door rejection tests, go-toolchain-default.md:
-  // 1417-1419). Duplicate enrollment re-attaches the same Runner rather than
-  // registering a second (single-Runner MVP, OQ6 go-toolchain-default.md:1392).
+  // the two mandatory cross-door rejection tests). Duplicate enrollment
+  // re-attaches the same Runner rather than
+  // registering a second (single-Runner MVP, OQ6).
   rpc Enroll(EnrollRequest) returns (EnrollResponse);
 
   // Sessions (bidi, Runner-opened): the session-command relay. Because the
   // Runner is the gRPC client, its REQUEST stream carries command *results*
   // upward and the Server's RESPONSE stream pushes session *commands* downward
   // — the inversion is inherent to the dial-out model
-  // (go-toolchain-default.md:929-934), not a naming accident. Every command and
+  // not a naming accident. Every command and
   // its result carry a shared `request_id` (OQ6): a command retried after a
   // timeout reuses its id so the Runner dedupes it to the original result — no
-  // duplicate container, no spurious ALREADY_RUNNING (go-toolchain-default.md:
-  // 1388-1389).
+  // duplicate container, no spurious ALREADY_RUNNING.
   rpc Sessions(stream SessionsRequest) returns (stream SessionsResponse);
 
   // PublishEvents (client-stream, Runner->Server): the Runner relays each agent
   // stdout frame upward. The stream is Runner-sequenced (seq assigned at the
   // Runner, not at Server publish) so in-transit loss is detectable as a gap
-  // and the Client bus's gap-free guarantee holds (OQ6, go-toolchain-default.md:
-  // 1389-1392). This is the sole path Runner events take into the Server; the
+  // and the Client bus's gap-free guarantee holds (OQ6).
+  // This is the sole path Runner events take into the Server; the
   // RunnerHub.Deliver seam behind it is where a future brokered transport would
   // substitute, nothing else (design.md:1347-1352).
   rpc PublishEvents(stream PublishEventsRequest) returns (PublishEventsResponse);
@@ -199,7 +196,7 @@ message EnrollRequest {
 
 // Enroll response: the handshake ack. `reattached` distinguishes a fresh
 // enrollment from a re-attach of an already-registered Runner (OQ6 duplicate
-// enrollment, go-toolchain-default.md:1392) — the wire-level evidence a
+// enrollment) — the wire-level evidence a
 // reattach test asserts on.
 message EnrollResponse {
   bool reattached = 1;
@@ -435,7 +432,7 @@ enum RunnerErrorCode {
 message PublishEventsRequest {
   // Runner-assigned monotonic sequence across this Runner's whole event stream
   // (not per session). A gap in the sequence the Server observes is detectable
-  // in-transit loss (OQ6, go-toolchain-default.md:1389-1392).
+  // in-transit loss (OQ6).
   uint64 runner_seq = 1;
   // The session this event belongs to (the Server-side session id the Runner
   // was handed at Start).

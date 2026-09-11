@@ -5,7 +5,7 @@
 // call and rejects anything that is not a live SubjectRunner token with a bare
 // CodeUnauthenticated.
 //
-// OQ7 (go-toolchain-default.md:1410-1423): the security check itself is the
+// OQ7: the security check itself is the
 // SHARED auth.ResolveToken helper (sha256 → ResolveTokenHash → Kind gate), built
 // once in the T3 network-door lane and consumed here verbatim — this door only
 // asks it for a SubjectRunner token. An account token that reaches this door
