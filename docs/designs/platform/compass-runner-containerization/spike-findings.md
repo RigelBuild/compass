@@ -6,11 +6,19 @@ recorded shape of the verification so the questions and their negative controls
 are fixed before anyone runs them, rather than being chosen after seeing
 results.
 
-The design record's §Privilege shape is a contract *contingent on this spike*.
-Two of its grants rest on `[INFERENCE]` claims about upstream
-Kubernetes/CRI/cgroup-v2 and node-image behaviour, grounded in no artifact in
-this repo. This spike is what converts them to evidence or reopens the option
-set.
+**This spike narrows a pod spec; it does not ask whether containerization
+works.** The composition already boots on Linux with `/dev/kvm` — the frozen
+[microVM CI/dev enablement](../../infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md)
+record runs KVM-backed boot tests as a required leg on GitHub Actions'
+`ubuntu-latest`. What a pod adds is confinement: a cgroup device controller, a
+seccomp filter, and a memory cgroup. So every item below asks **which grant the
+confinement makes necessary**, and each answer costs at most a wider pod spec
+the design record already specifies.
+
+Two grants rest on `[INFERENCE]` claims about upstream Kubernetes/CRI/cgroup-v2
+and node-image behaviour, grounded in no artifact in this repo. Converting them
+to evidence is the point: the valuable outcome is a *smaller* contract, since a
+grant that proves inert drops out.
 
 ## Why each item carries a negative control
 
@@ -21,17 +29,21 @@ the finding — it shrinks the contract.
 
 ## Items
 
-### S1 — does a zero-privilege pod boot the composition end to end?
+### S1 — does the confinement hold, given the composition already boots?
 
-Run the §Privilege shape pod spec on a real node and boot a session microVM:
-cloud-hypervisor + virtiofsd + passt, through to an agent session that
-executes.
+The KVM baseline is established (see above), so this item is scoped to what
+confinement changes. Run the §Privilege shape pod spec on a real node and boot
+a session microVM: cloud-hypervisor + virtiofsd + passt, through to an agent
+session that executes.
 
-- **Expected:** boots.
+- **Expected:** boots. S2-S4 attribute any shortfall to a specific layer, so
+  this item's job is to say whether the assembled spec is sufficient, not to
+  establish feasibility.
 - **Negative control:** none needed; this is the load-bearing positive.
-- **If it fails:** OQ-1 resolves against containerization and the
-  container-vs-host tradeoff reopens. Do **not** grant a capability to make it
-  pass — that is the decision this record forbids.
+- **If it fails:** expect the cause to be one of the named grants, and widen
+  that grant — a pod-spec edit, not a design change. Only a requirement for a
+  Linux **capability** or `privileged: true` reopens the container-vs-host
+  ruling, and no known mechanism needs one.
 - **Record:** the failing syscall and the component that needed it.
 
 ### S2 — does the hostPath char-device route actually fail?
@@ -62,7 +74,9 @@ With the device plugin injecting the device, run as the non-root runner uid
   the `supplementalGroups` grant is unnecessary and drops from the contract,
   along with the gid-value question.
 - **Also record:** the node's actual `/dev/kvm` mode and owner, since the
-  inference rests on it.
+  inference rests on it. The compass dev box measures `crw-rw---- root:kvm`
+  (2026-09-12), under which the grant is required; a world-readable mode would
+  make it inert, so the node's own mode is the thing that decides it.
 
 ### S4 — is the custom `Localhost` seccomp profile required?
 
