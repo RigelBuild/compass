@@ -324,6 +324,13 @@ func (f *matrixNotifyStore) UpsertArtifactCursor(_ context.Context, cur ingest.A
 	return nil
 }
 
+// AdvanceDeliveredRevisionCAS satisfies the widened NotifyStore seam. The matrix
+// suite never exercises self-origin suppression (nil resolver), so the router
+// never calls it; a no-op that reports no advance is correct here.
+func (f *matrixNotifyStore) AdvanceDeliveredRevisionCAS(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
+
 // matrixDispatcher records every notification dispatched, per account.
 type matrixDispatcher struct {
 	sent []*compassv1internal.ForgeNotification
@@ -392,7 +399,7 @@ func TestForgeNotifyMatrix_Route(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{sub}}
 			d := &matrixDispatcher{}
-			r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, mxRef(), nil)
+			r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, nil, mxRef(), nil)
 			if err := r.Route(t.Context(), tc.ev); err != nil {
 				t.Fatalf("Route: %v", err)
 			}
@@ -433,7 +440,7 @@ func TestForgeNotifyMatrix_ContainerScope(t *testing.T) {
 		container := ingest.NotifySubscriber{SubscriptionID: "repo-sub", AgentAccountID: "acct-repo"}
 		st := &matrixNotifyStore{openedSub: []ingest.NotifySubscriber{container}}
 		d := &matrixDispatcher{}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, mxRef(), nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, nil, mxRef(), nil)
 		ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com", Repo: "octo/repo", Kind: mxIssue, Number: 99, URL: "u", Change: mxOpened}
 		if err := r.Route(t.Context(), ev); err != nil {
 			t.Fatalf("Route: %v", err)
@@ -451,7 +458,7 @@ func TestForgeNotifyMatrix_ContainerScope(t *testing.T) {
 		otherProj := ingest.NotifySubscriber{SubscriptionID: "other-sub", AgentAccountID: "acct-other", Project: "proj-beta"}
 		st := &matrixNotifyStore{openedSub: []ingest.NotifySubscriber{inProj, otherProj}}
 		d := &matrixDispatcher{}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"}, nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, nil, &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"}, nil)
 		ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app", Repo: "SEA", Kind: mxIssue, Number: 42, Project: "proj-alpha", URL: "u", Change: mxOpened}
 		if err := r.Route(t.Context(), ev); err != nil {
 			t.Fatalf("Route: %v", err)
@@ -466,7 +473,7 @@ func TestForgeNotifyMatrix_ContainerScope(t *testing.T) {
 		container := ingest.NotifySubscriber{SubscriptionID: "repo-sub", AgentAccountID: "acct-repo"}
 		st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{exact}, openedSub: []ingest.NotifySubscriber{container}}
 		d := &matrixDispatcher{}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, mxRef(), nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, nil, nil, mxRef(), nil)
 		// A COMMENT (not OPENED) is artifact-scope: no container fan-in.
 		ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com", Repo: "octo/repo", Kind: mxIssue, Number: 7, URL: "u#c", Change: mxComment, Comment: &compassv1internal.CommentRef{Url: "u#c", Body: "x", ForgeAccount: "a"}}
 		if err := r.Route(t.Context(), ev); err != nil {
@@ -517,7 +524,7 @@ func TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber(t *testing.T) {
 		st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}}}
 		d := &matrixDispatcher{}
 		pulls := &matrixPullNumbers{number: 4242}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, pulls, mxRef(), nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, pulls, nil, mxRef(), nil)
 		if err := r.Route(t.Context(), ev); err != nil {
 			t.Fatalf("Route(check_suite): %v", err)
 		}
@@ -541,7 +548,7 @@ func TestForgeNotifyMatrix_CheckSuiteResolvesPRNumber(t *testing.T) {
 		st := &matrixNotifyStore{artifactSub: []ingest.NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}}}
 		d := &matrixDispatcher{}
 		pulls := &matrixPullNumbers{err: forge.ErrNoPullRequestForSHA}
-		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, pulls, mxRef(), nil)
+		r := ingest.NewNotifyRouter(st, d, &matrixChecksRoller{}, pulls, nil, mxRef(), nil)
 		if err := r.Route(t.Context(), ev); err == nil {
 			t.Fatal("Route(check_suite, no PR for head sha) = nil error, want the route to fail closed")
 		}
