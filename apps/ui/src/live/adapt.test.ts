@@ -1014,6 +1014,23 @@ describe("adaptRosterEntry", () => {
 });
 
 describe("adaptRuntimeMarker", () => {
+	test("maps an unknown wire value to unknown, not undefined", () => {
+		// A server newer than this UI can send an enum value it has no name for;
+		// an undefined posture reads as contained to every downstream check.
+		// The generated enum type is closed, but protobuf-es keeps an unnamed
+		// numeric value on decode, so the runtime shape is reproduced directly.
+		const skewed = create(AgentSessionStatusSchema, {
+			sessionId: "s-future",
+			agentAccountId: "acc-future",
+		});
+		Object.assign(skewed, { runtimeTier: 99, egressPosture: 99 });
+
+		const marker = adaptRuntimeMarker(skewed);
+
+		expect(marker.tier).toBe("unknown");
+		expect(marker.posture).toBe("unknown");
+	});
+
 	// The runtime marker maps AgentSessionStatus.{runtime_tier,egress_posture}
 	// to the user-facing roster tokens. The semantics a user reads: a host tier
 	// with unenforced egress is the host backend AND visibly uncontained; a

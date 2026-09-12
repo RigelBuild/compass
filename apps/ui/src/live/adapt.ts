@@ -590,8 +590,11 @@ const EGRESS_POSTURE: Record<EgressPosture, EgressPostureMark> = {
  *  posture, each mapped total over its wire enum. Pure — the identity/lifecycle
  *  fields the status also carries are the presence path's job, not this marker's. */
 export function adaptRuntimeMarker(w: WireAgentSessionStatus): RuntimeMarker {
+	// protobuf-es keeps an unknown numeric enum value on decode, so a server
+	// newer than this UI yields a miss here. Fall back rather than index bare:
+	// an undefined posture would silently drop the uncontained warning.
 	return {
-		tier: RUNTIME_TIER[w.runtimeTier],
-		posture: EGRESS_POSTURE[w.egressPosture],
+		tier: RUNTIME_TIER[w.runtimeTier] ?? "unknown",
+		posture: EGRESS_POSTURE[w.egressPosture] ?? "unknown",
 	};
 }

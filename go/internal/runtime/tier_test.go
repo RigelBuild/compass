@@ -4,7 +4,8 @@ import "testing"
 
 // TestEveryBackendNamesItsOwnTier: the tier is reported on a security surface,
 // so each production backend must name itself rather than fall through to the
-// empty tier. A backend added without a Tier method would fail here.
+// empty tier. This catches a regression on a listed backend; a NEW backend is
+// only covered once it is added here and to the SelectBackend cases below.
 func TestEveryBackendNamesItsOwnTier(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -43,6 +44,7 @@ func TestSelectBackendTierMatchesTheRequestedBackend(t *testing.T) {
 		{"", WorkloadTierPodman},
 		{"podman", WorkloadTierPodman},
 		{"microvm", WorkloadTierMicroVM},
+		{"apple-container", WorkloadTierAppleContainer},
 		{"host", WorkloadTierHost},
 	} {
 		engine, err := SelectBackend(BackendConfig{Backend: tc.backend})

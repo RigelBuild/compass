@@ -58,7 +58,7 @@ describe("joinAgents", () => {
 			["acc-cook", { lifecycle: "working", activity: "cooking" }],
 		]);
 
-		const agents = joinAgents(accounts, presence);
+		const agents = joinAgents(accounts, presence, new Map());
 
 		expect(agents).toHaveLength(1);
 		expect(agents[0]?.account.id).toBe("acc-cook");
@@ -72,7 +72,7 @@ describe("joinAgents", () => {
 		// An account present in `accounts` but absent from the presence seed — a
 		// snapshot-boundary race or an un-re-seeded accountChanged arrival — is an
 		// at-rest/unstarted agent: the stopped dot, never the false-live idle dot.
-		const agents = joinAgents([agentAccount("acc-new")], new Map());
+		const agents = joinAgents([agentAccount("acc-new")], new Map(), new Map());
 
 		expect(agents[0]?.lifecycle).toBe("stopped");
 		// The two failure modes the rule exists to forbid.
@@ -91,7 +91,7 @@ describe("joinAgents", () => {
 			["acc-quiet", { lifecycle: undefined, activity: undefined }],
 		]);
 
-		const agents = joinAgents([agentAccount("acc-quiet")], presence);
+		const agents = joinAgents([agentAccount("acc-quiet")], presence, new Map());
 
 		expect(agents[0]?.lifecycle).toBeUndefined();
 		expect(agents[0]?.lifecycle).not.toBe("stopped");
@@ -111,7 +111,7 @@ describe("joinAgents", () => {
 			["acc-alpha", { lifecycle: "idle" }],
 		]);
 
-		const agents = joinAgents(accounts, presence);
+		const agents = joinAgents(accounts, presence, new Map());
 
 		// Only the three agent accounts, in their original input order.
 		expect(agents.map((a) => a.account.id)).toEqual([

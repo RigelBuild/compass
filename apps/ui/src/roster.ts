@@ -30,11 +30,12 @@ import type { Account, Agent, RuntimeMarker } from "./stub-data";
  *  the session-status stream rather than the presence one, so an agent with no
  *  session status yet carries no marker. A miss stays undefined — unlike
  *  lifecycle there is no safe default, because guessing a posture would render
- *  an uncontained agent as contained. */
+ *  an uncontained agent as contained. It is required rather than defaulted so
+ *  rendering no markers is always a decision at the callsite. */
 export function joinAgents(
 	accounts: readonly Account[],
 	presence: ReadonlyMap<string, AgentPresenceInfo>,
-	runtime: ReadonlyMap<string, RuntimeMarker> = new Map(),
+	runtime: ReadonlyMap<string, RuntimeMarker>,
 ): Agent[] {
 	const agents: Agent[] = [];
 	for (const account of accounts) {
