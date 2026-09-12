@@ -43,3 +43,8 @@ result-*
 
 # NOTE: generated clients (go/gen, packages/compass-client/src/gen)
 # are intentionally committed and CI drift-gated — do not ignore them.
+
+# runner-image build outputs: the staged nix closure (which carries the
+# entrypoint symlink) and the OCI layout, realised by tools/runner-image/build.ts.
+/runner-image/store/
+/runner-image/out/
