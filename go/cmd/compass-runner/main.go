@@ -184,6 +184,10 @@ func newSpecBuilder(engine runtime.WorkloadRuntime, image string, egress runtime
 	if err != nil {
 		return nil, err
 	}
+	egress, err = runner.ResolveEgress(engine, egress)
+	if err != nil {
+		return nil, err
+	}
 	return runner.NewConfigSpecBuilder(runner.SpecDefaults{
 		Image:       image,
 		Egress:      egress,
