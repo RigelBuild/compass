@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.2.1](https://github.com/RigelBuild/compass/compare/v0.2.0...v0.2.1) (2026-09-12)
+
+
+### Features
+
+* **compass-agent:** emit decoded traceparent on the SessionInjection observation (RIG-2894) ([#1132](https://github.com/RigelBuild/compass/issues/1132)) ([2392c9a](https://github.com/RigelBuild/compass/commit/2392c9adca70b3781e69ba2a408fe7fcedd2f8c5))
+* **compass-agent:** re-attach the turn's trigger traceparent on outbound posts (RIG-2894) ([#1139](https://github.com/RigelBuild/compass/issues/1139)) ([1dfcbfc](https://github.com/RigelBuild/compass/commit/1dfcbfc67417a158cd99ee5ecdd30317b66c0585))
+* **envelope:** AES-256-GCM seam for user-secret values (RIG-3655 T1) ([#1111](https://github.com/RigelBuild/compass/issues/1111)) ([d58e256](https://github.com/RigelBuild/compass/commit/d58e256efb135e34b8c88063e014d6844498ddfe))
+* **secrets:** add the DB-backed StoreResolver (RIG-3655 T3) ([#1138](https://github.com/RigelBuild/compass/issues/1138)) ([902feca](https://github.com/RigelBuild/compass/commit/902feca21b9a722673f34f4ed6eb197bba6d4741))
+* **server:** resolve the at-rest master key at boot (RIG-3655 T4) ([#1146](https://github.com/RigelBuild/compass/issues/1146)) ([5c00a05](https://github.com/RigelBuild/compass/commit/5c00a0515418b4abcbfefd56beb664bf4b061eeb))
+* **store:** scope and encrypt user secrets at rest (RIG-3655 T2) ([#1118](https://github.com/RigelBuild/compass/issues/1118)) ([c34e417](https://github.com/RigelBuild/compass/commit/c34e4175e4d23d843ffd054e17dd7b92e2787643))
+
+
+### Bug Fixes
+
+* **release:** put the pinned pkg-config on PATH for the app bundle (RIG-3731) ([#1171](https://github.com/RigelBuild/compass/issues/1171)) ([3692236](https://github.com/RigelBuild/compass/commit/36922361628173c366f826ea6496a84469f20e78))
+
 ## [0.2.0](https://github.com/RigelBuild/compass/compare/v0.1.0...v0.2.0) (2026-09-12)
 
 
