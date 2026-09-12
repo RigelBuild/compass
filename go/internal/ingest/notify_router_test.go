@@ -192,9 +192,12 @@ type fakeIdentityResolver struct {
 	authorCalls int
 }
 
+// The two error paths return a POPULATED handle alongside the error, so a
+// caller that used the value instead of failing open would suppress — that is
+// what makes the fault cases discriminating.
 func (f *fakeIdentityResolver) HandleForAccount(_ context.Context, accountID string) (Handle, error) {
 	if f.accountErr != nil {
-		return Handle{}, f.accountErr
+		return f.accounts[accountID], f.accountErr
 	}
 	return f.accounts[accountID], nil
 }
@@ -202,7 +205,7 @@ func (f *fakeIdentityResolver) HandleForAccount(_ context.Context, accountID str
 func (f *fakeIdentityResolver) AuthorHandle(_ context.Context, _ string, _ compassv1internal.ForgeArtifactKind, _ uint64) (Handle, error) {
 	f.authorCalls++
 	if f.authorErr != nil {
-		return Handle{}, f.authorErr
+		return f.author, f.authorErr
 	}
 	if f.authorMiss {
 		return Handle{}, nil
@@ -742,16 +745,6 @@ func subIDs(ns []*compassv1internal.ForgeNotification) []string {
 
 // ---- self-origin suppression (T1) ----
 
-// stateEvent is a GitHub STATE event on o/r#7 (no reachable actor until the
-// RIG-3331 memo consumer lands).
-func stateEvent() forge.ForgeEvent {
-	return forge.ForgeEvent{
-		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
-		Host:     "github.com", Repo: "o/r", Kind: kindPR, Number: 7,
-		URL: "u", Change: chState, State: "closed",
-	}
-}
-
 // TestSelfOriginCommentSuppressedOnMatch: a COMMENT whose actor's
 // owner-qualified handle equals the subscriber's is skipped.
 func TestSelfOriginCommentSuppressedOnMatch(t *testing.T) {
@@ -865,6 +858,32 @@ func TestSelfOriginOpenedDeliveredOnAuthorMiss(t *testing.T) {
 	}
 }
 
+// TestSelfOriginOpenedDeliveredOnAuthorFault: a store fault resolving the
+// author row is logged and treated as a miss, so the dispatch delivers. The
+// subscriber WOULD match the faulting coordinate's author, so a fault that
+// suppressed instead would eat a real notification.
+func TestSelfOriginOpenedDeliveredOnAuthorFault(t *testing.T) {
+	st := &fakeNotifyStore{openedSub: []NotifySubscriber{
+		{SubscriptionID: "s", AgentAccountID: "acct-self", Project: "proj-A", Scope: scopeContainer},
+	}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		authorErr: errors.New("store unreachable"),
+		author:    Handle{Owner: "own", Agent: selfAgent},
+		accounts:  map[string]Handle{"acct-self": {Owner: "own", Agent: selfAgent}},
+	}
+	ev := forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app",
+		Repo: "RIG", Kind: kindIssue, Number: 42, Project: "proj-A", URL: "u", Change: chOpened,
+	}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (author fault delivers, fail open)", len(d.sent))
+	}
+}
+
 // TestSelfOriginChecksNeverSuppressed is the CHECKS invariant: CI results on an
 // agent's own push are the point of watching CI. The event carries a matching
 // Compass commenter, so the arm — not the absence of actor evidence — is what
@@ -915,12 +934,24 @@ func TestSelfOriginUpdateNeverSuppressed(t *testing.T) {
 
 // TestSelfOriginStateDeliversWithNoMemoConsumer: STATE has no reachable actor
 // through the two-method seam (RIG-3331's memo consumer is not wired), so the
-// actor resolves to a zero Handle and STATE delivers (the safe interim).
+// actor resolves to a zero Handle and STATE delivers (the safe interim). The
+// event is loaded so that EVERY other arm would match — a matching Compass
+// commenter and a matching author row — so delivering proves STATE fell
+// through to the no-actor arm. Routing STATE through the author row is the
+// fail-closed bug the record forbids: it would eat an agent's notification
+// that a HUMAN closed its issue.
 func TestSelfOriginStateDeliversWithNoMemoConsumer(t *testing.T) {
 	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
 	d := &fakeDispatcher{}
-	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
-	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), stateEvent()); err != nil {
+	ids := &fakeIdentityResolver{
+		author:   Handle{Owner: "own", Agent: selfAgent},
+		accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: selfAgent}},
+	}
+	ev := compassComment("own")
+	ev.Kind = kindPR
+	ev.Change = chState
+	ev.State = "closed"
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
 	if len(d.sent) != 1 {
@@ -949,7 +980,10 @@ func TestSelfOriginUnqualifiedActorDelivers(t *testing.T) {
 func TestSelfOriginResolverFaultDelivers(t *testing.T) {
 	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
 	d := &fakeDispatcher{}
-	ids := &fakeIdentityResolver{accountErr: errors.New("resolver boom")}
+	ids := &fakeIdentityResolver{
+		accountErr: errors.New("resolver boom"),
+		accounts:   map[string]Handle{"acct-self": {Owner: "own", Agent: selfAgent}},
+	}
 	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), compassComment("own")); err != nil {
 		t.Fatalf("Route: %v", err)
 	}
