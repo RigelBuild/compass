@@ -679,54 +679,6 @@ export async function main(
 	);
 	const sink = createSocketFrameSink(transport);
 
-	// Native comms + lifecycle tools (RIG-1741 gap-1). The existing `transport`
-	// is reused directly: `RunnerTransport` structurally satisfies both
-	// `CommsTransport` and `LifecycleTransport` (each is a one-method subset —
-	// comms.ts:74 / lifecycle.ts), so the brokers wrap it with no adapter. Their
-	// tools are merged into `customTools` below, flowing through the same
-	// customTools→state.tools→#withNatives natives path as the MCP tools — so the
-	// container agent's `comms_post_message` / `agents_spawn_peer` emissions
-	// resolve as session natives rather than "unknown tool".
-	const commsBroker = new CommsBroker(transport);
-	const lifecycleBroker = new LifecycleBroker(transport);
-	const forgeBroker = new ForgeBroker(transport);
-	const boardBroker = new BoardBroker(transport);
-	// The comms/lifecycle natives are authored as `AgentTool` (pi-agent-core)
-	// because CompassAgent's `#withNatives` mechanism (agent.ts) operates on
-	// `AgentTool[]`. `createAgentSession`'s `customTools` wants
-	// `(CustomTool | ToolDefinition)[]`, and the SDK exposes no dedicated native
-	// seam, so we register the `AgentTool[]` through `customTools` with a single
-	// documented assertion. The assertion to the `ToolDefinition` arm is
-	// TYPE-sound: the only compile-time gap is generic variance on the OPTIONAL
-	// renderCall/renderResult (`AgentTool` TTheme=unknown vs `ToolDefinition`
-	// Theme/Component) — fields these headless tools never define.
-	//
-	// RUNTIME mechanism (subtle — do not "simplify" the invariant below away):
-	// an `AgentTool` object literal carries no `__isToolDefinition` marker, so
-	// the SDK classifies it as a CustomTool (`isCustomTool`, sdk.ts:876) and runs
-	// it through `customToolToDefinition` (sdk.ts:915) — NOT the verbatim
-	// pass-through arm. That wrapper invokes `execute` with the CustomTool arg
-	// convention `(toolCallId, params, onUpdate, ctx, signal)` (sdk.ts:927),
-	// whereas `AgentTool.execute` is `(toolCallId, params, signal, onUpdate, ctx)`
-	// (pi-agent-core types.ts:612-616) — so args 3-5 arrive SHUFFLED. This is
-	// safe ONLY because every native's `execute` body reads solely
-	// `(toolCallId, params)` and ignores args 3-5 (comms.ts / lifecycle.ts). A
-	// test in cli.test.ts is a TRIPWIRE on the likely regression: it pins each
-	// native's `execute.length === 2`, so adding a plain positional 3rd param
-	// (`signal`) to consume a shuffled arg reddens it. The pin is not a total
-	// guard — a rest (`...args`) or defaulted (`signal = …`) param reads arg 3
-	// while keeping `.length === 2` — so the load-bearing rule is this invariant
-	// itself, not the arity check. If a native ever needs its AbortSignal or
-	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
-	// SDK must gain a real native-registration path, or the tool must be a true
-	// `ToolDefinition`. Do not consume args 3-5 here.
-	const nativeTools = [
-		...createCommsTools(commsBroker),
-		...createLifecycleTools(lifecycleBroker),
-		...createForgeTools(forgeBroker),
-		...createBoardTools(boardBroker),
-	] as ToolDefinition[];
-
 	// The tee session storage, wrapped + initialize()d (its scan of the session
 	// dir must complete before SessionManager.create so synchronous resume
 	// lookups see the keyspace). SESSION_DIR is the SDK-default HOME-relative dir
@@ -891,6 +843,60 @@ export async function main(
 	const traceBridge: TraceBridge | undefined = telemetryHooks.isEnabled()
 		? createTraceBridge()
 		: undefined;
+
+	// Native comms + lifecycle tools (RIG-1741 gap-1). The existing `transport`
+	// is reused directly: `RunnerTransport` structurally satisfies both
+	// `CommsTransport` and `LifecycleTransport` (each is a one-method subset —
+	// comms.ts:74 / lifecycle.ts), so the brokers wrap it with no adapter. Their
+	// tools are merged into `customTools` below, flowing through the same
+	// customTools→state.tools→#withNatives natives path as the MCP tools — so the
+	// container agent's `comms_post_message` / `agents_spawn_peer` emissions
+	// resolve as session natives rather than "unknown tool".
+	// The comms broker also reads the turn trigger (RIG-2894): the full
+	// `TraceBridge` satisfies the broker's narrow `TurnTriggerReader` structurally,
+	// so a post stamps `trigger_traceparent` from the current turn's single
+	// parent. Telemetry off ⇒ `traceBridge` undefined ⇒ every post stamps ""
+	// (bit-identical to before). Only the comms broker takes it — the others
+	// carry no posts.
+	const commsBroker = new CommsBroker(transport, traceBridge);
+	const lifecycleBroker = new LifecycleBroker(transport);
+	const forgeBroker = new ForgeBroker(transport);
+	const boardBroker = new BoardBroker(transport);
+	// The comms/lifecycle natives are authored as `AgentTool` (pi-agent-core)
+	// because CompassAgent's `#withNatives` mechanism (agent.ts) operates on
+	// `AgentTool[]`. `createAgentSession`'s `customTools` wants
+	// `(CustomTool | ToolDefinition)[]`, and the SDK exposes no dedicated native
+	// seam, so we register the `AgentTool[]` through `customTools` with a single
+	// documented assertion. The assertion to the `ToolDefinition` arm is
+	// TYPE-sound: the only compile-time gap is generic variance on the OPTIONAL
+	// renderCall/renderResult (`AgentTool` TTheme=unknown vs `ToolDefinition`
+	// Theme/Component) — fields these headless tools never define.
+	//
+	// RUNTIME mechanism (subtle — do not "simplify" the invariant below away):
+	// an `AgentTool` object literal carries no `__isToolDefinition` marker, so
+	// the SDK classifies it as a CustomTool (`isCustomTool`, sdk.ts:876) and runs
+	// it through `customToolToDefinition` (sdk.ts:915) — NOT the verbatim
+	// pass-through arm. That wrapper invokes `execute` with the CustomTool arg
+	// convention `(toolCallId, params, onUpdate, ctx, signal)` (sdk.ts:927),
+	// whereas `AgentTool.execute` is `(toolCallId, params, signal, onUpdate, ctx)`
+	// (pi-agent-core types.ts:612-616) — so args 3-5 arrive SHUFFLED. This is
+	// safe ONLY because every native's `execute` body reads solely
+	// `(toolCallId, params)` and ignores args 3-5 (comms.ts / lifecycle.ts). A
+	// test in cli.test.ts is a TRIPWIRE on the likely regression: it pins each
+	// native's `execute.length === 2`, so adding a plain positional 3rd param
+	// (`signal`) to consume a shuffled arg reddens it. The pin is not a total
+	// guard — a rest (`...args`) or defaulted (`signal = …`) param reads arg 3
+	// while keeping `.length === 2` — so the load-bearing rule is this invariant
+	// itself, not the arity check. If a native ever needs its AbortSignal or
+	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
+	// SDK must gain a real native-registration path, or the tool must be a true
+	// `ToolDefinition`. Do not consume args 3-5 here.
+	const nativeTools = [
+		...createCommsTools(commsBroker),
+		...createLifecycleTools(lifecycleBroker),
+		...createForgeTools(forgeBroker),
+		...createBoardTools(boardBroker),
+	] as ToolDefinition[];
 
 	// Resolve the pinned model selector ONCE and share it between the session
 	// option and the boot-model-health belt below, so the "was a model pinned?"

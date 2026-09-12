@@ -23,6 +23,7 @@ import {
 	openDmParameters,
 	postAskParameters,
 	postParameters,
+	type TurnTriggerReader,
 } from "./comms";
 import {
 	AgentPresence,
@@ -345,6 +346,100 @@ describe("createCommsTools", () => {
 		expect(byName("comms_dm").parameters).toBe(dmParameters);
 		expect(byName("compass_tree").approval).toBe("read");
 		expect(byName("compass_tree").parameters).toBe(compassTreeParameters);
+	});
+});
+
+// RIG-2894 — the turn-trigger re-attach. A POST stamps `trigger_traceparent`
+// from the broker's optional `TurnTriggerReader` (the current turn's single
+// parent inbound traceparent); a READ never stamps it, and an absent reader
+// stamps "" (telemetry-off, bit-identical to before the field existed). The
+// reader is faked to a fixed string so the wire field is asserted verbatim.
+describe("CommsBroker turn-trigger re-attach (RIG-2894)", () => {
+	const TP = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+	const reader = (tp: string): TurnTriggerReader => ({
+		currentTurnTrigger: () => tp,
+	});
+
+	test("a post stamps trigger_traceparent from the reader", async () => {
+		const transport = new FakeTransport(postResult("m-1", "t-1"));
+		const broker = new CommsBroker(transport, reader(TP));
+		const post = tool(broker, "comms_post_message");
+
+		await exec(post, "tc-1", { text: "hi", topic: "t", channel: "c" });
+
+		const req = transport.requests[0];
+		expect(req?.call.case).toBe("post");
+		expect(req?.triggerTraceparent).toBe(TP);
+	});
+
+	test("comms_post_ask stamps trigger_traceparent from the reader", async () => {
+		const transport = new FakeTransport(askPostResult("ask-1", "t-1"));
+		const broker = new CommsBroker(transport, reader(TP));
+		const post = askTool(broker);
+
+		await exec(post, "tc-1", {
+			questions: [{ id: "q1", question: "ok?", options: [{ label: "yes" }] }],
+			topic: "t",
+			channel: "c",
+		});
+
+		const req = transport.requests[0];
+		expect(req?.call.case).toBe("post");
+		expect(req?.triggerTraceparent).toBe(TP);
+	});
+
+	test("comms_dm leg-2 post stamps trigger_traceparent from the reader", async () => {
+		const transport = new SequencedTransport([
+			openDmResult("dm--a--b", true),
+			postResult("m-1", "t-1"),
+		]);
+		const broker = new CommsBroker(transport, reader(TP));
+		const dm = tool(broker, "comms_dm");
+
+		await exec(dm, "tc-1", { peer_handle: "peer", text: "hi", topic: "t" });
+
+		// Leg 1 is open_dm (no trigger); leg 2 is the post that carries it.
+		const req = transport.requests[1];
+		expect(req?.call.case).toBe("post");
+		expect(req?.triggerTraceparent).toBe(TP);
+	});
+
+	test("a reader returning empty stamps empty (single-parent-less turn)", async () => {
+		const transport = new FakeTransport(postResult("m-1", "t-1"));
+		const broker = new CommsBroker(transport, reader(""));
+		const post = tool(broker, "comms_post_message");
+
+		await exec(post, "tc-1", { text: "hi", topic: "t", channel: "c" });
+
+		const req = transport.requests[0];
+		expect(req?.call.case).toBe("post");
+		expect(req?.triggerTraceparent).toBe("");
+	});
+
+	test("an absent reader stamps empty (telemetry off, bit-identical)", async () => {
+		const transport = new FakeTransport(postResult("m-1", "t-1"));
+		const broker = new CommsBroker(transport);
+		const post = tool(broker, "comms_post_message");
+
+		await exec(post, "tc-1", { text: "hi", topic: "t", channel: "c" });
+
+		const req = transport.requests[0];
+		expect(req?.call.case).toBe("post");
+		expect(req?.triggerTraceparent).toBe("");
+	});
+
+	test("a list read never stamps trigger_traceparent, even with a set reader", async () => {
+		const transport = new FakeTransport(listResult());
+		const broker = new CommsBroker(transport, reader(TP));
+		const list = tool(broker, "comms_list_messages");
+
+		await exec(list, "tc-1", {});
+
+		// A list call is a read: the broker never stamps the trigger on it, so the
+		// request's trigger_traceparent stays empty even with a set reader.
+		const req = transport.requests[0];
+		expect(req?.call.case).toBe("list");
+		expect(req?.triggerTraceparent).toBe("");
 	});
 });
 
