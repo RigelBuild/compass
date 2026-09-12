@@ -116,7 +116,16 @@ export function outputSpec(
 	// set, two builds yield the same manifest digest.
 	const rewrite = "rewrite-timestamp=true";
 	if (mode === "oci") return `type=oci,dest=${ociDir},tar=false,${rewrite}`;
-	if (mode === "push") return `type=image,name=${tag},push=true,${rewrite}`;
+	// oci-mediatypes is stated rather than inherited. The publish lane gates on
+	// the pushed manifest digest equalling the local layout's, and media-type
+	// strings live INSIDE the manifest — so a Docker-media-type push of
+	// identical blobs would hash differently and red every run. rewrite-timestamp
+	// already forces OCI types today (measured: a push and a layout of the same
+	// context both yielded sha256:e6e98c76…), which makes this belt-and-braces
+	// against that coupling changing, not a behaviour change.
+	if (mode === "push") {
+		return `type=image,name=${tag},push=true,oci-mediatypes=true,${rewrite}`;
+	}
 	return `type=image,name=${tag},${rewrite}`;
 }
 

@@ -59,7 +59,10 @@ const tag = buildTag(repo, sha12);
 // The local layout the build lane wrote. Scanning the ASSEMBLED config (not the
 // Dockerfile) is what proves what ships, and scanning BEFORE the push matters
 // because deleting a tag from a public registry does not unpublish the bytes.
-if (!existsSync(ociDir)) {
+// The directory alone is not enough: the build lane creates it before the
+// exporter writes into it, so an interrupted build leaves an empty dir whose
+// index.json read would throw a raw ENOENT instead of naming the fault.
+if (!existsSync(join(ociDir, "index.json"))) {
 	fail(
 		EXIT.usage,
 		`no OCI layout at ${ociDir} — run \`moon run compass-runner-image:build\` first`,

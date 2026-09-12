@@ -205,7 +205,12 @@ console.error("runner-image: staging closure…");
 // own leftovers.
 makeWritable(stageDir);
 rmSync(stageDir, { recursive: true, force: true });
-rmSync(ociDir, { recursive: true, force: true });
+// Only a layout-producing run may clear the layout. A `push` run must NOT: the
+// publish lane compares the pushed digest against the layout this directory
+// already holds, and wiping it leaves that comparison with nothing to read.
+if (mode !== "push") {
+	rmSync(ociDir, { recursive: true, force: true });
+}
 mkdirSync(stageDir, { recursive: true });
 
 const closure = spawnSync(

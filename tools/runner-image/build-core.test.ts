@@ -98,7 +98,17 @@ describe("outputSpec", () => {
 
 	test("push exports to the registry, since buildctl has no push verb", () => {
 		expect(outputSpec("push", "ghcr.io/x/y:git-abc", "/tmp/out")).toBe(
-			"type=image,name=ghcr.io/x/y:git-abc,push=true,rewrite-timestamp=true",
+			"type=image,name=ghcr.io/x/y:git-abc,push=true,oci-mediatypes=true,rewrite-timestamp=true",
+		);
+	});
+
+	// Media-type strings live INSIDE the manifest, so a Docker-media-type push of
+	// identical blobs hashes differently from the OCI layout. The publish lane
+	// gates on those digests being equal, so a push that stopped requesting OCI
+	// types would red every run after the bytes were already published.
+	test("push requests OCI media types, so its digest can match the layout's", () => {
+		expect(outputSpec("push", "ghcr.io/x/y:t", "/tmp/out")).toContain(
+			"oci-mediatypes=true",
 		);
 	});
 
