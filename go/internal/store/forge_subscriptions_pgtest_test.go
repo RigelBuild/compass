@@ -444,18 +444,21 @@ func TestSubscribersForArtifactGitHub(t *testing.T) {
 	if len(subs) != 1 || subs[0].AgentAccountID != exact {
 		t.Fatalf("not-opened subs = %+v, want just exact agent %q", subs, exact)
 	}
+	if subs[0].Scope != ForgeSubscriptionScopeArtifact {
+		t.Errorf("exact subscriber scope = %d, want ARTIFACT(%d)", subs[0].Scope, ForgeSubscriptionScopeArtifact)
+	}
 
 	// Opened event: exact + container.
 	subs, err = s.SubscribersForArtifact(ctx, provider, host, repo, kind, number, "", true)
 	if err != nil {
 		t.Fatalf("SubscribersForArtifact (opened): %v", err)
 	}
-	got := map[AccountID]bool{}
+	got := map[AccountID]ForgeSubscriptionScope{}
 	for _, sub := range subs {
-		got[sub.AgentAccountID] = true
+		got[sub.AgentAccountID] = sub.Scope
 	}
-	if len(subs) != 2 || !got[exact] || !got[ctr] {
-		t.Fatalf("opened subs = %+v, want exact %q + container %q", subs, exact, ctr)
+	if len(subs) != 2 || got[exact] != ForgeSubscriptionScopeArtifact || got[ctr] != ForgeSubscriptionScopeContainer {
+		t.Fatalf("opened subs = %+v, want exact %q (ARTIFACT) + container %q (CONTAINER)", subs, exact, ctr)
 	}
 }
 
@@ -711,11 +714,22 @@ func TestListForgeNotifyTargetsMixedArtifactAndContainer(t *testing.T) {
 	if len(artTarget.Subscribers) != 1 {
 		t.Fatalf("artifact subscribers = %d, want 1", len(artTarget.Subscribers))
 	}
+	// The sweep lane must project each subscriber's real scope — the router's
+	// artifact-scope-only cursor advance depends on it, and a missing copy
+	// would silently arrive as ARTIFACT(1) for a CONTAINER row.
+	if artTarget.Subscribers[0].Scope != ForgeSubscriptionScopeArtifact {
+		t.Errorf("artifact subscriber scope = %d, want ARTIFACT(%d)", artTarget.Subscribers[0].Scope, ForgeSubscriptionScopeArtifact)
+	}
 	if containerTarget == nil {
 		t.Fatalf("no collapsed container target (number=0) in %+v", targets)
 	}
 	if len(containerTarget.Subscribers) != 2 {
 		t.Fatalf("container subscribers = %d, want 2", len(containerTarget.Subscribers))
+	}
+	for _, sub := range containerTarget.Subscribers {
+		if sub.Scope != ForgeSubscriptionScopeContainer {
+			t.Errorf("container subscriber %s scope = %d, want CONTAINER(%d)", sub.AgentAccountID, sub.Scope, ForgeSubscriptionScopeContainer)
+		}
 	}
 }
 

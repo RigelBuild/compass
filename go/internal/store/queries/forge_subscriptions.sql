@@ -44,7 +44,7 @@ SELECT count(*) FROM agent_forge_subscriptions
 -- name: SubscribersForArtifact :many
 -- Exact-artifact subscribers, plus (on an opened event) the container-scope
 -- subscribers for the same container/project.
-SELECT id, agent_account_id, delivered_revision, project
+SELECT id, agent_account_id, delivered_revision, project, scope
 FROM agent_forge_subscriptions
 WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4
   AND (
@@ -59,7 +59,7 @@ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4
 -- (repo, kind) to coord_number 0. The Go groups the flat rows into targets.
 SELECT s.repo, s.kind,
        (CASE WHEN s.scope = 2 THEN 0 ELSE s.number END)::BIGINT AS coord_number,
-       s.id, s.agent_account_id, s.delivered_revision, s.project,
+       s.id, s.agent_account_id, s.delivered_revision, s.project, s.scope,
        (c.forge_provider IS NOT NULL)::boolean AS has_cursor,
        c.etag, c.comments_etag, c.checks_etag, c.revision, c.snapshot, c.polled_at
 FROM agent_forge_subscriptions s

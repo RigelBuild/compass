@@ -23,12 +23,16 @@ import (
 // mirror of store.ForgeNotifySubscriber (the no-store rule keeps the store type
 // out of this package). SubscriptionID is the ack correlation key; Project is
 // the subscriber's own container project (set only for a Linear container sub,
-// "" otherwise) so an OPENED event matches only its project's container subs.
+// "" otherwise) so an OPENED event matches only its project's container subs;
+// Scope is the subscription's own scope, which self-origin suppression reads to
+// keep the cursor advance artifact-scope-only (a container-scope sub is skipped
+// but its cursor is never advanced).
 type NotifySubscriber struct {
 	SubscriptionID    string
 	AgentAccountID    string
 	DeliveredRevision string
 	Project           string
+	Scope             compassv1internal.ForgeSubscriptionScope
 }
 
 // ArtifactCursor is the router's view of one shared per-artifact FETCH cursor:
@@ -132,6 +136,31 @@ type PullNumberResolver interface {
 	PullNumberForSHA(ctx context.Context, repo, headSHA string) (uint64, error)
 }
 
+// Handle is an owner-qualified Compass identity: the owning user's handle plus
+// the agent's handle. Two handles match iff both owners and both agents are
+// non-empty and equal — a bare agent handle is unique only per owner, so the
+// owner leg is load-bearing, not decorative.
+type Handle struct{ Owner, Agent string }
+
+// qualified reports whether both components are non-empty — the precondition for
+// any positive match (an unqualified handle on either side fails open).
+func (h Handle) qualified() bool { return h.Owner != "" && h.Agent != "" }
+
+// IdentityResolver resolves owner-qualified Compass handles for self-origin
+// suppression. A zero Handle with a nil error is a clean miss; the caller MUST
+// fail open (deliver). A non-nil error is a store fault — log and fail open. A
+// nil IdentityResolver disables suppression entirely (the zero value is the
+// fail-open posture).
+type IdentityResolver interface {
+	// HandleForAccount resolves an agent account id to its owner-qualified
+	// Compass handle.
+	HandleForAccount(ctx context.Context, accountID string) (Handle, error)
+	// AuthorHandle resolves the recorded authoring agent at a coordinate (the
+	// DL-055 ownership row) to its owner-qualified handle. (provider, host) are
+	// bound by the server adapter, like NotifyStore.
+	AuthorHandle(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64) (Handle, error)
+}
+
 // NotifyRouter routes one normalized event: load the coordinate's snapshot,
 // apply the event (snapshot mutation + new revision digest), upsert the cursor,
 // then notify each matched subscriber. It never advances delivered_revision
@@ -141,20 +170,23 @@ type NotifyRouter struct {
 	dispatcher   NotifyDispatcher
 	checksRoller ChecksRoller
 	pullNumbers  PullNumberResolver
+	identities   IdentityResolver
 	forgeRef     *compassv1.ForgeRef
 	log          *slog.Logger
 }
 
 // NewNotifyRouter returns a router over the durable seam st, the notify seam
-// disp, the roll-up seam checks, and the head_sha->number resolution seam pulls,
-// stamping forgeRef on every notification. A nil pulls disables step 0 (a CHECKS
-// event with no number then fails the guard, the pre-RIG-2869 behavior). A nil
-// log defaults to slog.Default so the router never nil-panics on the log path.
-func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller, pulls PullNumberResolver, forgeRef *compassv1.ForgeRef, log *slog.Logger) *NotifyRouter {
+// disp, the roll-up seam checks, the head_sha->number resolution seam pulls, and
+// the identity seam ids, stamping forgeRef on every notification. A nil pulls
+// disables step 0 (a CHECKS event with no number then fails the guard, the
+// pre-RIG-2869 behavior). A nil ids disables self-origin suppression entirely
+// (every dispatch delivered). A nil log defaults to slog.Default so the router
+// never nil-panics on the log path.
+func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller, pulls PullNumberResolver, ids IdentityResolver, forgeRef *compassv1.ForgeRef, log *slog.Logger) *NotifyRouter {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &NotifyRouter{store: st, dispatcher: disp, checksRoller: checks, pullNumbers: pulls, forgeRef: forgeRef, log: log}
+	return &NotifyRouter{store: st, dispatcher: disp, checksRoller: checks, pullNumbers: pulls, identities: ids, forgeRef: forgeRef, log: log}
 }
 
 // Route runs the frozen algorithm (design.md:841-872) for one event:
@@ -288,7 +320,16 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	}
 
 	// 6. Build + dispatch a notification per subscriber, carrying revision.
+	// Self-origin suppression: the event's actor handle is a property of the
+	// event, so resolve it once here; the per-subscriber handle is resolved in
+	// selfOrigin, memoized per route. A nil identity seam leaves actor a zero
+	// Handle and every selfOrigin call false (suppression disabled).
+	actor := r.actorHandle(ctx, ev)
+	subMemo := map[string]Handle{}
 	for _, sub := range subs {
+		if r.selfOrigin(ctx, actor, sub, subMemo) {
+			continue
+		}
 		n := r.notification(ev, sub.SubscriptionID, revision)
 		if derr := r.dispatcher.Notify(ctx, sub.AgentAccountID, n); derr != nil {
 			// A vanished subscription / dropped session is logged, not fatal —
@@ -330,6 +371,65 @@ func (r *NotifyRouter) SynthesizeUpdate(ctx context.Context, sub NotifySubscribe
 			"repo", repo, "number", number,
 			"error", derr)
 	}
+}
+
+// actorHandle resolves the event's owner-qualified ACTOR handle per the
+// suppress/keep matrix. A zero Handle means no actor evidence or an unresolvable
+// one — the caller fails open. A nil identity seam short-circuits every arm to
+// the zero Handle, so suppression is disabled wholesale.
+//
+// COMMENT/REVIEW read the actor straight off the header-stamped CommentRef
+// (unset for a human commenter -> zero Handle). OPENED resolves the DL-055
+// ownership row's recorded author, which IS the actor by construction. STATE's
+// actor rides RIG-3331's forge_state_transitions memo, which is not reachable
+// through this two-method seam, so STATE resolves the zero Handle here and
+// delivers (the safe interim documented in §STATE) until the memo consumer is
+// wired. CHECKS and UPDATE carry no actor and never suppress.
+func (r *NotifyRouter) actorHandle(ctx context.Context, ev forge.ForgeEvent) Handle {
+	if r.identities == nil {
+		return Handle{}
+	}
+	switch ev.Change {
+	case compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_COMMENT,
+		compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_REVIEW:
+		agent := ev.Comment.GetAgent()
+		return Handle{Owner: agent.GetOwnerHandle(), Agent: agent.GetAgentHandle()}
+	case compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED:
+		h, err := r.identities.AuthorHandle(ctx, ev.Repo, ev.Kind, ev.Number)
+		if err != nil {
+			r.log.WarnContext(ctx, "forge notify author handle resolve failed",
+				"repo", ev.Repo, "number", ev.Number, "error", err)
+			return Handle{}
+		}
+		return h
+	default:
+		// STATE (interim), CHECKS, UPDATE: no reachable actor.
+		return Handle{}
+	}
+}
+
+// selfOrigin reports whether dispatch to sub must be skipped: the event's actor
+// and this subscriber's handles are both fully owner-qualified and equal. An
+// unqualified actor short-circuits before any store read (the common no-actor
+// path). The subscriber handle is resolved through the identity seam, memoized
+// per route by account id; a resolver fault is logged and treated as a miss
+// (fail open — deliver).
+func (r *NotifyRouter) selfOrigin(ctx context.Context, actor Handle, sub NotifySubscriber, memo map[string]Handle) bool {
+	if !actor.qualified() {
+		return false
+	}
+	subHandle, ok := memo[sub.AgentAccountID]
+	if !ok {
+		h, err := r.identities.HandleForAccount(ctx, sub.AgentAccountID)
+		if err != nil {
+			r.log.WarnContext(ctx, "forge notify subscriber handle resolve failed",
+				"account", sub.AgentAccountID, "error", err)
+			h = Handle{}
+		}
+		memo[sub.AgentAccountID] = h
+		subHandle = h
+	}
+	return subHandle.qualified() && actor == subHandle
 }
 
 // notification builds the wire ForgeNotification for one subscriber: the
