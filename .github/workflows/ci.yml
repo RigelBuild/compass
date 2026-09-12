@@ -754,6 +754,22 @@ jobs:
               rc=1
             fi
           done
+          # The FFI-gated tests skip when libsecretspec is absent, which is right
+          # for a sandbox but defeats the staging step here. Derive their names
+          # from the skip call itself, so renaming a test cannot leave this inert.
+          ffi=$({ grep -rlF 'libsecretspec FFI read path unavailable' --include='*_test.go' . || true; })
+          if [ -z "$ffi" ]; then
+            echo "::error::no test carries the libsecretspec skip message — this guard has drifted and checks nothing"
+            exit 1
+          fi
+          for f in $ffi; do
+            for name in $(sed -n 's/^func \(Test[A-Za-z0-9_]*\)(t \*testing\.T).*/\1/p' "$f"); do
+              if grep -qF -- "--- SKIP: $name" /tmp/pgtest.log; then
+                echo "::error::$name skipped — SECRETSPEC_FFI_LIB did not reach it, so the real resolver was never exercised"
+                exit 1
+              fi
+            done
+          done
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
 

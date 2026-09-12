@@ -24,14 +24,21 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/events"
 	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -53,9 +60,10 @@ func armedForgeConfig() ServeConfig {
 }
 
 // testAppPEM generates a real PKCS#1 RSA private key in PEM form. A real,
-// parseable PEM matters: the armed path threads it into forge.NewAppTokenSource,
-// so it proves the path builds a real App token source rather than passing a
-// string around. 2048 bits keeps generation off the test's critical path.
+// parseable PEM is load-bearing because the test drives Token() on a source
+// built with the resolved key: Token -> mint -> parseRSAPrivateKey runs on it.
+// (NewAppTokenSource itself only nil-checks the key, so construction alone
+// proves nothing.) 2048 bits keeps generation off the test's critical path.
 func testAppPEM(t *testing.T) string {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -212,4 +220,87 @@ func TestBuildBoardWebhookWiringArmedWithRealResolver(t *testing.T) {
 	if string(got) != webhookValue {
 		t.Fatalf("webhook secret = %q, want %q (the provider value, resolved through the real SpecResolver)", got, webhookValue)
 	}
+	// Prove the resolved PEM is a real, parseable key — the finding this test
+	// closes. buildBoardWebhookWiring builds its OWN token source with no Client
+	// and Host "github.com", so its apiBase is the live api.github.com; calling
+	// Token() on it would hit the network. Instead build a SECOND source with the
+	// SAME resolver-backed PrivateKey closure production uses
+	// (newDeclaredSecretResolver over the real SpecResolver), routed to an
+	// httptest server. appAPIBase forces an https:// base for any Host, so a Host
+	// string cannot point at the loopback http test server — a rewriting
+	// Transport is the only hermetic seam (matching forge's own githubapp_test).
+	// Token() -> mint -> parseRSAPrivateKey then runs on the key that flowed
+	// through the real FFI read path.
+	const mintedToken = "ghs_armed_installtoken"
+	mint := newArmedMintServer(t, mintedToken)
+	appSrc, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
+		AppID:          cfg.Forge.App.AppID,
+		InstallationID: cfg.Forge.App.InstallationID,
+		PrivateKey:     newDeclaredSecretResolver(resolver, cfg.Forge.App.AppPrivateKeySecret),
+		Host:           cfg.Forge.Host,
+		Client:         &http.Client{Transport: mint.transport(t)},
+		Clock:          func() time.Time { return time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("NewAppTokenSource with the resolver-backed key = %v, want nil", err)
+	}
+	tok, err := appSrc.Token(ctx)
+	if err != nil {
+		t.Fatalf("Token() = %v; the resolved app key failed to parse/mint (this is the finding: the PEM must really parse)", err)
+	}
+	if tok != mintedToken {
+		t.Fatalf("Token() = %q, want %q (the canned mint response)", tok, mintedToken)
+	}
+	if got := mint.hits.Load(); got != 1 {
+		t.Fatalf("mint endpoint hits = %d, want 1 (Token must drive exactly one mint round-trip)", got)
+	}
+}
+
+// armedMintServer stands in for the installation access-tokens endpoint so
+// Token() -> mint completes hermetically. It counts hits and rejects any path
+// other than the access-tokens POST, so a stray call (e.g. to real GitHub) is a
+// visible failure rather than a silent network escape.
+type armedMintServer struct {
+	srv   *httptest.Server
+	hits  atomic.Int64
+	token string
+}
+
+func newArmedMintServer(t *testing.T, token string) *armedMintServer {
+	t.Helper()
+	m := &armedMintServer{token: token}
+	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m.hits.Add(1)
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/access_tokens") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		// mint decodes {"token","expires_at"}; a 1 h expiry keeps the token fresh.
+		fmt.Fprintf(w, `{"token":%q,"expires_at":%q}`, m.token,
+			time.Date(2026, 9, 12, 13, 0, 0, 0, time.UTC).Format(time.RFC3339))
+	}))
+	t.Cleanup(m.srv.Close)
+	return m
+}
+
+// transport rewrites every request onto the test server, so the source's real
+// https://api.github.com URL construction runs while the request lands on
+// httptest. This is the only hermetic seam: appAPIBase forces https:// for any
+// Host, so no Host string yields a loopback http base.
+func (m *armedMintServer) transport(t *testing.T) http.RoundTripper {
+	t.Helper()
+	target, err := url.Parse(m.srv.URL)
+	if err != nil {
+		t.Fatalf("parse mint server url: %v", err)
+	}
+	return &armedRewriteTransport{target: target}
+}
+
+type armedRewriteTransport struct{ target *url.URL }
+
+func (rt *armedRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = rt.target.Scheme
+	req.URL.Host = rt.target.Host
+	return http.DefaultTransport.RoundTrip(req)
 }
