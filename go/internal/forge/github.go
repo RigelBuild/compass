@@ -326,7 +326,7 @@ func (g *GitHub) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 		Labels []string `json:"labels,omitempty"`
 	}{Title: in.Title, Body: in.Body, Labels: in.Labels}
 	var out ghIssue
-	if err := g.doJSON(ctx, g.apiBase()+"/repos/"+repo+"/issues", body, &out); err != nil {
+	if err := g.doJSON(ctx, http.MethodPost, g.apiBase()+"/repos/"+repo+"/issues", body, &out); err != nil {
 		return Issue{}, fmt.Errorf("forge: github create issue %q: %w", repo, err)
 	}
 	return out.toIssue(), nil
@@ -339,7 +339,7 @@ func (g *GitHub) CommentOnIssue(ctx context.Context, repo string, number uint64,
 	}{Body: body}
 	url := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10) + "/comments"
 	var out ghComment
-	if err := g.doJSON(ctx, url, in, &out); err != nil {
+	if err := g.doJSON(ctx, http.MethodPost, url, in, &out); err != nil {
 		return Comment{}, fmt.Errorf("forge: github comment on issue %q#%d: %w", repo, number, err)
 	}
 	return out.toComment(), nil
@@ -355,7 +355,7 @@ func (g *GitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR
 		Draft bool   `json:"draft"`
 	}{Title: in.Title, Body: in.Body, Head: in.HeadRef, Base: in.BaseRef, Draft: in.Draft}
 	var out ghPull
-	if err := g.doJSON(ctx, g.apiBase()+"/repos/"+repo+"/pulls", body, &out); err != nil {
+	if err := g.doJSON(ctx, http.MethodPost, g.apiBase()+"/repos/"+repo+"/pulls", body, &out); err != nil {
 		return PullRequest{}, fmt.Errorf("forge: github create pull request %q: %w", repo, err)
 	}
 	return out.toPullRequest(), nil
@@ -370,10 +370,53 @@ func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number u
 	}{Body: body}
 	url := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10) + "/comments"
 	var out ghComment
-	if err := g.doJSON(ctx, url, in, &out); err != nil {
+	if err := g.doJSON(ctx, http.MethodPost, url, in, &out); err != nil {
 		return Comment{}, fmt.Errorf("forge: github comment on pull request %q#%d: %w", repo, number, err)
 	}
 	return out.toComment(), nil
+}
+
+// TransitionIssueState moves issue number in repo to in.State via
+// PATCH /repos/{repo}/issues/{number}, returning the UPDATED issue. The PATCH
+// response IS the new truth, so nothing is re-read; it decodes through the same
+// ghIssue wire struct the read path uses. in.CloseReason rides as GitHub's
+// state_reason ONLY when closing with one — an empty reason leaves the key off
+// so GitHub applies its own default, and a reason on a reopen is meaningless to
+// the API and never sent. in.WorkflowState is the Linear refinement, screened at
+// the server arm and ignored here.
+func (g *GitHub) TransitionIssueState(ctx context.Context, repo string, number uint64, in TransitionState) (Issue, error) {
+	body := struct {
+		State       string `json:"state"`
+		StateReason string `json:"state_reason,omitempty"`
+	}{State: in.State}
+	if in.State == stateClosed {
+		body.StateReason = in.CloseReason
+	}
+	url := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10)
+	var out ghIssue
+	if err := g.doJSON(ctx, http.MethodPatch, url, body, &out); err != nil {
+		return Issue{}, fmt.Errorf("forge: github transition issue %q#%d: %w", repo, number, err)
+	}
+	return out.toIssue(), nil
+}
+
+// TransitionPullRequestState moves PR number in repo to in.State via
+// PATCH /repos/{repo}/pulls/{number}. Only `state` is sent: merge is a separate
+// operation the transition never expresses, and GitHub's issue-only
+// state_reason has no pulls counterpart. The response decodes through
+// ghPullDetail, so State folds the merged bool exactly as every read does —
+// reopening a merged PR is refused by the forge itself (a 422 the existing
+// mapping surfaces as the forge's own validation message).
+func (g *GitHub) TransitionPullRequestState(ctx context.Context, repo string, number uint64, in TransitionState) (PullRequest, error) {
+	body := struct {
+		State string `json:"state"`
+	}{State: in.State}
+	url := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10)
+	var out ghPullDetail
+	if err := g.doJSON(ctx, http.MethodPatch, url, body, &out); err != nil {
+		return PullRequest{}, fmt.Errorf("forge: github transition pull request %q#%d: %w", repo, number, err)
+	}
+	return out.toPullRequest(), nil
 }
 
 // reviewEvent maps a write-side verdict to its GitHub reviews-POST event token
@@ -458,7 +501,7 @@ func (g *GitHub) SubmitReview(ctx context.Context, repo string, number uint64, i
 
 	url := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10) + "/reviews"
 	var out ghReview
-	if err := g.doJSON(ctx, url, body, &out); err != nil {
+	if err := g.doJSON(ctx, http.MethodPost, url, body, &out); err != nil {
 		return SubmittedReview{}, fmt.Errorf("forge: github submit review %q#%d: %w", repo, number, err)
 	}
 	return SubmittedReview{ID: out.ID, URL: out.HTMLURL, Verdict: in.Verdict}, nil
@@ -862,17 +905,22 @@ func (g *GitHub) gateBlocked() (time.Duration, bool) {
 	return 0, false
 }
 
-// doJSON carries the write-path plumbing once for all four write methods: the
+// doJSON carries the write-path plumbing once for every write method: the
 // resetAt fail-fast gate (a write burst respects the same reserve as the poll
 // driver, so it cannot starve it), token auth, budget recording, and error
 // mapping. It marshals in to a JSON request body and decodes a 2xx response
 // into out. The read path (ListIssuesPage) is intentionally NOT refactored onto
 // this in this slice (no RIG-1728 rework).
-func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
+//
+// method is the HTTP verb: the create/comment/review writes POST, and the state
+// transitions PATCH. Everything else about the exchange is identical — writes
+// are unconditional (no If-None-Match), so the verb is the only axis that
+// varies and one helper still carries the whole write path.
+func (g *GitHub) doJSON(ctx context.Context, method, url string, in, out any) error {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
 	if hint, blocked := g.gateBlocked(); blocked {
-		return fmt.Errorf("POST %s: %w", url, &RateLimitError{RetryAfter: hint})
+		return fmt.Errorf("%s %s: %w", method, url, &RateLimitError{RetryAfter: hint})
 	}
 
 	token, err := g.token.Token(ctx)
@@ -885,7 +933,7 @@ func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
 		return fmt.Errorf("marshal request body: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}

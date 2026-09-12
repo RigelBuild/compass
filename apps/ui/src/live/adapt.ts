@@ -364,15 +364,17 @@ function adaptForgeRef(w: WireForgeRef | undefined): DomainForgeRef {
 	};
 }
 
-/** Map a wire AgentAttribution to the domain one. The current wire shape carries
- *  only `agentHandle` (DL-094 burned owner_handle/verified as reserved); the
- *  domain's `ownerHandle`/`verified` have no wire source, so they take honest
- *  hedged defaults (`""` / `false` — an unverified claim with no owner) rather
- *  than a fabricated value. */
+/** Map a wire AgentAttribution to the domain one. The owner handle is carried
+ * from the same stamped header parse (DL-339); verification remains an honest
+ * hedge because attribution is not a trust claim (DL-094). */
 function adaptAgentAttribution(
 	w: WireAgentAttribution,
 ): DomainAgentAttribution {
-	return { agentHandle: w.agentHandle, ownerHandle: "", verified: false };
+	return {
+		agentHandle: w.agentHandle,
+		ownerHandle: w.ownerHandle,
+		verified: false,
+	};
 }
 
 /** Map a wire ChangedStats to the domain diffstat — verbatim scalars. */

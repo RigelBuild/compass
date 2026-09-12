@@ -1,0 +1,38 @@
+{
+	"name": "transition_issue_type_contradiction",
+	"request": {
+		"op": "transition_issue_state",
+		"repo": "RIG",
+		"number": 42,
+		"input": {
+			"state": "closed",
+			"workflowState": "In Progress"
+		},
+		"method": "POST",
+		"path": "/graphql"
+	},
+	"response": {
+		"prelude": [
+			{
+				"status": 200,
+				"body": { "data": { "teams": { "nodes": [{ "id": "team-uuid-1" }] } } }
+			}
+		],
+		"status": 200,
+		"body": {
+			"data": {
+				"workflowStates": {
+					"nodes": [
+						{ "id": "state-todo", "name": "Todo", "type": "unstarted" },
+						{ "id": "state-doing", "name": "In Progress", "type": "started" },
+						{ "id": "state-done", "name": "Done", "type": "completed" }
+					]
+				}
+			}
+		},
+		"wantError": {
+			"status": 422,
+			"contains": ["In Progress", "RIG", "started", "contradicts", "closed"]
+		}
+	}
+}

@@ -798,7 +798,7 @@ describe("adaptPullRequest", () => {
 				url: "https://github.com/x/42",
 				headRef: "feat/x",
 				baseRef: "main",
-				agent: { agentHandle: "cook" },
+				agent: { agentHandle: "cook", ownerHandle: "matt" },
 				forgeAccount: "matt",
 				draft: true,
 				changed: { files: 3, additions: 10, deletions: 2 },
@@ -827,11 +827,10 @@ describe("adaptPullRequest", () => {
 		expect(r.url).toBe("https://github.com/x/42");
 		expect(r.headRef).toBe("feat/x");
 		expect(r.baseRef).toBe("main");
-		// The wire attribution carries only agentHandle; ownerHandle/verified have
-		// no wire source and take honest hedged defaults.
+		// The wire attribution carries both handles; verified remains hedged.
 		expect(r.agent).toEqual({
 			agentHandle: "cook",
-			ownerHandle: "",
+			ownerHandle: "matt",
 			verified: false,
 		});
 		expect(r.forgeAccount).toBe("matt");
@@ -880,7 +879,7 @@ describe("adaptIssue", () => {
 				body: "stripped",
 				forgeState: "open",
 				url: "https://linear.app/RIG-1729",
-				agent: { agentHandle: "cook" },
+				agent: { agentHandle: "cook", ownerHandle: "matt" },
 				forgeAccount: "matt",
 				labels: ["p1", "ui"],
 				state: IssueState.IN_PROGRESS,
@@ -913,7 +912,7 @@ describe("adaptIssue", () => {
 		expect(r.url).toBe("https://linear.app/RIG-1729");
 		expect(r.agent).toEqual({
 			agentHandle: "cook",
-			ownerHandle: "",
+			ownerHandle: "matt",
 			verified: false,
 		});
 		expect(r.forgeAccount).toBe("matt");

@@ -1,0 +1,53 @@
+{
+	"name": "transition_pull_request_close",
+	"request": {
+		"op": "transition_pull_request_state",
+		"repo": "org/repo",
+		"number": 7,
+		"input": {
+			"state": "closed"
+		},
+		"method": "PATCH",
+		"path": "/repos/org/repo/pulls/7",
+		"headers": {
+			"Content-Type": "application/json",
+			"Accept": "application/vnd.github+json"
+		},
+		"body": {
+			"state": "closed"
+		}
+	},
+	"response": {
+		"status": 200,
+		"body": {
+			"number": 7,
+			"title": "a change",
+			"body": "stamped body",
+			"state": "closed",
+			"html_url": "https://github.com/org/repo/pull/7",
+			"draft": false,
+			"additions": 10,
+			"deletions": 2,
+			"changed_files": 3,
+			"merged": false,
+			"head": { "ref": "feature", "sha": "abc123" },
+			"base": { "ref": "main" },
+			"user": { "login": "octocat" }
+		},
+		"want": {
+			"Number": 7,
+			"Title": "a change",
+			"Body": "stamped body",
+			"State": "closed",
+			"URL": "https://github.com/org/repo/pull/7",
+			"HeadRef": "feature",
+			"BaseRef": "main",
+			"ForgeAccount": "octocat",
+			"Draft": false,
+			"Changed": { "Files": 3, "Additions": 10, "Deletions": 2 },
+			"Checks": { "HeadSHA": "", "State": "", "Checks": null },
+			"Reviews": null,
+			"Threads": null
+		}
+	}
+}

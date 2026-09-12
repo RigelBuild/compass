@@ -1,0 +1,84 @@
+{
+	"name": "transition_issue_close_by_name",
+	"request": {
+		"op": "transition_issue_state",
+		"repo": "RIG",
+		"number": 42,
+		"input": {
+			"state": "closed",
+			"workflowState": "Canceled"
+		},
+		"method": "POST",
+		"path": "/graphql",
+		"headers": {
+			"Content-Type": "application/json",
+			"Accept": "application/json"
+		},
+		"body": {
+			"query": "mutation CompassIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {\n  issueUpdate(id: $id, input: $input) {\n    issue { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
+			"variables": {
+				"id": "issue-uuid-1",
+				"input": { "stateId": "state-canceled" }
+			}
+		}
+	},
+	"response": {
+		"prelude": [
+			{
+				"status": 200,
+				"body": { "data": { "teams": { "nodes": [{ "id": "team-uuid-1" }] } } }
+			},
+			{
+				"status": 200,
+				"body": {
+					"data": {
+						"workflowStates": {
+							"nodes": [
+								{ "id": "state-todo", "name": "Todo", "type": "unstarted" },
+								{ "id": "state-done", "name": "Done", "type": "completed" },
+								{
+									"id": "state-canceled",
+									"name": "Canceled",
+									"type": "canceled"
+								}
+							]
+						}
+					}
+				}
+			},
+			{
+				"status": 200,
+				"body": {
+					"data": { "issues": { "nodes": [{ "id": "issue-uuid-1" }] } }
+				}
+			}
+		],
+		"status": 200,
+		"body": {
+			"data": {
+				"issueUpdate": {
+					"issue": {
+						"number": 42,
+						"title": "a bug",
+						"description": "stamped body",
+						"url": "https://linear.app/x/issue/RIG-42",
+						"state": { "name": "Canceled", "type": "canceled" },
+						"labels": { "nodes": [] },
+						"creator": null,
+						"updatedAt": "2026-08-01T12:33:00Z"
+					}
+				}
+			}
+		},
+		"want": {
+			"Number": 42,
+			"Title": "a bug",
+			"Body": "stamped body",
+			"State": "closed",
+			"URL": "https://linear.app/x/issue/RIG-42",
+			"ForgeAccount": "",
+			"Labels": [],
+			"UpdatedAt": "2026-08-01T12:33:00Z"
+		}
+	}
+}

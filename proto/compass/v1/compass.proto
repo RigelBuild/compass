@@ -963,14 +963,11 @@ enum IssueState {
 // plain display fact (DL-094, compass-attribution-simplification, Active). If a
 // header names an agent, that is the displayed author: NO forge-login
 // cross-check, NO verified bit, NO population gating. It never reaches an authz,
-// routing, or ownership decision (DL-050). Owner is a property of the agent
-// account (AgentAccount.owner_user_id in comms.proto), resolved
-// server-side, never restated per artifact — so no owner_handle. Field numbers
-// 2,3 are simply reclaimable pre-dogfood (DL-186): no wire build ever shipped
-// the frozen #1018 owner_handle/verified shape, and nothing on disk is
-// proto-encoded, so the numbers carry no compatibility obligation.
+// routing, or ownership decision (DL-050). Owner is carried from the same
+// stamped header parse for downstream display and suppression (DL-339).
 message AgentAttribution {
   string agent_handle = 1;  // the authoring agent's handle, from the header
+  string owner_handle = 2;  // the owning user's handle, from the same header parse
 }
 
 // Which forge (and which host, for self-hosted instances) an artifact lives on.

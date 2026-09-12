@@ -829,3 +829,236 @@ func extractStateTypes(t *testing.T, filter map[string]any, op string) []string 
 	}
 	return got
 }
+
+// --- workflow-state cache: TTL reuse + invalidate-and-retry-once -------------
+
+// statesResp is a scripted team workflow-states response holding one state of
+// each type the default mapping cares about.
+var statesResp = scriptedResponse{status: 200, body: `{"data":{"workflowStates":{"nodes":[
+	{"id":"state-todo","name":"Todo","type":"unstarted"},
+	{"id":"state-done","name":"Done","type":"completed"}]}}}`}
+
+// issueIDResp is a scripted (team, number) -> issue UUID resolution.
+var issueIDResp = scriptedResponse{status: 200, body: `{"data":{"issues":{"nodes":[{"id":"issue-uuid-1"}]}}}`}
+
+// updatedIssueResp is a scripted successful issueUpdate returning the issue in
+// its post-transition (completed) state.
+var updatedIssueResp = scriptedResponse{status: 200, body: `{"data":{"issueUpdate":{"issue":{
+	"number":42,"title":"a bug","description":"body","url":"https://linear.app/x/issue/RIG-42",
+	"state":{"name":"Done","type":"completed"},"labels":{"nodes":[]},"creator":null,
+	"updatedAt":"2026-08-01T12:30:00Z"}}}}`}
+
+// A second transition inside the TTL reuses the cached state list: the teams and
+// workflowStates queries run ONCE across two transitions, so the second spends
+// only its issue-id resolve + mutation. Without the cache the second transition
+// would re-query both.
+func TestLinearTransitionCachesWorkflowStatesWithinTTL(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp, statesResp, issueIDResp, updatedIssueResp,
+		issueIDResp, updatedIssueResp,
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	for i := range 2 {
+		if _, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed}); err != nil {
+			t.Fatalf("transition %d: %v", i+1, err)
+		}
+	}
+	if got := len(rt.requests); got != 6 {
+		t.Fatalf("two transitions emitted %d requests, want 6 (the second must reuse the cached team + state list)", got)
+	}
+}
+
+// A state list that has gone stale past the TTL is refetched, not reused: the
+// second transition re-runs the workflowStates query and writes the id the FRESH
+// list carries. Without the TTL a state renamed in the Linear UI would resolve to
+// the dead id for the process lifetime.
+func TestLinearTransitionRefetchesWorkflowStatesAfterTTL(t *testing.T) {
+	renamed := scriptedResponse{status: 200, body: `{"data":{"workflowStates":{"nodes":[
+		{"id":"state-shipped","name":"Shipped","type":"completed"}]}}}`}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp, statesResp, issueIDResp, updatedIssueResp,
+		renamed, issueIDResp, updatedIssueResp,
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	now := time.Now()
+	l.now = func() time.Time { return now }
+
+	if _, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("first transition: %v", err)
+	}
+	now = now.Add(workflowStateTTL + time.Second)
+	if _, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("post-TTL transition: %v", err)
+	}
+
+	if got := len(rt.requests); got != 7 {
+		t.Fatalf("post-TTL transition emitted %d requests total, want 7 (the state list must be refetched)", got)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[6]))
+	if got := vars["input"].(map[string]any)["stateId"]; got != "state-shipped" {
+		t.Errorf("post-TTL mutation stateId = %v, want state-shipped (the refetched list's id)", got)
+	}
+}
+
+// A mutation rejected against a CACHED state id is retried ONCE against a freshly
+// fetched list, and the retry writes the new id. This is the resolve-then-write
+// staleness the TTL alone cannot close: a state deleted between the resolve and
+// the write would otherwise fail every transition until the TTL lapsed.
+func TestLinearTransitionInvalidatesAndRetriesOnceOnStaleState(t *testing.T) {
+	staleReject := scriptedResponse{status: 200, body: `{"errors":[{"message":"Entity not found: WorkflowState"}]}`}
+	renamed := scriptedResponse{status: 200, body: `{"data":{"workflowStates":{"nodes":[
+		{"id":"state-shipped","name":"Shipped","type":"completed"}]}}}`}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		// Warm the cache with a successful transition.
+		teamResp, statesResp, issueIDResp, updatedIssueResp,
+		// Second transition: resolves off cache, the mutation is rejected,
+		// the list is refetched and the mutation retried against the new id.
+		issueIDResp, staleReject, renamed, updatedIssueResp,
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	if _, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("warm-up transition: %v", err)
+	}
+	got, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed})
+	if err != nil {
+		t.Fatalf("stale-state transition: %v", err)
+	}
+	if got.State != stateClosed {
+		t.Errorf("retried transition State = %q, want %q", got.State, stateClosed)
+	}
+	if n := len(rt.requests); n != 8 {
+		t.Fatalf("stale-state transition emitted %d requests total, want 8 (reject -> refetch -> retry)", n)
+	}
+	_, vars := decodeGraphQLReq(t, readReqBody(t, rt.requests[7]))
+	if id := vars["input"].(map[string]any)["stateId"]; id != "state-shipped" {
+		t.Errorf("retry mutation stateId = %v, want state-shipped (the refetched id)", id)
+	}
+}
+
+// The retry is ONCE: a second rejection against the FRESH list surfaces, rather
+// than looping. A genuinely bad target must fail, not spin.
+func TestLinearTransitionRetriesAtMostOnce(t *testing.T) {
+	reject := scriptedResponse{status: 200, body: `{"errors":[{"message":"Entity not found: WorkflowState"}]}`}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp, statesResp, issueIDResp, updatedIssueResp,
+		issueIDResp, reject, statesResp, reject,
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	if _, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("warm-up transition: %v", err)
+	}
+	_, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed})
+	if err == nil {
+		t.Fatal("a mutation rejected twice must fail, not retry again")
+	}
+	if n := len(rt.requests); n != 8 {
+		t.Fatalf("twice-rejected transition emitted %d requests total, want 8 (exactly one retry)", n)
+	}
+}
+
+// A rate limit on the mutation is NOT a staleness signal and must not burn the
+// retry: the gate is armed, the error surfaces, and no refetch happens.
+func TestLinearTransitionDoesNotRetryOnRateLimit(t *testing.T) {
+	limited := scriptedResponse{
+		status:  429,
+		body:    `{"errors":[{"message":"rate limited"}]}`,
+		headers: map[string]string{"Retry-After": "30"},
+	}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp, statesResp, issueIDResp, updatedIssueResp,
+		issueIDResp, limited,
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	if _, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("warm-up transition: %v", err)
+	}
+	_, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed})
+	if !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+	}
+	if n := len(rt.requests); n != 6 {
+		t.Fatalf("rate-limited transition emitted %d requests total, want 6 (a rate limit must not burn the retry)", n)
+	}
+}
+
+// A non-staleness HTTP-200 GraphQL rejection (here a permission denial) is NOT
+// a staleness signal either, even though it arrives on the same 200 the stale
+// rejection does. Only linearStaleStateMarker earns the retry: any other reason
+// Linear refuses the mutation is one a refetch cannot change, so burning the
+// retry would cost a workflowStates query plus a re-issued mutation Linear has
+// already declined. The sibling of the rate-limit test above, at the arm the
+// status check alone cannot separate.
+func TestLinearTransitionDoesNotRetryOnNonStaleness200(t *testing.T) {
+	denied := scriptedResponse{
+		status: 200,
+		body:   `{"errors":[{"message":"You do not have permission to update this issue"}]}`,
+	}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp, statesResp, issueIDResp, updatedIssueResp,
+		issueIDResp, denied,
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	if _, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("warm-up transition: %v", err)
+	}
+	_, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed})
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v, want *StatusError", err)
+	}
+	if !strings.Contains(se.Message, "do not have permission") {
+		t.Errorf("Message = %q, want the permission denial surfaced verbatim", se.Message)
+	}
+	if n := len(rt.requests); n != 6 {
+		t.Fatalf("permission-denied transition emitted %d requests total, want 6 (a non-staleness 200 must not burn the retry on a refetch + re-issued mutation)", n)
+	}
+}
+
+// A workflow-state page returned FULL is treated as truncated and rejected at
+// 422, not resolved against: the query is unpaginated, so a list at the cap may
+// be missing states, and resolving would either reject a name that exists or
+// default-map to an only-apparently-sole candidate. The rejection must land
+// BEFORE the issue-id resolve and the mutation, so the request count is the
+// proof: team + states only.
+func TestLinearTransitionRejectsTruncatedWorkflowStatePage(t *testing.T) {
+	nodes := make([]string, 0, workflowStatePageCap)
+	for i := range workflowStatePageCap {
+		nodes = append(nodes, `{"id":"state-`+strconv.Itoa(i)+`","name":"S`+strconv.Itoa(i)+`","type":"completed"}`)
+	}
+	full := scriptedResponse{
+		status: 200,
+		body:   `{"data":{"workflowStates":{"nodes":[` + strings.Join(nodes, ",") + `]}}}`,
+	}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{teamResp, full}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+
+	_, err := l.TransitionIssueState(context.Background(), "RIG", 42, TransitionState{State: stateClosed, WorkflowState: "S0"})
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v, want *StatusError", err)
+	}
+	if se.Status != http.StatusUnprocessableEntity {
+		t.Errorf("Status = %d, want 422 (the in-band invalid_argument the Service flattens to)", se.Status)
+	}
+	for _, want := range []string{"RIG", "truncated", "explicit workflow state"} {
+		if !strings.Contains(se.Message, want) {
+			t.Errorf("Message = %q, want it to contain %q", se.Message, want)
+		}
+	}
+	if n := len(rt.requests); n != 2 {
+		t.Fatalf("truncated-page transition emitted %d requests total, want 2 (team + states; the rejection must land before the issue-id resolve and the mutation)", n)
+	}
+}
+
+// The PR half is unsupported — Linear has no pull requests.
+func TestLinearTransitionPullRequestStateUnsupported(t *testing.T) {
+	l := newTestLinear(&scriptedRoundTripper{}, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	if _, err := l.TransitionPullRequestState(context.Background(), "RIG", 1, TransitionState{State: stateClosed}); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
+	}
+}

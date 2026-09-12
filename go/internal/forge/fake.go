@@ -55,6 +55,12 @@ type FakeProvider struct {
 	ChecksResult Checks
 	// SubmitReviewResult is returned by SubmitReview when no error is scripted.
 	SubmitReviewResult SubmittedReview
+	// TransitionIssueResult is returned by TransitionIssueState when no error is
+	// scripted.
+	TransitionIssueResult Issue
+	// TransitionPRResult is returned by TransitionPullRequestState when no error
+	// is scripted.
+	TransitionPRResult PullRequest
 	// BodyLimitResult is returned by BodyLimit; 0 (the default) means unlimited.
 	BodyLimitResult int
 
@@ -173,6 +179,22 @@ func (f *FakeProvider) Checks(_ context.Context, repo string, number uint64) (Ch
 		return Checks{}, err
 	}
 	return f.ChecksResult, nil
+}
+
+// TransitionIssueState records the call and returns the scripted result or error.
+func (f *FakeProvider) TransitionIssueState(_ context.Context, repo string, number uint64, in TransitionState) (Issue, error) {
+	if err := f.record(Call{Method: "TransitionIssueState", Repo: repo, Number: number, Payload: in}); err != nil {
+		return Issue{}, err
+	}
+	return f.TransitionIssueResult, nil
+}
+
+// TransitionPullRequestState records the call and returns the scripted result or error.
+func (f *FakeProvider) TransitionPullRequestState(_ context.Context, repo string, number uint64, in TransitionState) (PullRequest, error) {
+	if err := f.record(Call{Method: "TransitionPullRequestState", Repo: repo, Number: number, Payload: in}); err != nil {
+		return PullRequest{}, err
+	}
+	return f.TransitionPRResult, nil
 }
 
 // record appends a call and returns any error scripted for its method. The

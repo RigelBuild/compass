@@ -1,4 +1,4 @@
-// ForgeBroker + the ten native forge tools (design:
+// ForgeBroker + the twelve native forge tools (design:
 // docs/designs/agent/compass-agent-forge-tools/design.md, T1 + T2).
 // Each test defends an observable contract of the agent->Runner forge call: the
 // exact `ForgeCallRequest` a tool `execute` puts on the wire (arm case, arm
@@ -46,6 +46,8 @@ import {
 	listIssuesParameters,
 	submitReviewParameters,
 	subscribeParameters,
+	transitionIssueStateParameters,
+	transitionPullRequestStateParameters,
 	unsubscribeParameters,
 } from "./forge";
 import {
@@ -197,9 +199,8 @@ describe("ForgeBroker", () => {
 		);
 	});
 });
-
 describe("createForgeTools", () => {
-	test("exposes exactly the ten forge tools with the right approvals", () => {
+	test("exposes all twelve forge tools and registers transitions as writes", () => {
 		const tools = createForgeTools(
 			new ForgeBroker(new FakeTransport(issueResult())),
 		);
@@ -212,11 +213,14 @@ describe("createForgeTools", () => {
 			"forge_submit_review",
 			"forge_create_issue",
 			"forge_create_pull_request",
+			"forge_transition_issue_state",
+			"forge_transition_pull_request_state",
 			"forge_subscribe",
 			"forge_unsubscribe",
 		]);
-		expect(tools.every((t) => t.label.length > 0)).toBe(true);
-		expect(tools.every((t) => t.description.length > 0)).toBe(true);
+		expect(
+			tools.every((t) => t.label.length > 0 && t.description.length > 0),
+		).toBe(true);
 		const approvalOf = (n: string) => {
 			const t = tools.find((x) => x.name === n);
 			if (!t) throw new Error(`no tool ${n}`);
@@ -236,6 +240,8 @@ describe("createForgeTools", () => {
 			"forge_submit_review",
 			"forge_create_issue",
 			"forge_create_pull_request",
+			"forge_transition_issue_state",
+			"forge_transition_pull_request_state",
 			"forge_subscribe",
 			"forge_unsubscribe",
 		])
@@ -452,11 +458,11 @@ describe("forge_get_pull_request", () => {
 			pullRequestResult({ number: 3, repo: "o/r" }),
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
-		await exec(t, "tc-1", { repo: "o/r", pull_number: 3 });
+		await exec(t, "tc-1", { repo: "o/r", pr_number: 3 });
 		const req = transport.requests[0];
 		expect(req.call.case).toBe("getPullRequest");
 		if (req.call.case !== "getPullRequest") throw new Error("expected arm");
-		expect(req.call.value.pullNumber).toBe(3n);
+		expect(req.call.value.prNumber).toBe(3n);
 	});
 
 	test("renders reviews with normalized verdicts and capped threads", async () => {
@@ -491,7 +497,7 @@ describe("forge_get_pull_request", () => {
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
 		const text = textOf(
-			await exec(t, "tc-1", { repo: "octo/repo", pull_number: 3 }),
+			await exec(t, "tc-1", { repo: "octo/repo", pr_number: 3 }),
 		);
 		const f = fenceOf(text);
 		// The wire "changes_requested" is normalized onto the tool's vocabulary.
@@ -518,7 +524,7 @@ describe("forge_get_pull_request", () => {
 			}),
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
-		const text = textOf(await exec(t, "tc-1", { repo: "o/r", pull_number: 3 }));
+		const text = textOf(await exec(t, "tc-1", { repo: "o/r", pr_number: 3 }));
 		const f = fenceOf(text);
 		expect(
 			text.split("\n").filter((l) => l.startsWith(`[review ${f}]`)),
@@ -541,7 +547,7 @@ describe("forge_get_pull_request", () => {
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
 		const text = textOf(
-			await exec(t, "tc-1", { repo: "octo/repo", pull_number: 3 }),
+			await exec(t, "tc-1", { repo: "octo/repo", pr_number: 3 }),
 		);
 		const f = fenceOf(text);
 		expect(text).toContain(`head="(malformed ${f})"`);
@@ -652,14 +658,14 @@ describe("forge_comment_on_pull_request", () => {
 		const t = tool(new ForgeBroker(transport), "forge_comment_on_pull_request");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			body: "ship it",
 		});
 		const req = transport.requests[0];
 		expect(req.call.case).toBe("commentOnPullRequest");
 		if (req.call.case !== "commentOnPullRequest")
 			throw new Error("expected arm");
-		expect(req.call.value.pullNumber).toBe(8n);
+		expect(req.call.value.prNumber).toBe(8n);
 		expect(textOf(result)).toBe(
 			"Commented on PR #8: https://github.com/o/r/pull/8#c1",
 		);
@@ -674,7 +680,7 @@ describe("forge_submit_review", () => {
 		const t = tool(new ForgeBroker(transport), "forge_submit_review");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			verdict: "request_changes",
 			body: "please fix",
 			comments: [{ path: "a.ts", line: 12, body: "here" }],
@@ -682,7 +688,7 @@ describe("forge_submit_review", () => {
 		const req = transport.requests[0];
 		expect(req.call.case).toBe("submitReview");
 		if (req.call.case !== "submitReview") throw new Error("expected arm");
-		expect(req.call.value.pullNumber).toBe(8n);
+		expect(req.call.value.prNumber).toBe(8n);
 		expect(req.call.value.verdict).toBe("request_changes");
 		expect(req.call.value.comments).toHaveLength(1);
 		expect(req.call.value.comments[0].path).toBe("a.ts");
@@ -702,7 +708,7 @@ describe("forge_submit_review", () => {
 		const t = tool(new ForgeBroker(transport), "forge_submit_review");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			verdict: "approve",
 		});
 		const req = transport.requests[0];
@@ -718,7 +724,7 @@ describe("forge_submit_review", () => {
 		const t = tool(new ForgeBroker(transport), "forge_submit_review");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			verdict: "comment",
 			body: "note",
 		});
@@ -728,6 +734,51 @@ describe("forge_submit_review", () => {
 	});
 });
 
+describe("forge transition tools", () => {
+	test("transitions an issue and returns the updated artifact", async () => {
+		const transport = new FakeTransport(
+			issueResult({ number: 4, repo: "o/r", forgeState: "closed" }),
+		);
+		const result = await exec(
+			tool(new ForgeBroker(transport), "forge_transition_issue_state"),
+			"tc-1",
+			{
+				repo: "o/r",
+				issue_number: 4,
+				state: "closed",
+				close_reason: "completed",
+				workflow_state: "Done",
+			},
+		);
+		const req = transport.requests[0];
+		if (req.call.case !== "transitionIssueState")
+			throw new Error("expected arm");
+		expect(req.call.value.issueNumber).toBe(4n);
+		expect(req.call.value.closeReason).toBe("completed");
+		expect(req.call.value.workflowState).toBe("Done");
+		expect(fenceOf(textOf(result))).toHaveLength(8);
+	});
+
+	test("transitions a pull request and returns the updated artifact", async () => {
+		const transport = new FakeTransport(
+			pullRequestResult({ number: 5, repo: "o/r", forgeState: "closed" }),
+		);
+		const result = await exec(
+			tool(new ForgeBroker(transport), "forge_transition_pull_request_state"),
+			"tc-2",
+			{
+				repo: "o/r",
+				pr_number: 5,
+				state: "closed",
+			},
+		);
+		const req = transport.requests[0];
+		if (req.call.case !== "transitionPullRequestState")
+			throw new Error("expected arm");
+		expect(req.call.value.prNumber).toBe(5n);
+		expect(fenceOf(textOf(result))).toHaveLength(8);
+	});
+});
 describe("forge_create_issue", () => {
 	test("sets a nonce-prefixed clientRequestId and renders the created ack", async () => {
 		const transport = new FakeTransport(
@@ -947,6 +998,25 @@ describe("forge parameter schemas", () => {
 	const rejects = (schema: Type<object>, params: unknown): boolean =>
 		schema(params) instanceof ArkErrors;
 
+	test("the transition arms reject a state outside the portable domain", () => {
+		// "merged" and a Linear workflow-state name are both real forge states,
+		// and neither is a legal TARGET: the portable domain is open|closed.
+		expect(
+			rejects(transitionIssueStateParameters, {
+				repo: "o/r",
+				issue_number: 4,
+				state: "merged",
+			}),
+		).toBe(true);
+		expect(
+			rejects(transitionPullRequestStateParameters, {
+				repo: "o/r",
+				pr_number: 5,
+				state: "Done",
+			}),
+		).toBe(true);
+	});
+
 	test("every tool rejects a blank or whitespace-only repo", () => {
 		for (const schema of [
 			getIssueParameters,
@@ -1022,7 +1092,7 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "lgtm",
 			}),
 		).toBe(true);
@@ -1032,14 +1102,14 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "request_changes",
 			}),
 		).toBe(true);
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "request_changes",
 				body: "   ",
 			}),
@@ -1047,7 +1117,7 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "request_changes",
 				body: "please fix",
 			}),
@@ -1056,7 +1126,7 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "approve",
 			}),
 		).toBe(false);

@@ -67,6 +67,8 @@ import {
 	type ReviewRef,
 	SubmitReviewRequestSchema,
 	SubscribeForgeRequestSchema,
+	TransitionIssueStateRequestSchema,
+	TransitionPullRequestStateRequestSchema,
 	UnsubscribeForgeRequestSchema,
 } from "./compassv1";
 import { attr, flat, ref } from "./render-guard";
@@ -161,7 +163,7 @@ export const getIssueParameters = type({
 export const getPullRequestParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
-	pull_number: type("number.integer >= 1"),
+	pr_number: type("number.integer >= 1"),
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
@@ -191,7 +193,7 @@ export const commentOnIssueParameters = type({
 export const commentOnPullRequestParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
-	pull_number: type("number.integer >= 1"),
+	pr_number: type("number.integer >= 1"),
 	body: nonBlank(STAMP_DESC),
 });
 
@@ -204,7 +206,7 @@ export const commentOnPullRequestParameters = type({
 export const submitReviewParameters = type({
 	...forgeSelector,
 	repo: nonBlank(REPO_DESC),
-	pull_number: type("number.integer >= 1"),
+	pr_number: type("number.integer >= 1"),
 	verdict: type("'approve' | 'request_changes' | 'comment'"),
 	"body?": type("string").describe(
 		"Review summary; required unless verdict is 'approve'. Do NOT include an attribution header — the server stamps it",
@@ -271,6 +273,27 @@ export const unsubscribeParameters = type({
 	subscription_id: nonBlank(
 		"The id returned by forge_subscribe; must not be blank",
 	),
+});
+/** Exported so a test can validate the wire contract the agent loop enforces. */
+export const transitionIssueStateParameters = type({
+	...forgeSelector,
+	repo: nonBlank(REPO_DESC),
+	issue_number: type("number.integer >= 1"),
+	state: type("'open' | 'closed'").describe("Target issue state"),
+	"close_reason?": type("'completed' | 'not_planned'").describe(
+		"GitHub issues only; close reason, omitted = provider default",
+	),
+	"workflow_state?": type("string").describe(
+		"Linear only; target workflow state NAME, omitted = default mapping",
+	),
+});
+
+/** Exported so a test can validate the wire contract the agent loop enforces. */
+export const transitionPullRequestStateParameters = type({
+	...forgeSelector,
+	repo: nonBlank(REPO_DESC),
+	pr_number: type("number.integer >= 1"),
+	state: type("'open' | 'closed'").describe("Target pull-request state"),
 });
 
 /** Map the tool's optional string provider enum onto the generated `ForgeProvider`. */
@@ -488,7 +511,7 @@ function framedRead(records: string[]): string {
 // well-formed URL and slug). No fence: a single line names none.
 
 function reviewAck(
-	pullNumber: bigint,
+	prNumber: bigint,
 	review: ReviewRef,
 	fallbackVerdict: string,
 ): string {
@@ -496,7 +519,7 @@ function reviewAck(
 		review.verdict.length > 0
 			? normalizeVerdict(review.verdict)
 			: fallbackVerdict;
-	return `Submitted ${attr(verdict)} review on PR #${attr(String(pullNumber))}: ${ref(review.url)}`;
+	return `Submitted ${attr(verdict)} review on PR #${attr(String(prNumber))}: ${ref(review.url)}`;
 }
 
 // DL-206 dedup-hit: a replayed create returns a skeletal artifact carrying only
@@ -583,7 +606,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 						case: "getPullRequest",
 						value: create(GetPullRequestRequestSchema, {
 							repo: params.repo,
-							pullNumber: BigInt(params.pull_number),
+							prNumber: BigInt(params.pr_number),
 						}),
 					},
 					forge: forgeRef(params),
@@ -690,7 +713,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 							case: "commentOnPullRequest",
 							value: create(CommentOnPullRequestRequestSchema, {
 								repo: params.repo,
-								pullNumber: BigInt(params.pull_number),
+								prNumber: BigInt(params.pr_number),
 								body: params.body,
 							}),
 						},
@@ -707,7 +730,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 					content: [
 						{
 							type: "text",
-							text: `Commented on PR #${attr(String(BigInt(params.pull_number)))}: ${ref(result.result.value.url)}`,
+							text: `Commented on PR #${attr(String(BigInt(params.pr_number)))}: ${ref(result.result.value.url)}`,
 						},
 					],
 				};
@@ -728,7 +751,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 						case: "submitReview",
 						value: create(SubmitReviewRequestSchema, {
 							repo: params.repo,
-							pullNumber: BigInt(params.pull_number),
+							prNumber: BigInt(params.pr_number),
 							verdict: params.verdict,
 							body: params.body ?? "",
 							comments: (params.comments ?? []).map((c) =>
@@ -751,7 +774,7 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 					{
 						type: "text",
 						text: reviewAck(
-							BigInt(params.pull_number),
+							BigInt(params.pr_number),
 							result.result.value,
 							params.verdict,
 						),
@@ -839,6 +862,85 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 		},
 	};
 
+	const transitionIssueState: AgentTool<typeof transitionIssueStateParameters> =
+		{
+			name: "forge_transition_issue_state",
+			label: "Transition forge issue state",
+			approval: "write",
+			description: `Change an existing issue's state to open or closed and return the post-transition issue. ${REPO_ADDRESSING} ${SCOPE_DISCIPLINE} ${SELECTOR_RULE} close_reason is GitHub-issues-only (completed or not_planned; omitted = provider default); workflow_state is Linear-only (target workflow state NAME; omitted = default mapping).`,
+			parameters: transitionIssueStateParameters,
+			execute: async (toolCallId, params) => {
+				const result = await broker.call(
+					create(ForgeCallRequestSchema, {
+						callId: toolCallId,
+						call: {
+							case: "transitionIssueState",
+							value: create(TransitionIssueStateRequestSchema, {
+								repo: params.repo,
+								issueNumber: BigInt(params.issue_number),
+								state: params.state,
+								closeReason: params.close_reason ?? "",
+								workflowState: params.workflow_state ?? "",
+							}),
+						},
+						forge: forgeRef(params),
+					}),
+				);
+				if (result.result.case !== "issue")
+					throw forgeFailure(result, "forge_transition_issue_state", "issue");
+				const fence = crypto.randomUUID().slice(0, 8);
+				return {
+					content: [
+						{
+							type: "text",
+							text: framedRead(renderIssueRecord(result.result.value, fence)),
+						},
+					],
+				};
+			},
+		};
+
+	const transitionPullRequestState: AgentTool<
+		typeof transitionPullRequestStateParameters
+	> = {
+		name: "forge_transition_pull_request_state",
+		label: "Transition forge pull request state",
+		approval: "write",
+		description: `Change an existing pull request's state to open or closed and return the post-transition pull request (GitHub only). ${REPO_ADDRESSING} ${SCOPE_DISCIPLINE} ${SELECTOR_RULE} No close reason or merge fields are accepted: close reason is an issue concept, and merge is a separate concern.`,
+		parameters: transitionPullRequestStateParameters,
+		execute: async (toolCallId, params) => {
+			const result = await broker.call(
+				create(ForgeCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "transitionPullRequestState",
+						value: create(TransitionPullRequestStateRequestSchema, {
+							repo: params.repo,
+							prNumber: BigInt(params.pr_number),
+							state: params.state,
+						}),
+					},
+					forge: forgeRef(params),
+				}),
+			);
+			if (result.result.case !== "pullRequest")
+				throw forgeFailure(
+					result,
+					"forge_transition_pull_request_state",
+					"pullRequest",
+				);
+			const fence = crypto.randomUUID().slice(0, 8);
+			return {
+				content: [
+					{
+						type: "text",
+						text: framedRead(renderPrRecord(result.result.value, fence)),
+					},
+				],
+			};
+		},
+	};
+
 	const subscribe: AgentTool<typeof subscribeParameters> = {
 		name: "forge_subscribe",
 		label: "Subscribe to forge artifact",
@@ -917,6 +1019,8 @@ export function createForgeTools(broker: ForgeBroker): AgentTool[] {
 		submitReview,
 		createIssue,
 		createPullRequest,
+		transitionIssueState,
+		transitionPullRequestState,
 		subscribe,
 		unsubscribe,
 	];

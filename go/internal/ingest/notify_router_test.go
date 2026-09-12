@@ -628,6 +628,27 @@ func TestCrossProducerLinearCommentNoPhantomDiff(t *testing.T) {
 	}
 }
 
+func TestDetectChangesCommentAttributionIncludesOwner(t *testing.T) {
+	body, err := forge.StampOwner("real body", forge.Author{AgentHandle: "agent-x", OwnerHandle: "owner-y", SessionID: "sess-1"}, 0)
+	if err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+	prev := &ArtifactSnapshot{Comments: map[string]SnapshotComment{}}
+	fetched := FetchedArtifact{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
+		Host:     "github.com", Repo: "owner/repo", Kind: kindIssue, Number: 7,
+		Comments: []forge.Comment{{Key: "comment-1", URL: "https://github.com/owner/repo/issues/7#comment-1", Body: body}},
+	}
+	changes, _, _ := DetectChanges(prev, fetched)
+	if len(changes) != 1 {
+		t.Fatalf("changes = %d, want 1", len(changes))
+	}
+	got := changes[0].Comment.GetAgent()
+	if got.GetAgentHandle() != "agent-x" || got.GetOwnerHandle() != "owner-y" {
+		t.Errorf("attribution = %v, want agent-x/owner-y", got)
+	}
+}
+
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
 	b, err := json.Marshal(v)
