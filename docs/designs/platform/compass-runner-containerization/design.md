@@ -1,6 +1,6 @@
 # Containerizing the Compass Runner
 
-Status: Draft — freezes on merge. §Privilege shape names the grants R8 must confirm are *necessary*; R8 narrows the grant set, it does not decide whether containerization works.
+Status: Draft — freezes on merge. §Privilege shape names the grants R7 must confirm are *necessary*; R7 narrows the grant set, it does not decide whether containerization works.
 
 Ledger-impact: mints DL-358
 
@@ -56,9 +56,9 @@ already verified to boot on Linux with `/dev/kvm`: the frozen
 [microVM CI/dev enablement](../../infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md)
 record runs KVM-backed boot tests as a required leg on GitHub Actions'
 `ubuntu-latest`. What a pod adds over that environment is confinement — a
-cgroup device controller, a seccomp filter, and a memory cgroup — so R8 asks
+cgroup device controller, a seccomp filter, and a memory cgroup — so R7 asks
 **which grants the confinement makes necessary**, not whether microVMs run in
-containers. Each plausible R8 outcome costs a wider pod spec (a seccomp
+containers. Each plausible R7 outcome costs a wider pod spec (a seccomp
 profile, a device plugin, a supplemental gid), all of which this record already
 specifies; none of them reopens the container-vs-host ruling. The one result
 that *would* reopen it is a requirement for a Linux **capability** or
@@ -84,7 +84,7 @@ provide:
    template change, not a node reprovision.
 
 The cost is the privilege question, which is the subject of §Privilege shape
-and R8.
+and R7.
 
 ### Net backend: passt, implemented, not an open pick
 
@@ -95,11 +95,11 @@ in-guest; the Runner dials **out** to the Server over gRPC with its per-Runner
 token (`go/cmd/compass-runner/main.go`), so the pod needs no host port and no
 inbound service.
 
-### Privilege shape (the pod spec — the grant set R8 narrows)
+### Privilege shape (the pod spec — the grant set R7 narrows)
 
-Every grant is justified; anything not listed is denied. R8 confirms which
+Every grant is justified; anything not listed is denied. R7 confirms which
 grants are *necessary* rather than inert, on real hardware, before R3 encodes
-them — a grant that proves inert drops out, which is the outcome to hope for. The rulings pick what R8 verifies first; they do not remove the
+them — a grant that proves inert drops out, which is the outcome to hope for. The rulings pick what R7 verifies first; they do not remove the
 verification.
 
 - **`/dev/kvm` via a device plugin — NOT `privileged: true`, NOT a raw
@@ -122,14 +122,14 @@ verification.
   candidate*. If it is wrong, hostPath returns to the option set and the
   device-plugin requirement must be re-argued on posture grounds — a change to
   *which* mechanism delivers the device, not to whether containerization works.
-  **R8 verifies it**:
+  **R7 verifies it**:
   attempt the hostPath route on a real node and confirm `open()` actually fails
   without device-plugin injection.
 
   The device-plugin implementation is an operator pick, not frozen here; any
   community plugin image an operator pins is thinly maintained and should be
   pinned by digest. The contract this record carries is *scoped device node,
-  zero capabilities, no privileged mode*; R8 confirms the device-plugin
+  zero capabilities, no privileged mode*; R7 confirms the device-plugin
   mechanism is the one that delivers it.
 
 - **`securityContext`:** `runAsNonRoot: true`, `runAsUser`/`runAsGroup` fixed
@@ -151,7 +151,7 @@ verification.
   `root:kvm 0660` — **measured `crw-rw---- root:kvm` on the compass dev box
   (2026-09-12)**, which supersedes the `crw-rw-rw-` reading in the frozen
   microVM CI/dev enablement record; the grant is inert under a world-readable
-  mode and required under `0660`, so R8 must record the node's actual mode —
+  mode and required under `0660`, so R7 must record the node's actual mode —
   and device injection grants a *cgroup allowance*, not
   filesystem permission — so the non-root runner uid needs the `kvm` gid via
   `securityContext.supplementalGroups` (or a node-provisioning chmod), or the
@@ -160,7 +160,7 @@ verification.
   device-controller denial in the `/dev/kvm` bullet above is `EPERM`. Marked inference because the device node's
   mode and ownership are properties of the node image's udev rules, not of
   anything in this repo, and because it is the sole justification for the
-  `supplementalGroups` grant. **R8 verifies it directly**, and the negative
+  `supplementalGroups` grant. **R7 verifies it directly**, and the negative
   control is the one that matters: confirm a non-root uid *without* the kvm gid
   actually fails to open the device. If it opens without the gid, the grant is
   unnecessary and drops out of the contract.
@@ -324,7 +324,7 @@ first thing a Kubernetes reader reaches for.
 
 - **No capability, no `privileged`.** The grant set may widen along the axes
   §Privilege shape already names (seccomp profile, device plugin, supplemental
-  gid) — that is R8 narrowing or confirming a spec, and is expected. What is
+  gid) — that is R7 narrowing or confirming a spec, and is expected. What is
   banned is patching a shortfall with a Linux capability or `privileged: true`:
   if the composition genuinely needed one, the container-vs-host ruling is
   reopened instead. No mechanism in the composition is known to need one.
@@ -377,7 +377,7 @@ bounded.
 
 Document and encode the device-plugin requirement, including the resource-name
 parameterization and the `supplementalGroups` gid — both confirmed necessary
-(or dropped as inert) by R8.
+(or dropped as inert) by R7.
 Test cycle: rendered pod spec requests the device resource and carries the gid;
 a spec that omits either fails the assertion.
 
@@ -432,7 +432,7 @@ independent. R6 lands with the freeze.
 ### OQ-1 [non-load-bearing] — which grants does confinement make necessary?
 
 Not a feasibility question. The composition boots on KVM today (see §Approach);
-R8 determines which of the specified grants — seccomp profile, device plugin,
+R7 determines which of the specified grants — seccomp profile, device plugin,
 `supplementalGroups` — are load-bearing rather than inert, so the pod spec can
 be narrowed to the minimum that works. Every outcome is a pod-spec edit this
 record already anticipates.
@@ -449,7 +449,7 @@ The genuinely open question, and the only one with a real cost attached. If
 `RuntimeDefault` suffices, the `Localhost` profile and its on-node staging
 requirement both drop, which materially simplifies the operator's job. If it
 does not, we ship the profile — a known, bounded cost this record already
-specifies, not a setback. R8 item 4 settles it.
+specifies, not a setback. R7 item 4 settles it.
 
 ### OQ-3 [non-load-bearing] — device-plugin implementation pick
 
@@ -470,7 +470,7 @@ D7. Default path chosen at implementation.
 ## Resolved decisions
 
 - **Containerize the Runner** as the Kubernetes delivery unit, rather than a
-  host systemd service — only if R8 surfaced a capability requirement, which
+  host systemd service — only if R7 surfaced a capability requirement, which
   no known mechanism in the composition needs (§Container vs host process).
 - **Never `privileged: true`** — the microVM isolation boundary is the reason
   the Runner exists, and a privileged Runner re-opens the host path
