@@ -4,12 +4,12 @@ Status: Active
 Tracker: RIG-1330
 
 Ledger placeholder: the decisions below are marked
-`DL-TBD-1`/`DL-TBD-2`/`DL-TBD-3` — real row ids are allocated when this
-record's PR flips `docs/designs/DECISIONS.md`, never by this draft.
+`DL-TBD-1`…`DL-TBD-5` — real row ids are allocated when this record's PR
+flips `docs/designs/DECISIONS.md`, never by this draft.
 
 ## Problem / Intent
 
-Two problems, one send model.
+Three problems, one send model.
 
 **Free-text questions are unanswerable.** An `AskQuestion` whose `options`
 list is empty is a free-text question — the wire says so: "Free-text answer
@@ -41,18 +41,32 @@ widens that sharp edge from a rare shape to a common one (typed text counting
 toward completeness). Every other destructive one-shot in this UI has an
 explicit control; the ask now does too.
 
-Non-goals: proto or server changes, timeout auto-selection (`timed_out`,
-RIG-1310), the `header`/`recommended` presentation extras (stay dropped), and
-multi-select interaction changes — including the "free text alongside options
-for allow_multiple" affordance (see Open Questions).
+**And the shipped UI is a strict subset of the contract (Matt's directive:
+full parity).** The wire already carries every presentation axis the native
+tool has — `header`, `recommended`, `AskOption.preview` — and free text on
+every question; the UI renders none of them and offers the input nowhere.
+The contract work is done (the merged derivation record cited in Approach);
+the parity gap is entirely in the UI layer, and this record closes it: D1
+widens the domain type, D4 puts the free-text input on every question, D6
+renders the presentation axes.
+
+Non-goals: proto or server changes, and timeout auto-selection (`timed_out`,
+RIG-1310 — the one wire field that stays dropped). One deliberate divergence
+from the native tool, and the only one: a single-question single-select ask
+auto-submits natively ("A single-select question still submits immediately
+when it is the only question", `omp://tools/ask.md` § Modes / Variants);
+here it never does — Matt's ruling that an ask is never auto-sent (D0)
+removes exactly that behaviour. Do not "fix" this later: the non-parity is
+intentional, and this line is its record.
 
 ## Approach
 
-Seven decisions. The through-lines: **nothing sends but an explicit submit**
-(D0), and the typed text is a **local pick with exactly the lifecycle of
-`chosenOptionIds`** (D1-D5), so it lives in the same place and rides the same
-machinery — the local ask copy in the store's message state — rather than a
-parallel keyed map.
+Eight decisions. The through-lines: **nothing sends but an explicit submit**
+(D0); the typed text is a **local pick with exactly the lifecycle of
+`chosenOptionIds`** (D1-D5), so it lives in the same place and rides the
+same machinery — the local ask copy in the store's message state — rather
+than a parallel keyed map; and the UI renders **every wire axis except
+`timed_out`** (D1, D6), full parity with the native tool.
 
 "Explicit" means a deliberate confirmation, **not a mouse**: the intended
 flow is answer every question, tab to submit, press Enter. That keyboard path
@@ -68,22 +82,28 @@ partially-answered ask. It also deletes machinery: `isAskComplete` loses its
 only caller, `sendAsk`'s rollback parameter loses both of its, and
 `sameAnswers` loses its one call site (D0).
 
-**Checked against the tool this proto mirrors.** `comms.proto`'s ask messages
-are written as a wire form of the agent harness's own `ask` tool — they cite
-it by name for the always-available free-text rule (`comms.proto:426-429`) —
-so its documented behaviour (`omp://tools/ask.md`) is the reference for what
-"an ask" means here, not an analogy. Reading it confirms the central ruling:
-that tool never sends on a pick either. Its rich dialog is a **form** the user
-fills and submits, and even its plain fallback treats a pick as navigation
-between questions, not as transmission — a multi-question ask advances and
-preserves prior answers, and only the *final* question auto-advances. It also
-shows where this record deliberately ships less: that tool offers `Other (type
-your own)` on **every** question, and reserves the label so a caller cannot
-mint it, whereas this record's input appears only when a question has no
-options (D4, Open Question 1). Two of its affordances — a per-answer note and
-a "Chat about this" redirect — have no field in `AskQuestionAnswer` at all
-(Open Question 4). Its timeout auto-selection is the `timed_out` field, owned
-by RIG-1310 and out of scope here.
+**Checked against the tool this proto mirrors.** `comms.proto`'s ask
+messages are written as a wire form of the agent harness's own `ask` tool.
+The derivation is its own merged record —
+`docs/designs/agent/compass-ask-typed-derivation.md` § "Axis carriers
+(native → reshaped)" — which this record defers to for everything
+contract-level; the tool's documented behaviour (`omp://tools/ask.md`) is
+the reference for what "an ask" means here, not an analogy. What that
+reference genuinely confirms about the central ruling: the tool's rich
+dialog is a **form** the user fills and submits, and its plain fallback
+treats a pick as navigation between questions, preserving prior answers.
+What it does NOT confirm: the single-question single-select case, which
+natively "still submits immediately when it is the only question"
+(§ Modes / Variants) — precisely the auto-send Matt's ruling removes (L2
+inverts the shipped test that pinned it). That is this record's **single
+intentional divergence** from the native tool, named in Non-goals so nobody
+later restores it as a parity fix. Everything else reaches parity here:
+free text on every question (D4) and the presentation axes the wire already
+carries — `header`, `recommended`, `preview` (D1, D6). The two native
+affordances with no wire carrier at all — the per-answer note and the "Chat
+about this" redirect — were dropped deliberately at the contract layer, not
+here (Open Questions, item 3). Timeout auto-selection is the `timed_out`
+field, owned by RIG-1310 and out of scope.
 
 ### D0 — sending is always an explicit gesture (DL-TBD-3)
 
@@ -143,9 +163,9 @@ path — option click, keystroke — ever triggers the wire. Concretely, in
   … grows a `submit` control" — now wrong twice over. Replacement:
 
   ```tsx
-  /** An inline async ask (comms.proto Ask): a question with selectable
-   *  options or a free-text input, answerable in place — never a blocking
-   *  modal. Every answer stays LOCAL until the user explicitly submits: the
+  /** An inline async ask (comms.proto Ask): questions with selectable
+   *  options and an always-available free-text input, answerable in place —
+   *  never a blocking modal. Every answer stays LOCAL until submit: the
    *  server accepts exactly ONE RespondToAsk per ask, so the submit control
    *  is the only send path, and unanswered questions ship blank (its copy
    *  says so). Once the ask is SETTLED — our respond issued, or the server's
@@ -223,16 +243,29 @@ with today's closed *option*-answered asks, whose recorded `chosenOptionIds`
 already defeat the same fast path; the per-ask `serverHasNoAnswer` guard
 (`store.ts:1556`) still drops them from the actual replacement.
 
-### D1 — the domain `AskQuestion` gains `customText: string` (DL-TBD-1)
+### D1 — the domain type reaches the full wire shape (DL-TBD-1)
 
-`adaptAskQuestion` (`apps/ui/src/live/adapt.ts:239-251`) today drops the
-wire's `customText` under the comment "The wire's presentation/audit extras
-(header, recommended, customText, timedOut) are not in the domain contract and
-are deliberately dropped here rather than carried half-rendered"
-(`adapt.ts:234-238`). That drop was correct while nothing rendered free text;
-it is now wrong for `customText` specifically, because `customText` is not a
-presentation extra — it is **answer state**, sitting under the proto's answer
-banner beside `chosen_option_ids`:
+`adaptAskQuestion` (`apps/ui/src/live/adapt.ts:239-251`) today drops four
+wire fields under the comment "The wire's presentation/audit extras (header,
+recommended, customText, timedOut) are not in the domain contract and are
+deliberately dropped here rather than carried half-rendered"
+(`adapt.ts:234-238`), and its option map drops `AskOption.preview` the same
+way. The comment's own criterion — a field is carryable exactly when the
+design renders it — was right, and this record now satisfies it four times
+over: D4 binds `customText`, and D6 renders `header`, `recommended`, and
+`preview`. Only `timedOut` still fails the criterion (RIG-1310, Non-goals);
+it stays dropped, and the adapt comment is rewritten to name only it.
+
+Each field's contract-level intent is already ruled in the merged derivation
+record (`docs/designs/agent/compass-ask-typed-derivation.md` § "Axis
+carriers (native → reshaped)") and is consumed here, not re-derived:
+`header` carries native `QuestionItem.header` (empty = absent),
+`recommended` carries the native zero-based option index (proto3 `optional`,
+unset = absent), `AskOption.preview` carries native `OptionItem.preview`,
+and `custom_text` carries the always-available free-text answer.
+
+`customText` is the one that is **answer state**, not a presentation extra —
+it sits under the proto's answer banner beside `chosen_option_ids`:
 
 > `// ── Answer state, empty/unset while pending (kept for audit) ──`
 > `// The chosen option ids once answered.`
@@ -260,36 +293,55 @@ exactly, and for the same two reasons:
    was answered, symmetric with the `chosen` styling `chosenOptionIds`
    already drives.
 
-The "half-rendered" hazard the adapt comment warns about does not apply: the
-field is fully rendered by this design (the input binds it, D4), which is the
-comment's own criterion for carrying a field. The server-owned asymmetry is
-also the same one `chosenOptionIds` already lives with: on a *pending* ask
-the wire value is always empty (the proto's `:436-438` "Values supplied on an
-inbound Ask (via PostMessage) are IGNORED" means the server never publishes a
-non-empty one before answering), so local typing edits a field the stream
-will not fight over — and `preserveLocalAsks` guards the push-race window
-exactly as it does for clicks. `header`, `recommended`, and `timedOut` remain
-dropped; the adapt comment is rewritten to name only those three.
+The "half-rendered" hazard the adapt comment warns about no longer applies
+to any of the four: each is fully rendered or bound by this design, which is
+the comment's own criterion for carrying a field. The server-owned asymmetry
+on `customText` is the same one `chosenOptionIds` already lives with: on a
+*pending* ask the wire value is always empty (the proto's `:436-438` "Values
+supplied on an inbound Ask (via PostMessage) are IGNORED" means the server
+never publishes a non-empty one before answering), so local typing edits a
+field the stream will not fight over — and `preserveLocalAsks` guards the
+push-race window exactly as it does for clicks.
 
-Concretely (`apps/ui/src/comms-stub.ts`, after `chosenOptionIds`), with the
-field's discriminant named in the doc comment — the same string means *draft*
-before the ask settles and *server-recorded audit value* after, and the flag
-that tells them apart must be written down:
+Concretely (`apps/ui/src/comms-stub.ts`):
 
 ```typescript
+// AskQuestion, after `question`:
+/** Optional short display chip above the question (comms.proto
+ *  AskQuestion.header). "" = absent, the wire's own convention. */
+header: string;
+
+// AskQuestion, after `allowMultiple`:
+/** Zero-based index into `options` of the agent-recommended option; absent
+ *  when nothing was recommended (comms.proto AskQuestion.recommended,
+ *  proto3 optional). A UI hint ONLY: it never pre-selects, and an
+ *  out-of-range value is ignored (D6). */
+recommended?: number;
+
+// AskQuestion, after `chosenOptionIds` — the draft/audit discriminant:
 /** Free-text answer (comms.proto AskQuestion.custom_text): the locally
  *  staged DRAFT while the ask is neither answered nor submitted; the
  *  server's recorded audit value once it is. "" when absent either way. */
 customText: string;
+
+// AskOption, after `description`:
+/** Optional rich preview content (comms.proto AskOption.preview). */
+preview?: string;
 ```
 
-`adaptAskQuestion` maps it verbatim: `customText: w.customText`.
+`adaptAskQuestion` maps `header` and `customText` verbatim and
+`recommended: w.recommended` (the generated field is already
+`number | undefined` — `comms_pb.ts`, `AskQuestion.recommended`); the option
+map gains `preview: o.preview || undefined`, the same empty-string→absent
+convention `description` uses on the line above (`adapt.ts:246`).
 
-A free-text question needs **no new discriminant field**: it is precisely
-`q.options.length === 0`, which the proto blesses ("Selectable options; MAY
-be empty (a free-text-only question …)", `comms.proto:426-429`) and the
-store's own comment already names ("a free-text question, which carries no
-options to choose", `store.ts:1487-1488`).
+A free-text-**only** question still needs **no new discriminant field**: it
+is precisely `q.options.length === 0`, which the proto blesses ("Selectable
+options; MAY be empty (a free-text-only question …)", `comms.proto:426-429`)
+and the store's own comment already names ("a free-text question, which
+carries no options to choose", `store.ts:1487-1488`). Free text itself is on
+every question (D4); the option-less shape is only the case where it is the
+sole answer path.
 
 ### D2 — store surface: a sibling `answerAskText`, recording locally (DL-TBD-2)
 
@@ -299,10 +351,11 @@ different inputs, and overloading one entry point with a
 `string`-that-means-two-things parameter hides that. The new sibling:
 
 ```typescript
-/** Record the free-text answer to an option-less question, LOCALLY — like
- *  every recorder, it never sends; re-typing replaces the draft until the
- *  explicit submit. No-op on a question that has options, an unknown
- *  message/ask/question, a submitted ask, and a CLOSED (`answered`) ask. */
+/** Record the free-text answer to a question, LOCALLY — like every
+ *  recorder, it never sends; re-typing replaces the draft until the
+ *  explicit submit. No-op on a single-select question already settled by a
+ *  chosen option (exclusivity, D4), an unknown message/ask/question, a
+ *  submitted ask, and a CLOSED (`answered`) ask. */
 answerAskText: (
   messageId: string,
   askId: string,
@@ -317,27 +370,34 @@ justified the asymmetry — "a click is a discrete gesture, a keystroke is not"
 
 Semantics, point by point against the existing machinery:
 
-- **Editable until submit.** The single-select first-responder-wins early
-  return ("a single-select question settles on its first answer",
-  `store.ts:1369-1371`) does NOT apply to text: the reducer sibling
-  `answerQuestionText(q, text)` returns the same reference (the file's
-  established no-op protocol, `store.ts:1360-1363`) only when
-  `q.options.length > 0` (not a free-text question) or `text === q.customText`
-  (nothing changed); otherwise `{ ...q, customText: text }`. Re-typing
-  replaces.
+- **Editable until submit — on every question.** The single-select
+  first-responder-wins early return ("a single-select question settles on
+  its first answer", `store.ts:1369-1371`) reaches text only through
+  exclusivity: the reducer sibling `answerQuestionText(q, text)` returns the
+  same reference (the file's established no-op protocol,
+  `store.ts:1360-1363`) when the question is a settled single-select
+  (`!q.allowMultiple && q.chosenOptionIds.length > 0` — the pick already
+  answered it, D4) or `text === q.customText` (nothing changed); otherwise
+  `{ ...q, customText: text }`. Re-typing replaces.
+- **The click side of exclusivity.** `answerQuestion` (the option reducer,
+  `store.ts:1377`) widens: recording a pick on a single-select also clears
+  the draft — `{ ...q, chosenOptionIds: chosen, customText: "" }` when
+  `!q.allowMultiple` — so the staged state never holds the option-plus-text
+  pair the server rejects (D4). On `allowMultiple` the text survives the
+  toggle.
 - **Gates.** Same as clicks: `isAskSubmitted(askId)` guard at entry
   (`store.ts:1672`), `ask.answered` guard inside the block map
   (`store.ts:1697`), `clearAskError(askId)` when a record lands
   (`store.ts:1713`).
 - **`locked`/`closed`.** In `AskBlock`, `locked(q) = closed() ||
   (!q.allowMultiple && q.chosenOptionIds.length > 0)`
-  (`ChannelView.tsx:72-73`). For a free-text question the second disjunct is
-  structurally false (no options → no chosen ids until the server records
-  some, at which point `closed()` is also true), so the input's disabled
-  state is exactly `locked(q())` — reusing the same accessor the option
-  buttons use, no new lock concept. Text stays editable until submit; a
-  closed ask locks the input and shows the recorded `customText` (D1's audit
-  payoff).
+  (`ChannelView.tsx:72-73`). The input's disabled state is exactly
+  `locked(q())` — the same accessor the option buttons use, no new lock
+  concept — and on a single-select this is the exclusivity surface: a
+  chosen option disables the input, so type-after-pick is structurally
+  impossible (D4). On `allowMultiple`, and on any question without a pick,
+  text stays editable until submit; a closed ask locks the input and shows
+  the recorded `customText` (D1's audit payoff).
 
 One existing store mechanism widens to see text as a pick (the D1 tradeoff
 made explicit and paid once, here):
@@ -357,20 +417,22 @@ The shared predicates live beside the `Ask` types in `comms-stub.ts` as
 exported pure functions, so store and renderer read one definition:
 
 ```typescript
-/** An option-less question, answerable by custom_text alone
- *  (comms.proto AskQuestion.options / AskQuestionAnswer.custom_text). */
+/** An option-less question — free text is the ONLY way to answer it
+ *  (comms.proto AskQuestion.options MAY be empty). Free text itself is
+ *  available on EVERY question (D4); this predicate only picks the
+ *  option-less copy (hint line, placeholder). */
 export function isFreeTextQuestion(q: AskQuestion): boolean;
-/** Whether this question holds an answer — a chosen option, or (free-text
- *  question only) a non-whitespace draft/recorded text. */
+/** Whether this question holds an answer — a chosen option, or a
+ *  non-whitespace draft/recorded text. */
 export function isQuestionAnswered(q: AskQuestion): boolean;
 ```
 
 with `isQuestionAnswered(q) = q.chosenOptionIds.length > 0 ||
-(isFreeTextQuestion(q) && q.customText.trim() !== "")`. Whitespace-only text
-does not count as answered: the wire reads empty `custom_text` + no chosen
-ids as an accepted skip (`store.ts:1484-1486`), and a whitespace "answer" is
-a skip to every reader; counting it answered would enable the submit control
-over a question the wire will record as skipped.
+q.customText.trim() !== ""`. Whitespace-only text does not count as
+answered: the wire reads empty `custom_text` + no chosen ids as an accepted
+skip (`store.ts:1484-1486`), and a whitespace "answer" is a skip to every
+reader; counting it answered would enable the submit control over a
+question the wire will record as skipped.
 
 ### D3 — the outbound `RespondToAsk` carries `customText` per question
 
@@ -389,7 +451,10 @@ answers: ask.questions.map((q) => ({
 answers: ask.questions.map((q) => ({
   questionId: q.questionId,
   chosenOptionIds: [...q.chosenOptionIds],
-  customText: isFreeTextQuestion(q) ? q.customText.trim() : "",
+  customText:
+    !q.allowMultiple && q.chosenOptionIds.length > 0
+      ? ""
+      : q.customText.trim(),
 })),
 ```
 
@@ -407,48 +472,70 @@ answers: ask.questions.map((q) => ({
   user sees in the input is what they typed); the trim happens only where the
   value becomes the permanent audit record, keeping D2's answered-predicate
   (`trim() !== ""`) and the shipped payload consistent by construction.
-- **Option questions ship `""`** — guarded by `isFreeTextQuestion` rather
-  than trusting `customText` to be empty there. This is a correctness guard,
-  not tidiness: `validateQuestionAnswer` in `go/internal/store/messages.go`
-  rejects one chosen option plus non-empty custom text on a non-`allow_multiple`
-  question with `ErrInvalidArgument`, so leaking the out-of-scope "text
-  alongside options" case would spend the one-shot respond on a server refusal.
+- **The exclusivity rule is enforced structurally at the seam** — a
+  single-select holding a chosen option ships `customText: ""`,
+  unconditionally. The recorders already keep the staged state exclusive
+  (D2), so this guard should be redundant; it stays because the cost of
+  needing it once is the whole ask: `validateQuestionAnswer` in
+  `go/internal/store/messages.go` rejects one chosen option plus non-empty
+  custom text on a non-`allow_multiple` question with `ErrInvalidArgument`,
+  and the respond is one-shot. On `allowMultiple` both ship together, which
+  the server accepts (the proto: custom text is typed "instead of (or, for
+  allow_multiple, alongside) picking options").
 
 `comms-fake.ts`'s `respondToAsk` recorder (`live/comms-fake.ts:263-266`,
 `:301-307`) widens its request type and its `askResponses` copy to carry
 `customText`, so renderer/store tests can assert the wire payload — today it
 records only `questionId` + `chosenOptionIds`. Any test asserting a
-`customText` wire shape sequences after this widening (see D6/T2).
+`customText` wire shape sequences after this widening (see D7/T2).
 
-### D4 — renderer: an inline single-line input replaces the options row
+### D4 — renderer: a free-text input on every question (DL-TBD-4)
 
-In `AskBlock` (`ChannelView.tsx:99-123`), the per-question body branches on
-`isFreeTextQuestion(q())`:
+Free text renders on **every** question — matching the native tool's
+unconditional `Other (type your own)` and the proto's "free-text answering
+is always available" (`comms.proto:426-429`) — not only on the option-less
+ones. Matt's directive: full parity. The prior draft's
+`options.length === 0` gate was this record's one deliberate scope cut, and
+it is gone.
+
+**Shape: an always-visible input under the option row, not an "Other"
+chip.** Native's `Other` is an entry in its option list, so a chip inside
+`.ask-options` would match native's shape — but it would be a fake
+`.ask-option` (no option id, excluded from the answer map and from the
+`chosen` styling) plus a revealed/hidden flag the store does not hold, and
+surviving pushes and re-renders for free is exactly why D1 put the draft on
+the ask copy rather than in component state. An always-visible single-line
+input directly under `.ask-options` is one DOM element with no new state,
+and it keeps the parity point visible instead of re-hiding free text behind
+a discovery step — a discoverability gap is what this decision removes. The
+cost is one thin input row per question.
+
+In `AskBlock` (`ChannelView.tsx:99-123`), the per-question body becomes the
+existing `.ask-options` `<For>` (rendered only when options exist) followed
+unconditionally by the input:
 
 ```tsx
-<Show
-  when={isFreeTextQuestion(q())}
-  fallback={/* the existing .ask-options <For> */}
->
-  <div class="ask-options">
-    <input
-      type="text"
-      class="ask-text"
-      value={q().customText}
-      disabled={locked(q())}
-      aria-label={q().question}
-      placeholder="type your answer"
-      onInput={(e) =>
-        store.answerAskText(
-          props.messageId,
-          ask().askId,
-          q().questionId,
-          e.currentTarget.value,
-        )
-      }
-    />
-  </div>
+<Show when={q().options.length > 0}>
+  <div class="ask-options">{/* the existing <For> */}</div>
 </Show>
+<input
+  type="text"
+  class="ask-text"
+  value={q().customText}
+  disabled={locked(q())}
+  aria-label={q().question}
+  placeholder={
+    isFreeTextQuestion(q()) ? "type your answer" : "other — type your own"
+  }
+  onInput={(e) =>
+    store.answerAskText(
+      props.messageId,
+      ask().askId,
+      q().questionId,
+      e.currentTarget.value,
+    )
+  }
+/>
 ```
 
 - **Single-line, not multi-line.** The proto frames the field as the
@@ -466,6 +553,22 @@ In `AskBlock` (`ChannelView.tsx:99-123`), the per-question body branches on
   store never disagree). The per-keystroke `setComms` map over messages is
   the price; it is the same O(messages) write a click already performs
   (`store.ts:1678-1710`) at human typing rate.
+- **Exclusivity on a single-select is a correctness rule, not styling.**
+  `validateQuestionAnswer` (`go/internal/store/messages.go`) rejects one
+  chosen option plus non-empty custom text on a single-select with
+  `ErrInvalidArgument`, and the ask has ONE unrepeatable respond — a UI
+  that lets both stand burns it on a refusal. The resolution, per gesture:
+  **choosing an option clears the staged draft** (`answerQuestion` records
+  `customText: ""` on a single-select pick, D2) and settles the question
+  under the shipped first-responder-wins rule, which disables the input via
+  `locked(q())` — so **typing after a pick never arises**; it is
+  structurally impossible, not merely cleared. The destructive direction is
+  named honestly: a pick discards typed text. That is the right cost order,
+  because the draft is provisional by design (editable until submit) while
+  the pick is the settling gesture the shipped single-select model already
+  treats as final. On `allowMultiple` nothing clears and nothing locks:
+  options and text coexist and ship together (D3), which the server
+  accepts.
 - **Enter in the *input* does not send; Enter on the *submit control* does.**
   These are different keys in different places, and only the first is
   declined. Enter while typing in one question's field would ship the whole
@@ -484,26 +587,12 @@ In `AskBlock` (`ChannelView.tsx:99-123`), the per-question body branches on
   The question text lives in a bare `div.ask-question` with no id, so
   `aria-label={q().question}` provides the accessible name without minting
   id plumbing. `aria-pressed` is not applicable to a text input.
-- **Hint line.** The `choose any`/`choose one` hint (`ChannelView.tsx:95-98`)
-  is wrong for a question with nothing to choose; the free-text branch
-  renders "type your answer · async — answer when ready".
-- **Free text alongside options: deferred, and the deferral is now a known
-  gap rather than a clean boundary.** The proto says free-text answering is
-  "always available, mirroring the native tool's always-offered 'Other (type
-  your own)'" (`comms.proto:426-429`), and the native tool does offer it on
-  every question — `ask.md` § Flow lists "single-select list plus `Other
-  (type your own)`" and the multi-select loop likewise. Gating the input on
-  `options.length === 0`, as this record does, therefore ships a UI that is
-  *narrower than the contract it implements*: an option question offers no
-  "Other". That is a deliberate scope line, not a reading of the proto, and
-  it is recorded as such — the widening is mechanical here (drop the guard in
-  this branch), but it lands on the multi-select interaction surface this
-  record declares a non-goal, and it inherits a server rule the option-less
-  case never meets: `validateQuestionAnswer` rejects an option *and*
-  custom text on a **single-select** question with `ErrInvalidArgument`
-  (`go/internal/store/messages.go`, the `AllowMultiple` exclusivity check),
-  so an always-offered "Other" must make text and option mutually exclusive
-  per question unless `allowMultiple`. Open Question 1 owns it.
+- **Hint line, three states.** The `choose any`/`choose one` hint
+  (`ChannelView.tsx:95-98`) must say that text is now an answer path
+  everywhere: option-less — "type your answer · async — answer when ready";
+  single-select with options — "choose one, or type your own · async —
+  answer when ready"; `allowMultiple` — "choose any, or type · async —
+  answer when ready".
 - **CSS.** `.ask-text` joins the ask family in `apps/ui/src/app.css` beside
   `.ask-option` (`app.css:1161`), using the existing tokens
   (`--cx-text-dim`, `--cx-border-focus` family) — sizing to match the option
@@ -572,7 +661,60 @@ needs no detector.
 `answerAsk`'s send tail is gone (D0), so nothing in the store consumes
 completeness; the label switch above is the only completeness reader left.
 
-### D6 — test plan
+### D6 — the presentation axes render: `header`, `recommended`, `preview` (DL-TBD-5)
+
+Parity is not only the answer path: the wire carries three presentation
+fields the native rich dialog renders, and D1 maps a field only when the
+design renders it — this decision is what makes D1's widening legal. It is
+a separate decision, not folded into D4, because D4 is about answering and
+this is about display; nothing here records or ships state.
+
+- **`header` — a chip above the question.** Native calls it a "short
+  display chip" (`omp://tools/ask.md`, `Question.header`). Rendered as
+  `<div class="ask-header">` immediately above `.ask-question`, inside
+  `<Show when={q().header}>` so an empty header (the wire's absent) renders
+  no node. `.ask-header` joins the family in `apps/ui/src/app.css` above
+  `.ask-question` (`app.css:1143`): small, dim, chip-shaped — visually
+  subordinate to the question text it labels.
+- **`recommended` — a visual mark; never a label edit, never a
+  pre-selection.** The option at a valid `recommended` index gains a
+  `recommended` class on its `.ask-option` button and a small
+  `<span class="ask-option-rec">recommended</span>` badge beside the label.
+  Visual marking rather than native's fallback `(Recommended)` label
+  suffix: the label is the agent's text — it is the button's accessible
+  name and what tests select on — and native itself has to strip the suffix
+  back out of its own results (`omp://tools/ask.md` § Notes), a wart a UI
+  with a real style layer does not need. **Invalid index: ignored**, as
+  native ignores it ("Invalid indexes are ignored for selection"). The
+  renderer marks only when `Number.isInteger(r) && r >= 0 &&
+  r < q.options.length`; any other value renders exactly as if
+  `recommended` were unset — nothing throws, nothing indexes out of range.
+  **It never pre-selects.** Native treats it as "only a UI/default hint"
+  (`omp://tools/ask.md` § Notes), and pre-selecting would stage an answer
+  the user never gave — under D5 an enabled submit would then ship it,
+  manufacturing an answer in direct collision with D0's explicit-gesture
+  ruling. `chosenOptionIds` stays empty until the user acts. (Native's one
+  use of the index as a *default* is timeout auto-selection — the
+  `timed_out` path, RIG-1310's, out of scope.)
+- **`preview` — rendered, minimally, capped.** "Rich preview content (e.g.
+  a rendered snippet)" (`AskOption.preview`, the generated `comms_pb.ts`
+  comment). Rendered inside the option button under the description as
+  `<code class="ask-option-preview">`: monospace, `white-space: pre-wrap`,
+  with a `max-height` cap (roughly eight lines) and `overflow: hidden` so a
+  pathological preview cannot blow up the channel column. Rendered rather
+  than deferred, deliberately: deferring the render would forbid the D1
+  mapping (the drop comment's criterion) and leave the axis dropped, short
+  of the directive. Plain text only — no markdown or HTML interpretation; a
+  richer rendering is a future widening contained to this element. The cap
+  is honest lossiness in an inline block: preview is a presentation aid,
+  not answer state.
+- **CSS.** `.ask-header`, `.ask-option-rec`, and `.ask-option-preview` join
+  the `.ask-*` family beside `.ask-question` (`app.css:1143`),
+  `.ask-option` (`app.css:1161`), and `.ask-option-desc` (`app.css:1176`),
+  on the existing tokens (`--cx-text-dim`, `--cx-text-faint`,
+  `--cx-accent`).
+
+### D7 — test plan
 
 Two kinds of work: **new tests** (send-model contracts + the free-text path)
 and **inversions of shipped tests** that pin the auto-send this record
@@ -600,6 +742,15 @@ test, so the inversions are enumerated per file at the end.
    ask ships that question as `customText: ""` (the accepted-skip shape).
    RED: no text path exists. Here because the trim seam is a store/send
    contract, not a DOM one.
+4. **L4 (mandatory — the exclusivity rule; a violation burns the one
+   respond).** On a single-select question: type a draft, then click an
+   option — the staged `customText` clears, and a subsequent `submitAsk`
+   ships that question as the chosen id with `customText: ""`. Then the
+   other direction: with the option chosen, `answerAskText` is a no-op (the
+   draft stays empty). RED: neither the clearing nor the gate exists.
+5. **L5 — `allowMultiple` carries both.** Toggle an option and type on the
+   same multi-select question; submit ships both the chosen id and the
+   trimmed text in one answer entry. RED: no text path exists.
 
 **`apps/ui/src/store.ask-race.test.ts`** — the `adoptComms`-vs-local-pick
 charter ("this suite's subject is narrowly `adoptComms` — what a stream push
@@ -631,15 +782,17 @@ over the live fake, whose `freeText` option already builds option-less wire
 questions (`comms-fake.ts:453-455`, `:499-503`), same `mountAsk`/`settled`
 harness (`:62-87`):
 
-1. **R1 — a free-text question renders an answerable input.** Snapshot with
-   `freeText: ["q-2"]`: `.block-ask .ask-text` exists for q-2, zero
-   `.ask-option` under it, and it is enabled. RED: no input renders today.
+1. **R1 — every question renders an answerable input.** Snapshot with
+   `freeText: ["q-2"]`: `.ask-text` exists for **both** questions — for q-2
+   (option-less) it is the only per-question content, zero `.ask-option`
+   beside it; for q-1 it renders under the option row. Both enabled. RED:
+   no input renders today.
 2. **R2 — typed text reaches `custom_text` on the outbound respond.** Type
-   into the input (`fireEvent.input`), click the submit control, assert
-   `fake.askResponses` equals one respond whose q-2 entry carries
-   `customText: "<typed>"` and whose option question carries
-   `customText: ""` (the D3 shape, via the widened recorder). RED: no store
-   path records or ships text.
+   into q-2's input (`fireEvent.input`), click a q-1 option, click the
+   submit control, assert `fake.askResponses` equals one respond whose q-2
+   entry carries `customText: "<typed>"` and whose q-1 entry carries the
+   chosen id with `customText: ""` (the D3 shape, via the widened
+   recorder). RED: no store path records or ships text.
 3. **R3 — the draft is editable until submit.** Type, re-type, assert the
    input value and the shipped `customText` reflect the second typing; after
    submit the input is disabled. RED.
@@ -673,18 +826,37 @@ harness (`:62-87`):
    *Real Enter-key activation is a browser behaviour this harness cannot
    exercise — it belongs to manual/e2e verification, and the design must not
    claim unit coverage of it.*
+7. **R7 — single-select exclusivity in the DOM.** On a question with
+   options: type into its input, then click an option — the input's value
+   clears and the input disables (the pick locks the question); submit
+   ships that question as the option id with `customText: ""`. The
+   invariant under test is the server rule: no sequence of clicks and
+   typing on a single-select may produce a respond carrying both an option
+   id and non-empty text. RED: no input exists.
+8. **R8 — `header` renders as a chip only when present.** A question with
+   `header` set shows `.ask-header` with its text above `.ask-question`; a
+   question without one renders no `.ask-header` node. RED.
+9. **R9 — `recommended` marks, never selects, never crashes.** A valid
+   index adds the `recommended` class and the `.ask-option-rec` badge to
+   exactly that option, and nothing is pre-selected (no `chosen` class, the
+   submit control still disabled on the untouched ask). An out-of-range
+   index (e.g. `7` on a two-option question) renders no marking and throws
+   nothing — the block still mounts. RED for the valid half; the invalid
+   half is a regression guard.
 
 **`apps/ui/src/live/adapt.test.ts`** — the wire→domain mapping:
 
-1. **A1 — `adaptAskQuestion` maps `customText` verbatim** (empty and
-   non-empty). RED: the field is dropped today. (The prior draft also
-   asserted "still drops `header`/`recommended`/`timedOut`" — dropped: under
-   TS strict those fields do not exist on the domain type, so the assertion
-   could only be an `"header" in q` runtime probe pinning implementation, a
-   near-tautology.)
+1. **A1 — `adaptAskQuestion` maps the widened shape.** `customText` and
+   `header` verbatim (empty and non-empty); `recommended` present and unset
+   (`undefined` survives the map); `AskOption.preview` present, and `""` →
+   `undefined` per the `description` convention. RED: all are dropped
+   today. (The prior draft also asserted "still drops
+   `header`/`recommended`/`timedOut`" — dropped; only `timedOut` remains
+   unmapped, and under TS strict a domain field that does not exist cannot
+   be asserted absent except by a near-tautological runtime probe.)
 
-Store-level `answerAskText` no-op gates (option question, submitted ask,
-closed ask) belong beside the existing `answerAsk` gate coverage in
+Store-level `answerAskText` no-op gates (settled single-select, submitted
+ask, closed ask) belong beside the existing `answerAsk` gate coverage in
 `store.live.test.ts`; they are RED trivially (the method does not exist).
 
 #### Inversions and edits to shipped tests, by file
@@ -810,6 +982,9 @@ mention only).
 - Every new test must be RED before its slice lands and assert
   consumer-observable behaviour (DOM, `fake.askResponses`, store accessors) —
   never mock echoes.
+- A respond never carries an option id and non-empty `customText` for a
+  single-select question — the staged state keeps them exclusive (D2/D4)
+  and the send seam enforces it structurally (D3).
 
 ### T0 — the send model (prerequisite slice; touches shipped behaviour)
 
@@ -835,7 +1010,7 @@ mention only).
   D5's keyboard contract depends on the native button activation this
   preserves.
 
-Tests: L2 and R6 (new) plus every inversion/edit in D6's enumeration for
+Tests: L2 and R6 (new) plus every inversion/edit in D7's enumeration for
 `store.live.test.ts`, `store.ask-race.test.ts` (S3 included — the restage is
 this slice's behaviour), and `ChannelView.ask.test.tsx` (`:103`, `:138`,
 `:199`, `:435`-analogue edits).
@@ -847,41 +1022,50 @@ Interfaces:
   contract; the unconditional submit control's DOM (`.ask-submit` present on
   every live ask).
 
-### T1 — domain field + adapt mapping
+### T1 — domain shape + adapt mapping
 
-`apps/ui/src/comms-stub.ts`: add `customText: string` to `AskQuestion` (after
-`chosenOptionIds`, D1 doc comment with the draft/audit discriminant) and the
-two exported predicates `isFreeTextQuestion` / `isQuestionAnswered` (D2/D5
-bodies, verbatim). `apps/ui/src/live/adapt.ts`: map
-`customText: w.customText` in `adaptAskQuestion`; rewrite the drop comment to
-name only `header`, `recommended`, `timedOut`. Fix every construction-site
-compile break the widened interface causes (fixture/stub ask builders gain
+`apps/ui/src/comms-stub.ts`: widen `AskQuestion` with `header: string`,
+`recommended?: number`, and `customText: string` (after `chosenOptionIds`,
+with the D1 draft/audit discriminant comment) and `AskOption` with
+`preview?: string`; add the two exported predicates `isFreeTextQuestion` /
+`isQuestionAnswered` (D2 bodies, verbatim). `apps/ui/src/live/adapt.ts`: map
+`header`/`customText` verbatim, `recommended: w.recommended`, and
+`preview: o.preview || undefined` in `adaptAskQuestion`; rewrite the drop
+comment to name only `timedOut`. Fix every construction-site compile break
+the widened interfaces cause (fixture/stub ask builders gain `header: ""`,
 `customText: ""`).
 
 Interfaces:
 
-- Consumes: `WireAskQuestion.customText` (generated, already present).
-- Produces: `AskQuestion.customText: string`;
+- Consumes: `WireAskQuestion.header`/`.recommended`/`.customText` and the
+  wire option's `preview` (generated, already present).
+- Produces: `AskQuestion.header: string`; `AskQuestion.recommended?: number`;
+  `AskQuestion.customText: string`; `AskOption.preview?: string`;
   `isFreeTextQuestion(q: AskQuestion): boolean`;
   `isQuestionAnswered(q: AskQuestion): boolean`.
 
-Tests: D6 case A1 in `live/adapt.test.ts`; predicate unit cases (option
-answered, text answered, whitespace text, option question with stray text)
-beside the other comms-stub consumers in `store.test.ts` or a small direct
-describe — boundary-owning: the `trim()` and the `options.length === 0` guard
-each have a case that reddens if removed.
+Tests: D7 case A1 in `live/adapt.test.ts` (the widened shape); predicate
+unit cases (option answered, text answered on an option question,
+whitespace text, option-less question) beside the other comms-stub
+consumers in `store.test.ts` or a small direct describe — boundary-owning:
+the `trim()` and the `options.length === 0` discriminant each have a case
+that reddens if removed.
 
 ### T2 — store: record, preserve, ship
 
 `apps/ui/src/store.ts`:
 
 - `answerQuestionText(q, text)` reducer + `answerAskText` action (D2
-  signature and gates, verbatim), exported on `AppStore` beside `answerAsk`.
+  signature and gates, verbatim — no-op on a settled single-select),
+  exported on `AppStore` beside `answerAsk`.
+- `answerQuestion` clears `customText` on a single-select pick (D2's click
+  half of the exclusivity rule).
 - `submitAsk` guard → `!ask.questions.some(isQuestionAnswered)`.
 - `preserveLocalAsks` unshipped-edit scan → `q.chosenOptionIds.length === 0
   && q.customText === ""`.
-- `sendAsk` answers map gains
-  `customText: isFreeTextQuestion(q) ? q.customText.trim() : ""`.
+- `sendAsk` answers map gains the D3 `customText` line — `""` on a
+  single-select holding a chosen option, `q.customText.trim()` otherwise
+  (structural exclusivity at the send seam).
 
 `apps/ui/src/live/comms-fake.ts`: widen `respondToAsk`'s request type and the
 `askResponses` copy with `customText: string` — the prerequisite for every
@@ -894,24 +1078,27 @@ Interfaces:
   questionId: string, text: string): void`; `fake.askResponses` entries carry
   `customText: string`.
 
-Tests: L1 and L3 in `store.live.test.ts` (plus the `answerAskText` gate
-no-ops); S1-S2 in `store.ask-race.test.ts`.
+Tests: L1, L3, L4, and L5 in `store.live.test.ts` (plus the `answerAskText`
+gate no-ops); S1-S2 in `store.ask-race.test.ts`.
 
 ### T3 — renderer + completion accounting
 
-`apps/ui/src/components/ChannelView.tsx` (`AskBlock`): the
-`isFreeTextQuestion` branch with the D4 input (binding, `aria-label`,
-`disabled={locked(q())}`), the free-text hint line; `answeredCount` moves to
-`isQuestionAnswered` so the submit control (T0) counts text.
-`apps/ui/src/app.css`: `.ask-text` beside the `.ask-option` family.
+`apps/ui/src/components/ChannelView.tsx` (`AskBlock`): the unconditional
+free-text input on every question (D4 binding, `aria-label`,
+`disabled={locked(q())}`, per-shape placeholder), the three-state hint
+line, the `header` chip, the `recommended` marking with its bounds guard,
+and the `preview` block (D6); `answeredCount` moves to `isQuestionAnswered`
+so the submit control (T0) counts text. `apps/ui/src/app.css`: `.ask-text`,
+`.ask-header`, `.ask-option-rec`, and `.ask-option-preview` beside the
+`.ask-option` family.
 
 Interfaces:
 
 - Consumes: T1's predicates, T2's `answerAskText`, T0's submit control.
-- Produces: the `.ask-text` DOM contract the tests select on; no exported
-  API.
+- Produces: the `.ask-text` / `.ask-header` / `.ask-option-rec` /
+  `.ask-option-preview` DOM contract the tests select on; no exported API.
 
-Tests: D6 cases R1-R6 in `ChannelView.ask.test.tsx` (R4/R5 land their final
+Tests: D7 cases R1-R9 in `ChannelView.ask.test.tsx` (R4/R5 land their final
 form here; their inversion halves are already green from T0). R6 — the
 keyboard submit guard — lands with T0's control and stays green from there.
 
@@ -925,64 +1112,38 @@ of their slices, the rest stay RED until theirs.
   `isAskComplete`/`sameAnswers`; unconditional submit control; comment
   rewrites — `store.ts`, `components/ChannelView.tsx`; inversions in
   `store.live.test.ts`, `store.ask-race.test.ts`, `ChannelView.ask.test.tsx`
-- [ ] T1: `AskQuestion.customText` + predicates + adapt mapping —
-  `comms-stub.ts`, `live/adapt.ts`, tests in `live/adapt.test.ts`
-- [ ] T2: `answerAskText` + widened preserve/guard/ship + fake recorder —
-  `store.ts`, `live/comms-fake.ts`, tests in `store.live.test.ts` +
-  `store.ask-race.test.ts`
-- [ ] T3: `AskBlock` free-text branch + text-aware `answeredCount` + CSS —
+- [ ] T1: widen `AskQuestion` (`header`, `recommended`, `customText`) +
+  `AskOption.preview` + predicates + adapt mapping — `comms-stub.ts`,
+  `live/adapt.ts`, tests in `live/adapt.test.ts`
+- [ ] T2: `answerAskText` + exclusivity recorders + widened
+  preserve/guard/ship + fake recorder — `store.ts`, `live/comms-fake.ts`,
+  tests in `store.live.test.ts` + `store.ask-race.test.ts`
+- [ ] T3: `AskBlock` free-text input on every question +
+  header/recommended/preview rendering + text-aware `answeredCount` + CSS —
   `components/ChannelView.tsx`, `app.css`, tests in
   `ChannelView.ask.test.tsx`
 
 ## Open Questions
 
-1. **An always-offered "Other", i.e. free text on a question that has
-   options.** (Load-bearing for *parity*, not for this record's machinery —
-   flagged after reading the native tool's own design.) The proto does not
-   merely permit this, it specifies it: options "MAY be empty (a free-text-only
-   question — free-text answering is **always** available, mirroring the
-   native tool's always-offered 'Other (type your own)')"
-   (`comms.proto:426-429`). The native tool matches that text — every
-   question, single- or multi-select, carries `Other (type your own)`
-   (`omp://tools/ask.md` § Flow), and `Other` is a *reserved option label* it
-   refuses to let a caller mint. So shipping the input only for option-less
-   questions leaves Compass a strict subset of the flow this proto was written
-   against, and the "free-text question" concept this record is built on
-   (`isFreeTextQuestion`, `options.length === 0`) is really "the only case
-   where free text is currently *reachable*". Two things must be decided
-   before widening, neither of which this record answers: how an "Other"
-   affordance reads beside an option row (chip that reveals an input, versus
-   an always-visible field), and the exclusivity rule — the server rejects an
-   option plus custom text on a single-select
-   (`validateQuestionAnswer`, `ErrInvalidArgument`), so on a single-select the
-   two must be mutually exclusive in the UI, while `allowMultiple` may carry
-   both. The machinery here widens mechanically (`answerAskText` is already
-   per-question; D3's guard becomes the exclusivity rule), which is why this
-   is a follow-up rather than a blocker — but it is a **parity gap**, not a
-   boundary the proto drew.
-2. **Enter-in-the-input-field.** (Not load-bearing — and no longer about
+1. **Enter-in-the-input-field.** (Not load-bearing — and no longer about
    whether the keyboard can submit at all: Enter on the focused submit
    control is a **decided contract**, D5's keyboard bullet, with a test.
    What stays declined is only the *shortcut* of Enter while typing in a
    question's field, which would ship the whole ask from a key that means
    "commit this field" everywhere else.) Revisit only if users report the
    tab-to-submit trip is friction.
-3. **Multi-line growth.** (Not load-bearing.) Single-line per D4's reading of
+2. **Multi-line growth.** (Not load-bearing.) Single-line per D4's reading of
    the proto's "Other" framing. If agents start asking prose-shaped free-text
    questions, a `textarea` swap is contained to the D4 branch and its CSS.
-4. **Two native-tool affordances have no wire carrier at all.** (Not
-   load-bearing here; recorded so the gap is known rather than rediscovered.)
-   The native tool returns an optional per-answer **note** ("`User added
-   note: ...`", `details.note`) and a **"Chat about this"** redirect that
-   declines to answer and moves the question into conversation
-   (`omp://tools/ask.md` § Outputs). `AskQuestionAnswer` carries only
-   `question_id`, `chosen_option_ids`, and `custom_text`
-   (`comms.proto` `AskQuestionAnswer`) — there is no note field and no
-   redirect signal, so neither is droppable-but-present like `header`: they
-   are absent from the contract. Both are plausibly *already served* in
-   Compass, where an ask lives in a channel a participant can simply reply to
-   — a note is a reply, and "chat about this" is what the channel is. Whether
-   that equivalence is good enough, or the answer needs the note attached to
-   it for audit, is a product call and a proto change (out of scope per
-   Non-goals). Raise it before anyone concludes the two surfaces are at
-   parity.
+3. **Per-answer note + "Chat about this" — settled at the contract layer,
+   not open here.** The native tool's remaining two affordances have no
+   wire carrier, and that is a decided contract ruling, not a gap this
+   record found: the merged derivation record
+   (`docs/designs/agent/compass-ask-typed-derivation.md` § "Axis carriers
+   (native → reshaped)") drops both deliberately — `QuestionResult.note` is
+   "omitted now; `string note = 4` on `AskQuestionAnswer` is a non-breaking
+   addition if RIG-1310 finds it needed", and `chatRedirect` / the "Chat
+   about this" label is "moot in Compass, which has first-class chat; not
+   modeled". In Compass a note is a channel reply, and "chat about this" is
+   the channel itself. Nothing for this record to decide; recorded so
+   nobody re-discovers the absence as a UI bug.
