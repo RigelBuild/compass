@@ -99,9 +99,9 @@ self-host by definition ("the only product whose code is in this repo",
 Self-host column is all-yes, so the core never itself refuses a tier.
 The Managed column is enforced by the managed control plane injecting a
 stricter `EnrollmentPolicy` (deny restricted-tier subscription OAuth)
-through the seam the core ships (§The EnrollmentPolicy seam), designed
-out of tree in the private monorepo. No RIG-1715 ledger rows change;
-this record adds decision rows only.
+through the seam the core ships (§The EnrollmentPolicy seam), injected
+out of tree — a managed-plane concern, out of scope here. No RIG-1715
+ledger rows change; this record adds decision rows only.
 
 **Restricted tier = self-host only.** The user's own box is the server:
 their credential, their IP, their risk — the same low-signal posture an
@@ -162,7 +162,7 @@ managed service can extend over a choice that only fits one product"
   Server wiring), so a policy is always present; nothing is keyed on a
   runtime mode flag.
 - **The managed implementation (restricted-tier ⇒ deny) is a
-  private-monorepo concern — named here, designed there**
+  managed-plane concern — named here, out of scope**
   (`self-host-and-managed.md:34-38`). The managed control plane injects
   its own policy the same way it extends the store with per-tenant pool
   routing ("per-tenant pool routing inside `Store` — keyed on the
