@@ -356,7 +356,8 @@ func (e *UnenforceableEgressPolicyError) Error() string {
 // rather than dropping it.
 func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
 	// Unenforced is tested first so a backend claiming both markers refuses a
-	// policy it cannot honour rather than skipping the arm and reporting armed.
+	// policy it cannot honour rather than taking the self-arm branch and
+	// silently dropping it.
 	switch {
 	case r.egressUnenforced():
 		if spec.Egress.Configured() {

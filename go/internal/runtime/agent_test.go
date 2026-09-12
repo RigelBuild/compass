@@ -337,22 +337,22 @@ func TestInGuestArmerSkipsHostArmEgress(t *testing.T) {
 	}
 }
 
-// unenforcedEgressFakeRuntime is a fakeRuntime that cannot enforce egress: it
-// implements the egressUnenforcer marker, mirroring the host backend without
-// spawning host children. Distinct from inGuestArmingFakeRuntime — that one
-// claims egress WAS armed, this one that it cannot be.
-type unenforcedEgressFakeRuntime struct {
+// egressMarkerFakeRuntime is a fakeRuntime that answers the egressUnenforcer
+// marker, mirroring the host backend without spawning host children. The answer
+// is a field because the marker is a question: true models a tier that cannot
+// enforce egress, false an enforcing one.
+type egressMarkerFakeRuntime struct {
 	*fakeRuntime
 	unenforced bool
 }
 
-func (f *unenforcedEgressFakeRuntime) EgressUnenforced() bool { return f.unenforced }
+func (f *egressMarkerFakeRuntime) EgressUnenforced() bool { return f.unenforced }
 
 // TestUnenforcedEgressRefusesAConfiguredPolicy: a tier that cannot firewall
 // must fail the launch rather than drop the policy, so a caller never believes
 // egress was constrained when nothing constrained it.
 func TestUnenforcedEgressRefusesAConfiguredPolicy(t *testing.T) {
-	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
+	fake := &egressMarkerFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
 	rt := NewAgentRuntime(fake)
 
 	_, err := rt.Launch(t.Context(), specWithCreds(true))
@@ -377,7 +377,7 @@ func TestUnenforcedEgressRefusesAConfiguredPolicy(t *testing.T) {
 // Paired with the refusal above, this is the presence-not-emptiness contract:
 // an empty-but-configured allowlist is refused, an absent one launches.
 func TestUnenforcedEgressLaunchesWithoutAPolicy(t *testing.T) {
-	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
+	fake := &egressMarkerFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
 	rt := NewAgentRuntime(fake)
 	spec := specWithCreds(true)
 	spec.Egress = EgressPolicy{}
@@ -407,7 +407,7 @@ func TestUnenforcedEgressLaunchesWithoutAPolicy(t *testing.T) {
 // absence of a policy. Keying the refusal on len(Hosts()) would reject a looser
 // policy while silently discarding the tightest one.
 func TestUnenforcedEgressRefusesAConfiguredEmptyAllowlist(t *testing.T) {
-	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
+	fake := &egressMarkerFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
 	rt := NewAgentRuntime(fake)
 	spec := specWithCreds(true)
 	spec.Egress = MustAllowEgress()
@@ -426,7 +426,7 @@ func TestUnenforcedEgressRefusesAConfiguredEmptyAllowlist(t *testing.T) {
 // an arming tier — including one that armed in-guest — reads "armed". A tier
 // that self-armed must never be reported as unenforced.
 func TestEgressPostureReportsUnenforcedOnlyForUnenforceableTiers(t *testing.T) {
-	unenforced := NewAgentRuntime(&unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true})
+	unenforced := NewAgentRuntime(&egressMarkerFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true})
 	if got := unenforced.EgressPosture(); got != EgressPostureUnenforced {
 		t.Errorf("unenforceable tier: EgressPosture() = %q, want %q", got, EgressPostureUnenforced)
 	}
@@ -443,7 +443,7 @@ func TestEgressPostureReportsUnenforcedOnlyForUnenforceableTiers(t *testing.T) {
 
 	// The marker is a question, not a type tag: implementing it while answering
 	// false is an enforcing backend.
-	answersFalse := NewAgentRuntime(&unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: false})
+	answersFalse := NewAgentRuntime(&egressMarkerFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: false})
 	if got := answersFalse.EgressPosture(); got != EgressPostureArmed {
 		t.Errorf("a backend reporting EgressUnenforced()=false: EgressPosture() = %q, want %q", got, EgressPostureArmed)
 	}
