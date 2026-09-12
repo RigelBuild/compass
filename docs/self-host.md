@@ -218,27 +218,28 @@ set in the provider under the `SERVER_`-prefixed spelling. Compass declares a
 name only when the feature that needs it is configured, so you only provision
 the rows for the lanes you run.
 
-| Flag | Holds | Default name | Required when |
-| --- | --- | --- | --- |
-| `--forge-app-key-secret` | Primary GitHub App PEM private key | none | GitHub App is configured (`--forge-app-id` set) |
-| `--forge-app-webhook-secret` | Primary App webhook signing secret | none | GitHub App is configured |
-| `--forge-reviewer-app-key-secret` | Reviewer GitHub App PEM private key | none | Reviewer App is configured (`--forge-reviewer-app-id` set) |
-| `--forge-linear-client-id` | Linear OAuth client id | `LINEAR_FORGE_CLIENT_ID` (see below) | Flag or env set, for both of the pair |
-| `--forge-linear-client-secret` | Linear OAuth client secret | `LINEAR_FORGE_CLIENT_SECRET` (see below) | Flag or env set, for both of the pair |
-| `--forge-linear-webhook-secret` | Linear webhook signing secret | none | `--forge-linear-webhook-secret` is set |
+| Flag | Holds | Required when |
+| --- | --- | --- |
+| `--forge-app-key-secret` | Primary GitHub App PEM private key | GitHub App is configured (`--forge-app-id` set) |
+| `--forge-app-webhook-secret` | Primary App webhook signing secret | GitHub App is configured |
+| `--forge-reviewer-app-key-secret` | Reviewer GitHub App PEM private key | Reviewer App is configured (`--forge-reviewer-app-id` set) |
+| `--forge-linear-client-id` | Linear OAuth client id | Set, together with the client secret |
+| `--forge-linear-client-secret` | Linear OAuth client secret | Set, together with the client id |
+| `--forge-linear-webhook-secret` | Linear webhook signing secret | Set |
 
 Each flag also reads an environment variable when the flag is unset:
 `$COMPASS_FORGE_APP_KEY_SECRET` and so on, one per row.
 
-The two Linear rows have a trap worth reading before you provision them.
-Their built-in default names apply only when compass looks a value *up*; they
-do not switch the Linear lane on. Compass declares the pair only when both
-names are set explicitly, by flag or by
+Set every name you intend to use. The two Linear rows have built-in default
+names in the code, but those apply only when compass looks a value *up* --
+they do not switch the Linear lane on, so do not rely on them. Compass
+declares the pair only when both names are set explicitly, by flag or by
 `$COMPASS_FORGE_LINEAR_CLIENT_ID` / `$COMPASS_FORGE_LINEAR_CLIENT_SECRET`
 (`declareServerSecretNames` gates on the raw config, `go/server/serve.go`).
-Setting a provider value under `SERVER_LINEAR_FORGE_CLIENT_ID` and nothing
-else leaves Linear off, with no boot error to tell you. Set the flag or the
-environment variable too.
+Set a provider value and no flag and Linear stays off silently:
+`buildLinearTokenSource` returns no token source, and its half-configured
+warning needs exactly one of the two to resolve, so neither resolving logs
+nothing at all.
 
 ### Choosing a provider
 
