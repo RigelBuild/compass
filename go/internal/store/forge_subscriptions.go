@@ -221,16 +221,18 @@ func (s *Store) AgentForgeSubscriptionsForArtifact(ctx context.Context, provider
 // ForgeNotifySubscriber is one subscriber the notify path fans a change out to:
 // the subscription id (the ack correlation key), the owning agent, that
 // subscriber's last-notified DeliveredRevision (the router suppresses a
-// re-notify when the change's revision equals it), and — for a collapsed
-// container target whose subscribers span multiple Linear projects — the
-// subscriber's own Project, so the router matches a project-P change to only
-// its project-P subscribers ("" for artifact/GitHub subs). Struct shape frozen
-// by the design record (RIG-2732 T3, §ListForgeNotifyTargets).
+// re-notify when the change's revision equals it), the subscriber's own Project
+// (for a collapsed container target spanning multiple Linear projects, so the
+// router matches a project-P change to only its project-P subscribers; "" for
+// artifact/GitHub subs), and its subscription Scope, which the router's
+// self-origin suppression consults to gate the artifact-scope-only cursor
+// advance apart from a container-scope skip.
 type ForgeNotifySubscriber struct {
 	SubscriptionID    string
 	AgentAccountID    AccountID
 	DeliveredRevision string
 	Project           string
+	Scope             ForgeSubscriptionScope
 }
 
 // ForgeArtifactCursor is one row of forge_artifact_cursors: the shared
@@ -304,6 +306,7 @@ func (s *Store) SubscribersForArtifact(ctx context.Context, provider ForgeProvid
 			AgentAccountID:    AccountID(r.AgentAccountID),
 			DeliveredRevision: r.DeliveredRevision,
 			Project:           r.Project,
+			Scope:             ForgeSubscriptionScope(r.Scope),
 		})
 	}
 	return out, nil
@@ -373,6 +376,7 @@ func (s *Store) ListForgeNotifyTargets(ctx context.Context, provider ForgeProvid
 			AgentAccountID:    AccountID(r.AgentAccountID),
 			DeliveredRevision: r.DeliveredRevision,
 			Project:           r.Project,
+			Scope:             ForgeSubscriptionScope(r.Scope),
 		})
 	}
 	return out, nil
