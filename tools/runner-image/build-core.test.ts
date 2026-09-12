@@ -96,16 +96,32 @@ describe("outputSpec", () => {
 		);
 	});
 
+	test("push exports to the registry, since buildctl has no push verb", () => {
+		expect(outputSpec("push", "ghcr.io/x/y:git-abc", "/tmp/out")).toBe(
+			"type=image,name=ghcr.io/x/y:git-abc,push=true,rewrite-timestamp=true",
+		);
+	});
+
+	test("only push uploads — a local mode must never reach a registry", () => {
+		expect(outputSpec("image", "ghcr.io/x/y:t", "/tmp/out")).not.toContain(
+			"push=true",
+		);
+		expect(outputSpec("oci", "ghcr.io/x/y:t", "/tmp/out")).not.toContain(
+			"push=true",
+		);
+	});
+
 	// The digest-stability property the publish lane depends on: without this,
 	// two builds of a bit-identical staged tree still export different layer
-	// digests, because the context's mtimes ride into the layer tar.
-	test("both modes rewrite layer timestamps, so a rebuild is digest-stable", () => {
-		expect(outputSpec("oci", "t", "/tmp/out")).toContain(
-			"rewrite-timestamp=true",
-		);
-		expect(outputSpec("image", "t", "/tmp/out")).toContain(
-			"rewrite-timestamp=true",
-		);
+	// digests, because the context's mtimes ride into the layer tar. The PUSH
+	// mode matters most — a push stamped differently than the local build
+	// publishes a digest no rebuild can reproduce.
+	test("every mode rewrites layer timestamps, so a rebuild is digest-stable", () => {
+		for (const mode of ["oci", "image", "push"] as const) {
+			expect(outputSpec(mode, "t", "/tmp/out")).toContain(
+				"rewrite-timestamp=true",
+			);
+		}
 	});
 
 	test("oci mode never names the tag, so a dev tag cannot leak into a layout build", () => {

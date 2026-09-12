@@ -55,19 +55,26 @@ const IMAGE_PLATFORM = "linux/amd64";
 
 function parseArgs(argv: readonly string[]): {
 	tag: string;
-	mode: "oci" | "image";
+	mode: "oci" | "image" | "push";
+	metadataFile: string | undefined;
 } {
 	let tag = "compass-runner:dev";
-	let mode: "oci" | "image" = "oci";
+	let mode: "oci" | "image" | "push" = "oci";
+	let metadataFile: string | undefined;
 	for (let i = 0; i < argv.length; i += 1) {
 		const arg = argv[i];
 		const value = argv[i + 1];
 		if (arg === "--tag" && value !== undefined) {
 			tag = value;
 			i += 1;
+		} else if (arg === "--metadata-file" && value !== undefined) {
+			metadataFile = value;
+			i += 1;
 		} else if (arg === "--output" && value !== undefined) {
-			if (value !== "oci" && value !== "image") {
-				console.error(`--output must be 'oci' or 'image', got: ${value}`);
+			if (value !== "oci" && value !== "image" && value !== "push") {
+				console.error(
+					`--output must be 'oci', 'image' or 'push', got: ${value}`,
+				);
 				process.exit(2);
 			}
 			mode = value;
@@ -77,7 +84,7 @@ function parseArgs(argv: readonly string[]): {
 			process.exit(2);
 		}
 	}
-	return { tag, mode };
+	return { tag, mode, metadataFile };
 }
 
 /** Run a nix build and return its realised out-paths in argument order. Exits on
@@ -127,7 +134,7 @@ function makeWritable(dir: string): void {
 	}
 }
 
-const { tag, mode } = parseArgs(process.argv.slice(2));
+const { tag, mode, metadataFile } = parseArgs(process.argv.slice(2));
 
 // The platform below is a manifest LABEL; BuildKit applies it without checking
 // what the COPY'd files actually are. Today only flake.nix's systems list keeps
@@ -255,14 +262,20 @@ symlinkSync(
 // ---------------------------------------------------------------------------
 mkdirSync(ociDir, { recursive: true });
 console.error(`runner-image: building ${tag}…`);
+// `--metadata-file` is how the digest leaves this process: the exporter writes
+// containerimage.digest, which for a push is what the registry accepted. The
+// publish lane asserts that against a prior local build.
 const build = spawnSync(
 	"buildctl",
-	buildctlArgs(
-		imageDir,
-		outputs,
-		IMAGE_PLATFORM,
-		outputSpec(mode, tag, ociDir),
-	),
+	[
+		...buildctlArgs(
+			imageDir,
+			outputs,
+			IMAGE_PLATFORM,
+			outputSpec(mode, tag, ociDir),
+		),
+		...(metadataFile ? ["--metadata-file", metadataFile] : []),
+	],
 	{ cwd: workspaceRoot, stdio: "inherit" },
 );
 process.exit(build.status ?? 1);
