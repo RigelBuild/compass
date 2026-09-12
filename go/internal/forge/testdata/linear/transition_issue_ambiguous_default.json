@@ -1,0 +1,44 @@
+{
+	"name": "transition_issue_ambiguous_default",
+	"request": {
+		"op": "transition_issue_state",
+		"repo": "RIG",
+		"number": 42,
+		"input": {
+			"state": "closed"
+		},
+		"method": "POST",
+		"path": "/graphql"
+	},
+	"response": {
+		"prelude": [
+			{
+				"status": 200,
+				"body": { "data": { "teams": { "nodes": [{ "id": "team-uuid-1" }] } } }
+			}
+		],
+		"status": 200,
+		"body": {
+			"data": {
+				"workflowStates": {
+					"nodes": [
+						{ "id": "state-todo", "name": "Todo", "type": "unstarted" },
+						{ "id": "state-done", "name": "Done", "type": "completed" },
+						{ "id": "state-shipped", "name": "Shipped", "type": "completed" }
+					]
+				}
+			}
+		},
+		"wantError": {
+			"status": 422,
+			"contains": [
+				"RIG",
+				"2 workflow states of type",
+				"completed",
+				"\"Done\"",
+				"\"Shipped\"",
+				"pass an explicit workflow state"
+			]
+		}
+	}
+}

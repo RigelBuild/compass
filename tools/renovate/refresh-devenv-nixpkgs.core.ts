@@ -9,8 +9,8 @@
 // The catalog key whose pin mirrors the baked biome linter (package.json
 // workspaces.catalog). Exact-version pin today; the dev-shell parity story
 // keeps it string-equal to the biome baked from the devenv-nixpkgs channel
-// (devenv.nix). Compass bakes markdownlint-cli2 from the same channel, but it
-// carries no catalog pin (package.json has no markdownlint-cli2 entry), so the
+// (devenv.nix). Compass bakes rumdl from the same channel, but it
+// carries no catalog pin (package.json has no rumdl entry), so the
 // relock rewrites this one pin only.
 export const BIOME_CATALOG_KEY = "@biomejs/biome";
 

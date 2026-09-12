@@ -1,0 +1,43 @@
+{
+	"name": "transition_issue_duplicate_name",
+	"request": {
+		"op": "transition_issue_state",
+		"repo": "RIG",
+		"number": 42,
+		"input": {
+			"state": "closed",
+			"workflowState": "Done"
+		},
+		"method": "POST",
+		"path": "/graphql"
+	},
+	"response": {
+		"prelude": [
+			{
+				"status": 200,
+				"body": { "data": { "teams": { "nodes": [{ "id": "team-uuid-1" }] } } }
+			}
+		],
+		"status": 200,
+		"body": {
+			"data": {
+				"workflowStates": {
+					"nodes": [
+						{ "id": "state-todo", "name": "Todo", "type": "unstarted" },
+						{ "id": "state-done-a", "name": "Done", "type": "completed" },
+						{ "id": "state-done-b", "name": "Done", "type": "completed" }
+					]
+				}
+			}
+		},
+		"wantError": {
+			"status": 422,
+			"contains": [
+				"RIG",
+				"2 workflow states named",
+				"Done",
+				"does not identify one"
+			]
+		}
+	}
+}

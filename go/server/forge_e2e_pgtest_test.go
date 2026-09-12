@@ -272,7 +272,7 @@ func TestForgeSubmitReviewOverTheWire(t *testing.T) {
 	resp, err := w.supervisorClient.Forge(ctx, connect.NewRequest(&compassv1internal.ForgeCallRequest{
 		CallId: "fc-review-1",
 		Call: &compassv1internal.ForgeCallRequest_SubmitReview{SubmitReview: &compassv1internal.SubmitReviewRequest{
-			Repo: forgeE2ERepo, PullNumber: 7, Verdict: "approve", Body: "looks good",
+			Repo: forgeE2ERepo, PrNumber: 7, Verdict: "approve", Body: "looks good",
 			Comments: []*compassv1internal.ReviewCommentInput{{Path: "a.go", Line: 3, Body: forgedInline}},
 		}},
 	}))

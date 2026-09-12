@@ -65,14 +65,15 @@ tasks:
     options:
       runInCI: false
 
-  # markdownlint-cli2 reads /.markdownlint.json (rules) + /.markdownlint-cli2.jsonc
-  # (globs, gitignore).
+  # rumdl reads /.rumdl.toml (rules + exclude). It prunes `exclude` before
+  # reading any file, so the policy lives entirely in that config — no glob
+  # operands, no --config chain.
   markdownlint:
-    command: 'markdownlint-cli2'
-    inputs: ['**/*.md', '!**/node_modules/**', '/.markdownlint.json', '/.markdownlint-cli2.jsonc']
+    command: 'rumdl check .'
+    inputs: ['**/*.md', '!**/node_modules/**', '/.rumdl.toml']
     options:
-      # Never cache the whole-repo gate. Runs the nixpkgs `markdownlint-cli2` on
-      # PATH (provided by devenv), not `bunx`.
+      # Never cache the whole-repo gate. Runs the nixpkgs `rumdl` on PATH
+      # (provided by devenv), not `bunx`.
       cache: false
 
   ci:

@@ -982,6 +982,61 @@ CREATE UNIQUE INDEX forge_authored_artifacts_request_memo_idx
 CREATE INDEX forge_authored_artifacts_agent_idx
     ON forge_authored_artifacts (agent_account_id);
 
+-- One row per forge coordinate an AGENT-DRIVEN state transition last landed on
+-- (compass-forge-state-transition design.md §Actor attribution): the consumable
+-- memo that carries the acting agent's identity across the write→webhook gap.
+-- A transition has no body, so the DL-050 owner header cannot attribute it, and
+-- every Server-credential write presents the shared App bot login — durable
+-- server-side correlation is the only channel that can name WHICH agent drove
+-- the transition. The write chokepoint upserts this row strictly AFTER a
+-- provider success (a rejected transition leaves no memo); the notify lane
+-- resolves a STATE event's actor by consuming it.
+--
+-- Coordinate-aligned to forge_authored_artifacts: the SAME (tenant_id,
+-- forge_provider, forge_host, repo, kind, number) PK, so a re-transition of one
+-- artifact re-lands on the key (latest transition wins) rather than accreting
+-- rows. This table is deliberately NOT forge_authored_artifacts itself: that
+-- row is a write-once AUTHORSHIP fact whose DO UPDATE would destroy the
+-- original create's F3 idempotency memo.
+--
+-- tenant_id is load-bearing, not incidental: two tenants legitimately hold the
+-- SAME forge coordinate (TestForgeAuthoredTwoTenantsSameCoordinate), so without
+-- it one tenant's memo could attribute another tenant's STATE event.
+--
+-- state is the APPLIED PORTABLE target, matched against the echoed event's
+-- state — never a provider-native workflow-state name, hence CHECK IN
+-- ('open', 'closed'). consumed_at NULL means "unconsumed"; the consume is a
+-- single UPDATE … RETURNING that stamps it, so one memo attributes at most one
+-- event and a concurrent second reader matches nothing. written_at is the
+-- freshness anchor: a memo older than the reader's bound resolves no actor
+-- (fail-open — an unattributed self-transition costs one redundant wake, never
+-- a lost cross-agent signal). written_at is NOT this row's local mutation time
+-- and is deliberately distinct from the created_at/updated_at pair below: it is
+-- the chokepoint-supplied anchor ConsumeStateTransition compares against its
+-- freshness bound, so it is set explicitly by the writer, never by the trigger.
+CREATE TABLE forge_state_transitions (
+    forge_provider   SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
+    forge_host       TEXT     NOT NULL,
+    repo             TEXT     NOT NULL,
+    kind             SMALLINT NOT NULL CHECK (kind IN (1, 2)),
+    number           BIGINT   NOT NULL,
+    state            TEXT     NOT NULL CHECK (state IN ('open', 'closed')),
+    -- SINGLE-column FK, deliberately diverging from the composite
+    -- (agent_account_id, owner_user_id) FK the otherwise field-for-field
+    -- sibling forge_authored_artifacts carries: that row records an
+    -- AUTHORSHIP pair whose (agent, that-agent's-owner) halves must be
+    -- validated together, while this memo records only the ACTING agent, so
+    -- there is no pair to validate. account_id is agent_accounts' PK, hence
+    -- globally unique, so the single-column reference is fully constrained.
+    agent_account_id TEXT     NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    written_at       TIMESTAMPTZ NOT NULL,
+    consumed_at      TIMESTAMPTZ,  -- NULL = unconsumed; stamped by the one-shot consume
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    tenant_id        TEXT     NOT NULL DEFAULT current_setting('compass.tenant_id', TRUE),
+    PRIMARY KEY (tenant_id, forge_provider, forge_host, repo, kind, number)
+);
+
 -- linear_agent_sessions: the Linear Agent Session ↔ Compass conversation
 -- association (compass-linear-agent-responder design.md §Part 2 / §T3). One row
 -- per Linear AgentSession the responder has handled: the resolved Manager, that
@@ -1109,7 +1164,8 @@ DECLARE
         'agent_delivery_cursors', 'owed_mentions', 'agent_activity',
         'agent_forge_subscriptions', 'forge_authored_artifacts',
         'linear_agent_sessions',
-        'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors'
+        'issues', 'forge_repo_subscriptions', 'forge_artifact_cursors',
+        'forge_state_transitions'
     ];
 BEGIN
     FOREACH t IN ARRAY tenant_tables LOOP
@@ -1189,6 +1245,7 @@ DECLARE
         'agent_config_bundle',
         'model_registry',
         'forge_repo_subscriptions',
+        'forge_state_transitions',
         'server_secrets',
         'server_key_state'
     ];

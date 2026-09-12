@@ -405,7 +405,7 @@ Order: T1/T3 (UI-in-up — the compass-critical path), T2 (the direct-dial
 streaming smoke), then T4/T5/T6 (macOS), T7 (gate-hazard docs, small, can
 land any time). T3–T5 rebase onto RIG-1983 per GC-1.
 
-### T1 — Wire the UI's base URL to the dev-http door  (owner: compass-repo)
+### T1 — Wire the UI's base URL to the dev-http door (owner: compass-repo)
 
 Direct-dial per §A1 (decided): a one-line env wire —
 `VITE_COMPASS_BASE_URL = "http://127.0.0.1:${toString
@@ -435,7 +435,7 @@ carries no proxy work.)
   compass-ui:dev` task (`apps/ui/moon.yml:11-12`, exists today); T3 is that
   value's placement into the `devenv up` process definition.
 
-### T2 — UI streaming e2e smoke against the dev door  (owner: compass-repo)
+### T2 — UI streaming e2e smoke against the dev door (owner: compass-repo)
 
 Direct-dial (decided) drops the proxy-streaming leg this task originally
 existed to verify — there is no middlebox to prove unbuffered. What remains
@@ -504,7 +504,7 @@ compass-ui:dev` (or the T3 `devenv up` `compass-ui` process), load
 live-updates as the stream tails — the browser dialing the dev door directly,
 no middlebox in the path.
 
-### T3 — `compass-ui` process in `devenv up`  (owner: compass-repo)
+### T3 — `compass-ui` process in `devenv up` (owner: compass-repo)
 
 Add the `compass-ui` process per §A1 inside the existing Linux guard: `exec
 bunx vite` from `cwd = ${config.devenv.root}/apps/ui`, env
@@ -524,7 +524,7 @@ cutover leaves.**
   kill compass-server and verify the UI process survives (no spurious
   dependency beyond start ordering).
 
-### T4 — macOS native services: relax the guards  (owner: platform)
+### T4 — macOS native services: relax the guards (owner: platform)
 
 Per §A2a: unguard `services.postgres`, `compass-server` (+ `compass-ui`),
 `dogfood:gen-cert`, `dogfood:mint-runner-token`; keep `compass-runner`,
@@ -545,7 +545,7 @@ onto RIG-1983 (GC-1).**
   `devenv processes list` before/after); on a mac, `devenv up` reaches
   compass-ui ready and the T1 probe answers.
 
-### T5 — macOS runner loop in the Linux VM  (owner: compass-runner)
+### T5 — macOS runner loop in the Linux VM (owner: compass-runner)
 
 Per §A2b: a darwin-guarded `dogfood:vm-runner` task that (a) asserts a
 running `podman machine` (fail-fast with setup instructions), (b)
@@ -580,7 +580,7 @@ guard move; both tasks' interfaces acknowledge the co-edit).
   with the VM stopped, the task fails with the instruction message, not a
   hang.
 
-### T6 — Darwin native-shell entrypoint + `compass-go:app` build task  (owner: compass-app)
+### T6 — Darwin native-shell entrypoint + `compass-go:app` build task (owner: compass-app)
 
 Per §A2c: retag `main.go` to `linux && gtk3`, and the welded trio
 `embedded.go` + `lifecycle.go` + `preflight_adapters.go` (all `unix &&
@@ -615,7 +615,7 @@ through to it.
   (the main.go:10-12 posture: "the window points at a daemon a developer
   starts by hand"). Existing Go gate battery (`compass-go:ci`) green.
 
-### T7 — Gate-hazard documentation  (owner: compass-repo; small, independent)
+### T7 — Gate-hazard documentation (owner: compass-repo; small, independent)
 
 Per §A3: extend the `hk.pkl` header comment (hk.pkl:1-17) with the
 temp-worktree drift hazard, the interim workaround (verify inside the devenv

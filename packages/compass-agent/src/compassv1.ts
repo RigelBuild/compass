@@ -113,6 +113,11 @@ export {
 	SubscribeForgeRequestSchema,
 	type SubscribeForgeResponse,
 	SubscribeForgeResponseSchema,
+	// The two forge state-transition arms (RIG-3331): both requests are
+	// all-scalar and reuse `ForgeCallResult.issue` / `.pull_request`, so no new
+	// forge domain type rides the wire.
+	TransitionIssueStateRequestSchema,
+	TransitionPullRequestStateRequestSchema,
 	UnsubscribeForgeRequestSchema,
 	type UnsubscribeForgeResponse,
 	UnsubscribeForgeResponseSchema,

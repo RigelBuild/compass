@@ -1,0 +1,106 @@
+# rumdl — the repo's markdown lint gate (RIG-3663), run by moon `root:markdownlint`.
+#
+# This file is the SINGLE place the markdown rule policy lives. rumdl replaced
+# markdownlint-cli2 as a parity swap: same enforcement, one Rust binary. rumdl
+# reads markdownlint config files (and `.markdownlint-cli2.jsonc` outranks
+# `.markdownlint.json`), so both were deleted in the same change — leaving one
+# alongside this file would silently re-enable MD013 and drop the exclusions.
+#
+# The old cli2 gate passed its exclusions as command-line globs because cli2's
+# config `ignores` applied only AFTER every matched file was read into memory.
+# rumdl prunes on `exclude` before it reads anything, so the whole exclusion set
+# lives here as plain config rather than a `--config` chain on the moon line,
+# keeping the policy reviewable in one place.
+
+[global]
+# Each excluded tree is an agent-context PAYLOAD, not docsite prose — loaded
+# verbatim into a model's context, its shape fixed by design, so prose rules
+# fight its purpose:
+#   - config/prompts + config/agents — the config-delivery bundle
+#     (packages/compass-agent/src/config-reader.ts), shaped by the frozen
+#     manager-prompt record (the `<compass-manager>` wrapper, atx role headings
+#     matching OMP's own block-0).
+#   - go/server/setup_thread.md — the root Manager's setup-thread prompt,
+#     //go:embed-ed as setupThreadBody (go/server/serve_seed.go) and seeded
+#     verbatim; its conversational first line is by design.
+#   - node_modules — dependency trees.
+#
+# KEEP config/prompts + config/agents + setup_thread IN SYNC with the docsite
+# gather's own exclusion source (apps/eng-docs/scripts/gather.ts), which now
+# reads this file's `exclude`.
+exclude = [
+  "config/prompts/**",
+  "config/agents/**",
+  "go/server/setup_thread.md",
+  "**/node_modules/**",
+]
+
+# Line length: prose in this repo wraps by meaning, not column. Carried over
+# from the deleted `.markdownlint.json`, which set exactly this one rule.
+[MD013]
+enabled = false
+
+# Fence style: rumdl's default is `consistent`, which flags a file's FIRST
+# fenced block. Pinning `fenced` is a config fix, not a disable — the repo uses
+# fenced blocks throughout, and this clears 53 findings with no rule turned off.
+[MD046]
+style = "fenced"
+
+# ── MD057 (relative-link existence) is ENABLED: adopted with this swap ──
+# A rule markdownlint never had. It stays on repo-wide to catch genuine broken
+# relative links; the per-file exemptions below are its only carve-outs.
+#
+# Every current finding (28 across 11 records) is the same house convention: a
+# design record's `## Ledger delta` section quotes its paste-ready
+# `DECISIONS.md` row, whose link is written relative to the ledger's directory
+# (`docs/designs/`) — e.g. `[board view §Approach](ui/compass-board-view/…)`.
+# That link resolves correctly from `DECISIONS.md` (which lives in
+# `docs/designs/` and passes MD057), but rumdl resolves a relative link from the
+# RECORD's own directory, where the ledger-relative path does not exist. The
+# domain-prefixed and bare forms both misfire this way — it is the resolution
+# root, not a missing segment. So these are false positives from the record's
+# vantage, not broken links: the authored ledger copies resolve.
+#
+# `[per-file-ignores]` scopes the MD057 exemption to exactly those records,
+# leaving MD057 live on every other file (and every OTHER rule live on these).
+# These are frozen/Active records; the Ledger-delta rows are append-only, so a
+# per-file exemption is the right tool rather than editing the rows.
+[per-file-ignores]
+"docs/designs/agent/compass-agent-trees/design.md" = ["MD057"]
+"docs/designs/infra/ci/compass-ci-check-naming/design.md" = ["MD057"]
+"docs/designs/server/compass-comms-multi-actor-test-coverage/design.md" = ["MD057"]
+"docs/designs/server/compass-forge-write-path/design.md" = ["MD057"]
+"docs/designs/server/compass-issue-model/design.md" = ["MD057"]
+"docs/designs/server/compass-linear-agent-responder/design.md" = ["MD057"]
+"docs/designs/server/compass-server-ownership-layer-amendment/design.md" = ["MD057"]
+"docs/designs/ui/compass-board-view/design.md" = ["MD057"]
+"docs/designs/ui/compass-native-packaging/design.md" = ["MD057"]
+"docs/designs/ui/compass-sidebar-pins/design.md" = ["MD057"]
+"docs/designs/ui/compass-sidebar-pins-unreachable-amendment/design.md" = ["MD057"]
+
+# False: flags a list item's own continuation line (indented prose wrapping one
+# bullet) as an unpadded list — the auto-fix inserts a blank line mid-sentence.
+# 6 findings, all this pattern.
+[MD032]
+enabled = false
+
+# False: flags the paragraph break inside a multi-paragraph list item as an
+# "unexpected blank line between list items"; the blank is required to keep the
+# item's second paragraph. 17 findings.
+[MD076]
+enabled = false
+
+# False: flags continuation lines under deeply-nested bullets. 12 findings.
+[MD077]
+enabled = false
+
+# False: reads a TypeScript union type in prose (e.g. `"files" | "vcs" | "pr"`)
+# as pipe-formatted table rows. 1 finding.
+[MD075]
+enabled = false
+
+# False: pairs an emphasis marker ACROSS an inline code span — an odd count of
+# literal `_` in prose (a snake_case `filterAttrs` example) marries markers on
+# opposite sides of a code span. 1 finding.
+[MD049]
+enabled = false

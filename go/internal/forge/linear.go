@@ -28,6 +28,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,6 +44,28 @@ const (
 	// linearDefaultEndpoint is the public Linear GraphQL endpoint; LinearConfig.Host
 	// overrides it (the whole endpoint URL, not just a hostname).
 	linearDefaultEndpoint = "https://api.linear.app/graphql"
+
+	// gqlInputKey is the GraphQL variable name every Linear mutation in this
+	// file binds its input object to. Extracted because goconst flags the
+	// third occurrence; applied at ALL of them, so a raw "input" appearing
+	// here later is a different key rather than a missed conversion.
+	gqlInputKey = "input"
+
+	// linearStaleStateMarker is the substring Linear's GraphQL error message
+	// carries when a mutation names a workflow state that no longer exists.
+	// It is the ONE HTTP-200 rejection invalidate-and-retry-once can fix, so
+	// TransitionIssueState's retry gate keys on it rather than on any
+	// GraphQL-level rejection.
+	linearStaleStateMarker = "Entity not found: WorkflowState"
+
+	// workflowStatePageCap bounds the single unpaginated workflowStates query.
+	// 250 is far above any real board (Rigel has eight), so a FULL page is
+	// read as truncation and rejected rather than resolved against: a
+	// truncated list would make a by-name resolve reject a state that really
+	// exists, and could make the default map resolve a candidate that is only
+	// apparently sole — the silent wrong-pick §The cross-provider state model
+	// exists to make structurally impossible.
+	workflowStatePageCap = 250
 
 	// linearBodyLimit is the max issue/comment body size (BYTES) the Service
 	// enforces before a Linear write. Linear does not publish a single pinned
@@ -68,6 +91,21 @@ const (
 	varTeam   = "team"
 	varFilter = "filter"
 	varNumber = "number"
+
+	// Linear workflow-state `type` values the default mapping resolves
+	// against. They are a subset of the SDL list quoted at
+	// linearClosedStateTypes; only these three are default-map targets.
+	linearTypeCompleted = "completed"
+	linearTypeUnstarted = "unstarted"
+	linearTypeBacklog   = "backlog"
+
+	// workflowStateTTL bounds how long a team's workflow-state list is reused.
+	// Unlike a team UUID, a workflow state is renamed, reordered and deleted
+	// from the Linear UI, so this cache expires where teamIDs never does. The
+	// TTL is a bound on how stale a resolution may be BEFORE the
+	// invalidate-and-retry-once path recovers it, not the only recovery — so a
+	// few minutes trades a rare extra query against a long staleness window.
+	workflowStateTTL = 5 * time.Minute
 )
 
 // linearClosedStateTypes are the Linear workflow-state `type` values that map
@@ -96,10 +134,10 @@ type Linear struct {
 	client *http.Client
 	log    *slog.Logger
 
-	// mu guards resetAt, teamIDs, and the actor-probe fields. The client may be
-	// shared between the poll driver and write-RPC goroutines (OQ-6), so all
-	// three are concurrent read-modify-write; mu is held only around the fast
-	// state touches, never across an HTTP round-trip.
+	// mu guards resetAt, teamIDs, workflowStates, and the actor-probe fields.
+	// The client may be shared between the poll driver and write-RPC goroutines
+	// (OQ-6), so all are concurrent read-modify-write; mu is held only around
+	// the fast state touches, never across an HTTP round-trip.
 	mu sync.Mutex
 
 	// resetAt is the rate-budget gate (see GitHub.resetAt). Non-zero and before
@@ -109,6 +147,14 @@ type Linear struct {
 	// teamIDs caches Linear team key -> team UUID; a key is resolved once via a
 	// teams query and reused for every subsequent CreateIssue.
 	teamIDs map[string]string
+
+	// workflowStates caches a team key -> that team's workflow states, with a
+	// TTL. It is DELIBERATELY separate from teamIDs: a team UUID is immutable,
+	// so teamIDs never invalidates, while a workflow state is renamed,
+	// reordered and deleted from the Linear UI. Reusing the invalidation-free
+	// cache would wedge every later transition to a renamed state until the
+	// process restarts.
+	workflowStates map[string]workflowStateCacheEntry
 
 	// probeDone/actorCapable cache the one-time actor-capability probe (A4).
 	// Once probeDone, actorCapable governs whether writes set createAsUser.
@@ -133,12 +179,13 @@ func NewLinear(cfg LinearConfig) *Linear {
 		log = slog.Default()
 	}
 	return &Linear{
-		host:    cfg.Host,
-		token:   cfg.Token,
-		client:  client,
-		log:     log,
-		teamIDs: make(map[string]string),
-		now:     time.Now,
+		host:           cfg.Host,
+		token:          cfg.Token,
+		client:         client,
+		log:            log,
+		teamIDs:        make(map[string]string),
+		workflowStates: make(map[string]workflowStateCacheEntry),
+		now:            time.Now,
 	}
 }
 
@@ -182,7 +229,7 @@ func (l *Linear) CreateIssue(ctx context.Context, repo string, in CreateIssue) (
 			Issue linearIssue `json:"issue"`
 		} `json:"issueCreate"`
 	}
-	if err := l.doGraphQL(ctx, query, map[string]any{"input": input}, &out); err != nil {
+	if err := l.doGraphQL(ctx, query, map[string]any{gqlInputKey: input}, &out); err != nil {
 		return Issue{}, fmt.Errorf("forge: linear create issue %q: %w", repo, err)
 	}
 	return out.IssueCreate.Issue.toIssue(), nil
@@ -209,7 +256,7 @@ func (l *Linear) CommentOnIssue(ctx context.Context, repo string, number uint64,
 			Comment linearComment `json:"comment"`
 		} `json:"commentCreate"`
 	}
-	if err := l.doGraphQL(ctx, query, map[string]any{"input": input}, &out); err != nil {
+	if err := l.doGraphQL(ctx, query, map[string]any{gqlInputKey: input}, &out); err != nil {
 		return Comment{}, fmt.Errorf("forge: linear comment on issue %q#%d: %w", repo, number, err)
 	}
 	return out.CommentCreate.Comment.toComment(), nil
@@ -285,6 +332,75 @@ func (l *Linear) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]
 		after = next
 	}
 	return all, nil
+}
+
+// TransitionIssueState moves issue number in the team keyed by repo to the
+// workflow state in resolves to, returning the UPDATED issue (the mutation
+// response IS the new truth). Resolution order is team -> the team's workflow
+// states -> the target state (by NAME when in.WorkflowState is set, by the
+// default mapping otherwise) -> the issue UUID -> the issueUpdate mutation, so
+// every rejection arm fails BEFORE the issue is touched. in.CloseReason is the
+// GitHub refinement, screened at the server arm and ignored here.
+//
+// A mutation that fails against a state list served from cache is retried ONCE
+// against a freshly fetched list: a state renamed or deleted in the Linear UI
+// between the resolve and the write is exactly the staleness the TTL cache
+// cannot rule out, and re-resolving recovers it in-flight.
+func (l *Linear) TransitionIssueState(ctx context.Context, repo string, number uint64, in TransitionState) (Issue, error) {
+	fail := func(err error) (Issue, error) {
+		return Issue{}, fmt.Errorf("forge: linear transition issue %q#%d: %w", repo, number, err)
+	}
+
+	states, cached, err := l.workflowStatesFor(ctx, repo)
+	if err != nil {
+		return fail(err)
+	}
+	stateID, err := resolveWorkflowState(repo, states, in)
+	if err != nil {
+		return fail(err)
+	}
+	issueID, err := l.resolveIssueID(ctx, repo, number)
+	if err != nil {
+		return fail(err)
+	}
+
+	issue, err := l.issueUpdateState(ctx, issueID, stateID)
+	if err == nil {
+		return issue, nil
+	}
+	// Staleness recovery: the ONLY rejection this retry can fix is a state id
+	// Linear no longer knows, against a CACHED resolution. Linear answers that
+	// on HTTP 200 with linearStaleStateMarker in the message; every OTHER
+	// HTTP-200 GraphQL rejection (a permission denial, an issue-validation
+	// error, a Linear-side internal error) is refused for a reason a refetch
+	// cannot change, and — like a rate limit, an auth failure or a transport
+	// fault — must never burn the one retry on a re-issued mutation Linear
+	// already declined.
+	se, isStatus := errors.AsType[*StatusError](err)
+	if !cached || !isStatus || se.Status != http.StatusOK ||
+		!strings.Contains(se.Message, linearStaleStateMarker) {
+		return fail(err)
+	}
+	l.invalidateWorkflowStates(repo)
+	fresh, _, err := l.workflowStatesFor(ctx, repo)
+	if err != nil {
+		return fail(err)
+	}
+	stateID, err = resolveWorkflowState(repo, fresh, in)
+	if err != nil {
+		return fail(err)
+	}
+	issue, err = l.issueUpdateState(ctx, issueID, stateID)
+	if err != nil {
+		return fail(err)
+	}
+	return issue, nil
+}
+
+// TransitionPullRequestState is unsupported (Linear has no PRs) — the
+// issues-only-forge case ErrUnsupported was minted for.
+func (l *Linear) TransitionPullRequestState(ctx context.Context, repo string, number uint64, in TransitionState) (PullRequest, error) {
+	return PullRequest{}, ErrUnsupported
 }
 
 // CreatePullRequest is unsupported: Linear has no pull-request concept
@@ -561,6 +677,208 @@ func (l *Linear) resolveIssueID(ctx context.Context, repo string, number uint64)
 		return "", &StatusError{Status: http.StatusNotFound, Message: fmt.Sprintf("no issue %s-%d", repo, number)}
 	}
 	return out.Issues.Nodes[0].ID, nil
+}
+
+// workflowState is one of a team's workflow states, as the transition path
+// needs it: the id to write, the name a caller may target, and the type the
+// default mapping and the consistency check read.
+type workflowState struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// workflowStateCacheEntry is one team's cached state list plus the instant it
+// expires. Expiry is stored (not the fetch time) so a read is one comparison.
+type workflowStateCacheEntry struct {
+	states    []workflowState
+	expiresAt time.Time
+}
+
+// workflowStatesQuery is the team workflow-state selection, built once so the
+// page cap has ONE source (workflowStatePageCap) shared by the query and the
+// truncation guard below rather than a literal repeated in both.
+var workflowStatesQuery = fmt.Sprintf(`query CompassTeamWorkflowStates($team: String!) {
+  workflowStates(filter: {team: {id: {eq: $team}}}, first: %d) {
+    nodes { id name type }
+  }
+}`, workflowStatePageCap)
+
+// workflowStatesFor returns the workflow states of the team keyed by repo, and
+// whether they came from cache (the discriminator TransitionIssueState's
+// retry-once arm keys on — a FRESH list that a mutation still rejects is not a
+// staleness the cache can fix). An expired or absent entry is refetched. The
+// cache is read and written under mu without holding it across the query; a
+// concurrent miss issues a redundant (idempotent) fetch at worst.
+func (l *Linear) workflowStatesFor(ctx context.Context, repo string) ([]workflowState, bool, error) {
+	l.mu.Lock()
+	entry, ok := l.workflowStates[repo]
+	fresh := ok && l.now().Before(entry.expiresAt)
+	l.mu.Unlock()
+	if fresh {
+		return entry.states, true, nil
+	}
+
+	// The states are filtered by team UUID off the existing (immutable,
+	// invalidation-free) teamIDs cache, so only the mutable half — the state
+	// list itself — rides the TTL.
+	teamID, err := l.resolveTeamID(ctx, repo)
+	if err != nil {
+		return nil, false, err
+	}
+
+	var out struct {
+		WorkflowStates struct {
+			Nodes []workflowState `json:"nodes"`
+		} `json:"workflowStates"`
+	}
+	if err := l.doGraphQL(ctx, workflowStatesQuery, map[string]any{varTeam: teamID}, &out); err != nil {
+		return nil, false, err
+	}
+	states := out.WorkflowStates.Nodes
+	if len(states) == 0 {
+		return nil, false, &StatusError{Status: http.StatusNotFound, Message: fmt.Sprintf("no workflow states on team %q", repo)}
+	}
+	// A FULL page is read as truncation: the query is unpaginated, so a list at
+	// the cap may be missing states, and resolving against it would reject a
+	// name that really exists or default-map to an only-apparently-sole
+	// candidate. Fail loud instead — the cap is far above any real board, so
+	// hitting it is a Linear-side surprise a caller must be told about, not a
+	// pagination loop worth carrying.
+	if len(states) >= workflowStatePageCap {
+		return nil, false, invalidWorkflowState(
+			"team %q returned %d workflow states, the %d-state page cap: the list may be truncated, so no state can be resolved safely; pass an explicit workflow state",
+			repo, len(states), workflowStatePageCap)
+	}
+
+	l.mu.Lock()
+	l.workflowStates[repo] = workflowStateCacheEntry{states: states, expiresAt: l.now().Add(workflowStateTTL)}
+	l.mu.Unlock()
+	return states, false, nil
+}
+
+// invalidateWorkflowStates drops a team's cached state list so the next
+// resolution refetches. It is the recovery half of the TTL cache: a state
+// renamed or deleted between resolve and write is corrected in-flight rather
+// than wedging every transition until the TTL lapses.
+func (l *Linear) invalidateWorkflowStates(repo string) {
+	l.mu.Lock()
+	delete(l.workflowStates, repo)
+	l.mu.Unlock()
+}
+
+// invalidWorkflowState builds the rejection every workflow-state resolution
+// failure returns. The status is 422 because that is the ONE status the
+// Service's flattening maps to an in-band `invalid_argument` carrying the
+// message (server/forge.go mapForgeError) — the code §The cross-provider state
+// model requires for an unknown name, an ambiguous name, a type contradiction
+// and a multi-candidate default. Every message names the team and what the
+// caller must do differently, since the caller cannot see the board.
+func invalidWorkflowState(format string, args ...any) error {
+	return &StatusError{Status: http.StatusUnprocessableEntity, Message: fmt.Sprintf(format, args...)}
+}
+
+// resolveWorkflowState picks the target workflow-state id from a team's states,
+// per §The cross-provider state model. It never touches the network, so every
+// rejection lands before the mutation.
+//
+// With in.WorkflowState set it resolves BY NAME: an unknown name, a name
+// matching two states on the one team (Linear does not enforce name uniqueness),
+// and a named state whose type contradicts the portable in.State target are each
+// a rejection, never a guess. With it empty it default-maps to the SOLE state of
+// the target type, and rejects when the team has more than one — naming every
+// candidate, so the caller knows exactly which name to pass.
+func resolveWorkflowState(repo string, states []workflowState, in TransitionState) (string, error) {
+	if in.WorkflowState == "" {
+		return defaultWorkflowState(repo, states, in.State)
+	}
+
+	matches := make([]workflowState, 0, 1)
+	for _, s := range states {
+		if s.Name == in.WorkflowState {
+			matches = append(matches, s)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", invalidWorkflowState("team %q has no workflow state named %q", repo, in.WorkflowState)
+	case 1:
+	default:
+		return "", invalidWorkflowState("team %q has %d workflow states named %q; the name does not identify one",
+			repo, len(matches), in.WorkflowState)
+	}
+
+	// Consistency: the named state's type must agree with the portable target,
+	// so `state: closed` can never land on an open-typed column (or the reverse)
+	// just because the caller named it.
+	if got := mapLinearState(matches[0].Type); got != in.State {
+		return "", invalidWorkflowState("workflow state %q on team %q is of type %q (a %s state), which contradicts the requested state %q",
+			in.WorkflowState, repo, matches[0].Type, got, in.State)
+	}
+	return matches[0].ID, nil
+}
+
+// defaultWorkflowState maps the portable target to the team's sole state of the
+// corresponding type. A close targets `completed` — NEVER `canceled`, the
+// deliberate asymmetry against the read-side fold: an agent closing its issue
+// means "done", and canceled stays reachable only by naming it. An open targets
+// `unstarted`, falling back to `backlog` for a team with no unstarted state.
+//
+// Two or more candidates is a rejection naming every one of them, not a
+// positional guess: silently picking a human-visible board column is the
+// behaviour this rule exists to make structurally impossible.
+func defaultWorkflowState(repo string, states []workflowState, target string) (string, error) {
+	types := []string{linearTypeUnstarted, linearTypeBacklog}
+	if target == stateClosed {
+		types = []string{linearTypeCompleted}
+	}
+
+	for _, want := range types {
+		candidates := make([]workflowState, 0, 1)
+		for _, s := range states {
+			if s.Type == want {
+				candidates = append(candidates, s)
+			}
+		}
+		switch len(candidates) {
+		case 0:
+			continue // an open target falls back from unstarted to backlog
+		case 1:
+			return candidates[0].ID, nil
+		default:
+			names := make([]string, 0, len(candidates))
+			for _, c := range candidates {
+				names = append(names, strconv.Quote(c.Name))
+			}
+			return "", invalidWorkflowState("team %q has %d workflow states of type %q (%s); pass an explicit workflow state to choose one",
+				repo, len(candidates), want, strings.Join(names, ", "))
+		}
+	}
+	return "", invalidWorkflowState("team %q has no workflow state of type %s to map the requested state %q onto",
+		repo, strings.Join(types, " or "), target)
+}
+
+// issueUpdateState runs the issueUpdate mutation moving issueID to stateID and
+// decodes the updated issue through the shared issueFieldsFragment — the same
+// decode every read uses, so the returned truth is shaped identically. No
+// attribution is applied: createAsUser attributes AUTHORSHIP of created content
+// (an issue, a comment), and a transition creates none.
+func (l *Linear) issueUpdateState(ctx context.Context, issueID, stateID string) (Issue, error) {
+	const query = `mutation CompassIssueStateUpdate($id: String!, $input: IssueUpdateInput!) {
+  issueUpdate(id: $id, input: $input) {
+    issue { ...CompassIssueFields }
+  }
+}` + issueFieldsFragment
+	var out struct {
+		IssueUpdate struct {
+			Issue linearIssue `json:"issue"`
+		} `json:"issueUpdate"`
+	}
+	vars := map[string]any{"id": issueID, gqlInputKey: map[string]any{"stateId": stateID}}
+	if err := l.doGraphQL(ctx, query, vars, &out); err != nil {
+		return Issue{}, err
+	}
+	return out.IssueUpdate.Issue.toIssue(), nil
 }
 
 // actorAttribution reports whether writes may set createAsUser, running the

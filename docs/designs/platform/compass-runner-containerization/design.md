@@ -2,7 +2,7 @@
 
 Status: Draft — freezes on merge. The §Privilege shape contract is contingent on R8's real-hardware verification.
 
-Ledger-impact: mints DL-357
+Ledger-impact: mints DL-358
 
 ## Problem / Intent
 
@@ -370,7 +370,7 @@ without launching a VM.
 
 ### R6 — ledger row
 
-Mint DL-357 recording the containerize ruling and the zero-privilege
+Mint DL-358 recording the containerize ruling and the zero-privilege
 constraint.
 
 ### R7 — privilege-shape spike on real hardware (gates the §Privilege shape freeze)
@@ -404,7 +404,7 @@ independent. R6 lands with the freeze.
 | R3 | DaemonSet + RBAC manifests + render tests | R7 |
 | R4 | device-plugin resource + gid wiring | R7 |
 | R5 | entrypoint agent-image fix under `--backend microvm` | — |
-| R6 | DL-357 ledger row | R7 |
+| R6 | DL-358 ledger row | R7 |
 | R7 | real-hardware privilege spike + `spike-findings.md` | R1 |
 
 ## Open Questions

@@ -277,5 +277,5 @@ func stripBodyToRef(raw string) (string, *compassv1.AgentAttribution) {
 	if !ok {
 		return clean, nil
 	}
-	return clean, &compassv1.AgentAttribution{AgentHandle: author.AgentHandle}
+	return clean, &compassv1.AgentAttribution{AgentHandle: author.AgentHandle, OwnerHandle: author.OwnerHandle}
 }

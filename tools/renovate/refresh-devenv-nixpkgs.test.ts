@@ -103,7 +103,7 @@ function devenvLock(outerRev: string, innerRev: string): string {
 
 // Minimal root package.json with a catalog block carrying the biome pin plus a
 // same-named `catalog:` CONSUMER ref that must survive untouched. Compass bakes
-// markdownlint-cli2 from the same channel, but it carries NO catalog pin, so
+// rumdl from the same channel, but it carries NO catalog pin, so
 // the fixture — like the real manifest — only pins biome.
 function packageJson(biome: string): string {
 	return `${JSON.stringify(

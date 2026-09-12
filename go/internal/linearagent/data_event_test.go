@@ -144,6 +144,9 @@ func TestParseLinearDataEvent_Comment(t *testing.T) {
 	if ev.Comment.GetAgent().GetAgentHandle() != "agent-x" {
 		t.Errorf("agent claim = %q, want agent-x", ev.Comment.GetAgent().GetAgentHandle())
 	}
+	if got := ev.Comment.GetAgent().GetOwnerHandle(); got != "owner-y" {
+		t.Errorf("owner claim = %q, want owner-y", got)
+	}
 	if ev.Comment.GetForgeAccount() != "Alice" {
 		t.Errorf("forge_account = %q, want Alice", ev.Comment.GetForgeAccount())
 	}
