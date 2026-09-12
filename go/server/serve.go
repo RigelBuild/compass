@@ -1475,6 +1475,13 @@ type forgeNotifyLane struct {
 	// suite, and silently restore the bug this field's lane exists to fix.
 	// Production reads it never.
 	pulls ingest.PullNumberResolver
+	// identities is the self-origin identity seam this lane's router uses.
+	// Recorded for the same reason as pulls: a builder passing nil here
+	// compiles and leaves every suppression test green, because those tests
+	// construct their own router — production would simply notify agents about
+	// their own actions forever, the bug this lane's resolver exists to fix.
+	// Production reads it never.
+	identities ingest.IdentityResolver
 }
 
 // forgeNotifyStore adapts *store.Store to ingest.NotifyStore, binding the forge
@@ -1600,6 +1607,67 @@ func toIngestCursor(cur *store.ForgeArtifactCursor) *ingest.ArtifactCursor {
 	}
 }
 
+// forgeIdentityResolver adapts *store.Store to ingest.IdentityResolver, binding
+// the forge coordinate half (provider, host) like forgeNotifyStore so the
+// ingest-side seam stays coordinate-free. It resolves the OWNER-QUALIFIED
+// Compass handle (owner handle + agent handle) that self-origin suppression
+// matches on. A clean miss — an unknown account, a non-agent account, or no
+// ownership row at the coordinate — returns a zero ingest.Handle with a NIL
+// error so the router fails OPEN (delivers). A real store fault returns the
+// error alongside a zero Handle (NEVER a populated one — a caller that used it
+// would suppress), which the router logs at warn and likewise delivers.
+type forgeIdentityResolver struct {
+	st       *store.Store
+	provider store.ForgeProvider
+	host     string
+}
+
+// HandleForAccount resolves an agent account id to its owner-qualified handle via
+// TWO PK reads: GetAccount(accountID) yields the agent's own handle and its
+// OwnerUserID (the owner as an *id*, not a handle — no id->handle projection
+// exists), then GetAccount(OwnerUserID) yields the owner's handle. ErrNotFound at
+// EITHER read, or an account that is not an agent (no owner to qualify by), is a
+// clean miss: a zero Handle with a nil error.
+func (r *forgeIdentityResolver) HandleForAccount(ctx context.Context, accountID string) (ingest.Handle, error) {
+	agent, err := r.st.GetAccount(ctx, store.AccountID(accountID))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ingest.Handle{}, nil
+		}
+		return ingest.Handle{}, err
+	}
+	if agent.Agent == nil {
+		// A non-agent account has no owner to qualify by — a clean miss.
+		return ingest.Handle{}, nil
+	}
+	owner, err := r.st.GetAccount(ctx, agent.Agent.OwnerUserID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ingest.Handle{}, nil
+		}
+		return ingest.Handle{}, err
+	}
+	return ingest.Handle{Owner: owner.Handle, Agent: agent.Handle}, nil
+}
+
+// AuthorHandle resolves the DL-055 ownership row's recorded authoring agent at
+// the bound coordinate, then that agent's owner-qualified handle. It reads the
+// row via AuthoredArtifactByCoordinate (kind mapped with the same direct cast
+// forgeNotifyStore uses, both enums mirroring the wire kind) then delegates to
+// HandleForAccount for the two-read owner resolution. ErrNotFound at the
+// ownership row (no recorded author at the coordinate) is a clean miss; a miss
+// inside HandleForAccount is one too.
+func (r *forgeIdentityResolver) AuthorHandle(ctx context.Context, repo string, kind compassv1internal.ForgeArtifactKind, number uint64) (ingest.Handle, error) {
+	row, err := r.st.AuthoredArtifactByCoordinate(ctx, r.provider, r.host, repo, store.ForgeArtifactKind(kind), number)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ingest.Handle{}, nil
+		}
+		return ingest.Handle{}, err
+	}
+	return r.HandleForAccount(ctx, string(row.AgentAccountID))
+}
+
 // errNoLiveSession is the sentinel forgeNotifyDispatcher.Notify returns when the
 // resolved subscriber has no live session: the router logs it and moves on, and
 // the reconcile sweep re-notifies from the durable gap (W3). It is DELIBERATELY
@@ -1716,14 +1784,15 @@ func buildForgeNotifyLane(
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 		Host:     fc.Host,
 	}
-	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, pulls, nil, forgeRef, log)
+	identities := &forgeIdentityResolver{st: st, provider: provider, host: fc.Host}
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, pulls, identities, forgeRef, log)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
 	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, fc.Host, ingest.ReconcileConfig{
 			Backstop: fc.App.ReconcileBackstop,
 			Log:      log,
 		})
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: pulls}
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: pulls, identities: identities}
 }
 
 // buildLinearNotifyLane assembles the Linear agent-notification lane (RIG-2732
@@ -1765,8 +1834,11 @@ func buildLinearNotifyLane(
 	}
 	// Nil pull-number resolver: Linear is issues-only and never produces a
 	// CHECKS event, so there is no head SHA to resolve (the router tolerates a
-	// nil resolver and keeps the pre-RIG-2869 guard behavior).
-	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, nil, nil, forgeRef, log)
+	// nil resolver and keeps the pre-RIG-2869 guard behavior). The identity
+	// resolver IS wired: self-origin suppression applies to Linear COMMENT /
+	// OPENED / STATE the same as GitHub.
+	identities := &forgeIdentityResolver{st: st, provider: provider, host: host}
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, nil, identities, forgeRef, log)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
 	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host, ingest.ReconcileConfig{
@@ -1775,7 +1847,7 @@ func buildLinearNotifyLane(
 		})
 	// pulls stays nil: Linear is issues-only and never emits a CHECKS event, so
 	// there is no head SHA to resolve.
-	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: nil}
+	return &forgeNotifyLane{arm: arm, reconciler: reconciler, sink: arm, reader: client, pulls: nil, identities: identities}
 }
 
 // newDeclaredSecretResolver returns a func that resolves the declared server_only

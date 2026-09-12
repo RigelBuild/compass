@@ -30,6 +30,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/linearagent"
 )
 
 // budgetRoundTripper scripts one 403 + Retry-After (arming the shared gate) then
@@ -251,5 +252,39 @@ func TestForgeNotifyLaneWiresPullNumberResolver(t *testing.T) {
 	linearLane := buildLinearNotifyLane(nil, nil, nil, slog.Default())
 	if linearLane != nil && linearLane.pulls != nil {
 		t.Error("Linear notify lane recorded a PullNumberResolver, want nil (Linear emits no CHECKS event)")
+	}
+}
+
+// TestNotifyLanesWireIdentityResolver pins that BOTH assembled lanes thread a
+// non-nil self-origin identity seam. The suppression suites build their own
+// routers, so a builder that passed nil here would leave every one of them green
+// while production notified each agent about its own actions forever — a nil
+// resolver disables suppression wholesale by design.
+func TestNotifyLanesWireIdentityResolver(t *testing.T) {
+	cfg := ServeConfig{Forge: ForgeConfig{Host: "github.com", App: ForgeAppConfig{
+		AppID:                42,
+		InstallationID:       7,
+		AppPrivateKeySecret:  "APP_KEY",
+		AppWebhookSecretName: "APP_WEBHOOK",
+	}}}
+
+	ghLane := buildForgeNotifyLane(cfg, nil, nil, nil, slog.Default())
+	if ghLane == nil {
+		t.Fatal("buildForgeNotifyLane returned nil, want an assembled lane")
+	}
+	if ghLane.identities == nil {
+		t.Error("GitHub notify lane recorded a nil IdentityResolver: self-origin suppression " +
+			"would be disabled wholesale, so agents keep being notified about their own actions")
+	}
+
+	// The Linear lane needs a token source to assemble at all; without one it is
+	// the documented off-state (nil lane), which wires nothing.
+	linearLane := buildLinearNotifyLane(nil, nil, linearagent.NewTokenSource("cid", "csecret", nil, ""), slog.Default())
+	if linearLane == nil {
+		t.Fatal("buildLinearNotifyLane returned nil for a configured token source, want a lane")
+	}
+	if linearLane.identities == nil {
+		t.Error("Linear notify lane recorded a nil IdentityResolver: Linear-side self-origin " +
+			"suppression would be disabled wholesale")
 	}
 }
