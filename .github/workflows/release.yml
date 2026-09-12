@@ -345,6 +345,115 @@ jobs:
           fi
           echo "verified: $ref:git-$sha12 resolves, linux/amd64, coherent with :latest"
 
+  agent-image-arm64-spike:
+    name: agent-image-arm64-spike
+    # GitHub-hosted arm64 runner (GA for public repos); the build is native, so
+    # nix2container emits an aarch64-linux spec with no cross machinery.
+    runs-on: ubuntu-24.04-arm
+    # Dispatch-only spike: it proves the arm64 build and reports values later
+    # tasks consume. NOT ref-guarded like publish-image — the point is to run it
+    # from a feature branch. Inert on push because a push cannot set this event.
+    if: github.event_name == 'workflow_dispatch'
+    # Reads the tree only. It writes NO tags, so no packages: write.
+    permissions:
+      contents: read
+    # Same ceiling the image closure sizes elsewhere in this file.
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: agent-image
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # Caches declared inline, never via accept-flake-config: that would
+          # trust the nixConfig of any evaluated flake and let a branch inject
+          # its own substituter + key. Naming them here keeps that trust reviewed.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned bun toolchain on PATH
+        # bun resolves the devenv-CLI that reads the fork rev from devenv.lock.
+        # `jq -r` renders a missing `.store` as the literal `null`, so guard it.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+
+      - name: Put the fork's patched skopeo on PATH
+        # The fork's skopeo understands the `nix:` transport stock skopeo lacks.
+        # `--print-out-paths` prints every output; take the one carrying bin/skopeo.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
+      - name: Build the arm64 image spec and record wall-clock
+        # Mirrors publish.sh's spec build (resolve the devenv fork rev from
+        # devenv.lock, then `container build agent`); pushes nothing.
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          src="$(bun ../tools/toolchain/devenv-cli/index.ts --lock devenv.lock --mode flakeref)"
+          build_out="$(nix run "$src" -- container build agent)"
+          spec="$(printf '%s\n' "$build_out" | tail -n 1)"
+          if [[ "$spec" != /nix/store/* ]]; then
+            echo "::error::container build produced no spec store path: $spec" >&2
+            exit 1
+          fi
+          echo "SPEC=$spec" >> "$GITHUB_ENV"
+          echo "BUILD_SECONDS=$(( $(date +%s) - started ))" >> "$GITHUB_ENV"
+
+      - name: Assert arm64, report the native addon, and summarize
+        run: |
+          set -euo pipefail
+          arch="$(skopeo inspect "nix:$SPEC" | jq -r .Architecture)"
+          if [ "$arch" != "arm64" ]; then
+            echo "::error::built spec architecture is $arch, want arm64" >&2
+            exit 1
+          fi
+
+          # A later task needs the REAL @oh-my-pi native-addon filenames;
+          # discover them from the built closure rather than assuming x64's
+          # two-variant (modern/baseline) scheme, which has no arm64 analogue.
+          mapfile -t node_files < <(nix-store --query --requisites "$SPEC" \
+            | xargs -r -I{} find {} -name 'pi_natives*.node' -printf '%f\n' | sort -u)
+          if [ "${#node_files[@]}" -eq 0 ]; then
+            echo "::error::no @oh-my-pi pi_natives*.node addon found in the built bundle" >&2
+            exit 1
+          fi
+
+          {
+            echo "### compass-agent arm64 build spike"
+            echo "- architecture: \`$arch\`"
+            echo "- build wall-clock: ${BUILD_SECONDS}s (ceiling 90m)"
+            echo "- native addon files:"
+            for f in "${node_files[@]}"; do echo "  - \`$f\`"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          printf 'native addon files found:\n%s\n' "${node_files[*]}"
+
   release-assets-macos:
     name: release-assets-macos
     runs-on: macos-14
