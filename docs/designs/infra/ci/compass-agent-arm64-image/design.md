@@ -427,6 +427,15 @@ So arm64 needs its real variant names rather than a renamed pair, and the
 "copy both" rule holds only if arm64 ships two. T2 reports the actual package
 contents; this task consumes that answer.
 
+**T1 does not merge on its own.** Both edits need a real aarch64 value that
+only the T2 runner can produce, so landing the seam alone would put a
+`lib.fakeSha256` placeholder and an unresolved copy block on `main` where
+nothing selects them until the arm64 lane exists — config that provably does
+nothing, which `rule://no-inert-gating` forbids. T1 is authored against the
+T2 spike and lands with T2's measured hash and variant names in the same
+change, or it waits for the T4 cutover. T2 itself is dispatch-only and writes
+no tags, so it is not a merge gate for anything else.
+
 Interfaces: consumes `pkgs` (already in scope); produces the same `outputHash`
 string and the same two `.node` files in `$out` per system. The amd64 hash and
 copied filenames stay byte-identical to today's.
