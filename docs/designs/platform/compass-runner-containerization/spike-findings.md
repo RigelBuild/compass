@@ -52,8 +52,12 @@ unprivileged pod, and attempt `open()`.
 With the device plugin injecting the device, run as the non-root runner uid
 **without** `supplementalGroups`, and attempt `open()`.
 
-- **Expected:** fails `EPERM` (device injection grants a cgroup allowance, not
-  filesystem permission).
+- **Expected:** fails `EACCES` (device injection grants a cgroup allowance, not
+  filesystem permission, and a DAC denial is `EACCES`). **The errno
+  discriminates the layer**: seeing `EPERM` instead would mean the cgroup
+  device controller denied the open, not the filesystem — which confounds this
+  item with S2 and means the gid question is still unanswered. Record the errno
+  verbatim, not just pass/fail.
 - **Negative control is the point of the item.** If it *opens* without the gid,
   the `supplementalGroups` grant is unnecessary and drops from the contract,
   along with the gid-value question.

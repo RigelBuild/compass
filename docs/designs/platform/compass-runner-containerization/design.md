@@ -37,7 +37,7 @@ never `privileged: true`.**
 The apparent conflict with the runtime record's "launched rootless as an
 ordinary host process per session"
 (`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md`,
-§D6) dissolves once the two layers are separated. *Rootless* is a property of
+§Approach (a) “VMM shape”) dissolves once the two layers are separated. *Rootless* is a property of
 the uid the Runner and its VMM children run as. *Ordinary host process*
 distinguishes the VMM from a CRI-owned pod-sandbox runtime. A container is a
 namespaced process tree: cloud-hypervisor, virtiofsd, and passt run as
@@ -138,7 +138,9 @@ verification.
   `root:kvm 0660`, and device injection grants a *cgroup allowance*, not
   filesystem permission — so the non-root runner uid needs the `kvm` gid via
   `securityContext.supplementalGroups` (or a node-provisioning chmod), or the
-  first real `open()` fails `EPERM`. Marked inference because the device node's
+  first real `open()` fails `EACCES`. The errno is the observable that separates
+  the two layers: a DAC permission denial is `EACCES`, while the cgroup
+  device-controller denial in the `/dev/kvm` bullet above is `EPERM`. Marked inference because the device node's
   mode and ownership are properties of the node image's udev rules, not of
   anything in this repo, and because it is the sole justification for the
   `supplementalGroups` grant. **R8 verifies it directly**, and the negative
@@ -167,8 +169,11 @@ verification.
   2. the Runner runtime dir (`--runtime-dir`, default `/run/compass`) plus the
      microVM runroot (`--microvm-runroot`) — a single host tree, read-write.
 
-  Host-visible rather than `emptyDir` so pidfiles survive a container restart
-  for orphan-reaping. Nothing else: the VMM/virtiofsd binaries and the guest
+  Host-visible rather than `emptyDir` because the tree must outlive the **pod**,
+  not just the container. An `emptyDir` is pod-scoped and does survive a
+  container restart, so that axis does not distinguish them; what it does not
+  survive is pod recreation or a node reboot, which is exactly when a stale
+  pidfile from a previous pod must still be visible for orphan-reaping. Nothing else: the VMM/virtiofsd binaries and the guest
   kernel/rootfs/initrd ship **in the image**, so no hostPath reaches them.
 
 - **Explicitly absent:** `privileged`, every capability, `hostNetwork`,
@@ -177,16 +182,24 @@ verification.
 
 ### Pod resources, QoS, and eviction: guest RAM is pod RAM
 
-cloud-hypervisor's virtio-fs path requires `--memory shared=on` (the argv
-construction in `go/internal/runtime/microvm/launch.go`; `BootConfig.MemoryMB`
-in `go/internal/runtime/microvm/config.go` is documented as always launched
-with `shared=on`). Guest memory is therefore memfd/shared mappings charged to
-the pod's memory cgroup: **every session microVM's RAM counts against the
-Runner pod.**
+The VMM is an ordinary child of the Runner inside the pod's cgroup, so guest
+memory is the VMM process's own memory and is charged to the pod's memory
+cgroup: **every session microVM's RAM counts against the Runner pod.** This
+holds regardless of the virtio-fs memory mode.
 
-With absent or low memory requests the pod is Burstable with a large
-usage-over-requests overage — precisely the pod the kubelet's node-pressure
-eviction ranks first — and evicting it kills every session on the node. A
+`--memory shared=on` is nonetheless set unconditionally (the argv construction
+in `go/internal/runtime/microvm/launch.go`; `BootConfig.MemoryMB` in
+`go/internal/runtime/microvm/config.go` is documented as always launched with
+`shared=on`), because virtio-fs requires it. Its consequence here is an
+*accounting* one, not a charging one: guest memory is memfd/shared mappings
+visible in more than one process, so naively summing RSS across
+cloud-hypervisor, virtiofsd, and the Runner double-counts it. Size against PSS
+or against the configured guest total, never a sum of RSS.
+
+With absent or low memory requests the pod is BestEffort (requests and limits
+fully absent) or Burstable with a large usage-over-requests overage — precisely
+the pod the kubelet's node-pressure eviction ranks first — and evicting it
+kills every session on the node. A
 priorityClass helps preemption and eviction ranking only if requests are
 honest. The DaemonSet's requests and limits MUST account for the aggregate
 guest RAM of the node's session capacity, not just the Runner process itself.
@@ -219,6 +232,21 @@ capacity sizing); this record fixes the *shape*.
   - `spec.nodeName` via `fieldRef` into the environment, so the Runner can
     identify its node.
   - A scrape annotation for the metrics endpoint.
+  - **Liveness probe: conservative, or absent.** A probe-driven container
+    restart is the same full-session teardown as a rollout (§Privilege shape,
+    restart semantics) — pid 1 dies and every session on the node dies with
+    it — but nothing rate-limits it the way `maxUnavailable` bounds a rollout,
+    so a transient health blip costs the whole node's sessions. Prefer a
+    readiness probe for traffic gating and either omit liveness or give it a
+    failure threshold well past any transient stall. A startup probe is
+    unobjectionable.
+  - **`terminationGracePeriodSeconds` sized to the reap budget.** On
+    termination the kubelet SIGTERMs pid 1 and SIGKILLs after the grace
+    period; that window is what lets the Runner shut its VMM children down in
+    order and notify the Server. Too short and teardown is hard — still no
+    stranded processes (the pid namespace guarantees that), but no graceful
+    session drain. Size it to the per-session reap budget times the node's
+    session capacity.
 - **RBAC**: a dedicated ServiceAccount with the narrowest role the Runner
   actually needs. The Runner dials out to the Server and does not drive the
   Kubernetes API for session work, so this is minimal by construction.
@@ -284,9 +312,17 @@ first thing a Kubernetes reader reaches for.
 - **The image is the unit of version.** Anything in the KVM userland or guest
   asset set ships in the image; nothing is expected on the node except the two
   hostPath trees and the seccomp profile.
-- **A rollout is session-affecting.** Any change to the pod template
-  terminates sessions on each replaced node, so every delivery mechanism must
-  rate-limit it.
+- **A rollout is session-affecting — and so is anything else that replaces or
+  restarts the pod.** Any change to the pod template terminates sessions on
+  each replaced node, so every delivery mechanism must rate-limit it. The same
+  blast radius applies to a probe-driven restart and to a **node drain**
+  (autoscaler, node upgrade, manual drain), neither of which is a delivery
+  mechanism and so neither is covered by that rate limit. A fleet
+  PodDisruptionBudget can bound *concurrent* drains — it applies to
+  eviction-API disruption, though not to the DaemonSet controller's own
+  rollout — but it cannot keep a pod alive while its own node drains, so
+  draining a Runner node is inherently session-terminating and must be
+  scheduled as such.
 - **Operator-supplied values stay operator-supplied.** This record fixes object
   shape, not node labels, taint values, capacity numbers, or a GitOps path.
 - **Deployment-plane concerns are out of scope.** Which cluster, which node
