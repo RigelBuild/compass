@@ -34,8 +34,8 @@ export interface AppTokenCredentials {
 
 /** Linear's OAuth token endpoint. */
 export const TOKEN_URL = "https://api.linear.app/oauth/token";
-/** The scopes the live-oracle's Linear legs need (read + write into TEST). */
-export const SCOPES = "read,write";
+/** The scopes the live-oracle's Linear legs need (read + write + app assignment into TEST). */
+export const SCOPES = "read,write,app:assignable";
 
 /** The two custodied client-credential Actions secrets this helper reads. */
 export const ENV_CLIENT_ID = "LINEAR_FORGE_CLIENT_ID";

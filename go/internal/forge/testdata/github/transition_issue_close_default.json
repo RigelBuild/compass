@@ -1,0 +1,43 @@
+{
+	"name": "transition_issue_close_default",
+	"request": {
+		"op": "transition_issue_state",
+		"repo": "org/repo",
+		"number": 42,
+		"input": {
+			"state": "closed"
+		},
+		"method": "PATCH",
+		"path": "/repos/org/repo/issues/42",
+		"headers": {
+			"Content-Type": "application/json",
+			"Accept": "application/vnd.github+json"
+		},
+		"body": {
+			"state": "closed"
+		}
+	},
+	"response": {
+		"status": 200,
+		"body": {
+			"number": 42,
+			"title": "a bug",
+			"body": "stamped body",
+			"state": "closed",
+			"html_url": "https://github.com/org/repo/issues/42",
+			"user": { "login": "octocat" },
+			"labels": [],
+			"updated_at": "2026-08-01T12:31:00Z"
+		},
+		"want": {
+			"Number": 42,
+			"Title": "a bug",
+			"Body": "stamped body",
+			"State": "closed",
+			"URL": "https://github.com/org/repo/issues/42",
+			"ForgeAccount": "octocat",
+			"Labels": [],
+			"UpdatedAt": "2026-08-01T12:31:00Z"
+		}
+	}
+}

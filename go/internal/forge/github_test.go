@@ -1031,6 +1031,46 @@ func TestGitHubDoJSONTokenError(t *testing.T) {
 	}
 }
 
+// The PATCH transitions ride the SAME fail-fast budget gate as every other
+// write: an armed gate short-circuits both before any request, with the retry
+// hint recoverable. A transition that bypassed the gate could starve the poll
+// driver of the tail of the rate window — the reason doJSON owns the check.
+func TestGitHubTransitionRespectsBudgetGate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(*GitHub) error
+	}{
+		{"issue", func(g *GitHub) error {
+			_, err := g.TransitionIssueState(context.Background(), "org/repo", 42, TransitionState{State: "closed"})
+			return err
+		}},
+		{"pull_request", func(g *GitHub) error {
+			_, err := g.TransitionPullRequestState(context.Background(), "org/repo", 7, TransitionState{State: "closed"})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := &scriptedRoundTripper{}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+			now := time.Now()
+			g.now = func() time.Time { return now }
+			g.resetAt = now.Add(90 * time.Second)
+
+			err := tc.call(g)
+			var rle *RateLimitError
+			if !errors.As(err, &rle) {
+				t.Fatalf("err = %v, want *RateLimitError", err)
+			}
+			if rle.RetryAfter != 90*time.Second {
+				t.Errorf("RetryAfter = %v, want 90s", rle.RetryAfter)
+			}
+			if rt.calls != 0 {
+				t.Errorf("issued a request despite the armed gate: calls = %d", rt.calls)
+			}
+		})
+	}
+}
+
 // concurrentRoundTripper is a race-safe transport for the concurrency test: it
 // serves a fixed benign response and guards its call counter with a mutex, so
 // the only unsynchronized shared state under test is the client's resetAt gate.

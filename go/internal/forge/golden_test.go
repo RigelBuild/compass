@@ -21,6 +21,7 @@ package forge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -28,8 +29,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
+
+// errUnknownFixtureOp is returned by invoke on an op no provider arm serves.
+// Only ever reached if t.Fatalf stopped short of terminating the goroutine.
+var errUnknownFixtureOp = errors.New("forge: fixture op unknown to invoke")
 
 // update regenerates the testdata fixtures from the live throwaway repo. The
 // live-capture path is T2's (//go:build livegithub) concern; T1 defines the
@@ -76,21 +82,35 @@ type fixtureRequest struct {
 	Body    json.RawMessage   `json:"body,omitempty"`
 }
 
-// fixtureInput is the create-op input payload (a superset across issue/PR/
-// comment; only the fields an op reads are populated).
+// fixtureInput is the write-op input payload (a superset across issue/PR/
+// comment/transition; only the fields an op reads are populated).
 type fixtureInput struct {
-	Title   string   `json:"title,omitempty"`
-	Body    string   `json:"body,omitempty"`
-	Labels  []string `json:"labels,omitempty"`
-	HeadRef string   `json:"headRef,omitempty"`
-	BaseRef string   `json:"baseRef,omitempty"`
-	Draft   bool     `json:"draft,omitempty"`
+	Title         string   `json:"title,omitempty"`
+	Body          string   `json:"body,omitempty"`
+	Labels        []string `json:"labels,omitempty"`
+	HeadRef       string   `json:"headRef,omitempty"`
+	BaseRef       string   `json:"baseRef,omitempty"`
+	Draft         bool     `json:"draft,omitempty"`
+	State         string   `json:"state,omitempty"`         // transition: the portable "open"|"closed" target
+	CloseReason   string   `json:"closeReason,omitempty"`   // transition: the GitHub-issue refinement
+	WorkflowState string   `json:"workflowState,omitempty"` // transition: the Linear refinement (state NAME)
 }
 
 // fixtureFilter is the list_issues narrowing.
 type fixtureFilter struct {
 	State  string   `json:"state,omitempty"`
 	Labels []string `json:"labels,omitempty"`
+}
+
+// fixtureError is the expected FAILURE of an op — the only expectation a
+// rejection arm can carry, since it decodes no domain value. Status is the
+// *StatusError status the provider returns (422 is what the Service's
+// flattening turns into an in-band invalid_argument carrying the message), and
+// Contains pins the substrings the message must name, so a rejection that stops
+// telling the caller WHICH states collided reddens.
+type fixtureError struct {
+	Status   int      `json:"status"`
+	Contains []string `json:"contains,omitempty"`
 }
 
 // fixtureStep is one scripted HTTP response served by the replay transport.
@@ -112,7 +132,10 @@ type fixtureResponse struct {
 	Body    json.RawMessage   `json:"body,omitempty"` // verbatim provider JSON
 	Prelude []fixtureStep     `json:"prelude,omitempty"`
 	Extra   []fixtureStep     `json:"extra,omitempty"`
-	Want    json.RawMessage   `json:"want"` // expected decoded forge domain value
+	Want    json.RawMessage   `json:"want,omitempty"` // expected decoded forge domain value
+	// WantError is set INSTEAD of Want on a rejection fixture: the op must fail,
+	// and the failure itself is the captured truth.
+	WantError *fixtureError `json:"wantError,omitempty"`
 }
 
 // loadFixtures reads every *.json in dir (one fixture per file) and returns them
@@ -206,7 +229,27 @@ func replayFixture(t *testing.T, provider string, f fixture) {
 	rt := &scriptedRoundTripper{responses: responses}
 	ts := &fakeTokenSource{token: "test-token"}
 
-	got := invoke(t, provider, rt, ts, f.Request)
+	got, err := invoke(t, provider, rt, ts, f.Request)
+
+	// A rejection fixture asserts the FAILURE instead of a decoded value. Its
+	// Prelude holds the legs that DID run and Status/Body the last of them, so
+	// the same exact-count check still applies — and it is load-bearing here:
+	// without it a rejection that fires BEFORE reaching the wire (or one that
+	// runs the mutation anyway and fails after) would pass on the error alone.
+	// The transition path's whole point is that a rejection lands after the
+	// resolve and before the write.
+	if f.Response.WantError != nil {
+		wantN := len(f.Response.Prelude) + 1
+		if n := len(rt.requests); n != wantN {
+			t.Fatalf("rejected op %q emitted %d requests, want exactly %d (the rejection must land after the resolve and before the mutation)",
+				f.Request.Op, n, wantN)
+		}
+		assertFixtureError(t, f.Request.Op, err, *f.Response.WantError)
+		return
+	}
+	if err != nil {
+		t.Fatalf("op %q: %v", f.Request.Op, err)
+	}
 
 	// (a) Request half: assert the client emitted EXACTLY the scripted number
 	// of requests — prelude probes + the asserted request + composite extras.
@@ -226,9 +269,33 @@ func replayFixture(t *testing.T, provider string, f fixture) {
 	assertJSONEqual(t, "decoded value", mustMarshal(t, got), f.Response.Want)
 }
 
+// assertFixtureError asserts a rejection fixture's captured failure: the op must
+// have failed with a *StatusError of the pinned status, whose message names each
+// pinned substring. The substrings are the point — a rejection that stops naming
+// the colliding states leaves the caller with no way to pick one.
+func assertFixtureError(t *testing.T, op string, err error, want fixtureError) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("op %q succeeded, want a rejection with status %d", op, want.Status)
+	}
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("op %q error = %v, want a *StatusError", op, err)
+	}
+	if se.Status != want.Status {
+		t.Errorf("op %q error status = %d, want %d (message %q)", op, se.Status, want.Status, se.Message)
+	}
+	for _, sub := range want.Contains {
+		if !strings.Contains(se.Message, sub) {
+			t.Errorf("op %q error message %q does not name %q", op, se.Message, sub)
+		}
+	}
+}
+
 // invoke calls the client method the fixture names and returns the decoded
-// domain value for the value-half assertion.
-func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTokenSource, req fixtureRequest) any {
+// domain value (for the value-half assertion) or the op's error (for a rejection
+// fixture). An unknown provider/op is a hard failure — never a silent pass.
+func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTokenSource, req fixtureRequest) (any, error) {
 	t.Helper()
 	ctx := context.Background()
 	in := req.Input
@@ -239,49 +306,48 @@ func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTok
 	if req.Filter != nil {
 		filter = IssueFilter{State: req.Filter.State, Labels: req.Filter.Labels}
 	}
+	transition := TransitionState{State: in.State, CloseReason: in.CloseReason, WorkflowState: in.WorkflowState}
 
 	switch provider {
 	case providerGitHub:
 		g := newTestGitHub(rt, ts)
 		switch req.Op {
 		case "create_issue":
-			v, err := g.CreateIssue(ctx, req.Repo, CreateIssue{Title: in.Title, Body: in.Body, Labels: in.Labels})
-			return must(t, v, err)
+			return g.CreateIssue(ctx, req.Repo, CreateIssue{Title: in.Title, Body: in.Body, Labels: in.Labels})
 		case "comment_on_issue":
-			v, err := g.CommentOnIssue(ctx, req.Repo, req.Number, in.Body)
-			return must(t, v, err)
+			return g.CommentOnIssue(ctx, req.Repo, req.Number, in.Body)
 		case "get_issue":
-			v, err := g.GetIssue(ctx, req.Repo, req.Number)
-			return must(t, v, err)
+			return g.GetIssue(ctx, req.Repo, req.Number)
 		case "list_issues":
-			v, err := g.ListIssues(ctx, req.Repo, filter)
-			return must(t, v, err)
+			return g.ListIssues(ctx, req.Repo, filter)
 		case "create_pull_request":
-			v, err := g.CreatePullRequest(ctx, req.Repo, CreatePR{Title: in.Title, Body: in.Body, HeadRef: in.HeadRef, BaseRef: in.BaseRef, Draft: in.Draft})
-			return must(t, v, err)
+			return g.CreatePullRequest(ctx, req.Repo, CreatePR{Title: in.Title, Body: in.Body, HeadRef: in.HeadRef, BaseRef: in.BaseRef, Draft: in.Draft})
 		case "get_pull_request":
-			v, err := g.GetPullRequest(ctx, req.Repo, req.Number)
-			return must(t, v, err)
+			return g.GetPullRequest(ctx, req.Repo, req.Number)
+		case "transition_issue_state":
+			return g.TransitionIssueState(ctx, req.Repo, req.Number, transition)
+		case "transition_pull_request_state":
+			return g.TransitionPullRequestState(ctx, req.Repo, req.Number, transition)
 		}
 	case providerLinear:
 		l := newTestLinear(rt, ts, slog.New(&capturingHandler{}))
 		switch req.Op {
 		case "create_issue":
-			v, err := l.CreateIssue(ctx, req.Repo, CreateIssue{Title: in.Title, Body: in.Body, Labels: in.Labels})
-			return must(t, v, err)
+			return l.CreateIssue(ctx, req.Repo, CreateIssue{Title: in.Title, Body: in.Body, Labels: in.Labels})
 		case "comment_on_issue":
-			v, err := l.CommentOnIssue(ctx, req.Repo, req.Number, in.Body)
-			return must(t, v, err)
+			return l.CommentOnIssue(ctx, req.Repo, req.Number, in.Body)
 		case "get_issue":
-			v, err := l.GetIssue(ctx, req.Repo, req.Number)
-			return must(t, v, err)
+			return l.GetIssue(ctx, req.Repo, req.Number)
 		case "list_issues":
-			v, err := l.ListIssues(ctx, req.Repo, filter)
-			return must(t, v, err)
+			return l.ListIssues(ctx, req.Repo, filter)
+		case "transition_issue_state":
+			return l.TransitionIssueState(ctx, req.Repo, req.Number, transition)
 		}
 	}
+	// Unreachable: t.Fatalf stops this goroutine. The error keeps the return
+	// honest for the linter rather than handing back a nil value AND a nil error.
 	t.Fatalf("unknown provider/op: %s/%s", provider, req.Op)
-	return nil
+	return nil, errUnknownFixtureOp
 }
 
 // assertRequest checks the emitted request against the fixture's expectation:
@@ -350,16 +416,6 @@ func mustMarshal(t *testing.T, v any) []byte {
 		t.Fatalf("marshal decoded value: %v", err)
 	}
 	return raw
-}
-
-// must fails the test on a client-method error and returns the value for the
-// value-half assertion.
-func must[T any](t *testing.T, v T, err error) T {
-	t.Helper()
-	if err != nil {
-		t.Fatalf("client method: %v", err)
-	}
-	return v
 }
 
 // TestFixtureRoundTrip proves the schema round-trips through writeFixture and

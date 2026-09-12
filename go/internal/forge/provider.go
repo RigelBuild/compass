@@ -228,6 +228,17 @@ type IssueFilter struct {
 	Labels []string
 }
 
+// TransitionState is the input to Provider.TransitionIssueState /
+// TransitionPullRequestState. State is the portable target ("open"|"closed");
+// CloseReason and WorkflowState are the per-provider refinements. A provider
+// receiving a refinement it cannot express has already been screened at the
+// server arm, so it may ignore the foreign field.
+type TransitionState struct {
+	State         string // "open" | "closed"
+	CloseReason   string // GitHub issues: "completed" | "not_planned"; "" = default
+	WorkflowState string // Linear: target workflow state name; "" = default mapping
+}
+
 // Provider is one forge backend. Every method is a network call against the
 // provider's API using the Server-held credential; none accept a credential
 // argument (the provider closes over its own). Body handling is the PROVIDER'S
@@ -249,6 +260,14 @@ type Provider interface { //nolint:interfacebloat // one method per forge operat
 	// Checks returns the rolled-up CI/status state for a PR head. Separated from
 	// GetPullRequest because the subscription poller needs it alone (#995 Decision 5).
 	Checks(ctx context.Context, repo string, number uint64) (Checks, error)
+	// TransitionIssueState moves an existing issue between forge states,
+	// returning the UPDATED issue — the write response IS the new truth, so no
+	// implementation re-reads. in.State is the portable target; the refinements
+	// are screened at the server arm, so a provider may ignore a foreign one.
+	TransitionIssueState(ctx context.Context, repo string, number uint64, in TransitionState) (Issue, error)
+	// TransitionPullRequestState is the PR twin. A provider with no PR model
+	// returns ErrUnsupported.
+	TransitionPullRequestState(ctx context.Context, repo string, number uint64, in TransitionState) (PullRequest, error)
 	// BodyLimit is the maximum body size (in BYTES) the Service enforces before
 	// a write. Zero means unlimited (the fake's default). See GitHub.BodyLimit
 	// for the byte-vs-character-cap rationale (A9).
