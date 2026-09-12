@@ -349,7 +349,7 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	subMemo := map[string]Handle{}
 	for _, sub := range subs {
 		if r.selfOrigin(ctx, actor, sub, subMemo) {
-			r.advanceOnSuppress(ctx, sub, priorRevision, revision)
+			r.advanceOnSuppress(ctx, ev, sub, priorRevision, revision)
 			continue
 		}
 		n := r.notification(ev, sub.SubscriptionID, revision)
@@ -420,7 +420,7 @@ func (r *NotifyRouter) SynthesizeUpdate(ctx context.Context, sub NotifySubscribe
 // A lost CAS (advanced=false) or any store fault degrades OPEN — logged and
 // swallowed, worst case one synthetic UPDATE on the next sweep — never a route
 // failure.
-func (r *NotifyRouter) advanceOnSuppress(ctx context.Context, sub NotifySubscriber, priorRevision, next string) {
+func (r *NotifyRouter) advanceOnSuppress(ctx context.Context, ev forge.ForgeEvent, sub NotifySubscriber, priorRevision, next string) {
 	if sub.Scope != compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_ARTIFACT {
 		return
 	}
@@ -432,13 +432,15 @@ func (r *NotifyRouter) advanceOnSuppress(ctx context.Context, sub NotifySubscrib
 		r.log.WarnContext(ctx, "forge notify suppress-advance failed",
 			"subscription_id", sub.SubscriptionID,
 			"account", sub.AgentAccountID,
+			"repo", ev.Repo, "number", ev.Number,
 			"error", err)
 		return
 	}
 	if !advanced {
 		r.log.WarnContext(ctx, "forge notify suppress-advance lost CAS",
 			"subscription_id", sub.SubscriptionID,
-			"account", sub.AgentAccountID)
+			"account", sub.AgentAccountID,
+			"repo", ev.Repo, "number", ev.Number)
 	}
 }
 
