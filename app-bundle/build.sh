@@ -26,17 +26,27 @@ err() { printf 'ERROR: %s\n' "$*" >&2; }
 # --- 1. Realize the pinned nix outputs, keeping GC-root symlinks under
 #        app-bundle/ so nix-collect-garbage cannot dangle the tarball's rpaths.
 #        A bare `nix build --no-link` creates NO GC root. Reuse the
-#        already-pinned pkgConfig + cc outputs directly off gtk-e2e-env.nix (no
-#        re-pinned copy) — the one gtk4 binary is rpathed against them.
-log "Realizing pinned nix outputs (pkgConfig, cc)"
+#        already-pinned bin + pkgConfig + cc outputs directly off gtk-e2e-env.nix
+#        (no re-pinned copy) — the one gtk4 binary is rpathed against them.
+#
+#        `bin` carries the pinned pkg-config the cgo link SHELLS OUT to. Setting
+#        only PKG_CONFIG_PATH is not enough: cgo execs `pkg-config` off PATH, so
+#        a runner without one fails "exec: pkg-config: executable file not found
+#        in $PATH" while a dev box silently passes on its dev-shell copy.
+log "Realizing pinned nix outputs (bin, pkgConfig, cc)"
+nix build -f "$REPO_ROOT/tools/toolchain/gtk-e2e-env.nix" bin \
+  -o "$SCRIPT_DIR/result-bin"
 nix build -f "$REPO_ROOT/tools/toolchain/gtk-e2e-env.nix" pkgConfig \
   -o "$SCRIPT_DIR/result-pkgconfig"
 nix build -f "$REPO_ROOT/tools/toolchain/gtk-e2e-env.nix" cc.out \
   -o "$SCRIPT_DIR/result-cc"
 
+BIN_ENV="$(readlink -f "$SCRIPT_DIR/result-bin")"
 PC_ENV="$(readlink -f "$SCRIPT_DIR/result-pkgconfig")"
 CC_ENV="$(readlink -f "$SCRIPT_DIR/result-cc")"
 
+# Prepend, so the pinned pkg-config wins over any ambient one.
+export PATH="$BIN_ENV/bin:$PATH"
 PKG_CONFIG_PATH="$PC_ENV/lib/pkgconfig:$PC_ENV/share/pkgconfig"
 CC_BIN="$CC_ENV/bin/cc"
 
