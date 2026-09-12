@@ -461,7 +461,7 @@ earlier. T5 and T7 execute against these rulings; T6 is dropped (Q5).
   choice, not the weakest.
 - **Q2 — Is compass the SOURCE OF TRUTH for Compass records going forward, or
   a published mirror gathered from sealed?** **RULED (Matt): SOURCE OF
-  TRUTH.** A mirror keeps every design PR in the private repo, defeating
+  TRUTH.** A mirror leaves every design PR on a non-public surface, defeating
   build-in-the-open (readers see outputs, not the review process); it also
   needs a cross-repo sync job that can silently drift. Authoring here means
   the design PRs, review threads, and preview links are all public — the
