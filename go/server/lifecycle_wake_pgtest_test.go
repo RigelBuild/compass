@@ -20,6 +20,7 @@ package server
 import (
 	"context"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -261,9 +262,12 @@ func TestWakeAgentSingleflightCoalescesToOneStart(t *testing.T) {
 	f.runner.forget()
 
 	// Gate the leader's Start in-flight: its StartResume blocks in the fake
-	// Runner until we close the gate, holding the singleflight key busy the whole
-	// time so every caller that reaches wakeGroup.Do while it is held coalesces.
+	// Runner until released, holding the singleflight key busy so every caller
+	// reaching wakeGroup.Do coalesces. OnceFunc + Cleanup so an early t.Fatalf
+	// unblocks the parked wakes instead of burying it in a timeout panic.
 	gate := make(chan struct{})
+	releaseGate := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(releaseGate)
 	f.runner.setStartGate(gate)
 
 	// The LEADER: launched alone and confirmed in-flight before any follower, so
@@ -276,27 +280,22 @@ func TestWakeAgentSingleflightCoalescesToOneStart(t *testing.T) {
 	}()
 	waitForOneInflightStart(t, f.runner)
 
-	// The FOLLOWERS: launched only now, while the leader still blocks inside Do.
-	// Each signals ready right before calling WakeAgent; once all have signalled
-	// and the key is still held (gate un-closed), every one of them joins the
-	// in-flight leader rather than starting its own.
+	// The FOLLOWERS: gate on the observed park, never a pre-call signal. A
+	// follower not yet inside Do would find the key free once the leader
+	// released it, become a second leader, and push a second Start.
 	const followers = 7
-	ready := make(chan struct{}, followers)
 	wg.Add(followers)
 	for range followers {
 		go func() {
 			defer wg.Done()
-			ready <- struct{}{}
 			lc.WakeAgent(ctx, f.agentID)
 		}()
 	}
-	for range followers {
-		<-ready
-	}
+	waitForParkedSingleflightFollowers(t, followers)
 
 	// Every caller is now fanned in against the still-in-flight leader; release
 	// the gate so the one start completes and all callers return.
-	close(gate)
+	releaseGate()
 	wg.Wait()
 
 	if got := f.runner.startCount(); got != 1 {
@@ -320,5 +319,64 @@ func waitForOneInflightStart(t *testing.T, r *recordingRunner) {
 			t.Fatalf("no Start reached the Runner; the leader wake never dispatched (commands: %v)", r.commands())
 		default:
 		}
+	}
+}
+
+// waitForParkedSingleflightFollowers spins until n goroutines are parked as
+// registered followers of an in-flight singleflight call, read out of
+// runtime.Stack. That park is the only observable proof a follower has actually
+// JOINED the leader's call rather than merely being about to. Bounded by the
+// suite timeout, so a follower that never arrives fails loudly.
+func waitForParkedSingleflightFollowers(t *testing.T, n int) {
+	t.Helper()
+	deadline := timeAfter()
+	for {
+		if countGoroutinesParkedInSingleflight(t) >= n {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("only %d of %d follower wakes parked inside singleflight.Do; the rest never joined the in-flight leader, so the coalescing precondition was never established", countGoroutinesParkedInSingleflight(t), n)
+		default:
+		}
+		// runtime.Stack stops the world, so yield rather than hammering it.
+		runtime.Gosched()
+	}
+}
+
+// countGoroutinesParkedInSingleflight counts goroutines parked as REGISTERED
+// followers of an in-flight singleflight call. Being somewhere inside
+// (*Group).Do is not enough to qualify, because Do's first act is g.mu.Lock():
+// a goroutine still blocked on that mutex has NOT yet incremented dups, so if
+// the leader completes and deletes the key before it acquires the lock it takes
+// the miss branch and becomes a second leader — exactly the second Start this
+// test forbids. Counting it as parked would release the gate early and reopen
+// the race. The leader also passes briefly through Do before entering doCall.
+//
+// A registered follower is therefore one parked in the WaitGroup wait reached
+// from Do (c.wg.Wait()), which lies AFTER dups++ under the lock and so is only
+// reachable once the goroutine is provably attached to the leader's call.
+func countGoroutinesParkedInSingleflight(t *testing.T) int {
+	t.Helper()
+	buf := make([]byte, 1<<16)
+	for {
+		n := runtime.Stack(buf, true)
+		// A full buffer means the dump was truncated and a goroutine may have
+		// been cut off mid-frame, so the count would be wrong.
+		if n >= len(buf) {
+			buf = make([]byte, 2*len(buf))
+			continue
+		}
+		followers := 0
+		// runtime.Stack separates goroutines with a blank line.
+		for _, g := range strings.Split(string(buf[:n]), "\n\n") {
+			if !strings.Contains(g, "singleflight.(*Group).Do") || strings.Contains(g, "singleflight.(*Group).doCall") {
+				continue
+			}
+			if strings.Contains(g, "sync.(*WaitGroup).Wait") {
+				followers++
+			}
+		}
+		return followers
 	}
 }
