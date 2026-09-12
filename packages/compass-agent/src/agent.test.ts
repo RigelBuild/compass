@@ -2772,12 +2772,19 @@ describe("CompassAgent — RIG-2894 turn-trigger re-attach (predicate on the wir
 		await h.close();
 	});
 
-	test("(c) an N>1 deliver flush carries EMPTY (not either message's tp) — the non-vacuity test", async () => {
+	test("(c) an N>1 deliver flush carries EMPTY, clearing a prior single-parent trigger", async () => {
 		const h = startTracedAgent();
-		// A live turn: both delivers coalesce to the agent_end flush → N=2, no
-		// single parent. The trigger MUST be empty, never m1's or m2's tp.
+		// Turn 1: an idle steer sets the trigger to X. This makes the test
+		// NON-VACUOUS for the flush else-branch clear (agent.ts): it proves the
+		// N>1 flush CLEARS a live prior trigger, not merely that the N>1 set-path
+		// is skipped (a fresh-bridge "" assertion passes even with the clear gone).
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: two delivers coalesce to the agent_end flush → N=2, no single
+		// parent. The trigger MUST be empty — never the leaked X, never a deliver tp.
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
-		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER);
+		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER_2);
 		h.agent.deliver(deliverMsg("m2", "two"), "", TP_HEADER_2);
 		h.drive({ type: "agent_end" } as AgentSessionEvent);
 		await tick();
@@ -2806,10 +2813,15 @@ describe("CompassAgent — RIG-2894 turn-trigger re-attach (predicate on the wir
 		await h.close();
 	});
 
-	test("(e) a forge-only flush (no channel message) carries EMPTY", async () => {
+	test("(e) a forge-only flush carries EMPTY, clearing a prior single-parent trigger", async () => {
 		const h = startTracedAgent();
-		// An idle forge notification flushes at once with zero delivers — a
-		// turn-start with no channel-message parent at all.
+		// Turn 1: an idle steer sets the trigger to X (makes the clear non-vacuous).
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: an idle forge notification flushes with zero delivers — a real
+		// turn-start with no channel-message parent, so the else-branch must clear
+		// the leaked X.
 		h.agent.forgeNotification(
 			create(ForgeNotificationSchema, {
 				subscriptionId: "sub-1",
@@ -2819,7 +2831,9 @@ describe("CompassAgent — RIG-2894 turn-trigger re-attach (predicate on the wir
 		);
 		await tick();
 		const req = await drivePostDuringTurn(h.bridge);
-		expect(triggerOf(req)).toBe("");
+		const trigger = triggerOf(req);
+		expect(trigger).toBe("");
+		expect(trigger).not.toBe(TP_HEADER);
 		h.endTurn();
 		await h.close();
 	});
