@@ -384,11 +384,11 @@ encryption) on main, and DL-329 (RIG-3239 supervision), DL-330 (Record A on
 PR 900, also grabbed by the apple-container branch — a separate collision those
 lanes resolve), and DL-331 / DL-332 / DL-333 (compass-managed delivery-cutover)
 all claimed on open design branches — so this record claims the true next-free
-**DL-351**
+**DL-358**
 (re-confirm against every OPEN design PR's ledger at freeze, not just main, since
 the space moves under you):
 
-> DL-351 | Forge notifications are self-origin-suppressed at the notify-router
+> DL-358 | Forge notifications are self-origin-suppressed at the notify-router
 > fan-out: a COMMENT / REVIEW / OPENED / STATE notification is skipped when the
 > event actor's OWNER-QUALIFIED Compass handle (owner-handle + agent-handle,
 > never account ids; a bare agent handle is unique only per owner) equals the
@@ -407,7 +407,7 @@ the space moves under you):
 > correct only once RIG-3331 lands (stamps the real actor); until then STATE
 > has no Compass actor and delivers (safe interim).
 
-Plus the owner-carriage amendment (**DL-352**), which T0 implements. DL-094 is
+Plus the owner-carriage amendment (**DL-359**), which T0 implements. DL-094 is
 already `Superseded by DL-186`, and DL-186 (Active) carried its
 "never restated per artifact" clause forward while freeing the field numbers —
 so DL-186 STAYS Active (its wire-compat-strip clause, the row's actual subject,
@@ -416,7 +416,7 @@ the DL-308/DL-324 precedent (`docs/designs/DECISIONS.md`): a row whose OTHER cla
 stand stays Active, and the amending row carries the narrowed scope — flipping
 DL-186 to Superseded would falsely retire the wire-compat strip:
 
-> DL-352 | `compass.v1.AgentAttribution` regains `owner_handle` (field 2, the
+> DL-359 | `compass.v1.AgentAttribution` regains `owner_handle` (field 2, the
 > slot DL-186's wire-compat strip freed), populated at the three parse sites
 > that already produce it and discard it (`stripBodyToRef` in `go/internal/forge/githubapp_webhook.go`,
 > `linearCommentRef` in `go/internal/linearagent/data_event.go`, `detectArtifact` in `go/internal/ingest/notify_detect.go`) from
@@ -428,7 +428,7 @@ DL-186 to Superseded would falsely retire the wire-compat strip:
 > server-side key available for a comment actor is the bare agent handle, which
 > is unique only per `(tenant_id, owner_user_id, handle)` — the exact ambiguity
 > owner-qualification exists to resolve. Neither DL-094 nor DL-186 weighed a
-> matching consumer; DL-351's suppression is the first. Attribution stays a
+> matching consumer; DL-358's suppression is the first. Attribution stays a
 > display fact, not a trust claim (DL-094's core semantics unchanged) — it now
 > simply carries both halves of the identity it already parsed.
 > `forge.ForgeEvent` additionally gains an internal `Actor` field carrying the
@@ -437,7 +437,7 @@ DL-186 to Superseded would falsely retire the wire-compat strip:
 > (Matt, 2026-09-05).
 
 No existing ROW is mutated (the ledger is append-only and Decision cells are
-immutable): DL-352 carries the amended-clause scope as a new row, and DL-186
+immutable): DL-359 carries the amended-clause scope as a new row, and DL-186
 stays Active. DL-205/DL-255 and RIG-3331 are load-bearing dependencies, not
 changed.
 
@@ -537,7 +537,7 @@ hand at every one of them.
 
 Ledger: this amends DL-094's "owner … never restated per artifact" clause as
 carried forward by DL-186 (§Ledger delta) — the superseding row lands in this
-record's PR beside DL-351.
+record's PR beside DL-358.
 
 **One downstream consumer T0 must also update.** The Go render callers are
 genuinely unaffected (they construct/read `AgentHandle` only:
@@ -550,9 +550,9 @@ defaults". Once T0 lands there IS a wire source, so the adapter would silently
 discard a real value behind a stale citation. The domain type already carries
 the field (`AgentAttribution` in `apps/ui/src/stub-data.ts`) and two tests pin the empty default
 (`r` in `apps/ui/src/live/adapt.test.ts`), so this is a live contract, not dead code. T0
-threads `ownerHandle: w.ownerHandle`, re-points the comment at DL-352, and
+threads `ownerHandle: w.ownerHandle`, re-points the comment at DL-359, and
 updates both assertions. (`verified` stays hedged — DL-094's
-attribution-is-not-a-trust-claim core is unchanged, and DL-352 amends only the
+attribution-is-not-a-trust-claim core is unchanged, and DL-359 amends only the
 owner clause.)
 
 Tests: the three parse sites round-trip `owner_handle` (a stamped comment body
@@ -777,8 +777,8 @@ worse than a documented contract).
 ### T5 — Ledger append
 
 Append BOTH rows (text under "Ledger delta" above) to
-`docs/designs/DECISIONS.md` in this record's freeze PR — **DL-351** (the
-suppression decision) and **DL-352** (the `owner_handle` carriage amendment T0
+`docs/designs/DECISIONS.md` in this record's freeze PR — **DL-358** (the
+suppression decision) and **DL-359** (the `owner_handle` carriage amendment T0
 implements) — confirming both are still next-free global ids across every OPEN
 design PR at freeze time, not just main. No existing row is mutated; DL-186
 stays Active.
@@ -810,7 +810,7 @@ stays Active.
       does not cross-suppress)
 - [ ] T4: surface (2) `SelfOriginGate` consume-on-match contract frozen in this
       record (Record-B-gated; no code)
-- [ ] T5: DL-351 + the DL-094/DL-186 owner-clause amendment rows appended in
+- [ ] T5: DL-358 + the DL-094/DL-186 owner-clause amendment rows appended in
       the freeze PR (confirm next-free ids vs every open design PR at freeze)
 
 ## Resolved decisions
