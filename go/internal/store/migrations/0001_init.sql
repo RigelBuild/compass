@@ -495,7 +495,7 @@ CREATE TABLE server_secrets (
     -- image: 'SERVERX_Y' LIKE 'SERVER_%' is TRUE, LIKE 'SERVER\_%' is FALSE,
     -- and 'SERVER_Y' LIKE 'SERVER\_%' is TRUE.
     CONSTRAINT server_secrets_reserved_prefix CHECK (
-        name LIKE 'SERVER\_%' OR name LIKE 'GATEWAY\_CREDENTIALS\_%'
+        name LIKE 'SERVER\_%' OR name LIKE 'GATEWAY\_CREDENTIALS\_%' OR name LIKE 'COMPASS\_%'
     )
 );
 

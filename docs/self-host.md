@@ -169,6 +169,80 @@ With `--database-external` the stack only connects to the `--database` DSN you
 name; it never starts, stops, or owns that instance's lifecycle. The flag is the
 opt-out switch and `--database` (or `$COMPASS_DATABASE_DSN`) carries the DSN.
 
+## Secrets
+
+Compass keeps its secret *values* in your configured `secretspec` provider, not
+in its own database. At boot the server declares the secret names it needs for
+the features you enabled and resolves each one from the provider. A declared
+name that resolves with no value fails startup rather than running degraded, so
+enabling a feature and forgetting its secret is a boot failure you see at once,
+not a silent gap. The name declaration and the resolve error live in
+`declareServerSecretNames` (`go/server/serve.go`) and `SpecResolver.Resolve`
+(`go/internal/secrets/resolver.go`).
+
+One prefixing trap is worth stating plainly. The forge secret names you
+configure are resolved with `SERVER_` prepended (`serverSecretName`,
+`go/server/serve.go`). A name you configure as `FOO` is stored in the provider
+as `SERVER_FOO`. Set the provider value under the prefixed name.
+
+### Master key
+
+`COMPASS_MASTER_KEY` encrypts every user secret at rest. You must provision it
+before the first boot; compass never generates it, and boot fails closed when it
+is absent, empty, the wrong length, or not hex.
+
+It is a 32-byte key, written as 64 hex characters. Generate one with:
+
+```bash
+openssl rand -hex 32
+```
+
+Set that value under the name `COMPASS_MASTER_KEY` in your provider. Unlike the
+forge secrets it already carries the reserved `COMPASS_` prefix, so it is
+fully qualified and is not re-prefixed with `SERVER_`.
+
+The first boot records a salted, non-secret fingerprint of the key. A later boot
+with a different key fails startup before it touches any stored data, because
+proceeding would make every existing secret undecryptable. Rotation is versioned
+re-encrypt machinery, never a raw overwrite of this value.
+
+Losing the master key loses every stored secret. There is no recovery path.
+Store it where you will not lose it and where a changed value cannot be
+overwritten by accident.
+
+### Forge secrets
+
+The forge integration adds up to six more secrets. Each row below is a *name*
+you choose (via the flag or its environment variable), whose *value* you then
+set in the provider under the `SERVER_`-prefixed spelling. Compass declares a
+name only when the feature that needs it is configured, so you only provision
+the rows for the lanes you run.
+
+| Flag | Holds | Default name | Required when |
+| --- | --- | --- | --- |
+| `--forge-app-key-secret` | Primary GitHub App PEM private key | none | GitHub App is configured (`--forge-app-id` set) |
+| `--forge-app-webhook-secret` | Primary App webhook signing secret | none | GitHub App is configured |
+| `--forge-reviewer-app-key-secret` | Reviewer GitHub App PEM private key | none | Reviewer App is configured (`--forge-reviewer-app-id` set) |
+| `--forge-linear-client-id` | Linear OAuth client id | `LINEAR_FORGE_CLIENT_ID` | Both Linear client-credential names are set |
+| `--forge-linear-client-secret` | Linear OAuth client secret | `LINEAR_FORGE_CLIENT_SECRET` | Both Linear client-credential names are set |
+| `--forge-linear-webhook-secret` | Linear webhook signing secret | none | `--forge-linear-webhook-secret` is set |
+
+Each flag also falls back to an environment variable before its built-in
+default. The two Linear client-credential names resolve flag, then
+`$COMPASS_FORGE_LINEAR_CLIENT_ID` / `$COMPASS_FORGE_LINEAR_CLIENT_SECRET`,
+then `LINEAR_FORGE_CLIENT_ID` / `LINEAR_FORGE_CLIENT_SECRET`
+(`defaultForgeLinearClientIDSecretName` / `defaultForgeLinearClientSecretName`,
+`go/server/serve.go`). Compass declares the pair only when both are
+configured, so a deployment that runs no Linear provisions neither.
+
+### Choosing a provider
+
+The right `secretspec` provider depends on your deployment shape. On a box an
+operator uses directly, a keychain-backed provider keeps the values in the
+platform keyring. On a server or cloud deployment, point `secretspec` at your
+cloud secret manager so the values live in managed storage rather than on the
+host.
+
 ## Running under systemd
 
 Wrap `compass-stack up` in a systemd unit so the stack starts on boot and

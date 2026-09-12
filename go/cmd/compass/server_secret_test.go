@@ -13,6 +13,7 @@ import (
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // fakeServerSecrets is a fake SecretsService handler recording the request each
@@ -95,14 +96,14 @@ func TestRunServerSecretList(t *testing.T) {
 	}
 }
 
-// TestRunServerSecretListStripsGatewayPrefix pins that the OTHER reserved
-// prefix is stripped too. The master-key family is a real server_secrets row
-// (secrets_service.go's masterKeyName), so it lists here; stripping only
+// TestRunServerSecretListStripsCompassPrefix pins that the master-key prefix is
+// stripped too. The master key is a real server_secrets row
+// (store.MasterKeyName, COMPASS_-prefixed), so it lists here; stripping only
 // SERVER_ would print it prefixed while every sibling printed bare, and the
 // seed script's line-anchored glob would miss it.
-func TestRunServerSecretListStripsGatewayPrefix(t *testing.T) {
+func TestRunServerSecretListStripsCompassPrefix(t *testing.T) {
 	fake := &fakeServerSecrets{list: &compassv1.ListServerSecretsResponse{ServerSecrets: []*compassv1.ServerSecretStatus{
-		{Name: "GATEWAY_CREDENTIALS_MASTER_KEY", IsSet: true},
+		{Name: store.MasterKeyName, IsSet: true},
 	}}}
 	client := startFakeServerSecretsServer(t, fake)
 
@@ -114,7 +115,7 @@ func TestRunServerSecretListStripsGatewayPrefix(t *testing.T) {
 	if want := "\nMASTER_KEY: set\n"; !strings.Contains("\n"+got, want) {
 		t.Errorf("list output %q is missing line-anchored %q", got, want)
 	}
-	if strings.Contains(got, "GATEWAY_CREDENTIALS_") {
+	if strings.Contains(got, store.CompassPrefix) {
 		t.Errorf("list output %q leaks the reserved prefix; the bare name must start the line", got)
 	}
 }
@@ -173,7 +174,7 @@ func TestRunServerSecretSetPrefixesName(t *testing.T) {
 }
 
 // TestRunServerSecretSetRefusesBareMasterKey pins the round-trip hazard: `list`
-// strips either reserved prefix, so the master key prints as bare MASTER_KEY.
+// strips any reserved prefix, so the master key prints as bare MASTER_KEY.
 // Wrapping that spelling would send SERVER_MASTER_KEY — a DIFFERENT secret that
 // clears the server's exact-name master-key guard, minting a shadow row while
 // the real key stays unprovisioned and `list` prints the same bare name twice.
@@ -191,29 +192,29 @@ func TestRunServerSecretSetRefusesBareMasterKey(t *testing.T) {
 	if fake.gotSet != nil {
 		t.Errorf("SetServerSecret was called with %q; the refusal must precede any RPC", fake.gotSet.GetName())
 	}
-	if !strings.Contains(err.Error(), masterKeyCLIName) {
-		t.Errorf("error %q does not name %s, so it is not actionable", err, masterKeyCLIName)
+	if !strings.Contains(err.Error(), store.MasterKeyName) {
+		t.Errorf("error %q does not name %s, so it is not actionable", err, store.MasterKeyName)
 	}
 }
 
-// TestRunServerSecretSetAcceptsFullGatewayName asserts the refusal is narrow:
-// the FULL gateway name still reaches the server, which is what fail-closes on
-// it (secrets_service.go's masterKeyName guard). The CLI must not become a
+// TestRunServerSecretSetAcceptsFullMasterKeyName asserts the refusal is narrow:
+// the FULL master-key name still reaches the server, which is what fail-closes
+// on it (secrets_service.go's store.MasterKeyName guard). The CLI must not become a
 // second, divergent authority on which names are writable.
-func TestRunServerSecretSetAcceptsFullGatewayName(t *testing.T) {
+func TestRunServerSecretSetAcceptsFullMasterKeyName(t *testing.T) {
 	fake := &fakeServerSecrets{}
 	client := startFakeServerSecretsServer(t, fake)
 
 	var out strings.Builder
 	in := strings.NewReader("s3cr3t\n")
-	if err := runServerSecretSet(context.Background(), client, masterKeyCLIName, in, &out); err != nil {
+	if err := runServerSecretSet(context.Background(), client, store.MasterKeyName, in, &out); err != nil {
 		t.Fatalf("runServerSecretSet: %v", err)
 	}
 	if fake.gotSet == nil {
 		t.Fatal("SetServerSecret was not called; the server must be the authority on this refusal")
 	}
-	if fake.gotSet.GetName() != masterKeyCLIName {
-		t.Errorf("name = %q, want %q unchanged", fake.gotSet.GetName(), masterKeyCLIName)
+	if fake.gotSet.GetName() != store.MasterKeyName {
+		t.Errorf("name = %q, want %q unchanged", fake.gotSet.GetName(), store.MasterKeyName)
 	}
 }
 

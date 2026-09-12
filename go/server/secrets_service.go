@@ -247,12 +247,6 @@ func (s *secretsService) DeleteSecret(
 	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
 }
 
-// masterKeyName is the reserved master-key name the admin RPCs refuse to touch.
-// Rotation is dedicated machinery (a versioned re-encrypt), never a raw
-// overwrite through the operator door: clobbering this value would strand every
-// encrypted credential row with no way back.
-const masterKeyName = store.GatewayCredentialsPrefix + "MASTER_KEY"
-
 // SetServerSecret declares a SERVER secret in the separate server_secrets
 // registry and writes its value through the SERVER resolver. Admin-only at the
 // door (classifyProcedure), which IS the authorization — a server secret is
@@ -277,9 +271,9 @@ func (s *secretsService) SetServerSecret(
 	}
 	msg := req.Msg
 	name := msg.GetName()
-	if name == masterKeyName {
+	if name == store.MasterKeyName {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("%s is provisioned and rotated by the server, never set through this RPC", masterKeyName))
+			fmt.Errorf("%s is provisioned and rotated by the server, never set through this RPC", store.MasterKeyName))
 	}
 	if strings.TrimSpace(msg.GetValue()) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("secret value is empty"))
@@ -335,9 +329,9 @@ func (s *secretsService) DeleteServerSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoServerResolver)
 	}
 	name := req.Msg.GetName()
-	if name == masterKeyName {
+	if name == store.MasterKeyName {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("%s is provisioned and rotated by the server, never deleted through this RPC", masterKeyName))
+			fmt.Errorf("%s is provisioned and rotated by the server, never deleted through this RPC", store.MasterKeyName))
 	}
 
 	// Provider value first, then the declaration: the same order as DeleteSecret,
