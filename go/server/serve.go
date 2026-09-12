@@ -336,8 +336,7 @@ const masterKeyProvisioningHint = "generate a 256-bit key with `openssl rand -he
 const masterKeyHexLen = 64
 
 // masterKeySaltLen is the per-deployment random salt length for the key
-// fingerprint; a full SHA-256 block, generous against birthday collisions on a
-// value that is only ever compared for equality.
+// fingerprint: 256 bits, matching the SHA-256 digest width.
 const masterKeySaltLen = 32
 
 // initialKeyVersion is the generation a first-boot key is stamped with; it
@@ -354,7 +353,7 @@ const initialKeyVersion int16 = 1
 // It NEVER generates a key (operator-seeded custody, DL-355) and NEVER echoes
 // the value or any part of it in an error — a wrong length or non-hex value is
 // reported by what was expected, not by what was found.
-func resolveMasterKey(ctx context.Context, st *store.Store, server secrets.Resolver) (envelope.Key, int16, error) { //nolint:unparam // st is nil only in the DB-free decode/fail-closed unit tests; the pgtest lane passes a real store and the boot caller lands with the rest of T4.
+func resolveMasterKey(ctx context.Context, st *store.Store, server secrets.Resolver) (envelope.Key, int16, error) { //nolint:unparam // st is nil only in the DB-free decode/fail-closed unit tests; the pgtest lane and the boot caller pass a real store.
 	resolved, err := server.Resolve(ctx, "master key resolve")
 	if err != nil {
 		return envelope.Key{}, 0, fmt.Errorf("resolve master key: %w", err)

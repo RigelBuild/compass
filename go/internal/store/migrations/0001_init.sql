@@ -466,8 +466,8 @@ CREATE TABLE server_secrets (
     -- The secret's name, validated at the store door against SecretSpec's
     -- env-var-name grammar (^[A-Za-z_][A-Za-z0-9_]*$) before it can reach a
     -- row, and additionally required to carry a reserved server-secret prefix
-    -- (SERVER_ or GATEWAY_CREDENTIALS_) so this table can never hold a name
-    -- the user keyspace owns.
+    -- (SERVER_, GATEWAY_CREDENTIALS_, or COMPASS_) so this table can never hold
+    -- a name the user keyspace owns.
     name        TEXT PRIMARY KEY,
     -- declared_by: the account that declared this secret, or NULL for a
     -- server-provisioned row (the master key). Contrast `secrets.declared_by`,
