@@ -133,7 +133,7 @@ func (q *Queries) IsUserAccount(ctx context.Context, accountID string) (bool, er
 const secretRecordsForAgent = `-- name: SecretRecordsForAgent :many
 SELECT DISTINCT ON (s.name) s.name, s.scope_kind, s.scope_id, s.delivery, s.kind,
        s.provider, s.host, s.value_ciphertext, s.value_nonce, s.key_version,
-       s.declared_by, s.created_at, s.updated_at
+       s.declared_by, s.created_at, s.updated_at, s.tenant_id
   FROM secrets s
   JOIN agent_accounts a ON a.account_id = $1
  WHERE (s.scope_kind = 0 AND s.scope_id = '')
@@ -142,35 +142,19 @@ SELECT DISTINCT ON (s.name) s.name, s.scope_kind, s.scope_id, s.delivery, s.kind
  ORDER BY s.name, s.scope_kind DESC
 `
 
-type SecretRecordsForAgentRow struct {
-	Name            string
-	ScopeKind       int16
-	ScopeID         string
-	Delivery        int16
-	Kind            int16
-	Provider        string
-	Host            string
-	ValueCiphertext []byte
-	ValueNonce      []byte
-	KeyVersion      int16
-	DeclaredBy      string
-	CreatedAt       pgtype.Timestamptz
-	UpdatedAt       pgtype.Timestamptz
-}
-
 // SecretRecordsForAgent collapses the A9 precedence in SQL: DISTINCT ON keeps the
 // first row per name under scope_kind DESC (agent 2 > user 1 > tenant 0), the
 // user tier reached through agent_accounts.owner_user_id. $1 is the calling
 // agent's account id. Ciphertext only — the store never decrypts.
-func (q *Queries) SecretRecordsForAgent(ctx context.Context, accountID string) ([]SecretRecordsForAgentRow, error) {
+func (q *Queries) SecretRecordsForAgent(ctx context.Context, accountID string) ([]Secret, error) {
 	rows, err := q.db.Query(ctx, secretRecordsForAgent, accountID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []SecretRecordsForAgentRow
+	var items []Secret
 	for rows.Next() {
-		var i SecretRecordsForAgentRow
+		var i Secret
 		if err := rows.Scan(
 			&i.Name,
 			&i.ScopeKind,
@@ -185,6 +169,7 @@ func (q *Queries) SecretRecordsForAgent(ctx context.Context, accountID string) (
 			&i.DeclaredBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.TenantID,
 		); err != nil {
 			return nil, err
 		}
