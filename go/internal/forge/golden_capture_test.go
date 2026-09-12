@@ -312,7 +312,14 @@ func deriveFixtureHalves(t *testing.T, provider string, f fixture) fixture {
 	rt := &scriptedRoundTripper{responses: responses}
 	ts := &fakeTokenSource{token: "test-token"}
 
-	got := invoke(t, provider, rt, ts, f.Request)
+	// Capture is a SUCCESS path: it derives a fixture from a live exchange that
+	// worked. A rejection fixture (Response.WantError) has no live capture — it
+	// is hand-written, which for the multi-candidate arm is the only coverage
+	// there can be, since no board reproduces it.
+	got, err := invoke(t, provider, rt, ts, f.Request)
+	if err != nil {
+		t.Fatalf("derive %s/%s: replay failed: %v", provider, f.Name, err)
+	}
 	f.Response.Want = mustMarshal(t, got)
 
 	// Guard that replay consumed EXACTLY every scripted response — the same
