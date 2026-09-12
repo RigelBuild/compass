@@ -31,6 +31,38 @@ func (q *Queries) AdvanceForgeDeliveredRevision(ctx context.Context, arg Advance
 	return result.RowsAffected(), nil
 }
 
+const advanceForgeDeliveredRevisionCAS = `-- name: AdvanceForgeDeliveredRevisionCAS :execrows
+UPDATE agent_forge_subscriptions
+   SET delivered_revision = $3, delivered_at = now()
+ WHERE id = $2 AND agent_account_id = $1 AND delivered_revision = $4
+`
+
+type AdvanceForgeDeliveredRevisionCASParams struct {
+	AgentAccountID      string
+	ID                  string
+	DeliveredRevision   string
+	DeliveredRevision_2 string
+}
+
+// Compare-and-set advance for the notify-router suppress path: the write lands
+// only when delivered_revision still equals $4 (the prior value the router read),
+// so a concurrent route cannot erase a delivery gap it did not observe. Scoped to
+// the owning agent (id AND agent_account_id). Zero rows affected is a lost CAS
+// (someone else advanced first), NOT an error — the wrapper reports it as
+// advanced=false.
+func (q *Queries) AdvanceForgeDeliveredRevisionCAS(ctx context.Context, arg AdvanceForgeDeliveredRevisionCASParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceForgeDeliveredRevisionCAS,
+		arg.AgentAccountID,
+		arg.ID,
+		arg.DeliveredRevision,
+		arg.DeliveredRevision_2,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countAgentForgeSubscriptionsForArtifact = `-- name: CountAgentForgeSubscriptionsForArtifact :one
 SELECT count(*) FROM agent_forge_subscriptions
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5

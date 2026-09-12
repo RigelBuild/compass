@@ -488,3 +488,33 @@ func (s *Store) AdvanceForgeDeliveredRevision(ctx context.Context, agent Account
 	}
 	return nil
 }
+
+// AdvanceForgeDeliveredRevisionCAS advances one subscription's per-subscriber
+// DELIVERY cursor from prior to next as a COMPARE-AND-SET: the write lands only
+// when the stored delivered_revision still equals prior, so a concurrent route
+// cannot erase a delivery gap it did not observe. Scoped to the owning agent (id
+// AND agent_account_id). Reports whether the row advanced — zero rows affected
+// (a lost CAS, or an unknown/foreign id) is (false, nil), NOT folded into
+// ErrNotFound, so the router's suppress path distinguishes a lost CAS (degrade
+// open, one synthetic UPDATE) from a real store fault (err != nil). This is the
+// notify-router suppress path's writer (amending W3); the ack arm keeps the
+// unguarded AdvanceForgeDeliveredRevision above. Empty agent / subscription id
+// -> ErrInvalidArgument.
+func (s *Store) AdvanceForgeDeliveredRevisionCAS(ctx context.Context, agent AccountID, subscriptionID, prior, next string) (bool, error) {
+	if agent == "" {
+		return false, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+	}
+	if subscriptionID == "" {
+		return false, fmt.Errorf("%w: subscription id is required", ErrInvalidArgument)
+	}
+	affected, err := s.q.AdvanceForgeDeliveredRevisionCAS(ctx, db.AdvanceForgeDeliveredRevisionCASParams{
+		AgentAccountID:      string(agent),
+		ID:                  subscriptionID,
+		DeliveredRevision:   next,
+		DeliveredRevision_2: prior,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: advance forge delivered revision cas: %w", err)
+	}
+	return affected > 0, nil
+}

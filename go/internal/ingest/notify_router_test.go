@@ -30,10 +30,21 @@ type fakeNotifyStore struct {
 
 	lastOpened  bool
 	lastProject string
-	// advanceCalls MUST stay zero: the router never advances delivered_revision
-	// (W3). No NotifyStore method advances it; this counter is the runtime guard
-	// that no future edit sneaks an advance onto the router's path.
-	advanceCalls int
+	// advanceCalls counts every AdvanceDeliveredRevisionCAS call — it MUST stay
+	// zero on the normal (non-suppressed) path (W3), and on the suppress path is
+	// nonzero only after the Go-side caught-up gate passes for an artifact-scope
+	// sub. advanceArgs records each call's args so a test can assert the prior the
+	// router passed. The fake models the SQL CAS: advanced == (arg.prior ==
+	// casStoredPrior), so a test forces a lost CAS by setting casStoredPrior to a
+	// value the router won't pass. casErr forces a store fault.
+	advanceCalls   int
+	advanceArgs    []casCall
+	casStoredPrior string
+	casErr         error
+}
+
+type casCall struct {
+	agent, subscriptionID, prior, next string
 }
 
 func (f *fakeNotifyStore) LoadArtifactCursor(_ context.Context, _ string, _ compassv1internal.ForgeArtifactKind, _ uint64) (*ArtifactCursor, error) {
@@ -77,6 +88,19 @@ func (f *fakeNotifyStore) UpsertArtifactCursor(_ context.Context, cur ArtifactCu
 	f.upserts = append(f.upserts, cur)
 	f.cursor = &cur
 	return nil
+}
+
+// AdvanceDeliveredRevisionCAS records the call and models the SQL CAS: it
+// advances (returns true) iff the router-supplied prior equals casStoredPrior.
+// casErr forces a store fault. The router only reaches here after its own
+// Go-side caught-up gate, so a call at all means that gate passed.
+func (f *fakeNotifyStore) AdvanceDeliveredRevisionCAS(_ context.Context, agent, subscriptionID, prior, next string) (bool, error) {
+	f.advanceCalls++
+	f.advanceArgs = append(f.advanceArgs, casCall{agent: agent, subscriptionID: subscriptionID, prior: prior, next: next})
+	if f.casErr != nil {
+		return false, f.casErr
+	}
+	return prior == f.casStoredPrior, nil
 }
 
 // fakeDispatcher records every notification per account.
@@ -158,6 +182,7 @@ const (
 	chUpdate  = compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_UPDATE
 	chReview  = compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_REVIEW
 
+	scopeArtifact  = compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_ARTIFACT
 	scopeContainer = compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER
 
 	// selfAgent is the agent handle every suppression fixture uses; the owner
@@ -1004,5 +1029,207 @@ func TestSelfOriginNilResolverDeliversEverything(t *testing.T) {
 	}
 	if len(d.sent) != 1 {
 		t.Errorf("notifications = %d, want 1 (nil resolver disables suppression)", len(d.sent))
+	}
+}
+
+// ---- self-origin suppress-path delivery-cursor advance (T2) ----
+//
+// The suppress path advances a self-suppressed subscriber's delivered_revision
+// to the route revision — but ONLY for an artifact-scope sub that was already
+// caught up to the PRIOR cursor revision, via a compare-and-set. selfCommentIDs
+// resolves the self-comment fixture's actor to a matching subscriber, so every
+// case below suppresses (0 dispatched); what varies is whether the advance fires.
+func selfCommentIDs() *fakeIdentityResolver {
+	return &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
+}
+
+// TestSuppressAdvancesCaughtUpArtifactScope: a suppressed ARTIFACT-scope
+// subscriber that is caught up to the prior cursor revision has its
+// delivered_revision advanced to the route revision. The cursor's prior revision
+// equals the subscriber's DeliveredRevision, so the caught-up gate passes and the
+// CAS lands.
+func TestSuppressAdvancesCaughtUpArtifactScope(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior},
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: prior, Scope: scopeArtifact}},
+		casStoredPrior: prior, // the CAS matches the caught-up prior.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Fatalf("notifications = %d, want 0 (self-origin suppressed)", len(d.sent))
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (caught-up artifact-scope advances)", st.advanceCalls)
+	}
+	got := st.advanceArgs[0]
+	if got.prior != prior {
+		t.Errorf("CAS prior = %q, want %q (the subscriber's caught-up revision)", got.prior, prior)
+	}
+	want := SnapshotRevision(new(ApplyEvent(decodeSnapshot(&ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior}), compassComment("own"))))
+	if got.next != want {
+		t.Errorf("CAS next = %q, want the route revision %q", got.next, want)
+	}
+	if got.subscriptionID != "s" || got.agent != "acct-self" {
+		t.Errorf("CAS target = %s/%s, want s/acct-self", got.subscriptionID, got.agent)
+	}
+}
+
+// TestSuppressDoesNotAdvanceTrailingSubscriber is the E1-never-learned safety
+// case — the most important test in the slice. A suppressed subscriber whose
+// DeliveredRevision TRAILS the prior cursor revision (an earlier undelivered
+// event) must NOT advance: advancing would erase the gap and the reconcile sweep
+// would never recover the missed event. The fixture is set up so the advance
+// WOULD fire if the caught-up gate were dropped — the CAS would match — so a
+// zero advanceCalls proves the Go gate, not the CAS, held the line.
+func TestSuppressDoesNotAdvanceTrailingSubscriber(t *testing.T) {
+	const (
+		priorCursor = "rev-cursor" // where the shared cursor is
+		trailing    = "rev-old"    // the subscriber trails it: a missed E1
+	)
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: priorCursor},
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: trailing, Scope: scopeArtifact}},
+		casStoredPrior: trailing, // the CAS WOULD match if the gate were dropped.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Fatalf("notifications = %d, want 0 (still suppressed)", len(d.sent))
+	}
+	if st.advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0 (a trailing subscriber must NOT advance — the E1 gap is left for the sweep)", st.advanceCalls)
+	}
+}
+
+// TestSuppressAdvancesFreshSubscriberNilCursor proves the nil-cursor guard: when
+// the coordinate was NEVER observed (cur == nil), the prior revision is "", which
+// matches a fresh subscriber's empty DeliveredRevision — so it counts as caught
+// up and advances. A missing nil guard is a nil-deref panic, so this asserts the
+// advance behaviour, not merely the absence of a crash.
+func TestSuppressAdvancesFreshSubscriberNilCursor(t *testing.T) {
+	st := &fakeNotifyStore{
+		cursor:         nil, // never observed.
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: "", Scope: scopeArtifact}},
+		casStoredPrior: "", // the CAS matches the empty caught-up prior.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (nil cursor -> prior \"\" == fresh sub's \"\", caught up)", st.advanceCalls)
+	}
+	if got := st.advanceArgs[0].prior; got != "" {
+		t.Errorf("CAS prior = %q, want \"\" (nil cursor)", got)
+	}
+}
+
+// TestSuppressNeverAdvancesContainerScope is the scope carve-out: a suppressed
+// CONTAINER-scope subscriber (the OPENED fan-out case) is skipped but NEVER
+// advanced, even when caught up — an artifact revision in a container cursor
+// poisons the container sweep. The subscriber is caught up and the CAS would
+// match, so a zero advanceCalls proves the scope check, not the caught-up gate,
+// held the line.
+func TestSuppressNeverAdvancesContainerScope(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "RIG", Kind: kindIssue, Number: 42, Revision: prior},
+		openedSub:      []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", Project: "proj-A", DeliveredRevision: prior, Scope: scopeContainer}},
+		casStoredPrior: prior, // the CAS WOULD match if the scope check were dropped.
+	}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		author:   Handle{Owner: "own", Agent: "atlas"},
+		accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}},
+	}
+	ev := forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app",
+		Repo: "RIG", Kind: kindIssue, Number: 42, Project: "proj-A", URL: "u", Change: chOpened,
+	}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Fatalf("notifications = %d, want 0 (self-opened suppressed)", len(d.sent))
+	}
+	if st.advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0 (container-scope is skipped but NEVER advanced)", st.advanceCalls)
+	}
+}
+
+// TestSuppressAdvanceLostCASRoutesCleanly: a lost CAS (advanced=false, no error)
+// degrades open — Route still returns nil. The caught-up gate passes (so the CAS
+// is attempted) but casStoredPrior differs from the subscriber's revision, so the
+// fake reports no advance.
+func TestSuppressAdvanceLostCASRoutesCleanly(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior},
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: prior, Scope: scopeArtifact}},
+		casStoredPrior: "someone-else-advanced", // a concurrent route moved the row first.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route returned error on a lost CAS, want nil (degrade open): %v", err)
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (the CAS was attempted)", st.advanceCalls)
+	}
+}
+
+// TestSuppressAdvanceFaultRoutesCleanly: a store fault from the CAS is logged and
+// swallowed — Route still returns nil and the OTHER (delivered) subscriber is
+// unaffected. A second, non-self subscriber is present and must still receive its
+// notification.
+func TestSuppressAdvanceFaultRoutesCleanly(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor: &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior},
+		artifactSub: []NotifySubscriber{
+			{SubscriptionID: "self", AgentAccountID: "acct-self", DeliveredRevision: prior, Scope: scopeArtifact},
+			{SubscriptionID: "other", AgentAccountID: "acct-other", DeliveredRevision: prior, Scope: scopeArtifact},
+		},
+		casErr: errors.New("store unreachable"),
+	}
+	d := &fakeDispatcher{}
+	// acct-other resolves to a DIFFERENT handle, so it is not suppressed.
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{
+		"acct-self":  {Owner: "own", Agent: "atlas"},
+		"acct-other": {Owner: "own", Agent: "borges"},
+	}}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route returned error on a CAS fault, want nil (swallowed): %v", err)
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (the self sub attempted its advance)", st.advanceCalls)
+	}
+	if len(d.sent) != 1 || d.sent[0].GetSubscriptionId() != "other" {
+		t.Fatalf("dispatched = %v, want exactly the non-self 'other' subscriber", subIDs(d.sent))
+	}
+}
+
+// TestDeliveredPathNeverAdvances: a normal (non-suppressed) dispatch never calls
+// the CAS — W3 still holds for the delivery path. The resolver matches no
+// subscriber (nil ids via newRouter), so every sub delivers and none advances.
+func TestDeliveredPathNeverAdvances(t *testing.T) {
+	st := &fakeNotifyStore{
+		cursor:      &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: "rev-prior"},
+		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: "rev-prior", Scope: scopeArtifact}},
+	}
+	d := &fakeDispatcher{}
+	if err := newRouter(t, st, d, &fakeChecksRoller{}).Route(context.Background(), commentEvent("https://gh/c1")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Fatalf("notifications = %d, want 1 (delivered path)", len(d.sent))
+	}
+	if st.advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0 (W3: the delivery path never advances)", st.advanceCalls)
 	}
 }

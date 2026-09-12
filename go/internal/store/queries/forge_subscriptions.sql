@@ -93,3 +93,14 @@ WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND nu
 UPDATE agent_forge_subscriptions
    SET delivered_revision = $3, delivered_at = now()
  WHERE id = $2 AND agent_account_id = $1;
+
+-- name: AdvanceForgeDeliveredRevisionCAS :execrows
+-- Compare-and-set advance for the notify-router suppress path: the write lands
+-- only when delivered_revision still equals $4 (the prior value the router read),
+-- so a concurrent route cannot erase a delivery gap it did not observe. Scoped to
+-- the owning agent (id AND agent_account_id). Zero rows affected is a lost CAS
+-- (someone else advanced first), NOT an error — the wrapper reports it as
+-- advanced=false.
+UPDATE agent_forge_subscriptions
+   SET delivered_revision = $3, delivered_at = now()
+ WHERE id = $2 AND agent_account_id = $1 AND delivered_revision = $4;
