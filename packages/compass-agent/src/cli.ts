@@ -61,11 +61,11 @@ import { CompassAgent } from "./agent";
 import { BoardBroker, createBoardTools } from "./board";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
-	AGENT_CONFIG_MOUNT_PATH,
 	currentConfigDir,
 	loadMountedConfig,
 	type MountedMcp,
 	readMountedRolePrompt,
+	resolveConfigMountPath,
 } from "./config-reader";
 import { createForgeTools, ForgeBroker } from "./forge";
 import type { FrameSink } from "./frame";
@@ -89,6 +89,24 @@ import {
  * socket configuration, so this constant IS the rendezvous.
  */
 export const AGENT_SOCKET_PATH = "/run/compass/agent.sock";
+
+/**
+ * The gateway-socket path this agent dials: the `COMPASS_AGENT_SOCKET_PATH`
+ * env override when set, else the frozen `AGENT_SOCKET_PATH` default.
+ *
+ * The container tiers bind-mount the socket at the fixed default and set no
+ * override, so they resolve `AGENT_SOCKET_PATH` unchanged. The host-process tier
+ * has no bind mounts — it serves the socket inside the agent handle's own state
+ * dir and threads the path here (design "Agent transport: the socket and config
+ * paths"). Unset or blank is the default, matching the Runner's empty-omit of an
+ * unset var (`go/internal/runner/agent_exec.go` execSpec) and every other
+ * `resolve*` here: a blank override is not a valid socket to dial.
+ */
+export function resolveSocketPath(
+	env: Record<string, string | undefined>,
+): string {
+	return env.COMPASS_AGENT_SOCKET_PATH?.trim() || AGENT_SOCKET_PATH;
+}
 
 /** The 0600 provider-credential seed the Runner materializes (design §T5). */
 export function authSeedPath(home: string): string {
@@ -675,7 +693,7 @@ export async function main(
 	// committed session write onto the sink's DURABLE lane (RIG-1570), so the
 	// sink must exist before the storage that holds it.
 	const transport = (deps.createTransport ?? createUnixSocketTransport)(
-		AGENT_SOCKET_PATH,
+		resolveSocketPath(env),
 	);
 	const sink = createSocketFrameSink(transport);
 
@@ -761,9 +779,11 @@ export async function main(
 	// session constructs with NONE injected. process.env is already sourced
 	// (above), so a connected MCP server inherits its credentials (credential-
 	// free configs by MVP rule; the reader resolves none).
-	const mounted = await loadMountedConfig(
-		deps.configMount ?? AGENT_CONFIG_MOUNT_PATH,
-	);
+	// The test seam wins when set (a tempdir fixture); otherwise resolve the
+	// `COMPASS_AGENT_CONFIG_MOUNT_PATH` env override, defaulting to the frozen
+	// mount path — the host tier supplies the override, the container tiers do not.
+	const configMount = deps.configMount ?? resolveConfigMountPath(env);
+	const mounted = await loadMountedConfig(configMount);
 	// The bundle hash, for one observability line. Non load-bearing: absent → no
 	// line, and nothing gates on it.
 	if (mounted.version) {
@@ -779,10 +799,7 @@ export async function main(
 	// symlink the Runner flips, so a ConfigVersion flip stays live. Persona still
 	// appends AFTER this block (record §OQ-8) — see the createSession call.
 	const rolePrompt = role
-		? await readMountedRolePrompt(
-				currentConfigDir(deps.configMount ?? AGENT_CONFIG_MOUNT_PATH),
-				role,
-			)
+		? await readMountedRolePrompt(currentConfigDir(configMount), role)
 		: undefined;
 	if (role && rolePrompt === undefined) {
 		// A role was selected but its prompt did not materialize (absent, empty, or

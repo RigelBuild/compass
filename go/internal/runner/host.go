@@ -59,6 +59,29 @@ type vsockGatewayEngine interface {
 	AgentGatewayEndpoint(name string) (endpoint string, ok bool)
 }
 
+// hostStateEngine is the unexported backend probe the host-process runtime
+// (HostRuntime) satisfies: each agent runs as a direct host child with NO bind
+// mounts, so its gateway socket and config tree are served inside the handle's
+// own private 0700 state dir and threaded to the agent as env vars, not mounted
+// at the frozen /run/compass paths. Provision type-asserts h.engine against it
+// to gate the host-specific leg; podman, the microVM backend, and every test
+// fake lack AgentStateDir, so their paths stay byte-identical (mirroring
+// vsockGatewayEngine — never a verb on the frozen WorkloadRuntime interface).
+type hostStateEngine interface {
+	AgentStateDir(id runtime.WorkloadID) (dir string, ok bool)
+}
+
+// hostAgentTransport is the per-agent socket + config-root paths the host leg
+// serves inside the handle's state dir and threads to the agent as env vars —
+// the host tier's stand-in for the container tiers' fixed bind-mount paths,
+// keyed by container name. Its presence also reroutes configMaterializerFor to
+// the state-dir root so a later ConfigVersion refresh materializes where the
+// agent actually reads.
+type hostAgentTransport struct {
+	socketPath string
+	configRoot string
+}
+
 // agentHost is the production SessionHost. It owns the live session set and
 // drives the container lifecycle through the AgentRuntime registry + the relay.
 type agentHost struct {
@@ -103,6 +126,13 @@ type agentHost struct {
 	// the session set under h.mu), so it never queues behind a slow Provision.
 	// See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 	containerLocks map[string]*sync.Mutex
+	// hostTransports records the per-agent socket + config-root paths the host
+	// backend's Provision leg serves inside each handle's state dir, keyed by
+	// container name. Empty for the podman and microVM tiers (which mount the
+	// socket/config at fixed paths); on the host tier it is the source agentEnv
+	// threads as env vars and configMaterializerFor reads to root a refresh.
+	// Set at Provision, removed at teardown (closeSocket).
+	hostTransports map[string]hostAgentTransport
 }
 
 // liveSession is one running agent session: its container and the relay stream
@@ -158,6 +188,7 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		materializer:   runtime.NewSecretMaterializer(engine, log),
 		configVersions: map[string]string{},
 		containerLocks: map[string]*sync.Mutex{},
+		hostTransports: map[string]hostAgentTransport{},
 	}
 }
 
@@ -190,6 +221,15 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	// fake) keeps today's body byte-identical.
 	if vsockEngine, ok := h.engine.(vsockGatewayEngine); ok {
 		return h.provisionVsockGateway(ctx, spec, vsockEngine)
+	}
+	// The host-process backend runs each agent as a direct child with NO bind
+	// mounts, so its socket + config live inside the handle's own state dir and
+	// are threaded to the agent as env vars, not mounted. That dir is minted by
+	// Create inside Launch, so this leg — like the vsock one — inverts the order:
+	// Launch first, then serve. Probe absent (podman, every fake) keeps today's
+	// body byte-identical.
+	if hostEngine, ok := h.engine.(hostStateEngine); ok {
+		return h.provisionHostGateway(ctx, spec, hostEngine)
 	}
 	listener, err := h.serveSocket(ctx, spec.Name)
 	if err != nil {
@@ -834,6 +874,67 @@ func (h *agentHost) provisionVsockGateway(ctx context.Context, spec runtime.Agen
 	return name, nil
 }
 
+// provisionHostGateway is Provision's host-process leg: the agent runs as a
+// direct host child with NO bind mounts, so its gateway socket and config tree
+// live inside the handle's own private 0700 state dir and are threaded to the
+// agent as env vars (agentEnv) rather than mounted at the frozen /run/compass
+// paths. Like the vsock leg it inverts the order — Launch first, because Create
+// mints the state dir, so there is nothing to serve into until the container
+// exists — and appends NO mounts. A serve or config-materialize failure after a
+// successful Launch tears BOTH the socket and the launched container down (the
+// exact legs Remove/teardownContainer use), so no agent outlives a session whose
+// transport never came up and no listener leaks. The config version is seeded
+// exactly as the default leg does, so a later RefreshConfig only Reloads when
+// the bundle actually moved past what this installed.
+func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.AgentSpec, engine hostStateEngine) (string, error) {
+	handle, err := h.runtime.Launch(ctx, spec)
+	if err != nil {
+		return "", err
+	}
+	name := handle.Name()
+	stateDir, ok := engine.AgentStateDir(handle.ID())
+	if !ok {
+		h.teardownContainer(ctx, name)
+		return "", fmt.Errorf("resolving host state dir for container %q: backend reports no handle", name)
+	}
+	// The socket lands in the handle's 0700 socket subdir and the config tree in
+	// its config subdir — both created private by Create. Record the paths BEFORE
+	// materializing: configMaterializerFor reads them to root the config tree in
+	// the state dir, and agentEnv reads them to thread the overrides onto the
+	// agent exec.
+	transport := hostAgentTransport{
+		socketPath: filepath.Join(stateDir, "socket", agentSocketFile),
+		configRoot: filepath.Join(stateDir, "config"),
+	}
+	h.mu.Lock()
+	h.hostTransports[name] = transport
+	h.mu.Unlock()
+	if _, err := h.serveSocketAt(ctx, name, transport.socketPath); err != nil {
+		// The socket never came up; forget the transport (closeSocket) and tear
+		// the launched container down so no agent runs with no reachable Runner.
+		h.closeSocket(ctx, name)
+		h.teardownContainer(ctx, name)
+		return "", err
+	}
+	// Materialize the fleet config into the state-dir root. mcsLabel is empty:
+	// there is no container and no MCS category (the host backend's MountLabel
+	// returns ""), so Materialize takes its skip-chcon path and the agent reads
+	// the tree as the same uid that wrote it.
+	mount, err := h.configMaterializerFor(name).Materialize(ctx, "")
+	if err != nil {
+		// Config could not be materialized: tear the socket down (mirror the
+		// container leg's Launch-failure cleanup) so it does not leak, and tear
+		// the launched container down so no agent comes up with no config.
+		h.closeSocket(ctx, name)
+		h.teardownContainer(ctx, name)
+		return "", fmt.Errorf("materializing agent config: %w", err)
+	}
+	h.mu.Lock()
+	h.configVersions[name] = mount.Version
+	h.mu.Unlock()
+	return name, nil
+}
+
 // teardownContainer tears a just-launched container down through the runtime
 // Teardown (stop + remove + deregister) — the exact leg Remove uses — for the
 // provision-failure cleanup on the vsock path. A resolve miss or teardown error
@@ -972,7 +1073,7 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 // launched container's handle, so Start and Reload cannot drift apart. The
 // model is Runner-wide config; everything else is per-container.
 func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
-	return AgentEnv{
+	env := AgentEnv{
 		UID:     handle.WorkspaceUID(),
 		HomeDir: handle.HomeDir(),
 		Workdir: handle.CheckoutDir(),
@@ -980,6 +1081,19 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 		Persona: handle.Persona(),
 		Role:    handle.Role(),
 	}
+	// On the host tier the socket and config live inside the handle's own state
+	// dir, not at the frozen /run/compass paths (there are no mounts). Thread
+	// those overrides so the agent dials/reads where the host leg served them.
+	// Absent for the container tiers, whose transports map has no entry — the
+	// agent then resolves the frozen defaults.
+	h.mu.Lock()
+	transport, ok := h.hostTransports[handle.Name()]
+	h.mu.Unlock()
+	if ok {
+		env.SocketPath = transport.socketPath
+		env.ConfigMountPath = transport.configRoot
+	}
+	return env
 }
 
 // configMaterializerFor builds a ConfigMaterializer rooted at the container's
@@ -989,6 +1103,17 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 // SELinux MCS category (:Z, podman.go mountArg); a shared root would be
 // re-stolen by each new container's relabel on an enforcing host.
 func (h *agentHost) configMaterializerFor(containerName string) *ConfigMaterializer {
+	// On the host tier the config tree lives inside the handle's own state dir
+	// (recorded in hostTransports at provision), not under RuntimeDir/containers
+	// — there are no mounts, so a later refresh must re-materialize where the
+	// agent actually reads. Absent an entry (the container tiers), root at the
+	// per-container RuntimeDir subtree as before.
+	h.mu.Lock()
+	transport, ok := h.hostTransports[containerName]
+	h.mu.Unlock()
+	if ok {
+		return NewConfigMaterializer(transport.configRoot, h.link, h.log)
+	}
 	return NewConfigMaterializer(filepath.Join(h.runtimeDir, agentSocketDir, containerName, "config"), h.link, h.log)
 }
 
@@ -999,13 +1124,21 @@ func (h *agentHost) configMaterializerFor(containerName string) *ConfigMateriali
 // Gateway forwards to the Server over the Runner's own RunnerService client
 // (the link), resolving the container to its bound session via this host.
 func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gateway.SocketListener, error) {
+	return h.serveSocketAt(ctx, containerName, filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile))
+}
+
+// serveSocketAt is serveSocket with an explicit socket path: the container tiers
+// pass the fixed RuntimeDir/containers/<container>/agent.sock, the host tier
+// passes a path inside the handle's own state dir (no mount reaches it). The
+// idempotency + recording discipline is identical: a container already serving
+// keeps its live listener, never double-served.
+func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, error) {
 	h.mu.Lock()
 	if listener, served := h.sockets[containerName]; served {
 		h.mu.Unlock()
 		return listener, nil
 	}
 	h.mu.Unlock()
-	path := filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile)
 	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client, Forge: h.link.client})
 	if err != nil {
 		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
@@ -1025,6 +1158,9 @@ func (h *agentHost) closeSocket(ctx context.Context, containerName string) {
 	if ok {
 		delete(h.sockets, containerName)
 	}
+	// Forget the host-tier transport paths alongside the socket: they are the
+	// same per-container lifetime, so a re-Provision re-records fresh ones.
+	delete(h.hostTransports, containerName)
 	h.mu.Unlock()
 	if !ok {
 		return
