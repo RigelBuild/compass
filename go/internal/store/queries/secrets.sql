@@ -7,12 +7,12 @@
 -- InsertSecret/DeclaredSecrets are the retained value-free path (T5 caller); the
 -- scoped, encrypted path is UpsertSecret + SecretRecordsForAgent (A1/A9).
 
--- InsertSecret writes the value-free declaration at the tenant coordinate
--- (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
--- SetSecret caller, removed with it in T5.
+-- InsertSecret writes the value-free declaration at the scope coordinate the
+-- caller resolved (D9); the value columns stay NULL. Retained for the SetSecret
+-- caller, removed with it when the upsert becomes the sole writer.
 -- name: InsertSecret :exec
-INSERT INTO secrets (name, scope_kind, delivery, kind, provider, host, declared_by)
-VALUES ($1, 0, $2, $3, $4, $5, $6);
+INSERT INTO secrets (name, scope_kind, scope_id, delivery, kind, provider, host, declared_by)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 
 -- IsUserAccount reports whether an id names a human account — the user-scope
 -- (scope_kind 1) referential check the UpsertSecret door runs in lieu of an FK

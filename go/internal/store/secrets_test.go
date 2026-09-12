@@ -22,13 +22,13 @@ func TestDeclareSecretRoundTrip(t *testing.T) {
 	// A generic file secret, a provider secret carrying a Provider id, and a gh
 	// secret carrying a Host — the three routing classes, declared out of name
 	// order to prove the read orders them.
-	if err := s.DeclareSecret(ctx, actor.ID, "ZED_TOKEN", SecretDeliveryFile, SecretKindGeneric, "", ""); err != nil {
+	if err := s.DeclareSecret(ctx, actor.ID, "ZED_TOKEN", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGeneric, "", ""); err != nil {
 		t.Fatalf("declare generic: %v", err)
 	}
-	if err := s.DeclareSecret(ctx, actor.ID, "ANTHROPIC_KEY", SecretDeliveryEnv, SecretKindProvider, "anthropic", ""); err != nil {
+	if err := s.DeclareSecret(ctx, actor.ID, "ANTHROPIC_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindProvider, "anthropic", ""); err != nil {
 		t.Fatalf("declare provider: %v", err)
 	}
-	if err := s.DeclareSecret(ctx, actor.ID, "GH_TOKEN", SecretDeliveryFile, SecretKindGH, "", "github.com"); err != nil {
+	if err := s.DeclareSecret(ctx, actor.ID, "GH_TOKEN", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGH, "", "github.com"); err != nil {
 		t.Fatalf("declare gh: %v", err)
 	}
 
@@ -73,10 +73,10 @@ func TestDeclareSecretDuplicateConflict(t *testing.T) {
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
 
-	if err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
+	if err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
 		t.Fatalf("first declare: %v", err)
 	}
-	err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretDeliveryFile, SecretKindGeneric, "", "")
+	err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGeneric, "", "")
 	sentinelIs(t, err, ErrConflict, "duplicate secret name")
 }
 
@@ -86,7 +86,7 @@ func TestDeclareSecretInvalidNameRejected(t *testing.T) {
 	actor := mustUser(t, s, "declarer")
 
 	for _, bad := range []string{"bad-name", "", "a/b", "1abc", "a b", "../x"} {
-		err := s.DeclareSecret(ctx, actor.ID, bad, SecretDeliveryEnv, SecretKindGeneric, "", "")
+		err := s.DeclareSecret(ctx, actor.ID, bad, SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "")
 		sentinelIs(t, err, ErrInvalidArgument, "invalid secret name "+bad)
 	}
 
@@ -106,7 +106,7 @@ func TestDeclareSecretUnknownActorInvalid(t *testing.T) {
 
 	// A well-formed name but an actor account that was never created → the
 	// declared_by FK yields ErrInvalidArgument.
-	err := s.DeclareSecret(ctx, AccountID("acct-never-created"), "API_KEY", SecretDeliveryEnv, SecretKindGeneric, "", "")
+	err := s.DeclareSecret(ctx, AccountID("acct-never-created"), "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "")
 	sentinelIs(t, err, ErrInvalidArgument, "unknown declaring account")
 }
 
@@ -115,7 +115,7 @@ func TestDeleteSecretDeclaration(t *testing.T) {
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
 
-	if err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
+	if err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
 		t.Fatalf("declare: %v", err)
 	}
 	if err := s.DeleteSecretDeclaration(ctx, actor.ID, "API_KEY", SecretScopeTenant, ""); err != nil {
@@ -164,7 +164,7 @@ func TestDeclareSecretKindRoutingRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretDeliveryEnv, tc.kind, tc.provider, tc.host)
+			err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, tc.kind, tc.provider, tc.host)
 			sentinelIs(t, err, ErrInvalidArgument, tc.name)
 		})
 	}
@@ -197,7 +197,7 @@ func TestDeclareSecretKindRoutingAccepted(t *testing.T) {
 		{"GENERIC_KEY", SecretKindGeneric, "", ""},
 	}
 	for _, tc := range cases {
-		if err := s.DeclareSecret(ctx, actor.ID, tc.name, SecretDeliveryEnv, tc.kind, tc.provider, tc.host); err != nil {
+		if err := s.DeclareSecret(ctx, actor.ID, tc.name, SecretScopeTenant, "", SecretDeliveryEnv, tc.kind, tc.provider, tc.host); err != nil {
 			t.Errorf("%s: valid combo rejected: %v", tc.name, err)
 		}
 	}
