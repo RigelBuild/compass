@@ -24,9 +24,14 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/RigelBuild/compass/go/internal/bridge"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -69,7 +74,72 @@ func TestMain(m *testing.M) {
 		os.Stderr.WriteString("compass-app multi-window e2e: app.Run: " + err.Error() + "\n")
 		os.Exit(1)
 	}
-	os.Exit(e2eExitCode)
+	// WebKitGTK fork+execs its GPU/network helpers in C as our direct children;
+	// upstream teardown never joins them. Left alive they hold go test's captured
+	// pipe until its WaitDelay fires (a PASS turns into "Test I/O incomplete"), or
+	// orphan to init on a reused runner. Reap them here, bounded and loud.
+	os.Exit(reapChildren(e2eExitCode))
+}
+
+// reapWait hard-bounds the join; past it a child is wedged, so the gate reds
+// loudly instead of tripping go test's opaque WaitDelay. reapEscalate is the
+// SIGTERM grace before SIGKILL — the helpers honor SIGTERM slowly.
+const (
+	reapWait     = 10 * time.Second
+	reapEscalate = 2 * time.Second
+)
+
+// procInfo names one surviving child for the timeout diagnostic.
+type procInfo struct {
+	pid  int
+	comm string
+}
+
+// reapChildren joins the WebKit helpers WebKitGTK fork+exec'd as our children.
+// They block until signaled (the app has quit), so a passive wait never ends:
+// SIGTERM, then SIGKILL if they dawdle, until none remain or reapWait elapses.
+// A survivor past the bound reds loudly and non-zero, never masking a failure.
+func reapChildren(exitCode int) int {
+	start := time.Now()
+	signalChildren(liveChildren(), syscall.SIGTERM)
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		remaining := liveChildren()
+		if len(remaining) == 0 {
+			return exitCode
+		}
+		if time.Since(start) >= reapWait {
+			var b strings.Builder
+			fmt.Fprintf(&b, "compass-app multi-window e2e: %d child process(es) survived the %s reap deadline:\n", len(remaining), reapWait)
+			for _, p := range remaining {
+				fmt.Fprintf(&b, "  pid=%d comm=%q\n", p.pid, p.comm)
+			}
+			os.Stderr.WriteString(b.String())
+			if exitCode == 0 {
+				return 1
+			}
+			return exitCode
+		}
+		// Re-signal each pass rather than latching: a helper first seen after
+		// the grace would otherwise get neither SIGTERM nor SIGKILL.
+		if time.Since(start) >= reapEscalate {
+			signalChildren(remaining, syscall.SIGKILL)
+		}
+		<-ticker.C
+	}
+}
+
+// signalChildren sends sig to each named process. ESRCH is expected and ignored
+// — the child exited between discovery and the signal; any other error is a real
+// fault worth surfacing, never swallowed.
+func signalChildren(procs []procInfo, sig syscall.Signal) {
+	for _, p := range procs {
+		if err := syscall.Kill(p.pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+			fmt.Fprintf(os.Stderr, "compass-app multi-window e2e: signal %d pid=%d: %v\n", sig, p.pid, err)
+		}
+	}
 }
 
 // TestMultiWindowCloseCancelsOnlyClosingWindowE2E is the leak-gate proof through
