@@ -34,13 +34,12 @@ func testKey(t *testing.T) envelope.Key {
 }
 
 // upsertValue encrypts value under the row's AAD and upserts it at the given
-// scope. tenantID is "" here: the store resolves the bootstrap tenant for the
-// row's tenant_id, and the AAD binds whatever the caller passes — the tests only
-// need self-consistency between encrypt and the later decrypt, so they bind "".
+// scope, binding the tenant the row will land with (EffectiveTenant(ctx) — the same
+// value UpsertSecret stamps tenant_id with) so the AAD is live, not vacuous.
 func upsertValue(t *testing.T, s *Store, key envelope.Key, actor AccountID, name string, scopeKind int16, scopeID, value string) {
 	t.Helper()
 	ctx := context.Background()
-	aad, err := envelope.UserSecretAAD("", scopeKind, scopeID, name, 1)
+	aad, err := envelope.UserSecretAAD(string(s.EffectiveTenant(ctx)), scopeKind, scopeID, name, 1)
 	if err != nil {
 		t.Fatalf("AAD %s@%d/%s: %v", name, scopeKind, scopeID, err)
 	}
@@ -112,7 +111,7 @@ func TestSecretScopePrecedence(t *testing.T) {
 		if r.ScopeKind != want.scope || r.ScopeID != want.id {
 			t.Errorf("%s: resolved scope (%d,%q), want (%d,%q)", name, r.ScopeKind, r.ScopeID, want.scope, want.id)
 		}
-		aad, err := envelope.UserSecretAAD("", r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
+		aad, err := envelope.UserSecretAAD(r.TenantID, r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
 		if err != nil {
 			t.Fatalf("%s: AAD: %v", name, err)
 		}
@@ -187,7 +186,7 @@ func TestSecretScopeTenantSharing(t *testing.T) {
 		if r.ScopeKind != SecretScopeTenant {
 			t.Errorf("agent %s resolved SHARED at scope %d, want tenant", ag.ID, r.ScopeKind)
 		}
-		aad, err := envelope.UserSecretAAD("", r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
+		aad, err := envelope.UserSecretAAD(r.TenantID, r.ScopeKind, r.ScopeID, r.Name, r.KeyVersion)
 		if err != nil {
 			t.Fatalf("agent %s: AAD: %v", ag.ID, err)
 		}
@@ -241,13 +240,15 @@ func decryptRow(t *testing.T, s *Store, key envelope.Key, name string, scopeKind
 	t.Helper()
 	var ct, nonce []byte
 	var kv int16
+	var tenantID string
 	if err := s.pool.QueryRow(context.Background(),
-		`SELECT value_ciphertext, value_nonce, key_version FROM secrets
+		`SELECT value_ciphertext, value_nonce, key_version, tenant_id FROM secrets
 		  WHERE name = $1 AND scope_kind = $2 AND scope_id = $3`,
-		name, scopeKind, scopeID).Scan(&ct, &nonce, &kv); err != nil {
+		name, scopeKind, scopeID).Scan(&ct, &nonce, &kv, &tenantID); err != nil {
 		t.Fatalf("read row %s@%d/%s: %v", name, scopeKind, scopeID, err)
 	}
-	aad, err := envelope.UserSecretAAD("", scopeKind, scopeID, name, kv)
+	// Bind the row's OWN tenant_id — the live AAD the value was sealed under, not "".
+	aad, err := envelope.UserSecretAAD(tenantID, scopeKind, scopeID, name, kv)
 	if err != nil {
 		t.Fatalf("AAD row %s@%d/%s: %v", name, scopeKind, scopeID, err)
 	}

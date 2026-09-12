@@ -502,7 +502,7 @@ type Querier interface {
 	// first row per name under scope_kind DESC (agent 2 > user 1 > tenant 0), the
 	// user tier reached through agent_accounts.owner_user_id. $1 is the calling
 	// agent's account id. Ciphertext only — the store never decrypts.
-	SecretRecordsForAgent(ctx context.Context, accountID string) ([]SecretRecordsForAgentRow, error)
+	SecretRecordsForAgent(ctx context.Context, accountID string) ([]Secret, error)
 	SeedChannelDeliveryCursors(ctx context.Context, channelID string) error
 	// Delivery-cursor queries (sqlc adoption T4, RIG-3034). These replace the inline
 	// SQL literals in internal/store/delivery_cursors.go; the hand-written Store

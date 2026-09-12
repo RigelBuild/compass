@@ -213,9 +213,11 @@ const (
 	SecretScopeAgent int16 = 2
 )
 
-// SecretRecord is a SecretDeclaration plus the at-rest value columns and the
-// scope coordinate. It carries CIPHERTEXT only — the store never sees plaintext
-// (crypto lives in the envelope/secrets layer).
+// SecretRecord is a SecretDeclaration plus the at-rest value columns, the scope
+// coordinate, and the row's tenant. It carries CIPHERTEXT only — the store never
+// sees plaintext (crypto lives in the envelope/secrets layer). TenantID is bound
+// into the AAD by the resolver so a ciphertext copied into another tenant's row
+// fails to decrypt — the cross-tenant defense RLS is the outer boundary for.
 type SecretRecord struct {
 	SecretDeclaration
 	ScopeKind       int16
@@ -223,6 +225,7 @@ type SecretRecord struct {
 	ValueCiphertext []byte
 	ValueNonce      []byte
 	KeyVersion      int16
+	TenantID        string
 }
 
 // validateScopeShape enforces the A9 scope↔id shape at the store door, mirroring
@@ -370,6 +373,7 @@ func (s *Store) SecretRecordsForAgent(ctx context.Context, agent AccountID) ([]S
 			ValueCiphertext: r.ValueCiphertext,
 			ValueNonce:      r.ValueNonce,
 			KeyVersion:      r.KeyVersion,
+			TenantID:        r.TenantID,
 		})
 	}
 	return out, nil

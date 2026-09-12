@@ -55,7 +55,7 @@ FROM secrets ORDER BY name;
 -- name: SecretRecordsForAgent :many
 SELECT DISTINCT ON (s.name) s.name, s.scope_kind, s.scope_id, s.delivery, s.kind,
        s.provider, s.host, s.value_ciphertext, s.value_nonce, s.key_version,
-       s.declared_by, s.created_at, s.updated_at
+       s.declared_by, s.created_at, s.updated_at, s.tenant_id
   FROM secrets s
   JOIN agent_accounts a ON a.account_id = $1
  WHERE (s.scope_kind = 0 AND s.scope_id = '')
