@@ -346,6 +346,93 @@ vs an 18px integer-multiple — is resolved: 9px is the intended shipped size.
 .........
 ```
 
+## Glyphs
+
+- **Classes:** none of its own — the `<Glyph name>` primitive renders a bare
+  inline SVG that the consuming control positions and colors. Adopted first by
+  the right-sidebar activity bar (`.r-tab .r-tab-icon[data-kind="glyph"]`).
+- **Geometry:** an 11×11 1-bit bitmap grid, `shape-rendering="crispEdges"` (no
+  anti-aliasing); one `<rect width="1" height="1">` per lit cell, filled on
+  `currentColor` so the consumer's color flows through. 11×11 (not the state
+  dot's 9×9) gives a true center cell and enough cells for pictographs.
+- **Accessibility:** glyphs are decorative — `aria-hidden="true"`, no
+  `role="img"` and no `aria-label`. A name-bearing label belongs on the
+  consuming control, never on the glyph (this is the deliberate difference from
+  the axis badge, whose glyph carries status meaning).
+- **Names:** the closed set is `status | files | vcs | pr` — the four static
+  activity-bar tabs. The set grows semantic names (never character names) as
+  the chrome audit converts further sites.
+
+### The four canonical glyph grids (11×11)
+
+`#` = lit cell, `.` = off; one CSS px per cell. Coordinates are `[x, y]` with
+`x` = column (0..10), `y` = row (0..10), origin top-left.
+
+`status` — a status grid (replaces `▦`): four cells in a 2×2 block:
+
+```text
+...........
+.####.####.
+.####.####.
+.####.####.
+.####.####.
+...........
+.####.####.
+.####.####.
+.####.####.
+.####.####.
+...........
+```
+
+`files` — a folder (replaces `🗀`): a tab over a wider body:
+
+```text
+...........
+...........
+.####......
+.####......
+.#########.
+.#########.
+.#########.
+.#########.
+.#########.
+.#########.
+...........
+```
+
+`vcs` — a version-control branch (replaces `⎇`): a trunk with a branch
+diverging to a top-right node:
+
+```text
+...........
+.##....##..
+.##...###..
+.##..##....
+.#####.....
+.###.......
+.##........
+.##........
+.##........
+.##........
+...........
+```
+
+`pr` — two opposing horizontal arrows (replaces `⇄`): right over left:
+
+```text
+...........
+........#..
+.#########.
+........#..
+...........
+...........
+...........
+..#........
+.#########.
+..#........
+...........
+```
+
 ## Tabs
 
 - **Class:** `.cx-tabs` · `data-orientation="h | v"`, with `.cx-tab` items
