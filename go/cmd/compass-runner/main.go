@@ -145,15 +145,7 @@ func run() error {
 			return err
 		}
 	}
-	specs, err := runner.NewConfigSpecBuilder(runner.SpecDefaults{
-		Image:       img,
-		Egress:      egress,
-		CheckoutDir: *checkoutDir,
-		HomeDir:     *homeDir,
-		UID:         agentuid.AgentUID,
-		NamePrefix:  runner.AgentContainerNamePrefix,
-		Mounts:      mounts,
-	})
+	specs, err := newSpecBuilder(engine, img, egress, *checkoutDir, *homeDir, mounts)
 	if err != nil {
 		return err
 	}
@@ -180,6 +172,45 @@ func run() error {
 		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
 		HTTPClient: httpClient,
 	}, specs, log)
+}
+
+// specDefaultsUID resolves the uid every agent workspace runs as, keyed off the
+// already-resolved engine so the flag/env backend fallback is not re-derived.
+// The host backend runs agents as direct children under the Runner's own uid,
+// so it derives the euid via geteuid; every container tier keeps the baked fleet
+// constant, which its userns remap maps the invoking host uid onto. geteuid is a
+// seam so the narrowing edges are reachable in a test.
+func specDefaultsUID(engine runtime.WorkloadRuntime, geteuid func() int) (uint32, error) {
+	if _, ok := engine.(*runtime.HostRuntime); !ok {
+		return agentuid.AgentUID, nil
+	}
+	euid := geteuid()
+	// os.Geteuid returns -1 where the syscall is unavailable; a blind uint32
+	// conversion would wrap it to a huge uid. The non-root check downstream
+	// (spec.go) refuses euid 0, so a root Runner is refused at startup too.
+	if euid < 0 {
+		return 0, fmt.Errorf("host backend: geteuid returned %d, no usable effective uid to run agents as", euid)
+	}
+	return uint32(euid), nil //nolint:gosec // G115: euid is non-negative here (the < 0 case returned above), so the narrowing cannot wrap.
+}
+
+// newSpecBuilder assembles the config spec builder from the resolved engine and
+// operator inputs. The uid every workspace runs as is derived per backend
+// (specDefaultsUID); everything else is the operator's flags/env verbatim.
+func newSpecBuilder(engine runtime.WorkloadRuntime, image string, egress runtime.EgressPolicy, checkoutDir, homeDir string, mounts []runtime.Mount) (runner.SpecBuilder, error) {
+	uid, err := specDefaultsUID(engine, os.Geteuid)
+	if err != nil {
+		return nil, err
+	}
+	return runner.NewConfigSpecBuilder(runner.SpecDefaults{
+		Image:       image,
+		Egress:      egress,
+		CheckoutDir: checkoutDir,
+		HomeDir:     homeDir,
+		UID:         uid,
+		NamePrefix:  runner.AgentContainerNamePrefix,
+		Mounts:      mounts,
+	})
 }
 
 // microVMPreflighter is the microVM backend's static host-capability probe:
