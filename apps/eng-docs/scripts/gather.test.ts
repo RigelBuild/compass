@@ -239,34 +239,21 @@ describe("classify", () => {
 });
 
 // -- parseExclusions ----------------------------------------------------------
-// Reads the canonical .markdownlint-cli2.jsonc `ignores` (single source of
-// truth), tolerating // line comments, and always appends the one glob the
-// gather owns: generated outputs/.
+// Takes the canonical `.rumdl.toml` `[global] exclude` (single source of truth,
+// parsed from TOML by the caller) and always appends the one glob the gather
+// owns: generated outputs/.
 
 describe("parseExclusions", () => {
-	test("strips // line comments, keeps ignores, appends the owned glob", () => {
-		const config = [
-			"{",
-			"\t// scopes the linter to the repo",
-			'\t"globs": ["**/*.md"],',
-			"\t// exclusions below",
-			'\t"ignores": [',
-			'\t\t"config/prompts/**",',
-			'\t\t"config/agents/**"',
-			"\t]",
-			"}",
-		].join("\n");
-		expect(parseExclusions(config)).toEqual([
+	test("keeps the exclude list and appends the owned glob", () => {
+		expect(parseExclusions(["config/prompts/**", "config/agents/**"])).toEqual([
 			"config/prompts/**",
 			"config/agents/**",
 			"**/outputs/**",
 		]);
 	});
 
-	test("still yields the owned glob when the config has no ignores", () => {
-		expect(parseExclusions('{\n\t"globs": ["**/*.md"]\n}')).toEqual([
-			"**/outputs/**",
-		]);
+	test("still yields the owned glob when the exclude list is empty", () => {
+		expect(parseExclusions([])).toEqual(["**/outputs/**"]);
 	});
 });
 

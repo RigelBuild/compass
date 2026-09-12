@@ -164,16 +164,15 @@ export interface ChangedPage {
  * resolve on the deployed preview. Pure: the gh lookup + config read live in
  * fetchChangedDocPages (the thin `$` runner below).
  *
- * @param changed the PR's changed files (filename + status)
- * @param markdownlintConfig the raw .markdownlint-cli2.jsonc (source of the
- *   exclusion set, via parseExclusions) — the single source of truth for what
- *   the gather drops.
+ * @param exclude the markdown gate's `.rumdl.toml` `[global] exclude` list
+ *   (source of the exclusion set, via parseExclusions) — the single source of
+ *   truth for what the gather drops.
  */
 export function changedDocPages(
 	changed: readonly ChangedFile[],
-	markdownlintConfig: string,
+	exclude: readonly string[],
 ): ChangedPage[] {
-	const exclusions = parseExclusions(markdownlintConfig);
+	const exclusions = parseExclusions(exclude);
 	const pages: ChangedPage[] = [];
 	for (const { filename, status } of changed) {
 		// Deleted files no longer render — linking them would 404.
@@ -414,7 +413,7 @@ async function main(): Promise<void> {
  * The docsite pages a PR changed, resolved live: list the PR's changed files
  * via the GitHub API (not a local `git diff` — the CI agent clone is shallow,
  * so local history is unreliable), then map them through the pure
- * changedDocPages against the repo's canonical markdownlint exclusion set.
+ * changedDocPages against the repo's canonical `.rumdl.toml` exclusion set.
  * Returns [] (no section) on any lookup failure — the deep-links are a
  * convenience, never worth failing an otherwise-good deploy over.
  */
@@ -438,23 +437,23 @@ async function fetchChangedDocPages(
 		);
 		return [];
 	}
-	// The exclusion set's single source of truth is the repo-root markdownlint
-	// config (the same file gather.ts reads). This file is apps/eng-docs/scripts/
+	// The exclusion set's single source of truth is the repo-root `.rumdl.toml`
+	// (the same file gather.ts reads). This file is apps/eng-docs/scripts/
 	// deploy.ts, so the repo root is three dirname hops up from its path
 	// (scripts → eng-docs → apps → root), matching gather.ts's own walk.
-	// Guarded like the gh call above: a missing/renamed config, a JSONC parse
+	// Guarded like the gh call above: a missing/renamed config, a TOML parse
 	// failure, or a classify throw must also omit the section, never fail the
 	// deploy — the docstring's "any lookup failure" contract covers this half too.
 	try {
 		const repoRoot = dirname(
 			dirname(dirname(dirname(Bun.fileURLToPath(import.meta.url)))),
 		);
-		const markdownlintConfig = await Bun.file(
-			join(repoRoot, ".markdownlint-cli2.jsonc"),
-		).text();
+		const rumdlConfig = Bun.TOML.parse(
+			await Bun.file(join(repoRoot, ".rumdl.toml")).text(),
+		) as { global?: { exclude?: string[] } };
 		return changedDocPages(
 			parseChangedFiles(files.stdout.toString()),
-			markdownlintConfig,
+			rumdlConfig.global?.exclude ?? [],
 		);
 	} catch (err) {
 		console.log(

@@ -598,7 +598,7 @@ Plan above (cited by its DL row) and stamped as an `Active` row in
 Question/Options that led to the ruling. The resolutions froze on merge and are
 the contract the executing lanes read.
 
-### OQ1 — Shell framework: Tauri (Rust) vs Wails (Go) vs other  *(blocks T3)*
+### OQ1 — Shell framework: Tauri (Rust) vs Wails (Go) vs other *(blocks T3)*
 
 **Question:** which framework hosts the webview and implements the IPC bridge?
 
@@ -652,7 +652,7 @@ and the bridge pump directly. Supersedes DL-044's Tauri framework choice
 (DL-110). `apps/ui`'s `@tauri-apps/*` deps are dropped in T1; `daemon-transport.ts`
 is re-pointed at Wails runtime events behind `ShellIpc`.
 
-### OQ2 — Embedded server lifecycle: in-process vs spawned; linger-on-quit  *(blocks T4 final behavior; T2 proceeds either way)*
+### OQ2 — Embedded server lifecycle: in-process vs spawned; linger-on-quit *(blocks T4 final behavior; T2 proceeds either way)*
 
 **Question:** (a) does the embedded server run in-process (Wails-only option)
 or as spawned child processes; (b) does the stack outlive the app on quit?
@@ -689,7 +689,7 @@ process. If Matt prefers die-with-app, only the T4 quit handler and the
 always (never in-process), linger-by-default with an explicit "Quit and stop
 stack". Parameter of the supervisor decision (DL-108), not a separate ledger row.
 
-### OQ3 — Native-client token acquisition and storage  *(blocks T5)*
+### OQ3 — Native-client token acquisition and storage *(blocks T5)*
 
 **Question:** how does the remote client obtain and store its bearer?
 
@@ -717,7 +717,7 @@ the shell over IPC for keychain write + header injection; the UI-side
 0600-file fallback on keyring-less hosts. Covered by DL-109 (credentials
 keychain-first, never config/argv).
 
-### OQ4 — Embedded database: what does "ensure Postgres" mean in an installed app?  *(blocks T2 `ensure database` + T4 preflight)*
+### OQ4 — Embedded database: what does "ensure Postgres" mean in an installed app? *(blocks T2 `ensure database` + T4 preflight)*
 
 **Question:** the server refuses to start without a Postgres DSN
 (`compass-server/main.go:108-109`; store is pgx-only,
@@ -745,7 +745,7 @@ field either way, so the choice does not reshape the design.
 Postgres in the app state dir (host-Postgres acceptable only as a beta stopgap).
 Folded into the supervisor decision (DL-108, the "ensure database" step).
 
-### OQ5 — uid-1000 preflight vs fix  *(sub-fork found in source; blocks T4 preflight copy only)*
+### OQ5 — uid-1000 preflight vs fix *(sub-fork found in source; blocks T4 preflight copy only)*
 
 **Question:** the runner refuses any uid but 1000 (`verifyRunnerUID`,
 `compass-runner/main.go:178-188`) because the agent image bakes uid 1000 and
@@ -765,7 +765,7 @@ is runner/image scope, not shell scope, and must not ride this record.
 Dogfood; arbitrary-uid support filed as a named GA-blocking follow-up issue
 (runner/image scope, not this record). No ledger row — inherited constraint.
 
-### OQ6 — Agent-image distribution for embedded mode  *(blocks T4; reshapes T6)*
+### OQ6 — Agent-image distribution for embedded mode *(blocks T4; reshapes T6)*
 
 **Question:** the runner refuses to boot without an agent container image
 (`compass-runner/main.go:111-114`) and every agent session runs inside one — but
@@ -794,7 +794,7 @@ a legible error when the pull is unavailable offline. New ledger row DL-112
 (cross-lane: compass-runner owns the image build + publish, T6 owns the pull
 step + packaging).
 
-### OQ7 — Embedded caller-identity mechanism  *(blocks T4; cross-lane compass-server)*
+### OQ7 — Embedded caller-identity mechanism *(blocks T4; cross-lane compass-server)*
 
 **Question:** the UI's `Connection` needs a caller account id, but account ids
 are 128 random bits minted per database and cannot be guessed
