@@ -226,3 +226,27 @@ test("onSpanEnd for the main turn clears the slot so later steers no-op", () => 
 		.find((s) => s.spanContext().spanId === mainSpan.spanContext().spanId);
 	expect(mainExported?.links).toHaveLength(0);
 });
+
+test("turn-trigger round-trips: starts empty, set stores raw, clear resets to empty (RIG-2894)", () => {
+	const bridge = createTraceBridge();
+	// A fresh bridge has no current turn, so no single-parent trigger.
+	expect(bridge.currentTurnTrigger()).toBe("");
+
+	// set stores the value RAW — an opaque passthrough, no parse/validate. A
+	// well-formed header round-trips verbatim.
+	bridge.setTurnTrigger(VALID_HEADER);
+	expect(bridge.currentTurnTrigger()).toBe(VALID_HEADER);
+
+	// A malformed value is stored as-is too (the server drops it on consume) —
+	// this proves setTurnTrigger does NOT parse/reject like runWithParent does.
+	bridge.setTurnTrigger("not-a-traceparent");
+	expect(bridge.currentTurnTrigger()).toBe("not-a-traceparent");
+
+	// clear resets to empty (a turn-start with no single parent).
+	bridge.clearTurnTrigger();
+	expect(bridge.currentTurnTrigger()).toBe("");
+
+	// An empty set is a valid state (single-parent turn whose inbound tp was "").
+	bridge.setTurnTrigger("");
+	expect(bridge.currentTurnTrigger()).toBe("");
+});

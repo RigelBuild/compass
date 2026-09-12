@@ -35,6 +35,7 @@ import {
 	formatDeliversForPrompt,
 	formatForgeNotifications,
 } from "./agent";
+import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AgentSessionState,
 	type Ask,
@@ -45,6 +46,10 @@ import {
 	AskSchema,
 	ChecksSummarySchema,
 	CommentRefSchema,
+	type CommsCallRequest,
+	CommsCallRequestSchema,
+	type CommsCallResult,
+	CommsCallResultSchema,
 	create,
 	type ForgeNotification,
 	ForgeNotificationKind,
@@ -54,6 +59,7 @@ import {
 	MessageBlockSchema,
 	type MessageInitShape,
 	MessageSchema,
+	PostMessageResponseSchema,
 	SessionInjectionKind,
 } from "./compassv1";
 import type { AgentControl, ControlSource } from "./control";
@@ -2494,6 +2500,7 @@ function startTracedAgent() {
 	};
 	return {
 		agent: compass,
+		bridge,
 		prompts,
 		steers,
 		frames,
@@ -2684,5 +2691,152 @@ describe("CompassAgent — T2 tracer absent is bit-identical to today", () => {
 		expect(withTracer.unmapped).toEqual(withoutTracer.unmapped);
 		// Non-vacuity: the script really produced acks + injections to compare.
 		expect(withoutTracer.acks).toEqual(["m1", "m2", "m3"]);
+	});
+});
+// ---------------------------------------------------------------------------
+// RIG-2894 — turn-trigger RE-ATTACH end to end (the HEADLINE discriminating
+// test, confirmed by the record owner). The predicate: a turn emits
+// trigger_traceparent iff it has a TRUE single parent = an idle steer (1:1) OR
+// an N=1 deliver flush; empty on N>1, mid-turn steer, forge-only. The exact
+// case a naive "deliver-only" reading gets WRONG is the idle-STEER-started turn:
+// no server-side test can catch it (they inject the field server-side), so this
+// drives the agent's real steer→turn path AND a real outbound comms POST and
+// asserts the field on the WIRE CommsCallRequest, not just currentTurnTrigger().
+
+// A fake comms transport that records the request each post puts on the wire and
+// returns a canned post result — the same one-method surface comms.test uses.
+class RecordingCommsTransport {
+	readonly requests: CommsCallRequest[] = [];
+	async comms(req: CommsCallRequest): Promise<CommsCallResult> {
+		this.requests.push(req);
+		return create(CommsCallResultSchema, {
+			callId: req.callId,
+			result: {
+				case: "post",
+				value: create(PostMessageResponseSchema, {
+					message: create(MessageSchema, { id: "posted-1", topicId: "t-1" }),
+				}),
+			},
+		});
+	}
+}
+
+// Drive the `comms_post_message` native through a real CommsBroker whose trigger
+// reader is the harness's live bridge, so the post stamps the CURRENT turn's
+// trigger exactly as it would in production. Returns the wire CommsCallRequest.
+async function drivePostDuringTurn(
+	bridge: TraceBridge,
+): Promise<CommsCallRequest> {
+	const transport = new RecordingCommsTransport();
+	const broker = new CommsBroker(transport, bridge);
+	const post = createCommsTools(broker).find(
+		(t) => t.name === "comms_post_message",
+	);
+	if (post === undefined) throw new Error("no comms_post_message tool");
+	await post.execute.call(post, "tc-1", {
+		text: "reply",
+		topic: "general",
+		channel: "eng",
+	} as never);
+	const req = transport.requests[0];
+	if (req === undefined) throw new Error("no post request recorded");
+	return req;
+}
+
+function triggerOf(req: CommsCallRequest): string {
+	if (req.call.case !== "post") throw new Error("expected a post call");
+	return req.triggerTraceparent;
+}
+
+describe("CompassAgent — RIG-2894 turn-trigger re-attach (predicate on the wire)", () => {
+	test("(headline) an idle-STEER-started turn carries the steer's traceparent on an in-turn post", async () => {
+		const h = startTracedAgent();
+		// Idle steer with tp X starts a turn (via prompt, no agent_start first).
+		// This is the 1:1 parent case a deliver-only reading silently drops.
+		h.agent.steer(deliverMsg("m1", "hi"), "", TP_HEADER);
+		await tick();
+		// A post made DURING this turn must carry the steer's tp on the wire.
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe(TP_HEADER);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(b) an N=1 idle deliver turn carries that message's traceparent on an in-turn post", async () => {
+		const h = startTracedAgent();
+		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER);
+		await tick();
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe(TP_HEADER);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(c) an N>1 deliver flush carries EMPTY (not either message's tp) — the non-vacuity test", async () => {
+		const h = startTracedAgent();
+		// A live turn: both delivers coalesce to the agent_end flush → N=2, no
+		// single parent. The trigger MUST be empty, never m1's or m2's tp.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER);
+		h.agent.deliver(deliverMsg("m2", "two"), "", TP_HEADER_2);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		const req = await drivePostDuringTurn(h.bridge);
+		const trigger = triggerOf(req);
+		expect(trigger).toBe("");
+		expect(trigger).not.toBe(TP_HEADER);
+		expect(trigger).not.toBe(TP_HEADER_2);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(d) a mid-turn steer does NOT overwrite the live turn's trigger", async () => {
+		const h = startTracedAgent();
+		// Turn starts as an N=1 idle deliver with tp X → trigger = X.
+		h.agent.deliver(deliverMsg("m0", "start"), "", TP_HEADER);
+		await tick();
+		// A mid-turn steer with a DIFFERENT tp injects into the running loop; it
+		// starts NO new turn, so it must leave the live turn's trigger untouched.
+		h.agent.steer(deliverMsg("m1", "interrupt"), "", TP_HEADER_2);
+		await tick();
+		expect(h.steers).toHaveLength(1);
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe(TP_HEADER);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(e) a forge-only flush (no channel message) carries EMPTY", async () => {
+		const h = startTracedAgent();
+		// An idle forge notification flushes at once with zero delivers — a
+		// turn-start with no channel-message parent at all.
+		h.agent.forgeNotification(
+			create(ForgeNotificationSchema, {
+				subscriptionId: "sub-1",
+				revision: "r-1",
+			}),
+			() => {},
+		);
+		await tick();
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe("");
+		h.endTurn();
+		await h.close();
+	});
+
+	test("a control-prompt turn clears a prior single-parent turn's trigger (no leak)", async () => {
+		const h = startTracedAgent();
+		// Turn 1: an idle steer sets the trigger to X.
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: a CONTROL prompt starts a fresh turn with no single parent — it
+		// must clear the trigger, else X leaks onto turn 2's posts.
+		await h.feed({ kind: "replayComplete" });
+		await h.feed({ kind: "prompt", input: "go" });
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe("");
+		h.endTurn();
+		await h.close();
 	});
 });
