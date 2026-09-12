@@ -324,6 +324,13 @@ func (f *matrixNotifyStore) UpsertArtifactCursor(_ context.Context, cur ingest.A
 	return nil
 }
 
+// AdvanceDeliveredRevisionCAS satisfies the widened NotifyStore seam. The matrix
+// suite never exercises self-origin suppression (nil resolver), so the router
+// never calls it; a no-op that reports no advance is correct here.
+func (f *matrixNotifyStore) AdvanceDeliveredRevisionCAS(context.Context, string, string, string, string) (bool, error) {
+	return false, nil
+}
+
 // matrixDispatcher records every notification dispatched, per account.
 type matrixDispatcher struct {
 	sent []*compassv1internal.ForgeNotification

@@ -1553,6 +1553,14 @@ func (a *forgeNotifyStore) UpsertArtifactCursor(ctx context.Context, cur ingest.
 	})
 }
 
+// AdvanceDeliveredRevisionCAS backs the router's suppress-path cursor advance
+// over the store's compare-and-set writer. A lost CAS (advanced=false, nil err)
+// is passed through unchanged so the router degrades open rather than treating
+// it as a fault.
+func (a *forgeNotifyStore) AdvanceDeliveredRevisionCAS(ctx context.Context, agentAccountID, subscriptionID, prior, next string) (bool, error) {
+	return a.st.AdvanceForgeDeliveredRevisionCAS(ctx, store.AccountID(agentAccountID), subscriptionID, prior, next)
+}
+
 // toIngestSubscribers converts the store subscriber rows to the ingest mirror
 // (the no-store rule keeps the store type out of the ingest package).
 func toIngestSubscribers(subs []store.ForgeNotifySubscriber) []ingest.NotifySubscriber {

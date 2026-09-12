@@ -66,9 +66,12 @@ type NotifyTarget struct {
 
 // NotifyStore is the durable surface the router + reconciler (T5) share — the
 // server wiring adapts *store.Store and binds (provider, host), the
-// forgePollStore pattern (serve.go:1082-1090). There is deliberately NO
-// delivered-revision advance here: the advance rides the hub's
-// ForgeNotificationAck arm in go/server (W3), never the router.
+// forgePollStore pattern (serve.go:1082-1090). The delivered-revision advance
+// normally rides the hub's ForgeNotificationAck arm in go/server (W3), never
+// the router — with ONE narrow exception: a self-origin-SUPPRESSED dispatch has
+// no agent to ack it, so the router advances the cursor itself via
+// AdvanceDeliveredRevisionCAS, and ONLY when the subscriber was already caught
+// up (the CAS predicate makes that concurrency-safe).
 //
 // RECONCILED INCONSISTENCY (surfaced): the frozen interface block
 // (design.md:815-825) lists exactly three methods, but the frozen Route
@@ -94,6 +97,15 @@ type NotifyStore interface {
 	// snapshot + revision), BEFORE notify (fetch-side truth advances
 	// unconditionally, DL-053's split).
 	UpsertArtifactCursor(ctx context.Context, cur ArtifactCursor) error
+	// AdvanceDeliveredRevisionCAS advances one subscriber's delivered_revision
+	// from prior to next as a compare-and-set — the write lands only when the
+	// stored value still equals prior, so a concurrent route cannot erase a gap
+	// it did not observe. Reports whether the row advanced (a lost CAS is
+	// advanced=false with a nil error, distinct from a store fault). The suppress
+	// path is the SOLE caller (amending W3); a caught-up self-suppressed
+	// subscriber advances so the reconcile sweep does not resurrect the
+	// suppressed self-notification as a synthetic UPDATE.
+	AdvanceDeliveredRevisionCAS(ctx context.Context, agentAccountID, subscriptionID, prior, next string) (bool, error)
 }
 
 // NotifyDispatcher is the notify seam: resolve account -> live session ->
@@ -324,10 +336,20 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	// event, so resolve it once here; the per-subscriber handle is resolved in
 	// selfOrigin, memoized per route. A nil identity seam leaves actor a zero
 	// Handle and every selfOrigin call false (suppression disabled).
+	//
+	// priorRevision is the PRE-upsert cursor revision (cur was loaded at step 1,
+	// before step 4 rewrote it): "" when the coordinate was never observed
+	// (cur == nil), which correctly matches a fresh subscriber's default
+	// delivered_revision. cur is a *ArtifactCursor, so the nil guard is required.
+	priorRevision := ""
+	if cur != nil {
+		priorRevision = cur.Revision
+	}
 	actor := r.actorHandle(ctx, ev)
 	subMemo := map[string]Handle{}
 	for _, sub := range subs {
 		if r.selfOrigin(ctx, actor, sub, subMemo) {
+			r.advanceOnSuppress(ctx, sub, priorRevision, revision)
 			continue
 		}
 		n := r.notification(ev, sub.SubscriptionID, revision)
@@ -370,6 +392,53 @@ func (r *NotifyRouter) SynthesizeUpdate(ctx context.Context, sub NotifySubscribe
 			"account", sub.AgentAccountID,
 			"repo", repo, "number", number,
 			"error", derr)
+	}
+}
+
+// advanceOnSuppress advances a self-origin-suppressed subscriber's
+// delivered_revision to the route's revision — the one router-side advance
+// (amending W3), because a suppressed notification is never acked and the
+// reconcile sweep would otherwise resurrect it as a synthetic UPDATE every
+// sweep. It is CONDITIONAL and SCOPED:
+//
+//   - Scope: ARTIFACT only. A CONTAINER-scope subscriber's delivered_revision
+//     lives on its number=0 row and the sweep compares it against the CONTAINER
+//     cursor's revision; writing this ARTIFACT revision there would poison that
+//     row (the container sweep would then synthesize an UPDATE every sweep). So
+//     a container-scope suppressed sub is skipped but NEVER advanced.
+//   - Caught up (Go gate): advance only when this subscriber was already caught
+//     up to the PRIOR cursor revision — sub.DeliveredRevision == priorRevision.
+//     A trailing subscriber has a genuinely-missed earlier event (E1); advancing
+//     would erase that gap and the sweep would never recover it, silently losing
+//     work-relevant signal. So a trailing sub is skipped, and the next sweep's
+//     synthetic UPDATE is the correct recovery for its missed event.
+//   - Concurrency (SQL CAS): the write itself is a compare-and-set keyed on
+//     prior = sub.DeliveredRevision, so a concurrent route that advanced the row
+//     between step 5 and here cannot be clobbered — the CAS then lands zero rows
+//     (advanced=false) and we degrade open.
+//
+// A lost CAS (advanced=false) or any store fault degrades OPEN — logged and
+// swallowed, worst case one synthetic UPDATE on the next sweep — never a route
+// failure.
+func (r *NotifyRouter) advanceOnSuppress(ctx context.Context, sub NotifySubscriber, priorRevision, next string) {
+	if sub.Scope != compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_ARTIFACT {
+		return
+	}
+	if sub.DeliveredRevision != priorRevision {
+		return // trailing: leave the gap for the sweep to recover.
+	}
+	advanced, err := r.store.AdvanceDeliveredRevisionCAS(ctx, sub.AgentAccountID, sub.SubscriptionID, sub.DeliveredRevision, next)
+	if err != nil {
+		r.log.WarnContext(ctx, "forge notify suppress-advance failed",
+			"subscription_id", sub.SubscriptionID,
+			"account", sub.AgentAccountID,
+			"error", err)
+		return
+	}
+	if !advanced {
+		r.log.WarnContext(ctx, "forge notify suppress-advance lost CAS",
+			"subscription_id", sub.SubscriptionID,
+			"account", sub.AgentAccountID)
 	}
 }
 

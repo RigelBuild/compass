@@ -113,6 +113,26 @@ func deliveredRevision(t *testing.T, st *store.Store, agent store.AccountID, sub
 	return ""
 }
 
+// deliveredRevisionAt is deliveredRevision's provider-bound sibling: it reads one
+// subscription's DELIVERY cursor for an arbitrary (provider, host), so a Linear
+// container-scope sub can be asserted the same way.
+func deliveredRevisionAt(t *testing.T, st *store.Store, provider store.ForgeProvider, host string, subID string) string {
+	t.Helper()
+	targets, err := st.ListForgeNotifyTargets(context.Background(), provider, host)
+	if err != nil {
+		t.Fatalf("ListForgeNotifyTargets: %v", err)
+	}
+	for _, tg := range targets {
+		for _, s := range tg.Subscribers {
+			if s.SubscriptionID == subID {
+				return s.DeliveredRevision
+			}
+		}
+	}
+	t.Fatalf("subscription %q not found among notify targets", subID)
+	return ""
+}
+
 // commentEvent builds a GitHub issue-comment ForgeEvent at the coordinate — the
 // simplest non-CHECKS event, so the router never touches the checks roller.
 func notifyCommentEvent(repo string, number uint64, url string) forge.ForgeEvent {
@@ -420,5 +440,171 @@ func TestLinearNotifyRoutedOpenedFansOutToProject(t *testing.T) {
 	}
 	if cur == nil || cur.Revision == "" {
 		t.Fatal("fetch cursor did not advance after the Linear OPENED route")
+	}
+}
+
+// --- test: suppress-path delivery-cursor advance over the real store adapter --
+
+// scriptedIdentityResolver is the ingest.IdentityResolver fake for the T2 store
+// pgtests: it resolves each seeded account id to its owner-qualified handle and a
+// single author handle for OPENED. It lets a self-comment event's actor match the
+// subscriber so the suppress path fires against the real store adapter.
+type scriptedIdentityResolver struct {
+	accounts map[string]ingest.Handle
+	author   ingest.Handle
+}
+
+func (r *scriptedIdentityResolver) HandleForAccount(_ context.Context, accountID string) (ingest.Handle, error) {
+	return r.accounts[accountID], nil
+}
+
+func (r *scriptedIdentityResolver) AuthorHandle(_ context.Context, _ string, _ compassv1internal.ForgeArtifactKind, _ uint64) (ingest.Handle, error) {
+	return r.author, nil
+}
+
+// selfCommentEvent builds a GitHub issue-comment event whose Compass commenter is
+// owner-qualified (owner/agent), so the router resolves an actor handle that can
+// match a subscriber.
+func selfCommentEvent(repo string, number uint64, url, owner, agent string) forge.ForgeEvent {
+	ev := notifyCommentEvent(repo, number, url)
+	ev.Comment.Agent = &compassv1.AgentAttribution{AgentHandle: agent, OwnerHandle: owner}
+	return ev
+}
+
+// TestForgeNotifySuppressAdvancesCaughtUpCursor drives the assembled router over
+// the REAL store adapter: a self-comment from the subscribing agent is suppressed
+// (no dispatch) AND, because the subscriber is caught up to the prior cursor
+// revision, its delivered_revision advances to the route revision through the
+// CAS. A first delivered comment establishes the caught-up state (its ack is
+// simulated by advancing delivered_revision to the cursor revision); the second,
+// self-authored comment is the suppressed one.
+func TestForgeNotifySuppressAdvancesCaughtUpCursor(t *testing.T) {
+	st := forgeTestStore(t)
+	ctx := context.Background() // test root
+	const (
+		repo   = "a/b"
+		number = uint64(42)
+		owner  = "own"
+		agent  = "atlas"
+	)
+	agentID, subID := seedNotifySubscription(t, st, repo, store.ForgeArtifactKindIssue, number)
+
+	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: forgeTestHost}
+	disp := &recordingDispatcher{}
+	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: forgeTestHost}
+	ids := &scriptedIdentityResolver{accounts: map[string]ingest.Handle{string(agentID): {Owner: owner, Agent: agent}}}
+	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, nil, ids, forgeRef, nil)
+
+	// A human comment first: delivered, advancing the shared cursor. Simulate the
+	// agent's ack so its delivered_revision catches up to the cursor revision.
+	if err := router.Route(ctx, notifyCommentEvent(repo, number, "https://github.com/a/b/issues/42#c1")); err != nil {
+		t.Fatalf("Route (human comment): %v", err)
+	}
+	cur, err := st.LoadForgeArtifactCursor(ctx, store.ForgeProviderGitHub, forgeTestHost, repo, store.ForgeArtifactKindIssue, number)
+	if err != nil || cur == nil {
+		t.Fatalf("LoadForgeArtifactCursor: %v (cur=%v)", err, cur)
+	}
+	if err := st.AdvanceForgeDeliveredRevision(ctx, agentID, subID, cur.Revision); err != nil {
+		t.Fatalf("simulate ack: %v", err)
+	}
+	if got := deliveredRevision(t, st, agentID, subID); got != cur.Revision {
+		t.Fatalf("precondition: delivered_revision = %q, want the caught-up cursor revision %q", got, cur.Revision)
+	}
+
+	// The self-comment: suppressed, and the caught-up subscriber advances.
+	if err := router.Route(ctx, selfCommentEvent(repo, number, "https://github.com/a/b/issues/42#c2", owner, agent)); err != nil {
+		t.Fatalf("Route (self comment): %v", err)
+	}
+	// No new dispatch for the self-comment (only the first human comment).
+	if len(disp.sent) != 1 {
+		t.Fatalf("dispatched notifications = %d, want 1 (the self-comment is suppressed)", len(disp.sent))
+	}
+	after, err := st.LoadForgeArtifactCursor(ctx, store.ForgeProviderGitHub, forgeTestHost, repo, store.ForgeArtifactKindIssue, number)
+	if err != nil || after == nil {
+		t.Fatalf("LoadForgeArtifactCursor (post): %v (cur=%v)", err, after)
+	}
+	if got := deliveredRevision(t, st, agentID, subID); got != after.Revision {
+		t.Fatalf("delivered_revision = %q after suppress, want the advanced route revision %q", got, after.Revision)
+	}
+}
+
+// TestForgeNotifySuppressDoesNotAdvanceTrailingCursor is the forward-masking
+// guard over the real store: a self-comment is suppressed, but the subscriber
+// TRAILS the prior cursor revision (an undelivered earlier event), so its
+// delivered_revision does NOT advance — the CAS gate leaves the gap for the
+// sweep. The subscriber never acked the first comment, so it stays trailing.
+func TestForgeNotifySuppressDoesNotAdvanceTrailingCursor(t *testing.T) {
+	st := forgeTestStore(t)
+	ctx := context.Background() // test root
+	const (
+		repo   = "a/b"
+		number = uint64(43)
+		owner  = "own"
+		agent  = "atlas"
+	)
+	agentID, subID := seedNotifySubscription(t, st, repo, store.ForgeArtifactKindIssue, number)
+
+	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: forgeTestHost}
+	disp := &recordingDispatcher{}
+	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: forgeTestHost}
+	ids := &scriptedIdentityResolver{accounts: map[string]ingest.Handle{string(agentID): {Owner: owner, Agent: agent}}}
+	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, nil, ids, forgeRef, nil)
+
+	// A human comment: delivered, cursor advances — but the agent NEVER acks, so
+	// delivered_revision stays "" while the cursor moved ahead (the trailing gap).
+	if err := router.Route(ctx, notifyCommentEvent(repo, number, "https://github.com/a/b/issues/43#c1")); err != nil {
+		t.Fatalf("Route (human comment): %v", err)
+	}
+	if got := deliveredRevision(t, st, agentID, subID); got != "" {
+		t.Fatalf("precondition: delivered_revision = %q, want empty (trailing, unacked)", got)
+	}
+
+	// The self-comment: suppressed, but the trailing subscriber must NOT advance.
+	if err := router.Route(ctx, selfCommentEvent(repo, number, "https://github.com/a/b/issues/43#c2", owner, agent)); err != nil {
+		t.Fatalf("Route (self comment): %v", err)
+	}
+	if got := deliveredRevision(t, st, agentID, subID); got != "" {
+		t.Fatalf("delivered_revision = %q after suppress, want empty (trailing sub NOT advanced — the E1 gap survives for the sweep)", got)
+	}
+}
+
+// TestForgeNotifySuppressNeverAdvancesContainerCursor is the scope carve-out over
+// the real store: a self-authored OPENED to a CONTAINER-scope subscriber is
+// suppressed but its container delivery cursor is NEVER advanced (an artifact
+// revision in the container row would poison the container sweep). The container
+// sub is caught up ("" == "") so only the scope check prevents the advance.
+func TestForgeNotifySuppressNeverAdvancesContainerCursor(t *testing.T) {
+	st := forgeTestStore(t)
+	ctx := context.Background() // test root
+	const (
+		repo    = "RIG"
+		host    = "linear.app"
+		number  = uint64(77)
+		project = "proj-A"
+		owner   = "own"
+		agent   = "atlas"
+		url     = "https://linear.app/rig/issue/RIG-77"
+	)
+	agentID, subID := seedLinearContainerSub(t, st, "lin-self", repo, project)
+
+	notifyStore := &forgeNotifyStore{st: st, provider: store.ForgeProviderLinear, host: host}
+	disp := &recordingDispatcher{}
+	forgeRef := &compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: host}
+	ids := &scriptedIdentityResolver{
+		accounts: map[string]ingest.Handle{string(agentID): {Owner: owner, Agent: agent}},
+		author:   ingest.Handle{Owner: owner, Agent: agent}, // the OPENED author IS the subscriber.
+	}
+	router := ingest.NewNotifyRouter(notifyStore, disp, fixedChecksRoller{}, nil, ids, forgeRef, nil)
+
+	if err := router.Route(ctx, linearOpenedEvent(repo, number, project, url)); err != nil {
+		t.Fatalf("Route (self OPENED): %v", err)
+	}
+	// Suppressed: no dispatch.
+	if len(disp.sent) != 0 {
+		t.Fatalf("dispatched notifications = %d, want 0 (self-opened suppressed)", len(disp.sent))
+	}
+	// The container subscriber's delivery cursor is untouched (never advanced).
+	if got := deliveredRevisionAt(t, st, store.ForgeProviderLinear, host, subID); got != "" {
+		t.Fatalf("container delivered_revision = %q after suppress, want empty (NEVER advanced — poisons the container sweep)", got)
 	}
 }
