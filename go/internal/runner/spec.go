@@ -84,6 +84,12 @@ type workspaceUIDResolver interface {
 	WorkspaceUID() (uint32, error)
 }
 
+// Compile-time regression guard, mirroring the preflight probes' assertions:
+// the binding is structural and cross-package, so a signature drift on either
+// side would otherwise fall through to the AgentUID default below — silently,
+// late (at first provision), and invisibly on a euid-1000 box.
+var _ workspaceUIDResolver = (*runtime.HostRuntime)(nil)
+
 // ResolveWorkspaceUID resolves the uid every agent workspace runs as, keyed off
 // the resolved engine. A backend that names its own uid (the host tier) wins;
 // every other backend falls back to agentuid.AgentUID.
