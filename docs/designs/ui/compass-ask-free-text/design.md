@@ -54,6 +54,13 @@ Seven decisions. The through-lines: **nothing sends but an explicit submit**
 machinery — the local ask copy in the store's message state — rather than a
 parallel keyed map.
 
+"Explicit" means a deliberate confirmation, **not a mouse**: the intended
+flow is answer every question, tab to submit, press Enter. That keyboard path
+is a first-class requirement (D5), not an accessibility footnote — it comes
+free from using a native `<button>`, and D5 names the three things that would
+silently break it. What is being removed is only the *implicit* send — a
+radio click that both answers and ships.
+
 The ruling *simplifies* the prior draft: there is no "did text or the click
 complete the ask" discrimination, one send path instead of two, and the submit
 control is unconditional rather than a skip affordance that appears only on a
@@ -442,16 +449,15 @@ In `AskBlock` (`ChannelView.tsx:99-123`), the per-question body branches on
   store never disagree). The per-keystroke `setComms` map over messages is
   the price; it is the same O(messages) write a click already performs
   (`store.ts:1678-1710`) at human typing rate.
-- **Enter does not submit — re-decided under D0, still declined.** The
-  question was re-weighed now that the explicit control is the *only* send
-  path (so every ask costs a pointer trip the old auto-send sometimes
-  saved). Declined again, on different grounds than before: Enter in one
-  question's input would ship the *whole ask* — including blank answers for
-  every question the user had not reached — through an unrepeatable wire,
-  from a gesture that in every other text field means "commit this field",
-  not "commit the form". The submit control's copy can warn about skipped
-  questions; a keystroke cannot. Revisit only if users report friction
-  (Open Questions).
+- **Enter in the *input* does not send; Enter on the *submit control* does.**
+  These are different keys in different places, and only the first is
+  declined. Enter while typing in one question's field would ship the whole
+  ask — blanks included for every question the user had not reached — from a
+  gesture that in every other text field means "commit this field", not
+  "commit the form". So the input has no `onKeyDown`. Enter (and Space) on
+  the focused submit control is the *primary* keyboard path and must work:
+  see D5's keyboard contract. A user answers every question, tabs to
+  submit, and presses Enter.
 - **Disabled/locked.** `disabled={locked(q())}` — identical accessor to the
   option buttons (`ChannelView.tsx:105`). After submit or on a closed ask
   the input is disabled and displays the recorded `customText` from the
@@ -496,6 +502,28 @@ user must discover mid-flow is the empty-options bug reborn one layer up).
   shipping blanks must know the rest goes blank; the `title` keeps the
   once-only warning); a fully-answered ask — and the disabled untouched
   state — reads plain **"submit"**.
+- **Keyboard-operable — this is the primary path, not an accessibility
+  afterthought.** The intended flow is: answer the questions, move focus to
+  submit, press Enter. It comes free from the platform — a native `<button>`
+  activates on Enter and Space and fires `onClick` with no key handling of
+  our own — so the work is not to build it but to **not break it**. Two
+  things that would silently defeat it are absent and must stay absent: there
+  is no `<form>` anywhere in `apps/ui/src` (so no implicit submission and no
+  stray `type="submit"` default — keep `type="button"`), and the only `Enter`
+  interception in the file is the composer's own `onKeyDown`
+  (`ChannelView.tsx:316-321`), a different component that never sees ask
+  focus. Options are `<button>`s too, so Tab already reaches submit in DOM
+  order with no `tabindex` needed. **A disabled button is not focusable**
+  (measured), so on an untouched ask the control announces itself visually
+  but cannot be tabbed to — acceptable, since an untouched ask has nothing
+  to send.
+- **What the test suite can and cannot prove here.** happy-dom does not
+  implement the button's implicit Enter-to-click default action: a
+  `keyDown` Enter fires `onClick` zero times under `bun test` (measured
+  against a click positive control). So R6 pins the *preconditions* —
+  `BUTTON`, `type="button"`, no ancestor `<form>`, focusable, Enter left
+  uncancelled — and the keystroke itself is verified manually in the running
+  app. Do not let a green suite be read as proof the key works.
 
 The predicates, replacing the old `answeredCount`/`hasStagedText`/`canSubmit`
 trio:
@@ -597,6 +625,26 @@ harness (`:62-87`):
    "submit — skip the rest"; after all answers: enabled, "submit"; after
    submit: gone. RED: today the control renders only in the
    partially-answered window (`ChannelView.tsx:79-82`).
+6. **R6 (mandatory — the keyboard path is a decided contract, D5) — but it
+   asserts *preconditions*, not an Enter keystroke.** Measured in this
+   harness: happy-dom does **not** implement a button's implicit
+   Enter-to-click default action, so `fireEvent.keyDown(btn, {key:"Enter"})`
+   fires `onClick` **zero** times while a click fires once. A test that
+   dispatches Enter and then asserts one respond therefore proves nothing —
+   it would pass only if a click ran too, which is R2. So R6 asserts the
+   three structural facts the native behaviour depends on, each verified
+   assertable: the submit control is a `BUTTON` with `type="button"`, has no
+   ancestor `<form>` (`closest("form") === null`), and is focusable when
+   enabled (`document.activeElement` after `.focus()`). Plus the interceptor
+   probe, which *is* observable: dispatch a bubbling cancelable `keydown`
+   Enter at the control and assert `ev.defaultPrevented === false`, catching
+   an ancestor handler that would swallow Enter (control: with such a handler
+   the flag reads `true`). These fail independently of R2's click. GREEN the
+   moment D5's control renders, so R6 is a **regression guard**, not a
+   red/green driver.
+   *Real Enter-key activation is a browser behaviour this harness cannot
+   exercise — it belongs to manual/e2e verification, and the design must not
+   claim unit coverage of it.*
 
 **`apps/ui/src/live/adapt.test.ts`** — the wire→domain mapping:
 
@@ -754,9 +802,12 @@ mention only).
 - Rewrite the `AskBlock` doc comment (D0 text).
 - Submit control: `<Show when={!closed()}>`, `disabled` on
   `answeredCount() === 0`, label switch per D5 (this slice still on the
-  chosen-ids `answeredCount`; T3 swaps in `isQuestionAnswered`).
+  chosen-ids `answeredCount`; T3 swaps in `isQuestionAnswered`). Keep
+  `type="button"`, add no `onKeyDown`, and introduce no wrapping `<form>` —
+  D5's keyboard contract depends on the native button activation this
+  preserves.
 
-Tests: L2 (new) plus every inversion/edit in D6's enumeration for
+Tests: L2 and R6 (new) plus every inversion/edit in D6's enumeration for
 `store.live.test.ts`, `store.ask-race.test.ts` (S3 included — the restage is
 this slice's behaviour), and `ChannelView.ask.test.tsx` (`:103`, `:138`,
 `:199`, `:435`-analogue edits).
@@ -832,8 +883,9 @@ Interfaces:
 - Produces: the `.ask-text` DOM contract the tests select on; no exported
   API.
 
-Tests: D6 cases R1-R5 in `ChannelView.ask.test.tsx` (R4/R5 land their final
-form here; their inversion halves are already green from T0).
+Tests: D6 cases R1-R6 in `ChannelView.ask.test.tsx` (R4/R5 land their final
+form here; their inversion halves are already green from T0). R6 — the
+keyboard submit guard — lands with T0's control and stays green from there.
 
 Task order is T0 → T1 → T2 → T3 (each consumes the previous slice's
 exports); T0's inversions and T1's adapt/predicate tests are green at the end
@@ -867,10 +919,13 @@ of their slices, the rest stay RED until theirs.
    None of it blocks or is blocked by this record's machinery (`answerAskText`
    and the D3 guard would widen mechanically), so it stays a named follow-up
    rather than silent scope growth.
-2. **Enter-to-submit.** (Not load-bearing.) Re-weighed under D0 and declined
-   again — see D4: Enter in one field shipping the whole ask, blanks
-   included, through an unrepeatable wire is the wrong meaning for that key.
-   Revisit only if users report friction.
+2. **Enter-in-the-input-field.** (Not load-bearing — and no longer about
+   whether the keyboard can submit at all: Enter on the focused submit
+   control is a **decided contract**, D5's keyboard bullet, with a test.
+   What stays declined is only the *shortcut* of Enter while typing in a
+   question's field, which would ship the whole ask from a key that means
+   "commit this field" everywhere else.) Revisit only if users report the
+   tab-to-submit trip is friction.
 3. **Multi-line growth.** (Not load-bearing.) Single-line per D4's reading of
    the proto's "Other" framing. If agents start asking prose-shaped free-text
    questions, a `textarea` swap is contained to the D4 branch and its CSS.
