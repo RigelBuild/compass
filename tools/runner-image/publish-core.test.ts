@@ -4,50 +4,106 @@ import {
 	digestFromMetadata,
 	digestRef,
 	isImageDigest,
-	secretEnvViolations,
+	secretConfigViolations,
 } from "./publish-core.ts";
 
 const DIGEST =
 	"sha256:2125c2a158a8329c40ac7c1daa8909f09fe82a5231ff0df05319d0be4d4c4bb6";
 
-describe("secretEnvViolations", () => {
+describe("secretConfigViolations", () => {
+	const noLabels = { labels: {} as Record<string, string> };
+
 	test("blocks a populated secret-shaped name", () => {
-		expect(secretEnvViolations(["GITHUB_TOKEN=ghp_x"])).toEqual([
-			"GITHUB_TOKEN",
-		]);
+		expect(
+			secretConfigViolations({ env: ["GITHUB_TOKEN=ghp_x"], ...noLabels }),
+		).toEqual(["GITHUB_TOKEN"]);
 	});
 
 	test("blocks a bare name, which inherits the builder's value at runtime", () => {
-		expect(secretEnvViolations(["REGISTRY_PASSWORD"])).toEqual([
-			"REGISTRY_PASSWORD",
-		]);
+		expect(
+			secretConfigViolations({ env: ["REGISTRY_PASSWORD"], ...noLabels }),
+		).toEqual(["REGISTRY_PASSWORD"]);
 	});
 
 	test("allows a secret-shaped name explicitly emptied", () => {
 		// The image ships the name with no value, so there is nothing to leak.
-		expect(secretEnvViolations(["GITHUB_TOKEN="])).toEqual([]);
+		expect(
+			secretConfigViolations({ env: ["GITHUB_TOKEN="], ...noLabels }),
+		).toEqual([]);
 	});
 
 	test("allows the runner's own config env", () => {
 		expect(
-			secretEnvViolations([
-				"COMPASS_RUNTIME_BACKEND=microvm",
-				"COMPASS_MICROVM_KERNEL=/nix/store/x/bzImage",
-				"PATH=/nix/store/y/bin",
-			]),
+			secretConfigViolations({
+				env: [
+					"COMPASS_RUNTIME_BACKEND=microvm",
+					"COMPASS_MICROVM_KERNEL=/nix/store/x/bzImage",
+					"PATH=/nix/store/y/bin",
+				],
+				...noLabels,
+			}),
 		).toEqual([]);
 	});
 
 	test("does not fire on a substring inside a larger word", () => {
 		// AUTHORITY and TOKENIZER are not credentials; matching bare substrings
 		// would make the scan cry wolf and get switched off.
-		expect(secretEnvViolations(["AUTHORITY=x", "TOKENIZER=y"])).toEqual([]);
+		expect(
+			secretConfigViolations({
+				env: ["AUTHORITY=x", "TOKENIZER=y"],
+				...noLabels,
+			}),
+		).toEqual([]);
+	});
+
+	test("catches the broadened keyword forms KEY, PASSPHRASE, BEARER", () => {
+		expect(
+			secretConfigViolations({
+				env: ["SSH_KEY=x", "DEPLOY_KEY=y", "PASSPHRASE=z", "BEARER_TOKEN=b"],
+				...noLabels,
+			}),
+		).toEqual(["SSH_KEY", "DEPLOY_KEY", "PASSPHRASE", "BEARER_TOKEN"]);
+	});
+
+	test("matches a *_PAT name but never PATH", () => {
+		// PATH is set in essentially every image config, so a bare PAT keyword
+		// that fired on it would break every publish — the word boundary must
+		// keep PATH out while still catching a real personal-access-token name.
+		expect(
+			secretConfigViolations({
+				env: ["GITHUB_PAT=x", "PATH=/nix/store/y/bin"],
+				...noLabels,
+			}),
+		).toEqual(["GITHUB_PAT"]);
 	});
 
 	test("reports every violation, not just the first", () => {
 		expect(
-			secretEnvViolations(["A_SECRET=1", "PATH=/bin", "B_API_KEY=2"]),
+			secretConfigViolations({
+				env: ["A_SECRET=1", "PATH=/bin", "B_API_KEY=2"],
+				...noLabels,
+			}),
 		).toEqual(["A_SECRET", "B_API_KEY"]);
+	});
+
+	test("scans label keys and values, not just env", () => {
+		expect(
+			secretConfigViolations({
+				env: [],
+				labels: {
+					"org.opencontainers.image.source": "https://example.test/repo",
+					deploy_token: "abc",
+					note: "value is a GITHUB_TOKEN",
+				},
+			}),
+		).toEqual(["deploy_token", "note"]);
+	});
+
+	test("allows an empty-valued secret-shaped label", () => {
+		// A label with no value ships nothing, mirroring the emptied-env case.
+		expect(
+			secretConfigViolations({ env: [], labels: { api_key: "" } }),
+		).toEqual([]);
 	});
 });
 

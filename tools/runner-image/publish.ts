@@ -1,8 +1,7 @@
 #!/usr/bin/env bun
-// Publish the compass-runner container image by digest (R2 of the Compass
-// Runner containerization record): scan the locally built image config for
-// leaked secrets, push with rootless BuildKit, then assert the digest the
-// registry accepted equals the one the local build produced.
+// Publish the compass-runner container image by digest: scan the locally built
+// image config for leaked secrets, push with rootless BuildKit, then assert the
+// digest the registry accepted equals the one the local build produced.
 //
 // WHY A DIGEST AND NOT A TAG. GHCR has no server-side tag immutability, so
 // anyone holding packages:write can re-point a tag at other bytes. The
@@ -16,10 +15,9 @@
 //
 // Usage:
 //   bun tools/runner-image/publish.ts --repo <ghcr.io/owner/name> --sha <sha12>
-//                                     [--expect-digest sha256:…]
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +27,7 @@ import {
 	digestRef,
 	EXIT,
 	isImageDigest,
-	secretEnvViolations,
+	secretConfigViolations,
 } from "./publish-core.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -51,7 +49,7 @@ const sha12 = arg("sha");
 if (!repo || !sha12) {
 	fail(
 		EXIT.usage,
-		"usage: publish.ts --repo <ghcr.io/owner/name> --sha <sha12> [--expect-digest sha256:…]",
+		"usage: publish.ts --repo <ghcr.io/owner/name> --sha <sha12>",
 	);
 }
 const tag = buildTag(repo, sha12);
@@ -65,22 +63,24 @@ const tag = buildTag(repo, sha12);
 if (!existsSync(join(ociDir, "index.json"))) {
 	fail(
 		EXIT.usage,
-		`no OCI layout at ${ociDir} — run \`moon run compass-runner-image:build\` first`,
+		`no OCI layout at ${ociDir} — run \`bun tools/runner-image/build.ts --output oci\` (or \`moon run compass-runner-image:build\`, its default output) first`,
 	);
 }
 const localDigest = manifestDigest(ociDir);
-const violations = secretEnvViolations(imageConfigEnv(ociDir, localDigest));
+const violations = secretConfigViolations(imageConfig(ociDir, localDigest));
 if (violations.length > 0) {
 	fail(
 		EXIT.secretFound,
-		`image config env carries secret-shaped names: ${violations.join(", ")} — rotate and rebuild`,
+		`image config carries secret-shaped names: ${violations.join(", ")} — rotate and rebuild`,
 	);
 }
 
-const metadataFile = join(
-	mkdtempSync(join(tmpdir(), "runner-image-")),
-	"meta.json",
-);
+// The metadata dir is a throwaway; remove it on every exit path (including a
+// fail()'s process.exit) so a dev-box run leaves nothing behind. force:true
+// keeps the handler from throwing, and it changes no exit code.
+const metadataDir = mkdtempSync(join(tmpdir(), "runner-image-"));
+process.on("exit", () => rmSync(metadataDir, { recursive: true, force: true }));
+const metadataFile = join(metadataDir, "meta.json");
 const push = spawnSync(
 	"bun",
 	[
@@ -114,16 +114,6 @@ if (pushedDigest !== localDigest) {
 	);
 }
 
-// An explicit expectation from the caller (a prior run's digest) turns
-// reproducibility into a gate rather than a claim.
-const expected = arg("expect-digest");
-if (expected && expected !== pushedDigest) {
-	fail(
-		EXIT.digestMismatch,
-		`expected ${expected} but published ${pushedDigest} — the build is not reproducible`,
-	);
-}
-
 // The deployable reference, on stdout so the workflow step can capture it.
 console.log(digestRef(repo, pushedDigest));
 
@@ -142,44 +132,70 @@ function manifestDigest(dir: string): string {
 			}
 		}
 	}
-	// Fail rather than pick one: a multi-manifest layout means the build emitted
-	// something other than the single linux/amd64 image this lane contracts for.
+	// A layout that exists but names other than one sha256 manifest is a
+	// malformed local artifact, not a usage mistake: the build emitted something
+	// other than the single linux/amd64 image this lane contracts for.
 	fail(
-		EXIT.usage,
+		EXIT.badLayout,
 		`${dir}/index.json does not carry exactly one sha256 manifest`,
 	);
 }
 
-/** The `Env` of the image config the layout's manifest points at. */
-function imageConfigEnv(dir: string, manifest: string): readonly string[] {
-	const blob = (digest: string): unknown =>
-		JSON.parse(readFileSync(join(dir, "blobs", ...digest.split(":")), "utf8"));
-	const descriptor: unknown = blob(manifest);
+/** The `Env` and `Labels` of the image config the layout's manifest points at.
+ * Both are secret-scanned: a leaked credential shows up as a name in either. */
+function imageConfig(
+	dir: string,
+	manifest: string,
+): { env: readonly string[]; labels: Readonly<Record<string, string>> } {
+	const image: unknown = readBlob(dir, manifestConfigDigest(dir, manifest));
+	// No config, no Env, or no Labels is all legitimate (nothing to leak), so an
+	// absence is an empty result, never a failure.
+	if (!image || typeof image !== "object" || !("config" in image)) {
+		return { env: [], labels: {} };
+	}
+	const inner = image.config;
+	if (!inner || typeof inner !== "object") return { env: [], labels: {} };
+	const env =
+		"Env" in inner && Array.isArray(inner.Env)
+			? inner.Env.filter((e): e is string => typeof e === "string")
+			: [];
+	const labels: Record<string, string> = {};
+	if ("Labels" in inner && inner.Labels && typeof inner.Labels === "object") {
+		for (const [key, value] of Object.entries(inner.Labels)) {
+			if (typeof value === "string") labels[key] = value;
+		}
+	}
+	return { env, labels };
+}
+
+function readBlob(dir: string, digest: string): unknown {
+	return JSON.parse(
+		readFileSync(join(dir, "blobs", ...digest.split(":")), "utf8"),
+	);
+}
+
+/** The config blob's own digest, resolved through the manifest descriptor. A
+ * missing or non-string config digest is a malformed layout, not a usage
+ * mistake. */
+function manifestConfigDigest(dir: string, manifest: string): string {
+	const descriptor: unknown = readBlob(dir, manifest);
 	if (
 		!descriptor ||
 		typeof descriptor !== "object" ||
 		!("config" in descriptor)
 	) {
-		fail(EXIT.usage, `manifest ${manifest} carries no config descriptor`);
+		fail(EXIT.badLayout, `manifest ${manifest} carries no config descriptor`);
 	}
 	const config = descriptor.config;
 	if (!config || typeof config !== "object" || !("digest" in config)) {
-		fail(EXIT.usage, `manifest ${manifest} config descriptor has no digest`);
+		fail(
+			EXIT.badLayout,
+			`manifest ${manifest} config descriptor has no digest`,
+		);
 	}
 	const digest = config.digest;
 	if (typeof digest !== "string") {
-		fail(EXIT.usage, `manifest ${manifest} config digest is not a string`);
+		fail(EXIT.badLayout, `manifest ${manifest} config digest is not a string`);
 	}
-	const image: unknown = blob(digest);
-	if (image && typeof image === "object" && "config" in image) {
-		const inner = image.config;
-		if (inner && typeof inner === "object" && "Env" in inner) {
-			const env = inner.Env;
-			if (Array.isArray(env)) {
-				return env.filter((e): e is string => typeof e === "string");
-			}
-		}
-	}
-	// No Env at all is legitimate (nothing to leak), so this is not a failure.
-	return [];
+	return digest;
 }

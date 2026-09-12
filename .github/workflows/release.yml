@@ -53,6 +53,27 @@ env:
     bun.lock
     .github/workflows/release.yml
     tools/toolchain/versions/bun.nix
+  # The runner image's own closure path set, SEPARATE from IMAGE_CLOSURE_PATHS
+  # (that one is the agent image's, and publish-image plus T3's resolver
+  # cross-check consume it — widening it would republish the agent image on a
+  # runner-only change). Derived from runner-image/moon.yml's build.inputs and
+  # the flake attributes tools/runner-image/build.ts realises: the image's
+  # source tree, the TypeScript build/publish lane, the Go runner binary and its
+  # internal packages, the guest asset closure, the two flake files the nix
+  # realise reads, the VMM env, and this workflow. Every glob is verified to
+  # match a real path — one that never matches would silently narrow the gate.
+  RUNNER_IMAGE_CLOSURE_PATHS: |
+    runner-image/**
+    tools/runner-image/**
+    go/go.mod
+    go/go.sum
+    go/cmd/compass-runner/**
+    go/internal/**
+    guest-image/**
+    flake.nix
+    flake.lock
+    tools/toolchain/microvm-vmm-env.nix
+    .github/workflows/release.yml
 
 jobs:
   release-pr:
@@ -909,7 +930,75 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Decide whether this push touches the runner-image closure
+        id: gate
+        # Same push-event before/after tree diff publish-image uses (release.yml
+        # gate above), over RUNNER_IMAGE_CLOSURE_PATHS instead of the agent set.
+        # The trigger carries no `paths:` filter, so this job decides for itself.
+        # Every fallback ERRS TOWARD PUBLISHING (the no-drop invariant): a
+        # dispatch, a first push with no diff base, or an unreachable before-sha
+        # all force-publish rather than risk silently dropping a closure change.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # workflow_dispatch has no push range to diff. Force-publish so the
+          # dispatch remediation path (publish then re-run) always publishes.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "workflow_dispatch: force-publish (no push range to diff)"
+            exit 0
+          fi
+
+          # First push to the branch has an all-zero before-sha and no diff base.
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "no diff base (first push to branch): force-publish"
+            exit 0
+          fi
+
+          # A two-dot tree diff needs only the two endpoint commits; checkout has
+          # HEAD at depth 1, so fetch the before endpoint the same way.
+          git fetch --no-tags --depth=1 origin "$BEFORE_SHA" >/dev/null 2>&1 || true
+
+          # An unreachable before-sha (force-push, GC'd object, fetch transient)
+          # leaves no diff base. Publish rather than fail — the no-drop invariant.
+          if ! changed="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null)"; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
+            exit 0
+          fi
+
+          should_publish=false
+          while IFS= read -r pattern; do
+            [ -n "$pattern" ] || continue
+            case "$pattern" in
+              *'/**')
+                prefix="${pattern%'/**'}/"
+                while IFS= read -r f; do
+                  [ -n "$f" ] || continue
+                  case "$f" in
+                    "$prefix"*) should_publish=true ;;
+                  esac
+                done <<< "$changed"
+                ;;
+              *)
+                while IFS= read -r f; do
+                  [ "$f" = "$pattern" ] && should_publish=true
+                done <<< "$changed"
+                ;;
+            esac
+            [ "$should_publish" = true ] && break
+          done <<< "$RUNNER_IMAGE_CLOSURE_PATHS"
+
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+          echo "changed-path gate over the runner-image closure set: should_publish=$should_publish"
+
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        if: steps.gate.outputs.should_publish == 'true'
         with:
           # The two caches are declared HERE rather than delegated via
           # `accept-flake-config`, which would make nix trust the nixConfig of
@@ -921,6 +1010,7 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the pinned bun toolchain on PATH
+        if: steps.gate.outputs.should_publish == 'true'
         # Resolve bun from gate-tools.nix so it is byte-identical to the dev
         # shell's — the same derivation, not merely the same version. `jq -r`
         # renders a missing `.store` as the literal string `null`, a value
@@ -936,10 +1026,12 @@ jobs:
           echo "$store/bin" >>"$GITHUB_PATH"
 
       - name: Start a rootless buildkitd
+        if: steps.gate.outputs.should_publish == 'true'
         # Rootless BuildKit is the ruled mechanism for a prebuilt-application
         # image: never `docker build`, never a host docker socket (a socket
         # hands a build step the daemon's blast radius). rootlesskit needs
-        # newuidmap from /run/wrappers/bin, and buildkitd needs runc on PATH.
+        # newuidmap, which on this ubuntu-latest runner comes from the uidmap
+        # package already on the default PATH; buildkitd needs runc on PATH.
         run: |
           set -euo pipefail
           buildkit=$(nix build --no-link --print-out-paths nixpkgs#buildkit)
@@ -947,19 +1039,33 @@ jobs:
           runc=$(nix build --no-link --print-out-paths nixpkgs#runc)
           echo "$buildkit/bin" >>"$GITHUB_PATH"
           export PATH="$buildkit/bin:$rootlesskit/bin:$runc/bin:$PATH"
+          addr="unix://$RUNNER_TEMP/buildkit.sock"
+          log="$RUNNER_TEMP/buildkitd.log"
+          # Redirect the daemon's output to a file: discarding it turns a startup
+          # failure into a bare timeout with no cause to read.
           "$rootlesskit/bin/rootlesskit" "$buildkit/bin/buildkitd" \
-            --addr unix://"$RUNNER_TEMP"/buildkit.sock &
+            --addr "$addr" >"$log" 2>&1 &
+          # `buildctl debug workers` is a real readiness probe, not a socket-file
+          # existence check: it round-trips to the daemon and exits 0 only once a
+          # worker is up (measured against buildkit 0.31.1). Bounded poll, no
+          # unbounded wait and no retry around a non-startup failure.
+          ready=false
           for _ in $(seq 1 60); do
-            if [ -S "$RUNNER_TEMP/buildkit.sock" ]; then break; fi
+            if buildctl --addr "$addr" debug workers >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
             sleep 1
           done
-          if [ ! -S "$RUNNER_TEMP/buildkit.sock" ]; then
-            echo "::error::buildkitd did not expose its socket within 60s" >&2
+          if [ "$ready" != true ]; then
+            echo "::error::buildkitd did not accept connections within 60s" >&2
+            cat "$log" >&2 || true
             exit 1
           fi
-          echo "BUILDKIT_HOST=unix://$RUNNER_TEMP/buildkit.sock" >>"$GITHUB_ENV"
+          echo "BUILDKIT_HOST=$addr" >>"$GITHUB_ENV"
 
       - name: Log in to GHCR
+        if: steps.gate.outputs.should_publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ACTOR: ${{ github.actor }}
@@ -972,24 +1078,35 @@ jobs:
           mkdir -p "$auth_dir"
           chmod 700 "$auth_dir"
           umask 077
-          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
-            "$(printf '%s:%s' "$ACTOR" "$GITHUB_TOKEN" | base64 -w0)" \
+          # base64(actor:token) is credential-equivalent, but Actions log-masking
+          # matches only the RAW token — a transformed form is NOT auto-redacted.
+          # Mask the blob before it can reach a log. `base64` reads stdin so the
+          # token still never touches argv.
+          auth="$(printf '%s:%s' "$ACTOR" "$GITHUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" \
             > "$auth_dir/config.json"
           echo "DOCKER_CONFIG=$auth_dir" >>"$GITHUB_ENV"
 
       - name: Build the image locally
+        if: steps.gate.outputs.should_publish == 'true'
         # The local OCI layout is what the publish step scans for leaked secrets
         # BEFORE any push, and its digest is what the push is asserted against.
         run: bun tools/runner-image/build.ts --output oci
 
       - name: Publish by digest and assert reproducibility
+        if: steps.gate.outputs.should_publish == 'true'
         # Re-runs the build with the push exporter (buildctl has no `push` verb),
         # then fails unless the registry's digest equals the local one. The
         # deployable `repo@sha256:…` lands in the step summary: GHCR has no
         # server-side tag immutability, so nothing deployed resolves via a tag.
         run: |
           set -euo pipefail
-          sha12="$(git rev-parse --short=12 HEAD)"
+          # `--short=12` returns the SHORTEST UNIQUE length that is >= 12, so a
+          # collision yields 13+ chars and buildTag's strict ^[0-9a-f]{12}$ then
+          # hard-fails the publish. A deterministic 12-char truncation keeps the
+          # contract exact.
+          sha12="$(git rev-parse HEAD | cut -c1-12)"
           ref="$(bun tools/runner-image/publish.ts \
             --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12")"
           echo "published $ref"
