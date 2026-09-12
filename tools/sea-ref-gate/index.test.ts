@@ -49,6 +49,9 @@ describe("isCarveOut", () => {
 	test("the generated bun.lock is carved out", () => {
 		expect(isCarveOut("bun.lock")).toBe(true);
 	});
+	test("the generated CHANGELOG is carved out", () => {
+		expect(isCarveOut("CHANGELOG.md")).toBe(true);
+	});
 	test("a canonical docs/ record is NOT carved out", () => {
 		expect(isCarveOut("docs/designs/ui/compass-board-view/design.md")).toBe(
 			false,
