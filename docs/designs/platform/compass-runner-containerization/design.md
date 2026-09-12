@@ -352,14 +352,46 @@ first thing a Kubernetes reader reaches for.
 
 ### R1 — `runner-image/` project
 
-A nix-built container image project in this repo, mirroring the existing
-agent-image lane: Runner binary, cloud-hypervisor, virtiofsd, passt, guest
-kernel/rootfs/initrd. Test cycle: the image builds reproducibly and the
-resulting layer set contains each expected binary and guest asset.
+A `Dockerfile` built on a **minimal hardened base** (distroless, or Alpine
+where a shell is genuinely needed), carrying the Runner binary,
+cloud-hypervisor, virtiofsd, passt, and the guest kernel/rootfs/initrd.
+
+**Not a nix image.** The private monorepo's frozen first-party-image-builds
+spec splits the two mechanisms by what the image's *runtime* is, not by what
+built the artifact: an image that **is** a Nix environment (a CI step image, a
+dev/agent shell) earns `nix2container`; a **prebuilt application** on a minimal
+base is a Dockerfile built by rootless BuildKit. Its words: a first-party image
+does not earn the nix path "merely because Nix built it or it ships a compiled
+binary — build tool and runtime base are independent choices", and the
+prescribed shape for a nix-built artifact is to `nix build` it and `COPY` the
+result onto the base. `nix2container` for app images is rejected there on cost
+— a per-app regeneration tax plus a maintained fork.
+
+The Runner is squarely the prebuilt-application row: a static `CGO_ENABLED=0`
+Go binary that exec's three userland binaries and runs no package manager,
+toolchain, or `nix` at runtime. The agent-image lane sits on the *other* row by
+name, because that container's job is to be a toolchain. Sharing the
+`*-image/` directory shape is not sharing the mechanism.
+
+Distroless is the stronger posture for a managed multi-tenant cluster and fits
+the Runner's shape — but the KVM userland binaries come from nixpkgs and carry
+store-path interpreter and rpath references, so R1 must settle how they are
+made runnable on a minimal base (a static or patchelf'd copy, or an Alpine base
+with the loader present). That is R1's one real engineering question.
+
+Test cycle: the image builds reproducibly; the resulting image contains each
+expected binary and guest asset; every carried binary actually executes on the
+chosen base (the store-path-reference check above, which a layer-contents
+assertion alone would miss).
 
 ### R2 — publish lane
 
-Extend the release workflow to build and publish the runner image by digest.
+Extend the release workflow to build and publish the runner image by digest,
+built with rootless BuildKit (`buildkitd`/`buildctl`) per the spec cited in R1
+— never `docker build`, never a host docker socket. The deployed contract is
+the resolved immutable digest (`repo@sha256:…`), not a tag: GHCR has no
+server-side tag immutability, so R3's DaemonSet pins the digest.
+
 Test cycle: a tagged run publishes a manifest whose digest is recorded in the
 run output; a second build of the same input yields the same digest.
 
@@ -419,7 +451,7 @@ independent. R6 lands with the freeze.
 
 | Task | Deliverable | Depends on |
 | ------ | ----------- | ---------- |
-| R1 | `runner-image/` nix project | — |
+| R1 | `runner-image/` Dockerfile on a minimal hardened base | — |
 | R2 | publish lane by digest | R1 |
 | R3 | DaemonSet + RBAC manifests + render tests | R7 |
 | R4 | device-plugin resource + gid wiring | R7 |
