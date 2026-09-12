@@ -1021,6 +1021,7 @@ to `Active (key-custody clause superseded by the user-secret store record)`.
 | DL-360 | User secrets are scoped at THREE levels — tenant (0), user (1), agent (2) — via `scope_kind SMALLINT` + `scope_id TEXT` (empty string for a tenant row, the owning `accounts.id` for user/agent rows) with the `secrets` PK widened to `(name, scope_kind, scope_id)`; a tenant row is a real shared VALUE several users resolve, not a declaration placeholder. The scope↔id shape is CHECK-enforced (`secrets_scope_shape`); `scope_id` carries NO FK to `accounts` — a tenant row's `''` can never satisfy one and Postgres has no conditional FK — so user/agent referential integrity is enforced at the store door in the writing transaction | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
 | DL-361 | Secret resolution is most-specific-wins — `agent > user > tenant`, ONE value per name in the injected environment — collapsed in SQL (`DISTINCT ON` ordered by `scope_kind DESC`, the numeric encoding being the precedence) so shadowed rows never leave Postgres or get decrypted; `FetchSecrets` resolves per agent account using the identity the runnerhub authz maps (`sessionAccounts`/`containerAccounts`) already hold and previously discarded, the user tier reached through the single `agent_accounts.owner_user_id` FK hop. Scope is an ADDITIONAL filter inside a tenant — RLS tenant isolation stays the outer boundary, never replaced. The existing `SetSecret`/`DeleteSecret` verbs stay pinned to the tenant coordinate, preserving inject-all behavior until a scope wire surface is ruled | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
 | DL-362 | The canonical user-secret AAD is the five-field tuple `"compass/user-secret/v1\x00" + tenantID + "\x00" + decimal(scopeKind) + "\x00" + scopeID + "\x00" + name + "\x00" + decimal(keyVersion)` (Go: `UserSecretAAD(tenantID string, scopeKind int16, scopeID, name string, keyVersion int16) []byte`; SMALLINTs rendered `strconv.FormatInt(int64(v), 10)`), every field bound unconditionally (a tenant row binds scopeID as the empty string) with `\x00` separators keeping the encoding injective. Fixed BEFORE any migration ships because the AAD is baked into every ciphertext — a scope field added later would force a re-encrypt of every row. Refines DL-351's four-field AAD clause; DL-351's other rulings stand | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
+| DL-363 | Writing a tenant-scoped user-secret row requires an admin (`store.UserRoleAdmin`, `go/internal/store/types.go`), reusing the existing role elevation rather than introducing a permission concept: tenant (0) admin-only, user (1) and agent (2) writable by the owning user or an admin. The check lands in the store door inside the same writing transaction as DL-360's FK-substitute referential checks, so one place enforces both. READS are deliberately asymmetric — a plain user's agent resolves tenant rows, which is the point of a shared tenant value under DL-361; reading a shared secret is the feature, writing one is the privileged act. The wire surface for a scoped write stays undecided (a scope selector on `SetSecretRequest` is a public-proto fork) | Active (Matt, 2026-09-12) | [user-secret store §D8](compass-user-secret-store.md#resolved-decisions) |
 
 ## Resolved decisions
 
@@ -1110,6 +1111,21 @@ the draft argued for, and because D1 supersedes part of a frozen record.
   full PK; D6's tenant-wart caveat stands — `tenant_id` is still not in the
   key, so `TestForgeAuthoredTwoTenantsSameCoordinate`'s cross-tenant
   limitation persists at the widened coordinate. Ledger: DL-360..DL-362.
+- **D8 — Writing a tenant-scoped row requires an admin; reads do not (Matt,
+  2026-09-12, was OQ-2's first half).** A plain user may NOT write a
+  tenant-scoped row. The check reuses the existing `store.UserRoleAdmin`
+  elevation (`go/internal/store/types.go`, with `UserRoleMember` the
+  least-privilege default and `adminByHandle` already refusing non-admins) —
+  no new permission concept. The matrix: tenant (0) admin-only; user (1) and
+  agent (2) writable by the owning user or an admin. It lands in the store
+  door, in the same writing transaction as A9's FK-substitute referential
+  checks, so one place enforces both. READS stay deliberately asymmetric: a
+  plain user's agent resolves tenant rows, which is the entire point of a
+  shared tenant value under DL-361 — reading a shared secret is the feature,
+  writing one is the privileged act. This also answers T2's two `(0, "")`
+  placeholders in `go/server/secrets_service.go`: they are tenant-scoped
+  writes and are already admin-gated at the door, so T5 verifies and
+  documents that gate rather than adding one. Ledger: DL-363.
 
 ## Open questions
 
@@ -1124,13 +1140,13 @@ needs a Matt ruling; none is silently decided by this amendment.
   provenance (whoever wrote the row), or does it carry authorization weight
   (only the declarer may rewrite/delete)? This record treats it as
   provenance only.
-- **Who may write which scope, and over what wire surface.** May a plain
-  user write a tenant-scoped row every other user's agents will resolve? T5
-  keeps the existing `SetSecret`/`DeleteSecret` verbs pinned to the tenant
-  coordinate — today's observable behavior — so per-user/per-agent writes
-  have NO surface yet: `SetSecretRequest`/`DeleteSecretRequest` would need a
-  scope selector, and its authorization matrix (user scope self-only? agent
-  scope owner-only? tenant scope admin-only?) is undecided.
+- **What wire surface carries a scoped write.** The authorization matrix is
+  now ruled (D8), but the surface is not. T5 keeps the existing
+  `SetSecret`/`DeleteSecret` verbs pinned to the tenant coordinate — today's
+  observable behavior — so per-user/per-agent writes have NO surface yet:
+  `SetSecretRequest`/`DeleteSecretRequest` would need a scope selector, and
+  adding one is a public-proto change (an ask-first fork), so it is
+  deliberately not decided here.
 - **Lifecycle of scoped rows when their account goes away.** `scope_id`
   carries no FK (A9), so deleting an agent account neither cascades nor
   RESTRICTs its agent-scoped secret rows — they linger as unreachable
