@@ -188,3 +188,25 @@ func kindFromStore(k store.SecretKind) SecretKind {
 		return SecretGeneric
 	}
 }
+
+// deliveryToStore maps this package's delivery enum to the persisted store one —
+// the write-path counterpart of deliveryFromStore, for StoreResolver.Upsert.
+func deliveryToStore(d DeliveryKind) store.SecretDelivery {
+	if d == DeliveryEnv {
+		return store.SecretDeliveryEnv
+	}
+	return store.SecretDeliveryFile
+}
+
+// kindToStore maps this package's kind enum to the persisted store one — the
+// write-path counterpart of kindFromStore, for StoreResolver.Upsert.
+func kindToStore(k SecretKind) store.SecretKind {
+	switch k {
+	case SecretProvider:
+		return store.SecretKindProvider
+	case SecretGH:
+		return store.SecretKindGH
+	default:
+		return store.SecretKindGeneric
+	}
+}

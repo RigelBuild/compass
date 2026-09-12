@@ -162,6 +162,18 @@ func TestEnumMappingFromStore(t *testing.T) {
 			t.Errorf("kindFromStore(%d) = %d, want %d", in, got, want)
 		}
 	}
+
+	// Reverse (write-path) maps round-trip: xToStore inverts xFromStore.
+	for in, mid := range deliveries {
+		if got := deliveryToStore(mid); got != in {
+			t.Errorf("deliveryToStore(%d) = %d, want %d", mid, got, in)
+		}
+	}
+	for in, mid := range kinds {
+		if got := kindToStore(mid); got != in {
+			t.Errorf("kindToStore(%d) = %d, want %d", mid, got, in)
+		}
+	}
 }
 
 func TestValidateProfile(t *testing.T) {
