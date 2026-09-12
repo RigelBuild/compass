@@ -31,6 +31,38 @@ func (q *Queries) AdvanceForgeDeliveredRevision(ctx context.Context, arg Advance
 	return result.RowsAffected(), nil
 }
 
+const advanceForgeDeliveredRevisionCAS = `-- name: AdvanceForgeDeliveredRevisionCAS :execrows
+UPDATE agent_forge_subscriptions
+   SET delivered_revision = $3, delivered_at = now()
+ WHERE id = $2 AND agent_account_id = $1 AND delivered_revision = $4
+`
+
+type AdvanceForgeDeliveredRevisionCASParams struct {
+	AgentAccountID      string
+	ID                  string
+	DeliveredRevision   string
+	DeliveredRevision_2 string
+}
+
+// Compare-and-set advance for the notify-router suppress path: the write lands
+// only when delivered_revision still equals $4 (the prior value the router read),
+// so a concurrent route cannot erase a delivery gap it did not observe. Scoped to
+// the owning agent (id AND agent_account_id). Zero rows affected is a lost CAS
+// (someone else advanced first), NOT an error — the wrapper reports it as
+// advanced=false.
+func (q *Queries) AdvanceForgeDeliveredRevisionCAS(ctx context.Context, arg AdvanceForgeDeliveredRevisionCASParams) (int64, error) {
+	result, err := q.db.Exec(ctx, advanceForgeDeliveredRevisionCAS,
+		arg.AgentAccountID,
+		arg.ID,
+		arg.DeliveredRevision,
+		arg.DeliveredRevision_2,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const countAgentForgeSubscriptionsForArtifact = `-- name: CountAgentForgeSubscriptionsForArtifact :one
 SELECT count(*) FROM agent_forge_subscriptions
  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5
@@ -176,7 +208,7 @@ func (q *Queries) GCForgeArtifactCursorIfUnsubscribed(ctx context.Context, arg G
 const listForgeNotifyTargets = `-- name: ListForgeNotifyTargets :many
 SELECT s.repo, s.kind,
        (CASE WHEN s.scope = 2 THEN 0 ELSE s.number END)::BIGINT AS coord_number,
-       s.id, s.agent_account_id, s.delivered_revision, s.project,
+       s.id, s.agent_account_id, s.delivered_revision, s.project, s.scope,
        (c.forge_provider IS NOT NULL)::boolean AS has_cursor,
        c.etag, c.comments_etag, c.checks_etag, c.revision, c.snapshot, c.polled_at
 FROM agent_forge_subscriptions s
@@ -203,6 +235,7 @@ type ListForgeNotifyTargetsRow struct {
 	AgentAccountID    string
 	DeliveredRevision string
 	Project           string
+	Scope             int16
 	HasCursor         bool
 	Etag              pgtype.Text
 	CommentsEtag      pgtype.Text
@@ -233,6 +266,7 @@ func (q *Queries) ListForgeNotifyTargets(ctx context.Context, arg ListForgeNotif
 			&i.AgentAccountID,
 			&i.DeliveredRevision,
 			&i.Project,
+			&i.Scope,
 			&i.HasCursor,
 			&i.Etag,
 			&i.CommentsEtag,
@@ -295,7 +329,7 @@ func (q *Queries) LoadForgeArtifactCursor(ctx context.Context, arg LoadForgeArti
 }
 
 const subscribersForArtifact = `-- name: SubscribersForArtifact :many
-SELECT id, agent_account_id, delivered_revision, project
+SELECT id, agent_account_id, delivered_revision, project, scope
 FROM agent_forge_subscriptions
 WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4
   AND (
@@ -319,6 +353,7 @@ type SubscribersForArtifactRow struct {
 	AgentAccountID    string
 	DeliveredRevision string
 	Project           string
+	Scope             int16
 }
 
 // Exact-artifact subscribers, plus (on an opened event) the container-scope
@@ -345,6 +380,7 @@ func (q *Queries) SubscribersForArtifact(ctx context.Context, arg SubscribersFor
 			&i.AgentAccountID,
 			&i.DeliveredRevision,
 			&i.Project,
+			&i.Scope,
 		); err != nil {
 			return nil, err
 		}

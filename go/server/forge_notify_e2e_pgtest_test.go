@@ -158,6 +158,7 @@ func newNotifyE2EWire(t *testing.T) *notifyE2EWire {
 		&forgeNotifyDispatcher{hub: hub},
 		&matrixChecksRoller{}, // a CHECKS cell here carries no head SHA, so step 0 never resolves and the roller is never reached; a trivially-scripted roller is correct.
 		nil,                   // no pull-number resolver: this lane's fixtures carry explicit numbers.
+		nil,                   // no identity resolver: self-origin suppression is the T3 lane wiring, not this seam-level assembly.
 		mxRef(),
 		log,
 	)
@@ -168,6 +169,7 @@ func newNotifyE2EWire(t *testing.T) *notifyE2EWire {
 		&forgeNotifyStore{st: st, provider: store.ForgeProviderLinear, host: "linear.app"},
 		&forgeNotifyDispatcher{hub: hub},
 		&matrixChecksRoller{},
+		nil,
 		nil,
 		&compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"},
 		log,

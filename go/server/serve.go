@@ -1553,6 +1553,14 @@ func (a *forgeNotifyStore) UpsertArtifactCursor(ctx context.Context, cur ingest.
 	})
 }
 
+// AdvanceDeliveredRevisionCAS backs the router's suppress-path cursor advance
+// over the store's compare-and-set writer. A lost CAS (advanced=false, nil err)
+// is passed through unchanged so the router degrades open rather than treating
+// it as a fault.
+func (a *forgeNotifyStore) AdvanceDeliveredRevisionCAS(ctx context.Context, agentAccountID, subscriptionID, prior, next string) (bool, error) {
+	return a.st.AdvanceForgeDeliveredRevisionCAS(ctx, store.AccountID(agentAccountID), subscriptionID, prior, next)
+}
+
 // toIngestSubscribers converts the store subscriber rows to the ingest mirror
 // (the no-store rule keeps the store type out of the ingest package).
 func toIngestSubscribers(subs []store.ForgeNotifySubscriber) []ingest.NotifySubscriber {
@@ -1566,6 +1574,7 @@ func toIngestSubscribers(subs []store.ForgeNotifySubscriber) []ingest.NotifySubs
 			AgentAccountID:    string(s.AgentAccountID),
 			DeliveredRevision: s.DeliveredRevision,
 			Project:           s.Project,
+			Scope:             compassv1internal.ForgeSubscriptionScope(s.Scope),
 		})
 	}
 	return out
@@ -1707,7 +1716,7 @@ func buildForgeNotifyLane(
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 		Host:     fc.Host,
 	}
-	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, pulls, forgeRef, log)
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, pulls, nil, forgeRef, log)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
 	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, fc.Host, ingest.ReconcileConfig{
@@ -1757,7 +1766,7 @@ func buildLinearNotifyLane(
 	// Nil pull-number resolver: Linear is issues-only and never produces a
 	// CHECKS event, so there is no head SHA to resolve (the router tolerates a
 	// nil resolver and keeps the pre-RIG-2869 guard behavior).
-	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, nil, forgeRef, log)
+	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, nil, nil, forgeRef, log)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
 	reconciler := ingest.NewNotifyReconciler(client, notifyStore, router,
 		compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, host, ingest.ReconcileConfig{

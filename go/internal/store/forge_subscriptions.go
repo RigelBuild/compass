@@ -221,16 +221,18 @@ func (s *Store) AgentForgeSubscriptionsForArtifact(ctx context.Context, provider
 // ForgeNotifySubscriber is one subscriber the notify path fans a change out to:
 // the subscription id (the ack correlation key), the owning agent, that
 // subscriber's last-notified DeliveredRevision (the router suppresses a
-// re-notify when the change's revision equals it), and — for a collapsed
-// container target whose subscribers span multiple Linear projects — the
-// subscriber's own Project, so the router matches a project-P change to only
-// its project-P subscribers ("" for artifact/GitHub subs). Struct shape frozen
-// by the design record (RIG-2732 T3, §ListForgeNotifyTargets).
+// re-notify when the change's revision equals it), the subscriber's own Project
+// (for a collapsed container target spanning multiple Linear projects, so the
+// router matches a project-P change to only its project-P subscribers; "" for
+// artifact/GitHub subs), and its subscription Scope, which the router's
+// self-origin suppression consults to gate the artifact-scope-only cursor
+// advance apart from a container-scope skip.
 type ForgeNotifySubscriber struct {
 	SubscriptionID    string
 	AgentAccountID    AccountID
 	DeliveredRevision string
 	Project           string
+	Scope             ForgeSubscriptionScope
 }
 
 // ForgeArtifactCursor is one row of forge_artifact_cursors: the shared
@@ -304,6 +306,7 @@ func (s *Store) SubscribersForArtifact(ctx context.Context, provider ForgeProvid
 			AgentAccountID:    AccountID(r.AgentAccountID),
 			DeliveredRevision: r.DeliveredRevision,
 			Project:           r.Project,
+			Scope:             ForgeSubscriptionScope(r.Scope),
 		})
 	}
 	return out, nil
@@ -373,6 +376,7 @@ func (s *Store) ListForgeNotifyTargets(ctx context.Context, provider ForgeProvid
 			AgentAccountID:    AccountID(r.AgentAccountID),
 			DeliveredRevision: r.DeliveredRevision,
 			Project:           r.Project,
+			Scope:             ForgeSubscriptionScope(r.Scope),
 		})
 	}
 	return out, nil
@@ -483,4 +487,34 @@ func (s *Store) AdvanceForgeDeliveredRevision(ctx context.Context, agent Account
 		return fmt.Errorf("%w: subscription %q", ErrNotFound, subscriptionID)
 	}
 	return nil
+}
+
+// AdvanceForgeDeliveredRevisionCAS advances one subscription's per-subscriber
+// DELIVERY cursor from prior to next as a COMPARE-AND-SET: the write lands only
+// when the stored delivered_revision still equals prior, so a concurrent route
+// cannot erase a delivery gap it did not observe. Scoped to the owning agent (id
+// AND agent_account_id). Reports whether the row advanced — zero rows affected
+// (a lost CAS, or an unknown/foreign id) is (false, nil), NOT folded into
+// ErrNotFound, so the router's suppress path distinguishes a lost CAS (degrade
+// open, one synthetic UPDATE) from a real store fault (err != nil). This is the
+// notify-router suppress path's writer (amending W3); the ack arm keeps the
+// unguarded AdvanceForgeDeliveredRevision above. Empty agent / subscription id
+// -> ErrInvalidArgument.
+func (s *Store) AdvanceForgeDeliveredRevisionCAS(ctx context.Context, agent AccountID, subscriptionID, prior, next string) (bool, error) {
+	if agent == "" {
+		return false, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+	}
+	if subscriptionID == "" {
+		return false, fmt.Errorf("%w: subscription id is required", ErrInvalidArgument)
+	}
+	affected, err := s.q.AdvanceForgeDeliveredRevisionCAS(ctx, db.AdvanceForgeDeliveredRevisionCASParams{
+		AgentAccountID:      string(agent),
+		ID:                  subscriptionID,
+		DeliveredRevision:   next,
+		DeliveredRevision_2: prior,
+	})
+	if err != nil {
+		return false, fmt.Errorf("store: advance forge delivered revision cas: %w", err)
+	}
+	return affected > 0, nil
 }
