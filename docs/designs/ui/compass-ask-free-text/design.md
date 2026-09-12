@@ -725,8 +725,8 @@ test, so the inversions are enumerated per file at the end.
 
 **`apps/ui/src/store.live.test.ts`** — the store write-path charter:
 
-1. **L1 (mandatory — the F5 gap; the design's most load-bearing safety claim
-   was previously untested).** All but one question of a mixed ask answered
+1. **L1 (mandatory — the design's most load-bearing safety claim was
+   previously untested).** All but one question of a mixed ask answered
    by clicks; type into the remaining free-text question (completing the ask
    under `isQuestionAnswered`); assert `fake.askResponses` **stays empty**.
    Then `submitAsk`: exactly one respond, the typed question carrying the
@@ -766,16 +766,26 @@ does to an in-progress ask", `:33-34`), using its `askMessage` builder:
    server's recorded `customText` shows. Extends the suite's existing
    custom_text-only-closure case (`:296-302`) from "not restored" to "not
    restored *and* the draft yields". RED for the draft half.
-3. **S3 (mandatory — the D0 restage contract).** Hold the respond in flight
-   (`fake.holdNextAskResponse`): click + type on a mixed ask, `submitAsk`,
-   then emit a blank unanswered restatement of the ask (adopted, because the
-   submitted ask is skipped by the preserve), then reject the held respond.
-   Assert the staged clicks **and** the typed text are back
-   (`chosenIn`/`customText` restored from the shipped ask) and the ask is
-   retryable (`isAskSubmitted` false). RED against the pre-change tree and
-   against a change that omits the restage: the state after refusal is the
-   adopted blank ask. Belongs here: it is precisely an `adoptComms`-vs-local
-   interaction, beside the suite's other held-in-flight case (`:601`).
+3. **S3 (mandatory — the D0 restage contract). Split across two slices,
+   because the mechanism lands before the field does.** Hold the respond in
+   flight (`fake.holdNextAskResponse`), `submitAsk`, then emit a blank
+   unanswered restatement of the ask (adopted, because the submitted ask is
+   skipped by the preserve), then reject the held respond. Assert the staged
+   answer is back and the ask is retryable (`isAskSubmitted` false). RED
+   against the pre-change tree and against a change that omits the restage:
+   the state after refusal is the adopted blank ask. Belongs in this suite:
+   it is precisely an `adoptComms`-vs-local interaction, beside the other
+   held-in-flight case (`:601`).
+   - **S3a, in T0 — clicks only.** The restage mechanism (`sameQuestions`
+     plus `putAsk` in `sendAsk`'s catch) is field-agnostic and ships in T0,
+     so its test must be too: click on a mixed ask, then the sequence
+     above, asserting `chosenIn` is restored. Compiles at the end of T0,
+     which a typed-text assertion would not — `answerAskText` is a T2
+     export and `customText` a T1 field.
+   - **S3b, in T2 — the typed half.** Same sequence with a typed draft
+     alongside the click; asserts `customText` is restored too. Sequences
+     after T1/T2 for the symbols it needs, beside S1/S2 which need the same
+     ones.
 
 **`apps/ui/src/components/ChannelView.ask.test.tsx`** — the render surface
 over the live fake, whose `freeText` option already builds option-less wire
@@ -966,6 +976,17 @@ restated here", `:804-806`). **Unaffected.**
 drills into a topic and asserts routing, not sends. **Unaffected** (comment
 mention only).
 
+**`apps/ui/src/components/ChannelView.test.tsx`** — mounts the ask surface
+(`.ask-option` queries, `store.answerAsk`, the `locked`/`chosen` render)
+against the *offline* store (`createAppStore({ initialComms:
+STUB_COMMS_STATE })`, `:109-110`, `:359-360`), so it observes local
+recording only and never a send. **Survives D0 unchanged** — it cannot pin
+auto-send. T3 adds DOM beneath these mounts (the input on every question,
+the new hint copy, the unconditional submit control) without changing the
+`.ask-option` queries or first-responder-wins, so no edit is expected;
+listed because silence here would leave an implementer unsure whether a
+break in it is intended.
+
 ## Plan
 
 ### Global Constraints
@@ -1010,9 +1031,10 @@ mention only).
   D5's keyboard contract depends on the native button activation this
   preserves.
 
-Tests: L2 and R6 (new) plus every inversion/edit in D7's enumeration for
-`store.live.test.ts`, `store.ask-race.test.ts` (S3 included — the restage is
-this slice's behaviour), and `ChannelView.ask.test.tsx` (`:103`, `:138`,
+Tests: L2 and R6 (new), S3a (the clicks-only restage guard — the mechanism
+ships here, so its field-agnostic half is testable here), plus every
+inversion/edit in D7's enumeration for `store.live.test.ts`,
+`store.ask-race.test.ts`, and `ChannelView.ask.test.tsx` (`:103`, `:138`,
 `:199`, `:435`-analogue edits).
 
 Interfaces:
@@ -1079,7 +1101,7 @@ Interfaces:
   `customText: string`.
 
 Tests: L1, L3, L4, and L5 in `store.live.test.ts` (plus the `answerAskText`
-gate no-ops); S1-S2 in `store.ask-race.test.ts`.
+gate no-ops); S1, S2, and S3b in `store.ask-race.test.ts`.
 
 ### T3 — renderer + completion accounting
 
