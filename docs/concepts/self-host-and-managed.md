@@ -53,11 +53,27 @@ built on top of it, out of tree.
   "built in the private monorepo." When the other product must be referred to
   at all, say **"the managed service"** (the product, as a consumer/operator
   of the core) — generically, and only when unavoidable; prefer describing the
-  core capability directly so it need not be named. `moon run
-  orion-ref-gate:check` catches the literal repo name; the place-pointer ban is
-  broader and is on the author and reviewer. (Applies the
+  core capability directly so it need not be named. (Applies the
   describe-behavior-directly principle from [`AGENTS.md`](../../AGENTS.md)
   Hygiene.)
+- **Never cite it as an authority.** This is the leak that survives the rule
+  above, because it can read as ordinary technical writing: attributing a
+  decision to the other repo's spec — "its frozen spec splits X this way,"
+  "its words: …," "rejected there on cost." Naming no repo does not fix it;
+  "an internal spec says" leaks the same fact, that the reasoning lives
+  somewhere a reader cannot go. **A record in this repo argues its own
+  position from its own reasons.** If the argument is sound, state it here and
+  own it; if it is only true because another document said so, it does not
+  belong in a public record. A reader must never be told that the real
+  justification is elsewhere.
+- **What is not enforceable.** `moon run orion-ref-gate:check` fails closed on
+  the literal repo name, and that is the whole of the automation. The
+  place-pointer and authority-citation bans are **deliberately not gated**:
+  the phrasings are open-ended, and a phrase-list gate over this corpus is
+  mostly false positives — the convention and the gate's own source discuss
+  the ban constantly. So these two rules rest entirely on the author and the
+  reviewer. Treat them as load-bearing, not aspirational: nothing downstream
+  will catch a miss.
 
 ## Deploy-time differences the core already carries
 

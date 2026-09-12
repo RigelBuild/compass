@@ -220,11 +220,10 @@ same env + tag contract E-D2's GHA step uses, so adopting the fallback is a
 lane swap, not a redesign. It also realizes V8's "CI job (KVM-labeled runner)"
 (`microvm-runner.md:606-608`).
 
-*Separate concern — the managed service:* the managed service is built out of
-tree and will need its own KVM CI when its buildout starts. That is
-deferred to the managed-service control-plane work (the fleet control
-plane, RIG-2485), not this record — this record keeps compass's own
-tests in compass.
+*Separate concern — the managed service:* KVM CI for the managed service is a
+managed-plane concern, out of scope here. It is deferred to the
+control-plane work (the fleet control plane, RIG-2485), not this record —
+this record keeps compass's own tests in compass.
 
 ### E-D4 — guest image: derivations beside the agent image, kernel from nixpkgs, a project binary cache (F4)
 
