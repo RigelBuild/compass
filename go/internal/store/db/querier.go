@@ -65,6 +65,12 @@ type Querier interface {
 	ChannelsByNameForViewer(ctx context.Context, arg ChannelsByNameForViewerParams) ([]ChannelsByNameForViewerRow, error)
 	ClearOwedMention(ctx context.Context, arg ClearOwedMentionParams) (int64, error)
 	CollectSegment(ctx context.Context, arg CollectSegmentParams) ([]CollectSegmentRow, error)
+	// Single-statement clear-and-return: the row is claimed and its actor returned
+	// in ONE UPDATE, so a memo attributes at most one event and a concurrent second
+	// reader matches nothing (consumed_at is no longer NULL). A state mismatch or a
+	// memo written before the freshness bound matches nothing either — no actor,
+	// which is the correct answer for every human/external transition.
+	ConsumeStateTransition(ctx context.Context, arg ConsumeStateTransitionParams) (string, error)
 	ConvertDMChannel(ctx context.Context, arg ConvertDMChannelParams) error
 	CoordinationReports(ctx context.Context, parentAgentID pgtype.Text) ([]string, error)
 	CountAgentForgeSubscriptionsForArtifact(ctx context.Context, arg CountAgentForgeSubscriptionsForArtifactParams) (int64, error)
@@ -448,6 +454,16 @@ type Querier interface {
 	// delivery held-deliver registry, and reaping a session that is once again live
 	// would strand a live agent's deliveries.
 	RecordSessionBinding(ctx context.Context, arg RecordSessionBindingParams) error
+	// Forge state-transition memo queries (compass-forge-state-transition §Actor
+	// attribution). The write chokepoint upserts one memo per forge coordinate
+	// AFTER a successful agent-driven transition; the notify lane consumes it on
+	// match to attribute the echoed STATE event to the acting agent. The
+	// hand-written Store methods keep the door-side validation (validCoordinate),
+	// the state-domain guard, and the ErrInvalidArgument mapping.
+	// Latest transition wins: a re-transition of the same coordinate re-lands on the
+	// PK and RESETS consumed_at to NULL, so the newest transition is attributable
+	// even when the previous one was already consumed.
+	RecordStateTransition(ctx context.Context, arg RecordStateTransitionParams) error
 	RemarkSafetyValveSuperseded(ctx context.Context, arg RemarkSafetyValveSupersededParams) error
 	RenameTopic(ctx context.Context, arg RenameTopicParams) error
 	RequireAgentSessionSubscriber(ctx context.Context, arg RequireAgentSessionSubscriberParams) (bool, error)

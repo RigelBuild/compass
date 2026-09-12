@@ -133,16 +133,18 @@ func (r *forgeProviderRegistry) resolve(ref *compassv1.ForgeRef) (resolvedForge,
 
 // forgeStore is the narrow store surface the chokepoint needs: resolve the
 // caller's attribution (agent handle + owning user), the F3 idempotency-memo
-// lookup, and the DL-055 ownership-row + memo write. Satisfied by *store.Store;
-// a narrow interface (the issueStore / CommsCaller pattern) so the
-// stamp/dedup/record ordering is provable in the default lane against a fake,
-// not only behind the pgtest tag.
+// lookup, the DL-055 ownership-row + memo write, and the state-transition memo
+// write. Satisfied by *store.Store; a narrow interface (the issueStore /
+// CommsCaller pattern) so the stamp/dedup/record ordering — and the transition
+// arms' memo-strictly-after-provider-success ordering — is provable in the
+// default lane against a fake, not only behind the pgtest tag.
 type forgeStore interface {
 	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
 	AuthoredArtifactByRequestID(ctx context.Context, agent store.AccountID, clientRequestID string) (store.AuthoredArtifact, bool, error)
 	RecordAuthoredArtifact(ctx context.Context, a store.AuthoredArtifact) error
 	EnsureAgentForgeSubscription(ctx context.Context, sub store.AgentForgeSubscription) (string, error)
 	DeleteAgentForgeSubscription(ctx context.Context, agent store.AccountID, subscriptionID string) error
+	RecordStateTransition(ctx context.Context, provider store.ForgeProvider, host, repo string, kind store.ForgeArtifactKind, number uint64, state string, agent store.AccountID, at time.Time) error
 }
 
 // forgeService is the ForgeCaller implementation and the DL-050 write
@@ -202,6 +204,10 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 		return s.commentOnPullRequest(ctx, caller, sessionID, call, c.CommentOnPullRequest), nil
 	case *compassv1internal.ForgeCallRequest_SubmitReview:
 		return s.submitReview(ctx, caller, sessionID, call, c.SubmitReview), nil
+	case *compassv1internal.ForgeCallRequest_TransitionIssueState:
+		return s.transitionIssueState(ctx, caller, call, c.TransitionIssueState), nil
+	case *compassv1internal.ForgeCallRequest_TransitionPullRequestState:
+		return s.transitionPullRequestState(ctx, caller, call, c.TransitionPullRequestState), nil
 	case *compassv1internal.ForgeCallRequest_GetIssue:
 		return s.getIssue(ctx, call, c.GetIssue), nil
 	case *compassv1internal.ForgeCallRequest_ListIssues:
@@ -527,6 +533,137 @@ func (s *forgeService) submitReview(ctx context.Context, caller store.AccountID,
 	}
 	return &compassv1internal.ForgeCallResult{
 		Result: &compassv1internal.ForgeCallResult_Review{Review: &compassv1internal.ReviewRef{Url: sr.URL, ReviewId: sr.ID, Verdict: sr.Verdict}},
+	}
+}
+
+// transitionStateDomain is the portable target-state domain both transition arms
+// screen against — exactly forge.Issue.State's, and exactly the store memo's.
+// Anything else is an in-band invalid_argument BEFORE any provider touch.
+func transitionStateDomain(state string) *compassv1internal.ForgeCallError {
+	if state != store.TransitionStateOpen && state != store.TransitionStateClosed {
+		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf(
+			"forge: state must be %q or %q, got %q", store.TransitionStateOpen, store.TransitionStateClosed, state))
+	}
+	return nil
+}
+
+// screenIssueRefinements is the refinement/provider screen: close_reason is a
+// GitHub-ISSUE concept and workflow_state is a Linear one, so a refinement the
+// ADDRESSED provider cannot express is rejected HERE, in-band, before any
+// provider call. Silently dropping it is rejected — the caller asked for
+// something specific and the write would not do it. Screening at the arm is
+// also what lets forge.TransitionState document that a provider may safely
+// ignore a foreign field.
+func screenIssueRefinements(rf resolvedForge, closeReason, workflowState string) *compassv1internal.ForgeCallError {
+	if closeReason != "" && rf.provider != compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB {
+		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf(
+			"forge: close_reason is a GitHub-issue refinement and provider %q cannot express it", rf.author.Name()))
+	}
+	if workflowState != "" && rf.provider != compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR {
+		return forgeErr(connect.CodeInvalidArgument, fmt.Sprintf(
+			"forge: workflow_state is a Linear refinement and provider %q cannot express it", rf.author.Name()))
+	}
+	return nil
+}
+
+// rememberTransition writes the actor memo (§Actor attribution) at the
+// transitioned coordinate, STRICTLY AFTER the provider succeeded — so a rejected
+// transition leaves no memo, mirroring record's "strictly AFTER a create's forge
+// success" ordering. The memo carries the REQUESTED portable state, not the
+// returned artifact's raw one: the notify lane matches it against the echoed
+// STATE event's portable state, and a raw PR state can be "merged", outside that
+// domain. There is no DL-055 row and no F3 memo here: a transition mints no
+// coordinate, and the authored row at this coordinate is a write-once authorship
+// fact whose upsert would destroy the original create's idempotency memo.
+//
+// COORDINATE CONTRACT (load-bearing, unguarded): the memo is keyed on the
+// CALLER-supplied repo string plus the PROVIDER-returned number, while the
+// notify lane's ConsumeStateTransition keys on the coordinate the WEBHOOK
+// carries — wh.Repository.FullName on GitHub (canonical "owner/name",
+// githubapp_webhook.go) and de.Data.Team.Key on Linear (canonical team key,
+// linearagent/data_event.go). So req.GetRepo() MUST already equal that
+// canonical form for the memo to resolve. A caller addressing the same repo in
+// different casing (or any other non-canonical spelling) writes a memo the
+// webhook can never match, and the transition goes UNATTRIBUTED — the
+// documented fail-open (one redundant wake, never a lost cross-agent signal),
+// so the divergence is SILENT: nothing here normalizes, guards, or asserts it.
+// Normalizing would change the coordinate's canonical form, which is a design
+// decision, not a fix applied here.
+func (s *forgeService) rememberTransition(ctx context.Context, rf resolvedForge, caller store.AccountID, repo string, kind store.ForgeArtifactKind, number uint64, state string) *compassv1internal.ForgeCallError {
+	if err := s.store.RecordStateTransition(ctx, store.ForgeProvider(rf.provider), rf.host, repo, kind, number, state, caller, s.now()); err != nil {
+		// The provider write ALREADY LANDED, so the error must name what
+		// succeeded: a caller told only "memo: db unavailable" reasonably
+		// retries an operation that is already done, and a human reading the
+		// trace cannot tell the forge state changed. The mapped code is
+		// unchanged — only the message gains the landed half.
+		fe := storeForgeError(err)
+		fe.Message = fmt.Sprintf(
+			"forge: %s#%d was transitioned to %s, but recording the acting agent failed: %v",
+			repo, number, state, err)
+		return fe
+	}
+	return nil
+}
+
+// transitionIssueState moves an existing issue between forge states: resolve
+// target, screen the state domain and the refinement/provider match, dispatch on
+// the AUTHOR client, flatten, write the actor memo on success, and return the
+// UPDATED issue on the EXISTING Issue result arm — the caller sees
+// post-transition truth the same way a create's caller sees the created
+// artifact. No stamp (a transition has no body) and no F3 dedup
+// (client_request_id is ignored on non-create arms; a retried transition
+// converges on the target state rather than duplicating anything).
+func (s *forgeService) transitionIssueState(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.TransitionIssueStateRequest) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, req.GetRepo())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := transitionStateDomain(req.GetState()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := screenIssueRefinements(rf, req.GetCloseReason(), req.GetWorkflowState()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	iss, err := rf.author.TransitionIssueState(ctx, req.GetRepo(), req.GetIssueNumber(), forge.TransitionState{
+		State:         req.GetState(),
+		CloseReason:   req.GetCloseReason(),
+		WorkflowState: req.GetWorkflowState(),
+	})
+	if err != nil {
+		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "transition_issue_state"}))
+	}
+	if fe := s.rememberTransition(ctx, rf, caller, req.GetRepo(), store.ForgeArtifactKindIssue, iss.Number, req.GetState()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	return &compassv1internal.ForgeCallResult{
+		Result: &compassv1internal.ForgeCallResult_Issue{Issue: translateIssue(iss, rf, req.GetRepo())},
+	}
+}
+
+// transitionPullRequestState is the PR twin of transitionIssueState. The PR arm
+// accepts NO refinement fields at all — close_reason is a GitHub *issue*
+// concept and workflow_state a Linear one, and merge is a separate concern never
+// expressed as a transition — so the wire message carries none and the dispatched
+// forge.TransitionState is state-only. A provider with no PR model answers
+// ErrUnsupported, which mapForgeError flattens to unimplemented naming
+// provider+op.
+func (s *forgeService) transitionPullRequestState(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.TransitionPullRequestStateRequest) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, req.GetRepo())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	if fe := transitionStateDomain(req.GetState()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	pr, err := rf.author.TransitionPullRequestState(ctx, req.GetRepo(), req.GetPrNumber(), forge.TransitionState{State: req.GetState()})
+	if err != nil {
+		return forgeErrorResult(mapForgeError(err, forgeOp{provider: rf.author.Name(), op: "transition_pull_request_state"}))
+	}
+	if fe := s.rememberTransition(ctx, rf, caller, req.GetRepo(), store.ForgeArtifactKindPullRequest, pr.Number, req.GetState()); fe != nil {
+		return forgeErrorResult(fe)
+	}
+	return &compassv1internal.ForgeCallResult{
+		Result: &compassv1internal.ForgeCallResult_PullRequest{PullRequest: translatePR(pr, rf, req.GetRepo())},
 	}
 }
 

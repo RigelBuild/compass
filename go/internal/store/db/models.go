@@ -192,6 +192,21 @@ type ForgeRepoSubscription struct {
 	TenantID       string
 }
 
+type ForgeStateTransition struct {
+	ForgeProvider  int16
+	ForgeHost      string
+	Repo           string
+	Kind           int16
+	Number         int64
+	State          string
+	AgentAccountID string
+	WrittenAt      pgtype.Timestamptz
+	ConsumedAt     pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	TenantID       string
+}
+
 type Issue struct {
 	ID             string
 	ForgeProvider  int16
