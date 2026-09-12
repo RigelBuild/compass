@@ -78,6 +78,16 @@ export interface TurnTracer {
 	runWithParent<T>(traceparent: string, fn: () => T): T;
 	linkActiveTurn(traceparent: string, messageId: string): void;
 	stampActiveTurn(messageIds: string): void;
+	// Turn-trigger re-attach (RIG-2894): the CURRENT turn's SINGLE parent
+	// message's decoded traceparent, or "" when the turn has no single parent.
+	// Set at the two 1:1-parent turn-starts (idle steer, N=1 deliver flush);
+	// cleared at every other turn-start. The comms broker reads it at post time
+	// to stamp `CommsCallRequest.trigger_traceparent`, so the server can link a
+	// reply's fresh trace back to the message that triggered the turn. Plain
+	// strings only — no OTel type crosses this surface (the fence).
+	setTurnTrigger(traceparent: string): void;
+	clearTurnTrigger(): void;
+	currentTurnTrigger(): string;
 }
 
 /**
@@ -100,6 +110,11 @@ function isMainTurnSpan(ctx: TelemetryHookContext): boolean {
 
 export function createTraceBridge(): TraceBridge {
 	let capturedInvokeAgent: Span | undefined;
+	// The current turn's single-parent trigger traceparent (RIG-2894). Stored
+	// RAW — an opaque passthrough exactly like the wire value: no parse/validate
+	// (the server drops a malformed value on consume). "" means the turn has no
+	// single parent (N>1 flush, mid-turn-steer-only, forge-only, telemetry-off).
+	let turnTrigger = "";
 
 	return {
 		runWithParent<T>(traceparent: string, fn: () => T): T {
@@ -125,6 +140,18 @@ export function createTraceBridge(): TraceBridge {
 		stampActiveTurn(messageIds: string): void {
 			if (capturedInvokeAgent === undefined) return;
 			capturedInvokeAgent.setAttribute("compass.message.ids", messageIds);
+		},
+
+		setTurnTrigger(traceparent: string): void {
+			turnTrigger = traceparent;
+		},
+
+		clearTurnTrigger(): void {
+			turnTrigger = "";
+		},
+
+		currentTurnTrigger(): string {
+			return turnTrigger;
 		},
 
 		onSpanStart(ctx: TelemetryHookContext): void {

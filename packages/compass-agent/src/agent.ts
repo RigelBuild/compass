@@ -280,9 +280,10 @@ export class CompassAgent {
 		opKind: SessionInjectionKind,
 		messageId: string,
 		fromHandle: string,
+		traceparent: string,
 	): void {
 		this.#sink.emit(
-			this.#mapper.sessionInjection(opKind, messageId, fromHandle),
+			this.#mapper.sessionInjection(opKind, messageId, fromHandle, traceparent),
 		);
 	}
 
@@ -515,7 +516,12 @@ export class CompassAgent {
 					messageId: msg.id,
 				});
 				this.#sink.emit({ kind: "deliveryAck", value });
-				this.#emitInjection(SessionInjectionKind.STEER, msg.id, fromHandle);
+				this.#emitInjection(
+					SessionInjectionKind.STEER,
+					msg.id,
+					fromHandle,
+					traceparent,
+				);
 			});
 			return;
 		}
@@ -556,6 +562,13 @@ export class CompassAgent {
 		// inside the wrapped context, so the parentage rides `context.active()`
 		// (the SDK-synchronicity property the idle-steer-parent test canaries).
 		// When the tracer is absent, `prompt(content)` runs directly — bit-identical.
+		// Re-attach (RIG-2894): this idle steer is a TRUE 1:1 parent — exactly one
+		// message starts exactly one turn. Set the turn's trigger to THIS message's
+		// inbound traceparent so an outbound comms post made during the turn stamps
+		// `CommsCallRequest.trigger_traceparent`, letting the server link a reply's
+		// fresh trace back to the message that triggered the turn. Stored raw; ""
+		// when the inbound tp was empty. No-op when the tracer is absent.
+		this.#tracer?.setTurnTrigger(traceparent);
 		const started =
 			this.#tracer === undefined
 				? this.#session.agent.prompt(content)
@@ -576,6 +589,9 @@ export class CompassAgent {
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
+			// Re-attach (RIG-2894): a refused prompt starts no turn, so clear the
+			// trigger set above — else it leaks onto the NEXT turn's posts.
+			this.#tracer?.clearTurnTrigger();
 			this.#processedMessageIds.delete(msg.id);
 			this.#onUnmapped({
 				kind: "unmapped",
@@ -590,7 +606,12 @@ export class CompassAgent {
 				messageId: msg.id,
 			});
 			this.#sink.emit({ kind: "deliveryAck", value });
-			this.#emitInjection(SessionInjectionKind.STEER, msg.id, fromHandle);
+			this.#emitInjection(
+				SessionInjectionKind.STEER,
+				msg.id,
+				fromHandle,
+				traceparent,
+			);
 		});
 	}
 
@@ -725,6 +746,21 @@ export class CompassAgent {
 		// `compass.message.ids` stamp attach on the next microtask, once the hook
 		// has captured the live span. Tracer absent ⇒ `prompt(input)` runs directly,
 		// bit-identical to today.
+		// Re-attach (RIG-2894): the trigger is the CURRENT turn's SINGLE parent.
+		// A single-message deliver flush is a TRUE 1:1 parent, so SET the trigger
+		// to that message's stashed inbound traceparent (the same value the N=1
+		// `runWithParent` parents on). EVERY other flush shape has NO single parent
+		// — N>1 (many messages, no one causal parent), or a forge-only / N=0 flush
+		// (no channel message at all) — so CLEAR it, else a prior single-parent
+		// turn's trigger leaks onto this turn's posts. No-op when the tracer is
+		// absent.
+		if (delivers.length === 1) {
+			this.#tracer?.setTurnTrigger(
+				this.#deliverTraceparents.get(delivers[0].id) ?? "",
+			);
+		} else {
+			this.#tracer?.clearTurnTrigger();
+		}
 		const startPrompt = (): Promise<void> => this.#session.agent.prompt(input);
 		const started =
 			this.#tracer !== undefined && delivers.length === 1
@@ -741,6 +777,9 @@ export class CompassAgent {
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
+			// Re-attach (RIG-2894): a refused prompt starts no turn, so clear any
+			// trigger the N=1 branch set above — else it leaks onto the next turn.
+			this.#tracer?.clearTurnTrigger();
 			// DELIVER: un-dedup every id so the Server redelivers + re-injects, and
 			// drop the stashed from-handle + traceparent (the redelivery re-stashes).
 			for (const msg of delivers) {
@@ -795,10 +834,16 @@ export class CompassAgent {
 				});
 				this.#sink.emit({ kind: "deliveryAck", value });
 				const fromHandle = this.#deliverFromHandles.get(msg.id) ?? "";
+				const traceparent = this.#deliverTraceparents.get(msg.id) ?? "";
 				this.#deliverFromHandles.delete(msg.id);
 				this.#deliverTraceparents.delete(msg.id);
 				this.#deliverSourceNames.delete(msg.id);
-				this.#emitInjection(SessionInjectionKind.DELIVER, msg.id, fromHandle);
+				this.#emitInjection(
+					SessionInjectionKind.DELIVER,
+					msg.id,
+					fromHandle,
+					traceparent,
+				);
 			}
 			// FORGE acks: one ForgeNotificationAck frame (advances the Server's
 			// delivered_revision) then the control-rail ack (`ackRail`, retiring
@@ -853,6 +898,12 @@ export class CompassAgent {
 				// topology-independent query key via a later mid-turn steer. No-op
 				// when the tracer is absent (the array op is unobservable off-path).
 				this.#turnMessageIds.length = 0;
+				// Re-attach (RIG-2894): a control prompt STARTS a fresh turn with NO
+				// single channel-message parent (it is a raw wire-driven injection,
+				// scoped out of traceparent threading — design.md:173-181). Clear the
+				// trigger like every other non-1:1 turn-start, else a prior
+				// single-parent turn's trigger leaks onto this turn's posts.
+				this.#tracer?.clearTurnTrigger();
 				await this.#session.agent.prompt(control.input);
 				return;
 			case "steer":

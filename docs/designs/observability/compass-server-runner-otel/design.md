@@ -164,8 +164,9 @@ causality is in scope:
   compass-server — the `agent_gateway.proto` file-zone authority (they own #628,
   RIG-2751, and this T4 edit) — RATIFIED field 10 (independently source-verified;
   they sequence #628's conflict-clear and this scalar together in their zone), so
-  it is authoritative, not a placeholder. The delivered
-  message's traceparent the agent re-attaches on its outbound post, so the
+  it is authoritative, not a placeholder. The value is the DELIVERED (inbound
+  trigger) message's `traceparent`, which the agent re-attaches on its outbound
+  post — not the outbound turn's own span context — so the
   server can LINK the reply's new trace to the message that triggered it — the
   cross-turn causal edge that keeps traces terminating (see §Trace lifetime and
   termination).
@@ -305,18 +306,56 @@ structural, not a timeout:
 **The link seam.** The trigger's traceparent reaches the origin via
 `CommsCallRequest.trigger_traceparent` (field 10, above): the agent re-attaches
 the `traceparent` it decoded (#649 T3) onto its outbound post, which rides
-`RelayCommsCall` to the server. The server's `RelayCommsCall` origin span (a′)
+`RelayCommsCall` to the server. **The value is the inbound trigger message's
+decoded `traceparent` — never a serialization of the outbound turn's own live
+span.** Both would carry the same trace id (the outbound turn joined the
+trigger's trace at the agent-side continuation), so the acceptance criterion
+below cannot tell them apart; what differs is WHICH span in that trace the link
+names. The trigger message's span is the causal antecedent; the agent's own
+turn span is the trigger's consumer, so linking it answers "what was I doing"
+instead of "what caused this". The termination-section query — "what did this
+message transitively trigger?" — then no longer resolves to a message. No
+assertion catches the wrong source: every test here injects
+`trigger_traceparent` server-side, so the agent's emit choice is exercised by
+none of them. The server's `RelayCommsCall` origin span (a′)
 adds a span **Link** from `trigger_traceparent` — a LINK, never a parent. The
 Link is attached to the ALREADY-STARTED otelconnect span via `Span.AddLink`
 (OTel Go SDK floor **≥ v1.23.0**, which the fresh `go.mod` deps pull) — NOT at
 span creation, because otelconnect owns the span factory and exposes no
 link-at-creation hook. The link carries `compass.link.kind=cross_turn_trigger`,
 which is what identifies it as the cross-turn causal link. Empty
-`trigger_traceparent` (a human-seeded first turn, or no active trigger) adds no
-*cross-turn causal* link, per the never-block posture — it does not leave the
+`trigger_traceparent` (a human-seeded first turn, no active trigger, or a
+coalesced turn — below) adds no *cross-turn causal* link, per the never-block
+posture — it does not leave the
 span linkless, because otelconnect adds a transport link of its own (below).
 Consumers MUST select the causal link by that attribute, never by position or
 by total link count.
+
+**A trigger is emitted exactly when the turn has a true parent.** The agent
+sets `trigger_traceparent` on a post iff the turn it posts from was started by
+a single identifiable message — the #649 topology's shape 1 (idle steer, 1:1)
+or shape 2 with N == 1 (single-message deliver flush), which are precisely the
+two sites that wrap the turn in `runWithParent`. Every other start goes empty:
+a coalesced flush (N > 1), a mid-turn steer (no new turn — the span is already
+parented, and the bridge links rather than parents), and a turn with no
+inbound trigger at all.
+
+**Coalesced turns emit no trigger (N>1 ⇒ empty).** A turn can coalesce N
+delivered messages into one prompt, and the field is one scalar, so a post
+from such a turn sets `trigger_traceparent` EMPTY rather than electing one of
+the N. This follows the #649 topology, which parents a turn on its trigger
+only when exactly one message started it and otherwise links all N
+(`../compass-agent-message-trace-continuity/design.md`, §the turn-boundary
+shapes: "a single-message batch parents; a multi-message batch links every
+message's context"). Electing a primary would reintroduce the precedence that
+topology deliberately refuses: queue order is arrival order, not causality, so
+"first" can name a message that did not cause the post. The cost is a real
+gap — a coalesced turn's post carries no cross-turn causal edge, so the
+"what did this message transitively trigger?" query does not traverse it. That
+is the honest degradation: the antecedent is genuinely a SET, and a fabricated
+single antecedent would silently corrupt the query that selects on
+`compass.link.kind`. Widening the field to `repeated` is rejected for now — a
+wire change to a ratified field with no consumer for the multi-edge case.
 
 **Fresh-root invariant (load-bearing for termination).** The `RelayCommsCall`
 origin span MUST be a fresh root with respect to its trigger. This holds
@@ -659,9 +698,11 @@ message CommsCallRequest {
   // oneof call { ... } occupies 2-6; #628 (held) claims 7-9 in the same oneof,
   // so 10 is the next collision-free scalar slot (ratified by compass-server,
   // the agent_gateway.proto file-zone authority).
-  // The delivered message's traceparent the agent re-attaches on an outbound
-  // post, so the server links the reply's new trace to its trigger. Empty on a
-  // human-seeded first turn.
+  // The inbound trigger message's decoded traceparent, which the agent
+  // re-attaches on an outbound post — never the outbound turn's own span
+  // context — so the server links the reply's new trace to its trigger.
+  // Empty on a human-seeded first turn, and on a turn that coalesced more
+  // than one delivered message (no single antecedent to name).
   string trigger_traceparent = 10;
 }
 ```

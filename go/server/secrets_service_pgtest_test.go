@@ -484,11 +484,11 @@ func TestServerSecretRejectsUnprefixedAndMasterKey(t *testing.T) {
 		do   func() error
 	}{
 		{"set", func() error {
-			_, e := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, "GATEWAY_CREDENTIALS_MASTER_KEY", "v"))
+			_, e := f.client.SetServerSecret(ctx, setServerReq(f.adminToken, store.MasterKeyName, "v"))
 			return e
 		}},
 		{"delete", func() error {
-			_, e := f.client.DeleteServerSecret(ctx, delServerReq(f.adminToken, "GATEWAY_CREDENTIALS_MASTER_KEY"))
+			_, e := f.client.DeleteServerSecret(ctx, delServerReq(f.adminToken, store.MasterKeyName))
 			return e
 		}},
 	} {

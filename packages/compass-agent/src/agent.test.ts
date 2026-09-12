@@ -35,6 +35,7 @@ import {
 	formatDeliversForPrompt,
 	formatForgeNotifications,
 } from "./agent";
+import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AgentSessionState,
 	type Ask,
@@ -45,6 +46,10 @@ import {
 	AskSchema,
 	ChecksSummarySchema,
 	CommentRefSchema,
+	type CommsCallRequest,
+	CommsCallRequestSchema,
+	type CommsCallResult,
+	CommsCallResultSchema,
 	create,
 	type ForgeNotification,
 	ForgeNotificationKind,
@@ -54,6 +59,7 @@ import {
 	MessageBlockSchema,
 	type MessageInitShape,
 	MessageSchema,
+	PostMessageResponseSchema,
 	SessionInjectionKind,
 } from "./compassv1";
 import type { AgentControl, ControlSource } from "./control";
@@ -751,12 +757,16 @@ function ackIds(frames: OutboundFrame[]): string[] {
 }
 
 // The SessionInjection observation frames captured, in order, as
-// {opKind, messageId} pairs. A SessionInjection rides the `session` variant's
-// typed_event (the same FrameSink path the trace events use), so it is a
-// "session" OutboundFrame whose typedEvent oneof case is "sessionInjection".
-function injections(
-	frames: OutboundFrame[],
-): { opKind: SessionInjectionKind; messageId: string; fromHandle: string }[] {
+// {opKind, messageId, fromHandle, traceparent} objects. A SessionInjection
+// rides the `session` variant's typed_event (the same FrameSink path the trace
+// events use), so it is a "session" OutboundFrame whose typedEvent oneof case
+// is "sessionInjection".
+function injections(frames: OutboundFrame[]): {
+	opKind: SessionInjectionKind;
+	messageId: string;
+	fromHandle: string;
+	traceparent: string;
+}[] {
 	return frames.flatMap((f) => {
 		if (f.kind !== "session") return [];
 		const event = f.value.typedEvent?.event;
@@ -766,6 +776,7 @@ function injections(
 				opKind: event.value.opKind,
 				messageId: event.value.messageId,
 				fromHandle: event.value.fromHandle,
+				traceparent: event.value.traceparent,
 			},
 		];
 	});
@@ -1338,7 +1349,12 @@ describe("CompassAgent — RIG-2732 W3 turn-end forge-notification arm", () => {
 		expect(h.railAcks).toEqual([1]);
 		// The deliver's DELIVER injection observation also fired at flush.
 		expect(injections(h.frames)).toEqual([
-			{ opKind: SessionInjectionKind.DELIVER, messageId: "m1", fromHandle: "" },
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "",
+				traceparent: "",
+			},
 		]);
 		await h.close();
 	});
@@ -1658,6 +1674,7 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 				opKind: SessionInjectionKind.STEER,
 				messageId: "s1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1865,6 +1882,7 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.DELIVER,
 				messageId: "m1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1882,6 +1900,7 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.STEER,
 				messageId: "s1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1899,6 +1918,7 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.STEER,
 				messageId: "s1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1912,7 +1932,12 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();
 		expect(injections(h.frames)).toEqual([
-			{ opKind: SessionInjectionKind.DELIVER, messageId: "m1", fromHandle: "" },
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "",
+				traceparent: "",
+			},
 		]);
 		await h.close();
 	});
@@ -1933,11 +1958,74 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.DELIVER,
 				messageId: "m1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 			{
 				opKind: SessionInjectionKind.DELIVER,
 				messageId: "m2",
 				fromHandle: "jane",
+				traceparent: "",
+			},
+		]);
+		await h.close();
+	});
+
+	test("an idle deliver carrying a traceparent emits a DELIVER injection with that traceparent (RIG-2894 non-vacuity)", async () => {
+		const h = startDeliverAgent();
+		// The decoded W3C traceparent off the wire deliver control threads
+		// server->wire->emit onto the injection frame. Non-vacuity: without the
+		// threading, traceparent is hard-coded "" so this asserted-value fails.
+		const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+		h.agent.deliver(deliverMsg("m1", "hello"), "matt", tp);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "matt",
+				traceparent: tp,
+			},
+		]);
+		await h.close();
+	});
+
+	test("an idle steer carrying a traceparent emits a STEER injection with that traceparent (RIG-2894 non-vacuity)", async () => {
+		const h = startDeliverAgent();
+		// Idle steer starts a turn via prompt and threads the decoded traceparent
+		// off the wire steer control onto the injection. Guards the idle-steer
+		// emit site: a hard-coded "" there would keep every default-tp assertion
+		// green, so this pins the specific header.
+		const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+		h.agent.steer(deliverMsg("s1", "hey"), "matt", tp);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.STEER,
+				messageId: "s1",
+				fromHandle: "matt",
+				traceparent: tp,
+			},
+		]);
+		await h.close();
+	});
+
+	test("a mid-turn steer carrying a traceparent emits a STEER injection with that traceparent (RIG-2894 non-vacuity)", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Mid-turn steer injects onto the running loop's steering queue and threads
+		// the decoded traceparent. Guards the mid-turn-steer emit site distinctly
+		// from the idle one (a different call site with its own emit).
+		const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+		h.agent.steer(deliverMsg("s1", "one"), "matt", tp);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.STEER,
+				messageId: "s1",
+				fromHandle: "matt",
+				traceparent: tp,
 			},
 		]);
 		await h.close();
@@ -2412,6 +2500,7 @@ function startTracedAgent() {
 	};
 	return {
 		agent: compass,
+		bridge,
 		prompts,
 		steers,
 		frames,
@@ -2602,5 +2691,166 @@ describe("CompassAgent — T2 tracer absent is bit-identical to today", () => {
 		expect(withTracer.unmapped).toEqual(withoutTracer.unmapped);
 		// Non-vacuity: the script really produced acks + injections to compare.
 		expect(withoutTracer.acks).toEqual(["m1", "m2", "m3"]);
+	});
+});
+// ---------------------------------------------------------------------------
+// RIG-2894 — turn-trigger RE-ATTACH end to end (the HEADLINE discriminating
+// test, confirmed by the record owner). The predicate: a turn emits
+// trigger_traceparent iff it has a TRUE single parent = an idle steer (1:1) OR
+// an N=1 deliver flush; empty on N>1, mid-turn steer, forge-only. The exact
+// case a naive "deliver-only" reading gets WRONG is the idle-STEER-started turn:
+// no server-side test can catch it (they inject the field server-side), so this
+// drives the agent's real steer→turn path AND a real outbound comms POST and
+// asserts the field on the WIRE CommsCallRequest, not just currentTurnTrigger().
+
+// A fake comms transport that records the request each post puts on the wire and
+// returns a canned post result — the same one-method surface comms.test uses.
+class RecordingCommsTransport {
+	readonly requests: CommsCallRequest[] = [];
+	async comms(req: CommsCallRequest): Promise<CommsCallResult> {
+		this.requests.push(req);
+		return create(CommsCallResultSchema, {
+			callId: req.callId,
+			result: {
+				case: "post",
+				value: create(PostMessageResponseSchema, {
+					message: create(MessageSchema, { id: "posted-1", topicId: "t-1" }),
+				}),
+			},
+		});
+	}
+}
+
+// Drive the `comms_post_message` native through a real CommsBroker whose trigger
+// reader is the harness's live bridge, so the post stamps the CURRENT turn's
+// trigger exactly as it would in production. Returns the wire CommsCallRequest.
+async function drivePostDuringTurn(
+	bridge: TraceBridge,
+): Promise<CommsCallRequest> {
+	const transport = new RecordingCommsTransport();
+	const broker = new CommsBroker(transport, bridge);
+	const post = createCommsTools(broker).find(
+		(t) => t.name === "comms_post_message",
+	);
+	if (post === undefined) throw new Error("no comms_post_message tool");
+	await post.execute.call(post, "tc-1", {
+		text: "reply",
+		topic: "general",
+		channel: "eng",
+	} as never);
+	const req = transport.requests[0];
+	if (req === undefined) throw new Error("no post request recorded");
+	return req;
+}
+
+function triggerOf(req: CommsCallRequest): string {
+	if (req.call.case !== "post") throw new Error("expected a post call");
+	return req.triggerTraceparent;
+}
+
+describe("CompassAgent — RIG-2894 turn-trigger re-attach (predicate on the wire)", () => {
+	test("(headline) an idle-STEER-started turn carries the steer's traceparent on an in-turn post", async () => {
+		const h = startTracedAgent();
+		// Idle steer with tp X starts a turn (via prompt, no agent_start first).
+		// This is the 1:1 parent case a deliver-only reading silently drops.
+		h.agent.steer(deliverMsg("m1", "hi"), "", TP_HEADER);
+		await tick();
+		// A post made DURING this turn must carry the steer's tp on the wire.
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe(TP_HEADER);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(b) an N=1 idle deliver turn carries that message's traceparent on an in-turn post", async () => {
+		const h = startTracedAgent();
+		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER);
+		await tick();
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe(TP_HEADER);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(c) an N>1 deliver flush carries EMPTY, clearing a prior single-parent trigger", async () => {
+		const h = startTracedAgent();
+		// Turn 1: an idle steer sets the trigger to X. This makes the test
+		// NON-VACUOUS for the flush else-branch clear (agent.ts): it proves the
+		// N>1 flush CLEARS a live prior trigger, not merely that the N>1 set-path
+		// is skipped (a fresh-bridge "" assertion passes even with the clear gone).
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: two delivers coalesce to the agent_end flush → N=2, no single
+		// parent. The trigger MUST be empty — never the leaked X, never a deliver tp.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER_2);
+		h.agent.deliver(deliverMsg("m2", "two"), "", TP_HEADER_2);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		const req = await drivePostDuringTurn(h.bridge);
+		const trigger = triggerOf(req);
+		expect(trigger).toBe("");
+		expect(trigger).not.toBe(TP_HEADER);
+		expect(trigger).not.toBe(TP_HEADER_2);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(d) a mid-turn steer does NOT overwrite the live turn's trigger", async () => {
+		const h = startTracedAgent();
+		// Turn starts as an N=1 idle deliver with tp X → trigger = X.
+		h.agent.deliver(deliverMsg("m0", "start"), "", TP_HEADER);
+		await tick();
+		// A mid-turn steer with a DIFFERENT tp injects into the running loop; it
+		// starts NO new turn, so it must leave the live turn's trigger untouched.
+		h.agent.steer(deliverMsg("m1", "interrupt"), "", TP_HEADER_2);
+		await tick();
+		expect(h.steers).toHaveLength(1);
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe(TP_HEADER);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("(e) a forge-only flush carries EMPTY, clearing a prior single-parent trigger", async () => {
+		const h = startTracedAgent();
+		// Turn 1: an idle steer sets the trigger to X (makes the clear non-vacuous).
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: an idle forge notification flushes with zero delivers — a real
+		// turn-start with no channel-message parent, so the else-branch must clear
+		// the leaked X.
+		h.agent.forgeNotification(
+			create(ForgeNotificationSchema, {
+				subscriptionId: "sub-1",
+				revision: "r-1",
+			}),
+			() => {},
+		);
+		await tick();
+		const req = await drivePostDuringTurn(h.bridge);
+		const trigger = triggerOf(req);
+		expect(trigger).toBe("");
+		expect(trigger).not.toBe(TP_HEADER);
+		h.endTurn();
+		await h.close();
+	});
+
+	test("a control-prompt turn clears a prior single-parent turn's trigger (no leak)", async () => {
+		const h = startTracedAgent();
+		// Turn 1: an idle steer sets the trigger to X.
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: a CONTROL prompt starts a fresh turn with no single parent — it
+		// must clear the trigger, else X leaks onto turn 2's posts.
+		await h.feed({ kind: "replayComplete" });
+		await h.feed({ kind: "prompt", input: "go" });
+		const req = await drivePostDuringTurn(h.bridge);
+		expect(triggerOf(req)).toBe("");
+		h.endTurn();
+		await h.close();
 	});
 });

@@ -16,6 +16,7 @@ import (
 
 	"connectrpc.com/connect"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestOpenDMSameOwnerCreatesDMChannel: an agent opens a DM with a same-owner
@@ -279,5 +280,225 @@ func TestOpenDMResumeEmitsNoChannelChanged(t *testing.T) {
 	}
 	if dmChannelChanges != 1 {
 		t.Fatalf("ChannelChanged events for the DM = %d, want exactly 1 (the create only; a resume must emit nothing)", dmChannelChanges)
+	}
+}
+
+// Each party posts under its own actor, and each read must return BOTH posts —
+// red if DM membership fails to grant a party read on the peer's turn.
+func TestOpenDMPostAndReadBothParties(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	alice := mustAgent(t, st, owner.ID, "alice")
+	bob := mustAgent(t, st, owner.ID, "bob")
+
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(alice->bob) = %v, want success", err)
+	}
+	dmID := opened.Msg.GetChannel().GetId()
+
+	post := func(actor store.AccountID, text string) string {
+		t.Helper()
+		resp, err := svc.PostMessage(WithActor(ctx, actor), connect.NewRequest(&compassv1.PostMessageRequest{
+			Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
+			Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+			CreateTopic: true,
+			Blocks:      textBlocks(text),
+		}))
+		if err != nil {
+			t.Fatalf("PostMessage(%s): %v", text, err)
+		}
+		return resp.Msg.GetMessage().GetId()
+	}
+	aliceMsg := post(alice.ID, "from alice")
+	bobMsg := post(bob.ID, "from bob")
+
+	// Each party's read of the DM must surface BOTH posts — its own and the peer's.
+	readSees := func(reader store.AccountID) map[string]bool {
+		t.Helper()
+		listed, err := svc.ListMessages(WithActor(ctx, reader), connect.NewRequest(&compassv1.ListMessagesRequest{
+			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: dmID},
+		}))
+		if err != nil {
+			t.Fatalf("ListMessages(%s): %v", reader, err)
+		}
+		ids := map[string]bool{}
+		for _, m := range listed.Msg.GetMessages() {
+			ids[m.GetId()] = true
+		}
+		return ids
+	}
+	for _, party := range []struct {
+		name string
+		id   store.AccountID
+	}{{"alice", alice.ID}, {"bob", bob.ID}} {
+		got := readSees(party.id)
+		if !got[aliceMsg] || !got[bobMsg] {
+			t.Fatalf("%s reads DM = %v, want both alice %q and bob %q posts", party.name, got, aliceMsg, bobMsg)
+		}
+	}
+}
+
+// Same-owner is not membership: a third agent under the same owner reads
+// nothing from a two-party DM. Canary-ordered, so an undelivered post cannot
+// pass it vacuously. Red if read-scoping falls back to owner scope.
+func TestOpenDMThirdPartySameOwnerCannotSee(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	alice := mustAgent(t, st, owner.ID, "alice")
+	bob := mustAgent(t, st, owner.ID, "bob")
+	carol := mustAgent(t, st, owner.ID, "carol")
+
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(alice->bob) = %v, want success", err)
+	}
+	dmID := opened.Msg.GetChannel().GetId()
+
+	posted, err := svc.PostMessage(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		CreateTopic: true,
+		Blocks:      textBlocks("private to alice and bob"),
+	}))
+	if err != nil {
+		t.Fatalf("PostMessage(alice): %v", err)
+	}
+	msgID := posted.Msg.GetMessage().GetId()
+
+	list := func(reader store.AccountID) []*compassv1.Message {
+		t.Helper()
+		listed, err := svc.ListMessages(WithActor(ctx, reader), connect.NewRequest(&compassv1.ListMessagesRequest{
+			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: dmID},
+		}))
+		if err != nil {
+			t.Fatalf("ListMessages(%s): %v", reader, err)
+		}
+		return listed.Msg.GetMessages()
+	}
+
+	// Canary: bob, a real party, DOES read the post — proves it was delivered,
+	// so the third-party emptiness below is a real negative, not a vacuous one.
+	var bobSees bool
+	for _, m := range list(bob.ID) {
+		if m.GetId() == msgID {
+			bobSees = true
+		}
+	}
+	if !bobSees {
+		t.Fatalf("party bob cannot read the DM post %q — canary failed, negative would be vacuous", msgID)
+	}
+
+	// carol, same owner but not a DM member, reads nothing.
+	if got := list(carol.ID); len(got) != 0 {
+		t.Fatalf("third same-owner agent carol read %d messages from a DM she is not a member of, want 0", len(got))
+	}
+}
+
+// TestConvertBareThirdPartyAddOnDMIsInvalidArgument: adding a third party to a
+// kind=DM channel WITHOUT convert_channel_name is INVALID_ARGUMENT — the wire
+// contract's bare-add rejection, pinned at the handler tier.
+func TestConvertBareThirdPartyAddOnDMIsInvalidArgument(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "t15owner")
+	alice := mustAgent(t, st, owner.ID, "t15alice")
+	mustAgent(t, st, owner.ID, "t15bob")
+	mustAgent(t, st, owner.ID, "t15carol")
+
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "t15bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(t15alice->t15bob) = %v, want success", err)
+	}
+
+	_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		ChannelId:        opened.Msg.GetChannel().GetId(),
+		AddMemberHandles: []string{"t15carol"},
+	}))
+	connectCodeIs(t, addErr, connect.CodeInvalidArgument, "bare third-party add on a DM without a convert name")
+}
+
+// TestConvertThirdPartyAddSucceedsWithAllEffects: the same add WITH
+// convert_channel_name succeeds and the response channel carries every effect —
+// kind flips to CHANNEL, name is the supplied one, the group is detached, the
+// third party is a member, mandatory_subscription is off, and both original DM
+// parties are subscribed.
+func TestConvertThirdPartyAddSucceedsWithAllEffects(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "t15owner")
+	alice := mustAgent(t, st, owner.ID, "t15alice")
+	bob := mustAgent(t, st, owner.ID, "t15bob")
+	carol := mustAgent(t, st, owner.ID, "t15carol")
+
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "t15bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(t15alice->t15bob) = %v, want success", err)
+	}
+
+	resp, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		ChannelId:          opened.Msg.GetChannel().GetId(),
+		AddMemberHandles:   []string{"t15carol"},
+		ConvertChannelName: "t15-war-room",
+	}))
+	if err != nil {
+		t.Fatalf("UpdateChannelMembers(convert) = %v, want success", err)
+	}
+	ch := resp.Msg.GetChannel()
+	if ch.GetKind() != compassv1.ChannelKind_CHANNEL_KIND_CHANNEL {
+		t.Fatalf("kind = %v, want CHANNEL_KIND_CHANNEL after convert", ch.GetKind())
+	}
+	if ch.GetName() != "t15-war-room" {
+		t.Fatalf("name = %q, want t15-war-room after convert", ch.GetName())
+	}
+	if ch.GetGroupId() != "" {
+		t.Fatalf("group_id = %q, want empty (detached from reserved DM group)", ch.GetGroupId())
+	}
+	if !containsString(ch.GetMemberAccountIds(), string(carol.ID)) {
+		t.Fatalf("members = %v, want the added third party t15carol %s", ch.GetMemberAccountIds(), carol.ID)
+	}
+	if ch.GetMandatorySubscription() {
+		t.Fatalf("mandatory_subscription = true, want false (a converted DM is an opt-in channel)")
+	}
+	if !containsString(ch.GetSubscriberAccountIds(), string(alice.ID)) || !containsString(ch.GetSubscriberAccountIds(), string(bob.ID)) {
+		t.Fatalf("subscribers = %v, want both original DM parties t15alice %s and t15bob %s", ch.GetSubscriberAccountIds(), alice.ID, bob.ID)
+	}
+}
+
+// TestConvertChannelNameIsNoOpOnNonDM: convert_channel_name on a kind=CHANNEL
+// channel is ignored — the add succeeds and neither name nor kind change; it is
+// not an error.
+func TestConvertChannelNameIsNoOpOnNonDM(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "t15owner")
+	newcomer := mustUser(t, st, "t15newcomer")
+
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "t15-room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel = %v, want success", err)
+	}
+
+	resp, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		ChannelId:          created.Msg.GetChannel().GetId(),
+		AddMemberHandles:   []string{"t15newcomer"},
+		ConvertChannelName: "t15-ignored",
+	}))
+	if err != nil {
+		t.Fatalf("UpdateChannelMembers(add + convert name on non-DM) = %v, want success (name ignored, not an error)", err)
+	}
+	ch := resp.Msg.GetChannel()
+	if ch.GetName() != "t15-room" {
+		t.Fatalf("name = %q, want t15-room unchanged (convert_channel_name is a no-op on a non-DM)", ch.GetName())
+	}
+	if ch.GetKind() != compassv1.ChannelKind_CHANNEL_KIND_CHANNEL {
+		t.Fatalf("kind = %v, want CHANNEL_KIND_CHANNEL unchanged", ch.GetKind())
+	}
+	if !containsString(ch.GetMemberAccountIds(), string(newcomer.ID)) {
+		t.Fatalf("members = %v, want the added t15newcomer %s", ch.GetMemberAccountIds(), newcomer.ID)
 	}
 }

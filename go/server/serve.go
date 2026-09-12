@@ -14,7 +14,10 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +42,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/board"
 	"github.com/RigelBuild/compass/go/internal/comms"
+	"github.com/RigelBuild/compass/go/internal/envelope"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
@@ -320,6 +324,115 @@ func serverSecretName(name string) string {
 		return ""
 	}
 	return store.ServerSecretPrefix + name
+}
+
+// masterKeyProvisioningHint is the operator runbook a failed master-key resolve
+// names verbatim, so a fail-closed boot IS the instruction. It must stay in step
+// with the self-host docs.
+const masterKeyProvisioningHint = "generate a 256-bit key with `openssl rand -hex 32` and set it as the reserved server secret " + store.MasterKeyName + " in the configured secretspec provider before boot"
+
+// masterKeyHexLen is the hex-encoded length of a 32-byte AES-256 key, the only
+// length resolveMasterKey accepts before decode.
+const masterKeyHexLen = 64
+
+// masterKeySaltLen is the per-deployment random salt length for the key
+// fingerprint: 256 bits, matching the SHA-256 digest width.
+const masterKeySaltLen = 32
+
+// initialKeyVersion is the generation a first-boot key is stamped with; it
+// matches the server_key_state.key_version column default. Rotation (a later
+// record) is what advances it.
+const initialKeyVersion int16 = 1
+
+// resolveMasterKey resolves the at-rest master key and its generation for boot.
+// It resolves store.MasterKeyName through the server resolver, decodes it (64
+// hex chars -> 32 bytes), builds the envelope.Key, and reconciles it against the
+// server_key_state tripwire: first boot writes the row, a later boot verifies
+// the key matches the one the stored ciphertexts were sealed under.
+//
+// It NEVER generates a key (operator-seeded custody, DL-355) and NEVER echoes
+// the value or any part of it in an error — a wrong length or non-hex value is
+// reported by what was expected, not by what was found.
+func resolveMasterKey(ctx context.Context, st *store.Store, server secrets.Resolver) (envelope.Key, int16, error) { //nolint:unparam // st is nil only in the DB-free decode/fail-closed unit tests; the pgtest lane and the boot caller pass a real store.
+	resolved, err := server.Resolve(ctx, "master key resolve")
+	if err != nil {
+		return envelope.Key{}, 0, fmt.Errorf("resolve master key: %w", err)
+	}
+	var value string
+	for _, s := range resolved {
+		if s.Name == store.MasterKeyName {
+			value = s.Value
+			break
+		}
+	}
+	if value == "" {
+		// Fail closed: an unprovisioned or empty key is the intended first-run
+		// experience, so the message is the runbook.
+		return envelope.Key{}, 0, fmt.Errorf("master key %s is not provisioned: %s", store.MasterKeyName, masterKeyProvisioningHint)
+	}
+
+	raw, err := decodeMasterKey(value)
+	if err != nil {
+		return envelope.Key{}, 0, err
+	}
+	key, err := envelope.NewKey(raw)
+	if err != nil {
+		return envelope.Key{}, 0, fmt.Errorf("build master key: %w", err)
+	}
+
+	return reconcileKeyState(ctx, st, key)
+}
+
+// decodeMasterKey decodes the 64-hex-char master-key value to 32 raw bytes. Both
+// failure arms name only the requirement — never the value or any byte of it.
+func decodeMasterKey(value string) ([]byte, error) {
+	if len(value) != masterKeyHexLen {
+		return nil, fmt.Errorf("master key %s must be %d hex characters (a 32-byte key)", store.MasterKeyName, masterKeyHexLen)
+	}
+	raw, err := hex.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("master key %s must be valid hex (a 32-byte key)", store.MasterKeyName)
+	}
+	return raw, nil
+}
+
+// reconcileKeyState verifies key against the server_key_state tripwire: first
+// boot writes the fingerprint row and returns the initial generation; a later
+// boot recomputes the fingerprint under the stored salt and constant-time
+// compares it, failing closed if a different key is configured than the one the
+// data was sealed under.
+func reconcileKeyState(ctx context.Context, st *store.Store, key envelope.Key) (envelope.Key, int16, error) {
+	state, err := st.ServerKeyState(ctx)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		salt := make([]byte, masterKeySaltLen)
+		if _, rerr := rand.Read(salt); rerr != nil {
+			return envelope.Key{}, 0, fmt.Errorf("master key salt: %w", rerr)
+		}
+		row := store.ServerKeyState{
+			KeyVersion:      initialKeyVersion,
+			KeyFingerprint:  key.Fingerprint(salt),
+			FingerprintSalt: salt,
+		}
+		if ierr := st.InsertServerKeyState(ctx, row); ierr != nil {
+			// A racing booter won the insert: re-read and verify against the
+			// winning row rather than trusting our own un-inserted salt.
+			if errors.Is(ierr, store.ErrConflict) {
+				return reconcileKeyState(ctx, st, key)
+			}
+			return envelope.Key{}, 0, fmt.Errorf("write master key state: %w", ierr)
+		}
+		return key, initialKeyVersion, nil
+	case err != nil:
+		return envelope.Key{}, 0, err
+	}
+
+	if subtle.ConstantTimeCompare(key.Fingerprint(state.FingerprintSalt), state.KeyFingerprint) != 1 {
+		return envelope.Key{}, 0, errors.New(
+			"master key " + store.MasterKeyName + " does not match the key the stored secrets were encrypted with; " +
+				"proceeding would make every existing secret undecryptable, so boot fails closed")
+	}
+	return key, state.KeyVersion, nil
 }
 
 // buildSecretResolvers constructs the TWO SpecResolver instances the Server

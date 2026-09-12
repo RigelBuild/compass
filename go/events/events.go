@@ -22,14 +22,16 @@ import (
 	otelx "github.com/RigelBuild/compass/go/internal/otel"
 )
 
-// ringCapacity bounds replay memory; a subscriber that falls further behind
-// than this recovers by re-snapshotting at sinceSeq = 0.
-const ringCapacity = 1024
+// RingCapacity bounds replay memory; a subscriber that falls further behind
+// than this recovers by re-snapshotting at sinceSeq = 0. Exported so tests in
+// other packages can derive an overrun count from it instead of hardcoding a
+// literal that silently stops overrunning if this grows.
+const RingCapacity = 1024
 
 // liveBufferCapacity is the per-subscriber live-tail buffer depth. Matched to
 // the ring so a subscriber lagging by less than the ring window can still
 // recover its gap via sinceSeq replay after re-subscribing.
-const liveBufferCapacity = ringCapacity
+const liveBufferCapacity = RingCapacity
 
 // Stamped is a published payload plus the ordering envelope the bus stamps onto
 // it: the monotonic Seq, the wall-clock publish time, and the per-boot
@@ -161,7 +163,7 @@ func NewBus[P any]() *Bus[P] {
 	return &Bus[P]{
 		instanceEpoch: epochNonce(),
 		nextSeq:       1,
-		ring:          make([]Stamped[P], 0, ringCapacity),
+		ring:          make([]Stamped[P], 0, RingCapacity),
 	}
 }
 
@@ -197,7 +199,7 @@ func (b *Bus[P]) publish(traceparent string, payload P) uint64 {
 		Traceparent:   traceparent,
 	}
 
-	if len(b.ring) == ringCapacity {
+	if len(b.ring) == RingCapacity {
 		copy(b.ring, b.ring[1:])
 		b.ring[len(b.ring)-1] = event
 	} else {
