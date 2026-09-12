@@ -28,9 +28,10 @@ import (
 
 // hostStateFakeRuntime is a WorkloadRuntime that ALSO implements the
 // hostStateEngine probe (AgentStateDir), so agentHost drives its host-process
-// Provision leg. Create mints a real 0700 state dir per container (with the
-// socket/ and config/ subdirs the host backend's Create makes), keyed by the
-// synthetic id it returns — so AgentStateDir(handle.ID()) resolves the same dir
+// Provision leg. Create mints a real 0700 state dir per container with the
+// socket subdir the host backend's Create makes — the config root is left to
+// the materializer, as it is in production — keyed by the synthetic id it
+// returns, so AgentStateDir(handle.ID()) resolves the same dir
 // the leg serves into. It embeds the stub so ExecStreaming drives a real
 // terminatable child for Start/Stop.
 type hostStateFakeRuntime struct {
@@ -43,7 +44,7 @@ type hostStateFakeRuntime struct {
 	// "backend reports no handle" resolve-miss path.
 	missing bool
 	// blockConfig, when true, makes Create leave a regular FILE at the state
-	// dir's config path (creating only the socket subdir), so the socket serves
+	// dir's config path, so the socket serves
 	// but the leg's later Materialize → ensureRoot MkdirAll hits ENOTDIR — the
 	// materialize-fails-after-socket-serves failure path.
 	blockConfig bool
