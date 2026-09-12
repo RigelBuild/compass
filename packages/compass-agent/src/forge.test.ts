@@ -458,11 +458,11 @@ describe("forge_get_pull_request", () => {
 			pullRequestResult({ number: 3, repo: "o/r" }),
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
-		await exec(t, "tc-1", { repo: "o/r", pull_number: 3 });
+		await exec(t, "tc-1", { repo: "o/r", pr_number: 3 });
 		const req = transport.requests[0];
 		expect(req.call.case).toBe("getPullRequest");
 		if (req.call.case !== "getPullRequest") throw new Error("expected arm");
-		expect(req.call.value.pullNumber).toBe(3n);
+		expect(req.call.value.prNumber).toBe(3n);
 	});
 
 	test("renders reviews with normalized verdicts and capped threads", async () => {
@@ -497,7 +497,7 @@ describe("forge_get_pull_request", () => {
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
 		const text = textOf(
-			await exec(t, "tc-1", { repo: "octo/repo", pull_number: 3 }),
+			await exec(t, "tc-1", { repo: "octo/repo", pr_number: 3 }),
 		);
 		const f = fenceOf(text);
 		// The wire "changes_requested" is normalized onto the tool's vocabulary.
@@ -524,7 +524,7 @@ describe("forge_get_pull_request", () => {
 			}),
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
-		const text = textOf(await exec(t, "tc-1", { repo: "o/r", pull_number: 3 }));
+		const text = textOf(await exec(t, "tc-1", { repo: "o/r", pr_number: 3 }));
 		const f = fenceOf(text);
 		expect(
 			text.split("\n").filter((l) => l.startsWith(`[review ${f}]`)),
@@ -547,7 +547,7 @@ describe("forge_get_pull_request", () => {
 		);
 		const t = tool(new ForgeBroker(transport), "forge_get_pull_request");
 		const text = textOf(
-			await exec(t, "tc-1", { repo: "octo/repo", pull_number: 3 }),
+			await exec(t, "tc-1", { repo: "octo/repo", pr_number: 3 }),
 		);
 		const f = fenceOf(text);
 		expect(text).toContain(`head="(malformed ${f})"`);
@@ -658,14 +658,14 @@ describe("forge_comment_on_pull_request", () => {
 		const t = tool(new ForgeBroker(transport), "forge_comment_on_pull_request");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			body: "ship it",
 		});
 		const req = transport.requests[0];
 		expect(req.call.case).toBe("commentOnPullRequest");
 		if (req.call.case !== "commentOnPullRequest")
 			throw new Error("expected arm");
-		expect(req.call.value.pullNumber).toBe(8n);
+		expect(req.call.value.prNumber).toBe(8n);
 		expect(textOf(result)).toBe(
 			"Commented on PR #8: https://github.com/o/r/pull/8#c1",
 		);
@@ -680,7 +680,7 @@ describe("forge_submit_review", () => {
 		const t = tool(new ForgeBroker(transport), "forge_submit_review");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			verdict: "request_changes",
 			body: "please fix",
 			comments: [{ path: "a.ts", line: 12, body: "here" }],
@@ -688,7 +688,7 @@ describe("forge_submit_review", () => {
 		const req = transport.requests[0];
 		expect(req.call.case).toBe("submitReview");
 		if (req.call.case !== "submitReview") throw new Error("expected arm");
-		expect(req.call.value.pullNumber).toBe(8n);
+		expect(req.call.value.prNumber).toBe(8n);
 		expect(req.call.value.verdict).toBe("request_changes");
 		expect(req.call.value.comments).toHaveLength(1);
 		expect(req.call.value.comments[0].path).toBe("a.ts");
@@ -708,7 +708,7 @@ describe("forge_submit_review", () => {
 		const t = tool(new ForgeBroker(transport), "forge_submit_review");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			verdict: "approve",
 		});
 		const req = transport.requests[0];
@@ -724,7 +724,7 @@ describe("forge_submit_review", () => {
 		const t = tool(new ForgeBroker(transport), "forge_submit_review");
 		const result = await exec(t, "tc-1", {
 			repo: "o/r",
-			pull_number: 8,
+			pr_number: 8,
 			verdict: "comment",
 			body: "note",
 		});
@@ -768,7 +768,7 @@ describe("forge transition tools", () => {
 			"tc-2",
 			{
 				repo: "o/r",
-				pull_number: 5,
+				pr_number: 5,
 				state: "closed",
 			},
 		);
@@ -1011,7 +1011,7 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(transitionPullRequestStateParameters, {
 				repo: "o/r",
-				pull_number: 5,
+				pr_number: 5,
 				state: "Done",
 			}),
 		).toBe(true);
@@ -1092,7 +1092,7 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "lgtm",
 			}),
 		).toBe(true);
@@ -1102,14 +1102,14 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "request_changes",
 			}),
 		).toBe(true);
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "request_changes",
 				body: "   ",
 			}),
@@ -1117,7 +1117,7 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "request_changes",
 				body: "please fix",
 			}),
@@ -1126,7 +1126,7 @@ describe("forge parameter schemas", () => {
 		expect(
 			rejects(submitReviewParameters, {
 				repo: "o/r",
-				pull_number: 1,
+				pr_number: 1,
 				verdict: "approve",
 			}),
 		).toBe(false);

@@ -349,16 +349,16 @@ message CreatePullRequestRequest {
 }
 message CommentOnPullRequestRequest {
   string repo = 1;
-  uint64 pull_number = 2;
+  uint64 pr_number = 2;
   string body = 3;               // WITHOUT the owner header
 }
 message GetPullRequestRequest {
   string repo = 1;
-  uint64 pull_number = 2;
+  uint64 pr_number = 2;
 }
 message SubmitReviewRequest {
   string repo = 1;               // REQUIRED; empty is invalid_argument
-  uint64 pull_number = 2;
+  uint64 pr_number = 2;
   string verdict = 3;            // "approve" | "request_changes" | "comment"
   string body = 4;               // WITHOUT the owner header; the Server stamps it
   repeated ReviewCommentInput comments = 5;  // inline comments; may be empty
