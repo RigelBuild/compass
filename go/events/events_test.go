@@ -6,7 +6,7 @@ package events
 // HeadSeq, and the replay->live handoff.
 //
 // White-box (package events) so the eviction and overrun contracts can be
-// stated in terms of ringCapacity / liveBufferCapacity rather than a magic 1024
+// stated in terms of RingCapacity / liveBufferCapacity rather than a magic 1024
 // that would silently drift if the constant changed.
 
 import (
@@ -118,7 +118,7 @@ func TestSubscribeAtZeroSnapshotsTheWholeRing(t *testing.T) {
 
 func TestSubscribeBelowEvictedSpanUnderflows(t *testing.T) {
 	bus := NewBus[ev]()
-	for range ringCapacity + 10 {
+	for range RingCapacity + 10 {
 		bus.Publish(ready())
 	}
 	// seqs 1..=10 were evicted; oldest retained is 11. A cursor of 5 wants
@@ -132,7 +132,7 @@ func TestSubscribeAtEvictionBoundarySucceedsAndReplaysFromNewOldest(t *testing.T
 	bus := NewBus[ev]()
 	// One eviction: fill the ring, then push one more so seq 1 drops and the
 	// oldest retained becomes seq 2.
-	for range ringCapacity + 1 {
+	for range RingCapacity + 1 {
 		bus.Publish(ready())
 	}
 	// cursor=1 wants events from 2 onward, which are exactly what remains — the
@@ -144,8 +144,8 @@ func TestSubscribeAtEvictionBoundarySucceedsAndReplaysFromNewOldest(t *testing.T
 	if sub.Replay[0].Seq != 2 {
 		t.Fatalf("first replay seq = %d, want 2 (new oldest)", sub.Replay[0].Seq)
 	}
-	if last := sub.Replay[len(sub.Replay)-1].Seq; last != uint64(ringCapacity+1) {
-		t.Fatalf("last replay seq = %d, want %d", last, ringCapacity+1)
+	if last := sub.Replay[len(sub.Replay)-1].Seq; last != uint64(RingCapacity+1) {
+		t.Fatalf("last replay seq = %d, want %d", last, RingCapacity+1)
 	}
 }
 
@@ -388,17 +388,17 @@ func TestOverrunClosesLiveAndLatchesLagged(t *testing.T) {
 		t.Fatal("Lagged() = false after overrun, want true")
 	}
 
-	// The ring still holds the last ringCapacity events, so a re-subscribe
+	// The ring still holds the last RingCapacity events, so a re-subscribe
 	// within the window recovers gap-free.
 	recover, err := bus.Subscribe(0, 0)
 	if err != nil {
 		t.Fatalf("re-Subscribe(0,0) after lag: %v", err)
 	}
-	if len(recover.Replay) != ringCapacity {
-		t.Fatalf("recovery replay len = %d, want %d (the retained ring)", len(recover.Replay), ringCapacity)
+	if len(recover.Replay) != RingCapacity {
+		t.Fatalf("recovery replay len = %d, want %d (the retained ring)", len(recover.Replay), RingCapacity)
 	}
-	if last := recover.Replay[len(recover.Replay)-1].Seq; last != uint64(ringCapacity+1) {
-		t.Fatalf("recovery last seq = %d, want %d", last, ringCapacity+1)
+	if last := recover.Replay[len(recover.Replay)-1].Seq; last != uint64(RingCapacity+1) {
+		t.Fatalf("recovery last seq = %d, want %d", last, RingCapacity+1)
 	}
 }
 
@@ -704,7 +704,7 @@ func TestClosedBusSubscribeWithInvalidCursorReturnsTerminalStream(t *testing.T) 
 			// gate.
 			name: "below evicted span",
 			prepare: func(bus *Bus[ev]) (uint64, uint64) {
-				for range ringCapacity + 10 {
+				for range RingCapacity + 10 {
 					bus.Publish(ready())
 				}
 				return 5, bus.InstanceEpoch()
