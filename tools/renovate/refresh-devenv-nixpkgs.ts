@@ -1,7 +1,7 @@
 // Renovate postUpgradeTask: lockstep the baked-biome catalog pin to a
 // devenv-nixpkgs channel bump (RIG-2432).
 //
-// Context. The dev shell bakes biome + markdownlint-cli2 from nixpkgs
+// Context. The dev shell bakes biome + rumdl from nixpkgs
 // (devenv.nix), whose versions are governed by devenv's nixpkgs channel
 // (devenv.yaml → github:cachix/devenv-nixpkgs/rolling), locked by git rev in
 // devenv.lock. The customManager in config.json5 surfaces that rev as a
@@ -24,7 +24,7 @@
 //      so this is a pure fetch+eval (seconds, no build) for every channel rev
 //      — the patch-independent path.
 //   4. Rewrite the biome catalog pin in the root package.json to the evaluated
-//      version (no-op when unchanged). Compass bakes markdownlint-cli2 from the
+//      version (no-op when unchanged). Compass bakes rumdl from the
 //      same channel, but it carries no catalog pin, so only biome is rewritten.
 //   5. `bun install --lockfile-only` — re-resolve bun.lock so the fail-closed
 //      `bun install --frozen-lockfile` root-check passes.
