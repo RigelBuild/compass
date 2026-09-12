@@ -195,6 +195,18 @@ enum SecretKind {
   SECRET_KIND_GH = 3;        // gh credential; carries host
 }
 
+// The tier a user-secret write targets. Names the same tiers as the store's
+// SecretScope* constants but NOT the same numbers: proto reserves 0 for
+// unspecified, so tenant is 2 here but 0 in the store — the handler maps
+// explicitly, never casts. The unspecified default is USER: a client that omits
+// the field writes its own private coordinate, never a tenant-wide value every
+// other user's agents resolve.
+enum SecretScope {
+  SECRET_SCOPE_UNSPECIFIED = 0;  // treated as USER — private by default
+  SECRET_SCOPE_USER = 1;
+  SECRET_SCOPE_TENANT = 2;       // admin-only
+}
+
 // User-facing secret registry writes. SetSecret/DeleteSecret are user-only
 // (enforced in the handler: caller account kind == User, an agent account is
 // rejected PermissionDenied); ListSecrets is callable by user AND agent tokens
@@ -236,6 +248,7 @@ message SetSecretRequest {
   SecretKind kind = 4;
   string provider = 5;  // set for SECRET_KIND_PROVIDER
   string host = 6;      // set for SECRET_KIND_GH
+  SecretScope scope = 7;  // tier the write targets; unspecified == user
 }
 message SetSecretResponse {}
 
@@ -255,6 +268,7 @@ message SecretStatus {
 
 message DeleteSecretRequest {
   string name = 1;
+  SecretScope scope = 2;  // tier the delete targets; unspecified == user
 }
 message DeleteSecretResponse {}
 

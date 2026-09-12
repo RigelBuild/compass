@@ -107,7 +107,7 @@ func (s *secretsService) SetSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.SetSecretRequest],
 ) (*connect.Response[compassv1.SetSecretResponse], error) {
-	callerID, err := s.requireUser(ctx)
+	callerID, role, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,12 @@ func (s *secretsService) SetSecret(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("secret value is empty"))
 	}
 
-	declErr := s.store.DeclareSecret(ctx, callerID, msg.GetName(), delivery, kind, msg.GetProvider(), msg.GetHost())
+	scopeKind, scopeID, err := resolveSecretScope(msg.GetScope(), callerID, role)
+	if err != nil {
+		return nil, err
+	}
+
+	declErr := s.store.DeclareSecret(ctx, callerID, msg.GetName(), scopeKind, scopeID, delivery, kind, msg.GetProvider(), msg.GetHost())
 	switch {
 	case declErr == nil:
 		// Fresh declaration.
@@ -157,9 +162,10 @@ func (s *secretsService) SetSecret(
 		// name/cli/stderr, never the value, so logging it server-side is safe; the
 		// client-facing error is value-free.
 		if declErr == nil {
-			// Tenant coordinate (scope 0, "") is a T5 placeholder: this handler still
-			// declares at tenant scope pending the write-surface scope ruling (A9 OQ).
-			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName(), 0, ""); delErr != nil {
+			// Roll back at the RESOLVED coordinate (D9): a fresh declaration lands
+			// wherever resolveSecretScope placed it, so the rollback must target the
+			// same coordinate, not a hardcoded tenant one.
+			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName(), scopeKind, scopeID); delErr != nil {
 				slog.ErrorContext(ctx, "rolling back secret declaration after failed write", "err", delErr)
 			}
 		}
@@ -216,7 +222,7 @@ func (s *secretsService) DeleteSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.DeleteSecretRequest],
 ) (*connect.Response[compassv1.DeleteSecretResponse], error) {
-	callerID, err := s.requireUser(ctx)
+	callerID, role, err := s.requireUser(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -224,6 +230,10 @@ func (s *secretsService) DeleteSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
 	name := req.Msg.GetName()
+	scopeKind, scopeID, err := resolveSecretScope(req.Msg.GetScope(), callerID, role)
+	if err != nil {
+		return nil, err
+	}
 	// Ordering note: resolver.Delete is a validate-only no-op today, so calling
 	// it before DeleteSecretDeclaration is inert. The provider verb it would
 	// shell EXISTS at this pin (`secretspec delete`, 0.18+); wiring it is a
@@ -235,9 +245,7 @@ func (s *secretsService) DeleteSecret(
 	if err := s.resolver.Delete(ctx, name); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("deleting secret value: %w", err))
 	}
-	// Tenant coordinate (scope 0, "") is a T5 placeholder: this handler deletes at
-	// tenant scope pending the write-surface scope ruling (A9 OQ).
-	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name, 0, ""); err != nil {
+	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name, scopeKind, scopeID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("secret %q", name))
 		}
@@ -419,29 +427,37 @@ func (s *secretsService) requireCaller(ctx context.Context) (store.AccountID, er
 	return callerID, nil
 }
 
-// requireUser returns the authenticated caller id only when it is a USER account;
-// an agent account is CodePermissionDenied (the user-only write gate, record
-// §919-927 — the same fail-closed posture as admin-gated IssueToken). No caller is
-// CodeUnauthenticated (fail closed). The account kind is read from the store (an
-// agent account has the Agent subtype set; a user does not — IsAgent).
-func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, error) {
+// requireUser returns the authenticated caller id AND role only when the caller
+// is a USER account; an agent account is CodePermissionDenied (the user-only
+// write gate, record §919-927 — the same fail-closed posture as admin-gated
+// IssueToken). No caller is CodeUnauthenticated (fail closed). The account kind
+// is read from the store (an agent account has the Agent subtype set; a user
+// does not — IsAgent). The role is returned so a handler can gate a tenant-scope
+// write (D9) without a second GetAccount; a caller with no user payload (the
+// reserved system account) is the least-privilege member, so it cannot pass the
+// admin gate.
+func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, store.UserRole, error) {
 	callerID, err := s.requireCaller(ctx)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	acct, err := s.store.GetAccount(ctx, callerID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// A caller the bearer door authenticated but whose account row is gone:
 			// fail closed rather than admit a write under an unresolvable identity.
-			return "", connect.NewError(connect.CodePermissionDenied, fmt.Errorf("caller account %q not found", callerID))
+			return "", 0, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("caller account %q not found", callerID))
 		}
-		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller account: %w", err))
+		return "", 0, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller account: %w", err))
 	}
 	if acct.IsAgent() {
-		return "", connect.NewError(connect.CodePermissionDenied, errors.New("secret writes are user-only"))
+		return "", 0, connect.NewError(connect.CodePermissionDenied, errors.New("secret writes are user-only"))
 	}
-	return callerID, nil
+	var role store.UserRole
+	if acct.User != nil {
+		role = acct.User.Role
+	}
+	return callerID, role, nil
 }
 
 // bumpSecretsVersion emits the SecretsVersion signal after a successful write.
@@ -505,5 +521,29 @@ func kindToProto(k store.SecretKind) compassv1.SecretKind {
 		return compassv1.SecretKind_SECRET_KIND_GH
 	default:
 		return compassv1.SecretKind_SECRET_KIND_GENERIC
+	}
+}
+
+// resolveSecretScope maps a wire SecretScope + caller identity to the store
+// coordinate (scope_kind, scope_id) a user-secret write targets, implementing
+// D9's matrix. UNSPECIFIED and USER both land at the caller's private user
+// coordinate — the unspecified default is USER, so an omitted field never
+// silently writes a tenant-wide value. TENANT lands at the shared coordinate
+// (store 0, "") and requires UserRoleAdmin, else CodePermissionDenied. An
+// unknown/out-of-range wire value is CodeInvalidArgument (fail closed). The wire
+// numbers deliberately differ from the store's (tenant is 2 here, 0 there), so
+// this MAPS explicitly rather than casting — a cast would turn an omitted field
+// into a tenant write, the exact bug the default exists to prevent.
+func resolveSecretScope(scope compassv1.SecretScope, callerID store.AccountID, role store.UserRole) (int16, string, error) {
+	switch scope {
+	case compassv1.SecretScope_SECRET_SCOPE_UNSPECIFIED, compassv1.SecretScope_SECRET_SCOPE_USER:
+		return store.SecretScopeUser, string(callerID), nil
+	case compassv1.SecretScope_SECRET_SCOPE_TENANT:
+		if role != store.UserRoleAdmin {
+			return 0, "", connect.NewError(connect.CodePermissionDenied, errors.New("tenant-scoped secret writes require an admin"))
+		}
+		return store.SecretScopeTenant, "", nil
+	default:
+		return 0, "", connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unknown secret scope %d", scope))
 	}
 }

@@ -97,8 +97,12 @@ type secretsFixture struct {
 	userToken  string
 	agentToken string
 	userID     store.AccountID
+	agentID    store.AccountID
 	adminToken string
-	resolver   *recordingResolver
+	// st is the live store, so a scope test can assert WHICH coordinate a write
+	// landed at rather than only that the RPC returned OK.
+	st       *store.Store
+	resolver *recordingResolver
 	// serverResolver is the SECOND fake, standing in for the server-secret
 	// resolver. Kept distinct from resolver so a test can prove a server-secret
 	// write lands ONLY on this one — the container-delivery registry must never
@@ -156,6 +160,8 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 		agentToken:     agentTok,
 		adminToken:     adminTok,
 		userID:         user.ID,
+		agentID:        agent.ID,
+		st:             st,
 		resolver:       resolver,
 		serverResolver: serverResolver,
 		signaler:       signaler,
@@ -176,6 +182,20 @@ func setReq(bearer, name, value string) *connect.Request[compassv1.SetSecretRequ
 func delReq(bearer, name string) *connect.Request[compassv1.DeleteSecretRequest] {
 	req := connect.NewRequest(&compassv1.DeleteSecretRequest{Name: name})
 	req.Header().Set("Authorization", "Bearer "+bearer)
+	return req
+}
+
+// scopedSetReq is setReq with an explicit D9 scope selector. setReq deliberately
+// leaves scope unset, so it exercises the unspecified-means-user default.
+func scopedSetReq(bearer, name, value string, scope compassv1.SecretScope) *connect.Request[compassv1.SetSecretRequest] {
+	req := setReq(bearer, name, value)
+	req.Msg.Scope = scope
+	return req
+}
+
+func scopedDelReq(bearer, name string, scope compassv1.SecretScope) *connect.Request[compassv1.DeleteSecretRequest] {
+	req := delReq(bearer, name)
+	req.Msg.Scope = scope
 	return req
 }
 
@@ -642,4 +662,146 @@ func TestListServerSecretsAdminOnly(t *testing.T) {
 	if _, err := f.client.ListServerSecrets(ctx, listServerReq(f.adminToken)); err != nil {
 		t.Fatalf("admin token: %v", err)
 	}
+}
+
+// D9 scope selector: an omitted scope must land at the CALLER's user coordinate,
+// never the shared tenant one. This is the load-bearing default — a client built
+// before the selector existed writes a private value, not a tenant-wide one.
+func TestSetSecretOmittedScopeLandsAtCallerUserCoordinate(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+		t.Fatalf("SetSecret(omitted scope): %v", err)
+	}
+	// An EXPLICIT user scope must reach the same coordinate as an omitted one;
+	// otherwise the default and the named tier could drift apart unnoticed.
+	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.userToken, "API_KEY", "v", compassv1.SecretScope_SECRET_SCOPE_USER)); err != nil {
+		t.Fatalf("SetSecret(explicit user scope): %v", err)
+	}
+
+	recs, err := f.st.SecretRecordsForAgent(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("SecretRecordsForAgent: %v", err)
+	}
+	found := 0
+	for _, r := range recs {
+		if r.Name != "DB_URL" && r.Name != "API_KEY" {
+			continue
+		}
+		found++
+		if r.ScopeKind != store.SecretScopeUser {
+			t.Errorf("scope_kind = %d, want %d (user)", r.ScopeKind, store.SecretScopeUser)
+		}
+		if r.ScopeID != string(f.userID) {
+			t.Errorf("scope_id = %q, want the caller %q", r.ScopeID, f.userID)
+		}
+	}
+	if found != 2 {
+		t.Fatalf("resolved %d of the 2 written names for the owning agent; got %d record(s)", found, len(recs))
+	}
+}
+
+// A plain user may not write the shared tenant coordinate (D8's matrix), on
+// either verb. Without this the selector would be a request field any caller
+// could use to overwrite every other user's value.
+func TestTenantScopeWriteRequiresAdmin(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	_, err := f.client.SetSecret(ctx, scopedSetReq(f.userToken, "DB_URL", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT))
+	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
+		t.Fatalf("SetSecret tenant scope as member: code = %v, want PermissionDenied (err %v)", got, err)
+	}
+	_, err = f.client.DeleteSecret(ctx, scopedDelReq(f.userToken, "DB_URL", compassv1.SecretScope_SECRET_SCOPE_TENANT))
+	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
+		t.Fatalf("DeleteSecret tenant scope as member: code = %v, want PermissionDenied (err %v)", got, err)
+	}
+
+	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.adminToken, "DB_URL", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
+		t.Fatalf("SetSecret tenant scope as admin: %v", err)
+	}
+}
+
+// The isolation property that motivated D9: a user-scoped value is private to its
+// owner's agents, while a tenant row stays shared. Asserted through the real
+// resolution query, not by reading the row back by primary key.
+func TestUserScopedSecretIsNotVisibleToAnotherUsersAgent(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	other, err := f.st.CreateUser(ctx, store.NewUser{Handle: "other", DisplayName: "other"})
+	if err != nil {
+		t.Fatalf("CreateUser(other): %v", err)
+	}
+	otherAgent, err := f.st.CreateAgent(ctx, other.ID, store.NewAgent{Handle: "otheragent", DisplayName: "otheragent"})
+	if err != nil {
+		t.Fatalf("CreateAgent(other): %v", err)
+	}
+
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "PRIVATE_ONE", "v")); err != nil {
+		t.Fatalf("SetSecret(user scope): %v", err)
+	}
+	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.adminToken, "SHARED_ONE", "v", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
+		t.Fatalf("SetSecret(tenant scope): %v", err)
+	}
+
+	names := resolvedNames(t, ctx, f, otherAgent.ID)
+	if names["PRIVATE_ONE"] {
+		t.Errorf("another user's agent resolved PRIVATE_ONE; user-scoped rows must not leak across users")
+	}
+	if !names["SHARED_ONE"] {
+		t.Errorf("another user's agent did NOT resolve the tenant-scoped SHARED_ONE; tenant rows stay shared")
+	}
+}
+
+// Re-setting a name that already has a tenant row writes a NEW user row and does
+// NOT retire the shared one — it keeps resolving for every other user until an
+// admin deletes it at tenant scope. Pins the real behavior against the intuition
+// that a re-set privatizes a secret (record D9).
+func TestUserScopeResetDoesNotRetireTheTenantRow(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	other, err := f.st.CreateUser(ctx, store.NewUser{Handle: "other", DisplayName: "other"})
+	if err != nil {
+		t.Fatalf("CreateUser(other): %v", err)
+	}
+	otherAgent, err := f.st.CreateAgent(ctx, other.ID, store.NewAgent{Handle: "otheragent", DisplayName: "otheragent"})
+	if err != nil {
+		t.Fatalf("CreateAgent(other): %v", err)
+	}
+
+	if _, err := f.client.SetSecret(ctx, scopedSetReq(f.adminToken, "DB_URL", "shared", compassv1.SecretScope_SECRET_SCOPE_TENANT)); err != nil {
+		t.Fatalf("SetSecret(tenant): %v", err)
+	}
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "private")); err != nil {
+		t.Fatalf("SetSecret(user re-set): %v", err)
+	}
+
+	if !resolvedNames(t, ctx, f, otherAgent.ID)["DB_URL"] {
+		t.Errorf("the tenant row stopped resolving for another user after a user-scope re-set; a re-set must not retire the shared value")
+	}
+	recs, err := f.st.SecretRecordsForAgent(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("SecretRecordsForAgent: %v", err)
+	}
+	for _, r := range recs {
+		if r.Name == "DB_URL" && r.ScopeKind != store.SecretScopeUser {
+			t.Errorf("the setter's own agent resolved scope_kind %d, want %d (its private row shadows the tenant one)", r.ScopeKind, store.SecretScopeUser)
+		}
+	}
+}
+
+func resolvedNames(t *testing.T, ctx context.Context, f secretsFixture, agent store.AccountID) map[string]bool {
+	t.Helper()
+	recs, err := f.st.SecretRecordsForAgent(ctx, agent)
+	if err != nil {
+		t.Fatalf("SecretRecordsForAgent: %v", err)
+	}
+	out := make(map[string]bool, len(recs))
+	for _, r := range recs {
+		out[r.Name] = true
+	}
+	return out
 }

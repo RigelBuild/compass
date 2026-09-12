@@ -123,7 +123,7 @@ func TestSecretsUpdatedAtIsLive(t *testing.T) {
 	s := newTestStore(t)
 	actor := mustUser(t, s, "secrets-owner")
 
-	if err := s.DeclareSecret(ctx, actor.ID, "DATABASE_URL", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
+	if err := s.DeclareSecret(ctx, actor.ID, "DATABASE_URL", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
 		t.Fatalf("DeclareSecret: %v", err)
 	}
 	createdBefore, updatedBefore := secretStamps(t, s, "DATABASE_URL")

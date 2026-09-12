@@ -71,15 +71,15 @@ type SecretDeclaration struct {
 	UpdatedAt  time.Time
 }
 
-// DeclareSecret adds a names-only registry row (RIG-1327 T3). It stores NO
-// value — the value lives in the SecretSpec provider. name is validated against
-// SecretSpec's env-var-name grammar at the door (a bad name is
-// ErrInvalidArgument before touching Postgres, since the name becomes a
-// filesystem path and script token downstream). A duplicate name is
-// ErrConflict; an unknown actor account is ErrInvalidArgument (the declared_by
-// FK). provider is meaningful only for a provider kind and host only for a gh
-// kind; callers pass "" otherwise.
-func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string, delivery SecretDelivery, kind SecretKind, provider, host string) error {
+// DeclareSecret adds a names-only registry row. It stores NO value — the value
+// lives in the SecretSpec provider. name is validated against SecretSpec's
+// env-var-name grammar at the door (a bad name is ErrInvalidArgument before
+// touching Postgres, since the name becomes a filesystem path and script token
+// downstream). A duplicate is ErrConflict at that COORDINATE: the PK is
+// (name, scope_kind, scope_id), so one name may be declared once per scope. An
+// unknown actor account is ErrInvalidArgument (the declared_by FK). provider is
+// meaningful only for a provider kind and host only for a gh kind.
+func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string, scopeKind int16, scopeID string, delivery SecretDelivery, kind SecretKind, provider, host string) error {
 	if !secretNamePattern.MatchString(name) {
 		return fmt.Errorf("%w: secret name %q must match %s", ErrInvalidArgument, name, secretNamePattern.String())
 	}
@@ -98,8 +98,13 @@ func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string,
 	if err := validateKindRouting(kind, provider, host); err != nil {
 		return err
 	}
+	if err := validateScopeShape(scopeKind, scopeID); err != nil {
+		return err
+	}
 	if err := s.q.InsertSecret(ctx, db.InsertSecretParams{
 		Name:       name,
+		ScopeKind:  scopeKind,
+		ScopeID:    scopeID,
 		Delivery:   int16(delivery), //nolint:gosec // G115: SecretDelivery is a CHECK-constrained 0/1 enum (secrets.delivery), always within int16
 		Kind:       int16(kind),     //nolint:gosec // G115: SecretKind is a CHECK-constrained 0/1/2 enum (secrets.kind), always within int16
 		Provider:   provider,
