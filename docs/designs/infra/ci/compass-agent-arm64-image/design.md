@@ -203,8 +203,9 @@ the platform set; keep the arch knowledge there.
    arm64 runners are GA for public repos (labels `ubuntu-24.04-arm` /
    `ubuntu-22.04-arm`); `RigelBuild/compass` is public. The arm64 job is a
    near-clone of the amd64 job: same nix install, same bootstrap steps, same
-   `publish.sh` invocation — the build is native, so nix2container emits an
-   aarch64-linux spec with no cross machinery.
+   `publish.sh` invocation. The build is native, so nix2container is expected
+   to emit an aarch64-linux spec with no cross machinery. That is
+   designed-to-be-true, not yet observed (UNVERIFIED until T2; OQ-1).
 2. **binfmt/QEMU emulation on `ubuntu-latest`.** One runner, but the image
    closure is the dominant CI cost already (the 90-minute `timeout-minutes`
    at `release.yml:120` is sized by it); emulating a full nix build of that
@@ -244,10 +245,20 @@ the platform set; keep the arch knowledge there.
   builds within the 90-minute ceiling or fails it visibly. If T2 shows the
   wall-clock is unacceptable, populating a cache is a follow-up, not a design
   change.
-- **UNVERIFIED: the `@oh-my-pi` native addon (`pi_natives.*.node`,
-  `agent-image/entrypoint.nix` bundle rationale) ships an aarch64-linux
-  prebuilt.** If absent, the entrypoint bundle fails at build time on arm64 —
-  a loud, pre-push failure. T2 surfaces this.
+- **The `@oh-my-pi` native-addon copy block is x64-hardcoded and must be
+  edited, independent of whether an aarch64 prebuilt exists.**
+  `agent-image/entrypoint.nix:218-220` names the arch three times:
+  `natives=node_modules/.bun/node_modules/@oh-my-pi/pi-natives-linux-x64`,
+  then `cp $natives/pi_natives.linux-x64-modern.node` and
+  `pi_natives.linux-x64-baseline.node`. The package name, both filenames, and
+  the variant scheme itself all change on arm64: the surrounding comment
+  (`:214-217`) states the loader picks `modern` when the host has AVX2 else
+  `baseline`, and AVX2 is an x86 feature with no arm64 analogue, so the
+  two-variant copy is not portable as written. T1 owns this edit.
+- **UNVERIFIED: whether that aarch64 prebuilt exists at all, and under which
+  variant names.** If absent, the entrypoint bundle fails at build time on
+  arm64 — a loud, pre-push failure. T2 surfaces both the existence and the
+  real filenames the copy block must use.
 
 ### Decision C — the guards' multi-arch forms
 
@@ -265,12 +276,26 @@ Every guard survives; none is deleted (`rule://no-inert-gating`).
 2. **Index immutability: the same guard shape one level up.** The compose
    step's local identity is the index's **manifest-list digest** (the sha256
    of the raw index bytes, `skopeo inspect --raw docker://…:git-<sha12> |
-   sha256sum` on the canonical pushed bytes, or `skopeo inspect --format
-   '{{.Digest}}'`). Before pushing `:git-<sha12>`: if the remote tag exists
-   and its list digest equals the locally composed one → idempotent skip; if
-   it exists and differs → hard fail; if inspect fails with anything but a
-   definitive manifest-unknown → abort. Identical decision table to
-   `guard_immutable`, with `.config.digest` replaced by the list digest.
+   sha256sum`, or `skopeo inspect --format '{{.Digest}}'`). Before pushing
+   `:git-<sha12>`: if the remote tag exists and its list digest equals the
+   locally composed one → idempotent skip; if it exists and differs → hard
+   fail; if inspect fails with anything but a definitive manifest-unknown →
+   abort. Identical decision table to `guard_immutable`, with
+   `.config.digest` replaced by the list digest.
+
+   **This guard's skip arm depends on byte-deterministic index composition,
+   which is UNVERIFIED (OQ-5).** An OCI image index is not canonicalized by
+   the spec, so a recomposed index could differ in member order or carry an
+   injected annotation and hash differently while describing the same two
+   images. If that happens, the digest-equality skip never fires and a
+   re-run after a mid-compose failure hits the "exists and differs → hard
+   fail" arm against a tag that is immutable by design, wedging that sha's
+   publish with no clean recovery. T2 closes this by composing, pushing to a
+   scratch tag, recomposing from the same member digests, and comparing the
+   two list digests. If composition proves non-deterministic, the guard's
+   identity becomes the **member digest set** (assert the remote index's
+   members are exactly the two per-arch digests) rather than the list digest
+   — same immutability property, no dependence on byte-stable serialization.
 
 3. **The platform tripwire becomes a platform-set assertion.** Replacement
    for `release.yml:330-336`: fetch the raw index for `:git-<sha12>`, assert
@@ -334,7 +359,11 @@ ambiguity" posture:**
 - Compose pushes `:git-<sha12>` but fails before `:latest` → exactly today's
   failure mode between the two `skopeo copy` iterations of
   `publish.sh:128-159`; the re-run's index guard (C.2) skips the pin and
-  moves `:latest`. No new window is introduced.
+  moves `:latest`. No new window is introduced. **This recovery is only as
+  good as C.2's skip arm, which is UNVERIFIED pending OQ-5**: if index
+  composition is not byte-deterministic the re-run hard-fails instead of
+  skipping, and the fallback identity in C.2 (assert the member digest set
+  rather than the list digest) is what restores the clean re-run.
 - A registry blip during any guard probe → abort without pushing, verbatim
   `guard_immutable` posture.
 
@@ -377,17 +406,30 @@ end-to-end pull check.
 - Runners: GitHub-hosted only (`ubuntu-latest`, `ubuntu-24.04-arm`); no
   self-hosted, no QEMU.
 
-### T1 — per-system FOD hash in `entrypoint.nix`
+### T1 — per-system `entrypoint.nix` (FOD hash and native-addon copy)
 
-Make `agent-image/entrypoint.nix`'s `nodeModules.outputHash` a per-system
-attrset keyed by `pkgs.stdenv.hostPlatform.system`, following the shape of
+Two edits in `agent-image/entrypoint.nix`, both required before an arm64 build
+can succeed.
+
+First, make `nodeModules.outputHash` a per-system attrset keyed by
+`pkgs.stdenv.hostPlatform.system`, following the shape of
 `tools/toolchain/versions/bun.nix` (`"x86_64-linux"` / `"aarch64-linux"`
 entries). The aarch64 hash is obtained the way the file's own comment
 prescribes (set `lib.fakeSha256`, take the reported value) — on the T2 spike
 runner, since the hash is what the arm64 install tree produces.
 
+Second, parameterize the native-addon copy block at `:218-220` per system. It
+hardcodes the arch three times: the `pi-natives-linux-x64` package path and
+both `pi_natives.linux-x64-{modern,baseline}.node` filenames. The variant
+scheme is also not portable: per the block's own comment (`:214-217`) the
+loader picks `modern` on an AVX2 host else `baseline`, and AVX2 is x86-only.
+So arm64 needs its real variant names rather than a renamed pair, and the
+"copy both" rule holds only if arm64 ships two. T2 reports the actual package
+contents; this task consumes that answer.
+
 Interfaces: consumes `pkgs` (already in scope); produces the same `outputHash`
-string per system. amd64 hash byte-identical to today's.
+string and the same two `.node` files in `$out` per system. The amd64 hash and
+copied filenames stay byte-identical to today's.
 
 ### T2 — arm64 build spike (workflow_dispatch, no tag writes)
 
@@ -448,7 +490,7 @@ authority for the platform contract.
 
 ## Tasks
 
-- [ ] T1 — per-system FOD hash in `agent-image/entrypoint.nix`
+- [ ] T1 — per-system `entrypoint.nix`: FOD hash + native-addon copy block
 - [ ] T2 — arm64 build spike on `ubuntu-24.04-arm` (dispatch-only, no pushes)
 - [ ] T3 — `publish.sh` per-arch mode
 - [ ] T4 — `release.yml` fan-out + index compose/verify jobs
@@ -481,3 +523,12 @@ before any workflow change lands.
 - **OQ-4 [non-load-bearing] — aarch64 binary-cache population.** If T2's
   wall-clock is painful, publishing the arm64 closure to a Rigel cachix cache
   is a follow-up optimization; correctness does not depend on it.
+- **OQ-5 [load-bearing until T2] — is index composition byte-deterministic?**
+  C.2's immutability guard and Decision D's clean re-run both assume that
+  recomposing the index from the same two member digests produces identical
+  bytes, and so an identical list digest. The OCI spec does not canonicalize
+  an index, so member order or an injected annotation could break it. T2
+  composes, pushes to a scratch tag, recomposes, and compares list digests.
+  If it is not deterministic, C.2's identity becomes the member digest set
+  instead of the list digest — the immutability property is preserved either
+  way, so this changes the guard's mechanism, not the design.
