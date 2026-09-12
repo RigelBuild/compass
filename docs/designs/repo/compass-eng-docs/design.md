@@ -23,8 +23,8 @@ authored in `RigelBuild/compass` at
 
 ## Problem / Intent
 
-The Compass design corpus (39 records + the living spec) lives out of tree and
-is not public — invisible to the public the product is being
+The Compass design corpus (39 records + the living spec) lives out of tree,
+invisible to the public the product is being
 built in the open for; the public `RigelBuild/compass` repo has no docsite
 and no `docs/designs/` tree (only `docs/architecture/build-and-ci.md`, verified
 this session). Move the Compass records + specs here and publish them on a
