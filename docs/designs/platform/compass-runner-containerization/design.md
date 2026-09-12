@@ -1,0 +1,419 @@
+# Containerizing the Compass Runner
+
+Status: Draft — freezes on merge. The §Privilege shape contract is contingent on R8's real-hardware verification.
+
+Ledger-impact: mints DL-357
+
+## Problem / Intent
+
+Compass ships a Runner that launches each agent session as a microVM
+(cloud-hypervisor + virtiofsd + passt) rootless, as an ordinary host process.
+Operators who run Compass on Kubernetes have no supported way to deploy it:
+there is no Runner container image, no lane that builds one, and no recorded
+answer to what such a container would have to be granted in order to boot a
+microVM at all.
+
+That last question is the hard one, and it is why this is a design record
+rather than a packaging task. A rootless *host* user has affordances a
+container does not — setuid `newuidmap`, unrestricted `unshare(2)`, no seccomp
+filter — so "the Runner already runs rootless" does not establish that a
+locked-down pod can run it. This record decides whether the Runner is
+containerized, states exactly what the container is granted and what it is
+denied, says where the KVM userland and guest assets live, and defines the
+Kubernetes object contract for a fleet whose real workload — the session
+microVMs — is invisible to Kubernetes.
+
+Scope is the **core capability**: the image, the privilege shape, and the
+generic Kubernetes object contract any conformant cluster can run. Choosing a
+cloud, a node provisioner, or a GitOps delivery path for a particular
+deployment is an operator concern and out of scope here.
+
+## Approach
+
+**Containerize the Runner as the Kubernetes delivery and lifecycle unit,
+running rootless inside an unprivileged pod with a scoped `/dev/kvm` device —
+never `privileged: true`.**
+
+The apparent conflict with the runtime record's "launched rootless as an
+ordinary host process per session"
+(`docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-runner.md`,
+§D6) dissolves once the two layers are separated. *Rootless* is a property of
+the uid the Runner and its VMM children run as. *Ordinary host process*
+distinguishes the VMM from a CRI-owned pod-sandbox runtime. A container is a
+namespaced process tree: cloud-hypervisor, virtiofsd, and passt run as
+ordinary children of the containerized Runner at a non-zero uid, exactly as
+they would under systemd.
+
+What the runtime record forbids is *privilege* — its D7 discussion pushes
+anything needing a capability the rootless Runner lacks out to operator
+provisioning plus preflight verification. That sentence rules out capabilities
+as a *requirement*; it does not establish that a `drop: ["ALL"]` +
+`RuntimeDefault` pod grants *enough*, because a pod denies affordances the
+host-rootless model silently assumed. So the containerize ruling is explicitly
+**contingent on the privilege shape verifying on real hardware (R8)**: if a
+zero-privilege pod cannot run the frozen virtiofsd/passt composition, the
+container-vs-host tradeoff reopens.
+
+### Container vs host process: why the container wins
+
+A host systemd service and a container both satisfy the runtime record. The
+container wins on four properties an operator needs and systemd does not
+provide:
+
+1. **Atomic, rollback-able version delivery.** The image digest names the
+   entire userland — Runner binary, cloud-hypervisor, virtiofsd, passt, guest
+   kernel and rootfs — as one unit. A host service versions each of those
+   independently, and a partial upgrade is a supported state.
+2. **A declarative fleet object.** One DaemonSet describes the Runner on every
+   eligible node, with a rollout strategy and a health surface, rather than N
+   nodes' worth of drifted unit files.
+3. **Isolation of the userland from the host.** The VMM binaries and guest
+   assets live in the image, not in the node's filesystem, so a node never
+   accumulates Compass-specific packages.
+4. **No node mutation on upgrade.** Changing the Runner version is a pod
+   template change, not a node reprovision.
+
+The cost is the privilege question, which is the subject of §Privilege shape
+and R8.
+
+### Net backend: passt, implemented, not an open pick
+
+Networking needs no capability. A rootless VMM cannot create a host tap, so
+networking is a userspace concern the backend provides — and the implemented
+D6 backend is passt, an unprivileged userspace forwarder. Guest networking is
+in-guest; the Runner dials **out** to the Server over gRPC with its per-Runner
+token (`go/cmd/compass-runner/main.go`), so the pod needs no host port and no
+inbound service.
+
+### Privilege shape (the pod spec — contract contingent on verification)
+
+Every grant is justified; anything not listed is denied. This is a
+contract-contingent-on-verification: the ruled privilege shape and the ruled
+`/dev/kvm` grant must still verify on real hardware (R8) before R3 encodes
+them. The rulings pick what R8 verifies first; they do not remove the
+verification.
+
+- **`/dev/kvm` via a device plugin — NOT `privileged: true`, NOT a raw
+  hostPath char-device mount.** `/dev/kvm` is a world-irrelevant char device
+  the KVM API gates by fd; the runtime record's D3 requires only that it
+  "exists and is openable by the Runner uid". A generic device plugin
+  advertises a `devices.kubelet.io/kvm`-style resource and the container
+  runtime injects the device node with the correct cgroup device-controller
+  allowance; the pod requests it via `resources.limits`.
+
+  The hostPath char-device route is rejected as **non-functional**, not merely
+  as a worse posture. **[INFERENCE]** A hostPath mount exposes the node's
+  device into the mount namespace, but the cgroup device controller (eBPF-backed
+  on cgroup v2) still denies `open()` unless the runtime injects the device via
+  CRI's `Devices` field — which is exactly what a device plugin's
+  `ContainerAllocateResponse` does — so a hostPath char device functions only
+  under privileged mode, which is banned here. Marked inference because this is
+  upstream Kubernetes/CRI/cgroup-v2 behaviour, grounded in no artifact in this
+  repo, and because it is what demotes hostPath from *worse-posture* to *not a
+  candidate*. If it is wrong, the option set reopens. **R8 verifies it**:
+  attempt the hostPath route on a real node and confirm `open()` actually fails
+  without device-plugin injection.
+
+  The device-plugin implementation is an operator pick, not frozen here; any
+  community plugin image an operator pins is thinly maintained and should be
+  pinned by digest. The contract this record carries, contingent on R8, is
+  *scoped device node, zero capabilities, no privileged mode*.
+
+- **`securityContext`:** `runAsNonRoot: true`, `runAsUser`/`runAsGroup` fixed
+  to a dedicated runner uid, `allowPrivilegeEscalation: false`,
+  `capabilities.drop: ["ALL"]`, and seccomp `type: Localhost` with a custom
+  profile permitting `unshare`/`mount`/`pivot_root`. The custom profile is a
+  new deliverable: authored with R3, staged on-node under the kubelet's seccomp
+  root by operator node provisioning, and asserted by R3's test.
+
+  `RuntimeDefault` is not sufficient, which is the whole reason the profile
+  exists — see §Alternatives considered.
+
+  No capability is added. Project-quota *assignment*
+  (`FS_IOC_FSSETXATTR` + `quotactl`) needs `CAP_SYS_ADMIN` the rootless Runner
+  lacks, so it stays an operator-provisioning concern verified by Runner
+  preflight (the runtime record's D7). Networking needs nothing (passt).
+
+  One filesystem grant IS required. **[INFERENCE]** `/dev/kvm` is typically
+  `root:kvm 0660`, and device injection grants a *cgroup allowance*, not
+  filesystem permission — so the non-root runner uid needs the `kvm` gid via
+  `securityContext.supplementalGroups` (or a node-provisioning chmod), or the
+  first real `open()` fails `EPERM`. Marked inference because the device node's
+  mode and ownership are properties of the node image's udev rules, not of
+  anything in this repo, and because it is the sole justification for the
+  `supplementalGroups` grant. **R8 verifies it directly**, and the negative
+  control is the one that matters: confirm a non-root uid *without* the kvm gid
+  actually fails to open the device. If it opens without the gid, the grant is
+  unnecessary and drops out of the contract.
+
+- **`hostNetwork: false`, `hostPID: false`.** Guest networking is in-guest and
+  the Runner dials out, so no host ports and no inbound service. hostPID is
+  unnecessary because the VMM/virtiofsd children are the Runner's own
+  descendants inside the container pid namespace.
+
+  The restart semantics follow deterministically rather than being chosen:
+  without `shareProcessNamespace` the container's pid 1 **is** the Runner, so
+  Runner death tears down the pid namespace and the kernel kills every
+  descendant (VMM, virtiofsd, passt); a kubelet-driven restart kills the
+  container cgroup regardless. "Container restart implies full session
+  teardown" is therefore forced, not elected — and it guarantees no stranded
+  VMM processes. The hostPath runtime dir then correctly serves the reap path:
+  after a restart the backend finds only stale pidfiles, which it already
+  handles by pidfile plus process-liveness check.
+
+- **hostPath mounts, exactly two:**
+  1. the session-volume tree (the project-quota filesystem operator
+     provisioning supplies) — read-write, `type: Directory`;
+  2. the Runner runtime dir (`--runtime-dir`, default `/run/compass`) plus the
+     microVM runroot (`--microvm-runroot`) — a single host tree, read-write.
+
+  Host-visible rather than `emptyDir` so pidfiles survive a container restart
+  for orphan-reaping. Nothing else: the VMM/virtiofsd binaries and the guest
+  kernel/rootfs/initrd ship **in the image**, so no hostPath reaches them.
+
+- **Explicitly absent:** `privileged`, every capability, `hostNetwork`,
+  `hostPID`, `hostIPC`, any `/dev` directory mount, any container-runtime
+  socket.
+
+### Pod resources, QoS, and eviction: guest RAM is pod RAM
+
+cloud-hypervisor's virtio-fs path requires `--memory shared=on` (the argv
+construction in `go/internal/runtime/microvm/launch.go`; `BootConfig.MemoryMB`
+in `go/internal/runtime/microvm/config.go` is documented as always launched
+with `shared=on`). Guest memory is therefore memfd/shared mappings charged to
+the pod's memory cgroup: **every session microVM's RAM counts against the
+Runner pod.**
+
+With absent or low memory requests the pod is Burstable with a large
+usage-over-requests overage — precisely the pod the kubelet's node-pressure
+eviction ranks first — and evicting it kills every session on the node. A
+priorityClass helps preemption and eviction ranking only if requests are
+honest. The DaemonSet's requests and limits MUST account for the aggregate
+guest RAM of the node's session capacity, not just the Runner process itself.
+R3's test cycle asserts requests and limits are present and sized to the
+session-capacity model.
+
+### Where the KVM userland and guest assets live: in the image
+
+The image carries the Runner binary, cloud-hypervisor, virtiofsd, passt, and
+the guest kernel/rootfs/initrd. This is deliberately image-heavy: it is what
+makes the digest name the whole userland (§Container vs host process,
+property 1) and what keeps hostPath down to two mounts. The guest assets dominate the
+image size; that cost is accepted in exchange for atomic version delivery.
+
+### Kubernetes object contract
+
+Stated as generic Kubernetes so any conformant cluster can run it. An operator
+supplies the *values* (node labels, taints, the device-plugin resource name,
+capacity sizing); this record fixes the *shape*.
+
+- **DaemonSet**, so the Runner lands on every eligible node.
+  - `nodeSelector` on an operator-chosen label key, and a matching
+    `toleration` for the taint that keeps non-Runner workloads off those nodes.
+    Keys and values are the operator's; the contract is that both exist.
+  - `updateStrategy` with a bounded `maxUnavailable`: a Runner pod replacement
+    terminates that node's sessions (§Privilege shape, restart semantics), so a
+    rollout is session-affecting and must be rate-limited.
+  - `securityContext`, device resource request, and the two hostPath mounts per
+    §Privilege shape.
+  - `spec.nodeName` via `fieldRef` into the environment, so the Runner can
+    identify its node.
+  - A scrape annotation for the metrics endpoint.
+- **RBAC**: a dedicated ServiceAccount with the narrowest role the Runner
+  actually needs. The Runner dials out to the Server and does not drive the
+  Kubernetes API for session work, so this is minimal by construction.
+- **priorityClass**: high enough that a Runner pod is not preempted by ordinary
+  workload, consistent with the eviction reasoning above.
+
+### Relationship to the elastic-session-runtime record
+
+This record does not amend the runtime record's D3/D6/D7. It *consumes* them
+and adds the container/pod layer beneath: D3's "openable by the Runner uid"
+becomes a device-plugin grant plus a gid; D6's passt backend is unchanged; D7's
+quota assignment stays outside the Runner, satisfied by operator provisioning
+and checked by preflight.
+
+## Alternatives considered
+
+### Host-level systemd service — rejected
+
+Satisfies the runtime record and avoids the privilege question entirely, but
+loses all four properties in §Container vs host process: no atomic digest, no
+declarative fleet object, node-resident userland, and node mutation on every
+upgrade. Rejected for operators who are already running Kubernetes; it remains
+the right shape for a bare-metal single-node deployment, which this record does
+not address.
+
+### `privileged: true` DaemonSet — rejected
+
+Trivially works and is what most VM-on-Kubernetes stacks ship. Rejected: a
+privileged pod holds every capability and effectively owns the node, which
+defeats the isolation the microVM boundary exists to provide. The whole point
+of the microVM is that a session cannot reach the host; a privileged Runner
+re-opens that path from the other side.
+
+### `RuntimeDefault` seccomp with no custom profile — rejected
+
+Preferred if it worked, since it needs no on-node artifact. Rejected because
+the composition needs `unshare`/`mount`/`pivot_root`, which `RuntimeDefault`
+restricts — this is precisely the host-rootless affordance a pod removes, and
+the reason §Privilege shape carries a custom `Localhost` profile as a new
+deliverable. The cost is real: `Localhost` requires the profile be staged on
+the node before the pod starts, which couples the DaemonSet to operator node
+provisioning.
+
+### Static pod / runner-in-node-image hybrid — rejected
+
+Bakes the Runner into the node image and manages it as a static pod. Gets
+atomic delivery of a sort, but the unit of rollback becomes the node image, so
+a Runner version bump is a node reprovision — the exact cost containerizing is
+meant to remove.
+
+### Kata / pod-sandbox runtime class — rejected upstream
+
+Already rejected by the runtime record: the Runner runs the VMM as its own
+children, not as a CRI-owned pod sandbox. Restated here only because it is the
+first thing a Kubernetes reader reaches for.
+
+## Global Constraints
+
+- **Zero privilege, or the ruling reopens.** No `privileged`, no added
+  capability. If R8 shows the composition cannot run under the §Privilege shape
+  contract, this record's central decision is reopened rather than patched with
+  a capability grant.
+- **The image is the unit of version.** Anything in the KVM userland or guest
+  asset set ships in the image; nothing is expected on the node except the two
+  hostPath trees and the seccomp profile.
+- **A rollout is session-affecting.** Any change to the pod template
+  terminates sessions on each replaced node, so every delivery mechanism must
+  rate-limit it.
+- **Operator-supplied values stay operator-supplied.** This record fixes object
+  shape, not node labels, taint values, capacity numbers, or a GitOps path.
+- **Deployment-plane concerns are out of scope.** Which cluster, which node
+  provisioner, and how the manifests reach a cluster are operator concerns;
+  they are named and deferred here, never described.
+
+## Plan
+
+### R1 — `runner-image/` project
+
+A nix-built container image project in this repo, mirroring the existing
+agent-image lane: Runner binary, cloud-hypervisor, virtiofsd, passt, guest
+kernel/rootfs/initrd. Test cycle: the image builds reproducibly and the
+resulting layer set contains each expected binary and guest asset.
+
+### R2 — publish lane
+
+Extend the release workflow to build and publish the runner image by digest.
+Test cycle: a tagged run publishes a manifest whose digest is recorded in the
+run output; a second build of the same input yields the same digest.
+
+### R3 — DaemonSet + RBAC manifests as config-as-data
+
+Author the object contract from §Kubernetes object contract as plain
+manifests, parameterized where §Global Constraints says the operator supplies
+values. Test cycle: the rendered objects assert the full §Privilege shape
+(no `privileged`, `drop: ["ALL"]`, `runAsNonRoot`, the device resource, the
+`Localhost` profile reference, exactly two hostPath mounts); requests and
+limits are present and sized per the capacity model; `maxUnavailable` is
+bounded.
+
+### R4 — `/dev/kvm` device-plugin delivery
+
+Document and encode the device-plugin requirement, including the resource-name
+parameterization and the `supplementalGroups` gid — both contingent on R8.
+Test cycle: rendered pod spec requests the device resource and carries the gid;
+a spec that omits either fails the assertion.
+
+### R5 — entrypoint fix for `--backend microvm`
+
+The image entrypoint must pass agent-image semantics correctly under
+`--backend microvm`. Test cycle: the container started with `--backend microvm`
+resolves its agent image from the documented flag/env precedence, asserted
+without launching a VM.
+
+### R6 — ledger row
+
+Mint DL-357 recording the containerize ruling and the zero-privilege
+constraint.
+
+### R7 — privilege-shape spike on real hardware (gates the §Privilege shape freeze)
+
+The verification the contract is contingent on. Findings land in
+`spike-findings.md` beside this record. It must answer, each with a negative
+control:
+
+1. Does an unprivileged pod with the §Privilege shape grants boot
+   cloud-hypervisor + virtiofsd + passt end to end?
+2. Does the hostPath char-device route actually fail `open()` without
+   device-plugin injection? (If it succeeds, the option set reopens.)
+3. Does a non-root uid without the kvm gid fail to open `/dev/kvm`? (If it
+   opens, the `supplementalGroups` grant drops.)
+4. Is the custom `Localhost` profile actually required — does
+   `RuntimeDefault` fail, and on which syscall?
+5. Does guest RAM appear in the pod's memory cgroup as §Pod resources claims?
+6. Does a container restart leave zero stranded VMM/virtiofsd/passt processes?
+
+### Task ordering
+
+R7 gates R3 and R4 (it freezes the contract they encode). R1 gates R2. R5 is
+independent. R6 lands with the freeze.
+
+## Tasks
+
+| Task | Deliverable | Depends on |
+| ------ | ----------- | ---------- |
+| R1 | `runner-image/` nix project | — |
+| R2 | publish lane by digest | R1 |
+| R3 | DaemonSet + RBAC manifests + render tests | R7 |
+| R4 | device-plugin resource + gid wiring | R7 |
+| R5 | entrypoint agent-image fix under `--backend microvm` | — |
+| R6 | DL-357 ledger row | R7 |
+| R7 | real-hardware privilege spike + `spike-findings.md` | R1 |
+
+## Open Questions
+
+### OQ-1 [load-bearing] — is the zero-privilege pod sufficient?
+
+The record's central contingency. R7 answers it. If the composition needs a
+capability, the container-vs-host ruling reopens rather than the constraint
+bending.
+
+### OQ-2 [load-bearing] — is the custom seccomp profile avoidable?
+
+If `RuntimeDefault` turns out to suffice, the `Localhost` profile and its
+on-node staging requirement both drop, which materially simplifies the
+operator's job. R7 item 4 settles it.
+
+### OQ-3 [non-load-bearing] — device-plugin implementation pick
+
+The contract names a resource, not a plugin. Which plugin an operator runs is
+an implementation choice; the community options are thinly maintained and want
+a digest pin.
+
+### OQ-4 [non-load-bearing] — runner uid and kvm gid values
+
+Fixed values chosen at implementation and single-sourced between the image, the
+manifests, and operator node provisioning.
+
+### OQ-5 [non-load-bearing] — session-volume host path and filesystem
+
+The path is operator-supplied; the filesystem must support project quotas for
+D7. Default path chosen at implementation.
+
+## Resolved decisions
+
+- **Containerize the Runner** as the Kubernetes delivery unit, rather than a
+  host systemd service — contingent on OQ-1 (§Container vs host process).
+- **Never `privileged: true`** — the microVM isolation boundary is the reason
+  the Runner exists, and a privileged Runner re-opens the host path
+  (§Alternatives considered).
+- **`/dev/kvm` by device plugin**, not hostPath char device, not privileged
+  mode (§Privilege shape).
+- **Guest RAM is pod RAM**, so DaemonSet requests must be sized to node
+  session capacity, not to the Runner process (§Pod resources).
+- **Container restart implies full session teardown** — forced by the pid
+  namespace, not chosen (§Privilege shape).
+- **The image carries the whole KVM userland and guest assets**, keeping
+  hostPath to exactly two mounts (§Where the KVM userland and guest assets
+  live).
