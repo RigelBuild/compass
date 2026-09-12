@@ -343,15 +343,16 @@ func TestInGuestArmerSkipsHostArmEgress(t *testing.T) {
 // claims egress WAS armed, this one that it cannot be.
 type unenforcedEgressFakeRuntime struct {
 	*fakeRuntime
+	unenforced bool
 }
 
-func (f *unenforcedEgressFakeRuntime) EgressUnenforced() bool { return true }
+func (f *unenforcedEgressFakeRuntime) EgressUnenforced() bool { return f.unenforced }
 
 // TestUnenforcedEgressRefusesAConfiguredPolicy: a tier that cannot firewall
 // must fail the launch rather than drop the policy, so a caller never believes
 // egress was constrained when nothing constrained it.
 func TestUnenforcedEgressRefusesAConfiguredPolicy(t *testing.T) {
-	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)}
+	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
 	rt := NewAgentRuntime(fake)
 
 	_, err := rt.Launch(t.Context(), specWithCreds(true))
@@ -376,7 +377,7 @@ func TestUnenforcedEgressRefusesAConfiguredPolicy(t *testing.T) {
 // Paired with the refusal above, this is the presence-not-emptiness contract:
 // an empty-but-configured allowlist is refused, an absent one launches.
 func TestUnenforcedEgressLaunchesWithoutAPolicy(t *testing.T) {
-	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)}
+	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
 	rt := NewAgentRuntime(fake)
 	spec := specWithCreds(true)
 	spec.Egress = EgressPolicy{}
@@ -393,6 +394,12 @@ func TestUnenforcedEgressLaunchesWithoutAPolicy(t *testing.T) {
 	if !slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "mkdir") }) {
 		t.Errorf("provision must still create the checkout dir; calls = %v", calls)
 	}
+	creds := slices.ContainsFunc(fake.execsSnapshot(), func(e ExecSpec) bool {
+		return e.Stdin != nil && strings.Contains(*e.Stdin, "git-credentials")
+	})
+	if !creds {
+		t.Errorf("provision must still install credentials on the unenforced path; execs = %v", fake.execsSnapshot())
+	}
 }
 
 // TestUnenforcedEgressRefusesAConfiguredEmptyAllowlist is the presence-vs-emptiness
@@ -400,7 +407,7 @@ func TestUnenforcedEgressLaunchesWithoutAPolicy(t *testing.T) {
 // absence of a policy. Keying the refusal on len(Hosts()) would reject a looser
 // policy while silently discarding the tightest one.
 func TestUnenforcedEgressRefusesAConfiguredEmptyAllowlist(t *testing.T) {
-	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)}
+	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true}
 	rt := NewAgentRuntime(fake)
 	spec := specWithCreds(true)
 	spec.Egress = MustAllowEgress()
@@ -419,19 +426,26 @@ func TestUnenforcedEgressRefusesAConfiguredEmptyAllowlist(t *testing.T) {
 // an arming tier — including one that armed in-guest — reads "armed". A tier
 // that self-armed must never be reported as unenforced.
 func TestEgressPostureReportsUnenforcedOnlyForUnenforceableTiers(t *testing.T) {
-	unenforced := NewAgentRuntime(&unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)})
-	if got := unenforced.EgressPosture(); got != EgressUnenforcedPosture {
-		t.Errorf("unenforceable tier: EgressPosture() = %q, want %q", got, EgressUnenforcedPosture)
+	unenforced := NewAgentRuntime(&unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: true})
+	if got := unenforced.EgressPosture(); got != EgressPostureUnenforced {
+		t.Errorf("unenforceable tier: EgressPosture() = %q, want %q", got, EgressPostureUnenforced)
 	}
 
 	selfArming := NewAgentRuntime(&inGuestArmingFakeRuntime{fakeRuntime: newFakeRuntime(t)})
-	if got := selfArming.EgressPosture(); got != EgressArmed {
-		t.Errorf("self-arming tier: EgressPosture() = %q, want %q", got, EgressArmed)
+	if got := selfArming.EgressPosture(); got != EgressPostureArmed {
+		t.Errorf("self-arming tier: EgressPosture() = %q, want %q", got, EgressPostureArmed)
 	}
 
 	hostArming := NewAgentRuntime(newFakeRuntime(t))
-	if got := hostArming.EgressPosture(); got != EgressArmed {
-		t.Errorf("host-arming tier: EgressPosture() = %q, want %q", got, EgressArmed)
+	if got := hostArming.EgressPosture(); got != EgressPostureArmed {
+		t.Errorf("host-arming tier: EgressPosture() = %q, want %q", got, EgressPostureArmed)
+	}
+
+	// The marker is a question, not a type tag: implementing it while answering
+	// false is an enforcing backend.
+	answersFalse := NewAgentRuntime(&unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t), unenforced: false})
+	if got := answersFalse.EgressPosture(); got != EgressPostureArmed {
+		t.Errorf("a backend reporting EgressUnenforced()=false: EgressPosture() = %q, want %q", got, EgressPostureArmed)
 	}
 }
 
