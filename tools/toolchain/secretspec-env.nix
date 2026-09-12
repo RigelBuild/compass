@@ -32,11 +32,28 @@
 # `secretspec-go` SDK pin in go/go.mod both track, so the read half (SDK +
 # native lib) and the write half (this CLI) cannot drift.
 #
-# One output the ci.yml step reads `bin/secretspec` off, realized with
-# `nix build` (never `nix eval`, which strips the store context that would build
-# the derivation):
+# The READ path is different in kind from the write path: the resolver's
+# `SpecResolver.Resolve`/`Statuses` do NOT shell the CLI — they call the
+# `secretspec-go` SDK, a purego FFI binding that dlopens a `libsecretspec`
+# cdylib located via `SECRETSPEC_FFI_LIB` (binding_purego.go). nixpkgs packages
+# ONLY the `secretspec` crate (via fetchCrate of the crate tarball), whose
+# derivation emits a single `bin/` output and no shared library, so it cannot
+# produce the cdylib. The cdylib is a SEPARATE workspace member
+# (`libsecretspec`, crate-type = ["cdylib", "staticlib"], lib name "secretspec"
+# so the artifact is `libsecretspec.so`) that lives only in the upstream repo,
+# not the published crate. So the read half is realized here by building that
+# workspace member from the upstream repo at tag v${version}, with `version`
+# read from the SAME pinned nixpkgs `secretspec` package the CLI comes from —
+# one source of truth for the number, so the CLI, the SDK go.mod pin, and this
+# cdylib cannot drift. Only the source content-hash and cargo vendor-hash are
+# literals here (they are not versions); the tag is derived from `version`.
 #
-#   secretspec  the CLI derivation.
+# Two outputs, each realized with `nix build` (never `nix eval`, which strips
+# the store context that would build the derivation):
+#
+#   secretspec     the CLI derivation (write path); ci.yml reads `bin/secretspec`.
+#   libsecretspec  the FFI cdylib (read path); ci.yml/devenv point
+#                  SECRETSPEC_FFI_LIB at `lib/libsecretspec.so`.
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
 
@@ -50,7 +67,59 @@ let
     sha256 = node.narHash;
   };
   pkgs = import nixpkgsSrc { };
+
+  # The single source of truth for the version number: the pinned nixpkgs
+  # `secretspec` package the CLI output below is. The cdylib is fetched at the
+  # matching release, so the read half and write half share one version.
+  version = pkgs.secretspec.version;
+
+  # The libsecretspec cdylib the read-path SDK dlopens, taken from the upstream
+  # RELEASE rather than built from source: the crate has no binary cache, so
+  # compiling it cost CI ~13 minutes of Rust per job. The asset is pinned by the
+  # sha256 upstream publishes beside it.
+  #
+  # Linux x86_64 and aarch64 plus Darwin arm64 are the hosts that run this; any
+  # other host throws rather than silently yielding no library.
+  ffiAsset =
+    {
+      x86_64-linux = {
+        name = "libsecretspec-x86_64-unknown-linux-gnu.so";
+        hash = "sha256-9YHvFdtHga5b4Z2Nv4U3C9Kwt0jQRs+pcBMoE6ZS3TQ=";
+      };
+      aarch64-linux = {
+        name = "libsecretspec-aarch64-unknown-linux-gnu.so";
+        hash = "sha256-UumvFC0pKEgiEHtCyKHXbODpa4+9weFHoSOAUbkTHYE=";
+      };
+      aarch64-darwin = {
+        name = "libsecretspec-aarch64-apple-darwin.dylib";
+        hash = "sha256-WoSv2V+/lAr1kVF+L1naNAmyoCIgqh0S4XYeuzhfjOY=";
+      };
+    }
+    .${pkgs.stdenv.hostPlatform.system}
+      or (throw "libsecretspec: no published asset for ${pkgs.stdenv.hostPlatform.system}");
+
+  # The SDK's findLibrary looks for `libsecretspec.<ext>`, so the asset is
+  # renamed from its triple-qualified release name to that flat one.
+  libsecretspec = pkgs.stdenvNoCC.mkDerivation {
+    pname = "libsecretspec";
+    inherit version;
+
+    src = pkgs.fetchurl {
+      url = "https://github.com/cachix/secretspec/releases/download/v${version}/${ffiAsset.name}";
+      hash = ffiAsset.hash;
+    };
+
+    dontUnpack = true;
+
+    installPhase = ''
+      runHook preInstall
+      install -Dm555 "$src" \
+        "$out/lib/libsecretspec${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
+      runHook postInstall
+    '';
+  };
 in
 {
   secretspec = pkgs.secretspec;
+  inherit libsecretspec;
 }

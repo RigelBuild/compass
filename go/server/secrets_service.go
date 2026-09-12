@@ -157,7 +157,9 @@ func (s *secretsService) SetSecret(
 		// name/cli/stderr, never the value, so logging it server-side is safe; the
 		// client-facing error is value-free.
 		if declErr == nil {
-			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName()); delErr != nil {
+			// Tenant coordinate (scope 0, "") is a T5 placeholder: this handler still
+			// declares at tenant scope pending the write-surface scope ruling (A9 OQ).
+			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName(), 0, ""); delErr != nil {
 				slog.ErrorContext(ctx, "rolling back secret declaration after failed write", "err", delErr)
 			}
 		}
@@ -233,7 +235,9 @@ func (s *secretsService) DeleteSecret(
 	if err := s.resolver.Delete(ctx, name); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("deleting secret value: %w", err))
 	}
-	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name); err != nil {
+	// Tenant coordinate (scope 0, "") is a T5 placeholder: this handler deletes at
+	// tenant scope pending the write-surface scope ruling (A9 OQ).
+	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name, 0, ""); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("secret %q", name))
 		}
@@ -242,12 +246,6 @@ func (s *secretsService) DeleteSecret(
 	s.bumpSecretsVersion(ctx)
 	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
 }
-
-// masterKeyName is the reserved master-key name the admin RPCs refuse to touch.
-// Rotation is dedicated machinery (a versioned re-encrypt), never a raw
-// overwrite through the operator door: clobbering this value would strand every
-// encrypted credential row with no way back.
-const masterKeyName = store.GatewayCredentialsPrefix + "MASTER_KEY"
 
 // SetServerSecret declares a SERVER secret in the separate server_secrets
 // registry and writes its value through the SERVER resolver. Admin-only at the
@@ -273,9 +271,9 @@ func (s *secretsService) SetServerSecret(
 	}
 	msg := req.Msg
 	name := msg.GetName()
-	if name == masterKeyName {
+	if name == store.MasterKeyName {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("%s is provisioned and rotated by the server, never set through this RPC", masterKeyName))
+			fmt.Errorf("%s is provisioned and rotated by the server, never set through this RPC", store.MasterKeyName))
 	}
 	if strings.TrimSpace(msg.GetValue()) == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("secret value is empty"))
@@ -331,9 +329,9 @@ func (s *secretsService) DeleteServerSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoServerResolver)
 	}
 	name := req.Msg.GetName()
-	if name == masterKeyName {
+	if name == store.MasterKeyName {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("%s is provisioned and rotated by the server, never deleted through this RPC", masterKeyName))
+			fmt.Errorf("%s is provisioned and rotated by the server, never deleted through this RPC", store.MasterKeyName))
 	}
 
 	// Provider value first, then the declaration: the same order as DeleteSecret,
