@@ -415,3 +415,119 @@ func TestSetStatusAsAccountEmptyAccountFailsClosedNoWrite(t *testing.T) {
 		t.Fatalf("agent_activity holds a row for the empty account id, want none (no write)")
 	}
 }
+
+// Per-agent assertion is the point: a join that maps one agent's enum onto
+// another's entry still passes a set or count check. WAITING is the ask-pending
+// state and the one most likely to regress silently.
+func TestGetRosterJoinsEachPresenceStatePerAgent(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+
+	treetop := mustAgent(t, st, owner.ID, "treetop")
+	working := mustChildAgent(t, st, owner.ID, "working", treetop.ID)
+	idle := mustChildAgent(t, st, owner.ID, "idle", treetop.ID)
+	waiting := mustChildAgent(t, st, owner.ID, "waiting", treetop.ID)
+	offline := mustChildAgent(t, st, owner.ID, "offline", treetop.ID)
+
+	svc.SetPresenceSource(fakePresenceSource{presence: map[store.AccountID]compassv1.AgentPresence{
+		working.ID: compassv1.AgentPresence_AGENT_PRESENCE_WORKING,
+		idle.ID:    compassv1.AgentPresence_AGENT_PRESENCE_IDLE,
+		waiting.ID: compassv1.AgentPresence_AGENT_PRESENCE_WAITING,
+		// offline deliberately absent from the map → OFFLINE default.
+	}})
+
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+		Scope:         compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
+		VantageHandle: treetop.Handle,
+	}))
+	if err != nil {
+		t.Fatalf("GetRoster(presence states): %v", err)
+	}
+	got := rosterByID(resp.Msg.GetEntries())
+	want := map[store.Account]compassv1.AgentPresence{
+		working: compassv1.AgentPresence_AGENT_PRESENCE_WORKING,
+		idle:    compassv1.AgentPresence_AGENT_PRESENCE_IDLE,
+		waiting: compassv1.AgentPresence_AGENT_PRESENCE_WAITING,
+		offline: compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE,
+	}
+	for acc, wantPres := range want {
+		e, ok := got[string(acc.ID)]
+		if !ok {
+			t.Errorf("roster missing %q (%s)", acc.Handle, acc.ID)
+			continue
+		}
+		if p := e.GetPresence(); p != wantPres {
+			t.Errorf("%q presence = %v, want %v", acc.Handle, p, wantPres)
+		}
+	}
+}
+
+// The hub-less-caller contract in presence_source.go: GetRoster guards on a nil
+// presence source and re-applies the OFFLINE default, so a caller with no hub
+// wired reads OFFLINE rather than panicking.
+func TestGetRosterNilPresenceSourceDefaultsAllOffline(t *testing.T) {
+	svc, st := newHandler(t) // newHandler never calls SetPresenceSource: presence is nil.
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+
+	treetop := mustAgent(t, st, owner.ID, "treetop")
+	child := mustChildAgent(t, st, owner.ID, "child", treetop.ID)
+
+	resp, err := svc.GetRoster(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+		Scope:         compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
+		VantageHandle: treetop.Handle,
+	}))
+	if err != nil {
+		t.Fatalf("GetRoster(nil presence): %v", err)
+	}
+	got := rosterByID(resp.Msg.GetEntries())
+	for _, acc := range []store.Account{treetop, child} {
+		e, ok := got[string(acc.ID)]
+		if !ok {
+			t.Fatalf("roster missing %q (%s)", acc.Handle, acc.ID)
+		}
+		if p := e.GetPresence(); p != compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE {
+			t.Errorf("%q presence = %v, want OFFLINE with a nil source", acc.Handle, p)
+		}
+	}
+}
+
+// A tree member the caller cannot see must be dropped entirely, not returned
+// with blanked fields. Canary-ordered: the shared-channel agent proves the
+// roster is non-empty before the invisible member's absence means anything.
+func TestGetRosterClipsCallerInvisibleTreeMember(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	callerOwner := mustUser(t, st, "caller-owner")
+
+	treetop := mustAgent(t, st, owner.ID, "treetop")
+	visible := mustChildAgent(t, st, owner.ID, "visible", treetop.ID)
+	hidden := mustChildAgent(t, st, owner.ID, "hidden", treetop.ID)
+	caller := mustAgent(t, st, callerOwner.ID, "caller")
+
+	// The caller shares this channel with the vantage `treetop` and `visible`,
+	// but not with `hidden` — so the clip is the only thing removing `hidden`.
+	if _, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "shared", Kind: store.ChannelKindChannel,
+		MemberAccountIDs: []store.AccountID{treetop.ID, visible.ID, caller.ID},
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	resp, err := svc.GetRoster(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.GetRosterRequest{
+		Scope:         compassv1.RosterScope_ROSTER_SCOPE_OWNER,
+		VantageHandle: "owner/treetop",
+	}))
+	if err != nil {
+		t.Fatalf("GetRoster(clip invisible member): %v", err)
+	}
+	got := rosterByID(resp.Msg.GetEntries())
+	if _, ok := got[string(visible.ID)]; !ok {
+		t.Fatalf("canary: shared-channel agent %q must be present", visible.Handle)
+	}
+	if _, ok := got[string(hidden.ID)]; ok {
+		t.Errorf("caller-invisible tree member %q leaked into the roster", hidden.Handle)
+	}
+}
