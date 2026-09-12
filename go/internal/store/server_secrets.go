@@ -42,6 +42,23 @@ func HasServerSecretPrefix(name string) bool {
 	return false
 }
 
+// ShadowsServerSecretPrefix reports whether name case-FOLDS onto a reserved
+// server-secret prefix — the wide REJECT predicate at the user-secret write/
+// delete door (A2, ported from held PR #1066). It is deliberately distinct from
+// HasServerSecretPrefix, the byte-exact ADMIT check at the server door: the
+// server door must admit only the canonical uppercase spelling, while the user
+// door must reject any case variant so a near-miss like "server_x" or
+// "Gateway_Credentials_x" can never mint a user row that shadows the reserved
+// keyspace.
+func ShadowsServerSecretPrefix(name string) bool {
+	for _, p := range serverSecretPrefixes {
+		if len(name) >= len(p) && strings.EqualFold(name[:len(p)], p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ServerSecretDeclaration is a names-only server-secret registry row. It
 // carries no value (the value lives in the SecretSpec provider) and no
 // delivery/kind — a server secret is never container-delivered and never

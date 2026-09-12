@@ -86,6 +86,8 @@ type Querier interface {
 	// row (singleton = TRUE) with a monotonic version supplying the CAS substrate:
 	// a write only lands if the row still holds the version the caller read.
 	CurrentModelRegistry(ctx context.Context) (CurrentModelRegistryRow, error)
+	// DeclaredSecrets is the names-only view the SERVER SpecResolver's declarations
+	// interface still consumes (value-free, all scopes).
 	DeclaredSecrets(ctx context.Context) ([]DeclaredSecretsRow, error)
 	DeclaredServerSecrets(ctx context.Context) ([]ServerSecret, error)
 	DeleteAgentConfig(ctx context.Context) error
@@ -97,7 +99,9 @@ type Querier interface {
 	DeleteChannelPin(ctx context.Context, arg DeleteChannelPinParams) error
 	DeleteChannelPinReturningPosition(ctx context.Context, arg DeleteChannelPinReturningPositionParams) (int32, error)
 	DeleteModelRegistry(ctx context.Context) error
-	DeleteSecret(ctx context.Context, name string) (int64, error)
+	// DeleteSecret addresses one scope coordinate — a name alone no longer
+	// identifies a row (composite PK).
+	DeleteSecret(ctx context.Context, arg DeleteSecretParams) (int64, error)
 	DeleteServerSecret(ctx context.Context, name string) (int64, error)
 	DeleteSessionBinding(ctx context.Context, sessionID string) error
 	// The reconnect sweep. Hub.enroll (internal/runnerhub/hub.go:905-957) clears
@@ -248,12 +252,17 @@ type Querier interface {
 	// RETURNING) rather than clobbering the winner. The seeded version is 1.
 	InsertModelRegistry(ctx context.Context, registry []byte) (int64, error)
 	InsertOwnerDMGroup(ctx context.Context, arg InsertOwnerDMGroupParams) error
-	// Secrets-registry queries (sqlc adoption T6, RIG-3034). These replace the inline
-	// SQL literals in internal/store/secrets.go; the hand-written Store methods keep
-	// their signatures, the door-side validation (name grammar, kind routing), the
-	// ErrConflict/ErrInvalidArgument/ErrNotFound mapping, and the RowsAffected branch
-	// (DeleteSecretDeclaration is :execrows). DeclaredSecrets maps the generated row
-	// back to the domain SecretDeclaration (delivery/kind ints -> named types).
+	// Secrets-registry queries (sqlc adoption T6, RIG-3034). These back the
+	// hand-written Store methods, which keep their signatures, the door-side
+	// validation (name grammar, kind/routing, A9 scope shape), the
+	// ErrConflict/ErrInvalidArgument/ErrNotFound mapping, and the RowsAffected
+	// branch (DeleteSecretDeclaration is :execrows).
+	//
+	// InsertSecret/DeclaredSecrets are the retained value-free path (T5 caller); the
+	// scoped, encrypted path is UpsertSecret + SecretRecordsForAgent (A1/A9).
+	// InsertSecret writes the value-free declaration at the tenant coordinate
+	// (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
+	// SetSecret caller, removed with it in T5.
 	InsertSecret(ctx context.Context, arg InsertSecretParams) error
 	// Server-secrets registry queries (design record T0, mechanism C1/D6). The
 	// SERVER-owned half of the names-only secret registry, physically separate from
@@ -283,6 +292,10 @@ type Querier interface {
 	InsertUserAccount(ctx context.Context, arg InsertUserAccountParams) error
 	IsAgentAccount(ctx context.Context, accountID string) (bool, error)
 	IsEnabledForgeRepo(ctx context.Context, repo string) (bool, error)
+	// IsUserAccount reports whether an id names a human account — the user-scope
+	// (scope_kind 1) referential check the UpsertSecret door runs in lieu of an FK
+	// (A9). The agent-scope check reuses IsAgentAccount.
+	IsUserAccount(ctx context.Context, accountID string) (bool, error)
 	LatestCheckpointSeq(ctx context.Context, sessionID string) (int64, error)
 	LatestSessionForAccount(ctx context.Context, agentAccountID string) (string, error)
 	LinearAgentSession(ctx context.Context, linearSessionID string) (LinearAgentSessionRow, error)
@@ -485,6 +498,11 @@ type Querier interface {
 	// (tenants, 0001_init.sql), so sqlc compiles it against the real schema.
 	ScaffoldGetTenant(ctx context.Context, id string) (Tenant, error)
 	SearchMessages(ctx context.Context, arg SearchMessagesParams) ([]SearchMessagesRow, error)
+	// SecretRecordsForAgent collapses the A9 precedence in SQL: DISTINCT ON keeps the
+	// first row per name under scope_kind DESC (agent 2 > user 1 > tenant 0), the
+	// user tier reached through agent_accounts.owner_user_id. $1 is the calling
+	// agent's account id. Ciphertext only — the store never decrypts.
+	SecretRecordsForAgent(ctx context.Context, accountID string) ([]SecretRecordsForAgentRow, error)
 	SeedChannelDeliveryCursors(ctx context.Context, channelID string) error
 	// Delivery-cursor queries (sqlc adoption T4, RIG-3034). These replace the inline
 	// SQL literals in internal/store/delivery_cursors.go; the hand-written Store
@@ -586,6 +604,11 @@ type Querier interface {
 	// generated row (nullable linear_issue_id, created_at timestamp) back to the
 	// domain LinearAgentSessionRow inline.
 	UpsertLinearAgentSession(ctx context.Context, arg UpsertLinearAgentSessionParams) (int64, error)
+	// UpsertSecret writes declaration+value in one row and, on a re-write of an
+	// existing (name, scope_kind, scope_id), rewrites value/nonce/key_version and the
+	// routing metadata. updated_at is maintained by the set_updated_at trigger, which
+	// fires on the ON CONFLICT DO UPDATE path — never set here.
+	UpsertSecret(ctx context.Context, arg UpsertSecretParams) error
 }
 
 var _ Querier = (*Queries)(nil)

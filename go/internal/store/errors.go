@@ -5,10 +5,12 @@ import "errors"
 // Postgres SQLSTATE codes the store maps to its sentinels (pgErrIs). 23505 is a
 // unique_violation (duplicate handle / channel name / re-used id → ErrConflict);
 // 23503 is a foreign_key_violation (an input referencing a row that does not
-// exist → ErrInvalidArgument).
+// exist → ErrInvalidArgument); 23514 is a check_violation (a row failing a table
+// CHECK — the defense-in-depth backstop when a door guard is bypassed).
 const (
 	pgUniqueViolation     = "23505"
 	pgForeignKeyViolation = "23503"
+	pgCheckViolation      = "23514"
 )
 
 // The store's sentinel errors. Callers (the comms service, the auth layer)

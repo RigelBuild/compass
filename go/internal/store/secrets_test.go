@@ -118,7 +118,7 @@ func TestDeleteSecretDeclaration(t *testing.T) {
 	if err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
 		t.Fatalf("declare: %v", err)
 	}
-	if err := s.DeleteSecretDeclaration(ctx, actor.ID, "API_KEY"); err != nil {
+	if err := s.DeleteSecretDeclaration(ctx, actor.ID, "API_KEY", SecretScopeTenant, ""); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestDeleteUnknownSecretNotFound(t *testing.T) {
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
 
-	err := s.DeleteSecretDeclaration(ctx, actor.ID, "NEVER_DECLARED")
+	err := s.DeleteSecretDeclaration(ctx, actor.ID, "NEVER_DECLARED", SecretScopeTenant, "")
 	sentinelIs(t, err, ErrNotFound, "delete unknown secret")
 }
 
