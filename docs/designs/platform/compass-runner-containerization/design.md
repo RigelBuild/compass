@@ -356,16 +356,15 @@ A `Dockerfile` built on a **minimal hardened base** (distroless, or Alpine
 where a shell is genuinely needed), carrying the Runner binary,
 cloud-hypervisor, virtiofsd, passt, and the guest kernel/rootfs/initrd.
 
-**Not a nix image.** The private monorepo's frozen first-party-image-builds
-spec splits the two mechanisms by what the image's *runtime* is, not by what
-built the artifact: an image that **is** a Nix environment (a CI step image, a
-dev/agent shell) earns `nix2container`; a **prebuilt application** on a minimal
-base is a Dockerfile built by rootless BuildKit. Its words: a first-party image
-does not earn the nix path "merely because Nix built it or it ships a compiled
-binary — build tool and runtime base are independent choices", and the
-prescribed shape for a nix-built artifact is to `nix build` it and `COPY` the
-result onto the base. `nix2container` for app images is rejected there on cost
-— a per-app regeneration tax plus a maintained fork.
+**Not a nix image.** The two mechanisms split by what the image's *runtime* is,
+not by what built the artifact: an image that **is** a Nix environment (a CI
+step image, a dev/agent shell) earns `nix2container`; a **prebuilt
+application** on a minimal base is a Dockerfile built by rootless BuildKit. A
+first-party image does not earn the nix path merely because Nix built it or it
+ships a compiled binary — build tool and runtime base are independent choices.
+The prescribed shape for a nix-built artifact is to `nix build` it and `COPY`
+the result onto the base. `nix2container` for app images is rejected on cost: a
+per-app regeneration tax plus a maintained fork.
 
 The Runner is squarely the prebuilt-application row: a static `CGO_ENABLED=0`
 Go binary that exec's three userland binaries and runs no package manager,
