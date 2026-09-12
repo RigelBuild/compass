@@ -164,6 +164,13 @@ projects:
   # (runInCI:false) — the shell compile itself is covered by the gtk4 e2e +
   # darwin CI lanes.
   compass-app-dev: 'tools/compass-app-dev'
+  # The release-notes generator (compass-distribution §18): assembles the
+  # Release body appendix + the machine-readable nix-outputs.json manifest from
+  # the built asset names, the resolved container image and the pinned nix
+  # toolchain store paths. Registered so its typecheck + unit tests ride the
+  # moon-driven CI sweep — it was unregistered until RIG-3731, so the release
+  # lane depended on a tool whose 22 tests never ran in CI.
+  release-notes: 'tools/release-notes'
 
 # File hashing uses moon's in-process native walker (the v2.5+ default), NOT the
 # git shell-out. This is load-bearing: the git hasher (`git ls-files` then `git

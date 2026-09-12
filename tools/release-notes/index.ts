@@ -306,10 +306,13 @@ async function gatherNixOutputs(): Promise<NixOutput[]> {
 		const info = JSON.parse(infoJson) as
 			| PathInfoEntry[]
 			| Record<string, PathInfoEntry>;
-		// nix path-info emits an array (newer nix) or an object keyed by path.
+		// nix path-info emits an array (newer nix) or an object keyed by path. In
+		// the keyed form the KEY is the authoritative store path, so it is spread
+		// last — the value may carry its own `path` field, which would otherwise
+		// overwrite the key (TS2783).
 		const entries: PathInfoEntry[] = Array.isArray(info)
 			? info
-			: Object.entries(info).map(([path, v]) => ({ path, ...v }));
+			: Object.entries(info).map(([path, v]) => ({ ...v, path }));
 		// A single-store-path query returns exactly one entry; anything else means
 		// `store` did not resolve to one output path and picking [0] would record
 		// an arbitrary identity — fail loud rather than ship a wrong manifest entry.
