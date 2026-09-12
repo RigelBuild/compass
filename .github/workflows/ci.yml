@@ -677,6 +677,14 @@ jobs:
             -f tools/toolchain/secretspec-env.nix secretspec)
           echo "$secretspec/bin" >>"$GITHUB_PATH"
 
+          # The FFI cdylib the secrets READ path dlopens, distinct from the
+          # write-path CLI above; without it the armed forge-secret pgtest in
+          # the next step SKIPs. Built from the upstream workspace member
+          # because nixpkgs packages only the `secretspec` crate.
+          libsecretspec=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/secretspec-env.nix libsecretspec)
+          echo "SECRETSPEC_FFI_LIB=$libsecretspec/lib/libsecretspec.so" >>"$GITHUB_ENV"
+
       - name: Real-Postgres suites
         working-directory: go
         env:

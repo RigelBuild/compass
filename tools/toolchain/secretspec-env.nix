@@ -32,11 +32,28 @@
 # `secretspec-go` SDK pin in go/go.mod both track, so the read half (SDK +
 # native lib) and the write half (this CLI) cannot drift.
 #
-# One output the ci.yml step reads `bin/secretspec` off, realized with
-# `nix build` (never `nix eval`, which strips the store context that would build
-# the derivation):
+# The READ path is different in kind from the write path: the resolver's
+# `SpecResolver.Resolve`/`Statuses` do NOT shell the CLI — they call the
+# `secretspec-go` SDK, a purego FFI binding that dlopens a `libsecretspec`
+# cdylib located via `SECRETSPEC_FFI_LIB` (binding_purego.go). nixpkgs packages
+# ONLY the `secretspec` crate (via fetchCrate of the crate tarball), whose
+# derivation emits a single `bin/` output and no shared library, so it cannot
+# produce the cdylib. The cdylib is a SEPARATE workspace member
+# (`libsecretspec`, crate-type = ["cdylib", "staticlib"], lib name "secretspec"
+# so the artifact is `libsecretspec.so`) that lives only in the upstream repo,
+# not the published crate. So the read half is realized here by building that
+# workspace member from the upstream repo at tag v${version}, with `version`
+# read from the SAME pinned nixpkgs `secretspec` package the CLI comes from —
+# one source of truth for the number, so the CLI, the SDK go.mod pin, and this
+# cdylib cannot drift. Only the source content-hash and cargo vendor-hash are
+# literals here (they are not versions); the tag is derived from `version`.
 #
-#   secretspec  the CLI derivation.
+# Two outputs, each realized with `nix build` (never `nix eval`, which strips
+# the store context that would build the derivation):
+#
+#   secretspec     the CLI derivation (write path); ci.yml reads `bin/secretspec`.
+#   libsecretspec  the FFI cdylib (read path); ci.yml/devenv point
+#                  SECRETSPEC_FFI_LIB at `lib/libsecretspec.so`.
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
 
@@ -50,7 +67,54 @@ let
     sha256 = node.narHash;
   };
   pkgs = import nixpkgsSrc { };
+
+  # The single source of truth for the version number: the pinned nixpkgs
+  # `secretspec` package the CLI output below is. The cdylib is built from the
+  # upstream repo at the matching tag, so the read half and write half share one
+  # version and cannot drift.
+  version = pkgs.secretspec.version;
+
+  # The libsecretspec cdylib the read-path SDK dlopens. Built from the upstream
+  # workspace (the published crate omits this member), pinned by content hash at
+  # tag v${version}. The lib target is named "secretspec" (libsecretspec/
+  # Cargo.toml), so the emitted artifact is `libsecretspec.so`/`.dylib` — exactly
+  # the name secretspec-go's findLibrary() looks for.
+  libsecretspec = pkgs.rustPlatform.buildRustPackage {
+    pname = "libsecretspec";
+    inherit version;
+
+    src = pkgs.fetchFromGitHub {
+      owner = "cachix";
+      repo = "secretspec";
+      tag = "v${version}";
+      hash = "sha256-ECk5iqtTnXzitbf8XMMNKZQ7MnbvcSAGd1IZImojWPA=";
+    };
+
+    cargoHash = "sha256-yLO05TKG0fd5YmA1/+cylKpvGslLi6wF8pwj/dOJ1U0=";
+
+    # Build only the C-ABI wrapper (and its transitive secretspec-core), not the
+    # whole workspace (CLI, node/py/php bindings). The cdylib is the artifact.
+    cargoBuildFlags = [
+      "-p"
+      "libsecretspec"
+    ];
+
+    # No test run: this output exists to be dlopened, and the workspace's tests
+    # reach for network providers and fixtures. The read path's real exercise is
+    # the Go pgtest that resolves through it.
+    doCheck = false;
+
+    # buildRustPackage installs bins; the cdylib is a library, so place it under
+    # $out/lib at the predictable path SECRETSPEC_FFI_LIB points at. The build
+    # target dir carries a triple subdir when a target is set, so glob for it.
+    postInstall = ''
+      mkdir -p "$out/lib"
+      find target -type f \( -name 'libsecretspec.so' -o -name 'libsecretspec.dylib' \) \
+        -exec cp {} "$out/lib/" \;
+    '';
+  };
 in
 {
   secretspec = pkgs.secretspec;
+  inherit libsecretspec;
 }

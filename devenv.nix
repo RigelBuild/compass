@@ -266,6 +266,13 @@ in
     # Linux-only merge below.
     MOON_TOOLCHAIN_FORCE_GLOBALS = "true";
 
+    # The FFI cdylib the secrets READ path dlopens, a different seam from the
+    # write-path CLI on PATH below; without it a local `go test` skips the armed
+    # forge-secret pgtest and the shell stops matching CI. An absolute path the
+    # SDK reads, so it belongs in `env`, never the parity-gated `packages`.
+    SECRETSPEC_FFI_LIB =
+      "${(import ./tools/toolchain/secretspec-env.nix).libsecretspec}/lib/libsecretspec${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
+
   }
   # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
   # GTK4/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
