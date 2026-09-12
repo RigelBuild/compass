@@ -137,6 +137,20 @@ func NewHostRuntime(stateRoot string) *HostRuntime {
 	}
 }
 
+// WorkspaceUID resolves the uid host-backend agents run as: the Runner's own
+// effective uid captured at construction — the same h.euid checkUser enforces —
+// so the uid handed to each workspace is exactly the uid its execs will be
+// accepted under. os.Geteuid returns -1 where the syscall is unavailable; a
+// blind uint32 conversion would wrap it to a huge uid, so the negative case is
+// refused before any narrowing. The error wording is stable so the startup
+// failure text does not regress.
+func (h *HostRuntime) WorkspaceUID() (uint32, error) {
+	if h.euid < 0 {
+		return 0, fmt.Errorf("host backend: geteuid returned %d, no usable effective uid to run agents as", h.euid)
+	}
+	return uint32(h.euid), nil //nolint:gosec // G115: euid is non-negative here (the < 0 case returned above), so the narrowing cannot wrap.
+}
+
 // WithTimeout overrides the per-command wall-clock cap Exec applies.
 func (h *HostRuntime) WithTimeout(timeout time.Duration) *HostRuntime {
 	h.timeout = timeout

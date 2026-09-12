@@ -23,7 +23,6 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/RigelBuild/compass/go/internal/agentuid"
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runner"
 	"github.com/RigelBuild/compass/go/internal/runtime"
@@ -174,31 +173,14 @@ func run() error {
 	}, specs, log)
 }
 
-// specDefaultsUID resolves the uid every agent workspace runs as, keyed off the
-// already-resolved engine so the flag/env backend fallback is not re-derived.
-// The host backend runs agents as direct children under the Runner's own uid,
-// so it derives the euid via geteuid; every container tier keeps the baked fleet
-// constant, which its userns remap maps the invoking host uid onto. geteuid is a
-// seam so the narrowing edges are reachable in a test.
-func specDefaultsUID(engine runtime.WorkloadRuntime, geteuid func() int) (uint32, error) {
-	if _, ok := engine.(*runtime.HostRuntime); !ok {
-		return agentuid.AgentUID, nil
-	}
-	euid := geteuid()
-	// os.Geteuid returns -1 where the syscall is unavailable; a blind uint32
-	// conversion would wrap it to a huge uid. The non-root check downstream
-	// (spec.go) refuses euid 0, so a root Runner is refused at startup too.
-	if euid < 0 {
-		return 0, fmt.Errorf("host backend: geteuid returned %d, no usable effective uid to run agents as", euid)
-	}
-	return uint32(euid), nil //nolint:gosec // G115: euid is non-negative here (the < 0 case returned above), so the narrowing cannot wrap.
-}
-
 // newSpecBuilder assembles the config spec builder from the resolved engine and
-// operator inputs. The uid every workspace runs as is derived per backend
-// (specDefaultsUID); everything else is the operator's flags/env verbatim.
+// operator inputs. The uid every workspace runs as is resolved per backend by
+// runner.ResolveWorkspaceUID (the host tier names its own euid; the container
+// tiers keep the baked fleet constant); everything else is the operator's
+// flags/env verbatim. The per-backend uid policy lives in internal/runner beside
+// the non-root check that validates the result — this binary stays a thin wrapper.
 func newSpecBuilder(engine runtime.WorkloadRuntime, image string, egress runtime.EgressPolicy, checkoutDir, homeDir string, mounts []runtime.Mount) (runner.SpecBuilder, error) {
-	uid, err := specDefaultsUID(engine, os.Geteuid)
+	uid, err := runner.ResolveWorkspaceUID(engine)
 	if err != nil {
 		return nil, err
 	}
