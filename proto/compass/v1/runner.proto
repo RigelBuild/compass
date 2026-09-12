@@ -190,8 +190,15 @@ service RunnerService {
 // CodeUnauthenticated, so the field is a defense-in-depth cross-check, not a
 // trusted input. The credential itself rides the transport as a bearer token,
 // never a field here (mirroring IssueTokenRequest, compass.proto:237-242).
+//
+// runtime_tier and egress_posture are declared once here, not per session:
+// they are Runner-wide facts of the one backend this Runner drives, so the hub
+// stamps them onto every session it owns rather than have each lifecycle frame
+// repeat them.
 message EnrollRequest {
   string runner_id = 1;
+  RuntimeTier runtime_tier = 2;
+  EgressPosture egress_posture = 3;
 }
 
 // Enroll response: the handshake ack. `reattached` distinguishes a fresh

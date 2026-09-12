@@ -24,7 +24,7 @@ import (
 // See docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
 func TestProvisionRelaySurfacesOperatorFaultAsFailedPrecondition(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
@@ -34,7 +34,7 @@ func TestProvisionRelaySurfacesOperatorFaultAsFailedPrecondition(t *testing.T) {
 	// the socket diagnostic followed by the appended gateway.ErrOperatorConfig
 	// sentinel text. The Runner is simulated here, so the wire carries only the
 	// string — the gateway package is deliberately not imported.
-	const diag = "serving agent socket for container \"cont-op\": agent socket path \"/run/compass/containers/cont-op/agent.sock\" is 120 bytes, over the 108-byte AF_UNIX limit: shorten the socket's parent directory or the agent account id: operator-fault runner configuration"
+	const diag = "serving agent socket for container \"cont-op\": agent socket path \"/run/compass/containers/cont-op/agent.sock\" is 120 bytes, over the 108-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id: operator-fault runner configuration"
 
 	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
 		go router.complete(&compassv1internal.SessionsRequest{

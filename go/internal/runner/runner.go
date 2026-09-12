@@ -115,7 +115,9 @@ func Dial(ctx context.Context, cfg RunnerConfig) (*ServerLink, error) {
 		connect.WithInterceptors(otelInterceptor, &bearerToken{token: cfg.Token}),
 	)
 	resp, err := client.Enroll(ctx, connect.NewRequest(&compassv1internal.EnrollRequest{
-		RunnerId: cfg.RunnerID,
+		RunnerId:      cfg.RunnerID,
+		RuntimeTier:   runtimeTierProto(runtime.TierOf(cfg.Engine)),
+		EgressPosture: egressPostureProto(runtime.PostureOf(cfg.Engine)),
 	}))
 	if err != nil {
 		return nil, fmt.Errorf("enrolling runner %q: %w", cfg.RunnerID, err)

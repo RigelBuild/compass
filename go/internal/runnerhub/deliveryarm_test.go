@@ -349,7 +349,7 @@ func TestDeliverSessionNilPresenceSinkIsSafe(t *testing.T) {
 // DispatchControl returns without blocking.
 func TestDispatchControlSendOnlyDoesNotBlock(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, err := hub.routerFor("sess-1")
 	if err != nil {
 		t.Fatalf("routerFor: %v", err)
@@ -400,7 +400,7 @@ func TestDispatchControlSendOnlyDoesNotBlock(t *testing.T) {
 // is observed (counted), not dropped as unknown.
 func TestDispatchControlNoLiveStreamRefuses(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	// No stream attached: send is nil.
 	op := &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Deliver{
