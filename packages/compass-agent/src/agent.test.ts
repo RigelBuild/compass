@@ -751,9 +751,10 @@ function ackIds(frames: OutboundFrame[]): string[] {
 }
 
 // The SessionInjection observation frames captured, in order, as
-// {opKind, messageId} pairs. A SessionInjection rides the `session` variant's
-// typed_event (the same FrameSink path the trace events use), so it is a
-// "session" OutboundFrame whose typedEvent oneof case is "sessionInjection".
+// {opKind, messageId, fromHandle, traceparent} objects. A SessionInjection
+// rides the `session` variant's typed_event (the same FrameSink path the trace
+// events use), so it is a "session" OutboundFrame whose typedEvent oneof case
+// is "sessionInjection".
 function injections(frames: OutboundFrame[]): {
 	opKind: SessionInjectionKind;
 	messageId: string;
@@ -1976,6 +1977,47 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 			{
 				opKind: SessionInjectionKind.DELIVER,
 				messageId: "m1",
+				fromHandle: "matt",
+				traceparent: tp,
+			},
+		]);
+		await h.close();
+	});
+
+	test("an idle steer carrying a traceparent emits a STEER injection with that traceparent (RIG-2894 non-vacuity)", async () => {
+		const h = startDeliverAgent();
+		// Idle steer starts a turn via prompt and threads the decoded traceparent
+		// off the wire steer control onto the injection. Guards the idle-steer
+		// emit site: a hard-coded "" there would keep every default-tp assertion
+		// green, so this pins the specific header.
+		const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+		h.agent.steer(deliverMsg("s1", "hey"), "matt", tp);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.STEER,
+				messageId: "s1",
+				fromHandle: "matt",
+				traceparent: tp,
+			},
+		]);
+		await h.close();
+	});
+
+	test("a mid-turn steer carrying a traceparent emits a STEER injection with that traceparent (RIG-2894 non-vacuity)", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Mid-turn steer injects onto the running loop's steering queue and threads
+		// the decoded traceparent. Guards the mid-turn-steer emit site distinctly
+		// from the idle one (a different call site with its own emit).
+		const tp = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+		h.agent.steer(deliverMsg("s1", "one"), "matt", tp);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.STEER,
+				messageId: "s1",
 				fromHandle: "matt",
 				traceparent: tp,
 			},
