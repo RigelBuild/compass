@@ -19,7 +19,12 @@
 # a mapping drift would actually be caught. The publish lane adds the first CI leg that builds this image.
 layer: 'application'
 language: 'bash'
-tags: []
+# ci-group.nix with the sibling image projects: the CI matrix requires every
+# project to carry exactly one group tag, and this project's real build closure
+# is the nix one those legs already provision. It contributes no CI task today
+# (`build` is runInCI:false), so the tag places it in the graph rather than
+# adding a leg.
+tags: ['ci-group.nix']
 
 workspace:
   inheritedTasks:
