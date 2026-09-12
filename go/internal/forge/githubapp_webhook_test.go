@@ -295,4 +295,7 @@ func TestParseGitHubEvent_StripsOwner(t *testing.T) {
 	if ev.Comment.GetAgent().GetAgentHandle() != "agent-x" {
 		t.Errorf("agent claim = %q, want agent-x", ev.Comment.GetAgent().GetAgentHandle())
 	}
+	if got := ev.Comment.GetAgent().GetOwnerHandle(); got != "owner-y" {
+		t.Errorf("owner claim = %q, want owner-y", got)
+	}
 }
