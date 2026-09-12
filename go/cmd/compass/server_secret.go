@@ -108,11 +108,11 @@ func runServerSecretSet(ctx context.Context, client compassv1connect.SecretsServ
 // HasServerSecretPrefix is the authority on what counts as prefixed, so the two
 // doors cannot drift.
 //
-// A bare name that would SHADOW a gateway-family row is refused rather than
-// wrapped. `list` strips either reserved prefix, so the master key prints as
-// the bare `MASTER_KEY`; feeding that spelling back here would wrap it to
+// A bare name that would SHADOW the master-key row is refused rather than
+// wrapped. `list` strips any reserved prefix, so the master key prints as the
+// bare `MASTER_KEY`; feeding that spelling back here would wrap it to
 // `SERVER_MASTER_KEY`, which is a DIFFERENT secret. That name clears the
-// server's master-key guard (it compares the exact GATEWAY_CREDENTIALS_ name),
+// server's master-key guard (it compares the exact COMPASS_MASTER_KEY name),
 // so the write would silently mint a shadow row, leave the real key untouched,
 // and make `list` print the same bare name twice. Refusing is the only safe
 // answer: wrapping writes a different secret than the operator named, with no
@@ -121,20 +121,13 @@ func serverSecretWireName(name string) (string, error) {
 	if store.HasServerSecretPrefix(name) {
 		return name, nil
 	}
-	if store.GatewayCredentialsPrefix+name == masterKeyCLIName {
+	if store.CompassPrefix+name == store.MasterKeyName {
 		return "", fmt.Errorf(
 			"%s is the bare spelling of %s, which is provisioned and rotated by the server; pass the full name if you meant a different secret",
-			name, masterKeyCLIName)
+			name, store.MasterKeyName)
 	}
 	return store.ServerSecretPrefix + name, nil
 }
-
-// masterKeyCLIName mirrors the server's reserved master-key name
-// (secrets_service.go's masterKeyName). Duplicated as a const rather than
-// imported because the server package is not a CLI dependency; the pgtest
-// suite covers the server-side refusal, and this only has to recognise the
-// bare spelling `list` prints.
-const masterKeyCLIName = store.GatewayCredentialsPrefix + "MASTER_KEY"
 
 // runServerSecretList calls ListServerSecrets and renders each declared server
 // secret. An empty list renders a clear message, not an error.
@@ -170,11 +163,11 @@ func runServerSecretList(ctx context.Context, client compassv1connect.SecretsSer
 // deployment's seed script matches each secret with a line-anchored
 // "\n<NAME>: " glob, which the stored prefixed form would never hit.
 //
-// EITHER reserved prefix is stripped, not just SERVER_: the master-key family
-// carries GATEWAY_CREDENTIALS_ (secrets_service.go's masterKeyName) and is a
-// real server_secrets row, so it lists here too. Stripping only one would print
-// that row with its prefix intact while every other row appeared bare — the
-// same output column meaning two different spellings.
+// ANY reserved prefix is stripped, not just SERVER_: the master key carries
+// COMPASS_ (store.MasterKeyName) and is a real server_secrets row, so it lists
+// here too. Stripping only one would print that row with its prefix intact
+// while every other row appeared bare — the same output column meaning two
+// different spellings.
 func renderServerSecretStatus(out io.Writer, s *compassv1.ServerSecretStatus) error {
 	state := "unset"
 	if s.GetIsSet() {
@@ -187,7 +180,7 @@ func renderServerSecretStatus(out io.Writer, s *compassv1.ServerSecretStatus) er
 // bareServerSecretName strips whichever reserved server-secret prefix a stored
 // name carries, returning the spelling the operator configured.
 func bareServerSecretName(name string) string {
-	for _, p := range []string{store.ServerSecretPrefix, store.GatewayCredentialsPrefix} {
+	for _, p := range []string{store.ServerSecretPrefix, store.GatewayCredentialsPrefix, store.CompassPrefix} {
 		if bare, ok := strings.CutPrefix(name, p); ok {
 			return bare
 		}

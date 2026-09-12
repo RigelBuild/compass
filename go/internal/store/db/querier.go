@@ -187,6 +187,13 @@ type Querier interface {
 	// NEVER be adopted, so visibility = $3 (bound to VisibilityOwner) excludes it.
 	GetOwnerDMGroup(ctx context.Context, arg GetOwnerDMGroupParams) (string, error)
 	GetPageCursorSeq(ctx context.Context, arg GetPageCursorSeqParams) (int64, error)
+	// server_key_state queries: the master-key tripwire. Single-row by construction
+	// (CHECK (id = 1)); GetServerKeyState reads it, InsertServerKeyState writes it
+	// once at first boot. No UPDATE and no DELETE here: rotation is a later
+	// record's versioned re-encrypt. The tripwire catches an operator booting the
+	// wrong key, not an actor with write access to this table -- UPDATE is granted,
+	// so a write-capable actor could restate the digest.
+	GetServerKeyState(ctx context.Context) (ServerKeyState, error)
 	GetTopic(ctx context.Context, id string) (Topic, error)
 	GetTopicByName(ctx context.Context, arg GetTopicByNameParams) (GetTopicByNameRow, error)
 	GetTopicChannel(ctx context.Context, id string) (string, error)
@@ -264,6 +271,7 @@ type Querier interface {
 	// (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
 	// SetSecret caller, removed with it in T5.
 	InsertSecret(ctx context.Context, arg InsertSecretParams) error
+	InsertServerKeyState(ctx context.Context, arg InsertServerKeyStateParams) error
 	// Server-secrets registry queries (design record T0, mechanism C1/D6). The
 	// SERVER-owned half of the names-only secret registry, physically separate from
 	// `secrets` so the inject-all container delivery path can never see these rows.
