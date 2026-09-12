@@ -110,6 +110,18 @@ export interface CommsTransport {
 }
 
 /**
+ * The narrow read the broker needs to stamp a post's `trigger_traceparent`
+ * (RIG-2894): the current turn's single-parent inbound traceparent, or "" when
+ * the turn has no single parent. Deliberately NOT the full `TurnTracer` — a
+ * one-method structural surface keeps OTel-adjacent types out of comms.ts (the
+ * fence) and lets a test fake it with a literal. The `TraceBridge` in cli.ts
+ * satisfies it structurally; absent (telemetry off) ⇒ every post stamps "".
+ */
+export interface TurnTriggerReader {
+	currentTurnTrigger(): string;
+}
+
+/**
  * A thin adapter over the comms leg of the Runner transport. `call` delegates
  * straight to `transport.comms(req)`; the Connect unary owns correlation and
  * deadlines. Cancellation is not plumbed — see the file header.
@@ -126,14 +138,28 @@ export class CommsBroker {
 	// returns the older message, so the tool reports success for a post that
 	// was never written.
 	readonly #idempotencyNonce = crypto.randomUUID();
+	// The turn-trigger reader (RIG-2894), optional: telemetry-off ⇒ undefined ⇒
+	// every post stamps "" (bit-identical to before this field existed).
+	readonly #triggerReader: TurnTriggerReader | undefined;
 
-	constructor(transport: CommsTransport) {
+	constructor(transport: CommsTransport, triggerReader?: TurnTriggerReader) {
 		this.#transport = transport;
+		this.#triggerReader = triggerReader;
 	}
 
 	/** The account-safe idempotency key for a post made under `toolCallId`. */
 	idempotencyKey(toolCallId: string): string {
 		return `${this.#idempotencyNonce}:${toolCallId}`;
+	}
+
+	/**
+	 * The current turn's single-parent inbound traceparent to stamp on an
+	 * outbound POST's `trigger_traceparent` (RIG-2894), or "" when the turn has
+	 * no single parent OR telemetry is off. Only the two `case: "post"` arms read
+	 * it; reads (list/roster/status/…) never stamp it.
+	 */
+	triggerTraceparent(): string {
+		return this.#triggerReader?.currentTurnTrigger() ?? "";
 	}
 
 	call(req: CommsCallRequest): Promise<CommsCallResult> {
@@ -487,6 +513,11 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 			const result = await broker.call(
 				create(CommsCallRequestSchema, {
 					callId: toolCallId,
+					// Re-attach (RIG-2894): stamp the turn's single-parent inbound
+					// traceparent so the server links this post's reply trace back to
+					// the message that triggered the turn. "" when the turn has no
+					// single parent or telemetry is off — POST calls only.
+					triggerTraceparent: broker.triggerTraceparent(),
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
@@ -583,6 +614,8 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 			const result = await broker.call(
 				create(CommsCallRequestSchema, {
 					callId: toolCallId,
+					// Re-attach (RIG-2894): same as comms_post_message — POST calls only.
+					triggerTraceparent: broker.triggerTraceparent(),
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
@@ -1049,6 +1082,10 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 			const posted = await broker.call(
 				create(CommsCallRequestSchema, {
 					callId: toolCallId,
+					// Re-attach (RIG-2894): leg-2 is a genuine `case: "post"` (a DM
+					// reply), so it carries the turn trigger under the same "ONLY posts
+					// carry it" rule as comms_post_message/comms_post_ask.
+					triggerTraceparent: broker.triggerTraceparent(),
 					call: {
 						case: "post",
 						value: create(PostMessageRequestSchema, {
