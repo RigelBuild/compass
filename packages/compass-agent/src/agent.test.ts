@@ -754,9 +754,12 @@ function ackIds(frames: OutboundFrame[]): string[] {
 // {opKind, messageId} pairs. A SessionInjection rides the `session` variant's
 // typed_event (the same FrameSink path the trace events use), so it is a
 // "session" OutboundFrame whose typedEvent oneof case is "sessionInjection".
-function injections(
-	frames: OutboundFrame[],
-): { opKind: SessionInjectionKind; messageId: string; fromHandle: string }[] {
+function injections(frames: OutboundFrame[]): {
+	opKind: SessionInjectionKind;
+	messageId: string;
+	fromHandle: string;
+	traceparent: string;
+}[] {
 	return frames.flatMap((f) => {
 		if (f.kind !== "session") return [];
 		const event = f.value.typedEvent?.event;
@@ -766,6 +769,7 @@ function injections(
 				opKind: event.value.opKind,
 				messageId: event.value.messageId,
 				fromHandle: event.value.fromHandle,
+				traceparent: event.value.traceparent,
 			},
 		];
 	});
@@ -1338,7 +1342,12 @@ describe("CompassAgent — RIG-2732 W3 turn-end forge-notification arm", () => {
 		expect(h.railAcks).toEqual([1]);
 		// The deliver's DELIVER injection observation also fired at flush.
 		expect(injections(h.frames)).toEqual([
-			{ opKind: SessionInjectionKind.DELIVER, messageId: "m1", fromHandle: "" },
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "",
+				traceparent: "",
+			},
 		]);
 		await h.close();
 	});
@@ -1658,6 +1667,7 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 				opKind: SessionInjectionKind.STEER,
 				messageId: "s1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1865,6 +1875,7 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.DELIVER,
 				messageId: "m1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1882,6 +1893,7 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.STEER,
 				messageId: "s1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1899,6 +1911,7 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.STEER,
 				messageId: "s1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 		]);
 		await h.close();
@@ -1912,7 +1925,12 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();
 		expect(injections(h.frames)).toEqual([
-			{ opKind: SessionInjectionKind.DELIVER, messageId: "m1", fromHandle: "" },
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "",
+				traceparent: "",
+			},
 		]);
 		await h.close();
 	});
@@ -1933,11 +1951,33 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 				opKind: SessionInjectionKind.DELIVER,
 				messageId: "m1",
 				fromHandle: "matt",
+				traceparent: "",
 			},
 			{
 				opKind: SessionInjectionKind.DELIVER,
 				messageId: "m2",
 				fromHandle: "jane",
+				traceparent: "",
+			},
+		]);
+		await h.close();
+	});
+
+	test("an idle deliver carrying a traceparent emits a DELIVER injection with that traceparent (RIG-2894 non-vacuity)", async () => {
+		const h = startDeliverAgent();
+		// The decoded W3C traceparent off the wire deliver control threads
+		// server->wire->emit onto the injection frame. Non-vacuity: without the
+		// threading, traceparent is hard-coded "" so this asserted-value fails.
+		const tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+		h.agent.deliver(deliverMsg("m1", "hello"), "matt", tp);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "matt",
+				traceparent: tp,
 			},
 		]);
 		await h.close();

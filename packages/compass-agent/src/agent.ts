@@ -280,9 +280,10 @@ export class CompassAgent {
 		opKind: SessionInjectionKind,
 		messageId: string,
 		fromHandle: string,
+		traceparent: string,
 	): void {
 		this.#sink.emit(
-			this.#mapper.sessionInjection(opKind, messageId, fromHandle),
+			this.#mapper.sessionInjection(opKind, messageId, fromHandle, traceparent),
 		);
 	}
 
@@ -515,7 +516,12 @@ export class CompassAgent {
 					messageId: msg.id,
 				});
 				this.#sink.emit({ kind: "deliveryAck", value });
-				this.#emitInjection(SessionInjectionKind.STEER, msg.id, fromHandle);
+				this.#emitInjection(
+					SessionInjectionKind.STEER,
+					msg.id,
+					fromHandle,
+					traceparent,
+				);
 			});
 			return;
 		}
@@ -590,7 +596,12 @@ export class CompassAgent {
 				messageId: msg.id,
 			});
 			this.#sink.emit({ kind: "deliveryAck", value });
-			this.#emitInjection(SessionInjectionKind.STEER, msg.id, fromHandle);
+			this.#emitInjection(
+				SessionInjectionKind.STEER,
+				msg.id,
+				fromHandle,
+				traceparent,
+			);
 		});
 	}
 
@@ -795,10 +806,16 @@ export class CompassAgent {
 				});
 				this.#sink.emit({ kind: "deliveryAck", value });
 				const fromHandle = this.#deliverFromHandles.get(msg.id) ?? "";
+				const traceparent = this.#deliverTraceparents.get(msg.id) ?? "";
 				this.#deliverFromHandles.delete(msg.id);
 				this.#deliverTraceparents.delete(msg.id);
 				this.#deliverSourceNames.delete(msg.id);
-				this.#emitInjection(SessionInjectionKind.DELIVER, msg.id, fromHandle);
+				this.#emitInjection(
+					SessionInjectionKind.DELIVER,
+					msg.id,
+					fromHandle,
+					traceparent,
+				);
 			}
 			// FORGE acks: one ForgeNotificationAck frame (advances the Server's
 			// delivered_revision) then the control-rail ack (`ackRail`, retiring
