@@ -805,8 +805,9 @@ func (h *Hub) deliverSession(ctx context.Context, sessionID string, sf *compassv
 	// gap). accountForSession takes h.mu; deliverSession holds no lock here.
 	// runnerRuntimeIdentity reads the enrolled Runner's tier/posture under the
 	// same lock, so a status published after a reattach reflects the newly
-	// enrolled Runner's values. It is a separate critical section from the
-	// account resolve above, not one atomic read of both.
+	// enrolled Runner's values, never the previous Runner's. It is a separate
+	// acquisition from the account read above, so the two can straddle a
+	// re-enroll; harmless while one Runner enrolls at a time.
 	account, hasAccount := h.accountForSession(ctx, sessionID)
 	tier, egressPosture := h.runnerRuntimeIdentity()
 	status := &compassv1.AgentSessionStatus{SessionId: sessionID, State: state, RuntimeTier: tier, EgressPosture: egressPosture}
@@ -1166,13 +1167,14 @@ func (h *Hub) routerFor(sessionID string) (*commandRouter, string, error) {
 // runnerRuntimeIdentity returns the enrolled Runner's declared runtime tier and
 // egress posture under h.mu, so a session status stamps the Runner that owns it
 // today rather than racing a re-enroll. No Runner enrolled yields UNSPECIFIED on
-// both — the wire's "we do not know", never a plausible default. h.runner is
-// assigned only in enroll and never set back to nil, so no disconnect path can
-// regress a known tier to UNSPECIFIED.
+// both — the wire's "we do not know", never a plausible default.
 func (h *Hub) runnerRuntimeIdentity() (compassv1.RuntimeTier, compassv1.EgressPosture) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.runner == nil {
+		// Reachable only before the first enroll: no disconnect path nils
+		// h.runner, and that is load-bearing — the board replaces its whole
+		// entry per publish, so a later UNSPECIFIED would regress a known tier.
 		return compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED
 	}
 	return h.runner.tier, h.runner.egressPosture

@@ -133,7 +133,10 @@ func (RunnerErrorCode) EnumDescriptor() ([]byte, []int) {
 // runtime_tier and egress_posture are declared once here, not per session:
 // they are Runner-wide facts of the one backend this Runner drives, so the hub
 // stamps them onto every session it owns rather than have each lifecycle frame
-// repeat them.
+// repeat them. Unlike runner_id they are trusted as declared, with nothing to
+// cross-check them against: only the Runner can observe which namespace an
+// agent got, and it is the component that enforces egress in the first place,
+// so a Runner that lies here has already lost containment either way.
 type EnrollRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RunnerId      string                 `protobuf:"bytes,1,opt,name=runner_id,json=runnerId,proto3" json:"runner_id,omitempty"`

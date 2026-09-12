@@ -373,8 +373,7 @@ func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentS
 }
 
 func (r *AgentRuntime) egressUnenforced() bool {
-	unenforcer, ok := r.runtime.(egressUnenforcer)
-	return ok && unenforcer.EgressUnenforced()
+	return PostureOf(r.runtime) == EgressPostureUnenforced
 }
 
 func (r *AgentRuntime) selfArmsEgress() bool {

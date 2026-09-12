@@ -152,10 +152,11 @@ func TestReEnrollUpdatesStampedTierAndPosture(t *testing.T) {
 	}
 }
 
-// TestEnrollWithNoRuntimeIdentityYieldsUnspecified pins the fail-honest default:
-// a Runner that declares nothing (zero values) yields UNSPECIFIED on both fields
-// — never a plausible default like PODMAN or ARMED. A security surface that
-// guesses is worse than one that says it does not know.
+// TestEnrollWithNoRuntimeIdentityYieldsUnspecified pins runnerRuntimeIdentity's
+// fail-honest default only: a Runner that declares nothing stays UNSPECIFIED
+// rather than a plausible PODMAN/ARMED, because a security surface that guesses
+// is worse than one that says it does not know. Its expectation is the zero
+// value, so propagation is pinned by the two tests above, not here.
 //
 // Negative control: defaulting runnerRuntimeIdentity to PODMAN/ARMED when the
 // enrolled values are zero reddens both assertions — observed "runtime_tier =
