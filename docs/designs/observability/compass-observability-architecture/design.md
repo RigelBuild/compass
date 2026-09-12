@@ -187,8 +187,8 @@ OSS core never stores:
 - **Class 3 — cross-tenant managed analytics (whole managed service, for
   Rigel).** PostHog-scale product analytics across ALL tenants is where a
   ClickHouse-class OLAP genuinely belongs — a managed-plane concern, out of
-  scope here. Any big-scale analytics dep, if ever, is adopted there, not in
-  this repo and not now.
+  scope here. Any big-scale analytics dep, if ever, is a managed-plane
+  adoption, not this repo's and not now.
 
 With the classes separated, the store question resolves cleanly — Decision D1.
 
