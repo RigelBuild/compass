@@ -306,12 +306,16 @@ structural, not a timeout:
 **The link seam.** The trigger's traceparent reaches the origin via
 `CommsCallRequest.trigger_traceparent` (field 10, above): the agent re-attaches
 the `traceparent` it decoded (#649 T3) onto its outbound post, which rides
-`RelayCommsCall` to the server. **The value is the INBOUND trigger message's
+`RelayCommsCall` to the server. **The value is the inbound trigger message's
 decoded `traceparent` — never a serialization of the outbound turn's own live
-span.** Serializing the outbound span would put the link's trace id EQUAL to
-the origin span's (same trace, under #649 continuation), which makes the
-"trace id ≠ the trigger's" acceptance criterion below untestable and collapses
-the termination proof. The server's `RelayCommsCall` origin span (a′)
+span.** Both would carry the same trace id (the outbound turn joined the
+trigger's trace at the agent-side continuation), so the acceptance criterion
+below cannot tell them apart; what differs is WHICH span in that trace the link
+names. The trigger message's span is the causal antecedent; the agent's own
+turn span is the trigger's consumer, so linking it answers "what was I doing"
+instead of "what caused this", and the
+§Trace lifetime and termination query — "what did this message transitively
+trigger?" — no longer resolves to a message. The server's `RelayCommsCall` origin span (a′)
 adds a span **Link** from `trigger_traceparent` — a LINK, never a parent. The
 Link is attached to the ALREADY-STARTED otelconnect span via `Span.AddLink`
 (OTel Go SDK floor **≥ v1.23.0**, which the fresh `go.mod` deps pull) — NOT at
