@@ -884,3 +884,113 @@ jobs:
             exit 1
           fi
           echo "verified: $ref:$tag re-tagged from :git-$resolved_sha12, config digests coherent"
+
+  publish-runner-image:
+    name: publish-runner-image
+    runs-on: ubuntu-latest
+    # Least privilege: read the tree, write the GHCR package, nothing else.
+    permissions:
+      contents: read
+      packages: write
+    # A SEPARATE group from the agent image: this publishes a different package,
+    # so serializing the two against each other would only add latency. Within
+    # this package, publishes must still serialize — two runs pushing the same
+    # tag concurrently make which bytes the tag names a race.
+    concurrency:
+      group: publish-runner-image
+      cancel-in-progress: false
+      queue: max
+    # A dispatch from a feature branch must never publish an image for unmerged
+    # code. Main pushes satisfy this trivially.
+    if: github.ref == 'refs/heads/main'
+    # The guest rootfs is a ~2 GiB erofs built from source; that nix build sizes
+    # this timeout, matching the agent image's.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The two caches are declared HERE rather than delegated via
+          # `accept-flake-config`, which would make nix trust the nixConfig of
+          # any flake it evaluates — a PR could then add its own substituter and
+          # trusted key and have CI run attacker-signed binaries.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned bun toolchain on PATH
+        # Resolve bun from gate-tools.nix so it is byte-identical to the dev
+        # shell's — the same derivation, not merely the same version. `jq -r`
+        # renders a missing `.store` as the literal string `null`, a value
+        # rather than an absence, so the guard tests for it explicitly.
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+
+      - name: Start a rootless buildkitd
+        # Rootless BuildKit is the ruled mechanism for a prebuilt-application
+        # image: never `docker build`, never a host docker socket (a socket
+        # hands a build step the daemon's blast radius). rootlesskit needs
+        # newuidmap from /run/wrappers/bin, and buildkitd needs runc on PATH.
+        run: |
+          set -euo pipefail
+          buildkit=$(nix build --no-link --print-out-paths nixpkgs#buildkit)
+          rootlesskit=$(nix build --no-link --print-out-paths nixpkgs#rootlesskit)
+          runc=$(nix build --no-link --print-out-paths nixpkgs#runc)
+          echo "$buildkit/bin" >>"$GITHUB_PATH"
+          export PATH="$buildkit/bin:$rootlesskit/bin:$runc/bin:$PATH"
+          "$rootlesskit/bin/rootlesskit" "$buildkit/bin/buildkitd" \
+            --addr unix://"$RUNNER_TEMP"/buildkit.sock &
+          for _ in $(seq 1 60); do
+            if [ -S "$RUNNER_TEMP/buildkit.sock" ]; then break; fi
+            sleep 1
+          done
+          if [ ! -S "$RUNNER_TEMP/buildkit.sock" ]; then
+            echo "::error::buildkitd did not expose its socket within 60s" >&2
+            exit 1
+          fi
+          echo "BUILDKIT_HOST=unix://$RUNNER_TEMP/buildkit.sock" >>"$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        # BuildKit reads registry creds from a docker config file. Writing it
+        # with a 0600 umask in a private dir keeps the token off argv and out of
+        # any process listing.
+        run: |
+          set -euo pipefail
+          auth_dir="$RUNNER_TEMP/docker"
+          mkdir -p "$auth_dir"
+          chmod 700 "$auth_dir"
+          umask 077
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' \
+            "$(printf '%s:%s' "$ACTOR" "$GITHUB_TOKEN" | base64 -w0)" \
+            > "$auth_dir/config.json"
+          echo "DOCKER_CONFIG=$auth_dir" >>"$GITHUB_ENV"
+
+      - name: Build the image locally
+        # The local OCI layout is what the publish step scans for leaked secrets
+        # BEFORE any push, and its digest is what the push is asserted against.
+        run: bun tools/runner-image/build.ts --output oci
+
+      - name: Publish by digest and assert reproducibility
+        # Re-runs the build with the push exporter (buildctl has no `push` verb),
+        # then fails unless the registry's digest equals the local one. The
+        # deployable `repo@sha256:…` lands in the step summary: GHCR has no
+        # server-side tag immutability, so nothing deployed resolves via a tag.
+        run: |
+          set -euo pipefail
+          sha12="$(git rev-parse --short=12 HEAD)"
+          ref="$(bun tools/runner-image/publish.ts \
+            --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12")"
+          echo "published $ref"
+          echo "runner image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
