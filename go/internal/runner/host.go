@@ -897,11 +897,12 @@ func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.Agent
 		h.teardownContainer(ctx, name)
 		return "", fmt.Errorf("resolving host state dir for container %q: backend reports no handle", name)
 	}
-	// The socket lands in the handle's 0700 socket subdir and the config tree in
-	// its config subdir — both created private by Create. Record the paths BEFORE
-	// materializing: configMaterializerFor reads them to root the config tree in
-	// the state dir, and agentEnv reads them to thread the overrides onto the
-	// agent exec.
+	// The socket lands in the handle's 0700 socket subdir, which Create mints.
+	// The config tree is rooted under the same state dir but its root is created
+	// 0755 by the materializer, so the agent can traverse it; the 0700 state dir
+	// above it is what keeps it private. Record both paths BEFORE materializing:
+	// configMaterializerFor reads them to root the config tree in the state dir,
+	// and agentEnv reads them to thread the overrides onto the agent exec.
 	transport := hostAgentTransport{
 		socketPath: filepath.Join(stateDir, "socket", agentSocketFile),
 		configRoot: filepath.Join(stateDir, "config"),

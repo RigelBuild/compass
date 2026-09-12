@@ -71,8 +71,6 @@ func (r *hostStateFakeRuntime) Create(_ context.Context, spec runtime.WorkloadSp
 		if err := os.WriteFile(filepath.Join(dir, "config"), []byte("x"), 0o600); err != nil {
 			return "", err
 		}
-	} else if err := os.MkdirAll(filepath.Join(dir, "config"), 0o700); err != nil {
-		return "", err
 	}
 	r.mu.Lock()
 	r.calls = append(r.calls, "create")
