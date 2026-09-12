@@ -217,7 +217,7 @@ jobs:
           # triggering ref.
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The whole toolchain — language runtimes AND the nixpkgs tools — is
           # built from nix below, and the devenv flake it fetches needs flakes, so
@@ -344,7 +344,7 @@ jobs:
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
       - if: matrix.run == 'true'
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The whole toolchain — language runtimes AND the nixpkgs tools — is
           # built from nix below, and the devenv flake it fetches needs flakes, so
@@ -614,7 +614,7 @@ jobs:
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The whole toolchain — language runtimes AND the nixpkgs tools — is
           # built from nix below, and the devenv flake it fetches needs flakes, so
@@ -839,7 +839,7 @@ jobs:
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The whole toolchain — language runtimes AND the nixpkgs tools — is
           # built from nix below, and the devenv flake it fetches needs flakes, so
@@ -1083,7 +1083,7 @@ jobs:
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The whole toolchain — language runtimes AND the nixpkgs tools — is
           # built from nix below, and the devenv flake it fetches needs flakes, so
@@ -1357,7 +1357,7 @@ jobs:
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The whole toolchain — language runtimes AND the nixpkgs tools — is
           # built from nix below, and the devenv flake it fetches needs flakes, so
@@ -1670,7 +1670,7 @@ jobs:
           # on every other event (see setup's checkout).
           ref: ${{ github.event.inputs.pr != '' && format('refs/pull/{0}/merge', github.event.inputs.pr) || '' }}
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The whole toolchain — Go + bun — is built from nix (Global Constraint
           # 3), never a `setup-go` drift. nix runs on macos-14. The two caches
@@ -2628,7 +2628,7 @@ jobs:
           # cleanly, matching the moon job's checkout.
           fetch-depth: 0
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The SAME two-cache trust posture as the moon job — the two
           # substituters the nix builds use plus their trusted keys, never
@@ -2765,7 +2765,7 @@ jobs:
           # cleanly, matching the forge regen lane's checkout.
           fetch-depth: 0
 
-      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
         with:
           # The SAME two-cache trust posture as the moon job — the two
           # substituters the nix builds use plus their trusted keys, never
