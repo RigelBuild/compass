@@ -282,6 +282,7 @@ export class EventMapper {
 		opKind: SessionInjectionKind,
 		messageId: string,
 		fromHandle: string,
+		traceparent: string,
 	): OutboundFrame {
 		return this.#sessionEvent({
 			case: "sessionInjection",
@@ -289,6 +290,7 @@ export class EventMapper {
 				opKind,
 				messageId,
 				fromHandle,
+				traceparent,
 			}),
 		});
 	}
