@@ -164,8 +164,9 @@ causality is in scope:
   compass-server — the `agent_gateway.proto` file-zone authority (they own #628,
   RIG-2751, and this T4 edit) — RATIFIED field 10 (independently source-verified;
   they sequence #628's conflict-clear and this scalar together in their zone), so
-  it is authoritative, not a placeholder. The delivered
-  message's traceparent the agent re-attaches on its outbound post, so the
+  it is authoritative, not a placeholder. The value is the DELIVERED (inbound
+  trigger) message's `traceparent`, which the agent re-attaches on its outbound
+  post — not the outbound turn's own span context — so the
   server can LINK the reply's new trace to the message that triggered it — the
   cross-turn causal edge that keeps traces terminating (see §Trace lifetime and
   termination).
@@ -305,7 +306,12 @@ structural, not a timeout:
 **The link seam.** The trigger's traceparent reaches the origin via
 `CommsCallRequest.trigger_traceparent` (field 10, above): the agent re-attaches
 the `traceparent` it decoded (#649 T3) onto its outbound post, which rides
-`RelayCommsCall` to the server. The server's `RelayCommsCall` origin span (a′)
+`RelayCommsCall` to the server. **The value is the INBOUND trigger message's
+decoded `traceparent` — never a serialization of the outbound turn's own live
+span.** Serializing the outbound span would put the link's trace id EQUAL to
+the origin span's (same trace, under #649 continuation), which makes the
+"trace id ≠ the trigger's" acceptance criterion below untestable and collapses
+the termination proof. The server's `RelayCommsCall` origin span (a′)
 adds a span **Link** from `trigger_traceparent` — a LINK, never a parent. The
 Link is attached to the ALREADY-STARTED otelconnect span via `Span.AddLink`
 (OTel Go SDK floor **≥ v1.23.0**, which the fresh `go.mod` deps pull) — NOT at
