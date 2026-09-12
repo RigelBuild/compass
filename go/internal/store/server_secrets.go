@@ -25,10 +25,22 @@ const (
 	// GatewayCredentialsPrefix marks the master-key family for the
 	// gateway_credentials at-rest encryption.
 	GatewayCredentialsPrefix = "GATEWAY_CREDENTIALS_"
+	// CompassPrefix marks a deployment-wide compass server secret shared across
+	// stores — currently the at-rest master key. Neutral because the key is
+	// shared between the user-secret and gateway_credentials stores rather than
+	// owned by either (design compass-user-secret-store, D3/DL-355).
+	CompassPrefix = "COMPASS_"
 )
 
+// MasterKeyName is the reserved name the at-rest master key is provisioned and
+// resolved under. Its COMPASS_ prefix makes it admissible at the server-secret
+// door and resolvable from the declared registry; boot reads it once and never
+// overwrites it, since rotation is versioned re-encrypt machinery, never a raw
+// clobber that would strand every encrypted row.
+const MasterKeyName = CompassPrefix + "MASTER_KEY"
+
 // serverSecretPrefixes is the reserved set both doors check against.
-var serverSecretPrefixes = [...]string{ServerSecretPrefix, GatewayCredentialsPrefix}
+var serverSecretPrefixes = [...]string{ServerSecretPrefix, GatewayCredentialsPrefix, CompassPrefix}
 
 // HasServerSecretPrefix reports whether name carries a reserved server-secret
 // prefix. Both secret doors consult it: `server_secrets` requires it, and the
@@ -36,6 +48,23 @@ var serverSecretPrefixes = [...]string{ServerSecretPrefix, GatewayCredentialsPre
 func HasServerSecretPrefix(name string) bool {
 	for _, p := range serverSecretPrefixes {
 		if strings.HasPrefix(name, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// ShadowsServerSecretPrefix reports whether name case-FOLDS onto a reserved
+// server-secret prefix — the wide REJECT predicate at the user-secret write/
+// delete door (A2, ported from held PR #1066). It is deliberately distinct from
+// HasServerSecretPrefix, the byte-exact ADMIT check at the server door: the
+// server door must admit only the canonical uppercase spelling, while the user
+// door must reject any case variant so a near-miss like "server_x" or
+// "Gateway_Credentials_x" can never mint a user row that shadows the reserved
+// keyspace.
+func ShadowsServerSecretPrefix(name string) bool {
+	for _, p := range serverSecretPrefixes {
+		if len(name) >= len(p) && strings.EqualFold(name[:len(p)], p) {
 			return true
 		}
 	}
@@ -74,8 +103,8 @@ func (s *Store) DeclareServerSecret(ctx context.Context, actor AccountID, name s
 		return fmt.Errorf("%w: server secret name %q must match %s", ErrInvalidArgument, name, secretNamePattern.String())
 	}
 	if !HasServerSecretPrefix(name) {
-		return fmt.Errorf("%w: server secret name %q must carry a reserved prefix (%s or %s)",
-			ErrInvalidArgument, name, ServerSecretPrefix, GatewayCredentialsPrefix)
+		return fmt.Errorf("%w: server secret name %q must carry a reserved prefix (%s, %s, or %s)",
+			ErrInvalidArgument, name, ServerSecretPrefix, GatewayCredentialsPrefix, CompassPrefix)
 	}
 	// declared_by is NULL for the server-provisioned path: honest provenance
 	// for a row no human declared.
@@ -165,4 +194,48 @@ func (v ServerDeclaredSecrets) DeclaredSecrets(ctx context.Context) ([]SecretDec
 		})
 	}
 	return out, nil
+}
+
+// ServerKeyState is the master-key tripwire row: the active key version plus a
+// salted, non-secret fingerprint of the key the store's ciphertexts were sealed
+// under. It carries no key material.
+type ServerKeyState struct {
+	KeyVersion      int16
+	KeyFingerprint  []byte
+	FingerprintSalt []byte
+}
+
+// ServerKeyState reads the single tripwire row. A missing row (first boot after
+// provisioning) is ErrNotFound, which the boot resolver treats as "write it",
+// distinct from a read fault.
+func (s *Store) ServerKeyState(ctx context.Context) (ServerKeyState, error) {
+	row, err := s.q.GetServerKeyState(ctx)
+	if err != nil {
+		if noRows(err) {
+			return ServerKeyState{}, fmt.Errorf("%w: server key state", ErrNotFound)
+		}
+		return ServerKeyState{}, fmt.Errorf("store: read server key state: %w", err)
+	}
+	return ServerKeyState{
+		KeyVersion:      row.KeyVersion,
+		KeyFingerprint:  row.KeyFingerprint,
+		FingerprintSalt: row.FingerprintSalt,
+	}, nil
+}
+
+// InsertServerKeyState writes the single tripwire row at first boot. A racing
+// second booter that lost the insert is ErrConflict, which the caller re-reads
+// through ServerKeyState to compare against the winning row.
+func (s *Store) InsertServerKeyState(ctx context.Context, st ServerKeyState) error {
+	if err := s.q.InsertServerKeyState(ctx, db.InsertServerKeyStateParams{
+		KeyVersion:      st.KeyVersion,
+		KeyFingerprint:  st.KeyFingerprint,
+		FingerprintSalt: st.FingerprintSalt,
+	}); err != nil {
+		if pgErrIs(err, pgUniqueViolation) {
+			return fmt.Errorf("%w: server key state already written", ErrConflict)
+		}
+		return fmt.Errorf("store: insert server key state: %w", err)
+	}
+	return nil
 }

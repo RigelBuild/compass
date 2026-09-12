@@ -3,6 +3,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -215,15 +216,52 @@ func TestT0PrefixCheckSurvivesADoorBypass(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
-	for _, name := range []string{"PLAIN_NAME", "SERVERX_Y", "GATEWAY_CREDENTIALSX_K", "server_lowercase"} {
+	for _, name := range []string{"PLAIN_NAME", "SERVERX_Y", "GATEWAY_CREDENTIALSX_K", "server_lowercase", "COMPASSX_MASTER_KEY"} {
 		_, err := s.pool.Exec(ctx, `INSERT INTO server_secrets (name) VALUES ($1)`, name)
 		if err == nil {
 			t.Fatalf("raw insert of %q succeeded — the reserved-prefix CHECK is not enforcing", name)
 		}
 	}
-	for _, name := range []string{"SERVER_APP_PEM", "GATEWAY_CREDENTIALS_MASTER_KEY"} {
+	for _, name := range []string{"SERVER_APP_PEM", "GATEWAY_CREDENTIALS_MASTER_KEY", "COMPASS_MASTER_KEY"} {
 		if _, err := s.pool.Exec(ctx, `INSERT INTO server_secrets (name) VALUES ($1)`, name); err != nil {
 			t.Fatalf("raw insert of legitimate %q rejected: %v", name, err)
 		}
+	}
+}
+
+// TestServerKeyStateAccessor pins the tripwire store accessor: a first read is
+// ErrNotFound (no row provisioned yet), the insert lands the single row, a
+// second read round-trips it byte-for-byte, and a second insert is ErrConflict
+// (single-row by construction). These are the store-side contracts
+// resolveMasterKey's first-boot and racing-booter arms depend on.
+func TestServerKeyStateAccessor(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.ServerKeyState(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("first read: want ErrNotFound, got %v", err)
+	}
+
+	row := ServerKeyState{
+		KeyVersion:      1,
+		KeyFingerprint:  []byte("fingerprint-32-bytes-abcdefghij!"),
+		FingerprintSalt: []byte("salt-32-bytes-0123456789abcdef!!"),
+	}
+	if err := s.InsertServerKeyState(ctx, row); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := s.ServerKeyState(ctx)
+	if err != nil {
+		t.Fatalf("read after insert: %v", err)
+	}
+	if got.KeyVersion != row.KeyVersion ||
+		!bytes.Equal(got.KeyFingerprint, row.KeyFingerprint) ||
+		!bytes.Equal(got.FingerprintSalt, row.FingerprintSalt) {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", got, row)
+	}
+
+	if err := s.InsertServerKeyState(ctx, row); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second insert: want ErrConflict, got %v", err)
 	}
 }

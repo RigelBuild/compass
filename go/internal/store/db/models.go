@@ -270,15 +270,20 @@ type OwedMention struct {
 }
 
 type Secret struct {
-	Name       string
-	Delivery   int16
-	Kind       int16
-	Provider   string
-	Host       string
-	DeclaredBy string
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	TenantID   string
+	Name            string
+	ScopeKind       int16
+	ScopeID         string
+	Delivery        int16
+	Kind            int16
+	Provider        string
+	Host            string
+	ValueCiphertext []byte
+	ValueNonce      []byte
+	KeyVersion      int16
+	DeclaredBy      string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+	TenantID        string
 }
 
 type ServerKeyState struct {
