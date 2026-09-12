@@ -331,6 +331,15 @@ span linkless, because otelconnect adds a transport link of its own (below).
 Consumers MUST select the causal link by that attribute, never by position or
 by total link count.
 
+**A trigger is emitted exactly when the turn has a true parent.** The agent
+sets `trigger_traceparent` on a post iff the turn it posts from was started by
+a single identifiable message — the #649 topology's shape 1 (idle steer, 1:1)
+or shape 2 with N == 1 (single-message deliver flush), which are precisely the
+two sites that wrap the turn in `runWithParent`. Every other start goes empty:
+a coalesced flush (N > 1), a mid-turn steer (no new turn — the span is already
+parented, and the bridge links rather than parents), and a turn with no
+inbound trigger at all.
+
 **Coalesced turns emit no trigger (N>1 ⇒ empty).** A turn can coalesce N
 delivered messages into one prompt, and the field is one scalar, so a post
 from such a turn sets `trigger_traceparent` EMPTY rather than electing one of
