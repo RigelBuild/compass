@@ -313,9 +313,11 @@ trigger's trace at the agent-side continuation), so the acceptance criterion
 below cannot tell them apart; what differs is WHICH span in that trace the link
 names. The trigger message's span is the causal antecedent; the agent's own
 turn span is the trigger's consumer, so linking it answers "what was I doing"
-instead of "what caused this", and the
-§Trace lifetime and termination query — "what did this message transitively
-trigger?" — no longer resolves to a message. The server's `RelayCommsCall` origin span (a′)
+instead of "what caused this". The termination-section query — "what did this
+message transitively trigger?" — then no longer resolves to a message. No
+assertion catches the wrong source: every test here injects
+`trigger_traceparent` server-side, so the agent's emit choice is exercised by
+none of them. The server's `RelayCommsCall` origin span (a′)
 adds a span **Link** from `trigger_traceparent` — a LINK, never a parent. The
 Link is attached to the ALREADY-STARTED otelconnect span via `Span.AddLink`
 (OTel Go SDK floor **≥ v1.23.0**, which the fresh `go.mod` deps pull) — NOT at
@@ -669,9 +671,10 @@ message CommsCallRequest {
   // oneof call { ... } occupies 2-6; #628 (held) claims 7-9 in the same oneof,
   // so 10 is the next collision-free scalar slot (ratified by compass-server,
   // the agent_gateway.proto file-zone authority).
-  // The delivered message's traceparent the agent re-attaches on an outbound
-  // post, so the server links the reply's new trace to its trigger. Empty on a
-  // human-seeded first turn.
+  // The inbound trigger message's decoded traceparent, which the agent
+  // re-attaches on an outbound post — never the outbound turn's own span
+  // context — so the server links the reply's new trace to its trigger.
+  // Empty on a human-seeded first turn.
   string trigger_traceparent = 10;
 }
 ```
