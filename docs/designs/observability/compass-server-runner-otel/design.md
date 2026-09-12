@@ -324,11 +324,29 @@ Link is attached to the ALREADY-STARTED otelconnect span via `Span.AddLink`
 span creation, because otelconnect owns the span factory and exposes no
 link-at-creation hook. The link carries `compass.link.kind=cross_turn_trigger`,
 which is what identifies it as the cross-turn causal link. Empty
-`trigger_traceparent` (a human-seeded first turn, or no active trigger) adds no
-*cross-turn causal* link, per the never-block posture — it does not leave the
+`trigger_traceparent` (a human-seeded first turn, no active trigger, or a
+coalesced turn — below) adds no *cross-turn causal* link, per the never-block
+posture — it does not leave the
 span linkless, because otelconnect adds a transport link of its own (below).
 Consumers MUST select the causal link by that attribute, never by position or
 by total link count.
+
+**Coalesced turns emit no trigger (N>1 ⇒ empty).** A turn can coalesce N
+delivered messages into one prompt, and the field is one scalar, so a post
+from such a turn sets `trigger_traceparent` EMPTY rather than electing one of
+the N. This follows the #649 topology, which parents a turn on its trigger
+only when exactly one message started it and otherwise links all N
+(`../compass-agent-message-trace-continuity/design.md`, §the turn-boundary
+shapes: "a single-message batch parents; a multi-message batch links every
+message's context"). Electing a primary would reintroduce the precedence that
+topology deliberately refuses: queue order is arrival order, not causality, so
+"first" can name a message that did not cause the post. The cost is a real
+gap — a coalesced turn's post carries no cross-turn causal edge, so the
+"what did this message transitively trigger?" query does not traverse it. That
+is the honest degradation: the antecedent is genuinely a SET, and a fabricated
+single antecedent would silently corrupt the query that selects on
+`compass.link.kind`. Widening the field to `repeated` is rejected for now — a
+wire change to a ratified field with no consumer for the multi-edge case.
 
 **Fresh-root invariant (load-bearing for termination).** The `RelayCommsCall`
 origin span MUST be a fresh root with respect to its trigger. This holds
@@ -674,7 +692,8 @@ message CommsCallRequest {
   // The inbound trigger message's decoded traceparent, which the agent
   // re-attaches on an outbound post — never the outbound turn's own span
   // context — so the server links the reply's new trace to its trigger.
-  // Empty on a human-seeded first turn.
+  // Empty on a human-seeded first turn, and on a turn that coalesced more
+  // than one delivered message (no single antecedent to name).
   string trigger_traceparent = 10;
 }
 ```
