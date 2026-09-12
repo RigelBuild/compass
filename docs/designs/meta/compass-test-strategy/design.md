@@ -2,7 +2,7 @@
 
 Status: Draft
 
-> **Design record** — ported from the internal monorepo's frozen
+> **Design record** — ported from a frozen ancestor
 > test-strategy record into compass, with Matt-ruled amendments grounding it
 > against the shipped compass CI. Ledgered as DL-174..DL-181.
 
@@ -22,9 +22,9 @@ remaining unexecuted deliverables: in-harness require-live teeth, one thin
 client↔server contract lane (a follow-up owned conceptually by the
 dogfood-e2e harness record).
 
-**Provenance and amendments.** This is a port of the internal monorepo's
-frozen test-strategy record, which designed the strategy against its
-Woodpecker/moon CI before compass forked. Two of its decisions are amended by
+**Provenance and amendments.** This is a port of a frozen ancestor
+test-strategy record, which designed the strategy against a Woodpecker/moon CI
+before compass forked. Two of its decisions are amended by
 Matt's ruling to match compass's shipped reality (see D-A1/D-A2 below): the
 ancestor record mandated a separate `compass-go:test-pg` CI lane — compass runs
 the pgtest suites **inline in the one existing CI job**, with no extra job —
@@ -47,7 +47,7 @@ and contract testing — the layered pyramid underneath it.
 Neither the `pgtest` nor the `podman` suites compile into it.
 
 **The live-Postgres surface runs inline in CI — shipped.** Unlike the
-internal monorepo's ancestor record (where no CI lane ran the pgtest suites at all), compass CI already
+ancestor record (where no CI lane ran the pgtest suites at all), compass CI already
 runs them: `.github/workflows/ci.yml` attaches a Postgres **service
 container** to the one `CI` job (`ci.yml:108-127`) and, after the moon
 battery, a folded-in step runs
@@ -214,7 +214,7 @@ here.
 
 ### A4 — Client-transport contract lane: a follow-up owned with dogfood-e2e
 
-The internal monorepo's ancestor F5 lane — a `bun test` suite spawning the real `compass-server`
+The ancestor record's F5 lane — a `bun test` suite spawning the real `compass-server`
 binary and driving the generated TS client against it over a loopback
 endpoint — remains a real gap (mock-fetch on the TS side, in-process servers
 on the Go side; the two generated stubs never meet a real wire in any gate).

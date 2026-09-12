@@ -38,8 +38,8 @@ This record therefore only documents the hazard and the interim workaround;
 it designs no compass-side gate change.
 
 Local dev is the developer's own box — not a deployed `main` or `preview`
-environment. Those deployed environments are internal infrastructure, defined
-in the private infrastructure design repo, and are not redesigned here. The
+environment. Those deployed environments are a managed-plane concern, out of
+tree, and are not redesigned here. The
 repo-facing PR-validation surface (the expanded e2e harness and its
 results-on-PR) is Record B
 (`docs/designs/platform/compass-pr-validation/design.md`).

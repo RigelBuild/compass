@@ -10,9 +10,9 @@ Status: Draft
 > (`docs/designs/platform/compass-dogfood-e2e/design.md`, RIG-1681, H1-H8).
 > Local-dev / gate mechanics are a separate record
 > (`docs/designs/platform/compass-local-dev/design.md`). UI-visible changes
-> are additionally previewable in an isolated PR-preview environment defined
-> in the private infrastructure design repo; that environment's hosting,
-> deploy workflow, and selection mechanism live in that repo's records, not
+> are additionally previewable in an isolated PR-preview environment, which is
+> out of tree: that environment's hosting, deploy workflow, and selection
+> mechanism are a managed-plane concern, out of scope
 > here — this record owns only the repo-side validation surfaces, including
 > the configurable UI build the preview consumes.
 
@@ -165,8 +165,8 @@ format/lint/test.
 - **Scripts over bash.** Any summary/capture logic beyond a one-liner is a
   bun/TS tool under `tools/`, not shell in YAML.
 - **De-leak.** This is a public repo. The isolated PR-preview environment is
-  referred to only generically — "an isolated PR-preview environment defined
-  in the private infrastructure design repo". No internal hostnames,
+  referred to only generically — as "an isolated PR-preview environment", out
+  of tree. No internal hostnames,
   addresses, ports, service/unit names, or private repo names appear in this
   record or in anything it produces (workflow YAML, skill text, PR comments).
 - **Sequencing floor.** Tasks that extend the CI gate land AFTER #256
@@ -190,7 +190,7 @@ A2 and the Plan has no B2.
 
 A general compass-ui capability: make the UI bundle buildable against ANY
 configured door URL + bearer via build-time env — the isolated PR-preview
-environment (defined in the private infrastructure design repo) consumes this
+environment, which is out of tree, consumes this
 capability; local/dev targets can too. No code change to connection
 resolution is expected — `resolveConnection` already requires a base URL and
 normalizes an absent token to a no-auth client
