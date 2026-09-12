@@ -151,6 +151,15 @@ func (h *HostRuntime) WorkspaceUID() (uint32, error) {
 	return uint32(h.euid), nil //nolint:gosec // G115: euid is non-negative here (the < 0 case returned above), so the narrowing cannot wrap.
 }
 
+// EgressUnenforced marks this tier as unable to constrain egress. A host child
+// shares the host's network namespace, so there is no boundary to firewall —
+// the nftables arm the container tiers run has nothing to attach to here. This
+// reports the absence of enforcement, never that enforcement happened
+// elsewhere.
+func (h *HostRuntime) EgressUnenforced() bool {
+	return true
+}
+
 // WithTimeout overrides the per-command wall-clock cap Exec applies.
 func (h *HostRuntime) WithTimeout(timeout time.Duration) *HostRuntime {
 	h.timeout = timeout
