@@ -119,7 +119,9 @@ function makeWritable(dir: string): void {
 	if (!existsSync(dir)) return;
 	chmodSync(dir, 0o755);
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
-		if (entry.isDirectory() && !entry.isSymbolicLink()) {
+		// readdirSync withFileTypes uses lstat semantics, so a symlink already
+		// reports isDirectory() === false and is never followed here.
+		if (entry.isDirectory()) {
 			makeWritable(join(dir, entry.name));
 		}
 	}
@@ -127,9 +129,22 @@ function makeWritable(dir: string): void {
 
 const { tag, mode } = parseArgs(process.argv.slice(2));
 
-// buildctl is a CLIENT; it needs a reachable buildkitd. Checked BEFORE the
-// expensive nix builds so a missing daemon fails in a second rather than after a
-// multi-minute realise. There is deliberately no `docker build` fallback.
+// The platform below is a manifest LABEL; BuildKit applies it without checking
+// what the COPY'd files actually are. Today only flake.nix's systems list keeps
+// the two honest — a separate file this lane never reads — so assert it here
+// rather than inherit an unchecked invariant.
+if (process.arch !== "x64") {
+	console.error(
+		`runner-image targets ${IMAGE_PLATFORM}, but this host is ${process.arch}.\n` +
+			"  Building here would label the image amd64 while staging this host's binaries.",
+	);
+	process.exit(1);
+}
+
+// buildctl is a CLIENT; it needs a reachable buildkitd. This only checks the
+// var is SET, so an unreachable daemon still fails at the build step after the
+// realise — it catches the common "forgot to start one" case early, not a dead
+// socket. There is deliberately no `docker build` fallback.
 const buildkitHost = process.env.BUILDKIT_HOST;
 if (buildkitHost === undefined || buildkitHost === "") {
 	console.error(
@@ -204,9 +219,16 @@ for (const path of closurePaths) {
 	// Each basename is unique by construction (it carries a content hash), and
 	// the store's symlinks are preserved verbatim so the symlinkJoin'd stack env
 	// still resolves inside the image.
+	//
+	// preserveTimestamps is load-bearing for the DIGEST, not just tidiness. Nix
+	// normalises every store mtime to 1; without this, cpSync stamps wall-clock
+	// mtimes into the staged tree, they land in the layer tar, and two builds of
+	// identical inputs produce different digests. The publish lane asserts a
+	// stable digest, so this is part of what makes that assertion meaningful.
 	cpSync(path, join(stageDir, path.replace(/^\/nix\/store\//, "")), {
 		recursive: true,
 		verbatimSymlinks: true,
+		preserveTimestamps: true,
 	});
 }
 console.error(`runner-image: staged ${closurePaths.length} store paths`);

@@ -6,23 +6,17 @@
 # This project carries the Dockerfile and the staged build context; the
 # realise-and-stage logic is tools/runner-image (TypeScript, not a shell script).
 #
-# WHY THIS IS A DOCKERFILE PROJECT AND NOT A NIX ONE. The sibling image projects
-# (agent-image/, guest-image/) are `language: nix` because their artifacts ARE
-# nix derivations. This one is not: the fleet's first-party image-builds spec
-# routes a prebuilt application on a minimal base to a Dockerfile built by
-# rootless BuildKit, and routes nix2container only to images that ARE a Nix
-# environment. Nix still BUILDS every carried artifact — the spec's prescribed
-# shape is `nix build` then COPY — but the image's runtime is a distroless base,
-# not a Nix environment, and the mechanism follows the runtime.
+# A Dockerfile project, not a nix one like the sibling agent-image/ and
+# guest-image/: their artifacts ARE nix derivations, this image's runtime is a
+# distroless base. See the design record's R1 task.
 #
 # WHY THERE IS NO `ci` TASK. Unlike agent-image/ and guest-image/, this project
 # deliberately does NOT ride the pre-merge gate: the build needs a reachable
-# buildkitd (which no compass CI step carries today — R2 stands that up) and it
+# buildkitd (which no compass CI step carries today) and it
 # stages a multi-GB closure dominated by the guest rootfs. Registering a `ci`
 # task now would add an unrunnable task to the gate, so the gate coverage this
 # project has today is the pure-core suite in tools/runner-image, which is where
-# a mapping drift would actually be caught. R2 adds the publish lane and with it
-# the first CI leg that builds this image.
+# a mapping drift would actually be caught. The publish lane adds the first CI leg that builds this image.
 layer: 'application'
 language: 'bash'
 tags: []
@@ -54,8 +48,14 @@ tasks:
     # runner command for the binary, and the guest-image/VMM-env closures for
     # the carried assets. A glob that misses one would leave a stale image
     # passing as current.
+    # Named tracked files, NOT a `**/*` glob. moon hashes with its native walker,
+    # which reads contents directly and does not skip gitignored paths — a bare
+    # glob here would hash the multi-GB staged closure this task itself writes
+    # into store/, on every affected-computation.
     inputs:
-      - '**/*'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'moon.yml'
       - '/tools/runner-image/**/*'
       - '/flake.nix'
       - '/flake.lock'

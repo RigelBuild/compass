@@ -6,6 +6,11 @@
 // container build needs: the set of paths to stage into the build context, and
 // the build-args that bake those absolute paths into the image's env.
 
+/** The fixed build epoch. Nix normalises every store mtime to 1, so using the
+ * same value keeps the rewritten layer timestamps equal to what the staged tree
+ * already carries. */
+export const SOURCE_DATE_EPOCH = 1;
+
 /** The six artifacts the image carries, as realised store paths. */
 export interface RunnerImageOutputs {
 	/** The `compass-runner` package out-path (the binary is at `bin/compass-runner`). */
@@ -54,7 +59,6 @@ export function kernelImagePath(kernelDir: string): string {
  */
 export function buildArgs(outputs: RunnerImageOutputs): Record<string, string> {
 	return {
-		RUNNER_BIN: `${outputs.runner}/bin/compass-runner`,
 		VMM_BIN: `${outputs.stack}/bin/cloud-hypervisor`,
 		VIRTIOFSD_BIN: `${outputs.stack}/bin/virtiofsd`,
 		// passt is exec'd by NAME rather than by a configured path (it has no
@@ -92,16 +96,22 @@ export function closureRoots(outputs: RunnerImageOutputs): string[] {
 }
 
 /** The buildctl `--output` spec for each supported output mode. `oci` writes a
- * browsable local layout (what R2's publish lane scans BEFORE deciding to push);
+ * browsable local layout (what the publish lane scans BEFORE deciding to push);
  * `image` names a tagged image for a local dogfood load. */
 export function outputSpec(
 	mode: "oci" | "image",
 	tag: string,
 	ociDir: string,
 ): string {
+	// rewrite-timestamp normalises every layer entry's mtime to SOURCE_DATE_EPOCH.
+	// Without it two builds of a BIT-IDENTICAL staged tree still produce different
+	// layer digests, because BuildKit carries the context's mtimes into the layer
+	// tar. Measured: only the `COPY store` layer differed between runs; with this
+	// set, two builds yield the same manifest digest.
+	const rewrite = "rewrite-timestamp=true";
 	return mode === "oci"
-		? `type=oci,dest=${ociDir},tar=false`
-		: `type=image,name=${tag}`;
+		? `type=oci,dest=${ociDir},tar=false,${rewrite}`
+		: `type=image,name=${tag},${rewrite}`;
 }
 
 /**
@@ -128,6 +138,11 @@ export function buildctlArgs(
 		"filename=Dockerfile",
 		"--opt",
 		`platform=${platform}`,
+		// Pairs with rewrite-timestamp: this fixes the image config's `created`
+		// field and is the epoch every layer mtime is rewritten to. 1, not 0,
+		// matching the mtime nix normalises its store paths to.
+		"--opt",
+		`build-arg:SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}`,
 	];
 	// Sorted, so the argv is deterministic across runs: an unstable arg order
 	// would make two otherwise-identical builds diff in logs for no reason.

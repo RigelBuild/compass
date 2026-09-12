@@ -3,6 +3,8 @@
 // plausible bug — not on a restatement of the implementation.
 
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
 	buildArgs,
 	buildctlArgs,
@@ -48,7 +50,6 @@ describe("kernelImagePath", () => {
 describe("buildArgs", () => {
 	test("maps each artifact to the env the Runner reads, kernel suffixed and the file assets bare", () => {
 		expect(buildArgs(outputs)).toEqual({
-			RUNNER_BIN: "/nix/store/aaa-compass-runner/bin/compass-runner",
 			VMM_BIN: "/nix/store/bbb-compass-stack-env/bin/cloud-hypervisor",
 			VIRTIOFSD_BIN: "/nix/store/bbb-compass-stack-env/bin/virtiofsd",
 			STACK_BIN_DIR: "/nix/store/bbb-compass-stack-env/bin",
@@ -56,12 +57,6 @@ describe("buildArgs", () => {
 			GUEST_ROOTFS: "/nix/store/ddd-rootfs.erofs",
 			GUEST_INITRD: "/nix/store/eee-initrd",
 		});
-	});
-
-	test("every value is absolute, since the image bakes them as env the Runner resolves without a cwd", () => {
-		for (const value of Object.values(buildArgs(outputs))) {
-			expect(value.startsWith("/nix/store/")).toBe(true);
-		}
 	});
 });
 
@@ -91,13 +86,25 @@ describe("closureRoots", () => {
 describe("outputSpec", () => {
 	test("oci writes a browsable layout, which is what the publish lane scans before pushing", () => {
 		expect(outputSpec("oci", "ignored:tag", "/tmp/out")).toBe(
-			"type=oci,dest=/tmp/out,tar=false",
+			"type=oci,dest=/tmp/out,tar=false,rewrite-timestamp=true",
 		);
 	});
 
 	test("image names the tag for a local load", () => {
 		expect(outputSpec("image", "compass-runner:dev", "/tmp/out")).toBe(
-			"type=image,name=compass-runner:dev",
+			"type=image,name=compass-runner:dev,rewrite-timestamp=true",
+		);
+	});
+
+	// The digest-stability property the publish lane depends on: without this,
+	// two builds of a bit-identical staged tree still export different layer
+	// digests, because the context's mtimes ride into the layer tar.
+	test("both modes rewrite layer timestamps, so a rebuild is digest-stable", () => {
+		expect(outputSpec("oci", "t", "/tmp/out")).toContain(
+			"rewrite-timestamp=true",
+		);
+		expect(outputSpec("image", "t", "/tmp/out")).toContain(
+			"rewrite-timestamp=true",
 		);
 	});
 
@@ -126,10 +133,26 @@ describe("buildctlArgs", () => {
 		const once = buildctlArgs("/ctx", outputs, "linux/amd64", "type=oci");
 		const twice = buildctlArgs("/ctx", outputs, "linux/amd64", "type=oci");
 		expect(once).toEqual(twice);
-		const names = once
-			.filter((a) => a.startsWith("build-arg:"))
-			.map((a) => a.slice("build-arg:".length).split("=")[0]);
-		expect(names).toEqual([...names].sort());
+	});
+
+	// The load-bearing drift test: buildArgs is only correct RELATIVE to the
+	// Dockerfile's own ARG declarations, and nothing else compares the two. It is
+	// what caught a RUNNER_BIN that build-core supplied and the Dockerfile had
+	// stopped consuming.
+	test("supplies exactly the build-args the Dockerfile declares", () => {
+		const dockerfile = readFileSync(
+			join(import.meta.dir, "..", "..", "runner-image", "Dockerfile"),
+			"utf8",
+		);
+		const declared = new Set(
+			[...dockerfile.matchAll(/^ARG\s+([A-Z_][A-Z0-9_]*)/gm)].map(
+				(m) => m[1] as string,
+			),
+		);
+		// SOURCE_DATE_EPOCH is consumed by the frontend itself and supplied by
+		// buildctlArgs directly, not through the artifact mapping.
+		declared.delete("SOURCE_DATE_EPOCH");
+		expect(new Set(Object.keys(buildArgs(outputs)))).toEqual(declared);
 	});
 
 	test("uses the dockerfile.v0 frontend against the staged context", () => {

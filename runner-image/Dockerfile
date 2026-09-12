@@ -5,21 +5,10 @@
 # backend direct-boots, so a Runner pod needs no host toolchain — only /dev/kvm
 # and the session-volume mount.
 #
-# WHY A DOCKERFILE AND NOT nix2container. The fleet's first-party image-builds
-# spec splits the two mechanisms by what the image's RUNTIME is, not by what
-# built the artifact: an image that IS a Nix environment (a CI step image, a
-# dev/agent shell) earns nix2container; a PREBUILT APPLICATION on a minimal base
-# is a Dockerfile built by rootless BuildKit. It forecloses the tempting
-# inference in terms — an image does not earn the nix path "merely because Nix
-# built it or it ships a compiled binary" — and rejects nix2container for app
-# images on cost. The Runner is the prebuilt-application row: it runs no
-# toolchain, it exec's four binaries. The sibling agent-image/ sits on the other
-# row BY NAME, because that container's job is to be a toolchain; sharing the
-# `*-image/` directory shape is not sharing the mechanism.
-#
-# The prescribed shape for a nix-built artifact is therefore `nix build` it and
-# COPY the result onto the base — which is exactly what build.sh stages into
-# `store/` and what the single COPY below installs.
+# A Dockerfile on a minimal base, not a nix2container image: the mechanism
+# follows the image's RUNTIME, and the Runner is a prebuilt application that
+# runs no toolchain. Full rationale in the design record's R1 task; nix still
+# builds every carried artifact, and build.ts COPYs the result.
 
 # Distroless STATIC, not :base and not Alpine. The carried binaries are
 # dynamically linked but nix-closed: each names an ABSOLUTE /nix/store
@@ -33,9 +22,10 @@
 # omitted — the same exec fails "missing dynamic library", which is the control
 # proving the loader comes from the closure rather than the base.
 #
-# :nonroot selects uid/gid 65532. The Runner does not need root: R4 grants
-# /dev/kvm access by supplementary group, not by uid. Pinned by digest, never by
-# tag, for the same reason R2 pins this image's own digest downstream.
+# The pinned digest is the nonroot variant (uid/gid 65532). The Runner needs no
+# root: /dev/kvm access is granted by supplementary group at the pod layer.
+# Pinned by digest, never by tag — GHCR-style tag mutability gives no
+# immutability guarantee.
 FROM gcr.io/distroless/static-debian12@sha256:c0f429e16b13e583da7e5a6ec20dd656d325d88e6819cafe0adb0828976529dc
 
 # The realised nix closure: the Runner binary, the KVM userland and the guest
@@ -74,7 +64,6 @@ COPY store /nix/store
 # preflight is fail-closed (it requires both a static support probe and a real
 # boot canary), so a missing or wrong path fails at startup, loudly, rather than
 # at first session.
-ARG RUNNER_BIN
 ARG VMM_BIN
 ARG VIRTIOFSD_BIN
 ARG GUEST_KERNEL
@@ -91,6 +80,11 @@ ENV COMPASS_RUNTIME_BACKEND=microvm \
 # passt is exec'd by name, not by configured path (unlike the VMM and virtiofsd,
 # which have --microvm-* flags), so its bin dir must be on PATH. Prepended to
 # the base PATH rather than replacing it.
+# Consumed by the dockerfile frontend (paired with the export's
+# rewrite-timestamp) to fix the config `created` field and the layer mtimes, so
+# two builds of the same inputs yield the same digest.
+ARG SOURCE_DATE_EPOCH
+
 ARG STACK_BIN_DIR
 ENV PATH=${STACK_BIN_DIR}:/usr/local/bin:/usr/bin:/bin
 
@@ -99,4 +93,9 @@ ENV PATH=${STACK_BIN_DIR}:/usr/local/bin:/usr/bin:/bin
 # form, so the Runner is pid 1 and receives SIGTERM directly at pod shutdown —
 # a shell wrapper would swallow it and leave the graceful drain to the kill
 # timeout.
+# Explicit, rather than inherited from the base's own config: a future digest
+# bump that landed on the root `static` variant would otherwise silently produce
+# a root-running container, and nothing here would catch it.
+USER 65532:65532
+
 ENTRYPOINT ["/nix/store/.compass-runner"]

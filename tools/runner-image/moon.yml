@@ -1,12 +1,9 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# runner-image (R1): the build lane for the compass-runner container image. The
-# image is a Dockerfile on a minimal hardened base, built by rootless BuildKit —
-# the ruled mechanism for a prebuilt application, as against the nix2container
-# path the sibling agent-image/ takes because THAT container's job is to be a
-# toolchain. The realise-and-stage logic lives here in TypeScript rather than a
-# shell script (the no-bash-gate CI task); runner-image/ carries the Dockerfile
-# and the staged context.
+# runner-image (R1): the build lane for the compass-runner container image.
+# Realises the nix closure, stages it, and drives the rootless-BuildKit build.
+# TypeScript rather than a shell script (the no-bash-gate CI task);
+# runner-image/ carries the Dockerfile and the staged context.
 #
 # The BUILD itself needs a reachable buildkitd and realises a multi-GB nix
 # closure, so it is not a CI gate task (see runner-image/moon.yml for the build
