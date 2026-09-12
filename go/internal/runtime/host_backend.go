@@ -118,6 +118,9 @@ type HostRuntime struct {
 	timeout   time.Duration
 	mu        sync.Mutex
 	handles   map[WorkloadID]*hostHandle
+	// afterSpawn, when set by a test, runs between the spawn and the handle
+	// record in ExecStreaming. Nil in production.
+	afterSpawn func()
 }
 
 var _ WorkloadRuntime = (*HostRuntime)(nil)
@@ -332,6 +335,11 @@ func (h *HostRuntime) ExecStreaming(ctx context.Context, id WorkloadID, spec Str
 		proc.waitErr = cmd.Wait()
 		close(proc.done)
 	}()
+	// Test seam: lets a test occupy the gap between the spawn and the record
+	// below, which is otherwise a lock-free window no caller can time.
+	if h.afterSpawn != nil {
+		h.afterSpawn()
+	}
 
 	// The child is already running, so a Remove that landed during the spawn
 	// would have found no process to kill. Detect that and reap our own child

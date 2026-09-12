@@ -435,3 +435,35 @@ func TestHostRemoveConcurrentWithExecStreaming(t *testing.T) {
 		wg.Wait()
 	}
 }
+
+// TestHostExecStreamingRemovedDuringSpawn pins the removal-during-spawn
+// window. startedHandle releases the lock before the spawn, so a concurrent
+// Remove can delete the handle and wipe the state dir while the child is
+// already running and not yet recorded — after which nothing can reach it by
+// id. The seam forces that interleaving instead of racing for it.
+func TestHostExecStreamingRemovedDuringSpawn(t *testing.T) {
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skipf("sleep not on PATH: %v", err)
+	}
+	h := newHostRuntime(t)
+	id := createStarted(t, h, "agent-removed")
+	h.afterSpawn = func() {
+		if removeErr := h.Remove(t.Context(), id); removeErr != nil {
+			t.Errorf("Remove during spawn: %v", removeErr)
+		}
+	}
+
+	stream, err := h.ExecStreaming(t.Context(), id, NewStreamingExecSpec(sleepBin, "300"))
+	if err == nil {
+		_ = stream.Process.Kill()
+		_ = stream.Process.Wait()
+		t.Fatal("ExecStreaming returned a live stream for a workload removed mid-spawn; the child would outlive every way of reaching it")
+	}
+	if stream != nil {
+		t.Fatalf("ExecStreaming returned a stream alongside err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "removed during spawn") {
+		t.Fatalf("err = %v, want the removed-during-spawn refusal", err)
+	}
+}
