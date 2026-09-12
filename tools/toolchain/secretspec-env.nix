@@ -69,48 +69,53 @@ let
   pkgs = import nixpkgsSrc { };
 
   # The single source of truth for the version number: the pinned nixpkgs
-  # `secretspec` package the CLI output below is. The cdylib is built from the
-  # upstream repo at the matching tag, so the read half and write half share one
-  # version and cannot drift.
+  # `secretspec` package the CLI output below is. The cdylib is fetched at the
+  # matching release, so the read half and write half share one version.
   version = pkgs.secretspec.version;
 
-  # The libsecretspec cdylib the read-path SDK dlopens. Built from the upstream
-  # workspace (the published crate omits this member), pinned by content hash at
-  # tag v${version}. The lib target is named "secretspec" (libsecretspec/
-  # Cargo.toml), so the emitted artifact is `libsecretspec.so`/`.dylib` — exactly
-  # the name secretspec-go's findLibrary() looks for.
-  libsecretspec = pkgs.rustPlatform.buildRustPackage {
+  # The libsecretspec cdylib the read-path SDK dlopens, taken from the upstream
+  # RELEASE rather than built from source: the crate has no binary cache, so
+  # compiling it cost CI ~13 minutes of Rust per job. The asset is pinned by the
+  # sha256 upstream publishes beside it.
+  #
+  # Linux x86_64 and aarch64 plus Darwin arm64 are the hosts that run this; any
+  # other host throws rather than silently yielding no library.
+  ffiAsset =
+    {
+      x86_64-linux = {
+        name = "libsecretspec-x86_64-unknown-linux-gnu.so";
+        hash = "sha256-9YHvFdtHga5b4Z2Nv4U3C9Kwt0jQRs+pcBMoE6ZS3TQ=";
+      };
+      aarch64-linux = {
+        name = "libsecretspec-aarch64-unknown-linux-gnu.so";
+        hash = "sha256-UumvFC0pKEgiEHtCyKHXbODpa4+9weFHoSOAUbkTHYE=";
+      };
+      aarch64-darwin = {
+        name = "libsecretspec-aarch64-apple-darwin.dylib";
+        hash = "sha256-WoSv2V+/lAr1kVF+L1naNAmyoCIgqh0S4XYeuzhfjOY=";
+      };
+    }
+    .${pkgs.stdenv.hostPlatform.system}
+      or (throw "libsecretspec: no published asset for ${pkgs.stdenv.hostPlatform.system}");
+
+  # The SDK's findLibrary looks for `libsecretspec.<ext>`, so the asset is
+  # renamed from its triple-qualified release name to that flat one.
+  libsecretspec = pkgs.stdenvNoCC.mkDerivation {
     pname = "libsecretspec";
     inherit version;
 
-    src = pkgs.fetchFromGitHub {
-      owner = "cachix";
-      repo = "secretspec";
-      tag = "v${version}";
-      hash = "sha256-ECk5iqtTnXzitbf8XMMNKZQ7MnbvcSAGd1IZImojWPA=";
+    src = pkgs.fetchurl {
+      url = "https://github.com/cachix/secretspec/releases/download/v${version}/${ffiAsset.name}";
+      hash = ffiAsset.hash;
     };
 
-    cargoHash = "sha256-yLO05TKG0fd5YmA1/+cylKpvGslLi6wF8pwj/dOJ1U0=";
+    dontUnpack = true;
 
-    # Build only the C-ABI wrapper (and its transitive secretspec-core), not the
-    # whole workspace (CLI, node/py/php bindings). The cdylib is the artifact.
-    cargoBuildFlags = [
-      "-p"
-      "libsecretspec"
-    ];
-
-    # No test run: this output exists to be dlopened, and the workspace's tests
-    # reach for network providers and fixtures. The read path's real exercise is
-    # the Go pgtest that resolves through it.
-    doCheck = false;
-
-    # buildRustPackage installs bins; the cdylib is a library, so place it under
-    # $out/lib at the predictable path SECRETSPEC_FFI_LIB points at. The build
-    # target dir carries a triple subdir when a target is set, so glob for it.
-    postInstall = ''
-      mkdir -p "$out/lib"
-      find target -type f \( -name 'libsecretspec.so' -o -name 'libsecretspec.dylib' \) \
-        -exec cp {} "$out/lib/" \;
+    installPhase = ''
+      runHook preInstall
+      install -Dm555 "$src" \
+        "$out/lib/libsecretspec${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}"
+      runHook postInstall
     '';
   };
 in
