@@ -68,6 +68,23 @@ partially-answered ask. It also deletes machinery: `isAskComplete` loses its
 only caller, `sendAsk`'s rollback parameter loses both of its, and
 `sameAnswers` loses its one call site (D0).
 
+**Checked against the tool this proto mirrors.** `comms.proto`'s ask messages
+are written as a wire form of the agent harness's own `ask` tool — they cite
+it by name for the always-available free-text rule (`comms.proto:426-429`) —
+so its documented behaviour (`omp://tools/ask.md`) is the reference for what
+"an ask" means here, not an analogy. Reading it confirms the central ruling:
+that tool never sends on a pick either. Its rich dialog is a **form** the user
+fills and submits, and even its plain fallback treats a pick as navigation
+between questions, not as transmission — a multi-question ask advances and
+preserves prior answers, and only the *final* question auto-advances. It also
+shows where this record deliberately ships less: that tool offers `Other (type
+your own)` on **every** question, and reserves the label so a caller cannot
+mint it, whereas this record's input appears only when a question has no
+options (D4, Open Question 1). Two of its affordances — a per-answer note and
+a "Chat about this" redirect — have no field in `AskQuestionAnswer` at all
+(Open Question 4). Its timeout auto-selection is the `timed_out` field, owned
+by RIG-1310 and out of scope here.
+
 ### D0 — sending is always an explicit gesture (DL-TBD-3)
 
 An ask is sent **only** by the user clicking the submit control. No recording
@@ -470,12 +487,23 @@ In `AskBlock` (`ChannelView.tsx:99-123`), the per-question body branches on
 - **Hint line.** The `choose any`/`choose one` hint (`ChannelView.tsx:95-98`)
   is wrong for a question with nothing to choose; the free-text branch
   renders "type your answer · async — answer when ready".
-- **Free text alongside options: out of scope.** The proto allows recording
-  text "alongside picking options" for `allow_multiple`
-  (`comms.proto:441-443`), but offering the input beside options is a
-  multi-select interaction change (an explicit non-goal) with its own design
-  surface. Named follow-up in Open Questions. The input renders only when
-  `options.length === 0`.
+- **Free text alongside options: deferred, and the deferral is now a known
+  gap rather than a clean boundary.** The proto says free-text answering is
+  "always available, mirroring the native tool's always-offered 'Other (type
+  your own)'" (`comms.proto:426-429`), and the native tool does offer it on
+  every question — `ask.md` § Flow lists "single-select list plus `Other
+  (type your own)`" and the multi-select loop likewise. Gating the input on
+  `options.length === 0`, as this record does, therefore ships a UI that is
+  *narrower than the contract it implements*: an option question offers no
+  "Other". That is a deliberate scope line, not a reading of the proto, and
+  it is recorded as such — the widening is mechanical here (drop the guard in
+  this branch), but it lands on the multi-select interaction surface this
+  record declares a non-goal, and it inherits a server rule the option-less
+  case never meets: `validateQuestionAnswer` rejects an option *and*
+  custom text on a **single-select** question with `ErrInvalidArgument`
+  (`go/internal/store/messages.go`, the `AllowMultiple` exclusivity check),
+  so an always-offered "Other" must make text and option mutually exclusive
+  per question unless `allowMultiple`. Open Question 1 owns it.
 - **CSS.** `.ask-text` joins the ask family in `apps/ui/src/app.css` beside
   `.ask-option` (`app.css:1161`), using the existing tokens
   (`--cx-text-dim`, `--cx-border-focus` family) — sizing to match the option
@@ -908,17 +936,30 @@ of their slices, the rest stay RED until theirs.
 
 ## Open Questions
 
-1. **Free text alongside options (`allow_multiple`).** (Not load-bearing —
-   still deferred, for a narrower reason.) The proto records text typed
-   "alongside picking options" (`comms.proto:441-443`). The prior deferral
-   leaned on "what is the completing gesture" — a question D0 dissolves, since
-   no gesture completes anything anymore. What remains is a genuine but
-   smaller presentation/product surface: how an "Other" input reads beside an
-   option row, whether typed text and a picked option may ship together on
-   one question, and whether text counts toward a single-select's settling.
-   None of it blocks or is blocked by this record's machinery (`answerAskText`
-   and the D3 guard would widen mechanically), so it stays a named follow-up
-   rather than silent scope growth.
+1. **An always-offered "Other", i.e. free text on a question that has
+   options.** (Load-bearing for *parity*, not for this record's machinery —
+   flagged after reading the native tool's own design.) The proto does not
+   merely permit this, it specifies it: options "MAY be empty (a free-text-only
+   question — free-text answering is **always** available, mirroring the
+   native tool's always-offered 'Other (type your own)')"
+   (`comms.proto:426-429`). The native tool matches that text — every
+   question, single- or multi-select, carries `Other (type your own)`
+   (`omp://tools/ask.md` § Flow), and `Other` is a *reserved option label* it
+   refuses to let a caller mint. So shipping the input only for option-less
+   questions leaves Compass a strict subset of the flow this proto was written
+   against, and the "free-text question" concept this record is built on
+   (`isFreeTextQuestion`, `options.length === 0`) is really "the only case
+   where free text is currently *reachable*". Two things must be decided
+   before widening, neither of which this record answers: how an "Other"
+   affordance reads beside an option row (chip that reveals an input, versus
+   an always-visible field), and the exclusivity rule — the server rejects an
+   option plus custom text on a single-select
+   (`validateQuestionAnswer`, `ErrInvalidArgument`), so on a single-select the
+   two must be mutually exclusive in the UI, while `allowMultiple` may carry
+   both. The machinery here widens mechanically (`answerAskText` is already
+   per-question; D3's guard becomes the exclusivity rule), which is why this
+   is a follow-up rather than a blocker — but it is a **parity gap**, not a
+   boundary the proto drew.
 2. **Enter-in-the-input-field.** (Not load-bearing — and no longer about
    whether the keyboard can submit at all: Enter on the focused submit
    control is a **decided contract**, D5's keyboard bullet, with a test.
@@ -929,3 +970,19 @@ of their slices, the rest stay RED until theirs.
 3. **Multi-line growth.** (Not load-bearing.) Single-line per D4's reading of
    the proto's "Other" framing. If agents start asking prose-shaped free-text
    questions, a `textarea` swap is contained to the D4 branch and its CSS.
+4. **Two native-tool affordances have no wire carrier at all.** (Not
+   load-bearing here; recorded so the gap is known rather than rediscovered.)
+   The native tool returns an optional per-answer **note** ("`User added
+   note: ...`", `details.note`) and a **"Chat about this"** redirect that
+   declines to answer and moves the question into conversation
+   (`omp://tools/ask.md` § Outputs). `AskQuestionAnswer` carries only
+   `question_id`, `chosen_option_ids`, and `custom_text`
+   (`comms.proto` `AskQuestionAnswer`) — there is no note field and no
+   redirect signal, so neither is droppable-but-present like `header`: they
+   are absent from the contract. Both are plausibly *already served* in
+   Compass, where an ask lives in a channel a participant can simply reply to
+   — a note is a reply, and "chat about this" is what the channel is. Whether
+   that equivalence is good enough, or the answer needs the note attached to
+   it for audit, is a product call and a proto change (out of scope per
+   Non-goals). Raise it before anyone concludes the two surfaces are at
+   parity.
