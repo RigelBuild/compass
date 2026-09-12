@@ -21,10 +21,13 @@ import {
 	ChannelGroupVisibility,
 	ChannelKind,
 	ChannelPostPolicy,
+	EgressPosture,
 	ForgeProvider,
 	IssueState,
+	RuntimeTier,
 	type Account as WireAccount,
 	type AgentAttribution as WireAgentAttribution,
+	type AgentSessionStatus as WireAgentSessionStatus,
 	type Ask as WireAsk,
 	type AskQuestion as WireAskQuestion,
 	type ChangedStats as WireChangedStats,
@@ -73,6 +76,9 @@ import type {
 	Review as DomainReview,
 	ReviewThread as DomainReviewThread,
 	TrackerRef as DomainTrackerRef,
+	EgressPostureMark,
+	RuntimeMarker,
+	RuntimeTierMark,
 } from "../stub-data";
 import type { MapMessage } from "./comms-state";
 
@@ -555,4 +561,37 @@ export function adaptRosterEntry(
 			activity: w.activity || undefined,
 		},
 	];
+}
+
+/** The wire `RuntimeTier` enum → the domain's runner-backend mark. Total over
+ *  the enum (`satisfies Record<RuntimeTier, …>` makes a new wire tier a compile
+ *  error here). `UNSPECIFIED → "unknown"`: an unresolved or version-skewed tier
+ *  is rendered honestly, never assumed to be a contained backend. */
+const RUNTIME_TIER: Record<RuntimeTier, RuntimeTierMark> = {
+	[RuntimeTier.UNSPECIFIED]: "unknown",
+	[RuntimeTier.PODMAN]: "podman",
+	[RuntimeTier.MICROVM]: "microvm",
+	[RuntimeTier.APPLE_CONTAINER]: "apple-container",
+	[RuntimeTier.HOST]: "host",
+} satisfies Record<RuntimeTier, RuntimeTierMark>;
+
+/** The wire `EgressPosture` enum → the domain's posture mark. Total, same
+ *  rationale as RUNTIME_TIER. `UNSPECIFIED → "unknown"`: an unresolved posture
+ *  is never rendered as contained. `UNENFORCED` is a DECLARED posture the user
+ *  must read as uncontained, not a failed arm (compass.proto EgressPosture). */
+const EGRESS_POSTURE: Record<EgressPosture, EgressPostureMark> = {
+	[EgressPosture.UNSPECIFIED]: "unknown",
+	[EgressPosture.ARMED]: "armed",
+	[EgressPosture.UNENFORCED]: "unenforced",
+} satisfies Record<EgressPosture, EgressPostureMark>;
+
+/** Map a wire `AgentSessionStatus` to the session runtime marker the roster
+ *  renders beside the state dot: the Runner-reported runtime tier and egress
+ *  posture, each mapped total over its wire enum. Pure — the identity/lifecycle
+ *  fields the status also carries are the presence path's job, not this marker's. */
+export function adaptRuntimeMarker(w: WireAgentSessionStatus): RuntimeMarker {
+	return {
+		tier: RUNTIME_TIER[w.runtimeTier],
+		posture: EGRESS_POSTURE[w.egressPosture],
+	};
 }

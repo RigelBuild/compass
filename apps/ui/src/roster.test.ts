@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentPresenceInfo } from "./live/adapt";
 import { joinAgents } from "./roster";
-import type { Account } from "./stub-data";
+import type { Account, RuntimeMarker } from "./stub-data";
 
 // roster.ts is the pure join at the store's seam: it composes the board's live
 // `Agent` view-models from the durable `accounts` (identity) and the ephemeral
@@ -22,6 +22,36 @@ function userAccount(id: string): Account {
 }
 
 describe("joinAgents", () => {
+	test("joins a runtime marker onto its agent by account id", () => {
+		const accounts = [agentAccount("acc-host"), agentAccount("acc-pod")];
+		const presence = new Map<string, AgentPresenceInfo>([
+			["acc-host", { lifecycle: "working" }],
+			["acc-pod", { lifecycle: "working" }],
+		]);
+		const runtime = new Map<string, RuntimeMarker>([
+			["acc-host", { tier: "host", posture: "unenforced" }],
+			["acc-pod", { tier: "podman", posture: "armed" }],
+		]);
+
+		const agents = joinAgents(accounts, presence, runtime);
+
+		expect(agents[0]?.runtime).toEqual({ tier: "host", posture: "unenforced" });
+		expect(agents[1]?.runtime).toEqual({ tier: "podman", posture: "armed" });
+	});
+
+	test("leaves runtime undefined for an agent with no session status yet", () => {
+		const accounts = [agentAccount("acc-new")];
+		const presence = new Map<string, AgentPresenceInfo>([
+			["acc-new", { lifecycle: "working" }],
+		]);
+
+		const agents = joinAgents(accounts, presence, new Map());
+
+		// Undefined, never a default: guessing a posture would render an
+		// uncontained agent as contained.
+		expect(agents[0]?.runtime).toBeUndefined();
+	});
+
 	test("projects a present entry's lifecycle and activity onto the agent", () => {
 		const accounts = [agentAccount("acc-cook")];
 		const presence = new Map<string, AgentPresenceInfo>([

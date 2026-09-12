@@ -4,6 +4,7 @@ import {
 	AccountSchema,
 	AgentAccountSchema,
 	AgentPresence,
+	AgentSessionStatusSchema,
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
@@ -13,6 +14,7 @@ import {
 	ChannelPostPolicy,
 	ChannelSchema,
 	create,
+	EgressPosture,
 	ForgeProvider,
 	IssueSchema,
 	IssueState,
@@ -20,6 +22,7 @@ import {
 	MessageSchema,
 	PullRequestSchema,
 	RosterEntrySchema,
+	RuntimeTier,
 	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,
@@ -35,6 +38,7 @@ import {
 	adaptMessage,
 	adaptPullRequest,
 	adaptRosterEntry,
+	adaptRuntimeMarker,
 	adaptTopic,
 	agentHomeChannelIds,
 	deriveMembership,
@@ -1006,5 +1010,43 @@ describe("adaptRosterEntry", () => {
 			}),
 		);
 		expect(info.lifecycle).toBeUndefined();
+	});
+});
+
+describe("adaptRuntimeMarker", () => {
+	// The runtime marker maps AgentSessionStatus.{runtime_tier,egress_posture}
+	// to the user-facing roster tokens. The semantics a user reads: a host tier
+	// with unenforced egress is the host backend AND visibly uncontained; a
+	// zero/unset value is unknown and never armed/contained.
+	test("host tier + unenforced egress maps to host and uncontained", () => {
+		const marker = adaptRuntimeMarker(
+			create(AgentSessionStatusSchema, {
+				runtimeTier: RuntimeTier.HOST,
+				egressPosture: EgressPosture.UNENFORCED,
+			}),
+		);
+		expect(marker.tier).toBe("host");
+		expect(marker.posture).toBe("unenforced");
+	});
+
+	test("a contained podman session reads as armed, not uncontained", () => {
+		const marker = adaptRuntimeMarker(
+			create(AgentSessionStatusSchema, {
+				runtimeTier: RuntimeTier.PODMAN,
+				egressPosture: EgressPosture.ARMED,
+			}),
+		);
+		expect(marker.tier).toBe("podman");
+		expect(marker.posture).toBe("armed");
+	});
+
+	test("a zero/unspecified value maps to unknown, never armed or contained", () => {
+		// The generated default for an absent field is the 0 enum value; it must
+		// render as unknown so a user never reads an unresolved session as armed.
+		const marker = adaptRuntimeMarker(create(AgentSessionStatusSchema, {}));
+		expect(marker.tier).toBe("unknown");
+		expect(marker.posture).toBe("unknown");
+		expect(marker.posture).not.toBe("armed");
+		expect(marker.posture).not.toBe("unenforced");
 	});
 });

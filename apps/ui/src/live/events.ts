@@ -41,8 +41,8 @@
 // (store.ts, behind options.compass).
 
 import type { CompassClient, SubscribeEventsResponse } from "@compass/client";
-import type { Issue as DomainIssue } from "../stub-data";
-import { adaptIssue } from "./adapt";
+import type { Issue as DomainIssue, RuntimeMarker } from "../stub-data";
+import { adaptIssue, adaptRuntimeMarker } from "./adapt";
 
 /** What the driver needs to run: the compass client, the sink for each new
  *  board snapshot, and the abort signal that cancels the whole run (component
@@ -53,6 +53,10 @@ export interface EventStreamOptions {
 	/** Called with the full current board (upsert-deduped by issue id) after each
 	 *  applied issue event. */
 	onIssues: (issues: DomainIssue[]) => void;
+	/** Called with each agent account's latest runtime marker, keyed by account
+	 *  id. A status whose account binding is no longer resolvable carries no
+	 *  account and is skipped rather than keyed under an empty id. */
+	onRuntime?: (runtime: ReadonlyMap<string, RuntimeMarker>) => void;
 	signal?: AbortSignal;
 	onError?: (error: unknown) => void;
 }
@@ -100,11 +104,15 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
  *  start (re-read + re-tail). Each applied issue pushes the full board to
  *  `onIssues`. Resolves only when aborted. */
 export async function runEventStream(opts: EventStreamOptions): Promise<void> {
-	const { client, onIssues, signal, onError } = opts;
+	const { client, onIssues, onRuntime, signal, onError } = opts;
 	// The board, deduped by issue id: the durable ListBoardIssues re-snapshot
 	// plus live tail upserts both land here, so a re-sent id REPLACES rather
 	// than appends — this map IS the union.
 	const board = new Map<string, DomainIssue>();
+	// Each agent account's latest runtime marker, keyed by account id. Same
+	// upsert-by-key discipline as the board: a new status for an account
+	// replaces its marker.
+	const runtime = new Map<string, RuntimeMarker>();
 	// The single stream cursor (echoed as since_seq) and the server's instance
 	// epoch. Both 0 means a cold start → re-read + re-tail. Never persisted.
 	let sinceSeq = 0n;
@@ -123,6 +131,16 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 	};
 
 	const applyPayload = (payload: SubscribeEventsPayload): void => {
+		if (payload.case === "agentSessionStatus") {
+			// No resolvable account binding means nothing to key the marker by;
+			// keying it under "" would attach one agent's posture to every
+			// unbound status.
+			const account = payload.value.agentAccountId;
+			if (account === "") return;
+			runtime.set(account, adaptRuntimeMarker(payload.value));
+			onRuntime?.(new Map(runtime));
+			return;
+		}
 		if (payload.case !== "issue") return;
 		const issue = adaptIssue(payload.value);
 		board.set(issue.id, issue);
@@ -169,8 +187,12 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 					// The server can't serve our cursor gap-free. Clear the board +
 					// reset both cursors to a cold start and reconnect immediately for a
 					// fresh re-read + re-tail — a resync is a server directive, not a spin.
+					// The runtime markers clear with it: a stale posture surviving a
+					// resync could show a torn-down host session as still contained.
 					board.clear();
 					onIssues([]);
+					runtime.clear();
+					onRuntime?.(new Map());
 					sinceSeq = 0n;
 					instanceEpoch = 0n;
 					madeProgress = true;
