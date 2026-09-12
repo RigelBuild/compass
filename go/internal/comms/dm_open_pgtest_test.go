@@ -16,6 +16,7 @@ import (
 
 	"connectrpc.com/connect"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestOpenDMSameOwnerCreatesDMChannel: an agent opens a DM with a same-owner
@@ -279,5 +280,119 @@ func TestOpenDMResumeEmitsNoChannelChanged(t *testing.T) {
 	}
 	if dmChannelChanges != 1 {
 		t.Fatalf("ChannelChanged events for the DM = %d, want exactly 1 (the create only; a resume must emit nothing)", dmChannelChanges)
+	}
+}
+
+// Each party posts under its own actor, and each read must return BOTH posts —
+// red if DM membership fails to grant a party read on the peer's turn.
+func TestOpenDMPostAndReadBothParties(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	alice := mustAgent(t, st, owner.ID, "alice")
+	bob := mustAgent(t, st, owner.ID, "bob")
+
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(alice->bob) = %v, want success", err)
+	}
+	dmID := opened.Msg.GetChannel().GetId()
+
+	post := func(actor store.AccountID, text string) string {
+		t.Helper()
+		resp, err := svc.PostMessage(WithActor(ctx, actor), connect.NewRequest(&compassv1.PostMessageRequest{
+			Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
+			Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+			CreateTopic: true,
+			Blocks:      textBlocks(text),
+		}))
+		if err != nil {
+			t.Fatalf("PostMessage(%s): %v", text, err)
+		}
+		return resp.Msg.GetMessage().GetId()
+	}
+	aliceMsg := post(alice.ID, "from alice")
+	bobMsg := post(bob.ID, "from bob")
+
+	// Each party's read of the DM must surface BOTH posts — its own and the peer's.
+	readSees := func(reader store.AccountID) map[string]bool {
+		t.Helper()
+		listed, err := svc.ListMessages(WithActor(ctx, reader), connect.NewRequest(&compassv1.ListMessagesRequest{
+			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: dmID},
+		}))
+		if err != nil {
+			t.Fatalf("ListMessages(%s): %v", reader, err)
+		}
+		ids := map[string]bool{}
+		for _, m := range listed.Msg.GetMessages() {
+			ids[m.GetId()] = true
+		}
+		return ids
+	}
+	for _, party := range []struct {
+		name string
+		id   store.AccountID
+	}{{"alice", alice.ID}, {"bob", bob.ID}} {
+		got := readSees(party.id)
+		if !got[aliceMsg] || !got[bobMsg] {
+			t.Fatalf("%s reads DM = %v, want both alice %q and bob %q posts", party.name, got, aliceMsg, bobMsg)
+		}
+	}
+}
+
+// Same-owner is not membership: a third agent under the same owner reads
+// nothing from a two-party DM. Canary-ordered, so an undelivered post cannot
+// pass it vacuously. Red if read-scoping falls back to owner scope.
+func TestOpenDMThirdPartySameOwnerCannotSee(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	alice := mustAgent(t, st, owner.ID, "alice")
+	bob := mustAgent(t, st, owner.ID, "bob")
+	carol := mustAgent(t, st, owner.ID, "carol")
+
+	opened, err := svc.OpenDM(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.OpenDMRequest{PeerHandle: "bob"}))
+	if err != nil {
+		t.Fatalf("OpenDM(alice->bob) = %v, want success", err)
+	}
+	dmID := opened.Msg.GetChannel().GetId()
+
+	posted, err := svc.PostMessage(WithActor(ctx, alice.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container:   &compassv1.PostMessageRequest_ChannelId{ChannelId: dmID},
+		Topic:       &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		CreateTopic: true,
+		Blocks:      textBlocks("private to alice and bob"),
+	}))
+	if err != nil {
+		t.Fatalf("PostMessage(alice): %v", err)
+	}
+	msgID := posted.Msg.GetMessage().GetId()
+
+	list := func(reader store.AccountID) []*compassv1.Message {
+		t.Helper()
+		listed, err := svc.ListMessages(WithActor(ctx, reader), connect.NewRequest(&compassv1.ListMessagesRequest{
+			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: dmID},
+		}))
+		if err != nil {
+			t.Fatalf("ListMessages(%s): %v", reader, err)
+		}
+		return listed.Msg.GetMessages()
+	}
+
+	// Canary: bob, a real party, DOES read the post — proves it was delivered,
+	// so the third-party emptiness below is a real negative, not a vacuous one.
+	var bobSees bool
+	for _, m := range list(bob.ID) {
+		if m.GetId() == msgID {
+			bobSees = true
+		}
+	}
+	if !bobSees {
+		t.Fatalf("party bob cannot read the DM post %q — canary failed, negative would be vacuous", msgID)
+	}
+
+	// carol, same owner but not a DM member, reads nothing.
+	if got := list(carol.ID); len(got) != 0 {
+		t.Fatalf("third same-owner agent carol read %d messages from a DM she is not a member of, want 0", len(got))
 	}
 }
