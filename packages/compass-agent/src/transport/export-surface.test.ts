@@ -182,4 +182,10 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 	} finally {
 		rmSync(out, { recursive: true, force: true });
 	}
-}, 60_000);
+	// A real test-body BUDGET, not a slow-cleanup detector: the body shells out
+	// to a cold `tsc --declaration` emit over the package, then walks a second
+	// TS program over the output. That is ~5s locally but 45-68s on a contended
+	// CI runner (~12-18x). The emit is near its floor (scoping it to the index
+	// closure and in-process emit both measured SLOWER), so the ceiling is what
+	// gives it headroom — matched to the house budget for slow bodies here.
+}, 130_000);
