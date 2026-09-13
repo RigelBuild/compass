@@ -1,24 +1,24 @@
 //go:build unix
 
 // The SecretsService implementation — the account-facing side of the compass.v1
-// secrets contract (RIG-1327 T7). It sits beside CompassService/CommsService on
-// the same account doors (socket + dev + network), behind the bearer + admin-gate
+// secrets contract. It sits beside CompassService/CommsService on the same
+// account doors (socket + dev + network), behind the bearer + admin-gate
 // interceptors that classify the three procedures authenticatedOpen (admin_gate.go):
 // the door admits any authenticated account and THIS handler enforces the fine
 // authz the frozen record pins.
 //
-//   - SetSecret / DeleteSecret are USER-ONLY (record §911-927): an agent-token
-//     caller is CodePermissionDenied, the same fail-closed posture as the
-//     admin-gated IssueToken. This is the load-bearing regression the record
-//     calls out (§927).
-//   - ListSecrets is open to user AND agent (record §904-910): the Setup agent
-//     drives it. It returns value-free SecretStatus — never a value, and never
-//     resolves values to compute is_set.
+//   - SetSecret / DeleteSecret are user-only: an agent-token caller is
+//     CodePermissionDenied (the requireUser gate), the same fail-closed posture
+//     as the admin-gated IssueToken. A tenant-scoped write additionally requires
+//     an admin (D8), at the coordinate the D9 selector resolves.
+//   - ListSecrets is open to user AND agent: the Setup agent drives it. It
+//     returns value-free SecretStatus — never a value, and never resolves values
+//     to compute is_set.
 //
 // A successful Set/Delete bumps the secrets version (a fire-and-forget hub push
-// to live sessions, secretsSignaler) so live containers re-fetch (T6 cleanup).
-// A secret value is never logged here (it is [debug_redact] on the wire; the
-// server side keeps the same posture).
+// to live sessions, secretsSignaler) so live containers re-fetch. A secret value
+// is never logged here (it is [debug_redact] on the wire; the server side keeps
+// the same posture).
 package server
 
 import (
@@ -91,8 +91,8 @@ var errNoResolver = errors.New("no secret resolver configured on this server")
 var errNoServerResolver = errors.New("no server secret resolver configured on this server")
 
 // SetSecret writes a user secret's declaration and encrypted value in ONE atomic
-// upsert at the caller-resolved scope coordinate. USER-ONLY (record §911-927): an
-// agent-token caller is CodePermissionDenied. `value` is never logged.
+// upsert at the caller-resolved scope coordinate. User-only: an agent-token
+// caller is CodePermissionDenied. `value` is never logged.
 //
 // The declaration and the value are the same row now (A1), so the write is a
 // single StoreResolver.Upsert transaction — the old declare-then-Set-then-rollback
@@ -142,7 +142,7 @@ func (s *secretsService) SetSecret(
 }
 
 // ListSecrets returns the value-free status of every declared secret. Open to
-// USER AND AGENT (record §904-910): the Setup agent drives it, so no kind
+// USER AND AGENT (the Setup agent drives it), so no kind
 // restriction. It reads the declaration registry and maps each row to a
 // SecretStatus — NEVER a value (SecretStatus has no value field), and never
 // resolves values to compute is_set.
@@ -182,7 +182,7 @@ func (s *secretsService) ListSecrets(
 
 // DeleteSecret removes a user secret's row (declaration and value are the same
 // row post-A1) at the caller-resolved coordinate, then bumps the secrets version.
-// USER-ONLY (record §915-918): an agent-token caller is CodePermissionDenied. A
+// User-only: an agent-token caller is CodePermissionDenied. A
 // name that was never declared at that coordinate is CodeNotFound. A reserved-
 // prefix name is rejected CodeInvalidArgument ahead of any store call — the F1
 // name partition keeps reserved names out of the user table, so a delete on one
@@ -288,13 +288,12 @@ func (s *secretsService) requireCaller(ctx context.Context) (store.AccountID, er
 
 // requireUser returns the authenticated caller id AND role only when the caller
 // is a USER account; an agent account is CodePermissionDenied (the user-only
-// write gate, record §919-927 — the same fail-closed posture as admin-gated
-// IssueToken). No caller is CodeUnauthenticated (fail closed). The account kind
-// is read from the store (an agent account has the Agent subtype set; a user
-// does not — IsAgent). The role is returned so a handler can gate a tenant-scope
-// write (D9) without a second GetAccount; a caller with no user payload (the
-// reserved system account) is the least-privilege member, so it cannot pass the
-// admin gate.
+// write gate — the same fail-closed posture as admin-gated IssueToken). No
+// caller is CodeUnauthenticated (fail closed). The account kind is read from the
+// store (an agent account has the Agent subtype set; a user does not — IsAgent).
+// The role is returned so a handler can gate a tenant-scope write (D8) without a
+// second GetAccount; a caller with no user payload (the reserved system account)
+// is the least-privilege member, so it cannot pass the admin gate.
 func (s *secretsService) requireUser(ctx context.Context) (store.AccountID, store.UserRole, error) {
 	callerID, err := s.requireCaller(ctx)
 	if err != nil {

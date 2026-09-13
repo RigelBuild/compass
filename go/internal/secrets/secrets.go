@@ -1,25 +1,31 @@
 // Package secrets is the Server-side secret resolve surface for the agent
-// container runtime (RIG-1327 T3). It wraps SecretSpec resolution behind a
-// Resolver interface and owns the resolve-surface value types the Runner fetch
-// (T4) and materializer (T5) consume.
+// container runtime. It wraps secret resolution behind a Resolver interface and
+// owns the resolve-surface value types the Runner fetch path and the container
+// materializer consume.
 //
 // The split of concerns:
-//   - internal/store owns the persisted NAMES registry (SecretDeclaration) —
-//     which secrets are declared and how each is delivered/routed, never a
-//     value.
-//   - this package reads that registry, generates the SecretSpec manifest the
-//     resolver resolves against, calls SecretSpec to resolve the actual values
-//     from the configured provider (keyring/1Password/Vault/…), and hands back
-//     ResolvedSecrets (name + value + content-hash version + delivery/kind).
+//   - internal/store owns two separate registries. The secrets table holds user
+//     secrets: one row carries the declaration (name, delivery/routing) AND the
+//     encrypted value columns. Boot/server secret names live in the physically
+//     separate server_secrets table, declaration only — so the inject-all
+//     container path, which reads secrets, can never see them by construction.
+//   - this package reads those registries and hands back ResolvedSecrets (name +
+//     value + content-hash version + delivery/kind): SpecResolver by generating
+//     a manifest and resolving names against the provider, StoreResolver by
+//     decrypting the user rows.
 //
 // It maps store enums to its own resolve-surface enums at this edge, exactly as
 // the comms service maps store↔proto (store/types.go) — so store stays a leaf
 // and the two evolve independently. The dependency runs one way: secrets →
 // store (no cycle).
 //
-// Values live only in the provider and this process's memory during a resolve;
-// they are never persisted by Compass and never logged. Every value-bearing
-// type here redacts under %s/%v/%#v (the store.Credentials pattern).
+// Value locations differ by kind. User secret values are persisted in the
+// Postgres secrets table as AES-256-GCM ciphertext (the internal/envelope seam
+// encrypts them; StoreResolver is the DB-backed resolver over those rows).
+// Boot/server secret values are never persisted by Compass — they stay in the
+// configured provider (keyring/1Password/Vault/…) and are read through
+// SpecResolver. Either way a value is never logged: every value-bearing type
+// here redacts under %s/%v/%#v (the store.Credentials pattern).
 package secrets
 
 import (
@@ -32,7 +38,7 @@ import (
 )
 
 // DeliveryKind is how a resolved secret is delivered into a container — the
-// load-bearing file-vs-env split that fixes how it rotates (T5/T6). It mirrors
+// load-bearing file-vs-env split that fixes how it rotates. It mirrors
 // store.SecretDelivery; the two are mapped at this package's edge.
 type DeliveryKind uint8
 
@@ -45,7 +51,7 @@ const (
 	DeliveryEnv
 )
 
-// SecretKind is the routing class the T5 materializer switches on. It mirrors
+// SecretKind is the routing class the materializer switches on. It mirrors
 // store.SecretKind; the two are mapped at this package's edge.
 type SecretKind uint8
 
@@ -62,8 +68,8 @@ const (
 
 // nameGrammar is SecretSpec's env-var-name grammar. A declared secret name must
 // match it: it becomes both a manifest key and, downstream, a path segment
-// under $HOME/.compass/secrets/ and a token in a root-adjacent setup script
-// (T5). Validated at the store door (store.UpsertSecret) and re-checked here as
+// under $HOME/.compass/secrets/ and a token in a root-adjacent setup script.
+// Validated at the store door (store.UpsertSecret) and re-checked here as
 // defense in depth before a name is ever emitted into a generated manifest.
 var nameGrammar = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -112,15 +118,15 @@ func ValidateProfile(profile string) error {
 // of the value, hex-encoded. The registry stores no values and SecretSpec
 // resolve returns values (not versions), so a content hash is the only
 // deterministic version producer. A same-value re-set hashes identically, so
-// T6's rotation diff sees no change and does nothing — correct, since nothing
+// the rotation diff sees no change and does nothing — correct, since nothing
 // the container holds is stale.
 //
 // It is NEVER logged: String/GoString redact the value AND omit the version, so
 // the hash cannot serve as an offline confirmation oracle for a low-entropy
-// secret. T6 diffs the struct field directly, not a log line, so dropping it
-// from the log surface costs nothing. (A keyed hash — HMAC under a server key —
-// is a post-MVP defense-in-depth option, redundant once the version is unlogged;
-// it would amend the frozen SHA-256 algorithm, so it is deferred, not folded.)
+// secret. The rotation diff reads the struct field directly, not a log line, so
+// dropping it from the log surface costs nothing. (A keyed hash — HMAC under a
+// server key — is a defense-in-depth option, redundant once the version is
+// unlogged; it would amend the frozen SHA-256 algorithm, so it is deferred.)
 func Version(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
@@ -134,7 +140,7 @@ type ResolvedSecret struct {
 	Name    string
 	Value   string
 	Version string
-	// Delivery is the file-vs-env split (T5/T6 rotation shape).
+	// Delivery is the file-vs-env split (rotation shape).
 	Delivery DeliveryKind
 	// Kind is the materializer routing class.
 	Kind SecretKind
