@@ -18,6 +18,7 @@ import { detectPlatform } from "../keyboard/dispatch";
 import { shortcutForAria } from "../keyboard/keymap";
 import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
 import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
+import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
 /** An agent leaf row in the tree — the per-agent select button, plus a hover
@@ -46,6 +47,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 				onClick={() => store.openAgent(a().account.id)}
 			>
 				<StateDot state={a().lifecycle ?? "idle"} />
+				<Show when={a().runtime}>{(m) => <RuntimeMarker marker={m()} />}</Show>
 				<span class="name">{a().account.handle}</span>
 				<Show when={a().role !== undefined && a().role !== "worker"}>
 					<span class="role-pip" data-role={a().role} title={a().role}>

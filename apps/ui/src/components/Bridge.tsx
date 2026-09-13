@@ -41,6 +41,7 @@ import { createRovingGroup, type Stop } from "../keyboard/roving";
 import type { IssueState } from "../stub-data";
 import { BadgeGlyph } from "./BadgeGlyph";
 import { IssueCard } from "./IssueCard";
+import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
 /** How the board groups rows. Swimlane = one row per agent (default); status =
@@ -665,6 +666,9 @@ export const Bridge: Component = () => {
 											onClick={() => store.openAgent(agent.account.id)}
 										>
 											<StateDot state={agent.lifecycle ?? "idle"} />
+											<Show when={agent.runtime}>
+												{(m) => <RuntimeMarker marker={m()} />}
+											</Show>
 											<span>
 												<span class="g-name">{agent.account.handle}</span>
 												<br />
@@ -758,6 +762,9 @@ export const Bridge: Component = () => {
 												onClick={() => store.openAgent(agent().account.id)}
 											>
 												<StateDot state={agent().lifecycle ?? "idle"} />
+												<Show when={agent().runtime}>
+													{(m) => <RuntimeMarker marker={m()} />}
+												</Show>
 												<span class="g-name">{agent().account.handle}</span>
 												<span class="g-open" aria-hidden="true">
 													→
