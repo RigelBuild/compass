@@ -123,6 +123,21 @@ export const RIGHT_SIDEBAR_TAB_BY_ID: {
 export const RIGHT_SIDEBAR_ISSUE_ITEMS: readonly ActivityBarItem[] =
 	Object.values(RIGHT_SIDEBAR_TAB_BY_ID).filter((t) => t.group === "issue");
 
+/** Derive an agent's activity-bar avatar initial from its handle, per D1 of
+ *  design compass-glyph-primitives. Handles are charset-unconstrained (proto
+ *  `from_handle`, no schema validation), so both activity-bar constructors
+ *  derive through here — and the ASCII clamp is what lets the Unifont pin
+ *  retire. An uppercase that expands (`ß`→`SS`) keeps the first letter rather
+ *  than `?`, since the initial exists to tell agents apart; the tab's title
+ *  carries the full handle either way. */
+export function avatarInitial(handle: string): string {
+	const first = Array.from(handle.trim())[0];
+	if (first === undefined) return "?";
+	const folded = first.normalize("NFKD").replace(/\p{M}/gu, "").toUpperCase();
+	const ascii = Array.from(folded)[0];
+	return ascii !== undefined && /^[\x21-\x7e]$/.test(ascii) ? ascii : "?";
+}
+
 /** Build the fleet activity-bar item for a RESOLVABLE pinned agent (Record A
  *  §T2; RIG-1645 P1). The tab id is the `agent:`-prefixed account id (the open
  *  arm of `RightSidebarTab`); the icon is the agent handle's initial (matching
@@ -134,7 +149,7 @@ export const RIGHT_SIDEBAR_ISSUE_ITEMS: readonly ActivityBarItem[] =
 export function fleetItemForAgent(agent: Agent): ActivityBarItem {
 	return {
 		id: `agent:${agent.account.id}`,
-		icon: (agent.account.handle.at(0) ?? "?").toUpperCase(),
+		icon: avatarInitial(agent.account.handle),
 		title: agent.account.handle,
 		group: "fleet",
 		agentId: agent.account.id,
@@ -151,7 +166,7 @@ export function fleetItemForAgent(agent: Agent): ActivityBarItem {
 export function unreachableFleetItem(pin: PinnedAgent): ActivityBarItem {
 	return {
 		id: `agent:${pin.id}`,
-		icon: (pin.handle.at(0) ?? "?").toUpperCase(),
+		icon: avatarInitial(pin.handle),
 		title: pin.handle,
 		group: "fleet",
 		agentId: pin.id,
