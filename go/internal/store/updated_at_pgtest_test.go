@@ -107,24 +107,22 @@ func TestUpdatedAtTriggerFiresOnUpsertConflict(t *testing.T) {
 }
 
 // TestSecretsUpdatedAtIsLive proves property 3 — the specific rot RIG-3495
-// fixes. secrets.updated_at is declared, read by DeclaredSecrets, and surfaced
-// on SecretDeclaration.UpdatedAt, but queries/secrets.sql has only an INSERT and
-// a DELETE: no write path ever set the column, so its value could never differ
-// from created_at and every reader was reading a lie.
+// fixes. secrets.updated_at is read by DeclaredSecrets and surfaced on
+// SecretDeclaration.UpdatedAt. Before RIG-3495 queries/secrets.sql had only an
+// INSERT and a DELETE: no write path ever set the column, so its value could
+// never differ from created_at and every reader was reading a lie.
 //
-// The store therefore still has no update method for a secret, and this test
-// does NOT invent one. It asserts what the store's own surface can show (a
-// freshly declared row has updated_at == created_at), and then drives a bare
-// UPDATE on the table to prove the trigger is ARMED on secrets — so the column
-// becomes correct for free the moment a re-declare/rotate path is added, rather
-// than needing whoever adds it to remember.
+// UpsertSecret's ON CONFLICT arm is now that write path, and this asserts the
+// trigger is ARMED on secrets: a freshly upserted row has updated_at ==
+// created_at, and a bare UPDATE on the table then advances updated_at while
+// leaving created_at fixed.
 func TestSecretsUpdatedAtIsLive(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	actor := mustUser(t, s, "secrets-owner")
 
-	if err := s.DeclareSecret(ctx, actor.ID, "DATABASE_URL", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
-		t.Fatalf("DeclareSecret: %v", err)
+	if err := s.UpsertSecret(ctx, actor.ID, "DATABASE_URL", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1); err != nil {
+		t.Fatalf("UpsertSecret: %v", err)
 	}
 	createdBefore, updatedBefore := secretStamps(t, s, "DATABASE_URL")
 	if !updatedBefore.Equal(createdBefore) {
