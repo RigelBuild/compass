@@ -27,6 +27,9 @@ const (
 	kindGeneric  = "generic"
 	kindProvider = "provider"
 	kindGH       = "gh"
+
+	scopeUser   = "user"
+	scopeTenant = "tenant"
 )
 
 // maxSecretBytes caps the stdin read in `secret set`. A secret value (an API
@@ -53,7 +56,7 @@ func newSecretCmd() *cobra.Command {
 // read from stdin, never a flag or positional, so it cannot leak into the
 // process table (the load-bearing convention shared with the bearer token).
 func newSecretSetCmd() *cobra.Command {
-	var delivery, kind, provider, host string
+	var delivery, kind, provider, host, scope string
 	cmd := &cobra.Command{
 		Use:   "set <NAME>",
 		Short: "Declare a secret and write its value (value read from stdin, admin)",
@@ -69,6 +72,7 @@ func newSecretSetCmd() *cobra.Command {
 				kind:     kind,
 				provider: provider,
 				host:     host,
+				scope:    scope,
 			}, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
@@ -80,6 +84,8 @@ func newSecretSetCmd() *cobra.Command {
 		"LLM provider id (required when --kind provider).")
 	cmd.Flags().StringVar(&host, "host", "",
 		"gh host (required when --kind gh).")
+	cmd.Flags().StringVar(&scope, "scope", scopeUser,
+		"Scope the write targets: user (private, default) or tenant (shared, admin-only).")
 	return cmd
 }
 
@@ -102,7 +108,8 @@ func newSecretListCmd() *cobra.Command {
 
 // newSecretDeleteCmd builds `secret delete <NAME>`: DeleteSecret and confirm.
 func newSecretDeleteCmd() *cobra.Command {
-	return &cobra.Command{
+	var scope string
+	cmd := &cobra.Command{
 		Use:   "delete <NAME>",
 		Short: "Delete a declared secret (admin)",
 		Args:  cobra.ExactArgs(1),
@@ -111,9 +118,12 @@ func newSecretDeleteCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runSecretDelete(cmd.Context(), client, args[0], cmd.OutOrStdout())
+			return runSecretDelete(cmd.Context(), client, args[0], scope, cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().StringVar(&scope, "scope", scopeUser,
+		"Scope the delete targets: user (private, default) or tenant (shared, admin-only).")
+	return cmd
 }
 
 // errEmptySecretValue names the empty-stdin rejection: a secret value is
@@ -150,6 +160,7 @@ type secretSetArgs struct {
 	kind     string
 	provider string
 	host     string
+	scope    string
 }
 
 // parseDelivery maps the --delivery flag to its enum. It is required, so an
@@ -206,6 +217,21 @@ func parseKind(kind, provider, host string) (compassv1.SecretKind, error) {
 	}
 }
 
+// parseScope maps the --scope flag to its proto enum. Only user and tenant are
+// reachable: an agent scope names a coordinate no CLI caller can write. An empty
+// or unknown value is a clear error naming the valid choices.
+func parseScope(s string) (compassv1.SecretScope, error) {
+	switch s {
+	case scopeUser:
+		return compassv1.SecretScope_SECRET_SCOPE_USER, nil
+	case scopeTenant:
+		return compassv1.SecretScope_SECRET_SCOPE_TENANT, nil
+	default:
+		return compassv1.SecretScope_SECRET_SCOPE_UNSPECIFIED,
+			fmt.Errorf("unknown scope %q: pass --scope user or --scope tenant", s)
+	}
+}
+
 // runSecretSet validates the routing flags, reads the value from in (trimming a
 // single trailing newline and rejecting an empty value), and calls SetSecret.
 // The value is never taken from argv, so it cannot leak into the process table.
@@ -215,6 +241,10 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 		return err
 	}
 	kind, err := parseKind(args.kind, args.provider, args.host)
+	if err != nil {
+		return err
+	}
+	scope, err := parseScope(args.scope)
 	if err != nil {
 		return err
 	}
@@ -232,6 +262,7 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 		Kind:     kind,
 		Provider: args.provider,
 		Host:     args.host,
+		Scope:    scope,
 	})); err != nil {
 		return fmt.Errorf("setting secret %s: %w", args.name, err)
 	}
@@ -310,12 +341,16 @@ func kindLabel(k compassv1.SecretKind) string {
 }
 
 // runSecretDelete calls DeleteSecret and confirms.
-func runSecretDelete(ctx context.Context, client compassv1connect.SecretsServiceClient, name string, out io.Writer) error {
+func runSecretDelete(ctx context.Context, client compassv1connect.SecretsServiceClient, name, scopeFlag string, out io.Writer) error {
+	scope, err := parseScope(scopeFlag)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	if _, err := client.DeleteSecret(ctx, connect.NewRequest(&compassv1.DeleteSecretRequest{Name: name})); err != nil {
+	if _, err := client.DeleteSecret(ctx, connect.NewRequest(&compassv1.DeleteSecretRequest{Name: name, Scope: scope})); err != nil {
 		return fmt.Errorf("deleting secret %s: %w", name, err)
 	}
-	_, err := fmt.Fprintf(out, "deleted secret %s\n", name)
+	_, err = fmt.Fprintf(out, "deleted secret %s\n", name)
 	return err
 }

@@ -122,6 +122,14 @@ type ServeConfig struct {
 	// the bootstrap installs no provider and the RPC interceptors are inert
 	// no-ops (no active span, so no traceresponse header).
 	OtelEndpoint string
+	// SecretProvider is the secretspec provider URI both secret resolvers resolve
+	// through (e.g. "keyring://", "onepassword://Production", "dotenv://path").
+	// Empty uses secretspec's default provider chain — today's behavior, so an
+	// existing deployment is unchanged. The CLI supplies it (flag
+	// --secret-provider / $COMPASS_SECRET_PROVIDER). It is the ONE knob that
+	// points the whole deployment's custody — including the master key — at a
+	// managed store, per the record's A2 KMS-by-provider-URI custody note.
+	SecretProvider string
 }
 
 // ForgeConfig configures the board webhook-ingestion lane (RIG-2883) and the
@@ -353,7 +361,7 @@ const initialKeyVersion int16 = 1
 // It NEVER generates a key (operator-seeded custody, DL-355) and NEVER echoes
 // the value or any part of it in an error — a wrong length or non-hex value is
 // reported by what was expected, not by what was found.
-func resolveMasterKey(ctx context.Context, st *store.Store, server secrets.Resolver) (envelope.Key, int16, error) { //nolint:unparam // st is nil only in the DB-free decode/fail-closed unit tests; the pgtest lane and the boot caller pass a real store.
+func resolveMasterKey(ctx context.Context, st *store.Store, server secrets.Resolver) (envelope.Key, int16, error) {
 	resolved, err := server.Resolve(ctx, "master key resolve")
 	if err != nil {
 		return envelope.Key{}, 0, fmt.Errorf("resolve master key: %w", err)
@@ -435,27 +443,50 @@ func reconcileKeyState(ctx context.Context, st *store.Store, key envelope.Key) (
 	return key, state.KeyVersion, nil
 }
 
-// buildSecretResolvers constructs the TWO SpecResolver instances the Server
-// runs, returning (container, server) in that order.
+// buildServerSecretResolver constructs the read-only SERVER-secret resolver: a
+// SpecResolver whose manifest is built from the SEPARATE server_secrets registry
+// (the ServerDeclaredSecrets view), resolving through cfg.SecretProvider. It is
+// the surface resolveMasterKey and the forge-secret consumers read, and the
+// value-free Statuses probe ListServerSecrets uses. Its own state dir keeps its
+// manifest off the (now DB-backed) user path's disk. An empty provider uses
+// secretspec's default chain — today's behavior.
 //
-// The first reads the store's user names registry and is the single place
-// SecretSpec runs for container delivery — the RunnerService FetchSecrets
-// handler and the user SecretsService write path both delegate to it. Its state
-// dir is a "secrets" subdirectory of the state dir the bootstrap-admin token is
-// written under; NewSpecResolver creates it 0700 if absent.
-//
-// The second has the same project and profile but builds its manifest from the
-// SEPARATE server_secrets registry, via the ServerDeclaredSecrets view. Two
-// instances rather than one filtered instance: the container path keeps reading
-// the user registry, so a server secret cannot be delivered into an agent
-// container even if a future caller forgets a filter. Its own state dir keeps
-// the two manifests from overwriting each other on disk.
-func buildSecretResolvers(st *store.Store, cfg ServeConfig) (container, server secrets.Resolver) {
-	return secrets.NewSpecResolver(st, secretsStateDir(cfg)),
-		secrets.NewSpecResolver(
-			store.ServerDeclaredSecrets{Store: st},
-			filepath.Join(secretsStateDir(cfg), "server"),
-		)
+// The user/container side is no longer a SpecResolver: it is the DB-backed
+// StoreResolver (record A4), built in Serve from the master key this resolver
+// yields, so a server secret cannot be delivered into an agent container by
+// construction — the two paths read different tables.
+func buildServerSecretResolver(st *store.Store, cfg ServeConfig) secrets.Resolver {
+	opts := []secrets.SpecOption{}
+	if cfg.SecretProvider != "" {
+		opts = append(opts, secrets.WithProvider(cfg.SecretProvider))
+	}
+	return secrets.NewSpecResolver(
+		store.ServerDeclaredSecrets{Store: st},
+		filepath.Join(secretsStateDir(cfg), "server"),
+		opts...,
+	)
+}
+
+// buildUserSecretResolver declares the server-secret names (including the
+// reserved master-key name, without which resolveMasterKey reads a provisioned
+// key as absent), resolves the master key, and returns the DB-backed user-secret
+// resolver built from it. Fail-closed per DL-355: an absent, empty, wrong-length
+// or non-hex key aborts startup with the provisioning runbook, and boot NEVER
+// generates one — nothing decrypts a stored value until this succeeds.
+func buildUserSecretResolver(
+	ctx context.Context, st *store.Store, cfg ServeConfig, serverResolver secrets.Resolver,
+) (*secrets.StoreResolver, error) {
+	if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+		return nil, err
+	}
+	if err := st.DeclareServerSecret(ctx, "", store.MasterKeyName); err != nil && !errors.Is(err, store.ErrConflict) {
+		return nil, fmt.Errorf("declaring master key name: %w", err)
+	}
+	masterKey, keyVersion, err := resolveMasterKey(ctx, st, serverResolver)
+	if err != nil {
+		return nil, err
+	}
+	return secrets.NewStoreResolver(st, masterKey, keyVersion), nil
 }
 
 // declareServerSecretNames declares the six forge secret NAMEs into
@@ -757,12 +788,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// before serving; the store invokes it on its own tx.
 	commsSvc.RegisterCoordinationHook(st)
 
-	resolver, serverResolver := buildSecretResolvers(st, cfg)
-
-	// Declare the six forge secret NAMEs into server_secrets before any
-	// consumer resolves them: the re-pointed consumers read the SERVER
-	// registry, and an empty registry short-circuits Resolve to (nil, nil).
-	if err := declareServerSecretNames(ctx, st, cfg); err != nil {
+	serverResolver := buildServerSecretResolver(st, cfg)
+	resolver, err := buildUserSecretResolver(ctx, st, cfg, serverResolver)
+	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
 
@@ -895,13 +923,14 @@ type serveDoors struct {
 	uds *http.Server
 	dev *http.Server
 	net *http.Server
-	// netResolver is the resolver INSTANCE threaded to the net door, i.e. the
-	// one runnerhub's FetchSecrets delivers from. It must always be the
-	// CONTAINER instance; recorded because buildNetworkServer resolves nothing
-	// at build time, so the wiring is otherwise unobservable and a swap to the
-	// server instance would silently deliver every deployment secret into every
-	// agent container. Asserted by the buildDoors routing test.
-	netResolver secrets.Resolver
+	// netResolver is the user-secret resolver INSTANCE threaded to the net door,
+	// i.e. the one runnerhub's FetchSecrets delivers from. It must always be the
+	// CONTAINER instance (the DB-backed StoreResolver reading `secrets`); recorded
+	// because buildNetworkServer resolves nothing at build time, so the wiring is
+	// otherwise unobservable and a swap to the server instance would silently
+	// deliver every deployment secret into every agent container. Asserted by the
+	// buildDoors routing test.
+	netResolver *secrets.StoreResolver
 	// linearNotify is the Linear agent-notification lane (RIG-2732 T7), built
 	// beside the webhook handler it feeds; nil when Linear is not configured (its
 	// client-credentials pair undeclared). Serve starts its arm + reconciler on
@@ -924,12 +953,12 @@ func buildDoors(
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
-	// resolver is the CONTAINER instance (reads `secrets`), threaded to
-	// buildNetworkServer -> the FetchSecrets delivery path. serverResolver reads
-	// `server_secrets` and is threaded ONLY to the Linear webhook wiring. Do not
-	// collapse these into one parameter: that is how every server secret ends up
-	// delivered into every agent container.
-	resolver secrets.Resolver,
+	// resolver is the CONTAINER user-secret resolver (the DB-backed StoreResolver
+	// reading `secrets`), threaded to buildNetworkServer -> the FetchSecrets
+	// delivery path. serverResolver reads `server_secrets` and is threaded ONLY to
+	// the Linear webhook wiring. Do not collapse these: that is how every server
+	// secret ends up delivered into every agent container.
+	resolver *secrets.StoreResolver,
 	serverResolver secrets.Resolver,
 	devListener net.Listener,
 	netListener net.Listener,
