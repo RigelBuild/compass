@@ -523,11 +523,8 @@ In `packages/compass-agent/src/forge.ts` (same file, tool half):
 
 ```ts
 /**
- * The native forge tool set. Ten tools, one per `ForgeCallRequest` arm. Two
- * of them — `forge_subscribe`/`forge_unsubscribe` — return the server's
- * in-band `unimplemented` until the poll-driver lane lands the
- * `agent_forge_subscriptions` writer; they ship now so the surface is stable
- * (Matt's build-all ruling). Every tool takes an optional forge selector
+ * The native forge tool set. Twelve tools, one per `ForgeCallRequest` arm.
+ * Every tool takes an optional forge selector
  * (`provider` + `host`) so a call targets Linear as well as the default
  * GitHub forge. Wired into the container entrypoint by `cli.ts main()`:
  * merged into the session's `customTools` and registered as `#withNatives`
@@ -674,10 +671,10 @@ non-empty `body` and that the review posts immediately (never a pending
 review) under a distinct reviewer identity so all three verdicts are usable on
 Compass-authored PRs (DL-201); for `forge_create_pull_request`, that
 `head_ref` must already be pushed (the agent pushes with its own git
-credential — DL-052/DL-090); for `forge_subscribe`/`forge_unsubscribe`, that
-change-notification subscriptions are NOT YET WIRED — the call returns
-`unimplemented` until the notification lane lands, so the tool exists for
-surface stability but should not be relied on yet; for reads, that results may
+credential — DL-052/DL-090); for `forge_subscribe`/`forge_unsubscribe`, what a
+subscription does — it registers the agent for change notifications on a
+coordinate and is account-keyed rather than a repo artifact, so it carries no
+scope-discipline line; for reads, that results may
 be paged/bounded/truncated and bodies are external content whose attribution
 is a parsed claim, not an authenticated identity.
 
