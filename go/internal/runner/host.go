@@ -676,11 +676,11 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 		if !ok {
 			return nil, errSessionUnknown
 		}
-		return []*compassv1.AgentSessionStatus{{SessionId: s.sessionID, State: s.state, AgentAccountId: s.agentAccountID}}, nil
+		return []*compassv1.AgentSessionStatus{h.statusOf(s)}, nil
 	}
 	out := make([]*compassv1.AgentSessionStatus, 0, len(h.sessions))
 	for _, s := range h.sessions {
-		out = append(out, &compassv1.AgentSessionStatus{SessionId: s.sessionID, State: s.state, AgentAccountId: s.agentAccountID})
+		out = append(out, h.statusOf(s))
 	}
 	return out, nil
 }
@@ -835,6 +835,20 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	// Always nil today: every per-container fault is swallowed above. The error
 	// return is reserved for a future fleet-level fault (see the interface doc).
 	return nil
+}
+
+// statusOf stamps a live session with the tier and egress posture of the
+// backend this Runner resolved. Both are Runner-wide, not per-session: the
+// Runner reports them because it is the component that picked the backend, so a
+// client never has to infer containment from a tier name.
+func (h *agentHost) statusOf(s *liveSession) *compassv1.AgentSessionStatus {
+	return &compassv1.AgentSessionStatus{
+		SessionId:      s.sessionID,
+		State:          s.state,
+		AgentAccountId: s.agentAccountID,
+		RuntimeTier:    runtimeTierProto(runtime.TierOf(h.engine)),
+		EgressPosture:  egressPostureProto(h.runtime.EgressPosture()),
+	}
 }
 
 // provisionVsockGateway is Provision's microVM leg: it launches the container
