@@ -499,10 +499,12 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 	ctx := context.Background()
 	st := forgeTestStore(t)
 
-	// Distinct, non-overlapping sets: only the server fake carries the
-	// SERVER_-prefixed webhook secret the Linear wiring needs, so a handler
-	// exists if and only if that instance was the one threaded there.
-	container := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "USER_ONLY", Value: "u"}}}
+	// The container instance is the real DB-backed StoreResolver (T5); the server
+	// instance is a fake carrying ONLY the SERVER_-prefixed webhook secret the
+	// Linear wiring needs, so a handler exists if and only if that instance was
+	// threaded there. Pointer identity of the container instance is what the D6
+	// assertion below turns on.
+	container := secrets.NewStoreResolver(st, secretsFixtureKey(t), 1)
 	server := &fakeResolver{resolved: []secrets.ResolvedSecret{
 		{Name: serverSecretName("LWH"), Value: "shh"},
 	}}
@@ -565,9 +567,7 @@ func TestBuildDoorsRoutesTheResolverInstancesOverTheRealCallGraph(t *testing.T) 
 	// D6: the net door — runnerhub's FetchSecrets delivery path — must have
 	// received the CONTAINER instance. Pointer identity is the assertion: this
 	// is the swap that leaks every deployment secret into every agent container,
-	// and buildNetworkServer resolves nothing at build time, so nothing else
-	// about the built door reveals which instance it holds.
-	if doors.netResolver != secrets.Resolver(container) {
+	if doors.netResolver != container {
 		t.Fatal("net door did not receive the CONTAINER resolver: runnerhub FetchSecrets would serve server_secrets, delivering every deployment secret (App PEMs, webhook secrets, Linear credentials) into every agent container")
 	}
 

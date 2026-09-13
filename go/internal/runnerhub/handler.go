@@ -37,15 +37,28 @@ type AgentConfigStore interface {
 	CurrentAgentConfig(ctx context.Context) (version string, bundle []byte, err error)
 }
 
+// secretResolver is the Server-side per-agent secret resolve surface FetchSecrets
+// delegates to — the A9 scoped read. Narrow by design, the AgentConfigStore
+// pattern: the handler depends on this one method, not the whole resolver, so the
+// concrete *secrets.StoreResolver satisfies it and a server built with no secrets
+// surface passes nil. It replaces the old value-free secrets.Resolver the handler
+// carried: FetchSecrets no longer injects the whole declared set, it resolves the
+// most-specific row per name for one agent account.
+type secretResolver interface {
+	// ResolveFor resolves the one most-specific row per name visible to agent
+	// (A9: agent > user > tenant), decrypted. reason is audit context.
+	ResolveFor(ctx context.Context, agent store.AccountID, reason string) ([]secrets.ResolvedSecret, error)
+}
+
 // Handler implements compassv1internalconnect.RunnerServiceHandler over the hub.
 // The hub owns the registry, router, and Deliver seam; the resolver is the
-// Server-side secret resolve surface FetchSecrets delegates to, and configStore
-// the fleet config-bundle surface FetchAgentConfig delegates to. The handler is
-// the wire-termination shell that drives them.
+// Server-side per-agent secret resolve surface FetchSecrets delegates to, and
+// configStore the fleet config-bundle surface FetchAgentConfig delegates to. The
+// handler is the wire-termination shell that drives them.
 type Handler struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 	hub         *Hub
-	resolver    secrets.Resolver
+	resolver    secretResolver
 	configStore AgentConfigStore
 }
 
@@ -57,7 +70,7 @@ type Handler struct {
 // CodeUnavailable connect-go synthesizes for transport faults, so the Runner can
 // tolerate a genuine no-surface server without also tolerating a transient
 // outage.
-func NewHandler(hub *Hub, resolver secrets.Resolver, configStore AgentConfigStore) *Handler {
+func NewHandler(hub *Hub, resolver secretResolver, configStore AgentConfigStore) *Handler {
 	return &Handler{hub: hub, resolver: resolver, configStore: configStore}
 }
 
@@ -256,20 +269,22 @@ func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(resp), nil
 }
 
-// FetchSecrets resolves the whole declared secret set for a live session and
-// returns it to the Runner. Auth is already at the door (the Runner-subject
-// bearer interceptor Kind-gates every RunnerService RPC — an account token is
-// Unauthenticated here, the OQ7 cross-door rule); the runnerSubjectFrom check is
-// defense in depth, mirroring the other handlers.
+// FetchSecrets resolves the secret set for a live session (or a provisioned
+// container) and returns it to the Runner. Auth is already at the door (the
+// Runner-subject bearer interceptor Kind-gates every RunnerService RPC — an
+// account token is Unauthenticated here, the OQ7 cross-door rule); the
+// runnerSubjectFrom check is defense in depth, mirroring the other handlers.
 //
 // Binding authz (record §756-762): the request selects the binding to authorize
-// against. A session_id must be a live session bound to this Runner (rotation
-// re-fetch); a container_name must have a recorded container→account binding
-// (the PROVISION-time initial materialize, before any session exists). Under
-// inject-all + single-Runner, "bound to this Runner" == "present in the hub"
-// (there is exactly one Runner); HasLiveSession / HasContainerBinding are those
-// checks. A foreign/unknown selector is rejected CodePermissionDenied; a missing
-// selector is CodeInvalidArgument.
+// against, and that binding RESOLVES the agent account the read is scoped to (A9).
+// A session_id must be a live session bound to this Runner (rotation re-fetch); a
+// container_name must have a recorded container→account binding (the PROVISION-
+// time initial materialize, before any session exists). Under inject-all +
+// single-Runner, "bound to this Runner" == "present in the hub" (there is exactly
+// one Runner); AccountForLiveSession / AccountForContainer are those checks AND
+// yield the account. The agent identity comes from the hub binding, NEVER a
+// request field. A foreign/unknown selector is rejected CodePermissionDenied; a
+// missing selector is CodeInvalidArgument.
 //
 // NO-LOG posture (record §770-772): the response carries live secret values
 // (ResolvedSecret.value/.version are [debug_redact] on the wire). This handler
@@ -281,27 +296,32 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	if h.resolver == nil {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoResolver)
 	}
-	// Authorize against whichever binding the selector names, then resolve the
-	// same inject-all set for either (no per-agent differentiation in the MVP).
-	// A container_name authorizes the PROVISION-time initial materialize (bound
-	// from Provision, before any session); a session_id authorizes the
-	// post-Start rotation re-fetch. A foreign/unknown selector — or none — is
-	// rejected CodePermissionDenied, never a silent empty set.
+	// Authorize against whichever binding the selector names AND take the agent
+	// account it resolves to — the read is scoped to that agent (A9). A
+	// container_name authorizes the PROVISION-time initial materialize (bound from
+	// Provision, before any session); a session_id authorizes the post-Start
+	// rotation re-fetch. A foreign/unknown selector — or none — is rejected
+	// CodePermissionDenied, never a silent empty set.
+	var agent store.AccountID
 	switch sessionID, containerName := req.Msg.GetSessionId(), req.Msg.GetContainerName(); {
 	case sessionID != "" && containerName != "":
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets accepts a session_id or a container_name, not both"))
 	case sessionID != "":
-		if !h.hub.HasLiveSession(sessionID) {
+		account, ok := h.hub.AccountForLiveSession(sessionID)
+		if !ok {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("session %q is not a live session bound to this runner", sessionID))
 		}
+		agent = account
 	case containerName != "":
-		if !h.hub.HasContainerBinding(containerName) {
+		account, ok := h.hub.AccountForContainer(containerName)
+		if !ok {
 			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("container %q has no provisioned binding on this runner", containerName))
 		}
+		agent = account
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets requires a session_id or container_name selector"))
 	}
-	resolved, err := h.resolver.Resolve(ctx, "runner fetch")
+	resolved, err := h.resolver.ResolveFor(ctx, agent, "runner fetch")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving secrets: %w", err))
 	}
@@ -447,7 +467,7 @@ func kindToProto(k secrets.SecretKind) compassv1.SecretKind {
 func NewMountedHandler(
 	hub *Hub,
 	resolve TokenResolver,
-	resolver secrets.Resolver,
+	resolver secretResolver,
 	configStore AgentConfigStore,
 	otelIC *otelconnect.Interceptor,
 ) (string, http.Handler) {

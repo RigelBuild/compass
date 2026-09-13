@@ -159,6 +159,7 @@ func newTLSClient(t *testing.T, addr string, pool *x509.CertPool) compassv1conne
 // waitServing.
 func serveInBackground(t *testing.T, cfg ServeConfig) {
 	t.Helper()
+	provisionMasterKeyProvider(t, &cfg)
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
 	go func() { errCh <- Serve(ctx, cfg) }()
@@ -174,6 +175,31 @@ func serveInBackground(t *testing.T, cfg ServeConfig) {
 		}
 	})
 }
+
+// provisionMasterKeyProvider gives a full-Serve test a resolvable at-rest master
+// key. Serve now calls resolveMasterKey at boot (T4/T5) and fails closed with a
+// runbook when the key is absent, so a test that drives Serve MUST provision one.
+// It writes a dotenv holding COMPASS_MASTER_KEY and points cfg.SecretProvider at
+// it — the same production knob the CLI's --secret-provider flag sets — unless the
+// test already chose a provider. testMasterKeyHex is a fixed valid 64-hex key; the
+// value is irrelevant, only that boot resolves and pins it.
+func provisionMasterKeyProvider(t *testing.T, cfg *ServeConfig) {
+	t.Helper()
+	if cfg.SecretProvider != "" {
+		return
+	}
+	path := filepath.Join(t.TempDir(), "master-key.env")
+	line := store.MasterKeyName + "=" + dotenvValue(testMasterKeyHex) + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o600); err != nil {
+		t.Fatalf("write master-key dotenv: %v", err)
+	}
+	cfg.SecretProvider = "dotenv://" + path
+}
+
+// testMasterKeyHex is a fixed, valid 64-hex-char (32-byte) master key for the
+// full-Serve tests' boot-time resolveMasterKey. Distinct from keyHexA/keyHexB so
+// a grep for those does not collide.
+const testMasterKeyHex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
 
 // waitServing event-gates on the server actually serving RPCs: it waits for the
 // socket to bind (waitListening), then round-trips GetServerInfo over the UDS.

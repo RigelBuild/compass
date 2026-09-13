@@ -227,6 +227,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		StateDir:          *f.stateDir,
 		AdminHandle:       *f.adminHandle,
 		CORSAllowedOrigin: *f.corsAllowedOrigin,
+		SecretProvider:    firstNonEmpty(*f.secretProvider, os.Getenv("COMPASS_SECRET_PROVIDER")),
 		PublicURL:         firstNonEmpty(*f.publicURL, os.Getenv("COMPASS_PUBLIC_URL")),
 		// ENV-ONLY knob (Matt 2026-08-28): the OTLP exporter and the enable-gate
 		// read one source, so no --otel-endpoint flag. Empty = tracing off.
@@ -267,6 +268,7 @@ type serveFlags struct {
 	s3Region          *string
 	s3UseTLS          *bool
 	stateDir          *string
+	secretProvider    *string
 	adminHandle       *string
 	corsAllowedOrigin *string
 	publicURL         *string
@@ -317,6 +319,10 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 		stateDir: fs.String("state-dir", "",
 			"Directory the bootstrap-admin token file is written under (0600). "+
 				"Defaults to the socket's parent directory."),
+		secretProvider: fs.String("secret-provider", "",
+			"SecretSpec provider URI both secret resolvers read (e.g. "+
+				"\"keyring://\", \"dotenv:///path/.env\"). Empty = the SDK's "+
+				"default chain. Defaults to $COMPASS_SECRET_PROVIDER."),
 		adminHandle: fs.String("admin-handle", "",
 			"Handle of the bootstrap-admin account created (or found) at startup. "+
 				"Defaults to \"admin\". A handle that already names a non-admin "+

@@ -86,8 +86,8 @@ type ServerSecretDeclaration struct {
 }
 
 // DeclareServerSecret adds a names-only row to the SEPARATE server-secret
-// registry, mirroring DeclareSecret minus delivery/kind/provider/host. It
-// stores NO value.
+// registry: like a user-secret row (UpsertSecret) minus delivery/kind/provider/
+// host and, being names-only, minus any value.
 //
 // name is validated against SecretSpec's env-var-name grammar AND is REQUIRED
 // to carry a reserved server-secret prefix — so no writer (the admin RPC, or

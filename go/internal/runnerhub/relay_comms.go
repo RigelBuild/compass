@@ -441,36 +441,36 @@ func (h *Hub) OnBindingChange(change fabric.BindingChange) {
 	}
 }
 
-// HasLiveSession reports whether sessionID names a live session bound in the
-// hub. It mirrors accountForSession's lock discipline but discards the account —
-// the FetchSecrets authz check only needs "is this a session bound to the (one)
-// enrolled Runner", not whose session it is. Under the inject-all + single-Runner
-// MVP, a live binding in the hub IS a session bound to this Runner (there is
-// exactly one), so this is the whole session-binding authz. The per-Runner
-// differentiation — verifying the session belongs to THIS Runner among several —
-// is the future multi-Runner seam (record §761-762); today there is one Runner,
-// so membership in sessionAccounts is that check.
-func (h *Hub) HasLiveSession(sessionID string) bool {
+// AccountForLiveSession returns the agent account bound to sessionID in the hub,
+// with false when no live binding exists. It mirrors accountForSession's lock
+// discipline but skips the durable read-through: FetchSecrets authorizes a
+// re-fetch for a session the hub currently holds, and the returned account is
+// the identity the A9 scoped resolve reads. Under the inject-all + single-Runner
+// MVP a live binding in the hub IS a session bound to this Runner (there is
+// exactly one), so membership in sessionAccounts is the whole session-binding
+// authz; the per-Runner differentiation is the future multi-Runner seam
+// (record §761-762).
+func (h *Hub) AccountForLiveSession(sessionID string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, ok := h.sessionAccounts[sessionID]
-	return ok
+	account, ok := h.sessionAccounts[sessionID]
+	return account, ok
 }
 
-// HasContainerBinding reports whether containerName has a recorded
-// container→account binding — the Provision..Start window binding (bindContainer,
-// cleared by promoteSession at Start and by clear() on re-enroll). It is the
-// PROVISION-time analogue of HasLiveSession: FetchSecrets authorizes an initial
-// pre-exec materialize against it, because no live session exists until Start.
-// Under the inject-all + single-Runner MVP a recorded binding IS a container
-// provisioned on the one enrolled Runner, so membership is the whole authz check
-// (the per-Runner differentiation is the same future multi-Runner seam,
-// record §761-762).
-func (h *Hub) HasContainerBinding(containerName string) bool {
+// AccountForContainer returns the agent account bound to containerName in the
+// Provision..Start window (bindContainer, cleared by promoteSession at Start and
+// by clear() on re-enroll), with false when none is recorded. It is the
+// PROVISION-time analogue of AccountForLiveSession: FetchSecrets authorizes an
+// initial pre-exec materialize against it (no live session exists until Start)
+// and reads the returned account for the A9 scoped resolve. Under the inject-all
+// + single-Runner MVP a recorded binding IS a container provisioned on the one
+// enrolled Runner, so membership is the whole authz check (the per-Runner
+// differentiation is the same future multi-Runner seam, record §761-762).
+func (h *Hub) AccountForContainer(containerName string) (store.AccountID, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, ok := h.containerAccounts[containerName]
-	return ok
+	account, ok := h.containerAccounts[containerName]
+	return account, ok
 }
 
 // errCommsUnavailable is the fail-closed cause when a hub with no CommsCaller

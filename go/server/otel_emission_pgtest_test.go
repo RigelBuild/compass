@@ -379,8 +379,10 @@ func serveOTelSocket(t *testing.T, version, dsn string) string {
 	path := filepath.Join(t.TempDir(), "compass.sock")
 	ctx, cancel := context.WithCancel(context.Background()) // test root (rule://go-thread-context _test.go exemption)
 	errCh := make(chan error, 1)
+	cfg := ServeConfig{SocketPath: path, Version: version, DatabaseDSN: dsn}
+	provisionMasterKeyProvider(t, &cfg)
 	go func() {
-		errCh <- Serve(ctx, ServeConfig{SocketPath: path, Version: version, DatabaseDSN: dsn})
+		errCh <- Serve(ctx, cfg)
 	}()
 	t.Cleanup(func() {
 		cancel()

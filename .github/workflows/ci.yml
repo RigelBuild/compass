@@ -2267,6 +2267,20 @@ jobs:
             -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
           echo "$out/bin" >>"$GITHUB_PATH"
 
+      - name: Stage the secretspec cdylib and seed a throwaway master key
+        # T5 resolves the master key unconditionally at boot, so the server now
+        # fails closed without both the cdylib its read path dlopens (the pgtest
+        # job's recipe) and a resolvable key. The dotenv is the only declared
+        # name here: e2e configures no forge, and every name is required=true.
+        run: |
+          libsecretspec=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/secretspec-env.nix libsecretspec)
+          echo "SECRETSPEC_FFI_LIB=$libsecretspec/lib/libsecretspec.so" >>"$GITHUB_ENV"
+          secrets_env=/tmp/compass-e2e-secrets.env
+          umask 077
+          echo "COMPASS_MASTER_KEY=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" >"$secrets_env"
+          echo "COMPASS_SECRET_PROVIDER=dotenv://$secrets_env" >>"$GITHUB_ENV"
+
       - name: Detect whether this PR changes the compass-agent image
         id: image_affected
         # PRs only. Whether the e2e gate must test a LOCALLY-BUILT image or the

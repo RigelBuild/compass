@@ -4,15 +4,9 @@
 -- ErrConflict/ErrInvalidArgument/ErrNotFound mapping, and the RowsAffected
 -- branch (DeleteSecretDeclaration is :execrows).
 --
--- InsertSecret/DeclaredSecrets are the retained value-free path (T5 caller); the
--- scoped, encrypted path is UpsertSecret + SecretRecordsForAgent (A1/A9).
-
--- InsertSecret writes the value-free declaration at the tenant coordinate
--- (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
--- SetSecret caller, removed with it in T5.
--- name: InsertSecret :exec
-INSERT INTO secrets (name, scope_kind, delivery, kind, provider, host, declared_by)
-VALUES ($1, 0, $2, $3, $4, $5, $6);
+-- DeclaredSecrets is the retained value-free READ path (the SERVER SpecResolver's
+-- declarations view); the scoped, encrypted path is UpsertSecret +
+-- SecretRecordsForAgent (A1/A9), now the sole writer.
 
 -- IsUserAccount reports whether an id names a human account — the user-scope
 -- (scope_kind 1) referential check the UpsertSecret door runs in lieu of an FK
