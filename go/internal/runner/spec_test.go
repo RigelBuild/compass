@@ -292,7 +292,7 @@ func TestResolveAgentImageStillRequiredOnBackendsThatReadIt(t *testing.T) {
 		engine runtime.WorkloadRuntime
 	}{
 		{"a backend declaring it reads the image", &imageIrrelevantFake{irrelevant: false}},
-		{"a backend without the capability at all", &imageOblivousFake{}},
+		{"a backend without the capability at all", &imageObliviousFake{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, _, err := ResolveAgentImage(tc.engine, ""); err == nil {
@@ -312,9 +312,9 @@ func TestResolveAgentImageStillRequiredOnBackendsThatReadIt(t *testing.T) {
 	}
 }
 
-// imageOblivousFake implements no image capability, so it exercises the
+// imageObliviousFake implements no image capability, so it exercises the
 // type-assertion miss.
-type imageOblivousFake struct{ runtime.WorkloadRuntime }
+type imageObliviousFake struct{ runtime.WorkloadRuntime }
 
 // The builder accepts an empty image only when the backend declared it unread,
 // so the second guard cannot fail a microVM Runner the resolver just cleared —
