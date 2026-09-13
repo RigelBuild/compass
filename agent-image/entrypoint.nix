@@ -42,7 +42,7 @@ let
       ];
     };
     "aarch64-linux" = {
-      outputHash = lib.fakeSha256; # placeholder until the arm64 CI spike reports the real hash
+      outputHash = lib.fakeSha256; # placeholder; replace with the hash an aarch64 build reports
       nativesPkg = "pi-natives-linux-arm64";
       addons = [ "pi_natives.linux-arm64.node" ];
     };
