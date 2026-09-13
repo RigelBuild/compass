@@ -248,8 +248,14 @@ describe("locksEqual", () => {
 });
 
 describe("rendering and refs", () => {
-	test("renders stable bytes, so an unchanged relock writes an identical file", () => {
-		expect(renderLock(lock())).toBe(renderLock(lock()));
+	test("renders the exact committed bytes for a known lock", () => {
+		// Pinned against literal output, not against renderLock itself: the
+		// file is read by the nix eval and rewritten by the relock, so the
+		// indentation and key order ARE the contract. A self-comparison would
+		// pass for any deterministic implementation.
+		expect(renderLock(lock())).toBe(
+			`{\n\t"repo": "${AGENT_REPO}",\n\t"tag": "${TAG}",\n\t"digest": "${DIGEST}",\n\t"layers": [\n\t\t"${LAYER_A}",\n\t\t"${LAYER_B}"\n\t]\n}\n`,
+		);
 	});
 
 	test("renders valid JSON that round-trips through validatePin", () => {

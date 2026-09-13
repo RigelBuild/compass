@@ -31,6 +31,7 @@ import { join } from "node:path";
 import {
 	AGENT_REPO,
 	EXIT,
+	isBuildTag,
 	lockFromInspect,
 	locksEqual,
 	PinError,
@@ -72,30 +73,26 @@ async function skopeo(args: string[]): Promise<string> {
 	return out;
 }
 
-/** The manifest body plus the digest the registry resolved for the reference.
- * Both come from skopeo so the pair is consistent; deriving the digest by
- * re-hashing locally would assert our own hashing instead of the registry's. */
+/** The manifest body, plus the digest OF THAT BODY.
+ *
+ * One fetch, hashed locally, because a manifest digest is by definition the
+ * sha256 of the manifest bytes (verified against the registry's own reported
+ * digest). Asking the registry separately would be two reads of a MUTABLE tag,
+ * so a publish landing between them would pair one manifest's body with
+ * another's digest — and the lock would describe layers the digest disowns. */
 async function inspect(reference: string): Promise<Inspected> {
 	const raw = await skopeo(["inspect", "--raw", `docker://${reference}`]);
-	const meta = await skopeo(["inspect", `docker://${reference}`]);
 
 	let manifest: unknown;
-	let digest: unknown;
 	try {
 		manifest = JSON.parse(raw);
-		digest = (JSON.parse(meta) as Record<string, unknown>).Digest;
 	} catch (err) {
 		throw new PinError(
-			`could not parse skopeo output for ${reference}: ${String(err)}`,
+			`could not parse the manifest for ${reference}: ${String(err)}`,
 			EXIT.registryFailed,
 		);
 	}
-	if (typeof digest !== "string") {
-		throw new PinError(
-			`skopeo reported no digest for ${reference}`,
-			EXIT.registryFailed,
-		);
-	}
+	const digest = `sha256:${new Bun.CryptoHasher("sha256").update(raw).digest("hex")}`;
 	return { digest, manifest };
 }
 
@@ -144,9 +141,10 @@ async function discoverBuildTag(): Promise<string> {
 		throw new PinError("registry returned no tag list", EXIT.registryFailed);
 	}
 
-	const candidates = tags
-		.filter((t): t is string => typeof t === "string" && t.startsWith("git-"))
-		.reverse();
+	// Filter by the same predicate the lock validator enforces, not a looser
+	// `git-` prefix: a malformed `git-*` tag that matched the digest would be
+	// selected here and then hard-fail the whole relock downstream.
+	const candidates = tags.filter(isBuildTag).reverse();
 	for (const tag of candidates) {
 		if ((await resolvedDigest(`${AGENT_REPO}:${tag}`)) === target) return tag;
 	}
