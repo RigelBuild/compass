@@ -1,71 +1,44 @@
 # The in-image toolchain for the Compass agent base image.
 #
-# This is a *runtime* toolchain for a coding agent, not a build image: it needs
-# Nix and a shell, not the project's compile-time dependency closure. What it
-# does share with the rest of the repo is the pinned bun version: this image
-# consumes the exact vendored bun derivation the dev shell and CI gate build
-# (tools/toolchain/toolchain-tools.nix) rather than re-pinning — see `bun` below.
+# A *runtime* toolchain for a coding agent, not a build image: it needs Nix and a
+# shell, not the project's compile-time closure. It shares one thing with the rest
+# of the repo — the pinned bun derivation the dev shell and CI gate build
+# (tools/toolchain/toolchain-tools.nix) — rather than re-pinning.
 #
-# What the agent needs in-image, and why each is here rather than assumed:
-#
-#   * nix — the agent rebuilds its own devenv in-container as itself, so the
-#     `nix` CLI is the load-bearing tool, not an extra. devenv's containers
-#     module ships no `nix` (it was built for "CI runs nix builds", where the
-#     host has it).
-#   * devenv + direnv — the activation path, driven by the agent rather than by
-#     the Runner. The Runner execs a bare `compass-agent` argv
-#     (go/internal/runner/relay.go:37,65-67), so nothing wraps the entrypoint in
-#     `direnv exec`; the agent activates a checkout itself when it needs the
-#     repo's toolchain. The two binaries alone do not make that path work:
-#     `use devenv` is devenv's own direnv stdlib, not direnv's, so the image
-#     also bakes a direnvrc that loads it and points `DIRENV_CONFIG` at it
-#     (`direnvConfig` below, and devenv.nix's `env`).
-#   * bun — runs `compass-agent`, which is a TypeScript entrypoint.
-#   * git + gh — the agent clones its own repos rather than being handed a
-#     checkout, and drives forge work.
-#   * nftables/getent/gawk — required IN-IMAGE by the root egress arm step:
-#     "Requires nft, getent, and awk in the image"
-#     (go/internal/runtime/egress.go:76-77). getent is its own nixpkgs package,
-#     NOT part of `glibc`/`glibc.bin` — neither of those ships
-#     a `bin/getent`, so listing glibc here yields an image where the egress arm
-#     step fails at provision with a missing binary.
-#   * coreutils/bash/cacert — a usable shell environment, and the CA bundle the
-#     substituter + every HTTPS clone needs. A container with no CA bundle fails
-#     at the first `nix` substitution with an opaque TLS error.
+# What the agent needs in-image, and why each is here:
+#   * nix — the agent rebuilds its own devenv in-container as itself; devenv's
+#     containers module ships no `nix` (it assumed a CI host that has it).
+#   * devenv + direnv — the activation path, driven by the agent. Nothing wraps
+#     the entrypoint in `direnv exec`, so the agent activates a checkout itself.
+#     The image also bakes a direnvrc loading devenv's `use devenv` stdlib and
+#     points DIRENV_CONFIG at it (`direnvConfig` below).
+#   * bun — runs `compass-agent`, a TypeScript entrypoint.
+#   * git + gh — the agent clones its own repos and drives forge work.
+#   * nftables/getent/gawk — required in-image by the egress arm. getent is its
+#     own nixpkgs package, NOT part of glibc/glibc.bin (neither ships bin/getent).
+#   * coreutils/bash/cacert — a usable shell and the CA bundle every HTTPS clone +
+#     nix substitution needs (without it the first substitution fails on TLS).
 {
   pkgs,
   compassAgent,
 }:
 let
-  # The repo's pinned bun. This image consumes the exact vendored bun derivation
-  # built from tools/toolchain/versions/bun.nix — the same one the dev shell and
-  # the CI toolchain gate import from tools/toolchain/toolchain-tools.nix — so
-  # the image cannot drift from the repo's pin: it IS the pin, byte for byte,
-  # not a nixpkgs bun that merely happens to match.
+  # The repo's pinned bun — the exact vendored derivation the dev shell and CI
+  # gate import, so the image IS the pin byte for byte, not a nixpkgs bun that
+  # merely matches.
   bun = (import ../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
 
-  # Single-user Nix: in-container Nix is set up for the agent uid, with `/nix`
-  # owned by the agent user. Each setting below is load-bearing:
-  #
-  #   build-users-group = (empty) — THE single-user switch. A non-empty group with
-  #     no nix-daemon running aborts every build. There is no daemon here by
-  #     design — one uid does all Nix work, and the container runs the agent as
-  #     PID 1 with nothing to supervise a daemon.
-  #   sandbox = false — the build sandbox needs nested user namespaces, which are
-  #     unreliable inside an already-rootless podman userns. The threat model
-  #     treats the agent as trusted, so it gains nothing from sandboxing a build
-  #     the agent could run unsandboxed a moment later by hand.
-  #   experimental-features — devenv is flake-based; without this every devenv
-  #     invocation fails.
-  #   substituters — cold-realizing closures from the public cache is accepted
-  #     cost, so the cache and its key must be configured or every activation
-  #     builds from source.
-  #   ssl-cert-file — pinned to the bundle's STORE path, not a /etc filename.
-  #     `pkgs.cacert` installs `etc/ssl/certs/ca-bundle.crt`, but nix's compiled-in
-  #     default is `/etc/ssl/certs/ca-certificates.crt` and openssl's OPENSSLDIR
-  #     ships no bundle at all, so without this every substitution and flake fetch
-  #     dies with an opaque "Problem with the SSL CA cert (77)" — the exact failure
-  #     this file's header says the CA bundle prevents. A store path is immune to
+  # Single-user Nix, set up for the agent uid with `/nix` owned by the agent.
+  # Each setting is load-bearing:
+  #   build-users-group = (empty) — the single-user switch; a non-empty group with
+  #     no daemon aborts every build, and there is no daemon here by design.
+  #   sandbox = false — the build sandbox needs nested userns, unreliable inside a
+  #     rootless podman userns; the agent is trusted, so it gains nothing.
+  #   experimental-features — devenv is flake-based; without this it fails.
+  #   substituters — cold-realizing from the public cache is accepted cost.
+  #   ssl-cert-file — pinned to the bundle's STORE path: nix's compiled-in default
+  #     names a filename `pkgs.cacert` does not ship, so without this every
+  #     substitution dies with an opaque SSL CA error. A store path is immune to
   #     however /etc ends up laid out.
   nixConf = pkgs.writeTextDir "etc/nix/nix.conf" ''
     experimental-features = nix-command flakes
@@ -77,49 +50,30 @@ let
   '';
 
   # The same bundle under the filename everything OTHER than nix looks for.
-  # `pkgs.cacert` ships only `ca-bundle.crt`, but openssl (hence curl, git, gh,
-  # ssh) defaults to `/etc/ssl/certs/ca-certificates.crt`. `ssl-cert-file` above
-  # covers nix alone, so without this the agent's own `git clone`/`gh` over HTTPS
-  # still fail even once substitution works. Same store bundle, second name.
+  # `pkgs.cacert` ships only `ca-bundle.crt`, but openssl (curl/git/gh/ssh)
+  # defaults to `ca-certificates.crt`. `ssl-cert-file` covers nix alone, so
+  # without this the agent's own HTTPS clones still fail. Same bundle, second name.
   caCertificates = pkgs.runCommand "ca-certificates" { } ''
     mkdir -p $out/etc/ssl/certs
     ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt \
           $out/etc/ssl/certs/ca-certificates.crt
   '';
 
-  # The devenv stdlib for direnv, so `use devenv` resolves in-image.
+  # The devenv stdlib for direnv, so `use devenv` resolves in-image. Shipping the
+  # binaries is not enough: direnv's stdlib has no `use_devenv` — devenv supplies
+  # it as a fragment printed by `devenv direnvrc` that an `.envrc` is expected to
+  # `eval`. A bare `use devenv` .envrc (what a trimmed repo ends up with) fails
+  # `use_devenv: command not found` and direnv silently degrades to this image's
+  # tools. Loading the fragment from direnv's own rc makes every `.envrc` shape
+  # work without the agent editing cloned repos.
   #
-  # Shipping the `devenv` and `direnv` binaries is not enough to make the
-  # activation path work. direnv's stdlib has no `use_devenv`; devenv supplies it
-  # as a shell fragment printed by `devenv direnvrc`, which an `.envrc` is
-  # expected to `eval` itself (devenv's own `devenv init` template does exactly
-  # that — the RigelBuild/devenv fork's devenv/init/envrc:3). An `.envrc` that is a bare
-  # `use devenv` — the shape a repo ends up with once anyone trims the boilerplate
-  # — fails with `use_devenv: command not found`, and direnv still runs the
-  # command afterwards, so the agent silently degrades to this image's tools
-  # instead of the repo's toolchain. Loading the fragment from direnv's own rc
-  # makes every `.envrc` shape work without the agent editing repos it clones.
-  #
-  # It lands in /etc, not under $HOME, even though direnv looks for the rc at
-  # `$DIRENV_CONFIG/direnvrc` (default `~/.config/direnv/direnvrc`) and has no
-  # system-wide path. The container module stages a real `/home/agent` directory
-  # of its own (containers.nix `mkEtc`), which wins over anything this buildEnv
-  # symlinks there — a `home/agent/...` entry here simply vanishes from the image.
-  # `DIRENV_CONFIG` in the image env points direnv at this store-backed directory
-  # instead, which also leaves the agent's writable `~/.config` untouched.
-  #
-  # Activation through this rc prints a short run of
-  # `/etc/direnv/direnvrc:<n>: <name>: command not found` lines, on a COLD load
-  # only — a warm re-entry into an already-built environment prints none
-  # (measured 2, 0, 0 across three consecutive `direnv exec` runs in the built
-  # image). The exact count and line numbers are deliberately not quoted here:
-  # they track the rc devenv emits and shift with the pin.
-  #
-  # They are expected upstream noise, not a failed activation: `devenv direnvrc`'s
-  # own `_nix_import_env` (fork `devenv/direnvrc`, the `eval "$env"` it performs)
-  # evals the printed environment, whose non-assignment progress lines bash then
-  # tries to run as commands. The environment is fully activated regardless — an
-  # agent reading its own tool output should not read these as a broken toolchain.
+  # It lands in /etc, not $HOME: the container module stages a real `/home/agent`
+  # that wins over anything this buildEnv symlinks there, so DIRENV_CONFIG points
+  # direnv at this store-backed rc instead, leaving the agent's ~/.config
+  # untouched. A COLD activation prints a few `command not found` lines — devenv's
+  # own `_nix_import_env` evals the printed environment, whose progress lines bash
+  # tries to run; the environment is fully activated regardless, so an agent
+  # reading its own output should not read these as a broken toolchain.
   direnvConfig = pkgs.writeTextDir "etc/direnv/direnvrc" ''
     eval "$(${pkgs.devenv}/bin/devenv direnvrc)"
   '';

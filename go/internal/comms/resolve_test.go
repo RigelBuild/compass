@@ -1,18 +1,9 @@
 package comms
 
-// The two resolve.go contracts that need NO database, kept at the cheapest tier
-// that can catch them (RIG-3536 / T8):
-//
-//   - notFoundHandle's discrimination (resolve.go:131-139): it re-keys ONLY a
-//     store.ErrNotFound, and a real query fault passes through UNMANGLED. A pure
-//     function over an error value — a pgtest case here would buy nothing.
-//   - resolveHandles' empty-input no-op (resolve.go:33, :35-37). Driven against a
-//     Comms with a NIL store, which is a strictly stronger assertion than a
-//     pgtest one: the call can only return without panicking if the
-//     len(handles)==0 short-circuit fires BEFORE ResolveOwner/AccountsByHandles
-//     are reached.
-//
-// context.Background() is the test root (test-root ctx exemption).
+// The two resolve.go contracts that need NO database (RIG-3536 / T8):
+// notFoundHandle re-keys ONLY store.ErrNotFound and passes a real fault through
+// unmangled; resolveHandles' empty-input no-op, driven against a Comms with a
+// NIL store — a stronger assertion that the len==0 short-circuit fires first.
 
 import (
 	"context"

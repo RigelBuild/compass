@@ -3,22 +3,9 @@
 package comms
 
 // The agent-TOOL comms entries (peer-DM R1/R2): PostAsAccountByName /
-// ListAsAccountByName resolve the request's channel NAME to an id within the
-// caller's visible set (ChannelByNameForViewer) and delegate to the id-typed
-// PostAsAccount / ListAsAccount. Every test here defends one arm of the
-// name-addressing contract the tool edge now enforces:
-//
-//   - a visible name resolves and the post/list lands in that channel;
-//   - an unknown OR invisible name is CodeNotFound (the D9 merge — the agent
-//     never learns a channel it cannot see exists);
-//   - an ambiguous name is CodeInvalidArgument (there is no ErrAmbiguous);
-//   - post/ask have NO home default: an empty channel name is CodeNotFound, not
-//     a silent home fallback (R2);
-//   - list KEEPS omit-=home: an empty channel name lists the caller's home.
-//
-// The id-typed PostAsAccount / ListAsAccount and defaultChannel are unchanged and
-// covered by agent_caller_pgtest_test.go; these tests exercise only the ByName
-// resolution layer above them.
+// ListAsAccountByName resolve a channel NAME within the caller's visible set.
+// Contract: a visible name resolves; unknown or invisible is CodeNotFound (D9);
+// ambiguous is CodeInvalidArgument; post/ask have no home default, list keeps it.
 
 import (
 	"context"

@@ -3,31 +3,9 @@
 package server
 
 // RIG-1298 — the network door's slow-body (slowloris) read deadline.
-//
-// withBodyReadDeadline is the outermost network-door middleware: for every
-// request whose path is NOT in bodyDeadlineExempt it arms a per-request
-// SetReadDeadline via http.ResponseController, so a client that sends headers
-// promptly then drips the request body forever is cut instead of tying up a
-// connection. The two long-lived-REQUEST-body Runner streams (Sessions,
-// PublishEvents) are exempt, because their request half is legitimately open
-// for the whole life of the connection.
-//
-// These tests exercise that contract through a real loopback httptest server
-// (HTTP/1.1 over TCP; ResponseController.SetReadDeadline arms the underlying
-// conn), driving the middleware itself — not a mock. Time is the subject under
-// test, never a synchronization device: the enforced-path drip stalls
-// UNBOUNDED (far past any fixed margin) so the socket deadline is guaranteed to
-// fire, and the exempt-path pause is a time.Sleep used only as a guaranteed
-// LOWER bound (sleeps run long, never short) that sits 4x past the deadline, so
-// a wrongly-applied deadline would already have errored before the body
-// completes. Every assertion gates on the real server-side read outcome
-// delivered over a buffered channel, bounded by the shared testTimeout
-// safety-net, never on elapsed wall-clock.
-//
-// DB-free and hermetic (httptest loopback, OS-assigned port, no Postgres), so
-// it runs in the default `go test ./...` lane rather than behind the pgtest tag
-// that network_door_test.go carries. White-box (package server) to reference
-// the unexported withBodyReadDeadline and bodyDeadlineExempt.
+// withBodyReadDeadline is the outermost middleware: for every non-exempt request it
+// arms a per-request SetReadDeadline, so a client dripping the body forever is cut
+// (the two long-lived Runner streams are exempt). Time is the subject, not a sync device.
 
 import (
 	"context"
@@ -280,11 +258,10 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	const isolationPath = "/isolation"
 	const wantB = "prompt-sibling-body"
 
-	// Per-stream server-side read outcomes, buffered so the handler goroutines
-	// never block on the send. startedA fires when the drip stream's handler is
-	// live — i.e. its h2 stream (and thus the shared conn) is established — so
-	// the sibling can be launched knowing it multiplexes onto the SAME conn
-	// rather than racing a fresh dial.
+	// Per-stream server-side read outcomes, buffered so the handler goroutines never
+	// block on the send. startedA fires when the drip stream's handler is live (its
+	// h2 stream and the shared conn are established), so the sibling multiplexes onto
+	// the SAME conn rather than racing a fresh dial.
 	resA := make(chan bodyReadResult, 1)
 	resB := make(chan bodyReadResult, 1)
 	startedA := make(chan struct{}, 1)
@@ -311,12 +288,10 @@ func TestNetworkDoorBodyDeadlineIsolatesHTTP2Streams(t *testing.T) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 
-	// One shared h2c connection: the dialer counts dials so the test can prove
-	// both streams rode a SINGLE connection (dials == 1) — the premise that
-	// makes this a per-STREAM (not per-connection) proof. h2 multiplexes
-	// concurrent requests onto one conn; launching B only after A's handler is
-	// live keeps that single-conn behaviour deterministic instead of racing a
-	// second dial.
+	// One shared h2c connection: the dialer counts dials so the test can prove both
+	// streams rode a SINGLE connection (dials == 1) — the premise that makes this a
+	// per-STREAM proof. Launching B only after A's handler is live keeps the
+	// single-conn behaviour deterministic instead of racing a second dial.
 	var dials atomic.Int32
 	tr := h2cTransport(func(ctx context.Context, network, addr string) (net.Conn, error) {
 		dials.Add(1)
@@ -482,11 +457,10 @@ func TestNetworkDoorBodyDeadlineDoesNotCutServerStreamResponse(t *testing.T) {
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	// Prime one event pre-subscribe: connect flushes the server-stream's
-	// response headers on the handler's first Send, and the client's
-	// SubscribeEvents RoundTrip blocks until those headers arrive — with an empty
-	// bus the handler tails silently and the open would deadlock. Its snapshot
-	// replay below is also the proof the stream opened and delivered a frame.
+	// Prime one event pre-subscribe: connect flushes the response headers on the
+	// handler's first Send, and SubscribeEvents RoundTrip blocks until they arrive —
+	// with an empty bus the open would deadlock. Its snapshot replay below is also the
+	// proof the stream opened and delivered a frame.
 	bus.Publish(statusEvent())
 
 	url := startServerStreamDeadlineDoor(t, newService("test", bus, nil, nil, nil, nil, nil), deadline)

@@ -1,13 +1,7 @@
-// @compass/agent — the first-party Compass agent (design: architecture-lineage).
-//
-// Built on the OMP SDK (@oh-my-pi/pi-agent-core): it subscribes the SDK event
-// stream, maps it to compass.v1 `AgentFrame`s in-process (its own testable
-// surface — no Runner-side translator), and speaks compass.v1 over the
-// AgentGateway socket the Runner bind-mounts into the container (the
-// transport-consolidation record supersedes the former newline-framed stdio
-// channel). The wire envelopes (`AgentFrame` out, `AgentControl` in) are
-// isolated behind FrameSink / ControlSource, so a change of carrier touches
-// only the sink/source impls.
+// @compass/agent — the first-party Compass agent (design: architecture-lineage). Built on
+// the OMP SDK: subscribes the SDK event stream, maps it to compass.v1 `AgentFrame`s, and
+// speaks compass.v1 over the AgentGateway socket the Runner bind-mounts. Wire envelopes
+// stay behind FrameSink / ControlSource, so a change of carrier touches only those impls.
 
 export { CompassAgent, type CompassAgentOptions } from "./agent";
 export { CommsBroker, type CommsTransport, createCommsTools } from "./comms";

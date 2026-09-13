@@ -402,14 +402,10 @@ type WorkloadRuntime interface {
 	Resize(ctx context.Context, id WorkloadID, limits ResourceLimits) error
 }
 
-// WorkloadRuntime is frozen (the Resize reservation above): a backend that
-// self-arms egress does NOT grow a verb here. Instead MicroVMRuntime carries an
-// off-interface marker method, EgressArmedInGuest(), and AgentRuntime.provision
-// type-asserts the unexported inGuestEgressArmer (agent.go) to skip armEgress on
-// such a backend (design §(c)). A future backend — or any WorkloadRuntime
-// decorator, which would otherwise swallow the marker and silently re-enable
-// armEgress on the microVM backend — must re-expose EgressArmedInGuest to keep
-// the probe working.
+// WorkloadRuntime is frozen: a backend that self-arms egress does NOT grow a
+// verb here. MicroVMRuntime carries an off-interface marker EgressArmedInGuest(),
+// and AgentRuntime.provision type-asserts inGuestEgressArmer to skip armEgress
+// (design §(c)). A future backend or decorator must re-expose it to keep working.
 
 // defaultCommandTimeout is the default per-command wall-clock cap. A hung podman
 // (stalled pull, wedged userns/cgroup setup, hung exec) must surface as an
@@ -470,11 +466,10 @@ func createArgs(spec WorkloadSpec) []string {
 	args = append(args,
 		"create",
 		"--name", spec.Name,
-		// Rootless uid remap: maps the invoking host user to the baked agent
-		// uid, so files the agent writes in a bind-mount still map back to the
-		// invoking user on the host (design: architecture-lineage;
-		// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md). gid
-		// collapses to uid: the image bakes gid==uid==1000.
+		// Rootless uid remap: maps the invoking host user to the baked agent uid,
+		// so files the agent writes in a bind-mount map back to the invoking user
+		// on the host (compass-runner-arbitrary-uid design). gid collapses to
+		// uid: the image bakes gid==uid==1000.
 		fmt.Sprintf("--userns=keep-id:uid=%d,gid=%d", spec.UID, spec.UID),
 	)
 	for _, cap := range spec.CapAdd {

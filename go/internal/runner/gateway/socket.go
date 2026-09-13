@@ -123,30 +123,15 @@ type SocketListener struct {
 // Refusing before the mkdir is what makes the question moot, rather than a
 // teardown that would have to be added.
 func listenAgentSocket(ctx context.Context, path string, h http.Handler, cancel context.CancelFunc) (*SocketListener, error) {
-	// The socket path is RuntimeDir + /containers/<container>/agent.sock
-	// (host.go), where <container> is NamePrefix + the agent account id
-	// (spec.go). RuntimeDir is the operator-supplied variable: --runtime-dir is
-	// unbounded on every hop and inflates the path for every agent at once.
-	//
-	// The account id's SHAPE is validated where it enters, not here — see
-	// validAccountID in spec.go, which refuses an id that is not fixed-width
-	// lowercase hex (the minted shape). That is a separate property from length
-	// and cannot be checked here: a traversing id SHORTENS the path, so it would
-	// sail past this guard.
-	//
-	// With the minted id the tail is 69 bytes, so the default /run/compass lands
-	// at 81 and the --runtime-dir budget is sunPathMax-69: 38 on Linux, 34 on
-	// darwin/BSD. validateRuntimeDir (run.go) asserts that budget at startup, so
-	// an operator learns it at boot rather than at first provision.
-	//
-	// The bind's own error is "bind: invalid argument", an EINVAL naming neither
-	// the limit nor the actual length, which reads as a permissions or path
-	// problem. Check first, before any directory is created, so a misconfigured
-	// deployment is self-diagnosing at Provision and leaves nothing behind.
-	// The message names the socket's parent, not a specific flag: the tiers root
-	// this path differently — the container tiers under the Runner's runtime dir,
-	// the host tier under the backend's state root — so naming one knob would
-	// send half the operators to a value that has no effect on their path.
+	// The socket path is RuntimeDir + /containers/<container>/agent.sock, and
+	// --runtime-dir is operator-supplied and unbounded. The account id's SHAPE is
+	// validated in spec.go (validAccountID), a separate property from length that
+	// can't be checked here since a traversing id SHORTENS the path.
+
+	// With the minted id the tail is 69 bytes, so the --runtime-dir budget is
+	// sunPathMax-69 (38 Linux, 34 darwin), asserted at startup by validateRuntimeDir.
+	// Check first, before any mkdir: the bind's own EINVAL names neither limit nor
+	// length, so an early check makes a misconfigured deployment self-diagnosing.
 	if len(path) > sunPathMax {
 		return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the socket's parent directory or the agent account id: %w", path, len(path), sunPathMax, ErrOperatorConfig)
 	}
@@ -228,11 +213,10 @@ func (l *SocketListener) Close(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, shutdownGrace)
 	defer cancel()
 
-	// Cancel the socket-lifetime context on the way out (after the drain below
-	// lets in-flight handlers finish and release the shared publisher), tearing
-	// down any upstream PublishEvents stream still bound to it — e.g. one a
-	// PostConversationFrame unary opened and left installed. Deferred so it runs
-	// on every return path; nil-guarded for a listener built without a cancel.
+	// Cancel the socket-lifetime context on the way out (after the drain lets
+	// in-flight handlers finish and release the shared publisher), tearing down any
+	// upstream PublishEvents stream still bound to it. Deferred on every return
+	// path; nil-guarded for a listener built without a cancel.
 	if l.cancel != nil {
 		defer l.cancel()
 	}

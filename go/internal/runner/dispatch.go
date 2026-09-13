@@ -1,14 +1,9 @@
 //go:build unix
 
-// The Runner-side session-command dispatcher: the Runner opens the Sessions bidi
-// stream and this loop reads the commands the Server pushes on it, executes each
-// against the container lifecycle, and returns the correlated result on the
-// request half. Request-id idempotency (OQ6): a command whose request id was
-// already handled returns the recorded result rather than re-executing — so a
-// relay-Start retried after a timeout creates no duplicate container and no
-// spurious ALREADY_RUNNING. The Runner is
-// authoritative for live session truth (OQ6): it holds the session set and a
-// Status command answers from it.
+// The Runner-side session-command dispatcher: this loop reads the commands the
+// Server pushes on the Sessions stream, executes each against the container
+// lifecycle, and returns the correlated result. Request-id idempotency (OQ6): a
+// handled id returns the recorded result, so a retried relay-Start makes no duplicate.
 package runner
 
 import (
@@ -28,11 +23,10 @@ import (
 // subset of the Runner's runtime work a session command touches. The production
 // Runner implements it over AgentRuntime + StartAgent; a test drives a fake.
 type SessionHost interface {
-	// Start brings a session online: resolves the container and starts the agent
-	// relay. Returns the live session id. A start for a container already running
-	// a session returns errAlreadyRunning. resumeBody is the server-reconstructed
-	// session-JSONL body materialized into the container before the agent starts;
-	// empty means a fresh (non-resume) start.
+	// Start brings a session online: resolves the container and starts the agent relay,
+	// returning the live session id. A start for a container already running a session
+	// returns errAlreadyRunning. resumeBody is the reconstructed session-JSONL body
+	// materialized before the agent starts; empty means a fresh start.
 	Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string) (sessionID string, err error)
 	// Provision creates the isolated per-agent container for a workstream via the
 	// AgentRuntime façade, returning its stable container_name. Provision and
@@ -41,43 +35,37 @@ type SessionHost interface {
 	// Stop tears a session down. Stopping an unknown/already-stopped session
 	// succeeds (idempotent, matching the established StopAgentSession semantics).
 	Stop(ctx context.Context, sessionID string) error
-	// Remove tears down a container and everything bound to it: it retires any
-	// live session on the container, tears the container down (stop + remove +
-	// deregister), and closes the container's agent socket. An unknown container
-	// (never provisioned, or already removed) succeeds as a no-op — the
-	// teardown-symmetric counterpart to Provision, idempotent like Stop.
+	// Remove tears down a container and everything bound to it: retires any live session,
+	// tears the container down (stop + remove + deregister), and closes its agent socket.
+	// An unknown container succeeds as a no-op — the teardown-symmetric counterpart to
+	// Provision, idempotent like Stop.
 	Remove(ctx context.Context, containerName string) error
 	// Reload restarts a session's agent in place, reusing the session id.
 	Reload(ctx context.Context, sessionID string) error
 	// Status returns the live status of one session, or every live session when
 	// id is empty — answered from the Runner's authoritative session set.
 	Status(ctx context.Context, sessionID string) ([]*compassv1.AgentSessionStatus, error)
-	// RefreshSecrets re-fetches the session's resolved secret set from the
-	// Server and materializes it into the container — the SecretsVersion-driven
-	// install path (initial materialize and rotation ride the same signal). An
-	// unknown session errors; a fetch/materialize failure is returned for the
-	// caller to log and recover from on the next signal.
+	// RefreshSecrets re-fetches the session's resolved secret set and materializes it into
+	// the container — the SecretsVersion-driven install path (initial and rotation share
+	// the signal). An unknown session errors; a fetch/materialize failure is returned for
+	// the caller to recover from on the next signal.
 	RefreshSecrets(ctx context.Context, sessionID string) error
-	// RefreshConfig re-materializes the current fleet config bundle into every
-	// live session's per-container root and Reloads each agent whose config
-	// version actually moved — the fleet-wide ConfigVersion-driven update path
-	// (contrast RefreshSecrets, which is per-session). Per-session failures are
-	// logged and swallowed inside; the returned error is reserved for a
-	// fleet-level fault the caller logs and recovers from on the next signal.
+	// RefreshConfig re-materializes the current fleet config bundle into every live
+	// session's per-container root and Reloads each agent whose config version moved — the
+	// fleet-wide ConfigVersion path. Per-session failures are logged and swallowed inside;
+	// the returned error is reserved for a fleet-level fault.
 	RefreshConfig(ctx context.Context) error
-	// Deliver writes a server-relayed control op to the session's container
-	// socket — the receive arm of the Server's send-only DeliverControl dispatch
-	// (a turn-driving message deliver). An unknown session returns
-	// errSessionUnknown; success means the op was durably queued for the agent,
-	// confirmed later by the agent's delivery_ack (not by this return).
+	// Deliver writes a server-relayed control op to the session's container socket — the
+	// receive arm of the Server's send-only DeliverControl dispatch. An unknown session
+	// returns errSessionUnknown; success means durably queued, confirmed later by the
+	// agent's delivery_ack (not by this return).
 	Deliver(ctx context.Context, sessionID string, op *compassv1internal.AgentControl) error
 }
 
-// Sentinel errors the host returns, mapped to RunnerErrorCode on the wire.
-// These are package-private to runner; the operator-fault sentinel
-// gateway.ErrOperatorConfig is exported from package gateway (it is raised
-// there) and errorResult maps it to RUNNER_ERROR_CODE_FAILED_PRECONDITION —
-// see docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
+// Sentinel errors the host returns, mapped to RunnerErrorCode on the wire. These are
+// package-private to runner; the operator-fault sentinel gateway.ErrOperatorConfig is
+// exported from package gateway and errorResult maps it to
+// RUNNER_ERROR_CODE_FAILED_PRECONDITION.
 var (
 	errAlreadyRunning = errors.New("session already running on container")
 	errSessionUnknown = errors.New("session unknown to runner")
@@ -89,27 +77,16 @@ type dispatcher struct {
 	log  *slog.Logger
 
 	mu sync.Mutex
-	// handled records an in-flight-or-completed entry per request id, so a retry
-	// of an id whose execution is still running JOINS that execution rather than
-	// starting a second — and a retry of a completed id returns the recorded
-	// result. Concurrent per-command dispatch (Approach (a)) opens the
-	// check-then-record window to concurrent same-id pushes, so the entry carries
-	// a done channel the joiner waits on; this mirrors the Server router's
-	// pendingCall (runnerhub/router.go). Single-Runner MVP: the set is small and
-	// lives for the stream's life — it is not evicted. Bounded eviction (plus the
-	// per-container transition lock this change already lands) is the remaining
-	// T9 work (RIG-1328); see docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
+	// handled records an in-flight-or-completed entry per request id, so a retry of an
+	// in-flight id JOINS its execution (via a done channel) rather than starting a second,
+	// and a completed id returns the recorded result. Mirrors the Server router's
+	// pendingCall. Single-Runner MVP: small, not evicted (bounded eviction is T9, RIG-1328).
 	handled map[string]*inflightResult
 
 	// configSignal coalesces ConfigVersion signals into a single pending
-	// re-materialize+Reload pass. It is buffered with capacity 1 and written by a
-	// non-blocking send (signalConfig): a signal arriving while a pass is already
-	// pending is dropped, so N signals collapse to at most one queued pass on top
-	// of the one in flight — never N queued Reload fan-outs. The background config
-	// worker (runConfigWorker) drains it. The ConfigVersion signal is fleet-wide,
-	// so the pass itself (agentHost.RefreshConfig) fans out over every live
-	// session; the dispatch receive loop must not block on that slow fan-out, so
-	// it only ever signals here.
+	// re-materialize+Reload pass. Buffered cap 1 with a non-blocking send, so N signals
+	// collapse to at most one queued pass on top of the one in flight. The signal is
+	// fleet-wide, so the receive loop only signals here and never blocks on the fan-out.
 	configSignal chan struct{}
 	// configWorkerDone is closed when the config worker goroutine has exited, so
 	// RunSessions can join it on shutdown (no leaked goroutine) and a test can
@@ -130,24 +107,21 @@ type dispatcher struct {
 	// calls it rather than touching the stream directly.
 	send func(*compassv1internal.SessionsRequest) error
 	// provisionSem is a counting semaphore bounding concurrent Provision arms to
-	// provisionConcurrency (T-cap, OQ-4=(i)): it restores an intentional throttle
-	// on agent-triggered Provisions in place of the accidental concurrency-1 the
-	// serial loop provided, WITHOUT queueing any other command (only the Provision
-	// arm acquires it, so a Provision backlog never delays a Stop/Status).
+	// provisionConcurrency (T-cap, OQ-4=(i)): it restores an intentional throttle without
+	// queueing any other command — only the Provision arm acquires it, so a Provision
+	// backlog never delays a Stop/Status.
 	provisionSem chan struct{}
 }
 
-// provisionConcurrency caps how many Provision arms run at once (T-cap,
-// OQ-4=(i)): the single tunable restoring an intentional throttle on
-// agent-triggered Provisions in place of the accidental concurrency-1 the serial
-// dispatch loop provided. Sized for the single-Runner dogfood target; see
-// docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
+// provisionConcurrency caps how many Provision arms run at once (T-cap, OQ-4=(i)): the
+// single tunable restoring an intentional throttle on agent-triggered Provisions in place
+// of the accidental concurrency-1 the serial loop provided. Sized for the single-Runner
+// dogfood target.
 const provisionConcurrency = 8
 
-// inflightResult is one request id's dispatch entry: done closes when the
-// execution completes and result is set, so a concurrent same-id push waits on
-// done and observes the one identical outcome (Approach (b), mirroring the
-// Server router's pendingCall in runnerhub/router.go).
+// inflightResult is one request id's dispatch entry: done closes when the execution
+// completes and result is set, so a concurrent same-id push waits on done and observes the
+// one identical outcome (mirroring the Server router's pendingCall).
 type inflightResult struct {
 	done   chan struct{}
 	result *compassv1internal.SessionsRequest
@@ -178,11 +152,10 @@ func (d *dispatcher) signalConfig() {
 	}
 }
 
-// runConfigWorker drains configSignal and runs one RefreshConfig pass per drained
-// signal until ctx is cancelled. Because configSignal is a coalescing buffer of
-// one, a burst of signals during an in-flight pass results in exactly one
-// follow-up pass, never one per signal. It exits on ctx cancel, closing
-// configWorkerDone so the caller can join it leak-free.
+// runConfigWorker drains configSignal and runs one RefreshConfig pass per drained signal
+// until ctx is cancelled. Because configSignal is a coalescing buffer of one, a burst
+// during an in-flight pass yields exactly one follow-up pass. It exits on ctx cancel,
+// closing configWorkerDone so the caller can join leak-free.
 func (d *dispatcher) runConfigWorker(ctx context.Context) {
 	defer close(d.configWorkerDone)
 	for {
@@ -198,54 +171,40 @@ func (d *dispatcher) runConfigWorker(ctx context.Context) {
 	}
 }
 
-// RunSessions opens the Sessions bidi stream on the link and runs the dispatch
-// loop until the stream ends or ctx is cancelled. Each command the Server pushes
-// is executed (or deduped) and its result sent back correlated by request id.
+// RunSessions opens the Sessions bidi stream and runs the dispatch loop until the stream
+// ends or ctx is cancelled. Each pushed command is executed (or deduped) and its result
+// sent back correlated by request id.
 //
-// The Sessions stream is server-speaks-first: the Runner dials out, but the
-// Server pushes commands and only reads results. connect-go does not send the
-// request headers — and so does not run the Server's Sessions handler — until
-// the client's first Send (CallBidiStream: "request headers are not sent
-// automatically ... require an explicit call to Send"). Without an initial Send
-// the handler never runs, the command router never attaches, and every
-// server-pushed command fails CodeUnavailable until the Runner happens to send.
-// So open with one empty bootstrap frame (no request id, no result variant) to
-// flush the headers; the Server's router ignores a result frame with no matching
-// in-flight request id, so the bootstrap is a harmless no-op there.
+// The stream is server-speaks-first: connect-go does not send request headers — and so
+// does not run the Server's handler — until the client's first Send. So open with one
+// empty bootstrap frame to flush the headers; the Server's router ignores a result frame
+// with no matching in-flight id, so the bootstrap is a harmless no-op.
 func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost, log *slog.Logger) error {
 	return runSessions(ctx, l.client.Sessions(ctx), host, log)
 }
 
-// sessionStream is the Sessions client bidi stream surface the dispatch loop
-// drives: the real *connect.BidiStreamForClient satisfies it directly (no
-// adapter). It is the seam RunSessions wraps around the live stream so the loop
-// — the concurrent-dispatch logic in runSessions — is exercised over the real
-// wire in production AND drivable with a scripted stream in a loop-level unit
-// test.
+// sessionStream is the Sessions client bidi stream surface the dispatch loop drives: the
+// real *connect.BidiStreamForClient satisfies it directly. It is the seam RunSessions
+// wraps around the live stream so the loop runs over the real wire in production and is
+// drivable with a scripted stream in a loop-level unit test.
 type sessionStream interface {
 	Send(result *compassv1internal.SessionsRequest) error
 	Receive() (*compassv1internal.SessionsResponse, error)
 	CloseResponse() error
 }
 
-// runSessions runs the dispatch loop over stream until it ends or ctx is
-// cancelled. Each command the Server pushes is executed (or deduped) in its own
-// goroutine and its result sent back correlated by request id (Approach (a)):
-// this keeps a slow Provision from head-of-line-blocking every other command on
-// the stream. The wire ordering across commands is NOT preserved — the Server
-// router correlates by request id, so out-of-order completions are legal.
+// runSessions runs the dispatch loop over stream until it ends or ctx is cancelled. Each
+// pushed command is executed (or deduped) in its own goroutine and its result sent back
+// correlated by request id (Approach (a)), so a slow Provision does not head-of-line-block
+// every other command. Wire ordering across commands is NOT preserved.
 func runSessions(ctx context.Context, stream sessionStream, host SessionHost, log *slog.Logger) error {
 	d := newDispatcher(host, log)
-	// Derive a cancelable ctx (with cause) so the watcher goroutine below always
-	// exits when the loop returns — on ctx cancel, EOF, or error alike — never
-	// leaking. The cause distinguishes a clean shutdown from a send-failure
-	// unwind (see the Receive-error classification below).
+	// Derive a cancelable ctx (with cause) so the watcher goroutine below always exits when
+	// the loop returns. The cause distinguishes a clean shutdown from a send-failure unwind.
 	ctx, cancelCause := context.WithCancelCause(ctx)
-	// The config worker runs the coalesced re-materialize+Reload passes off the
-	// receive loop. On return, cancel first (nil cause = clean shutdown), then
-	// join every in-flight command goroutine, then the config worker — so no
-	// spawned goroutine outlives runSessions (leak-free), and cancel precedes the
-	// join regardless of return path.
+	// The config worker runs the coalesced re-materialize+Reload passes off the receive
+	// loop. On return, cancel first (nil cause = clean shutdown), then join every in-flight
+	// command goroutine, then the config worker — so no spawned goroutine outlives runSessions.
 	go d.runConfigWorker(ctx)
 	defer func() {
 		cancelCause(nil)
@@ -272,13 +231,10 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 	for {
 		cmd, err := stream.Receive()
 		if err != nil {
-			// Classify the loop's exit. The send-failure cause is checked FIRST
-			// and overrides the io.EOF arm: a broken Send commonly surfaces the
-			// next Receive as io.EOF (the watcher's CloseResponse on ctx.Done pops
-			// the blocked Receive as EOF), so returning nil on io.EOF ahead of the
-			// cause check would silently swallow the send failure the serial loop
-			// used to return directly. Only a clean context.Canceled cause, or a
-			// genuine external EOF with no send-failure cause, returns nil.
+			// Classify the loop's exit. The send-failure cause is checked FIRST and overrides
+			// io.EOF: a broken Send commonly surfaces the next Receive as io.EOF (the watcher's
+			// CloseResponse pops the blocked Receive), so returning nil on io.EOF first would
+			// swallow it. Only a clean context.Canceled, or a genuine external EOF, returns nil.
 			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
 				return cause
 			}
@@ -287,21 +243,10 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 			}
 			return err
 		}
-		// ConfigVersion is a signal-only arm that carries no request id and no
-		// result and is genuinely non-blocking: its arm only marks a pass pending
-		// on the coalescing config worker (signalConfig) and returns, so it runs
-		// inline on the receive loop without ever blocking it. SecretsVersion is
-		// also signal-only but is NOT cheap — its arm re-fetches (a network
-		// FetchSecrets) and re-materializes (a container exec) synchronously, so
-		// running it inline would head-of-line-block every other command behind a
-		// slow rotation, the exact block this dispatch exists to remove. It goes
-		// through the per-command goroutine like a correlated command; handle
-		// routes it to execute(ctx, "") and returns nil, so no result frame is
-		// sent, and it is joined by the shutdown wg.Wait like every other spawn.
-		// The initial before-start materialize is unaffected: it lives in
-		// host.Start (FetchSecretsByContainer + Install, strictly before
-		// StartAgent), and RefreshSecrets no-ops with errSessionUnknown until the
-		// session Start records is live, so a rotation can never precede it.
+		// ConfigVersion is a signal-only arm carrying no id/result and genuinely non-blocking
+		// (it only marks a pass pending), so it runs inline. SecretsVersion is also signal-only
+		// but NOT cheap — it re-fetches and re-materializes synchronously — so it goes through
+		// the per-command goroutine like a correlated command (execute(ctx, ""), no result frame).
 		if _, ok := cmd.GetCommand().(*compassv1internal.SessionsResponse_ConfigVersion); ok {
 			d.execute(ctx, "", cmd)
 			continue
@@ -322,29 +267,20 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 // handle executes one command (or returns the recorded result for a retried
 // request id) and builds the correlated result message.
 func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
-	// A signal-only command (SecretsVersion, ConfigVersion) carries no request id
-	// and has no result variant — it must never enter the request-id dedup map, or
-	// the empty-id key would collapse every signal to one and a later rotation or
-	// config update would never re-materialize. Execute it directly and return no
-	// result frame. SecretsVersion reaches here as its live path (the receive loop
-	// spawns it through this goroutine so its network+exec never blocks the loop);
-	// ConfigVersion is filtered inline before the spawn, so it reaches this branch
-	// only via a direct caller (tests) — the case stays for that and for the
-	// empty-id guard above.
+	// A signal-only command (SecretsVersion, ConfigVersion) carries no request id and no
+	// result — it must never enter the dedup map, or the empty-id key would collapse every
+	// signal to one. Execute it directly, return no result frame; ConfigVersion is filtered
+	// inline before the spawn, so this branch is reached only by a direct caller (tests).
 	switch cmd.GetCommand().(type) {
 	case *compassv1internal.SessionsResponse_SecretsVersion, *compassv1internal.SessionsResponse_ConfigVersion:
 		return d.execute(ctx, "", cmd)
 	}
 	id := cmd.GetRequestId()
 
-	// Idempotent retry under concurrent dispatch (Approach (b)): create an entry
-	// the FIRST time an id is seen, and record its result when the execution
-	// lands. A concurrent same-id push that finds the entry JOINS it — waiting on
-	// done and returning the one recorded result — rather than executing a second
-	// time (execute-once). A joiner that lands while the Runner is shutting down
-	// returns nil on ctx.Done and sends nothing: the Server's own retry then
-	// observes the Runner detach, so the unsent frame is covered server-side, not
-	// lost.
+	// Idempotent retry under concurrent dispatch (Approach (b)): create an entry the FIRST
+	// time an id is seen, record its result on completion. A concurrent same-id push JOINS
+	// the entry rather than executing again. A joiner during shutdown returns nil on ctx.Done;
+	// the Server's retry then observes the detach, so the unsent frame is covered server-side.
 	d.mu.Lock()
 	if entry, ok := d.handled[id]; ok {
 		d.mu.Unlock()
@@ -436,11 +372,9 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 			Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{Statuses: statuses}},
 		}
 	case *compassv1internal.SessionsResponse_SecretsVersion:
-		// Signal-only: re-fetch and re-materialize the session's secret set. A
-		// fetch/materialize failure is logged (never a secret value, per the
-		// no-log posture) and swallowed — the Runner recovers on the next signal
-		// or reconnect, and never crashes the session over a rotation blip
-		// (best-effort, mirroring the Server's emit side). No result frame.
+		// Signal-only: re-fetch and re-materialize the session's secret set. A failure is
+		// logged (never a secret value) and swallowed — the Runner recovers on the next
+		// signal or reconnect, best-effort like the Server's emit side. No result frame.
 		sessionID := c.SecretsVersion.GetSessionId()
 		if err := d.host.RefreshSecrets(ctx, sessionID); err != nil {
 			d.log.ErrorContext(ctx, "refreshing secrets on SecretsVersion signal failed; will retry on next signal",
@@ -448,48 +382,34 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		}
 		return nil
 	case *compassv1internal.SessionsResponse_ConfigVersion:
-		// Signal-only, fleet-wide: the config bundle changed. Fan-out over every
-		// live session (re-materialize + in-place Reload) is slow and would block
-		// this sequential receive loop from reading further commands, so the arm
-		// only marks a pass pending on the coalescing config worker and returns.
-		// Best-effort like SecretsVersion: the worker logs and swallows any
-		// failure, recovering on the next signal or reconnect. No result frame
-		// (no session id, not request_id-correlated).
+		// Signal-only, fleet-wide: the config bundle changed. The re-materialize + Reload
+		// fan-out over every live session is slow, so the arm only marks a pass pending on
+		// the coalescing config worker and returns. Best-effort: the worker logs and swallows
+		// any failure. No result frame (no session id, not request_id-correlated).
 		d.log.InfoContext(ctx, "received ConfigVersion signal",
 			slog.String("version", c.ConfigVersion.GetVersion()))
 		d.signalConfig()
 		return nil
 	case *compassv1internal.SessionsResponse_DeliverControl:
-		// Send-only: relay a server-pushed control op (a turn-driving message
-		// deliver) to the session's container socket. On SUCCESS return nil — NO
-		// result frame. This is the contract the Server's send-only dispatch
-		// requires: success is confirmed later by the agent's delivery_ack (which
-		// advances the durable delivery cursor), NOT by a synchronous result. A
-		// typed success result here is read by the Server's router.complete as a
-		// refusal ("deliver returned an unexpected non-error result; cursor left
-		// unadvanced") and the message sticks. A FAILURE returns errorResult: a
-		// refusal the Server observes asynchronously and leaves the cursor
-		// unadvanced for the D2 reconnect sweep to redeliver (errSessionUnknown
-		// maps to NOT_FOUND via errorResult).
+		// Send-only: relay a server-pushed control op to the session's container socket. On
+		// SUCCESS return nil — NO result frame: success is confirmed later by delivery_ack,
+		// not synchronously (a typed success is read as a refusal). A FAILURE returns
+		// errorResult, leaving the cursor unadvanced for the D2 reconnect sweep.
 		if err := d.host.Deliver(ctx, c.DeliverControl.GetSessionId(), c.DeliverControl.GetOp()); err != nil {
 			return d.errorResult(ctx, id, err)
 		}
 		return nil
 	default:
-		// An unset/unrecognized command variant — a contract skew. Return an
-		// internal error so the Server surfaces it rather than hanging the call.
+		// An unset/unrecognized command variant — a contract skew. Return an internal error
+		// so the Server surfaces it rather than hanging the call.
 		return d.errorResult(ctx, id, errors.New("unrecognized session command variant"))
 	}
 }
 
-// errorResult maps a host error to a RunnerError result with the wire code the
-// Server translates to a Connect status, and logs the failure once at a level
-// chosen by class (see
-// docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md): a
-// context cancellation (a routine shutdown/deadline outcome) is dropped to
-// Debug, an INTERNAL fault logs at Error, and a classified operator/client
-// fault logs at Warn. The diagnostic thus survives locally independent of relay
-// fidelity without over-logging the two noise classes.
+// errorResult maps a host error to a RunnerError result with the wire code the Server
+// translates to a Connect status, and logs the failure once at a level chosen by class: a
+// context cancellation drops to Debug, an INTERNAL fault logs at Error, and a classified
+// operator/client fault logs at Warn — so the diagnostic survives locally without over-logging.
 func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *compassv1internal.SessionsRequest {
 	code := compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL
 	switch {

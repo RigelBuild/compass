@@ -1,15 +1,7 @@
-// The agent-state projection — the pure core of the agent axis (design D9/D11).
-//
-// The agent dot is a UI presentation over the daemon's coarse, authoritative
-// `AgentSessionState` (compass.v1, #443) plus the `session/update` event stream.
-// It is NOT a parallel enum: the daemon enum stays coarse by design, and the
-// UI derives the fine-grained dot client-side. `waiting`/`done`/`paused` are
-// UI-only refinements the wire contract does not carry (D9) — never written
-// back as new `AgentSessionState` variants.
-//
-// Consuming the generated enum here (not a hand-copied union) is the whole
-// point: if #443's contract changes, this projection is the one place the UI
-// reconciles it, and TypeScript's exhaustiveness check flags an unhandled case.
+// The agent-state projection — the pure core of the agent axis (design D9/D11). The agent
+// dot is a UI presentation over the daemon's coarse `AgentSessionState` plus the
+// `session/update` stream, NOT a parallel enum: `waiting`/`done`/`paused` are UI-only (D9),
+// never written back. Consuming the generated enum gives one reconciliation point with exhaustiveness.
 
 import { AgentSessionState } from "@compass/client";
 import type { AgentState } from "./stub-data";
@@ -59,21 +51,18 @@ export function agentDotState(
 		case AgentSessionState.STOPPED:
 			return "stopped";
 		case AgentSessionState.DISCONNECTED:
-			// The owning Runner's link dropped — live truth is temporarily
-			// unreachable but the session is not terminated (compass.proto: a
-			// bounded reattach window governs recovery; only expiry falls to
-			// ERRORED). Its own dot, never collapsed into `error` (that would
-			// erase the recoverable-vs-fatal distinction the wire enum draws) or
-			// `stopped` (that state is a deliberate teardown).
+			// The owning Runner's link dropped — live truth is temporarily unreachable but
+			// the session is not terminated (a bounded reattach window governs recovery;
+			// only expiry falls to ERRORED). Its own dot, never collapsed into `error` (erases
+			// the recoverable-vs-fatal distinction) or `stopped` (a deliberate teardown).
 			return "disconnected";
 		case AgentSessionState.UNSPECIFIED:
 			return "idle";
 		default: {
-			// Exhaustiveness guard: a new AgentSessionState variant (an additive
-			// #443 delta) reddens here at type-check. At runtime the coarse enum
-			// is proto3-open, so a version-skewed daemon can send an unmodeled
-			// numeric variant that bypasses the `never` check — throw rather than
-			// return a raw enum that would break downstream Record<AgentState> lookups.
+			// Exhaustiveness guard: a new AgentSessionState variant reddens here at
+			// type-check. At runtime the coarse enum is proto3-open, so a version-skewed
+			// daemon can send an unmodeled numeric variant that bypasses `never` — throw
+			// rather than return a raw enum that breaks downstream Record lookups.
 			const _exhaustive: never = sessionState;
 			throw new Error(`Unhandled AgentSessionState: ${_exhaustive}`);
 		}

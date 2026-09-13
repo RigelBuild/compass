@@ -4,10 +4,8 @@ package delivery
 
 // RIG-1569 T3 — OnSessionsReaped (the hub's SessionReapSink) drops the
 // held-deliver registry entries for sessions whose hub bindings were cleared at
-// a Runner (re-)enroll, so a no-frame author death's entry does not leak until
-// process restart (design.md:172-175). White-box (package delivery) so the test
-// drives c.hold and reads c.held via isHeld directly. Sleep-free: the reap is a
-// synchronous in-memory delete, so the assertion reads a recorded fact.
+// a Runner (re-)enroll, so a no-frame author death's entry does not leak.
+// White-box to drive c.hold and read c.held; sleep-free (synchronous delete).
 
 import "testing"
 

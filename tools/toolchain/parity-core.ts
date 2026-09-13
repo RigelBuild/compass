@@ -1,31 +1,23 @@
-// Pure parsing and comparison for the toolchain parity gate. No I/O, no process
-// exec — everything here is a total function over strings, so the interesting
-// half of the gate is unit-testable (parity-core.test.ts) and the executable
-// shell (parity.ts) stays thin.
-//
-// THE METHOD THIS FILE IMPLEMENTS. Every dev toolchain — the language runtimes
-// (bun/node/moon/go) and everything else (buf, protoc, the Go battery, the
-// linters) — resolves to a nix derivation, so one uniform verdict covers them
-// all:
-//
-//   store-path — `realpath` of the binary on PATH must be inside the store path
-//                that the devenv.lock-pinned nix derivation resolves to. This
-//                identifies the exact derivation, not a coincidence of version
-//                numbers, and it is the only method that works for the tools
-//                (go-licenses, nilaway) that implement no version flag at all.
-//                An ambient runtime shadowing the pinned one resolves outside
-//                the expected store path and fails.
-//
-// The two halves differ only in where the expected store path comes from: the
-// nixpkgs attrs are parsed out of devenv.nix's `packages = (with pkgs; [ … ])`
-// literal and resolved through gate-tools.nix's `identity`; the language
-// toolchains are the closed set gate-tools.nix's `langs` output builds. Both
-// are checked by the identical containment test below.
-//
-// A tool that cannot be checked is NOT skipped — the verdict is `unverifiable`,
-// which the caller treats as a failure. Silently omitting a tool it could not
-// check is the precise failure mode this gate exists to prevent: a green that
-// proves nothing.
+// Pure parsing and comparison for the toolchain parity gate. No I/O, no exec — a
+// total function over strings, so parity.ts stays thin.
+
+// Method: every dev toolchain (runtimes bun/node/moon/go and the rest — buf,
+// protoc, the Go battery, the linters) resolves to a nix derivation, so one
+// verdict covers them all — store-path.
+
+//   store-path — realpath of the binary on PATH must be inside the store path the
+//   devenv.lock-pinned derivation resolves to. Identifies the exact derivation,
+//   not a version coincidence; the only method for tools with no version flag
+//   (go-licenses, nilaway). An ambient shadow resolves outside and fails.
+
+// The two halves differ only in where the expected store path comes from: nixpkgs
+// attrs parsed out of devenv.nix and resolved through gate-tools.nix's identity;
+// the language toolchains from gate-tools.nix's langs output. Both use the same
+// containment test.
+
+// A tool that cannot be checked is NOT skipped — the verdict is unverifiable,
+// which the caller treats as a failure. A silently-omitted tool is the precise
+// failure this gate prevents.
 
 /** How a tool's identity was established. */
 export type CheckMethod = "store-path";

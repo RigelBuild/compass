@@ -2,72 +2,10 @@
 
 package server
 
-// RIG-2848 mounted, whole-wire forge-notification e2e: a fake forge emits a
-// SIGNED webhook into the Server's mounted /webhooks/{github,linear} ingress and
-// the event flows through the REAL notify pipeline onto a subscribed, live agent
-// session, observed as a ForgeNotification control frame on the fake runner's
-// recorded wire. No seam fakes sit on the delivery path — the fakes are only at
-// the forge network boundary (the signed-webhook senders in
-// forge_webhook_fakes_test.go, reused verbatim) and the container engine (the
-// recordingRunner over the mounted RunnerService door).
-//
-// The wire stood up here, inline, is production's (serve.go's
-// buildForgeNotifyLane / buildLinearNotifyLane, minus the App-gated client):
-//
-//	fake forge (signed webhook)
-//	  -> POST /webhooks/{github,linear}  (NewGitHubWebhookHandler / NewLinearWebhookHandler)
-//	     verify signature + parse -> ForgeEventSink.Enqueue
-//	  -> ingest.NotifyWebhookArm (Run drains queue -> router.Route)
-//	  -> ingest.NotifyRouter (real: NewNotifyRouter over the store-backed adapter)
-//	  -> forgeNotifyDispatcher{hub}.Notify -> hub.SessionForAccount -> hub.DispatchControl
-//	  -> recordingRunner observes SessionsResponse_DeliverControl carrying the
-//	     AgentControl.ForgeNotification
-//
-// PACKAGE server: the store-backed notify adapters — forgeNotifyStore and
-// forgeNotifyDispatcher — are UNEXPORTED server-package types, and only this
-// package can construct them directly (the App-gated buildForgeNotifyLane needs a
-// GitHub App token source / real client for its checks roller + reconciler,
-// which this test-only wire has no business standing up). So the whole-wire
-// notify e2e lives in package server and REUSES the placement harness's
-// attachFakeRunner + recordingRunner (service_placement_pgtest_test.go) and the
-// landed webhook fakes + scripted checks roller (forge_notify_matrix_test.go).
-//
-// REAL vs FAKED — real: the Postgres store.Store (subscription rows +
-// artifact-cursor upserts), the runnerhub.Hub (account->session binding at
-// Provision+Start's promoteSession, and the send-only DispatchControl), the
-// mounted ingress handlers (signature verify + parse), the notify arm + router,
-// and the hub dispatch. Faked: the forge network boundary (signed-webhook
-// senders) and the container engine (recordingRunner).
-//
-// FORK-1 (Linear COMMENT): #768 landed the cross-producer unit regression
-// TestCrossProducerLinearCommentNoPhantomDiff, which OWNS the phantom-diff proof
-// (webhook vs sweep produce a byte-identical SnapshotComment). Here, at the e2e
-// tier, we assert the Linear COMMENT is DELIVERED end to end by its stable
-// comment key (CommentRef.CommentKey) onto the subscriber's live session; wiring
-// a second reconcile-sweep pass of the identical state through this fixture to
-// re-prove the no-phantom invariant would duplicate that landed unit regression
-// for no added e2e coverage (the delivery wire, not the digest equality, is what
-// this tier exercises), so the phantom-diff proof stays with the unit regression.
-//
-// EVENT-GATING: dispatch is async (the arm drains on a goroutine, DispatchControl
-// is send-only), so every assertion polls the recorded wire under a bounded
-// deadline with runtime.Gosched() between polls (the attachFakeRunner gate shape,
-// service_placement_pgtest_test.go:597-612) — never a time.Sleep. A negative
-// (out-of-scope, or documented-gap) assertion gates on the POSITIVE in-scope
-// frame arriving first, THEN reads the negative slice: because the arm drains one
-// event at a time on a single goroutine, an in-scope frame arriving after the
-// same-provider event that should NOT deliver proves that earlier event was
-// routed to completion and produced nothing.
-//
-// The Linear webhook fakes carry no webhookTimestamp (the notify path never reads
-// it), so the mounted Linear handler's freshness gate is pinned to the epoch so a
-// zero timestamp reads as fresh — the same now-injection the Linear handler unit
-// tests use (linear_webhook_test.go).
-//
-// context.Background() is the test root (the _test.go thread-context exemption,
-// rule://go-thread-context): the one root ctx threads into every store / hub /
-// arm call below, and the arms' Run loops are bounded by a child ctx cancelled at
-// cleanup.
+// RIG-2848 mounted, whole-wire forge-notification e2e: a fake forge emits a SIGNED
+// webhook into the mounted /webhooks/{github,linear} ingress and the event flows
+// through the REAL notify pipeline onto a live agent session, observed as a
+// ForgeNotification frame on the fake runner's wire. Package server (adapters unexported).
 
 import (
 	"bytes"
@@ -832,10 +770,9 @@ func TestForgeNotifyE2E_LinearState(t *testing.T) {
 		ln := newFakeLinearForge(w.secret, notifyE2ELinearTeam, notifyE2EProject)
 		inAcct := w.seedAgent(t, "sub-in")
 		// An OPENED event on an exact-number ARTIFACT-scope sub matches the
-		// SubscribersForArtifact `scope = 1 AND number = $5` branch
-		// (store/forge_subscriptions.go:304) — OPENED delivers to an exact-number
-		// artifact sub, not only to containers. Number 6 matches the posted
-		// issue 6 (SubscribersForArtifact requires number != 0, line 296).
+		// SubscribersForArtifact `scope = 1 AND number = $5` branch — OPENED delivers
+		// to an exact-number artifact sub, not only to containers. Number 6 matches
+		// the posted issue 6 (SubscribersForArtifact requires number != 0).
 		w.subscribe(t, store.AgentForgeSubscription{
 			AgentAccountID: inAcct, Provider: store.ForgeProviderLinear, Host: "linear.app",
 			Repo: notifyE2ELinearTeam, Kind: store.ForgeArtifactKindIssue, Number: 6,

@@ -2,22 +2,10 @@
 
 package auth
 
-// Token issue/resolve contract tests (RIG-1195 T3, the S3 gate), transcribed
-// from the authoritative Rust suite in crates/compass-daemon/src/auth.rs
-// (#[cfg(test)] mod tests). Intent is carried onto Go idioms; the Rust is the
-// spec, not a template.
-//
-// The seam is now the Postgres store of record (T1): IssueAccountToken persists
-// a token's hash under a store.Subject and returns the plaintext once; the
-// EXPORTED ResolveToken hashes a presentation, resolves it against the store,
-// and enforces the cross-door subject-kind gate — returning a distinct sentinel
-// per failure (ErrTokenNotFound / ErrTokenRevoked / ErrWrongKind) so the server
-// can audit-log which fired. These tests require a live database, so they are in
-// the `pgtest` lane (openTestStore SKIPs when no runtime is available).
-//
-// White-box (package auth) to reuse the unexported hashToken helper — the one
-// place issuance and resolution agree on how a token becomes a store key, so a
-// test that revokes by hash addresses the exact row IssueAccountToken wrote.
+// Token issue/resolve contract tests (RIG-1195 T3), transcribed from
+// crates/compass-daemon/src/auth.rs. IssueAccountToken persists a hash;
+// ResolveToken hashes a presentation and enforces the subject-kind gate with a
+// distinct sentinel per failure. `pgtest` lane; white-box to reuse hashToken.
 
 import (
 	"context"
@@ -226,11 +214,9 @@ func TestServiceTokenCrossDoorMatrix(t *testing.T) {
 	})
 
 	t.Run("runner token wanted as runner resolves", func(t *testing.T) {
-		// The runner positive diagonal: the account diagonal is covered by
-		// TestIssueThenResolveRoundTripsToTheIssuedAccount and the service one
-		// above, so this closes the 3x3 — a resolvable token of each kind
-		// succeeds at its own door, pinning the `want` comparison against all
-		// three values rather than only the two rejection axes.
+		// The runner positive diagonal, closing the 3x3: a resolvable token of
+		// each kind succeeds at its own door, pinning `want` against all three
+		// values rather than only the two rejection axes.
 		runnerToken := "cnVubmVyLWRpYWdvbmFs" // base64url-shaped, never account-issued
 		const runnerID = "diagonal-runner"
 		if err := st.PutTokenHash(ctx, hashToken(runnerToken), store.Subject{Kind: store.SubjectRunner, ID: runnerID}); err != nil {

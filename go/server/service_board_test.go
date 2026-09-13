@@ -3,13 +3,9 @@
 package server
 
 // Default-lane coverage for part 4b's connect-time re-snapshot seam: the
-// SubscribeEvents snapshot-boundary frame and the ListBoardIssues handler's
-// wiring/reachability, driven through a real connect-go client over the shipped
-// h2c door (not a direct handler call). The populated-board assertions (a real
-// PG-rehydrated Snapshot, boundary-then-tail ordering, union-by-id) live in the
-// pgtest lane (service_board_pgtest_test.go) where a store can seed the board;
-// here the board is nil (empty), so these cases pin the seam's frame ordering,
-// the empty-board boundary, and the handler's nil-guard reachability.
+// SubscribeEvents snapshot-boundary frame and the ListBoardIssues handler wiring, over
+// the shipped h2c door. Here the board is nil, so these pin frame ordering, the empty
+// boundary, and nil-guard reach; the populated-board assertions live in the pgtest lane.
 
 import (
 	"context"

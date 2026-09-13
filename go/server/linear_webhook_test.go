@@ -1,10 +1,9 @@
 //go:build unix
 
-// Unit tests for the shared Linear /webhooks ingress handler: signature
-// fail-closed, the type-dispatch (Issue/Comment -> data sink, AgentSessionEvent
-// -> session sink), the ErrQueueFull -> 500 retry signal, the 200-with-drop
-// stale-timestamp rule, the nil-sessionSink logged-drop, and the ignored-type /
-// ignored-action drops.
+// Unit tests for the shared Linear /webhooks ingress handler: signature fail-closed,
+// the type-dispatch (Issue/Comment -> data sink, AgentSessionEvent -> session sink),
+// the ErrQueueFull -> 500 retry, the 200-with-drop stale-timestamp rule, the
+// nil-sessionSink logged-drop, and the ignored-type / ignored-action drops.
 package server
 
 import (
@@ -362,11 +361,10 @@ func TestLinearWebhookHandler_VerifiedUnparseable(t *testing.T) {
 // secret, exactly as Serve wires it.
 func TestBuildLinearWebhookWiring_DeliversToInjectedSink(t *testing.T) {
 	ctx := context.Background() // test root
-	// The CONFIG names the secret unprefixed (what the operator sets); the
-	// RESOLVED set carries the server prefix, because the Linear webhook secret
-	// is declared in server_secrets. If these two ever disagree the handler
-	// silently unmounts rather than failing loudly, which is what this test
-	// guards.
+	// The CONFIG names the secret unprefixed (what the operator sets); the RESOLVED
+	// set carries the server prefix, because the Linear webhook secret is declared in
+	// server_secrets. If these disagree the handler silently unmounts rather than
+	// failing loudly, which is what this test guards.
 	const secretName = "LINEAR_WEBHOOK_SECRET"
 	secret := []byte("shh")
 	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: serverSecretName(secretName), Value: string(secret)}}}

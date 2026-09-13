@@ -1,20 +1,7 @@
-// The wire→domain adapter: generated @compass/client (compass.v1) messages →
-// the UI's domain types (comms-stub / stub-data). The store's comms accessors
-// stay the seam (store.ts:10-13); this is what their bodies read once the live
-// SubscribeComms stream + read RPCs replace the in-memory fixture, so `comms.ts`
-// (pure over the domain types) and every component render unchanged.
-//
-// Scope (T7, franklin-clear half): the STABLE entities — Account, ChannelGroup,
-// Channel — plus the caller-relative `membership` derivation the domain type
-// carries but the wire does not, and the durable Message/Ask mapping the live
-// read path consumes through `MapMessage` (./comms-state).
-//
-// Two structural gaps every mapper bridges:
-//  - protobuf-es oneofs are `{case, value}` tagged unions; the domain uses a
-//    discriminated `kind` string (Account) or a bare optional (Channel.groupId).
-//  - protobuf-es enums are numeric (ChannelKind.CHANNEL = 0); the domain uses
-//    string literals ("channel"). The maps below are total over the wire enum so
-//    an unhandled value is a compile error, never a silent default.
+// The wire→domain adapter: generated @compass/client (compass.v1) messages → the UI's
+// domain types, read by the store's comms accessors once the live stream replaces the
+// fixture. Bridges two gaps: protobuf-es oneofs (`{case,value}`) → discriminated `kind`,
+// and numeric enums → string literals (maps total, so an unhandled value is a compile error).
 
 import {
 	AgentPresence,

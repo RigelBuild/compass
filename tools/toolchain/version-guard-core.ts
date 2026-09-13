@@ -1,34 +1,21 @@
 // Pure parsing and comparison for the version.txt guard-parity gate. No I/O, no
-// process exec — total functions over strings, so the interesting half is
-// unit-testable (version-guard-core.test.ts) and the executable shell
-// (version-guard.ts) stays thin. Mirrors the flake-parity-core.ts split.
-//
-// THE INVARIANT THIS GATE ENFORCES. Two independent build paths read
-// version.txt and stamp `-X main.version` from it, each guarding it in its own
-// language:
-//
-//   flake.nix    `lib.strings.trim`, then `builtins.match "[0-9A-Za-z.+-]+"`,
-//                throwing on an empty or non-matching value.
-//   devenv.nix   a bash loop trimming the same four whitespace bytes, then a
-//                `case` rejecting `""` or `*[!0-9A-Za-z.+-]*`.
-//
+// exec — total functions over strings, so the interesting half is unit-testable
+// and version-guard.ts stays thin. Mirrors the flake-parity-core.ts split.
+
+// The invariant: two build paths read version.txt and stamp -X main.version, each
+// guarding it in its own language — flake.nix via lib.strings.trim then
+// builtins.match "[0-9A-Za-z.+-]+" (throwing on empty/non-matching), devenv.nix
+// via a bash trim then a case rejecting "" or *[!0-9A-Za-z.+-]*.
+
 // They must accept exactly the same file. When they disagree one lane builds
-// green while the other hard-fails on the identical tree — `nix build
-// .#compass-server` succeeding while `devenv up` dies — or, worse, both build
-// and stamp DIFFERENT versions from one source, breaking the one-stamp promise
-// (Global Constraint 4). Nothing enforces the agreement by construction: the
-// guards are two hand-written expressions in two languages, and editing either
-// silently skews it. That skew already shipped once (the flake matched its
-// class against the TRIMMED value while devenv matched the raw `$(cat)`, so a
-// CRLF or tab-padded version.txt passed the flake and failed devenv).
-//
-// This module does NOT re-model the guards. A restatement would leave the gate
-// green while comparing two fictions of its own making. It EXTRACTS each real
-// guard from its source file and the shell executes it — `nix eval` for the
-// flake expression, `bash` for the devenv snippet — so the gate tests the code
-// that ships. Extraction failure is a gate FAILURE, never a skip: the
-// unverifiable-is-a-failure rule flake-parity-core.ts and parity-core.ts both
-// take.
+// green while the other hard-fails, or both stamp DIFFERENT versions (breaks the
+// one-stamp promise, Global Constraint 4). That skew already shipped once (flake
+// matched the TRIMMED value, devenv the raw $(cat)).
+
+// This module does NOT re-model the guards — a restatement would compare two
+// fictions. It EXTRACTS each real guard and the shell executes it (nix eval,
+// bash), so the gate tests the code that ships. Extraction failure is a gate
+// FAILURE, never a skip.
 
 /** What a guard did with one candidate version.txt content. */
 export type Verdict =
@@ -83,47 +70,24 @@ export const CANDIDATES: readonly {
 	{ label: "slash", content: "0.1.0/x\n" },
 	{ label: "quote", content: '0.1.0"x\n' },
 	{ label: "non-ASCII", content: "0.1.0é\n" },
-	// Trim-set discriminators, one byte per row. A row witnesses a WIDENING of
-	// either lane's trim set only if its core is class-legal and its padding is
-	// a byte both sets currently EXCLUDE — then the widened lane flips to accept
-	// while the other still rejects. Padding with two such bytes at once
-	// (`\v0.1.0\f`) cannot do it: whichever byte a lane still leaves untrimmed
-	// keeps the value outside the class, so the row reads reject/reject however
-	// the trim sets move. `\v` and `\f` are the whitespace bytes `[[:space:]]`
-	// includes and ` \t\r\n` does not, so those two rows are what reds the gate
-	// if a lane reaches for a broader whitespace class.
-	//
-	// NARROWING needs a row per trim byte PER ARM, positioned where that byte can
-	// actually reach the trim loop. devenv's loop is two independently editable
-	// arms — a leading `[$' \t\r\n']*)` and a trailing `*[$' \t\r\n'])` — and the
-	// realistic maintenance edit drops a byte from ONE of them, so a row that
-	// only exercises the trailing arm cannot witness the same byte leaving the
-	// leading arm. The space and tab rows are padded both sides and so cover
-	// both arms. CR and LF each need their own positioned row:
-	//
-	//   - CR reaches the leading arm only from a LEADING position. The `CRLF` and
-	//     `lone CR` rows carry CR trailing, and `CRLF only` is absorbed by the
-	//     empty-string check rather than the trim set, so none of them reds a
-	//     leading-arm CR drop.
-	//   - LF is the reverse, and the constraint is `$(cat)`: the devenv lane seeds
-	//     `version_base="$(cat ...)"`, and command substitution strips every
-	//     trailing newline before the loop runs. So a LEADING newline is what
-	//     reaches the leading arm, while reaching the TRAILING arm needs an LF
-	//     that is not last — an LF followed by another trim byte survives
-	//     `$(cat)` and lands on the trailing arm.
+	// Trim-set discriminators, one byte per row. A row witnesses a WIDENING of a
+	// lane's trim set only if its core is class-legal and its padding is a byte
+	// both sets EXCLUDE. \v and \f are the whitespace bytes [[:space:]] includes
+	// and  \t\r\n does not, so those rows red the gate if a lane broadens its set.
+
+	// NARROWING needs a row per trim byte PER ARM. devenv's loop is two editable
+	// arms; a maintenance edit drops a byte from ONE. Space and tab are padded both
+	// sides. CR reaches the leading arm only from a leading position; LF is the
+	// reverse, and $(cat) strips trailing newlines (a non-last LF → trailing arm).
 	{ label: "leading vertical tab only", content: "\v0.1.0\n" },
 	{ label: "trailing form feed only", content: "0.1.0\f\n" },
 	{ label: "leading newline only", content: "\n0.1.0\n" },
 	{ label: "leading carriage return only", content: "\r0.1.0\n" },
 	{ label: "trailing newline before a space", content: "0.1.0\n \n" },
-	// Class-narrowing discriminator. Every other ACCEPTING row's surviving value
-	// is lowercase-or-digits, so dropping `A-Z` from either lane's class —
-	// `[0-9A-Za-z.+-]` -> `[0-9a-z.+-]`, a one-character edit — split the lanes
-	// with all rows still agreeing. An accepting value carrying an uppercase
-	// byte is what reds that, in either direction. Uppercase in version.txt is
-	// realistic rather than contrived: the release and CI stamp lanes and
-	// app-bundle/build.sh interpolate `$(cat version.txt)` with no class filter
-	// at all, so an `-RC.1` or `-SNAPSHOT` tag reaches them unexamined.
+	// Class-narrowing discriminator. Every other accepting row's value is
+	// lowercase-or-digits, so dropping A-Z from a lane's class would split the
+	// lanes silently. An uppercase accepting value reds that; realistic since the
+	// stamp lanes interpolate $(cat version.txt) with no class filter.
 	{ label: "uppercase core", content: "1.2.3-RC.1\n" },
 	{ label: "bare word", content: "banana\n" },
 	{ label: "dashes only", content: "----\n" },
@@ -193,14 +157,10 @@ export function extractDevenvGuard(devenvNix: string): string | null {
 		return null;
 	}
 	const snippet = rest.slice(0, secondEsac + "esac".length);
-	// Landmark on the guard's STRUCTURE, not on the character class text. The
-	// class is the thing most likely to change legitimately, and a synchronized
-	// widening in both lanes preserves parity — landmarking on its literal
-	// would red the gate on a correct edit, and the predictable response to a
-	// gate that fails on correct maintenance is to relax the assertion, which
-	// retires the tracking guarantee altogether. A negated bracket expression
-	// against `$version_base` is what must be present; which bytes it names is
-	// the CANDIDATE TABLE's job to compare, not the extractor's to pin.
+	// Landmark on the guard's STRUCTURE, not the class text. The class is most
+	// likely to change legitimately, so landmarking on its literal would red the
+	// gate on a correct edit. A negated bracket expression against $version_base
+	// must be present; which bytes it names is the CANDIDATE TABLE's job.
 	if (!/case "\$version_base" in/.test(snippet)) {
 		return null;
 	}

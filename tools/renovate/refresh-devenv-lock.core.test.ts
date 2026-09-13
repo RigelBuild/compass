@@ -8,22 +8,17 @@ import {
 	devenvForkLockedRev,
 } from "./refresh-devenv-lock.core.ts";
 
-// Unit tests for the pure decision core of refresh-devenv-lock.ts (RIG-2815):
-// deciding WHICH of the two devenv locks a Renovate branch touched, and reading
-// the RigelBuild/devenv fork rev out of a lock. No devenv / network / git —
-// that shell-out lives in the entry point and runs for real on the PR's own
-// branch. These assert the decisions a wrong line would silently corrupt:
-// relocking the wrong scope (whose write the rule's one-lock fileFilters then
-// discards), or reading a stale/wrong rev.
+// Unit tests for the pure decision core (RIG-2815): which of the two devenv locks
+// a branch touched, and reading the fork rev out of a lock. These assert the
+// decisions a wrong line would corrupt: relocking the wrong scope (whose write the
+// one-lock fileFilters discards), or reading a stale rev.
 
 const repoRoot = join(import.meta.dir, "..", "..");
 
 describe("DEVENV_LOCK_SCOPES", () => {
-	// The cwd IS the scope selector — devenv resolves devenv.yaml/devenv.lock
-	// relative to it — so each scope's cwd must be the directory its lock lives
-	// in. A mismatch would relock the OTHER scope's lock while the rule's
-	// fileFilters names this one, so Renovate would commit nothing and the rev
-	// bump would ship unrelocked.
+	// The cwd IS the scope selector — devenv resolves devenv.lock relative to it —
+	// so each scope's cwd must hold its lock. A mismatch relocks the OTHER scope's
+	// lock while fileFilters names this one, so Renovate commits nothing.
 	test("every scope's relock cwd is the directory holding that scope's lock", () => {
 		for (const { lock, cwd } of Object.values(DEVENV_LOCK_SCOPES)) {
 			const dir = lock.includes("/")

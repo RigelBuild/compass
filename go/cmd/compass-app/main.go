@@ -155,14 +155,10 @@ func run() error {
 		return err
 	}
 
-	// The menu is installed in both modes. The "Window"/"New Window" item opens
-	// an additional Bridge window and is always available. The embedded-only
-	// "File"/"Quit and stop stack" item (DL-108) is gated on quitter: client
-	// mode has no stack to stop. Plain quit (window close, OS quit) LINGERS by
-	// default — the stack children stay running and the app does nothing to them
-	// (relaunch re-attaches), so there is deliberately no OnShutdown *stack*
-	// teardown here. (The window-set persist hook above is unrelated: it touches
-	// only the state-dir window list, never the stack.)
+	// The menu is installed in both modes; "New Window" is always available. The
+	// embedded-only "Quit and stop stack" item (DL-108) is gated on quitter (client
+	// mode has no stack). Plain quit LINGERS by default — stack children stay
+	// running and relaunch re-attaches, so there is deliberately no stack teardown.
 	menu := application.NewMenu()
 	if quitter != nil {
 		quitter.quit = app.Quit
@@ -278,11 +274,9 @@ func launch(
 		params := embeddedParams{socket: socket, stateDir: stateDir, image: image}
 
 		// The embedded bring-up (preflight → stack up → WhoAmI) runs BEFORE the
-		// window opens, under a bounded bring-up context. launch() is invoked
-		// once from run() (the process entrypoint) and no context is created
-		// upstream, so this context.Background() is the sanctioned root of the
-		// bring-up pipeline, not a mid-tree re-root; the bring-up window is
-		// derived from it.
+		// window opens, under a bounded context. launch() is invoked once from run()
+		// with no context upstream, so this context.Background() is the sanctioned
+		// root of the bring-up pipeline, not a mid-tree re-root.
 		bringUpCtx, cancel := context.WithTimeout(context.Background(), bringUpTimeout)
 		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, runStackDown(stackBin))
 		cancel()

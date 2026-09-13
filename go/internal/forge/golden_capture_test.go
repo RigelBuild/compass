@@ -1,40 +1,19 @@
 package forge
 
 // Wire canonicalization + fixture derivation for the -update live-capture path
-// (leg 2 of the forge integration-testing record,
-// docs/designs/server/compass-forge-integration-testing/design.md §T2; RIG-2229).
-//
-// This file is UNTAGGED on purpose: the canonicalization logic and its
-// invariants run in the normal credential-free `go test ./internal/forge/`
-// battery, so a regression in the sentinel table or a break in the load-bearing
-// golden invariants is caught without live credentials. The //go:build livegithub
-// suite (livegithub_test.go) drives the live capture and calls the helpers here.
-//
-// The design (Matt's 2026-08-22 ruling): canonicalize on write, reusing the
-// oracle's volatileFields as the single source of truth. Two tables express that
-// tie:
-//   - wireVolatile maps a PROVIDER wire JSON key to a fixed, type-appropriate
-//     sentinel; canonicalizeWire recursively substitutes those values so a
-//     pure-volatile per-run change canonicalizes to identical output while a real
-//     shape change (a new/renamed/retyped field) survives and shows in the diff.
-//   - domainToWire maps every DOMAIN volatile key (volatileFields) to the wire
-//     key(s) it decodes from; TestUpdateCanonicalizeCoversVolatileFields asserts
-//     the keyset EQUALS volatileFields, so adding a domain volatile without a
-//     wire mapping fails the untagged battery.
-//
-// The load-bearing invariant, held BY CONSTRUCTION: TestGoldenFixtures replays
-// every committed fixture and asserts BOTH the emitted request (method/path/
-// query/body) AND the decoded value (Want) against the fixture. deriveFixtureHalves
-// produces both halves from ONE invoke() replay over the canonicalized responses
-// and canonicalized coordinates — the identical code path golden replay runs — so
-// the committed request matches what replay emits, and marshal(decode(Body))==Want,
-// no matter which keys are canonicalized. That is why string ids CAN be
-// canonicalized (a Linear teamId/issueId resolved from the canonicalized prelude
-// stays consistent with the request derived from that same prelude): the request
-// is never recorded from the live wire, it is re-derived.
-//
-// context here flows through invoke() (which roots context.Background() as the
-// test root — the sanctioned F-ttsr exemption, mirroring golden_test.go).
+// (forge integration-testing record §T2; RIG-2229). UNTAGGED on purpose: the
+// canonicalization logic runs in the credential-free battery, so a sentinel-
+// table or golden-invariant regression is caught without live credentials.
+
+// Design (Matt's 2026-08-22 ruling): canonicalize on write, reusing the oracle's
+// volatileFields. wireVolatile maps a wire key to a sentinel so a pure-volatile
+// change canonicalizes identically while a shape change survives; domainToWire
+// maps every domain volatile to its wire key(s), asserted to EQUAL volatileFields.
+
+// Load-bearing, held BY CONSTRUCTION: deriveFixtureHalves produces both the
+// request and decoded Want from ONE invoke() replay over canonicalized input —
+// the same path golden replay runs — so the request is re-derived, never
+// recorded from the wire, which is why string ids can be canonicalized.
 
 import (
 	"encoding/json"
@@ -322,12 +301,10 @@ func deriveFixtureHalves(t *testing.T, provider string, f fixture) fixture {
 	}
 	f.Response.Want = mustMarshal(t, got)
 
-	// Guard that replay consumed EXACTLY every scripted response — the same
-	// exact-count invariant golden replayFixture asserts. A response the client
-	// never reaches (e.g. a later pagination page whose rel=next Link header the
-	// recorder dropped, so HasNext stayed false and the loop stopped early) would
-	// otherwise be written into a truncated fixture silently, surfacing only later
-	// and confusingly as a golden count mismatch. Fail loudly AT CAPTURE instead.
+	// Guard that replay consumed EXACTLY every scripted response — the exact-count
+	// invariant golden replayFixture asserts. A response the client never reaches
+	// (a dropped rel=next Link header stopping the loop early) would otherwise be
+	// written into a truncated fixture silently. Fail loudly AT CAPTURE instead.
 	wantN := len(f.Response.Prelude) + 1 + len(f.Response.Extra)
 	if got := len(rt.requests); got != wantN {
 		t.Fatalf("derive %s/%s: replay emitted %d requests, want exactly %d — a captured response was not consumed (a dropped rel=next Link header truncating a paginated leg?); the fixture would be truncated",

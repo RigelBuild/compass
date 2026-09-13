@@ -451,29 +451,20 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// runnerSpec unit test; here they exercise the real forward path).
 		AgentModel:  "anthropic/claude-opus",
 		EgressAllow: []string{"api.anthropic.com", "10.0.0.1"},
-		// The real compass-agent image ships /workspace (the runner's default
-		// checkout dir) non-writable — only $HOME is agent-owned — so Provision's
-		// in-container `mkdir` of the checkout dir fails there. Anchor the checkout
-		// under $HOME so every leg that Provisions is launchable against the real
-		// image without a production or image change (mirrors
-		// runner/config_delivery_e2e_test.go).
+		// The real compass-agent image ships /workspace non-writable (only $HOME is
+		// agent-owned), so Provision's in-container mkdir of the checkout dir fails
+		// there. Anchor the checkout under $HOME so every Provisioning leg is
+		// launchable against the real image without a production or image change.
 		CheckoutDir: "/home/agent/repo",
-		// The bundled Plane-B fan-in collector is a container-only component (no
-		// light/process path, unlike postgres above which the fixture runs via the
-		// ProcessSupervisor). This headless stack emits no OTLP, so a running
-		// collector would only drop-sink an empty stream — pure CI cost for zero
-		// assertions; the real collector container start/teardown/readiness is
-		// covered by the podman-guarded collector_container / collector_podman
-		// tests. Opt out via the --otel-external switch, mirroring the fixture's
-		// light-postgres choice, so spawnChain skips startCollector entirely rather
-		// than dereferencing the (deliberately unwired) CollectorContainer seam.
+		// The bundled Plane-B fan-in collector is container-only and this headless
+		// stack emits no OTLP, so a running collector would drop-sink an empty stream
+		// — pure CI cost (the real collector is covered by the podman-guarded tests).
+		// Opt out via --otel-external so spawnChain skips startCollector.
 		ExternalOTLPEndpoint: "127.0.0.1:4317",
-		// This headless stack connects to no broker — the server/runner NATS
-		// cutover is a later slice — so a bundled NATS would be pure CI cost
-		// (and the e2e deps below wire no NatsContainer/NatsProber, so the
-		// bundle path would hit the nil-dep error next). Opt out via the
-		// --nats-external switch, mirroring the collector choice above, so
-		// spawnChain skips startNats entirely.
+		// This headless stack connects to no broker (the NATS cutover is a later
+		// slice), so a bundled NATS would be pure CI cost and the e2e deps wire no
+		// NatsContainer anyway. Opt out via --nats-external so spawnChain skips
+		// startNats entirely.
 		ExternalNatsURL: "nats://127.0.0.1:4222",
 	}
 
@@ -516,11 +507,10 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		fc.onUp(st)
 	}
 
-	// The TLS anchor lives under StateDir (cert.go: tls.crt/tls.key). The
-	// bootstrap-admin token is written by the network door under the server
-	// SOCKET's parent dir (serve.go defaults StateDir to parentDir(SocketPath)),
-	// which is `root` here — not cfg.StateDir. Ready is the Up postcondition, so
-	// the token file exists by the time Up returns; no sleep-poll.
+	// The TLS anchor lives under StateDir (tls.crt/tls.key). The bootstrap-admin
+	// token is written by the network door under the SOCKET's parent dir (`root`
+	// here, not cfg.StateDir). Ready is the Up postcondition, so the token file
+	// exists by the time Up returns; no sleep-poll.
 	caPath := filepath.Join(cfg.StateDir, "tls.crt")
 	adminTokenPath := filepath.Join(filepath.Dir(serverSock), "admin-token")
 	raw, err := os.ReadFile(adminTokenPath)
@@ -564,18 +554,10 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		t.Fatalf("wait for runner enrollment: %v", err)
 	}
 
-	// The runner is enrolled, but the first-launch root-supervisor seed
-	// (server/serve_seed.go) fires on that SAME Sessions-stream attach and drives
-	// its own Provision+Start of the supervisor on the hook goroutine. A leg that
-	// Provisions the instant this returns would race the seed's in-flight
-	// Provision — two cold rootless-podman bring-ups contending on the engine
-	// storage lock, overrunning the leg's 30s rpcTimeout under CI load (RIG-2403).
-	// Gate on the seed's Provision having recorded its durable placement, so the
-	// seed's container work finishes before any leg Provisions and the two run
-	// serially. Event-gated on the real cross-process placement row, never a sleep;
-	// a short-lived store connection scoped to the gate (the fixture holds none).
-	// On the WithSite re-attach path the placement persists from the prior boot, so
-	// this passes on the first probe and does not wait on the doomed re-fired seed.
+	// The first-launch root-supervisor seed fires on the SAME Sessions-stream attach
+	// and drives its own Provision+Start. A leg Provisioning immediately would race
+	// it — two cold podman bring-ups contending on the storage lock, overrunning the
+	// rpcTimeout (RIG-2403). Gate on the seed's placement row so the two run serially.
 	seedStore, err := store.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open store for seed-settle gate: %v", err)
@@ -739,11 +721,9 @@ type fixtureSite struct {
 // before run2's Up rebinds them, so a single freePorts pair serves both.
 func newPersistentSite(t *testing.T) fixtureSite {
 	t.Helper()
-	// A short, unique root — NOT via shortRoot, whose t.Cleanup RemoveAll fires
-	// at the enclosing test's end but would be fine either way; the reason to
-	// inline it is to keep the site's single RemoveAll here, alongside the rest
-	// of the site's lifecycle, rather than split across helpers. suffix "h6"
-	// keeps it distinct from an ephemeral fixture's "h1" root in the same test.
+	// A short, unique root — NOT via shortRoot: inlined to keep the site's single
+	// RemoveAll here alongside the rest of its lifecycle. Suffix "h6" keeps it
+	// distinct from an ephemeral fixture's "h1" root in the same test.
 	root := filepath.Join("/tmp", "ce"+strconv.Itoa(os.Getpid())+"h6")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatalf("mkdir persistent site root: %v", err)

@@ -2,11 +2,9 @@
 
 package runnerhub
 
-// T5 (RIG-1667): the resume-body reconstructor. ReconstructSessionBody rebuilds
-// the loadable SDK session file a resuming agent starts from, by pure
-// read-and-concatenate over the two-tier transcript store — no control-lane ops,
-// no entry-JSON parsing. See the method doc for the normal (PG-only) and the
-// safety-valve (S3 fallback) shapes.
+// The resume-body reconstructor. ReconstructSessionBody rebuilds the loadable
+// SDK session file a resuming agent starts from, by pure read-and-concatenate
+// over the two-tier transcript store — no control-lane ops, no entry parsing.
 
 import (
 	"context"
@@ -62,14 +60,10 @@ func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]b
 		return nil, connect.NewError(connect.CodeUnavailable, errReaderUnavailable)
 	}
 
-	// One atomic snapshot: the PG hot-tail and the safety_valve manifest are
-	// read together, so a concurrent flush can't commit between them and corrupt
-	// the body. The NotFound-on-empty-tail early return (inside the snapshot)
-	// relies on the store invariant that the safety valve always retains the
-	// newest post-checkpoint entry (maybeSafetyValve never evicts the last row):
-	// a session with any data always has >=1 PG row, so "empty tail but segments
-	// exist" cannot occur — a future eviction change MUST preserve this or resume
-	// would wrongly NotFound a segment-only session.
+	// One atomic snapshot: PG hot-tail and safety_valve manifest are read together
+	// so a concurrent flush can't corrupt the body. The NotFound-on-empty-tail
+	// return relies on the store invariant that the valve never evicts the last
+	// row — a future eviction change MUST preserve it or resume wrongly NotFounds.
 	tail, segments, err := reader.SessionResumeSnapshot(ctx, sessionID)
 	if err != nil {
 		return nil, reconstructReadError(err)
@@ -97,16 +91,9 @@ func (h *Hub) ReconstructSessionBody(ctx context.Context, sessionID string) ([]b
 	}
 
 	// S3 fallback: only when the valve fired. Fetch each safety_valve segment and
-	// fold its lines into the delta set at their entry_seq. By construction these
-	// segments are all post-latest-checkpoint (the store re-marks any stale
-	// segment superseded when a later checkpoint arrives), so they merge behind
-	// the checkpoint body with the PG tail. NOTE: this object read runs OUTSIDE the
-	// RepeatableRead snapshot that made the manifest+tail read atomic; it is safe
-	// only because safety_valve segment objects are immutable and never deleted
-	// while a manifest row references them (no object-delete path exists, and
-	// PutSegment is ON CONFLICT DO NOTHING on a deterministic key). Any future
-	// object-GC path MUST preserve that, or move this read into the snapshot's
-	// consistency domain.
+	// fold its lines in at their entry_seq. This read runs OUTSIDE the
+	// RepeatableRead snapshot; it is safe only because segment objects are
+	// immutable and never deleted while a manifest references them — preserve that.
 	for _, seg := range segments {
 		body, err := reader.ReadArchiveSegment(ctx, seg.ObjectKey)
 		if err != nil {

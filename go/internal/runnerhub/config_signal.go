@@ -1,13 +1,9 @@
 //go:build unix
 
 // The ConfigVersion emit seam: a signal-only Server->Runner push telling a live
-// session that the fleet config bundle changed, so the Runner re-fetches via
-// FetchAgentConfig, re-materializes the new version dir, and Reloads live agents.
-// Like the SecretsVersion signal (secrets_signal.go) and unlike the command relay
-// (commands.go), this registers no pendingCall and waits for no result —
-// ConfigVersion has no result variant on the Runner's request stream (runner.proto:
-// SessionsResponse.command tag 9). The CompassService config write handlers
-// (server/service.go) call SignalConfigVersion after a successful Put/Delete.
+// session the fleet config bundle changed, so the Runner re-fetches and Reloads
+// live agents. Like the SecretsVersion signal and unlike the command relay, this
+// registers no pendingCall and waits for no result.
 package runnerhub
 
 import (
@@ -44,15 +40,10 @@ func (h *Hub) SignalConfigVersion(version string) error {
 	if !hasLiveSessions {
 		return nil
 	}
-	// ConfigVersion is fleet-wide (record §527-528, §563), so ONE push per distinct
-	// attached router carries it to the whole fleet on that stream; single-Runner
-	// MVP = one router = one push. The !hasLiveSessions gate above keeps a Runner
-	// with no live sessions a clean no-op (nothing to reload; it reconciles
-	// via the version-only fetch on next Sessions (re)establishment, record
-	// §677-685). A future multi-Runner change giving sessions distinct routers MUST
-	// push once PER DISTINCT ROUTER and accumulate-and-continue (errors.Join)
-	// across routers so a wedged stream does not silently under-notify the rest of
-	// the fleet — the per-ROUTER analogue of SignalSecretsVersion's per-session loop.
+	// ConfigVersion is fleet-wide, so ONE push per attached router carries it to
+	// the whole fleet (single-Runner MVP = one router = one push). A future
+	// multi-Runner change MUST push once PER ROUTER and accumulate-and-continue
+	// (errors.Join) so a wedged stream does not silently under-notify the fleet.
 	cmd := &compassv1internal.SessionsResponse{
 		Command: &compassv1internal.SessionsResponse_ConfigVersion{
 			ConfigVersion: &compassv1internal.ConfigVersion{

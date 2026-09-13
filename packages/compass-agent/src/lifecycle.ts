@@ -1,26 +1,19 @@
-// The agent's lifecycle surface: a thin broker over the Runner transport, plus
-// the two native tools an agent registers on its Agent to spawn / despawn a peer
-// (design docs/designs/agent/compass-agent-spawn-despawn/design.md, T6).
-//
-// This mirrors comms.ts exactly, one leg over: `AgentGateway.Lifecycle` is a
-// Connect **unary** over the per-container Unix socket (transport/index.ts), so
-// correlation and deadlines belong to the RPC and a result is just the awaited
-// return value — no pending map, no stdin pump, no deadlock. Cancellation is NOT
-// plumbed: `execute`'s `AbortSignal` is not forwarded, so an aborted turn does
-// not cancel an in-flight spawn — it lands. The idempotency key means a re-issue
-// of the same spawn dedupes rather than double-spawning. What is left for the
-// broker is one delegation. It exists so the tools depend on a narrow one-method
-// surface (`LifecycleTransport`) rather than the whole `RunnerTransport`.
-//
-// IDENTITY. The agent presents no token and asserts no account: the Runner owns
-// which container (hence which session) a call arrived on, and the Server
-// resolves session -> account and executes under `WithActor`. Same-owner despawn
-// authority is enforced Server-side — an unauthorized target comes back as a
-// `LifecycleCallError`, in-band, not as a transport teardown.
+// The agent's lifecycle surface: a thin broker over the Runner transport, plus the two
+// native spawn/despawn-peer tools (design compass-agent-spawn-despawn T6). Mirrors comms.ts:
+// `AgentGateway.Lifecycle` is a Connect unary, so a result is the awaited return value —
+// no pending map, no stdin pump.
 
-// The schema builder rides the SDK's own schema stack via its `/ark` compat
-// facade — see the comms.ts note; one schema implementation in the graph, so
-// there is no two-copy mismatch to catch.
+// Cancellation is NOT plumbed (an aborted turn's in-flight spawn lands); the idempotency key
+// dedupes a re-issued spawn. The broker exists so the tools depend on a narrow
+// `LifecycleTransport`, not all of `RunnerTransport`.
+
+// IDENTITY: the agent presents no token; the Runner owns which container a call arrived on
+// and the Server resolves session -> account and executes under `WithActor`. Same-owner
+// despawn authority is Server-side — an unauthorized target returns a `LifecycleCallError`
+// in-band, not a transport teardown.
+
+// The schema builder rides the SDK's own schema stack via its `/ark` compat facade — one
+// schema implementation in the graph, so there is no two-copy mismatch to catch.
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
@@ -49,14 +42,10 @@ export interface LifecycleTransport {
  */
 export class LifecycleBroker {
 	readonly #transport: LifecycleTransport;
-	// Scopes every idempotency key this broker mints to this one broker
-	// instance. The Server dedups on `(author_account_id, client_request_id)`
-	// and an account outlives any single session, while some provider tool-call
-	// ids are derived from turn position rather than randomness (the OpenAI
-	// fallback hashes `messageIndex:toolCallIndex:toolName`). A bare tool-call
-	// id therefore collides across two sessions of the same account at the same
-	// turn position, and the collision is silent: the spawn dedup returns the
-	// older result, so the tool reports success for a spawn that never ran.
+	// Scopes every idempotency key to this broker instance. The Server dedups on
+	// `(author_account_id, client_request_id)`, an account outlives a session, and some
+	// provider tool-call ids derive from turn position — so a bare id collides across two
+	// sessions of the same account at the same turn position, silently returning the older result.
 	readonly #idempotencyNonce = crypto.randomUUID();
 
 	constructor(transport: LifecycleTransport) {
@@ -75,13 +64,10 @@ export class LifecycleBroker {
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const spawnParameters = type({
-	// The non-blank bound on `handle`/`persona` is enforced at runtime but is NOT
-	// expressible in JSON Schema — arktype drops the `.narrow` predicate from the
-	// wire schema the model is shown, so their descriptions carry the rule instead
-	// (see the comms.ts `postParameters` note). `role` needs no such carry: it is a
-	// closed literal union, which DOES render into the JSON Schema, so the model
-	// sees the exact taxonomy and an off-taxonomy (or empty) label is rejected
-	// structurally at the tool edge — the server re-validates it as the authority.
+	// The non-blank bound on `handle`/`persona` is enforced at runtime but NOT expressible in
+	// JSON Schema (arktype drops `.narrow`), so their descriptions carry the rule. `role` needs
+	// no carry: a closed literal union DOES render, so an off-taxonomy label is rejected
+	// structurally at the edge (the server re-validates as authority).
 	handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe("The new peer's account handle (unique); must not be blank"),
@@ -127,12 +113,10 @@ function lifecycleFailure(
 ): Error {
 	const outcome = result.result;
 	if (outcome.case === "error") {
-		// The detail is server text that lands in the model's context as a tool
-		// failure — a position at least as trusted as the transcript, with no
-		// framing and no author. A line break in it would forge a second line of
-		// authoritative output, so it passes through the shared `flat` (never a
-		// second copy of its regex — see render-guard.ts). The bound runs AFTER
-		// the collapse, so slicing cannot re-expose a break the collapse removed.
+		// The detail is server text that lands in the model's context as a tool failure — a
+		// trusted position with no framing. A line break would forge a second line of
+		// authoritative output, so it passes through the shared `flat`; the bound runs AFTER
+		// the collapse so slicing cannot re-expose a removed break.
 		const detail = flat(outcome.value.message).slice(0, 500);
 		return new Error(
 			`${toolName} failed: ${attr(outcome.value.code)}: ${detail}`,
@@ -170,11 +154,9 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 							displayName: params.display_name ?? "",
 							role: params.role,
 							persona: params.persona,
-							// Idempotency key, so a replayed spawn (an agent-turn/model
-							// retry of the same tool call) dedupes at the lifecycle handler
-							// rather than double-spawning. Broker-scoped, never the bare
-							// tool-call id — see `LifecycleBroker.idempotencyKey`. Spawn
-							// only — despawn is idempotent by semantics and carries no field.
+							// Idempotency key, so a replayed spawn (a turn/model retry) dedupes at
+							// the handler rather than double-spawning. Broker-scoped, never the
+							// bare tool-call id. Spawn only — despawn is idempotent by semantics.
 							clientRequestId: broker.idempotencyKey(toolCallId),
 						}),
 					},
@@ -183,13 +165,10 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 			if (result.result.case !== "spawn")
 				throw lifecycleFailure(result, "agents_spawn_peer", "spawn");
 			const spawned = result.result.value;
-			// Names-only rendering: `handle` is caller-supplied, `dmChannelName` is a
-			// server value — both interpolate into text the model reads as
-			// authoritative harness output, so each passes through the shared `attr`
-			// (a newline would forge a second, unattributed line). No account /
-			// container / session id is ever rendered. An empty `dmChannelName` means
-			// the post-spawn DM open was deferred (recoverable next turn via
-			// comms_open_dm) — not a failure, so it renders its own guidance line.
+			// Names-only rendering: caller-supplied `handle` and server `dmChannelName` both
+			// interpolate into text the model reads as authoritative, so each passes through
+			// `attr` (a newline would forge an unattributed line). No id is ever rendered. An
+			// empty `dmChannelName` means the DM open was deferred (recoverable), not a failure.
 			const text =
 				spawned.dmChannelName === ""
 					? `Spawned peer ${attr(params.handle)}. (DM channel not yet open — use comms_open_dm to reach it.)`

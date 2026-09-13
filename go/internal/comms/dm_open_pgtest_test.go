@@ -2,13 +2,10 @@
 
 package comms
 
-// The Comms.OpenDM handler + OpenDMAsAccount adapter (RIG-2962 T3, design.md
-// T3:745-773): resolve-or-create the two-party peer DM addressed by handle, with
-// same-owner authz, the deterministic sorted-handle name, and the post-commit
-// ChannelChanged emit on create. Driven in-process via connect.NewRequest +
-// WithActor (and the AsAccount adapter) against a real store and bus, mirroring
-// comms_test.go / org_mgmt_pgtest_test.go. context.Background() is the test root
-// (test-root ctx exemption).
+// The Comms.OpenDM handler + OpenDMAsAccount adapter (RIG-2962 T3): resolve-or-
+// create the two-party peer DM addressed by handle, with same-owner authz, the
+// deterministic sorted-handle name, and the post-commit ChannelChanged on
+// create. In-process via WithActor against a real store and bus.
 
 import (
 	"context"

@@ -1,20 +1,9 @@
 //go:build unix
 
-// The Linear webhook ingress: a single shared http.Handler for
-// POST /webhooks/linear (symmetric with /webhooks/github, DL-302) that
-// type-dispatches the top-level envelope. "AgentSessionEvent" routes to the
-// RIG-2717 responder seam (a local SessionEventSink satisfied by
-// *linearagent.Dispatcher); "Issue"/"Comment" data-change events route to an
-// injected ForgeEventSink. It mirrors github_webhook.go's fail-closed order
-// (secret -> HMAC -> parse) and its ack-fast discipline; T7d mounts it and
-// supplies the sinks. The data sink is injected-and-nil-for-now (DL-302): a
-// Linear-provider-bound notify lane wires the real sink later, so a nil sink
-// acks-and-drops rather than mis-routing into the GitHub-coordinate fanout.
-//
-// Dedup is NOT done here: RIG-2717's design (design.md:167-170) rides the comms
-// rail's own idempotency for sessions (the dispatcher's client_request_id) and
-// the notify router's idempotency for data, so — unlike the GitHub handler's
-// X-GitHub-Delivery LRU — this mount adds no delivery-id LRU.
+// The Linear webhook ingress: a single shared http.Handler for POST /webhooks/linear
+// that type-dispatches the envelope (AgentSessionEvent -> responder seam, Issue/Comment
+// -> injected ForgeEventSink). Mirrors github_webhook.go's fail-closed order and
+// ack-fast discipline; a nil data sink acks-and-drops. No delivery-id LRU (RIG-2717).
 package server
 
 import (

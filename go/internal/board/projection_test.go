@@ -2,17 +2,13 @@
 
 package board
 
-// Default-lane (no database) tests for the Bridge board projection. They
-// exercise the public Projection surface over an in-process events.Bus and pin
-// the board contract (design.md:1585-1604): a per-session aggregate of
-// the latest AgentSessionState (last-write-wins), a deterministically sorted
-// snapshot that hands out independent copies, a nil/empty-session guard, and a
-// live fan-out onto SubscribeEvents.
-//
-// Every live-channel wait is event-gated with a deadline as a safety net, never
-// as a synchronization device: negative ("nothing published") assertions are
-// proven by publishing a real sentinel after the ignored inputs and asserting
-// the sentinel is the first event delivered, not by racing a timer.
+// Default-lane (no database) tests for the Bridge board projection over an
+// in-process events.Bus. They pin the contract: a per-session last-write-wins
+// aggregate, a deterministically sorted snapshot handing out independent copies,
+// a nil/empty-session guard, and a live fan-out onto SubscribeEvents.
+
+// Every live-channel wait is event-gated with a deadline as a safety net;
+// negative assertions publish a sentinel and assert it arrives first.
 
 import (
 	"fmt"

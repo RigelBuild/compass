@@ -32,11 +32,10 @@ const natsStopTimeout = 20 * time.Second
 const (
 	natsClientPort  = "4222"
 	natsMonitorPort = "8222"
-	// natsListenHost is the host interface the ports are published on: the
-	// loopback only, never 0.0.0.0. NATS sits on the trusted control-plane tier
-	// and carries no credentials in this shape, so it must never be
-	// network-exposed; an operator wanting a shared NATS runs --nats-external and
-	// points at their own.
+	// natsListenHost is the host interface the ports publish on: loopback only,
+	// never 0.0.0.0. NATS sits on the trusted control-plane tier and carries no
+	// credentials in this shape, so it must never be network-exposed; an operator
+	// wanting a shared NATS runs --nats-external.
 	natsListenHost = "127.0.0.1"
 )
 

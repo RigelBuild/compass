@@ -67,12 +67,10 @@ func (s *Store) PinMessage(ctx context.Context, ch ChannelID, msg MessageID, rep
 		return nil, err
 	}
 
-	// Board-mutation authz, enforced IN this tx under the FOR UPDATE lock the
-	// lock helper just took, BEFORE the pin write: `by` must be a member and,
-	// on OWNER_ONLY, the owner — the SAME two-gate no-oracle check PostMessage
-	// runs (store/messages.go:80-82). Under the row lock the who-may-act
-	// decision is serialized against a concurrent membership/policy change, so a
-	// just-removed member or now-unauthorized non-owner cannot race the write.
+	// Board-mutation authz IN this tx under the FOR UPDATE lock, BEFORE the pin
+	// write: `by` must be a member and, on OWNER_ONLY, the owner — the same
+	// two-gate no-oracle check PostMessage runs. The row lock serializes it
+	// against a concurrent membership/policy change so it cannot race the write.
 	if err := requireBoardMutator(ctx, tx, ch, by, postPolicy, ownerAcct); err != nil {
 		return nil, err
 	}

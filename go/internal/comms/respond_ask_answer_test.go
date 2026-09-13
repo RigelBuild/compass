@@ -2,11 +2,10 @@
 
 package comms
 
-// T4 (RIG-2257): RespondToAsk publishes MessagePosted for the NEW answer
-// message (the delivery trigger) alongside MessageUpdated for the ask, and the
-// wire edge rejects a client-supplied ask_answer block on the POST path as the
-// server-owned variant. The waker rail is gone — the answer rides the normal
-// message rail.
+// T4 (RIG-2257): RespondToAsk publishes MessagePosted for the NEW answer message
+// (the delivery trigger) alongside MessageUpdated for the ask, and the wire edge
+// rejects a client-supplied ask_answer block on the POST path. The waker rail is
+// gone — the answer rides the normal message rail.
 
 import (
 	"context"

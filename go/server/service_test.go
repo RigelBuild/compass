@@ -3,10 +3,9 @@
 package server
 
 // Tests for the compass.v1 service handlers, exercised end to end through a real
-// connect-go client over in-process cleartext HTTP/2 — the same door the server
-// ships, minus the Unix socket. Each test wires a real event bus so the
-// SubscribeEvents snapshot/tail/resync paths run against the actual bus, not a
-// stub.
+// connect-go client over in-process cleartext HTTP/2 — the shipped door minus the Unix
+// socket. Each test wires a real event bus so the SubscribeEvents snapshot/tail/resync
+// paths run against the actual bus, not a stub.
 
 import (
 	"context"

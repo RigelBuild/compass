@@ -1,12 +1,9 @@
 //go:build unix
 
 // The SecretsVersion emit seam: a signal-only Server->Runner push telling a live
-// session that its declared secret set changed, so the Runner re-fetches via
-// FetchSecrets. Unlike the command relay (commands.go), this registers no
-// pendingCall and waits for no result — SecretsVersion has no result variant on
-// the Runner's request stream (runner.proto: SessionsResponse.command tag 8).
-// The SecretsService write handlers (server/secrets_service.go) call
-// SignalSecretsVersion after a successful Set/Delete.
+// session its declared secret set changed, so the Runner re-fetches via
+// FetchSecrets. Unlike the command relay, this registers no pendingCall and waits
+// for no result. Called by the SecretsService write handlers after a Set/Delete.
 package runnerhub
 
 import (
@@ -61,12 +58,10 @@ func (h *Hub) SignalSecretsVersion() error {
 	if router == nil {
 		return nil
 	}
-	// Single-Runner MVP: every live session pushes through the same router/stream
-	// (hub.go), so a push failure is stream-wide — the unpushed remainder would
-	// fail identically, making this early return total by construction, not a
-	// partial best-effort. A future multi-Runner change giving sessions distinct
-	// routers MUST switch this to accumulate-and-continue (errors.Join) so it does
-	// not silently under-notify.
+	// Single-Runner MVP: every live session pushes through the same router/stream,
+	// so a push failure is stream-wide and this early return is total, not partial.
+	// A future multi-Runner change giving sessions distinct routers MUST switch to
+	// accumulate-and-continue (errors.Join) so it does not silently under-notify.
 	for _, sessionID := range sessionIDs {
 		cmd := &compassv1internal.SessionsResponse{
 			Command: &compassv1internal.SessionsResponse_SecretsVersion{

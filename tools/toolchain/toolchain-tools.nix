@@ -1,12 +1,7 @@
-# Exact bun/node/moon toolchains vendored as Nix derivations. Both the dev
-# shell (devenv.nix) and the CI toolchain gate (tools/toolchain/gate-tools.nix)
-# import this one module, so the two cannot drift: on Linux both sides resolve
-# byte-identical store paths, and the aarch64-darwin legs give macOS developers
-# the same pinned versions from the per-platform Apple-Silicon assets.
-#
+# Exact bun/node/moon toolchains vendored as Nix derivations. Both the dev shell
+# and the CI toolchain gate import this one module, so the two cannot drift.
 # Versions come from tools/toolchain/versions/<lang>.nix (the single source of
-# truth); bump the hash there when a version changes — the fetch fails loudly
-# on the resulting mismatch, so nothing silently drifts.
+# truth); the fetch fails loudly on a hash mismatch, so nothing silently drifts.
 { pkgs }:
 let
   inherit (pkgs) lib stdenv;

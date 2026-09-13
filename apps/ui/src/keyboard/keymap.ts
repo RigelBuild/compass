@@ -200,16 +200,10 @@ export const DEFAULT_KEYMAP: readonly KeymapEntry[] = [
 	{ chord: "Home", commandId: cmd("list.moveFirst") },
 	{ chord: "End", commandId: cmd("list.moveLast") },
 
-	// Board (RIG-2130 T4). Group-relative chords the active board roving group
-	// claims in the dispatcher's tier 1, ahead of the `when:"main"` comms entries
-	// below: `Shift+Enter` opens the cursor card's assigned agent (winning over
-	// `comms.newline`). The board's `Space` cross-link rides the existing
-	// `Space → list.expandOrToggle` row above: the dispatcher resolves a chord to
-	// its FIRST group-relative match (dispatch.ts:95-97, DEFAULT_KEYMAP order), so
-	// the earlier Lists-block `Space` wins and the board maps THAT id to the
-	// cross-link (Bridge onCommand). The `board.openCardCrossLink` command still
-	// exists (palette + a future remap when a real board `Space` affordance lands,
-	// OQ-2) — it just needs no keymap row of its own, which would be dead here.
+	// Board (RIG-2130 T4). Group-relative chords the active board roving group claims in
+	// tier 1, ahead of the `when:"main"` comms entries: `Shift+Enter` opens the cursor
+	// card's assigned agent. The board's `Space` cross-link rides the earlier Lists-block
+	// `Space` row (first group-relative match wins); `board.openCardCrossLink` needs no row.
 	{ chord: "Shift+Enter", commandId: cmd("board.openAssignedAgent") },
 
 	// Workspace (D5:452-453): Ctrl+Alt+Arrow moves focus between the channel
@@ -217,11 +211,9 @@ export const DEFAULT_KEYMAP: readonly KeymapEntry[] = [
 	{ chord: "Mod+Alt+ArrowLeft", commandId: cmd("workspace.focusPaneLeft") },
 	{ chord: "Mod+Alt+ArrowRight", commandId: cmd("workspace.focusPaneRight") },
 
-	// Comms (D5:454-455). Enter send / Shift+Enter newline (kept);
-	// Ctrl+Enter send-and-stay variant reserved. NOTE: `Enter` (and the
-	// group-relative list chords above) is also bound unscoped in the Lists
-	// block; in the main zone the scoped `comms.send` wins over the global
-	// `list.openOrSelect` per the precedence rule documented on KeymapEntry.
+	// Comms (D5:454-455). Enter send / Shift+Enter newline; Ctrl+Enter send-and-stay
+	// reserved. `Enter` is also bound unscoped in the Lists block; in the main zone the
+	// scoped `comms.send` wins over the global `list.openOrSelect` per KeymapEntry precedence.
 	{ chord: "Enter", commandId: cmd("comms.send"), when: "main" },
 	{ chord: "Shift+Enter", commandId: cmd("comms.newline"), when: "main" },
 	{ chord: "Mod+Enter", commandId: cmd("comms.sendAndStay"), when: "main" },

@@ -3,15 +3,9 @@
 package server
 
 // Store-gated CompassService model-registry handler contracts (RIG-3122 P2):
-// PutModelRegistry persists under a compare-and-set and returns the new version;
-// GetModelRegistry returns an empty-but-valid response on an unconfigured fleet
-// and the payload on a configured one; a malformed payload is CodeInvalidArgument;
-// an orphaning removal is CodeInvalidArgument; a stale expected_version is
-// CodeAborted; and the two write RPCs are admin-gated on the network door. They
-// need a real Postgres because the writes persist the singleton row and the
-// handler reads a genuine caller identity. The admin-gate denial runs through the
-// full network-door chain (networkDoorHandler); the handler-contract cases run
-// through the bearer-only fixture. Behind `pgtest && unix` (SKIP when no runtime).
+// PutModelRegistry persists under a compare-and-set; Get returns empty-but-valid when
+// unconfigured; malformed/orphaning is InvalidArgument; a stale version is Aborted;
+// both writes are admin-gated. Behind `pgtest && unix`.
 
 import (
 	"context"

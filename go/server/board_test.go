@@ -3,14 +3,9 @@
 package server
 
 // Default-lane (no database) tests for the shared transition executor
-// (boardService.SetIssueState): the frozen compare-and-transition
-// (compass-issue-model/design.md:513-521). The executor is driven against a fake
-// issueStore and a real IssueProjection over a real bus, so the
-// read->validate->commit->record+publish->mirror path is provable without
-// Postgres — the store interface is narrow exactly so this lane can fake it. The
-// pgtest-backed store contract (SetIssueState/GetIssue against a real DB) is
-// proven in the store package's own pgtest suite; here we pin the executor's
-// decision logic, publish behavior, and the nil-safe mirror.
+// (boardService.SetIssueState). Driven against a fake issueStore and a real
+// IssueProjection over a real bus, proving the read->validate->commit->publish->mirror
+// path without Postgres. Pins the executor's decision logic, publish, nil-safe mirror.
 
 import (
 	"context"

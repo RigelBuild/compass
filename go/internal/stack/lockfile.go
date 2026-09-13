@@ -33,14 +33,9 @@ type stackLock struct {
 // lockfile records the holder's pid so staleness is decidable.
 func acquireLock(stateDir string) (*stackLock, error) {
 	// Serialize the whole inspect→reclaim→create decision across processes with a
-	// short-lived advisory lock on a separate guard file. The O_EXCL pidfile
-	// below marks *linger ownership* — it must outlive the acquiring process, so
-	// it cannot be an flock — but the pidfile alone cannot make the stale-reclaim
-	// atomic: two Ups that both find the same stale pidfile would each
-	// remove-then-recreate, the second clobbering the first's fresh lock, and both
-	// would spawn. The guard flock — held only for the decision and released
-	// before spawning — closes that window, and the OS drops it automatically if
-	// the acquirer crashes, so the guard file itself never wedges the state dir.
+	// short-lived advisory lock on a separate guard file. The O_EXCL pidfile marks
+	// linger ownership but can't make stale-reclaim atomic alone: two Ups on one
+	// stale pidfile would both remove-recreate and spawn. The guard flock closes it.
 	guard, err := acquireGuard(stateDir)
 	if err != nil {
 		return nil, err

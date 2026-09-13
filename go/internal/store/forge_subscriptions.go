@@ -11,18 +11,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The DL-053 agent-notification subscription writer (RIG-2732 Piece 1, design
-// docs/designs/server/compass-notification-delivery/design.md): the Server-side
-// Postgres row that records an agent's standing interest in one forge artifact.
-// agent_forge_subscriptions is the per-subscriber DELIVERY-cursor table
-// (delivered_revision/delivered_at); forge_artifact_cursors is the shared
-// per-artifact FETCH cursor. This file owns two writers/readers of that shared
-// table: UpsertForgeArtifactCursor (the FETCH-cursor WRITER — INSERT ... ON
-// CONFLICT DO UPDATE, keyed by the coordinate PK) and ListForgeNotifyTargets
-// (the notify-target READER — LEFT JOINs the cursor onto each subscribed
-// coordinate). The GC invariant also lives here: when the LAST subscription for
-// a coordinate is deleted, its cursor row is collected in the same transaction
-// (DL-053).
+// The DL-053 agent-notification subscription writer (RIG-2732 Piece 1).
+// agent_forge_subscriptions is the per-subscriber DELIVERY cursor;
+// forge_artifact_cursors is the shared per-artifact FETCH cursor (writer + reader
+// here). GC: deleting the last subscription collects its cursor in the same tx.
 
 // ForgeSubscriptionScope mirrors compass.v1 ForgeSubscriptionScope
 // (UNSPECIFIED=0, ARTIFACT=1, CONTAINER=2; RIG-2732 T3, OQ-1 ruled (i)). It

@@ -1,14 +1,12 @@
 package ingest
 
-// The notify webhook arm (RIG-2732 T7, design.md pipeline step 1/4): the notify
-// consumer behind the one GitHub ingress that the board arm also sits behind.
-// The webhook handler verifies, acks 200, and fans each accepted event to this
-// arm's Enqueue (a non-blocking channel try-send, github_webhook.go:44-51 — the
-// 200 ack is never on the downstream latency path), and a single drain goroutine
-// hands each dequeued event to the in-package NotifyRouter (step 4, the notify
-// hot path). Unlike the board arm this does NOT hydrate/coalesce/target-gate: the
-// router does its own store loads and subscriber match, so the drain is a plain
-// dequeue-then-Route, log-and-continue on a per-event error.
+// The notify webhook arm (RIG-2732 T7): the notify consumer behind the one GitHub
+// ingress the board arm also sits behind. The handler verifies, acks 200, and
+// fans each accepted event to Enqueue (a non-blocking try-send, off the ack path).
+
+// A drain goroutine hands each event to the in-package NotifyRouter. Unlike the
+// board arm it does NOT hydrate/coalesce — the router does its own store loads —
+// so the drain is a plain dequeue-then-Route.
 
 import (
 	"context"

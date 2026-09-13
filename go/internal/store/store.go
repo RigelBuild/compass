@@ -83,13 +83,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	}
 
 	s := &Store{pool: pool, safetyValveCapBytes: defaultSafetyValveCapBytes}
-	// Bind the sqlc query set to the tenant-scoping DBTX (scopedDBTX), not the
-	// bare pool: every pool-path s.q.<Query> then arms SET LOCAL ROLE + the
-	// compass.tenant_id GUC from ctx in one round-trip so RLS scopes it
-	// (tenant_tx.go). migrate() below runs on the raw pool (s.pool) as the
-	// owner, before any policy exists to fight; BootstrapTenant runs through
-	// s.q, but the tenants table is RLS-exempt (bucket A) so the app role with
-	// an empty GUC writes it fine.
+	// Bind the sqlc query set to the tenant-scoping DBTX, not the bare pool, so
+	// every pool-path query arms SET LOCAL ROLE + the tenant_id GUC for RLS
+	// (tenant_tx.go). migrate() runs on the raw pool as owner; BootstrapTenant
+	// runs through s.q but the tenants table is RLS-exempt (bucket A).
 	s.q = db.New(s.scopedPool())
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
@@ -281,11 +278,10 @@ func loadMigrations() ([]migration, error) {
 
 	sort.Slice(migs, func(i, j int) bool { return migs[i].version < migs[j].version })
 
-	// The embedded set must be a contiguous 1..N sequence: a gap (0001 + 0003,
-	// missing 0002) would otherwise pass the max-version serve check while
-	// silently deploying an incomplete schema. This is the build-time half of
-	// the refuse-to-serve-on-a-gap contract (migrate() enforces the runtime
-	// half against the database).
+	// The embedded set must be contiguous 1..N: a gap (0001+0003, no 0002) would
+	// pass the max-version serve check while deploying an incomplete schema. The
+	// build-time half of the refuse-to-serve-on-a-gap contract (migrate()
+	// enforces the runtime half).
 	if err := checkContiguous(migs); err != nil {
 		return nil, err
 	}

@@ -264,12 +264,10 @@ func parseProcEntry(line string, f []string) (pgidEntry, error) {
 	if err != nil {
 		return pgidEntry{}, fmt.Errorf("unparseable pgid %q in entry line %q: %w", f[1], line, err)
 	}
-	// A real process-group leader pid is always > 1; pid 1 is init and is never a
-	// compass child. Refuse a degenerate pgid at parse time so a corrupt or
-	// tampered record is rejected wholesale rather than reaching the signal sink,
-	// where kill(-1, ...) is the "every process the caller may signal" wildcard
-	// and kill(0, ...) targets the down process's own group — exactly the
-	// pattern-kill blast radius the design forbids.
+	// A real process-group leader pid is always > 1; pid 1 is init. Refuse a
+	// degenerate pgid at parse time so a corrupt or tampered record never reaches
+	// the signal sink, where kill(-1,...) is the signal-everything wildcard and
+	// kill(0,...) hits the down process's own group — the blast radius forbidden.
 	if pgid <= 1 {
 		return pgidEntry{}, fmt.Errorf("invalid pgid %d in entry line %q: a process-group leader pid is always > 1", pgid, line)
 	}

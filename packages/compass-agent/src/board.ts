@@ -1,38 +1,20 @@
-// The agent's board surface: a thin broker over the Runner transport's Board
-// call, plus the one native tool an agent registers to drive the Compass-native
-// issue board — `board_set_issue_state`. This is the write half of the
-// issue-ownership contract the taxonomy role prompts state: an agent moves its
-// issue as the work moves and closes it itself; nothing advances board state for
-// it (a forge closed/merged badge is consistent with DONE but never auto-advances
-// the Compass-native state).
-//
-// This mirrors comms.ts / lifecycle.ts / forge.ts one leg over: `AgentGateway.Board`
-// is a Connect **unary** over the per-container Unix socket (transport/index.ts),
-// so correlation and deadlines belong to the RPC and a result is just the awaited
-// return value — no pending map, no stdin pump, no deadlock. Cancellation is NOT
-// plumbed: `execute`'s `AbortSignal` is not forwarded, so an aborted turn does not
-// cancel an in-flight transition — it lands. Unlike `ForgeBroker` there is no
-// idempotency key: a board transition is not a create, and the server treats a
-// target equal to the current state as an idempotent no-op (a re-issue is
-// harmless), so nothing needs to dedup.
-//
-// IDENTITY. The agent presents no token and asserts no account: the Runner owns
-// which container (hence which session) a call arrived on, and the Server resolves
-// session -> account and runs the transition under that caller (single-trust-domain
-// MVP). Every write attributes to the agent's account with zero new authz code; a
-// no-`BoardCaller` deployment fails closed at the relay as a thrown ConnectError,
-// never a transport teardown.
-//
-// The board is a single Compass-native instance — no repo selector and no shared
-// cross-repo credential — so the unguarded free-text-`repo` threat forge documents
-// (A8) does not arise here: the one input is a Compass-local issue id resolved
-// against the caller's own board. The shared call envelope is reused verbatim as
-// the RelayBoardCall payload on the Runner->Server leg (DL-049), one wire shape
-// for both hops. See packages/compass-agent/AGENTS.md for the package contract.
+// The agent's board surface: a thin broker over the Runner transport's Board call, plus
+// the native `board_set_issue_state` tool. This is the write half of the issue-ownership
+// contract: an agent moves its issue as work moves and closes it itself; nothing advances
+// board state for it (a forge closed/merged badge never auto-advances the Compass state).
 
-// The schema builder rides the SDK's own schema stack via its `/ark` compat
-// facade — see the comms.ts note; one schema implementation in the graph, so
-// there is no two-copy mismatch to catch.
+// `AgentGateway.Board` is a Connect unary over the per-container Unix socket, so a result
+// is the awaited return value — no pending map, no stdin pump. Cancellation is NOT plumbed
+// (an aborted turn's in-flight transition lands). No idempotency key: a transition is not
+// a create, and target-equals-current is a server-side no-op.
+
+// IDENTITY: the agent presents no token; the Runner owns which container a call arrived on
+// and the Server resolves session -> account (single-trust-domain MVP). A no-`BoardCaller`
+// deployment fails closed at the relay. The board is a single Compass-native instance, so
+// forge's free-text-`repo` threat (A8) does not arise; the envelope doubles as RelayBoardCall.
+
+// The schema builder rides the SDK's own schema stack via its `/ark` compat facade — one
+// schema implementation in the graph, so there is no two-copy mismatch to catch.
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
@@ -72,15 +54,10 @@ export class BoardBroker {
 	}
 }
 
-// The required-non-blank string idiom (comms/lifecycle/forge precedent): the
-// `.narrow` predicate is enforced at runtime but has no JSON Schema form (the
-// harness degrades the node to its unconstrained base), so the model sees a
-// bare string and learns the rule only from the description — hence the
-// description repeats it. Appended here rather than hand-written into each
-// caller's text so no call site can forget it: under omptype a `.describe()`
-// SHADOWS the narrow's `ctx.mustBe(...)` reason in the rejection message, so if
-// the rule is missing from the description it reaches the model through no
-// channel at all.
+// The required-non-blank string idiom (comms/lifecycle/forge precedent): the `.narrow`
+// predicate has no JSON Schema form, so the model sees a bare string and learns the rule
+// only from the description — hence the description repeats it. Appended here so no call
+// site can forget it (a `.describe()` SHADOWS the narrow's `mustBe` reason).
 const nonBlank = (description: string) =>
 	type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
@@ -90,11 +67,9 @@ const nonBlank = (description: string) =>
 				: `${description} (must not be blank)`,
 		);
 
-// The eight real board states, as the model-facing tokens the tool accepts.
-// ISSUE_STATE_UNSPECIFIED is deliberately absent: the closed enum rejects it at
-// schema validation, so the sentinel never reaches the wire (the server's own
-// UNSPECIFIED -> invalid_argument guard is defense-in-depth the tool never
-// triggers).
+// The eight real board states as model-facing tokens. ISSUE_STATE_UNSPECIFIED is
+// deliberately absent: the closed enum rejects it at schema validation, so the sentinel
+// never reaches the wire (the server's own UNSPECIFIED guard is defense-in-depth).
 type StateToken =
 	| "backlog"
 	| "todo"
@@ -204,11 +179,9 @@ export function createBoardTools(broker: BoardBroker): AgentTool[] {
 			);
 			if (result.result.case !== "setIssueState")
 				throw boardFailure(result, "board_set_issue_state", "setIssueState");
-			// The post-transition truth the server returns; fall back to the
-			// requested token if the response carries no issue or an enum this map
-			// does not yet name. Both branches are fixed known tokens, so the ack
-			// line needs no render guard on the state; the issue id is model-supplied
-			// and id-shaped, so it passes through `attr`.
+			// The post-transition truth the server returns; fall back to the requested
+			// token if the response carries no issue or an unnamed enum. Both branches
+			// are fixed known tokens, so only the model-supplied issue id needs `attr`.
 			const resultState = result.result.value.issue?.state;
 			const label =
 				(resultState !== undefined ? TOKEN_BY_STATE[resultState] : undefined) ??

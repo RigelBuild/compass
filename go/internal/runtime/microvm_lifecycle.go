@@ -2,22 +2,15 @@
 
 package runtime
 
-// microvm_lifecycle.go fills the eight MicroVMRuntime lifecycle verbs behind the
-// frozen WorkloadRuntime signatures (microvm.go holds the type + config +
-// SelectBackend). It is //go:build unix because the microvm package it drives
-// (Launch/GuestExec/VM/GuestClient, all //go:build unix) is unix-only; keeping
-// the bodies here lets the untagged runtime package still type-check backend
-// selection on any platform.
-//
-// The design (record §(c)/(d)/(e)) translates each container verb onto V2a's
-// boot harness plus the U3 GuestExec layer: Create allocates a session without
-// booting (mirroring `podman create`), Start boots + Health-polls + nonce-binds
-// + Provisions transactionally, Exec/ExecStreaming map the spec onto GuestExec,
-// Stop is graceful-then-kill via the guest Signal RPC, and Remove is an
-// idempotent teardown. The load-bearing invariants: the mutex-guarded session
-// table, Start's tear-down-on-any-failure posture, and ExecStreaming's waitFunc
-// constructing a *runtime.ExitStatusError for a signalled exit so the runner's
-// isDeliberateKill recognizes a deliberate kill (OQ-G/U3b).
+// Fills the eight MicroVMRuntime lifecycle verbs behind the frozen
+// WorkloadRuntime signatures. //go:build unix because the microvm package it
+// drives is unix-only; the untagged runtime package still type-checks backend
+// selection everywhere.
+
+// Each container verb maps onto V2a's boot harness + the U3 GuestExec layer:
+// Create allocates without booting, Start boots+binds+provisions
+// transactionally, Stop is graceful-then-kill, Remove is idempotent.
+// Load-bearing: the mutex-guarded session table and Start's tear-down-on-failure.
 
 import (
 	"bytes"
@@ -240,13 +233,10 @@ func (m *MicroVMRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadI
 		runtimeDir: runtimeDir,
 	}
 
-	// Reject an over-long suffixed gateway socket path before boot: the host
-	// serves the AgentGateway at GatewaySocketPath(VsockSocket, gateway port)
-	// post-Launch, and its bind is sun_path-budgeted. Failing here — one length
-	// comparison, before any VM boots — turns an over-long RunRoot into an
-	// operator-actionable error instead of a post-boot Serve failure the caller
-	// then has to tear down (record §(e)). Drop the runtime dir Create just made
-	// so a refused Create leaves nothing behind, mirroring the duplicate-name leg.
+	// Reject an over-long suffixed gateway socket path before boot: the AgentGateway
+	// bind is sun_path-budgeted. Failing here — one length check before any VM
+	// boots — turns an over-long RunRoot into an operator-actionable error, not a
+	// post-boot Serve failure. Drop the runtime dir Create just made (record §(e)).
 	if gatewayPath := microvm.GatewaySocketPath(session.cfg.VsockSocket, agentGatewayVsockPort); len(gatewayPath) > sunPathMax {
 		err := fmt.Errorf("microvm: gateway socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten --microvm-runroot or $COMPASS_MICROVM_RUNROOT", gatewayPath, len(gatewayPath), sunPathMax)
 		if rmErr := os.RemoveAll(runtimeDir); rmErr != nil {
@@ -403,11 +393,10 @@ func (m *MicroVMRuntime) Start(ctx context.Context, id WorkloadID) error {
 	}
 
 	m.mu.Lock()
-	// Re-check membership under the same lock the store happens under: a
-	// concurrent Remove may have won the race and deleted the entry while this
-	// Start was booting. If so, do NOT store onto the orphaned session (that
-	// would strand a live VMM+daemons); leave booted=true so the deferred
-	// Shutdown tears the freshly-booted VM down, and return an error.
+	// Re-check membership under the store's lock: a concurrent Remove may have
+	// deleted the entry while Start was booting. If so, do NOT store onto the
+	// orphaned session (it would strand a live VMM+daemons); leave booted=true so
+	// the deferred Shutdown tears the freshly-booted VM down, and return an error.
 	if _, ok := m.sessions[id]; !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("microvm: session %s was removed during Start", id)

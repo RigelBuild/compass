@@ -60,11 +60,9 @@ func defaultPreflightProbes() preflightProbes {
 		lookPath: exec.LookPath,
 		version: func(ctx context.Context, path string) (string, error) {
 			// CombinedOutput (not Output): a preflight must not miss a --version
-			// a tool prints to stderr. hostcheck.FirstLine takes the first line,
-			// and the trio all print --version as their first stdout line, so
-			// the shared DecideVersion agrees with compass-stack's install-time
-			// gate (which uses Output) for a well-behaved trio; capturing stderr
-			// here only widens what this startup gate can catch.
+			// a tool prints to stderr. The trio print --version as their first
+			// stdout line, so DecideVersion still agrees with the install-time
+			// gate; capturing stderr only widens what this startup gate catches.
 			out, err := exec.CommandContext(ctx, path, "--version").CombinedOutput()
 			return string(out), err
 		},
@@ -127,11 +125,10 @@ func (m *MicroVMRuntime) verifyMicroVMSupport(ctx context.Context, probes prefli
 		return err
 	}
 
-	// 5. Subordinate id range: virtiofsd's uid/gid mapping is validated by
-	// newuidmap against the invoking user's /etc/subuid entry, so a host with
-	// no subordinate range must fail HERE with the fix named — not at the first
-	// session boot, where virtiofsd dies before binding its socket and the
-	// cause surfaces only as "waiting for daemon sockets".
+	// 5. Subordinate id range: newuidmap validates virtiofsd's mapping against
+	// the invoking user's /etc/subuid, so a host with no range must fail HERE
+	// with the fix named — not at first boot, where virtiofsd dies before
+	// binding its socket and the cause surfaces only as "waiting for sockets".
 	if err := probes.verifySubordinateIDs(); err != nil {
 		return fmt.Errorf("microvm preflight: %w", err)
 	}
@@ -180,12 +177,10 @@ func (m *MicroVMRuntime) verifyQuota(probes preflightProbes) error {
 			"volume_root", m.config.VolumeRoot, "reason", err)
 		return nil
 	}
-	// used_ratio is logged ONLY on an active bound, where its denominator is the
-	// project's own limit and its numerator the project's own usage. With no
-	// quota projected, statfs reports the whole filesystem, so the same
-	// expression would silently mean "how full is the host disk" — a different
-	// number under one key. The raw pair is logged instead, so V7 inherits a
-	// single-meaning ratio (microvm_quota_linux.go on the dual meaning).
+	// used_ratio is logged ONLY on an active bound, where its numerator/denominator
+	// are the project's own usage/limit. With no quota projected, statfs reports
+	// the whole filesystem, so the same key would silently mean "host disk fill".
+	// The raw pair is logged instead, so V7 inherits a single-meaning ratio.
 	slog.Info("microvm preflight: session-volume project quota is active",
 		"volume_root", m.config.VolumeRoot,
 		"limit_bytes", reading.LimitBytes,

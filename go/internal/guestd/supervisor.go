@@ -79,11 +79,10 @@ func runNftScript(ctx context.Context, script string) error {
 	ctx, cancel := context.WithTimeout(ctx, armTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", script) //nolint:gosec // script is the host-delivered egress ruleset run as guest root by design — this IS the arm surface (§(d))
-	// guestd is PID 1 with no PATH, and the arm is a spawn path SEPARATE from
-	// exec children (§(d)), so it never inherits mergeEnv's PATH floor. Set the
-	// guest rootfs PATH explicitly so the script's bare nft/getent/awk (linked
-	// under /bin, guest-image/default.nix) resolve; without it every microVM
-	// Start fails "nft: command not found" — the §(e) total-backend outage.
+	// guestd is PID 1 with no PATH, and the arm is a spawn path SEPARATE from exec
+	// children (§(d)), so it never inherits mergeEnv's PATH floor. Set the guest
+	// rootfs PATH explicitly so the script's bare nft/getent/awk resolve; without
+	// it every microVM Start fails "nft: command not found" — the §(e) outage.
 	cmd.Env = []string{"PATH=" + defaultGuestPATH}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -254,14 +253,10 @@ func (s *supervisor) Provision(
 				fmt.Errorf("arming nft egress: %w", err))
 		}
 	}
-	// Start the unix→vsock forwarder before opening the gate (§(d)): after the
-	// V3 arm, before the stateProvisioned transition, under s.mu. A configured
-	// gateway port binds /run/compass/agent.sock and forwards it to the host
-	// gateway; a listen/chown failure returns CodeInternal and leaves the state
-	// at stateReady (exec refused, the V3 fail-closed shape). A zero port (the
-	// cmdline key was absent) starts no proxy and Provision is otherwise
-	// unchanged. The forwarder is bound to serveCtx, not the per-request ctx, so
-	// it outlives this RPC.
+	// Start the unix→vsock forwarder before opening the gate (§(d)): after the V3
+	// arm, before stateProvisioned, under s.mu. A configured gateway port binds
+	// /run/compass/agent.sock and forwards to the host gateway; a listen/chown
+	// failure leaves state at stateReady (fail-closed). Bound to serveCtx.
 	if s.gatewayPort != 0 {
 		if s.serveCtx == nil {
 			return nil, connect.NewError(connect.CodeInternal,
@@ -402,11 +397,9 @@ func (s *supervisor) ExecStream(
 	cmd.Stderr = &streamWriter{stream: stream, mu: &sendMu, stdout: false}
 
 	// Acquire the shared send mutex BEFORE cmd.Start so the child's stdout/stderr
-	// copier goroutines (spawned by cmd.Start, Sending through this same mutex)
-	// cannot emit an output frame ahead of the mandatory first ExecStarted frame
-	// (§(b): the response stream is ExecStarted first). A fast child (e.g. `echo`)
-	// can otherwise produce output and win the mutex before this goroutine sends
-	// Started; streamWriter.Write blocks on this mutex until Started has gone out.
+	// copier goroutines cannot emit an output frame ahead of the mandatory first
+	// ExecStarted frame (§(b)). A fast child (e.g. `echo`) can otherwise win the
+	// mutex first; streamWriter.Write blocks on it until Started has gone out.
 	sendMu.Lock()
 	if err := cmd.Start(); err != nil {
 		sendMu.Unlock()
@@ -428,13 +421,10 @@ func (s *supervisor) ExecStream(
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("sending started frame: %w", startErr))
 	}
 
-	// Receive loop: stdin frames feed the child's stdin, StdinClose half-closes
-	// it. A clean half-close (io.EOF after the client's CloseRequest) ends the
-	// loop without killing the child — a one-shot-style stream that sent all its
-	// input still runs to completion. Any OTHER receive error is a broken stream
-	// (host disconnect / ctx cancel): close disconnected so the wait select
-	// kills and reaps the bound child, since connect does not reliably cancel
-	// the server ctx on a client-side cancel over this transport.
+	// Receive loop: stdin frames feed the child's stdin, StdinClose half-closes it.
+	// A clean half-close ends the loop without killing the child. Any OTHER receive
+	// error is a broken stream: close disconnected so the wait select kills and reaps
+	// the child (connect does not reliably cancel the server ctx on client cancel).
 	disconnected := make(chan struct{})
 	go func() {
 		defer close(disconnected)
@@ -443,10 +433,9 @@ func (s *supervisor) ExecStream(
 			if rerr != nil {
 				if errors.Is(rerr, io.EOF) {
 					// Clean end of the request stream (client CloseRequest):
-					// no more stdin, so close the child's stdin pipe (a
-					// stdin-reading child now sees EOF). This is NOT a broken
-					// stream, so do not trigger the disconnect kill — wait until
-					// the stream actually breaks or the child exits.
+					// close the child's stdin pipe so a stdin-reading child sees
+					// EOF. NOT a broken stream, so do not trigger the disconnect
+					// kill — wait until the stream breaks or the child exits.
 					_ = stdin.Close()
 					<-ctx.Done()
 				}

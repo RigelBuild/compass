@@ -3,10 +3,9 @@
 package guestd
 
 // Hermetic suite for the pure network-config helpers: renderResolvConf (lease
-// DNS → /etc/resolv.conf text) and leaseToConfig (a DHCPv4 ACK → the applied
-// addr/gw/dns/search). Both are the socket-free half of net bringup (§(d) step
-// 2) — the socket exchange is T4's. leaseToConfig is driven against hand-built
-// dhcpv4.DHCPv4 ACKs, no real DHCP server.
+// DNS -> /etc/resolv.conf text) and leaseToConfig (a DHCPv4 ACK -> the applied
+// addr/gw/dns/search), the socket-free half of net bringup (§(d) step 2). Driven
+// against hand-built dhcpv4 ACKs, no real DHCP server.
 
 import (
 	"net"

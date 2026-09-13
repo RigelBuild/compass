@@ -13,25 +13,9 @@ import (
 )
 
 // preflight is the T9 host bring-up gate: it surfaces the KVM/podman/microVM and
-// secretspec-CLI prerequisites at install-time rather than at first `up`,
-// printing a legible pass/fail line per check. It is deliberately MINIMAL and a
-// thin consumer.
-//
-// DEPENDENCY HONESTY: the host-capability check logic now lives in the runtime
-// lane's internal/hostcheck (the /dev/kvm probe, the version-floor comparator,
-// the per-check verdicts). The runtime lane also defines VerifyMicroVMSupport
-// (go/internal/runtime/microvm_preflight.go) to enforce the same floors as a
-// hard-fail Runner-startup gate; its wiring into Runner selection lands in a
-// later V5 wave. This command is a thin consumer of that shared core — no
-// longer a placeholder to be replaced — and keeps only what is stack-specific:
-// the podman rootless-capability check (postgres runs as a rootless container)
-// and the print/exit surface. It also reports the secretspec CLI: the secrets
-// WRITE path (internal/secrets SpecResolver.Set) spawns it by name, so it is an
-// install-time dependency the operator must have even though boot, which reads
-// through the SDK, never touches it — surfacing it here is what turns "the first
-// admin write fails" into an install-time line. That is one more entry in this
-// same list, not a new abstraction. Do not grow this into a capability
-// framework.
+// secretspec-CLI prerequisites at install-time rather than at first `up`. A thin
+// consumer of the runtime lane's internal/hostcheck core, keeping only the
+// stack-specific podman-rootless and secretspec-CLI checks. Do not grow it.
 
 // podmanBinary is the podman executable name, resolved on PATH. It is the check
 // name and the LookPath target, so it is named once here (goconst).

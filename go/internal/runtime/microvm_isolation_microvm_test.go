@@ -2,39 +2,26 @@
 
 package runtime
 
-// The KVM-gated virtio-fs ISOLATION suite (record §Plan V6 Test cycle). This is
-// the slice that PROVES inter-tenant isolation rather than exercising a happy
-// path, so every assertion here drives a real MicroVMRuntime through
-// Create→Start and then execs inside the live guest to ATTEMPT an escape,
-// asserting confinement from both sides of the boundary (what the guest can
-// name, and what actually landed on the host).
-//
-// Every test calls microvmtest.Require(t) FIRST, mirroring
-// microvm_lifecycle_microvm_test.go: on a KVM-less box it SKIPS, and under
-// COMPASS_REQUIRE_MICROVM=1 that skip becomes a hard failure — so a green run
-// proves the suite really booted guests.
-//
-// The three legs, and what each actually proves:
-//
-//  1. Path traversal (TestMicroVMVolumeTraversalConfined) — the guest attempts
-//     to read and write outside its volume via `..`, an absolute host path, and
-//     a symlink planted inside the volume pointing at a host path outside it.
-//     Confinement is asserted on BOTH sides: the guest cannot read the outside
-//     canary's content, and the host-side outside tree is byte-for-byte
-//     unchanged afterwards. The host-side half is the load-bearing one — a guest
-//     read failing could be a missing file, but an unchanged host tree after a
-//     write attempt is confinement.
-//  2. Cross-session unreachability (TestMicroVMCrossSessionVolumeUnreachable) —
-//     two sessions boot with distinct volumes; guest A cannot read B's secret by
-//     any path, and nothing A writes appears in B's host-side volume.
-//  3. Host-ownership parity (TestMicroVMHostOwnershipParity) — a file the guest
-//     agent creates on the shared volume must land with the SAME host-side
-//     (uid,gid) the podman `--userns=keep-id:uid=N,gid=N` path produces: the
-//     INVOKING host user, not the in-guest agent id (podman.go createArgs).
-//     This is the test that decided whether launch.go needed virtiofsd uid/gid
-//     translation (record §(d)) — see parityTargetUID/GID below.
-//
-// The quota-enforcement-in-guest leg is gated separately and skips honestly; see
+// The KVM-gated virtio-fs ISOLATION suite (V6). Proves inter-tenant isolation:
+// every assertion drives a real MicroVMRuntime through Create→Start, execs
+// inside the live guest to ATTEMPT an escape, and asserts confinement from both
+// sides (what the guest can name, what landed on the host).
+
+// Every test calls microvmtest.Require(t) first: KVM-less boxes SKIP, and
+// COMPASS_REQUIRE_MICROVM=1 turns the skip into a hard failure, so a green run
+// really booted guests.
+
+// Leg 1, path traversal: the guest tries `..`, absolute paths, and an
+// inside-volume symlink; confinement asserted on both sides (the host-side
+// unchanged tree is load-bearing, since a guest read failure could be a missing
+// file).
+
+// Leg 2, cross-session unreachability: guest A cannot reach B's volume by any
+// path. Leg 3, host-ownership parity: a guest-created file lands with the
+// INVOKING host user's (uid,gid), matching podman --userns=keep-id (record §(d))
+// — this decided whether launch.go needed virtiofsd uid/gid translation.
+
+// The quota-enforcement-in-guest leg is gated separately; see
 // TestMicroVMVolumeQuotaEnforcedInGuest.
 
 import (
@@ -314,11 +301,10 @@ func TestMicroVMVolumeTraversalConfined(t *testing.T) {
 		t.Fatalf("planting host canary: %v", err)
 	}
 
-	// A symlink INSIDE the volume pointing at the outside host path. This is the
-	// sharpest probe: virtio-fs passes the link through verbatim, so if the
-	// guest could resolve it against the host's namespace the escape would
-	// succeed. It cannot — the target is resolved inside the guest's own mount
-	// namespace, where that path does not exist.
+	// A symlink INSIDE the volume pointing at the outside host path — the
+	// sharpest probe: virtio-fs passes the link through verbatim, but the target
+	// resolves inside the guest's own mount namespace, where that path does not
+	// exist, so the escape fails.
 	if err := os.Symlink(canary, filepath.Join(volume, "escape-link")); err != nil {
 		t.Fatalf("planting escape symlink: %v", err)
 	}
@@ -421,11 +407,9 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 	}
 
 	// Every way A could try to name B's volume. Each row's success condition
-	// matches WHAT ITS COMMAND EMITS, which the secret-body check alone does
-	// not: `ls` prints names and never file content, so a Contains(secret) on
-	// an `ls` is unconditionally true and proves nothing whether B's volume is
-	// reachable or not. Every row also asserts the NON-ZERO EXIT the traversal
-	// leg asserts — a confined command must fail, not merely print nothing.
+	// matches WHAT ITS COMMAND EMITS: `ls` prints names not content, so a
+	// Contains(secret) on an `ls` is unconditionally true. Every row also asserts
+	// the NON-ZERO EXIT — a confined command must fail, not merely print nothing.
 	attempts := map[string]crossSessionAttempt{
 		"B's absolute host volume path": {
 			script: "cat " + filepath.Join(volumeB, "host-secret.txt") + " " + filepath.Join(volumeB, "guest-secret.txt"),
@@ -444,22 +428,14 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 			script: "ln -sf " + volumeB + " /workspace/b-link && cat /workspace/b-link/host-secret.txt",
 		},
 		"a content sweep of every tree A can name": {
-			// NOT `grep -r`: the guest image ships no grep (and no find), so
-			// that row exited 127 without ever searching — vacuous twice over,
-			// once for printing paths instead of content and once for never
-			// running. This is the same sweep in what the guest DOES have
-			// (bash globstar + awk), and sweepScript keeps grep's exit
-			// semantics: non-zero when nothing matched.
-			//
-			// "/" is deliberately NOT a root. The discriminating question is
-			// whether B's volume path is REACHABLE from A, not whether the
-			// read-only nix store holds the needle — and sweeping "/" pulled
-			// the guest's entire ~21.8k-file rootfs through the scan, which
-			// (even batched) buys nothing this targeted list plus B's own
-			// volume parent does not already answer. The parent of volume B is
-			// included explicitly so the one tree that COULD hold the secret is
-			// definitely walked; a sweep that skipped it would be the vacuous
-			// pass this row exists to avoid.
+			// NOT `grep -r`: the guest ships no grep/find, so that row exited 127
+			// without searching. This sweeps in what the guest has (bash globstar
+			// + awk), keeping grep's exit semantics.
+
+			// "/" is deliberately NOT a root: the question is whether B's volume
+			// is REACHABLE, not whether the nix store holds the needle. B's volume
+			// parent is included explicitly so the one tree that could hold the
+			// secret is walked.
 			script: sweepScript(tenantBSecret,
 				"/tmp /mnt /media /run /var /home /workspace "+filepath.Dir(volumeB)),
 			forbid: []string{volumeB},
@@ -699,15 +675,11 @@ func TestMicroVMVolumeQuotaEnforcedInGuest(t *testing.T) {
 
 	// Write past the byte bound: dd until it fails. The guest MUST hit
 	// ENOSPC/EDQUOT rather than consuming the whole host filesystem.
-	//
-	// Only the REMAINING HEADROOM plus a margin, never the whole limit. The old
-	// `LimitBytes/MiB + 64` wrote the entire project limit again on top of
-	// whatever was already used, so against a realistically-sized operator quota
-	// (10GiB) it was a 10GiB guest write over virtio-fs — past the 120s per-exec
-	// cap, which surfaces as a transport TimeoutError (fatal at guestSh) instead
-	// of the ENOSPC/EDQUOT verdict this leg exists to prove. Headroom+margin
-	// crosses the bound by exactly the same amount while writing only what is
-	// actually needed to cross it.
+
+	// Only the REMAINING HEADROOM plus a margin, never the whole limit: the old
+	// `LimitBytes/MiB + 64` wrote the whole project limit again, which against a
+	// 10GiB quota is a 10GiB write past the 120s per-exec cap — a transport
+	// TimeoutError instead of the ENOSPC/EDQUOT verdict this leg proves.
 	fillMiB := (before.LimitBytes-before.UsedBytes)/(1<<20) + quotaFillMarginMiB
 	if fillMiB > quotaFillCeilingMiB {
 		t.Skipf("the quota'd volume %s has %d MiB of headroom, over this leg's %d MiB ceiling: crossing the "+

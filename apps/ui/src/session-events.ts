@@ -1,11 +1,7 @@
-// Typed session model + the pure fold that turns an ordered SessionEvent stream
-// into render-ready TraceItems (design: architecture-lineage).
-//
-// A session is an ordered stream of typed SessionEvents (assistant/thinking text
-// deltas, tool calls + updates, plans, notices). `foldSession` reduces that raw
-// stream into the TraceItem[] a renderer walks: streamed text deltas coalesce,
-// tool updates fold into their originating call, and a later plan supersedes an
-// earlier one. The fold is pure — it never mutates the input events.
+// Typed session model + the pure fold that turns an ordered SessionEvent stream into
+// render-ready TraceItems (design: architecture-lineage). `foldSession` reduces the raw
+// stream (text deltas, tool calls + updates, plans, notices) into TraceItem[]: text deltas
+// coalesce, tool updates fold into their call, a later plan supersedes. Pure, never mutates.
 
 /** Lifecycle of a tool call, latest-wins as updates arrive. */
 export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";

@@ -1,20 +1,9 @@
 package compute
 
-// This file is the fail-closed routing-policy shell (Global Constraint 3). Route
-// is a pure function — separate from any backend, mirroring how the podman argv
-// builders are split out for hermetic testing — that decides the ResourceClass
-// an op runs at. Two invariants are load-bearing security properties, not
-// conveniences:
-//
-//   - Fail closed. An unknown or unclassified op escalates to the HEAVY path
-//     (ClassBurst), never the cheap one. The routing verdict must never default
-//     to the most-privileged-but-cheapest boundary for an op the classifier did
-//     not recognize; the most-isolated, most-provisioned path is the safe
-//     default when in doubt.
-//   - The agent hint is upgrade-only. An op may carry an agent-supplied hint,
-//     but the hint may only RAISE the class (Inner -> Resized -> Burst); a hint
-//     asking for a cheaper class than policy chose is refused. The agent can
-//     never lower isolation or sizing below what Runner policy assigns.
+// The fail-closed routing-policy shell (Global Constraint 3). Route is a pure
+// function deciding the ResourceClass an op runs at. Two load-bearing invariants:
+// (1) Fail closed — an unknown op escalates to the HEAVY path (ClassBurst), never
+// the cheap one. (2) The agent hint is upgrade-only — it may only RAISE the class.
 
 // OpClass is the Runner classifier's verdict for an op — the input to the
 // routing policy. Its zero value is OpUnknown, so an op that was never
@@ -45,13 +34,10 @@ const (
 // the recognized classes and is never cheaper than policy chose.
 func Route(op OpClass, hint ResourceClass) ResourceClass {
 	base := baseClass(op)
-	// Upgrade-only, within the recognized range: a hint above the floor raises
-	// the class, but only when it names a real class (<= ClassBurst, the
-	// heaviest). An out-of-range or garbage hint is refused exactly as a
-	// below-floor hint is — it collapses to the policy floor rather than
-	// propagating an unrecognized class. So Route's verdict is always one of the
-	// recognized classes, and a malformed hint can neither lower isolation nor
-	// escape the class set.
+	// Upgrade-only, within the recognized range: a hint above the floor raises the
+	// class, but only when it names a real class (<= ClassBurst). An out-of-range or
+	// garbage hint collapses to the policy floor, so Route's verdict is always a
+	// recognized class and a malformed hint can neither lower isolation nor escape it.
 	if hint > base && hint <= ClassBurst {
 		return hint
 	}

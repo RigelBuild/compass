@@ -143,16 +143,10 @@ func (f *Fabric) Events(ctx context.Context) (<-chan RunnerEvent, error) {
 func (f *Fabric) pumpRunnerEvents(ctx context.Context, sub *nats.Subscription, raw <-chan *nats.Msg, out chan<- RunnerEvent) {
 	defer close(out)
 	defer func() {
-		// Drain rather than Unsubscribe: it lets NATS deliver what it has
-		// already accepted for this subject before removing the interest,
-		// mirroring Close's connection-level drain.
-		//
-		// An already-closed connection is the expected shutdown outcome, not a
-		// failure: Close closes f.teardown before nc.Drain(), and the
-		// connection-level drain reclaims every subscription itself. If that
-		// finishes before this descheduled goroutine reaches the defer,
-		// sub.Drain() returns ErrConnectionClosed for a subscription that WAS
-		// drained — so warning on it would be a false alarm on a clean path.
+		// Drain rather than Unsubscribe: NATS delivers what it already accepted before
+		// removing the interest, mirroring Close's connection-level drain. Close closes
+		// f.teardown before nc.Drain(), so a later sub.Drain() reporting
+		// ErrConnectionClosed is a subscription that WAS drained — not a real failure.
 		if err := sub.Drain(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
 			f.log.WarnContext(ctx, "fabric: draining the runner-events subscription failed",
 				"subject", sub.Subject, "error", err)

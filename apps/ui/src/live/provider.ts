@@ -1,17 +1,7 @@
-// The connection-provider seam: the one place boot mode differs. The UI above
-// the transport boundary never knows whether it is the browser dev build or the
-// native desktop shell — it asks a ConnectionProvider to `resolve()` a
-// connection, and the difference is confined to which provider boot installs and
-// what transport `fetch` that provider carries (design §A1).
-//
-// The browser dev path keeps the env provider unchanged: it wraps
-// `connectionFromEnv()` (the Vite-env resolver, required-var throw and all) and
-// leaves `fetchImpl` undefined so the transport uses the platform `fetch`. The
-// native app supplies its own provider at boot — one that produces a
-// shell-provided Connection plus a `fetchImpl` that tunnels gRPC-Web over the
-// shell IPC — with NO shell/Wails dependency reaching this module or anything
-// above the transport boundary. `createLiveClients` and everything above it are
-// untouched: they consume a resolved connection, not a mode.
+// The connection-provider seam: the one place boot mode differs. The UI above the transport
+// boundary never knows browser-dev from native shell — it asks a ConnectionProvider to
+// `resolve()`. The browser path wraps `connectionFromEnv()` (platform `fetch`); the native
+// app supplies a shell Connection + a gRPC-Web-over-IPC `fetchImpl`, no Wails dep reaching here.
 
 import { type Connection, connectionFromEnv } from "./connection";
 

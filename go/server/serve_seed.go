@@ -16,13 +16,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// The root supervisor seeded on first launch. A fixed handle so the empty-tree
-// gate and CreateAgent's unique-handle constraint together make the seed
-// idempotent; role "supervisor" selects config/prompts/supervisor/SYSTEM.md as
-// the container's block-0 prompt (RIG-1732), which is what makes the seeded root
-// a real tree supervisor rather than a default agent. Under the Manager role
-// taxonomy the tree root is a supervisor (owns the whole tree: intake,
-// incidents, broadcasts, first contact), not a leaf manager (RIG-3066).
+// The root supervisor seeded on first launch. A fixed handle makes the seed
+// idempotent (empty-tree gate + unique-handle constraint); role "supervisor"
+// selects config/prompts/supervisor/SYSTEM.md as block-0 (RIG-1732). The tree root
+// is a supervisor (owns intake, incidents, broadcasts), not a leaf manager (RIG-3066).
 const (
 	rootSupervisorHandle      = "supervisor"
 	rootSupervisorDisplayName = "Supervisor"
@@ -110,14 +107,10 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	supervisor, err := st.AgentByHandle(ctx, adminID, rootSupervisorHandle)
 	switch {
 	case err == nil:
-		// Exists already (prior boot). The find half resolves by a globally
-		// unique handle, so assert the found agent is actually THIS admin's root
-		// before re-driving it — mirroring the create half's owner+root invariant
-		// (createRootSupervisor is empty-tree-gated and admin-scoped). Without
-		// this, a non-admin-owned or non-root agent that happened to hold the
-		// reserved handle would be auto-provisioned and started. Defensive under
-		// the single-admin MVP, but it keeps the create half's "adopts nothing it
-		// did not seed" contract honest on the find half too.
+		// Exists already (prior boot). The find half resolves by a globally unique
+		// handle, so assert the found agent is actually THIS admin's root before
+		// re-driving it — else a non-admin-owned agent holding the reserved handle
+		// would be auto-provisioned. Keeps the "adopts nothing it did not seed" contract.
 		if supervisor.Agent == nil || supervisor.Agent.OwnerUserID != adminID || supervisor.Agent.ParentAgentID != "" {
 			log.Error("root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
 				"agent_account_id", supervisor.ID)

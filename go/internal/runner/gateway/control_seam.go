@@ -2,25 +2,10 @@
 
 package gateway
 
-// control_seam.go is the boundary between telemetry ingest and the control
-// lane. Two AgentFrame variants that arrive on the Publish stream are NOT
-// telemetry to relay upstream — they are control-plane acks the agent sends
-// back (transport-consolidation record, ack routing):
-//
-//   - ReplayCompleteAck — the agent's replay-barrier ack (OQ-4(i)): on receipt
-//     the Runner releases the live control ops held behind the restart replay
-//     barrier.
-//   - ControlAck — the agent's selective apply-ack (amended OQ-6): a contiguous
-//     cursor (highest contiguously-applied control_seq) plus a bounded set of
-//     seqs applied out of order above it. The Runner retires retained ops up to
-//     the cursor and drops the individually-acked ones.
-//
-// The telemetry-ingest path routes these to the control lane instead of
-// forwarding them; the control lane owns the retention/barrier state behind this
-// interface. Keeping the seam an interface lets telemetry ingest build and test
-// independently of the control lane (a fake router records the routed acks) and
-// lets the control-lane owner inject the real implementation without changing
-// the ingest path.
+// The boundary between telemetry ingest and the control lane. Two AgentFrame
+// variants on the Publish stream — ReplayCompleteAck and ControlAck — are NOT
+// telemetry: they are control-plane acks routed to the control lane, never
+// relayed upstream. The lane owns the retention/barrier state behind this seam.
 
 // ControlRouter is the control lane as the ack-routing path sees it. The control
 // lane's ControlSender implementation satisfies it; until the control lane

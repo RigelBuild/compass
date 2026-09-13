@@ -163,11 +163,9 @@ export function installKeymap(
 		}
 	};
 
-	// Resolve a set of matching rows through the ratified three tiers (active
-	// group → scoped → global). Factored so a single chord and a completed
-	// leader sequence run byte-identical resolution — the completion path passes
-	// the sequence-matched rows, the single-chord path passes the single-chord
-	// rows, and both flow through here.
+	// Resolve a set of matching rows through the ratified three tiers (active group → scoped
+	// → global). Factored so a single chord and a completed leader sequence run byte-identical
+	// resolution — each path passes its own matched rows and both flow through here.
 	const resolve = (
 		matching: readonly KeymapEntry[],
 		event: KeyboardEvent,
@@ -202,12 +200,10 @@ export function installKeymap(
 			}
 		}
 
-		// Tier 3 — global, scope-gated (RIG-2529). A window-global unscoped
-		// entry fires anywhere its COMMAND's scope allows: a `scope:'global'`
-		// command runs from any target; a zone-scoped command runs only while
-		// its zone is active. An unregistered global command does not swallow
-		// the event, and neither does a scoped command whose zone is inactive —
-		// both fall out without preventDefault, so native activation survives.
+		// Tier 3 — global, scope-gated (RIG-2529). A window-global unscoped entry fires
+		// anywhere its COMMAND's scope allows: `scope:'global'` from any target, a zone-scoped
+		// command only while its zone is active. An unregistered global, or a scoped command
+		// whose zone is inactive, falls out without preventDefault so native activation survives.
 		const globalEntry = matching.find((entry) => entry.when === undefined);
 		if (globalEntry) {
 			const command = registry.get(globalEntry.commandId);
@@ -222,11 +218,9 @@ export function installKeymap(
 		// Step 1 — normalize.
 		const chord = eventToChord(event, platform);
 
-		// Step 2 — editable-target guard FIRST, before any leader logic and
-		// before the empty-matching return, but only for modifier-less keys. A
-		// bare key in a text field / native <select> / ARIA widget must type,
-		// never arm, complete, or fire. Mod/Ctrl/Alt chords are global and stay
-		// unguarded (and, via the completion fall-through below, still disarm).
+		// Step 2 — editable-target guard FIRST, before any leader logic and the empty-matching
+		// return, but only for modifier-less keys. A bare key in a text field / native <select>
+		// / ARIA widget must type, never arm/complete/fire. Mod/Ctrl/Alt chords stay unguarded.
 		const hasCommandModifier = event.metaKey || event.ctrlKey || event.altKey;
 		if (!hasCommandModifier && isEditableTarget(event.target)) return;
 
@@ -266,11 +260,9 @@ export function installKeymap(
 			// repeated leader re-arms and any other key resolves on its own).
 		}
 
-		// Step 4 — arming. No leader pending (or the sequence fell through): if
-		// the normalized chord is a table-derived leader prefix (which, per the
-		// A2 authoring rule, has no single-chord row of its own) and the key is
-		// not an auto-repeat, arm and consume. Modifier chords never arm; the
-		// editable guard already returned for interactive targets.
+		// Step 4 — arming. No leader pending (or the sequence fell through): if the chord is
+		// a table-derived leader prefix (which per the A2 rule has no single-chord row) and
+		// not an auto-repeat, arm and consume. Modifier chords never arm.
 		if (!hasCommandModifier && !event.repeat && leaders.has(chord)) {
 			pending = {
 				leader: chord,

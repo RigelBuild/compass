@@ -165,17 +165,14 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 	}
 	serveErr := steps.serve(serveCtx, port, svc)
 
-	// An RPC-driven Stop (Signal("", ...)) cancels serveCtx from inside the
-	// supervisor; ctx (the process signal context) is still live. In that case
-	// the guest is going down UNCONDITIONALLY, so guestd must power the guest
-	// off explicitly (§(d)) — a PID-1 exit would panic the kernel. The
-	// power-off is gated on rpcStop alone, NOT on a clean serveErr: a graceful
-	// drain that overran its deadline (e.g. a child that ignored SIGTERM)
-	// returns a non-nil Shutdown error, but the guest must STILL power off so
-	// the VMM observes a real shutdown within the host's timeout rather than
-	// burning the full timeout to a hard kill. A serve fault or a Unix-signal
-	// cancel (rpcStop false) returns as before, letting main exit and the host
-	// observe the dial failure.
+	// An RPC-driven Stop cancels serveCtx from inside the supervisor while ctx
+	// stays live. The guest is going down UNCONDITIONALLY, so guestd powers off
+	// explicitly (§(d)) — a PID-1 exit would panic the kernel.
+	//
+	// Gated on rpcStop alone, NOT a clean serveErr: a graceful drain that overran
+	// its deadline still returns non-nil, but the guest must STILL power off so
+	// the VMM observes a real shutdown within the host timeout. A serve fault or
+	// Unix-signal cancel returns as before, letting the host observe the failure.
 	svc.mu.Lock()
 	rpcStop := svc.rpcStop
 	svc.mu.Unlock()

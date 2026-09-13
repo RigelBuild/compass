@@ -2,21 +2,10 @@
 
 package server
 
-// The first-launch root-supervisor seed (serve_seed.go), against a real Postgres
-// and a real Runner door. The seed hangs off the hub's runner-ready hook, fired
-// when a Runner's Sessions command stream attaches — not at enroll, because the
-// stream (and so the ability to serve Provision/Start) comes up only after Enroll
-// returns. These tests drive a real fake-Runner enrollment + Sessions stream
-// (attachFakeRunner) to fire the hook through the PRODUCTION path, then assert
-// the observable outcome on the store: an agent row and a durable session
-// ownership row, not a mock expectation.
-//
-// The seed runs on the ready-hook goroutine, so each harness wraps the hook to
-// close a done channel when the seed returns: every assertion gates on that
-// completion, deterministically, never on a sleep or a poll-until-timeout. The
-// "went live" proof reads the agent_sessions ownership row StartAgentSession
-// writes (race-free once the seed has returned), not the fake Runner's in-memory
-// command tally, which the harness's attach-probe reset races.
+// The first-launch root-supervisor seed (serve_seed.go), against a real Postgres and
+// a real Runner door. The seed hangs off the hub's runner-ready hook; tests drive a
+// real fake-Runner enrollment through the PRODUCTION path, then assert the store
+// outcome (agent row + durable ownership row), gating on seed completion, never a sleep.
 
 import (
 	"context"

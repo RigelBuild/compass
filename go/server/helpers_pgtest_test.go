@@ -3,12 +3,9 @@
 package server
 
 // Test scaffolding used only by the store-gated serve tests (serve_pgtest_test.go,
-// behind the `pgtest` tag): the socket-readiness gate and the two Unix-socket
-// connect clients. These live behind the same tag as their only callers so the
-// default `go test ./...` lane — which does not compile serve_pgtest_test.go —
-// does not see them as unused (golangci-lint runs on the default build tags).
-// They build on the tag-neutral scaffolding in helpers_test.go (h2cTransport,
-// timeAfter), which the default lane's service tests also use.
+// behind the `pgtest` tag): the socket-readiness gate and the two Unix-socket connect
+// clients. Behind the same tag as their only callers so the default lane does not see
+// them as unused. Built on the tag-neutral scaffolding in helpers_test.go.
 
 import (
 	"context"

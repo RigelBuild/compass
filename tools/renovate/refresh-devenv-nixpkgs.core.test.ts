@@ -9,11 +9,10 @@ import {
 	rewriteFlakeNixpkgsUrl,
 } from "./refresh-devenv-nixpkgs.core.ts";
 
-// Unit tests for the pure transform core of refresh-devenv-nixpkgs.ts
-// (RIG-2432): reading the inner nixpkgs rev out of devenv.lock and rewriting
-// the biome catalog pin. No nix / network / git — those shell-outs live in the
-// entry point and are exercised by the PR's own CI run. These assert the
-// parsing + rewriting that a wrong line would silently corrupt.
+// Unit tests for the pure transform core of refresh-devenv-nixpkgs.ts (RIG-2432):
+// reading the inner nixpkgs rev out of devenv.lock and rewriting the biome catalog
+// pin. No nix/network/git — those live in the entry point. These assert the
+// parsing + rewriting a wrong line would corrupt.
 
 const repoRoot = join(import.meta.dir, "..", "..");
 
@@ -64,11 +63,9 @@ describe("rewriteCatalogPin", () => {
 	const pkg = () => readFileSync(join(repoRoot, "package.json"), "utf8");
 
 	// Read a catalog pin's current value straight from the live manifest, so the
-	// idempotency assertion tracks whatever is pinned today instead of a
-	// hardcoded literal that a routine linter bump (e.g. a Renovate biome bump)
-	// would silently invalidate — turning this into a red gate on every future
-	// bump. Guards each access with in/typeof (package.json is valid JSON;
-	// parse it) rather than an inline cast.
+	// idempotency assertion tracks whatever is pinned today instead of a hardcoded
+	// literal a routine biome bump would invalidate. Guards each access with
+	// in/typeof rather than an inline cast.
 	const currentCatalogPin = (key: string): string => {
 		const parsed: unknown = JSON.parse(pkg());
 		const isObj = (v: unknown): v is Record<string, unknown> =>

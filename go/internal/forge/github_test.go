@@ -1,13 +1,9 @@
 package forge
 
 // Unit tests for the hand-rolled net/http GitHub read client, driven by a
-// stubbed http.RoundTripper (no network). Covers the T1 test cycle: JSON
-// parsing incl. UpdatedAt, conditional GET/304, the x-ratelimit budget gate,
-// pagination + HasNext + the ListIssues walk, filter->query mapping,
-// pull_request-row exclusion, StatusError mapping + the 403 disambiguation /
-// TokenSource.Invalidate rule, bearer auth + token-error propagation, the
-// malformed-header non-wedge, and ctx cancellation mid-walk.
-// context.Background() here is the test root — the sanctioned F-ttsr exemption.
+// stubbed http.RoundTripper (no network). Covers T1: JSON parsing, conditional
+// GET/304, the x-ratelimit gate, pagination + the ListIssues walk, filter->query
+// mapping, StatusError + 403 disambiguation, auth propagation, and ctx cancel.
 
 import (
 	"context"

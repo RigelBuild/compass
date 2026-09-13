@@ -1,34 +1,9 @@
 //go:build unix
 
-// The agent-comms *AsAccount family: execute one agent-originated comms
-// operation as a resolved agent account. Two callers, both in the RunnerHub
-// (internal/runnerhub), both resolving the relayed session_id to its bound
-// account first — the Runner asserts no account, the Server attributes
-// in-process here (transport design Decision #3 / OQ-2, comms-tools design T2):
-//
-//   - PostAsAccount / ListAsAccount serve RelayCommsCall — a comms call the
-//     agent made deliberately, as a tool.
-//   - CommitAgentPost / CommitAgentUpdate turn a relayed conversation FRAME (the
-//     agent's own turn, streamed out as it speaks) into a durable comms row
-//     (RIG-1364 T3). They survive only as test helpers now: their production
-//     caller (the ConversationSink write-through) was removed with the sink, so
-//     no non-test path reaches them.
-//
-// These are deliberately NOT new CommsService RPCs: an agent-initiated call
-// never reaches a network door (it rides the per-container socket to the Runner,
-// which relays over RelayCommsCall). They reuse the exact PostMessage /
-// ListMessages handler paths a human caller takes — same store calls, same D9
-// authz, same idempotency, same event fan-out — by setting the acting account on
-// the context via WithActor and delegating. So a comms call the agent makes is
-// indistinguishable downstream from one its account made by hand, and no new
-// authz code exists to drift.
-//
-// Fail-closed identity (security-critical). Every method requires a non-empty
-// resolved account and errors CodeInvalidArgument on an empty one, so a wiring
-// bug that reached here without a resolved caller can never fall through to the
-// bootstrap-admin fallback actorFromContext applies on an unattributed context
-// (comms.go:330-334): a missing actor is a hard error, never silent admin
-// attribution.
+// The agent-comms *AsAccount family: execute one agent-originated comms operation
+// as a resolved agent account (the RunnerHub resolves the relayed session_id
+// first). NOT new CommsService RPCs: they reuse the human PostMessage/ListMessages
+// paths via WithActor. Fail-closed: an empty account is a hard CodeInvalidArgument.
 package comms
 
 import (
@@ -218,11 +193,9 @@ func (c *Comms) PostAsAccountByName(
 		CreateTopic:     req.GetCreateTopic(),
 	}
 	// The delegated PostAsAccount runs defaultChannel again, but it is a no-op
-	// here: the channel id is already resolved-non-empty, so defaultChannel's
-	// empty→home fill never fires. R2 (no home default for post/ask) is enforced
-	// upstream by ChannelByNameForViewer rejecting an empty name above, NOT by
-	// this residual pass — a future refactor of PostAsAccount's home default must
-	// not reintroduce a post/ask home fallback here.
+	// here: the channel id is already resolved-non-empty, so the empty→home fill
+	// never fires. R2 (no home default for post/ask) is enforced upstream by
+	// ChannelByNameForViewer rejecting an empty name, NOT by this residual pass.
 	return c.PostAsAccount(ctx, account, resolved)
 }
 
@@ -509,16 +482,10 @@ func (c *Comms) reconcileUpdateAskIDs(ctx context.Context, id store.MessageID, b
 			continue
 		}
 		if askIdx >= len(storedAskIDs) {
-			// A surplus ask block (beyond the stored ask count) has no stored
-			// counterpart to reconcile against. An UPDATE cannot legitimately
-			// introduce a new ask — a fresh ask is minted only on the POST path
-			// (mintAskIDs) — so any surplus ask is illegitimate regardless of its
-			// ask_id: an id-less one could not be answered (no minted id), and a
-			// NON-empty one is a caller-chosen id, exactly the forgery the POST
-			// path strips to prevent (askFromWire: a shared ask_id makes
-			// RespondToAsk's containment SELECT match multiple rows). Reject it
-			// here rather than passing a wire id through to the store, which only
-			// guards the empty case.
+			// A surplus ask block has no stored counterpart to reconcile, and an
+			// UPDATE cannot introduce a new ask (minted only on POST): an id-less one
+			// is unanswerable, a NON-empty one is the forgery the POST path strips (a
+			// shared ask_id matches multiple rows). Reject here.
 			return connect.NewError(connect.CodeInvalidArgument,
 				surplusAskError{block: i})
 		}

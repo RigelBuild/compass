@@ -7,13 +7,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The presence component's read side (RIG-1569 T8, design record D4). Two pure
-// reads back the server-side presence projection: the unanswered-authored-ask
-// overlay (AgentHasOpenAsk) and the shared-channel visibility predicate the
-// SubscribeComms edge scopes an AgentPresenceChanged by (SharesVisibleChannel).
-// They live beside the delivery reads (delivery_reads.go) so the whole
-// notification-delivery store surface is proven against real Postgres in the
-// pgtest-tagged files.
+// The presence component's read side (RIG-1569 T8, D4). Two pure reads back the
+// server-side presence projection: the unanswered-authored-ask overlay
+// (AgentHasOpenAsk) and the shared-channel visibility predicate SubscribeComms
+// scopes AgentPresenceChanged by (SharesVisibleChannel).
 
 // AgentHasOpenAsk reports whether agent has authored a message carrying an ask
 // block that is not yet answered — the WAITING overlay input (design.md:449-457,

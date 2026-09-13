@@ -10,31 +10,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// The manager-comms coordination-channel reconcile (RIG-1722 T5, design.md:
-// 530-592). A manager's coordination channel is auto-provisioned from the agent
-// tree's parent edges: the store's two parent-edge writers (CreateAgent,
-// ReparentAgent) invoke a store-registered hook on their own tx right after
-// writing parent_agent_id, and the closure registered here does the in-tx
-// reconcile — channel upsert + membership rows + D2 cursor seeds — all on that
-// same tx, so the coordination state commits atomically with the tree edge.
-//
-// The ChannelChanged event is emitted POST-COMMIT, best-effort (design.md:
-// 170-173, 555-556): the in-tx reconcile cannot publish (its writes are not yet
-// visible, and a rolled-back tx must publish nothing), so it records what it
-// changed into a ctx-scoped buffer that the parent-edge RPC drains and emits
-// after the store confirms the commit. A lost emit self-heals on the next
-// reconcile / D1 sweep, so a dropped event never leaves the tree edge and the
-// channel state divergent.
-//
-// IN-TX vs NEVER-ROLLS-BACK-THE-PARENT-WRITE (design.md:554 in-tx vs 581-582,
-// 591-592 never wedges report creation): NO savepoint. The reconcile runs
-// directly on the parent-edge writer's tx, and its ONLY expected failure — a
-// same-owner name collision — is resolved WITHOUT erroring, by the advisory-lock
-// + SELECT-guided suffix search in UpsertCoordinationChannelTx (a user's
-// manually-named channel is suffixed around, never adopted, never a
-// unique-violation). So normal operation cannot poison the tx; only a genuine
-// unexpected store fault returns an error, and that correctly rolls back the
-// whole parent-edge write (fail-loud beats a silently half-provisioned tree).
+// The manager-comms coordination-channel reconcile (RIG-1722 T5). A manager's
+// coordination channel is auto-provisioned in-tx from the agent tree's parent edges,
+// atomic with the edge; ChannelChanged is emitted POST-COMMIT best-effort (a lost
+// emit self-heals on the next sweep). A name collision suffixes without erroring.
 
 // coordChange is one coordination channel the in-tx reconcile touched, buffered
 // for the post-commit ChannelChanged emit: the channel id to re-read and the

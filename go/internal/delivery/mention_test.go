@@ -2,13 +2,10 @@
 
 package delivery
 
-// The mention→steer routing acceptance cases (RIG-1569 T7, design record D5,
-// design.md:507-562, 848-855), RED-first. Each drives the consumer through the
-// real events bus + hand-written fakes and gates on the recorder's observed
-// dispatches (op-kind: steer vs deliver) — never a sleep, never a retry
-// (rule://no-retries). context.Background() is the test root
-// (rule://go-thread-context exemption for _test.go); it is threaded into Run via
-// startConsumer and never re-rooted below.
+// The mention→steer routing acceptance cases (RIG-1569 T7, design record D5).
+// Each drives the consumer through the real events bus + hand-written fakes and
+// gates on the recorder's observed dispatches (steer vs deliver) — never a sleep,
+// never a retry (rule://no-retries).
 
 import (
 	"testing"
@@ -118,11 +115,10 @@ func TestNonMemberMentionIsNoop(t *testing.T) {
 	}
 }
 
-// Case 4 (design.md:849-850): the author never steers itself — neither via a
-// self-mention of its own handle NOR via a reserved ping (@agents) that would
-// otherwise expand to include it. The author is live, so a leak would be
-// observable as a dispatch to its session; there is none. Another live member
-// mentioned by @agents does get a steer.
+// Case 4: the author never steers itself — not via a self-mention nor via a
+// reserved ping (@agents) that would expand to include it. The author is live, so
+// a leak would show as a dispatch to its session; there is none. Another live
+// member mentioned by @agents does get a steer.
 func TestSelfMentionAndReservedSelfNoop(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -156,12 +152,10 @@ func TestSelfMentionAndReservedSelfNoop(t *testing.T) {
 	}
 }
 
-// Case 5 (design.md:850-851): @agents expands to the channel's agent members
-// ONLY, author excluded. Two live agent members (both distinct from the author)
-// each get a steer; the author — itself an agent member — is excluded by the
-// ChannelAgentMembers query. A human member (no agent session) is never on this
-// path (structural: the fake's member set holds only agents, mirroring the JOIN
-// to agent_accounts).
+// Case 5: @agents expands to the channel's agent members ONLY, author excluded.
+// Two live agent members (distinct from the author) each get a steer; the author
+// — itself an agent member — is excluded by ChannelAgentMembers. A human member
+// is never on this path (the fake's member set holds only agents).
 func TestReservedAgentsExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -222,11 +216,10 @@ func TestMentionedAgentNoLiveSessionSkipped(t *testing.T) {
 	}
 }
 
-// Case 7 (design.md:852-853): the steer op carries the mentioned message — assert
-// op-kind = steer and the message id matches. The ack-path/above-set cursor
-// arithmetic is T2's proven behavior (delivery_cursors_test.go Case 3 gap-fill +
-// Case 4 self-post: the ack arm is message-id-keyed and blind to deliver-vs-steer),
-// so T7 asserts op-kind + message id ONLY, never cursor state.
+// Case 7: the steer op carries the mentioned message — assert op-kind = steer and
+// the message id matches. Cursor arithmetic is T2's proven behavior (the ack arm
+// is message-id-keyed and blind to deliver-vs-steer), so T7 asserts op-kind +
+// message id ONLY, never cursor state.
 func TestSteerCarriesMessage(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -251,13 +244,10 @@ func TestSteerCarriesMessage(t *testing.T) {
 	}
 }
 
-// RIG-2486 T1: the author's handle is denormalized onto BOTH the steer op (to a
-// mentioned member) and the deliver op (to a plain subscriber), resolved once
-// server-side via GetAccount from the message's author_account_id. The agent
-// reads it off the control to emit the SessionInjection observation's
-// from_handle without a per-injection roster lookup. RED before the build sites
-// populated FromHandle: both ops carried an empty from_handle, so the handle
-// assertions failed.
+// RIG-2486 T1: the author's handle is denormalized onto BOTH the steer and deliver
+// ops, resolved once via GetAccount from author_account_id. The agent emits
+// from_handle off the control without a roster lookup. RED before the build sites
+// populated FromHandle: both ops carried an empty from_handle.
 func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -314,13 +304,10 @@ func TestFromHandleMissDeliversWithEmptyHandle(t *testing.T) {
 	}
 }
 
-// RIG-2956 T0: the source channel name AND topic name are denormalized onto BOTH
-// the steer op (to a mentioned member) and the deliver op (to a plain
-// subscriber), resolved once server-side via TopicChannelNames from the
-// message's topic_id. The agent reads them off the control to render
-// "Channel <name> › topic <name>:" without a per-injection roster lookup, the
-// same denorm posture as from_handle. RED before the wrap sites populated
-// ChannelName/TopicName: both ops carried empty names.
+// RIG-2956 T0: the source channel + topic names are denormalized onto BOTH the
+// steer and deliver ops, resolved once via TopicChannelNames from topic_id. The
+// agent renders "Channel <name> › topic <name>:" without a roster lookup. RED
+// before the wrap sites populated the names: both ops carried empty names.
 func TestDeliverAndSteerCarrySourceChannelAndTopicNames(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -380,13 +367,10 @@ func TestSourceNameMissDeliversWithEmptyNames(t *testing.T) {
 	}
 }
 
-// Case 8 (design.md:853-855): a mention absent from the initial MessagePosted
-// block set but streamed in via a later store-grow still steers at the author's
-// settle edge. The message is HELD while the author streams (no mention yet); the
-// store then grows to add the `@mention` block; the author's settle fires the
-// held routing from the SETTLED (grown) blocks. Mirrors
-// TestAgentAuthoredHeldUntilSettle (settle machinery) +
-// TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks (grown-block re-read).
+// Case 8: a mention absent from the initial MessagePosted block set but streamed in
+// via a later store-grow still steers at the author's settle edge. The message is
+// HELD while the author streams; the store grows to add the `@mention` block; the
+// author's settle fires the held routing from the settled blocks.
 func TestStreamedMentionAtSettleEdgeSteers(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -424,12 +408,10 @@ func TestStreamedMentionAtSettleEdgeSteers(t *testing.T) {
 	}
 }
 
-// Case 9 (design.md:507-562): a `@users` reserved ping is a no-op on the steer
-// path — it expands to human members only (no agent session to interrupt), so no
-// agent member is steered. Two live subscribed agent members each get their plain
-// DELIVER of the post; ZERO steers. This fails if `@users` were ever wired into
-// the everyone/agents expansion. (Grounding: dispatch.go:159-166 — `@users` hits
-// the reserved branch but is neither "everyone" nor "agents", so it adds nothing.)
+// Case 9: a `@users` reserved ping is a no-op on the steer path — it expands to
+// human members only (no agent session), so no agent member is steered. Two live
+// subscribed agent members each get their plain DELIVER; ZERO steers. Fails if
+// `@users` were ever wired into the everyone/agents expansion.
 func TestReservedUsersIsNoop(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -457,11 +439,10 @@ func TestReservedUsersIsNoop(t *testing.T) {
 	}
 }
 
-// Case 10 (design.md:850-851): `@everyone` expands to the channel's agent members
-// ONLY, author excluded — the sibling arm to Case 5's `@agents`. Two live agent
-// members distinct from the author each get a steer; the author — itself a member
-// — is excluded by ChannelAgentMembers. Proves the `h == "everyone"` arm of the
-// shared reserved branch (dispatch.go:160), not just `@agents`.
+// Case 10: `@everyone` expands to the channel's agent members ONLY, author
+// excluded — the sibling arm to Case 5's `@agents`. Two live agent members get a
+// steer; the author is excluded by ChannelAgentMembers. Proves the
+// `h == "everyone"` arm of the shared reserved branch, not just `@agents`.
 func TestReservedEveryoneExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -493,12 +474,10 @@ func TestReservedEveryoneExpandsToAgentMembersAuthorExcluded(t *testing.T) {
 	}
 }
 
-// Case 11 (design.md:849): a mention whose handle resolves to NOTHING (unknown or
-// human handle → store.ErrNotFound) is a no-op on the steer path. `@nobody` is not
-// seeded in reads.handles, so AgentByHandle returns ErrNotFound and the mention is
-// dropped; the one live subscribed member still gets its plain DELIVER, ZERO
-// steers. Proves the ErrNotFound → no-op arm (dispatch.go:170-171) directly; Case 3
-// only covers a resolvable-but-non-member handle.
+// Case 11: a mention whose handle resolves to NOTHING (unknown or human handle →
+// ErrNotFound) is a no-op on the steer path. `@nobody` returns ErrNotFound and is
+// dropped; the live subscribed member still gets its plain DELIVER, ZERO steers.
+// Proves the ErrNotFound → no-op arm; Case 3 covers a resolvable non-member.
 func TestUnknownHandleMentionIsNoop(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -551,19 +530,10 @@ func TestMultiBlockMentionDedupsToOneSteer(t *testing.T) {
 	}
 }
 
-// Case 13: a mentioned agent member that is NOT subscribed AND has NO live
-// session gets NO IMMEDIATE DISPATCH this cycle — no steer (no turn to interrupt)
-// and it is NOT folded into the plain deliver fan-out (it is the mentioned agent,
-// not a subscriber). Only the subscribed live member gets its deliver.
-//
-// This pins the fan-out-time contract: an offline mentioned member never receives
-// a synchronous steer or deliver. Its redelivery is the RIG-1641 owed-mention arm
-// — routeMentions records a durable owed row (out-of-sweep-set members) and wakes
-// it, and the start-edge sweep re-steers the owed mention on resume — covered in
-// offline_mention_test.go, not here. This test wires no waker (the nil-safe wake
-// is a no-op) and asserts only the dispatch layer, so it stays scoped to the
-// no-immediate-dispatch invariant. Contrast Case 6, whose mentioned-offline agent
-// WAS subscribed, so the cursor sweep is its backstop.
+// Case 13: a mentioned agent member NOT subscribed and with NO live session gets NO
+// IMMEDIATE DISPATCH this cycle — no steer and no fold into the deliver fan-out.
+// Only the subscribed live member gets its deliver. Redelivery is the RIG-1641
+// owed-mention arm (offline_mention_test.go); contrast Case 6 (offline but subscribed).
 func TestUnsubscribedOfflineMentionedMemberGetsNoImmediateDispatch(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"

@@ -1,20 +1,14 @@
 // Pure parsing and comparison for the flake nixpkgs-pin parity gate. No I/O, no
-// process exec — total functions over strings, so the interesting half is
-// unit-testable (flake-parity-core.test.ts) and the executable shell
-// (flake-parity.ts) stays thin. Mirrors the parity.ts / parity-core.ts split.
-//
-// THE INVARIANT THIS GATE ENFORCES (design record compass-distribution §T6). The
-// repo carries TWO independent nixpkgs locks: devenv.lock (the dev shell + the
-// app-bundle build) and flake.lock (the repo-root flake). The "one closure"
-// claim — that flake-built binaries are byte-for-byte the bundle-built ones —
-// holds ONLY if the two locks resolve the same nixpkgs revision, and nothing
-// enforces that by construction. A devenv pin bump silently skews flake.lock.
-// This gate reads the nixpkgs revision each lock records and fails on a
-// mismatch, so the drift is a red CI check rather than a silent divergence.
-//
-// A rev that cannot be extracted is NOT skipped — it is a failure, the same
-// false-green refusal parity-core.ts makes: a gate that cannot read one side
-// proves nothing.
+// exec — total functions over strings, so flake-parity.ts stays thin. Mirrors
+// the parity-core.ts split.
+
+// The invariant (compass-distribution §T6): the repo carries TWO independent
+// nixpkgs locks — devenv.lock and flake.lock. The "one closure" claim holds ONLY
+// if both resolve the same nixpkgs rev, and nothing enforces that. A devenv bump
+// silently skews flake.lock; this gate reads each rev and fails on a mismatch.
+
+// A rev that cannot be extracted is NOT skipped — it is a failure: a gate that
+// cannot read one side proves nothing.
 
 /** The parity verdict plus a legible one-block report of the two revs. */
 export interface FlakeParityReport {

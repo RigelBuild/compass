@@ -1,12 +1,7 @@
 // The comms partition — the pure core of the comms model (design: architecture-lineage).
-// One source of truth for how the shell organizes channels, DMs,
-// and threaded messages, read by the channel rail and the conversation view so
-// the shape can never drift between surfaces.
-//
-// Pure over injected fixtures (no fixture import, no store), so the whole model
-// is unit-testable and the same functions serve the stub today and the
-// @compass/client stream later. Mirrors comms-stub.ts, which mirrors
-// comms.proto.
+// One source of truth for how the shell organizes channels, DMs, and threaded messages,
+// read by the channel rail and conversation view so the shape can't drift. Pure over
+// injected fixtures, so it is unit-testable and serves the stub today and the stream later.
 
 import type {
 	Account,

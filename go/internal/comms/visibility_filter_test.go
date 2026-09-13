@@ -4,23 +4,18 @@ package comms
 
 // The SubscribeComms per-event D9 visibility filter (subscribe.go forwardComms +
 // visibleToActor), driven end to end through the real connect server-stream. The
-// shared bus fans every event to every subscriber, so the ONLY thing keeping a
-// non-member from seeing a private channel's traffic is this filter — these are
-// the leak regressions it defends. Each case is per-variant, because the filter
-// is per-variant: MessagePosted/MessageUpdated gate on bare membership,
-// ChannelChanged on full channel visibility (member OR SHARED-grouped) plus the
-// removed-member final event, AccountChanged/ChannelGroupChanged on their
-// directory read predicate. A uniform membership filter would pass the leak
-// tests but fail the SHARED-visibility ones, and vice-versa.
-//
+// shared bus fans every event to every subscriber, so this filter is the ONLY
+// thing keeping a non-member from a private channel's traffic.
+
+// Each case is per-variant because the filter is: MessagePosted/Updated gate on
+// bare membership, ChannelChanged on full visibility (member OR SHARED) plus the
+// removed-member final event, AccountChanged/ChannelGroupChanged on the directory
+// predicate. A uniform filter would pass the leak tests but fail SHARED, or vice-versa.
+
 // Determinism without sleeps: every event is published BEFORE any subscriber
-// opens, then a globally-visible "canary" user is created LAST. A subscriber
-// opened at since_seq=0 replays the whole ring under the same per-event filter
-// the live tail uses (forwardComms filters both loops identically), delivering —
-// in seq order, exactly once — precisely the subset that subscriber is entitled
-// to, terminated by the canary. So "collect until the canary" yields that
-// subscriber's complete entitled set with no wall-clock wait: a leaked event
-// would arrive before the canary, and its absence is a real proof, not a race.
+// opens, then a globally-visible "canary" user is created LAST. A since_seq=0
+// subscriber replays the ring under the same filter, terminated by the canary —
+// so a leaked event would arrive before it and its absence is a real proof.
 
 import (
 	"context"
@@ -98,12 +93,10 @@ func drainReplayAsActor(t *testing.T, h streamHarness, actor store.AccountID, ca
 	}
 }
 
-// messagePostedTopics / messageUpdatedTopics / channelChanges /
-// channelGroupChanges / accountChanges pull the topic/channel/group/account ids
-// out of one variant of a collected event slice, so a case asserts on
-// presence/absence of exactly the variant it means to. A message carries only
-// its topic now, so the message variants key on topic id (the channel is
-// resolved through the topic server-side).
+// messagePostedTopics et al pull the topic/channel/group/account ids out of one
+// variant of a collected event slice, so a case asserts on exactly the variant
+// it means to. A message carries only its topic now, so the message variants key
+// on topic id (the channel is resolved through the topic server-side).
 
 func messagePostedTopics(evts []*compassv1.SubscribeCommsResponse) []string {
 	var out []string

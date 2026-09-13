@@ -2,22 +2,10 @@
 
 package server
 
-// P1 dev-door regression test (RIG-1195 T3b, security-critical) — pins the
-// closed hole from the Greptile finding "Dev Door Can Mint Admin Tokens". The
-// dev-only loopback endpoint (--dev-http) mounts CompassService behind
-// auth.NewAdminGate with NO bearer interceptor, so there is never an
-// authenticated caller in context: CallerFrom is empty, and AdminGate.check
-// fail-closes every adminOnly procedure to PermissionDenied. Without this, a
-// browser page loaded against a configured --dev-http could call IssueToken to
-// mint a bootstrap-admin bearer token and replay it against the TLS network door.
-//
-// Drives a real Serve with a DevHTTP loopback address and a real store
-// (DatabaseDSN from the shared pgtest harness), then over an h2c client to the
-// dev port asserts: (a) IssueToken (adminOnly) → CodePermissionDenied and NO
-// minted token; (b) GetServerInfo (authenticatedOpen) → OK; (c) a CommsService
-// read (ListAccounts) → OK (the dev door serves comms under the ambient admin,
-// its own per-account authz). Store-gated (Serve opens the store), so behind
-// `//go:build pgtest && unix`.
+// P1 dev-door regression test (RIG-1195 T3b, security-critical) — pins the closed
+// "Dev Door Can Mint Admin Tokens" hole. The --dev-http endpoint mounts
+// CompassService behind AdminGate with NO bearer interceptor, so AdminGate
+// fail-closes every adminOnly procedure (asserts IssueToken → PermissionDenied).
 
 import (
 	"context"
@@ -86,16 +74,11 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 	})
 
 	t.Run("SubscribeAgentSession reaches the authz gate under the dev-door ambient admin (NotFound not Unauthenticated)", func(t *testing.T) {
-		// The dev door carries NO bearer, yet the ambient pair
-		// (AmbientIdentity + AmbientStreamInterceptor) attaches caller=bootstrap
-		// admin AFTER AdminGate. SubscribeAgentSession is authenticatedOpen, so it
-		// passes the gate and the ambient caller lets it proceed PAST the
-		// CallerFrom check into RequireAgentSessionSubscriber. With no session
-		// seeded, the unknown id resolves to the merged not-found/forbidden path →
-		// CodeNotFound. Pre-fix (dev door had AdminGate only, no ambient) this same
-		// call returned CodeUnauthenticated (errNoCaller). Reusing the in-package
-		// bearer-less helper (one deadline-guarded Receive) keeps the idiom shared
-		// with service_agentsession_test.go.
+		// The dev door carries NO bearer, yet the ambient pair attaches
+		// caller=bootstrap admin AFTER AdminGate. SubscribeAgentSession is
+		// authenticatedOpen, so it passes the gate and proceeds PAST CallerFrom into
+		// RequireAgentSessionSubscriber; the unknown id resolves to CodeNotFound.
+		// Pre-fix (AdminGate only, no ambient) this returned CodeUnauthenticated.
 		code := subscribeAgentSessionCode(t, compassClient, "no-such-session")
 		if code == connect.CodeUnauthenticated {
 			t.Fatalf("SubscribeAgentSession on the dev door = CodeUnauthenticated — the ambient caller is not attached; the ambient pair was dropped or ordered before AdminGate")

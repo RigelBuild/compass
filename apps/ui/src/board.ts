@@ -1,11 +1,7 @@
-// The board partition — the pure core of the issue state model (design D1). One
-// source of truth for "what's active (a board column) vs pre-active (Backlog
-// view) vs done", read by the Bridge board and the Backlog/Done views so the
-// partition can never drift between surfaces.
-//
-// Pure over an injected issue list (no fixture import, no store), so the whole
-// D1 contract is unit-testable and the same functions serve the fixture today
-// and the @compass/client stream later.
+// The board partition — the pure core of the issue state model (design D1). One source of
+// truth for "active (a board column) vs pre-active (Backlog) vs done", read by the Bridge
+// board and the Backlog/Done views so the partition can never drift between surfaces. Pure
+// over an injected issue list (no fixture import, no store), so the D1 contract is testable.
 
 import { openPrs } from "./board-render";
 import { BOARD_LANES } from "./constants";

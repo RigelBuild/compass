@@ -1,33 +1,16 @@
 // The in-container reader for the Runner-mounted agent-config bundle (design
-// compass-agent-config-delivery §CD-3/CD-4).
-//
-// The transport spine — server store, config RPCs, the Runner's
-// fetch/materialize/mount, in-place Reload — lands the bundle READ-ONLY at a
-// fixed in-container path. This module is the last mile: it reads that mount and
-// maps it into the three `createAgentSession` option surfaces the SDK exposes —
-// skills, extensions, and MCP servers — so the agent boots configured.
-//
-// Layout, under `<mount>/current/` (a symlink the Runner flips atomically):
-//
-//   - `skills/<name>/…`      — skill trees, each a dir with a SKILL.md
-//   - `extensions/<name>/…`  — extension entry files or dirs
-//   - `mcp/<name>.json`      — MCP server configs (credential-free by MVP rule;
-//                              servers read tokens from the aggregate env file
-//                              main() already sources into process.env)
-//   - `prompts/<role>/SYSTEM.md` — per-role block-0 system prompts; the
-//                              operator-set role label selects one, delivered as
-//                              `customSystemPrompt` (REPLACES block-0)
-//   - `version`              — bundle hash, observability only
-//
-// UNCONFIGURED — no `current` symlink, or the whole mount absent — is a VALID
-// empty state, not an error: every reader is tolerant (absent/malformed →
-// empty, NEVER throws), mirroring the Runner's materialize-empty posture and the
-// entrypoint's own `readSeed`/`readEnvFile` idiom. A partially-populated mount
-// (e.g. skills but no mcp) is normal — each subtree is read independently.
-//
-// Structure mirrors `cli.ts`: these are pure/async decisions tested directly in
-// `config-reader.test.ts` over tempdir fixtures; `main()` performs the one IO
-// composition (build+connect the MCP manager, spread the fields, own teardown).
+// compass-agent-config-delivery §CD-3/CD-4). The transport spine lands the bundle
+// READ-ONLY at a fixed path; this module is the last mile — it reads that mount and maps
+// it into the three `createAgentSession` surfaces (skills, extensions, MCP servers).
+
+// Layout under `<mount>/current/` (a symlink the Runner flips atomically): `skills/<name>/`
+// trees, `extensions/<name>/` entries, `mcp/<name>.json` configs (credential-free),
+// `prompts/<role>/SYSTEM.md` block-0 prompts (delivered as `customSystemPrompt`), and a
+// `version` hash. UNCONFIGURED (no `current`, or mount absent) is a VALID empty state.
+
+// Every reader is tolerant (absent/malformed → empty, NEVER throws); a partially-populated
+// mount is normal, each subtree read independently. Structure mirrors `cli.ts`: pure/async
+// decisions tested over tempdir fixtures, with `main()` doing the one IO composition.
 
 import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -389,13 +372,10 @@ export async function readMountedRolePrompt(
 	currentDir: string,
 	role: string,
 ): Promise<string | undefined> {
-	// Guard the label as a path segment: a role is a flat directory name
-	// (`manager`, `supervisor`), never a path. Reject a separator or `..` so the
-	// label can never traverse outside the `prompts/` subtree. Defense in depth —
-	// today `role` is set out-of-band in the store (no RPC populates it, so the
-	// value is trusted), but the guard costs nothing and closes the traversal the
-	// moment a client-facing setter lands. A rejected label reads as "no prompt"
-	// (undefined), so it falls back to the default block-0 like any absent file.
+	// Guard the label as a path segment: a role is a flat directory name, never a path. Reject
+	// a separator or `..` so it can never traverse outside `prompts/`. Defense in depth — `role`
+	// is trusted today (no RPC sets it), but the guard costs nothing and closes the traversal the
+	// moment a client-facing setter lands. A rejected label reads as "no prompt" (undefined).
 	if (/[/\\]|\.\./.test(role)) return undefined;
 	const path = join(currentDir, "prompts", role, "SYSTEM.md");
 	try {

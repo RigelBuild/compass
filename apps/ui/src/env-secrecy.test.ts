@@ -1,29 +1,7 @@
-// Env-secrecy gate: the app's env files must stay uncommittable, because Vite
-// bakes every VITE_* value into the production bundle as a string literal — so a
-// secret in a tracked `.env` ships in `dist/` to every browser that loads the
-// app. No moon task consumes these paths (they are inputs to nothing that
-// lints, tests, or scans), so review is the ONLY thing between a committed token
-// and an exfiltrated one — and review is exactly what missed it the first time
-// (RIG-1539). This gate gives the `.gitignore` rules teeth so they cannot
-// silently re-widen, and — the property that actually matters — pins the real
-// tracked set so it can never grow past the one dev-defaults file.
-//
-// Two layers, because `git check-ignore` and `git ls-files` answer different
-// questions and each alone has a hole:
-//   1. check-ignore — do the IGNORE RULES cover the dangerous filenames? Catches
-//      a `.gitignore` edit that un-ignores `.env` / `.env.production`. But it
-//      reports rule MATCHES, not tracking: a file force-added (`git add -f`) or
-//      committed before the rule existed stays tracked and ships, while
-//      check-ignore still calls it "ignored".
-//   2. ls-files — what is ACTUALLY tracked, regardless of the rules? This is the
-//      only ground truth about what leaves in the bundle, and it closes the
-//      force-add / pre-rule blind spot layer 1 cannot see.
-//
-// Scope boundary: this gate covers WHICH files are tracked, not their CONTENTS.
-// A VITE_* secret pasted into the one allowed tracked file (`.env.development`)
-// still ships and passes both layers; that file's secret-freedom rests on
-// convention and review, not this gate. Closing that hole needs a content-scan
-// layer, tracked as a follow-up.
+// Env-secrecy gate: the app's env files must stay uncommittable, because Vite bakes every
+// VITE_* value into the production bundle, so a secret in a tracked `.env` ships to every
+// browser (review missed it once, RIG-1539). Two layers: check-ignore (do the rules cover the
+// filenames) + ls-files (what is ACTUALLY tracked, closing the force-add / pre-rule hole).
 
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";

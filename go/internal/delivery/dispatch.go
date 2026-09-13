@@ -254,11 +254,10 @@ func (c *Consumer) routeAskAnswerFor(ctx context.Context, channel store.ChannelI
 			"agent", string(asker), "channel", string(channel), "message_id", msg.GetId())
 		return
 	}
-	// Now-live between the sweep-set check and the record: steer directly,
-	// closing the record-vs-start race (the owed row is the offline backstop,
-	// this is the latency path). The owed sweep dispatches as a STEER, so the
-	// direct dispatch matches — both render through the same T6 ask_answer arm
-	// and dedup by msg.id absorbs any overlap.
+	// Now-live between the sweep-set check and the record: steer directly, closing the
+	// record-vs-start race (the owed row is the offline backstop, this is the latency
+	// path). The owed sweep also dispatches as a STEER, so both render through the T6
+	// ask_answer arm and dedup by msg.id absorbs any overlap.
 	if sessionID, live := c.resolver.SessionForAccount(ctx, asker); live {
 		c.dispatchSteerTo(ctx, sessionID, msg, c.authorHandle(ctx, msg))
 	}

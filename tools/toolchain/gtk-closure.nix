@@ -1,19 +1,8 @@
-# The GTK4/WebKitGTK package set the Compass native app (Wails v3,
-# go/cmd/compass-app) links through cgo on Linux. ONE definition, imported
-# by three consumers so they cannot drift:
-#
-#   - devenv.nix's `env` block builds PKG_CONFIG_PATH over `lib.closePropagation`
-#     of this set for the dev shell (and a local gtk4 build/test);
-#   - tools/toolchain/gtk-e2e-env.nix realizes the same closure on a CI runner
-#     for the multi-window gtk4 e2e gate (design record compass-multi-window
-#     §M4), the ONE CI lane that compiles + runs the native app.
-#   - flake.nix's `compass-app` package realizes the same closure as cgo
-#     buildInputs for the `nix build .#compass-app` / bundle build.
-#
-# Kept as a bare name list (not the resolved derivations) so a consumer applies
-# it against whichever pinned `pkgs` it already resolves — the dev shell's, or
-# the e2e helper's devenv.lock-pinned nixpkgs — without this module taking a
-# nixpkgs of its own.
+# The GTK4/WebKitGTK package set the Compass native app (Wails v3) links through
+# cgo on Linux. ONE definition, imported by three consumers so they cannot drift:
+# devenv.nix's PKG_CONFIG_PATH, tools/toolchain/gtk-e2e-env.nix (the CI e2e gate),
+# and flake.nix's `compass-app` package. Kept as a bare name list so each consumer
+# applies it against its own pinned `pkgs`, without this module taking a nixpkgs.
 pkgs:
 with pkgs;
 [
@@ -25,12 +14,10 @@ with pkgs;
   libsoup_3
   cairo
   pango
-  # atk (legacy GTK accessibility) and gdk-pixbuf are intentionally omitted:
-  # GTK4 routes accessibility through at-spi2 (gtk4.pc pulls atspi-2 via
-  # gtk4-atspi.pc), so atk is unreachable in the gtk4/webkitgtk-6.0 .pc
-  # Requires-walk and would be dead closure weight; gdk-pixbuf is still needed
-  # at link but gtk4.pc (and librsvg) already `Requires: gdk-pixbuf-2.0`, so
-  # closePropagation pulls it in transitively — the explicit entry is redundant.
+  # atk and gdk-pixbuf are intentionally omitted: GTK4 routes accessibility
+  # through at-spi2, so atk is dead closure weight in the gtk4/webkitgtk-6.0
+  # Requires-walk; gdk-pixbuf is pulled in transitively by gtk4.pc/librsvg, so
+  # the explicit entry is redundant.
   harfbuzz
   librsvg
   gobject-introspection

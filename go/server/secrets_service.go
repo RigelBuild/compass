@@ -1,24 +1,9 @@
 //go:build unix
 
-// The SecretsService implementation — the account-facing side of the compass.v1
-// secrets contract (RIG-1327 T7). It sits beside CompassService/CommsService on
-// the same account doors (socket + dev + network), behind the bearer + admin-gate
-// interceptors that classify the three procedures authenticatedOpen (admin_gate.go):
-// the door admits any authenticated account and THIS handler enforces the fine
-// authz the frozen record pins.
-//
-//   - SetSecret / DeleteSecret are USER-ONLY (record §911-927): an agent-token
-//     caller is CodePermissionDenied, the same fail-closed posture as the
-//     admin-gated IssueToken. This is the load-bearing regression the record
-//     calls out (§927).
-//   - ListSecrets is open to user AND agent (record §904-910): the Setup agent
-//     drives it. It returns value-free SecretStatus — never a value, and never
-//     resolves values to compute is_set.
-//
-// A successful Set/Delete bumps the secrets version (a fire-and-forget hub push
-// to live sessions, secretsSignaler) so live containers re-fetch (T6 cleanup).
-// A secret value is never logged here (it is [debug_redact] on the wire; the
-// server side keeps the same posture).
+// The SecretsService implementation — account-facing side of the compass.v1
+// secrets contract (RIG-1327 T7), behind bearer + admin-gate. SetSecret/DeleteSecret
+// are USER-ONLY (agent-token caller is CodePermissionDenied); ListSecrets is open
+// to user AND agent (value-free). A Set/Delete bumps the version; values never logged.
 package server
 
 import (
@@ -135,27 +120,16 @@ func (s *secretsService) SetSecret(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("declaring secret: %w", declErr))
 	}
 
-	// The audit reason carries the authenticated caller, so the provider's log
-	// distinguishes which operator wrote a secret rather than recording every
-	// write anonymously. The RPC is the only path that reaches this write, so
-	// the prefix also records that provenance. callerID is resolved from the
-	// bearer token (auth.CallerFrom -> the token subject), never a request
-	// field, and every account id is server-minted hex (store/ids.go), so it
-	// cannot carry a quote or newline into the reason; the CLI additionally
-	// JSON-escapes the reason into its audit record, so a forged log entry is
-	// doubly unreachable.
+	// The audit reason carries the authenticated caller so the provider's log
+	// distinguishes which operator wrote a secret. callerID is resolved from the
+	// bearer token (never a request field) and every account id is server-minted
+	// hex, so it cannot carry a quote or newline; the CLI also JSON-escapes it.
 	reason := fmt.Sprintf("compass: operator secret write via SetSecret RPC (caller %s)", callerID)
 	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue(), reason); err != nil {
-		// The name was validated by DeclareSecret and the value was screened
-		// non-empty above, so a Set failure here is a provider/exec fault
-		// (CLI unreachable, non-zero exit) — retryable and operator-side, never
-		// the caller's argument, so CodeUnavailable, not CodeInvalidArgument.
-		// Roll back a FRESH declaration: an orphaned declaration is required=true
-		// in the resolve manifest and would fail EVERY live session's FetchSecrets
-		// (a global denial from one failed write). Leave an ErrConflict (re-Set)
-		// row alone — it legitimately pre-existed this call. The Set error wraps
-		// name/cli/stderr, never the value, so logging it server-side is safe; the
-		// client-facing error is value-free.
+		// The name was validated and value screened above, so a Set failure is a
+		// provider/exec fault (retryable, operator-side) — CodeUnavailable. Roll back
+		// a FRESH declaration (an orphaned required=true one fails every FetchSecrets);
+		// leave a re-Set row alone. The Set error wraps name/cli/stderr, never the value.
 		if declErr == nil {
 			// Tenant coordinate (scope 0, "") is a T5 placeholder: this handler still
 			// declares at tenant scope pending the write-surface scope ruling (A9 OQ).
@@ -224,14 +198,10 @@ func (s *secretsService) DeleteSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
 	name := req.Msg.GetName()
-	// Ordering note: resolver.Delete is a validate-only no-op today, so calling
-	// it before DeleteSecretDeclaration is inert. The provider verb it would
-	// shell EXISTS at this pin (`secretspec delete`, 0.18+); wiring it is a
-	// deferral (RIG-3436), not an upstream gap. When it lands, this MUST flip to
-	// declaration-first: the declaration is the source of truth Resolve reads, and
-	// deleting the provider value before the row would leave a required=true
-	// declaration pointing at a missing value — the same global resolve-poison as a
-	// failed Set, in reverse.
+	// Ordering note: resolver.Delete is a validate-only no-op today, so calling it
+	// before DeleteSecretDeclaration is inert. When the provider verb is wired
+	// (RIG-3436), this MUST flip to declaration-first: deleting the value before the
+	// row would leave a required=true declaration poisoning every Resolve.
 	if err := s.resolver.Delete(ctx, name); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("deleting secret value: %w", err))
 	}
@@ -291,11 +261,9 @@ func (s *secretsService) SetServerSecret(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("declaring server secret: %w", declErr))
 	}
 
-	// The audit reason names the SERVER-secret RPC specifically, so the
-	// provider's log distinguishes a deployment-secret write from an operator's
-	// user-secret write, and carries the authenticated admin caller. Same
-	// injection reasoning as the user path: callerID comes from the bearer
-	// token, never a request field, and is server-minted hex.
+	// The audit reason names the SERVER-secret RPC specifically and carries the
+	// authenticated admin caller. Same injection reasoning as the user path:
+	// callerID comes from the bearer token, never a request field, server-minted hex.
 	reason := fmt.Sprintf("compass: server secret write via SetServerSecret RPC (caller %s)", callerID)
 	if err := s.serverResolver.Set(ctx, name, msg.GetValue(), reason); err != nil {
 		// Name validated at the store door and value screened non-empty above, so

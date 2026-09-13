@@ -20,14 +20,10 @@ import (
 	yaml "go.yaml.in/yaml/v3"
 )
 
-// The fleet CONFIG-BUNDLE store (RIG-1624 T1). One fleet-wide singleton bundle
-// row (agent_config_bundle, 0001_init.sql) holds the gzip-tarball of the
-// skills/, extensions/, and mcp/ material every agent materializes into its
-// scoped config dir (T3/T4). Unlike the secrets NAMES registry (secrets.go, a
-// set of named rows), config is CURRENT-ONLY: PutAgentConfig replaces the one
-// row in place, and version is the canonical CONTENT hash so a re-put of
-// identical content is version-stable. The bundle is credential-free by MVP
-// rule (CD-3) — secrets ride the separate resolve path, never this bundle.
+// The fleet CONFIG-BUNDLE store (RIG-1624 T1). One fleet-wide singleton bundle row
+// holds the gzip-tarball of skills/, extensions/, mcp/ material every agent materializes
+// into its scoped config dir. Config is CURRENT-ONLY: PutAgentConfig replaces the row,
+// version is the content hash. Credential-free by MVP rule (CD-3).
 
 // Config-bundle top-dir names — the whitelisted top-level directories a bundle
 // member may live under. Each becomes a host directory when the bundle is
@@ -74,12 +70,9 @@ var configBundleTopDirs = map[string]bool{
 	topDirProfiles:   true,
 }
 
-// configNamePattern is the grammar for a config entry's <name> segment —
-// skills/<name>, extensions/<name>, mcp/<name>.json. A declared name is
-// validated at the store door (PutAgentConfig) before it can reach a row
-// because it later becomes a host path segment under the agent's config dir
-// (T4): constrained at the door, not escaped downstream (mirrors secrets.go's
-// secretNamePattern posture).
+// configNamePattern is the grammar for a config entry's <name> segment (skills/<name>,
+// extensions/<name>, mcp/<name>.json). Validated at the store door before it can reach
+// a row, since it later becomes a host path segment (mirrors secretNamePattern).
 var configNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // frontmatterNamePattern matches a `name:` line in an agents/*.md frontmatter
@@ -89,17 +82,12 @@ var configNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 var frontmatterNamePattern = regexp.MustCompile(`^name:\s*(.*)$`)
 
 const (
-	// maxDecompressedBytes caps the total DECOMPRESSED size of a config bundle,
-	// enforced DURING gunzip (cappedReader) so a gzip bomb — a few KiB that
-	// inflates to gigabytes — is aborted mid-stream rather than after a full
-	// decompress. 64 MiB is generous headroom over the skills/extensions/mcp
-	// material a fleet realistically ships while still bounding a single Put's
-	// memory and the BYTEA row.
+	// maxDecompressedBytes caps the DECOMPRESSED size of a config bundle, enforced
+	// DURING gunzip (cappedReader) so a gzip bomb is aborted mid-stream. 64 MiB is
+	// generous over realistic material while bounding a single Put's memory and row.
 	maxDecompressedBytes int64 = 64 << 20 // 64 MiB
-	// maxFileCount caps the number of regular-file members, also enforced during
-	// the streamed read, so a bundle of millions of tiny files (each under the
-	// byte cap) cannot exhaust memory/handles. 4096 files comfortably covers a
-	// realistic skill/extension/mcp set.
+	// maxFileCount caps the regular-file member count, enforced during the streamed
+	// read, so a bundle of millions of tiny files cannot exhaust memory/handles.
 	maxFileCount = 4096
 )
 
@@ -110,10 +98,8 @@ const (
 var errBundleTooLarge = fmt.Errorf("%w: bundle exceeds decompressed size cap of %d bytes", ErrInvalidArgument, maxDecompressedBytes)
 
 // cappedReader bounds the total bytes read from an underlying reader, returning
-// errBundleTooLarge once the cap is crossed. Wrapping the gunzip stream (the
-// DECOMPRESSED side) with it is the gzip-bomb defense: the tar reader can never
-// pull more than maxDecompressedBytes of inflated content regardless of how
-// small the compressed input is.
+// errBundleTooLarge once the cap is crossed. Wrapping the gunzip (DECOMPRESSED)
+// stream is the gzip-bomb defense regardless of how small the compressed input is.
 type cappedReader struct {
 	r io.Reader
 	n int64
@@ -156,11 +142,9 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	if err != nil {
 		return "", err
 	}
-	// Reverse orphan guard (design.md §P2 L530-532): a profile that pins a model
-	// stable name absent from the current registry (and not an escape-hatch
-	// provider/id selector) fails closed here rather than publishing a stranded
-	// reference. See checkBundleProfileRefsAgainstRegistry for the accepted
-	// non-transactional two-store TOCTOU window this shares with PutModelRegistry.
+	// Reverse orphan guard (design.md §P2): a profile pinning a model stable name absent
+	// from the current registry (and not an escape-hatch selector) fails closed here
+	// rather than publishing a stranded reference. See checkBundleProfileRefsAgainstRegistry.
 	if err := s.checkBundleProfileRefsAgainstRegistry(ctx, bundle); err != nil {
 		return "", err
 	}
@@ -173,12 +157,10 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	return version, nil
 }
 
-// ValidateConfigBundle validates a config bundle against the store door's
-// grammar and returns its canonical content version, without touching the
-// database. It is the pure door check PutAgentConfig runs before the row
-// write, exported so a bundle producer (the operator CLI builder) can prove
-// its output against the real door in tests, closing the builder/door drift
-// gap a parallel hand-rolled grammar leaves open.
+// ValidateConfigBundle validates a config bundle against the store door's grammar and
+// returns its canonical content version without touching the database. Exported so a
+// bundle producer (the operator CLI builder) can prove its output against the real door
+// in tests, closing the builder/door drift gap.
 func ValidateConfigBundle(bundle []byte) (version string, err error) {
 	return validateAndHashConfigBundle(bundle)
 }
@@ -199,13 +181,9 @@ func (s *Store) CurrentAgentConfig(ctx context.Context) (version string, bundle 
 }
 
 // DeleteAgentConfig clears the fleet config bundle, returning the store to the
-// unconfigured state (CurrentAgentConfig then reports ErrNotFound — a valid
-// downstream state, the empty-config door). Idempotent: deleting when the
-// singleton is already absent is a no-op success, not ErrNotFound — the caller's
-// intent (no bundle) already holds, so a repeated Delete or a Delete on a
-// never-configured fleet both succeed. This is the operator's explicit
-// return-to-unconfigured path (RIG-1625 T2), chosen over blessing an
-// empty-tarball push.
+// unconfigured state. Idempotent: deleting an already-absent singleton is a no-op
+// success, not ErrNotFound — the operator's explicit return-to-unconfigured path
+// (RIG-1625 T2), chosen over blessing an empty-tarball push.
 func (s *Store) DeleteAgentConfig(ctx context.Context) error {
 	if err := s.q.DeleteAgentConfig(ctx); err != nil {
 		return fmt.Errorf("store: delete agent config: %w", err)
@@ -213,18 +191,11 @@ func (s *Store) DeleteAgentConfig(ctx context.Context) error {
 	return nil
 }
 
-// AgentConfigInfo reports the current bundle's version and the NAMES of its
-// declared members, bucketed by top dir (skills / extensions / mcp) — names
-// only, never content (RIG-1625 T2). Each bucket is deduplicated and sorted: a
-// skill spreads many files under skills/<name>/, but the operator-facing view is
-// the set of declared <name>s. ErrNotFound when no bundle is declared (the
-// caller decides empty-is-ok, mirroring CurrentAgentConfig).
-//
-// It re-walks the stored bundle with the SAME grammar the store door enforced at
-// Put (configMemberParts + the decompressed cap via cappedReader), so it reuses
-// the door's path validation rather than re-inventing a tar walk. The bundle was
-// already validated at Put, so this walk is over trusted content; re-applying the
-// cap is the cheap defense-in-depth posture every unpack re-enforces.
+// AgentConfigInfo reports the current bundle's version and the NAMES of its declared
+// members, bucketed by top dir — names only, never content (RIG-1625 T2). Each bucket
+// is deduplicated and sorted. ErrNotFound when no bundle is declared. It re-walks the
+// stored bundle with the SAME grammar the door enforced at Put (configMemberParts + the
+// cappedReader cap), reusing the door's path validation rather than re-inventing a walk.
 func (s *Store) AgentConfigInfo(ctx context.Context) (info AgentConfigInfoResult, err error) {
 	version, bundle, err := s.CurrentAgentConfig(ctx)
 	if err != nil {
@@ -256,14 +227,10 @@ type AgentConfigInfoResult struct {
 	HasModels   bool
 }
 
-// configBundleMemberNames walks a stored config bundle and returns the declared
-// member names bucketed by top dir, each deduplicated and sorted. It never reads
-// member CONTENT — only the tar HEADERS — so it decompresses (bounded by the
-// same cappedReader gzip-bomb guard as the store door) without materializing any
-// file body. skills/<name>/... and extensions/<name>/... contribute <name> (the
-// second path component); mcp/<name>.json contributes <name> (the base without
-// the .json suffix). Directory members and any name-less top-dir-only entry are
-// skipped — they declare no member.
+// configBundleMemberNames walks a stored config bundle and returns the declared member
+// names bucketed by top dir, deduplicated and sorted. It reads only the tar HEADERS
+// (bounded by the cappedReader guard), never member CONTENT; skills/<name>/... and
+// extensions/<name>/... contribute <name>, mcp/<name>.json contributes <name>.
 func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(bundle))
 	if err != nil {
@@ -349,22 +316,10 @@ func configBundleMemberNames(bundle []byte) (AgentConfigInfoResult, error) {
 	return info, nil
 }
 
-// configBundleProfileBodies walks a stored, already-validated config bundle and
-// returns each published profile's raw profile.yml body, keyed by the profile
-// <name>. It reuses the same tar-walk + grammar (configMemberParts + the
-// cappedReader gzip-bomb guard) the store door enforced at Put, so it reads only
-// trusted content. The model-registry orphan cross-check
-// (publishedProfileModelRefs) consumes it to learn which stable names the
-// published profiles reference. A bundle with no profiles yields an empty map.
-//
-// This deliberately RE-WALKS the bundle validateAndHashConfigBundle already
-// walked at Put (which collects the same profile bodies into profileBodies for
-// the agent-key lint): on the operator write path a bundle is gunzipped and
-// tar-walked twice. The duplication is accepted for now to keep the Put door's
-// signature unchanged; folding the two walks into one (threading the already-
-// collected bodies through) is tracked as a follow-up (RIG-3220). If either walk's
-// grammar changes, the other MUST change in step or the lint reads a different
-// member set than the door validated.
+// configBundleProfileBodies walks a stored, already-validated config bundle and returns
+// each published profile's raw profile.yml body, keyed by profile <name>, reusing the
+// door's tar-walk + grammar. It RE-WALKS the bundle Put already walked, accepted to keep
+// the door signature unchanged (RIG-3220); if either walk's grammar changes, both must.
 func configBundleProfileBodies(bundle []byte) (map[string][]byte, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(bundle))
 	if err != nil {
@@ -427,23 +382,10 @@ func sortedKeys(set map[string]bool) []string {
 	return out
 }
 
-// validateAndHashConfigBundle is the security-critical store door: a SINGLE
-// streamed pass over the gzip tarball that both validates every member and
-// accumulates the canonical content hash, returning a %w-wrapped
-// ErrInvalidArgument on the first violation (so nothing is decompressed twice).
-//
-// Canonical version serialization (metadata-zeroed, order-independent): collect
-// (name, content) for every regular file, sort by name, then hash a
-// LENGTH-PREFIXED framing so two distinct member sets cannot collide —
-//
-//	uint64(len(members))
-//	for each member in name order:
-//	    uint64(len(name)) name
-//	    uint64(len(content)) content
-//
-// all big-endian. Only the member NAME and file CONTENT feed the hash; tar
-// ordering, mtimes, uid/gid, and gzip mtime/level are excluded, so identical
-// content re-packed any which way hashes identically.
+// validateAndHashConfigBundle is the security-critical store door: a SINGLE streamed
+// pass over the gzip tarball that validates every member and accumulates the canonical
+// content hash (length-prefixed over (name, content) pairs in name order, metadata
+// excluded), returning %w-wrapped ErrInvalidArgument on the first violation.
 func validateAndHashConfigBundle(bundle []byte) (string, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(bundle))
 	if err != nil {
@@ -476,10 +418,9 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 			return "", fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
 		}
 
-		// Reject the escape-vector typeflags outright. A symlink and a hardlink
-		// are DISTINCT escapes (TypeSymlink vs TypeLink); both can point outside
-		// the materialized config dir, so both are refused before any path
-		// analysis.
+		// Reject the escape-vector typeflags outright. A symlink and a hardlink are
+		// DISTINCT escapes; both can point outside the materialized config dir, so both
+		// are refused before any path analysis.
 		switch hdr.Typeflag {
 		case tar.TypeSymlink:
 			return "", fmt.Errorf("%w: bundle member %q is a symlink (not allowed)", ErrInvalidArgument, hdr.Name)
@@ -492,18 +433,10 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 			return "", err
 		}
 
-		// The member typeflag must resolve to a regular file or a directory —
-		// an explicit ALLOWLIST, not a catch-all skip. A directory contributes
-		// no content and no host file (its path already passed the escape +
-		// whitelist checks above), so it is skipped. A contiguous-file member
-		// (tar.TypeCont) is reported as a regular file by archive/tar and is
-		// treated as one: its content is hashed and it materializes to a regular
-		// host file, so the version covers it. Every remaining typeflag
-		// (char/block device, FIFO, socket, and any future non-regular flag) is
-		// REJECTED: such a member would ride into the verbatim-persisted bundle
-		// bytes yet contribute nothing to the version hash, so two bundles with
-		// identical regular files but a differing device member would share a
-		// version while differing on disk (M2).
+		// The member typeflag must resolve to a regular file or a directory — an explicit
+		// ALLOWLIST. A directory is skipped; a contiguous-file member is a regular file.
+		// Every other typeflag is REJECTED: it would ride into the persisted bytes yet
+		// feed nothing to the version hash, so bundles could share a version but differ (M2).
 		if hdr.Typeflag == tar.TypeDir {
 			continue
 		}
@@ -511,21 +444,17 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 			return "", fmt.Errorf("%w: bundle member %q has unsupported typeflag %d (only regular files and directories are allowed)", ErrInvalidArgument, hdr.Name, hdr.Typeflag)
 		}
 
-		// Reject duplicate regular-member names at the door (M1). Tar permits
-		// duplicate entries, so two regular members at the same path with
-		// different content would leave two equal-keyed members whose relative
-		// order an unstable sort cannot normalize — the same logical bundle
-		// re-packed in a different tar order could then hash to a different
-		// version. Rejecting duplicates closes that ambiguity and keeps every
-		// sort key unique. Only regular files are tracked: directories feed no
-		// content/hash and persist no host file, so a duplicate dir is harmless.
+		// Reject duplicate regular-member names at the door (M1). Tar permits duplicates,
+		// so two members at one path would leave equal-keyed entries an unstable sort
+		// cannot normalize — the same bundle re-packed could hash differently. Only
+		// regular files are tracked; a duplicate dir feeds no content and is harmless.
 		if seen[hdr.Name] {
 			return "", fmt.Errorf("%w: bundle contains duplicate member %q", ErrInvalidArgument, hdr.Name)
 		}
 		seen[hdr.Name] = true
 
-		// Count-before-read (L1): enforce the file-count cap before reading the
-		// member body, so the (maxFileCount+1)th body is never read into memory.
+		// Count-before-read (L1): enforce the file-count cap before reading the body, so
+		// the (maxFileCount+1)th body is never read into memory.
 		fileCount++
 		if fileCount > maxFileCount {
 			return "", fmt.Errorf("%w: bundle exceeds file-count cap of %d files", ErrInvalidArgument, maxFileCount)
@@ -541,18 +470,10 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		members = append(members, member{name: hdr.Name, content: content})
 	}
 
-	// Cross-member profile lint (RIG-2968 T1). The per-member pass above
-	// validated each profiles/<name>/profile.yml in isolation (YAML mapping +
-	// superset-key closure + models.* selector shape); the models.agents key
-	// lint is CROSS-MEMBER — each key must match the frontmatter name: of an
-	// agents/*.md def in the SAME bundle — so it runs here over the fully
-	// collected member set, after the single streamed pass. It reads only the
-	// already-collected member bytes (no re-decompress) and never feeds the
-	// hash, so the canonical version stays order-independent and metadata-zeroed.
-	// Separate the two member classes the lint needs (agent-def frontmatter
-	// names, and the profile bodies) into plain maps so the check is a pure
-	// function over collected bytes. The member NAME segment already passed the
-	// grammar in validateRegularMember, so parts[1] is safe to index.
+	// Cross-member profile lint (RIG-2968 T1). The models.agents key lint is CROSS-MEMBER
+	// — each key must match the frontmatter name: of an agents/*.md def in the SAME bundle
+	// — so it runs here over the collected set, reading only collected bytes (no
+	// re-decompress) and never feeding the hash.
 	agentDefNames := make(map[string]bool)
 	profileBodies := make(map[string][]byte)
 	for _, m := range members {
@@ -570,8 +491,8 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 		return "", err
 	}
 
-	// Sort by name. Duplicate regular names are rejected above, so keys are
-	// unique and this ordering is total — sort stability is moot.
+	// Sort by name. Duplicate regular names are rejected above, so keys are unique and
+	// this ordering is total — sort stability is moot.
 	sort.Slice(members, func(i, j int) bool { return members[i].name < members[j].name })
 
 	h := sha256.New()
@@ -589,13 +510,10 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-// configMemberParts validates a member path for escapes and the top-dir
-// whitelist, returning its cleaned path components. It rejects an absolute
-// path, the empty/root path, and any "", ".", or ".." component (the ".."
-// traversal escape), then requires the top-level part to be either a
-// whitelisted top dir (skills/|extensions/|mcp/|settings/|rules/|agents/) or,
-// for a single-component path, one of the two admitted top-level filenames
-// (AGENTS.md, models.yml).
+// configMemberParts validates a member path for escapes and the top-dir whitelist,
+// returning its cleaned path components. It rejects an absolute path, the empty/root
+// path, and any "", ".", or ".." component, then requires the top-level part to be a
+// whitelisted top dir or (for a single component) an admitted top-level filename.
 func configMemberParts(name string) ([]string, error) {
 	if strings.HasPrefix(name, "/") {
 		return nil, fmt.Errorf("%w: bundle member %q is an absolute path", ErrInvalidArgument, name)
@@ -621,23 +539,10 @@ func configMemberParts(name string) ([]string, error) {
 	return parts, nil
 }
 
-// validateRegularMember enforces the per-file grammar and reads the member's
-// content (bounded by the enclosing cappedReader), returning it for the hash.
-//
-//   - mcp/<name>.json — grammar-valid <name>, content parses as JSON.
-//   - skills/<name>/… , extensions/<name>/… — grammar-valid <name>.
-//   - settings/config.yml — the ONLY settings/ member (yml-only, OQ-1); content
-//     parses as a YAML mapping and sets no credential-denylisted key.
-//   - rules/<name>.md|.mdc — flat, grammar-valid <name>; prose, no content check.
-//   - agents/<name>.md — flat, grammar-valid <name>; prose, no content check.
-//   - prompts/<role>/SYSTEM.md — grammar-valid <role>, filename exactly
-//     SYSTEM.md; prose, no content check (RIG-3075 T2).
-//   - top-level AGENTS.md — prose, no content check beyond the read.
-//   - top-level models.yml — content parses as a YAML mapping and sets no
-//     credentialed provider surface (apiKey, or a headers.* literal secret).
-//
-// The read propagates errBundleTooLarge if the decompressed cap is crossed
-// mid-file.
+// validateRegularMember enforces the per-file grammar and reads the member's content
+// (bounded by the enclosing cappedReader), returning it for the hash. mcp/*.json parses
+// as JSON; settings/config.yml and models.yml as credential-free YAML mappings; the rest
+// are name-grammar-checked prose. The read propagates errBundleTooLarge on cap crossing.
 func validateRegularMember(parts []string, r io.Reader) ([]byte, error) {
 	joined := strings.Join(parts, "/")
 	switch parts[0] {
@@ -758,11 +663,10 @@ func validateModelsMember(joined string, r io.Reader) ([]byte, error) {
 	return content, nil
 }
 
-// profileSupersetKeys is the closed set of top-level keys a profile.yml may
-// declare (RIG-2968 T1, §Approach superset schema). v1 CONSUMES only `models`;
-// `corpus`/`extensions`/`settings` are schema'd, consumption deferred — but all
-// four are ACCEPTED at the door so later phases grow additively with no schema
-// break. "Unknown key" = a top-level key OUTSIDE this set, never a deferred axis.
+// profileSupersetKeys is the closed set of top-level keys a profile.yml may declare
+// (RIG-2968 T1). v1 CONSUMES only `models`; `corpus`/`extensions`/`settings` are
+// schema'd but consumption is deferred — all four are ACCEPTED so later phases grow
+// additively. "Unknown key" = a top-level key OUTSIDE this set.
 var profileSupersetKeys = map[string]bool{
 	"models":     true,
 	"corpus":     true,
@@ -770,13 +674,10 @@ var profileSupersetKeys = map[string]bool{
 	"settings":   true,
 }
 
-// validateProfileMember validates a profiles/<name>/profile.yml member in
-// isolation: exactly three components with filename profile.yml and a
-// grammar-valid <name>, a YAML-mapping body, top-level keys within the profile
-// superset, and (where present) string-shaped models.* selectors. The
-// CROSS-MEMBER models.agents key lint (each key must match a shipped agent def's
-// frontmatter name) is not enforceable per-member and runs in
-// validateAndHashConfigBundle over the collected member set.
+// validateProfileMember validates a profiles/<name>/profile.yml member in isolation:
+// three components with filename profile.yml and a grammar-valid <name>, a YAML-mapping
+// body, superset top-level keys, and string-shaped models.* selectors. The CROSS-MEMBER
+// models.agents key lint runs in validateAndHashConfigBundle over the collected set.
 func validateProfileMember(parts []string, joined string, r io.Reader) ([]byte, error) {
 	if len(parts) != 3 || parts[2] != memberProfileYML {
 		return nil, fmt.Errorf("%w: profiles member %q must be profiles/<name>/%s", ErrInvalidArgument, joined, memberProfileYML)
@@ -800,9 +701,8 @@ func validateProfileMember(parts []string, joined string, r io.Reader) ([]byte, 
 	if err := validateProfileModelSelectors(mapping, joined); err != nil {
 		return nil, err
 	}
-	// The profile settings sub-mapping shares the settings/config.yml credential
-	// axis, so reuse the same denylist here (F3). The extensions/corpus axes'
-	// credential surfaces are deferred with their consumption task — not now.
+	// The profile settings sub-mapping shares the settings/config.yml credential axis, so
+	// reuse the same denylist here (F3). The extensions/corpus axes are deferred.
 	if settingsRaw, present := mapping["settings"]; present && settingsRaw != nil {
 		if err := rejectNonStringKeys(settingsRaw, joined, "settings"); err != nil {
 			return nil, err
@@ -816,11 +716,9 @@ func validateProfileMember(parts []string, joined string, r io.Reader) ([]byte, 
 	return content, nil
 }
 
-// rejectNonStringKeys rejects a YAML value that is a mapping with any non-string
-// key. yaml.v3 decodes such a mapping as map[any]any (not map[string]any), so a
-// v.(map[string]any) assertion on it fails OPEN, silently skipping every
-// key-level check below. A non-mapping value (scalar/list/absent) is not this
-// class and passes through for the caller's own shape handling.
+// rejectNonStringKeys rejects a YAML mapping value with any non-string key. yaml.v3
+// decodes such a mapping as map[any]any, so a v.(map[string]any) assertion fails OPEN,
+// silently skipping every key-level check. A non-mapping value passes through.
 func rejectNonStringKeys(v any, joined, path string) error {
 	if _, ok := v.(map[any]any); ok {
 		return fmt.Errorf("%w: profile member %q %s must be a string-keyed mapping", ErrInvalidArgument, joined, path)
@@ -828,15 +726,10 @@ func rejectNonStringKeys(v any, joined, path string) error {
 	return nil
 }
 
-// validateProfileModelSelectors enforces the models.* selector SHAPE: a model
-// selector is an opaque string (the split-on-last-colon grammar is the SDK's,
-// never re-parsed here). models.manager, where present, must be a string; every
-// value under models.agents, where present, must be a string. An absent or null
-// axis is fine (deferred/empty). Non-string selectors are rejected so a
-// mis-shaped profile fails closed at the door rather than silently at render.
-// A models (or models.agents) mapping with any non-string key is rejected up
-// front: yaml.v3 decodes it as map[any]any, so a naive map[string]any assertion
-// would fail OPEN and skip every selector check below.
+// validateProfileModelSelectors enforces the models.* selector SHAPE: each selector is
+// an opaque string. models.manager and every models.agents value, where present, must be
+// a string; an absent/null axis is fine. A mapping with any non-string key is rejected up
+// front (yaml.v3 decodes it as map[any]any, and a naive assertion fails OPEN).
 func validateProfileModelSelectors(mapping map[string]any, joined string) error {
 	modelsRaw, present := mapping["models"]
 	if !present || modelsRaw == nil {
@@ -847,9 +740,8 @@ func validateProfileModelSelectors(mapping map[string]any, joined string) error 
 	}
 	models, ok := modelsRaw.(map[string]any)
 	if !ok {
-		// A non-mapping models value (scalar/list) is a deferred-shape concern,
-		// not a v1 door failure (v1 consumes models but tolerates an empty axis).
-		// The map[any]any case was already rejected above.
+		// A non-mapping models value (scalar/list) is a deferred-shape concern, not a v1
+		// door failure. The map[any]any case was already rejected above.
 		return nil
 	}
 	if v, present := models["manager"]; present && v != nil {
@@ -879,28 +771,21 @@ func validateProfileModelSelectors(mapping map[string]any, joined string) error 
 	return nil
 }
 
-// lintProfileAgentKeys is the CROSS-MEMBER models.agents key lint (RIG-2968 T1):
-// every key under a profile's models.agents must match the FRONTMATTER name: of
-// an agents/*.md def shipped in the SAME bundle — NOT its filename stem. The SDK
-// resolves a subagent by agent.name and consults the override record per spawned
-// agentName, so a key matching no def name is a SILENT no-op at spawn; the lint
-// turns that typo into a reviewable door failure. agentDefNames is the set of
-// frontmatter names collected from the bundle's agents/ members; profileBodies
-// maps each profile member path to its raw YAML. Runs after the streamed pass,
-// over already-collected bytes, so it never perturbs the canonical hash.
+// lintProfileAgentKeys is the CROSS-MEMBER models.agents key lint (RIG-2968 T1): every
+// key under a profile's models.agents must match the FRONTMATTER name: of an agents/*.md
+// def in the SAME bundle. The SDK resolves a subagent by agent.name, so a key matching no
+// def is a SILENT no-op at spawn; the lint turns that typo into a door failure.
 func lintProfileAgentKeys(profileBodies map[string][]byte, agentDefNames map[string]bool) error {
 	for joined, body := range profileBodies {
 		mapping, err := parseYAMLMapping(body, joined)
 		if err != nil {
-			// Already validated during the per-member pass; a re-parse failure
-			// here would be a logic error, but fail closed regardless.
+			// Already validated during the per-member pass; a re-parse failure here would
+			// be a logic error, but fail closed regardless.
 			return err
 		}
-		// The per-member validateProfileModelSelectors pass runs and aborts the
-		// bundle before this cross-member lint, and it already rejected any
-		// non-string-keyed models mapping (yaml.v3's map[any]any). So no such
-		// mapping reaches here: these map[string]any assertions cannot fail-open
-		// on that class, and a miss below is a genuine non-mapping value.
+		// The per-member selector pass already rejected any non-string-keyed models
+		// mapping (yaml.v3's map[any]any), so these map[string]any assertions cannot
+		// fail-open on that class; a miss below is a genuine non-mapping value.
 		models, ok := mapping["models"].(map[string]any)
 		if !ok {
 			continue
@@ -918,15 +803,10 @@ func lintProfileAgentKeys(profileBodies map[string][]byte, agentDefNames map[str
 	return nil
 }
 
-// agentDefFrontmatterName parses an agents/*.md def's leading YAML frontmatter
-// and returns its name: field, or "" if there is no frontmatter or no name. It
-// recovers the name even when a SIBLING frontmatter field is a YAML-ambiguous
-// scalar (e.g. `description: A thing: with a colon`) that would fail a strict
-// whole-block parse, matching the SDK loader's permissiveness: it first tries a
-// full YAML parse, then falls back to a tolerant `name:` line-scan (mirroring
-// the SDK's parseFrontmatter line-parser cascade for the name field). The lint
-// keys on this parsed name, NOT the filename stem, so a def whose frontmatter
-// name diverges from its stem lints correctly.
+// agentDefFrontmatterName parses an agents/*.md def's leading YAML frontmatter and
+// returns its name: field, or "" if absent. It recovers the name even when a sibling
+// field is a YAML-ambiguous scalar (full parse first, then a tolerant `name:` line-scan,
+// mirroring the SDK loader). The lint keys on this parsed name, NOT the filename stem.
 func agentDefFrontmatterName(content []byte) string {
 	fm, ok := extractFrontmatter(content)
 	if !ok {
@@ -938,9 +818,8 @@ func agentDefFrontmatterName(content []byte) string {
 	if err := yaml.Unmarshal(fm, &doc); err == nil && doc.Name != "" {
 		return doc.Name
 	}
-	// Whole-block parse failed or yielded no name: a sibling field may be a
-	// YAML-ambiguous scalar. Fall back to a tolerant line-scan for the name
-	// field alone, mirroring the SDK's parseFrontmatter line-parser fallback.
+	// Whole-block parse failed or yielded no name: a sibling field may be YAML-ambiguous.
+	// Fall back to a tolerant line-scan for the name field alone, mirroring the SDK.
 	for line := range strings.SplitSeq(string(fm), "\n") {
 		m := frontmatterNamePattern.FindStringSubmatch(line)
 		if m == nil {
@@ -989,14 +868,10 @@ func validateFlatNamedMember(topDir, filename, joined string, exts ...string) er
 	return fmt.Errorf("%w: %s member %q must end in one of %s", ErrInvalidArgument, topDir, joined, strings.Join(exts, ", "))
 }
 
-// parseYAMLMapping parses content as YAML and requires it to be a mapping
-// (rejecting a scalar or sequence), returning the decoded map. This is the door
-// twin of the mcp/*.json "must parse as JSON" rule and mirrors the SDK's strict
-// overlay-loader contract (settings.ts #loadOverlayYaml: a non-object/array
-// overlay is rejected). It is best-effort — Go and Bun YAML parsers can diverge;
-// the container-side Bun-parse guard (T4) is the authoritative backstop. An
-// empty document (YAML null) is treated as an empty mapping, matching the
-// loader's `parsed === null → {}` path.
+// parseYAMLMapping parses content as YAML and requires it to be a mapping (rejecting a
+// scalar or sequence), returning the decoded map. Door twin of the mcp/*.json "must
+// parse as JSON" rule; best-effort (the container-side Bun parse is authoritative). An
+// empty document (YAML null) is treated as an empty mapping, matching the loader.
 func parseYAMLMapping(content []byte, joined string) (map[string]any, error) {
 	var doc any
 	if err := yaml.Unmarshal(content, &doc); err != nil {
@@ -1015,15 +890,13 @@ func parseYAMLMapping(content []byte, joined string) (map[string]any, error) {
 // credentialKeys (credential_keys_gen.go) is generated from the SDK's
 // isCredential markers, read from the installed @oh-my-pi/pi-coding-agent;
 // refresh it at an SDK bump with `go generate ./...`.
-//
+
 //go:generate go run gen_credential_keys.go
 
-// rejectCredentialSettings walks the parsed settings/config.yml mapping and
-// rejects any set path that is credential-marked in the SDK (credentialKeys,
-// generated from isCredential). A settings path is dotted (auth.broker.token);
-// the YAML nests it (auth: { broker: { token: … } }), so a key is "set" when the
-// full nested path resolves to a present leaf. The door is authoritative: it
-// survives a raw PutAgentConfig (GC-5, OQ-2 (c)).
+// rejectCredentialSettings walks the parsed settings/config.yml mapping and rejects any
+// set path credential-marked in the SDK (credentialKeys). A dotted path (auth.broker.token)
+// nests in YAML, so a key is "set" when the full nested path resolves to a present leaf.
+// The door is authoritative: it survives a raw PutAgentConfig (GC-5).
 func rejectCredentialSettings(mapping map[string]any, joined string) error {
 	for _, key := range credentialKeys {
 		if yamlPathIsSet(mapping, strings.Split(key, ".")) {
@@ -1033,11 +906,10 @@ func rejectCredentialSettings(mapping map[string]any, joined string) error {
 	return nil
 }
 
-// yamlPathIsSet reports whether the nested path resolves to a present (non-nil)
-// value in the mapping. An intermediate segment that is not a mapping means the
-// path is not set. It descends through both string-keyed and non-string-keyed
-// mapping nodes (see yamlMapIndex): a non-string SIBLING key one level above a
-// credential leaf must not be able to shield that leaf from the denylist walk.
+// yamlPathIsSet reports whether the nested path resolves to a present (non-nil) value.
+// An intermediate segment that is not a mapping means the path is not set. It descends
+// through both string-keyed and non-string-keyed nodes, so a non-string sibling one
+// level above a credential leaf cannot shield it from the denylist walk.
 func yamlPathIsSet(mapping map[string]any, segments []string) bool {
 	var current any = mapping
 	for _, seg := range segments {
@@ -1051,11 +923,9 @@ func yamlPathIsSet(mapping map[string]any, segments []string) bool {
 }
 
 // yamlMapIndex looks up a string key in a YAML-decoded mapping node that may be
-// either map[string]any (all keys are strings) or map[any]any (yaml.v3 decodes a
-// mapping to this shape when ANY key is non-string). Handling both means a
-// non-string sibling key can no longer flip an intermediate node to map[any]any
-// and thereby fail-open a map[string]any-only lookup, hiding a string-keyed leaf
-// from a security walk. A non-mapping node yields (nil, false).
+// map[string]any or map[any]any (yaml.v3's shape when ANY key is non-string). Handling
+// both means a non-string sibling can't flip the node type and fail-open a
+// string-only lookup, hiding a leaf from a security walk. A non-mapping node yields (nil, false).
 func yamlMapIndex(node any, key string) (any, bool) {
 	switch m := node.(type) {
 	case map[string]any:
@@ -1076,16 +946,10 @@ type yamlMapEntry struct {
 	val any
 }
 
-// yamlMapEntries returns every entry of a YAML-decoded mapping node as a slice,
-// handling both map[string]any and the map[any]any yaml.v3 produces when ANY key
-// is non-string. Non-string keys are rendered with fmt.Sprint (they name a
-// provider/header and are used only for diagnostics). A non-mapping node yields
-// nil. It is the yamlMapIndex analog for a security walk that must ENUMERATE
-// members: iterating through both shapes means a non-string sibling key can no
-// longer flip the node's Go type and fail-open a map[string]any-only assertion
-// that would skip a credential-bearing sibling. Returning a slice (not a
-// normalized map) is collision-safe: a non-string key that renders to the same
-// string as a sibling cannot overwrite and hide it.
+// yamlMapEntries returns every entry of a YAML-decoded mapping node as a slice, handling
+// both map[string]any and map[any]any (non-string keys rendered with fmt.Sprint,
+// diagnostics-only). The yamlMapIndex analog for a walk that ENUMERATES; a slice (not a
+// map) is collision-safe when a non-string key renders to a sibling's string.
 func yamlMapEntries(node any) []yamlMapEntry {
 	switch m := node.(type) {
 	case map[string]any:
@@ -1105,21 +969,10 @@ func yamlMapEntries(node any) []yamlMapEntry {
 	}
 }
 
-// rejectCredentialModels rejects a models.yml member that sets either of the two
-// credential-bearing provider surfaces (CP-4):
-//
-//   - providers.<name>.apiKey — a literal or any configured key.
-//   - providers.<name>.headers.<h> set to a NON-env-indirection literal (a
-//     pinned secret). An env-referenced header value passes: the SDK resolves a
-//     header value env-name-first, literal fallback (resolveConfigValue), so a
-//     value that names an env var is indirection, not a secret; a value that is
-//     not an env var name (and not a `!command`) resolves to itself — a pinned
-//     credential.
-//
-// The door cannot see the container's env, so "is an env reference" is a
-// syntactic judgment: a bare identifier that is a plausible env-var name (or a
-// `!command`) passes; anything else (contains spaces, punctuation like a bearer
-// token, a URL, etc.) is treated as a literal secret and rejected.
+// rejectCredentialModels rejects a models.yml member that sets either credential-bearing
+// provider surface (CP-4): providers.<name>.apiKey, or providers.<name>.headers.<h> set
+// to a NON-env-indirection literal (a pinned secret). An env-referenced header passes.
+// The door can't see the container env, so "is an env reference" is a syntactic judgment.
 func rejectCredentialModels(mapping map[string]any, joined string) error {
 	providers, present := mapping["providers"]
 	if !present {
@@ -1151,11 +1004,9 @@ func rejectCredentialModels(mapping map[string]any, joined string) error {
 // matches is indirection (passes); anything else is a pinned literal.
 var envIndirectionPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// isEnvIndirection reports whether a header value is an env reference (or a
-// `!command` indirection) rather than a pinned literal secret. It mirrors the
-// syntactic surface of the SDK's resolveConfigValue: a leading `!` is a command
-// (indirection), and an otherwise bare env-var-name token is an env reference.
-// A literal secret (a bearer token, an inline key) matches neither.
+// isEnvIndirection reports whether a header value is an env reference (or a `!command`)
+// rather than a pinned literal secret, mirroring the SDK's resolveConfigValue: a leading
+// `!` is a command, a bare env-var-name token is an env reference. A literal secret matches neither.
 func isEnvIndirection(value string) bool {
 	if strings.HasPrefix(value, "!") {
 		return true

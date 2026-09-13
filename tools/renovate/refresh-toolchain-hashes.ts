@@ -1,33 +1,21 @@
 #!/usr/bin/env bun
 // Renovate postUpgradeTask: refresh the vendored-toolchain Nix hashes after a
-// per-language pin bump. Each `tools/toolchain/versions/<lang>.nix` file is the
-// single source of truth for its tool's version, and pins a `sha256-` next to
-// each version-interpolated source URL, one per platform leg:
-//
-//   tools/toolchain/versions/bun.nix   bun  (x86_64-linux, aarch64-linux, aarch64-darwin)
-//   tools/toolchain/versions/node.nix  node (x86_64-linux, aarch64-linux, aarch64-darwin)
-//   tools/toolchain/versions/moon.nix  moon (x86_64-linux, aarch64-linux, aarch64-darwin)
-//
-// A Renovate pin bump leaves those hashes stale → the CI image build fails until
-// they're refreshed. Renovate runs this after applying the update so the same PR
-// lands green. `fetchurl` hashes the downloaded file directly, so a `nix store
-// prefetch-file` of the same URL yields the matching SRI hash. Go is NOT handled
-// here: its binary and per-platform hashes come from the go-overlay input, which
-// ships the hashes for each version — a go bump touches no pin file, so this
-// script no-ops on it.
-//
-// Self-gating: for each pin file, act only when it differs from the base branch,
-// so it's a cheap no-op on every non-toolchain Renovate branch (no prefetch),
-// and a bun-only bump re-prefetches bun.nix alone, leaving node/moon untouched.
-//
-// Requires `nix` (with the nix-command experimental feature) on PATH — provided
-// by the self-hosted Renovate runner's environment. Run via `bun` (already on
-// the runner PATH; it runs `bun install --lockfile-only` as an allowed command).
-//
-// This is the bun/TypeScript port of the internal monorepo's refresh-toolchain-hashes
-// (RIG-2432), scoped to compass's three vendored binary toolchains (bun, node,
-// moon). Every observable behaviour — the per-file self-gate, the per-leg hash
-// fail-loud on a missing marker / hash line, and idempotence — is preserved 1:1.
+// per-language pin bump. Each tools/toolchain/versions/<lang>.nix single-sources
+// its tool's version and pins a sha256- per platform leg (bun.nix, node.nix,
+// moon.nix — x86_64-linux, aarch64-linux, aarch64-darwin each).
+
+// A pin bump leaves those hashes stale → the CI image build fails until
+// refreshed. Renovate runs this after the update so the PR lands green. fetchurl
+// hashes the file directly, so nix store prefetch-file of the same URL yields the
+// matching SRI. Go is NOT handled here (its hashes come from go-overlay).
+
+// Self-gating: act on a pin file only when it differs from base, so a bun-only
+// bump re-prefetches bun.nix alone. Requires nix (nix-command) on PATH, provided
+// by the runner; run via bun.
+
+// bun/TypeScript port of the internal monorepo's refresh-toolchain-hashes
+// (RIG-2432), scoped to compass's three vendored binary toolchains. Every
+// observable behaviour is preserved 1:1.
 
 import { $ } from "bun";
 
@@ -38,14 +26,10 @@ export const BUN_NIX = "tools/toolchain/versions/bun.nix";
 export const NODE_NIX = "tools/toolchain/versions/node.nix";
 export const MOON_NIX = "tools/toolchain/versions/moon.nix";
 
-// ── Pure rewrite (string in, string out) ─────────────────────────────────────
-//
-// Replace the `hash = "sha256-...";` value on the line that immediately follows
-// the line containing the STATIC fragment `marker` (a substring present verbatim
-// regardless of version — the `.nix` URLs interpolate the version, so the
-// concrete version never appears literally). Throws if `newSri` is empty, if the
-// marker isn't found, or if no `hash = "sha256-` line follows it, so a silent
-// no-op can't ship a stale pin. Idempotent: a matching hash yields no net change.
+// Pure rewrite (string in, string out). Replace the hash = "sha256-..." value on
+// the line following the one containing the STATIC fragment marker (a substring
+// present regardless of version — the URLs interpolate the version). Throws on an
+// empty newSri, a missing marker, or no hash line after it. Idempotent.
 export function rewriteHash(
 	fileText: string,
 	marker: string,
@@ -110,11 +94,9 @@ async function updateHashFile(
 }
 
 async function main(): Promise<void> {
-	// Resolve the repo root from git, not a hardcoded "../" depth: Renovate
-	// invokes this as a postUpgradeTask and the path constants above are
-	// repo-root-relative, so a wrong cwd silently no-ops the gate. git is already
-	// a hard dependency (the gate runs `git diff`), so this adds none and is
-	// move-proof.
+	// Resolve the repo root from git, not a hardcoded depth: the path constants
+	// are repo-root-relative, so a wrong cwd silently no-ops the gate. git is
+	// already a hard dependency here.
 	const repoRoot = (await $`git rev-parse --show-toplevel`.text()).trim();
 	process.chdir(repoRoot);
 
@@ -127,12 +109,10 @@ async function main(): Promise<void> {
 		baseRef = `origin/${baseBranch}`;
 	}
 
-	// Per-tool pin file + its three platform legs. The `marker` is the STATIC
-	// tail of each fetchurl URL (no version), so it matches the
-	// version-interpolated `.nix` source line verbatim; `url` rebuilds the full
-	// URL at the pinned version to prefetch. Each pin file carries all three legs
-	// (x86_64-linux, aarch64-linux, aarch64-darwin — the CI image + dev shell are
-	// multi-arch), so a refresh rewrites all three in its own file.
+	// Per-tool pin file + its three platform legs. marker is the STATIC tail of
+	// each fetchurl URL (no version), matching the interpolated source line; url
+	// rebuilds the full URL at the pinned version. Each file carries all three
+	// legs (multi-arch CI image + dev shell), so a refresh rewrites all three.
 	const tools: { file: string; legs: { marker: string; url: string }[] }[] = [];
 	const bunBase = "https://github.com/oven-sh/bun/releases/download";
 	const nodeBase = "https://nodejs.org/dist";

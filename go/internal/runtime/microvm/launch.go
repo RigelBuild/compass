@@ -127,10 +127,9 @@ type VM struct {
 	vsockSocket string // host end of the hybrid vsock (empty under the net-only smoke)
 	vsockPort   uint32
 
-	// Cleanup targets: the AF_UNIX sockets the daemons/VMM serve and the three
-	// host-written pidfiles (§(a)). Removed by Shutdown after the processes are
-	// reaped. A pidfile path is appended by startRecordedChild BEFORE its first
-	// write, so a boot that fails between the intent record and the settled one
+	// Cleanup targets: the AF_UNIX sockets and the three host-written pidfiles
+	// (§(a)), removed by Shutdown after reap. A pidfile path is appended by
+	// startRecordedChild BEFORE its first write, so a boot that fails mid-record
 	// still has its record cleaned up by the deferred Shutdown.
 	sockets  []string
 	pidfiles []string
@@ -192,15 +191,10 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 		if lookErr != nil {
 			return nil, fmt.Errorf("microvm: resolving virtiofsd on PATH: %w", lookErr)
 		}
-		// Both subordinate bases are READ, never assumed and never shared:
-		// newuidmap validates the requested host uid range against /etc/subuid
-		// and newgidmap validates the gid range against /etc/subgid, and those
-		// are INDEPENDENT allocations (subuid.go). Reusing the uid base for the
-		// gid map boots fine on a shadow-utils-default box and dies on a
-		// divergent one — after virtiofsd has already bound its socket, which is
-		// why waitForSockets below is liveness-aware. VerifySubordinateIDRange
-		// runs the same two reads at startup so this error is rare by
-		// construction.
+		// Both subordinate bases are READ, never assumed: newuidmap validates the
+		// uid range against /etc/subuid and newgidmap the gid range against
+		// /etc/subgid — INDEPENDENT allocations. Reusing the uid base dies on a
+		// divergent box after virtiofsd bound its socket (waitForSockets is liveness-aware).
 		subUIDBase, subGIDBase := 0, 0
 		if cfg.AgentUID != 0 {
 			uidBase, gidBase, subErr := SubordinateIDBases()
@@ -228,16 +222,13 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	vm.passt = &child{
 		name:    "passt",
 		logPath: filepath.Join(dir, "passt.log"),
-		// -f keeps passt in the foreground so this *exec.Cmd IS the passt
-		// process (default is to daemonize, which would orphan it and make the
-		// Cmd exit immediately). The -a/-g/-n/-D flags fix the host-controlled
-		// address plan passt serves over DHCP (§(c)).
-		//
-		// NO --pid: passt's self-written pidfile is retired (§(a)). Because -f
-		// makes this Cmd the passt process, the host knows passt's pid exactly
-		// as it knows the other two, and a host-written record can carry the
-		// starttime+boot-id reuse defense that a daemon's own bare-pid file
-		// cannot. One writer, one format, three files.
+		// -f keeps passt in the foreground so this *exec.Cmd IS the passt process
+		// (default daemonizes, orphaning it). The -a/-g/-n/-D flags fix the
+		// host-controlled address plan passt serves over DHCP (§(c)).
+
+		// NO --pid: passt's pidfile is retired (§(a)). -f makes this Cmd the passt
+		// process, so the host knows its pid and carries the starttime+boot-id
+		// reuse defense. One writer, one format, three files.
 		//nolint:gosec // G204: the microVM harness seam — passtPath is LookPath-resolved and the argv is harness-built (fixed flags + BootConfig socket), neither user-controlled
 		cmd: exec.CommandContext(ctx, passtPath,
 			"--vhost-user",
@@ -253,14 +244,10 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	}
 	vm.sockets = append(vm.sockets, cfg.Net.VhostUserSocket)
 
-	// virtiofsd + passt must be serving before cloud-hypervisor connects to
-	// their sockets. Bounded poll, not a fixed sleep — and LIVENESS-AWARE, not
-	// merely path-existence: virtiofsd binds its AF_UNIX socket BEFORE the
-	// id-map setup that can fail, so a mapping failure leaves the socket on
-	// disk behind a dead daemon. A path-only poll would return nil there and
-	// launch cloud-hypervisor against a corpse, surfacing as an inscrutable
-	// vhost-user negotiation error instead of virtiofsd's own "couldn't setup
-	// id mappings" line.
+	// virtiofsd + passt must be serving before cloud-hypervisor connects.
+	// Bounded poll, LIVENESS-AWARE not path-existence: virtiofsd binds its socket
+	// BEFORE the id-map setup that can fail, so a mapping failure leaves the
+	// socket behind a dead daemon and a path-only poll would launch against a corpse.
 	waiting := []*child{vm.passt}
 	ready := []string{cfg.Net.VhostUserSocket}
 	if opts.withFS {
@@ -492,11 +479,10 @@ func startChild(c *child) error {
 	}
 	c.exited = make(chan struct{})
 	go func() {
-		// The single Wait for this child. waitErr is written BEFORE the close,
-		// so any reader that has received from c.exited sees it (that is the
-		// happens-before edge); an *exec.ExitError from a killed daemon is the
-		// expected teardown outcome and is filtered by waitResult at each
-		// reader, not here.
+		// The single Wait for this child. waitErr is written BEFORE the close, so
+		// any reader that received from c.exited sees it (happens-before). An
+		// *exec.ExitError from a killed daemon is expected and filtered by
+		// waitResult at each reader, not here.
 		c.waitErr = c.cmd.Wait()
 		close(c.exited)
 	}()
@@ -574,16 +560,12 @@ func (vm *VM) Shutdown(ctx context.Context) error {
 		// VMM first: kill outright, then let the sole reaper's single Wait
 		// complete via vmmExited (Shutdown must not Wait the VMM itself — that
 		// would be a second Wait on the same process).
-		//
-		// The RECEIVE carries its own nil guard, because vmmExited is hoisted
-		// onto the VM only AFTER startRecordedChild returns: a
-		// startRecordedChild that fails once startChild has already spawned
-		// the VMM leaves a live process handle beside a NIL channel, and
-		// launch's deferred Shutdown runs in exactly that state. Receiving on
-		// the nil channel there blocks FOREVER — a hang with no stack and no
-		// diagnostic, replacing the launch error it was cleaning up after. It
-		// is the same nil-channel condition WaitVMMExit guards on.
-		//
+
+		// The RECEIVE carries its own nil guard: vmmExited is hoisted onto the VM
+		// only AFTER startRecordedChild returns, so a failure once the VMM is
+		// spawned leaves a live handle beside a NIL channel, and receiving on it
+		// would block FOREVER. Same condition WaitVMMExit guards on.
+
 		// The guard is on the receive alone and NOT on the arm: such a process
 		// is started, live, and unrecorded, so skipping the Kill would orphan
 		// precisely the child the deferred Shutdown exists to clean up. Its
@@ -698,12 +680,10 @@ func (vm *VM) PSS() (map[string]int64, error) {
 		}
 		pss, err := readPSS(c.cmd.Process.Pid)
 		if err != nil {
-			// Best-effort: a sandboxed helper makes its own smaps_rollup
-			// unreadable to the rootless harness — passt sets PR_SET_DUMPABLE=0,
-			// which reparents /proc/<pid>/smaps_rollup to root and denies the
-			// non-root reader — and an already-exited process's proc entry is
-			// gone. Both are expected and leave no entry rather than failing:
-			// PSS is informational spike output (record §(g)), not a boot gate.
+			// Best-effort: a sandboxed helper makes its smaps_rollup unreadable
+			// (passt sets PR_SET_DUMPABLE=0, reparenting it to root), and an
+			// exited process's proc entry is gone. Both are expected and leave no
+			// entry — PSS is informational (record §(g)), not a boot gate.
 			if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
 				continue
 			}

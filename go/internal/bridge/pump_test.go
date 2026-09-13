@@ -2,12 +2,10 @@
 
 package bridge
 
-// The T3 bridge gate: the compass_rpc pump exercised against a REAL in-process
-// stub daemon served over cleartext-HTTP/2 (h2c) on a Unix domain socket — the
-// same door the shipped daemon serves. Deterministic + event-gated only: every
-// synchronization point is a channel/observed event, never a sleep, and there
-// are no retries. A short-deadline root context bounds each blocking wait so a
-// wedged pump fails fast instead of hanging.
+// The T3 bridge gate: the compass_rpc pump against a REAL in-process stub daemon
+// served over h2c on a Unix domain socket — the same door the shipped daemon
+// serves. Deterministic + event-gated: every sync point is a channel/observed
+// event, never a sleep. A short-deadline root context bounds each blocking wait.
 
 import (
 	"context"
@@ -326,13 +324,10 @@ func hasHeaderPair(pairs [][2]string, name, value string) bool {
 }
 
 func TestPumpMidStreamErrorAfterHead(t *testing.T) {
-	// The server declares more body than it writes: Content-Length is far larger
-	// than the bytes it flushes, then it returns. The h2c client detects the
-	// short stream and resp.Body.Read returns a non-EOF, non-cancel error AFTER
-	// the head (and partial body) have already been emitted — the Head->Error
-	// terminus. This is the one contract branch the UI adapter routes distinctly
-	// (headSeen ? controller.error : rejectHead). No panic, no hijack: the short
-	// body is deterministically classified as an error by the transport.
+	// The server declares more body (Content-Length) than it writes, then
+	// returns. The h2c client detects the short stream and Read returns a
+	// non-EOF error AFTER the head emitted — the Head->Error terminus, the one
+	// branch the UI adapter routes distinctly (headSeen ? error : rejectHead).
 	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {

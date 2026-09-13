@@ -23,13 +23,10 @@ export type BootModeDeps = {
 
 export const defaultDeps: BootModeDeps = {
 	bootNativeClient,
-	// Embedded never receives __COMPASS_SERVER_URL__ (the shell injects it in
-	// client mode only, guarded by client_test.go), and the bridge fetch routes
-	// over the Wails IPC by path — so this is a syntactic same-origin
-	// placeholder, never dialed. It must be ABSOLUTE: createDaemonFetch does
-	// `new Request(url)`, which rejects a relative URL on a document with no
-	// resolvable origin. Matches the placeholder convention in
-	// packages/compass-client (createCompassClientOverFetch).
+	// Embedded never receives __COMPASS_SERVER_URL__ (injected in client mode only), and the
+	// bridge fetch routes over Wails IPC by path — so this is a syntactic same-origin
+	// placeholder, never dialed. Must be ABSOLUTE: createDaemonFetch does `new Request(url)`,
+	// which rejects a relative URL. Matches the packages/compass-client convention.
 	embeddedConnectionProvider: () =>
 		nativeConnectionProvider(shellServerUrl() ?? "http://compass.localhost"),
 	envConnectionProvider,

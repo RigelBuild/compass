@@ -2,11 +2,10 @@
 
 package server
 
-// DB-free unit tests for resolveMasterKey's decode + fail-closed arms — the
-// parts that return BEFORE the server_key_state tripwire (which needs a store).
-// The tripwire reconcile (first-boot insert, matching-key boot, mismatched-key
-// boot fails) is proven in the pgtest lane. The load-bearing security property
-// tested here: no error message ever contains any substring of the secret value.
+// DB-free unit tests for resolveMasterKey's decode + fail-closed arms — the parts
+// that return BEFORE the server_key_state tripwire (proven in the pgtest lane). The
+// load-bearing security property tested here: no error message ever contains any
+// substring of the secret value.
 
 import (
 	"context"

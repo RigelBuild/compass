@@ -1,14 +1,9 @@
 package forge
 
 // Unit tests for the hand-rolled net/http Linear GraphQL client, driven by a
-// stubbed http.RoundTripper (no network). Covers the T6 test cycle: issueCreate
-// and commentCreate request goldens (query + variables, incl. teamId and
-// createAsUser when the actor probe passes), team-key->id resolve-once-and-cache,
-// GetIssue / ListIssues read mapping incl. IssueFilter state, ErrUnsupported for
-// all five PR/review ops, the 429 -> resource_exhausted mapping, a GraphQL
-// errors-on-200 -> *StatusError, the actor-probe-fails degrade path (no
-// createAsUser + the exact log line), and 401 -> TokenSource.Invalidate.
-// context.Background() here is the test root — the sanctioned F-ttsr exemption.
+// stubbed http.RoundTripper (no network). Covers T6: issueCreate/commentCreate
+// goldens, resolve-once team-id cache, read mapping, ErrUnsupported for PR/review
+// ops, 429/GraphQL-error/401 mappings, and the actor-probe degrade path.
 
 import (
 	"context"

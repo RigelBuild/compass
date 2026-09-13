@@ -1,36 +1,18 @@
-# tools/toolchain/versions/go-analysis.nix — the Go analysis battery pins.
+# The Go analysis battery pins. golangci-lint/govulncheck/go-licenses/nilaway
+# link go/types + x/tools, so each must be BUILT with the same Go toolchain the
+# code compiles with — a go1.26-built analyzer fails on a go1.27 stdlib. They are
+# rebuilt with the go-overlay toolchain (see ../go-analysis.nix).
 #
-# golangci-lint, govulncheck, go-licenses and nilaway are Go programs that link
-# the go/types + golang.org/x/tools source-processing packages, so each must be
-# BUILT with the same Go toolchain the code is COMPILED with (go.nix). A skew —
-# a go1.26-built analyzer parsing a go1.27 stdlib — fails every run with
-# `file requires newer Go version go1.27 (application built with go1.26)`. So
-# these four are rebuilt with the go-overlay toolchain (tools/toolchain/
-# go-analysis.nix) rather than taken as the bare go1.26-built nixpkgs attrs.
+# Rebuilding is necessary but not sufficient: an analyzer also needs a RELEASE new
+# enough for the newer language/IR, so two carry a source override past the
+# nixpkgs pin — nilaway (nixpkgs' x/tools v0.31.0 can't parse go1.27; pinned to
+# v0.45.0) and golangci-lint (nixpkgs' bundled staticcheck panics on go1.27 IR;
+# 2.13.0 added support, pinned to 2.13.2). govulncheck/go-licenses need none.
 #
-# Rebuilding with the newer compiler is necessary but not always sufficient: an
-# analyzer also needs a RELEASE new enough to understand the newer language/IR.
-# So two of the four carry a source override past the nixpkgs pin:
-#
-#   - nilaway: nixpkgs ships 0-unstable-2025-03-07 (x/tools v0.31.0), which
-#     cannot parse go1.27 even when rebuilt. Pinned to an upstream rev carrying
-#     x/tools v0.45.0.
-#   - golangci-lint: nixpkgs ships 2.12.2, whose bundled staticcheck
-#     (honnef.co/go/tools) panics on the go1.27 IR. 2.13.0 added go1.27 support
-#     (#6642); pinned to 2.13.2.
-#
-# govulncheck and go-licenses need no source override — their nixpkgs pins carry
-# an x/tools new enough for go1.27, so they omit a pin here and build the nixpkgs
-# source with the overridden toolchain (go-licenses also gets the toolchain in
-# its own `go` arg — see go-analysis.nix). Only the two below carry a pin.
-#
-# MANUALLY MAINTAINED — these pins are NOT yet Renovate-managed (the other
-# versions/*.nix files each have a customManager in tools/renovate/config.json5;
-# this file has none — tracked as a follow-up). Bump policy until then: move a
-# tool's rev/tag + hash + vendorHash together and re-prefetch both hashes. The
-# FOD derivations fail loudly on a WRONG hash, but never on a stale-but-consistent
-# pin — this file is the pin most likely to rot (nilaway tracks an untagged main
-# rev) and the least likely to be noticed, so check it on every Go bump.
+# MANUALLY MAINTAINED — NOT yet Renovate-managed (tracked as a follow-up). Bump:
+# move a tool's rev/tag + hash + vendorHash together and re-prefetch both. The FOD
+# fails loudly on a wrong hash but not a stale-but-consistent pin, so check it on
+# every Go bump (nilaway tracks an untagged main rev, most likely to rot).
 {
   nilaway = {
     version = "0-unstable-2026-08-08";

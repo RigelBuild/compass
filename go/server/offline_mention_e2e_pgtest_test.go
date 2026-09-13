@@ -2,53 +2,10 @@
 
 package server
 
-// RIG-1641 T4 — the end-to-end offline-mention redelivery pgtest: T1's real
-// owed_mentions SQL + T2's routeMentions/fanOut arms + T3's resume-based
-// AgentWaker composed over a REAL Postgres store and the REAL runnerhub.Hub, the
-// way production assembles them (sinks.go:142-155 startDeliveryConsumer). Every
-// existing delivery test (internal/delivery/*_test.go) drives the consumer over
-// hand-written fakes (fakeReads / fakeWaker); NONE exercises the arms against
-// the real store SQL and the real resume waker, so the fakes could silently
-// diverge from the real InSweepSet disjunct, RecordOwedMention idempotency, the
-// AckDelivery owed-clear txn, and OwedMentions ordering. This closes that gap.
-//
-// The wire the test stands up, inline, is production's:
-//
-//	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
-//	c.SetAgentWaker(newLifecycleService(st, hub, nil)) // the REAL resume waker
-//	hub.SetSettleSink(c); hub.SetSessionStartSink(c); hub.SetDeliveryStore(st)
-//	go c.Run(ctx)
-//
-// It REUSES the full-stack placement harness (attachFakeRunner + recordingRunner
-// from this package's service_placement_pgtest_test.go): a real store.Store + a
-// real runnerhub.Hub + a recordingRunner attached over the mounted RunnerService
-// door that records every pushed command as a WIRE fact. That harness is the
-// only one that (a) lets a mention post through the real comms bus / settle edge,
-// (b) lets a wake's fresh-start push a Start observed on the recording door, and
-// (c) exposes newLifecycleService in-package — so it is the home the brief's
-// package/location analysis lands on (no new package, no import cycle: server
-// already imports delivery, sinks.go:27).
-//
-// Why the wake pushes a Start but does NOT itself make the agent live: the real
-// waker's freshStart relays hub.Start (a Start on the wire — the observable "wake
-// fired"), but promoteSession is a no-op there because the container was never
-// bindContainer'd (no Provision precedes a wake), so no OnSessionStarted fires.
-// That is exactly why the recoverable path needs the durable owed row AND a
-// later start edge: the test drives OnSessionStarted (the exported consumer hook)
-// to model the agent actually coming live, and the owed mention is swept then.
-// DispatchControl routes to the enrolled Runner regardless of session id, so the
-// swept steer/deliver is a recorded wire command on any session id.
-//
-// Human posts settle at post (IsAgentAccount==false → route/deliver now), so the
-// test posts as the human admin through comms.PostAsAccount and the routing runs
-// synchronously off that post — there is no author-settle edge to drive.
-//
-// context.Background() is the test root (the _test.go thread-context exemption,
-// rule://go-thread-context): the one root ctx threads into Run and every store /
-// hub / consumer call below, never re-rooted mid-tree. Every wait is event-gated
-// on an observed wire fact (a pushed Start, a pushed steer/deliver) — never a
-// sleep. Reads are scoped to THIS test's seeded agents / messages, so the
-// shared-container isolated schema needs no empty-global-table assumption.
+// RIG-1641 T4 — the end-to-end offline-mention redelivery pgtest: the owed_mentions
+// SQL + routeMentions/fanOut arms + resume-based AgentWaker composed over a REAL
+// store and Hub, closing the gap where fake-driven delivery tests could diverge
+// from the real SQL. Every wait is event-gated on a wire fact, never a sleep.
 
 import (
 	"context"
@@ -116,11 +73,8 @@ func newMentionE2EWire(t *testing.T) *mentionE2EWire {
 
 	// The comms service comes FIRST, before the hub: the hub's RelayCommsCall leg
 	// executes an agent-initiated comms call through it as its CommsCaller, so it
-	// cannot be constructed after the hub — the exact ordering and reason
-	// production assembles them in (serve.go:635-637). It was previously nil here
-	// ("the wake path never relays a comms call"), which left executeCall's arms
-	// unreachable in this wire; a real caller makes the agent-authored leg
-	// drivable (T6 (h)/(i)) and changes nothing on the paths that never relay.
+	// cannot be built after the hub (the ordering production uses, serve.go:635-637).
+	// A real caller (not nil) makes the agent-authored leg drivable.
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)
 	commsSvc := comms.NewComms(st, commsBus, admin.ID)
@@ -278,17 +232,15 @@ func TestOfflineMentionRedeliveryEndToEnd(t *testing.T) {
 		}
 
 		// A SECOND start sweeps NOTHING. Enqueue gapmember's re-start, then a
-		// subscribed sentinel's start whose ONE cursor-owed message delivers on
-		// the wire: drainStarts is single-goroutine FIFO, so the sentinel's
-		// deliver arriving proves gapmember's re-start (enqueued first) already
-		// drained — and swept nothing.
+		// subscribed sentinel's start whose ONE cursor-owed message delivers on the
+		// wire: drainStarts is single-goroutine FIFO, so the sentinel's deliver proves
+		// gapmember's re-start (enqueued first) already drained — and swept nothing.
 		sentinel := w.seedAgentMember(t, "sentinelsub", true)
 		sentMsg := w.post(t, "sentinel barrier message")
-		// startCount reaching 2 is the sentinel's own deliver-arm wake ALONE:
-		// the barrier is a plain (non-mention) message and gapmember is
-		// unsubscribed, so neither fanOut's subscribed set nor routeMentions
-		// includes gapmember — it is not re-woken here. That is what makes the
-		// FIFO barrier below a genuine re-start sweep, not an incidental re-wake.
+		// startCount reaching 2 is the sentinel's own deliver-arm wake ALONE: the
+		// barrier is a plain (non-mention) message and gapmember is unsubscribed, so
+		// gapmember is not re-woken here — which makes the FIFO barrier below a genuine
+		// re-start sweep, not an incidental re-wake.
 		waitForStartCount(t, w.runner, 2)
 
 		const sessA2 = "sess-gapmember-2"

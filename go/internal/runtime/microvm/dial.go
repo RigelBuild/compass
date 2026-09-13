@@ -32,15 +32,10 @@ func DialGuest(ctx context.Context, vsockSocket string, port uint32) (net.Conn, 
 		return nil, fmt.Errorf("microvm: dialing hybrid-vsock socket %q: %w", vsockSocket, err)
 	}
 
-	// The write + ack read below run on an already-connected socket that
-	// DialContext no longer governs. Without a bound, a guest that accepts the
-	// connection but never acks (booted the socket, then wedged) would hang the
-	// dial forever — and since this backs the GuestClient transport's
-	// DialContext, the RPC ctx could not abort it. Bound the handshake to ctx's
-	// deadline, then clear it before the transparent stream is handed off so the
-	// caller (http2) owns all further deadlines. Callers that must abort a hung
-	// handshake pass a ctx with a deadline; a bare cancel is not aborted
-	// mid-handshake — adequate for the spike, where every dial is deadline-bound.
+	// The write + ack read below run on an already-connected socket DialContext
+	// no longer governs. Without a bound, a guest that accepts but never acks
+	// hangs the dial forever with no RPC-ctx abort. Bound the handshake to ctx's
+	// deadline, then clear it before handing the stream to http2.
 	if dl, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(dl); err != nil {
 			_ = conn.Close() // teardown on an already-failing path

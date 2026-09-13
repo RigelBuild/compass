@@ -1,25 +1,13 @@
 //go:build unix
 
 // The RIG-2848 forge-notification matrix over the LANDED pipeline: every
-// ForgeNotificationKind × provider × scope, driven end to end from a fake
-// signed webhook (forge_webhook_fakes_test.go) through the real ingress and
-// normalize seam, then representative cells through the real NotifyRouter.
-//
-// Two seams are exercised, reflecting exactly what has landed on main:
-//   - GitHub ingress is a real http.Handler (NewGitHubWebhookHandler): a fake
-//     signed webhook POSTs through ServeHTTP → VerifyGitHubSignature →
-//     ParseGitHubEvent, and the recordingSink captures the normalized event.
-//   - The Linear data-change arm landed as pure functions (its /webhooks mount
-//     is RIG-2717 T7, unlanded): a fake signed body runs through
-//     linearagent.VerifySignature + ParseLinearDataEvent — the same normalize
-//     seam, minus the not-yet-mounted HTTP handler.
-//
-// Then TestForgeNotifyMatrix_Route feeds normalized events through the real
-// ingest.NotifyRouter with fakes on its OWN designed seams (store/dispatch/
-// checks-roll-up), asserting the emitted ForgeNotification and the
-// artifact-vs-container fan-out. The store-backed NotifyStore adapter + the
-// full Runner/agent-turn delivery are gated on RIG-2732 T5/T7 + the RIG-2717
-// mount; this suite is the seam-independent half that stacks onto them.
+// ForgeNotificationKind × provider × scope, driven end to end from a fake signed
+// webhook through the real ingress + normalize seam, then representative cells
+// through the real NotifyRouter. GitHub ingress is a real http.Handler; the Linear
+// data-change arm landed as pure functions (VerifySignature + ParseLinearDataEvent),
+// its HTTP mount unlanded. TestForgeNotifyMatrix_Route feeds normalized events
+// through the real NotifyRouter with fakes on its own seams, asserting the emitted
+// ForgeNotification and artifact-vs-container fan-out. The seam-independent half.
 package server
 
 import (

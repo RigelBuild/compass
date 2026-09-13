@@ -1,15 +1,9 @@
 package auth
 
-// This test delivers the guarantee the //sumtype:decl on privilege cannot:
-// gochecksumtype polices type-switches over the privilege sum, but
-// classifyProcedure switches over a procedure string, which no compile-time tool
-// can see. Instead of trusting a hand-maintained switch to stay in step with the
-// generated RPC set, this ranges the proto service descriptors — the same source
-// the connect procedure constants are generated from — and fails if any generated
-// procedure is not explicitly classified. A newly added RPC therefore reddens CI
-// until it is placed in a privilege class, which is the network-door invariant:
-// a new procedure can never be served unclassified (silently fail-closed to
-// adminOnly) without a maintainer noticing.
+// Delivers the guarantee gochecksumtype cannot: classifyProcedure switches over
+// a procedure string, not a sum type. This ranges the proto service descriptors
+// and fails on any unclassified generated procedure — the network-door invariant
+// that no procedure is ever served silently fail-closed without a maintainer.
 
 import (
 	"testing"

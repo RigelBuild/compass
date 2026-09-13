@@ -2,14 +2,10 @@
 
 package runner
 
-// The AgentEnv producer seam: the Runner's only chance to tell the agent process
-// who it is, where it runs, and which model to use. Everything here is read by
-// the agent at boot (packages/compass-agent/src/cli.ts) or enforced by podman at
-// exec time, so a dropped or misspelled key is a silently broken session rather
-// than a build error. Each test names the contract a plausible bug would break.
-//
-// The argv these specs assemble into is not re-tested here — execStreamingArgs
-// is covered in internal/runtime/podman_test.go. This file pins the spec.
+// The AgentEnv producer seam: the Runner's only chance to tell the agent who it
+// is, where it runs, and which model to use. Everything is read by the agent at
+// boot or enforced by podman at exec, so a dropped or misspelled key is a silently
+// broken session, not a build error. Each test names a contract a bug would break.
 
 import (
 	"testing"

@@ -3,34 +3,9 @@
 package server
 
 // Whole-flow composition of the Server<->Runner enrollment seam (RIG-1914 S2,
-// DL-178). This is the one seam no suite on main composes: a REAL Runner (the
-// production internal/runner.Dial client) enrolling through the PRODUCTION
-// RunnerService door — the one buildNetworkServer mounts behind its Runner-subject
-// bearer interceptor — over TLS, with a REAL minted Runner token resolved against
-// the store of record.
-//
-// Every other RunnerService test stops short of this composition. The runnerhub
-// package's own wire tests (seam_test.go, integration_pgtest_test.go) mount the
-// handler on a bare h2c httptest server via NewMountedHandler with a FAKE
-// resolver — they never build the door through buildNetworkServer, never
-// terminate TLS, and never resolve a token minted by MintRunnerToken against a
-// real store. This test closes exactly that gap: it drives the real serving path
-// (Serve -> buildDoors -> buildNetworkServer, --listen + TLS), mints a Runner
-// token with runnerhub.MintRunnerToken against the same per-test schema Serve
-// opens, and dials the served door with runner.Dial. If buildNetworkServer ever
-// stopped mounting the RunnerService door, mounted it without the Runner bearer
-// interceptor, or wired the wrong resolver, the positive leg reddens; the
-// negative leg proves the Kind gate has teeth (a bad token is Unauthenticated),
-// so a door that accepted anything would redden too.
-//
-// Store-gated (Serve opens the store; the Runner bearer interceptor resolves the
-// token against it), so it lives in the `pgtest` lane behind the shared harness.
-// It reuses network_door_test.go's TLS + door helpers (writeSelfSignedCert,
-// freeLoopbackAddr, serveInBackground, waitServing) and adds only the Runner-side
-// TLS HTTP client. White-box (package server) so it drives Serve through the
-// unexported serving path the same way the sibling network-door pgtest tests do;
-// package runner does not import package server (no import cycle), and package
-// server does not import internal/runner in production — only this test does.
+// DL-178). No suite on main composes it: a REAL Runner (runner.Dial) enrolls
+// through the PRODUCTION RunnerService door over TLS with a REAL minted token.
+// The negative leg proves the Kind gate has teeth (a bad token is Unauthenticated).
 
 import (
 	"context"
@@ -112,14 +87,10 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	httpClient := newTLSRunnerHTTPClient(t, pool)
 	serverAddr := "https://" + addr
 
-	// Positive leg: the real Runner dials the served door with the minted token
-	// and Enroll succeeds. Dial constructs the RunnerService client behind its
-	// bearer interceptor and calls Enroll; a nil error + non-nil link proves the
-	// door authenticated the Runner-kind token and registered it. The first
-	// enrollment of a fresh id must not report a re-attach. This is the leg that
-	// would 401 if the token had never been minted/stored — the door's Kind gate
-	// resolves the presented token against the store, and an unresolved token is
-	// Unauthenticated (see the negative leg), so the mint is load-bearing here.
+	// Positive leg: the real Runner dials with the minted token and Enroll
+	// succeeds. A nil error + non-nil link proves the door authenticated the
+	// Runner-kind token and registered it; a fresh id must not re-attach. Would 401
+	// if the token had never been minted, so the mint is load-bearing here.
 	dctx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	link, err := runner.Dial(dctx, runner.RunnerConfig{
@@ -138,12 +109,10 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 		t.Fatal("first Enroll reattached = true, want false (fresh registration)")
 	}
 
-	// Negative leg 1 (not-found): an unminted string is rejected Unauthenticated.
-	// This exercises the hash-lookup miss branch (store.ErrNotFound ->
-	// ErrTokenNotFound -> errUnauthenticated), not the Kind gate — a token that
-	// never resolves fails before subj.Kind is ever compared. It proves the
-	// positive leg is not a vacuous accept-anything. runner.Dial wraps the enroll
-	// error, so unwrap to the connect code.
+	// Negative leg 1 (not-found): an unminted string is rejected Unauthenticated
+	// at the hash-lookup miss (store.ErrNotFound -> errUnauthenticated), before the
+	// Kind gate — proving the positive leg is not a vacuous accept-anything.
+	// runner.Dial wraps the enroll error, so unwrap to the connect code.
 	bctx, bcancel := context.WithTimeout(ctx, testTimeout)
 	defer bcancel()
 	_, err = runner.Dial(bctx, runner.RunnerConfig{
@@ -159,15 +128,11 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 		t.Fatalf("unminted-token Dial code = %v, want CodeUnauthenticated", code)
 	}
 
-	// Negative leg 2 (the real Kind gate, OQ7 cross-door): present a VALID
-	// account token — the bootstrap admin token buildNetworkServer minted and
-	// wrote under stateDir — to the RUNNER door. It resolves to a real subject,
-	// so it clears the hash-lookup branch and reaches `subj.Kind != want`
-	// (SubjectAccount presented where SubjectRunner is required), which rejects
-	// it Unauthenticated. This is the leg that goes red if the Kind gate is
-	// removed or inverted — the not-found leg above would stay green through
-	// such a regression, so this is what actually defends the cross-door rule
-	// through buildNetworkServer's real resolver + TLS.
+	// Negative leg 2 (the real Kind gate, OQ7 cross-door): present a VALID account
+	// token (the bootstrap admin's) to the RUNNER door. It resolves to a real
+	// subject, clears the hash-lookup branch, and reaches `subj.Kind != want`,
+	// which rejects it Unauthenticated. Goes red if the Kind gate is removed or
+	// inverted — the not-found leg would stay green through such a regression.
 	adminToken := readAdminToken(t, stateDir)
 	kctx, kcancel := context.WithTimeout(ctx, testTimeout)
 	defer kcancel()

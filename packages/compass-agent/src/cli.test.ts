@@ -1,25 +1,13 @@
 // The `compass-agent` entrypoint — both halves.
-//
-// The Runner execs a bare `compass-agent` argv (no flags —
-// `go/internal/runner/relay.go` `agentCommand`), so every input reaches the
-// process through the environment or a well-known file. Two surfaces:
-//
-//   - CONSTRUCTION: the pure resolution functions (`AGENT_SOCKET_PATH`,
-//     `resolveModelSelector`, `authSeedPath`, `createSeedApiKeyResolver`) —
-//     each exercised directly, against a tempfile seed.
-//   - COMPOSITION: `main` itself, over the `MainDeps` seam (cli.ts `MainDeps`) — a fake
-//     session and a fake `RunnerTransport` stand in for the two unfakeable
-//     constructors, and everything between them (the real socket FrameSink, the
-//     real ControlSource, the real PublishSpine, the real CompassAgent run loop)
-//     is the production code. What `main` uniquely owns and nothing below it can
-//     defend is the TEARDOWN BARRIER: `finally { await sink.drain?.();
-//     transport.close() }`, which the teardown tests here pin against a captured
-//     wire log and a recorded ordering.
-//
-// Nothing here touches a socket, a real model, or a real credential: the carrier
-// is injected (as `agent.test.ts` already does) and the seed is a tempfile. No
-// timers, no sleeps — the composition tests gate on events (a deferred resolved
-// from the fake carrier's own RPC handlers).
+
+// The Runner execs a bare `compass-agent` argv (no flags), so every input reaches the
+// process through the environment or a well-known file. Two surfaces: CONSTRUCTION (the
+// pure resolution functions, exercised directly against a seed) and COMPOSITION (`main`
+// over the MainDeps seam — fakes stand in for the two unfakeable constructors, the rest real).
+
+// What `main` uniquely owns is the TEARDOWN BARRIER (finally { drain; close }), pinned
+// here against a captured wire log and a recorded ordering. Nothing touches a socket, a
+// real model, or a real credential; no timers — the composition tests gate on events.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -86,12 +74,10 @@ function scratch(): string {
 	return dir;
 }
 
-// `main` computes its session dir via SessionManager.getDefaultSessionDir(cwd),
-// which anchors on the global HOME (os.homedir() → process.env.HOME). Pin it to
-// a per-test scratch dir so the tee storage's mkdir + the manager's writes land
-// under a throwaway tree, never the developer's real ~/.omp session store. (The
-// `env` arg main receives controls the auth-seed lookup, NOT the session dir —
-// that reads the process HOME, which is what this pins.)
+// `main` computes its session dir via SessionManager.getDefaultSessionDir(cwd), anchored
+// on the global HOME. Pin it to a per-test scratch dir so the tee storage lands under a
+// throwaway tree, never the developer's real ~/.omp store. (The `env` arg controls the
+// auth-seed lookup, NOT the session dir — that reads the process HOME, which this pins.)
 let savedHome: string | undefined;
 beforeEach(() => {
 	savedHome = process.env.HOME;
@@ -108,21 +94,18 @@ afterEach(() => {
 	// parallel pre-push gate; bound as a slow-cleanup detector, not a budget (RIG-3611).
 }, 60_000);
 
-// The socket path is a CONTRACT with the Runner, not a preference: host.go:33
-// bind-mounts the per-container socket at this fixed path precisely "so the
-// agent needs no per-session configuration — it always dials the same path"
-// (host.go:28-29). A drift here is a launch failure with no error until the
-// dial times out, so it is pinned by a test.
+// The socket path is a CONTRACT with the Runner, not a preference: host.go bind-mounts the
+// per-container socket at this fixed path "so the agent needs no per-session config". A
+// drift here is a launch failure with no error until the dial times out, so it is pinned.
 describe("AGENT_SOCKET_PATH", () => {
 	test("matches the Runner's fixed in-container mount path", () => {
 		expect(AGENT_SOCKET_PATH).toBe("/run/compass/agent.sock");
 	});
 
-	// The path became env-overridable for the host tier (design "Agent transport:
-	// the socket and config paths"): the host-process backend has no bind mounts,
-	// so it serves the socket inside the agent handle's own state dir and threads
-	// the path via COMPASS_AGENT_SOCKET_PATH. The frozen literal stays the DEFAULT
-	// — a container-tier agent (no override) resolves it unchanged.
+	// The path became env-overridable for the host tier: the host-process backend has no
+	// bind mounts, so it serves the socket inside the agent handle's state dir and threads
+	// the path via COMPASS_AGENT_SOCKET_PATH. The frozen literal stays the DEFAULT — a
+	// container-tier agent (no override) resolves it unchanged.
 	test("resolveSocketPath defaults to the frozen path when unset or blank", () => {
 		expect(resolveSocketPath({})).toBe(AGENT_SOCKET_PATH);
 		expect(resolveSocketPath({ COMPASS_AGENT_SOCKET_PATH: "   " })).toBe(
@@ -139,12 +122,10 @@ describe("AGENT_SOCKET_PATH", () => {
 	});
 });
 
-// COMPASS_MODEL is the Matt-ruled runtime seam for model selection. The
-// entrypoint does not parse it into a Model — the SDK's model registry owns
-// that — it forwards it as `modelPattern` to createAgentSession. Absent, the
-// session falls back to the SDK's own default, which is a legitimate
-// configuration, not an error: an operator who pins nothing gets the SDK
-// default rather than a container that refuses to boot.
+// COMPASS_MODEL is the Matt-ruled runtime seam for model selection. The entrypoint does
+// not parse it into a Model — the SDK's registry owns that — it forwards it as modelPattern
+// to createAgentSession. Absent, the session falls back to the SDK default, which is a
+// legitimate configuration, not an error.
 describe("resolveModelSelector", () => {
 	test("returns the COMPASS_MODEL value when set", () => {
 		expect(
@@ -286,11 +267,10 @@ describe("envFilePath", () => {
 	});
 });
 
-// The pure parser of the materialized `KEY=VALUE` file. Split on the FIRST `=`
-// (values may contain `=`), value literal to EOL (only a trailing \r stripped),
-// tolerant of blank/`=`-less/empty-key lines, and reserved keys (`HOME` + the
-// whole `COMPASS_*` namespace) excluded so a file KEY can never clobber a
-// Runner-set var. No IO, no process.env.
+// The pure parser of the materialized KEY=VALUE file. Split on the FIRST `=` (values may
+// contain `=`), value literal to EOL (only a trailing \r stripped), tolerant of blank/
+// `=`-less/empty-key lines, and reserved keys (HOME + the COMPASS_* namespace) excluded so
+// a file KEY can never clobber a Runner-set var. No IO, no process.env.
 describe("parseEnvFile", () => {
 	test("parses basic KEY=VALUE lines", () => {
 		expect(parseEnvFile("A=1\nB=2")).toEqual({ A: "1", B: "2" });
@@ -336,11 +316,10 @@ describe("parseEnvFile", () => {
 	});
 });
 
-// getApiKey is called PER LLM CALL (agent.d.ts:66-70: "Resolves an API key ...
-// dynamically for each LLM call. Useful for expiring tokens"). That semantic is
-// the whole reason rotation works without a restart: T6 rewrites the seed file
-// in place and the next call must pick it up. So the resolver re-reads the seed
-// rather than closing over a value read at boot — these tests pin that.
+// getApiKey is called PER LLM CALL ("dynamically for each LLM call. Useful for expiring
+// tokens"). That semantic is why rotation works without a restart: T6 rewrites the seed
+// in place and the next call must pick it up. So the resolver re-reads the seed rather
+// than closing over a boot value — these tests pin that.
 describe("createSeedApiKeyResolver", () => {
 	test("resolves the key for the model's provider", async () => {
 		const home = scratch();
@@ -467,14 +446,11 @@ function model(provider: string): Model {
 }
 
 // ── main(): the composition root ─────────────────────────────────────────────
-//
-// `main` is exercised over the `MainDeps` seam: a fake `AgentSession` (the
-// recording shape `agent.test.ts` established) and a fake `RunnerTransport` whose
-// four RPCs are in-process handlers recording what reached "the Runner". The
-// carrier is fake; everything main composes over it — createSocketFrameSink,
-// createSocketControlSource, createPublishSpine (the REAL one, built here exactly
-// as createUnixSocketTransport builds it), CompassAgent.run — is production code.
-// So these tests see the actual enqueue/flush behavior, not a restatement of it.
+
+// `main` is exercised over the MainDeps seam: a fake AgentSession and a fake
+// RunnerTransport whose four RPCs record what reached "the Runner". The carrier is fake;
+// everything main composes over it (the REAL FrameSink, ControlSource, PublishSpine,
+// CompassAgent.run) is production code, so these tests see actual enqueue/flush behavior.
 
 // What the fake carrier saw. `publishFrames` is the wire log of the Publish
 // spine (trace + lifecycle + control acks, in arrival order); `durableFrames`
@@ -541,13 +517,10 @@ function fakeCarrier(
 	};
 }
 
-// Like `deps`, but captures the tee-backed SessionManager `main` builds — the
-// surviving durable rider (RIG-1570) is a transcript frame, launched when a
-// session write teems onto the sink's durable lane. A test resolves the gate,
-// then drives an `appendMessage` through the captured manager to put a durable
-// TranscriptEntry send in flight (the way the removed conversation write-through
-// used to, before RIG-1708). The real tee storage is used (default
-// createSessionStorage), so the full sink → tee → durable-unary path runs.
+// Like `deps`, but captures the tee-backed SessionManager `main` builds — the surviving
+// durable rider (RIG-1570) is a transcript frame, launched when a session write teems onto
+// the sink's durable lane. A test resolves the gate, then drives an appendMessage through
+// the captured manager to put a durable send in flight. The real tee storage is used.
 function depsCapturingManager(
 	session: FakeSession,
 	transport: RunnerTransport,
@@ -562,11 +535,9 @@ function depsCapturingManager(
 	};
 }
 
-// The recording AgentSession `main` composes over: `subscribe` hands the listener
-// to a gate (so a test can push a session event through the REAL EventMapper the
-// way the SDK would, once the run loop has wired it) and `agent` carries the
-// members CompassAgent/main touch. Only those are implemented, so the cast is
-// honest.
+// The recording AgentSession `main` composes over: `subscribe` hands the listener to a
+// gate (so a test can push a session event through the REAL EventMapper), and `agent`
+// carries the members CompassAgent/main touch. Only those are implemented, so the cast is honest.
 interface FakeSession {
 	// Resolves with the listener the moment `run()` subscribes — the event gate a
 	// test awaits before pushing session events, so there is no race and no spin.
@@ -617,18 +588,13 @@ function fakeSession(
 }
 
 // The deps `main` runs under: the fake session factory plus the fake carrier.
-// `createSessionStorage` is left to its production default — the REAL
-// `createTeeSessionStorage`, writing under the per-test scratch HOME (pinned in
-// beforeEach) — so `main`'s full composition (build sink → tee storage →
-// SessionManager.create) is exercised, not stubbed.
-//
-// The telemetry seam is a RECORDING NO-OP (never the real `initTelemetryExport`,
-// which registers a live global TracerProvider + OTLP exporter with no teardown
-// and would poison every later test in this shared process — design record F3).
-// It reports enabled iff an OTLP endpoint is configured at call time, so a test
-// that sources an endpoint still exercises main's gating without real
-// registration. The dedicated telemetry tests below use their own recording
-// seam to assert the calls.
+// `createSessionStorage` is left to its production default (the REAL createTeeSessionStorage
+// under the scratch HOME), so main's full composition is exercised, not stubbed.
+
+// The telemetry seam is a RECORDING NO-OP (never the real initTelemetryExport, which
+// registers a live global TracerProvider + OTLP exporter with no teardown and would poison
+// every later test — F3). It reports enabled iff an OTLP endpoint is configured at call
+// time. The dedicated telemetry tests below use their own recording seam.
 function deps(session: FakeSession, transport: RunnerTransport): MainDeps {
 	return {
 		createSession: () =>
@@ -733,11 +699,10 @@ function statesOf(log: CarrierLog): AgentSessionState[] {
 }
 
 describe("main", () => {
-	// HOME is how the entrypoint finds the provider seed (authSeedPath). The
-	// Runner always supplies it; if it ever does not, the failure must name the
-	// cause at boot rather than surfacing later as an inexplicable "no credential"
-	// on the first LLM call. Nothing is constructed before the check, so this
-	// needs no injection.
+	// HOME is how the entrypoint finds the provider seed (authSeedPath). The Runner always
+	// supplies it; if it ever does not, the failure must name the cause at boot rather than
+	// surfacing later as an inexplicable "no credential" on the first LLM call. Nothing is
+	// constructed before the check, so this needs no injection.
 	test("rejects when HOME is unset, naming HOME as the cause", async () => {
 		// Non-vacuity: a main that fell back to a default home (or read
 		// process.env.HOME instead of the passed env) would construct and hang/
@@ -753,14 +718,11 @@ describe("main", () => {
 	});
 
 	// THE DRAIN BARRIER — what `main` alone owns.
-	//
-	// `run()` emits its terminal STOPPED through the sink on its way out, and the
-	// socket sink only ENQUEUES a lifecycle frame onto the spine's priority lane
-	// (frame-sink.ts:131) — the actual wire flush happens in a later batch. So
-	// when `main` resolves, STOPPED has reached the Runner only if `main` awaited
-	// `sink.drain()`. Without the `finally { await sink.drain?.() }` the process
-	// exits with the terminal frame still in the queue, and the board never sees
-	// the session stop.
+
+	// run() emits its terminal STOPPED through the sink, and the socket sink only ENQUEUES
+	// a lifecycle frame onto the spine's priority lane — the wire flush happens in a later
+	// batch. So when main resolves, STOPPED has reached the Runner only if main awaited
+	// sink.drain(); without it the process exits with the terminal frame still queued.
 	test("the terminal STOPPED frame has reached the carrier by the time main resolves", async () => {
 		const log = emptyLog();
 		const session = fakeSession();
@@ -778,18 +740,14 @@ describe("main", () => {
 		]);
 	});
 
-	// The other half of the sink's teardown contract: a transcript frame is
-	// DURABLE (delivered-or-erred on the unary, frame-sink.ts:141-144). A session
-	// write teemed during the run launches a durable send that is still in flight
-	// when `run()` resolves. `drain()` awaits those in-flight commits; without the
-	// barrier `main` resolves — and `import.meta.main` calls `process.exit` —
-	// abandoning an uncommitted transcript frame. This is the exact defect the
-	// drain fixed.
-	//
-	// The assertion is an ORDERING, which is the contract itself: the commit
-	// strictly precedes main's resolution. The commit is parked one event-loop turn
-	// out (never a duration — see nextEventLoopTurn), and `main` without the drain
-	// resolves entirely within the microtask phase, so the order inverts.
+	// The other half of the sink's teardown contract: a transcript frame is DURABLE
+	// (delivered-or-erred on the unary). A session write teemed during the run launches a
+	// durable send still in flight when run() resolves; drain() awaits those commits, else
+	// main resolves and process.exit abandons an uncommitted transcript frame.
+
+	// The assertion is an ORDERING, the contract itself: the commit strictly precedes main's
+	// resolution. The commit is parked one event-loop turn out, and main without the drain
+	// resolves within the microtask phase, so the order inverts.
 	test("a transcript frame in flight at teardown is COMMITTED before main resolves", async () => {
 		const log = emptyLog();
 		const session = fakeSession();
@@ -830,18 +788,15 @@ describe("main", () => {
 		expect(log.durableFrames[0]?.frame?.frame.case).toBe("transcriptEntry");
 	});
 
-	// The barrier is in `finally`, so it holds on the ERROR path too — which is
-	// where it matters most: a session that died is exactly when the board needs
-	// its terminal transition and its last transcript frame. `run()` emits
-	// ERRORED (agent.ts:113) and re-throws; main must still drain, then propagate
-	// the ORIGINAL error (a `finally` that swallowed it would hide the crash).
-	//
-	// The crash is an SDK op rejecting mid-loop, NOT a control-stream drop: a drop
-	// sends the source through its bounded reconnect backoff (control-source.ts:79),
-	// and those timers would incidentally flush the spine before main rejects —
-	// making the assertions pass with or without the barrier. An op rejection
-	// reaches the `finally` entirely within the microtask phase, so this test is
-	// genuinely drain-sensitive.
+	// The barrier is in `finally`, so it holds on the ERROR path too — where it matters most:
+	// a session that died is exactly when the board needs its terminal transition and last
+	// transcript frame. run() emits ERRORED and re-throws; main must still drain, then
+	// propagate the ORIGINAL error (a finally that swallowed it would hide the crash).
+
+	// The crash is an SDK op rejecting mid-loop, NOT a control-stream drop: a drop sends the
+	// source through its bounded reconnect backoff, and those timers would incidentally flush
+	// the spine before main rejects. An op rejection reaches the finally within the microtask
+	// phase, so this test is genuinely drain-sensitive.
 	test("on the error path the frame is committed and ERRORED delivered before main rejects", async () => {
 		const log = emptyLog();
 		const boom = new Error("SDK prompt failed mid-turn");
@@ -883,14 +838,10 @@ describe("main", () => {
 		]);
 	});
 
-	// The carrier is a live HTTP/2 session over the Runner socket, and nothing
-	// below `main` holds it — so the composition root must RELEASE it, and must
-	// do so strictly AFTER the drain: close abandons open streams, so closing
-	// first would discard exactly the frames the barrier exists to commit. The
-	// fake carrier holds no socket, so the lingering connection itself is not
-	// observable here; what IS the contract, and what this pins, is the ORDER —
-	// the durable commit (which only happens because `drain()` awaited it)
-	// strictly precedes `close()`, which strictly precedes main's resolution.
+	// The carrier is a live HTTP/2 session over the Runner socket, and nothing below main holds
+	// it — so the root must RELEASE it, strictly AFTER the drain: closing first would discard the
+	// frames the barrier commits. The fake carrier holds no socket, so what this pins is the
+	// ORDER — durable commit precedes close(), which precedes main's resolution.
 	test("the carrier is closed after the drain, before main resolves", async () => {
 		const log = emptyLog();
 		const session = fakeSession();
@@ -924,12 +875,10 @@ describe("main", () => {
 		expect(order).toEqual(["committed", "closed", "main-resolved"]);
 	});
 
-	// The release is in the same `finally`, so it holds on the crash path too —
-	// a self-terminating agent that died still must not leave the socket held
-	// until the session manager's idle timeout. Same crash shape as the error
-	// drain test above (an SDK op rejection, not a control-stream drop, so no
-	// reconnect timer incidentally flushes the spine), and the original error
-	// still propagates past both teardown steps.
+	// The release is in the same `finally`, so it holds on the crash path too — a self-
+	// terminating agent that died still must not leave the socket held until the manager's
+	// idle timeout. Same crash shape as the error-drain test (an SDK op rejection, no
+	// reconnect timer flushes the spine), and the original error still propagates past both.
 	test("the carrier is closed after the drain on the error path too", async () => {
 		const log = emptyLog();
 		const boom = new Error("SDK prompt failed mid-turn");
@@ -964,16 +913,13 @@ describe("main", () => {
 		expect(order).toEqual(["committed", "closed", "main-rejected"]);
 	});
 
-	// The release must survive a FAILING drain. Neither production drain can
-	// reject today, but that no-throw property belongs to frame-sink.ts and
-	// publish-spine.ts, not to this composition root — so if either ever lost it,
-	// an unguarded `await sink.drain?.(); transport.close()` would skip the close
-	// and leak the HTTP/2 session for the manager's whole idle window, which is
-	// the exact defect close() was added to fix. The nested
-	// `try { drain } finally { close }` is what this pins.
-	//
-	// Non-vacuity (mutation-verified): with the close moved back out of its own
-	// `finally`, `closed` stays false and the assertion reds.
+	// The release must survive a FAILING drain. That no-throw property belongs to frame-sink
+	// and publish-spine, not this root — so if either lost it, an unguarded `drain; close`
+	// would skip the close and leak the HTTP/2 session. The nested try{drain}finally{close}
+	// pins it.
+
+	// Non-vacuity (mutation-verified): with the close moved out of its own finally, `closed`
+	// stays false and the assertion reds.
 	test("a rejecting drain still closes the carrier, and its error propagates", async () => {
 		const log = emptyLog();
 		const drainBoom = new Error("drain failed");
@@ -992,11 +938,10 @@ describe("main", () => {
 		expect(closed).toBe(true);
 	});
 
-	// The seed resolver is installed on the SESSION'S agent, and installed as a
-	// live resolver (called per LLM call) rather than a value read at boot. The
-	// wiring is only interesting because of what it resolves TO, so this drives
-	// the installed function against a real seed under the passed HOME: a resolver
-	// built from the wrong home, or one never installed, reddens.
+	// The seed resolver is installed on the SESSION'S agent, as a live resolver (called per
+	// LLM call) not a boot value. The wiring is only interesting because of what it resolves
+	// TO, so this drives the installed function against a real seed under the passed HOME:
+	// a resolver built from the wrong home, or one never installed, reddens.
 	test("installs a getApiKey on the session that resolves from the passed HOME's seed", async () => {
 		const home = scratch();
 		writeSeed(home, {
@@ -1033,12 +978,10 @@ describe("main", () => {
 		expect(dialed).toEqual([AGENT_SOCKET_PATH]);
 	});
 
-	// The host tier serves the socket inside the agent handle's own state dir and
-	// threads its path via COMPASS_AGENT_SOCKET_PATH — so main must dial the
-	// OVERRIDE, not the frozen constant. Pinning it AT THE CALL SITE catches a
-	// main that resolved the env but still dialed the default. Non-vacuity:
-	// reverting cli.ts to dial AGENT_SOCKET_PATH reds this while the default-dial
-	// test above stays green.
+	// The host tier serves the socket inside the agent handle's state dir and threads its path
+	// via COMPASS_AGENT_SOCKET_PATH — so main must dial the OVERRIDE, not the frozen constant.
+	// Pinning it AT THE CALL SITE catches a main that resolved the env but dialed the default.
+	// Non-vacuity: reverting cli.ts to dial AGENT_SOCKET_PATH reds this while default-dial stays green.
 	test("dials the carrier at the COMPASS_AGENT_SOCKET_PATH override when set", async () => {
 		const dialed: string[] = [];
 		const session = fakeSession();
@@ -1092,12 +1035,11 @@ describe("main", () => {
 	});
 
 	// BOOT-MODEL-HEALTH BELT.
-	//
-	// createAgentSession swallows a models.yml validation error and falls back to
-	// built-in resolution; a pinned selector that no longer resolves then boots
-	// the session model-less, and the first prompt throws "No model configured"
-	// far from the cause. The belt surfaces the error loudly at boot and refuses a
-	// pinned-but-unresolvable boot.
+
+	// createAgentSession swallows a models.yml validation error and falls back to built-in
+	// resolution; a pinned selector that no longer resolves then boots model-less, and the
+	// first prompt throws "No model configured" far from the cause. The belt surfaces the
+	// error at boot and refuses a pinned-but-unresolvable boot.
 	test("logs the swallowed models.yml config error loudly at boot", async () => {
 		const errs: string[] = [];
 		const original = console.error;
@@ -1202,12 +1144,10 @@ describe("main", () => {
 	});
 
 	test("releases both resource holders when it refuses a pinned-unresolvable boot", async () => {
-		// The early throw bypasses the drain→close→disconnect finally, so the belt
-		// must tear down BOTH holders it owns: the connected MCP manager and the
-		// socket. Pin both — dropping `await mcp.disconnect()` leaks every MCP
-		// subprocess/HTTP session, dropping `transport.close()` leaks the socket;
-		// each reddens exactly one assertion here. `connectMcp` is injected (rather
-		// than left at the default no-op) so the disconnect is observable.
+		// The early throw bypasses the drain→close→disconnect finally, so the belt must tear
+		// down BOTH holders it owns: the connected MCP manager and the socket. Pin both —
+		// dropping mcp.disconnect() leaks every MCP subprocess, dropping transport.close()
+		// leaks the socket. connectMcp is injected so the disconnect is observable.
 		let closed = false;
 		let disconnected = false;
 		const original = console.error;
@@ -1245,12 +1185,10 @@ describe("main", () => {
 	});
 
 	test("still closes the socket and surfaces the diagnostic when the fail-closed disconnect rejects", async () => {
-		// The belt nests `mcp.disconnect()` in a try/catch/finally so a rejecting
-		// disconnect neither leaks the socket (finally still runs transport.close)
-		// nor masks the actionable diagnostic (the catch swallows-and-logs the
-		// disconnect error rather than letting it propagate in place of the throw).
-		// Pin both: un-nesting the catch would leave the socket open AND reject with
-		// the disconnect error instead of the pinned-model message.
+		// The belt nests mcp.disconnect() in a try/catch/finally so a rejecting disconnect
+		// neither leaks the socket (finally still runs transport.close) nor masks the
+		// diagnostic (the catch swallows-and-logs it). Pin both: un-nesting the catch would
+		// leave the socket open AND reject with the disconnect error, not the pinned-model message.
 		let closed = false;
 		let rejection: unknown;
 		const original = console.error;
@@ -1293,11 +1231,9 @@ describe("main", () => {
 	});
 
 	test("refuses a pinned-unresolvable boot even when the registry recorded no config error", async () => {
-		// Pinned + model-less + getError() === undefined: the belt still refuses
-		// (the fail-closed guard is model resolution, not the presence of a config
-		// error), and the throw's `; config error:` suffix collapses to empty.
-		// Pins the ternary's empty branch — a regression that always appended the
-		// suffix, or gated the throw on a present modelError, reddens this.
+		// Pinned + model-less + getError() === undefined: the belt still refuses (the fail-
+		// closed guard is model resolution, not the presence of a config error), and the
+		// throw's `; config error:` suffix collapses to empty. Pins the ternary's empty branch.
 		const original = console.error;
 		console.error = () => {};
 		try {
@@ -1318,11 +1254,10 @@ describe("main", () => {
 	});
 
 	test("treats an empty or whitespace-only COMPASS_WORKDIR as unset, not as a cwd", async () => {
-		// Mirrors the empty-HOME case: `??` would forward "" verbatim, and bun does
-		// not reject `cwd: ""` — the agent would silently load project context from
-		// the wrong tree. A whitespace-only value is truthy, so the `.trim()` is
-		// what catches it. The Runner sets COMPASS_WORKDIR unconditionally
-		// (relay.go `execSpec`), so a blank AgentEnv.Workdir reaches here directly.
+		// Mirrors the empty-HOME case: `??` would forward "" verbatim, and bun does not reject
+		// `cwd: ""` — the agent would silently load context from the wrong tree. A whitespace-
+		// only value is truthy, so the .trim() is what catches it. The Runner sets
+		// COMPASS_WORKDIR unconditionally, so a blank AgentEnv.Workdir reaches here directly.
 		for (const workdir of ["", "   "]) {
 			const session = fakeSession();
 			const seen: (string | undefined)[] = [];
@@ -1408,12 +1343,11 @@ describe("main", () => {
 	});
 
 	// ── RIG-1570: the tee-storage composition + resume ────────────────────────
-	//
-	// `main` builds the tee storage over the socket sink and injects the
-	// resulting IndexedSessionStorage into SessionManager.create, passed to
-	// createAgentSession as `sessionManager`. This pins that wiring: what reaches
-	// createSession is the manager main built (not the SDK's own default), so
-	// every session write teems onto the durable lane.
+
+	// `main` builds the tee storage over the socket sink and injects the resulting
+	// IndexedSessionStorage into SessionManager.create, passed to createAgentSession as
+	// sessionManager. This pins that wiring: what reaches createSession is the manager main
+	// built (not the SDK default), so every session write teems onto the durable lane.
 	test("passes the tee-backed SessionManager to createAgentSession", async () => {
 		const session = fakeSession();
 		let seenManager: unknown;
@@ -1445,17 +1379,15 @@ describe("main", () => {
 	});
 
 	// COMPASS_RESUME_SESSION_FILE (exported by T8) is loaded through the SDK-native
-	// setSessionFile path BEFORE the session is created — so the resumed history
-	// is already present when createAgentSession runs. This pins that the manager
-	// handed to createSession carries the fixture's entries, loaded via the tee
-	// backend's readFull/loadIndex (no replay code).
+	// setSessionFile path BEFORE the session is created — so the resumed history is present
+	// when createAgentSession runs. This pins that the manager handed to createSession carries
+	// the fixture's entries, loaded via the tee backend's readFull/loadIndex (no replay code).
 	test("resumes COMPASS_RESUME_SESSION_FILE before creating the session", async () => {
 		const session = fakeSession();
-		// The resume file must be INDEXED by the tee backend's initialize() scan
-		// (the wrapper ENOENTs un-indexed paths, indexed-session-storage.ts:177),
-		// so it lives in the SDK default session dir for this cwd and is written
-		// before main() builds the storage. Current-version fixture → no load-time
-		// migration rewrite, so the resume path emits no checkpoint frame.
+		// The resume file must be INDEXED by the tee backend's initialize() scan (the wrapper
+		// ENOENTs un-indexed paths), so it lives in the SDK default session dir for this cwd
+		// and is written before main() builds the storage. Current-version fixture → no load-
+		// time migration rewrite, so the resume path emits no checkpoint frame.
 		const cwd = process.cwd();
 		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
 		mkdirSync(sessionDir, { recursive: true });
@@ -1490,12 +1422,10 @@ describe("main", () => {
 		expect(texts).toContain("resumed turn");
 	});
 
-	// The real Option-B shape (RIG-1570 T2): the Runner materializes the resume
-	// file at an absolute path OUTSIDE the SDK default session dir. On the unfixed
-	// code loadIndex scans only sessionDir → the file is un-indexed → setSessionFile's
-	// statSync gate ENOENTs → silent fresh session → entriesAtCreate empty → RED.
-	// After the fix (resumeFile threaded into the tee backend and indexed at
-	// initialize()) → GREEN. This is the exact silent-degradation this task prevents.
+	// The real Option-B shape (RIG-1570 T2): the Runner materializes the resume file at an
+	// absolute path OUTSIDE the SDK default session dir. On the unfixed code loadIndex scans
+	// only sessionDir → un-indexed → setSessionFile's statSync ENOENTs → silent fresh session
+	// → RED. After the fix (resumeFile threaded in and indexed) → GREEN. The exact silent degradation this prevents.
 	test("resumes a COMPASS_RESUME_SESSION_FILE that lives OUTSIDE the session dir", async () => {
 		const session = fakeSession();
 		// A scratch dir that is NOT the SDK default session dir for this cwd —
@@ -1578,24 +1508,16 @@ describe("main", () => {
 	});
 
 	// ── T3: the resume proof-smoke (SDK-native load) ──────────────────────────
-	//
-	// The full round-trip, no Runner: run one main(), drive two turns through the
-	// REAL tee-backed SessionManager, capture the durable TranscriptEntry frames
-	// off the carrier; reconstruct the session-JSONL body the way T5 does (latest
-	// checkpoint body + later delta lines by entry_seq); write it to the default
-	// session dir; start a SECOND main() with COMPASS_RESUME_SESSION_FILE at it;
-	// and assert the second session's manager carries the first run's turns,
-	// loaded via setSessionFile → loadEntriesFromFile — with NO TranscriptEntry
-	// frames emitted during the load (reads never tee), and a post-resume turn
-	// emitting deltas with a FRESH per-lifetime entry_seq starting at 1 (the
-	// server-rebase model, T4). The load touches only the $HOME session dir, so
-	// it is checkout-independent.
+
+	// The full round-trip, no Runner: run one main(), drive two turns through the REAL tee-backed
+	// SessionManager, capture the durable frames, reconstruct the JSONL body the way T5 does, start
+	// a SECOND main() resuming it, and assert the second manager carries the first run's turns
+	// (loaded with NO frames — reads never tee) and a post-resume turn emits a FRESH entry_seq at 1.
 	test("a teed run reconstructs into a resumable session (SDK-native load)", async () => {
-		// ── Run 1: drive two turns through the real tee manager, in the
-		// createSession callback (it holds options.sessionManager — the manager
-		// main built over the tee storage). appendMessage → tee → durable lane;
-		// flush() awaits storage.drain() so the frames are committed to the
-		// carrier before the callback returns. ──
+		// ── Run 1: drive two turns through the real tee manager, in the createSession
+		// callback (it holds options.sessionManager — the manager main built over the tee
+		// storage). appendMessage → tee → durable lane; flush() awaits storage.drain() so the
+		// frames are committed to the carrier before the callback returns. ──
 		const log1 = emptyLog();
 		const session1 = fakeSession();
 		await main(
@@ -1677,14 +1599,13 @@ describe("main", () => {
 		expect(frames2[0].entrySeq).toBe(1n);
 	});
 
-	// A v2 (older-version) fixture resumed via COMPASS_RESUME_SESSION_FILE: the
-	// SDK runs a v2→v3 load migration, but that only sets #rewriteRequired as a
-	// DEFERRED flag (session-manager.ts:1007) — it does NOT rewrite the non-empty
-	// file during load, so the load tees ZERO frames. This is a regression guard
-	// on the cli.ts "the load never tees" invariant for the migrated-resume path.
-	// Non-vacuity: if a future SDK revision (or a tee change) rewrote the file
-	// during a migrated load, a checkpoint frame would land → framesAtCreate > 0
-	// → red.
+	// A v2 (older-version) fixture resumed via COMPASS_RESUME_SESSION_FILE: the SDK runs a
+	// v2→v3 load migration, but that only sets #rewriteRequired as a DEFERRED flag — it does
+	// NOT rewrite the non-empty file during load, so the load tees ZERO frames. A regression
+	// guard on the cli.ts "the load never tees" invariant for the migrated-resume path.
+
+	// Non-vacuity: if a future SDK revision rewrote the file during a migrated load, a
+	// checkpoint frame would land → framesAtCreate > 0 → red.
 	test("a v2-fixture resume stays migration-deferred and tees no frames on load", async () => {
 		const session = fakeSession();
 		const cwd = process.cwd();
@@ -1725,11 +1646,10 @@ describe("main", () => {
 		// The resumed manager carries the fixture's turn (loaded via the SDK's own
 		// migrating loader).
 		expect(textsOf(entriesAtCreate)).toContain("v2 turn");
-		// The v2→v3 migration actually RAN: the in-memory header was upgraded to 3
-		// (migrateV2ToV3, session-migrations.ts:46) and the rewrite was flagged as
-		// required — this distinguishes "migration ran but stayed deferred" from
-		// "no migration was needed", so the zero-frames assertion below is a real
-		// guard on the migrated-resume path, not a vacuous current-version pass.
+		// The v2→v3 migration actually RAN: the in-memory header was upgraded to 3 and the
+		// rewrite was flagged as required — distinguishing "migration ran but stayed deferred"
+		// from "no migration was needed", so the zero-frames assertion below is a real guard
+		// on the migrated-resume path, not a vacuous current-version pass.
 		expect(headerVersionAtCreate).toBe(3);
 		expect(needsRewriteAtCreate).toBe(true);
 		// Migration stayed deferred: no checkpoint (or any) frame teed on load
@@ -1738,18 +1658,13 @@ describe("main", () => {
 		expect(framesAtCreate).toBe(0);
 	});
 
-	// A compaction round-trip: a fixture body whose file contains a superseded
-	// compaction loads intact — proving the T5 reconstruction needs no compaction
-	// awareness beyond T4's supersession.
-	//
-	// The SDK moved WHERE supersession is applied. It used to elide the superseded
-	// summary at session LOAD (`elideSupersededCompactionEntries`, gone in 18.x);
-	// it now keeps stored entries verbatim and elides only when assembling the
-	// model-facing context (`buildSessionContext`, session-context.ts:174 ->
-	// `active ? entry.summary : SUPERSEDED_COMPACTION_SUMMARY` at :377). So the
-	// loaded entries carry BOTH real summaries, and this asserts the property that
-	// actually matters to compass either way: the round-trip preserves the whole
-	// compaction chain, so reconstruction never has to reason about supersession.
+	// A compaction round-trip: a fixture body containing a superseded compaction loads intact
+	// — proving the T5 reconstruction needs no compaction awareness beyond T4's supersession.
+
+	// The SDK moved WHERE supersession is applied: it used to elide the superseded summary at
+	// LOAD (gone in 18.x); it now keeps stored entries verbatim and elides only when assembling
+	// the model-facing context. So the loaded entries carry BOTH real summaries, and this
+	// asserts the round-trip preserves the whole compaction chain — reconstruction never reasons about it.
 	test("a superseded-compaction fixture round-trips with its chain intact", async () => {
 		const session = fakeSession();
 		const cwd = process.cwd();
@@ -1796,13 +1711,11 @@ describe("main", () => {
 });
 
 // ── main(): sourcing $HOME/.compass/env into process.env ─────────────────────
-//
-// The materialized env-secret file (RIG-1327 T5) must reach `process.env` before
-// createAgentSession, so the session's extensions/MCP/tools inherit the secrets.
-// These run over the same composition seam as the `main` tests above, writing
-// the env file under the per-test scratch HOME (pinned in beforeEach). Every
-// process.env KEY a test writes is saved+restored so the suite stays isolated
-// and full-suite safe — mirroring the savedHome pattern.
+
+// The materialized env-secret file (RIG-1327 T5) must reach process.env before
+// createAgentSession, so the session's extensions/MCP/tools inherit the secrets. These run
+// over the same composition seam as the `main` tests, writing the env file under the scratch
+// HOME. Every process.env KEY a test writes is saved+restored so the suite stays isolated.
 function writeEnvFile(home: string, body: string): void {
 	const dir = join(home, ".compass");
 	mkdirSync(dir, { recursive: true });
@@ -1886,11 +1799,10 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 
 	test("the OTEL endpoint key from the env file reaches process.env unfiltered (where the transport's OTel layer reads it), while a COMPASS_-prefixed key is dropped", async () => {
 		const home = process.env.HOME as string;
-		// A non-COMPASS key (the OTEL endpoint) and a COMPASS_-prefixed key in the
-		// same file: the endpoint must land (isReservedEnvKey lets it through), the
-		// COMPASS_ key must be dropped (prefix rule) — pinning that the deployer's
-		// endpoint reaches makeOtelLayer's process.env read while the control-var
-		// namespace stays unclobberable, in one assertion pair.
+		// A non-COMPASS key (the OTEL endpoint) and a COMPASS_-prefixed key in the same file:
+		// the endpoint must land (isReservedEnvKey lets it through), the COMPASS_ key must be
+		// dropped (prefix rule) — pinning that the deployer's endpoint reaches makeOtelLayer's
+		// process.env read while the control-var namespace stays unclobberable.
 		writeEnvFile(
 			home,
 			"OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318\nCOMPASS_FUTURE_VAR=nope\n",
@@ -1910,26 +1822,20 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 
 	test("all four loop-OTel env keys from the Runner-materialized env file survive isReservedEnvKey filtering and reach process.env", async () => {
 		const home = process.env.HOME as string;
-		// Invariant (RIG-2508 T2): the four loop-OTel keys the Runner materializes
-		// into $HOME/.compass/env reach process.env BEFORE the telemetry
-		// registration point (cli.ts:838), because the env-merge loop
-		// (cli.ts:614-618) runs earlier — so a file-sourced OTEL_* key is in
-		// process.env by the time initTelemetryExport / the loop tracer reads it.
-		// None of the four is HOME or COMPASS_*-prefixed, so isReservedEnvKey
-		// (cli.ts:108-110) lets them all through.
-		// Non-vacuity: were any of these keys COMPASS_-prefixed or HOME, it would
-		// be dropped by isReservedEnvKey (as the neighboring test pins for
-		// COMPASS_FUTURE_VAR) → the assertion reds. So this pins that the loop
-		// keys are genuinely NOT reserved and survive the filter unaltered.
-		// (The TRACES_ endpoint fires T1's enabled-path activation, which APPENDS
-		// compass.session.id to OTEL_RESOURCE_ATTRIBUTES — never clobbering the
-		// deployer-set value, Decision 3a — so the file value survives as a prefix.)
-		// OTEL_SERVICE_NAME uses a DISTINCT sentinel (not "compass-agent") on
-		// purpose: the activation's `??=` default (cli.ts:839) is "compass-agent",
-		// so a file value equal to that default would keep the assertion green even
-		// if the key were wrongly dropped by isReservedEnvKey and re-defaulted. A
-		// distinct value only survives when the key genuinely reaches process.env
-		// AND the `??=` no-ops on the already-present value — pinning the invariant.
+		// Invariant (RIG-2508 T2): the four loop-OTel keys the Runner materializes into
+		// $HOME/.compass/env reach process.env BEFORE the telemetry registration point, because
+		// the env-merge loop runs earlier. None of the four is HOME or COMPASS_*-prefixed, so
+		// isReservedEnvKey lets them all through.
+
+		// Non-vacuity: were any COMPASS_-prefixed or HOME, it would be dropped → the assertion
+		// reds. The TRACES_ endpoint fires T1's enabled-path activation, which APPENDS
+		// compass.session.id to OTEL_RESOURCE_ATTRIBUTES (never clobbering), so the file value
+		// survives as a prefix.
+
+		// OTEL_SERVICE_NAME uses a DISTINCT sentinel (not "compass-agent") on purpose: the
+		// activation's `??=` default is "compass-agent", so a file value equal to it would stay
+		// green even if the key were wrongly dropped and re-defaulted. A distinct value survives
+		// only when the key genuinely reaches process.env AND the `??=` no-ops on it.
 		writeEnvFile(
 			home,
 			"OTEL_SERVICE_NAME=deployer-custom-name\n" +
@@ -1977,14 +1883,10 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 	});
 
 	test("LITELLM_MCP_URL is derived BEFORE the MCP manager connects (the load-bearing ordering)", async () => {
-		// The whole point of the fix is that the MCP connector — which reads
-		// ${LITELLM_MCP_URL} from process.env — sees the derived value. Asserting
-		// it only after main() resolves would pass even if a future refactor moved
-		// the derive AFTER the connect. Capture process.env AT the connect instant
-		// via the connectMcp seam (main calls it unconditionally, cli.ts:729, after
-		// loadMountedConfig and before session construction). Non-vacuity: move the
-		// derive block below the connect and this reds (undefined at capture) while
-		// the post-resolve assertion above would still pass.
+		// The point of the fix is the MCP connector — which reads ${LITELLM_MCP_URL} from
+		// process.env — sees the derived value. Asserting only after main() resolves would pass
+		// even if a refactor moved the derive AFTER the connect. Capture process.env AT the connect
+		// via connectMcp. Non-vacuity: move the derive below the connect and this reds at capture.
 		const home = process.env.HOME as string;
 		delete process.env.LITELLM_MCP_URL;
 		writeEnvFile(home, "LITELLM_BASE_URL=https://llm.example/v1\n");
@@ -2028,16 +1930,11 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 });
 
 // ── main(): loop OpenTelemetry activation ────────────────────────────────────
-//
-// design docs/designs/observability/compass-agent-loop-otel/design.md T1. These run
-// over the MainDeps composition seam with a RECORDING telemetry seam — NEVER the
-// real `initTelemetryExport`, which registers a live global TracerProvider + a
-// real OTLP exporter with no teardown and would poison every later test in this
-// shared process (design record F3). They assert exactly what cli.ts owns: the
-// endpoint gate, the enabled-path env writes (defaulted service name + appended
-// join key), the bit-identical inertness when off, and the gated `telemetry`
-// session option. Span correctness is OMP's own suite; the real registration is
-// left to a spawned-subprocess smoke (not run in-process, per F3).
+
+// design compass-agent-loop-otel T1. These run over the MainDeps seam with a RECORDING
+// telemetry seam — NEVER the real initTelemetryExport, which registers a live global provider
+// with no teardown and would poison every later test (F3). They assert what cli.ts owns: the
+// endpoint gate, enabled-path env writes, inertness when off, and the gated telemetry option.
 describe("main activates loop OpenTelemetry", () => {
 	// Every OTEL_* key these tests read or main may write, saved+restored so a
 	// leaked var can never flake a later test — the savedHome/TOUCHED_KEYS pattern.
@@ -2065,13 +1962,10 @@ describe("main activates loop OpenTelemetry", () => {
 		}
 	});
 
-	// A recording telemetry seam + the captured createSession options. `isEnabled`
-	// mirrors the real module: it reports true only AFTER init() ran AND a provider
-	// actually registered, so the option gate keys off registration, not the
-	// endpoint. `registerOnInit` (default true) models the ordinary success; set it
-	// false to model the protocol-decline branch — init() runs (endpoint gate
-	// fired, env defaults written) yet no provider registers, so isEnabled() stays
-	// false. The seam records call order so a test can pin env-before-init.
+	// A recording telemetry seam + the captured createSession options. `isEnabled` mirrors the
+	// real module: true only AFTER init() ran AND a provider registered, so the option gate keys
+	// off registration, not the endpoint. registerOnInit (default true) models success; false
+	// models the protocol-decline branch. The seam records call order to pin env-before-init.
 	interface TelemetrySpy {
 		calls: string[];
 		telemetryOption: unknown;
@@ -2147,10 +2041,9 @@ describe("main activates loop OpenTelemetry", () => {
 		});
 	});
 
-	// Endpoint UNSET ⇒ true bit-identical inertness (F2): NO `telemetry` key on
-	// the options AND process.env is unmutated. Snapshot the two enabled-path keys
-	// before and after so a stray write (an ungated mutation) reddens. Non-vacuity:
-	// dropping the `if (isTelemetryEndpointConfigured(...))` gate writes
+	// Endpoint UNSET ⇒ true bit-identical inertness (F2): NO `telemetry` key on the options AND
+	// process.env is unmutated. Snapshot the two enabled-path keys before and after so a stray
+	// write reddens. Non-vacuity: dropping the isTelemetryEndpointConfigured gate writes
 	// OTEL_SERVICE_NAME here → red.
 	test("endpoint unset ⇒ no telemetry key and process.env is unmutated", async () => {
 		const beforeName = process.env.OTEL_SERVICE_NAME;
@@ -2175,12 +2068,10 @@ describe("main activates loop OpenTelemetry", () => {
 		expect(process.env.OTEL_RESOURCE_ATTRIBUTES).toBe(beforeAttrs);
 	});
 
-	// Endpoint SET ⇒ init() ran with the env defaults in place, and the options
-	// carry the telemetry key with the trace-continuity bridge's capture hooks
-	// installed (message-trace-continuity §T2: `{} → { onSpanStart, onSpanEnd }`
-	// on the enabled path). Pins: OTEL_SERVICE_NAME defaulted, compass.session.id
-	// appended to OTEL_RESOURCE_ATTRIBUTES, and — via the recorded init call — that
-	// both were set BEFORE init ran (the load-bearing order).
+	// Endpoint SET ⇒ init() ran with the env defaults in place, and the options carry the
+	// telemetry key with the trace-continuity bridge's capture hooks installed (§T2). Pins:
+	// OTEL_SERVICE_NAME defaulted, compass.session.id appended to OTEL_RESOURCE_ATTRIBUTES,
+	// and — via the recorded init call — that both were set BEFORE init ran (the load-bearing order).
 	test("endpoint set ⇒ env defaults set before init, and telemetry hooks on the options", async () => {
 		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
 		const spy: TelemetrySpy = {
@@ -2249,15 +2140,10 @@ describe("main activates loop OpenTelemetry", () => {
 		expect(spy.hasTelemetryKey).toBe(true);
 	});
 
-	// Option gate AUTHORITY: the `telemetry` session key gates on the
-	// post-registration isEnabled() — did a provider actually register — NOT on the
-	// endpoint being configured (Decision 1 + Global Constraints). The distinguishing
-	// branch is a set endpoint whose protocol the real module can't honor: init()
-	// runs (endpoint gate fired, env defaults written) yet declines to register, so
-	// isEnabled() stays false and NO telemetry key is added. Non-vacuity: swapping
-	// the gate from `telemetryHooks.isEnabled()` to `isTelemetryEndpointConfigured`
-	// reds this (endpoint is set ⇒ key would appear) while every other test in the
-	// block stays green — this is the only test that pins the two gates apart.
+	// Option gate AUTHORITY: the `telemetry` session key gates on the post-registration
+	// isEnabled() — did a provider actually register — NOT on the endpoint being configured. The
+	// distinguishing branch is a set endpoint whose protocol declines to register, so isEnabled()
+	// stays false and NO key is added. Non-vacuity: swapping the gate reds only this test.
 	test("endpoint set but provider declines to register ⇒ init ran, env written, but NO telemetry key", async () => {
 		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
 		const spy: TelemetrySpy = {
@@ -2286,22 +2172,15 @@ describe("main activates loop OpenTelemetry", () => {
 	});
 
 	// ── The composition root's traceparent FORWARDING closures (RIG-2871 T3) ──
-	//
-	// cli.ts:1043-1050 builds the `ImmediateControl` handle the socket
-	// ControlSource dispatches into, and each arm forwards its wire args on to
-	// the CompassAgent. control-source.test.ts pins that the SOURCE hands the
-	// wire `traceparent` to `immediate.steer`/`immediate.deliver`;
-	// agent.test.ts pins that CompassAgent.steer/deliver PARENT the turn span on
-	// it. Neither sees the closures BETWEEN them — the two lines in cli.ts that
-	// carry the value across — so these drive the whole seam end to end: a wire
-	// op carrying a traceparent, pushed through the injected carrier's Control
-	// stream, must come out as the turn span's parent.
-	//
-	// Telemetry is ON (endpoint set + the seam registers), which is what makes
-	// `main` build a real `createTraceBridge()` and pass it as the agent's
-	// `tracer`; the recording session below models the loop's SYNCHRONOUS
-	// `invoke_agent` span start (agent.test.ts's startTracedAgent recipe) so the
-	// bridge's `runWithParent` wrap is observable as real parentage.
+
+	// cli.ts builds the ImmediateControl handle the socket ControlSource dispatches into, and each
+	// arm forwards its wire args to the CompassAgent. control-source.test.ts pins the SOURCE hands
+	// the wire traceparent to immediate.steer/deliver; agent.test.ts pins CompassAgent PARENTs the
+	// turn span on it. Neither sees the closures BETWEEN, so these drive the whole seam end to end.
+
+	// Telemetry is ON (endpoint set + the seam registers), so `main` builds a real
+	// createTraceBridge() and passes it as the agent's tracer; the recording session models the
+	// loop's SYNCHRONOUS invoke_agent span start, so runWithParent is observable as real parentage.
 	describe("forwards the wire traceparent into the CompassAgent", () => {
 		let traceProvider: NodeTracerProvider | undefined;
 		afterEach(async () => {
@@ -2313,12 +2192,10 @@ describe("main activates loop OpenTelemetry", () => {
 			traceProvider = undefined;
 		});
 
-		// Run `main` over a REAL trace bridge with telemetry enabled, feeding the
-		// injected carrier's Control stream the given ops, and return the single
-		// exported `invoke_agent` span. The session models the loop's synchronous
-		// span start: `prompt()` starts `invoke_agent` reading context.active() as
-		// its parent and fires the capture hook `main` installed on the session's
-		// telemetry option — the real bridge's `onSpanStart` (cli.ts:970-976).
+		// Run `main` over a REAL trace bridge with telemetry enabled, feeding the injected
+		// carrier's Control stream the given ops, and return the single exported invoke_agent
+		// span. The session models the loop's synchronous span start: prompt() starts
+		// invoke_agent reading context.active() as its parent and fires the capture hook main installed.
 		async function turnSpanFor(ops: WireAgentControl[]) {
 			// Fail loud on a second call within one test: the shared `traceProvider`
 			// slot would be clobbered and only the last one shut down (afterEach
@@ -2384,14 +2261,12 @@ describe("main activates loop OpenTelemetry", () => {
 		}
 
 		test("a wire deliver's traceparent becomes the turn span's PARENT through the composition root", async () => {
-			// Non-vacuity: revert cli.ts:1046-1047 to the pre-RIG-2871
-			// `deliver: (msg, fromHandle, _traceparent, sourceNames) =>
-			// agent?.deliver(msg, fromHandle, "", sourceNames)` — a hardcoded ""
-			// — and `runWithParent("")` no-ops, the turn span comes out ROOTLESS,
-			// and both parent assertions red. (Mutation-verified.)
-			//
-			// An IDLE, single-message deliver: it flushes at once with N=1, which
-			// is the PARENT topology (N>1 links instead).
+			// Non-vacuity: revert cli.ts to the pre-RIG-2871 hardcoded "" traceparent for deliver
+			// — runWithParent("") no-ops, the turn span comes out ROOTLESS, and both parent
+			// assertions red. (Mutation-verified.)
+
+			// An IDLE, single-message deliver: it flushes at once with N=1, the PARENT topology
+			// (N>1 links instead).
 			const span = await turnSpanFor([
 				deliverOp(2n, "m1", "hi", "", TP_HEADER),
 			]);
@@ -2408,15 +2283,12 @@ describe("main activates loop OpenTelemetry", () => {
 		});
 
 		test("a wire steer's traceparent becomes the turn span's PARENT through the composition root", async () => {
-			// The sibling arm, and the one the PR review's revert probe named:
-			// non-vacuity — revert cli.ts:1044-1045 to
-			// `steer: (msg, fromHandle, _traceparent, sourceNames) =>
-			// agent?.steer(msg, fromHandle, "", sourceNames)` — a hardcoded "" —
-			// and the idle steer's `runWithParent("")` no-ops, the turn span comes
-			// out ROOTLESS, and both parent assertions red. (Mutation-verified.)
-			//
-			// An IDLE steer starts a turn via prompt() under the same
-			// `runWithParent` wrap the deliver flush uses (agent.ts idle-steer arm).
+			// The sibling arm, named by the PR review's revert probe: non-vacuity — revert cli.ts
+			// to the hardcoded "" traceparent for steer, the idle steer's runWithParent("") no-ops,
+			// the turn span comes out ROOTLESS, and both parent assertions red. (Mutation-verified.)
+
+			// An IDLE steer starts a turn via prompt() under the same runWithParent wrap the deliver
+			// flush uses (agent.ts idle-steer arm).
 			const span = await turnSpanFor([steerOp(2n, "m2", "hey", "", TP_HEADER)]);
 			expect(span?.parentSpanContext?.traceId).toBe(TP_TRACE_ID);
 			expect(span?.parentSpanContext?.spanId).toBe(TP_SPAN_ID);
@@ -2429,13 +2301,10 @@ describe("main activates loop OpenTelemetry", () => {
 // A Control stream that closes cleanly with no ops — the shortest complete run.
 async function* emptyControlStream(): AsyncGenerator<WireAgentControl> {}
 
-// Park the caller until the next MACROtask turn — a single `setImmediate`, not a
-// duration and not a poll. It is the coarsest thing that is still not a sleep:
-// every microtask already queued (and every one they queue) runs first, so it
-// cleanly separates "resolved within the microtask phase" from "resolved after an
-// event-loop turn". The drain tests use it to place the durable commit strictly
-// after a barrier-less `main` would have resolved, making the ordering assertion
-// discriminate the two implementations rather than time them.
+// Park the caller until the next MACROtask turn — a single setImmediate, not a duration and
+// not a poll. The coarsest thing that is still not a sleep: every microtask already queued
+// runs first, cleanly separating "resolved within the microtask phase" from "resolved after
+// an event-loop turn". The drain tests use it to make the ordering assertion discriminate.
 function nextEventLoopTurn(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	setImmediate(resolve);
@@ -2443,12 +2312,11 @@ function nextEventLoopTurn(): Promise<void> {
 }
 
 // ── RIG-1570 session-JSONL fixtures ──────────────────────────────────────────
-//
-// Build a current-version (v3) session body the SDK loader accepts verbatim: a
-// 256-byte title slot, a session header, then one JSONL line per entry. Current
-// version means setSessionFile loads it without a migration rewrite — so the
-// resume path emits NO checkpoint frame (reads never tee). These mirror the
-// bytes the tee backend commits, so a T3 reconstruction feeds this exact shape.
+
+// Build a current-version (v3) session body the SDK loader accepts verbatim: a 256-byte
+// title slot, a session header, then one JSONL line per entry. Current version means
+// setSessionFile loads it without a migration rewrite — so the resume path emits NO checkpoint
+// frame. These mirror the bytes the tee backend commits, so a T3 reconstruction feeds this shape.
 let fixtureSeq = 0;
 
 function titleSlot(): string {
@@ -2630,15 +2498,11 @@ function compactionSummariesOf(entries: unknown[]): string[] {
 }
 
 // ── main(): wiring the Runner-mounted agent-config into createAgentSession ────
-//
-// The reader (config-reader.ts) maps the mount at COMPASS's fixed path into the
-// three createAgentSession option surfaces. These run over the same MainDeps
-// composition seam as the `main` tests above, but add two seams the reader
-// needs: `configMount` points the reader at a tempdir fixture (the real
-// /run/compass/agent-config does not exist off-container), and `connectMcp`
-// stands in for the real MCPManager dial (a test cannot spawn MCP servers). What
-// reaches createAgentSession is asserted via the createSession spy, mirroring
-// the modelPattern/persona option tests.
+
+// The reader (config-reader.ts) maps the mount at COMPASS's fixed path into the three
+// createAgentSession option surfaces. These run over the same MainDeps seam, adding two seams
+// the reader needs: configMount points the reader at a tempdir fixture, and connectMcp stands
+// in for the real MCPManager dial. What reaches createAgentSession is asserted via the spy.
 
 // Write a file under `<mount>/current/<rel>`, creating parents — the layout the
 // Runner materializes. Returns nothing; the caller holds the mount root.
@@ -2701,13 +2565,10 @@ function toolNames(tools: unknown[] | undefined): string[] {
 }
 
 describe("main wires the mounted agent-config into createAgentSession", () => {
-	// The host tier materializes config inside the agent handle's state dir and
-	// threads the root via COMPASS_AGENT_CONFIG_MOUNT_PATH — NOT the deps.configMount
-	// test seam. This drives the mount through the ENV VAR alone (deps.configMount
-	// unset) and asserts a mounted skill reaches options.skills, proving main
-	// resolves the override end-to-end. Non-vacuity: reverting cli.ts to read
-	// AGENT_CONFIG_MOUNT_PATH reds this (the default path does not exist, so no
-	// skill loads) while the frozen-default main tests below stay green.
+	// The host tier materializes config inside the agent handle's state dir and threads the root
+	// via COMPASS_AGENT_CONFIG_MOUNT_PATH — NOT the deps.configMount seam. This drives the mount
+	// through the ENV VAR alone and asserts a mounted skill reaches options.skills. Non-vacuity:
+	// reverting cli.ts to read AGENT_CONFIG_MOUNT_PATH reds this while the frozen-default tests stay green.
 	test("reads the mount at the COMPASS_AGENT_CONFIG_MOUNT_PATH override when deps.configMount is unset", async () => {
 		const mount = scratch();
 		writeMount(mount, "skills/host-skill/SKILL.md", mountSkill("host-skill"));
@@ -2746,17 +2607,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		);
 
 		const session = fakeSession();
-		// A CLASS instance with `#private` state, not an object literal. The real
-		// `mcp.tools` are SDK class instances: `MCPTool` (pi-coding-agent
-		// src/mcp/tool-bridge.ts:492) keeps `execute`/`renderCall`/`renderResult`
-		// on the PROTOTYPE, and its sibling `DeferredMCPTool` (:604) also holds
-		// ECMAScript `#private` fields its `execute` reads. Both properties matter
-		// to the fixture: a plain literal spreads losslessly (so it cannot see a
-		// `{ ...tool }` stamp shear the methods off), and a fixture without
-		// `#private` state cannot see an `Object.create` clone re-home `this` —
-		// that break passes a `typeof execute === "function"` check and only
-		// surfaces when the method is actually CALLED, which is why the assertion
-		// below invokes it.
+		// A CLASS instance with #private state, not an object literal. The real mcp.tools are SDK
+		// class instances: MCPTool keeps its methods on the PROTOTYPE and DeferredMCPTool holds
+		// #private fields. So a `{ ...tool }` spread shears the methods, and an Object.create clone
+		// re-homes `this` — a break that surfaces only when execute is CALLED (why the assertion invokes it).
 		class FakeMcpTool {
 			readonly name = "db.query";
 			readonly mcpServerName = "db";
@@ -2815,20 +2669,15 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			join(mount, "current", "extensions", "ext.ts"),
 		]);
 		expect(opts.disableExtensionDiscovery).toBe(true);
-		// MCP: the parsed config reached the connector, and its tools reached
-		// customTools with enableMCP:false (never a passed mcpManager, which would
-		// not surface its tools). The array now also carries the native
-		// comms/lifecycle tools (merged in main), so this is a containment check,
-		// not identity — the dedicated native-tools test below pins those.
+		// MCP: the parsed config reached the connector, and its tools reached customTools with
+		// enableMCP:false (never a passed mcpManager, which would not surface its tools). The
+		// array now also carries the native comms/lifecycle tools, so this is a containment
+		// check, not identity — the dedicated native-tools test below pins those.
 		expect(connectedWith).toEqual({ db: { command: "db-mcp" } });
-		// Asserted by PRESENTATION, not bare membership. main stamps the whole
-		// merged array `loadMode: "essential"`, and that stamp is the load-bearing
-		// part for a mounted-MCP tool: without it the SDK's adapter boundary
-		// defaults it to `"discoverable"`, which registers the tool but keeps it
-		// out of the model's top-level callable schema — and the `xd://` transport
-		// does not recover it in this headless session shape. A membership-only
-		// check passes while the tool is silently unreachable, which is the exact
-		// failure the RIG-1741/CD-3 mount contract exists to prevent.
+		// Asserted by PRESENTATION, not membership. main stamps the whole merged array `loadMode:
+		// "essential"`, load-bearing for a mounted-MCP tool: without it the SDK adapter defaults it
+		// to "discoverable" — registered but out of the model's callable schema, and xd:// does not
+		// recover it here. A membership-only check passes while the tool is silently unreachable.
 		for (const tool of mcpTools) {
 			const stamped = opts.customTools?.find((t) => t.name === tool.name);
 			expect(stamped).toEqual(
@@ -2837,14 +2686,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 					loadMode: "essential",
 				}),
 			);
-			// The stamp must preserve the tool's callable surface AND its identity.
-			// All three of `execute`/`renderCall`/`renderResult` are prototype
-			// methods, so a `{ ...tool }` stamp drops them outright; an
-			// `Object.create` clone keeps them but re-homes `this`, so a
-			// `#private` read throws only when the method is INVOKED. Presence
-			// checks pass in that second case, so the contract is asserted by
-			// actually calling `execute` — a tool the model can see and cannot
-			// call is worse than one it never sees.
+			// The stamp must preserve the tool's callable surface AND its identity. The methods are
+			// prototype methods, so a `{ ...tool }` stamp drops them; an Object.create clone keeps
+			// them but re-homes `this`, so a #private read throws only when INVOKED. So the contract
+			// is asserted by actually calling execute — a tool visible but uncallable is worse than none.
 			expect(typeof stamped?.renderCall).toBe("function");
 			expect(typeof stamped?.renderResult).toBe("function");
 			const execute = stamped?.execute;
@@ -2860,12 +2705,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	});
 
 	test("the native comms + lifecycle tools reach customTools alongside the MCP tools", async () => {
-		// gap-1 (RIG-1741): main constructs the comms/lifecycle brokers from the
-		// existing transport and merges their tools into customTools so the
-		// container agent can spawn/post. Derive the EXPECTED names at runtime from
-		// the same factories main uses (a rename reddens here, never silently
-		// skips), rather than hardcode-guessing them. The brokers are never called
-		// during registration, so a stub transport whose bodies never run suffices.
+		// gap-1 (RIG-1741): main constructs the comms/lifecycle brokers from the transport and
+		// merges their tools into customTools so the container agent can spawn/post. Derive the
+		// EXPECTED names at runtime from the same factories main uses (a rename reddens here) rather
+		// than hardcode-guessing. The brokers are never called during registration, so a stub suffices.
 		const fakeTransport = {
 			comms: async () => ({}) as never,
 			lifecycle: async () => ({}) as never,
@@ -2920,19 +2763,15 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	});
 
 	test("every native's execute keeps arity 2 — tripwire on the customToolToDefinition arg-shuffle", () => {
-		// RIG-1741 seam invariant. The natives are `AgentTool`s registered through
-		// `customTools`; the SDK classifies a marker-less AgentTool as a CustomTool
-		// and runs it through `customToolToDefinition`, which invokes `execute`
-		// with the CustomTool arg order (toolCallId, params, onUpdate, ctx, signal)
-		// — NOT the AgentTool order (toolCallId, params, signal, onUpdate, ctx). So
-		// args 3-5 arrive SHUFFLED, and the wiring in cli.ts main() is sound ONLY
-		// while no native reads past `params`. This is a TRIPWIRE, not a total
-		// guard: pinning `execute.length === 2` reddens the LIKELY regression —
-		// adding a plain positional 3rd param (`signal`) to consume a shuffled arg.
-		// It does NOT catch a rest (`...args`) or defaulted (`signal = …`) param,
-		// which read arg 3 while keeping `.length === 2`; the load-bearing guard is
-		// the invariant itself (see cli.ts). If a native must consume its
-		// AbortSignal, it cannot go through this seam — see the comment in cli.ts.
+		// RIG-1741 seam invariant. The natives are AgentTools registered through customTools; the SDK
+		// classifies a marker-less AgentTool as a CustomTool and runs it through customToolToDefinition,
+		// which invokes execute with the CustomTool arg order — NOT the AgentTool order — so args 3-5
+		// arrive SHUFFLED, and the wiring is sound ONLY while no native reads past params.
+
+		// This is a TRIPWIRE, not a total guard: pinning execute.length === 2 reddens the likely
+		// regression (a plain positional 3rd param). It does NOT catch a rest/defaulted param; the
+		// load-bearing guard is the invariant itself (see cli.ts). A native needing its signal cannot
+		// go through this seam.
 		const fakeTransport = {
 			comms: async () => ({}) as never,
 			lifecycle: async () => ({}) as never,
@@ -3032,12 +2871,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	});
 
 	// ── RIG-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──
-	//
-	// The role selector delivers a per-role block-0 as `customSystemPrompt` (which
-	// REPLACES OMP's default block-0), while persona STILL appends AFTER (record
-	// §OQ-8). These pin the four compose states at the createSession seam; the
-	// MP-1 render property (skills/rules/footer survival + read-tool gate) is the
-	// SDK-render test that follows.
+
+	// The role selector delivers a per-role block-0 as customSystemPrompt (which REPLACES OMP's
+	// default block-0), while persona STILL appends AFTER (§OQ-8). These pin the four compose
+	// states at the createSession seam; the MP-1 render property is the SDK-render test that follows.
 	test("COMPASS_ROLE with a shipped prompt → its text reaches customSystemPrompt", async () => {
 		const mount = scratch();
 		writeMount(
@@ -3102,15 +2939,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	});
 
 	test("COMPASS_ROLE with a path-traversal label → rejected, no customSystemPrompt", async () => {
-		// A role is a flat directory name; a label carrying a separator or `..`
-		// must never traverse outside prompts/. The decoy sits at current/SYSTEM.md
-		// — exactly where role="../" resolves (join(current, "prompts", "../",
-		// "SYSTEM.md") = current/SYSTEM.md) — so WITHOUT the guard the traversal
-		// would find it and inject it as block-0 (customSystemPrompt defined). The
-		// guard rejects the label first, so main falls back to today's behavior.
-		// This placement is what makes the test non-vacuous: drop the guard and it
-		// fails. Defense in depth: role is store-set out-of-band today, but the
-		// guard holds the moment a client-facing setter lands.
+		// A role is a flat directory name; a label with a separator or `..` must never traverse
+		// outside prompts/. The decoy sits at current/SYSTEM.md — where role="../" resolves — so
+		// WITHOUT the guard the traversal would inject it as block-0. The guard rejects the label
+		// first; drop it and this fails. Defense in depth: the guard holds the moment a setter lands.
 		const mount = scratch();
 		writeMount(mount, "SYSTEM.md", "# Escaped\n");
 		const session = fakeSession();
@@ -3159,12 +2991,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	});
 
 	test("role + persona compose: role reaches customSystemPrompt AND persona appends after", async () => {
-		// The OQ-8 composition: customSystemPrompt (role, REPLACE block-0) and the
-		// systemPrompt append customizer (persona) are ORTHOGONAL keys, so both
-		// apply. The customizer runs over whatever default array the SDK built —
-		// which, with a role, already carries the role block-0 — so persona lands
-		// LAST, after the role block. Drive the customizer with a fake default that
-		// stands in for [role block-0, …skills/rules, project footer].
+		// The OQ-8 composition: customSystemPrompt (role, REPLACE block-0) and the systemPrompt
+		// append customizer (persona) are ORTHOGONAL keys, so both apply. The customizer runs over
+		// whatever default array the SDK built — which, with a role, already carries the role
+		// block-0 — so persona lands LAST. Drive the customizer with a fake default standing in for it.
 		const mount = scratch();
 		writeMount(mount, "prompts/manager/SYSTEM.md", "# Manager block-0\n");
 		const session = fakeSession();
@@ -3208,16 +3038,11 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 	});
 
 	// ── MP-1 PROPERTY (frozen record §MP-1) ───────────────────────────────────
-	//
-	// Passing a role prompt as `customSystemPrompt` REPLACES OMP's block-0 — but
-	// the SDK's custom-system-prompt template STILL auto-injects skills + rules,
-	// and the project footer stays a separate block. Two pins the record names:
-	//   (1) skills injection is GATED on the `read` tool being in the tool set
-	//       (system-prompt.ts:819-820) — so the tool set MUST retain `read`;
-	//   (2) the rendered prompt RETAINS skills + rules + the project footer even
-	//       though block-0 is the role text, not the default.
-	// This is a real SDK render (buildSystemPrompt), not a seam spy: it exercises
-	// the actual template the SDK routes customSystemPrompt through.
+
+	// Passing a role prompt as customSystemPrompt REPLACES OMP's block-0 — but the SDK's custom-
+	// system-prompt template STILL auto-injects skills + rules, and the footer stays separate. Two
+	// pins: (1) skills injection is GATED on the `read` tool, so the tool set MUST retain read; (2)
+	// the rendered prompt RETAINS skills + rules + footer. A real SDK render, not a spy.
 	test("MP-1: a role prompt as customSystemPrompt REPLACES block-0 while skills, rules, and the project footer survive (read-tool gate held)", async () => {
 		const roleBlock0 = "ROLE-BLOCK-0-SENTINEL: you are the manager.";
 		const { systemPrompt } = await buildSystemPrompt({
@@ -3261,12 +3086,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (2) rules survived (the custom template's <rules> list).
 		expect(rendered).toContain("MP1-RULE-SENTINEL");
 		expect(rendered).toContain("<rules>");
-		// (2) the project footer survived as its own block. The SDK restructured
-		// this block: `project-prompt.md` renders `PROJECT` + `<workstation>` (the
-		// environment list), while the cwd line moved out to its own
-		// `date-cwd-reminder` block (session/date-cwd-reminder.ts) that this render
-		// path does not include. Assert the footer's own markers, not the relocated
-		// cwd text.
+		// (2) the project footer survived as its own block. The SDK restructured this block:
+		// project-prompt.md renders PROJECT + <workstation>, while the cwd line moved out to its own
+		// date-cwd-reminder block this render path does not include. Assert the footer's own markers,
+		// not the relocated cwd text.
 		expect(rendered).toContain("PROJECT");
 		expect(rendered).toContain("<workstation>");
 		// The read tool stayed in the set (the gate's precondition).

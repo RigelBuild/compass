@@ -3,20 +3,9 @@
 package server
 
 // Store-gated SUCCESS-case proof for the armed forge-secret boot path:
-// buildBoardWebhookWiring driven with a configured App against the
-// REAL secrets.SpecResolver — the SecretSpec FFI read path — over a REAL
-// Postgres, not a &fakeResolver{}. Every other forge pgtest injects a fake, so
-// the real resolver (which fail-closes a configured deployment when a declared
-// secret is unreadable) is never exercised at boot. This test closes that gap:
-// declarations are written by the production declareServerSecretNames, read back
-// to derive the provider fixture, and resolved through NewSpecResolver so the
-// value the webhook-secret closure returns proves it flowed from the provider
-// through the real resolver, not a hand-set fake.
-//
-// The read path dlopens the libsecretspec cdylib, which the dev/CI shell stages
-// only as the write-path CLI. The test SKIPs cleanly when that library is
-// absent, so a runtime-less sandbox stays green while the assertions are real
-// wherever the library is present.
+// buildBoardWebhookWiring with a configured App against the REAL secrets.SpecResolver
+// (the FFI read path), not a fake — exercising the fail-closed boot no other forge
+// pgtest reaches. Dlopens libsecretspec, so SKIPs cleanly when the library is absent.
 
 import (
 	"context"

@@ -1,18 +1,11 @@
-// Pure decision core for refresh-agent-image-nixpkgs.ts.
-//
-// Split out from the entry point so the load-bearing read — which nixpkgs
-// channel rev the agent base image's devenv lock currently pins — is
-// unit-testable without a devenv runner, a network, or a git tree. The entry
-// point owns the shell-outs (the base diff, the `nix run <fork flakeref> --
-// update nixpkgs` relock, the FOD refresh); this file owns the parse. NO
-// shell-outs, NO fs beyond text passed in.
-//
-// Deliberately its own module rather than a reuse of
-// refresh-devenv-nixpkgs.core.ts's `channelNixpkgsRev`: that module's throws are
-// named for the ROOT channel task and its scope's coupling story (biome catalog,
-// bun.lock, flake.nix), none of which exists here. A fail-loud script's value is
-// its diagnosis, so each scope names itself — the same per-script-core
-// convention refresh-devenv-lock.core.ts and refresh-go-overlay.core.ts follow.
+// Pure decision core for refresh-agent-image-nixpkgs.ts: the load-bearing read
+// (which nixpkgs channel rev the agent-image devenv lock pins), unit-testable
+// without a devenv runner, network, or git tree. NO shell-outs, NO fs.
+
+// Its own module rather than reusing refresh-devenv-nixpkgs.core.ts's
+// channelNixpkgsRev: that module's throws name the ROOT channel task and its
+// coupling story (biome catalog, bun.lock, flake.nix), none of which exists
+// here. A fail-loud script's value is its diagnosis, so each scope names itself.
 
 /**
  * The agent base image's devenv lock, repo-root-relative: the file the

@@ -4,9 +4,7 @@ package delivery
 
 // T5/RIG-2892 trace-propagation acceptance cases for the delivery consumer.
 // Each drives the consumer through the real events bus + hand-written fakes and
-// event-gates on observed dispatches — never a sleep (rule://no-retries).
-// context.Background() is the test root (rule://go-thread-context exemption for
-// _test.go); it is threaded into every span/dispatch below and never re-rooted.
+// event-gates on observed dispatches, never a sleep (rule://no-retries).
 
 import (
 	"context"

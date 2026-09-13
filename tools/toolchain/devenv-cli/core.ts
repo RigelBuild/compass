@@ -1,10 +1,7 @@
-// Pure resolution for the devenv-CLI source tool (RIG-2546). No I/O, no process
-// exec — everything here is a total function over strings, so the load-bearing
-// half (lock JSON → validated coordinates → flakeref; argv → parsed request) is
-// unit-testable (core.test.ts) and the executable shell (index.ts) stays thin.
-// This mirrors the tools/toolchain/parity.ts / parity-core.ts split, and the
-// lock-parse posture of tools/renovate/refresh-devenv-nixpkgs.core.ts:25 — a
-// shape change must fail the caller loudly, never resolve a stale/wrong source.
+// Pure resolution for the devenv-CLI source tool (RIG-2546). No I/O, no exec — a
+// total function over strings (lock JSON → validated coordinates → flakeref;
+// argv → parsed request), so index.ts stays thin. A lock-shape change must fail
+// loudly, never resolve a stale source.
 
 /** The devenv node's locked coordinates, as a nix flakeref fragment. */
 export interface DevenvSource {

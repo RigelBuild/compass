@@ -1,11 +1,9 @@
 //go:build unix
 
-// The agent exec tail: StartAgent spawns the first-party agent in a container
-// over the built streaming exec and drains both its pipes to the diagnostic log.
-// The agent's compass.v1 traffic rides the per-container `AgentGateway` socket,
-// so stdout and stderr carry no protocol — but both are drained continuously,
-// because a full OS pipe buffer would stall the agent's next write regardless of
-// what the bytes mean.
+// The agent exec tail: StartAgent spawns the first-party agent in a container and
+// drains both its pipes to the diagnostic log. The compass.v1 traffic rides the
+// per-container AgentGateway socket, so stdout/stderr carry no protocol — but both
+// are drained continuously, since a full OS pipe buffer would stall the next write.
 package runner
 
 import (
@@ -115,27 +113,23 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 type AgentStream struct {
 	sessionID string
 	exec      *runtime.StreamingExec
-	// drains is signalled by both drain goroutines as they return. Stop waits on
-	// it before reaping: these are cmd.StdoutPipe/StderrPipe readers, and
-	// os/exec makes Wait close the pipes, so reaping first would race the drains
-	// off the end of the stream (os/exec: "it is incorrect to call Wait before
-	// all reads from the pipe have completed").
+	// drains is signalled by both drain goroutines as they return. Stop waits on it
+	// before reaping: os/exec's Wait closes the pipes, so reaping first would race
+	// the drains off the end of the stream ("incorrect to call Wait before all
+	// reads from the pipe have completed").
 	drains sync.WaitGroup
 	// stopDrains ends both drains on teardown even if the pipes never reach EOF,
 	// so a wedged read can't hold Stop past its bounded wait.
 	stopDrains context.CancelFunc
 	// stopping is set by Stop before it reaps. The reap closes the pipes, so a
-	// drain's os.ErrClosed is ordinary during a deliberate stop and a genuine
-	// fault at any other time; the flag says which, where ctx cannot — Stop
-	// must Terminate before it cancels (see Stop), so the reap's ErrClosed
-	// always arrives while drainCtx is still live.
+	// drain's os.ErrClosed is ordinary during a deliberate stop and a genuine fault
+	// otherwise; the flag says which, where ctx cannot — Stop Terminates before it
+	// cancels, so the reap's ErrClosed always arrives while drainCtx is still live.
 	stopping atomic.Bool
-	// drainsReleased mirrors drainCtx.Done(): it closes when the drain context
-	// is cancelled, whichever path ends the exec — Stop's endDrains on
-	// deliberate teardown, or StartAgent's reaper once both drains return on a
-	// self-exit. Held as a channel rather than the context itself, which
-	// containedctx forbids in shipped state, so the ctx-node release is
-	// observable without re-rooting a context on the struct.
+	// drainsReleased mirrors drainCtx.Done(): it closes when the drain context is
+	// cancelled, whichever path ends the exec — Stop's endDrains or StartAgent's
+	// reaper on self-exit. Held as a channel, not the context (containedctx forbids
+	// that in shipped state), so the ctx-node release is observable.
 	drainsReleased <-chan struct{}
 }
 
@@ -175,14 +169,10 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 		stream.drainToLog(drainCtx, xs.IO.Stdout, "agent stdout", log)
 	}()
 
-	// Release the ctx node whichever way the exec ends. Stop cancels drainCtx
-	// on the deliberate-teardown path, but a self-exiting agent (pipes reach
-	// EOF, both drains return, no Stop/Reload/Close) would otherwise leave the
-	// context.WithCancel node attached to the caller's long-lived ctx until
-	// Runner shutdown. Waiting on the same drains and cancelling once they
-	// finish covers that path; it is idempotent with Stop's endDrains, since a
-	// CancelFunc is safe to call more than once. This reaper exits the moment
-	// the drains do, so it adds no lifetime of its own.
+	// Release the ctx node whichever way the exec ends. A self-exiting agent (pipes
+	// EOF, drains return, no Stop) would otherwise leave the WithCancel node
+	// attached to the caller's ctx until Runner shutdown. This reaper waits on the
+	// drains and cancels once — idempotent with Stop's endDrains.
 	go func() {
 		stream.drains.Wait()
 		stopDrains()
@@ -253,12 +243,9 @@ func (s *AgentStream) endDrains() {
 //     byte-path is byte-identical (OQ-G/U3b).
 func isDeliberateKill(err error) bool {
 	if exitStatus, ok := errors.AsType[*runtime.ExitStatusError](err); ok {
-		// The two branches are deliberately asymmetric (OQ-G): the portable
-		// branch counts ANY signalled exit as a kill, while the podman branch
-		// below pins SIGKILL. That is intentional — the guest reports a
-		// deliberate teardown as SIGKILL (Kill) or SIGTERM (Stop), and OQ-G
-		// blessed Signal!=0 rather than enumerating signals. Do NOT "align"
-		// the two by narrowing this to SIGKILL: the microVM path has no os.ProcessState
+		// Deliberately asymmetric (OQ-G): the portable branch counts ANY signalled
+		// exit as a kill, while the podman branch below pins SIGKILL. Do NOT "align"
+		// them by narrowing this to SIGKILL — the microVM path has no os.ProcessState
 		// to inspect, and Stop's SIGTERM teardown must still classify as a kill.
 		return exitStatus.Signal != 0
 	}
@@ -311,27 +298,21 @@ func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string
 			log.Debug(msg, attrs...)
 		}
 		switch {
-		// The expected ends, tested FIRST: a truncated final line returns its
-		// error joined with the terminal one, and treating that as "keep going"
-		// would spin on a dead pipe.
-		//
-		// os.ErrClosed is ordinary only during a deliberate stop: Terminate
-		// reaps via cmd.Wait, which CLOSES the pipe rather than EOF-ing it, so
-		// every stop ends the drains this way and warning unconditionally would
-		// fire on 100% of stops. ctx cannot make that distinction — Stop must
-		// Terminate before it cancels, so the reap's ErrClosed always arrives
-		// while ctx is still live — hence the explicit flag. Outside a stop the
-		// same error means a live agent's pipe closed under us and the drain is
-		// dead, which is exactly what the warn below exists to report.
+		// The expected ends, tested FIRST: a truncated final line joins its error
+		// with the terminal one, and "keep going" would spin on a dead pipe.
+
+		// os.ErrClosed is ordinary only during a deliberate stop: Terminate reaps
+		// via cmd.Wait, which CLOSES the pipe, so every stop ends the drains this
+		// way. ctx cannot tell that apart (Stop Terminates before it cancels, so
+		// ErrClosed arrives while ctx is live) — hence the explicit stopping flag.
 		case errors.Is(err, io.EOF), ctx.Err() != nil:
 			return // agent exit or teardown: the expected ends.
 		case errors.Is(err, os.ErrClosed) && s.stopping.Load():
 			return // the reap closed the pipe on the deliberate-stop path.
-		// A truncated line comes back as the sentinel BY VALUE; only a truncated
-		// line that ALSO faulted joins the fault in, and the ends above have
-		// already peeled off the terminal faults — so an identity test keeps
-		// draining on pure truncation while a fault-carrying join falls through
-		// to the warn below rather than being swallowed as "keep going".
+		// A truncated line comes back as the sentinel BY VALUE; a truncated line
+		// that ALSO faulted joins the fault in, and the ends above peeled off the
+		// terminal faults — so an identity test keeps draining on pure truncation
+		// while a fault-carrying join falls through to the warn.
 		case err == nil, err == errLineTruncated: //nolint:errorlint // identity is the point: the by-value sentinel is pure truncation; a truncated line that also faulted is a *joinError, which must fall through to the warn — errors.Is would match that join and swallow the fault.
 			continue
 		default:
@@ -365,11 +346,10 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 	)
 	for {
 		chunk, err := r.ReadSlice('\n')
-		// Measure against the running total, never per chunk. The terminator is
-		// not payload — a line of exactly limit bytes plus its EOL loses
-		// nothing — but only the FINAL chunk can hold one, so discounting a
-		// chunk's trailing CR discounts a byte that is ordinary payload and
-		// under-reports a line that is over the cap by exactly that byte.
+		// Measure against the running total, never per chunk. The terminator is not
+		// payload, but only the FINAL chunk can hold one, so discounting a chunk's
+		// trailing CR would discount ordinary payload and under-report a line that
+		// is over the cap by exactly that byte.
 		if chunk != nil {
 			seen += len(chunk)
 			for _, b := range chunk[max(0, len(chunk)-2):] {
@@ -383,11 +363,9 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 			continue // more of the same line; keep consuming.
 		}
 		// The whole line is in hand, so discount its one real terminator. `tail`
-		// carries the last two bytes across the chunk boundary, since a CRLF can
-		// straddle one and leave this chunk holding a bare "\n". It is also the
-		// ONLY witness to what terminated the line: `line` may have been clipped
-		// at the cap, so its own suffix says nothing about the terminator, and an
-		// unterminated final line legitimately ends in a payload "\r".
+		// carries the last two bytes across the chunk boundary (a CRLF can straddle
+		// one). It is also the ONLY witness to the terminator: `line` may have been
+		// clipped at the cap, and an unterminated final line legitimately ends "\r".
 		terminated := seen > 0 && tail[1] == '\n'
 		payload := seen
 		if terminated {

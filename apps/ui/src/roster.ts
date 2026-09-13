@@ -1,20 +1,7 @@
-// The roster join — the pure seam that composes the board's live `Agent`
-// view-models from the two independent sources the store already holds: the
-// durable `accounts` (identity, from the comms snapshot / accountChanged
-// stream) and the ephemeral `presence` map (lifecycle + activity, seeded by
-// GetRoster and tailed by AgentPresenceChanged; T2). Sibling of `board.ts`,
-// same shape: pure over injected inputs (no fixture import, no store), so the
-// join contract is unit-testable and the store just wires it into a memo.
-//
-// The miss rule (R2 / DL-194): an account present in `accounts` but ABSENT from
-// the presence map — a snapshot-boundary race, or a post-snapshot
-// `accountChanged` arrival never re-seeded — is an at-rest/unstarted agent, so
-// it maps to `lifecycle: "stopped"`, mirroring the server's absent→OFFLINE→
-// stopped default at this client seam. It must NOT fall through to the
-// components' `lifecycle ?? "idle"` fallback, which would render a false-live
-// grey idle dot; the first real AgentPresenceChanged upserts the map and flips
-// it. A PRESENT-but-UNSPECIFIED entry (its `lifecycle` is undefined) keeps
-// undefined → the defensive idle arm; only a genuine miss becomes "stopped".
+// The roster join — the pure seam composing the board's live `Agent` view-models from
+// durable `accounts` (identity) and the ephemeral `presence` map (lifecycle + activity, T2).
+// The miss rule (R2 / DL-194): an account ABSENT from presence is an at-rest agent →
+// `lifecycle: "stopped"`, NOT the components' `?? "idle"` fallback (which is a false-live dot).
 
 import type { AgentPresenceInfo } from "./live/adapt";
 import type { Account, Agent, RuntimeMarker } from "./stub-data";

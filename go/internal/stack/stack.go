@@ -25,32 +25,21 @@ const (
 	readyPollInterval = 100 * time.Millisecond
 	readyPollBudget   = 30 * time.Second
 	// dbReadyPollInterval/dbReadyPollBudget bound the postgres-reachability poll
-	// between starting the postgres child and compass-server. The budget is
-	// larger than readyPollBudget because this waits on cold cluster init
-	// (initdb + postgres start + createdb), not a server bind: initdb+createdb
-	// measured ~5.5s on an idle box, but runs far heavier on a loaded shared
-	// box, so 60s leaves generous headroom while still failing a genuinely
-	// wedged cluster legibly rather than hanging.
+	// between starting postgres and compass-server. The budget is larger than
+	// readyPollBudget because this waits on cold cluster init (initdb + start +
+	// createdb), ~5.5s idle but heavier on a loaded box, so 60s leaves headroom.
 	dbReadyPollInterval = 100 * time.Millisecond
 	dbReadyPollBudget   = 60 * time.Second
-	// collectorReadyPollInterval/collectorReadyPollBudget bound the
-	// collector-health poll between launching the bundled collector and the
-	// components that emit to it. The collector holds no on-disk state and does
-	// no cold init like postgres's initdb — it binds its OTLP receivers and
-	// health_check extension in well under a second once the image is present —
-	// so the budget is the smaller readyPollBudget-tier value, ample for a cold
-	// `podman run` of a present image while still failing a genuinely wedged
-	// collector legibly rather than hanging.
+	// collectorReadyPollInterval/collectorReadyPollBudget bound the collector-health
+	// poll between launching the bundled collector and its emitters. The collector
+	// holds no on-disk state and does no cold init, binding in under a second, so
+	// the budget is the smaller readyPollBudget tier.
 	collectorReadyPollInterval = 100 * time.Millisecond
 	collectorReadyPollBudget   = 30 * time.Second
 	// natsReadyPollInterval/natsReadyPollBudget bound the nats-readiness poll
-	// between launching the bundled NATS and the components that connect to it.
-	// NATS boots fast — no cold init like postgres's initdb — and a single-node
-	// R1 JetStream store recovers in well under a second at the scales this
-	// stack runs, so the budget is the same readyPollBudget tier as the
-	// collector: ample for a cold `podman run` of a present image plus store
-	// recovery, while still failing a genuinely wedged server legibly rather
-	// than hanging.
+	// between launching NATS and its consumers. NATS boots fast — no cold init —
+	// and a single-node JetStream store recovers in under a second, so the budget
+	// is the same readyPollBudget tier as the collector.
 	natsReadyPollInterval = 100 * time.Millisecond
 	natsReadyPollBudget   = 30 * time.Second
 )
@@ -235,11 +224,10 @@ func (s *Stack) Health(ctx context.Context) (Status, error) {
 // recorded on the Stack before the next step, so drainChildren can reverse
 // exactly what started.
 func (s *Stack) spawnChain(ctx context.Context) error {
-	// 1. Private postgres child. Three paths (S4): external (skip the component
-	// entirely, probe the caller's DSN as-is), container-backed (the installed
-	// default), or the dev-path wrapper process. Start returns at launch, not at
-	// readiness — the waitPostgres poll below is the readiness gate for all
-	// three.
+	// 1. Private postgres child. Three paths (S4): external (skip the component,
+	// probe the caller's DSN as-is), container-backed (the installed default), or
+	// the dev-path wrapper process. Start returns at launch, not readiness — the
+	// waitPostgres poll below is the readiness gate for all three.
 	if err := s.startPostgres(ctx); err != nil {
 		return err
 	}
@@ -251,15 +239,10 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 
-	// 1c. Bundled Plane-B fan-in OTel Collector (T4 / D3). Placed early — before
-	// compass-server and compass-runner — because those are the surfaces that
-	// emit TO it (server/runner emission lands in T4b; the agent already emits),
-	// so the fan-in endpoint must be receiving before an emitter comes up. On
-	// the --otel-external opt-out (ExternalOTLPEndpoint set) startCollector is a
-	// no-op and no readiness gate runs: surfaces point straight at the external
-	// endpoint, so nothing bundled starts (mirrors startPostgres's early return
-	// on ExternalDatabase). Start returns at launch; waitCollector is the
-	// readiness gate.
+	// 1c. Bundled OTel Collector. Placed early — before server and runner, which
+	// emit TO it — so the fan-in endpoint is receiving before an emitter comes up.
+	// On --otel-external (ExternalOTLPEndpoint set) startCollector is a no-op and no
+	// readiness gate runs. Start returns at launch; waitCollector is the gate.
 	if err := s.startCollector(ctx); err != nil {
 		return err
 	}
@@ -267,15 +250,10 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 
-	// 1d. Bundled NATS (the fabric's message broker). Grouped with the other
-	// infra preconditions — after postgres and the collector, before the TLS
-	// anchor and the server/runner — because server and runner are the surfaces
-	// that will CONNECT to it (that cutover is PR3/PR4; nothing in-tree connects
-	// yet), so the broker must be accepting before a consumer comes up, exactly
-	// the collector's ordering rationale. On the --nats-external opt-out
-	// (ExternalNatsURL set) startNats is a no-op and no readiness gate runs:
-	// consumers point straight at the external URL, so nothing bundled starts.
-	// Start returns at launch; waitNats is the readiness gate.
+	// 1d. Bundled NATS. Grouped after postgres and the collector, before the server
+	// and runner that will CONNECT to it (cutover PR3/PR4), so the broker is
+	// accepting before a consumer comes up. On --nats-external (ExternalNatsURL set)
+	// startNats is a no-op. Start returns at launch; waitNats is the gate.
 	if err := s.startNats(ctx); err != nil {
 		return err
 	}

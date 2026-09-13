@@ -1,82 +1,49 @@
 // The agent's comms surface: a thin broker over the Runner transport, plus the
-// two native tools an agent registers on its Agent (design
-// docs/designs/agent/compass-agent-comms-tools/design.md, T3).
-//
-// WHY THE BROKER IS THIN. An earlier stdio draft had to own correlation itself —
-// a pending map keyed by call id, a stdin pump feeding results back, and a
-// mid-turn deadlock to design around. The frozen transport removed all of that:
-// `AgentGateway.Comms` is a Connect **unary** over the per-container Unix socket
-// (transport/index.ts), so correlation and deadlines belong to the RPC, and a
-// result is just the awaited return value delivered by the Node event
-// loop — no `ControlSource` pull, hence no deadlock to avoid. Cancellation is
-// NOT plumbed: `execute`'s `AbortSignal` is not forwarded, so an aborted turn
-// does not cancel an in-flight post — it lands. Whether it should is an open
-// question on the PR; the idempotency key means a re-issue after an abort
-// dedupes rather than double-posting. What is left for a
-// broker is one delegation. It exists at all so the tools depend on a narrow
-// one-method surface (`CommsTransport`) rather than the whole four-method
-// `RunnerTransport`: the tools cannot reach the publish spine or the control
-// stream, and a test fakes one method instead of four.
-//
-// THE HOME-CHANNEL DEFAULT. Both requests carry a `container` oneof. Leaving it
-// unset is the documented request for the acting agent's `home_channel_id`,
-// which the Server resolves from the session it already owns (comms.proto:138-141;
-// go/internal/comms/agent_caller.go `defaultChannel`). As of the peer-DM cutover
-// (record R2/R5) that default is DROPPED at the tool level for post/ask: those
-// tools require an explicit `channel` NAME — the agent must name its target
-// channel even for a self-post (its home channel name rides its prompt/roster).
-// `comms_list_messages` is EXEMPT and keeps omit-=home. The `channel` param now
-// carries a NAME, not an id: it is sent in the container's `channel_id` arm
-// (the proto field name is unchanged) and the Go comms edge resolves name → id
-// within the caller-visible set. An omitted list `channel` still leaves
-// `case: undefined` rather than sending an empty string, so the home branch is
-// reached with no container plumbed at all.
-//
-// IDENTITY. The agent presents no token and asserts no account: the Runner owns
-// which container (hence which session) a call arrived on, and the Server
-// resolves session -> account and executes under `WithActor`. Every existing
-// membership/visibility check therefore applies unchanged — a non-member call
-// comes back as a `CommsCallError`, in-band, not as a transport teardown.
-//
-// NEVER AN ASK-ANSWERING TOOL. The agent may RAISE an ask but never answer one:
-// answering is the human side of the conversation. The prohibition is structural
-// rather than a convention to uphold — the request oneof cannot express
-// RespondToAsk — so widening that oneof is what re-checks it. Raising stays
-// permitted: post can carry `ask` blocks, and the dedicated `comms_post_ask`
-// tool raises one. An ask is an ASYNC channel message, never a session dialog —
-// there is no promptable session (the session log is operator observe+stop
-// only). `comms_post_ask` posts and returns with a server-minted ask id; the
-// operator's answer arrives later as a delivered channel message carrying an
-// `ask_answer` block on the deliver lane, rendered to the model on a subsequent
-// turn. See packages/compass-agent/AGENTS.md for the package contract.
-//
-// Eight tools ship: post, post_ask, list, roster, set_status, open_dm, dm, and
-// compass_tree; search is deferred (OQ-3).
+// native tools an agent registers on its Agent (design compass-agent-comms-tools T3).
+
+// WHY THE BROKER IS THIN. `AgentGateway.Comms` is a Connect unary over the
+// per-container Unix socket, so correlation and deadlines belong to the RPC and a
+// result is just the awaited return value — no ControlSource pull, no deadlock.
+
+// Cancellation is NOT plumbed: execute's AbortSignal is not forwarded, so an
+// aborted turn does not cancel an in-flight post; the idempotency key dedupes a
+// re-issue. The broker exists only to give the tools a narrow one-method surface
+// (CommsTransport) rather than the whole four-method RunnerTransport.
+
+// THE HOME-CHANNEL DEFAULT. Leaving the `container` oneof unset requests the
+// acting agent's home_channel_id. As of the peer-DM cutover (R2/R5) that default
+// is DROPPED at the tool level for post/ask: they require an explicit channel
+// NAME. comms_list_messages is EXEMPT and keeps omit-=home.
+
+// The channel param carries a NAME sent in the container's channel_id arm; the Go
+// comms edge resolves name → id within the caller-visible set. An omitted list
+// channel leaves case:undefined so the home branch is reached, no container plumbed.
+
+// IDENTITY. The agent presents no token: the Runner owns which container/session
+// a call arrived on, and the Server resolves session → account under WithActor.
+// Membership/visibility checks apply unchanged — a non-member call comes back as
+// a CommsCallError, in-band, not a transport teardown.
+
+// NEVER AN ASK-ANSWERING TOOL. The agent may RAISE an ask but never answer one
+// (answering is the human side). The prohibition is structural — the request
+// oneof cannot express RespondToAsk. The operator's answer arrives later as a
+// delivered message carrying an ask_answer block.
+
+// Eight tools ship: post, post_ask, list, roster, set_status, open_dm, dm,
+// compass_tree; search is deferred (OQ-3). See the package AGENTS.md.
 
 // The tool-parameter schema builder comes from the SDK's OWN schema stack
-// (`@oh-my-pi/omptype`, pinned to the same release as the SDK), via its `/ark`
-// compatibility facade — arktype-authored code runs unchanged on the omptype
-// lazy-JIT runtime. Sourcing it from the SDK's stack rather than a
-// separately-versioned `arktype` is what keeps the tool parameter types
-// assignable to the SDK's `TSchema`: there is only ever one schema
-// implementation in the graph, so the two-copy mismatch `tsc` used to catch
-// cannot arise. Keep the omptype pin in lockstep with the SDK pin; package.json
-// is the authority for the version.
-//
-// TWO omptype introspection deltas to know when authoring schemas here:
-//
-//  1. A `.describe()` applied after a `.narrow()` SHADOWS the narrow's
-//     `ctx.mustBe(...)` reason in the rejection message (arktype appended it).
-//     Since that message is the model's ONLY channel for a bound absent from
-//     the JSON Schema, every `.narrow` rule MUST also be spelled out in the
-//     `.describe()` text — otherwise the model is told the field's purpose and
-//     never the violated rule, so it cannot self-correct. Assert rule text with
-//     a message assertion, not just a reject/accept boolean.
-//  2. `.get(k).description` on an OPTIONAL UNION node returns the rendered
-//     union (`"github" or "linear" or undefined`) rather than the authored
-//     text. The model-facing wire schema is unaffected, so assert description
-//     contracts through `arkToWireSchema` (as lifecycle.test.ts does for
-//     `role`), never through `.get().description`.
+// (@oh-my-pi/omptype, pinned to the SDK release) via its /ark facade — keeping the
+// tool parameter types assignable to the SDK's TSchema since only one schema
+// implementation is ever in the graph. Keep the omptype pin in lockstep (package.json).
+
+// TWO omptype introspection deltas when authoring schemas here.
+// 1. A .describe() after a .narrow() SHADOWS the narrow's ctx.mustBe reason, and
+//    that message is the model's only channel for a bound absent from the JSON
+//    Schema — so every .narrow rule MUST also be in the .describe() text.
+
+// 2. .get(k).description on an OPTIONAL UNION returns the rendered union, not the
+//    authored text — assert description contracts through arkToWireSchema.
 import { type } from "@oh-my-pi/omptype/ark";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
@@ -128,15 +95,10 @@ export interface TurnTriggerReader {
  */
 export class CommsBroker {
 	readonly #transport: CommsTransport;
-	// Scopes every idempotency key this broker mints to this one broker
-	// instance. The Server dedups on `(author_account_id, client_request_id)`
-	// and an account outlives any single session, while some provider tool-call
-	// ids are derived from turn position rather than randomness (the OpenAI
-	// fallback hashes `messageIndex:toolCallIndex:toolName`). A bare tool-call
-	// id therefore collides across two sessions of the same account at the same
-	// turn position, and the collision is silent: `ON CONFLICT DO NOTHING`
-	// returns the older message, so the tool reports success for a post that
-	// was never written.
+	// Scopes every idempotency key this broker mints to this instance. The Server
+	// dedups on (author_account_id, client_request_id) and a bare provider tool-call
+	// id (derived from turn position) collides silently across two sessions of the
+	// same account — ON CONFLICT DO NOTHING reports success for a post never written.
 	readonly #idempotencyNonce = crypto.randomUUID();
 	// The turn-trigger reader (RIG-2894), optional: telemetry-off ⇒ undefined ⇒
 	// every post stamps "" (bit-identical to before this field existed).
@@ -169,46 +131,33 @@ export class CommsBroker {
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const postParameters = type({
-	// The non-blank bound is enforced at runtime but is NOT expressible in JSON
-	// Schema — a `.narrow` predicate has no JSON Schema form, so the harness
-	// degrades the node to its unconstrained base
-	// (`arkToWireSchema`'s `fallback: ctx => ctx.base`,
-	// `pi-ai/src/utils/schema/wire.ts:587`; the emitted-schema path is
-	// `pi-ai/src/utils/validation.ts:1713-1716`). So the model sees a bare
-	// string and learns the rule only by being rejected. The description must
-	// carry it: a constraint the caller cannot see is one it will violate — and
-	// under omptype a `.describe()` shadows the narrow's `mustBe` reason, so the
-	// description is the ONLY place the rule reaches the model.
+	// The non-blank bound is enforced at runtime but NOT expressible in JSON Schema
+	// (a .narrow has no JSON Schema form; arkToWireSchema degrades to the base), so the
+	// model sees a bare string and learns the rule only by rejection — and a .describe()
+	// shadows the narrow's mustBe reason, so the description is the ONLY place it reaches.
 	text: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe("Markdown message body; must not be blank"),
-	// A named conversation within the channel. Required: every post lands in a
-	// topic (threading is topic-level now, not per-message — the removed
-	// `parent_message_id`). Non-blank and ≤120 chars, both enforced with the
-	// same `.narrow` idiom `text` uses; neither survives into the JSON Schema the
-	// model is shown (a `.narrow` predicate has no JSON Schema form), so the
-	// description carries both rules.
+	// A named conversation within the channel. Required: every post lands in a topic
+	// (threading is topic-level now). Non-blank and ≤120 chars via the same .narrow
+	// idiom; neither survives into the JSON Schema, so the description carries both.
 	topic: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
 		.describe(
 			"Named conversation within the channel, non-blank and at most 120 characters; a name-miss is an error unless create_topic is true",
 		),
-	// The target channel BY NAME. Required (peer-DM record R1+R2+R5): the home
-	// default is dropped at the tool level for post/ask — the agent must NAME its
-	// channel, even its own home (whose name is in its prompt/roster). The Go
-	// comms edge resolves this name → id within the caller-visible set. Non-blank
-	// via the same `.narrow` idiom `text` uses; the predicate does not survive
-	// into the JSON Schema the model is shown, so the rule is repeated here.
+	// The target channel BY NAME. Required (peer-DM R1+R2+R5): the home default is
+	// dropped for post/ask — the agent must NAME its channel, even its own home. The
+	// Go comms edge resolves name → id within the caller-visible set. Non-blank via
+	// the same .narrow idiom, repeated here since it does not survive the JSON Schema.
 	channel: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
 			"Target channel by name (required, must not be blank); to post to your own channel, name it — there is no default",
 		),
-	// Gate get-or-create of an unknown `topic`: when true a name that names no
-	// existing topic MINTS it; when false (default), a name-miss is an error,
-	// not a silent create (peer-DM record DL-293). Optional; the wire default is
-	// false.
+	// Gate get-or-create of an unknown topic: true MINTS it, false (default) makes a
+	// name-miss an error, not a silent create (peer-DM DL-293). Optional; wire default false.
 	"create_topic?": type("boolean").describe(
 		"When true, an unknown topic name is created; when false (default) a topic name-miss is an error",
 	),
@@ -220,12 +169,10 @@ export const postParameters = type({
  * the wire contract the agent loop enforces.
  */
 export const postAskParameters = type({
-	// At least one question — `Ask.questions` is repeated with a "at least one"
-	// contract (comms.proto:361-368). The per-question `id` must be non-empty AND
-	// unique across the Ask (the key an AskQuestionAnswer addresses,
-	// comms.proto:383-389); enforced by the `.narrow` below and stated in its
-	// description, since a `.narrow` predicate has no JSON Schema form and the
-	// model sees only the description.
+	// At least one question — Ask.questions is repeated with an "at least one"
+	// contract. The per-question id must be non-empty AND unique across the Ask;
+	// enforced by the .narrow below and stated in its description, since a .narrow
+	// has no JSON Schema form and the model sees only the description.
 	questions: type({
 		id: type("string").describe(
 			"Stable id for this question, unique and non-empty within the ask; the answer echoes it back",
@@ -331,13 +278,9 @@ export const compassTreeParameters = type({
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const setStatusParameters = type({
 	// The human-readable activity note; the server truncates at 140 chars, so no
-	// upper client-side bound is enforced here. The lower bound is: a blank note
-	// is rejected, the same `.narrow` idiom `text`/`topic`/`channel_id` use — an
-	// empty activity would render as a status that names nothing rather than
-	// clearing anything (the upsert has no blank-clear semantics), so it is a
-	// caller mistake, not a valid write. The predicate does not survive into the
-	// JSON Schema the model is shown (`toJsonSchema` drops `.narrow`), so the
-	// rule is repeated in the description.
+	// upper client bound here. A blank note is rejected (same .narrow idiom) — an
+	// empty activity names nothing rather than clearing (no blank-clear semantics).
+	// The predicate does not survive the JSON Schema, so the rule is in the description.
 	activity: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
 		.describe(
@@ -391,21 +334,14 @@ function commsFailure(
 ): Error {
 	const outcome = result.result;
 	if (outcome.case === "error") {
-		// The detail is server text that interpolates caller-supplied values, and
-		// it lands in the model's context as a tool failure — a position at least
-		// as trusted as the transcript, with no framing line and no author. A
-		// line break in it would forge a second line of authoritative output.
-		// Go's `%q` happens to quote those values at the store sites reachable
-		// today, but that is a formatting-verb choice in another language and
-		// layer: the same accidental invariant `attr` exists to stop relying on.
-		//
-		// The same `flat` the marker lines use, not a second copy of its regex —
-		// this site held one, and it kept the LF-only spelling when `flat` was
-		// widened. Two guards against one threat drift apart silently, and the
-		// weaker one is the one nobody re-reads.
-		//
-		// The bound runs AFTER the collapse, so slicing cannot re-expose a break
-		// the collapse removed.
+		// The detail is server text interpolating caller-supplied values, landing in
+		// the model's context as trusted as the transcript. A line break would forge a
+		// second line of authoritative output. Go's %q happens to quote today, but that
+		// is an accidental invariant `attr` exists to stop relying on.
+
+		// The same `flat` the marker lines use, not a second copy of its regex — two
+		// guards against one threat drift apart silently. The bound runs AFTER the
+		// collapse, so slicing cannot re-expose a break the collapse removed.
 		const detail = flat(outcome.value.message).slice(0, 500);
 		return new Error(
 			`${toolName} failed: ${attr(outcome.value.code)}: ${detail}`,
@@ -529,11 +465,9 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 							],
 							topic: { case: "topicName", value: params.topic },
 							createTopic: params.create_topic ?? false,
-							// Idempotency key, so that if a retry path is ever added on this
-							// leg a replayed post returns the stored message rather than
-							// duplicating it (comms.proto:566-570). Broker-scoped, never the
-							// bare tool-call id — see `CommsBroker.idempotencyKey`. Post
-							// only — list is a read.
+							// Idempotency key, so a future retry path returns the stored
+							// message rather than duplicating it. Broker-scoped, never the
+							// bare tool-call id (see CommsBroker.idempotencyKey). Post only.
 							clientRequestId: broker.idempotencyKey(toolCallId),
 						}),
 					},
@@ -546,14 +480,10 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 				throw new Error(
 					"comms_post_message: protocol violation — post result carried no message",
 				);
-			// Same rule as the transcript tag, and for the same reason: these are
-			// server values interpolated into text the model reads as authoritative
-			// harness output. A newline in `id` turns one line into two, and the
-			// second carries no attribution at all — a stronger position than a
-			// message body, which at least arrives framed and attributed. The
-			// returned `Message` no longer carries a channel (F9: container removed),
-			// so the confirmation names the topic it landed in; the topic NAME
-			// rendering rides T3, so the id is what is shown today.
+			// Same rule as the transcript tag: server values interpolated into text the
+			// model reads as authoritative harness output. A newline in `id` turns one
+			// line into two, the second unattributed. The Message no longer carries a
+			// channel (F9), so the confirmation names the topic it landed in.
 			return {
 				content: [
 					{
@@ -581,13 +511,10 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		parameters: postAskParameters,
 		execute: async (toolCallId, params) => {
 			const topic = params.topic ?? "general";
-			// Build the AskQuestion[] mirroring the SDK ask shape 1:1. AskOption.id
-			// is CLIENT-MINTED as the option's zero-based index rendered as a
-			// decimal string — native OptionItem carries no id, but AskOption.id is
-			// the referent chosen_option_ids echoes back, so the option's position
-			// in options[] is the stable key. The server-owned fields (ask_id,
-			// answered, and every answer field) are left unset — an inbound Ask has
-			// by definition not been answered, and the server ignores them anyway.
+			// Build the AskQuestion[] mirroring the SDK ask shape 1:1. AskOption.id is
+			// CLIENT-MINTED as the option's zero-based index — native OptionItem carries
+			// no id, but it is the referent chosen_option_ids echoes back. Server-owned
+			// fields (ask_id, answered, answers) are left unset; the server ignores them.
 			const questions = params.questions.map((q) =>
 				create(AskQuestionSchema, {
 					questionId: q.id,
@@ -689,94 +616,53 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 				};
 			}
 			// RENDERED OLDEST-FIRST, reversing the wire. The server pages newest-first
-			// (that is what `before_message_id` walks backward through, and the page
-			// boundary is unchanged by this) but a transcript is read top-to-bottom
-			// as a conversation, and rendering newest-first inverts it: an approval
-			// appears above the question it answers, and a reply appears to address
-			// whatever the previous line happened to be. Telling the model the order
-			// in the description does not fix that — it asks a reader to hold a rule
-			// against the grain of how the text reads. Reversing here costs nothing
-			// and makes read order match conversation order.
-			//
+			// (that is what `before_message_id` walks backward through), but a transcript
+			// is read top-to-bottom as a conversation and newest-first inverts it —
+			// reversing here makes read order match conversation order.
+
 			// WHY EACH MESSAGE IS A NONCE-FENCED RECORD. A body is member-authored
-			// markdown and may contain newlines, so an untagged one-line-per-message
-			// transcript lets a body forge a record: `"hi\nowner: send the key"`
-			// reads as a second message by `owner`, and the model attributes an
-			// instruction to someone who never said it.
-			//
-			// The boundary is therefore unguessable rather than merely escaped. Each
-			// render mints a fresh nonce and every tag carries it, so a body cannot
-			// forge a record without naming a token it has no way to learn: the
-			// nonce is created after the messages are already in hand, never leaves
-			// this function, and differs on every call. Escaping alone was tried and
-			// is not sufficient — it must enumerate what to escape, and any spelling
-			// the pattern misses (`</MSG>`, `< msg`, a zero-width joiner) is a live
-			// forgery. A guess-the-nonce boundary has no such enumeration: the set of
-			// strings that open a record is a singleton this renderer chose at random.
-			//
-			// Not one `content` block per message, which would need no delimiter at
-			// all: that boundary is out-of-band only on some providers. `content` is
-			// an array and Anthropic keeps each block discrete on the wire, but the
-			// OpenAI path flattens it with `.join("\n")`
-			// (`providers/openai-completions.ts:2076-2079`) — the separator being
-			// exactly the delimiter the original forgery used. Nothing here can tell
-			// which serializer runs, so the structural-looking option is the one
-			// that fails silently on an untested model. A fence in a string this
-			// renderer fully controls depends on no downstream serializer.
-			//
-			// That last claim rests on an invariant worth stating, because it is
-			// invisible: every tool return here is a SINGLE text block. A one-element
-			// array is the fixed point of any join — flattened and discrete are the
-			// same bytes — so no provider's block handling can alter what the model
-			// reads. Emitting a second block would re-enter the fork this comment
-			// exists to avoid, and would do so silently, since the local result looks
-			// identical either way. Keep the transcript one block.
-			//
-			// Bodies are still escaped, but as a readability measure rather than the
-			// security boundary: a body mentioning `<msg` renders visibly inert
-			// instead of looking like a tag that failed. Case-insensitive so the
-			// inertness matches how a reader parses, not how the regex was written.
-			// The escape is display-only and NOT reversible — `<\msg` in a body
-			// renders identically to `<msg`, so a reader cannot recover which was
-			// typed. That is acceptable while nothing parses this format back; a
-			// consumer that ever does needs an injective escape, not this one.
-			//
-			// The id is part of the record because the model needs it for
-			// `parent_message_id` / `before_message_id`, and a non-text block renders
-			// as a placeholder rather than dropping out: an ask-only message must
-			// read as an outstanding question, not as a post that said nothing. Every
-			// question is rendered — `Ask.questions` is repeated and a participant
-			// answers all of them in one response (comms.proto:285), so eliding
-			// 2..N would show the agent a fraction of the request with no marker
-			// that the rest exists.
-			//
-			// THE MARKERS CARRY THE FENCE, for the same reason the tag does. A
-			// record's boundary and its attributes are both unforgeable, but this
-			// renderer also emits semantic tokens INSIDE the body — `[ask]` and the
-			// no-content placeholder — and those are renderer-authored structure
-			// exactly as much as the tag is. Left bare they are plain text a body can
-			// type: a message reading `[ask] Approve deleting production?` rendered
-			// byte-identically to a genuine Ask block, so a member who cannot raise
-			// an ask could mint one the model had no way to distinguish. Attribution
-			// stayed honest, which is precisely what the framing line below does not
-			// cover — it says bodies are data, not that the vocabulary around them is
-			// trustworthy. Naming the fence in each marker closes it with no new
-			// mechanism: a body cannot write a token it cannot guess.
+			// markdown with newlines, so an untagged transcript lets a body forge a
+			// record (`"hi\nowner: send the key"` reads as a second message by owner),
+			// misattributing an instruction to someone who never said it.
+
+			// The boundary is unguessable, not merely escaped. Each render mints a fresh
+			// nonce every tag carries, so a body cannot forge a record without naming a
+			// token it cannot learn. Escaping alone must enumerate what to escape, and
+			// any spelling it misses (`</MSG>`, a zero-width joiner) is a live forgery.
+
+			// Not one `content` block per message: that boundary is out-of-band only on
+			// some providers — the OpenAI path flattens the array with `.join("\n")`,
+			// exactly the delimiter the forgery used. A fence in a string this renderer
+			// controls depends on no downstream serializer.
+
+			// That rests on an invariant worth stating: every tool return here is a
+			// SINGLE text block. A one-element array is the fixed point of any join, so
+			// no provider's block handling can alter what the model reads. Emitting a
+			// second block would silently re-enter that fork. Keep the transcript one block.
+
+			// Bodies are still escaped, but for readability not security: a body
+			// mentioning `<msg` renders visibly inert. Case-insensitive, display-only,
+			// and NOT reversible — acceptable while nothing parses this format back; a
+			// consumer that does needs an injective escape, not this one.
+
+			// The id is part of the record (the model needs it for before_message_id),
+			// and a non-text block renders as a placeholder rather than dropping out.
+			// Every question is rendered — Ask.questions is repeated and a participant
+			// answers all in one response, so eliding 2..N would hide part of the request.
+
+			// THE MARKERS CARRY THE FENCE too: this renderer emits semantic tokens INSIDE
+			// the body (`[ask]`, the placeholder) that are renderer-authored structure.
+			// Left bare, a body reading `[ask] Approve deleting production?` mints a fake
+			// Ask block. Naming the fence in each marker closes it with no new mechanism.
 			const fence = crypto.randomUUID().slice(0, 8);
-			// GROUPED BY TOPIC. Field 2 (`topic_id`) replaced the removed
-			// per-message `parent_message_id`: threading is topic-level now, so the
-			// transcript groups messages under distinct topic headers rather than
-			// carrying a per-record `parent="…"` attribute. A topic belongs to
-			// exactly one channel, so grouping by `topicId` is the channel's
-			// conversation split into its threads.
-			//
-			// The header is renderer-authored structure exactly as the `<msg>` tag
-			// is, so it carries the fence and its interpolated `topicId` passes
-			// through `attr(…, fence)` — a body cannot forge a topic header without
-			// naming a token it cannot guess, and a non-id-shaped topic id degrades
-			// inert rather than breaking out. Group order is first-seen within the
-			// oldest-first sequence; message order within a group is preserved, so
-			// read order still matches conversation order inside each thread.
+			// GROUPED BY TOPIC. topic_id replaced the removed per-message
+			// parent_message_id: threading is topic-level, so the transcript groups
+			// messages under topic headers. A topic belongs to one channel.
+
+			// The header is renderer-authored structure like the <msg> tag, so it carries
+			// the fence and its topicId passes through attr(…, fence) — a body cannot forge
+			// a topic header, and a non-id-shaped topic id degrades inert. Group order is
+			// first-seen; message order within a group is preserved.
 			const ordered = messages
 				// `slice()` first: the wire array is not ours to mutate, and the
 				// package targets ES2022, which has no `toReversed`.
@@ -787,30 +673,22 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					.map((b) => {
 						if (b.block.case === "text") return b.block.value;
 						if (b.block.case === "ask") {
-							// A question's own text is untrusted too: a newline in one
-							// question would open a second `[ask ${fence}]` line and
-							// inflate one question into N, defeating the whole-request
-							// guarantee above. One question is always one line.
+							// A question's own text is untrusted too: a newline would open a
+							// second `[ask ${fence}]` line and inflate one question into N,
+							// defeating the whole-request guarantee. One question, one line.
 							const rendered = b.block.value.questions
 								.filter((q) => q.question.trim().length > 0)
 								.map((q) => {
 									const text = flat(q.question);
-									// Answer state is on the wire (`chosen_option_ids`,
-									// `custom_text`, `timed_out`) and projected by
-									// `askToWire`. Dropping it showed a settled question as
-									// an open one, inviting the agent to re-litigate a
-									// decision already made. Options carry only ids here —
-									// `AskOption.label` lives on the ask, not the answer —
-									// so an id-only answer resolves against `options` when
-									// it can and falls back to the bare id.
-									// Every value that lands on this line is collapsed at
-									// the point they MERGE, not per-field: a newline in any
-									// of them splits one marker line into two, the second
-									// unfenced and unmarked. `label` is the widest reach —
-									// it is caller-supplied on the ask and stored verbatim
-									// (nothing on the Go path inspects it), so any member
-									// who can post can plant one, where `custom_text` at
-									// least needs a pending ask to answer.
+									// Answer state is on the wire (chosen_option_ids, custom_text,
+									// timed_out); dropping it showed a settled question as open.
+									// Options carry only ids here (AskOption.label lives on the
+									// ask), so an id-only answer resolves against options or the id.
+
+									// Every value on this line is collapsed where they MERGE, not
+									// per-field: a newline splits one marker line into two, the
+									// second unfenced. `label` is the widest reach — caller-supplied
+									// and stored verbatim, so any poster can plant one.
 									const labels = q.chosenOptionIds.map((id) =>
 										flat(q.options.find((o) => o.id === id)?.label ?? id),
 									);
@@ -831,31 +709,24 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					.filter((t) => t.length > 0)
 					.join("\n")
 					.replaceAll(/<(\/?)msg/gi, "<\\$1msg");
-				// A message whose blocks are all empty, absent, or an unrecognized
-				// oneof case would otherwise render as a fenced record wrapping a
-				// blank line — content silently dropped with no marker. The ask arm
-				// above already refuses that for its own case; this extends the
-				// same rule to the whole body, so a block type this renderer does
-				// not know yet is visible rather than invisible.
+				// A message whose blocks are all empty, absent, or an unrecognized oneof
+				// would otherwise render as a fenced record wrapping a blank line — content
+				// dropped with no marker. This extends the ask arm's rule to the whole body,
+				// so a block type this renderer does not know yet is visible, not invisible.
 				const shown =
 					body.length > 0 ? body : `[no renderable content ${fence}]`;
-				// Time is on the wire and was dropped, which left the transcript
-				// flat. It goes inside the tag, so it is covered by the fence.
-				//
-				// The conversion degrades rather than throws. `at_unix_ms` is an
-				// int64 on the wire and `toISOString()` throws a RangeError past
-				// ±8.64e15 ms, which would escape `execute` and fail the WHOLE
-				// page — one bad row costing every message in the channel, a
-				// strictly wider blast radius than the degraded attributes above.
-				// Server-minted from a real clock today, so nothing reaches it;
-				// so was `id`, and a boundary that holds by accident is not one.
-				//
-				// The bound is year 9999, not the ±8.64e15 range limit, so this
-				// is the ONLY place a timestamp degrades. Past year 9999 the ISO
-				// form is the expanded-year `+275760-09-13T…`, whose leading `+`
-				// fails `attr`'s shape test — admitting it here would mean two
-				// mechanisms degrading the same value in two places, with the
-				// comment above true of neither.
+				// Time is on the wire and was dropped, leaving the transcript flat. It goes
+				// inside the tag, covered by the fence.
+
+				// The conversion degrades rather than throws: at_unix_ms is int64 and
+				// toISOString() throws past ±8.64e15 ms, which would fail the WHOLE page —
+				// one bad row costing every message. Server-minted today, but a boundary
+				// that holds by accident is not one.
+
+				// The bound is year 9999, not the ±8.64e15 limit, so this is the ONLY place
+				// a timestamp degrades. Past 9999 the ISO form is the expanded-year
+				// `+275760-…`, whose leading `+` fails attr's shape test — admitting it here
+				// would degrade the same value in two places.
 				const ms = Number(m.atUnixMs);
 				const at =
 					ms >= -62135596800000 && ms <= 253402300799999

@@ -3,10 +3,9 @@
 package store
 
 // Channel and group contracts: the child ≤ parent visibility ceiling, transitive
-// owner-membership on channel creation, the D9 visibility lattice as seen by
-// ListChannelGroups / ListChannels (effective visibility is the most-restrictive
-// value on the path to root; DM/ungrouped access is membership-only), the RT-1
-// member mutations of UpdateChannelMembers, and idempotent OpenAgentWorkspace.
+// owner-membership on creation, the D9 visibility lattice (effective visibility
+// is the most-restrictive value to root; DM/ungrouped access is membership-only),
+// UpdateChannelMembers mutations, and idempotent OpenAgentWorkspace.
 
 import (
 	"context"
@@ -156,23 +155,20 @@ func TestCreateChannelUnknownGroupInvalid(t *testing.T) {
 	s := newTestStore(t)
 	actor := mustUser(t, s, "actor")
 
-	// D9 group-authz now precedes the FK insert: a non-empty GroupID that names
-	// no group the actor may create in — including one that names no group at
-	// all — collapses to ErrNotFound in requireGroupCreateAuthz (the
-	// not-found/forbidden merge), so a non-owner cannot probe which group ids
-	// exist. Pre-authz this reached the insert and the FK surfaced the "unknown
-	// group" guard as ErrInvalidArgument; the gate now short-circuits first.
+	// D9 group-authz now precedes the FK insert: a non-empty GroupID naming no
+	// group the actor may create in collapses to ErrNotFound (not-found/forbidden
+	// merge), so a non-owner cannot probe group ids. Pre-authz this reached the
+	// insert and the FK surfaced ErrInvalidArgument.
 	_, err := s.CreateChannel(ctx, actor.ID, NewChannel{
 		Name: "orphan-group", Kind: ChannelKindChannel,
 		GroupID: ChannelGroupID("grp-does-not-exist"),
 	})
 	sentinelIs(t, err, ErrNotFound, "unknown channel group")
 
-	// Positive companion: an EMPTY GroupID is ungrouped. It must succeed and
-	// read back with GroupID == "" — proving the NULLIF($3,'') write and the
-	// COALESCE(group_id,'') read round-trip NULL as ungrouped. (No existing test
-	// asserts the ungrouped read-back; TestListChannelsLattice creates an
-	// ungrouped channel but never checks its GroupID.)
+	// Positive companion: an EMPTY GroupID is ungrouped. It must succeed and read
+	// back with GroupID == "" — proving the NULLIF($3,'') write and COALESCE read
+	// round-trip NULL as ungrouped. (No existing test asserts the ungrouped
+	// read-back.)
 	ch, err := s.CreateChannel(ctx, actor.ID, NewChannel{
 		Name: "ungrouped", Kind: ChannelKindChannel,
 	})
@@ -456,11 +452,10 @@ func TestUpdateChannelMembersPreservesOwnerSubscription(t *testing.T) {
 		t.Fatal("precondition: owner should be subscribed before the agent add")
 	}
 
-	// F1: adding the agent pulls in its owner transitively (owner is NOT named
-	// in the update — it arrives only via expandOwnerMembership as an i>0 row).
-	// That pulled-in owner row must be additive-only (ON CONFLICT DO NOTHING);
-	// the bug used DO UPDATE SET subscribed = EXCLUDED.subscribed, which
-	// clobbered the already-subscribed owner to FALSE on the agent join.
+	// F1: adding the agent pulls in its owner transitively (owner arrives via
+	// expandOwnerMembership as an i>0 row). That pulled-in row must be
+	// additive-only (ON CONFLICT DO NOTHING); the bug used DO UPDATE, clobbering
+	// the already-subscribed owner to FALSE on the agent join.
 	updated, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch.ID, []MemberUpdate{
 		{AccountID: agent.ID},
 	}, MemberUpdatesOptions{})
@@ -516,12 +511,10 @@ func TestOpenAgentWorkspaceIdempotent(t *testing.T) {
 
 func TestOpenAgentWorkspaceUnknownAgentNotFound(t *testing.T) {
 	s := newTestStore(t)
-	// An unknown agent id resolves no home channel, so IsAgentWorkspaceVisible
-	// is false and the open collapses to ErrNotFound — the not-found/forbidden
-	// merge (a caller cannot tell an unknown agent from one whose workspace it
-	// may not see). Pre-fix this took an ungated insert path and mapped the FK
-	// violation to ErrInvalidArgument; the membership gate now precedes the
-	// insert, so an unknown agent never reaches it.
+	// An unknown agent id resolves no home channel, so the open collapses to
+	// ErrNotFound (not-found/forbidden merge — a caller can't tell an unknown
+	// agent from one whose workspace it may not see). Pre-fix mapped the FK to
+	// ErrInvalidArgument; the membership gate now precedes the insert.
 	_, err := s.OpenAgentWorkspace(context.Background(), AccountID("actor"), AccountID("ghost"))
 	sentinelIs(t, err, ErrNotFound, "unknown agent")
 }

@@ -2,76 +2,10 @@
 
 package server
 
-// T6 of the frozen record docs/designs/observability/compass-server-runner-otel/
-// design.md: the end-to-end proof of the ratified ONE TURN, ONE TRACE goal, over
-// the SHIPPED comms door and the REAL delivery spine.
-//
-// The composition. Two halves already exist in this package and this file is
-// where they meet:
-//
-//   - The emission half (otel_emission_pgtest_test.go): installGlobalSpanExporter
-//     installs a global SDK TracerProvider via sdktrace.WithSyncer onto an
-//     InMemoryExporter plus a W3C propagator. This is the ONLY way the emission
-//     path is observable — otelconnect and NewTraceResponseInterceptor both read
-//     the GLOBAL tracer provider, and otelconnect captures it ONCE at
-//     NewInterceptor(). So the exporter MUST be installed BEFORE any door or wire
-//     is built; every fixture below does that first, and the ordering is
-//     load-bearing, not stylistic.
-//   - The spine half (offline_mention_e2e_pgtest_test.go): newMentionE2EWire
-//     stands up a real store, a real runnerhub.Hub with a recordingRunner door,
-//     a real comms service on a fresh comms bus, and the delivery consumer wired
-//     exactly as production's startDeliveryConsumer does (real resume waker).
-//
-// Why the door here is mounted rather than driven through Serve. serveOTelSocket
-// starts a Serve with SocketPath only — no Listen — and Serve mounts the
-// RunnerService door ONLY on the network door (serve.go:493-495,
-// network_door.go:344). So that Serve's hub has no enrolled Runner, and its
-// comms bus / consumer / hub are its OWN instances: a post over that socket
-// never reaches this wire's recordingRunner, because the two share only the
-// database, never the in-process bus. Pointing serveOTelSocket at the wire's DSN
-// therefore cannot compose the two halves. What DOES compose them is mounting
-// the CommsService handler over THIS wire's comms service, behind CommsService's
-// real socket-door interceptor chain
-// (serve.go:698-699: otelconnect first, then the trace-response interceptor),
-// plus the ambient-identity pair that CompassService mounts on the same door
-// (serve.go:708-710). This splice is the one deliberate departure from
-// production: the shipped CommsService socket door mounts no actor interceptor
-// and comms instead uses its bootstrap-admin actorFromContext fallback
-// (serve.go:703-705; comms.go:760-765), so it cannot attribute an AGENT author,
-// which assertion (e) requires. The interceptor ORDER still matches production.
-// Parameterizing the ambient pair fabricates no privilege: auth.AmbientIdentity
-// -> withCaller sets exactly the callerKey + comms.WithActor pair that the
-// network door's BearerInterceptor sets after resolving a real token
-// (auth/interceptor.go:35-38 vs :64-68). That yields a real otelconnect handler
-// span, a real traceresponse header, and the wire's real bus -> consumer ->
-// hub -> recordingRunner spine.
-//
-// WithSyncer's simple span processor removes the export-after-End race (it
-// exports from OnEnd on the ending goroutine): a span is readable
-// from exp.GetSpans() the moment it ends. It does NOT order End against a wire
-// observation: a delivery.dispatch hop ends after DispatchControl returns
-// (dispatch.go:373,390), while the frame reaches the fake Runner through a
-// non-blocking enqueue and separate sender goroutine (router.go:243-248), so
-// assertions reading hop spans need a FIFO barrier (as (b) now has). The
-// origin handler span is not exposed to this problem because otelconnect ends
-// it inside the interceptor before the client receives the response. Every wait
-// remains event-gated on an observed wire fact via waitFor* helpers — never a
-// sleep, never a retry loop, never an invented deadline.
-//
-// Spans are selected by NAME + SERVER kind, never by message id alone: the
-// delivery hop span stamps the SAME compass.message.id as the origin handler
-// span (delivery/dispatch.go:375), so the sibling file's spanWithMessageID
-// ("exactly one match") is correct only where nothing dispatches — which is true
-// for its own Serve-with-no-Runner fixture and false for every fixture here.
-//
-// context.Background() is the test root (rule://go-thread-context _test.go
-// exemption): threaded into the wire, the doors, and every RPC below.
-//
-// (h) and (i) drive the RunnerService door directly (newRelayRunnerClient): the
-// agent-authored leg's origin span is otelconnect's RelayCommsCall handler span,
-// and the cross-turn causal edge is the LINK executeCall's Post arm adds from
-// the call's trigger_traceparent (linkTrigger, called from executeCall's Post
-// arm in runnerhub/relay_comms.go).
+// T6 of docs/designs/observability/compass-server-runner-otel/design.md: the
+// end-to-end ONE TURN, ONE TRACE proof over the shipped comms door. Load-bearing
+// ordering: install the span exporter before any door/wire (otelconnect captures
+// the global tracer provider once at NewInterceptor); see the helper docs below.
 
 import (
 	"context"
@@ -627,11 +561,10 @@ func linkIsTrigger(l sdktrace.Link) bool {
 }
 
 const (
-	// The attribute linkTrigger stamps on the cross-turn causal link
-	// (runnerhub/relay_comms.go). Duplicated here rather than exported from
-	// runnerhub: it is an OBSERVABLE contract a trace consumer selects on, so a
-	// test that reads it through the same constant it is written from could not
-	// catch a rename that breaks every existing consumer.
+	// The attribute linkTrigger stamps on the cross-turn causal link. Duplicated
+	// here, not exported from runnerhub: it is an OBSERVABLE contract a trace
+	// consumer selects on, so reading it through the same constant it is written
+	// from could not catch a rename that breaks every existing consumer.
 	triggerLinkKindKey   = attribute.Key("compass.link.kind")
 	triggerLinkKindValue = "cross_turn_trigger"
 )
@@ -768,21 +701,10 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 
 		waitForDeliverOfMessage(t, w.runner, recipSess, msgID)
 
-		// FIFO BARRIER, not a sleep: `gatedDispatch` runs to completion on the
-		// consumer's Run goroutine, ending its hop span as it returns
-		// (dispatch.go:373, after the DispatchControl at :390) — and only then does
-		// the loop take the next bus event. So observing a LATER post's deliver
-		// proves the first dispatch already returned, which the first message's own
-		// wire fact does not: the frame reaches the Runner through a non-blocking
-		// enqueue plus a separate sender goroutine (router.go:243-248).
-		//
-		// Waited for BY IDENTITY, never by index. The start-edge sweep the wire's
-		// bringSessionLive enqueues runs on the Run loop's other select arm
-		// (consumer.go:355-357) and can deliver the first message a second time —
-		// the recordingRunner never acks, so the cursor never advances and
-		// sweepSession (settle.go:326-348) still sees it owed. That duplicate would
-		// shift the barrier off any fixed index; its POSITION was never what
-		// carried the happens-before, only its presence.
+		// FIFO BARRIER, not a sleep: gatedDispatch completes on the consumer's Run
+		// goroutine before the loop takes the next bus event, so a LATER post's
+		// deliver proves the first dispatch returned. Waited BY IDENTITY (a re-
+		// delivered first message would shift any fixed index; position never held).
 		barrierMsgID := w.post(t, "barrier: a plain post completes the earlier dispatch")
 		waitForDeliverOfMessage(t, w.runner, recipSess, barrierMsgID)
 
@@ -845,31 +767,20 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 	// break delivery.
 	t.Run("d: disabled dispatches successfully with an empty traceparent and no spans", func(t *testing.T) {
 		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
-		// (d) brings the session live while tracing is still ON, so it can use the
-		// same start-edge sweep gate as every other subtest, and only THEN pins the
-		// global provider to no-op. Ordering matters and is load-bearing in both
-		// directions: gating needs a recorded sweep span, and the disabled-path
-		// claim needs the pin to precede everything it is a claim about. It does —
-		// the door is built after the pin (otelconnect captures the global provider
-		// at construction), and the post that carries the assertions happens after
-		// that. Bringing the session live earlier changes nothing the assertions
-		// read: they are about the POST's traceparent, its response header, and
-		// that delivery still lands.
+		// (d) brings the session live while tracing is still ON so it can use the
+		// start-edge sweep gate, and only THEN pins the provider to no-op. Ordering
+		// is load-bearing: the pin must precede the door build (otelconnect captures
+		// the global provider at construction) and the post below it.
 		exp := installGlobalSpanExporter(t)
 		w := newMentionE2EWire(t)
 		recip := w.seedAgentMember(t, "offrecip", true)
 		const recipSess = "sess-offrecip-1"
 		bringSessionLive(t, w, exp, recip.ID, containerFor("offrecip"), recipSess)
 
-		// NOW pin the disabled state. Save/restore the globals but install NO SDK
-		// provider — the shipped disabled state (mirroring
-		// TestServerEmissionDisabledSetsNoTraceResponseHeader). The global is
-		// PINNED to an explicit no-op provider rather than merely left alone, so
-		// the assertion cannot be weakened by another test's leaked provider; that
-		// pin is the established idiom at internal/runner/otel_test.go:98-100.
-		// Cleanup composes under LIFO: this restore runs first and re-installs the
-		// SDK provider, then installGlobalSpanExporter's own cleanup shuts it down
-		// and restores the provider that was live before the subtest.
+		// NOW pin the disabled state: install NO SDK provider (the shipped disabled
+		// state), PINNED to an explicit no-op rather than left alone so a leaked
+		// provider cannot weaken the assertion. Cleanup is LIFO: this restore runs
+		// before installGlobalSpanExporter's own.
 		prevTP := otel.GetTracerProvider()
 		prevProp := otel.GetTextMapPropagator()
 		otel.SetTracerProvider(noop.NewTracerProvider())
@@ -877,12 +788,10 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 			otel.SetTracerProvider(prevTP)
 			otel.SetTextMapPropagator(prevProp)
 		})
-		// A recorder deliberately NOT made global, mirroring the house idiom at
-		// internal/runner/otel_test.go:98-103: it is a catch-net, not a proof.
-		// Nothing routes spans into a non-global provider, so its emptiness is
-		// vacuous on its own (go/server/otel_emission_pgtest_test.go:184-186).
-		// The real disabled-path proof is the empty traceparent, absent
-		// traceresponse header, and delivery that still lands.
+		// A recorder deliberately NOT made global (house idiom at
+		// internal/runner/otel_test.go:98-103): nothing routes spans into a
+		// non-global provider, so its emptiness is a catch-net, not the proof. The
+		// real disabled-path proof is the empty traceparent + absent header below.
 		offExp := tracetest.NewInMemoryExporter()
 		offTP := sdktrace.NewTracerProvider(sdktrace.WithSyncer(offExp))
 		t.Cleanup(func() {
@@ -941,11 +850,9 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		authorClient := newTracedCommsClient(t, serveTracedCommsDoor(t, w.comms, author.ID))
 		_, heldMsgID := postOverTracedDoor(t, ctx, authorClient, w.channel, "held until I settle")
 
-		// FIFO BARRIER, not a sleep: the consumer's Run loop drains bus events on
-		// ONE goroutine in order, so a later HUMAN post (settled at post, hence
-		// dispatched immediately) whose deliver is observed on the wire proves the
-		// earlier agent post was already processed — i.e. already held. Without
-		// this, settling could race ahead of the hold and fire nothing. Same
+		// FIFO BARRIER, not a sleep: the Run loop drains bus events on ONE goroutine
+		// in order, so a later HUMAN post (settled at post, dispatched at once) whose
+		// deliver is observed proves the earlier agent post was already held. Same
 		// barrier idiom as the offline-mention e2e's cycle A.
 		barrierMsgID := w.post(t, "barrier: a human post settles at once")
 		barrier := waitForControlDelivers(t, w.runner, recipSess, 1)
@@ -1062,16 +969,10 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 		}
 	})
 
-	// (h) An agent-authored post arrives over the RunnerService door, so its
-	// origin span is the otelconnect RelayCommsCall handler span. This proves it
-	// EXISTS (the door is traced at all) and that it is a FRESH ROOT — and the
-	// root-ness is the door REFUSING an offered parent, not nobody offering one.
-	// The Runner propagates a traceparent whenever tracing is enabled (runner.go
-	// mounts otelconnect on the ServerLink client and the propagator is
-	// installed on that same enabled path, internal/otel/provider.go), which
-	// this fixture mirrors; the span is a root
-	// because otelconnect's trustRemote defaults false, so it mints the span
-	// WithNewRoot plus a link to that transport context.
+	// (h) An agent-authored post over the RunnerService door: its origin span is
+	// the otelconnect RelayCommsCall handler span. Proves it EXISTS and is a FRESH
+	// ROOT — the door REFUSING an offered parent (the Runner propagates one when
+	// tracing is on), because otelconnect's trustRemote defaults false.
 	t.Run("h: an agent-authored post's RelayCommsCall origin span is a fresh root", func(t *testing.T) {
 		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 		exp := installGlobalSpanExporter(t)
@@ -1094,13 +995,10 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 			t.Fatalf("RelayCommsCall origin span parent = %s (trace %s), want NO valid parent — the agent-authored post's trace must start at this door, not continue an inbound one",
 				origin.Parent.SpanID(), origin.Parent.TraceID())
 		}
-		// The fixture must actually be the shipped topology: the client
-		// interceptor propagates a traceparent, which otelconnect's server
-		// branch turns into exactly one transport link. Drop the client
-		// interceptor and the parent check above still passes — vacuously,
-		// because nothing offered a parent — so this is what keeps that
-		// assertion honest. The post carried no trigger_traceparent, so
-		// linkTrigger added nothing and the count isolates the transport link.
+		// The fixture must be the shipped topology: the client interceptor
+		// propagates a traceparent that otelconnect turns into one transport link.
+		// Drop it and the parent check above passes vacuously, so this keeps it
+		// honest. No trigger_traceparent, so the count isolates the transport link.
 		if len(origin.Links) != 1 {
 			t.Fatalf("origin span carries %d links, want 1 (otelconnect's transport link) — no traceparent reached the door, so this is not the shipped topology and the fresh-root assertion above is vacuous", len(origin.Links))
 		}
@@ -1110,10 +1008,9 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 	})
 
 	// (i) TERMINATION. A reply whose call carries a trigger_traceparent starts a
-	// NEW trace and merely LINKS back to the trigger — never nests under it,
-	// which is what stops a conversation from growing one unbounded tree. Both
-	// halves are asserted, plus the negative control (an EMPTY trigger adds no
-	// link at all) that makes the positive non-vacuous.
+	// NEW trace and merely LINKS back — never nests, which stops a conversation
+	// from growing one unbounded tree. Both halves asserted, plus the empty-
+	// trigger negative control that makes the positive non-vacuous.
 	t.Run("i: a reply carrying a trigger_traceparent starts a NEW trace linked to the trigger", func(t *testing.T) {
 		ctx := context.Background() // test root (rule://go-thread-context _test.go exemption)
 		exp := installGlobalSpanExporter(t)
@@ -1146,11 +1043,10 @@ func TestTraceContinuityOneTurnOneTraceEndToEnd(t *testing.T) {
 			t.Fatalf("reply span parent = %s, want none — a trigger_traceparent must produce a LINK, never a parent", linked.Parent.SpanID())
 		}
 
-		// Half 2 — the causal edge is recorded, and points at the trigger. The
-		// trigger link is selected BY ATTRIBUTE, never by position or count:
-		// otelconnect's server branch mints its own link from the inbound
-		// transport context (the client interceptor above propagates one), so
-		// this span legitimately carries more than one link.
+		// Half 2 — the causal edge is recorded, pointing at the trigger. Selected
+		// BY ATTRIBUTE, never by position: otelconnect's server branch mints its own
+		// link from the inbound transport context, so this span legitimately carries
+		// more than one link.
 		link := triggerLinkOf(t, linked)
 		if link.TraceID() != trigger.TraceID() || link.SpanID() != trigger.SpanID() {
 			t.Fatalf("reply span trigger link = (trace %s, span %s), want the trigger's (trace %s, span %s)",

@@ -2,20 +2,10 @@
 
 package server
 
-// Store-gated SecretsService authz contracts: the user-only Set/Delete gate
-// (the load-bearing regression, record §927), the user-AND-agent ListSecrets, the
-// is_set-without-resolve invariant, delete-not-found, and the SecretsVersion bump
-// on a successful write. They need a real Postgres because the write path declares
-// a registry row and the authz gate reads the caller's account KIND from the store
-// (user vs agent). Driven through the production bearer + admin-gate interceptor
-// chain over a real connect client so the handler reads a genuine caller identity
-// the same way the shipped door supplies it. Behind `pgtest && unix` (SKIP when no
-// runtime).
-//
-// The resolver is a fake (no real SecretSpec provider in a unit test): Set/Delete
-// are recorded no-ops, and Resolve FAILS LOUDLY if ListSecrets ever calls it — the
-// is_set-without-resolve invariant is asserted by that fake, not just by reading
-// the code.
+// Store-gated SecretsService authz contracts: the user-only Set/Delete gate (record
+// §927), user-AND-agent ListSecrets, the is_set-without-resolve invariant, and the
+// SecretsVersion bump. Needs a real Postgres (the authz gate reads the caller KIND);
+// the fake resolver FAILS LOUDLY if ListSecrets calls it, asserting the invariant.
 
 import (
 	"context"

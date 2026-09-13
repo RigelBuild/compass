@@ -1,20 +1,16 @@
 #!/usr/bin/env bun
-// The devenv-CLI source tool (RIG-2546): the single place that turns "the
-// devenv node of a named devenv.lock" into a usable devenv CLI. Shared by
-// .github/workflows/renovate.yml (mode=bin-dir → PATH) and ci.yml (mode=flakeref
-// → `nix run`), so neither carries a hand-pinned rev or its own jq/nix blob.
-//
-// This is the thin execution shell — parse argv, read the lock, resolve, maybe
-// build, print one line. All parsing and validation lives in ./core.ts, which
-// is pure and unit-tested (./core.test.ts).
-//
-//   bun tools/toolchain/devenv-cli/index.ts --lock <path> --mode <flakeref|bin-dir>
-//     mode=flakeref → print `github:<owner>/<repo>/<rev>#devenv` (no build, no network)
-//     mode=bin-dir  → `nix build --no-link --print-out-paths <flakeref>`, create a
-//                     temp dir holding a single `devenv` symlink → its bin, print that dir
-//
-// stdout: exactly one line (the value); all diagnostics to stderr; exit 1 on
-// any failure (bad args, missing/invalid lock, failed build).
+// The devenv-CLI source tool (RIG-2546): the single place that turns "the devenv
+// node of a named devenv.lock" into a usable devenv CLI. Shared by
+// renovate.yml (mode=bin-dir → PATH) and ci.yml (mode=flakeref → nix run), so
+// neither carries a hand-pinned rev or its own jq/nix blob.
+
+// Thin execution shell — parse argv, read the lock, resolve, maybe build, print
+// one line; all parsing lives in ./core.ts. stdout is exactly one line;
+// diagnostics to stderr; exit 1 on any failure.
+
+//   --lock <path> --mode <flakeref|bin-dir>
+//     flakeref → print github:<owner>/<repo>/<rev>#devenv (no build, no network)
+//     bin-dir  → nix build the flakeref, temp dir with one devenv symlink → bin
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, symlinkSync } from "node:fs";
@@ -36,21 +32,18 @@ async function main(): Promise<void> {
 	const out = execFileSync(
 		"nix",
 		["build", "--no-link", "--print-out-paths", ref],
-		// stdout stays 'pipe' (we read the out-path below); nix's stderr is
-		// inherited so its real build diagnostic streams straight through
-		// instead of being swallowed into error.stderr and lost to the
-		// generic "Command failed" message the outer catch would print.
+		// stdout stays 'pipe' (we read the out-path); nix's stderr is inherited so
+		// its real build diagnostic streams through instead of being swallowed into
+		// the generic "Command failed" message.
 		{ encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
 	).trim();
 	if (out === "") {
 		throw new Error(`devenv-cli: nix build produced no out-path for ${ref}.`);
 	}
-	// One symlink named `devenv`, not the raw `<out>/bin` — appending the whole
-	// closure bin dir to $GITHUB_PATH could shadow the parity-pinned toolchain
-	// (RD-3). shimPlan encodes that single-binary invariant.
-	// Intentionally never removed: the caller appends this dir to $GITHUB_PATH
-	// and needs it after this process exits (CI runners are ephemeral, so no
-	// unlink is wanted — cleaning it up would break the PATH contract).
+	// One symlink named devenv, not the raw <out>/bin — appending the whole closure
+	// bin dir to $GITHUB_PATH could shadow the parity-pinned toolchain (RD-3).
+	// Never removed: the caller appends this dir to $GITHUB_PATH and needs it after
+	// this process exits (ephemeral runners; unlinking would break the contract).
 	const shimDir = mkdtempSync(join(tmpdir(), "devenv-shim-"));
 	for (const { link, target } of shimPlan(out)) {
 		symlinkSync(target, join(shimDir, link));

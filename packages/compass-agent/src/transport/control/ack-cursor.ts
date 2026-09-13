@@ -12,23 +12,15 @@ import {
 } from "./../../gen/compass/v1/agent_pb";
 import type { PublishSpine } from "./../publish-spine";
 
-// The selective apply-ack cursor: the highest CONTIGUOUS applied `control_seq`
-// plus the set of seqs applied out of order above it (`applied_above`,
-// invariant 2). That set is UNBOUNDED — it has no cap, and nothing about a turn
-// bounds its size. The cursor only advances through a contiguous run, so a
-// single queued-but-unapplied iterator op pins it while every immediate op
-// above it accumulates — invariant 2's intended interleaving, not a pathology.
-// It drains completely once the held op lands, but until then it grows without
-// limit. Note `applied_above` is serialized in full into EVERY ack (see
-// `#emit`), so the wire cost over a long turn is quadratic: one op held across
-// 1999 immediate applies serializes 1,999,000 seqs onto the priority lane,
-// which is never dropped — unlike the trace queue's `TRACE_QUEUE_CAP`
-// drop-oldest there is no backstop here. Range-encoding `applied_above` is the
-// fix and lands in RIG-1466; this file only documents and exposes the growth.
-// `markApplied` is idempotent — a redelivered already-applied op
-// re-acks (so the Runner retires it) without corrupting the cursor. Every apply
-// emits a `ControlAck` on the shared Publish spine's priority lane; the Runner
-// retires retained ops up to the cursor and drops the individually-acked ones.
+// The selective apply-ack cursor: the highest CONTIGUOUS applied `control_seq` plus the set
+// of seqs applied out of order above it (`applied_above`, invariant 2). That set is
+// UNBOUNDED: a queued-but-unapplied iterator op pins the cursor while immediate ops above
+// accumulate, draining only once the held op lands.
+
+// `applied_above` serializes in full into EVERY ack, so wire cost over a long turn is
+// quadratic and never dropped; range-encoding is the fix (RIG-1466). `markApplied` is
+// idempotent — a redelivered applied op re-acks without corrupting the cursor. Every apply
+// emits a `ControlAck` on the priority lane.
 export class AckCursor {
 	readonly #spine: PublishSpine;
 	#cursor = 0n;
@@ -63,13 +55,10 @@ export class AckCursor {
 	// contiguous cursor as far as the applied set allows, pruning subsumed
 	// out-of-order entries. Idempotent for an already-applied seq (re-ack only).
 	markApplied(seq: bigint): void {
-		// `seq > #cursor` alone is NOT novelty: a seq already in `#above` (applied
-		// out of order, still above the contiguous cursor) satisfies it too, and a
-		// redelivery of such an op re-acks through here. Test membership as well,
-		// or that re-ack would increment `#applied` and read as progress —
-		// resetting the source's no-progress reconnect budget on a Runner that
-		// redelivers the same op forever, which is the shape that budget exists to
-		// terminate.
+		// `seq > #cursor` alone is NOT novelty: a seq already in `#above` satisfies it too,
+		// and a redelivery re-acks through here. Test membership as well, or a re-ack would
+		// increment `#applied` and read as progress — resetting the no-progress reconnect
+		// budget on a Runner that redelivers forever, the shape that budget exists to terminate.
 		if (seq > this.#cursor && !this.#above.has(seq)) {
 			this.#above.add(seq);
 			while (this.#above.delete(this.#cursor + 1n)) this.#cursor += 1n;

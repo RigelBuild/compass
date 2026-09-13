@@ -4,30 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "bun";
 
-// Orchestration harness for tools/renovate/refresh-devenv-lock.ts (RIG-2815).
-//
-// The pure decisions (which lock changed, the fork-rev read) are unit-tested in
-// refresh-devenv-lock.core.test.ts. This drives the SHIPPED entry point end to
-// end inside a throwaway git repo with a stub `nix` on PATH, so the step
-// SEQUENCING is exercised offline + deterministically: self-gate → pick the
-// scope → relock in THAT scope's directory, under THAT scope's own devenv →
-// verify the lock actually moved. The real relock
-// (`nix run github:RigelBuild/devenv/<rev>#devenv -- update devenv`) runs for
-// real on the PR's own branch; here `nix` is stubbed so the failure mode under
-// test is the script's own control flow, not the network.
-//
-// Two assertions are load-bearing:
-//   * the CWD one — the stub records the directory it was invoked from, because
-//     relocking in the wrong directory would rewrite the sibling scope's lock
-//     while the rule's one-lock `fileFilters` names this one, so Renovate would
-//     commit nothing and the rev bump would ship unrelocked; and
-//   * the FLAKEREF one — the stub records its full argv, and the rev inside the
-//     flakeref must be the CHANGED scope's OWN bumped rev. The script
-//     self-provisions the devenv CLI from the lock it is about to relock, so
-//     each scope is written by the devenv version IT pins; an ambient/PATH
-//     devenv would relock agent-image under the ROOT lock's devenv (the two
-//     revs differ by design — RD-1 unifies the source, not the locks).
-// A cwd-agnostic or argv-agnostic stub would pass both bugs green.
+// Orchestration harness for refresh-devenv-lock.ts (RIG-2815). The pure decisions
+// are unit-tested in refresh-devenv-lock.core.test.ts. This drives the SHIPPED
+// entry point end to end in a throwaway git repo with a stub nix, exercising the
+// step sequencing (self-gate → pick scope → relock → verify) offline.
+
+// Two assertions are load-bearing. The CWD one: relocking in the wrong directory
+// rewrites the sibling scope's lock while fileFilters names this one, so Renovate
+// commits nothing.
+
+// The FLAKEREF one: the rev inside the flakeref must be the CHANGED scope's OWN
+// bumped rev. The script self-provisions devenv from the lock it relocks, so each
+// scope is written by the devenv version IT pins (an ambient devenv would relock
+// agent-image under root's). A cwd- or argv-agnostic stub would pass both green.
 
 // The shipped entry point, invoked as Renovate will: `bun tools/renovate/…ts`,
 // cwd = repo root. Copied into the throwaway repo so the SHIPPED file runs, not
@@ -66,11 +55,10 @@ const BASE_REV = "1111111111111111111111111111111111111111";
 const BUMPED_REV = "2222222222222222222222222222222222222222";
 const RELOCKED_REV = "3333333333333333333333333333333333333333";
 
-// A minimal devenv lock carrying the `devenv` fork node the core reads
-// (nodes.devenv.locked.rev) plus the `original` block whose repeated
-// `"repo": "devenv"` (followed by `"type"`, never `"rev"`) is what makes the
-// config.json5 matchString anchor unique — kept here so the fixture has the
-// same ambiguity the real locks do.
+// A minimal devenv lock carrying the devenv fork node the core reads
+// (nodes.devenv.locked.rev) plus the original block whose repeated "repo":
+// "devenv" (followed by "type", never "rev") makes the matchString anchor unique
+// — kept so the fixture has the same ambiguity the real locks do.
 function devenvLock(rev: string, narHash: string): string {
 	return `${JSON.stringify(
 		{
@@ -120,26 +108,18 @@ const CORRUPT_LOCK = JSON.stringify({
 	version: 7,
 });
 
-// Stub `nix`: the script relocks via
-// `nix run github:RigelBuild/devenv/<rev>#devenv -- update devenv`, so in bash
-// $1=`run`, $2=the flakeref, then `--`, then the devenv subcommand. On that
-// shape the stub records the cwd it ran in AND its full argv (so the tests can
-// assert both the scope directory and WHICH devenv the script provisioned),
-// then rewrites ./devenv.lock (relative to that cwd — exactly how the real
-// devenv resolves the lock) to the RELOCKED rev with a fresh narHash,
-// simulating a real re-resolution.
-//
-// Sentinel files in the repo root model the failure modes, so each is exercised
-// through the script's REAL control flow rather than a mocked seam:
-//   .force-noop-relock    → exit 0 having written NOTHING (a relock that did
-//                           not move — the half-relock the script must surface).
-//   .force-fail-relock    → exit 1 (the relock itself failed).
-//   .force-corrupt-relock → write a lock with a short rev (a lock-shape drift
-//                           the post-relock guard must catch).
-// And the write is gated on the post-`--` args being exactly `update devenv`:
-// any OTHER input name writes nothing, so a wrong-input regression fails
-// through BEHAVIOUR (the byte-identical guard fires), not merely an argv-log
-// assertion. Offline throughout.
+// Stub nix: the script relocks via nix run <flakeref> -- update devenv, so the
+// stub records the cwd and full argv (tests assert both the scope directory and
+// WHICH devenv was provisioned), then rewrites ./devenv.lock to the RELOCKED rev.
+
+// Sentinel files in the repo root model the failure modes through the script's
+// REAL control flow: .force-noop-relock → exit 0 writing NOTHING (a half-relock);
+// .force-fail-relock → exit 1; .force-corrupt-relock → a short-rev lock (a shape
+// drift the post-relock guard must catch).
+
+// The write is gated on the post-`--` args being exactly `update devenv`, so a
+// wrong-input regression fails through BEHAVIOUR (the byte-identical guard fires),
+// not merely an argv-log assertion. Offline throughout.
 const STUB_NIX = `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "run" ]; then
@@ -271,11 +251,10 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 		);
 	});
 
-	// The end-to-end happy path per scope, and the two assertions that are the
-	// whole point of two scopes: the relock must run in the changed lock's OWN
-	// directory (devenv resolves the lock relative to cwd) under the devenv that
-	// same lock pins, and must leave the SIBLING lock untouched — the rule's
-	// fileFilters admits only the one.
+	// The end-to-end happy path per scope, plus the two assertions that are the whole
+	// point of two scopes: the relock runs in the changed lock's OWN directory under
+	// the devenv that lock pins, and leaves the SIBLING lock untouched (fileFilters
+	// admits only the one).
 	test.each([
 		{ label: "root", lockRel: ROOT_LOCK_REL, dir: ".", narHash: "AAAA" },
 		{
@@ -315,11 +294,10 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 			// re-lock every input and bloat the PR's diff).
 			expect(args.endsWith(" -- update devenv")).toBe(true);
 
-			// H2 regression guard: the devenv CLI the script provisioned came from
-			// THIS scope's own lock — its flakeref rev is this lock's bumped rev,
-			// the fork HEAD the branch is moving to. Running under an ambient/PATH
-			// devenv (or the sibling scope's) would put a different rev here, which
-			// is exactly the cross-scope coupling this shape removes.
+			// H2 regression guard: the devenv CLI the script provisioned came from THIS
+			// scope's own lock — its flakeref rev is this lock's bumped rev. An ambient
+			// devenv (or the sibling's) would put a different rev here, the cross-scope
+			// coupling this shape removes.
 			expect(await provisionedRev(repo)).toBe(BUMPED_REV);
 
 			// The sibling scope is untouched — the two locks are independent (RD-1).
@@ -329,14 +307,10 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 		},
 	);
 
-	// Fail-loud: a relock that wrote NOTHING leaves the regex-bumped rev beside
-	// the base lock's narHash — the silent half-relock this task exists to
-	// surface. The non-zero exit does NOT abort the Renovate branch (Renovate
-	// catches a postUpgradeTask failure and still commits the regex bump); it
-	// reds the `renovate/artifacts` status, and the human review gate is what
-	// stops the merge. So the resulting on-disk lock IS the unrepaired
-	// rev-bumped-but-not-relocked state — asserted below so the real contract is
-	// pinned, not the imagined "refuses to ship" one.
+	// Fail-loud: a relock that wrote NOTHING leaves the regex-bumped rev beside the
+	// base narHash — the silent half-relock this surfaces. The non-zero exit does NOT
+	// abort the branch (Renovate still commits the bump); it reds renovate/artifacts,
+	// and human review stops the merge. The on-disk lock stays rev-bumped-unrelocked.
 	test("exits non-zero when the relock leaves the lock byte-identical, and the lock stays rev-bumped-but-unrelocked", async () => {
 		await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");
 		await Bun.write(join(repo, ".force-noop-relock"), "");
@@ -382,11 +356,9 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 		expect(res.stdout.toString()).not.toContain("now at");
 	});
 
-	// Fail-loud: BOTH locks changed. The two rules carry distinct groupNames so
-	// they never share a branch; if that invariant ever breaks, relocking either
-	// one is wrong — each rule's fileFilters names ONE lock, so Renovate would
-	// commit one relock and silently drop the other. Exit non-zero instead of
-	// guessing.
+	// Fail-loud: BOTH locks changed. The two rules carry distinct groupNames so they
+	// never share a branch; if that breaks, each rule's fileFilters names ONE lock, so
+	// Renovate would commit one relock and drop the other. Exit non-zero, not guess.
 	test("exits non-zero when BOTH locks changed on one branch", async () => {
 		await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");
 		await applyRegexBump(repo, AGENT_LOCK_REL, "BBBB");
@@ -422,15 +394,10 @@ describe("tools/renovate/refresh-devenv-lock.ts relock (RIG-2815)", () => {
 		);
 	});
 
-	// The base-ref fallback DIRECTION under the case that actually exercises it:
-	// BOTH `origin/<base>` and the bare `<base>` resolve, but to DIFFERENT
-	// commits. Production always has both (Renovate fetches origin), and the two
-	// can diverge — a stale local `main` in the runner checkout vs the fetched
-	// `origin/main` the branch is really based on. The gate must diff against the
-	// REMOTE ref (as every sibling refresh script does); diffing the stale local
-	// ref would silently mis-compute the changed set. The `origin absent` test
-	// above cannot see this — with one ref deleted both orderings pick the same
-	// ref — so a flipped order would pass it while breaking here.
+	// The base-ref fallback DIRECTION under the case that exercises it: BOTH
+	// origin/<base> and bare <base> resolve to DIFFERENT commits (stale local main vs
+	// fetched origin/main). The gate must diff the REMOTE ref; the origin-absent test
+	// can't see this, so a flipped order would pass it while breaking here.
 	test("prefers origin/<base> over a stale local <base> when both resolve", async () => {
 		// Renovate wrote the regex bump to the working tree.
 		await applyRegexBump(repo, ROOT_LOCK_REL, "AAAA");

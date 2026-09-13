@@ -2,24 +2,10 @@
 
 package server
 
-// The lifecycleService orchestration seam, against a real Postgres AND a real
-// Runner door. lifecycleService is an INTERNAL seam (runnerhub.LifecycleCaller),
-// not a wire RPC, so these drive newLifecycleService(f.store, f.hub, dm) DIRECTLY
-// under a resolved caller AccountID — the same way the hub's RelayLifecycleCall
-// delegates into it — rather than through the connect client. The RemoveAgentWorkspace
-// operator door IS a wire RPC, so that one test drives it through f.client.
-//
-// The fake Runner (service_placement_pgtest_test.go) answers Provision with a
-// fixed container name and Start with a fixed session id, and now also answers
-// Remove and can refuse Start on demand (the mid-chain failure the rollback test
-// drives). Every command the Server pushes is recorded on the wire, so
-// "the rollback removed the container" is an observed fact, not a mock
-// expectation.
-//
-// Each authz/idempotency test carries a mutation comment: the plausible
-// regression that reddens it. The load-bearing security legs are F2 ownership
-// (spawn inherits the CALLER'S owner) and the despawn same-owner/indistinguishable
-// not-found merge.
+// The lifecycleService orchestration seam, against a real Postgres AND a real Runner
+// door. These drive newLifecycleService DIRECTLY under a resolved caller, the way the
+// hub's RelayLifecycleCall delegates. The fake Runner answers Provision/Start/Remove
+// and can refuse Start (the mid-chain failure the rollback test drives).
 
 import (
 	"context"
@@ -288,11 +274,9 @@ func TestSpawnSameHandleDifferentOwnerCreatesDistinctPeer(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
 
-	// The two spawns land distinct containers AND distinct session ids (both are
-	// unique-keyed in the store); without distinct names the second placement,
-	// and without distinct ids the second session record, would collide on the
-	// fixture's fixed fakeContainer/fakeSessionID rather than exercising the
-	// cross-owner path.
+	// The two spawns land distinct containers AND distinct session ids; without
+	// distinct names/ids the second placement/session would collide on the fixture's
+	// fixed fakeContainer/fakeSessionID rather than exercising the cross-owner path.
 	f.runner.setContainerNames("compass-agent-a", "compass-agent-b")
 	f.runner.setStartIDs("sess-a", "sess-b")
 

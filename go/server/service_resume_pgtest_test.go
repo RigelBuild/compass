@@ -2,21 +2,10 @@
 
 package server
 
-// T6 (RIG-1667): the resume branch of StartAgentSession. When
-// resume_session_id is non-empty the handler (1) gates the caller via
-// RequireAgentSessionSubscriber BEFORE any Runner call — an unknown or foreign
-// id is NotFound and no Start is ever pushed; (2) BindLifetime write-once to
-// snapshot the entry_seq rebase base for the new lifetime; (3) calls T5's
-// ReconstructSessionBody; (4) carries the reconstructed body to the Runner on
-// the INTERNAL SessionsResponse.resume_body envelope, never the public request.
-// A fresh start (empty resume_session_id) attaches nothing and does not bind.
-//
-// Driven through the production network-door interceptor chain (bearer +
-// admin-gate) over a real connect client so the handler reads a genuine caller
-// identity the same way the shipped door supplies it, against a real Postgres
-// (authz + transcript + bind) and a real Runner door (a fake Runner that records
-// every relayed command, so "the body rode the internal envelope" and "no Start
-// was pushed" are observed wire facts). Behind `pgtest && unix`.
+// T6 (RIG-1667): the resume branch of StartAgentSession. A non-empty resume_session_id
+// gates the caller BEFORE any Runner call (unknown/foreign is NotFound, no Start),
+// BindLifetime write-once, ReconstructSessionBody, and carries the body on the INTERNAL
+// resume_body envelope. Fake Runner records every command, so the claims are wire facts.
 
 import (
 	"context"
@@ -132,10 +121,9 @@ func relayedStartResumeBody(t *testing.T, r *recordingRunner) (body string, sawS
 }
 
 // 1. A resume with an unknown or foreign session id fails NotFound BEFORE any
-// Runner call — the authz gate precedes the relay, so the fake Runner records no
-// Start. The outsider (member of nothing) resuming a real session and anyone
-// resuming an unknown session are the SAME NotFound (the not-found/forbidden
-// merge, D9), and in neither case does a container get started.
+// Runner call — the authz gate precedes the relay. Outsider-resuming-a-real-session
+// and anyone-resuming-an-unknown-session are the SAME NotFound (D9 merge), and in
+// neither case does a container get started.
 func TestStartAgentSessionResumeUnknownOrForeignIsNotFoundBeforeRunner(t *testing.T) {
 	ctx := context.Background() // test root
 
@@ -189,11 +177,9 @@ func TestStartAgentSessionResumeUnknownOrForeignIsNotFoundBeforeRunner(t *testin
 }
 
 // 2. An authorized resume reconstructs the session body and attaches it to the
-// INTERNAL envelope: the owner (a home-channel member) resumes a real session
-// that has a stored transcript, and the fake Runner receives a Start whose
-// resume_body.session_body is exactly the reconstructed body (checkpoint verbatim
-// + later deltas, newline-joined). The public request carried only the
-// resume_session_id; the body is server-attached.
+// INTERNAL envelope: the owner resumes a real session with a stored transcript,
+// and the fake Runner receives a Start whose resume_body.session_body is the
+// reconstructed body. The public request carried only the resume_session_id.
 func TestStartAgentSessionResumeAttachesReconstructedBody(t *testing.T) {
 	ctx := context.Background() // test root
 	f := newResumeFixture(t)
@@ -262,11 +248,9 @@ func TestStartAgentSessionFreshAttachesNoResumeBody(t *testing.T) {
 }
 
 // 4. The stored transcript is keyed on the STABLE LOGICAL id across resumes: two
-// resumes of the same logical session both reconstruct from the SAME stored
-// transcript (keyed on the logical id, not a per-lifetime id), and each BindLifetime
-// re-reads the same stored max as the base (idempotent within a lifetime, monotonic
-// across them). Here both resumes reconstruct the same body from the one transcript,
-// and the persisted base is the stored max after each bind.
+// resumes both reconstruct from the SAME stored transcript, and each BindLifetime
+// re-reads the same stored max as the base (idempotent within a lifetime,
+// monotonic across them).
 func TestStartAgentSessionResumeKeyedOnStableLogicalIdAcrossResumes(t *testing.T) {
 	ctx := context.Background() // test root
 	f := newResumeFixture(t)
@@ -284,11 +268,8 @@ func TestStartAgentSessionResumeKeyedOnStableLogicalIdAcrossResumes(t *testing.T
 	want := "{\"header\":true}\n{\"d\":2}"
 
 	// A placement is recorded for completeness, though the resume branch no longer
-	// reads it (ownership is recorded only on a fresh start; a resume reuses the
-	// logical id whose row already exists). In production a resume reuses the
-	// logical id as its live id; the fake Runner here echoes setStartIDs values,
-	// which the handler ignores on resume — what matters is that both resumes
-	// reconstruct from and bind the SAME stable logical transcript.
+	// reads it (ownership is recorded only on a fresh start). What matters is that
+	// both resumes reconstruct from and bind the SAME stable logical transcript.
 	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
 		t.Fatalf("RecordAgentPlacement: %v", err)
 	}
@@ -370,14 +351,10 @@ func (m *memObjectStore) count() int {
 	return len(m.blob)
 }
 
-// 5. END-TO-END S3 fallback against a REAL Postgres + a real object-store seam:
-// wiring a fake object store and lowering the safety-valve cap so appending
-// enough post-checkpoint entries trips the valve (evicting an oldest chunk to a
-// safety_valve segment in the fake object store), then an authorized resume
-// reconstructs the FULL body — checkpoint verbatim then every later delta merged
-// by entry_seq, pulling the evicted entries back from the object store. This is
-// the only resume path that touches the object store; here it runs end-to-end,
-// not through the runnerhub unit fake.
+// 5. END-TO-END S3 fallback against a REAL Postgres + object-store seam: lowering
+// the safety-valve cap so enough post-checkpoint entries trip the valve, then an
+// authorized resume reconstructs the FULL body, pulling the evicted entries back
+// from the object store. The only resume path that touches the object store.
 func TestStartAgentSessionResumeS3FallbackReconstructsEvictedEntries(t *testing.T) {
 	ctx := context.Background() // test root
 	f := newResumeFixture(t)

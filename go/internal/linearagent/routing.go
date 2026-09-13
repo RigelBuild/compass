@@ -1,24 +1,14 @@
 package linearagent
 
-// Responder routing resolution (RIG-2717 T4, design
-// docs/designs/server/compass-linear-agent-responder/design.md §Part 2 / §T4).
-//
-// A Linear delegation or @mention names the Compass app, never a specific
-// Manager, so the bridge must resolve which stable Manager runs the session.
-// The trusted routing source is Compass's own recorded ownership truth — the
-// DL-055 forge_authored_artifacts index — never a header parsed from forge text
-// (DL-050 / DL-094): an owner claim parsed from a body is untrusted display
-// metadata that must never reach a routing decision.
-//
-//   - A delegated issue with a recorded ownership row resolves to the stable
-//     Manager for that recorded work. The row records the AUTHORING agent, which
-//     may be a transient peer/sub-agent (not itself a Manager), so the resolver
-//     walks from the recorded agent to its owning Manager and returns that
-//     Manager's home channel.
-//   - No recorded row (a human-filed issue delegated cold, any coordinate
-//     Compass has never authored) — or a bare @mention carrying no issue
-//     coordinate — routes to the supervisor / top-level Manager via the
-//     dedicated routing channel, where the lane is decided and stamped.
+// Responder routing resolution (RIG-2717 T4). A Linear delegation or @mention
+// names the Compass app, never a specific Manager, so the bridge resolves which
+// stable Manager runs the session. The trusted source is Compass's own recorded
+// ownership truth (the DL-055 index), never a header parsed from forge text.
+
+// A delegated issue with a recorded row resolves to the stable Manager: the row
+// records the AUTHORING agent (maybe a transient peer), so the resolver walks to
+// its owning Manager. No row, or a bare @mention with no coordinate, routes to
+// the supervisor via the dedicated routing channel.
 
 import (
 	"context"

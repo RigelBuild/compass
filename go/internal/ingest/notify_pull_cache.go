@@ -2,9 +2,8 @@ package ingest
 
 // The head_sha->PR-number TTL cache (RIG-2869), the hot-path guard on Route's
 // step 0. It lives next to the PullNumberResolver seam it both consumes and
-// satisfies (a decorator, not a lane detail), so go/server's wiring is one
-// constructor call and the cache's contract is unit-tested against the same
-// seam the router drives.
+// satisfies (a decorator), so the wiring is one constructor call and the cache
+// is unit-tested against the same seam the router drives.
 
 import (
 	"context"
@@ -135,11 +134,9 @@ func (c *CachedPullNumberResolver) PullNumberForSHA(ctx context.Context, repo, h
 	}
 
 	// Resolved outside the lock: a commits/{sha}/pulls GET must never serialize
-	// every other coordinate's cache lookup behind it. Two concurrent misses on
-	// one key can both call base — the cost is one duplicate GET, which is
-	// strictly better than holding the mutex across network I/O. observedAt is
-	// captured BEFORE the call so store can order the two by what each one saw,
-	// not by which finished first.
+	// every other lookup behind it. Two concurrent misses on one key both call
+	// base — one duplicate GET, better than holding the mutex across network I/O.
+	// observedAt is captured BEFORE the call so store orders by what each saw.
 	observedAt := c.now()
 	num, err := c.base.PullNumberForSHA(ctx, repo, headSHA)
 	switch {

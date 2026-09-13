@@ -1,11 +1,9 @@
 package ingest
 
-// Board reconciliation-sweep acceptance (RIG-2883 T3, design.md:335-403). Fakes
-// for the updatedLister + BoardStore seams, over a REAL Ingester with a
-// recording sink. context.Background() here is the test root — the sanctioned
-// F-ttsr exemption (mirrors notify_reconcile_test.go). Time-dependent behavior
-// (immediate startup sweep, Backstop ticker) runs under testing/synctest so the
-// virtual clock advances deterministically without a real sleep.
+// Board reconciliation-sweep acceptance (RIG-2883 T3). Fakes for the
+// updatedLister + BoardStore seams over a REAL Ingester with a recording sink.
+// Time-dependent behavior (startup sweep, Backstop ticker) runs under
+// testing/synctest so the virtual clock advances without a real sleep.
 
 import (
 	"context"

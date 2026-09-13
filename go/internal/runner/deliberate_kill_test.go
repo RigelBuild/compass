@@ -2,12 +2,10 @@
 
 package runner
 
-// isDeliberateKill's widened taxonomy (U3b/OQ-G): it accepts both a real
-// *exec.ExitError from a SIGKILLed local child (the podman byte-path, unchanged)
-// and the portable *runtime.ExitStatusError a remote (microVM) waitFunc
-// constructs, and rejects a non-signal exit and an unrelated error. Hermetic:
-// the podman-path case SIGKILLs a real short-lived child, the rest are
-// constructed errors; no KVM, no backend.
+// isDeliberateKill's widened taxonomy: it accepts both a real *exec.ExitError from
+// a SIGKILLed local child and the portable *runtime.ExitStatusError a microVM
+// waitFunc constructs, and rejects a non-signal exit. Hermetic: the podman case
+// SIGKILLs a real short-lived child, the rest are constructed errors.
 
 import (
 	"errors"

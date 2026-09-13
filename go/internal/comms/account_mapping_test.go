@@ -1,13 +1,7 @@
 // The account kind discriminant at the store <-> proto edge (mapping.go
-// accountToWire): a store Account carries exactly one of User / Agent / System,
-// and the wire Account.kind oneof must reflect that side. accountToWire is a
-// pure function of its argument, so the contract is fully observable with NO
-// database — this file is untagged and runs on the default `go test` lane.
-//
-// The system arm is the T2 addition: a System-subtype account must emit the
-// Account_System oneof case, never fall through to an unset kind (which the UI
-// documents as the malformed-row fallback, so a system account landing there
-// would silently render as a plain user).
+// accountToWire): a store Account is one of User / Agent / System and the wire
+// oneof must reflect it. The T2 arm: a System account must emit Account_System,
+// never an unset kind (which the UI renders as a plain user). Pure, default lane.
 
 package comms
 

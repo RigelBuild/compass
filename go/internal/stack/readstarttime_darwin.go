@@ -25,12 +25,10 @@ func readProcessStartTime(pid int) (uint64, error) {
 		return 0, fmt.Errorf("sysctl kern.proc.pid.%d: %w", pid, err)
 	}
 	tv := kp.Proc.P_starttime
-	// Sec alone is the guard. A real process start time is a wall-clock epoch
-	// second, so any value <= 0 means the kernel gave us nothing usable — and
-	// Sec is signed, so a negative would otherwise pack into a huge uint64 that
-	// looks like a valid token. Usec is deliberately NOT part of the condition:
-	// a process really can start on an exact second boundary, and rejecting
-	// Usec == 0 would fail a legitimate read about once in a million.
+	// Sec alone is the guard: a real start time is a wall-clock epoch second, so
+	// <= 0 means nothing usable — and Sec is signed, so a negative would pack into
+	// a huge uint64 that looks valid. Usec is deliberately excluded: a process can
+	// start on an exact second boundary, and rejecting Usec == 0 would fail it.
 	if tv.Sec <= 0 {
 		return 0, fmt.Errorf("sysctl kern.proc.pid.%d: no usable start timeval (sec=%d usec=%d)",
 			pid, tv.Sec, tv.Usec)

@@ -4,10 +4,8 @@ package server
 
 // forgeNotifyDispatcher unit tests (RIG-2732 T7): the production dispatch adapter
 // that resolves a subscriber's account to its live session and wraps the
-// notification as an AgentControl before dispatch. Driven through a fake
-// notifySessionDispatcher so the resolve/miss branches and the AgentControl
-// wrapping are exercised without a live hub or Postgres — the pgtests fake the
-// whole ingest.NotifyDispatcher, so this is the only coverage of the real glue.
+// notification as an AgentControl. Driven through a fake notifySessionDispatcher, so
+// this is the only coverage of the real glue (the pgtests fake NotifyDispatcher).
 
 import (
 	"context"

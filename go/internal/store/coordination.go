@@ -198,13 +198,9 @@ func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec
 		}
 
 		// Free name (as of our SELECT): INSERT the channel born with the
-		// coordination policy, poison-free. ON CONFLICT DO NOTHING on the partial
-		// unique index absorbs a row a concurrent user CreateChannel committed
-		// between our SELECT and this INSERT: instead of a raised unique-violation
-		// (which, with no savepoint, would poison the parent-edge tx and wedge
-		// report creation), the INSERT affects zero rows and RETURNING yields no
-		// row. On that no-row case we loop back to the SELECT, which now sees the
-		// concurrently-committed row and resumes-or-suffixes it.
+		// coordination policy. ON CONFLICT DO NOTHING absorbs a row a concurrent
+		// CreateChannel committed since our SELECT — zero rows instead of a
+		// unique-violation that would poison the parent-edge tx — and we loop.
 		id := newID()
 		insertedID, err := qtx.InsertCoordinationChannel(ctx, db.InsertCoordinationChannelParams{
 			ID:                    id,
@@ -219,13 +215,10 @@ func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec
 		case err == nil:
 			return ChannelID(insertedID), nil
 		case noRows(err):
-			// A concurrent writer won the (group, name) race between our SELECT
-			// and this INSERT. Re-resolve the SAME name (undo the loop's suffix
-			// advance): the next iteration's SELECT now sees the committed row and
-			// resumes-or-suffixes it. Under the per-owner lock the only concurrent
-			// writer is a user CreateChannel (user-owned), so this re-resolve
-			// suffixes; keeping it a re-SELECT rather than a blind advance leaves
-			// the resume branch correct should that invariant ever weaken.
+			// A concurrent writer won the (group, name) race. Re-resolve the SAME
+			// name (undo the suffix advance): the next SELECT sees the committed
+			// row and resumes-or-suffixes it. Under the per-owner lock the only
+			// concurrent writer is a user CreateChannel, so this re-resolve suffixes.
 			suffix--
 			continue
 		default:
@@ -346,11 +339,10 @@ func (s *Store) ResolveCoordinationManagerTx(ctx context.Context, tx pgx.Tx, man
 // redundant wait, never a wrong result (mirrors ReparentAgent's per-owner-tree
 // lock, accounts.go).
 func LockOwnerCoordinationTx(ctx context.Context, tx pgx.Tx, ownerUserID AccountID) error {
-	// Namespace the key against ReparentAgent's per-owner-tree lock (which keys on
-	// the bare owner) so the two locks never spuriously serialize each other: a
-	// reconcile runs INSIDE a parent-edge write that may itself hold the tree
-	// lock, and a distinct key avoids a self-deadlock-adjacent double-take while
-	// still serializing coordination reconciles against each other.
+	// Namespace the key against ReparentAgent's per-owner-tree lock (keyed on
+	// the bare owner) so the two never spuriously serialize: a reconcile runs
+	// inside a parent-edge write that may hold the tree lock, and a distinct key
+	// avoids a self-deadlock while still serializing reconciles against each other.
 	if err := db.New(tx).LockOwnerCoordination(ctx, pgtype.Text{String: string(ownerUserID), Valid: true}); err != nil {
 		return fmt.Errorf("store: lock owner coordination: %w", err)
 	}

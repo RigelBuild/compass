@@ -1,18 +1,7 @@
-// The desktop-shell transport: a `fetch` implementation that routes gRPC-Web
-// requests to the Compass daemon through the shell instead of the network.
-//
-// A WebView `fetch` can't dial the daemon's Unix socket, so the shell exposes a
-// `compass_rpc` command that proxies to it. This adapter turns a gRPC-Web
-// `fetch(Request)` into that command call: it sends the request bytes over the
-// shell, receives the response as ordered frames, and reassembles them into a
-// `Response` whose body is a `ReadableStream` — so
-// `createGrpcWebTransport({ fetch })` streams `SubscribeEvents` incrementally,
-// with all gRPC-Web framing handled by the generated client.
-// The two framework-specific calls (the Wails runtime's `Call.ByName` bound
-// method + the `Events.On` response-frame subscription) sit behind a local
-// `ShellIpc` seam so the frame contract and all stream/cancel/abort logic are
-// framework-agnostic: the browser dev path keeps the default network `fetch`,
-// and any shell can supply its own `ShellIpc` binding.
+// The desktop-shell transport: a `fetch` implementation that routes gRPC-Web requests to
+// the Compass daemon through the shell (a WebView `fetch` can't dial the daemon's Unix
+// socket). Turns a gRPC-Web `fetch(Request)` into the shell's `compass_rpc` call, streaming
+// ordered response frames. Wails-specific calls sit behind a `ShellIpc` seam; dev keeps network `fetch`.
 
 // Mirrors the Rust `ResponseFrame` (bridge.rs): a tagged head/body/end/error
 // stream. Body chunks are base64 so they ride the JSON channel as strings.
@@ -91,12 +80,10 @@ export function createDaemonFetch(ipc: ShellIpc): DaemonFetch {
 			rejectHead = rej;
 		});
 
-		// A caller-minted id correlates this call with the Rust proxy task so a
-		// cancel can abort it. Fire-once: cancelling the ReadableStream (the
-		// gRPC-Web transport dropping a `SubscribeEvents` subscription — an
-		// unmounted view, a navigation) or the request's AbortSignal both route
-		// here, and without it the daemon-side stream would run until the daemon
-		// ended it.
+		// A caller-minted id correlates this call with the Rust proxy task so a cancel can
+		// abort it. Fire-once: cancelling the ReadableStream (a dropped SubscribeEvents
+		// subscription) or the AbortSignal both route here; without it the daemon-side
+		// stream would run until the daemon ended it.
 		const requestId = crypto.randomUUID();
 		let canceled = false;
 		const cancelUpstream = () => {
@@ -182,22 +169,16 @@ export function createDaemonFetch(ipc: ShellIpc): DaemonFetch {
 	};
 }
 
-// The Wails v3 binding of the seam — the only place that touches
-// `@wailsio/runtime`. `rpc` subscribes to the per-request runtime event
-// `"compass_rpc:"+requestId` BEFORE invoking the bound `CompassRPC` method (by
-// name), delivering each `ResponseFrame` to `onFrame`, and unsubscribes on the
-// terminal frame (`end`/`error`); `cancel` invokes the bound `CompassRPCCancel`
-// method. The Go shell emits one runtime event per ordered frame carrying the
-// JS `ResponseFrame` shape (go/cmd/compass-app/bridge_service.go:9-12,199-201).
+// The Wails v3 binding of the seam — the only place that touches `@wailsio/runtime`. `rpc`
+// subscribes to the per-request runtime event BEFORE invoking `CompassRPC`, delivers each
+// `ResponseFrame` to `onFrame`, and unsubscribes on the terminal frame; `cancel` invokes
+// `CompassRPCCancel`. The Go shell emits one runtime event per ordered frame.
 import { Call, Events } from "@wailsio/runtime";
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 
-// The fully-qualified names of the bound Go methods, as the Wails binding
-// generator computes them for a `main`-package service: `main.<Struct>.<Method>`
-// (v3 collectMethod: reflect reports the main package's path as "main", then
-// `path + "." + structName + "." + methodName`). The service is `bridgeService`
-// in `go/cmd/compass-app` (package main), so its bound methods are namespaced
-// under `main.bridgeService`.
+// The fully-qualified names of the bound Go methods, as the Wails generator computes them
+// for a `main`-package service: `main.<Struct>.<Method>`. The service is `bridgeService`
+// in `go/cmd/compass-app` (package main), so its methods are under `main.bridgeService`.
 const RPC_METHOD = "main.bridgeService.CompassRPC";
 const RPC_CANCEL_METHOD = "main.bridgeService.CompassRPCCancel";
 const CONNECT_METHOD = "main.bridgeService.Connect";

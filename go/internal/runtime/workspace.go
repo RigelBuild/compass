@@ -1,11 +1,7 @@
-// Clone-per-container and the agent's scoped $HOME (design: architecture-lineage).
-//
-// Each agent gets its own full git clone, created inside the container — not a
-// shared checkout and not a host worktree (a worktree's .git link assumes a
-// shared on-disk path that can't survive the container boundary). The clone's
-// credentials live in the agent's $HOME/.gitconfig credential helper, never in
-// the workspace .git/config, so one agent's token never leaks into another's
-// tree and the host's own credentials never enter the container.
+// Clone-per-container and the agent's scoped $HOME. Each agent gets its own full
+// git clone created inside the container (not a host worktree, whose .git link
+// can't survive the boundary). Credentials live in the agent's $HOME credential
+// helper, never in .git/config, so no token leaks between agents or to the host.
 
 package runtime
 
@@ -78,13 +74,12 @@ func (w Workspace) CredentialSetupScript() (string, error) {
 		return "", &InvalidHostError{Host: creds.Host}
 	}
 	home := shellSingleQuote(w.HomeDir)
-	// git's own credential-store URL-encodes the user and token when it writes
-	// this file, so a token containing reserved characters (:@/?) round-trips.
-	// Match that, or such a token mis-parses on read.
-	// An IPv6 literal must be bracketed in a URL authority ([::1], not ::1), or
-	// the ':' reads as a host:port separator and the URL is malformed. isValidHost
-	// already rejected zone-scoped hosts, so any colon-bearing host here is a bare
-	// IPv6 literal — safe to bracket unconditionally. IPv4/DNS carry no ':'.
+	// git's credential-store URL-encodes the user and token, so a token with
+	// reserved characters (:@/?) round-trips; match that or it mis-parses.
+
+	// An IPv6 literal must be bracketed in a URL authority ([::1]), or ':' reads
+	// as host:port. isValidHost already rejected zone hosts, so any colon-bearing
+	// host here is a bare IPv6 literal — safe to bracket. IPv4/DNS carry no ':'.
 	host := creds.Host
 	if strings.Contains(host, ":") {
 		host = "[" + host + "]"
@@ -94,11 +89,9 @@ func (w Workspace) CredentialSetupScript() (string, error) {
 		percentEncode(creds.Token),
 		host,
 	)
-	// `h` holds the (single-quoted) home dir once, so a path with a space or
-	// metacharacter can't break the commands, and the store helper's --file
-	// survives git's later re-shelling of the helper string. The heredoc keeps
-	// the token out of any argv even within the script; 0600 on the credential
-	// file.
+	// `h` holds the single-quoted home dir once, so a path with a space or
+	// metacharacter can't break the commands. The heredoc keeps the token out of
+	// any argv even within the script; 0600 on the credential file.
 	return fmt.Sprintf("set -eu\n"+
 		"umask 077\n"+
 		"h=%s\n"+

@@ -1,17 +1,9 @@
 //go:build unix
 
-// The server-side write-through sinks the RunnerHub delivers relayed agent
-// events into, and the hub constructor that wires them. Deliver classifies each
-// relayed frame by its set oneof and hands it to the surface that owns it
-// (runnerhub/hub.go): a lifecycle transition to the board and a session-trace
-// frame to the observation pane.
-//
-// Both sinks are real. The lifecycle sink is the Bridge board — an
-// agent-session state transition fans onto SubscribeEvents, the board/liveness
-// surface. The session-tail sink is the per-session fan-out backing
-// SubscribeAgentSession. Agent-initiated comms calls no longer write through a
-// sink: the hub executes them directly against the CommsService handler
-// (RelayCommsCall), so there is no conversation write-through sink here.
+// The server-side write-through sinks the RunnerHub delivers relayed agent events
+// into, and the hub constructor that wires them. Deliver classifies each frame by its
+// oneof: a lifecycle transition to the board, a session-trace frame to the pane.
+// Agent-initiated comms calls run directly against the CommsService handler, not here.
 package server
 
 import (
@@ -32,16 +24,13 @@ import (
 
 // The lifecycle sink is the Bridge board (internal/board): a session lifecycle
 // transition is recorded into the board's per-session projection AND fanned onto
-// SubscribeEvents, so GetAgentStatus (the snapshot) can never disagree with what
-// the live stream carried. The board is a strict superset of a bus-only sink, so
-// it is the one lifecycle sink — see newRunnerHub.
+// SubscribeEvents, so GetAgentStatus can never disagree with the live stream. The
+// board is a strict superset of a bus-only sink, so it is the one lifecycle sink.
 
-// newRunnerHub's session-tail sink is the real per-session fan-out (sessionTail,
-// sessiontail.go): RelaySessionFrame repackages each internal frame to its
-// public form and fans it to that session's live SubscribeAgentSession
-// subscribers. The same *sessionTail instance is shared with the
-// service (serve.go), which subscribes to it in the SubscribeAgentSession
-// handler — hub is the writer, service the reader, one instance.
+// newRunnerHub's session-tail sink is the real per-session fan-out (sessionTail):
+// RelaySessionFrame repackages each internal frame to its public form and fans it
+// to that session's live SubscribeAgentSession subscribers. The same *sessionTail
+// instance is shared with the service — hub is the writer, service the reader.
 
 // newRunnerHub constructs the Server-side RunnerHub over its write-through sinks
 // and the agent-comms caller: the Bridge board as the lifecycle sink (a session
@@ -65,15 +54,10 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 		log,
 	)
 	hub.SetTranscriptStore(st)
-	// RIG-3108 T4: the same store is the durable session-binding surface the
-	// hub's in-RAM maps are demoted to a read-through cache over — the write path
-	// (record on promote, delete on unbind, sweep on re-enroll) and the two
-	// request-scoped cache-miss reads. Wired here beside the transcript seam so
-	// the one store instance backs the binding cache too. No RoutingFabric is
-	// wired: this is the single-Server MVP, so the hub's own writes keep its own
-	// cache honest and a cross-instance invalidation plane is not yet mounted
-	// (RIG-3107/T3 lands the NATS fabric; startDeliveryConsumer's subscribe
-	// wiring rides that).
+	// RIG-3108 T4: the same store is the durable session-binding surface the hub's
+	// in-RAM maps are demoted to a read-through cache over (record on promote, delete
+	// on unbind, sweep on re-enroll). No RoutingFabric is wired: single-Server MVP, so
+	// the hub's own writes keep its cache honest (RIG-3107/T3 lands the NATS fabric).
 	hub.SetSessionBindingStore(st)
 	// RIG-1667 T5: the same store backs the resume-body reconstructor's read
 	// seam (SessionResumeSnapshot + ReadArchiveSegment), wired here beside the
@@ -82,19 +66,15 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 	return hub
 }
 
-// RIG-1641 T3: *lifecycleService satisfies the delivery-defined AgentWaker
-// (delivery defines the narrow interface it needs; the server package implements
-// it over the resume machinery). The assertion lives here in the server package,
-// which imports both — so delivery never imports server.
+// RIG-1641 T3: *lifecycleService satisfies the delivery-defined AgentWaker. The
+// assertion lives here in the server package, which imports both — so delivery never
+// imports server.
 var _ delivery.AgentWaker = (*lifecycleService)(nil)
 
-// Compass forge write path T8: *forgeService (forge.go, the DL-050 write
-// chokepoint) satisfies the T5-defined runnerhub.ForgeCaller seam the hub relays
-// RelayForgeCall into. The assertion lives here in the server package — which
-// imports both forgeService (unexported, same package) and runnerhub — the same
-// direction the sibling assertion above is proven; T4 could not
-// place it because the runnerhub interface was not importable in its isolated
-// slice.
+// Compass forge write path T8: *forgeService (the DL-050 write chokepoint) satisfies
+// the T5-defined runnerhub.ForgeCaller seam the hub relays RelayForgeCall into. The
+// assertion lives here in the server package (which imports both); T4 could not place
+// it because the runnerhub interface was not importable in its isolated slice.
 var _ runnerhub.ForgeCaller = (*forgeService)(nil)
 
 // wireHubServiceCycles breaks the post-construction cycles between the hub and
@@ -106,20 +86,17 @@ var _ runnerhub.ForgeCaller = (*forgeService)(nil)
 func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store, issueBrd *board.IssueProjection) {
 	hub.SetLifecycleCaller(newLifecycleService(st, hub, commsSvc))
 	hub.SetBoardCaller(newBoardService(st, issueBrd))
-	// The roster read (RIG-1721 T2) joins the hub's in-memory presence enum; the
-	// hub in turn reads it from the T8 presence projection wired at
-	// startPresencePublisher (hub.SetPresenceSource). comms->hub is set here (the
-	// hub is stable and delegates lazily), hub->publisher when the publisher
-	// starts — both before any RPC is served.
+	// The roster read (RIG-1721 T2) joins the hub's in-memory presence enum; the hub
+	// reads it from the T8 presence projection wired at startPresencePublisher.
+	// comms->hub is set here, hub->publisher when the publisher starts — both before
+	// any RPC is served.
 	commsSvc.SetPresenceSource(hubPresenceSource{hub})
 }
 
-// hubPresenceSource adapts *runnerhub.Hub to the comms-defined PresenceSource:
-// the hub returns the enum wrapped in a runnerhub.PresenceSnapshot (leaving room
-// for a later live-only attribute), while comms consumes the bare enum. The
-// projection lives here in the server package, which imports both — the same
-// direction the ForgeCaller assertion above is proven, so neither comms nor
-// runnerhub depends on the other.
+// hubPresenceSource adapts *runnerhub.Hub to the comms-defined PresenceSource: the
+// hub returns the enum wrapped in a runnerhub.PresenceSnapshot while comms consumes
+// the bare enum. It lives here in the server package (which imports both), so
+// neither comms nor runnerhub depends on the other.
 type hubPresenceSource struct{ hub *runnerhub.Hub }
 
 func (h hubPresenceSource) PresenceFor(accountIDs []store.AccountID) map[store.AccountID]compassv1.AgentPresence {
@@ -132,23 +109,16 @@ func (h hubPresenceSource) PresenceFor(accountIDs []store.AccountID) map[store.A
 }
 
 // startDeliveryConsumer builds the RIG-1569 T3 fan-out consumer over the comms
-// bus, wires the consumer<->hub construction cycle (the consumer takes hub as
-// its ControlDispatcher + SessionResolver; the hub takes the consumer as its
-// SettleSink AND its SessionStartSink — the reconnect sweep edge (RIG-1569 T6) —
-// with st as its delivery-cursor store, the post-construction
-// setters that break the cycle), and starts its bus-tail goroutine on the serve
-// group rooted on gctx (so it cancels at shutdown; it also ends when the comms
-// bus closes in drainDoors, so shutdown reaches it two ways).
+// bus, wires the consumer<->hub construction cycle (consumer takes hub as
+// ControlDispatcher/SessionResolver; hub takes consumer as SettleSink and
+// SessionStartSink), and starts its bus-tail goroutine on gctx (ending at shutdown
+// or when the comms bus closes).
 func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
 	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
 	// The wake seam (RIG-1641 T3): a FRESH lifecycleService, not the instance
-	// wireHubServiceCycles wired as the hub's LifecycleCaller. lifecycleService is
-	// stateless besides its own singleflight group, and only the waker path drives
-	// WakeAgent, so a second instance's group IS the wake's coalescer — sharing
-	// the LifecycleCaller instance would buy nothing and couple two unrelated call
-	// sites. Same (st, hub) inputs, so it runs the identical resume/start chain.
-	// nil dmOpener: the waker only drives WakeAgent, never SpawnAsAccount, so it
-	// never opens a DM.
+	// wireHubServiceCycles wired. lifecycleService is stateless besides its own
+	// singleflight group, and only the waker path drives WakeAgent, so this
+	// instance's group IS the wake's coalescer. nil dmOpener: the waker never spawns.
 	c.SetAgentWaker(newLifecycleService(st, hub, nil))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)

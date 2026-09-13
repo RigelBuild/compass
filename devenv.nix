@@ -6,35 +6,25 @@
   ...
 }:
 # Compass dev shell — the single source of the dev + CI toolchain. nix/devenv
-# owns everything: the language/runtime toolchains (bun/node/moon vendored as
-# nix derivations from tools/toolchain/versions/*.nix, go from the go-overlay
-# input) plus everything non-language — the contract codegen tools, the Go
-# analysis battery, and the linters the moon gate runs.
-#
-# Everything here is a system task's dependency: moon execs what this shell puts
-# on PATH rather than managing a toolchain of its own.
+# owns the language/runtime toolchains, the contract codegen tools, the Go
+# analysis battery, and the linters the moon gate runs. Everything here is a
+# system task's dependency: moon execs what this shell puts on PATH.
 let
   # Postgres DSN shared by compass-server and dogfood:mint-runner-token. mint
-  # MUST open the same store the server migrated, so both consumers reference one
-  # binding — a lone edit to either copy would silently point mint at a different
-  # database, surfacing only as a runner enroll failure.
+  # MUST open the same store the server migrated, so both reference one binding —
+  # a lone edit to either copy would silently point mint at a different database.
   dogfoodDSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
 
   # Runner id (enrollment subject) shared by dogfood:mint-runner-token and the
-  # compass-runner process. The runner's Enroll cross-checks the token subject
-  # against its --runner-id, so mint and runner MUST agree or enroll is rejected
-  # `unauthenticated` — both consumers reference one binding rather than a pair
-  # of copies that could silently drift. An overlay that overrides the runner id
-  # sets it here once and both consumers move in lockstep.
+  # compass-runner process. Enroll cross-checks the token subject against
+  # --runner-id, so mint and runner MUST agree or enroll is rejected — both
+  # reference one binding so an overlay override moves them in lockstep.
   dogfoodRunnerID = "dogfood";
 
   # The go pin (tools/toolchain/versions/go.nix), version-selected from the
-  # go-overlay input. go-overlay's flake exposes each version as a package attr
-  # named `go_<major>_<minor>_<patch>` (dots→underscores; nix attr names hold no
-  # unquoted dots), built over the devenv.lock-pinned nixpkgs via the
-  # devenv.yaml `inputs.nixpkgs.follows: nixpkgs`. The parity gate selects the
-  # same version through go-overlay's overlay route, so both resolve one
-  # derivation.
+  # go-overlay input, which exposes each version as `go_<major>_<minor>_<patch>`
+  # built over the devenv.lock-pinned nixpkgs. The parity gate selects the same
+  # version through go-overlay's overlay route, so both resolve one derivation.
   goPin = import ./tools/toolchain/versions/go.nix;
   goToolchain = inputs.go-overlay.packages.${pkgs.stdenv.system}."go_${lib.replaceStrings [ "." ] [ "_" ] goPin.version}";
 
@@ -44,120 +34,78 @@ let
   toolchainTools = import ./tools/toolchain/toolchain-tools.nix { inherit pkgs; };
 
   # The Go analysis battery (golangci-lint, govulncheck, go-licenses, nilaway),
-  # each rebuilt with the go-overlay toolchain via tools/toolchain/go-analysis.nix
-  # rather than taken as the bare nixpkgs attrs: those are built with nixpkgs' go
-  # (go1.26 at this pin) and fail every run under this shell's go1.27 with
-  # `file requires newer Go version go1.27`. Passed the same goToolchain the gate
-  # builds, so both resolve one derivation per tool. Appended below (like
-  # goToolchain) rather than listed in the parsed `with pkgs` literal, because
-  # each is a dotted reference, not a bare nixpkgs attribute.
+  # each rebuilt with the go-overlay toolchain rather than the bare nixpkgs
+  # attrs: those are go1.26-built and fail under go1.27 with `file requires newer
+  # Go version`. Appended below (dotted refs), not in the parsed `with pkgs` list.
   goAnalysis = import ./tools/toolchain/go-analysis.nix { inherit pkgs goToolchain; };
 in
 {
   packages = (with pkgs; [
     # compass.v1 contract codegen. buf drives the pipeline; protobuf supplies
-    # protoc; protoc-gen-go (messages) + protoc-gen-connect-go (Connect
-    # handlers/clients) are the Go lane's plugins, and protoc-gen-es is the TS
-    # lane's. All from nixpkgs (pinned), NOT `go install` or a bun devDep, so
-    # each resolves to an immutable store path: the plugin version stamped into
-    # the generated headers is reproducible and the drift gate stays
-    # deterministic.
-    #
-    # Immutability is the point, not tidiness. buf lazily requires a plugin's
-    # closure while executing it, and a store path cannot be rewritten
-    # mid-execution. A package store can — a concurrent install tears the read
-    # and the gate flakes with a fault that reads like a codegen error.
-    #
-    # The trade: these versions are the pinned nixpkgs's to choose
-    # (devenv.lock), not a lockfile's. A nixpkgs bump that moves a plugin
-    # restamps the `@generated by` header, so drift reds with a comment-only
-    # diff on a PR touching neither the schema nor the gen trees. That is real
-    # drift: run `moon run compass-proto:gen` and commit the restamp with the
-    # bump.
+    # protoc; protoc-gen-go/-connect-go are the Go lane's plugins, protoc-gen-es
+    # the TS lane's. All from pinned nixpkgs, not `go install`/bun devDep, so
+    # each is an immutable store path buf cannot have torn mid-execution by a
+    # concurrent install (which flakes the gate with a fake codegen error). A
+    # nixpkgs bump that moves a plugin restamps the `@generated by` header: real
+    # drift — run `moon run compass-proto:gen` and commit the restamp.
     buf
     protobuf # protoc
     protoc-gen-go
     protoc-gen-connect-go
     protoc-gen-es
 
-    # Go gate battery (go/moon.yml): golangci-lint (lint), govulncheck (vuln
-    # scan), go-licenses (license fence), nilaway (nil-flow analysis) are NOT
-    # here — all four are rebuilt with the go-overlay toolchain
-    # (tools/toolchain/go-analysis.nix) and appended below with the language
-    # toolchains, because the bare nixpkgs attrs are go1.26-built and cannot
-    # parse the go1.27 stdlib. Go itself is the go-overlay toolchain appended
-    # below, alongside the vendored bun/node/moon derivations.
+    # Go gate battery (golangci-lint/govulncheck/go-licenses/nilaway) is NOT
+    # here — all four are rebuilt with the go-overlay toolchain and appended
+    # below, because the bare nixpkgs attrs are go1.26-built and cannot parse the
+    # go1.27 stdlib. Go itself is the go-overlay toolchain, also appended below.
 
     # sqlc: generates typed Go from the .sql query files in
-    # go/internal/store/queries, compiled against the migrations schema
-    # (go/moon.yml sqlc-gen/sqlc-drift). Bare nixpkgs attr so it lives in this
-    # parsed literal where the toolchain-parity gate resolves it; the pin ships
-    # sqlc 1.31.1.
+    # go/internal/store/queries, compiled against the migrations schema. Bare
+    # nixpkgs attr so the toolchain-parity gate resolves it in this literal.
     sqlc
 
     # Lint gate. biome + rumdl are nixpkgs derivations here, not `bunx` — one
-    # nixpkgs pin means `moon run root:lint` / `root:markdownlint` resolve the
-    # identical binary and version for everyone, with no drift between a
-    # contributor's node_modules and anyone else's. `@biomejs/biome` stays a
-    # package.json devDep for the editor LSP.
+    # pin means `moon run root:lint`/`root:markdownlint` resolve the identical
+    # binary for everyone. `@biomejs/biome` stays a package.json devDep for the LSP.
     biome
     rumdl
 
-    # actionlint: static checker for the GitHub Actions workflows under
-    # .github/workflows/ (ci, eng-docs-deploy, publish-agent-image, renovate).
-    # A bare nixpkgs attr, so it lives in this parsed literal where the
-    # toolchain-parity gate resolves it. Moved off the box into this shell so
-    # workflow linting resolves the same pinned binary everywhere.
+    # actionlint: static checker for the .github/workflows/ files. A bare nixpkgs
+    # attr in this parsed literal so the toolchain-parity gate resolves it,
+    # giving the same pinned binary everywhere.
     actionlint
 
-    # SQL migration lint battery (tools/sql-migration-gate/moon.yml): squawk
-    # (migration-safety analysis — full-table rewrites, unsafe DDL, missing
-    # CONCURRENTLY) + sqruff (SQL style/lint). Bare nixpkgs attrs so they live
-    # in this parsed literal where the toolchain-parity gate resolves them, one
-    # pin giving CI and every dev box the identical binary + version.
+    # SQL migration lint battery: squawk (migration-safety) + sqruff (SQL
+    # style/lint). Bare nixpkgs attrs in this parsed literal so the parity gate
+    # resolves them, one pin giving CI and every dev box the identical binaries.
     squawk
     sqruff
 
-    # curl: the compass-server readiness probe (processes below) POSTs to
-    # GetServerInfo over the loopback dev-http door to gate readiness on a real
-    # serving handler. Pin it here (referenced via `lib.getExe` in the probe)
-    # rather than inheriting an ambient system curl, so the one-command bring-up
-    # works on any dev box — a non-NixOS nix/devenv host, or a NixOS box without
-    # curl in current-system — not only one whose current-system ships curl.
+    # curl: the compass-server readiness probe POSTs to GetServerInfo over the
+    # loopback dev-http door. Pinned here (via `lib.getExe`) rather than an
+    # ambient system curl, so one-command bring-up works on any dev box —
+    # including a NixOS box without curl in current-system.
     curl
 
     # pkg-config: the Wails v3 cgo link needs it to discover the GTK4/WebKitGTK
-    # `.pc` files (via PKG_CONFIG_PATH, set over the GTK closure in
-    # `env` below, which owns that rationale). Kept in this parsed list, not the
-    # Linux-guarded env block, because it has a bin the toolchain-parity gate
-    # resolves and is cross-platform — harmless on macOS, where the app links
-    # the system WebKit framework and pkg-config goes unused.
+    # `.pc` files (via PKG_CONFIG_PATH, set in `env` below). In this parsed list,
+    # not the Linux env block, because it has a gate-resolved bin and is
+    # cross-platform — harmless on macOS where the app links system WebKit.
     pkg-config
 
-    # postgresql: the dogfood e2e harness's private postgres
-    # (go/cmd/compass-postgres/main.go) shells out to `initdb`/`postgres`/`createdb`
-    # via exec.LookPath, so those binaries must be on PATH wherever the e2e suite
-    # runs. In the dev shell they arrive free from `services.postgres` (a devenv
-    # service), but CI's gate-tools (tools/toolchain/gate-tools.nix, fed by
-    # `parity.ts --print-nix-attrs` off THIS list) builds its PATH env ONLY from
-    # `packages` — service-provided binaries never reach a CI runner. So the
-    # harness prereq has to live here for the CI e2e gate to find `initdb`.
-    #
-    # Bare `postgresql`, not a version-suffixed attr, for strict parity:
-    # `services.postgres.package` defaults to bare `pkgs.postgresql`
-    # (the RigelBuild/devenv fork's src/modules/services/postgres.nix), which at this devenv.lock
-    # pin resolves to postgresql-18.4 — the SAME derivation the service uses, so
-    # CI and the dev shell exercise one postgres, not two.
+    # postgresql: the dogfood e2e harness's private postgres shells out to
+    # `initdb`/`postgres`/`createdb` via exec.LookPath. In the dev shell those
+    # arrive from `services.postgres`, but CI's gate-tools builds its PATH ONLY
+    # from `packages` — service binaries never reach a CI runner — so the prereq
+    # must live here for the CI e2e gate. Bare `postgresql` (not version-suffixed)
+    # for strict parity: it is the same derivation `services.postgres.package`
+    # defaults to (postgresql-18.4 at this pin), so CI and dev share one postgres.
     postgresql
   ])
-  # The language toolchains: bun/node/moon vendored from
-  # tools/toolchain/versions/*.nix and go from the go-overlay input, plus the Go
-  # analysis battery (golangci-lint/govulncheck/go-licenses/nilaway) rebuilt with
-  # that go toolchain (tools/toolchain/go-analysis.nix). Appended OUTSIDE the
-  # `with pkgs; [ … ]` literal above because each is a dotted reference, not a
-  # bare nixpkgs attribute — and the toolchain-parity gate parses that literal
-  # and THROWS on any non-bare token. The gate covers these through its
-  # store-path `langs` verdict instead; it never parses this list.
+  # The language toolchains (bun/node/moon vendored, go from go-overlay) plus the
+  # Go analysis battery rebuilt with that go toolchain. Appended OUTSIDE the
+  # `with pkgs` literal because each is a dotted reference and the parity gate
+  # THROWS on any non-bare token there; the gate covers these via `langs` instead.
   ++ [
     toolchainTools.bun
     toolchainTools.node
@@ -168,138 +116,81 @@ in
     goAnalysis.go-licenses
     goAnalysis.nilaway
   ]
-  # hk (jdx/hk): the jj/git pre-push hook runner. A dotted input reference
-  # (inputs.hk.packages.<system>.default), not a bare nixpkgs attr, so it is
-  # appended OUTSIDE the parsed `with pkgs` literal — the toolchain-parity gate
-  # THROWS on any non-bare token in that literal (same reason as goToolchain
-  # above). Cross-platform (linux + darwin), so it needs no isLinux guard.
-  # `enterShell` runs `hk install` to wire the hooks against the repo-root
-  # hk.pkl; this puts the binary that reads that schema on PATH so the two can't
-  # drift. Pinned to v1.48.0 via the `hk` input in devenv.yaml.
+  # hk (jdx/hk): the jj/git pre-push hook runner. A dotted input reference,
+  # appended outside the parsed literal (parity gate throws on non-bare tokens).
+  # Cross-platform, so no isLinux guard. `enterShell` runs `hk install` against
+  # the repo-root hk.pkl; pinned to v1.48.0 via the `hk` input in devenv.yaml.
   ++ [
     inputs.hk.packages.${pkgs.stdenv.system}.default
   ]
-  # xvfb-run: a virtual framebuffer wrapper for the multi-window gtk4 e2e
-  # (go/cmd/compass-app, design record compass-multi-window §M4) — the real
-  # GTK4/WebKit shell needs a display to open windows, and dev boxes + CI
-  # runners are headless. Linux-only (X11) and appended OUTSIDE the parsed
-  # `packages` literal: the toolchain-parity gate resolves every bare attr in
-  # that literal on macOS too, where xvfb-run does not exist. The package is
-  # self-contained (its wrapper prepends its own Xvfb to PATH). CI's dedicated
-  # e2e step gets it via tools/toolchain/gtk-e2e-env.nix, not this shell.
+  # xvfb-run: virtual framebuffer wrapper for the multi-window gtk4 e2e — the
+  # real GTK4/WebKit shell needs a display and dev boxes + CI runners are
+  # headless. Linux-only, appended outside the parsed literal (the parity gate
+  # resolves every bare attr on macOS too, where xvfb-run does not exist).
   ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.xvfb-run ]
-  # chromium: the browser the dev-boot smoke gate drives (apps/ui:dev-smoke,
-  # design record compass-dev-boot-gate). Playwright points at it via
-  # launchOptions.executablePath, resolved from PLAYWRIGHT_CHROMIUM_PATH
-  # (apps/ui/playwright.config.ts:31-33). Linux-only (nixpkgs chromium has no
-  # darwin build) and appended OUTSIDE the parsed `packages` literal for the
-  # same reason as xvfb-run: the toolchain-parity gate resolves every bare attr
-  # in that literal on macOS too, where chromium does not exist. CI's dev-smoke
-  # step provisions it via tools/toolchain/chromium-e2e-env.nix, not this shell.
+  # chromium: the browser the dev-boot smoke gate drives (apps/ui:dev-smoke).
+  # Playwright points at it via PLAYWRIGHT_CHROMIUM_PATH. Linux-only (no darwin
+  # build), appended outside the parsed literal for the same macOS reason as
+  # xvfb-run. CI's dev-smoke provisions it via chromium-e2e-env.nix, not here.
   ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ]
-  # skopeo-nix2container: the RigelBuild/nix2container fork's patched skopeo,
-  # which understands the `nix:` transport (reads a nix2container image spec
-  # directly). The agent-image publish lane (agent-image/publish.sh, the
-  # publish-agent-image workflow, tools/agent-image-env-gate) drives it to
-  # inspect and copy the built image; installing it HERE, on the dev shell the
-  # publish job enters, puts a plain `skopeo` on PATH so those sites invoke it by
-  # name rather than a raw, lockfile-bypassing `nix run` (OQ2 Decision 2). It is
-  # deliberately NOT in agent-image/devenv.nix `packages`: that devenv is the one
-  # the container module bakes into the image via the entrypoint's
-  # `source ${shell.envScript}`, so a package there lands skopeo's ~168 MB
-  # closure in every published agent image — a publish-only tool the running
-  # agent never invokes. This shell is not a container, so nothing bakes it.
-  # Resolved from the `nix2container` input pinned in devenv.lock (one source of
-  # truth for the rev). Linux-only and appended OUTSIDE the parsed `with pkgs`
-  # literal (same reason as xvfb-run/chromium: it is a dotted input reference,
-  # not a bare nixpkgs attr, and the toolchain-parity gate throws on any non-bare
-  # token in that literal).
+  # skopeo-nix2container: the nix2container fork's patched skopeo understanding
+  # the `nix:` transport. The agent-image publish lane drives it; installing a
+  # plain `skopeo` here lets those sites invoke it by name, not a
+  # lockfile-bypassing `nix run`. Deliberately NOT in agent-image/devenv.nix,
+  # whose packages get baked into every published image — this would add skopeo's
+  # ~168 MB closure the running agent never uses. Resolved from the pinned
+  # `nix2container` input; Linux-only, appended outside the parsed literal.
   ++ lib.optionals pkgs.stdenv.isLinux [
     inputs.nix2container.packages.${pkgs.stdenv.system}.skopeo-nix2container
   ]
   # cloud-hypervisor / virtiofsd / passt: the microVM VMM userspace toolset the
-  # elastic-session runtime's KVM-backed backend drives (design record
-  # docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md,
-  # § E-D1). cloud-hypervisor is the microVM VMM chosen in design D1; virtiofsd
-  # is the virtio-fs daemon that serves the guest's filesystem; passt is the
-  # userspace network backend instantiating the D6 passt/gvproxy-class net path
-  # (E1 picks passt, not gvproxy: C, no in-guest Go runtime, packaged in
-  # nixpkgs, and free of gvproxy's podman-machine coupling). All three are
-  # ordinary user binaries that open(2) /dev/kvm but need no capability or
-  # device node of their own; the host-level /dev/kvm enablement is a separate,
-  # out-of-repo concern. Linux-only and appended OUTSIDE the parsed `with pkgs`
-  # literal for the same reason as xvfb-run/chromium: the toolchain-parity gate
-  # resolves every bare attr in that literal on macOS too, where these
-  # Linux-only packages do not exist. No version pin here — the shell provides
-  # one pinned version from devenv.lock; the runtime preflight (V2a+) will
-  # enforce the floor, and the CI KVM leg will realize these binaries
-  # out-of-band from this same pin.
+  # elastic-session runtime's KVM backend drives (compass-elastic-session-runtime
+  # § E-D1): the VMM, the virtio-fs daemon, and the passt userspace net backend
+  # (E1 picks passt over gvproxy). All are ordinary user binaries opening
+  # /dev/kvm; host /dev/kvm enablement is out-of-repo. Linux-only, appended
+  # outside the parsed literal (same macOS reason as xvfb-run). No pin here — the
+  # shell provides one from devenv.lock; the runtime preflight enforces the floor.
   ++ lib.optionals pkgs.stdenv.isLinux [
     pkgs.cloud-hypervisor
     pkgs.virtiofsd
     pkgs.passt
   ]
-  # secretspec: the CLI the Go secrets write path spawns BY NAME for
-  # `set`/`delete` (go/internal/secrets/resolver.go's `cli` default), so the
-  # write path is unreachable unless this shell puts one on PATH. Resolved from
-  # the `secretspec-nixpkgs` input rather than this shell's own nixpkgs because
-  # that channel's rev still carries 0.14.0, which has no `age` provider
-  # compiled in — the encrypted-at-rest default the server-secret resolver
-  # writes through. This input's version matches the Go SDK pin in go/go.mod, so
-  # the read path (SDK + native lib) and the write path (this CLI) advance
-  # together; `internal/secrets` asserts both halves rather than assuming them.
-  # A dotted input reference, so it is appended OUTSIDE the parsed `with pkgs`
-  # literal (same reason as skopeo-nix2container: the toolchain-parity gate
-  # resolves every bare attr in that literal, including on macOS).
+  # secretspec: the CLI the Go secrets write path spawns BY NAME, so the write
+  # path is unreachable unless this shell puts one on PATH. From the
+  # `secretspec-nixpkgs` input, not this shell's nixpkgs, whose rev carries
+  # 0.14.0 with no `age` provider (the encrypted-at-rest default). Matches the Go
+  # SDK pin in go/go.mod, so read and write paths advance together. Dotted ref,
+  # appended outside the parsed literal.
   ++ [
     inputs.secretspec-nixpkgs.legacyPackages.${pkgs.stdenv.system}.secretspec
   ];
 
   env = {
-    # moon execs the vendored nix toolchain on PATH (the .moon/workspace.yml
-    # system-task design) instead of resolving go/gofmt through the proto shims
-    # under ~/.proto — which are present but back an absent `proto` binary, so
-    # every `compass-go:*` moon task (and the jj-hp pre-push `moon ci` gate)
-    # dies with a proto-shim exec error without this. Forcing globals makes moon
-    # honor the documented system-task contract rather than manage its own
-    # toolchain. Platform-independent, so it lives in the base set, not the
-    # Linux-only merge below.
+    # moon execs the vendored nix toolchain on PATH instead of resolving
+    # go/gofmt through the ~/.proto shims, which back an absent `proto` binary
+    # and otherwise kill every `compass-go:*` moon task with a shim exec error.
+    # Platform-independent, so in the base set, not the Linux merge below.
     MOON_TOOLCHAIN_FORCE_GLOBALS = "true";
 
-    # The FFI cdylib the secrets READ path dlopens, a different seam from the
-    # write-path CLI on PATH below; without it a local `go test` skips the armed
-    # forge-secret pgtest and the shell stops matching CI. An absolute path the
-    # SDK reads, so it belongs in `env`, never the parity-gated `packages`.
+    # The FFI cdylib the secrets READ path dlopens (a different seam from the
+    # write-path CLI); without it a local `go test` skips the armed forge-secret
+    # pgtest and the shell stops matching CI. An absolute path, so in `env`.
     SECRETSPEC_FFI_LIB =
       "${(import ./tools/toolchain/secretspec-env.nix).libsecretspec}/lib/libsecretspec${pkgs.stdenv.hostPlatform.extensions.sharedLibrary}";
 
   }
-  # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
-  # GTK4/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
-  # library's `.pc` file along PKG_CONFIG_PATH, built here over the transitive
-  # propagated-dependency closure of the GTK/WebKitGTK set so a `.pc`
-  # `Requires:` walk (gtk4 → zlib, pango → freetype2/fontconfig, …) resolves.
-  # Both `.pc` install subdirs are searched: a dev output splits its `.pc` files
-  # across `lib/pkgconfig` and `share/pkgconfig` (zlib ships `zlib.pc` under
-  # `share/`, which gtk4 transitively requires), so searching only `lib/` fails the walk.
-  # The package set and subdir order are defined once in
-  # tools/toolchain/gtk-closure.nix (imported just below), the single
-  # definition every in-repo consumer resolves so they cannot drift.
-  #
-  # Linux-only, and set in `env` rather than `packages`: on macOS the app links
-  # the system WebKit framework, so the closure is Linux's alone; and keeping it
-  # out of the parsed `packages` list means the heavy WebKitGTK closure is never
-  # realized by the toolchain-parity gate on a CI runner. The per-PR moon gate
-  # still never compiles the native app; the one CI lane that does — the
-  # multi-window gtk4 e2e (compass-multi-window §M4) — is a dedicated,
-  # affected-guarded ci.yml step that realizes this same closure out of band via
-  # tools/toolchain/gtk-e2e-env.nix, so the moon battery stays GTK-free.
+  # The Compass native app (Wails v3) links the Linux GTK4/WebKitGTK stack
+  # through cgo. pkg-config finds each `.pc` file along PKG_CONFIG_PATH, built
+  # here over the transitive closure of the GTK set so a `Requires:` walk
+  # resolves; both `lib/pkgconfig` and `share/pkgconfig` are searched (zlib ships
+  # its `.pc` under `share/`). The set is defined once in gtk-closure.nix so
+  # consumers cannot drift. Linux-only, and in `env` not `packages`: on macOS the
+  # app links system WebKit, and this keeps the heavy closure off the parity gate.
   // lib.optionalAttrs pkgs.stdenv.isLinux {
     PKG_CONFIG_PATH =
       let
-        # The GTK4/WebKitGTK set, imported from the shared
-        # module so the dev shell and the gtk4 e2e CI helper
-        # (tools/toolchain/gtk-e2e-env.nix) resolve one closure and cannot drift.
+        # The GTK4/WebKitGTK set, from the shared module so the dev shell and the
+        # gtk4 e2e CI helper resolve one closure and cannot drift.
         pcClosure = lib.closePropagation (import ./tools/toolchain/gtk-closure.nix pkgs);
       in
       lib.concatStringsSep ":" [
@@ -307,18 +198,12 @@ in
         (lib.makeSearchPathOutput "dev" "share/pkgconfig" pcClosure)
       ];
 
-    # The visual-regression gate (apps/ui:visual-gate) rasterizes text with
-    # these faces, pinned to the same devenv.lock nixpkgs CI resolves, and the
-    # config also pins hinting/antialiasing, so a local run and a CI run
-    # rasterize identically and a red gate is reproducible off-CI. The config
-    # sees ONLY the pinned faces, so the host's own font set — which previously
-    # decided which substitute the CSS stack fell through to, with no declared
-    # cause — cannot affect the output.
-    #
-    # Linux-only despite the fonts themselves building everywhere: chromium is
-    # Linux-only in nixpkgs, so a darwin shell cannot run this gate at all, and
-    # FONTCONFIG_FILE is process-tree-wide — it would replace the font universe
-    # for everything launched from the shell in exchange for nothing.
+    # The visual-regression gate (apps/ui:visual-gate) rasterizes text with these
+    # faces, pinned to the same devenv.lock nixpkgs CI uses (with hinting/AA also
+    # pinned), so a local run and a CI run rasterize identically. The config sees
+    # ONLY the pinned faces, so the host's font set cannot sway the output.
+    # Linux-only: chromium is Linux-only so darwin cannot run the gate, and
+    # FONTCONFIG_FILE is process-tree-wide.
     FONTCONFIG_FILE = (import tools/toolchain/chromium-e2e-env.nix).fontconfig;
   };
 
@@ -336,60 +221,17 @@ in
   '';
 
   # One-command Compass dogfood enroll-loop: `devenv up` stands up the full
-  # backend a human can drive an agent session against. The chain:
-  #
-  #   postgres            — the store of record; compass-server opens it at
-  #                         startup and applies its embedded migrations under an
-  #                         advisory lock (go/internal/store/store.go).
-  #   dogfood:gen-cert    — mints the self-signed TLS trust anchor (tls.crt /
-  #                         tls.key) the network door serves and the runner
-  #                         trusts. Skip-if-present, so a restart never swaps the
-  #                         cert out from under a live server/runner pair.
-  #   compass-server      — serves compass.v1 on a Unix socket (the local door),
-  #                         a loopback gRPC-Web port for the browser UI dev
-  #                         server, AND an authenticated TLS network door
-  #                         (RunnerService lives only here — runners are remote
-  #                         and dial the TLS door, never the loopback socket).
-  #                         On network-door startup it mints the bootstrap
-  #                         admin-token 0600 under the state dir.
-  #   compass-ui          — the browser UI dev server (vite); serves the SolidJS
-  #                         board on http://127.0.0.1:5173 and dials the
-  #                         server's loopback gRPC-Web dev door directly via
-  #                         VITE_COMPASS_BASE_URL. Runs after the server is ready
-  #                         so the first browser load never races the migrating
-  #                         store.
-  #   dogfood:mint-runner-token — registers the `dogfood` runner and writes its
-  #                         enrollment token; runs after the server is ready
-  #                         (the readiness probe gates on the migrated store).
-  #   compass-runner      — enrolls over the TLS door with that token, then
-  #                         idles in RunSessions awaiting Provision/Start.
-  #   dogfood:build-cli   — builds the operator CLI (./cmd/compass) into the state
-  #                         dir so a human driving the box over ssh never gets a
-  #                         stale binary; nothing execs it, so it needs a `before`
-  #                         edge to land in `up`'s default (upstream-only) closure
-  #                         at all. Deliberate consequence: a CLI compile error
-  #                         fails `up` WHOLESALE — server, ui, mint-runner-token
-  #                         and runner all go with it, leaving postgres+gen-cert.
-  #                         Accepted so a non-compiling CLI cannot be ignored;
-  #                         `--mode single` is the escape hatch while it is broken.
-  #
-  # Opt-in (NOT wired into up): `dogfood:agent-image` builds+loads the agent
-  # base image (heavy closure — kept off the hot up path), and `dogfood:clean`
-  # tears down the deterministic-named agent containers so a second session
-  # drive does not hit a podman create name collision.
-  #
-  # Prereqs (the podman loop only — compass-runner, agent-image, clean): a Linux
-  # dev box with rootless podman and the uid-1000 subuid/subgid ranges configured
-  # (the runner guards on uid 1000 and creates per-container sockets under its
-  # runtime dir); the postgres/server/UI/cert/token half runs macOS-native and
-  # needs no Linux prereqs. Cert expiry: gen-cert is skip-if-present
-  # forever against a finite --validity, so once the cert expires the loop fails
-  # with an opaque TLS error — rerun `compass-gen-cert --force` (or delete
-  # tls.crt/tls.key from the state dir) to rotate.
-  #
-  # Postgres, compass-server, and compass-ui run cross-platform (macOS-native
-  # dogfood); only the podman-backed loop (compass-runner and the agent-image /
-  # clean tasks) targets the Linux dev box.
+  # backend (postgres → gen-cert → compass-server → compass-ui →
+  # mint-runner-token → compass-runner, plus build-cli). Ordering is load-bearing:
+  # each stage `after`s the store/cert/token the next needs, and dogfood:build-cli
+  # uses a `before` edge (nothing execs it, so an `after` edge would drop it from
+  # `up`'s upstream-only closure). A CLI compile error thus fails `up` WHOLESALE —
+  # accepted so a non-compiling CLI cannot be ignored (`--mode single` escapes it).
+  # Opt-in (NOT in up): dogfood:agent-image (heavy closure) and dogfood:clean.
+  # The podman loop (runner/agent-image/clean) needs a Linux box with rootless
+  # podman + uid-1000 subuid/subgid; the postgres/server/UI/cert/token half runs
+  # macOS-native. gen-cert is skip-if-present forever, so an expired cert fails
+  # the loop with an opaque TLS error — rerun `compass-gen-cert --force` to rotate.
   services.postgres = {
     enable = true;
     # The single dogfood database compass-server opens. Owned by $USER over the
@@ -398,22 +240,12 @@ in
   };
 
   processes = {
-    # compass-server: serves compass.v1 on a Unix domain socket (the shipped
-    # local door) plus a loopback gRPC-Web port for the browser UI dev server.
-    # It builds the binary once, then `exec`s it. process-compose does not run
-    # this script directly: it runs `exec devenv-tasks run … compass-server`, so
-    # the tree is process-compose → devenv-tasks → compass-server. `exec` here
-    # still matters: it collapses the bash-wrapper → binary hop so no `go
-    # run`/shell parent is left to orphan (exit status propagates, and the
-    # compiled binary sits directly in the process group devenv-tasks signals).
-    # On stop, devenv-tasks traps SIGTERM and killpg()s that group (SIGTERM,
-    # then SIGKILL after a 5s grace); the SIGTERM reaches compass-server, which
-    # traps it in cmd/compass-server and drains both doors. Note the 5s killpg
-    # grace equals compass-server's own 5s drain deadline (server/serve.go), so
-    # a drain that runs its full budget races the SIGKILL at the boundary. The
-    # build is incremental/cached, so the per-restart cost is negligible.
-    # Restarts on failure (devenv caps this at 5 by default) so a transient
-    # store hiccup recovers.
+    # compass-server: serves compass.v1 on a Unix socket plus a loopback
+    # gRPC-Web port. Builds once then `exec`s the binary so no shell/`go run`
+    # parent lingers — the binary sits directly in the process group devenv-tasks
+    # killpg()s on stop (SIGTERM, then SIGKILL after a 5s grace). That 5s grace
+    # equals compass-server's own 5s drain deadline, so a full-budget drain races
+    # the SIGKILL. Restarts on failure (devenv caps at 5) so a store hiccup recovers.
     compass-server = {
       exec = ''
         # Build once into the state dir, then exec the binary so no shell/`go
@@ -483,24 +315,18 @@ in
         # Unix socket under the devenv state dir so the path is stable across
         # restarts and a co-located client (the UI/shell) resolves the same one.
         COMPASS_SOCKET = "${config.devenv.state}/compass/server.sock";
-        # pgx keyword/value DSN over the Postgres Unix socket ($PGHOST is the
-        # socket dir, $PGPORT the allocated port — set by services.postgres).
-        # No user= : pgx defaults to the OS user, which is the peer-auth identity
-        # ($USER) that owns the `compass` database (services.postgres above).
+        # pgx keyword/value DSN over the Postgres Unix socket. No user= : pgx
+        # defaults to the OS user, the peer-auth identity that owns `compass`.
         COMPASS_DATABASE_DSN = dogfoodDSN;
       };
-      # Wait for Postgres to be accepting connections before starting, so the
-      # store opens on the first try rather than crash-restarting until it's up.
-      # (dogfood:gen-cert orders itself `before` this process so the TLS cert/key
-      # the network door opens over exist by the time the server starts.)
+      # Wait for Postgres to accept connections before starting, so the store
+      # opens first try. (dogfood:gen-cert orders `before` this so the TLS
+      # cert/key exist when the network door opens.)
       after = [ "devenv:processes:postgres" ];
-      # Ready only once the server actually answers — not merely once the socket
-      # file exists. compass-server binds (and chmods) the socket BEFORE it runs
-      # the store migrations and starts accepting, so `test -S` would flip ready
-      # true while a dial still blocks on the first RPC. Probe GetServerInfo over
-      # the loopback dev door instead: it succeeds only after the store is
-      # migrated and the handler serves, which is the real signal an `after`-
-      # dependent needs.
+      # Ready only once the server answers, not merely once the socket exists:
+      # compass-server binds the socket BEFORE migrating and accepting, so
+      # `test -S` would flip ready true while a dial still blocks. Probe
+      # GetServerInfo, which succeeds only after the store is migrated.
       ready.exec = ''
         ${lib.getExe pkgs.curl} -fsS --max-time 2 \
           -H 'Content-Type: application/json' \
@@ -512,25 +338,18 @@ in
     };
 
     # compass-ui: the browser UI dev server (vite). Serves the SolidJS board on
-    # http://127.0.0.1:5173 and dials compass-server's loopback gRPC-Web dev
-    # door directly — no vite proxy: the browser reads the door URL from
-    # VITE_COMPASS_BASE_URL at boot (apps/ui/src/live/connection.ts) and the dev
-    # door serves wildcard CORS (any origin — it is a loopback dev-only door),
-    # which covers this browser consumer (go/server/serve.go devCORS,
-    # AllowedOrigins ["*"]). `exec bunx vite` matches the moon dev task
-    # (apps/ui/moon.yml) — one convention, two entry points. `after`s the
-    # server's readiness probe (a real GetServerInfo answer over the dev door,
-    # not merely a bound socket) so the first browser load never races the
-    # migrating store.
+    # :5173 and dials compass-server's loopback gRPC-Web dev door directly (no
+    # vite proxy) — the browser reads the URL from VITE_COMPASS_BASE_URL and the
+    # dev door serves wildcard CORS. `after`s the server's readiness probe so
+    # the first browser load never races the migrating store.
     compass-ui = {
       exec = ''
         exec bunx vite
       '';
       cwd = "${config.devenv.root}/apps/ui";
       env = {
-        # Direct-dial (decided): the browser dials the dev door directly, so the
-        # base URL is the server's loopback dev-http port (devenv stays the
-        # single owner of that port number).
+        # Direct-dial: the browser dials the dev door directly, so the base URL
+        # is the server's loopback dev-http port.
         VITE_COMPASS_BASE_URL =
           "http://127.0.0.1:${toString config.processes.compass-server.ports.devhttp.value}";
       };
@@ -539,28 +358,15 @@ in
   }
   // lib.optionalAttrs pkgs.stdenv.isLinux {
     # compass-runner: enrolls with the server over the TLS network door, then
-    # idles awaiting Provision/Start commands. Built into the state dir and
-    # exec'd the same way as compass-server (see that process's comment for the
-    # build/exec rationale and the devenv-tasks signal path). Runners are
-    # remote by design, so this dials the authenticated TLS door
-    # (https://127.0.0.1:<network-port>) with the gen-cert cert as the single
-    # trust anchor (--ca) — never the loopback socket. The enrollment token is
-    # passed via COMPASS_RUNNER_TOKEN env ONLY, never a flag (a flag would leak
-    # it into the process table); the exec script reads it from the token file
-    # dogfood:mint-runner-token produced. --runtime-dir overrides the root-only
-    # /run/compass default with $XDG_RUNTIME_DIR/compass-runner: the runner mints
-    # per-container sockets at <runtime-dir>/containers/compass-agent-<32-hex>/
-    # agent.sock (a fixed 69-byte suffix) and validates at startup that the widest
-    # such path fits the 107-byte AF_UNIX sun_path limit (run.go
-    # validateRuntimeDir), capping the dir at 38 bytes — the deep $DEVENV_STATE
-    # checkout overflows it, a short per-user /run path (this uid owns it) does
-    # not. --egress-allow is omitted:
-    # the base loop's local_path clone needs no network, so the agent runs pure
-    # default-deny. `ready` is intentionally unset — the runner exposes no HTTP
-    # surface and devenv has no log-line readiness type, so it idles unprobed;
-    # nothing `after`s it, so that is safe. Restarts on failure because
-    # Dial/Enroll is single-shot with no retry, so a transient enroll failure
-    # would otherwise leave a permanently dead runner.
+    # idles awaiting Provision/Start. Built and exec'd like compass-server.
+    # Runners are remote by design, so this dials the authenticated TLS door with
+    # the gen-cert cert as sole trust anchor (--ca), never the loopback socket.
+    # The token is passed via COMPASS_RUNNER_TOKEN env ONLY (a flag would leak it
+    # into the process table). --runtime-dir overrides the root-only /run/compass
+    # with $XDG_RUNTIME_DIR/compass-runner: per-container socket paths must fit
+    # the 107-byte AF_UNIX limit (validateRuntimeDir caps the dir at 38 bytes),
+    # which the deep $DEVENV_STATE checkout overflows and a short /run path does
+    # not. Restarts on failure because Dial/Enroll is single-shot with no retry.
     compass-runner = {
       exec = ''
         : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
@@ -583,17 +389,13 @@ in
   };
 
   # Dogfood loop tasks. gen-cert, build-cli and mint-runner-token run
-  # cross-platform (they back the macOS-native server/UI dogfood); agent-image and
-  # clean stay Linux-only, as the whole podman-backed loop targets the Linux dev box.
+  # cross-platform (backing the macOS-native dogfood); agent-image and clean stay
+  # Linux-only, as the whole podman-backed loop targets the Linux dev box.
   tasks = {
     # gen-cert: mint the self-signed TLS trust anchor the network door serves and
-    # the runner trusts. Built into the state dir and run the same way the server
-    # binary is (PATH/build preamble mirrors compass-server). SAN defaults
-    # (127.0.0.1,::1,localhost) suffice for the loopback loop, and the binary is
-    # skip-if-present, so a restart never swaps the cert out from under a live
-    # server/runner pair (cert 0644 public anchor, key 0600). Ordered `before`
-    # the compass-server process so the cert/key exist when the network door
-    # opens over them.
+    # the runner trusts. Skip-if-present, so a restart never swaps the cert out
+    # from under a live server/runner pair. Ordered `before` compass-server so
+    # the cert/key exist when the network door opens.
     "dogfood:gen-cert" = {
       exec = ''
         bin="${config.devenv.state}/compass/compass-gen-cert"
@@ -607,41 +409,15 @@ in
     };
 
     # build-cli: build the operator CLI (`./cmd/compass`) into the state dir so a
-    # human driving the box always has a binary matching the deployed source.
-    # Unlike the other four binary builds here, this task does not `exec` what it
-    # produces — there is nothing to run at boot. Those four are each built by the
-    # task or process that immediately execs them (gen-cert and mint-runner-token
-    # as tasks; compass-server and compass-runner as processes), so their freshness
-    # is a side effect of being invoked; the operator CLI is invoked LATER, by a
-    # human over ssh, so nothing would otherwise rebuild it (RIG-3342; the
-    # identical-version blind spot that hid the drift is RIG-3346).
-    # The build is unconditional ON PURPOSE — a present-but-stale binary IS the
-    # bug, so skip-if-present would skip exactly when the build is required.
-    # Ordered `before` the server, like gen-cert: `devenv up` defaults to
-    # `--mode before`, so it schedules only the UPSTREAM closure of the
-    # processes. An `after` edge put this task DOWNSTREAM, and — alone among
-    # these tasks — nothing depends on it, so it fell outside the closure and
-    # never ran at all under a plain `up`. A `before` edge is what actually puts
-    # it in the graph.
-    # THE GATE IS DELIBERATE, AND IT IS STACK-WIDE, NOT CLI-ONLY: a compile
-    # error anywhere in this CLI's import graph fails the task, which fails
-    # `up` — taking compass-server and everything ordered after it
-    # (dogfood:mint-runner-token, compass-runner, compass-ui) down with it, and
-    # leaving only postgres and gen-cert up. Someone doing server- or UI-only
-    # work on a briefly-broken CLI cannot boot the stack. That is accepted: on
-    # a dogfood box a CLI that will not compile should be impossible to ignore,
-    # and a loud failure at boot beats an operator discovering it over ssh.
-    # Recovery is to fix `./cmd/compass`, or to bring processes up individually
-    # (`devenv up --mode single`) while the CLI is broken.
-    # `rm -f "$bin"` first is load-bearing: `go build -o` does NOT write its
-    # destination when the build fails, so without the remove a failed rebuild
-    # leaves the previous binary in place and an operator runs silently-old code
-    # — undetectable while `--version` is a static string (RIG-3346). Removing
-    # first converts that into a self-announcing "no such file"; the cost is a
-    # ~10s window on every `up` where the binary is absent while it rebuilds.
-    # Invocation path is explicit — the state dir is not on PATH, so an operator
-    # runs `"$DEVENV_STATE/compass/compass"` (or the absolute path). `devenv
-    # info` prints that var (`devenv info` itself takes no positional argument).
+    # human always has a binary matching the source. Unlike the four execed
+    # builds, nothing runs this at boot, so it needs a `before` edge to land in
+    # `up`'s upstream-only closure at all (an `after` edge dropped it entirely).
+    # The build is unconditional and `rm -f "$bin"` first: `go build -o` leaves
+    # the old binary on failure, so a failed rebuild would silently run stale code
+    # (undetectable while `--version` is static — RIG-3346); removing first makes
+    # that a self-announcing "no such file". A compile error fails the task, thus
+    # `up`, taking the whole downstream stack with it — accepted so a broken CLI
+    # cannot be ignored (`devenv up --mode single` is the escape hatch).
     "dogfood:build-cli" = {
       exec = ''
         set -euo pipefail
@@ -654,11 +430,9 @@ in
     };
 
     # mint-runner-token: register the `dogfood` runner and write its enrollment
-    # token 0600 (raw, no newline) to the state dir. Reads COMPASS_DATABASE_DSN
-    # (the same DSN the server uses) so its store precedence matches. Runs after
-    # the server is ready — the readiness probe gates on the migrated store,
-    # which mint's store.Open requires. Idempotent: re-registers the same token
-    # without rotating when the file exists.
+    # token 0600 to the state dir. Reads the same DSN the server uses so store
+    # precedence matches. Runs after the server is ready (its probe gates on the
+    # migrated store). Idempotent: re-registers the same token when the file exists.
     "dogfood:mint-runner-token" = {
       exec = ''
         bin="${config.devenv.state}/compass/compass-mint-runner-token"
@@ -675,18 +449,12 @@ in
     };
   }
   // lib.optionalAttrs pkgs.stdenv.isLinux {
-    # agent-image and clean are Linux-only: the podman-backed image build/teardown
-    # targets the Linux dev box.
     # agent-image: build AND load the agent base image into
-    # containers-storage:compass-agent:latest (the ref the runner resolves with
-    # no pull). `container copy` builds then copies; the devenv fork rev is
-    # resolved from agent-image/devenv.lock at runtime (via
-    # tools/toolchain/devenv-cli, `nix run "$src" -- …`) so it names exactly the
-    # fork source the agent-image module set is pinned to — the same source
-    # ci.yml's seed step resolves. Opt-in (per D5): NOT wired `after` into up —
-    # the image closure is large and rebuilding it on every `up` would violate
-    # the never-heavy-on-up constraint. The runner starts fine without the image;
-    # it only resolves it at Provision time.
+    # containers-storage:compass-agent:latest (the ref the runner resolves with no
+    # pull). The devenv fork rev is resolved from agent-image/devenv.lock at
+    # runtime, so it names exactly the source the module set is pinned to. Opt-in
+    # (per D5): NOT wired into up — the image closure is large and rebuilding it
+    # on every `up` would violate the never-heavy-on-up constraint.
     "dogfood:agent-image" = {
       exec = ''
         set -euo pipefail
@@ -706,10 +474,9 @@ in
     };
 
     # clean: tear down the deterministic-named agent containers and sweep the
-    # runner's per-container socket dirs. Opt-in (not wired into up/down):
-    # container names are NamePrefix + agent account id (deterministic) and the
-    # runner's create-dedup is in-memory, so a second session drive after a
-    # restart would hit a `podman create` name collision without this cleanup.
+    # runner's per-container socket dirs. Opt-in (not wired into up/down): the
+    # names are deterministic and the runner's create-dedup is in-memory, so a
+    # second session drive after a restart would hit a `podman create` collision.
     "dogfood:clean" = {
       exec = ''
         set -euo pipefail

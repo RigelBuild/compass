@@ -1,18 +1,12 @@
 //go:build unix
 
-// The agent-lifecycle Server leg: the RelayLifecycleCall resolution edge the
-// Runner forwards each agent-initiated spawn/despawn call into (spawn/despawn
-// record T4). It is the lifecycle sibling of the RelayCommsCall comms leg
-// (relay_comms.go) and shares its trust model exactly.
-//
-// Trust model (the load-bearing security leg). The Runner is a pure forwarder:
-// it sends RelayLifecycleCall{session_id, call} and asserts NO account. The
-// SERVER resolves session_id -> caller agent account from THIS hub's own binding
-// (the same binding RelayCommsCall resolves against) and delegates the call to
-// the LifecycleCaller under that resolved caller account. An unknown, stopped,
-// or reconnect-dropped session fails closed CodeNotFound: never a stale account,
-// never the bootstrap admin. A session_id on the wire selects an account, it
-// never carries one.
+// The agent-lifecycle Server leg: the RelayLifecycleCall resolution edge, sibling
+// of the comms leg, sharing its trust model exactly.
+
+// Trust model (load-bearing security leg): the Runner is a pure forwarder and
+// asserts NO account. The SERVER resolves session_id -> caller account and
+// delegates to the LifecycleCaller under it. Unknown/stopped/dropped session
+// fails closed CodeNotFound — never a stale account, never bootstrap admin.
 package runnerhub
 
 import (

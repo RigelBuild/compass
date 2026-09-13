@@ -299,12 +299,10 @@ func New(cfg Config) (*Fabric, error) {
 		nats.ReconnectHandler(func(nc *nats.Conn) {
 			log.Info("fabric: nats reconnected", "url", nc.ConnectedUrl())
 		}),
-		// The Runner plane's safety argument is that a stalled receiver is
-		// dropped AND reported, with the cursor sweep recovering what was
-		// dropped (see RunnerEventBuffer). nats.go reports a full channel
-		// subscription through the async error callback, and the default
-		// options install none — so without this the one lossy path in the
-		// fabric drops events with no log line, no metric and no error.
+		// The Runner plane's safety argument: a stalled receiver is dropped AND
+		// reported, with the cursor sweep recovering what was dropped. The default
+		// options install no async error callback — so without this the one lossy path
+		// drops events with no log, no metric, no error.
 		nats.ErrorHandler(func(_ *nats.Conn, sub *nats.Subscription, err error) {
 			if sub == nil {
 				log.Warn("fabric: nats async error", "error", err)
@@ -363,9 +361,8 @@ func (f *Fabric) Close() error {
 
 		// Register the CLOSED listener BEFORE Drain: StatusChanged reports only
 		// future transitions and does not replay one that already fired, so a
-		// listener installed after Drain could miss the close entirely. Using
-		// the connection's own status (not a nats.ClosedHandler option) means a
-		// caller's Config.Options cannot overwrite the drain-completion signal.
+		// listener installed after Drain could miss the close entirely. Using the
+		// connection's own status means a caller's Config.Options cannot overwrite it.
 		closed := f.nc.StatusChanged(nats.CLOSED)
 		defer f.nc.RemoveStatusListener(closed)
 
@@ -379,10 +376,9 @@ func (f *Fabric) Close() error {
 			return
 		}
 		// Drain is asynchronous: it returns as soon as the connection enters
-		// DRAINING. Wait for CLOSED so Close does not return mid-flush. Guard
-		// the already-closed case first: if the connection reached CLOSED
-		// between Drain and here, the transition has already fired and the
-		// listener will never see it.
+		// DRAINING. Wait for CLOSED so Close does not return mid-flush. Guard the
+		// already-closed case first: if the connection reached CLOSED between Drain
+		// and here, the transition already fired and the listener will never see it.
 		if f.nc.IsClosed() {
 			return
 		}

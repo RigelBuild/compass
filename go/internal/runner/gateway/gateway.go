@@ -2,20 +2,10 @@
 
 package gateway
 
-// gateway.go is the Runner->Server forward: the AgentGateway.Comms handler an
-// in-container agent reaches over its per-container socket (socket.go). It maps
-// the connection -> the container it belongs to -> the one session bound to that
-// container, then forwards the call to the Server as RelayCommsCall(session_id,
-// call). The Runner resolves NO account and sets NO actor: the Server resolves
-// session_id -> account from its own binding and attributes in-process, fail-
-// closed (transport design T3, Decision #3 / OQ-2).
-//
-// The socket IS the container's identity: one Gateway serves one container's
-// socket, so the container name is fixed at construction, never read off the
-// request. A call arriving before the container's session is bound (socket live
-// at Provision, before Start mints the session) fails closed
-// CodePermissionDenied — never a forward with an empty session id, never a
-// bootstrap-admin-attributed side effect.
+// The Runner->Server forward: the AgentGateway.Comms handler an in-container
+// agent reaches over its per-container socket. Map the connection -> container ->
+// the one bound session, then forward as RelayCommsCall. The Runner sets NO actor
+// — the Server resolves the account, fail-closed; a call before binding is denied.
 
 import (
 	"context"
@@ -133,12 +123,10 @@ type ConversationCommitter interface {
 // container's socket. containerName is the identity the socket structurally
 // carries; sessions resolves it to the bound session; relay forwards the call.
 type Gateway struct {
-	// The transport-consolidation record grew AgentGateway with Publish
-	// (client-stream), PostConversationFrame (unary), and Control
-	// (server-stream). This change overrides Publish + PostConversationFrame on
-	// *Gateway; Control is still served by the embedded Unimplemented handler
-	// until the control lane overrides it. Embedding keeps Gateway satisfying the
-	// interface across the telemetry-ingest/control-lane split.
+	// This overrides Publish + PostConversationFrame on *Gateway; Control is still
+	// served by the embedded Unimplemented handler until the control lane overrides
+	// it. Embedding keeps Gateway satisfying the interface across the
+	// telemetry-ingest/control-lane split.
 	compassv1internalconnect.UnimplementedAgentGatewayHandler
 	containerName string
 	sessions      SessionForContainer
@@ -165,60 +153,32 @@ type Gateway struct {
 	events  EventRelay
 	control ControlRouter
 	// baseCtx is the socket's lifetime context — it lives as long as the socket
-	// server (Serve creates it; SocketListener.Close cancels it at container
-	// teardown), NOT any one agent request. The shared upstream PublishEvents
-	// stream is opened against it (acquirePublisher), so the stream's life is the
-	// socket's, never a single handler invocation: binding it to a unary
-	// PostConversationFrame's request context would tear the shared stream down
-	// the instant that unary returned (net/http cancels a request context on
-	// handler return), wedging every later forward. Stored on the struct because
-	// the handler methods that lazily open the stream receive only their own
-	// request contexts; there is no other channel for the socket-lifetime scope.
+	// server, NOT any one agent request. The shared upstream PublishEvents stream
+	// is opened against it, so binding it to a unary request context would tear the
+	// stream down when that unary returned, wedging every later forward.
 	//nolint:containedctx // socket-lifetime scope for the shared upstream stream; the per-request handler ctx is the wrong lifetime (see field doc)
 	baseCtx context.Context
-	// pub is the ordered per-session publisher driven ONLY by Publish (the
-	// loss-tolerant telemetry-ingest spine). Durable conversation frames do NOT
-	// ride it: they leave this spine and commit request/response via
-	// CommitConversationFrame (post_conversation_frame.go), so pub stamps a
-	// monotonic RunnerSeq for Publish traffic alone. It is created lazily by the
-	// first Publish forward, guarded by pubMu for that init race, for the swap
-	// back to nil when Publish closes the stream, and for the session-change
-	// reset (a publisher bound to a prior session is replaced when the container
-	// rebinds to a new session across Stop→Start).
-	//
-	// seq is the RunnerSeq counter, and it lives HERE rather than on the
-	// publisher because a publisher is replaceable within one Gateway: the
-	// session-change reset in acquirePublisher closes an orphan bound to a
-	// stopped session and opens a fresh one. A counter owned by the publisher
-	// restarts at 0 on that swap, which is silently worse than a gap:
-	// runner.proto states runner_seq is monotonic across the Runner's whole event
-	// stream, and the hub's detector only flags seq > lastSeq+1
-	// (runnerhub/hub.go:230), so replayed low seqs are ACCEPTED and in-transit
-	// loss inside the replayed range stops being detectable. Hoisting it to the
-	// socket-lifetime Gateway makes the sequence survive every publisher
-	// replacement.
-	//
-	// Scope is per-Runner-link, not yet truly per-Runner, and the hazard is worth
-	// stating precisely: relay.go's eventPublisher owns a SECOND counter, and both
-	// feed the hub's one high-water mark (runnerhub/hub.go:229-236). So gap
-	// detection is meaningful only while exactly one of them is live — a live
-	// stdout relay alongside a live Gateway would have the two counters corrupt
-	// each other's detection. This path replaced the stdout relay for gateway
-	// traffic (see publisher.go's header), so that is the case today; unifying the
-	// two counters is T9's multi-session work.
+	// pub is the ordered per-session publisher driven ONLY by Publish. Durable
+	// conversation frames do NOT ride it; it stamps a monotonic RunnerSeq for
+	// Publish traffic alone. Created lazily, guarded by pubMu for the init race,
+	// the close-to-nil swap, and the session-change reset across Stop→Start.
+
+	// seq lives HERE, not on the replaceable publisher: a per-publisher counter
+	// restarts at 0 on a swap, silently worse than a gap — runner_seq is monotonic
+	// across the whole event stream and the hub only flags seq > lastSeq+1, so
+	// replayed low seqs are accepted and loss in that range stops being detectable.
+
+	// Scope is per-Runner-link: relay.go's eventPublisher owns a SECOND counter and
+	// both feed the hub's one high-water mark, so gap detection is meaningful only
+	// while exactly one is live. This path replaced the stdout relay for gateway
+	// traffic, so that holds today; unifying the two is T9.
 	pubMu sync.Mutex
 	pub   *sessionPublisher
 	seq   seqCounter
-	// committedKeys is the advisory in-process at-most-once fast-path for durable
-	// PostConversationFrame idempotency: a key seen committed here short-circuits
-	// a retry without a redundant upstream forward. It is NOT the durability
-	// boundary — that is the atomic commit at the comms Message store keyed on the
-	// same idempotency_key (store AppendMessage clientRequestID), which survives a
-	// Runner crash that loses this cache. Bounded (LRU, committedKeysMax) so a
-	// long-lived session emitting many distinct-key durable frames cannot grow it
-	// without limit — an evicted key merely costs one redundant re-forward the
-	// store dedups, never a correctness loss. The LRU is internally synchronized,
-	// so it needs no separate mutex.
+	// committedKeys is the advisory in-process fast-path for durable frame
+	// idempotency; a key seen here short-circuits a retry. It is NOT the durability
+	// boundary — the atomic Message-store commit on the same idempotency_key is,
+	// and survives a crash. Bounded LRU; eviction costs one redundant re-forward.
 	committedKeys *expirable.LRU[string, struct{}]
 }
 
@@ -297,10 +257,9 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // listener's Close tears the socket down at container teardown.
 func Serve(ctx context.Context, path, containerName string, deps Deps) (*SocketListener, error) {
 	// The socket-lifetime context: it outlives any one agent request and is
-	// cancelled when the listener closes at container teardown (listenAgentSocket
-	// hands socketCancel to the listener). The shared upstream PublishEvents
-	// stream is opened against it, so a PostConversationFrame unary that first
-	// opens the stream does not tie the stream's life to its own request.
+	// cancelled when the listener closes at container teardown. The shared upstream
+	// PublishEvents stream is opened against it, so a PostConversationFrame unary
+	// that opens the stream does not tie the stream's life to its own request.
 	socketCtx, socketCancel := context.WithCancel(ctx)
 	mux := http.NewServeMux()
 	g := NewGateway(socketCtx, containerName, deps)

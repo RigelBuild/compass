@@ -1,10 +1,9 @@
 package linearagent
 
 // Unit tests for the Linear data-change webhook arm: Issue/Comment payloads ->
-// forge.ForgeEvent. Covers the T2 Linear test cycle (design.md:660-674): Issue
-// create -> OPENED; Issue update -> STATE iff updatedFrom shows a workflow-state
-// change, else UPDATE; Comment create -> COMMENT; the Issue payload's project id
-// lands in Project; remove actions -> ok=false; StripOwner applied to bodies.
+// forge.ForgeEvent (T2). Issue create -> OPENED; Issue update -> STATE iff
+// updatedFrom shows a workflow-state change else UPDATE; Comment -> COMMENT;
+// project id lands in Project; remove -> ok=false; StripOwner applied to bodies.
 
 import (
 	"encoding/json"

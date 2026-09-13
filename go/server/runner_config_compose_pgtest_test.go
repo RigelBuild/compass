@@ -3,31 +3,9 @@
 package server
 
 // Whole-flow composition of the Server->Runner fleet-config delivery seam: a
-// config bundle PUT into the store of record must stream back out over the
-// PRODUCTION RunnerService door the way a live Runner fetches it. This is the
-// wiring `buildNetworkServer` owns — it constructs the runnerhub handler and
-// decides whether the config surface is served — and no suite on main composes
-// it end to end.
-//
-// The runnerhub package's own FetchAgentConfig wire tests (config_fetch_test.go)
-// mount the handler with a FAKE config store via NewMountedHandler directly; they
-// prove the handler streams a bundle when handed a store, but never that
-// buildNetworkServer hands it the REAL *store.Store. So a server built with the
-// config store dropped (configStore == nil at the mount site) fails
-// CodeFailedPrecondition — "no config surface" — and every agent provisions with
-// no materialized config (no model provider, no skills), while every handler-level
-// test stays green. This test closes exactly that gap: it drives the real serving
-// path (Serve -> buildDoors -> buildNetworkServer, --listen + TLS), PUTs a bundle
-// through the store, and dials FetchAgentConfig over the served RunnerService door
-// with a real minted Runner token. If buildNetworkServer ever stops wiring the
-// config store into the runner door, the reassembled-bundle assertion reddens.
-//
-// Store-gated (Serve opens the store; PutAgentConfig writes the bundle row), so it
-// lives in the `pgtest` lane behind the shared harness. It reuses
-// network_door_test.go's TLS + door helpers (writeSelfSignedCert, freeLoopbackAddr,
-// serveInBackground, waitServing) and runner_enroll_compose_pgtest_test.go's
-// TLS Runner HTTP client. White-box (package server) so it drives Serve through the
-// unexported serving path the sibling network-door pgtest tests use.
+// bundle PUT into the store must stream back over the PRODUCTION RunnerService
+// door. No suite on main composes this, so it drives the real serving path and
+// reddens if buildNetworkServer ever drops the config store from the runner door.
 
 import (
 	"archive/tar"

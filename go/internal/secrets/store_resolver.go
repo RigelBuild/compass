@@ -1,11 +1,9 @@
 package secrets
 
-// StoreResolver is the DB-backed user-secret resolver (record T3/A4). Unlike
-// SpecResolver it implements NO interface: its write methods (Upsert/Remove)
-// carry an actor plus a scope coordinate the four-method Resolver never had, and
-// its read (ResolveFor) is scoped to one agent — so a shared interface would be
-// weightless (record A4/A9). It owns the crypto: the store sees only ciphertext
-// and never decrypts, keeping store a leaf (secrets → store, no cycle).
+// StoreResolver is the DB-backed user-secret resolver. Unlike SpecResolver it
+// implements NO interface: its write methods carry an actor plus scope and its
+// read is scoped to one agent, so a shared interface would be weightless. It owns
+// the crypto: the store sees only ciphertext and never decrypts (secrets → store).
 
 import (
 	"context"

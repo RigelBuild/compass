@@ -1,35 +1,7 @@
-// `compass-agent` — the in-container entrypoint the Runner execs.
-//
-// The Runner starts the agent with a bare `compass-agent` argv and no flags
-// (`go/internal/runner/relay.go` `agentCommand`), so this process takes its
-// entire configuration from the environment it is launched into:
-//
-//   - the Runner socket at a FIXED path — `/run/compass/agent.sock`, bind-mounted
-//     per container (`internal/runner/host.go:33`), chosen "so the agent needs no
-//     per-session configuration" (`host.go:28-29`);
-//   - the model selector from `COMPASS_MODEL`;
-//   - the block-0 role selector from `COMPASS_ROLE`, naming a
-//     `prompts/<role>/SYSTEM.md` in the mount that REPLACES the agent's default
-//     block-0 (delivered as `customSystemPrompt`);
-//   - the persona identity overlay from `COMPASS_PERSONA`, appended AFTER the
-//     agent's default system prompt (or after the role block-0 when both set);
-//   - the provider credential from the 0600 `$HOME/.compass/auth-seed.json` the
-//     Runner's materializer writes (design §T5);
-//   - the materialized tool/MCP secrets from the 0600 `$HOME/.compass/env` the
-//     Runner's materializer writes as `KEY=VALUE` lines (RIG-1327 T5), sourced
-//     into the process environment before the session is built.
-//
-// It composes three things and runs them: an `AgentSession` from
-// `createAgentSession` (which loads extensions/MCP/skills/tools/the model
-// registry/auth), the socket carrier
-// (`createSocketFrameSink` / `createSocketControlSource`), and
-// `CompassAgent` over both.
-//
-// Structure follows the repo's construction/execution split: every decision is a
-// pure exported function tested in `cli.test.ts`, and `main()` is the thin
-// composition that performs IO. `main` is itself tested there over the `MainDeps`
-// seam — the two unfakeable constructors (session, socket carrier) are
-// injectable, everything between them is the real thing.
+// `compass-agent` — the in-container entrypoint the Runner execs with a bare argv and no
+// flags, so it takes its whole configuration from the environment (fixed Runner socket,
+// COMPASS_MODEL/ROLE/PERSONA, the 0600 auth-seed + env files). Every decision is a pure
+// exported function tested in cli.test.ts; main() is the thin IO composition over MainDeps.
 
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
@@ -643,27 +615,20 @@ export async function main(
 		);
 	}
 
-	// Materialized tool/MCP secrets (RIG-1327 T5): the Runner writes a 0600
-	// aggregate KEY=VALUE file inside the container; source it into the process
-	// environment so createAgentSession's extensions/MCP/tools — and any
-	// subprocess they spawn — inherit the secrets. The merge target is
-	// `process.env`, NOT the `env` param (that is only compass-agent's own config
-	// reader): createAgentSession reads process.env, so the secrets must land
-	// there. File wins for the keys it defines; `HOME` and the whole `COMPASS_*`
-	// control-var namespace are never clobbered (filtered parse-side).
+	// Materialized tool/MCP secrets (RIG-1327 T5): source the Runner's 0600 aggregate
+	// KEY=VALUE file into process.env — NOT the `env` param — so createAgentSession's
+	// extensions/MCP/tools and their subprocesses inherit them. File wins per key it
+	// defines; HOME and the COMPASS_* control namespace are never clobbered.
 	for (const [key, value] of Object.entries(
 		await readEnvFile(envFilePath(home)),
 	)) {
 		process.env[key] = value;
 	}
 
-	// Derive LITELLM_MCP_URL from the just-sourced LITELLM_BASE_URL (RIG-2674):
-	// Compass's keyring delivers the base URL + API key but not the derived MCP
-	// URL, so the fleet mcp.json's `${LITELLM_MCP_URL}` would expand empty and the
-	// LiteLLM MCP server would fail to connect. Derive it here — after the env
-	// merge, before the MCP connect below — reading from process.env (where the
-	// merge landed the base). An explicitly-delivered LITELLM_MCP_URL wins (same
-	// file-defines-it posture as the merge); we only fill the gap.
+	// Derive LITELLM_MCP_URL from the just-sourced LITELLM_BASE_URL (RIG-2674): the
+	// keyring delivers base URL + key but not the derived MCP URL, so mcp.json's
+	// `${LITELLM_MCP_URL}` would expand empty. Fill the gap after the env merge; an
+	// explicitly-delivered value wins.
 	if (!process.env.LITELLM_MCP_URL) {
 		const mcpUrl = deriveLitellmMcpUrl(process.env);
 		if (mcpUrl) process.env.LITELLM_MCP_URL = mcpUrl;
@@ -675,18 +640,16 @@ export async function main(
 	// already normalized a blank value to undefined.
 	const persona = resolvePersona(env);
 
-	// The block-0 role selector; undefined when unset or whitespace-only. When
-	// set, `main` reads its `prompts/<role>/SYSTEM.md` from the mount (below) and
-	// injects it as `customSystemPrompt` — REPLACING OMP's default block-0. The
-	// resolve here only yields the LABEL; the file lookup + fallback live below,
-	// after the mount is loaded.
+	// The block-0 role selector; undefined when unset/whitespace. When set, `main`
+	// reads its `prompts/<role>/SYSTEM.md` and injects it as `customSystemPrompt`,
+	// REPLACING OMP's default block-0. This resolve yields only the LABEL; file
+	// lookup + fallback live below.
 	const role = resolveRole(env);
 
-	// The workdir the session is keyed to. `||`, not `??`: an empty or
-	// whitespace-only COMPASS_WORKDIR is unset, not a valid cwd. The Runner sets
-	// it unconditionally (relay.go `execSpec`), so a caller that builds an
-	// AgentEnv with a blank Workdir would otherwise hand bun `cwd: ""` — which
-	// does not throw, it silently loads the wrong tree.
+	// The workdir the session is keyed to. `||`, not `??`: an empty/whitespace
+	// COMPASS_WORKDIR is unset, not a valid cwd. The Runner always sets it, so a
+	// caller building an AgentEnv with a blank Workdir would otherwise hand bun
+	// `cwd: ""` — which silently loads the wrong tree instead of throwing.
 	const cwd = env.COMPASS_WORKDIR?.trim() || process.cwd();
 
 	// The socket carrier + sink come FIRST: the tee storage backend teems every
@@ -697,18 +660,15 @@ export async function main(
 	);
 	const sink = createSocketFrameSink(transport);
 
-	// The tee session storage, wrapped + initialize()d (its scan of the session
-	// dir must complete before SessionManager.create so synchronous resume
-	// lookups see the keyspace). SESSION_DIR is the SDK-default HOME-relative dir
-	// for this cwd — checkout-independent (anchored on the agent's scoped $HOME,
-	// not a populated repo; DL-090 no-auto-clone), mirroring the auth-seed
-	// anchoring above.
+	// The tee session storage, wrapped + initialize()d (its scan of the session dir
+	// must finish before SessionManager.create so synchronous resume lookups see the
+	// keyspace). SESSION_DIR is the SDK-default HOME-relative dir for this cwd —
+	// checkout-independent (anchored on the agent's scoped $HOME; DL-090 no-auto-clone).
 	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
-	// Resume (RIG-1570): T8 exports COMPASS_RESUME_SESSION_FILE on the agent exec.
-	// Resolve it BEFORE the storage is built so it can be threaded into the tee
-	// backend and indexed at initialize()→loadIndex() — the resume file lives at
-	// an absolute path OUTSIDE sessionDir (Option B, T2), so setSessionFile's
-	// statSync gate (indexed-session-storage.ts:177) would ENOENT it otherwise.
+	// Resume (RIG-1570): T8 exports COMPASS_RESUME_SESSION_FILE. Resolve it BEFORE the
+	// storage is built so it can be threaded into the tee backend and indexed at
+	// initialize()→loadIndex() — the resume file lives at an absolute path OUTSIDE
+	// sessionDir (Option B, T2), else setSessionFile's statSync gate would ENOENT it.
 	const resumeFile = env.COMPASS_RESUME_SESSION_FILE?.trim();
 	const { storage } = await (
 		deps.createSessionStorage ?? createTeeSessionStorage
@@ -717,23 +677,16 @@ export async function main(
 	// do NOT await. The wrapped IndexedSessionStorage is the 3rd arg.
 	const manager = SessionManager.create(cwd, sessionDir, storage);
 
-	// When set, load it through the SDK-native path (setSessionFile → drain →
-	// loadEntriesFromFile → migrate → resolveBlobRefs → apply) BEFORE creating
-	// the session — reads flow through the tee backend's readFull/loadIndex, no
-	// replay code. The reconstructed body is authoritative; the load never tees.
-	// The resume file is now also indexed at initialize() (above) so this
-	// statSync gate passes for a file outside sessionDir.
+	// When set, load it through the SDK-native path (setSessionFile → drain → migrate
+	// → resolveBlobRefs → apply) BEFORE creating the session; reads flow through the
+	// tee backend, no replay code. The reconstructed body is authoritative; the load
+	// never tees. The resume file is now indexed at initialize() so this gate passes.
 	if (resumeFile) await manager.setSessionFile(resumeFile);
 
-	// The Runner-mounted agent-config bundle (design §CD-3): read the mount and
-	// map it to the createAgentSession option surfaces below. Unconfigured — no
-	// `current` symlink, or the mount absent — yields every field empty, so the
-	// session constructs with NONE injected. process.env is already sourced
-	// (above), so a connected MCP server inherits its credentials (credential-
-	// free configs by MVP rule; the reader resolves none).
-	// The test seam wins when set (a tempdir fixture); otherwise resolve the
-	// `COMPASS_AGENT_CONFIG_MOUNT_PATH` env override, defaulting to the frozen
-	// mount path — the host tier supplies the override, the container tiers do not.
+	// The Runner-mounted agent-config bundle (design §CD-3): read the mount and map
+	// it to the createAgentSession surfaces below; unconfigured yields every field
+	// empty, so NONE is injected. Test seam wins when set; else the
+	// COMPASS_AGENT_CONFIG_MOUNT_PATH override, defaulting to the frozen mount path.
 	const configMount = deps.configMount ?? resolveConfigMountPath(env);
 	const mounted = await loadMountedConfig(configMount);
 	// The bundle hash, for one observability line. Non load-bearing: absent → no
@@ -743,21 +696,16 @@ export async function main(
 	}
 
 	// The role's block-0 prompt (RIG-1732 T10): when a role is set, read its
-	// `prompts/<role>/SYSTEM.md` from the same mount and inject it below as
-	// `customSystemPrompt` — REPLACING OMP's default block-0. The read is
-	// tolerant (absent/empty file → undefined), so a set-but-unshipped role
-	// FALLS BACK to today's behavior (no customSystemPrompt) rather than
-	// injecting an empty replace. The mount is read through `current/`, the
-	// symlink the Runner flips, so a ConfigVersion flip stays live. Persona still
-	// appends AFTER this block (record §OQ-8) — see the createSession call.
+	// `prompts/<role>/SYSTEM.md` from the mount and inject it below as
+	// `customSystemPrompt`, REPLACING OMP's default block-0. Tolerant read (absent/
+	// empty → undefined) so a set-but-unshipped role falls back to the default block-0.
 	const rolePrompt = role
 		? await readMountedRolePrompt(currentConfigDir(configMount), role)
 		: undefined;
 	if (role && rolePrompt === undefined) {
-		// A role was selected but its prompt did not materialize (absent, empty, or
-		// unreadable file). The boot still degrades gracefully to the default
-		// block-0 above, but a role-without-shipped-prompt is an operator config
-		// gap the server-side taxonomy cannot catch (it validates the label, never
+		// A role was selected but its prompt did not materialize. Boot degrades to
+		// the default block-0, but a role-without-shipped-prompt is an operator
+		// config gap the server taxonomy cannot catch (it validates the label, not
 		// the bundle), so surface it loudly rather than silently.
 		console.error(
 			`[compass-agent] role ${role} is set but no prompt was found at prompts/${role}/SYSTEM.md — falling back to the default block-0`,
@@ -765,22 +713,9 @@ export async function main(
 	}
 
 	// Fleet OMP config passthrough (RIG-1678, design compass-agent-config-passthrough
-	// §CP-1/CP-2/CP-4), applied AFTER loadMountedConfig and BEFORE
-	// createAgentSession. Matt's pivot: the mount stays the delivery vehicle, but
-	// the agent CONSUMES it by OBJECT INJECTION wherever the runtime SDK (16.5.2)
-	// exposes a `createAgentSession` object seam — the env-var/symlink paths the
-	// original design named are inert or absent against this SDK:
-	//   - settings (CP-1): built into a `Settings` overlay here, injected as
-	//     `settingsManager` below (the SDK reads `configFiles`, NOT PI_CONFIG_FILES).
-	//   - rules (CP-4) + AGENTS.md (CP-2): injected as `rules` / `contextFiles`
-	//     objects below (from the reader), each short-circuiting SDK discovery.
-	// Only the two members with NO object seam stay filesystem-based, symlinked
-	// into $HOME/.omp/agent so the SDK's getAgentDir()-anchored load finds them,
-	// each pointing through the mount's `current/` so a ConfigVersion flip stays
-	// live:
-	//   - agents (CP-4): subagent defs, discovered by walking the agent dir.
-	//   - models.yml (CP-4): loaded by the ModelRegistry (object seam is a gap).
-	// All real-FS over the injectable mount, so MainDeps needs no new member.
+	// §CP-1/CP-2/CP-4): the mount is the delivery vehicle but the agent CONSUMES it by
+	// OBJECT INJECTION at the createAgentSession seams (settings/rules/contextFiles).
+	// Only agents + models.yml (no seam) stay FS-based, symlinked through current/.
 	const fleetSettings = await buildFleetSettings(
 		cwd,
 		agentDirPath(home),
@@ -790,24 +725,16 @@ export async function main(
 		ensureAgentDirLink(home, "agents", mounted.agentsDir),
 		ensureAgentDirLink(home, "models.yml", mounted.modelsPath),
 	]);
-	// Connect the mount's MCP servers now, before construction, so their tools
-	// reach createAgentSession as customTools. `main` OWNS the manager — the SDK
-	// never disconnects a manager it did not build — so its `disconnect` is added
-	// to the teardown finally below.
+	// Connect the mount's MCP servers now, before construction, so their tools reach
+	// createAgentSession as customTools. `main` OWNS the manager — the SDK never
+	// disconnects a manager it did not build — so its `disconnect` is in the teardown
+	// finally below.
 	const mcp = await (deps.connectMcp ?? connectMountedMcp)(cwd, mounted.mcp);
 
-	// Fleet AGENTS.md compose (CP-2, Matt-decided): the fleet AGENTS.md is a
-	// GLOBAL/user-level working-conventions file, so it must COMPOSE with — never
-	// REPLACE — the checkout's own project-level AGENTS.md chain. Providing
-	// `contextFiles` short-circuits the SDK's discovery entirely (sdk.ts:1177-1179
-	// → discoverContextFiles skipped), and that discovery is PROJECT scope only
-	// (the cwd walk-up, sdk.ts:136 loadProjectContextFiles alias). So when the
-	// fleet file is present we run that same discovery OURSELVES and prepend the
-	// fleet global: it goes FIRST (least prominent — discoverContextFiles sorts
-	// farther-from-cwd first so closer files stay last/more-prominent, and a
-	// user-level global is less prominent than any project file). When ABSENT we
-	// OMIT the key so the SDK runs its own discovery and project files load
-	// automatically — identical effect, simpler.
+	// Fleet AGENTS.md compose (CP-2, Matt-decided): the fleet AGENTS.md is a global
+	// file that must COMPOSE with — never REPLACE — the checkout's project chain.
+	// `contextFiles` short-circuits SDK discovery, so we run that discovery ourselves
+	// and prepend the fleet global (least prominent); absent → omit so the SDK does it.
 	const contextFiles = mounted.agentsMd
 		? [
 				mounted.agentsMd,
@@ -815,28 +742,19 @@ export async function main(
 			]
 		: undefined;
 
-	// Fleet rules compose (CP-4, Matt-decided): the fleet rules/ is a GLOBAL/user-level
-	// set that must COMPOSE with — never REPLACE — the checkout's own discovered rules.
-	// Providing `rules` short-circuits the SDK's rule discovery entirely
-	// (sdk.ts:1434-1436), so we run that discovery OURSELVES and prepend the fleet
-	// rules: they go FIRST (least prominent), the checkout's discovered rules follow.
+	// Fleet rules compose (CP-4, Matt-decided): the fleet rules/ is a global set that
+	// must COMPOSE with — never REPLACE — the checkout's discovered rules. `rules`
+	// short-circuits SDK rule discovery, so we run it ourselves and prepend the fleet
+	// rules (least prominent), checkout rules following.
 	const discoveredRules = (
 		await loadCapability<Rule>(ruleCapability.id, { cwd })
 	).items;
 	const rules = [...mounted.rules, ...discoveredRules];
 
-	// Loop OpenTelemetry activation (design
-	// docs/designs/observability/compass-agent-loop-otel/design.md T1). Gated HARD on
-	// an OTLP endpoint being configured: with none set this block is skipped
-	// whole, so process.env is UNMUTATED and the createAgentSession path below is
-	// bit-identical to a no-telemetry build (Global Constraints, "Off by default";
-	// F2 — an unconditional env write would leak to every tool subprocess). The
-	// order is load-bearing: the loop provider reads OTEL_SERVICE_NAME /
-	// OTEL_RESOURCE_ATTRIBUTES at registration time, so the env defaults must be
-	// in place BEFORE init(). The session id the manager owns (fresh-minted, or
-	// the resumed header's id after setSessionFile above) is the shared
-	// cross-signal join key (Decision 3a): APPENDED to OTEL_RESOURCE_ATTRIBUTES,
-	// never clobbering a deployer-set value.
+	// Loop OpenTelemetry activation (design compass-agent-loop-otel T1). Gated HARD on
+	// an OTLP endpoint: unset → skipped whole, process.env UNMUTATED, bit-identical to
+	// no-telemetry. Order matters: the provider reads OTEL_* at registration so env
+	// defaults must precede init(). Session id is the join key (3a), APPENDED not clobbered.
 	const telemetryHooks = deps.telemetry ?? defaultTelemetryHooks;
 	if (isTelemetryEndpointConfigured(process.env)) {
 		process.env.OTEL_SERVICE_NAME ??= "compass-agent";
@@ -848,66 +766,26 @@ export async function main(
 		await telemetryHooks.init();
 	}
 
-	// Trace-continuity bridge (design
-	// docs/designs/observability/compass-agent-message-trace-continuity/design.md §T2):
-	// built ONLY on the same enabled path that registered the loop provider +
-	// context manager above — the parentage the bridge installs presupposes that
-	// registration. When telemetry is off, `undefined` flows to both the session
-	// telemetry option and the agent's `tracer` dep, so no hook is installed and
-	// every agent-side trace call no-ops (bit-identical off). The full
-	// `TraceBridge` (with the `Span`-typed hook members) lives here in the cli.ts
-	// composition; CompassAgent receives only its narrow `TurnTracer` facet.
+	// Trace-continuity bridge (design compass-agent-message-trace-continuity §T2):
+	// built ONLY on the same enabled path that registered the loop provider above —
+	// the parentage it installs presupposes that registration. Telemetry off ⇒
+	// undefined flows to both seams, every agent-side trace call no-ops (bit-identical).
 	const traceBridge: TraceBridge | undefined = telemetryHooks.isEnabled()
 		? createTraceBridge()
 		: undefined;
 
-	// Native comms + lifecycle tools (RIG-1741 gap-1). The existing `transport`
-	// is reused directly: `RunnerTransport` structurally satisfies both
-	// `CommsTransport` and `LifecycleTransport` (each is a one-method subset —
-	// comms.ts:74 / lifecycle.ts), so the brokers wrap it with no adapter. Their
-	// tools are merged into `customTools` below, flowing through the same
-	// customTools→state.tools→#withNatives natives path as the MCP tools — so the
-	// container agent's `comms_post_message` / `agents_spawn_peer` emissions
-	// resolve as session natives rather than "unknown tool".
-	// The comms broker also reads the turn trigger (RIG-2894): the full
-	// `TraceBridge` satisfies the broker's narrow `TurnTriggerReader` structurally,
-	// so a post stamps `trigger_traceparent` from the current turn's single
-	// parent. Telemetry off ⇒ `traceBridge` undefined ⇒ every post stamps ""
-	// (bit-identical to before). Only the comms broker takes it — the others
-	// carry no posts.
+	// Native comms + lifecycle tools (RIG-1741 gap-1): `transport` (RunnerTransport)
+	// structurally satisfies both broker transports, so they wrap it with no adapter
+	// and their tools merge into customTools below. The comms broker also reads the
+	// turn trigger (RIG-2894) via TraceBridge to stamp trigger_traceparent (off ⇒ "").
 	const commsBroker = new CommsBroker(transport, traceBridge);
 	const lifecycleBroker = new LifecycleBroker(transport);
 	const forgeBroker = new ForgeBroker(transport);
 	const boardBroker = new BoardBroker(transport);
-	// The comms/lifecycle natives are authored as `AgentTool` (pi-agent-core)
-	// because CompassAgent's `#withNatives` mechanism (agent.ts) operates on
-	// `AgentTool[]`. `createAgentSession`'s `customTools` wants
-	// `(CustomTool | ToolDefinition)[]`, and the SDK exposes no dedicated native
-	// seam, so we register the `AgentTool[]` through `customTools` with a single
-	// documented assertion. The assertion to the `ToolDefinition` arm is
-	// TYPE-sound: the only compile-time gap is generic variance on the OPTIONAL
-	// renderCall/renderResult (`AgentTool` TTheme=unknown vs `ToolDefinition`
-	// Theme/Component) — fields these headless tools never define.
-	//
-	// RUNTIME mechanism (subtle — do not "simplify" the invariant below away):
-	// an `AgentTool` object literal carries no `__isToolDefinition` marker, so
-	// the SDK classifies it as a CustomTool (`isCustomTool`, sdk.ts:876) and runs
-	// it through `customToolToDefinition` (sdk.ts:915) — NOT the verbatim
-	// pass-through arm. That wrapper invokes `execute` with the CustomTool arg
-	// convention `(toolCallId, params, onUpdate, ctx, signal)` (sdk.ts:927),
-	// whereas `AgentTool.execute` is `(toolCallId, params, signal, onUpdate, ctx)`
-	// (pi-agent-core types.ts:612-616) — so args 3-5 arrive SHUFFLED. This is
-	// safe ONLY because every native's `execute` body reads solely
-	// `(toolCallId, params)` and ignores args 3-5 (comms.ts / lifecycle.ts). A
-	// test in cli.test.ts is a TRIPWIRE on the likely regression: it pins each
-	// native's `execute.length === 2`, so adding a plain positional 3rd param
-	// (`signal`) to consume a shuffled arg reddens it. The pin is not a total
-	// guard — a rest (`...args`) or defaulted (`signal = …`) param reads arg 3
-	// while keeping `.length === 2` — so the load-bearing rule is this invariant
-	// itself, not the arity check. If a native ever needs its AbortSignal or
-	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
-	// SDK must gain a real native-registration path, or the tool must be a true
-	// `ToolDefinition`. Do not consume args 3-5 here.
+	// The comms/lifecycle natives are AgentTool, registered via customTools with one
+	// type-sound assertion to ToolDefinition. RUNTIME invariant (do NOT simplify): the
+	// SDK runs them as CustomTools, so execute receives args 3-5 SHUFFLED — safe ONLY
+	// because every native reads solely (id, params); cli.test.ts pins execute.length===2.
 	const nativeTools = [
 		...createCommsTools(commsBroker),
 		...createLifecycleTools(lifecycleBroker),
@@ -926,108 +804,40 @@ export async function main(
 		// The tee-backed manager, so every session write teems upstream and the
 		// resumed history (if any) is already loaded.
 		sessionManager: manager,
-		// The Runner-mounted agent-config (design §CD-3). Each field is passed
+		// The Runner-mounted agent-config (design §CD-3): each field passed
 		// UNCONDITIONALLY, empty when unconfigured, so "unconfigured → none" is a
-		// guarantee, not an accident of discovery:
-		//   - `skills` provided (even `[]`) SKIPS discovery entirely
-		//     (sdk.ts:1417) — no ambient skills leak in.
-		//   - `additionalExtensionPaths` are concrete entry FILES the reader
-		//     enumerated; `disableExtensionDiscovery: true` passes them verbatim
-		//     (sdk.ts:695) and runs no native/plugin/cwd discovery.
-		//   - `customTools` are the connected MCP tools; `enableMCP: false` stops
-		//     the SDK ALSO discovering a cwd `.mcp.json`. A provided `mcpManager`
-		//     would NOT surface its tools (sdk.ts:1739/1818), so we pass tools.
-		// Scope: the guarantee covers the mount's three surfaces (skills,
-		// extensions, MCP). It does NOT suppress cwd custom-TOOL discovery —
-		// sdk.ts:1861 runs discoverCustomToolPaths([], cwd) unconditionally, so a
-		// `.omp/tools/` tree in the workdir still loads. Orthogonal to this
-		// mount contract; noted so nobody over-reads it as "zero ambient tools".
+		// guarantee (skills [] skips discovery; extensions verbatim; enableMCP:false).
+		// Scope covers skills/extensions/MCP, NOT cwd custom-TOOL discovery.
 		skills: mounted.skills,
 		additionalExtensionPaths: mounted.additionalExtensionPaths,
 		disableExtensionDiscovery: mounted.disableExtensionDiscovery,
-		// The connected MCP tools MERGED with the native comms/lifecycle tools
-		// (RIG-1741 gap-1, constructed above): all reach the session as natives via
-		// the same customTools→state.tools→#withNatives path, so the container
-		// agent can spawn peers and post to channels.
-		//
-		// `loadMode: "essential"` is REQUIRED, not decorative, and it is stamped
-		// on the WHOLE merged array — natives AND mounted-MCP tools. SDK 18.x
-		// added progressive tool disclosure: at an adapter boundary an omitted
-		// `loadMode` defaults to `"discoverable"`
-		// (`defaultLoadModeForToolName`, pi-coding-agent
-		// src/tools/essential-tools.ts:43-45), which registers the tool but keeps
-		// it OUT of the model's top-level callable schema. `MCPManager.getTools()`
-		// never sets `loadMode`, so stamping only the natives would silently
-		// demote every mounted-MCP tool — and the `xd://` device transport does
-		// NOT recover them here, because it is gated on a top-level `write` tool
-		// this headless session does not request (`xdevEnabled`, pi-coding-agent
-		// src/tools/index.ts:772). A demoted MCP tool would therefore be neither
-		// top-level callable NOR xd://-reachable: registered and unreachable,
-		// which is exactly the silent-no-surface failure the RIG-1741/CD-3 mount
-		// contract exists to prevent. Stamped once here, at the single
-		// registration seam, rather than in the four native factories.
-		//
-		// Stamped IN PLACE, never by copying. `mcp.tools` are SDK class instances
-		// (`MCPTool`, pi-coding-agent src/mcp/tool-bridge.ts:492) whose
-		// `execute`/`renderCall`/`renderResult` live on the PROTOTYPE, and its
-		// sibling `DeferredMCPTool` (:604) additionally holds ECMAScript
-		// `#private` state. Neither a spread nor an `Object.create` clone can
-		// carry that: a spread drops the prototype methods outright, and a clone
-		// keeps the methods but re-homes `this`, so a `#private` read throws
-		// `Cannot access invalid private field` at the model's FIRST call — a
-		// tool the model can see and cannot use, which is worse than a demoted
-		// one. `loadMode` is a mutable field on `CustomTool`
-		// (extensibility/custom-tools/types.ts:224), so assigning it preserves
-		// object identity: the methods, the private state, and the connection
-		// rebinding `MCPTool.execute` performs on reconnect all keep working,
-		// and the session cannot drift onto a stale copy. Compass owns this
-		// manager exclusively (built above; `getTools()` feeds `customTools` and
-		// nothing else), so there is no second consumer to isolate from the
-		// assignment.
+		// MCP tools MERGED with native comms/lifecycle tools, all reaching the session
+		// as natives. `loadMode: "essential"` stamped on the WHOLE array is REQUIRED:
+		// SDK 18.x defaults omitted loadMode to "discoverable" (registered but NOT model-
+		// callable), and getTools() sets none, so unstamped MCP tools become unreachable.
+
+		// Stamped IN PLACE, never copied: mcp.tools are MCPTool class instances with
+		// prototype methods and DeferredMCPTool #private state, so a spread/clone breaks
+		// them at the model's first call. `loadMode` is a mutable CustomTool field, so
+		// assigning preserves identity (methods, private state, reconnect rebinding).
 		customTools: stampEssential([...mcp.tools, ...nativeTools]),
 		enableMCP: false,
-		// Headless approval policy (RIG-1741, design compass-agent-comms-tools
-		// §"the container runs headless with write-approval tools auto-executing"):
-		// the container has NO human to answer an approval prompt, and the native
-		// comms/lifecycle tools declare approval:"write" — so without auto-approve
-		// a write-approval tool would block forever and never execute. Pin the
-		// yolo-default policy here in the entrypoint. Unconditional by design: the
-		// safety rests on an EXTERNAL invariant — this bin is exec'd only by the
-		// Runner as the in-container headless entrypoint (`if (import.meta.main)`,
-		// the sole createAgentSession call in the package), never interactively. If
-		// that ever changes, gate this on an explicit headless signal so the
-		// auto-approve posture fails safe outside a container.
+		// Headless approval policy (RIG-1741): the container has NO human to answer an
+		// approval prompt and the native tools declare approval:"write", so without
+		// auto-approve they block forever. Unconditional — safety rests on the external
+		// invariant that the Runner exec's this bin headless; if that changes, gate it.
 		autoApprove: true,
-		// Fleet config object injection (RIG-1678 pivot):
-		//   - `rules` (CP-4): the fleet rules COMPOSED with the checkout's
-		//     discovered rules (both load; fleet-first), computed above. Passed
-		//     unconditionally — empty fleet set still composes cleanly.
-		//   - `contextFiles` (CP-2): [fleet global AGENTS.md, ...project-discovered],
-		//     computed above — passed ONLY when the fleet file is present (it
-		//     COMPOSES with, never replaces, the checkout's project AGENTS.md).
-		//     When absent, `contextFiles` is undefined so the key is omitted and
-		//     the SDK runs its own project discovery.
-		//   - `settingsManager` (CP-1): the prebuilt fleet Settings overlay, ONLY
-		//     when built — omitted lets the SDK init its own default Settings.
+		// Fleet config object injection (RIG-1678 pivot): `rules` (CP-4) = fleet rules
+		// composed with discovered rules, always; `contextFiles` (CP-2) = [fleet
+		// AGENTS.md, ...project], only when the fleet file exists; `settingsManager`
+		// (CP-1) = prebuilt fleet Settings, only when built.
 		rules,
 		...(contextFiles ? { contextFiles } : {}),
 		...(fleetSettings ? { settingsManager: fleetSettings } : {}),
-		// Role (RIG-1732 T10) + persona compose INDEPENDENTLY, and BOTH apply:
-		//   - `customSystemPrompt` (role): the role's block-0 text, routed through
-		//     the SDK's custom-system-prompt template (sdk.ts:2727) — REPLACES
-		//     OMP's default block-0 while the template STILL injects skills + rules
-		//     and the project footer stays a separate block (record §MP-1). Passed
-		//     ONLY when a role prompt was found; absent → key omitted → today's
-		//     default block-0 (no empty replace).
-		//   - `systemPrompt` (persona): the identity OVERLAY, APPENDED after the
-		//     built default array (record §OQ-8: persona appends AFTER the role
-		//     block). The callback transforms whatever `defaultPrompt` the SDK
-		//     built — with a role, that array already carries the role block-0 +
-		//     skills/rules/footer, so persona lands LAST, after the role block.
-		//     Passed ONLY when a persona is set.
-		// The two are orthogonal keys, so all four states compose: neither, role
-		// only (replace block-0), persona only (append, today's behavior), both
-		// (role replaces block-0, persona appends after).
+		// Role (RIG-1732 T10) + persona compose INDEPENDENTLY, both apply:
+		// customSystemPrompt (role) REPLACES the default block-0 (template still injects
+		// skills+rules), passed only when found; systemPrompt (persona) APPENDS the
+		// identity overlay after the default array (§OQ-8), passed only when set.
 		...(rolePrompt ? { customSystemPrompt: rolePrompt } : {}),
 		...(persona
 			? {
@@ -1037,14 +847,10 @@ export async function main(
 					],
 				}
 			: {}),
-		// Loop telemetry (design docs/designs/observability/compass-agent-loop-otel/
-		// design.md T1) + trace continuity (message-trace-continuity §T2): the
-		// enabled path installs the bridge's capture hooks INTO the telemetry
-		// config, so the bridge sees each `invoke_agent` span start/end and can
-		// parent/link injected messages onto the turn. Keyed off the same
-		// authoritative post-registration check (`traceBridge` is defined iff
-		// enabled), so the key is OMITTED entirely when export is off and the loop
-		// keeps its literal-undefined zero-lookup path.
+		// Loop telemetry (design compass-agent-loop-otel T1) + trace continuity
+		// (message-trace-continuity §T2): the enabled path installs the bridge's
+		// capture hooks into the telemetry config so it parents/links injected
+		// messages. Keyed off `traceBridge` defined iff enabled; omitted when off.
 		...(traceBridge !== undefined
 			? {
 					telemetry: {
@@ -1056,14 +862,9 @@ export async function main(
 	});
 
 	// Boot-model-health belt. createAgentSession SWALLOWS a models.yml validation
-	// error — a rejected provider config leaves the registry with a recorded
-	// error and the session falls back to built-in-only model resolution, booting
-	// model-less when the pinned selector can no longer resolve. The cost surfaces
-	// far from the cause: the first prompt throws "No model configured" deep in a
-	// turn, with nothing pointing back at the bad config. So surface it here, at
-	// boot: log the config error loudly whenever one is present, and refuse to
-	// boot when an operator PINNED a model that did not resolve (rather than limp
-	// on to the deferred first-turn crash).
+	// error, leaving the registry with a recorded error and booting model-less when
+	// the pinned selector no longer resolves — surfacing far away as a first-turn
+	// "No model configured". Log it here and refuse to boot on a pinned-but-unresolved.
 	const modelRegistry = session.modelRegistry;
 	const modelError = modelRegistry.getError();
 	if (modelError !== undefined) {
@@ -1071,14 +872,10 @@ export async function main(
 			`[compass-agent] models.yml config rejected (${modelError.id}): ${modelError.message} — falling back to built-in model resolution`,
 		);
 	}
-	// A pinned pattern sets the SDK's explicit-model flag, which SKIPS the
-	// default-role fallback — so pinned-but-unresolvable is exactly `model ===
-	// undefined` here, while an unpinned boot gets the SDK default and is left
-	// alone. This early throw bypasses the drain→close→disconnect finally below,
-	// so release the two holders `main` owns (the connected MCP manager, then the
-	// socket) here. Nest them so a rejecting disconnect still closes the socket,
-	// and log — never rethrow — that rejection, so it cannot mask the actionable
-	// diagnostic this belt exists to surface.
+	// A pinned pattern sets the SDK's explicit-model flag (skips default-role
+	// fallback), so pinned-but-unresolvable is exactly `model === undefined`. This
+	// early throw bypasses the drain→close finally below, so release the two holders
+	// `main` owns (MCP manager, socket); nest so a rejecting disconnect still closes.
 	if (modelPattern !== undefined && session.model === undefined) {
 		try {
 			await mcp.disconnect();
@@ -1095,28 +892,17 @@ export async function main(
 		);
 	}
 
-	// Post-construction assignment, not a `createAgentSession` option: the SDK
-	// declares `getApiKey` as a public mutable field on `Agent` (`agent.d.ts:209`)
-	// and does NOT declare it on `CreateAgentSessionOptions` — its docstring
-	// example (`sdk.d.ts:368`) advertises the option, but the type does not carry
-	// it, so passing it there is a compile error. Assigning the field is the
-	// type-safe path to the same per-call resolution semantics.
-	//
-	// LAYER the seed OVER the SDK resolver rather than replacing it: capture the
-	// resolver `createAgentSession` installed (`modelRegistry.resolver`) and pass
-	// it as the fall-through. A seeded provider's key still wins (T6 rotation),
-	// but a provider absent from the seed — notably an `auth: none` keyless
-	// provider — resolves through the SDK path, which yields the keyless `"N/A"`
-	// sentinel so the turn dials instead of failing `MissingApiKeyError`.
+	// Post-construction assignment, not a createAgentSession option: the SDK declares
+	// `getApiKey` on Agent but not on CreateAgentSessionOptions, so passing it there
+	// is a compile error. LAYER the seed OVER the SDK resolver (captured as fall-
+	// through) so a seeded key wins but an auth:none provider resolves the keyless "N/A".
 	const sdkGetApiKey = session.agent.getApiKey?.bind(session.agent);
 	session.agent.getApiKey = createSeedApiKeyResolver(home, sdkGetApiKey);
 
-	// Construction cycle (RIG-1310 §8): createSocketControlSource needs the
-	// ImmediateControl handle at construction, but the handle must forward into
-	// the CompassAgent — which is constructed AFTER (it takes `control` as a ctor
-	// arg). A mutable holder resolves it: the handle closes over `agent` and the
-	// source's pump only dispatches AFTER `run()` starts consuming, by which point
-	// `agent` is assigned — so the `agent?.` guard never actually sees undefined.
+	// Construction cycle (RIG-1310 §8): createSocketControlSource needs the control
+	// handle at construction, but the handle forwards into CompassAgent, built AFTER.
+	// A mutable holder resolves it — the source's pump only dispatches after run()
+	// starts consuming, by which point `agent` is assigned, so `agent?.` never sees undefined.
 	let agent: CompassAgent | undefined;
 	const control = createSocketControlSource(transport, {
 		steer: (msg, fromHandle, traceparent, sourceNames) =>
@@ -1127,48 +913,26 @@ export async function main(
 			agent?.forgeNotification(notification, ackRail),
 	});
 
-	// Drain in `finally`, on both the clean and error paths. `run()` emits its
-	// terminal status through the sink on its way out, and the socket sink only
-	// ENQUEUES lifecycle frames onto the send spine's priority lane — so without
-	// this barrier the process can exit with that terminal frame, and any
-	// in-flight conversation unary, still uncommitted. `drain()` is what the sink
-	// contract (frame.ts:52-58) provides for exactly this, and this composition
-	// root is the only place holding the sink to call it.
-	//
-	// Then CLOSE the carrier, in that order: the transport holds a live HTTP/2
-	// session over the Runner socket whose manager keeps an idle connection for
-	// 15 minutes, so a clean run that only drained would leave the process
-	// lingering on the socket. Closing first would abandon the very frames the
-	// drain exists to commit, so drain strictly precedes close.
-	//
-	// The close is nested in its OWN `finally` so it is unconditional. Neither
-	// drain implementation can reject today (frame-sink.ts awaits sends whose
-	// producer catches to exhaustion; publish-spine's pump catches every batch
-	// error) — but that is an invariant of two other files, and if either ever
-	// broke it a skipped `close()` would leak the session, which is the exact
-	// defect `close()` was added to fix.
+	// Drain in `finally` on both paths, then CLOSE the carrier, in that order: run()
+	// emits its terminal status through the sink, which only ENQUEUES lifecycle frames on
+	// the send spine, so without this barrier the process can exit uncommitted. The
+	// transport holds a 15-min idle HTTP/2 session; closing first abandons those frames.
 	try {
 		// `traceBridge` (undefined when telemetry is off) flows in as the narrow
 		// `TurnTracer` facet — off ⇒ every agent-side trace call no-ops.
 		agent = new CompassAgent({ session, sink, control, tracer: traceBridge });
 		await agent.run();
 	} finally {
-		// The load-bearing drain→close chain is UNTOUCHED — storage.drain →
-		// sink.drain → transport.close, in that exact order (see above). The MCP
-		// disconnect wraps it as its OWN outer finally so it runs unconditionally
-		// (clean and error paths) AFTER the frame barrier, without reordering it:
-		// the MCP connections are independent of the send spine, so tearing them
-		// down last cannot abandon a frame the drain exists to commit. `main` owns
-		// the manager (the SDK never disconnects one it did not build), so without
-		// this the container would leak every MCP subprocess/HTTP session on exit.
+		// The load-bearing drain→close chain is UNTOUCHED (storage.drain → sink.drain
+		// → transport.close). MCP disconnect wraps it as an OWN outer finally so it
+		// runs unconditionally AFTER the frame barrier: MCP is independent of the send
+		// spine, so tearing it down last cannot abandon a frame. `main` owns the manager.
 		try {
 			try {
-				// Belt for the APPEND vector: `writeTextSync` tracks drain
-				// (indexed-session-storage.ts:143 trackDrain:true) so a queued append's
-				// tee send is awaited here; the compaction `writeTextAtomic` checkpoint
-				// vector does NOT track drain (:270), but the sink drain below covers
-				// its durable send. Storage drain precedes sink drain so a late append's
-				// emitDurable is in the sink's in-flight set before it is awaited.
+				// Belt for the APPEND vector: writeTextSync tracks drain so a queued
+				// append's tee send is awaited here; the compaction checkpoint does NOT,
+				// but the sink drain below covers it. Storage drain precedes sink drain so
+				// a late append's emitDurable is in the sink's in-flight set before await.
 				await storage.drain();
 			} finally {
 				try {
@@ -1184,10 +948,9 @@ export async function main(
 }
 
 if (import.meta.main) {
-	// Both exit paths are explicit so the drain-then-close barrier in `main` is
-	// the last thing that runs before the process goes away: without the clean
-	// `exit(0)` the process would wait out any straggling handle, and without
-	// the barrier ahead of `exit(1)` a crash would discard uncommitted frames.
+	// Both exit paths are explicit so the drain-then-close barrier in `main` is the
+	// last thing to run before exit: without the clean exit(0) the process waits out
+	// stragglers, and without the barrier ahead of exit(1) a crash discards frames.
 	main().then(
 		() => process.exit(0),
 		(err: unknown) => {

@@ -1,29 +1,7 @@
-// Previewable-build gate: `bunx vite build` must bake the CONFIGURED door URL
-// and bearer into `dist/`, so one bundle can be deployed against any target
-// (the isolated PR-preview environment, a staging door, a local dogfood door).
-// The capability rests on a Vite default — every `import.meta.env.VITE_*` value
-// present at build time is inlined into the emitted bundle as a string literal
-// (the same mechanism `env-secrecy.test.ts` guards the DANGEROUS direction of:
-// a committed secret ships in `dist/`). This gate guards the USEFUL direction:
-// the previewable build is only previewable if the door+bearer it was built
-// with actually reach the browser.
-//
-// Nothing else pins this. `resolveConnection` (live/connection.ts) is unit-
-// tested over plain env objects, but that proves the RESOLVER is pure — not that
-// `vite build` delivers the env to it. A `vite.config.ts` change (an
-// `envPrefix` override, a stray `define`, a plugin that strips env) or an
-// env-precedence regression could silently ship a bundle that ignores
-// VITE_COMPASS_BASE_URL and dials the wrong door — a preview pointed at the
-// wrong server looks like a working preview until someone reads the network
-// tab. This test builds the real bundle with a configured door+bearer and
-// asserts both are baked in, and that the tracked dev loopback default does NOT
-// bleed into a production build.
-//
-// It is the positive counterpart to env-secrecy.test.ts: that one asserts no
-// secret-bearing env file is tracked (nothing dangerous bakes in); this one
-// asserts the configured target DOES bake in (the preview capability works).
-// No connection-resolution code change backs this capability — it is a Vite
-// build-time property — so this gate is the deliverable that keeps it true.
+// Previewable-build gate: `bunx vite build` must bake the CONFIGURED door URL and bearer into
+// `dist/`, so one bundle deploys against any target (a Vite default: every build-time `VITE_*`
+// is inlined). Guards the USEFUL direction — nothing else pins it, so a vite.config or
+// env-precedence regression could ship a bundle dialing the wrong door. Counterpart to env-secrecy.test.ts.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";

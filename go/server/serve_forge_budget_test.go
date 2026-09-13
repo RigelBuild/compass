@@ -2,23 +2,10 @@
 
 package server
 
-// Unit proof for RIG-2991: the board-ingest lane and the agent-notification lane
-// ride ONE shared forge.GitHub client, so the client-side rate-budget/resetAt
-// gate is a SINGLE gate across both lanes — not two independent gates against the
-// same App installation. A regression that gives each lane its own client would
-// leave the second lane's gate unarmed, so its read would issue a live request
-// instead of fast-failing; this test asserts the opposite.
-//
-// The proof is LANE-dependent, not client-dependent: it reads the client each
-// lane actually recorded (boardLane.client, notifyLane.reader — the exact object
-// each builder threaded into its arm/reconciler) and drives the gate through
-// those, never through a client handle the test holds directly. So a builder that
-// ACCEPTED the shared client but minted its own for its arm would record a
-// different pointer, and both the identity assertion and the fast-fail would fail.
-//
-// No Postgres: buildBoardIngestLane/buildForgeNotifyLane touch the store only via
-// reconcileForgeSeed (a no-op on an empty seed) and adapters they hold but this
-// test never sweeps, so a nil *store.Store is safe here.
+// Unit proof for RIG-2991: the board-ingest and agent-notification lanes ride ONE
+// shared forge.GitHub client, so the rate-budget gate is a SINGLE gate across both.
+// LANE-dependent: it reads the client each lane recorded, so a builder that minted
+// its own would record a different pointer and fail. No Postgres.
 
 import (
 	"context"

@@ -1,38 +1,22 @@
-// The per-session Publish spine, shared by the socket FrameSink (trace/session
-// frames) and the socket ControlSource (control-plane ack frames). One ordered
-// publisher per session is load-bearing: the Runner assigns a monotonic
-// RunnerSeq to each frame in arrival order (agent_gateway.proto Publish), so a
-// single ordered producer keeps hub gap-detection well-defined. Both producers
-// feed THIS spine, reached only through `RunnerTransport.publishSpine()` (a
-// memoized singleton) — the frozen C4 factory signatures take just `transport`,
-// so the transport is the sole shared handle they have.
-//
-// Delivery mechanism — STREAM CYCLING. A long-lived client-stream held open for
-// the whole session does NOT flush under bun's http2: the runtime buffers DATA
-// frames until the request stream ENDS, so a session-lifetime `publish()` never
-// delivers a frame while it stays open. The spine therefore sends in bounded
-// BATCHES: it opens `publish()`, feeds the currently-queued frames into a
-// generator that then RETURNS (ending the stream, which flushes), and opens a
-// fresh `publish()` for the next batch. The Runner assigns the upstream seq and
-// hub gap-detection tolerates a publisher that reconnects, so cycling the stream
-// is wire-safe. A batch closes as soon as the queue drains, so a lone frame
-// (notably the terminal STOPPED at teardown) flushes in its own immediate batch.
-//
-// Overload policy (transport-consolidation OQ-2(c), P1 #2): trace/session frames
-// are loss-tolerable and ride a BOUNDED queue — on overflow the OLDEST queued
-// trace frame is dropped and a counter incremented (surfaced as a session
-// diagnostic). Control-plane ack frames and lifecycle/status frames (notably the
-// terminal STOPPED) are NOT loss-tolerable: they ride a separate priority queue
-// that is never the drop target and is always drained AHEAD of the trace
-// backlog, both within a batch and by forcing the next batch, so teardown
-// delivers STOPPED to the socket within the shutdown deadline even when the
-// trace buffer is saturated. The never-drop guarantee extends to a FAILED cycled
-// batch: a batch send that throws (socket blip mid-teardown) drops its trace
-// frames (loss-tolerable, counted) but re-enqueues its priority frames at the
-// front and retries on a bounded backoff, so a transient error on the final
-// flush does not silently abandon STOPPED; only after the retry budget are those
-// priority frames counted as definitively failed, in a SEPARATE counter from the
-// trace drops (a never-drop loss is surfaced distinctly, never as a trace drop).
+// The per-session Publish spine, shared by the socket FrameSink (trace/session frames)
+// and the socket ControlSource (control-plane ack frames). One ordered publisher is
+// load-bearing: the Runner assigns a monotonic RunnerSeq in arrival order, so a single
+// ordered producer keeps hub gap-detection well-defined. Both reach it via publishSpine().
+
+// Delivery — STREAM CYCLING. A long-lived client-stream does NOT flush under bun's http2
+// (DATA frames buffer until the request stream ENDS), so the spine sends in bounded
+// BATCHES: open publish(), feed the queued frames into a generator that RETURNS (flushing),
+// open a fresh publish() next. A lone terminal STOPPED flushes immediately in its own batch.
+
+// Overload policy (OQ-2(c), P1 #2): trace/session frames are loss-tolerable on a BOUNDED
+// queue — overflow drops the OLDEST trace frame, counted. Acks and lifecycle/status frames
+// (notably terminal STOPPED) are NOT loss-tolerable: they ride a priority queue never the
+// drop target, always drained AHEAD of the trace backlog, so STOPPED makes the deadline.
+
+// The never-drop guarantee extends to a FAILED cycled batch: a send that throws drops its
+// trace frames (counted) but re-enqueues its priority frames at the front and retries on a
+// bounded backoff. Only after the retry budget are those priority frames counted failed,
+// in a SEPARATE counter.
 
 import {
 	Duration,
@@ -67,11 +51,10 @@ export const TRACE_QUEUE_CAP = 1024;
 // end(), and caps the work the drain generator does per cycle.
 export const PUBLISH_BATCH_MAX = 256;
 
-// Bounded-backoff retry for a failed cycled batch that carried PRIORITY frames
-// (lifecycle/STOPPED, control acks — not loss-tolerable). Unlike trace frames,
-// which are dropped on a failed batch, the priority frames are re-enqueued at
-// the front and the batch retried on this schedule; after the last delay they
-// are counted as definitively failed so drain() stays bounded on a dead socket.
+// Bounded-backoff retry for a failed cycled batch carrying PRIORITY frames (not loss-
+// tolerable). Unlike trace frames (dropped on a failed batch), priority frames are re-
+// enqueued at the front and retried on this schedule; after the last delay they are
+// counted definitively failed so drain() stays bounded on a dead socket.
 export const PRIORITY_BATCH_RETRY_MS: readonly number[] = [50, 200, 800];
 
 export interface PublishSpine {
@@ -82,14 +65,11 @@ export interface PublishSpine {
 	// Enqueue a priority frame (control-plane ack or lifecycle/status transition).
 	// Never dropped; drained ahead of the trace backlog.
 	enqueuePriority(frame: PublishFrameRequest): void;
-	// How many trace frames have been LOST — overflow drops plus the trace frames
-	// in a failed cycled batch. Loss-tolerable by contract; surfaced as a session
-	// diagnostic.
+	// How many trace frames have been LOST — overflow drops plus the trace frames in a
+	// failed cycled batch. Loss-tolerable by contract; surfaced as a session diagnostic.
 	droppedTraceCount(): number;
-	// How many PRIORITY frames (lifecycle/STOPPED, control acks) were lost after
-	// their failed batch exhausted the bounded priority retry. NOT loss-tolerable
-	// — a non-zero count is a contract breach surfaced distinctly, never folded
-	// into droppedTraceCount.
+	// How many PRIORITY frames were lost after their failed batch exhausted the bounded
+	// retry. NOT loss-tolerable — a non-zero count is a contract breach surfaced distinctly.
 	failedPriorityCount(): number;
 	// Flush every queued frame (priority ahead of trace) and resolve once the
 	// last batch's stream has closed. Idempotent; after it resolves the spine
@@ -97,30 +77,19 @@ export interface PublishSpine {
 	drain(): Promise<void>;
 }
 
-// Build the spine over a driver that consumes an AsyncIterable of frames (the
-// transport's `client.publish`, whose promise resolves at stream end). The
-// driver is invoked once per batch, lazily — an idle agent that never emits
+// Build the spine over a driver that consumes an AsyncIterable of frames (the transport's
+// client.publish, resolving at stream end). Invoked once per batch, lazily — an idle agent
 // opens no stream.
-//
+
 // `borrowedRuntime` is the single transport-owned ManagedRuntime threaded in by
-// createUnixSocketTransport (design record §T5). The spine is a direct child of
-// the transport — it takes `publish`, not `transport`, so it cannot read the
-// module-private channel the sink/source use; the runtime is passed by argument
-// instead (createPublishSpine is neither a package re-export nor a transport
-// index export, so an `effect` type on this internal signature never reaches the
-// public `.d.ts`). When absent (test paths that build a bare spine over a fake
-// publish driver), the spine falls back to its OWN default runtime and disposes
-// it at the end of drain(). A borrowed runtime is NEVER disposed here — the
-// transport's close() owns that.
-//
-// A `metricNamespace` prefixes the two LEVEL gauges this spine sets
-// (trace_queue_depth, priority_retry_depth). It defaults to "" — production
-// yields the exact frozen metric names. A test passes a unique prefix so its
-// gauge reads hit a private registry entry, immune to the cross-file gauge race
-// the shared process-global registry keys structurally on the metric
-// name, so a bare gauge would be moved by a concurrent sibling test file between
-// this spine's Metric.set and the test's synchronous read. Counters take no
-// namespace — they are read as a before/after delta, robust to that movement.
+// createUnixSocketTransport (§T5). The spine takes `publish`, not `transport`, so the
+// runtime is passed by argument. When absent (test paths) it falls back to its OWN runtime
+// and disposes it at drain() end; a borrowed one is NEVER disposed here.
+
+// A `metricNamespace` prefixes the two LEVEL gauges (trace_queue_depth, priority_retry_
+// depth). Defaults to "" — production yields the frozen names. A test passes a unique prefix
+// so its gauge reads hit a private registry entry, immune to the cross-file gauge race (the
+// global registry keys on the metric name). Counters take no namespace — read as a delta.
 export function createPublishSpine(
 	publish: (stream: AsyncIterable<PublishFrameRequest>) => Promise<unknown>,
 	borrowedRuntime?: TransportRuntime,
@@ -128,28 +97,22 @@ export function createPublishSpine(
 ): PublishSpine {
 	const traceQueueDepth = traceQueueDepthGauge(metricNamespace);
 	const priorityRetryDepth = priorityRetryDepthGauge(metricNamespace);
-	// Effect is confined module-private behind the spine: it backs the sliding
-	// trace queue, the wake latch, and the forked pump fiber. The default logger
-	// is removed on the fallback runtime so a handled pump-send failure does not
-	// double-report to the console (the loss disposition is already folded into
-	// the drop counters).
+	// Effect is confined module-private behind the spine: it backs the sliding trace queue,
+	// the wake latch, and the forked pump fiber. The default logger is removed on the
+	// fallback runtime so a handled pump-send failure does not double-report (the loss
+	// disposition is already folded into the drop counters).
 	const ownsRuntime = borrowedRuntime === undefined;
 	const runtime =
 		borrowedRuntime ?? ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
-	// Trace/session lane: a bounded drop-OLDEST sliding queue. The sync emit()
-	// path reads unsafeSize() BEFORE offering (size == cap ⇒ the imminent offer
-	// evicts the oldest) and then runs the effectful offer synchronously — sliding
-	// offer never suspends, so runSync cannot throw on a live queue, and the
-	// eviction stays synchronously countable. unsafeOffer is NOT used: in effect
-	// 3.22.1 it bypasses the sliding strategy and rejects the NEWEST element on a
-	// full queue (drop-newest), the opposite of this lane's contract (see the
-	// design.md T3 amendment and effect-smoke.test.ts).
+	// Trace/session lane: a bounded drop-OLDEST sliding queue. The sync emit() path reads
+	// unsafeSize() BEFORE offering (at cap ⇒ the imminent offer evicts the oldest) then runs
+	// the effectful offer synchronously — sliding offer never suspends, so the eviction stays
+	// synchronously countable. unsafeOffer is NOT used: it drops-newest, the opposite contract.
 	const traceQ = runtime.runSync(
 		Queue.sliding<PublishFrameRequest>(TRACE_QUEUE_CAP),
 	);
-	// Priority lane: a plain array (ruled — design record OQ-7; effect 3.22.1
-	// ships no primitive that is FIFO, front-reinsertable on a failed batch, and
-	// synchronously drainable at once). Drained AHEAD of the trace backlog.
+	// Priority lane: a plain array (OQ-7; effect 3.22.1 ships no primitive that is FIFO,
+	// front-reinsertable on a failed batch, and synchronously drainable). Drained AHEAD of trace.
 	const priority: PublishFrameRequest[] = [];
 	// Wake latch: a capacity-1 sliding<void>. enqueueTrace/enqueuePriority offer a
 	// unit (unsafeOffer is correct HERE — a 1-slot signal, not the trace lane —
@@ -204,25 +167,20 @@ export function createPublishSpine(
 		return { batch, priorityCount };
 	});
 
-	// The pump: drain the lanes one cycled stream at a time. Each iteration opens
-	// a fresh `publish()` over a generator that yields the batch then RETURNS, so
-	// the stream ends and bun flushes it. Priority-first, cap PUBLISH_BATCH_MAX.
-	// Terminal exit = ended && both lanes empty; the fiber returning is what
-	// resolves drain()'s join.
+	// The pump: drain the lanes one cycled stream at a time. Each iteration opens a fresh
+	// publish() over a generator that yields the batch then RETURNS, so the stream ends and
+	// bun flushes. Priority-first, cap PUBLISH_BATCH_MAX. Terminal exit = ended && both lanes
+	// empty; the fiber returning is what resolves drain()'s join.
 	const pumpLoop = Effect.gen(function* () {
-		// Consecutive failed batches that carried priority frames, reset on any
-		// successful send. This pump-run-scoped budget bounds the priority retry so
-		// a persistently-dead socket cannot wedge drain(): it caps the total retry
-		// delay across ALL queued priority batches at O(1) (a per-batch
-		// Schedule.fromDelays would make drain() O(N) on a dead socket).
+		// Consecutive failed batches that carried priority frames, reset on any successful
+		// send. This pump-run-scoped budget bounds the priority retry so a dead socket cannot
+		// wedge drain(): it caps total retry delay across ALL queued priority batches at O(1)
+		// (a per-batch Schedule.fromDelays would make drain() O(N) on a dead socket).
 		let priorityRetries = 0;
-		// Defer the first batch one scheduler yield so a synchronous burst of
-		// emit()s — e.g. a saturated trace backlog followed by the terminal
-		// STOPPED, all enqueued in one tick — is fully queued before the first
-		// takeBatch runs. takeBatch drains priority-first, so STOPPED then leads the
-		// batch AHEAD of the trace backlog (the record's terminal-flush guarantee),
-		// rather than a trace frame racing out in a batch opened before STOPPED was
-		// enqueued.
+		// Defer the first batch one scheduler yield so a synchronous burst of emit()s — a
+		// saturated trace backlog followed by the terminal STOPPED, all in one tick — is fully
+		// queued before the first takeBatch. takeBatch drains priority-first, so STOPPED leads
+		// the batch AHEAD of the trace backlog rather than a trace frame racing out first.
 		yield* Effect.yieldNow();
 		while (true) {
 			// Block while idle: an agent that never emits opens no stream. A stale
@@ -267,13 +225,10 @@ export function createPublishSpine(
 				batch.length - priorityCount,
 			);
 			if (priorityCount === 0) continue;
-			// Priority frames (lifecycle/STOPPED — notably the terminal flush) are
-			// NOT loss-tolerable: re-enqueue them at the FRONT and retry the batch on
-			// a bounded backoff rather than dropping them, so a transient blip on the
-			// final flush does not silently abandon STOPPED. After the retry budget
-			// they are counted as definitively failed — kept SEPARATE from trace
-			// drops (a never-drop loss is not a loss-tolerable drop) — and retrying
-			// stops so drain() stays bounded.
+			// Priority frames (lifecycle/STOPPED) are NOT loss-tolerable: re-enqueue them at
+			// the FRONT and retry on a bounded backoff rather than dropping, so a transient
+			// blip on the final flush does not abandon STOPPED. After the retry budget they
+			// are counted definitively failed, kept SEPARATE from trace drops, and retrying stops.
 			if (priorityRetries >= PRIORITY_BATCH_RETRY_MS.length) {
 				failedPriorityFrames += priorityCount;
 				// Never-drop priority loss (Decision 2 counter, kept separate).
@@ -352,11 +307,10 @@ export function createPublishSpine(
 					);
 				}
 			} finally {
-				// Dispose ONLY a runtime this spine owns (the fallback path). A borrowed
-				// transport-owned runtime is disposed by the transport's close() after
-				// the drain barrier — disposing it here would break the still-open
-				// sibling sink/source that share it (design record §T5). In a `finally`
-				// so a throwing join cannot strand a self-owned runtime.
+				// Dispose ONLY a runtime this spine owns (the fallback path). A borrowed runtime
+				// is disposed by transport.close() after the drain barrier — disposing here would
+				// break the sibling sink/source (§T5). In a finally so a throwing join cannot
+				// strand a self-owned runtime.
 				if (ownsRuntime) await runtime.dispose();
 			}
 		},
