@@ -261,10 +261,7 @@ func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id WorkloadID, uid ui
 // can surface it per session instead of inferring containment from a green
 // launch.
 func (r *AgentRuntime) EgressPosture() EgressPosture {
-	if r.egressUnenforced() {
-		return EgressPostureUnenforced
-	}
-	return EgressPostureArmed
+	return PostureOf(r.runtime)
 }
 
 // createAndStart creates then starts the container, cleaning up a created but
@@ -376,8 +373,7 @@ func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentS
 }
 
 func (r *AgentRuntime) egressUnenforced() bool {
-	unenforcer, ok := r.runtime.(egressUnenforcer)
-	return ok && unenforcer.EgressUnenforced()
+	return PostureOf(r.runtime) == EgressPostureUnenforced
 }
 
 func (r *AgentRuntime) selfArmsEgress() bool {

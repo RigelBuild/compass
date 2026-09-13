@@ -36,6 +36,18 @@ func TierOf(engine WorkloadRuntime) WorkloadTier {
 	return ""
 }
 
+// PostureOf reports how a backend constrains agent egress, probing the same
+// egressUnenforcer marker AgentRuntime.EgressPosture does so the value a Runner
+// declares at enrollment matches the one a live workload would report. A backend
+// with no isolation boundary to firewall is unenforced; every other backend is
+// armed.
+func PostureOf(engine WorkloadRuntime) EgressPosture {
+	if unenforcer, ok := engine.(egressUnenforcer); ok && unenforcer.EgressUnenforced() {
+		return EgressPostureUnenforced
+	}
+	return EgressPostureArmed
+}
+
 // Tier reports the podman tier.
 func (p *PodmanCLI) Tier() WorkloadTier { return WorkloadTierPodman }
 
