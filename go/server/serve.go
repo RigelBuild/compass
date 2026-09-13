@@ -310,9 +310,10 @@ func secretDeclared(declared []secrets.ResolvedSecret, name string) bool {
 // server-secret keyspace the SERVER resolver declares them under.
 //
 // This is the resolve-side half of an INVARIANT, not a hand-listed set of call
-// sites. The provider keyspace is keyed by name, so the declare side
-// (SetServerSecret, which applies the same prefix) and every resolve-side
-// comparison must agree on the prefixed name or the resolve silently misses.
+// sites. The provider keyspace is keyed by name, so the declare side (which
+// applies the same prefix) and every resolve-side comparison must agree on the
+// prefixed name or the resolve silently misses.
+//
 // The rule, applied without exception:
 //
 //   - Every name compared against a resolved secrets.ResolvedSecret.Name is

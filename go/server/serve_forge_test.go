@@ -28,8 +28,8 @@ import (
 )
 
 // fakeResolver is a secrets.Resolver whose Resolve returns a scripted set (or a
-// scripted error). Set/Delete are unused here. The resolved value can be changed
-// between calls so a test proves the TokenSource picks up a rotation.
+// scripted error). The resolved value can be changed between calls so a test
+// proves the TokenSource picks up a rotation.
 type fakeResolver struct {
 	resolved []secrets.ResolvedSecret
 	err      error
@@ -43,9 +43,6 @@ func (r *fakeResolver) Resolve(_ context.Context, _ string) ([]secrets.ResolvedS
 	}
 	return r.resolved, nil
 }
-
-func (r *fakeResolver) Set(context.Context, string, string, string) error { return nil }
-func (r *fakeResolver) Delete(context.Context, string) error              { return nil }
 
 // Statuses is unused on the forge paths, which read values; it exists to satisfy
 // secrets.Resolver.

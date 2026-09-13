@@ -25,13 +25,11 @@ import (
 // later V5 wave. This command is a thin consumer of that shared core — no
 // longer a placeholder to be replaced — and keeps only what is stack-specific:
 // the podman rootless-capability check (postgres runs as a rootless container)
-// and the print/exit surface. It also reports the secretspec CLI: the secrets
-// WRITE path (internal/secrets SpecResolver.Set) spawns it by name, so it is an
-// install-time dependency the operator must have even though boot, which reads
-// through the SDK, never touches it — surfacing it here is what turns "the first
-// admin write fails" into an install-time line. That is one more entry in this
-// same list, not a new abstraction. Do not grow this into a capability
-// framework.
+// and the print/exit surface. It also reports the secretspec CLI: no Go code
+// spawns it, but it is the operator's server-secret rotation path, so surfacing
+// it here turns "the first rotation fails" into an install-time line. That is
+// one more entry in this same list, not a new abstraction. Do not grow this
+// into a capability framework.
 
 // podmanBinary is the podman executable name, resolved on PATH. It is the check
 // name and the LookPath target, so it is named once here (goconst).
@@ -103,7 +101,7 @@ func runPreflight(args []string) error {
 		checks = append(checks, checkBinaryVersion(f))
 	}
 	// After the trio so the microVM group stays contiguous and the output order
-	// is stable: secretspec is the secrets write path's dependency, not a microVM
+	// is stable: secretspec is the operator's rotation dependency, not a microVM
 	// userspace binary.
 	checks = append(checks, checkBinaryVersion(hostcheck.SecretSpecFloor))
 
