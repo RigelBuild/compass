@@ -148,6 +148,7 @@ type Args = {
 	bodyOut: string;
 	manifestOut: string;
 	dryRun: boolean;
+	imageDigest: string;
 };
 
 /** Parse argv into the edge's inputs. Repeated `--asset` accumulates. */
@@ -160,6 +161,7 @@ export function parseArgs(argv: string[]): Args {
 		bodyOut: "RELEASE_BODY.md",
 		manifestOut: "nix-outputs.json",
 		dryRun: false,
+		imageDigest: "",
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const flag = argv[i];
@@ -193,6 +195,9 @@ export function parseArgs(argv: string[]): Args {
 				break;
 			case "--manifest-out":
 				args.manifestOut = value;
+				break;
+			case "--image-digest":
+				args.imageDigest = value;
 				break;
 			default:
 				throw new Error(`release-notes: unknown flag ${flag}`);
@@ -246,6 +251,25 @@ export function classifyImageResult(result: {
 }
 
 /**
+ * Build the image identity from a digest the caller already resolved, skipping
+ * the skopeo probe. WHY the digest is passed in: the image lane is
+ * paths-filtered, so a release commit that does not touch the image closure has
+ * no `:git-<release-sha>` image — probing the release sha asks for a tag that
+ * was never published. The release-image job walks first-parent ancestors,
+ * resolves the correct ancestor `:git-<sha>` digest, and re-tags it to
+ * `:vX.Y.Z`; passing that already-verified config digest here is the single
+ * source of truth and avoids a re-probe race. Pure + exported so it is
+ * unit-tested. Returns null for an empty/whitespace-only digest (no flag given).
+ */
+export function imageFromDigest(digest: string): ImageIdentity | null {
+	const trimmed = digest.trim();
+	if (trimmed === "") {
+		return null;
+	}
+	return { ref: `${IMAGE_REPO}@${trimmed}`, digest: trimmed };
+}
+
+/**
  * At release time a null image is a hard failure, not a degradation: a
  * published `vX.Y.Z` with no resolvable container image violates the
  * one-version-spans-the-product invariant (§A2). The dry-run/preview path keeps
@@ -282,8 +306,14 @@ async function gatherImage(sha: string): Promise<ImageIdentity | null> {
 	});
 }
 
-/** The `nix path-info --json` record shape (the fields the manifest reads). */
+/**
+ * The `nix path-info --json` record shape (the fields the manifest reads).
+ * The array form carries its own `path`; the keyed form does not — there the
+ * store path IS the object key, so it is modelled separately rather than
+ * pretending the value carries one.
+ */
 type PathInfoEntry = { path: string; narHash?: string };
+type KeyedPathInfo = Omit<PathInfoEntry, "path">;
 
 /**
  * Resolve the toolchain `langs` set to store paths and run `nix path-info` over
@@ -305,11 +335,12 @@ async function gatherNixOutputs(): Promise<NixOutput[]> {
 		const infoJson = await $`nix path-info --json ${store}`.quiet().text();
 		const info = JSON.parse(infoJson) as
 			| PathInfoEntry[]
-			| Record<string, PathInfoEntry>;
-		// nix path-info emits an array (newer nix) or an object keyed by path.
+			| Record<string, KeyedPathInfo>;
+		// nix path-info emits an array (newer nix) or an object keyed by path; in
+		// the keyed form the key is the authoritative store path.
 		const entries: PathInfoEntry[] = Array.isArray(info)
 			? info
-			: Object.entries(info).map(([path, v]) => ({ path, ...v }));
+			: Object.entries(info).map(([path, v]) => ({ ...v, path }));
 		// A single-store-path query returns exactly one entry; anything else means
 		// `store` did not resolve to one output path and picking [0] would record
 		// an arbitrary identity — fail loud rather than ship a wrong manifest entry.
@@ -331,7 +362,14 @@ async function gatherNixOutputs(): Promise<NixOutput[]> {
 async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
 
-	const image = await gatherImage(args.sha);
+	// The image lane is paths-filtered, so a release commit often has no
+	// `:git-<release-sha>` image. When release-image passes its already-resolved
+	// ancestor digest via --image-digest, that is the authoritative identity;
+	// otherwise (local/dry-run) fall back to probing the sha's own tag.
+	const image =
+		args.imageDigest.trim() !== ""
+			? imageFromDigest(args.imageDigest)
+			: await gatherImage(args.sha);
 	const releaseError = requireImageAtRelease(image, args.dryRun);
 	if (releaseError !== null) {
 		throw new Error(releaseError);

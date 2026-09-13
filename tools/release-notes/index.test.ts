@@ -15,6 +15,7 @@ import {
 	assemble,
 	classifyImageResult,
 	IMAGE_ABSENT_LINE,
+	imageFromDigest,
 	type NixOutput,
 	parseArgs,
 	requireImageAtRelease,
@@ -137,6 +138,13 @@ describe("parseArgs — the edge's argv contract", () => {
 		expect(args.assets).toEqual(["a", "b"]);
 	});
 
+	test("--image-digest is optional: absent leaves the probe-selecting default", () => {
+		expect(parseArgs(required).imageDigest).toBe("");
+		expect(
+			parseArgs([...required, "--image-digest", "sha256:beef"]).imageDigest,
+		).toBe("sha256:beef");
+	});
+
 	test("a missing required flag throws", () => {
 		expect(() =>
 			parseArgs(["--sha", "abc", "--version", "0.1.0+gabc"]),
@@ -221,5 +229,19 @@ describe("requireImageAtRelease — a null image is a release-time failure, a dr
 
 	test("dry-run + present image is acceptable — returns null", () => {
 		expect(requireImageAtRelease(image, true)).toBeNull();
+	});
+});
+
+describe("imageFromDigest — the caller-supplied digest bypasses the skopeo probe", () => {
+	test("a real digest yields the @digest ref and the digest itself", () => {
+		expect(imageFromDigest("sha256:beef")).toEqual({
+			ref: "ghcr.io/rigelbuild/compass-agent@sha256:beef",
+			digest: "sha256:beef",
+		});
+	});
+
+	test("an empty or whitespace-only digest is null — the no-flag path", () => {
+		expect(imageFromDigest("")).toBeNull();
+		expect(imageFromDigest("   ")).toBeNull();
 	});
 });
