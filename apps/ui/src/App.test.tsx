@@ -272,14 +272,14 @@ describe("coaching tooltips (RIG-2530 T2)", () => {
 		);
 		expect(left).not.toBeNull();
 		expect(right).not.toBeNull();
-		// The visible content is a decorative block glyph; the accessible name
-		// must come from aria-label, never the glyph.
+		// The visible content is a decorative <Glyph> SVG (aria-hidden, no text);
+		// the accessible name must come from aria-label, never the glyph.
 		expect(left?.getAttribute("aria-label")).toBe("Toggle left sidebar");
 		expect(right?.getAttribute("aria-label")).toBe("Toggle right sidebar");
-		expect(left?.textContent?.trim()).not.toBe("");
-		expect(left?.getAttribute("aria-label")).not.toBe(
-			left?.textContent?.trim(),
-		);
+		const glyph = left?.querySelector("svg");
+		expect(glyph).not.toBeNull();
+		expect(glyph?.getAttribute("aria-hidden")).toBe("true");
+		expect(left?.textContent?.trim()).toBe("");
 	});
 
 	test("both sidebar toggles are now live: their coached chords dispatch", async () => {

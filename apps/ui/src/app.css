@@ -270,7 +270,7 @@
 .folder-caret {
 	color: var(--cx-text-faint);
 	font-size: 9px;
-	width: 10px;
+	width: 11px;
 	display: inline-flex;
 	justify-content: center;
 	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s grandfathered by the RIG-2034 cutover lane, which never scoped the motion axis */
