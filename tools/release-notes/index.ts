@@ -367,7 +367,7 @@ async function main(): Promise<void> {
 	// ancestor digest via --image-digest, that is the authoritative identity;
 	// otherwise (local/dry-run) fall back to probing the sha's own tag.
 	const image =
-		args.imageDigest !== ""
+		args.imageDigest.trim() !== ""
 			? imageFromDigest(args.imageDigest)
 			: await gatherImage(args.sha);
 	const releaseError = requireImageAtRelease(image, args.dryRun);

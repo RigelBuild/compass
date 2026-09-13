@@ -138,6 +138,13 @@ describe("parseArgs — the edge's argv contract", () => {
 		expect(args.assets).toEqual(["a", "b"]);
 	});
 
+	test("--image-digest is optional: absent leaves the probe-selecting default", () => {
+		expect(parseArgs(required).imageDigest).toBe("");
+		expect(
+			parseArgs([...required, "--image-digest", "sha256:beef"]).imageDigest,
+		).toBe("sha256:beef");
+	});
+
 	test("a missing required flag throws", () => {
 		expect(() =>
 			parseArgs(["--sha", "abc", "--version", "0.1.0+gabc"]),
