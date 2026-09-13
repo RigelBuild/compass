@@ -8,13 +8,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The Linear Agent Session association (compass-linear-agent-responder
-// design.md §Part 2 / §T3): the durable link between a Linear AgentSession and
-// the Compass conversation the responder routed it to. Written on a `created`
-// event (UpsertLinearAgentSession, idempotent on the session-id PK) and read on
-// a `prompted` event (LinearAgentSession) to route the follow-up to the same
-// Manager/topic. No dedup column — message-level dedup is the comms rail's
-// client_request_id (§Part 1); the association insert is idempotent on its own.
+// The Linear Agent Session association (design §Part 2/§T3): the durable link
+// between a Linear AgentSession and the Compass conversation it routed to.
+// Written on `created` (idempotent on the session-id PK), read on `prompted` to
+// route the follow-up to the same Manager/topic. Dedup is the comms rail's job.
 
 // LinearAgentSessionRow is one association row: the Linear session id, the Compass
 // Manager the delegated issue routed to, that Manager's home channel, the comms

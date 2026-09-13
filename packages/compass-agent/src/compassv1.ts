@@ -1,17 +1,7 @@
-// The single import point for every compass.v1 type + schema this package uses.
-//
-// WHY a barrel: the agent needs the generated compass.v1 message types to
-// construct the payloads it emits, but where those types live is a build-seam
-// decision owned by the compass service (buf codegen pipeline + drift gate).
-// Frozen §T5 (design: architecture-lineage): the agent's compass.v1 types are generated
-// into ./gen via a second `out:` on buf.gen.yaml — its own drift-gated tree
-// (option A). Today ./gen holds a byte-identical second buf output of the one
-// owned schema; if that ever fans out differently, only this file's import
-// paths change. Every other module imports compass.v1 through here.
-//
-// The agent emits protojson (newline-framed) — it never reaches the daemon over
-// gRPC, so it imports the message *types* + the @bufbuild/protobuf codec, not
-// the @connectrpc transport the biome fence restricts. No fence override needed.
+// The single import point for every compass.v1 type + schema this package uses. A barrel:
+// where the generated types live is a build-seam decision owned by the compass service.
+// Frozen §T5: generated into ./gen via a second `out:` on buf.gen.yaml; if it fans out
+// differently, only this file's imports change. The agent emits protojson (no @connectrpc).
 
 // Codec: protobuf-es v2 runtime (the gen files import from the same package).
 export {
@@ -22,36 +12,24 @@ export {
 	toJson,
 } from "@bufbuild/protobuf";
 export {
-	// The agent-initiated board call envelopes (internal-only AgentGateway gen).
-	// One `BoardCallRequest` carries the SDK toolCallId as `call_id` plus a oneof
-	// over the board operations (today: `set_issue_state`); the `BoardCallResult`
-	// mirrors it with an `error` case — an in-band domain failure (not_found,
-	// invalid_argument), NOT a transport teardown. The same two messages are
-	// reused verbatim as the RelayBoardCall payloads on the Runner->Server leg
-	// (DL-049), so this is the one wire shape for both hops.
+	// The agent-initiated board call envelopes (internal-only AgentGateway gen). Request
+	// carries the toolCallId as `call_id` plus a oneof; Result mirrors it with an in-band
+	// `error` case (not a transport teardown). Reused verbatim as the RelayBoardCall payloads.
 	type BoardCallError,
 	BoardCallErrorSchema,
 	type BoardCallRequest,
 	BoardCallRequestSchema,
 	type BoardCallResult,
 	BoardCallResultSchema,
-	// The agent-initiated forge call envelopes (internal-only AgentGateway gen).
-	// One `ForgeCallRequest` carries the SDK toolCallId as `call_id`, a oneof over
-	// the ten forge arms, an optional `ForgeRef forge` (unset = the configured
-	// default GitHub forge, DL-202), and a `client_request_id` (create arms only,
-	// DL-206); the `ForgeCallResult` retypes the domain arms to the canonical
-	// compass.v1 `Issue`/`PullRequest`/`CommentRef`/`ReviewRef` (DL-069/DL-092)
-	// plus an in-band `error` arm carrying a `retry_after_ms` a forge — unlike the
-	// in-process comms handler — can rate-limit on. The same messages are reused
-	// verbatim as the RelayForgeCall payloads on the Runner->Server leg.
+	// The agent-initiated forge call envelopes (internal-only AgentGateway gen). Request
+	// carries `call_id`, a oneof over the ten forge arms, an optional `ForgeRef`, and a
+	// `client_request_id` (create arms); Result retypes to canonical Issue/PullRequest/etc
+	// plus an in-band `error` arm carrying `retry_after_ms`. Reused as RelayForgeCall payloads.
 	CommentOnIssueRequestSchema,
 	CommentOnPullRequestRequestSchema,
-	// The agent-initiated comms call envelopes (internal-only AgentGateway gen).
-	// One `CommsCallRequest` carries the SDK toolCallId as `call_id` plus a oneof
-	// over the comms operations; the `CommsCallResult` mirrors it with a third
-	// `error` case — an in-band domain failure, NOT a transport teardown. The same
-	// two messages are reused verbatim as the RelayCommsCall payloads on the
-	// Runner->Server leg, so this is the one wire shape for both hops.
+	// The agent-initiated comms call envelopes (internal-only AgentGateway gen). Request
+	// carries `call_id` plus a oneof; Result mirrors it with an in-band `error` case (not a
+	// transport teardown). Reused verbatim as the RelayCommsCall payloads.
 	type CommsCallError,
 	CommsCallErrorSchema,
 	type CommsCallRequest,
@@ -60,12 +38,9 @@ export {
 	CommsCallResultSchema,
 	CreateIssueRequestSchema,
 	CreatePullRequestRequestSchema,
-	// The agent-initiated lifecycle call envelopes (internal-only AgentGateway
-	// gen). One `LifecycleCallRequest` carries the SDK toolCallId as `call_id`
-	// plus a oneof over spawn/despawn; the `LifecycleCallResult` mirrors it with a
-	// third `error` case — an in-band domain failure, NOT a transport teardown.
-	// The same two messages are reused verbatim as the RelayLifecycleCall payloads
-	// on the Runner->Server leg, so this is the one wire shape for both hops.
+	// The agent-initiated lifecycle call envelopes (internal-only AgentGateway gen). Request
+	// carries `call_id` plus a oneof over spawn/despawn; Result mirrors it with an in-band
+	// `error` case (not a transport teardown). Reused verbatim as RelayLifecycleCall payloads.
 	type DespawnPeerRequest,
 	DespawnPeerRequestSchema,
 	type DespawnPeerResponse,
@@ -123,11 +98,9 @@ export {
 	UnsubscribeForgeResponseSchema,
 } from "./gen/compass/v1/agent_gateway_pb";
 export {
-	// The inbound control envelope (internal-only §T5): a oneof over the control
-	// ops plus a Runner-assigned `controlSeq` envelope field (retention cursor).
-	// The control source decodes one AgentControl per Control-stream message;
-	// the agent classifies each by the set oneof case. Payload fields for
-	// steer/deliver/replay/config stay empty shells (RIG-1310 parked).
+	// The inbound control envelope (internal-only §T5): a oneof over the control ops plus a
+	// Runner-assigned `controlSeq` (retention cursor). The source decodes one AgentControl per
+	// message; payload fields for steer/deliver/replay/config stay empty shells (RIG-1310 parked).
 	type AgentControl,
 	AgentControlSchema,
 	// The stdout envelope (internal-only §T5): a oneof over the payload messages.
@@ -168,11 +141,9 @@ export {
 	SessionFrameSchema,
 	type SteerControl,
 	SteerControlSchema,
-	// The `transcript_entry` variant's payload: one committed SDK session entry
-	// (entry_json + checkpoint + entry_seq) the tee backend commits locally and
-	// tees upstream as a durable frame (RIG-1570). Constructed with
-	// `create(TranscriptEntrySchema, …)` so the branded message satisfies the
-	// AgentFrame oneof.
+	// The `transcript_entry` variant's payload: one committed SDK session entry (entry_json +
+	// checkpoint + entry_seq) the tee backend commits locally and tees upstream (RIG-1570).
+	// Constructed with `create(...)` so the branded message satisfies the AgentFrame oneof.
 	type TranscriptEntry,
 	TranscriptEntrySchema,
 	type TranscriptReplay,
@@ -217,12 +188,9 @@ export {
 	ListMessagesRequestSchema,
 	type ListMessagesResponse,
 	ListMessagesResponseSchema,
-	// Conversation payloads (comms surface). The AgentFrame reuses
-	// MessagePosted/MessageUpdated (each wraps a Message carrying MessageBlocks)
-	// as its conversation variants — no bare-block variant. The MessageBlock
-	// oneof carries the surviving durable-conversation variants (text + ask); the
-	// trace variants (thought/tool_call/plan/diff) ride the typed SessionEvent on
-	// the session surface, not comms blocks (design: architecture-lineage, spine-inversion).
+	// Conversation payloads (comms surface). The AgentFrame reuses MessagePosted/MessageUpdated
+	// (each wraps a Message carrying MessageBlocks) as its conversation variants. The MessageBlock
+	// oneof carries the durable variants (text + ask); trace variants ride the typed SessionEvent.
 	type Message,
 	type MessageBlock,
 	MessageBlockSchema,
@@ -249,11 +217,9 @@ export {
 	RosterScope,
 } from "./gen/compass/v1/comms_pb";
 export {
-	// ── Forge canonical result types (DL-069/DL-092: the forge domain arms
-	// retype to these) plus the multi-forge selector. `Issue`/`PullRequest` are
-	// the read + create-ack payloads; `Review`/`ReviewThread`/`Comment`/
-	// `ChecksSummary`/`AgentAttribution` are the nested read-render sub-messages;
-	// `ForgeRef`/`ForgeProvider` are the selector every forge tool spreads.
+	// Forge canonical result types (DL-069/DL-092: the forge domain arms retype to these) plus
+	// the multi-forge selector. Issue/PullRequest are read + create-ack payloads; Review/etc are
+	// nested read-render sub-messages; ForgeRef/ForgeProvider are the selector every forge tool spreads.
 	type AgentAttribution,
 	// The plan entry the typed session plan reuses (content + status) and its
 	// status enum — reused rather than minting parallel enums
@@ -280,11 +246,9 @@ export {
 	PullRequestSchema,
 	type Review,
 	type ReviewThread,
-	// The typed observation-trace event (design: architecture-lineage)
-	// carried by SessionFrame.typed_event: a oneof over assistant-text
-	// / thinking chunks, a tool call + its updates (with file diffs), a plan, or a
-	// notice. The emitter builds one per trace event it maps; the Session* sub-
-	// message schemas are the oneof payloads it constructs with `create`.
+	// The typed observation-trace event carried by SessionFrame.typed_event: a oneof over
+	// assistant-text / thinking chunks, a tool call + updates (with diffs), a plan, or a notice.
+	// The emitter builds one per trace event; the Session* sub-messages are the oneof payloads.
 	type SessionAssistantText,
 	SessionAssistantTextSchema,
 	type SessionError,
@@ -309,11 +273,9 @@ export {
 	SessionToolCallUpdateSchema,
 } from "./gen/compass/v1/compass_pb";
 export {
-	// The forge write-ack references (internal-only forge gen). `CommentRef` is
-	// the ack for both comment arms (url + comment_id; body/forge_account/agent
-	// set only on a notification, unused here); `ReviewRef` is the submit_review
-	// ack (url + review_id + echoed verdict). `ForgeArtifactKind` is the
-	// subscribe arm's kind selector.
+	// The forge write-ack references (internal-only forge gen). `CommentRef` is the ack for both
+	// comment arms; `ReviewRef` is the submit_review ack (url + review_id + verdict);
+	// `ForgeArtifactKind` is the subscribe arm's kind selector.
 	type CommentRef,
 	CommentRefSchema,
 	ForgeArtifactKind,

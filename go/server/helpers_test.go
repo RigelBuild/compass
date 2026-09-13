@@ -2,12 +2,10 @@
 
 package server
 
-// Shared test scaffolding for the server package tests: in-process h2c
-// transports (the same cleartext-HTTP/2 door the server ships) so the
-// SubscribeEvents / GetServerInfo handlers are exercised through a real
-// connect-go client rather than called directly. White-box (package server)
-// so tests can construct the unexported service and drive the socket-door
-// helpers.
+// Shared test scaffolding for the server package tests: in-process h2c transports
+// (the same cleartext-HTTP/2 door the server ships) so handlers are exercised
+// through a real connect-go client. White-box (package server) so tests can
+// construct the unexported service and drive the socket-door helpers.
 
 import (
 	"context"

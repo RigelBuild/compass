@@ -59,13 +59,10 @@ func TestSubjectBuilders(t *testing.T) {
 		}
 	})
 
-	// The routing plane's two builders. Both the publisher
-	// (PublishBindingChange) and the subscriber (SubscribeBindingChanges)
-	// derive their subject from the one routingBindingPrefix constant, so every
-	// integration test on this seam is a round-trip through the same string and
-	// stays green after a typo in it — while the wire grammar silently diverges
-	// from SUBJECTS.md and from any other process on the bus. Pinning the
-	// literals is the only thing that catches that.
+	// The routing plane's two builders. Both publisher and subscriber derive
+	// their subject from the one routingBindingPrefix constant, so a round-trip
+	// test stays green after a typo while the wire grammar silently diverges from
+	// SUBJECTS.md. Pinning the literals is the only thing that catches that.
 	t.Run("routing binding", func(t *testing.T) {
 		t.Parallel()
 		got, err := RoutingBindingSubject("t1")

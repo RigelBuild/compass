@@ -13,47 +13,36 @@ import {
 	rewriteInlineHash,
 } from "./refresh-fod-hashes.ts";
 
-// Regression + unit test for tools/renovate/refresh-fod-hashes.ts (PR #579).
-//
-// The bug this guards against: a dependency bump moves a pinned Nix
-// fixed-output-derivation hash (the Go `vendorHash` in guest-image/default.nix on
-// a gomod bump; the bun `outputHash` in agent-image/entrypoint.nix on a bun/
-// catalog bump), and nothing regenerates it, so the image build fails
-// `hash mismatch in fixed-output derivation` and the bump PR goes red. The
-// refresher recomputes the hash IN the bump branch so the PR lands green.
-//
-// It also guards the SECOND half of that pin's story: `outputHash` is realised by
-// two builders (guest-image with root's pkgs, the agent image with its own), so
-// the table pairs an AUTHORITATIVE entry that writes the value with a VERIFY
-// entry that recomputes it through the agent-image vehicle and compares. Equal is
-// a quiet no-op; a difference must throw naming both SRIs, because no single
-// literal can then satisfy both builders.
-//
-// The failure mode is precisely the script's cwd × git-cwd-relative-pathspec
-// gate interaction plus the fake-hash→build→parse-`got:` recovery — only a real
-// run in a real git repo exercises it. So this drives the ACTUAL shipped script
-// (never a re-implementation) inside a throwaway git tree with a FAKE `nix` on
-// PATH that emits the `hash mismatch … got: <sri>` shape keyed to the faked pin.
-//
-// Network-free & deterministic: the stub `nix` derives a stable `got:` SRI from
-// the drv fragment it's asked to build, so a run is fully offline and asserting a
-// pin took the fragment-specific stub value proves both that the per-FOD gate
-// fired AND that the correct derivation's hash was parsed and written back. The
-// stub also honours a per-vehicle divergence knob, which is how the two-builders
-// disagreement is exercised without two real nixpkgs.
-//
-// The fixture layout, trigger files, vehicles, and pin markers are DERIVED from
-// the script's own exported FOD_ENTRIES table, so a rebase that edits the table
-// keeps this honest without a second edit.
+// Regression + unit test for refresh-fod-hashes.ts (PR #579). The bug: a bump
+// moves a pinned Nix FOD hash (the Go vendorHash on a gomod bump; the bun
+// outputHash on a bun/catalog bump), nothing regenerates it, so the image build
+// fails "hash mismatch" and the PR goes red. The refresher recomputes it in-branch.
+
+// It also guards the SECOND half: outputHash is realised by two builders, so the
+// table pairs an AUTHORITATIVE entry that writes with a VERIFY entry that
+// recomputes through the agent-image vehicle and compares. Equal is a quiet no-op;
+// a difference must throw naming both SRIs.
+
+// The failure mode is the script's cwd × git-cwd-relative-pathspec gate plus the
+// fake-hash→build→parse-got: recovery — only a real run in a real git repo
+// exercises it. So this drives the ACTUAL shipped script in a throwaway git tree
+// with a FAKE nix emitting the "hash mismatch … got: <sri>" shape.
+
+// Network-free: the stub nix derives a stable got: SRI from the drv fragment, so
+// asserting a pin took the fragment-specific value proves both that the per-FOD
+// gate fired and that the right derivation was parsed. The stub also honours a
+// per-vehicle divergence knob for the two-builders disagreement.
+
+// The fixture layout, triggers, vehicles, and pin markers are DERIVED from the
+// script's own exported FOD_ENTRIES, so a rebase editing the table stays honest.
 
 const SCRIPT_REL = "tools/renovate/refresh-fod-hashes.ts";
 const REAL_SCRIPT = join(import.meta.dir, "refresh-fod-hashes.ts");
 
 // Resolve each FOD entry from the shipped table by its stable id, throwing on
-// drift so the fixture follows the script. A returning helper (not a top-level
-// `if (!x) throw`) gives a non-nullable type that narrows into the closures
-// below. Keyed on `id`, not `drvFragment`: the two entrypoint.nix entries share a
-// fragment by design — they are the same derivation seen through two nixpkgs.
+// drift so the fixture follows the script. Keyed on id, not drvFragment: the two
+// entrypoint.nix entries share a fragment by design (the same derivation through
+// two nixpkgs).
 function mustFind(id: string): FodEntry {
 	const entry = FOD_ENTRIES.find((e) => e.id === id);
 	if (!entry) {
@@ -85,10 +74,9 @@ const PLACEHOLDER_GO = "sha256-PLACEHOLDERgovendor00000000000000000000=";
 const PLACEHOLDER_BUN = "sha256-PLACEHOLDERbunoutput00000000000000000000=";
 
 // Minimal nix files carrying the real markers the script keys on. The script only
-// reads/rewrites the marker line, so the surrounding nix need not be buildable —
-// the fake `nix` never actually evaluates it. The marker already ends in
-// `sha256-`, so interpolate the placeholder body WITHOUT its own `sha256-` prefix
-// (else the line carries `sha256-sha256-…`).
+// reads/rewrites the marker line, so the surrounding nix need not be buildable.
+// The marker already ends in sha256-, so interpolate the placeholder body without
+// its own sha256- prefix.
 const bodyOf = (sri: string) => sri.replace(/^sha256-/, "");
 const GO_NIX_FIXTURE = `let
   guestd = pkgs.buildGoModule {
@@ -117,14 +105,10 @@ in nodeModules
 // script passes to `nix build -f`, matching the real layout.
 const VEHICLE_FIXTURE = "{ }\n";
 
-// A fake `nix`: emit a `hash mismatch` block for BOTH FODs (the real build with
-// --keep-going reports every stale FOD), each with a fragment-derived
-// deterministic `got:` SRI. Shape matches what parseGotForFragment scans for.
-// Offline.
-//
-// STUB_DIVERGE_VEHICLE, when set to a `-f <file>` value, makes THAT vehicle
-// report a different SRI for the same fragment — the two-builders-disagree case,
-// which is otherwise only reachable with two real, skewed nixpkgs revisions.
+// A fake nix: emit a hash mismatch block for BOTH FODs (the real build with
+// --keep-going reports every stale FOD), each with a fragment-derived got: SRI.
+// Offline. STUB_DIVERGE_VEHICLE, set to a -f <file> value, makes THAT vehicle
+// report a different SRI for the same fragment — the two-builders-disagree case.
 const STUB_NIX = `#!/usr/bin/env bash
 # Find the \`-f <file>\` vehicle so a per-vehicle divergence can be simulated.
 vehicle=""
@@ -295,10 +279,9 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 	});
 
 	// RIG-2852 Gap 1: the SAME go/go.mod bump must refresh the flake.nix MIRROR to
-	// the identical value — not just guest-image/default.nix. Before this fix the
-	// mirror was never touched, so an auto-opened Go bump landed with flake.nix's
-	// vendorHash stale and `nix flake check` red. Assert every declared mirror got
-	// the go-modules SRI and none kept its distinct placeholder.
+	// the identical value. Before this fix the mirror was never touched, so an
+	// auto-opened Go bump landed with flake.nix stale and nix flake check red.
+	// Assert every declared mirror got the go-modules SRI, none kept its placeholder.
 	test("refreshes every flake.nix mirror to the same SRI on a go/go.mod bump", async () => {
 		await Bun.write(join(repo, "go/go.mod"), "bumped\n");
 
@@ -351,13 +334,9 @@ describe("tools/renovate/refresh-fod-hashes.ts gate (PR #579)", () => {
 	});
 
 	// The HIGH-finding regression (RIG-3296 review): a devenv-nixpkgs channel bump
-	// that does NOT move biome leaves bun.lock untouched (refresh-devenv-nixpkgs
-	// skips the relock when the catalog pin is static), yet the channel moves
-	// pkgs.bun — the FOD's builder — which may move the recursive outputHash. So
-	// the node-modules entry gates on devenv.lock too: a devenv.lock-only diff
-	// must still refresh the bun outputHash, or a biome-static channel bump ships
-	// the exact `compass-agent-node-modules` hash mismatch this task exists to
-	// prevent. The Go pin is left untouched (its trigger did not change).
+	// that does NOT move biome leaves bun.lock untouched, yet the channel moves
+	// pkgs.bun (the FOD builder). So the node-modules entry gates on devenv.lock too:
+	// a devenv.lock-only diff must still refresh the bun outputHash.
 	test("a devenv.lock-only bump refreshes the bun outputHash (channel pkgs.bun move)", async () => {
 		const goBefore = await readFile(join(repo, GO_ENTRY.file), "utf8");
 		await Bun.write(join(repo, "devenv.lock"), "bumped\n");
@@ -444,11 +423,10 @@ describe("two builders, one outputHash: the verify entry", () => {
 		expect(bunNix).not.toContain("sha256-AAAAAAAA");
 	});
 
-	// The MISMATCH path — the whole reason the second vehicle exists. The
-	// agent-image vehicle reports a different SRI for the same FOD, meaning the
-	// two channel revs' buns produce different install trees. One literal cannot
-	// serve both, so the task must exit non-zero (reddening `renovate/artifacts`)
-	// with a diagnosis naming BOTH SRIs, both vehicles, and both channel revs.
+	// The MISMATCH path — the whole reason the second vehicle exists. The agent-image
+	// vehicle reports a different SRI for the same FOD (the two channel revs' buns
+	// produce different trees). One literal cannot serve both, so the task exits
+	// non-zero with a diagnosis naming BOTH SRIs, both vehicles, and both channel revs.
 	test("a divergent second vehicle throws naming both SRIs, vehicles and revs", async () => {
 		await Bun.write(join(repo, "bun.lock"), "bumped\n");
 
@@ -488,11 +466,10 @@ describe("two builders, one outputHash: the verify entry", () => {
 		expect(bunNix).not.toContain("sha256-AAAAAAAA");
 	});
 
-	// Ordering is load-bearing: the authoritative write must land BEFORE the
-	// verify reads its baseline, or every ordinary refresh would be reported as a
-	// divergence (the verify would compare the new value against the stale pin).
-	// Assert it on the observable log order, so a refactor that reorders the run
-	// set fails here.
+	// Ordering is load-bearing: the authoritative write must land BEFORE the verify
+	// reads its baseline, or every ordinary refresh would read as a divergence.
+	// Assert it on the observable log order, so a refactor that reorders the run set
+	// fails here.
 	test("writes the authoritative value before the verify reads its baseline", async () => {
 		await Bun.write(join(repo, "bun.lock"), "bumped\n");
 
@@ -677,12 +654,10 @@ describe("FOD_ENTRIES table invariants", () => {
 		expect(() => assertFodTableInvariants(FOD_ENTRIES)).not.toThrow();
 	});
 
-	// `vehicleChannelLock` is a CLAIM about `buildFile`: it names the lock whose
-	// nixpkgs node supplies that vehicle's `pkgs`. Nothing in the type system ties
-	// the two, so a vehicle pointed at the sibling scope's lock would satisfy
-	// every structural invariant (different file name, different target) and then
-	// re-derive the identical hash — a verify that always agrees and checks
-	// nothing. Read the vehicle and assert it really reads the lock it declares.
+	// vehicleChannelLock is a CLAIM about buildFile: it names the lock whose nixpkgs
+	// node supplies that vehicle's pkgs. Nothing in the type system ties the two, so
+	// a vehicle pointed at the sibling scope's lock would satisfy every structural
+	// invariant and re-derive the identical hash — a verify that always agrees.
 	test("every entry's vehicle reads the channel lock the table declares", async () => {
 		for (const entry of FOD_ENTRIES) {
 			const vehicle = await readFile(join(repoRoot, entry.buildFile), "utf8");
@@ -706,19 +681,14 @@ describe("FOD_ENTRIES table invariants", () => {
 		}
 	});
 
-	// No gate in the repo EVALUATES the renovate vehicle: the only nix eval in CI
-	// is over tools/toolchain/gate-tools.nix, and guest-image/default.nix is
-	// covered by the guest-image project's own build. So a syntax break in a
-	// vehicle would pass every check on the PR that ships it and first surface on
-	// a live Renovate branch, where the realise fails with an eval error, the
-	// refresh exits non-zero, and the bumped lock still lands beside an
-	// unrefreshed pin — the silent drift this table exists to prevent, through a
-	// different door. `--parse` is offline and sub-second, so it runs here.
-	//
-	// The precondition uses `which`, NOT `command -v`: the latter is a shell
-	// BUILTIN that Bun's own shell does not implement, so it returns non-zero
-	// even where nix is installed — which would skip this test everywhere and
-	// leave it permanently vacuous.
+	// No gate in the repo EVALUATES the renovate vehicle (the only CI nix eval is
+	// over gate-tools.nix), so a syntax break would pass every PR check and first
+	// surface on a live Renovate branch — the silent drift this table prevents,
+	// through a different door. --parse is offline and sub-second, so it runs here.
+
+	// The precondition uses which, NOT command -v: the latter is a shell builtin
+	// Bun's shell does not implement, so it returns non-zero even where nix is
+	// installed — which would skip this test everywhere and leave it vacuous.
 	test("every entry's vehicle parses as nix", async () => {
 		const nixOnPath = await $`which nix-instantiate`.nothrow().quiet();
 		if (nixOnPath.exitCode !== 0) return;

@@ -1,23 +1,7 @@
-// The connect-query-core → solid-query glue seam (query record §A2).
-//
-// connect-query-core is framework-agnostic: its option factories return a
-// `{ queryKey, queryFn, structuralSharing }` (plus `getNextPageParam` /
-// `initialPageParam` for infinite queries), keyed by the generated method
-// descriptor + transport + input via `createConnectQueryKey`. No first-party
-// Solid binding exists (connect-query ships React hooks only), so this small
-// typed module maps a core descriptor to a `@tanstack/solid-query` call. It is
-// glue, not a fork — deletable the day a first-party `connect-solid-query` ships.
-//
-// Two load-bearing choices, both from the record:
-//   1. Options are a THUNK. Solid Query re-runs the thunk when a signal it reads
-//      changes, so a reactive `input` re-keys and refetches (§A2).
-//   2. The `QueryClient` is passed EXPLICITLY as the query hook's second
-//      argument (an `Accessor<QueryClient>`, `() => opts.queryClient`), never
-//      resolved from context. Store-internal queries have no
-//      `QueryClientProvider` ancestor — the store singleton is built before
-//      `render()` mounts the provider (§A3) — so context resolution would throw
-//      `No QueryClient set` at boot. The provider (§A1) serves components; the
-//      store uses the explicit client.
+// The connect-query-core → solid-query glue seam (query record §A2). connect-query-core
+// ships React hooks only, so this maps a core descriptor to a `@tanstack/solid-query`
+// call. Options are a THUNK (a reactive `input` re-keys/refetches); the `QueryClient` is
+// passed EXPLICITLY, never from context (store-internal queries have no provider ancestor).
 
 import type {
 	DescMessage,

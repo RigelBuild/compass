@@ -1,13 +1,7 @@
-// CompassAgent: control application + the frozen replay barrier (§T5). Tests
-// inject a fake `AgentSession` — a recording inner `Agent` behind `session.agent`
-// plus a `subscribe` on the session (the AgentSessionEvent stream source) — and a
-// fake ControlSource (a finite async generator — no stdin, no timers), then
-// assert the observable effects: which SDK methods `run()` drove on
-// `session.agent`, in what order, and the STARTING/STOPPED/ERRORED `session`
-// lifecycle frames bracketing the run. The board lifecycle rides the `session`
-// variant (SessionFrame.state); the agent mints no server id. The barrier is the
-// load-bearing contract: live input is refused (and surfaced, never dropped)
-// until ReplayComplete lifts it.
+// CompassAgent: control application + the frozen replay barrier (§T5). Tests inject a fake
+// AgentSession (a recording inner Agent + a subscribe stream) and a fake ControlSource, then
+// assert the observable effects: which SDK methods run() drove, in what order, and the lifecycle
+// frames bracketing it. The barrier is load-bearing: live input is refused until ReplayComplete lifts it.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
@@ -67,33 +61,25 @@ import type { OutboundFrame } from "./frame";
 import type { UnmappedEvent } from "./mapping";
 import { createTraceBridge, type TraceBridge } from "./trace-bridge";
 
-// A recording fake for the SDK Agent — the control surface CompassAgent drives
-// (now reached through `session.agent`). It records the calls the class makes so
-// tests assert on observable behavior (what was driven) rather than internals.
-// Only the members CompassAgent touches are implemented; the rest of the wide
-// Agent surface is never called, so the cast at construction is honest.
+// A recording fake for the SDK Agent — the control surface CompassAgent drives (reached
+// through session.agent). It records the calls the class makes so tests assert on observable
+// behavior, not internals. Only the members CompassAgent touches are implemented, so the cast
+// at construction is honest.
 interface RecordingAgent {
 	readonly prompts: string[];
 	readonly steers: AgentMessage[];
 	readonly appended: AgentMessage[];
 	readonly systemPrompts: (string[] | string)[];
 	readonly toolSets: AgentTool[][];
-	// The live SDK-shaped state CompassAgent reads its native tool set from at
-	// construction. Mirrors `Agent.state` (which returns the live object), so a
-	// test can assert the snapshot is a copy and not this array. `isStreaming`
-	// mirrors `Agent.state.isStreaming` (pi-agent-core agent.ts:1072) — mutable so
-	// a test can model the control-prompt spin-up window (streaming true before
-	// any agent_start event) that the idle-deliver race hinges on.
+	// The live SDK-shaped state CompassAgent reads its native tool set from at construction.
+	// Mirrors Agent.state (which returns the live object), so a test can assert the snapshot is
+	// a copy. isStreaming mirrors Agent.state.isStreaming — mutable so a test can model the
+	// control-prompt spin-up window (streaming true before agent_start) the idle-deliver race hinges on.
 	readonly state: { tools: AgentTool[]; isStreaming: boolean };
-	// Forces the next `prompt()` to reject with the "No model configured" Error
-	// (pi-agent-core agent.ts:990), INDEPENDENT of `state.isStreaming`. Models the
-	// one genuinely reachable idle-steer rejection: `CompassAgent.steer` starts an
-	// idle turn via `prompt()` (not `continue()`), and prompt rejects only via the
-	// already-streaming AgentBusyError (:986 — unreachable on the idle path, which
-	// is synchronous from the idle gate so `isStreaming` cannot change) or the
-	// no-model throw (:990, pre-injection). Setting `state.isStreaming` true
-	// instead would flip the idle gate to the mid-turn path, so the idle-only
-	// rejection belt would never run — hence a dedicated trigger.
+	// Forces the next prompt() to reject with "No model configured", INDEPENDENT of isStreaming.
+	// Models the one reachable idle-steer rejection: CompassAgent.steer starts an idle turn via
+	// prompt(), which rejects only via the already-streaming AgentBusyError (unreachable on the
+	// synchronous idle path) or the no-model throw — so a dedicated trigger is needed.
 	promptRejectsNoModel: boolean;
 }
 
@@ -111,20 +97,15 @@ interface RecordingSession {
 	// inner agent's `state.isStreaming` (minus the in-flight count the real getter
 	// also folds in — irrelevant to this fake's synchronous drive).
 	readonly isStreaming: boolean;
-	// RIG-2644 — the strand-recovery re-check awaits this (agent.ts
-	// #armStrandRecovery). Mirrors AgentSession.waitForIdle (agent-session.ts:6478):
-	// resolves once streaming has settled. Deterministic, no timers: resolves at
-	// once when already idle, else parks until `settleIdle()` releases it (the test
-	// models the untracked probe clearing).
+	// RIG-2644 — the strand-recovery re-check awaits this (#armStrandRecovery). Mirrors
+	// AgentSession.waitForIdle: resolves once streaming has settled. Deterministic, no timers —
+	// resolves at once when idle, else parks until settleIdle() releases it (the test models the
+	// untracked probe clearing).
 	waitForIdle(): Promise<void>;
-	// Test control: release any parked waitForIdle — models a startup
-	// probe/prewarm finishing with no agent_end on the stream. Default clears the
-	// streaming flag too (fully idle). `keepStreaming: true` resolves the waiters
-	// but LEAVES isStreaming true — faithfully modelling production's window where
-	// AgentSession.waitForIdle (which awaits the inner agent, agent-session.ts:6478-6481)
-	// resolves while `isStreaming` still reads true because a fresh probe holds
-	// `#promptInFlightCount > 0` (the fold at :6469-6470). That window is what
-	// makes the recovery re-arm branch fire.
+	// Test control: release any parked waitForIdle — models a startup probe finishing with no
+	// agent_end. Default clears the streaming flag too. keepStreaming: true resolves the waiters
+	// but LEAVES isStreaming true — modelling the window where waitForIdle resolves while
+	// isStreaming still reads true (a fresh probe holds #promptInFlightCount > 0), firing the re-arm branch.
 	settleIdle(opts?: { keepStreaming?: boolean }): void;
 }
 
@@ -140,28 +121,20 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 	};
 	const agentImpl = {
 		prompt(input: string): Promise<void> {
-			// Mirror the real `Agent.prompt` refusal shapes (pi-agent-core agent.ts
-			// :985-990), both surfaced as a promise REJECTION before any injection:
-			// AgentBusyError if already streaming (:986), and the "No model
-			// configured" throw (:990). The streaming guard reproduces the deliver
-			// spin-up race; the no-model throw is the one reachable idle-STEER
-			// rejection the steer belt must survive (the idle path starts its turn
-			// via prompt(), so this is its injection-refused case).
+			// Mirror the real Agent.prompt refusal shapes, both surfaced as a REJECTION before any
+			// injection: AgentBusyError if already streaming, and the "No model configured" throw.
+			// The streaming guard reproduces the deliver spin-up race; the no-model throw is the one
+			// reachable idle-STEER rejection the steer belt must survive.
 			if (agent.state.isStreaming) {
 				return Promise.reject(new AgentBusyError());
 			}
 			if (agent.promptRejectsNoModel) {
 				return Promise.reject(new Error("No model configured"));
 			}
-			// Faithful to production: `Agent.prompt` sets `#state.isStreaming = true`
-			// SYNCHRONOUSLY on the success path (pi-agent-core agent.ts:1072), AFTER
-			// both refusal guards above (:985 busy, :990 no-model, which reject
-			// BEFORE any injection and never flip streaming). The inner loop clears
-			// it again at the `agent_end` edge (:1254) — modeled in the `drive`
-			// helpers, which clear it before delivering an `agent_end` event, exactly
-			// as production emits that edge with streaming already false. This is
-			// what makes a SECOND synchronous `prompt()` on one turn-end edge collide
-			// with AgentBusyError — the bug the single-prompt turn-end flush closes.
+			// Faithful to production: Agent.prompt sets isStreaming = true SYNCHRONOUSLY on the
+			// success path, AFTER both refusal guards (which reject BEFORE any injection). The inner
+			// loop clears it at the agent_end edge — modeled in the drive helpers. This is what makes
+			// a SECOND synchronous prompt() on one turn-end edge collide with AgentBusyError.
 			agent.state.isStreaming = true;
 			agent.prompts.push(input);
 			return Promise.resolve();
@@ -235,11 +208,10 @@ function names(tools: AgentTool[] | undefined): string[] {
 	return (tools ?? []).map((t) => t.name);
 }
 
-// Run one agent over a fixed control script, capturing sink frames and unmapped
-// events. The ControlSource is a finite async generator (no stdin, no timers),
-// so `run()` resolves once it ends. The recording session is the only external
-// dependency; the cast to AgentSession is honest because CompassAgent touches
-// only the members implemented above.
+// Run one agent over a fixed control script, capturing sink frames and unmapped events. The
+// ControlSource is a finite async generator (no stdin, no timers), so run() resolves once it
+// ends. The recording session is the only external dependency; the cast to AgentSession is
+// honest because CompassAgent touches only the members implemented above.
 async function runWith(controls: AgentControl[], natives: AgentTool[] = []) {
 	const session = recordingSession(natives);
 	const frames: OutboundFrame[] = [];
@@ -266,12 +238,10 @@ async function runWith(controls: AgentControl[], natives: AgentTool[] = []) {
 	return { session, agent: session.agent, frames, unmapped };
 }
 
-// Run one agent over an arbitrary ControlSource, capturing sink frames and
-// whether run() rejected. Unlike runWith (which builds a finite generator from a
-// fixed script), this takes the source directly so a test can supply one that
-// throws mid-stream — the control-loop crash path. run() is awaited defensively:
-// on rejection the error is captured, never re-thrown, so the caller asserts on
-// both the terminal frames AND the rejection.
+// Run one agent over an arbitrary ControlSource, capturing sink frames and whether run()
+// rejected. Unlike runWith (which builds a finite generator from a fixed script), this takes
+// the source directly so a test can supply one that throws mid-stream — the control-loop crash
+// path. run() is awaited defensively: on rejection the error is captured, never re-thrown.
 async function runWithSource(control: ControlSource) {
 	const session = recordingSession();
 	const frames: OutboundFrame[] = [];
@@ -409,11 +379,10 @@ function answeredAsk(questions: AskQuestion[]): Ask {
 	return create(AskSchema, { questions, answered: true });
 }
 
-// A CompassAgent over a PUSHABLE control source: `feed` enqueues a control op
-// and lets the run loop drain it, `drive` pushes session turn edges through the
-// recorded listener, `close` ends the loop. Unlike runWith (a fixed script that
-// runs to completion) this interleaves control ops with turn edges — the
-// deliver coalescing path needs both.
+// A CompassAgent over a PUSHABLE control source: `feed` enqueues a control op and lets the run
+// loop drain it, `drive` pushes session turn edges through the recorded listener, `close` ends
+// the loop. Unlike runWith (a fixed script that runs to completion) this interleaves control
+// ops with turn edges — the deliver coalescing path needs both.
 function startControlAgent(natives: AgentTool[] = []) {
 	const session = recordingSession(natives);
 	const frames: OutboundFrame[] = [];
@@ -578,12 +547,10 @@ describe("CompassAgent — construction-time native tools survive every config c
 	});
 
 	test("the native snapshot is a copy: mutating the live state.tools in place after construction cannot alter the native set", async () => {
-		// Split construction from run so we can mutate the caller-owned
-		// `state.tools` array AFTER the constructor snapshots it but BEFORE a
-		// config control merges natives. The snapshot is a copy (agent.ts), so
-		// the in-place mutation below must not leak through: the native still
-		// merges from the construction-time set, and the injected tool never
-		// appears. This FAILS if the defensive spread at construction is dropped.
+		// Split construction from run so we can mutate the caller-owned state.tools array AFTER
+		// the constructor snapshots it but BEFORE a config control merges natives. The snapshot is
+		// a copy, so the in-place mutation must not leak through: the native still merges from the
+		// construction-time set, and the injected tool never appears. FAILS if the spread is dropped.
 		const nativeSend = tool("cotal_send");
 		const session = recordingSession([nativeSend]);
 		const frames: OutboundFrame[] = [];
@@ -653,12 +620,11 @@ describe("CompassAgent — terminal status distinguishes failure from clean stop
 
 // ---------------------------------------------------------------------------
 // RIG-1310 §8 — RT-3 turn-end delivery (DELIVER arm).
-//
-// deliver() rides the immediate handle (not the control script), so these tests
-// construct CompassAgent directly and call `agent.deliver(msg)`, driving turn
-// edges through the recorded `session.listener`. run() is started (not awaited)
-// so the subscribe listener is registered; a held-open control source keeps the
-// run loop parked until the test closes it, so nothing races the assertions.
+
+// deliver() rides the immediate handle (not the control script), so these tests construct
+// CompassAgent directly and call agent.deliver(msg), driving turn edges through the recorded
+// listener. run() is started (not awaited) so the subscribe listener registers; a held-open
+// control source keeps the run loop parked until the test closes it.
 
 // A comms Message fixture: id + a single text block, and its topic. The id is
 // load-bearing (dedup + ack key); the text is what the coalesced prompt must
@@ -704,11 +670,10 @@ function startDeliverAgent(natives: AgentTool[] = [], tracer?: TraceBridge) {
 	const controlClosed = new Promise<void>((resolve) => {
 		releaseControl = resolve;
 	});
-	// A held-open control source: it yields NO ops and resolves (ends the
-	// iterable) only when `close()` releases it, so run() registers the turn
-	// listener but the control loop parks until the test is done. Expressed as an
-	// async iterator whose `next()` resolves once (to done) after the release —
-	// no `yield`, mirroring `dropsImmediately` in control-source.test.ts.
+	// A held-open control source: it yields NO ops and resolves (ends the iterable) only when
+	// close() releases it, so run() registers the turn listener but the control loop parks until
+	// the test is done. Expressed as an async iterator whose next() resolves once (to done) after
+	// the release — no yield, mirroring dropsImmediately in control-source.test.ts.
 	const control: ControlSource = {
 		[Symbol.asyncIterator]() {
 			return {
@@ -756,11 +721,10 @@ function ackIds(frames: OutboundFrame[]): string[] {
 	);
 }
 
-// The SessionInjection observation frames captured, in order, as
-// {opKind, messageId, fromHandle, traceparent} objects. A SessionInjection
-// rides the `session` variant's typed_event (the same FrameSink path the trace
-// events use), so it is a "session" OutboundFrame whose typedEvent oneof case
-// is "sessionInjection".
+// The SessionInjection observation frames captured, in order, as {opKind, messageId,
+// fromHandle, traceparent} objects. A SessionInjection rides the `session` variant's
+// typed_event (the same FrameSink path the trace events use), so it is a "session"
+// OutboundFrame whose typedEvent oneof case is "sessionInjection".
 function injections(frames: OutboundFrame[]): {
 	opKind: SessionInjectionKind;
 	messageId: string;
@@ -782,12 +746,10 @@ function injections(frames: OutboundFrame[]): {
 	});
 }
 
-// The `content` string of a recorded steer AgentMessage. CompassAgent.steer
-// injects a UserMessage ({ role:"user", content: <formatted text> }), but the
-// recorded type is the wide AgentMessage union (whose custom arms — e.g.
-// BranchSummaryMessage — have no `content`), so a test asserting on the injected
-// text must narrow first. Fails loud if the recorded steer is not the expected
-// user-message shape rather than silently reading undefined.
+// The `content` string of a recorded steer AgentMessage. CompassAgent.steer injects a
+// UserMessage ({ role:"user", content: <text> }), but the recorded type is the wide
+// AgentMessage union (whose custom arms have no content), so a test asserting on the injected
+// text must narrow first. Fails loud if the recorded steer is not the expected user-message shape.
 function steerContent(m: AgentMessage): string {
 	if (!("content" in m) || typeof m.content !== "string") {
 		throw new Error("recorded steer is not a string-content user message");
@@ -795,13 +757,10 @@ function steerContent(m: AgentMessage): string {
 	return m.content;
 }
 
-// Drain the microtask queue: the delivery ack is emitted on the microtask right
-// after `#flushDelivers` issues its prompt (the injection-accepted point — see
-// the method comment in agent.ts), so a test asserting on acks must let that
-// microtask run first. Awaiting a resolved promise yields one microtask turn,
-// which is enough: the flush's ack microtask and any settled-rejection `.catch`
-// were both scheduled synchronously by the `deliver`/`agent_end` call, ahead of
-// this await.
+// Drain the microtask queue: the delivery ack is emitted on the microtask right after
+// #flushDelivers issues its prompt (the injection-accepted point), so a test asserting on acks
+// must let that microtask run first. Awaiting a resolved promise yields one microtask turn,
+// enough: the flush's ack microtask and any settled-rejection .catch were scheduled ahead of this await.
 async function tick(): Promise<void> {
 	await Promise.resolve();
 }
@@ -870,11 +829,10 @@ describe("CompassAgent — RT-3 turn-end delivery (RIG-1310 §8 deliver arm)", (
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();
 		expect(ackIds(h.frames)).toEqual(["m1"]);
-		// The SAME id, redelivered after its ack was lost on the "never-drop"
-		// PRIORITY lane (its retry budget exhausted on a >~1s socket outage, or a
-		// Runner restart mid-flush — publish-spine.ts:156-158). m1 is ALREADY
-		// injected (not in #deliverQueue), so the dedup-drop path RE-ACKS to
-		// recover the stranded Server delivery cursor, and does NOT re-inject.
+		// The SAME id, redelivered after its ack was lost on the "never-drop" PRIORITY lane (its
+		// retry budget exhausted on a >~1s outage, or a Runner restart mid-flush). m1 is ALREADY
+		// injected (not in #deliverQueue), so the dedup-drop path RE-ACKS to recover the stranded
+		// Server delivery cursor, and does NOT re-inject.
 		h.agent.deliver(deliverMsg("m1", "once"));
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();
@@ -937,14 +895,10 @@ describe("CompassAgent — RT-3 turn-end delivery (RIG-1310 §8 deliver arm)", (
 		await h.close();
 	});
 
-	// The high-severity race (RIG-1310 §8): a control-driven prompt sets the inner
-	// agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072) but flips
-	// `#turnActive` only later, off the async `agent_start` event. A deliver that
-	// lands in that window must NOT be flushed — flushing would inject into a
-	// streaming agent, the prompt would reject (AgentBusyError), and the message
-	// would be acked-and-dropped: a false receipt for a never-injected message,
-	// the exact frozen-contract violation this gate closes. Modeled by setting the
-	// fake's `state.isStreaming = true` WITHOUT firing `agent_start`.
+	// The high-severity race (RIG-1310 §8): a control-driven prompt sets the inner agent streaming
+	// SYNCHRONOUSLY but flips #turnActive only later, off the async agent_start. A deliver in that
+	// window must NOT be flushed — flushing injects into a streaming agent, the prompt rejects
+	// (AgentBusyError), and the message is acked-and-dropped. Modeled by isStreaming=true without agent_start.
 	test("a deliver during the control-prompt spin-up window is queued, not acked-and-dropped", async () => {
 		const h = startDeliverAgent();
 		// A control prompt has spun up the inner agent: streaming true, but no
@@ -966,13 +920,10 @@ describe("CompassAgent — RT-3 turn-end delivery (RIG-1310 §8 deliver arm)", (
 		await h.close();
 	});
 
-	// Rejection-safety belt (RIG-1310 §8): if a flush's prompt is REFUSED (the
-	// only prompt-rejection shape — a not-injected batch), the batch must not be
-	// acked (no false receipt) and its ids must leave the processed set so the
-	// Server's redelivery re-injects them. Forced via the model-independent
-	// `promptRejectsNoModel` trigger (the "No model configured" throw, pi-agent-core
-	// agent.ts:990) — a pre-injection rejection that does not hinge on the
-	// streaming flag the `agent_end` edge now clears.
+	// Rejection-safety belt (RIG-1310 §8): if a flush's prompt is REFUSED (the only prompt-
+	// rejection shape — a not-injected batch), the batch must not be acked (no false receipt) and
+	// its ids must leave the processed set so the Server re-injects them. Forced via the model-
+	// independent promptRejectsNoModel trigger — a pre-injection rejection not hinging on the streaming flag.
 	test("a refused flush prompt emits no ack, un-dedups the batch, and surfaces it", async () => {
 		const h = startDeliverAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
@@ -1059,14 +1010,9 @@ describe("CompassAgent — RT-3 turn-end delivery (RIG-1310 §8 deliver arm)", (
 });
 
 // ---------------------------------------------------------------------------
-// RIG-2732 W3 — turn-end forge-notification arm. The RT-3 sibling of the deliver
-// arm: a forge notification pushed mid-turn coalesces onto the turn-end queue
-// and flushes as ONE prompt at agent_end; an idle notification flushes at once.
-// BOTH acks fire at flush — the ForgeNotificationAck frame AND the deferred
-// control-rail ack (the `ackRail` thunk the control source hands the agent) —
-// never at decode (design.md:1006-1013). forgeNotification() rides the immediate
-// handle, so these tests construct CompassAgent directly and drive turn edges
-// through the recorded listener, exactly as the deliver tests do.
+// RIG-2732 W3 — turn-end forge-notification arm. A forge notification pushed mid-turn coalesces
+// onto the turn-end queue and flushes as ONE prompt at agent_end; an idle one flushes at once.
+// BOTH acks fire at flush (the ForgeNotificationAck frame AND the deferred rail ack), never at decode.
 
 // A forge notification fixture for the agent arm: subscription id + revision (the
 // ack correlation + advance target) and a per-kind payload. `change` defaults to
@@ -1306,17 +1252,10 @@ describe("CompassAgent — RIG-2732 W3 turn-end forge-notification arm", () => {
 		await h.close();
 	});
 
-	// RIG-2732 Piece-2 review HIGH — the mixed-queue turn-end collision. Before
-	// the single-prompt fix, `agent_end` issued TWO independent `prompt()` calls
-	// (deliver flush then forge flush) on one synchronous edge; the first set the
-	// inner agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072), so the
-	// second threw AgentBusyError and the forge batch was silently dropped — no
-	// ForgeNotificationAck, no rail ack, delivered_revision stranded. The faithful
-	// fake now sets `state.isStreaming = true` on the first prompt, so this test
-	// REDS against the two-prompt code (the forge acks never fire) and GREENS
-	// against the combined single-prompt flush. It asserts (a) exactly ONE prompt
-	// carrying BOTH rendered sections, (b) the deliveryAck for the message, (c) the
-	// ForgeNotificationAck AND the rail-ack retirement for the notification.
+	// RIG-2732 Piece-2 review HIGH — the mixed-queue turn-end collision. Before the single-prompt
+	// fix, agent_end issued TWO prompt() calls on one edge; the first set the agent streaming
+	// SYNCHRONOUSLY, so the second threw AgentBusyError and dropped the forge batch. The fake sets
+	// isStreaming on the first prompt, so this REDS the two-prompt code and GREENS the combined flush.
 	test("a mixed deliver+forge queue flushes as ONE prompt with BOTH sections and all acks", async () => {
 		const h = startForgeAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
@@ -1361,10 +1300,9 @@ describe("CompassAgent — RIG-2732 W3 turn-end forge-notification arm", () => {
 });
 
 // ---------------------------------------------------------------------------
-// RIG-2257 — a delivered ask_answer message renders through the deliver lane.
-// The answer arrives as a normal Message carrying an `ask_answer` block; it
-// coalesces, dedups by msg.id, and acks exactly like any other deliver — no
-// control arm, no registry.
+// RIG-2257 — a delivered ask_answer message renders through the deliver lane. The answer arrives
+// as a normal Message carrying an ask_answer block; it coalesces, dedups by msg.id, and acks
+// exactly like any other deliver — no control arm, no registry.
 describe("CompassAgent — RIG-2257 delivered ask_answer renders on the deliver lane", () => {
 	test("an idle delivered ask_answer renders question text + chosen labels + custom text as one prompt", async () => {
 		const h = startDeliverAgent();
@@ -1436,15 +1374,9 @@ describe("CompassAgent — RIG-2257 delivered ask_answer renders on the deliver 
 });
 
 // ---------------------------------------------------------------------------
-// RIG-2644 — idle deliver after replay_complete must start a turn, and a deliver
-// against an UNTRACKED stream must not strand. Surfaced investigating RIG-2617
-// Defect 2; wire evidence (992f3b5e clean seed): control path binds, drains,
-// applies + acks replay_complete(1) + deliver(2,3,4), but the board stays
-// STARTING, comms delivery cursor acked_seq=0 (NO DeliveryAck), no turn. The
-// first two tests pin the correct idle-flush path; the last two pin the
-// strand-recovery fix (an untracked stream that never emits `agent_end`). All
-// drive the REAL run loop (startControlAgent) with production ordering:
-// replay_complete then a deliver, no agent_start/agent_end in between.
+// RIG-2644 — idle deliver after replay_complete must start a turn, and a deliver against an
+// UNTRACKED stream must not strand. First two tests pin the idle-flush path; the last two the
+// strand-recovery fix (an untracked stream that never emits agent_end). All drive the REAL loop.
 describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_complete", () => {
 	test("replay_complete then an idle deliver (no turn edges) → prompt turn + DeliveryAck", async () => {
 		const h = startControlAgent();
@@ -1462,12 +1394,10 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 	});
 
 	test("replay_complete + idle deliver fired synchronously in one batch → turn + ack", async () => {
-		// The tightest production ordering: the pump dispatches replay_complete(1)
-		// (buffered) and deliver(2) (immediate) in ONE synchronous stream drain,
-		// BEFORE run() has pulled + applied replay_complete via #applyControl. The
-		// immediate deliver fires agent.deliver() before agent.ts #replayComplete is
-		// set — the two-barrier-flag window the supervisor flagged. agent.deliver's
-		// gate does not consult #replayComplete, so it must still flush when idle.
+		// The tightest production ordering: the pump dispatches replay_complete(1) (buffered) and
+		// deliver(2) (immediate) in ONE synchronous stream drain, BEFORE run() has pulled + applied
+		// replay_complete via #applyControl. The immediate deliver fires agent.deliver() before
+		// #replayComplete is set; agent.deliver's gate does not consult it, so it must still flush when idle.
 		const h = startControlAgent();
 		// Fire the deliver in the same tick as the replayComplete feed, without
 		// awaiting the feed's drain first — the deliver lands while run() is still
@@ -1482,15 +1412,10 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 	});
 
 	test("a deliver against an UNTRACKED stream (startup probe, no agent_end) is recovered: flushes once the stream settles", async () => {
-		// THE production shape (supervisor's wire evidence, RIG-2617 Defect 2). The
-		// real AgentSession.isStreaming folds in #promptInFlightCount
-		// (agent-session.ts:6470), which a startup provider probe/prewarm holds > 0
-		// WITHOUT emitting an agent_end through subscribe(). Before the fix the
-		// idle gate (agent.ts:325) read !idle, the deliver QUEUED, and nothing ever
-		// fired the agent_end that would flush it → permanent strand (no prompt, no
-		// DeliveryAck, comms acked_seq 0, board stuck STARTING). The fix arms a
-		// waitForIdle-gated recovery: when the untracked stream settles, the queued
-		// deliver flushes.
+		// THE production shape (RIG-2617 Defect 2). The real isStreaming folds in
+		// #promptInFlightCount, which a startup probe holds > 0 WITHOUT emitting agent_end. Before
+		// the fix the idle gate read !idle, the deliver QUEUED, and nothing fired agent_end → permanent
+		// strand. The fix arms a waitForIdle-gated recovery: when the untracked stream settles, it flushes.
 		const h = startControlAgent();
 		await h.feed({ kind: "replayComplete" });
 		// An untracked in-flight (probe/prewarm) holds isStreaming true; NO
@@ -1516,13 +1441,10 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 	});
 
 	test("a real tracked turn flushes on agent_end; the strand recovery does not double-flush", async () => {
-		// The spin-up race the isStreaming gate exists to close (RIG-2488/RIG-1310)
-		// must stay closed: a deliver landing while a control-prompt has spun the
-		// inner agent streaming but agent_start has not yet propagated (#turnActive
-		// still false, isStreaming true) queues AND arms a recovery. When the REAL
-		// turn's agent_end fires it flushes the queue; the later waitForIdle
-		// recovery must then find an empty queue and no-op — exactly ONE flush, no
-		// double-inject / AgentBusyError.
+		// The spin-up race the isStreaming gate exists to close (RIG-2488/RIG-1310) must stay closed:
+		// a deliver landing while a control-prompt has spun the agent streaming but agent_start has not
+		// propagated queues AND arms a recovery. When the REAL turn's agent_end flushes it, the later
+		// waitForIdle recovery must find an empty queue and no-op — exactly ONE flush, no double-inject.
 		const h = startControlAgent();
 		await h.feed({ kind: "replayComplete" });
 		// Control-prompt spin-up: streaming true, no agent_start yet.
@@ -1549,13 +1471,10 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 	});
 
 	test("a second probe still streaming at resolve re-arms the recovery; it flushes once the second settles", async () => {
-		// RIG-2644 review M3. The re-arm branch (agent.ts, #armStrandRecovery
-		// else-if): waitForIdle can resolve while the session still reads streaming
-		// because a FRESH probe holds #promptInFlightCount > 0 (the fold at
-		// agent-session.ts:6469-6470). The recovery must NOT flush into that (it
-		// would AgentBusyError) — it re-arms and flushes only when the second probe
-		// settles. `settleIdle({ keepStreaming: true })` models exactly that window:
-		// waiters resolve, isStreaming stays true.
+		// RIG-2644 review M3. The re-arm branch (#armStrandRecovery else-if): waitForIdle can resolve
+		// while the session still reads streaming because a FRESH probe holds #promptInFlightCount > 0.
+		// The recovery must NOT flush into that (it would AgentBusyError) — it re-arms and flushes only
+		// when the second probe settles. settleIdle({ keepStreaming: true }) models that window.
 		const h = startControlAgent();
 		await h.feed({ kind: "replayComplete" });
 		// First untracked probe: streaming, no turn. The deliver queues + arms.
@@ -1586,13 +1505,10 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 	});
 
 	test("a recovery whose waitForIdle resolves AFTER close does not start a post-terminal turn", async () => {
-		// RIG-2644 review M2 (close race). run()'s finally sets #closed on the same
-		// edge it emits the terminal status. A strand-recovery waitForIdle still
-		// pending at close must NOT flush when it later resolves — that would start
-		// a turn and emit a DeliveryAck AFTER the terminal STOPPED frame the board
-		// already saw. Order: arm the recovery (deliver against an untracked
-		// stream), close the agent (control stream ends → STOPPED, #closed set),
-		// THEN settle the probe so the pending .then fires.
+		// RIG-2644 review M2 (close race). run()'s finally sets #closed on the same edge it emits the
+		// terminal status. A strand-recovery waitForIdle still pending at close must NOT flush when it
+		// resolves — that would emit a DeliveryAck AFTER the terminal STOPPED the board saw. Order:
+		// arm the recovery, close the agent (STOPPED, #closed set), THEN settle the probe.
 		const h = startControlAgent();
 		await h.feed({ kind: "replayComplete" });
 		h.session.agent.state.isStreaming = true;
@@ -1620,13 +1536,11 @@ describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_
 
 // ---------------------------------------------------------------------------
 // RIG-1310 §8 — channel-borne steer arm.
-//
-// steer() rides the same immediate handle deliver does (not the control script),
-// so these tests reuse startDeliverAgent()/deliverMsg()/ackIds()/tick() and call
-// `agent.steer(msg)`. Unlike deliver, a steer is an @-mention interrupt: mid-turn
-// it injects via `session.agent.steer` (drained by the running loop, no turn
-// started); idle it STARTS A TURN with the mention as content via
-// `session.agent.prompt`, mirroring the idle-deliver path (design: architecture-lineage idle arm).
+
+// steer() rides the same immediate handle deliver does, so these tests reuse the deliver harness
+// and call agent.steer(msg). Unlike deliver, a steer is an @-mention interrupt: mid-turn it
+// injects via session.agent.steer (drained by the running loop, no turn started); idle it STARTS
+// A TURN with the mention as content via session.agent.prompt, mirroring the idle-deliver path.
 describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => {
 	test("a mid-turn steer injects via session.agent.steer and does NOT start a turn", async () => {
 		const h = startDeliverAgent();
@@ -1649,16 +1563,10 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 	});
 
 	test("an idle steer starts a turn via prompt (history-agnostic) and emits its STEER injection", async () => {
-		// REGRESSION (RIG-2488, the leg-4 e2e catch): the idle arm must START A
-		// TURN with the mention as initial content via prompt() — which runs on ANY
-		// history, including a fresh agent's EMPTY history — NOT via continue(),
-		// which rejects "No messages to continue from" on a zero-history session.
-		// The leg-4 peer is spawned idle with empty history: the mention WAS steered
-		// to its live session, but the old continue() path threw and rolled back, so
-		// its SessionInjection.STEER never fired and the split assertion timed out.
-		// The frozen record ties an idle frame to "starts a new turn" (agent.ts
-		// idle-arm comment / design: architecture-lineage); prompt() is the idle-deliver
-		// path's mechanism too (#flushDelivers), so this mirrors it.
+		// REGRESSION (RIG-2488, the leg-4 e2e catch): the idle arm must START A TURN with the mention
+		// as content via prompt() — which runs on ANY history, including EMPTY — NOT via continue(),
+		// which rejects "No messages to continue from" on zero history. The leg-4 peer is spawned idle
+		// with empty history: the old continue() path threw, so its SessionInjection.STEER never fired.
 		const h = startDeliverAgent();
 		// Idle: no agent_start, no prior turns — the fresh-peer shape.
 		h.agent.steer(deliverMsg("s1", "please take a look"), "matt");
@@ -1698,16 +1606,10 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 		await h.close();
 	});
 
-	// Spin-up-window guard on the idle-steer arm (RIG-2488 review follow-up): the
-	// idle arm optimistically sets `#turnActive = true` BEFORE `prompt()`'s
-	// `agent_start` propagates (agent.ts:428), exactly as `#flushDelivers` does.
-	// Without it, a follow-on steer/deliver landing in that window — `isStreaming`
-	// still false, no `agent_start` yet — would re-gate as idle and start a SECOND
-	// turn (→ AgentBusyError, the message acked-and-dropped). Here the first idle
-	// steer starts a turn (one prompt); a second steer fired in the same window
-	// must take the MID-TURN arm (enqueue, no new turn). Non-vacuity: drop the
-	// optimistic `#turnActive = true` and the second steer re-gates idle → a
-	// second prompt (prompts length 2).
+	// Spin-up-window guard on the idle-steer arm (RIG-2488 follow-up): the idle arm optimistically
+	// sets #turnActive = true BEFORE prompt()'s agent_start propagates, like #flushDelivers. Without
+	// it, a follow-on steer/deliver in that window would re-gate idle and start a SECOND turn. Here
+	// the second steer must take the MID-TURN arm. Non-vacuity: drop the flag → prompts length 2.
 	test("a follow-on steer inside the idle-steer spin-up window enqueues, not a second turn", async () => {
 		const h = startDeliverAgent();
 		// First idle steer starts a turn via prompt and optimistically marks the
@@ -1780,16 +1682,10 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 		await h.close();
 	});
 
-	// Idle-steer rejection belt (MEDIUM-1): the idle arm STARTS A TURN with
-	// `prompt()`, which can REJECT. The one reachable idle-path rejection is the
-	// "No model configured" throw (pi-agent-core agent.ts:990) — NOT an
-	// AgentBusyError spin-up race, which cannot fire because steer() is synchronous
-	// from the idle gate to the call. On rejection the turn did not start and the
-	// idle path never enqueued (prompt carries the mention as turn content), so
-	// there is no orphan steer to roll back: the belt simply emits no ack (no false
-	// receipt) and un-dedups the id, so the Server's redelivery re-injects EXACTLY
-	// ONCE. Modeled by `promptRejectsNoModel` (not `state.isStreaming`, which would
-	// flip the idle gate to the mid-turn path and skip the belt entirely).
+	// Idle-steer rejection belt (MEDIUM-1): the idle arm STARTS A TURN with prompt(), which can
+	// REJECT. The one reachable idle-path rejection is the "No model configured" throw — NOT an
+	// AgentBusyError spin-up race (steer() is synchronous from gate to call). On rejection the turn
+	// did not start and never enqueued, so no orphan: no ack, un-dedup, redelivery re-injects ONCE.
 	test("an idle prompt rejection un-dedups the id and emits no ack; redelivery injects exactly once", async () => {
 		const h = startDeliverAgent();
 		h.session.agent.promptRejectsNoModel = true;
@@ -1819,12 +1715,10 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 		await h.close();
 	});
 
-	// Cross-type re-ack guard (MEDIUM-2): `#processedMessageIds` is SHARED between
-	// the deliver and steer arms, and an id can cross-arrive as the other type. A
-	// steer duplicate of an id still pending in `#deliverQueue` (queued mid-turn by
-	// deliver, NOT yet injected) must NOT be re-acked — "ack means injected", and
-	// acking a still-queued message then losing it to a crash-before-flush would
-	// strand it. Mirrors the deliver duplicate-of-a-queued-message test.
+	// Cross-type re-ack guard (MEDIUM-2): #processedMessageIds is SHARED between the deliver and
+	// steer arms, and an id can cross-arrive as the other type. A steer duplicate of an id still
+	// pending in #deliverQueue (queued mid-turn, NOT yet injected) must NOT be re-acked — "ack means
+	// injected", and acking a still-queued message then losing it to a crash would strand it.
 	test("a steer duplicate of a still-QUEUED deliver is not re-acked (only the queued copy acks, when it flushes)", async () => {
 		const h = startDeliverAgent();
 		// A turn is live, so a deliver of X is QUEUED (not flushed) — X enters
@@ -1832,11 +1726,9 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
 		h.agent.deliver(deliverMsg("x1", "queued"));
 		expect(h.session.agent.prompts).toEqual([]);
-		// Now a steer of the SAME id arrives (cross-type sweep). It is a duplicate
-		// (id already processed) BUT X is still queued/un-injected, so NO ack is
-		// emitted — only the "duplicate steer" unmapped surface. Non-vacuity: drop
-		// the #deliverQueue-membership guard (re-ack unconditionally) → this reddens
-		// (a not-yet-injected message gets acked).
+		// Now a steer of the SAME id arrives (cross-type sweep). It is a duplicate BUT X is still
+		// queued/un-injected, so NO ack is emitted — only the "duplicate steer" unmapped surface.
+		// Non-vacuity: drop the #deliverQueue-membership guard (re-ack unconditionally) → this reddens.
 		h.agent.steer(deliverMsg("x1", "dup"));
 		await tick();
 		expect(ackIds(h.frames)).toEqual([]);
@@ -1857,13 +1749,10 @@ describe("CompassAgent — channel-borne steer (RIG-1310 §8 steer arm)", () => 
 	});
 });
 
-// RIG-2486 (T1) — the cross-process op-kind signal. steer()/deliver() each emit
-// a first-class SessionInjection observation frame BESIDE the existing delivery
-// ack at injection time (design "steer/deliver split observation seam"). These
-// reuse the deliver/steer harness and assert the injection rides the session
-// trace path with the right op_kind + message_id, alongside the ack. Before the
-// emit arms exist these are RED: injections(h.frames) is empty, so the length
-// assertion fails.
+// RIG-2486 (T1) — the cross-process op-kind signal. steer()/deliver() each emit a first-class
+// SessionInjection observation frame BESIDE the existing delivery ack at injection time. These
+// reuse the deliver/steer harness and assert the injection rides the session trace path with the
+// right op_kind + message_id, alongside the ack. Before the emit arms exist these are RED.
 describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () => {
 	test("deliver(msg, fromHandle) emits one DELIVER SessionInjection with the handle beside the ack", async () => {
 		const h = startDeliverAgent();
@@ -2333,25 +2222,18 @@ describe("formatForgeNotifications — per-kind render (RIG-2732 W3)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// T2 — trace continuity: thread the TurnTracer through the three injection
-// shapes (design record
-// docs/designs/observability/compass-agent-message-trace-continuity/design.md §T2).
-//
-// These tests exercise the REAL bridge (createTraceBridge) against a real
-// in-memory OTel provider — the same house recipe trace-bridge.test.ts uses (a
-// NodeTracerProvider installs a context manager so `context.with` propagates
-// into the wrapped prompt). The recording agent below MODELS the SDK's
-// synchronous span start: `prompt()` starts an `invoke_agent` span reading
-// `context.active()` (so a `runWithParent` wrapper makes the remote context its
-// PARENT) and fires the bridge's `onSpanStart` hook, exactly as the loop does
-// inside `prompt()` before its first await. The idle-steer-parent test canaries
-// the MODELED contract: it pins that `runWithParent` wraps the (modeled)
-// synchronous prompt so the remote context is the turn span's PARENT — dropping
-// the wrap, or an await slipping in before the fake's span start, reddens it.
-// It does NOT guard the REAL SDK's synchronicity (the fake starts the span
-// synchronously by construction); that property — startInvokeAgentSpan runs
-// before the loop's first await (agent-loop.ts:692, ahead of runInActiveSpan at
-// :696) — belongs to a separate real-`prompt()` integration assertion.
+// T2 — trace continuity: thread the TurnTracer through the three injection shapes (design
+// compass-agent-message-trace-continuity §T2).
+
+// These exercise the REAL bridge (createTraceBridge) against a real in-memory OTel provider —
+// the house recipe trace-bridge.test.ts uses (a NodeTracerProvider installs a context manager).
+// The recording agent MODELS the SDK's synchronous span start: prompt() starts an invoke_agent
+// span reading context.active() (so runWithParent makes the remote context its PARENT) and fires onSpanStart.
+
+// The idle-steer-parent test canaries the MODELED contract: it pins runWithParent wraps the
+// modeled synchronous prompt so the remote context is the turn span's PARENT. It does NOT guard
+// the REAL SDK's synchronicity (the fake starts the span synchronously by construction); that
+// belongs to a separate real-prompt() integration assertion.
 
 const TP_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
 const TP_SPAN_ID = "b7ad6b7169203331";
@@ -2377,10 +2259,9 @@ function traceHookCtx(
 	return { span, kind, agent, model: undefined, conversationId: undefined };
 }
 
-// A CompassAgent wired to the REAL bridge + a recording, span-aware session.
-// `prompt()` starts an `invoke_agent` span in the active context (so
-// `runWithParent` parents it on the remote header) and fires `onSpanStart`;
-// `endTurn()` ends that span (exporting it) and fires `onSpanEnd`. The held-open
+// A CompassAgent wired to the REAL bridge + a recording, span-aware session. prompt() starts an
+// invoke_agent span in the active context (so runWithParent parents it on the remote header) and
+// fires onSpanStart; endTurn() ends that span (exporting it) and fires onSpanEnd. The held-open
 // control source keeps run() parked, exactly like startDeliverAgent.
 function startTracedAgent() {
 	const exporter = new InMemorySpanExporter();
@@ -2604,11 +2485,10 @@ describe("CompassAgent — T2 trace continuity (message → turn topology)", () 
 		expect(span?.links[0]?.attributes?.["compass.message.id"]).toBe("m1");
 		expect(span?.links[0]?.context.traceId).toBe(TP_TRACE_ID);
 		expect(span?.links[0]?.context.spanId).toBe(TP_SPAN_ID);
-		// The query key ACCUMULATES across the turn: m0 STARTED the turn and m1 fed
-		// it mid-turn, so both must be answerable by attribute regardless of
-		// topology (m0 is the parent, m1 is a link). A delta-only stamp
-		// (`stampActiveTurn(msg.id)`) would overwrite to "m1" and drop m0 — this
-		// assertion reddens on that regression (design.md:199-200).
+		// The query key ACCUMULATES across the turn: m0 STARTED the turn and m1 fed it mid-turn, so
+		// both must be answerable by attribute regardless of topology (m0 is the parent, m1 a link).
+		// A delta-only stamp (stampActiveTurn(msg.id)) would overwrite to "m1" and drop m0 — this
+		// assertion reddens on that regression.
 		expect(span?.attributes["compass.message.ids"]).toBe("m0,m1");
 		await h.close();
 	});
@@ -2653,12 +2533,10 @@ describe("CompassAgent — T2 trace continuity (message → turn topology)", () 
 });
 
 describe("CompassAgent — T2 tracer absent is bit-identical to today", () => {
-	// Drive the SAME deliver script (mid-turn coalesce of two, then an idle
-	// single) against a no-tracer agent and a real-bridge agent, and assert the
-	// observable frame emission — kind sequence, acks, injections, prompts — is
-	// IDENTICAL. The tracer only touches spans, never frames, so any frame delta
-	// would be a regression (an errant emit, a reordered/dropped ack or
-	// injection). The bridge run needs a provider registered for context.with.
+	// Drive the SAME deliver script (mid-turn coalesce of two, then an idle single) against a
+	// no-tracer agent and a real-bridge agent, and assert the observable frame emission — kind
+	// sequence, acks, injections, prompts — is IDENTICAL. The tracer only touches spans, never
+	// frames, so any frame delta is a regression. The bridge run needs a provider for context.with.
 	async function runDeliverScript(tracer?: TraceBridge) {
 		const h = startDeliverAgent([], tracer);
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
@@ -2694,14 +2572,9 @@ describe("CompassAgent — T2 tracer absent is bit-identical to today", () => {
 	});
 });
 // ---------------------------------------------------------------------------
-// RIG-2894 — turn-trigger RE-ATTACH end to end (the HEADLINE discriminating
-// test, confirmed by the record owner). The predicate: a turn emits
-// trigger_traceparent iff it has a TRUE single parent = an idle steer (1:1) OR
-// an N=1 deliver flush; empty on N>1, mid-turn steer, forge-only. The exact
-// case a naive "deliver-only" reading gets WRONG is the idle-STEER-started turn:
-// no server-side test can catch it (they inject the field server-side), so this
-// drives the agent's real steer→turn path AND a real outbound comms POST and
-// asserts the field on the WIRE CommsCallRequest, not just currentTurnTrigger().
+// RIG-2894 — turn-trigger RE-ATTACH end to end (the HEADLINE discriminating test). Predicate: a
+// turn emits trigger_traceparent iff it has a TRUE single parent = an idle steer (1:1) OR an N=1
+// deliver flush. The case a naive "deliver-only" reading gets WRONG is the idle-STEER-started turn.
 
 // A fake comms transport that records the request each post puts on the wire and
 // returns a canned post result — the same one-method surface comms.test uses.

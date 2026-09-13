@@ -1,19 +1,7 @@
-// The product-analytics embed: a headless PostHog client wrapped behind a small
-// interface so the rest of the app never touches posthog-js directly. Built once
-// at boot (index.tsx → main) from the resolved AnalyticsConfig. PostHog is a
-// measurement/DATA SDK here only — event capture and (later) flag/early-access
-// JSON our own Solid components render. NO PostHog-rendered UI ships: autocapture,
-// pageview capture, and session replay are all turned OFF at init.
-//
-// The config gate lives upstream (analytics/config.ts): when analytics is
-// disabled (no project key) the config is `undefined` and `createAnalytics`
-// returns a no-op that never CALLS posthog — flag-off means zero PostHog calls
-// and zero network. (The posthog-js module is statically imported and bundled;
-// constructing its singleton neither initializes it nor dials the network — only
-// the enabled PostHogAnalytics path calls .init(), so nothing leaves the
-// deployment when the flag is off.) When enabled, the posthog-backed impl
-// delegates to the injected client. posthog is injectable via `deps` so tests
-// exercise both paths against a fake without real network.
+// The product-analytics embed: a headless PostHog client wrapped behind a small interface
+// so the rest of the app never touches posthog-js directly. A measurement/DATA SDK only —
+// NO PostHog-rendered UI ships (autocapture, pageview, replay OFF). Disabled (no project
+// key) → a no-op that never calls posthog (zero network); posthog is injectable for tests.
 
 import posthog, { type PostHog } from "posthog-js";
 import type { AnalyticsConfig } from "./config";
@@ -89,19 +77,10 @@ class PostHogAnalytics implements Analytics {
 			this.client.capture(event, props);
 			return;
 		}
-		// The caller's explicit `$ai_trace_id` WINS over the sink. The sink holds
-		// the last reply's trace id, which is a good default but only a guess
-		// about which call the event belongs to; a call site that passes one knows
-		// the actual trace (e.g. it held the response), so overwriting it would
-		// replace a fact with a heuristic.
-		//
-		// "Caller wins" means the caller supplied a VALUE, so the key is written
-		// AFTER the spread rather than before it. A plain
-		// `{ $ai_trace_id: traceId, ...props }` lets a caller who passed
-		// `{ $ai_trace_id: someMaybeUndefinedVar }` spread an undefined-valued key
-		// over the sink's good id — leaving the key present-and-undefined (the
-		// null-column defect the no-trace-id branch above exists to avoid) while
-		// also dropping correlation that was available.
+		// The caller's explicit `$ai_trace_id` WINS over the sink (the sink's last-reply id
+		// is only a guess; a caller that passes one holds the actual trace). "Caller wins"
+		// means a VALUE, so the key is written AFTER the spread — a plain `{id, ...props}`
+		// would let a caller's undefined-valued key overwrite the sink's good id.
 		const callerTraceId = props?.$ai_trace_id;
 		this.client.capture(event, {
 			...props,

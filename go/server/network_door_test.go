@@ -3,26 +3,9 @@
 package server
 
 // Integration tests for the authenticated TLS network door (RIG-1195 T3b): TLS
-// termination against an in-test self-signed pair, the bearer+admin-gate chain
-// over a real connect client, the IssueToken handler's input contract, the
-// oracle-safety of the bearer rejection paths, and the bootstrap-admin token's
-// --listen gating and 0600 persistence. White-box (package server) so tests
-// construct the unexported service, drive Serve, and reference the network-door
-// helpers (adminTokenFile) directly.
-//
-// Store-gated: the network door authenticates every RPC against the Postgres
-// store of record (IssueAccountToken persists a hash there; the bearer
-// interceptor resolves against it) and Serve opens the store at startup, so
-// every test here needs a real database. Behind `//go:build pgtest && unix` via
-// the shared pgtest harness (pgtest.RequireDSN → an isolated-schema DSN, or
-// t.Skip when no runtime), with DatabaseDSN set on every ServeConfig.
-//
-// Hermetic: every cert, key, socket, and state dir lives under t.TempDir(); the
-// network door binds an OS-assigned loopback port (a throwaway net.Listen reads
-// a free port, then releases it). No wall-clock sleep is used for sync — Serve
-// readiness is event-gated on the door actually serving an RPC; testTimeout is a
-// deadline safety net that turns a wedged handler into a fast failure, never a
-// synchronization device.
+// termination, the bearer+admin-gate chain over a real connect client, IssueToken's
+// input contract, the oracle-safety of the bearer rejection paths, and the
+// bootstrap-admin token's --listen gating and 0600 persistence. Store-gated.
 
 import (
 	"bytes"
@@ -562,12 +545,10 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 	svc := newService("net-test", bus, st, nil, nil, nil, nil)
 	client := networkDoorHandler(t, svc, st, admin)
 
-	// rejectCode opens a SubscribeEvents stream carrying the given bearer ("" leaves
-	// the Authorization header absent) and returns the connect code the
-	// door answers with. A rejected stream surfaces its terminal error on the
-	// first Receive: the stream interceptor returns before the handler runs, so
-	// no event ever arrives. recvStreamOrTimeout is the deadline safety net, not
-	// a sleep — a wedged handler fails fast instead of hanging.
+	// rejectCode opens a SubscribeEvents stream carrying the given bearer ("" = no
+	// Authorization header) and returns the connect code the door answers. A rejected
+	// stream surfaces its terminal error on the first Receive (the interceptor returns
+	// before the handler runs). recvStreamOrTimeout is the deadline net, not a sleep.
 	rejectCode := func(t *testing.T, bearer string) connect.Code {
 		t.Helper()
 		req := connect.NewRequest(&compassv1.SubscribeEventsRequest{SinceSeq: 0})
@@ -600,12 +581,10 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 	})
 
 	t.Run("valid non-admin bearer opens the stream", func(t *testing.T) {
-		// SubscribeEvents is authenticatedOpen, so the member's valid bearer
-		// clears both the bearer resolve and the admin gate. The bus must carry
-		// one event before subscribing: with an empty ring the handler tails
-		// silently and never Sends, so the client's first Receive would block on
-		// response headers that never flush. One primed Ready snapshot makes the
-		// handler Send once — the open becomes observable without a sleep.
+		// SubscribeEvents is authenticatedOpen, so the member's valid bearer clears
+		// the bearer resolve and the admin gate. The bus must carry one event before
+		// subscribing: with an empty ring the handler never Sends and the first
+		// Receive blocks on headers that never flush. One primed snapshot fixes it.
 		bus.Publish(statusEvent())
 
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)

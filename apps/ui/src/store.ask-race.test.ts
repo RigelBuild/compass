@@ -11,27 +11,10 @@ import {
 import { type AppStore, createAppStore } from "./store";
 import { testQueryClient } from "./test-support";
 
-// The race between a MULTI-question ask being answered and the stream pushing a
-// new state under it.
-//
-// The wire is ATOMIC: exactly one RespondToAsk per ask, issued only on the click
-// that COMPLETES the ask (see the comment above `sendAsk`). So every choice
-// before the last one lives ONLY in local `comms` state — the server has not
-// been told and has nothing to send back. `adoptComms` replaces that state
-// wholesale on every push, so a snapshot or a tail event landing mid-ask used to
-// discard the user's clicks with no indication at all.
-//
-// The fix must hold BOTH ends:
-//
-//   - an ask with purely local, unsubmitted answers survives a push,
-//   - an ask the server has an opinion about — because we shipped it, or because
-//     another participant answered it — still takes the SERVER's value, which is
-//     the property the refused-respond rollback rests on (store.live.test.ts's
-//     "does not clobber an ask the stream moved meanwhile").
-//
-// The rollback and gate contracts themselves live in store.live.test.ts; this
-// suite's subject is narrowly `adoptComms` — what a stream push does to an
-// in-progress ask.
+// The race between a MULTI-question ask being answered and the stream pushing a new state
+// under it. The wire is ATOMIC (one RespondToAsk on the completing click), so pre-last choices
+// live ONLY in local state and `adoptComms` replaces it wholesale, so a mid-ask push used to
+// discard clicks. Subject is narrowly `adoptComms`; rollback/gate contracts in store.live.test.ts.
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-1";
@@ -122,12 +105,10 @@ async function withLiveStore(
 }
 
 describe("adoptComms vs an in-progress ask", () => {
-	// The gap the wire's atomicity opens: the first click on a two-question ask
-	// sends NOTHING, so the answer exists only locally. A push re-stating the ask
-	// as the server still holds it (unanswered — it was never told) must not take
-	// the click away. Mutation-check: the wholesale `setComms(next)` reddens the
-	// survives leg; a preserve that forgot to re-arm the ask reddens the still
-	// completable leg.
+	// The gap the wire's atomicity opens: the first click on a two-question ask sends NOTHING,
+	// so the answer exists only locally. A push re-stating the ask as the server still holds it
+	// (unanswered — never told) must not take the click away. Mutation-check: wholesale
+	// `setComms(next)` reddens the survives leg; a preserve that forgot to re-arm reddens completable.
 	test("an unsubmitted local answer survives a stream push", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -174,15 +155,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The other end of the rule, and the one the refusal rollback depends on: an
-	// ask the SERVER has an opinion about takes the server's value, even while
-	// the user has an unsubmitted local answer on it. Here another participant
-	// answered q-1 differently and the server closed the ask recording it, so
-	// the push carries BOTH halves of that one write — the chosen id and the
-	// spent flag (go/internal/store/messages.go:435 sets ChosenOptionIDs, :438
-	// sets Answered). `answered` is passed out loud rather than left to the
-	// fixture's default because it is what the preserve gate actually reads.
-	// Mutation-check: preserving local answers unconditionally reddens this.
+	// The other end of the rule, the one the refusal rollback depends on: an ask the SERVER
+	// has an opinion about takes the server's value, even while the user has an unsubmitted
+	// local answer. Here another participant answered q-1 and the server closed the ask, so the
+	// push carries the chosen id AND the spent flag. Mutation-check: preserving local reddens this.
 	test("an authoritative server answer beats an unsubmitted local one", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -214,14 +190,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// A SHIPPED ask is the server's, full stop. Once the one RespondToAsk is
-	// issued the local record is no longer "in progress" — it is a claim about
-	// what the server was told — so a push replaces it even when the pushed ask
-	// carries no answers yet (the server's own view has not caught up, or the
-	// respond is still in flight). Keeping the local copy here would re-break the
-	// conditional rollback in `sendAsk`, which decides by comparing the shipped
-	// answers against what the stream has since put in their place.
-	// Mutation-check: dropping the submitted-ask gate reddens this.
+	// A SHIPPED ask is the server's, full stop. Once the one RespondToAsk is issued the local
+	// record is a claim about what the server was told, so a push replaces it even when the
+	// pushed ask carries no answers yet. Keeping the local copy would re-break the conditional
+	// rollback in `sendAsk`. Mutation-check: dropping the submitted-ask gate reddens this.
 	test("a shipped ask takes the pushed server value", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -249,17 +221,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The shape that held this fix: a CLOSED ask with no chosen ids anywhere.
-	// A deliberate skip is an ACCEPTED answer — an entry with no chosen ids and
-	// empty custom_text satisfies the wire's coverage-of-every-question contract
-	// — so the server flips Ask.answered and records nothing to see. The server
-	// has closed this ask, so our unshipped click must NOT be restored over it:
-	// preserving it would leave the UI offering a completing click the server is
-	// guaranteed to refuse with ErrConflict.
-	//
-	// Mutation-check: this is precisely the case the old chosen-ids scan got
-	// wrong — it read this ask as "the server has said nothing" and let local
-	// state clobber it, so reverting the predicate reddens this test.
+	// The shape that held this fix: a CLOSED ask with no chosen ids anywhere. A deliberate skip
+	// is an ACCEPTED answer, so the server flips answered with nothing to see. Our unshipped
+	// click must NOT be restored — it would offer a click the server refuses with ErrConflict.
+	// Mutation-check: the old chosen-ids scan read this as "server said nothing" and clobbered it.
 	test("a fully-skipped answered ask beats an unsubmitted local one", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -293,12 +258,9 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The second defeating shape: a free-text question carries NO options, so it
-	// is answered by custom_text alone and its chosenOptionIds stays empty even
-	// though the server accepted the answer and closed the ask. Same rule, same
-	// reason — only Ask.answered can see it.
-	//
-	// Mutation-check: reverting to the chosen-ids scan reddens this too.
+	// The second defeating shape: a free-text question carries NO options, so it is answered by
+	// custom_text alone and chosenOptionIds stays empty though the server closed the ask. Same
+	// rule — only Ask.answered can see it. Mutation-check: reverting to the chosen-ids scan reddens this.
 	test("a custom-text-only answered ask beats an unsubmitted local one", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -332,14 +294,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The other side of the same flag, and the original bug: `answered: false`
-	// with empty chosen ids is the GENUINELY pending ask — the server was never
-	// told, has nothing to send back, and the user's unshipped click must
-	// survive. This is what stops the new predicate from being read as "any push
-	// wins".
-	//
-	// Mutation-check: a predicate that always reported "the server has a value"
-	// reddens this.
+	// The other side of the same flag, the original bug: `answered: false` with empty chosen ids
+	// is the GENUINELY pending ask — the server was never told, so the user's unshipped click
+	// must survive. This stops the new predicate from being read as "any push wins". Mutation-
+	// check: a predicate that always reported "the server has a value" reddens this.
 	test("an unanswered pushed ask still preserves the local answer", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -381,16 +339,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The write gate, one half. `answered` is not only a reconciliation input:
-	// once the reconciliation correctly ADOPTS a server-closed ask, every option
-	// on it still rendered enabled and the completing click still issued the one
-	// RespondToAsk the server has already spent — refused with ErrConflict
-	// (go/internal/store/messages.go:404-406). Nothing about the ask says
-	// "submitted" to this client: the respond that closed it was someone else's.
-	// So the click must be refused where it is recorded, not discovered at the
-	// server.
-	//
-	// Mutation-check: gating `answerAsk` on `isAskSubmitted` alone reddens this.
+	// The write gate, one half. Once reconciliation ADOPTS a server-closed ask, the completing
+	// click would issue the one RespondToAsk the server already spent — refused with ErrConflict.
+	// Nothing says "submitted" here (the closing respond was someone else's), so the click must be
+	// refused where it is recorded. Mutation-check: gating `answerAsk` on `isAskSubmitted` reddens this.
 	test("a click on a server-closed ask ships nothing", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -423,14 +375,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The write gate, other half — and the shape the user actually meets: another
-	// participant answered q-1, so the server recorded their id AND closed the
-	// ask in the one write (messages.go:435 sets ChosenOptionIDs, :438 sets
-	// Answered). Judged by chosen ids alone this is a partially answered ask, so
-	// the skip control renders and `submitAsk` ships — into a guaranteed
-	// ErrConflict. The server's flag is the only thing that knows better.
-	//
-	// Mutation-check: gating `submitAsk` on `isAskSubmitted` alone reddens this.
+	// The write gate, other half — the shape the user meets: another participant answered q-1,
+	// so the server recorded their id AND closed the ask in one write. Judged by chosen ids alone
+	// this looks partially answered, so `submitAsk` ships into a guaranteed ErrConflict; the
+	// server's flag knows better. Mutation-check: gating `submitAsk` on `isAskSubmitted` reddens this.
 	test("a submit on a server-closed ask ships nothing", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -463,15 +411,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// An ask whose QUESTIONS moved is a different ask: there is nothing to line
-	// the local answers up against, so the pushed shape is adopted whole and the
-	// unshipped pick goes with the shape it belonged to. Here the server grew a
-	// third question under an in-progress answer.
-	//
-	// Mutation-check: dropping the `sameQuestions` clause from the preserve
-	// guard reddens this — the two-question local ask is restored over the
-	// three-question pushed one, and the render loses a question the server
-	// posed.
+	// An ask whose QUESTIONS moved is a different ask: nothing to line the local answers up
+	// against, so the pushed shape is adopted whole. Here the server grew a third question under
+	// an in-progress answer. Mutation-check: dropping the `sameQuestions` clause reddens this —
+	// the two-question local ask is restored over the three-question pushed one, losing a question.
 	test("a pushed ask that grew a question beats the local shape", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -502,13 +445,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The same rule where the shape moved without the COUNT moving: q-2 became
-	// q-9. Positionally the local answers still fit, which is exactly why the
-	// comparison is by question id and not by length — carrying the pick across
-	// would attach the user's answer to a question they were never shown.
-	//
-	// Mutation-check: weakening `sameQuestions` to a length-only compare reddens
-	// this one specifically; the grew-a-question case above cannot see it.
+	// The same rule where the shape moved without the COUNT moving: q-2 became q-9. Positionally
+	// the local answers still fit, which is why the comparison is by question id not length —
+	// carrying the pick across would attach the answer to a question never shown. Mutation-check:
+	// weakening `sameQuestions` to length-only reddens this specifically; the grew case cannot see it.
 	test("a pushed ask that renamed a question beats the local shape", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -538,16 +478,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The fast path the preserve is built around: with no unshipped pick
-	// anywhere, `preserveLocalAsks` collects nothing and hands the pushed state
-	// back UNTOUCHED — references and all — so a push that did not name the ask
-	// leaves the ask's message object identical. That is what keeps every
-	// downstream memo and every rendered row from re-running on a push about
-	// some other message, which is nearly every push.
-	//
-	// Mutation-check: dropping the local chosen-ids scan from the collect loop
-	// reddens this — the untouched ask is collected, the block is rebuilt with
-	// the (identical) local copy, and the message object is replaced for nothing.
+	// The fast path the preserve is built around: with no unshipped pick anywhere,
+	// `preserveLocalAsks` collects nothing and hands the pushed state back UNTOUCHED — references
+	// and all — so a push not naming the ask leaves its message object identical, sparing every
+	// downstream memo (nearly every push). Mutation-check: dropping the local chosen-ids scan reddens this.
 	test("a push over an untouched ask is adopted by reference", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -583,21 +517,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The accepted-then-lost-reply race, and the one case the rollback's answer
-	// comparison structurally cannot see. The server COMMITTED our respond — it
-	// recorded our chosen ids and flipped Ask.answered in the one write
-	// (go/internal/store/messages.go:435 then :438) and write-through published
-	// the MessageUpdated — but our RPC's own reply never landed (connection
-	// reset, proxy timeout), so the promise rejects. The push therefore carries
-	// OUR ids, which is exactly what makes `sameAnswers` pass; only `answered`
-	// distinguishes "the stream restated the ask we shipped" from "the server
-	// CLOSED it recording what we shipped". Restoring the pre-click ask there
-	// would overwrite the authoritative CLOSED state with a stale OPEN one and
-	// re-offer a click that can only earn ErrConflict (:404-406).
-	//
-	// Mutation-check: dropping `!current.answered` from the rollback condition
-	// reddens this — the restore fires and the ask reads answered:false with no
-	// chosen ids.
+	// The accepted-then-lost-reply race, the one case the rollback's answer comparison can't see.
+	// The server COMMITTED our respond and published the MessageUpdated, but our RPC's reply never
+	// landed, so the promise rejects. The push carries OUR ids, so only `answered` distinguishes a
+	// restate from a CLOSE. Mutation-check: dropping `!current.answered` from the rollback reddens this.
 	test("a refusal after the server accepted does not reopen the closed ask", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -651,22 +574,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// An ask's SHAPE includes the options it offers, not just its question ids.
-	// The server's block-update path rewrites a message's whole block set and
-	// requires only that ask_id survive (go/internal/store/messages.go:151,
-	// :163-167), so an agent may restate an ask under the same question ids with
-	// REVISED options. Carrying the local pick across would silently discard the
-	// revision: the UI would render withdrawn options and ship an option id the
-	// server no longer offers, which the server's validateQuestionAnswer
-	// rejects as ErrInvalidArgument — a refusal the user cannot act on, because
-	// the option they need is not on screen.
-	//
-	// Designed-for, not yet wired: no caller issues the block-update RPC today,
-	// so this defends a documented wire capability (comms.proto MessageUpdated
-	// carries the full CURRENT block set), not a live bug.
-	//
-	// Mutation-check: reverting `sameQuestions` to the question-id-only compare
-	// reddens this; the grew/renamed cases above cannot see it.
+	// An ask's SHAPE includes the options it offers, not just its question ids. The block-update
+	// path rewrites the whole block set requiring only ask_id, so an agent may restate an ask
+	// with REVISED options; carrying the local pick would ship an id the server rejects. Designed-
+	// for, not yet wired. Mutation-check: reverting `sameQuestions` to question-id-only reddens this.
 	test("a pushed ask that revised its options beats the local pick", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],

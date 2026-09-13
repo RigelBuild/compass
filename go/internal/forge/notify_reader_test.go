@@ -3,9 +3,7 @@ package forge
 // Unit tests for the NotifyReader conditional-read arm (RIG-2732 T5), driven by
 // the stubbed http.RoundTripper (no network): the If-None-Match/304 short-circuit
 // on every GitHub arm, the ListNewArtifacts PR-interleave filter + endpoint
-// split, the >1-page container walk (never truncated to page 1), and the Linear
-// arms' no-ETag / ErrUnsupported behavior. context.Background() here is the test
-// root — the sanctioned F-ttsr exemption (mirrors github_test.go).
+// split, the multi-page container walk, and the Linear arms' no-ETag behavior.
 
 import (
 	"context"
@@ -543,11 +541,10 @@ func TestPullRequestForSHA(t *testing.T) {
 		{
 			name: "open FIRST, then a lower-numbered closed PR",
 			body: `[{"number":99,"state":"open"},{"number":7,"state":"closed"}]`,
-			// The inverse ordering of the case above, and the only one where the
-			// openness guard itself decides: 7 is lower and arrives later, so a
-			// tie-break that compares numbers WITHOUT first comparing openness
-			// returns 7 and routes CHECKS to a closed PR. Both orderings are
-			// needed — this endpoint guarantees no row order.
+			// The inverse ordering, the only case where the openness guard itself
+			// decides: 7 is lower and arrives later, so a tie-break comparing
+			// numbers WITHOUT first comparing openness returns 7 and routes CHECKS
+			// to a closed PR. Both orderings are needed — no row order guaranteed.
 			wantNumber: 99,
 		},
 		{

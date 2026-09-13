@@ -137,11 +137,10 @@ func resolveBearer(ctx context.Context, st *store.Store, header string) (store.A
 	}
 	subj, err := ResolveToken(ctx, st, token, store.SubjectAccount)
 	if err != nil {
-		// Oracle-safe: every resolution failure — unknown, revoked, or a
-		// cross-door (Runner) token — is one indistinguishable CodeUnauthenticated
-		// to the client (errInvalidToken), so the response never reveals which.
-		// The distinct sentinel is logged (debug) as a server-side audit signal
-		// only; it never reaches the wire.
+		// Oracle-safe: every resolution failure — unknown, revoked, or a cross-door
+		// (Runner) token — is one indistinguishable CodeUnauthenticated to the client,
+		// so the response never reveals which. The distinct sentinel is logged (debug)
+		// as a server-side audit signal only; it never reaches the wire.
 		slog.DebugContext(ctx, "network door rejected bearer token", "reason", err)
 		return store.AccountID(""), connect.NewError(connect.CodeUnauthenticated, errInvalidToken)
 	}

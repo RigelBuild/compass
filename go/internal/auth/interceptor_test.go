@@ -1,24 +1,13 @@
 package auth
 
-// Shared unary-door test scaffolding + the pure header-parse boundary table
-// (RIG-1195 T3, the S3 gate), transcribed from the authoritative Rust suite in
-// crates/compass-daemon/src/auth.rs (#[cfg(test)] mod tests, the bearer_auth
-// cases). The Rust interceptor mutates a tonic Request and attaches an
-// AuthedAccount extension; the Go door is a connect UnaryInterceptorFunc that
-// threads the caller into the request context, read back via CallerFrom — so the
-// observable contract is "the wrapped handler sees CallerFrom(ctx) == the
-// resolved account" on accept, and "connect.CodeOf(err) == CodeUnauthenticated
-// and the handler never runs" on reject.
-//
-// The store-backed bearer accept/reject tests need a live Postgres token store
-// (BearerInterceptor resolves against store.Store), so they live in the `pgtest`
-// lane (interceptor_pgtest_test.go). This default-lane file holds only what needs
-// no store: the shared spy/assert helpers (reused by the pgtest bearer tests, the
-// streaming tests, and the admin-gate tests) and the bearerToken parser table,
-// whose (string, bool) return is directly observable without any store.
-//
-// White-box (package auth) to match the T4 house style and reach the unexported
-// bearerToken parser directly.
+// Shared unary-door scaffolding + the pure header-parse table (RIG-1195 T3),
+// transcribed from crates/compass-daemon/src/auth.rs. Contract: on accept the
+// wrapped handler sees CallerFrom(ctx) == the resolved account; on reject
+// CodeOf(err) is CodeUnauthenticated and the handler never runs.
+
+// The store-backed bearer tests need a live Postgres, so they live in the
+// `pgtest` lane; this default-lane file holds only the store-free spy/assert
+// helpers and the bearerToken parser table. White-box to reach bearerToken.
 
 import (
 	"context"

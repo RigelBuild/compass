@@ -13,12 +13,10 @@ const (
 	pgCheckViolation      = "23514"
 )
 
-// The store's sentinel errors. Callers (the comms service, the auth layer)
-// discriminate with errors.Is and map each to a connect status code at the RPC
-// edge — a package-level var per class so the mapping is stable and %w-wrapped
-// context can ride along (F-oops composes with this later without changing the
-// sentinels). Package-level error vars are the idiomatic Go form the lint
-// config keeps (gochecknoglobals disabled by design, .golangci.yml).
+// The store's sentinel errors. Callers discriminate with errors.Is and map each
+// to a connect status code at the RPC edge — a package-level var per class so
+// the mapping is stable and %w-wrapped context can ride along. Package-level
+// error vars are idiomatic (gochecknoglobals disabled by design, .golangci.yml).
 
 var (
 	// ErrNotFound is returned when a row addressed by id does not exist, or

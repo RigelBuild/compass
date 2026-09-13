@@ -3,17 +3,9 @@
 package server
 
 // The --admin-handle wiring (RIG-1362 T1): the operator-settable bootstrap-admin
-// handle must actually name the created account, not merely a log field. These
-// tests OBSERVE the account the store minted — a round-trip of the flag into
-// ServeConfig is necessary but not sufficient, because an inert knob round-trips
-// too (that was the pre-T1 defect). White-box (package server) so they drive the
-// real Serve and read the store of record directly.
-//
-// Store-gated (//go:build pgtest && unix): Serve opens the Postgres store at
-// startup and BootstrapAdmin writes there, so every case needs a real database
-// via the shared pgtest harness. DSN captured ONCE per test and shared between
-// Serve and the observing reads (each pgtest.RequireDSN call mints a fresh
-// schema, so a second call would read an empty one).
+// handle must actually name the created account, not merely a log field. These OBSERVE
+// the account the store minted — a flag round-trip is necessary but not sufficient,
+// since an inert knob round-trips too (the pre-T1 defect). Store-gated.
 
 import (
 	"context"

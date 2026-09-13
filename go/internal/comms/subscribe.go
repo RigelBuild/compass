@@ -47,28 +47,10 @@ func (c *Comms) SubscribeComms(
 	defer sub.Cancel()
 	actor := c.actorFromContext(ctx)
 
-	// since_seq=0 recovery gets a leading snapshot-boundary frame before any
-	// event: it carries the store-space snapshot_seq the client passes to each
-	// catch-up read RPC so every page reads one point-in-time view
-	// (comms.proto:353-368, design.md:807-817). The subscriber is already
-	// registered (bus.Subscribe above), so capturing the store head here is
-	// subscribe-first: a message committing in this window lands on the live
-	// tail rather than falling between the snapshot and the tail. The boundary
-	// is sent unconditionally on since_seq=0 — including the empty-ring case,
-	// where no event frame exists to carry it — so a client on a quiet channel
-	// still learns the boundary instead of defaulting to 0 (no boundary). A
-	// positioned resubscribe (since_seq>0) already holds state and tails from
-	// its own cursor, so it needs no fresh boundary.
-	// The boundary carries the instance-global store head (MessagesHeadSeq,
-	// messages.go:129) and is sent before per-event visibility filtering, so any
-	// authenticated subscriber — including a non-member of a private channel —
-	// learns the instance-wide durable message count (one monotonic integer, no
-	// content, author, or channel identity) from frame 1. This is the established
-	// contract's ratified shape: a single instance-wide, store-space snapshot_seq
-	// token that survives restarts and covers the empty-ring bootstrap
-	// (design.md:809-816). A visibility-scoped boundary is a different token with
-	// a different meaning; the count-metadata exposure is accepted as within the
-	// threat model (RIG-1333 OQ4, Matt's ruling).
+	// since_seq=0 recovery gets a leading snapshot-boundary frame carrying the
+	// store-space snapshot_seq for each catch-up read. Subscribe-first so a message
+	// in this window lands on the live tail. The boundary carries the store head
+	// BEFORE visibility filtering — the count leak is within the threat model (OQ4).
 	if req.Msg.GetSinceSeq() == 0 {
 		head, err := c.store.MessagesHeadSeq(ctx)
 		if err != nil {
@@ -79,12 +61,10 @@ func (c *Comms) SubscribeComms(
 		}
 	}
 	if err := forwardComms(ctx, actor, c.store, sub, stream); err != nil {
-		// A store error resolving per-event visibility: the stream ends rather
-		// than failing open (the event is never sent unfiltered), but the client
-		// must see a fault, not a clean EOF indistinguishable from shutdown, and
-		// the fault must be diagnosable. The underlying error is logged, not
-		// returned to the client, so the unfiltered event's existence never
-		// leaks through an error message.
+		// A store error resolving per-event visibility: the stream ends rather than
+		// failing open (the event is never sent unfiltered), but the client must see
+		// a fault, not a clean EOF. The underlying error is logged, not returned, so
+		// the unfiltered event's existence never leaks through an error message.
 		slog.ErrorContext(ctx, "comms stream ended: visibility resolution failed",
 			"actor", actor, "error", err)
 		return connect.NewError(connect.CodeInternal, errStreamVisibility)
@@ -123,12 +103,9 @@ func forwardComms(
 	stream *connect.ServerStream[compassv1.SubscribeCommsResponse],
 ) error {
 	// send reports (visErr, ok): visErr is a store fault resolving visibility —
-	// propagate it so the caller surfaces a fault. ok is false on a clean end —
-	// a stream.Send failure (client hung up) or a cancellation racing the
-	// in-flight visibility query (client gone / server shutting down); the
-	// caller stops the loop and returns cleanly, since neither is a fault. The
-	// two are kept distinct so a hang-up never masquerades as a fault and a
-	// fault never masquerades as a clean end.
+	// propagate it. ok is false on a clean end (a stream.Send failure or a
+	// cancellation racing the visibility query). Kept distinct so a hang-up
+	// never masquerades as a fault, nor a fault as a clean end.
 	send := func(event events.Stamped[*compassv1.SubscribeCommsResponse]) (visErr error, ok bool) {
 		visible, err := visibleToActor(ctx, vis, actor, event.Payload)
 		if err != nil {
@@ -295,17 +272,10 @@ func visibleToActor(
 	case *compassv1.SubscribeCommsResponse_MessageUpdated:
 		return vis.IsTopicChannelMember(ctx, actor, p.MessageUpdated.GetMessage().GetTopicId())
 	case *compassv1.SubscribeCommsResponse_ChannelChanged:
-		// A member this change removed is no longer in the channel's set, so it
-		// would never see its own removal — deliver this one final event to a
-		// departed account too (Matt's ruling), then it goes silent to them.
-		// The event carries the channel's post-mutation roster, so a single
-		// batch that both adds X and removes Y reveals newly-added X to departing
-		// Y (a state Y was never a member alongside). Accepted for T2: a minor,
-		// same-batch-only roster exposure to an account that was a member moments
-		// before; closing it would require a per-removed-member before-image.
-		// Otherwise gate on full channel visibility (member OR SHARED-grouped),
-		// not bare membership, so a SHARED channel's change reaches a non-member
-		// viewer at read-parity with ListChannels.
+		// A member this change removed would never see its own removal — deliver this
+		// one final event to a departed account too (Matt's ruling). The event carries
+		// the post-mutation roster (a batch adding X and removing Y reveals X to Y,
+		// accepted for T2). Otherwise gate on full channel visibility.
 		cc := p.ChannelChanged
 		for _, id := range cc.GetRemovedAccountIds() {
 			if store.AccountID(id) == actor {

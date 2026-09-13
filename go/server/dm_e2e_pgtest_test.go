@@ -2,55 +2,10 @@
 
 package server
 
-// RIG-2967 T6 — the peer-DM tasking loop end to end over the REAL spine: T3's
-// OpenDMAsAccount resolve-or-create + T0's name-addressed post/list + T0's
-// source-channel/topic denorm on the wrapped deliver/steer + T2's born-mandatory
-// DM store (both parties members, cursors seeded) + T3's spawn auto-open — all
-// composed over a real Postgres store, the real runnerhub.Hub with a
-// recordingRunner door, a real comms service on the comms bus, and the delivery
-// consumer driven by the REAL resume-based waker, the way production assembles
-// them (sinks.go:142-155). No mocks, no production change (design.md T6:831 —
-// "Interfaces: none new — consumes T0-T3").
-//
-// It proves the dogfood-symptom regression the record names (design.md
-// T6:820-829): agent A opens a DM on B, posts (create_topic) naming the DM
-// channel + topic, B receives it as a deliver whose recorded ChannelName/TopicName
-// ARE the DM's (the T0 denorm the reply-routing fix hangs on), B replies NAMING
-// that same DM channel + topic, and the reply lands in the SAME DM topic — NOT
-// B's home channel. The home-misroute guard is a two-sided assertion: the reply
-// MUST be readable in the DM AND absent from B's home; a reply that routed home
-// (the old bug) reddens both halves.
-//
-// The wire the tests stand up, inline, is production's:
-//
-//	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
-//	c.SetAgentWaker(newLifecycleService(st, hub, commsSvc)) // REAL waker, real dm opener
-//	hub.SetSettleSink(c); hub.SetSessionStartSink(c); hub.SetDeliveryStore(st)
-//	go c.Run(ctx)
-//
-// It REUSES the full-stack placement harness (attachFakeRunner + recordingRunner
-// from service_placement_pgtest_test.go) and the offline-mention e2e's control
-// accessors (allControlDelivers / waitForControlDelivers / controlRecord /
-// classifyControl / containerFor). Only what those don't carry is added here: a
-// deliver snapshot that also reads the source ChannelName/TopicName off the op
-// (the T0 denorm), which the plain controlRecord does not surface.
-//
-// Why a wake fresh-starts but does NOT itself make B live (same as the mention
-// e2e): the waker's freshStart relays hub.Start (a Start on the wire), but
-// promoteSession is a no-op because the container was never bindContainer'd (no
-// Provision precedes a direct-placement wake), so no OnSessionStarted fires. The
-// test therefore drives OnSessionStarted (the exported consumer hook) to model B
-// actually coming live, and the DM message is cursor-swept then. The spawn leg is
-// different: SpawnAsAccount runs the real hub Provision->Start, which DOES
-// bindContainer then promoteSession, so the spawned peer is genuinely hub-live at
-// the fake session id and a manager post reaches it via the live fan-out.
-//
-// context.Background() is the test root (the _test.go thread-context exemption,
-// rule://go-thread-context): the one root ctx threads into Run and every store /
-// hub / comms / consumer call, never re-rooted mid-tree. Every async wait is
-// event-gated on an observed wire fact (a pushed deliver) — never a sleep. Reads
-// are scoped to THIS test's seeded agents / channels, so the shared-container
-// isolated schema needs no empty-global-table assumption.
+// RIG-2967 T6 — the peer-DM tasking loop end to end over the REAL spine (OpenDM,
+// name-addressed post/list, channel/topic denorm, spawn auto-open) composed as
+// production assembles it. Proves the dogfood regression: A DMs B, B replies naming
+// that DM, and the reply lands in the SAME DM topic, NOT B's home (guard two-sided).
 
 import (
 	"context"
@@ -329,11 +284,10 @@ func TestPeerDMTaskingLoopEndToEnd(t *testing.T) {
 			dd[0].channelName, dd[0].topicName, dmName, dmTopic)
 	}
 
-	// 3. REPLY LANDS IN THE DM (the regression): B replies by posting NAMING that
-	//    same DM channel + topic. The reply MUST land in the SAME DM topic and NOT
-	//    in B's home channel. This is the dogfood-symptom guard: the old bug routed
-	//    an agent reply to its home channel; here the reply is asserted present in
-	//    the DM AND absent from B's home, so a home-misroute reddens both halves.
+	// 3. REPLY LANDS IN THE DM (the regression): B replies NAMING that same DM
+	//    channel + topic. The reply MUST land in the SAME DM topic, NOT B's home.
+	//    The old bug routed an agent reply to its home; the guard asserts present in
+	//    the DM AND absent from home, so a home-misroute reddens both halves.
 	const replyText = "B: on it — replying inside the DM topic, not my home channel"
 	if _, err := w.comms.PostAsAccountByName(ctx, agentB.ID, &compassv1.PostMessageRequest{
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: dmName},
@@ -425,13 +379,9 @@ func TestPeerDMSpawnPathDelivers(t *testing.T) {
 	}
 
 	// DELIVERY LEG: the manager posts into the auto-opened DM naming its channel +
-	// topic. The spawned peer is hub-live at the fake session id (the real
-	// Provision->Start binding), so the message reaches it via the live fan-out —
-	// event-gated on the recording runner, never a sleep. The manager is
-	// intentionally NOT hub-live (seedAgent records a placement but never
-	// Provision->Starts it), so the post takes the offline-author path and fires
-	// the deliver immediately rather than holding it to the author's settle edge —
-	// a future change that makes the caller live would need to drive that edge.
+	// topic. The spawned peer is hub-live (the real Provision->Start binding), so the
+	// message reaches it via the live fan-out. The manager is intentionally NOT
+	// hub-live, so the post takes the offline-author path and fires the deliver.
 	const spawnTopic = "kickoff"
 	const spawnText = "manager: your first tasking, in our DM"
 	posted, err := w.comms.PostAsAccountByName(ctx, manager.ID, &compassv1.PostMessageRequest{

@@ -1,15 +1,7 @@
-// The agent side of the agent->Runner call transport: a RunnerCallTransport over
-// a Connect client that dials the Runner's per-container Unix socket
-// (design docs/designs/agent/compass-agent-runner-transport/design.md, RIG-1351
-// T4). The in-container first-party agent reaches its Runner over a bind-mounted
-// Unix socket — a local hop, no network path, so the egress seal is untouched.
-//
-// This module is the ONE place @connectrpc/connect-node is allowed: the biome
-// `noRestrictedImports` fence blocks raw connect/connect-node everywhere else in
-// the agent (reach the daemon through @compass/client, the owned door), and a
-// single scoped override lets the transport dial the Runner socket directly. The
-// AgentGateway service is internal-only gen (never the public client surface), so
-// this is not a server-door client.
+// The agent side of the agent->Runner call transport: a RunnerCallTransport over a Connect
+// client that dials the Runner's per-container Unix socket (RIG-1351 T4) — a local hop, no
+// network path. This is the ONE place @connectrpc/connect-node is allowed (a scoped override
+// past the biome fence); AgentGateway is internal-only gen, so this is not a server-door client.
 
 import { type CallOptions, createClient } from "@connectrpc/connect";
 import {
@@ -111,23 +103,16 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 		sessionManager,
 	});
 	const client = createClient(AgentGateway, transport);
-	// The single ManagedRuntime this transport owns and every Effect lane behind
-	// it (sink, spine, source) shares, so the production wiring path runs on ONE
-	// scheduler (design record §T5). The default logger is removed so a
-	// handled/swallowed lane failure does not double-report to the console;
-	// makeOtelLayer() adds the transport's OTel provider when an OTLP endpoint is
-	// configured and Layer.empty otherwise, so instrumentation is inert with no
-	// endpoint (design docs/designs/repo/compass-agent-effect-otel/design.md
-	// Decision 4). close() disposes it; the sibling factories BORROW it (never
-	// dispose) via the module-private channel.
+	// The single ManagedRuntime this transport owns and every Effect lane (sink, spine,
+	// source) shares, so production runs on ONE scheduler (design record §T5). The default
+	// logger is removed so a swallowed lane failure does not double-report; makeOtelLayer()
+	// is inert with no OTLP endpoint. close() disposes it; sibling factories BORROW it.
 	const runtime = ManagedRuntime.make(
 		Layer.merge(Logger.remove(Logger.defaultLogger), makeOtelLayer()),
 	);
-	// The Publish spine is created once on first use and shared by the sink +
-	// source; memoize it so both reach the same single stream. It runs on the
-	// transport's runtime (threaded by argument — the spine takes `publish`, not
-	// `transport`, so it cannot read the channel), so its drain() does NOT dispose
-	// the borrowed runtime.
+	// The Publish spine is created once on first use and shared by the sink + source;
+	// memoize it so both reach the same single stream. It runs on the transport's runtime
+	// (threaded by argument), so its drain() does NOT dispose the borrowed runtime.
 	let spine: PublishSpine | undefined;
 	const runnerTransport: RunnerTransport = {
 		comms: (req) => client.comms(req),
@@ -143,19 +128,16 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 		control: (req, options) => client.control(req, options),
 		close: () => {
 			sessionManager.abort();
-			// Fire-and-forget from the sync `void` signature: the composition root
-			// calls close() only AFTER the sink's drain barrier, which has already
-			// quiesced every fiber this runtime backs, so the dispose races nothing
-			// (design record §T5; `index.ts` close() doc above). ManagedRuntime.dispose
-			// is not expected to reject; the `.catch` is a guard so a future rejecting
-			// dispose surfaces as nothing rather than an unhandledRejection at teardown.
+			// Fire-and-forget from the sync `void` signature: the composition root calls
+			// close() only AFTER the sink's drain barrier has quiesced every fiber, so the
+			// dispose races nothing. The `.catch` guards a future rejecting dispose from
+			// surfacing as an unhandledRejection at teardown.
 			void runtime.dispose().catch(() => {});
 		},
 	};
-	// Publish the owned runtime on the module-private channel so createSocketFrameSink
-	// and createSocketControlSource BORROW it instead of each making their own
-	// (design record §T5). Absent for a fake transport → those factories fall back
-	// to a self-owned default runtime, disposed at their own teardown seam.
+	// Publish the owned runtime on the module-private channel so the sink + source BORROW
+	// it instead of each making their own (design record §T5). Absent for a fake transport,
+	// those factories fall back to a self-owned default runtime disposed at their own teardown.
 	setTransportRuntime(runnerTransport, runtime);
 	return runnerTransport;
 }

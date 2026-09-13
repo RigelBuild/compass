@@ -2,21 +2,16 @@
 // architecture-lineage). The container's own network namespace is firewalled with
 // nftables, so a compromised agent can't exfiltrate to an arbitrary host — the
 // structural floor beneath the hook-level output gate.
-//
-// The integrity model, verified against rootless podman: the container is
-// granted NET_ADMIN only so a root entrypoint can arm nft; the agent then runs
-// as a non-root user whose capability set is empty, so it cannot flush or edit
-// the ruleset even though the container nominally holds the capability. Never
-// run the agent as container-root.
-//
-// Two nft subtleties the design depends on:
-//   - Dual-stack. A host resolves to A and AAAA records; allowlisting one family
-//     lets the container prefer the other and reach a blocked host (or stall a
-//     permitted one). Both families are resolved and allowlisted.
-//   - Resolve after deny. DNS (port 53) is allowlisted, then names are resolved
-//     from inside the container to populate the address sets — the ruleset is
-//     armed first so resolution itself isn't what a compromised resolver could
-//     exploit to widen the allowlist.
+
+// Integrity model, verified against rootless podman: the container gets
+// NET_ADMIN only so a root entrypoint can arm nft; the agent then runs as a
+// non-root user with an empty capability set, so it cannot edit the ruleset.
+// Never run the agent as container-root.
+
+// Two nft subtleties: dual-stack (allowlist both A and AAAA or the container
+// reaches a blocked host via the other family) and resolve-after-deny (arm the
+// ruleset, allowlist DNS, then resolve names from inside, so a compromised
+// resolver can't widen the allowlist).
 
 package runtime
 
@@ -100,13 +95,10 @@ func (e EgressPolicy) NftScript() string {
 	var b strings.Builder
 	b.WriteString(baseRuleset)
 	for _, host := range e.hosts {
-		// `getent ahostsv4/v6` is resolver-backed and present in glibc images;
-		// each yields one address per line in column one. The `set +e` keeps a
-		// failing `nft add element` (a host may lack a family, or two hosts may
-		// resolve to a shared address whose second insert nft rejects) from
-		// aborting the loop, and the trailing `; true` makes the subshell itself
-		// exit 0 so that tolerated failure can't pierce the fail-closed base
-		// ruleset's `set -e`.
+		// `getent ahostsv4/v6` is resolver-backed (glibc), one address per line.
+		// `set +e` keeps a failing `nft add element` (missing family, or a shared
+		// address nft rejects on second insert) from aborting the loop; the
+		// trailing `; true` keeps it from piercing the base ruleset's `set -e`.
 		fmt.Fprintf(&b,
 			"\n(set +e; for ip in $(getent ahostsv4 %s | awk '{print $1}' | sort -u); do "+
 				"nft add element inet compass_egress allow4 \"{ $ip }\"; done; true)", host)

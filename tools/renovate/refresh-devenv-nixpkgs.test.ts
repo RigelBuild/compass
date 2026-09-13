@@ -5,17 +5,10 @@ import { join } from "node:path";
 import { $ } from "bun";
 import { nixpkgsLockedRev } from "../toolchain/flake-parity-core.ts";
 
-// Orchestration harness for tools/renovate/refresh-devenv-nixpkgs.ts
-// (RIG-2432).
-//
-// The pure transforms (rev extraction, pin rewrite) are unit-tested in
-// refresh-devenv-nixpkgs.core.test.ts. This drives the SHIPPED entry point end
-// to end inside a throwaway git repo with stub `devenv`/`nix`/`bun` on PATH, so
-// the step SEQUENCING is exercised offline + deterministically: self-gate →
-// re-lock → raw-nixpkgs eval → catalog rewrite → lockfile re-resolve. The real
-// nix eval + devenv re-lock run for real against the vendored devenv in the
-// PR's own CI; here they are stubbed so the failure mode under test is the
-// script's own control flow, not the network.
+// Orchestration harness for refresh-devenv-nixpkgs.ts (RIG-2432). The pure
+// transforms are unit-tested in refresh-devenv-nixpkgs.core.test.ts. This drives
+// the SHIPPED entry point end to end in a throwaway git repo with stub
+// devenv/nix/bun, exercising the step sequencing offline (real nix runs in CI).
 
 // The shipped entry point, invoked as Renovate will: `bun tools/renovate/…ts`,
 // cwd = repo root. Copied into the throwaway repo so the SHIPPED file runs, not
@@ -205,14 +198,10 @@ else
 fi
 `;
 
-// Stub `bun`: swallow `bun install --lockfile-only` (record that it ran via a
-// marker file) so the harness can assert step 5 fired, offline. The passthrough
-// execs the REAL bun by its absolute path (process.execPath, the interpreter
-// running this test), NOT `env bun` — a bare `bun` re-resolves through PATH,
-// which is prepended with this stub dir, so under Bun ≥1.4 (where Bun-Shell's
-// `$` resolves a bare command via PATH rather than the running executable) the
-// passthrough would re-enter the stub and recurse until timeout. An absolute
-// path can never loop back through the stub.
+// Stub bun: swallow bun install --lockfile-only (record a marker) so the harness
+// can assert step 5 fired, offline. The passthrough execs the REAL bun by absolute
+// path (process.execPath), NOT a bare bun — under Bun ≥1.4, Bun-Shell resolves a
+// bare command via PATH (prepended with this stub dir) and would recurse to timeout.
 const STUB_BUN = `#!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "install" ]; then
@@ -265,11 +254,9 @@ async function buildRepo(): Promise<string> {
 	return repo;
 }
 
-// Run the shipped script as Renovate does: `bun tools/renovate/…ts`, cwd = repo
-// root, stubs first on PATH so no real nix/devenv/network is touched. The real
-// `bun` runs the script itself; the stub `bun` only intercepts `bun install`
-// (its first arg), so we keep the real bun on PATH too — the stub `exec`s it
-// for non-install calls, but the script is launched with the real bun here.
+// Run the shipped script as Renovate does: bun tools/renovate/…ts, cwd = repo
+// root, stubs first on PATH. The real bun runs the script; the stub bun only
+// intercepts bun install and execs the real bun for other calls.
 async function runRefresh(repo: string) {
 	return await $`bun ${SCRIPT_REL}`
 		.cwd(repo)
@@ -303,11 +290,9 @@ describe("tools/renovate/refresh-devenv-nixpkgs.ts lockstep (RIG-2432)", () => {
 		expect(pkg).toContain('"@biomejs/biome": "2.4.16"');
 	});
 
-	// The end-to-end happy path: bump devenv.lock's outer rev (what the
-	// customManager's regex update does), run the script, and assert it
-	// re-locked, evaluated the BUMPED INNER rev, rewrote the biome catalog pin to
-	// the evaluated version, left the `catalog:` consumer alone, and ran the
-	// lockfile re-resolve.
+	// The end-to-end happy path: bump devenv.lock's outer rev, run the script, and
+	// assert it re-locked, evaluated the BUMPED INNER rev, rewrote the biome catalog
+	// pin, left the catalog: consumer alone, and ran the lockfile re-resolve.
 	test("re-locks, evaluates inner rev, and rewrites the biome catalog pin", async () => {
 		// Simulate the regex update: rewrite ONLY the outer channel rev.
 		await Bun.write(

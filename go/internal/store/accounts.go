@@ -338,11 +338,9 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		Role:          a.Role,
 		Column6:       string(a.ParentAgentID),
 	}); err != nil {
-		// Both FKs on agent_accounts land here: parent_agent_id (a supplied
-		// parent that does not resolve to an agent) and owner_user_id (an
-		// unknown owner). ConstraintName tells them apart — the parent FK is a
-		// missing referent (ErrNotFound), an unknown owner a caller error
-		// (ErrInvalidArgument), not a store fault.
+		// Both FKs land here: parent_agent_id (unresolved parent) and
+		// owner_user_id (unknown owner). ConstraintName tells them apart — parent
+		// is a missing referent (ErrNotFound), unknown owner a caller error.
 		if pgErrIs(err, pgForeignKeyViolation) {
 			if pgConstraintName(err) == "agent_accounts_parent_agent_id_fkey" {
 				return Account{}, fmt.Errorf("%w: parent agent %q", ErrNotFound, a.ParentAgentID)
@@ -360,12 +358,10 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		return Account{}, err
 	}
 
-	// INVARIANT: every write of agent_accounts.parent_agent_id must invoke the
-	// registered coordination hook. The INSERT above just wrote it; invoke the
-	// hook on THIS tx for the new agent's PARENT (the manager that gains this
-	// report), so the coordination-channel reconcile commits atomically with the
-	// tree edge (RIG-1722 T5, design.md:550-551). Skipped when parent is empty: a
-	// root agent has no manager, so there is no coordination channel to reconcile.
+	// INVARIANT: every write of parent_agent_id must invoke the coordination
+	// hook. Invoke it on this tx for the new agent's PARENT so the channel
+	// reconcile commits atomically with the tree edge (RIG-1722 T5). Skipped
+	// when parent is empty: a root agent has no manager to reconcile.
 	if a.ParentAgentID != "" {
 		if err := s.invokeCoordinationHook(ctx, tx, a.ParentAgentID); err != nil {
 			return Account{}, err
@@ -564,15 +560,10 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 		}
 	}
 
-	// Per-owner-tree lock: serialize every re-parent under this owner's tree so
-	// the cycle check below reads a stable tree and no concurrent acyclic move
-	// can interleave into a persisted cycle. hashtext -> int4 widens to the
-	// bigint the advisory lock takes; the lock auto-releases at txn end. An
-	// unknown agent has no owner to key on, so its (already-doomed) request locks
-	// on its own id — never colliding with a real owner's tree. Two distinct
-	// owners can hash-collide on the int4 hashtext key and spuriously serialize
-	// each other's reparents — a benign liveness/throughput cost (a redundant
-	// wait), never a wrong result, acceptable at expected fleet size.
+	// Per-owner-tree lock: serialize every reparent under this owner's tree so
+	// the cycle check reads a stable tree. Auto-releases at txn end. An unknown
+	// agent locks on its own id. Two owners can hash-collide on the int4 key and
+	// spuriously serialize — benign liveness cost, never a wrong result.
 	lockKey := agentOwner
 	if !agentExists {
 		lockKey = string(agentAccountID)
@@ -611,16 +602,10 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 		return Account{}, fmt.Errorf("store: update parent: %w", err)
 	}
 
-	// INVARIANT: every write of agent_accounts.parent_agent_id must invoke the
-	// registered coordination hook. The UPDATE above rewrote it, so reconcile
-	// BOTH affected managers' coordination channels on THIS tx (RIG-1722 T5,
-	// design.md:550-551,567): the NEW parent gains this report (reparent-in adds
-	// it) and the OLD parent loses it (reparent-out removes it). The reconcile is
-	// a per-manager membership resync (idempotent), so invoking it for each with
-	// a full resync naturally adds-on-new and removes-on-old. A promote-to-root
-	// (empty new parent) or a former-root move (empty old parent) skips the empty
-	// side — that manager does not exist. Skip the old side when it equals the
-	// new (a no-op move) to avoid a redundant second resync of the same channel.
+	// INVARIANT: every write of parent_agent_id must invoke the coordination
+	// hook. Reconcile BOTH managers' channels on this tx (RIG-1722 T5): new
+	// parent gains this report, old parent loses it. Skip an empty side
+	// (promote-to/from root) and the old side when it equals the new.
 	if newParentAgentID != "" {
 		if err := s.invokeCoordinationHook(ctx, tx, newParentAgentID); err != nil {
 			return Account{}, err
@@ -664,12 +649,10 @@ func validateNewParent(ctx context.Context, q *db.Queries, agentAccountID, newPa
 		return fmt.Errorf("store: resolve new parent owner: %w", err)
 	}
 	if AccountID(parentOwner) != agentOwner {
-		// Cross-owner reparent is rejected. On the ReparentAgent RPC path this
-		// clause is edge-shadowed: comms.ReparentAgent rejects a foreign parent
-		// at the service edge (naming the submitted handle, DL-269 oracle
-		// invariant) BEFORE calling the store, so this ErrPermissionDenied only
-		// surfaces to a direct store caller (independently tested) — it remains
-		// as store-layer defense-in-depth, not dead code.
+		// Cross-owner reparent rejected. On the ReparentAgent RPC path this is
+		// edge-shadowed (comms.ReparentAgent rejects a foreign parent first,
+		// DL-269), so this only surfaces to a direct store caller — kept as
+		// store-layer defense-in-depth, not dead code.
 		return fmt.Errorf("%w: parent agent %q has a different owner", ErrPermissionDenied, newParentAgentID)
 	}
 

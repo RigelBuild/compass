@@ -3,19 +3,9 @@
 package server
 
 // RIG-1641 T3: lifecycleService.WakeAgent, the resume-based offline-agent wake,
-// against a real Postgres AND a real Runner door (the fake recordingRunner that
-// records every relayed command, so "a Start was pushed" / "no Start was pushed"
-// / "the resume body rode the internal envelope" are observed wire facts, not
-// mock expectations). WakeAgent is an INTERNAL seam (delivery.AgentWaker), not a
-// wire RPC, so these drive newLifecycleService(store, hub, nil).WakeAgent directly
-// under a resolved agent AccountID — the same way the delivery consumer's wake
-// seam calls it — rather than through the connect client.
-//
-// The chain each case pins: not-live pre-check (a live agent is a no-op), a
-// prior-session system-authorized internal resume (BindLifetime +
-// ReconstructSessionBody + StartResume, SKIPPING the caller-subscriber gate), a
-// never-started fresh hub.Start fallback, a no-placement logged no-op, and the
-// per-agent singleflight coalescing N concurrent wakes onto exactly one start.
+// against a real Postgres AND a real Runner door. Drives WakeAgent directly under a
+// resolved AccountID. Pins: not-live pre-check, system-authorized internal resume,
+// fresh hub.Start fallback, and singleflight coalescing of N wakes onto one start.
 
 import (
 	"context"
@@ -251,11 +241,10 @@ func TestWakeAgentSingleflightCoalescesToOneStart(t *testing.T) {
 	if err := f.store.AppendTranscriptEntry(ctx, logical, 1, true, `{"header":true}`, "k1"); err != nil {
 		t.Fatalf("append checkpoint: %v", err)
 	}
-	// Bind the container in the hub (Provision's container->account binding) so
-	// the leader's StartResume->promoteSession actually promotes the agent LIVE.
-	// That closes the only residual race: a follower that reaches wakeGroup.Do
-	// just AFTER the leader releases finds the agent live at the not-live
-	// pre-check and no-ops, so it never starts a second session either.
+	// Bind the container in the hub (Provision's container->account binding) so the
+	// leader's StartResume->promoteSession promotes the agent LIVE. That closes the
+	// residual race: a follower reaching wakeGroup.Do just after the leader releases
+	// finds the agent live at the not-live pre-check and no-ops.
 	if _, _, err := f.hub.Provision(ctx, "prov-sf", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID)}); err != nil {
 		t.Fatalf("Provision (bind container): %v", err)
 	}

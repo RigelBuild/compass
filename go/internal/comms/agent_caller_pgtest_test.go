@@ -2,27 +2,14 @@
 
 package comms
 
-// The agent-comms execution leg (comms-tools design T2, OQ-2): PostAsAccount /
-// ListAsAccount execute one agent-initiated comms call as a resolved agent
-// account, reusing the SAME PostMessage / ListMessages handler paths a human
-// takes. Every test here drives the real Postgres store + real bus (no mocks —
-// the newHandler harness comms_test.go uses) and defends one contract:
-//
-//   - attribution: the stored message's author IS the agent account, so the
-//     transport (T3) can trust "author = agent account";
-//   - D9 authz reuse: a non-member channel collapses to CodeNotFound, identical
-//     to a human non-member — the agent never learns a channel it cannot see;
-//   - home-channel default: an empty channel_id lands in the agent's home
-//     channel, so the container needs no channel id plumbed in;
-//   - fail-closed identity (SECURITY): an empty account is a hard
-//     CodeInvalidArgument, never a silent fall-through to bootstrap-admin
-//     attribution;
-//   - idempotency reuse: the same client_request_id stores exactly one message.
-//
-// Gated `pgtest && unix`: it SKIPs (via pgtest.RequireDSN in newTestStore) when
-// no Postgres/podman runtime is available, so the default gate stays green while
-// the assertions are real wherever a runtime exists. `unix` because
-// agent_caller.go is unix-tagged.
+// The agent-comms execution leg (comms-tools T2, OQ-2): PostAsAccount /
+// ListAsAccount run one agent-initiated call as a resolved agent account,
+// reusing the SAME handler paths a human takes, over the real Postgres store.
+
+// Contracts: the stored author is the agent account; a non-member channel is
+// CodeNotFound (D9 reuse); an empty channel_id lands in the agent's home; an
+// empty account is a hard CodeInvalidArgument (fail-closed, never bootstrap-
+// admin); the same client_request_id stores exactly one message.
 
 import (
 	"context"

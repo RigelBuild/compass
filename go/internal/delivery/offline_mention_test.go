@@ -4,13 +4,12 @@ package delivery
 
 // RIG-1641 T2 — the offline-mention redelivery arms, RED-first: the routeMentions
 // offline arm (record an owed row for an out-of-sweep-set member, wake all
-// offline mentioned members), the fanOut deliver arm (wake an offline subscriber,
-// no owed row), and the sweepOwedMentions start-edge step (dispatch every owed
-// mention as a STEER, clearing a permanently-unreadable row). Each case drives
-// the consumer through the real events bus + hand-written fakes and gates on the
-// recorder's observed dispatches / wakes — never a sleep. context.Background() is
-// the test root (rule://go-thread-context exemption for _test.go); it is threaded
-// into Run via startConsumer and never re-rooted below.
+// offline mentioned members) and the fanOut deliver arm (wake an offline
+// subscriber, no owed row).
+
+// Plus sweepOwedMentions (dispatch every owed mention as a STEER, clearing an
+// unreadable row). Driven through the real bus + fakes, gating on the recorder's
+// dispatches/wakes, never a sleep.
 
 import (
 	"testing"

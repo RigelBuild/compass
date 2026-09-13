@@ -154,9 +154,8 @@ func (p *gatewayProxy) forward(ctx context.Context, client net.Conn, dial func(p
 	if err != nil || upstream == nil {
 		// A dial before the host listener exists (or any dial fault) fails this
 		// one connection visibly rather than wedging the proxy — the lazy-dial
-		// property (§(d)). Close only the client; the accept loop survives. The
-		// upstream==nil arm also proves non-nil below for the later Close (a seam
-		// that returned (nil, nil) would otherwise nil-panic in the AfterFunc).
+		// property (§(d)). The upstream==nil arm also proves non-nil below for the
+		// later Close, so a (nil, nil) seam can't nil-panic in the AfterFunc.
 		_ = client.Close() // the dial failed, so there is nothing to splice; drop the client
 		return
 	}

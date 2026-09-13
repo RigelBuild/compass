@@ -2,12 +2,9 @@
 
 package delivery
 
-// The fan-out consumer's acceptance cases (RIG-1569 T3, design.md:744-761),
-// RED-first. Each drives the consumer through the real events bus + hand-written
-// fakes and gates on the recorder's observed dispatches — never a sleep, never a
-// retry (rule://no-retries). context.Background() is the test root
-// (rule://go-thread-context exemption for _test.go); it is threaded into Run and
-// never re-rooted below.
+// The fan-out consumer's acceptance cases (RIG-1569 T3), RED-first. Each drives
+// the consumer through the real events bus + hand-written fakes and gates on the
+// recorder's observed dispatches — never a sleep, never a retry (rule://no-retries).
 
 import (
 	"context"
@@ -321,11 +318,10 @@ func TestLiveEventsQueueBehindSweep(t *testing.T) {
 	}
 }
 
-// Case 7: a bus-lag resync triggers the sweep, NOT a loss. When the consumer's
-// live channel overruns (lagged), it redelivers every owed message to every live
-// session rather than dropping the missed events. Driven deterministically: block
-// the consumer inside its first dispatch, overrun its live buffer, release, and
-// assert the owed message reaches its recipient via the sweep.
+// Case 7: a bus-lag resync triggers the sweep, NOT a loss. When the live channel
+// overruns, the consumer redelivers every owed message to every live session rather
+// than dropping the missed events. Driven deterministically: block the first
+// dispatch, overrun the buffer, release, and assert the owed message arrives.
 func TestBusLagTriggersSweepNotLoss(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -367,12 +363,9 @@ func TestBusLagTriggersSweepNotLoss(t *testing.T) {
 }
 
 // Case 4: a refused dispatch leaves the cursor UNADVANCED. The consumer never
-// advances a cursor on send (the cursor advances only on delivery_ack, in the
-// hub's ack arm); a synchronous refusal is swallowed as "no live session, fall
-// to the sweep". This test asserts the refusal is non-fatal (the consumer keeps
-// running and delivers the next message), so a refused deliver is a no-op on the
-// dispatch side — the cursor it never touched stays where the sweep can redeliver
-// from. The cursor-advance itself is proven in the store/hub ack tests.
+// advances a cursor on send (that happens only on delivery_ack in the hub); a
+// synchronous refusal is swallowed as "no live session, fall to the sweep". Asserts
+// the refusal is non-fatal; the cursor-advance is proven in the store/hub ack tests.
 func TestRefusedDispatchIsNonFatalNoAdvance(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -398,14 +391,9 @@ func TestRefusedDispatchIsNonFatalNoAdvance(t *testing.T) {
 }
 
 // FIX 1 (RIG-1569 T3 review): a bus-lag overrun must RE-SUBSCRIBE and keep
-// delivering, not terminate the singleton consumer goroutine. design.md:227-231
-// rules a resync "a latency blip, never a loss" and says the consumer "treats a
-// resync exactly as SubscribeComms clients do" — a client re-subscribes and
-// continues. The pre-fix code ran the sweep then `return nil`, so after one
-// transient overrun NO message was ever delivered live again for the server's
-// whole life. This drives an overrun (mirroring Case 7), then publishes a NEW
-// message AFTER the sweep and asserts it is delivered live — proof the loop is
-// still running and still fanning out.
+// delivering, not terminate the singleton consumer goroutine. The pre-fix code ran
+// the sweep then `return nil`, so one overrun ended live delivery forever. Drives an
+// overrun, then publishes a NEW message AFTER the sweep and asserts it delivers live.
 func TestBusLagResubscribesAndKeepsDelivering(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -463,22 +451,9 @@ func TestBusLagResubscribesAndKeepsDelivering(t *testing.T) {
 }
 
 // FIX A (RIG-1569 T3 round-2 review): a bus-lag resync must SUBSCRIBE before it
-// sweeps, or a message committed+published in the window between the sweep's
-// owed-read and the fresh Subscribe's lock-acquire is delivered to no one until
-// the recipient reconnects. The post path commits the store row before
-// publishing MessagePosted (comms.go:270-271), so such a window message M is
-// absent from the already-read owed set AND, under a sweep-first order, only in
-// the fresh Replay (deliberately not drained) and NOT on a Live that predates
-// its registration (events.go:216-219) — a live-delivery seam.
-//
-// This drives the overrun exactly as TestBusLagResubscribesAndKeepsDelivering,
-// but blocks the consumer INSIDE the resync sweep (via a beforeUndelivered seam
-// on the reads fake), publishes M during that block, and asserts M reaches a
-// live subscriber with an EMPTY owed set — so M can ONLY have arrived via live
-// delivery, never the sweep. With the subscribe-first order M lands on the fresh
-// Live and is delivered after the sweep drains; with the pre-fix sweep-first
-// order M is published before the fresh Subscribe, lands in the skipped Replay,
-// and never reaches the window agent (the RED).
+// sweeps, or a message committed between the owed-read and the fresh Subscribe
+// reaches no one until reconnect. Blocks the consumer INSIDE the resync sweep,
+// publishes M during the block, and asserts M arrives live (sweep-first: skipped Replay).
 func TestBusLagResubscribeDeliversWindowMessageLive(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -599,11 +574,9 @@ func (d *blockCapturingDispatcher) waitFor(t *testing.T, messageID string) block
 }
 
 // FIX 3 (RIG-1569 T3 review): the no-live-author path must deliver from the
-// STORED block set, not the posted (possibly partial) wire message. The branch
-// comment and design.md:177-178,:306 both specify "from its stored block set";
-// the pre-fix code fanned out the raw bus `msg`. This seeds the store with a
-// GROWN block set distinct from the posted one and asserts the dispatched deliver
-// carries the stored blocks.
+// STORED block set, not the posted (possibly partial) wire message. The pre-fix
+// code fanned out the raw bus `msg`. Seeds the store with a GROWN block set
+// distinct from the posted one and asserts the dispatched deliver carries it.
 func TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks(t *testing.T) {
 	disp := newBlockCapturingDispatcher()
 	res := newFakeResolver()

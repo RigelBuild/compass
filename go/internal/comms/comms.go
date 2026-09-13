@@ -110,21 +110,10 @@ func (c *Comms) CreateAgent(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	// CreateAgent now resolves the caller's owner via store.ResolveOwner
-	// (mirroring ReparentAgent's clause-0 resolution): an agent caller resolves
-	// to its owner_user_id, a user caller to itself. The resolved user-owner is
-	// both the parent same-owner comparison key below AND the owner the new agent
-	// is created under — so an agent spawning a child under a same-owner parent is
-	// authorized correctly, and the store's owner_user_id FK (which requires a
-	// user) is satisfied.
-	// A supplied parent is validated before the account is minted (§Server
-	// validation, applied on creation too): the parent_handle must resolve to an
-	// existing agent (clause 3 → NotFound) that belongs to the creating caller's
-	// owner. Clause 2 (cycle) cannot arise on create — a new account has no
-	// descendants. Oracle-safe remap (DL-269): a resolved-but-foreign parent
-	// (an owner-qualified handle naming another owner's agent) is byte-identical
-	// to an unknown one — NOT_FOUND naming the SUBMITTED handle, never the old
-	// PermissionDenied "different owner" that leaked the parent's existence.
+	// CreateAgent resolves the caller's owner via store.ResolveOwner; the resolved
+	// user-owner is the parent same-owner key and the new agent's owner. A supplied
+	// parent_handle must resolve to an existing agent of that owner (else NotFound).
+	// Oracle-safe (DL-269): a foreign parent is NOT_FOUND naming the SUBMITTED handle.
 	var parentID store.AccountID
 	if parent := req.Msg.GetParentHandle(); parent != "" {
 		parentID, err = c.resolveAgentHandle(ctx, caller, parent)
@@ -303,13 +292,9 @@ func (c *Comms) ReparentAgent(
 			return nil, edgeError(err)
 		}
 		// Oracle-safe remap (DL-269), mirroring CreateAgent's parent pre-check:
-		// a resolved-but-foreign parent (an owner-qualified handle naming another
-		// owner's agent) must be byte-identical to an unknown one. Resolve the
-		// caller's owner and reject a foreign parent HERE, naming the SUBMITTED
-		// new_parent_handle — otherwise the store's clause-1 ErrPermissionDenied
-		// ("parent agent %q has a different owner") gets re-keyed below to name
-		// the AGENT handle, which differs from the unknown-parent NOT_FOUND
-		// (named with the parent handle) and leaks the parent's existence.
+		// resolve the caller's owner and reject a foreign parent HERE, naming the
+		// SUBMITTED new_parent_handle — otherwise the store's clause-1 error re-keys
+		// to the AGENT handle and leaks the parent's existence.
 		owner, err := c.store.ResolveOwner(ctx, caller)
 		if err != nil {
 			return nil, edgeError(err)
@@ -329,12 +314,10 @@ func (c *Comms) ReparentAgent(
 		newParentID,
 	)
 	if err != nil {
-		// Oracle-safe remap (DL-269): the store's clause-0 authority failure
-		// (ErrPermissionDenied "caller may not re-parent agent %q") on a resolved
-		// but foreign agent must be byte-identical to the unknown-handle
+		// Oracle-safe remap (DL-269): the store's clause-0 authority failure on a
+		// resolved but foreign agent must be byte-identical to the unknown-handle
 		// NOT_FOUND — a real-but-foreign handle is guessable, so it cannot leak a
-		// distinct code/message. Re-key it to NOT_FOUND naming the SUBMITTED
-		// agent handle, never the resolved id.
+		// distinct code/message. Re-key to NOT_FOUND naming the SUBMITTED handle.
 		if errors.Is(err, store.ErrPermissionDenied) {
 			return nil, edgeError(notFoundHandle(store.ErrNotFound, req.Msg.GetAgentHandle()))
 		}
@@ -464,10 +447,9 @@ func (c *Comms) RespondToAsk(
 	// active.
 	trace.SpanFromContext(ctx).SetAttributes(attribute.String("compass.message.id", string(answerMsg.ID)))
 	// MessageUpdated carries the ask's new answered state to the UI; it is NOT a
-	// delivery trigger. MessagePosted for the answer message IS the delivery
-	// trigger — it fans out on the normal message rail, so an offline or
-	// reconnecting asker gets the answer via the ack-gated cursor + resweep
-	// (RIG-2257: no bespoke ask wake).
+	// delivery trigger. MessagePosted for the answer message IS the trigger — it
+	// fans out on the normal message rail, so an offline asker gets the answer via
+	// the ack-gated cursor + resweep (RIG-2257: no bespoke ask wake).
 	c.publishMessageUpdated(askMsg)
 	c.publishMessagePosted(ctx, answerMsg)
 	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
@@ -524,14 +506,9 @@ func (c *Comms) UpdateTopic(
 }
 
 // ---- manager-comms-substrate RPCs (RIG-1740 T1) ----
-//
-// GetRoster, SetChannelPolicy, and UpdatePinnedBoard are the T1 proto surface of
-// the manager-comms substrate. T1 lands the contract (proto + regen) proto-first;
-// the real handler bodies are the T1-gated legs (T2 roster read, T4 channel
-// policy, T6 pinned board) that replace these stubs. Until then they return
-// CodeUnimplemented so the handler satisfies the generated interface (comms.go
-// asserts CommsServiceHandler with no Unimplemented embed) without pretending to
-// serve a surface whose store legs do not exist yet.
+// GetRoster, SetChannelPolicy, and UpdatePinnedBoard land the T1 proto contract
+// proto-first (real bodies are T2/T4/T6); until then they return CodeUnimplemented
+// so the handler satisfies the generated interface without serving absent legs.
 
 // SetChannelPolicy sets a channel's post policy, owner/operator account, and
 // mandatory-subscription flag (T4) — the only mutation path for these fields
@@ -669,13 +646,10 @@ func (c *Comms) OpenDM(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: cannot open a DM with yourself"))
 	}
 
-	// Same-owner authz. resolveAgentAccount for a BARE handle already resolves in
-	// the caller's own owner namespace, so a bare peer is same-owner by
-	// construction; the check bites an owner-QUALIFIED handle naming another
-	// owner's agent. A cross-owner peer is byte-identical to an unknown one
-	// (oracle-safe, mirroring ReparentAgent's remap at comms.go:321-323) — the
-	// merged NOT_FOUND naming the submitted handle, never leaking the peer's
-	// existence.
+	// Same-owner authz. resolveAgentAccount for a BARE handle already resolves in the
+	// caller's own owner namespace, so a bare peer is same-owner by construction; the
+	// check bites an owner-QUALIFIED handle naming another owner's agent. A
+	// cross-owner peer is oracle-safe: the merged NOT_FOUND names the submitted handle.
 	owner, err := c.store.ResolveOwner(ctx, caller)
 	if err != nil {
 		return nil, edgeError(err)

@@ -47,14 +47,9 @@ func (authenticatedOpen) isPrivilege() {}
 func classifyProcedure(procedure string) (privilege, bool) {
 	switch procedure {
 	// Privileged CompassService agent-session RPCs + token issuance + container
-	// teardown + fleet config writes: admin only. RemoveAgentWorkspace is the
-	// operator-door teardown counterpart to ProvisionAgentWorkspace, admin-gated
-	// like it (the agent-facing despawn reaches the same teardown over the Runner
-	// relay with its own owner-scoped check, never this door). PutAgentConfig and
-	// DeleteAgentConfig are the operator-scoped fleet config writes (record §520-522).
-	// SpawnAgent is the composite Provision+Start start-an-agent RPC — strictly
-	// more powerful than any sibling since it provisions AND starts, so it is
-	// admin-gated like them (DL-171).
+	// teardown + fleet config writes: admin only. RemoveAgentWorkspace, PutAgentConfig,
+	// DeleteAgentConfig are operator-scoped; SpawnAgent (composite Provision+Start) is
+	// strictly more powerful, so admin-gated like them (DL-171).
 	case compassv1connect.CompassServiceProvisionAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceStartAgentSessionProcedure,
@@ -70,18 +65,10 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceDeleteAgentConfigProcedure:
 		return adminOnly{}, true
 
-	// The connect-time probe, the two event streams, the board catch-up read, and
-	// the value-free config info view: open to any authenticated account.
-	// SubscribeAgentSession carries its own per-account authorization in the
-	// handler (session-ownership → home-channel membership), like the other open
-	// streams, so the network-door gate must let its intended non-admin channel
-	// members through to that check. GetAgentConfigInfo returns names only, never
-	// content (record §525-526), so it is open like the other read surfaces.
-	// WhoAmI is authenticatedOpen because it reflects the caller's OWN identity
-	// (identity reflection; native-client non-admin accounts must reach it),
-	// resolved server-side from the credential. ListBoardIssues is the durable
-	// board re-snapshot read — the same access class as the SubscribeEvents tail
-	// it pairs with: the whole board is repo-scoped, with no per-account filter.
+	// The connect-time probe, the two event streams, the board catch-up read, and the
+	// config info view: open to any authenticated account. SubscribeAgentSession
+	// carries its own per-account authorization, so the door admits non-admin members;
+	// GetAgentConfigInfo returns names only; WhoAmI reflects the caller's own identity.
 	case compassv1connect.CompassServiceGetServerInfoProcedure,
 		compassv1connect.CompassServiceWhoAmIProcedure,
 		compassv1connect.CompassServiceSubscribeEventsProcedure,
@@ -116,25 +103,19 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CommsServiceSubscribeCommsProcedure:
 		return authenticatedOpen{}, true
 
-	// The SecretsService write + read RPCs: open to any authenticated account.
-	// The frozen secrets record scopes these to the user (SetSecret/DeleteSecret)
-	// and to the user and its agents (ListSecrets) — none is admin-only, so the
-	// door gate admits any authenticated account and the service body enforces
-	// the per-account authorization (RequireUser on the writes, user-or-agent on
-	// the list), the same split as every CommsService method above.
+	// The SecretsService write + read RPCs: open to any authenticated account. The
+	// secrets record scopes these to the user (writes) and to the user and its agents
+	// (ListSecrets) — none is admin-only, so the door admits any account and the
+	// service body enforces per-account authorization.
 	case compassv1connect.SecretsServiceSetSecretProcedure,
 		compassv1connect.SecretsServiceListSecretsProcedure,
 		compassv1connect.SecretsServiceDeleteSecretProcedure:
 		return authenticatedOpen{}, true
 
-	// The SERVER-secret RPCs are ADMIN-only, unlike their user-facing siblings
-	// above. They read and write the separate server_secrets registry, whose
-	// rows are deployment-owned (forge App PEMs, webhook secrets, the
-	// gateway master-key family) rather than account-owned — there is no
-	// per-account authorization to fall back on, so the door gate is the
-	// authorization. The LIST is gated as tightly as the writes: the declared
-	// server-secret names are the deployment's own inventory, not something an
-	// agent token has any business enumerating.
+	// The SERVER-secret RPCs are ADMIN-only, unlike their user-facing siblings. They
+	// read/write the separate server_secrets registry, whose rows are deployment-owned
+	// with no per-account authorization to fall back on, so the door gate IS the
+	// authorization. The LIST is gated as tightly as the writes.
 	case compassv1connect.SecretsServiceSetServerSecretProcedure,
 		compassv1connect.SecretsServiceDeleteServerSecretProcedure,
 		compassv1connect.SecretsServiceListServerSecretsProcedure:

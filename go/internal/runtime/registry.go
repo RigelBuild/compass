@@ -1,13 +1,10 @@
-// The Runner's map of launched agent containers to their AgentHandles, keyed by
-// container name. StartAgentSession carries only a container name; the registry
-// resolves it to the launched handle the session manager needs. The launch path
-// (AgentRuntime.Launch) registers a handle here so the session RPCs can find it
-// later; the container engine remains the source of truth for existence, this is
-// only the in-memory handle cache.
-//
-// The registry is a leaf: it stores AgentHandle (an agent-lifecycle type) and
-// pulls in no session-manager state, so it lives with AgentRuntime in the
-// runtime package rather than the session tier that consumes it.
+// The Runner's map of launched agent containers to AgentHandles, keyed by
+// container name. StartAgentSession carries only a name; the registry resolves
+// it to the launched handle. The engine remains the source of truth for
+// existence — this is only the in-memory handle cache.
+
+// A leaf: it stores AgentHandle and pulls in no session-manager state, so it
+// lives with AgentRuntime rather than the session tier that consumes it.
 
 package runtime
 

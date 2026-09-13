@@ -1,44 +1,7 @@
-// The SubscribeEvents stream driver: the orchestrator that turns the live
-// server event stream (compass.v1 CompassService.SubscribeEvents) into a
-// sequence of domain Issue[] snapshots for the board.
-//
-// This is the READ half of RIG-1729. It mirrors the comms driver's
-// (./stream.ts runCommsStream) snapshot+tail shape: a cold-start subscription
-// pairs the durable board re-snapshot read (ListBoardIssues) with the live
-// SubscribeEvents tail, unioned into one board map and deduped by issue id
-// (compass_pb.ts:326-346, the established snapshot_seq contract). The bus replays
-// only a bounded event ring on connect, so the durable read is what covers
-// issues older than the ring plus the ARCHIVED set the Done view needs.
-//
-// Protocol (compass_pb.ts:263-462):
-//   1. subscribe(since_seq = last stream seq; 0 on a cold start). since_seq = 0
-//      is a cold start: the first response is the snapshot boundary frame
-//      carrying the opaque `snapshot_seq`. A positive cursor is a gap-free tail
-//      resubscribe from that seq — no re-snapshot.
-//   2. on the cold-start boundary, read ListBoardIssues(snapshot_seq) — the
-//      whole board in all lifecycle states — and upsert each adapted issue into
-//      the driver-local map. Subscribing BEFORE this read means the live tail
-//      already covers the read's window; the id-keyed map absorbs the overlap
-//      (a re-sent id REPLACES, never appends). The read is best-effort: a
-//      failure (e.g. the server has not yet wired the handler) is reported via
-//      onError and the driver keeps tailing rather than aborting the board.
-//   3. each `{ case: "issue" }` tail payload is an upsert keyed by issue id —
-//      apply it to the map and push the new [...map.values()].
-//   4. the cursor advances from `SubscribeEventsResponse.seq` (never
-//      snapshot_seq); the server's `instance_epoch` is stored and echoed on
-//      reconnect so a restart forces a resync.
-//   5. a `resync_required` (seq = 0, not a cursor) clears the map + resets the
-//      cursor to a cold start and reconnects immediately for a fresh snapshot +
-//      re-read; a fresh instance_epoch self-heals the same way.
-//
-// Only the `issue` payload is consumed here. The agent-lifecycle / server-status
-// variants (agentSessionStatus, agentMessageChunk, agentToolCall, agentPlan,
-// serverStatus) are gated on other lands and are safely ignored — never mapped
-// to a placeholder, never thrown on.
-//
-// This module owns the I/O and control flow; the wire→domain mapping lives in
-// ./adapt (adaptIssue). The store wires this to the `issues` signal
-// (store.ts, behind options.compass).
+// The SubscribeEvents stream driver (READ half of RIG-1729): turns the live server
+// event stream into domain Issue[] snapshots for the board. Cold start pairs the durable
+// ListBoardIssues re-snapshot with the live tail in one id-keyed map (re-sent id REPLACES);
+// `resync_required`/fresh instance_epoch cold-starts. I/O here, wire→domain in ./adapt.
 
 import type { CompassClient, SubscribeEventsResponse } from "@compass/client";
 import type { Issue as DomainIssue, RuntimeMarker } from "../stub-data";
@@ -147,14 +110,10 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 		onIssues([...board.values()]);
 	};
 
-	// The durable board re-snapshot at the cold-start boundary. ListBoardIssues
-	// returns the whole board in all lifecycle states (including ARCHIVED, which
-	// the bounded event ring drops but the Done view needs); each issue upserts
-	// into the map, unioned with the tail already subscribed above. `snapshotSeq`
-	// is the opaque boundary token, passed verbatim — the driver never interprets
-	// it. Best-effort: a failure (a server that has not wired the handler yet
-	// returns Unimplemented) is reported via onError and the driver keeps tailing
-	// rather than aborting the board — the live tail still populates it.
+	// The durable board re-snapshot at the cold-start boundary. ListBoardIssues returns
+	// the whole board in all lifecycle states (including ARCHIVED, which the event ring
+	// drops but the Done view needs); each issue upserts into the map. Best-effort: a
+	// failure (unwired handler → Unimplemented) is reported via onError and tailing continues.
 	const readCatchUp = async (snapshotSeq: bigint): Promise<void> => {
 		try {
 			const resp = await client.listBoardIssues({ snapshotSeq }, { signal });
@@ -172,10 +131,9 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 	while (!signal?.aborted) {
 		let madeProgress = false;
 		try {
-			// since_seq = 0 (cold start / post-resync) requests a fresh snapshot
-			// boundary; the first response carries the opaque snapshot_seq to read
-			// the durable board through. A positive cursor is a gap-free tail
-			// resubscribe — no re-read.
+			// since_seq = 0 (cold start / post-resync) requests a fresh snapshot boundary;
+			// the first response carries snapshot_seq. A positive cursor is a gap-free
+			// tail resubscribe — no re-read.
 			let pendingSnapshot = sinceSeq === 0n;
 			const stream = client.subscribeEvents(
 				{ sinceSeq, instanceEpoch },
@@ -184,11 +142,10 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 
 			for await (const resp of stream) {
 				if (resp.payload.case === "resyncRequired") {
-					// The server can't serve our cursor gap-free. Clear the board +
-					// reset both cursors to a cold start and reconnect immediately for a
-					// fresh re-read + re-tail — a resync is a server directive, not a spin.
-					// The runtime markers clear with it: a stale posture surviving a
-					// resync could show a torn-down host session as still contained.
+					// The server can't serve our cursor gap-free. Clear the board + reset both
+					// cursors to a cold start and reconnect immediately — a resync is a server
+					// directive, not a spin. Runtime markers clear too: a stale posture could
+					// show a torn-down host session as still contained.
 					board.clear();
 					onIssues([]);
 					runtime.clear();
@@ -199,31 +156,20 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 					break;
 				}
 
-				// The first response on a cold start is the boundary frame carrying
-				// the opaque snapshot_seq; read the durable board through it and union
-				// it into the map. Subscribing before this read (above) means the live
-				// tail already covers the read's window — dedup-by-id absorbs the
-				// overlap. The boundary positions the cursor but is NOT progress (a
-				// server that only replays it then closes is the spin the backoff
-				// guards against).
+				// The first cold-start response is the boundary frame carrying snapshot_seq;
+				// read the durable board through it and union into the map (dedup-by-id
+				// absorbs the tail overlap). The boundary positions the cursor but is NOT
+				// progress — a replay-then-close is the spin the backoff guards against.
 				const isBoundary = pendingSnapshot;
 				if (pendingSnapshot) {
 					await readCatchUp(resp.snapshotSeq);
 					pendingSnapshot = false;
 				}
 
-				// Advance the cursor from the stream's own seq, guarding against an
-				// out-of-order redelivery lowering it. Every positioned response
-				// advances it — even one whose payload we don't consume — so the
-				// resubscribe cursor stays gap-free. Forward advancement from a real
-				// (non-boundary) tail response is genuine progress: connection
-				// liveness, not a board update, is the anti-spin signal, so an
-				// agent-lifecycle tail on this shared stream keeps the next
-				// resubscribe immediate and clears the backoff ceiling exactly as an
-				// issue upsert does. The boundary frame positions the cursor but is
-				// NOT progress — a server that only replays it then cleanly closes is
-				// the tight loop the backoff guards against. Same policy as
-				// runCommsStream.
+				// Advance the cursor from the stream's own seq, guarding an out-of-order
+				// redelivery from lowering it. Every positioned response advances it (even an
+				// unconsumed one) so resubscribe stays gap-free. A real tail response is
+				// progress; the boundary frame is NOT. Same policy as runCommsStream.
 				if (resp.seq > sinceSeq) {
 					sinceSeq = resp.seq;
 					if (!isBoundary) {
@@ -233,14 +179,12 @@ export async function runEventStream(opts: EventStreamOptions): Promise<void> {
 				}
 				if (resp.instanceEpoch) instanceEpoch = resp.instanceEpoch;
 
-				// Apply an issue upsert for its board side-effect; a non-issue tail
-				// payload is ignored (never mapped, never thrown on). Progress is
-				// accounted on the cursor advance above, not on consumption here.
+				// Apply an issue upsert for its board side-effect; a non-issue tail payload
+				// is ignored. Progress is accounted on the cursor advance above.
 				applyPayload(resp.payload);
 			}
-			// A clean close with no forward progress is a spin a tight loop would
-			// hammer; back off (escalating) before resubscribing. A close after real
-			// events, or a resync directive, stays immediate.
+			// A clean close with no forward progress is a spin a tight loop would hammer;
+			// back off (escalating). A close after real events, or a resync, stays immediate.
 			if (!madeProgress) await backoffBeforeReconnect();
 		} catch (error) {
 			if (signal?.aborted) return;

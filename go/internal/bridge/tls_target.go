@@ -104,11 +104,10 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return b.base.RoundTrip(req)
 	}
 
-	// Clone before mutating: RoundTrippers must not modify the caller's request
-	// (net/http contract). Strip any caller-supplied Authorization header
-	// UNCONDITIONALLY: in client mode the bearer is only ever shell-injected, so
-	// a UI-supplied header is always illegitimate and must not reach the server
-	// even by bug (DL-107). Re-add the armed bearer when present.
+	// Clone before mutating (net/http contract). Strip any caller-supplied
+	// Authorization UNCONDITIONALLY: in client mode the bearer is only ever
+	// shell-injected, so a UI-supplied header is always illegitimate and must
+	// not reach the server even by bug (DL-107). Re-add the armed bearer.
 	clone := req.Clone(req.Context())
 	clone.Header.Del("Authorization")
 	if token != nil {

@@ -1,23 +1,7 @@
-// The client-mode boot gate: the sibling of `bootConnection` for the native
-// desktop shell. Unlike the browser dev path (which resolves a connection from
-// the Vite env and boots straight through), client mode cannot dial until the
-// shell has ARMED a connection — the bearer lives shell-side only (DL-109) and
-// the shell learns whether it can reach the server only by probing. So boot
-// fires the one auto-connect probe `shellConnect("")` (the empty-token sentinel
-// meaning "use the stored token"), shows a `connecting` state while it is in
-// flight, and branches on the classified result:
-//
-//   - ok               → resolve the native provider and hand the connection to
-//                         the existing boot chain (index.tsx main()), UNIFORMLY
-//                         (no mode-conditional above the transport seam).
-//   - any failure kind → render the connect screen and keep it up, retrying in
-//                         place from the token input, until a probe succeeds.
-//
-// This is a boot GATE, not a router route (OQ-2): it owns #root before the app
-// mounts, exactly as `renderBootError` does, painting DOM nodes (never
-// innerHTML). The token pasted into the input is passed to `shellConnect(token)`
-// and then the input is cleared; NO module-scope binding ever holds it and
-// nothing writes it to storage (DL-109).
+// The client-mode boot gate: the sibling of `bootConnection` for the native desktop
+// shell. Client mode cannot dial until the shell ARMS a connection (bearer is shell-side
+// only, DL-109), so boot fires one auto-connect probe, shows `connecting`, and branches:
+// ok → resolve the native provider and hand off; any failure → connect screen, retry in place.
 
 import {
 	type ConnectResult,
@@ -27,12 +11,10 @@ import {
 import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 import { shellServerUrl } from "./shell-globals";
 
-// The transport seam `bootNativeClient` consumes, injectable so a test drives
-// stubs directly rather than replacing the whole `./daemon-transport` module
-// (Bun's `mock.module` is process-global and its restore does not reliably
-// rebind a sibling suite's named imports, so a whole-module mock leaks across
-// files and turns test outcomes order-dependent). Production callers omit it and
-// get the real transport via `defaultNativeBootDeps`.
+// The transport seam `bootNativeClient` consumes, injectable so a test drives stubs
+// directly rather than replacing the whole `./daemon-transport` module (Bun's
+// `mock.module` is process-global and leaks across files, making outcomes
+// order-dependent). Production callers omit it and get the real transport.
 export type NativeBootDeps = {
 	shellConnect: (token: string) => Promise<ConnectResult>;
 	nativeConnectionProvider: (baseUrl: string) => ConnectionProvider;

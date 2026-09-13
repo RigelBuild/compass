@@ -1,10 +1,7 @@
-// Dev-only stub for the typed agent-session observation panel (design:
-// architecture-lineage, the typed session renderer T-U1). Supplies the typed
-// SessionEvent vocabulary the real fold + renderer consume. Fixtures are keyed
-// by agent account id and carry deterministic ids + monotonic epoch-ms
-// timestamps (no Date.now) so the panel renders identically every run.
-//
-// When the live OMP session-event stream is wired, this fixture is replaced.
+// Dev-only stub for the typed agent-session observation panel (T-U1). Supplies the typed
+// SessionEvent vocabulary the real fold + renderer consume, keyed by agent account id with
+// deterministic ids + monotonic epoch-ms timestamps (no Date.now) so the panel renders
+// identically every run. Replaced when the live OMP session-event stream is wired.
 
 import type { AgentSession } from "./session-events";
 

@@ -2,27 +2,15 @@
 
 package auth
 
-// Streaming bearer-door contract tests (RIG-1195 T3, the S3 gate), transcribed
-// from the authoritative Rust suite in crates/compass-daemon/src/auth.rs
-// (#[cfg(test)] mod tests, the bearer_auth cases). Those cover the unary door;
-// the Go door splits authentication across a UnaryInterceptorFunc and a streaming
-// Interceptor (streamAuth), so the streaming leg needs its own coverage. This is
-// the auth/token door — distinct from the AdminGate streaming authorization tests
-// in admin_gate_test.go: here the contract is caller RESOLUTION and rejection at
-// the stream door, not method-level admin gating.
-//
-// BearerStreamInterceptor resolves against the Postgres store of record, so these
-// need a live database and live in the `pgtest` lane. The observable contract
-// mirrors the unary door: on accept the wrapped streaming handler runs and sees
-// CallerFrom(ctx) == the token's account; on reject the handler never runs and
-// connect.CodeOf(err) == CodeUnauthenticated.
-//
-// White-box (package auth) to reuse the door's own resolution and the same-package
-// helpers: fakeStreamConn + recordingStreamHandler (admin_gate_test.go),
-// wantUnauthenticated + spyResult (interceptor_test.go), and the unexported
-// authorizationHeader. A streaming test needs a StreamingHandlerConn stub because
-// connect exposes no way to hand one to a unit test; fakeStreamConn's
-// RequestHeader() carries the wire Authorization value the door reads.
+// Streaming bearer-door contract tests (RIG-1195 T3), transcribed from
+// crates/compass-daemon/src/auth.rs. The Go door splits auth across a unary and
+// a streaming Interceptor; here the contract is caller resolution and rejection
+// at the stream door, distinct from the admin gating in admin_gate_test.go.
+
+// BearerStreamInterceptor resolves against Postgres, so these live in the
+// `pgtest` lane. Contract mirrors the unary door: accept runs the handler with
+// CallerFrom(ctx) == the token's account; reject never runs it, code
+// CodeUnauthenticated. White-box to reuse fakeStreamConn and the door helpers.
 
 import (
 	"context"

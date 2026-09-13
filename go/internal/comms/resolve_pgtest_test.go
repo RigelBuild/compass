@@ -3,29 +3,18 @@
 package comms
 
 // resolve.go's handle-resolution contracts, driven DIRECTLY against a real
-// Postgres (RIG-3536 / T8). The file had no dedicated test before; its contracts
-// were pinned only where other handlers happen to cross them, which leaves the
-// resolver's own properties — submitted-order preservation, the bare-vs-qualified
-// namespace split, and the vantage-probe closure — asserted nowhere on their own
-// terms.
-//
-// Driven as a specific account with WithActor's underlying caller id, the same
-// in-process seam the Runner relay uses in production. The resolvers are package
-// methods taking the caller explicitly, so these tests call them directly rather
-// than through an RPC — that is the point: an RPC-level test cannot tell a
-// resolver bug from a handler bug.
-//
-// NOT re-proven here: batch atomicity. resolveHandles does not implement it —
-// store.AccountsByHandles does (accounts.go:811), and it is covered at the store
-// tier by TestAccountsByHandlesAtomicMissNamesAll. What IS covered here is the
-// comms-tier PASS-THROUGH: the store's atomic-miss error survives resolveHandles
-// with its store.ErrNotFound sentinel and message intact, so edgeError still maps
-// it to CodeNotFound.
-//
-// The two DB-free contracts (notFoundHandle's discrimination, the empty-input
-// no-op) live in the untagged resolve_test.go — the cheapest tier that bites.
-//
-// context.Background() is the test root (test-root ctx exemption).
+// Postgres (RIG-3536 / T8): the resolver's own properties — submitted-order
+// preservation, the bare-vs-qualified namespace split, and the vantage-probe
+// closure — asserted on their own terms rather than incidentally via handlers.
+
+// Driven as a specific account via WithActor's caller id. The resolvers are
+// package methods taking the caller explicitly, so these call them directly:
+// an RPC-level test cannot tell a resolver bug from a handler bug.
+
+// NOT re-proven here: batch atomicity — store.AccountsByHandles owns it. What IS
+// covered is the comms-tier PASS-THROUGH: the store's atomic-miss error survives
+// resolveHandles with its ErrNotFound sentinel intact, so edgeError maps it to
+// CodeNotFound. The DB-free contracts live in the untagged resolve_test.go.
 
 import (
 	"context"

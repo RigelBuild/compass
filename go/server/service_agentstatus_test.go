@@ -3,12 +3,9 @@
 package server
 
 // End-to-end coverage for GetAgentStatus served off the Bridge board projection,
-// driven through a real connect-go client over the shipped h2c door (not a direct
-// handler call). Every case pins that the handler wires req.session_id →
-// board.Snapshot → resp.Statuses correctly, and that the terminal-filter /
-// keep-by-id contract survives the RPC boundary. Board transitions are driven by
-// calling brd.PublishSessionStatus directly — the board is the writer the
-// RunnerHub feeds; the RPC is the reader.
+// driven through a real connect-go client over the shipped h2c door. Every case pins
+// that the handler wires req.session_id → board.Snapshot → resp.Statuses and that the
+// terminal-filter/keep-by-id contract survives the RPC boundary.
 
 import (
 	"context"

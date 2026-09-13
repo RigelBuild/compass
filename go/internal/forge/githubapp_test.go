@@ -1,13 +1,9 @@
 package forge
 
 // Unit tests for the GitHub App installation-token source, driven by an
-// httptest.Server standing in for the access-tokens mint endpoint (no network).
-// Covers the T1 test cycle: App JWT header/claims/signature verify against a
-// test RSA key; mint caches (a second Token = no HTTP); refresh before the
-// expiry boundary via an injected clock; Invalidate forces a re-mint; a 401 on
-// mint surfaces as an error (not a panic); singleflight under concurrent Token
-// (N goroutines -> one mint HTTP call).
-// context.Background() here is the test root — the sanctioned F-ttsr exemption.
+// httptest.Server for the mint endpoint (no network). Covers T1: App JWT verify
+// against a test key; mint caching; refresh before expiry via an injected clock;
+// Invalidate re-mint; a 401 surfaces as error; singleflight under concurrent Token.
 
 import (
 	"context"

@@ -2,33 +2,19 @@
 
 package gateway
 
-// publisher.go is the ordered per-session upstream publisher for the Publish
-// telemetry-ingest handler (client-stream, trace/session frames). It forwards
-// each frame up the one RunnerService.PublishEvents client-stream the Runner
-// holds for this session, Runner-sequenced — the exact stamping relay.go does for
-// the stdout relay (relay.go:157-160), minus the scanner and protojson decode.
-// Durable conversation frames do NOT ride this publisher: they leave the
-// loss-tolerant Publish spine and commit request/response via
-// CommitConversationFrame (post_conversation_frame.go).
-//
-// The load-bearing property is ordering under concurrency. Although the Publish
-// client-stream delivers frames serially, the publisher can be replaced within a
-// session and a slow Send must not let allocation order diverge from emission
-// order — else the hub's gap detector (seq > lastSeq+1) would record a false gap.
-// So a publisher holds its own stream mutex across BOTH the sequence allocation
-// AND the matching Send as a single critical section: the goroutine that
-// allocates seq N is the one that sends seq N, before any other goroutine on that
-// publisher can allocate N+1. Emission order == allocation order by construction
-// (transport-consolidation record). The counter's own lock is separate and is held
-// only to allocate, so one publisher's close can never stall another's Send.
-//
-// Scope: the counter is Gateway-scoped — per socket, i.e. per Runner link — and
-// survives a publisher replacement, because a publisher is replaceable within one
-// session and a per-publisher counter would restart the sequence on that swap.
-// relay.go's eventPublisher still owns a SECOND counter, and both feed the hub's
-// single high-water mark (runnerhub/hub.go:229-236), so gap detection is only
-// meaningful while exactly one of them is live. Unifying the two into one truly
-// per-Runner sequence is T9 (relay.go:113-119).
+// The ordered per-session upstream publisher for the Publish handler. It forwards
+// each frame up the one PublishEvents client-stream, Runner-sequenced. Durable
+// conversation frames do NOT ride it — they commit via CommitConversationFrame.
+
+// The load-bearing property is ordering under concurrency: a publisher can be
+// replaced mid-session and a slow Send must not let allocation order diverge from
+// emission order, else the hub's gap detector records a false gap. So a publisher
+// holds its stream mutex across BOTH the seq allocation AND the Send.
+
+// Scope: the counter is Gateway-scoped (per socket / per Runner link) and survives
+// a publisher replacement, since a per-publisher counter would restart the
+// sequence on a swap. relay.go's eventPublisher owns a SECOND counter feeding the
+// same high-water mark, so gap detection holds only while one is live; unifying is T9.
 
 import (
 	"context"
@@ -104,10 +90,9 @@ type sessionPublisher struct {
 	sessionID string
 
 	// mu guards this publisher's stream: connect client-streams are not safe for
-	// concurrent Send, and holding it across allocate-and-send is what makes
-	// allocation order equal emission order. It is per-publisher, NOT shared with
-	// the Gateway's other publishers — a close on an outgoing publisher must not
-	// be able to block a forward on its live replacement.
+	// concurrent Send, and holding it across allocate-and-send makes allocation
+	// order equal emission order. Per-publisher, NOT shared — a close on an outgoing
+	// publisher must not block a forward on its live replacement.
 	mu     sync.Mutex
 	stream *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse]
 
@@ -194,11 +179,10 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 	pub := g.pub
 	g.pubMu.Unlock()
 	if stale != nil {
-		// The stopped session's handlers have already returned (lifecycle
-		// dispatch is sequential across Stop→Start, host.go), so no caller still
-		// holds the orphan; close it to end its upstream stream rather than leak
-		// it until socket teardown. Best-effort: the new publisher is already
-		// installed, so a close error changes nothing.
+		// The stopped session's handlers have already returned (lifecycle dispatch
+		// is sequential across Stop→Start), so no caller holds the orphan; close it
+		// to end its upstream stream rather than leak it. Best-effort: the new
+		// publisher is already installed, so a close error changes nothing.
 		_ = stale.close()
 	}
 	return pub

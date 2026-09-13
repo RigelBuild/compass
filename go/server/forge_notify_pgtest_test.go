@@ -2,26 +2,10 @@
 
 package server
 
-// Store-gated end-to-end proofs for the RIG-2732 T7 GitHub agent-notification
-// serve assembly: the pieces buildForgeNotifyLane composes (the forgeNotifyStore
-// adapter over a real *store.Store binding (provider, host), the notify router +
-// webhook arm behind the shared /webhooks/github fanoutSink, the hub-backed
-// dispatcher) driven against a REAL Postgres — no live GitHub (the checks roller
-// is a fake) and no live hub (the dispatcher is a fake recording notifications).
-// Behind `pgtest && unix` (SKIP when no runtime). Each test opens its own
-// isolated-schema store (forgeTestStore, sibling serve_forge_pgtest_test.go).
-//
-// The observable contracts (design.md:1080-1087), scoped to what this slice wires:
-//   - App-gated: buildBoardWebhookWiring with no App configured returns all-nil,
-//     so no notify lane is built (the gate moved to the shared site, RIG-2991).
-//   - Routed notify: an event fed through the assembled lane's sink dispatches a
-//     ForgeNotification to the seeded subscriber AND advances the shared FETCH
-//     cursor — but NEVER advances the subscriber's delivered_revision (W3).
-//   - No live session: the dispatcher's no-session error is non-fatal; the fetch
-//     cursor still advances and delivered_revision stays unadvanced.
-//
-// These pgtests only need to COMPILE locally; the CI gate runs them against
-// suite Postgres.
+// Store-gated proofs for the RIG-2732 T7 GitHub agent-notification serve assembly:
+// the pieces buildForgeNotifyLane composes, driven against a REAL Postgres with fake
+// checks roller + dispatcher. Contracts: App-gated (no App -> all-nil); routed notify
+// dispatches a ForgeNotification and advances FETCH but never delivered_revision (W3).
 
 import (
 	"context"

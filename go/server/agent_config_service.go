@@ -1,17 +1,9 @@
 //go:build unix
 
-// The fleet agent-config declaration handlers — the operator-facing write path on
-// CompassService (RIG-1625 T2). PutAgentConfig / DeleteAgentConfig are admin-gated
-// on the network door (admin_gate.go classifies them adminOnly); GetAgentConfigInfo
-// is value-free (names only) and classified authenticatedOpen. They sit on the same
-// service struct as the rest of CompassService (service.go) rather than a separate
-// service like SecretsService — these RPCs are ON CompassService.
-//
-// A successful Put/Delete emits a ConfigVersion signal (a fire-and-forget hub push
-// to every live session, configSignaler) so live Runners re-fetch the bundle. The
-// signal carries the store's canonical content version on Put and the empty string
-// on Delete (the fleet-cleared-to-empty marker). The bundle is credential-free by
-// rule — GetAgentConfigInfo returns member NAMES only, never content.
+// The fleet agent-config declaration handlers on CompassService (RIG-1625 T2).
+// PutAgentConfig / DeleteAgentConfig are admin-gated on the network door;
+// GetAgentConfigInfo is value-free (names only) and authenticatedOpen. A Put/Delete
+// emits a ConfigVersion signal so live Runners re-fetch the credential-free bundle.
 package server
 
 import (
@@ -62,11 +54,10 @@ func (s *service) PutAgentConfig(
 	if err != nil {
 		return nil, err
 	}
-	// Best-effort dedupe: read the currently-stored version so an identical
-	// re-Put can skip the redundant signal. A read failure (or an unconfigured
-	// fleet, ErrNotFound) degrades to an empty current version so the write
-	// still commits and a safe redundant signal fires — never let this
-	// optimization's read block the primary config declaration.
+	// Best-effort dedupe: read the stored version so an identical re-Put can skip
+	// the redundant signal. A read failure (or unconfigured fleet) degrades to an
+	// empty current version so the write still commits and a safe redundant signal
+	// fires — never let this optimization block the primary config declaration.
 	currentVersion, _, err := s.store.CurrentAgentConfig(ctx)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {

@@ -3,16 +3,9 @@
 package server
 
 // pgtest lane for part 4b's re-snapshot seam against a REAL PG-rehydrated board:
-// ListBoardIssues over a projection Rehydrated from Postgres, the
-// boundary-then-tail ordering a since_seq==0 subscriber observes, and the
-// union-by-id self-healing property when a live upsert lands AFTER the boundary.
-// A projection over the store of record is only proven against the database it
-// targets — every case opens its own isolated-schema store (pgtest.RequireDSN +
-// store.Open), SKIPping when no runtime/DSN is available.
-//
-// The board is driven as the WRITER through IssueProjection.PublishIssueUpdate
-// (the ingestion sink), exactly as part 3's poller would; the RPC/stream is the
-// reader. Every stream wait is deadline-gated as a safety net, never a sleep.
+// ListBoardIssues over a projection Rehydrated from Postgres, the boundary-then-tail
+// ordering a since_seq==0 subscriber observes, and union-by-id self-healing on a late
+// upsert. The board is the WRITER via PublishIssueUpdate; the RPC/stream is the reader.
 
 import (
 	"context"

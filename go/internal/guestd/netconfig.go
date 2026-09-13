@@ -49,10 +49,8 @@ func leaseToConfig(ack *dhcpv4.DHCPv4) (netConfig, error) {
 
 	// The subnet mask fixes the prefix length. passt always offers one (§(c));
 	// absent or malformed, fall back to a /32 host route rather than guessing a
-	// classful default. A /32 leaves a gateway outside the host route off-link,
-	// so applyNetConfig's default route would fail-close (ENETUNREACH) — correct
-	// for a spike where the mask is always present, and a loud failure beats a
-	// wrong guessed prefix.
+	// classful default. A /32 leaves a gateway off-link so the default route
+	// fail-closes (ENETUNREACH) — a loud failure beats a wrong guessed prefix.
 	mask := ack.SubnetMask()
 	if len(mask) != net.IPv4len {
 		mask = net.CIDRMask(32, 32)

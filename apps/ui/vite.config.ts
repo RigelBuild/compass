@@ -1,49 +1,19 @@
 import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 
-// Vite + the SolidJS plugin (JSX -> reactive DOM transform). The UI consumes
-// the generated @compass/client and dials the Compass server's loopback
-// gRPC-Web dev door directly: it reads the door URL from VITE_COMPASS_BASE_URL
-// at boot (live/connection.ts), and the door serves wildcard CORS for the
-// browser, so no dev proxy is needed here.
+// Vite + the SolidJS plugin (JSX -> reactive DOM transform). The UI consumes the
+// generated @compass/client and dials the Compass server's loopback gRPC-Web dev door
+// directly (URL from VITE_COMPASS_BASE_URL at boot); the door serves wildcard CORS, so
+// no dev proxy is needed here.
 export default defineConfig({
 	plugins: [solid()],
 	// Pin the dev-server port so the URL is copy-paste stable across restarts;
 	// strictPort fails loudly rather than silently drifting to 5174 if taken.
 	server: { port: 5173, strictPort: true },
-	// Prebundle the CJS-only leaves of the markdown chain, or the dev server
-	// serves a blank page: each is served raw over `/@fs`, so the browser's ESM
-	// loader finds no `default` binding and the whole module graph dies before
-	// `render()` runs. Naming them here routes them through the prebundler,
-	// which wraps CJS into ESM.
-	//
-	// Three leaves, three causes — worth keeping straight. The third
-	// (`style-to-js`, a plain CJS module the fork's `hast-util-to-jsx-runtime`
-	// pulls in) has nothing to do with dev builds: it exports via
-	// `module.exports` with no ESM `default`, so it needs prebundling under
-	// every condition. The other two are dev-tree-only:
-	//
-	//   - `micromark` exposes a `development` export condition (its package.json
-	//     maps it to `./dev/index.js`), and `vite-plugin-solid` prepends that
-	//     condition while serving (`dist/esm/index.mjs:152`). So the dev tree
-	//     loads, and `dev/lib/create-tokenizer.js:40` does
-	//     `import createDebug from "debug"`. The non-dev tree never mentions it.
-	//   - `unified` has NO dev tree — a single `"exports": "./index.js"` — and
-	//     its `lib/index.js:350` `import extend from "extend"` is unconditional.
-	//     That one breaks under every condition set.
-	//
-	// Which is why dropping the `development` condition is not the smaller fix
-	// it looks like: it does not work. Vite re-supplies the condition itself
-	// (`DEV_PROD_CONDITION` in its default client conditions, expanded to
-	// `development` outside a production build), and even with both sources
-	// filtered, `extend` still breaks. It also costs solid-refresh, which
-	// degrades HMR to a full reload and says so in a console warning.
-	//
-	// The nested `a > b > c` form is required — a bare `"debug"` resolves from
-	// the project root rather than from the dependency's own directory. Its one
-	// hazard: Vite silently skips an unresolvable INTERMEDIATE segment (it keeps
-	// the previous basedir), so if these paths ever rot there is no warning,
-	// just the blank page again.
+	// Prebundle the CJS-only leaves of the markdown chain, or the dev server serves a
+	// blank page (each served raw over `/@fs` with no ESM `default`). The nested `a > b > c`
+	// form is required — a bare name resolves from the project root — and an unresolvable
+	// middle segment is skipped silently, so if these paths rot there is no warning.
 	optimizeDeps: {
 		include: [
 			"@rigelbuild/solid-markdown > remark-parse > mdast-util-from-markdown > micromark > debug",

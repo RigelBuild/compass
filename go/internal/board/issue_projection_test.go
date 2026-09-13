@@ -3,11 +3,9 @@
 package board
 
 // Default-lane (no database) tests for the IssueProjection's pure mapping edge:
-// issueToProto and protoToForgeFields, the ONLY place store.Issue and the wire
-// *compassv1.Issue meet. PublishIssueUpdate/Rehydrate hit the store and so live
-// in the pgtest suite; these prove the two mapping funcs field-by-field,
-// including the compile-time guarantee that the forge-only upsert input carries
-// no machinery.
+// issueToProto and protoToForgeFields, the only place store.Issue and the wire
+// *compassv1.Issue meet. These prove the two mapping funcs field-by-field;
+// PublishIssueUpdate/Rehydrate hit the store and live in the pgtest suite.
 
 import (
 	"testing"

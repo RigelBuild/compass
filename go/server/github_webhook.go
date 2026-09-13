@@ -1,10 +1,9 @@
 //go:build unix
 
-// The GitHub App webhook ingress: a plain http.Handler for
-// POST /webhooks/github, the DL-254 shape (verify signature -> ack 200 fast ->
-// enqueue async), with an in-memory delivery-id LRU for dedup and an
-// oversized-body guard. T7 mounts it and supplies the sink; this file only
-// builds the handler.
+// The GitHub App webhook ingress: a plain http.Handler for POST /webhooks/github,
+// the DL-254 shape (verify signature -> ack 200 fast -> enqueue async), with an
+// in-memory delivery-id LRU for dedup and an oversized-body guard. T7 mounts it
+// and supplies the sink; this file only builds the handler.
 package server
 
 import (

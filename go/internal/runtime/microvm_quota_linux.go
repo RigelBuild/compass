@@ -5,7 +5,7 @@ package runtime
 // The syscall half of V6's quota verification: the rootless statfs(2) probe
 // microvm_quota.go's pure decision consumes. Mechanism and the rejected
 // alternatives (quotactl, FS_IOC_FSGETXATTR): microvm_quota.go's header.
-//
+
 // Linux-only because the project-quota-projected statvfs behavior it reads is a
 // Linux XFS/ext4 kernel property (xfs_qm_statvfs / ext4_statfs_project);
 // microvm_quota_unsupported.go carries the named refusal for every other unix.
@@ -33,13 +33,10 @@ func readVolumeQuota(path string) (QuotaReading, error) {
 		return QuotaReading{}, err
 	}
 	if !distinct {
-		// The volume root IS the mount point, so the comparison has no
-		// UNPROJECTED reference: both statfs calls would target the same path,
-		// LimitBytes would equal FilesystemBytes identically, and Active() would
-		// be false BY CONSTRUCTION rather than by observation. Reporting that as
-		// "no quota" refuses a QuotaRequired startup on a correctly provisioned
-		// host, so it is an INCONCLUSIVE probe with the fix named — the same
-		// posture as an unreadable ancestor (mountRoot's doc).
+		// The volume root IS the mount point, so there is no UNPROJECTED
+		// reference: both statfs calls target the same path and Active() is false
+		// BY CONSTRUCTION, not by observation. Reporting "no quota" would refuse a
+		// QuotaRequired startup, so this is an INCONCLUSIVE probe with the fix named.
 		return QuotaReading{}, fmt.Errorf(
 			"locating an unprojected reference for %q: that path IS the mount point of its filesystem (%q), "+
 				"so there is no unquota'd ancestor to compare its statfs totals against and whether a project "+

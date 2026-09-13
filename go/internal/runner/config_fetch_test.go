@@ -2,13 +2,10 @@
 
 package runner
 
-// The Runner-side FetchAgentConfig client: ServerLink.FetchAgentConfig calls the
-// server-streaming RunnerService RPC and reassembles the frames into one bundle —
-// the first frame the version, the rest tarball chunks. Every case pins a
-// contract a plausible bug would break: a dropped chunk loses config bytes; a
-// mis-ordered frame (chunk before version, or a second version) is a contract
-// skew the client must reject, not silently accept; an RPC failure must surface
-// loud so the caller recovers on the next signal.
+// The Runner-side FetchAgentConfig client reassembles the server-streamed frames
+// into one bundle (first frame version, rest tarball chunks). Every case pins a
+// contract a bug would break: a dropped chunk loses bytes; a mis-ordered frame is
+// a skew the client must reject; an RPC failure must surface loud.
 
 import (
 	"context"

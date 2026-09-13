@@ -195,11 +195,9 @@ func (r *SpecResolver) Resolve(ctx context.Context, reason string) ([]ResolvedSe
 	}
 
 	// resolved.Close removes the 0400 temp files SecretSpec creates for as_path
-	// secrets. The manifest declares none today (every key is {description,
-	// required=true}), so this is a no-op that keeps the SDK's documented idiom.
-	// If as_path is ever declared, out[].Value would hold a file PATH the caller
-	// reads after Resolve returns — move this Close to after materialization, or
-	// it removes the file before the caller reads it.
+	// secrets. The manifest declares none today, so this is a no-op. If as_path is
+	// ever declared, out[].Value would hold a file PATH read after Resolve returns
+	// — move this Close after materialization, or it removes the file too early.
 	defer func() { _ = resolved.Close() }()
 
 	out := make([]ResolvedSecret, 0, len(decls))
@@ -270,9 +268,8 @@ func (r *SpecResolver) Statuses(ctx context.Context, reason string) ([]SecretSta
 	}
 	// Same transient-input discipline as Resolve: a per-call temp manifest, so
 	// concurrent callers never share one path. The remove error is discarded
-	// deliberately — the file is already abandoned and the registry, not this
-	// file, is the durable source, so a failed unlink of a temp file is not
-	// actionable to the caller.
+	// deliberately — the registry, not this file, is the durable source, so a
+	// failed unlink of a temp file is not actionable.
 	defer func() { _ = os.Remove(manifestPath) }()
 
 	b := secretspec.New().WithPath(manifestPath).WithReason(reason)

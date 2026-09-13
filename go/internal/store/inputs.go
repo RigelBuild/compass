@@ -1,9 +1,8 @@
 package store
 
-// The write-method input structs. Each mirrors the corresponding compass.v1
-// request envelope's client-supplied fields (comms.proto:365-475) — the
-// server-set fields (ids, timestamps, owner) are assigned by the store or
-// passed as an explicit actor argument, never taken from client input, so a
+// The write-method input structs, each mirroring the compass.v1 request
+// envelope's client-supplied fields. Server-set fields (ids, timestamps, owner)
+// are assigned by the store or an explicit actor arg, never client input, so a
 // caller cannot forge ownership or identity (comms.proto:31-37).
 
 // UserAccount input for CreateUser. The new account is always a regular member;

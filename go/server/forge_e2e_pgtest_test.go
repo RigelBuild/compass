@@ -2,44 +2,10 @@
 
 package server
 
-// End-to-end T8 of the FROZEN Compass forge-write design
-// (docs/designs/server/compass-forge-write-path/design.md §T8, acceptance
-// :876-885): the WHOLE agent-initiated forge-WRITE wire, driven over a REAL
-// per-container AgentGateway unix socket against a real Postgres + a real
-// Runner-over-stub-engine, with the forge chokepoint mounted on the
-// server-package hub via hub.SetForgeCaller — the exact production seam
-// serve.go's buildForgeWriteService wires, but over forge.FakeProvider fakes
-// (author + reviewer roles, so F1 dispatch is observable) instead of the real
-// GitHub credential. Where forge_test.go drives the forgeService seam DIRECTLY
-// (newForgeService, no wire), this drives every hop the record names:
-//
-//	in-container agent  ->  AgentGateway.Forge (per-container unix socket)
-//	  ->  Runner gateway.Forge (maps socket->container->bound session)
-//	  ->  RelayForgeCall(session_id, call)  (Runner asserts NO account)
-//	  ->  Hub.RelayForgeCall (resolves session_id->caller account, fail-closed)
-//	  ->  forgeService.ExecuteForgeCallAsAccount under the resolved caller
-//	  ->  StampOwner + F3 dedup + DL-055 row (store) + provider dispatch
-//
-// PACKAGE PLACEMENT mirrors lifecycle_e2e_pgtest_test.go's option B: the hub
-// needs a real ForgeCaller, which is *forgeService — unexported, in package
-// server. Only package server can construct it (newForgeService) and wire it
-// (hub.SetForgeCaller), so the whole-wire forge test lives in package server and
-// REUSES that file's ported whole-wire scaffold (newE2EWire, dialPeer,
-// provisionWhenSeamLiveE2E, the stub runtime + socket helpers), mounting the
-// forge caller on the wire's hub after construction — the same post-construction
-// SetForgeCaller the production serve loop uses. The load-bearing WHY-comments on
-// those ported helpers live in lifecycle_e2e_pgtest_test.go; this file adds only
-// the forge-specific wiring beside them.
-//
-// FAKES, NOT GITHUB: the registry is populated with forge.FakeProvider author +
-// reviewer roles (and a Linear fake), so the stamp/dedup/dispatch/flattening is
-// observable without a network — the wire shape is exercised independently of
-// the real *forge.GitHub client the production buildForgeWriteService registers.
-// This E2E proves the whole wire over the same registry shape the production
-// serve loop assembles, without a live forge.
-//
-// Each assertion carries a mutation comment: the plausible regression in the
-// (already merged, green) T4/T5 spine that would redden it.
+// End-to-end T8 of the FROZEN Compass forge-write design: the WHOLE agent-initiated
+// forge-WRITE wire over a REAL per-container AgentGateway socket, chokepoint mounted
+// via hub.SetForgeCaller over forge.FakeProvider fakes. Drives every hop: agent ->
+// AgentGateway.Forge -> Runner -> RelayForgeCall -> Hub -> forgeService.
 
 import (
 	"strings"

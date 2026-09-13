@@ -189,15 +189,13 @@ func serve(ctx context.Context, cfg pgConfig) error {
 		return fmt.Errorf("locating postgres binary: %w", err)
 	}
 
-	// listen_addresses='' makes this socket-only: no TCP port is opened, so the
-	// private cluster is unreachable over the network by construction. -k sets
-	// the unix_socket_directories to the DSN host so compass-server's DSN
-	// resolves to this exact socket.
-	//
-	// The child is NOT started with the signal-cancelled ctx: we forward signals
-	// to it explicitly below so we control shutdown ordering (drain postgres,
-	// then exit). exec.CommandContext would SIGKILL it on ctx cancel, which is
-	// the abrupt "immediate shutdown" we specifically want to avoid.
+	// listen_addresses='' makes this socket-only: no TCP port is opened. -k sets
+	// unix_socket_directories to the DSN host so compass-server's DSN resolves to
+	// this exact socket.
+
+	// The child is NOT started with the signal-cancelled ctx: we forward signals to
+	// it explicitly below so we control shutdown ordering (CommandContext would
+	// SIGKILL it, the abrupt shutdown we want to avoid).
 	cmd := exec.Command(postgresBin, //nolint:gosec // G204: the embedded-postgres seam — postgresBin is LookPath-resolved and the args are wrapper-built from pgConfig, neither user-controlled
 		"-D", cfg.DataDir,
 		"-k", cfg.SocketDir,
@@ -325,11 +323,9 @@ func ensureDatabase(ctx context.Context, cfg pgConfig) error {
 		cmd := exec.CommandContext(ctx, createdbBin, //nolint:gosec // G204: the embedded-postgres seam — createdbBin is LookPath-resolved and args are wrapper-built from pgConfig, neither user-controlled
 			"-h", cfg.SocketDir, "-p", cfg.Port, cfg.DBName)
 		// Force the client message locale to C so the classification below is
-		// deterministic across desktop locales (server messages are pinned via
-		// `-c lc_messages=C` at start). A translated "could not connect" on a
-		// non-English desktop would otherwise be misread as fatal and the
-		// database never created. cLocaleEnv sets LC_ALL=C authoritatively —
-		// top of POSIX precedence, so an inherited LC_ALL/LC_MESSAGES cannot win.
+		// deterministic across desktop locales — a translated "could not connect"
+		// would otherwise read as fatal and the DB never get created. cLocaleEnv sets
+		// LC_ALL=C authoritatively, so an inherited LC_ALL/LC_MESSAGES cannot win.
 		cmd.Env = cLocaleEnv(os.Environ())
 		out, err := cmd.CombinedOutput()
 		if err == nil {

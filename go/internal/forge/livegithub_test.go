@@ -2,33 +2,19 @@
 
 package forge
 
-// Live-credentials oracle suite (leg 2 of the forge integration-testing record,
-// docs/designs/server/compass-forge-integration-testing/design.md §T2). Guarded
-// by //go:build livegithub so a bare `go test ./internal/forge/` never compiles
-// it — the untagged golden battery (golden_test.go) stays credential-free.
-//
-// Each scenario re-runs a T1 golden scenario against the REAL forge (GitHub /
-// Linear), then asserts the live decoded domain value matches the committed T1
-// fixture's `want` EXCEPT for an explicit volatile-field allowlist (see
-// volatileFields) — the fields the forge assigns per run/identity or that a
-// hygiene-unique artifact name perturbs.
-//
-// The GitHub legs authenticate as two GitHub Apps (author + reviewer), each
-// built into a real installation-token source (NewAppTokenSource) from an App
-// id + installation id + PEM in the environment, so the oracle drives the
-// production mint path — never a bot PAT (RIG-3096). The Linear legs
-// authenticate as the app-actor client_credentials token (LINEAR_FORGE); there
-// is no retained Linear user credential (agent delegation only). The
-// auth-failure test builds its own throwaway fakeTokenSource (github_test.go's
-// shape) to drive a deliberately-bad credential.
-//
-// The suite SKIPS (never fails) when its credentials are unset: the GitHub App
-// set gates the GitHub legs, LINEAR_FORGE gates the Linear legs independently.
-// The skip message is a stable one-line string literal (liveSkipMessage /
-// liveLinearSkipMessage) that the CI guard greps from this source.
-//
-// context.Background() below is the test root — the sanctioned F-ttsr exemption
-// (mirrors github_test.go / linear_test.go / golden_test.go).
+// Live-credentials oracle suite (forge integration-testing record §T2). Guarded
+// by //go:build livegithub so a bare `go test` never compiles it. Each scenario
+// re-runs a T1 golden against the REAL forge, then asserts the live decoded
+// value matches the fixture's `want` EXCEPT the volatileFields allowlist.
+
+// The GitHub legs authenticate as two GitHub Apps (author + reviewer) via real
+// installation-token sources from env, driving the production mint path, never a
+// bot PAT (RIG-3096). The Linear legs use the app-actor client_credentials token
+// (LINEAR_FORGE); the auth-failure test builds a throwaway bad fakeTokenSource.
+
+// SKIPS (never fails) when credentials are unset — the GitHub App set and
+// LINEAR_FORGE gate their legs independently. The skip message is a stable
+// one-line literal the CI guard greps from this source.
 
 import (
 	"bytes"

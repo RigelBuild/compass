@@ -1,50 +1,24 @@
 // Renovate postUpgradeTask: lockstep the baked-biome catalog pin to a
-// devenv-nixpkgs channel bump (RIG-2432).
-//
-// Context. The dev shell bakes biome + rumdl from nixpkgs
-// (devenv.nix), whose versions are governed by devenv's nixpkgs channel
-// (devenv.yaml → github:cachix/devenv-nixpkgs/rolling), locked by git rev in
-// devenv.lock. The customManager in config.json5 surfaces that rev as a
-// git-refs digest, so Renovate opens a branch that rewrites ONLY the rev string
-// in devenv.lock. That leaves the lock's narHash/lastModified and the inner
-// nixpkgs-src node stale, and does nothing about the dev-shell parity story,
-// where the baked biome must match the package.json catalog pin. This task, run
-// on that branch, makes the PR consistent in one shot:
-//
-//   1. Self-gate — exit 0 unless devenv.lock differs from the base branch, so
-//      it's a cheap no-op on every non-devenv Renovate branch (mirrors
-//      refresh-toolchain-hashes.ts's versions/*.nix pin gate).
-//   2. Re-lock — `devenv update nixpkgs` re-locks devenv.lock consistently at
-//      the new rev (refreshing narHash + the inner nixpkgs-src node the
-//      regex-only rewrite left stale). Networked, but light: it re-locks
-//      inputs, it does NOT build the dev shell.
-//   3. Read baked version — eval the biome version from the RAW inner nixpkgs
-//      the channel resolved (devenv.lock's nixpkgs-src rev), not the patched
-//      channel flake. Raw nixpkgs never routes .version through a derivation,
-//      so this is a pure fetch+eval (seconds, no build) for every channel rev
-//      — the patch-independent path.
-//   4. Rewrite the biome catalog pin in the root package.json to the evaluated
-//      version (no-op when unchanged). Compass bakes rumdl from the
-//      same channel, but it carries no catalog pin, so only biome is rewritten.
-//   5. `bun install --lockfile-only` — re-resolve bun.lock so the fail-closed
-//      `bun install --frozen-lockfile` root-check passes.
-//   6. Lockstep the repo-root flake: rewrite flake.nix's inputs.nixpkgs.url to
-//      the new devenv.lock channel rev and `nix flake update nixpkgs` to
-//      re-lock flake.lock, so the flake-parity gate (flake-gate:flake-parity)
-//      does not red on the skew a channel bump otherwise leaves behind.
-//
-// Design: docs/designs/repo/compass-renovate-migration.md
-//
-// Invoked by the devenv-nixpkgs packageRule's postUpgradeTasks command
-// (config.json5) as `bun tools/renovate/refresh-devenv-nixpkgs.ts`, allowlisted
-// in bot-config.json5. Requires `nix` (nix-command) + `devenv` + `bun` + network
-// on the runner PATH — the Renovate workflow provisions nix and the vendored
-// devenv shim (there is no ambient devenv on compass CI).
-//
-// Exit codes:
-//   0 - pin refreshed (or a no-op branch: devenv.lock unchanged vs base).
-//   1 - a step failed (re-lock, eval, or a rewrite) — fail loud, never ship a
-//       half-refreshed lock/pin set.
+// devenv-nixpkgs channel bump (RIG-2432). The dev shell bakes biome + rumdl from
+// the channel (locked in devenv.lock); the customManager rewrites only the rev
+// string, leaving the lock stale and the baked-vs-catalog parity unaddressed.
+
+// This task, on that branch, makes the PR consistent: 1. self-gate unless
+// devenv.lock differs from base; 2. devenv update nixpkgs re-locks at the new
+// rev; 3. eval biome from the RAW inner nixpkgs (a pure fetch+eval, no build).
+
+// Then: 4. rewrite the biome catalog pin in package.json (rumdl carries no pin);
+// 5. bun install --lockfile-only so the frozen-lockfile check passes; 6. lockstep
+// flake.nix's nixpkgs url + nix flake update, so the flake-parity gate does not
+// red on the skew.
+
+// Design: docs/designs/repo/compass-renovate-migration.md. Invoked by the
+// devenv-nixpkgs packageRule (config.json5), allowlisted in bot-config.json5.
+// Requires nix + devenv + bun + network on the runner PATH (the workflow
+// provisions nix and the vendored devenv shim; no ambient devenv on compass CI).
+
+// Exit 0 = pin refreshed (or no-op branch); 1 = a step failed — fail loud, never
+// ship a half-refreshed lock/pin set.
 
 import { readFileSync } from "node:fs";
 import { $ } from "bun";
@@ -127,11 +101,10 @@ async function main(): Promise<number> {
 		return 0;
 	}
 
-	// ── Step 2: re-lock devenv.lock consistently at the new rev. ──
-	// The regex update rewrote only the outer nixpkgs rev; narHash, lastModified,
-	// and the inner nixpkgs-src node are now inconsistent. `devenv update
-	// nixpkgs` re-locks that input (and its transitive nixpkgs-src) without
-	// building the shell. Fail loud: a stale lock must never ship.
+	// Step 2: re-lock devenv.lock consistently at the new rev. The regex update
+	// rewrote only the outer rev; devenv update nixpkgs re-locks that input (and
+	// its transitive nixpkgs-src) without building. Fail loud: a stale lock must
+	// never ship.
 	console.log(
 		"refresh-devenv-nixpkgs: re-locking devenv.lock (devenv update nixpkgs) ...",
 	);
@@ -172,21 +145,15 @@ async function main(): Promise<number> {
 		await $`bun install --lockfile-only`;
 	}
 
-	// ── Step 6: lockstep the repo-root flake to the new channel rev. ──
-	// The re-lock in step 2 moved devenv.lock's outer nixpkgs (channel) rev, but
-	// flake.nix hard-codes that rev in inputs.nixpkgs.url and flake.lock records
-	// it independently — so without this the flake-parity gate
-	// (flake-gate:flake-parity) reds on the skew. Rewrite the URL rev to the new
-	// channel rev, then re-lock flake.lock to match. `nix flake update nixpkgs`
-	// re-locks only the nixpkgs input (no build).
-	//
-	// The re-lock is gated on flake.lock's ACTUAL recorded rev, not merely on
-	// flake.nix's text changing: a half-aligned state (flake.nix already at the
-	// new rev but flake.lock stale — a prior run that rewrote+committed flake.nix
-	// then failed the update, re-driven on a rebase) must still re-lock. So we
-	// run the update whenever EITHER flake.nix was just rewritten OR flake.lock's
-	// rev != the channel rev. Idempotent: a fully-aligned flake rewrites nothing
-	// and skips the update. Fail loud — a half-aligned flake ships a red gate.
+	// Step 6: lockstep the repo-root flake to the new channel rev. Step 2 moved
+	// devenv.lock's outer nixpkgs rev, but flake.nix hard-codes it and flake.lock
+	// records it independently, so without this the flake-parity gate reds.
+	// Rewrite the URL rev, then nix flake update nixpkgs re-locks flake.lock.
+
+	// Gated on flake.lock's ACTUAL recorded rev, not just flake.nix's text: a
+	// half-aligned state (flake.nix at the new rev but flake.lock stale, from a
+	// prior run that committed the rewrite then failed the update) must still
+	// re-lock. Idempotent; fail loud — a half-aligned flake ships a red gate.
 	const channelRev = channelNixpkgsRev(readFileSync(DEVENV_LOCK, "utf8"));
 	const flakeBefore = readFileSync(FLAKE_NIX, "utf8");
 	const flakeAfter = rewriteFlakeNixpkgsUrl(flakeBefore, channelRev);

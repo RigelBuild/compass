@@ -1,14 +1,7 @@
-// Pure decision core for refresh-devenv-lock.ts (RIG-2815).
-//
-// Split out from the entry point so the two load-bearing decisions — WHICH of
-// the two devenv locks a Renovate branch touched, and which rev that lock
-// currently pins — are unit-testable without a devenv runner, a network, or a
-// git tree. Picking the wrong scope here would relock the WRONG lock file, and
-// the packageRule's `fileFilters` would then silently drop the write (it is an
-// INCLUDE allowlist naming exactly one lock), shipping a PR whose rev bump was
-// never followed by a real relock. The entry point owns the shell-outs (the
-// base diff, the `nix run <fork flakeref> -- update devenv` relock); this file
-// owns the decisions. NO shell-outs, NO fs beyond text passed in.
+// Pure decision core for refresh-devenv-lock.ts (RIG-2815): which of the two
+// devenv locks a branch touched, and which rev it pins — unit-testable without a
+// devenv runner, network, or git tree. The wrong scope relocks the wrong lock
+// and the fileFilters allowlist drops the write, shipping an unrelocked bump.
 
 /**
  * The two independently-locked devenv scopes in this repo. RD-1 unifies the

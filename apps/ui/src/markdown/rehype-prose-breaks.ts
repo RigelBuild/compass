@@ -1,41 +1,7 @@
-// Prose softbreak rescue (markdown design A3/R2). Softbreaks are a class of
-// silent content loss, one node type over from raw HTML. A single newline does
-// NOT arrive as its own `"\n"` text node — mdast→hast leaves it EMBEDDED in a
-// longer text node (verified: `"Done: **T4**\nT5 is next."` yields
-// `text("Done: ") strong(T4) text("\nT5 is next.")`). The renderer emits that
-// node's value as one DOM text node, and `.markdown-content` sets
-// `white-space: normal` (its reset in app.css), so the newline collapses and
-// the words join: `"T4T5 is next."`. Splitting such a node on `\n` and
-// interleaving real `br` elements restores the line break under
-// `white-space: normal`. That rescue is for PROSE only, and two guards keep it
-// there.
-//
-// Inside `pre`/`code` the newline already survives — `white-space: pre` renders
-// it verbatim — and the split is actively destructive: the `code` override
-// renders from `rawText`, which concatenates text descendants and ignores `br`,
-// so an interleaved break vanishes and a multi-line block collapses onto one
-// line (both plain and, since Shiki highlights that same string, highlighted).
-//
-// Between BLOCK children mdast→hast also emits bare `"\n"` separator nodes
-// (`ul`→`li`, `table`→`tr`, and inside a loose `li` around its `p`).
-// solid-markdown drops those with its own `child.value !== "\n"` guard, but
-// this plugin runs FIRST, and a `br` is an element, so it sails past that guard
-// — into a parent where phrasing content is illegal (browsers foster-parent a
-// `br` out of table internals) or simply as a blank line of height the
-// virtualizer then measures.
-//
-// What separates the two cases is the SIBLINGS, not the parent: `li` and
-// `blockquote` are dual-mode (phrasing in a tight list, blocks in a loose one),
-// so no parent-tag list can decide it. A bare `"\n"` sitting next to a
-// block-level element is layout whitespace; anything else is prose. Keying on
-// the value ALONE would be wrong — `"**T4**\n**T5**"` yields a bare `"\n"`
-// between the two `strong`s, and that one is a genuine softbreak.
-//
-// This is the SECOND pass of the rehype pipeline, run AFTER `rehypeInertRaw`.
-// Because that prior pass already retyped every `raw` node to `text`, this pass
-// operates on a tree with no `raw` nodes left — it needs no inline retype of
-// its own; a multi-line raw block reaches it as an ordinary `\n`-bearing text
-// node and splits like any other prose.
+// Prose softbreak rescue (markdown design A3/R2). A single newline is embedded in a
+// longer text node, and `white-space: normal` collapses it so words join; splitting on
+// `\n` into real `br` elements restores it — PROSE ONLY (destructive in `pre`/`code`,
+// illegal between block children). What separates the cases is the SIBLINGS, not the parent.
 
 import type {
 	Parent as HastParent,
@@ -89,11 +55,9 @@ const BLOCK_TAGS: Record<string, true> = {
 export function rehypeProseBreaks() {
 	const isBlock = (child: HastRootContent | undefined): boolean =>
 		child?.type === "element" && BLOCK_TAGS[child.tagName] === true;
-	// A hard break arrives as a PAIR — mdast-util-to-hast's break handler emits
-	// `[br, text("\n")]` — so the trailing newline is that `br`'s own source
-	// formatting, already rendered. Splitting it would emit a SECOND `br` and
-	// double the gap the author asked for. Only a PRECEDING `br` absorbs it: a
-	// `"\n"` BEFORE one is a genuine softbreak running into a hard break.
+	// A hard break arrives as a PAIR — `[br, text("\n")]` — so the trailing newline is the
+	// `br`'s own formatting, already rendered; splitting it would double the gap. Only a
+	// PRECEDING `br` absorbs it: a `"\n"` BEFORE one is a softbreak running into a hard break.
 	const isBr = (child: HastRootContent | undefined): boolean =>
 		child?.type === "element" && child.tagName === "br";
 	// `inCode` is INHERITED: a code subtree is verbatim all the way down.

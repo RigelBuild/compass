@@ -1,16 +1,11 @@
 package forge
 
-// Pure forge→canonical mappers (#1018 ingestion translation). Each Translate*
-// takes a raw forge value type and returns the forge-SUBSET of the canonical
-// compass.v1 message: only forge-derived fields plus the caller-supplied agent
-// attribution. Compass-owned machinery (id, lifecycle state, priority,
-// assignee, summary, branch, prs, tracker, forge, repo) is left ZERO — the
-// projection/store layer fills it.
-//
-// These mappers are PURE: they do not strip owner headers (the Service strips
-// on read, DL-050, so a Service caller already passes the stripped body) and
-// they do not parse attribution (the Service parses the owner header via
-// StripOwner and hands the result in as attr).
+// Pure forge->canonical mappers (#1018 ingestion translation). Each Translate*
+// returns the forge-SUBSET of the canonical message: only forge-derived fields
+// plus the caller-supplied attribution. Compass-owned machinery is left ZERO.
+
+// PURE: they do not strip owner headers (the Service strips on read, DL-050) and
+// do not parse attribution (the Service parses via StripOwner and hands in attr).
 
 import (
 	"math"

@@ -13,19 +13,13 @@ import (
 )
 
 // The durable TWO-TIER transcript store (RIG-1667 T4). A Postgres HOT TAIL
-// (agent_session_transcript_entries) holds [latest checkpoint .. now] = the
-// normal resume set; superseded/evicted/ended history is flushed as verbatim
-// JSONL segments to an object store behind the ObjectStore seam and indexed by
-// the archive manifest (agent_session_archive_segments). Resume reads the PG
-// hot-tail ONLY in normal operation (T5); the archive is the permanent,
-// analytics-ready record.
-//
-// entry_seq is SESSION-scoped: the wire entry_seq is agent-stamped monotonic
-// from 1 per container lifetime, and the store rebases it onto the session's
-// stored maximum at lifetime bind (BindLifetime writes agent_sessions.
-// base_entry_seq; AppendTranscriptEntry reads it per frame and persists at
-// base + lifetimeSeq), so the persisted entry_seq is monotonic per session
-// across resumes and the PK (session_id, entry_seq) holds.
+// (agent_session_transcript_entries) holds [latest checkpoint .. now]; older
+// history is flushed as verbatim JSONL to the ObjectStore seam and indexed by
+// agent_session_archive_segments. Resume reads only the PG hot-tail (T5).
+
+// entry_seq is SESSION-scoped: the agent-stamped per-lifetime wire seq is
+// rebased onto the session's stored max at BindLifetime (base_entry_seq), so the
+// persisted entry_seq stays monotonic per session across resumes and the PK holds.
 
 // defaultSafetyValveCapBytes is the default HIGH size cap on the post-checkpoint
 // hot-tail, in bytes of entry_json (octet length). It sits ABOVE the normal
@@ -185,13 +179,10 @@ func (s *Store) AppendTranscriptEntry(ctx context.Context, sessionID string, lif
 		return fmt.Errorf("store: append transcript entry: %w", err)
 	}
 	if rowsAffected == 0 {
-		// Duplicate idempotency_key: the retry dedup. Silent success, and NO
-		// flush — a retried checkpoint frame must not re-invoke the PRIMARY
-		// flush (design.md T4: it short-circuits before it). If the ORIGINAL
-		// checkpoint committed its row but its primaryFlush then failed, this
-		// retried commit also skips the flush — safe, because the next
-		// checkpoint's primaryFlush (or the session-end flush) re-covers that
-		// pre-checkpoint range, and the PG-only read view stays correct throughout.
+		// Duplicate idempotency_key: retry dedup. Silent success, NO flush — a
+		// retried checkpoint must not re-invoke the primary flush (design.md T4).
+		// If the original's flush failed, the next checkpoint's flush (or
+		// session-end) re-covers the range, so the PG read view stays correct.
 		return nil
 	}
 

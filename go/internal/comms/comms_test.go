@@ -2,13 +2,10 @@
 
 package comms
 
-// Unary CommsService handler contracts, driven in-process via connect.NewRequest
-// + WithActor against a real store and a real bus (no mocks). These cover the
-// authorization edge (a non-member's channel op collapses to CodeNotFound), the
-// membership tiers (join grants read via MemberAccountIDs, a subscribe toggle
-// flips SubscriberAccountIDs), CreateChannel's ChannelChanged fan-out, the
-// RespondToAsk happy path + visibility collapse, and the store-error -> connect-
-// code edge mapping.
+// Unary CommsService handler contracts, in-process via WithActor against a real
+// store and bus. They cover the authorization edge (non-member op collapses to
+// CodeNotFound), the membership tiers, CreateChannel's ChannelChanged fan-out,
+// the RespondToAsk path + visibility collapse, and store-error -> connect-code.
 
 import (
 	"context"

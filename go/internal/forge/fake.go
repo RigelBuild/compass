@@ -1,13 +1,9 @@
 package forge
 
 // FakeProvider is the in-package fake every downstream task's tests drive
-// (#995 design.md:1736-1739). It implements Provider without a network: it
-// records every call in an ordered, inspectable log (so a test can assert
-// exactly what a Service invoked — and that ZERO calls happened when the Service
-// short-circuits), returns scripted results per method (defaulting to zero-value
-// success), and can be told to return a scripted error for a method — including
-// a *StatusError with a set status, so the Service's 403/404 flattening is
-// testable without a wire.
+// (#995). It implements Provider without a network: an ordered inspectable call
+// log, scripted results per method (defaulting to zero-value success), and a
+// scriptable *StatusError so the Service's 403/404 flattening is wire-free testable.
 
 import (
 	"context"

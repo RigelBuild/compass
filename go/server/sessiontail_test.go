@@ -2,17 +2,10 @@
 
 package server
 
-// Tail-sink contracts. Two seams:
-//
-//   - toPublicFrame: the internal→public repackaging. The typed_event pointer
-//     and the state enum transfer faithfully, and session_id is ALWAYS stamped
-//     from the routing key, never read from the frame body — a bug that read
-//     session_id from the body would let a mislabeled frame route to the wrong
-//     subscriber.
-//   - sessionTail: the per-session live fan-out. Isolation across session ids,
-//     N-way fan-out, lag-drop that never stalls a session's other subscribers,
-//     unsubscribe that unblocks a receiver and is double-call safe, and a
-//     no-subscriber relay that is a clean no-op. Exercised under -race.
+// Tail-sink contracts for two seams. toPublicFrame: the internal→public repackaging,
+// where session_id is ALWAYS stamped from the routing key, never the frame body (a body
+// read would misroute a mislabeled frame). sessionTail: the per-session live fan-out —
+// isolation, N-way fan-out, lag-drop, double-call-safe unsubscribe. Exercised under -race.
 
 import (
 	"sync"

@@ -20,13 +20,10 @@ export function bearerAuthInterceptor(token: string): Interceptor {
 	};
 }
 
-// The interceptor list for an optional bearer token, and the single place the
-// "one bearer, only when asked" rule lives. Three cases, kept distinct on
-// purpose: a non-empty token installs exactly one bearer interceptor; `undefined`
-// (the arg omitted) is a deliberate no-auth client that installs none and sends
-// no authorization header; an empty string is a misconfigured credential, not a
-// request for no auth, so it fails loud rather than silently degrading to an
-// unauthenticated client.
+// Installs at most one bearer interceptor, and the single place the "one bearer,
+// only when asked" rule lives. `undefined` is a deliberate no-auth client; an
+// empty string is a misconfigured credential and fails loud rather than
+// silently degrading to unauthenticated.
 function bearerInterceptors(token?: string): Interceptor[] | undefined {
 	if (token === "") {
 		throw new Error(
@@ -37,10 +34,8 @@ function bearerInterceptors(token?: string): Interceptor[] | undefined {
 }
 
 // The W3C trace-context RESPONSE header the server sets on every unary reply
-// (go/internal/otel/interceptor.go). Draft-stage in the spec, but the standard
-// name and the "00-<32hex traceid>-<16hex spanid>-<2hex flags>" grammar are
-// what the server emits, and the network door CORS-exposes it, so the browser
-// can read it.
+// (go/internal/otel/interceptor.go). The network door CORS-exposes it so the
+// browser can read it.
 const traceResponseHeader = "traceresponse";
 
 /**
@@ -142,14 +137,10 @@ export function parseTraceResponse(value: string): string | undefined {
 export function traceResponseInterceptor(sink: TraceIdSink): Interceptor {
 	return (next) => async (req) => {
 		const res = await next(req);
-		// `?? ""` collapses "header absent" with "header present but empty" —
-		// harmless, because both mean there is nothing to record and the empty
-		// string parses to `undefined` on the length check. A DUPLICATE
-		// `traceresponse` (a realistic proxy artifact) is equally safe by
-		// construction: `Headers.get` comma-joins the values, the join is
-		// unparseable, and the sink keeps its last known good id rather than
-		// picking one of two candidate traces at random. Both are considered
-		// no-ops, not oversights.
+		// `?? ""` collapses "header absent" with "header present but empty" — both
+		// mean nothing to record. A duplicate `traceresponse` is safe too:
+		// `Headers.get` comma-joins the values, the join is unparseable, and the
+		// sink keeps its last known good id rather than guessing.
 		const traceId = parseTraceResponse(
 			res.header.get(traceResponseHeader) ?? "",
 		);
@@ -169,10 +160,8 @@ export const posthogSessionHeader = "X-POSTHOG-SESSION-ID";
 const SENDABLE = /^[\x21-\x7E]+$/;
 
 // Mirrors the server's maxSessionIDLen (go/internal/otel/interceptor.go), whose
-// check is `len(id) > maxSessionIDLen`, so 200 is legal on both sides and the
-// cap here is inclusive too. On input this guard accepts, `.length` IS the
-// UTF-8 byte count, so no TextEncoder is needed to mean the same thing as Go's
-// `len()`.
+// check is `len(id) > maxSessionIDLen`, so 200 is legal on both sides. On the
+// ASCII input this guard accepts, `.length` IS the UTF-8 byte count.
 const MAX_SESSION_ID_LEN = 200;
 
 /**
@@ -233,17 +222,10 @@ export function sessionIdInterceptor(
 	};
 }
 
-// The full interceptor list every client/transport factory installs, and the one
-// place the three concerns compose. The bearer rule is unchanged (and still
-// throws first on a misconfigured credential). The trace sink and the session-id
-// source follow the same omitted-means-off discipline: no sink ⇒ no trace
-// interceptor at all and no getter ⇒ no session interceptor at all, so a caller
-// that does not ask for correlation gets byte-identical behavior — including
-// `undefined` rather than an empty list when nothing is asked for.
-//
-// Built as one list with no early return on purpose: an append placed after an
-// `if (!traceSink) return bearer` guard would be skipped entirely whenever no
-// trace sink is configured, so `sessionId` alone would silently install nothing.
+// The full interceptor list every factory installs, and the one place the three
+// concerns compose. Omitted-means-off: no sink ⇒ no trace interceptor, no getter
+// ⇒ no session interceptor. Built as one list with no early return on purpose —
+// an early `return bearer` guard would silently skip a later append.
 function callInterceptors(
 	token?: string,
 	traceSink?: TraceIdSink,
@@ -319,22 +301,14 @@ export function createCompassWebTransport(
 export type { Transport } from "@connectrpc/connect";
 
 // Re-exported so test fixtures build an in-memory fake server through the one
-// door (a `createRouterTransport` handler serving compass.v1 methods), without
-// importing @connectrpc/connect directly — the fence blocks that import, and a
-// fake transport is the vendor's documented no-HTTP test path for the query
-// layer. Dev/test-only; the shipped app dials `createCompassWebTransport`.
+// door without importing @connectrpc/connect directly (the fence blocks that).
+// Dev/test-only; the shipped app dials `createCompassWebTransport`.
 export { createRouterTransport } from "@connectrpc/connect";
 
-// The four per-client factories below — `createCompassWebClient`,
-// `createCompassClientOverFetch`, `createCommsWebClient`,
-// `createCommsClientOverFetch` — deliberately do NOT take a `sessionId`
-// option, so a client built through any of them sends NO
-// `X-POSTHOG-SESSION-ID` header. That is not an oversight: the shipped path
-// for the session-id header is `createLiveClients` → `createCompassWebTransport`
-// (the sole production transport construction; both native-shell modes route
-// through it via `conn.fetchImpl`), and these four have no production caller.
-// A future caller that needs the header must dial `createCompassWebTransport`
-// with `opts.sessionId` rather than assume it rides along here.
+// The four per-client factories below deliberately do NOT take a `sessionId`
+// option, so a client built through any of them sends no `X-POSTHOG-SESSION-ID`
+// header. The shipped path for that header is `createLiveClients` →
+// `createCompassWebTransport`; these four have no production caller.
 
 /**
  * Create a compass.v1 client over gRPC-Web at `baseUrl` — the door the web UI

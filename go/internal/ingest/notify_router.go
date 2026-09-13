@@ -12,12 +12,10 @@ import (
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
-// The notify hot path (RIG-2732 T4, design.md:808-887): one normalized
-// forge.ForgeEvent in, notifications out, snapshot current. The store enters
-// through package-local structural seams (the no-store rule, design.md:538-541);
-// go/server binds the (provider, host) half onto *store.Store, the same
-// (provider, host)-binding store-adapter pattern. The router NEVER advances delivered_revision:
-// that rides the hub's ForgeNotificationAck arm (W3), never this path.
+// The notify hot path (RIG-2732 T4): one normalized forge.ForgeEvent in,
+// notifications out, snapshot current. The store enters through package-local
+// seams; go/server binds the (provider, host) half onto *store.Store. The router
+// NEVER advances delivered_revision: that rides the hub's ForgeNotificationAck arm.
 
 // NotifySubscriber is one subscriber a change fans out to — the package-local
 // mirror of store.ForgeNotifySubscriber (the no-store rule keeps the store type
@@ -220,21 +218,10 @@ func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller,
 //     Never advances delivered_revision (W3). A per-subscriber dispatch error
 //     is logged and skipped; a vanished subscription never crashes the route.
 func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
-	// 0. head_sha -> PR number (RIG-2869), BEFORE the guard: a check_suite
-	// webhook is head-SHA-keyed and carries no artifact number, so without this
-	// the guard below rejects the whole CHECKS-via-check_suite kind. Narrow by
-	// construction: only a GITHUB CHECKS event that has a SHA, has no number,
-	// and has a resolver wired. A non-CHECKS zero-number event never consults
-	// the resolver — it is malformed, not under-specified.
-	//
-	// The provider term is what makes "by construction" true rather than
-	// incidental. Today no Linear event could reach here (Linear emits no CHECKS
-	// event and its lane wires no resolver), so the term is defense in depth —
-	// but without it the narrowing lives in the WIRING, and a later
-	// provider-agnostic lane would hand a Linear team key to a GitHub
-	// commits/{sha}/pulls read: a guaranteed 404 per event against the shared
-	// App budget, reported as a confusing GitHub error instead of a clean
-	// zero-provider rejection.
+	// 0. head_sha -> PR number (RIG-2869), BEFORE the guard: a check_suite webhook is
+	// head-SHA-keyed with no artifact number, so without this the guard rejects the
+	// whole kind. Narrow by construction (GITHUB CHECKS, SHA, no number, resolver
+	// wired); the provider term keeps a Linear key off a GitHub commits/{sha}/pulls read.
 	if ev.Number == 0 &&
 		ev.Provider == compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB &&
 		ev.Change == compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS &&
@@ -270,13 +257,9 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	}
 
 	// 2. CHECKS: resolve the combined roll-up BEFORE apply — UNLESS the caller
-	// already resolved it. A webhook CHECKS event carries only a head SHA
-	// (ev.Checks nil), so the router fetches the combined roll-up via the
-	// ChecksRoller seam (passing the cursor's checks_etag); a 304 carries the
-	// prior stored checks forward. The reconcile sweep (T5) already fetched the
-	// roll-up when it built the synthetic event, so it passes ev.Checks set and
-	// the router skips the second read (the sweep's cost model is one checks GET
-	// per PR per sweep, not two).
+	// already resolved it. A webhook carries only a head SHA, so the router fetches
+	// the roll-up via ChecksRoller (a 304 carries prior checks forward). The
+	// reconcile sweep passes ev.Checks set, so the router skips the second read.
 	if ev.Change == compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS && ev.Checks == nil {
 		res, rerr := r.checksRoller.RollUp(ctx, ev.Repo, ev.Number, ev.HeadSHA, checksETag)
 		if rerr != nil {
@@ -299,10 +282,9 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	next := ApplyEvent(prev, ev)
 	revision := SnapshotRevision(&next)
 	// 4. Upsert the cursor BEFORE notify (fetch-side truth advances
-	// unconditionally). encoding/json marshal of a fixed scalar/map shape. The
-	// issue/PR + comments ETags a prior sweep stored are carried forward
-	// UNCHANGED (a webhook carries none; the next sweep re-conditions on them):
-	// zeroing them would force an uncharged-but-pointless full re-fetch.
+	// unconditionally). The issue/PR + comments ETags a prior sweep stored are
+	// carried forward UNCHANGED (a webhook carries none; the next sweep
+	// re-conditions on them): zeroing them would force a pointless full re-fetch.
 	snapBytes, merr := json.Marshal(&next)
 	if merr != nil {
 		return fmt.Errorf("ingest: route: marshal snapshot %s#%d: %w", ev.Repo, ev.Number, merr)
@@ -331,16 +313,10 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 		return fmt.Errorf("ingest: route: resolve subscribers %s#%d: %w", ev.Repo, ev.Number, err)
 	}
 
-	// 6. Build + dispatch a notification per subscriber, carrying revision.
-	// Self-origin suppression: the event's actor handle is a property of the
-	// event, so resolve it once here; the per-subscriber handle is resolved in
-	// selfOrigin, memoized per route. A nil identity seam leaves actor a zero
-	// Handle and every selfOrigin call false (suppression disabled).
-	//
-	// priorRevision is the PRE-upsert cursor revision (cur was loaded at step 1,
-	// before step 4 rewrote it): "" when the coordinate was never observed
-	// (cur == nil), which correctly matches a fresh subscriber's default
-	// delivered_revision. cur is a *ArtifactCursor, so the nil guard is required.
+	// 6. Build + dispatch a notification per subscriber. Self-origin suppression:
+	// the actor handle is resolved once here; the per-subscriber handle is resolved
+	// in selfOrigin. priorRevision is the PRE-upsert cursor revision (cur loaded at
+	// step 1): "" when never observed, matching a fresh subscriber's default.
 	priorRevision := ""
 	if cur != nil {
 		priorRevision = cur.Revision

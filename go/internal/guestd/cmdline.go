@@ -43,10 +43,9 @@ func parseVsockPort(procCmdline string) (uint32, error) {
 	}
 
 	// A vsock port is a uint32; parse as such so an out-of-range value is
-	// rejected here rather than silently truncated. Port 0 is not a valid
-	// listen port, and 0xFFFFFFFF is VMADDR_PORT_ANY — the AF_VSOCK wildcard
-	// sentinel that would make vsock.Listen bind an auto-assigned port instead
-	// of the configured one, silently breaking the host handshake. Reject both.
+	// rejected, not truncated. Port 0 is not a valid listen port, and 0xFFFFFFFF
+	// is VMADDR_PORT_ANY — the wildcard that would auto-assign a port and silently
+	// break the host handshake. Reject both.
 	n, err := strconv.ParseUint(raw, 10, 32)
 	if err != nil {
 		return 0, fmt.Errorf("kernel cmdline %s=%q is not a valid port: %w", vsockPortKey, raw, err)

@@ -25,11 +25,9 @@ func (f *Fabric) Publish(ctx context.Context, subject string, ref EventRef) erro
 	if err := ref.valid(); err != nil {
 		return err
 	}
-	// The subject must be exactly the one the ref itself names. A head-only
-	// check would let a caller publish tenant-a's ref on tenant-b's subject:
-	// the subscriber that claims it is scoped to tenant-b but the ref tells it
-	// to re-read a tenant-a row, which is the cross-tenant read the EventRef
-	// invariant (eventref.go) exists to prevent. Deriving the wanted subject
+	// The subject must be exactly the one the ref itself names: a head-only check
+	// would let a caller publish tenant-a's ref on tenant-b's subject, the
+	// cross-tenant read the EventRef invariant prevents. Deriving the wanted subject
 	// from the ref also subsumes the whole-subject grammar check.
 	want, err := CommsSubject(ref.Tenant, ref.Kind)
 	if err != nil {
@@ -149,18 +147,10 @@ func (f *Fabric) subscribeSubject(ctx context.Context, subject string, fn func(E
 		return nil, fmt.Errorf("fabric: consuming %q: %w", subject, err)
 	}
 
-	// One teardown path, reached from the caller's Unsubscribe, from ctx being
-	// done, or from the fabric closing, and run at most once — so the watchdog
-	// goroutine always exits and the consumer is never torn down twice.
-	//
-	// Drain, not Stop: Stop DISCARDS whatever the pull consumer has already
-	// buffered (up to its prefetch), and on a durable shared consumer those
-	// messages are claimed-not-acked, so they only come back to anyone after
-	// AckWait — a silent multi-second stall for events this process had already
-	// accepted. Drain runs them through fn and acks them first. That is the
-	// right choice for all three teardown paths: the durability contract says a
-	// claimed event is not silently dropped, and a cancelled context on
-	// shutdown does not change that.
+	// One teardown path (Unsubscribe, ctx done, or fabric closing), run once. Drain,
+	// not Stop: Stop DISCARDS the buffer, and on a durable shared consumer those
+	// claimed-not-acked events only return after AckWait (a silent stall). Drain runs
+	// them through fn and acks first, as the durability contract requires.
 	var once sync.Once
 	done := make(chan struct{})
 	stop := func() {
@@ -195,20 +185,10 @@ func (f *Fabric) handleEvent(ctx context.Context, msg jetstream.Msg, fn func(Eve
 		f.park(ctx, msg, decodeErr)
 		return
 	}
-	// The ref's tenant must match the subject it arrived on. Publish enforces
-	// this from the write side, but Publish is not the only writer the stream
-	// can have: COMPASS_COMMS is shared and the server carries no per-tenant
-	// authorization yet (OQ-3), so a client reaching the client port can put
-	// arbitrary bytes on any comms subject. Without this check a ref naming
-	// tenant-a delivered on tenant-b's subject would hand a tenant-b-scoped
-	// subscriber a tenant-a row id, and EventRef's contract directs that
-	// subscriber to re-read under ref.Tenant WITHOUT consulting the subject
-	// (eventref.go) — so the payload would be the only tenant discriminator.
-	// SubscribeKind makes that the primary path: its consumer spans every
-	// tenant, leaving ref.Tenant as the sole scope for a delivery.
-	//
-	// A mismatch is as unprocessable as an undecodable payload — no redelivery
-	// changes it — so it parks rather than retries.
+	// The ref's tenant must match the subject it arrived on. COMPASS_COMMS is shared
+	// with no per-tenant authorization yet (OQ-3), so a client can put arbitrary
+	// bytes on any subject; a cross-tenant ref would hand a subscriber a foreign row
+	// (EventRef re-reads under ref.Tenant, not the subject). A mismatch parks.
 	want, subjErr := CommsSubject(ref.Tenant, ref.Kind)
 	if subjErr != nil {
 		f.park(ctx, msg, subjErr)

@@ -205,11 +205,10 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 		g.recordBudget(resp)
 		// fallthrough to body parse below
 	default:
-		// Error responses: mapErrorResponse owns the budget decision (it arms
-		// the gate on a true rate-limit signal). A bad-creds 403 in the
-		// unauthenticated bucket carries a low nonzero remaining; recording it
-		// here would arm the gate against the token we are about to invalidate,
-		// suppressing the fresh-token retry the next batch is meant to make.
+		// Error responses: mapErrorResponse owns the budget decision (it arms the gate
+		// on a true rate-limit signal). A bad-creds 403 carries a low nonzero remaining;
+		// recording it here would arm the gate against the token we are about to
+		// invalidate, suppressing the fresh-token retry the next batch is meant to make.
 		return ListPage{}, g.mapErrorResponse(resp)
 	}
 
@@ -723,11 +722,10 @@ func (g *GitHub) getJSON(ctx context.Context, url string, out any) (bool, error)
 	defer func() { _ = resp.Body.Close() }() // read-only GET; body drained/closed, no actionable close error
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Error responses: mapErrorResponse owns the budget decision (it arms
-		// the gate on a true rate-limit signal). A bad-creds 403 carries a low
-		// nonzero remaining; recording it here would arm the gate against the
-		// token we are about to invalidate (same reasoning as ListIssuesPage's
-		// default arm — do NOT record budget on error).
+		// Error responses: mapErrorResponse owns the budget decision (it arms the
+		// gate on a true rate-limit signal). A bad-creds 403 carries a low nonzero
+		// remaining; recording it here would arm the gate against the token we are
+		// about to invalidate (same reasoning as ListIssuesPage — no budget on error).
 		return false, g.mapErrorResponse(resp)
 	}
 	g.recordBudget(resp)

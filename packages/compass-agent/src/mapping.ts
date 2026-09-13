@@ -1,37 +1,17 @@
-// The mapping: the agent's `AgentSessionEvent` stream → compass.v1 `AgentFrame`s.
-// This is the agent's own testable surface (design: architecture-lineage): there is no
-// Runner-side translator, so the agent-side map is where SDK semantics become
-// compass.v1 wire payloads, and it is exhaustively unit-tested against event
-// fixtures.
-//
-// The event shapes are pinned to @oh-my-pi/pi-coding-agent (`AgentSessionEvent`,
-// the session-driving superset of the core `AgentEvent`) and @oh-my-pi/pi-ai
-// (`AssistantMessageEvent`, the streaming inner union). `AgentEvent.args`/`result`
-// on tool events are typed `any` by the SDK; every read of them is runtime-
-// narrowed (`typeof`/`in`, via the `isRecord` guard and the extractors below),
-// never an inline cast.
-//
-// Session-surface mapping (§T5, spine-inversion + typed session renderer, design: architecture-lineage).
-// The execution trace — assistant-text chunks, thinking chunks, tool calls +
-// their updates (with file diffs), plans, and notices — rides
-// `SessionFrame.typed_event` as a typed `SessionEvent`, which Compass renders in
-// its first-party session pane. This supersedes v0.6's opaque `bytes event`
-// passthrough: the mapper now TYPES the trace (design: architecture-lineage), it
-// does not relay opaque bytes. Board lifecycle
-// transitions ride the same variant as `SessionFrame.state` (typed_event empty).
-//
-// The streaming conversation write-through (MessagePosted/MessageUpdated → comms)
-// is REMOVED (RIG-1708): a streamed assistant `text_delta` produces only a live
-// session `assistant_text` chunk per delta; `text_end` settles no comms block.
-// Thinking is session-only (no comms counterpart).
-//
-// Dumb emitter. The emitter sets `message_id` per
-// streamed assistant message and `event_id` per event, and does NOT buffer or
-// coalesce the session stream — one `SessionEvent` per delta. Coalescing by
-// `message_id` is `foldSession`'s job on the render side. `message_id` is a
-// monotonic per-message counter (the SDK carries no stable message id); `event_id`
-// a monotonic per-event counter. `atUnixMs` comes from an injectable clock so
-// tests are deterministic.
+// The mapping: the agent's `AgentSessionEvent` stream → compass.v1 `AgentFrame`s. The
+// agent's own testable surface (design: architecture-lineage): no Runner-side translator, so
+// this is where SDK semantics become compass.v1 wire payloads. Event shapes are pinned to the
+// SDK packages; the `any`-typed tool args/result are runtime-narrowed, never cast.
+
+// Session-surface mapping (§T5, spine-inversion + typed session renderer). The execution
+// trace — assistant-text/thinking chunks, tool calls + updates (with diffs), plans, notices —
+// rides `SessionFrame.typed_event` as a typed `SessionEvent` (superseding v0.6's opaque bytes
+// passthrough). Board lifecycle rides the same variant as `SessionFrame.state`.
+
+// The streaming conversation write-through is REMOVED (RIG-1708): a streamed `text_delta`
+// produces only a live session `assistant_text` chunk; thinking is session-only. Dumb emitter:
+// it sets `message_id` per streamed message and `event_id` per event and does NOT coalesce
+// (that is `foldSession`'s job); `atUnixMs` comes from an injectable clock for determinism.
 
 import type { AssistantMessage, AssistantMessageEvent } from "@oh-my-pi/pi-ai";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent";
@@ -87,11 +67,9 @@ const OUTPUT_TEXT_LIMIT = 4_000;
 // the assistant-text / thinking chunks of one logical message so `foldSession`
 // coalesces them; a monotonic event counter labels every SessionEvent.
 export class EventMapper {
-	// Monotonic per-message counter → the `message_id` on assistant-text/thinking
-	// session chunks. Bumped at `message_start`; the pre-first-message value labels
-	// any stray chunk that arrives before a `message_start` (defensive, never
-	// expected). One logical message = one id, so `foldSession` coalesces its
-	// streamed chunks into a single rendered block.
+	// Monotonic per-message counter → the `message_id` on assistant-text/thinking chunks.
+	// Bumped at `message_start`; the pre-first value labels any stray pre-`message_start`
+	// chunk (defensive). One logical message = one id, so `foldSession` coalesces its chunks.
 	#messageSeq = 0;
 	// Monotonic per-event counter → the `event_id` on every SessionEvent. Assigned
 	// as each event is emitted so ids are stable and ordered across the stream.
@@ -206,14 +184,10 @@ export class EventMapper {
 				// block already settled on its `text_end`.
 				return [];
 			default:
-				// A session event the map does not cover. This includes the
-				// orchestration-only variants of the `AgentSessionEvent` superset
-				// (auto_compaction_*, auto_retry_*, retry_fallback_*, ttsr_triggered,
-				// irc_message, thinking_level_changed, goal_updated) and the `notice`
-				// variant (staged — see below), plus any future variant (the dep is
-				// version-ranged). Surface a single UnmappedEvent so it is logged +
-				// counted, never silently dropped and never a crash (mapping.ts frozen
-				// invariant; symmetric with the inner #onMessageUpdate default arm).
+				// A session event the map does not cover: the orchestration-only variants of the
+				// `AgentSessionEvent` superset (auto_compaction_*, auto_retry_*, etc.), the
+				// `notice` variant, and any future variant. Surface a single UnmappedEvent so it
+				// is logged + counted, never dropped and never a crash (frozen invariant).
 				return [
 					{
 						kind: "unmapped",
@@ -233,11 +207,9 @@ export class EventMapper {
 		return { kind: "session", value };
 	}
 
-	// A typed trace frame: one `SessionEvent` on `SessionFrame.typed_event`, with
-	// no board-state transition (state stays UNSPECIFIED). Stamps the monotonic
-	// `event_id` and the clock `at_unix_ms`. This is the emitter's single point of
-	// SessionEvent construction — every trace arm routes through here so id/clock
-	// stamping is uniform.
+	// A typed trace frame: one `SessionEvent` on `SessionFrame.typed_event`, no board-state
+	// transition. Stamps the monotonic `event_id` and clock `at_unix_ms`. The emitter's single
+	// point of SessionEvent construction — every trace arm routes here so stamping is uniform.
 	#sessionEvent(event: SessionEvent["event"]): OutboundFrame {
 		const typedEvent: SessionEvent = create(SessionEventSchema, {
 			eventId: String(++this.#eventSeq),
@@ -248,13 +220,10 @@ export class EventMapper {
 		return { kind: "session", value };
 	}
 
-	// Build one SessionError trace frame from a pi-ai inner-error AssistantMessage
-	// (mapping.ts error arm). `kind` discriminates an unexpected failure (ERROR,
-	// paired with the ERRORED lifecycle transition) from a deliberate abort
-	// (ABORTED, no transition). `message` is the failure text (empty when the SDK
-	// surfaced none); `status` is set only when the provider surfaced an HTTP
-	// status, so a subscriber can tell "no status" from a literal 0. Routes
-	// through `#sessionEvent` for uniform id/clock stamping.
+	// Build one SessionError trace frame from a pi-ai inner-error AssistantMessage. `kind`
+	// discriminates an unexpected failure (ERROR, paired with ERRORED) from a deliberate abort
+	// (ABORTED, no transition). `status` is set only when the provider surfaced an HTTP status,
+	// so a subscriber can tell "no status" from a literal 0. Routes through `#sessionEvent`.
 	#sessionError(
 		kind: SessionErrorKind,
 		error: AssistantMessage,
@@ -271,13 +240,10 @@ export class EventMapper {
 		});
 	}
 
-	// Build one SessionInjection trace frame — the agent-side observation that a
-	// channel message was injected into the live session as a steer or a deliver
-	// (design "steer/deliver split observation seam", T1). Public because the
-	// injection point is `CompassAgent.steer()`/`deliver()`, not the session-event
-	// stream `map()` drains; routing through `#sessionEvent` reuses the same
-	// event_id/at_unix_ms stamping every other trace frame gets, so the injection
-	// observation is ordered on the one monotonic sequence.
+	// Build one SessionInjection trace frame — the agent-side observation that a channel
+	// message was injected as a steer or deliver (design T1). Public because the injection
+	// point is `CompassAgent.steer()`/`deliver()`, not the `map()` stream; routing through
+	// `#sessionEvent` orders the observation on the one monotonic sequence.
 	sessionInjection(
 		opKind: SessionInjectionKind,
 		messageId: string,
@@ -322,20 +288,10 @@ export class EventMapper {
 				return [this.#thinking(inner.delta)];
 			}
 			case "error": {
-				// The stream surfaced an inner error. `reason` splits the failure
-				// class (SDK: "aborted" | "error"), and both surface their content as
-				// a SessionError trace frame (DL-322): `inner.error.errorMessage` is
-				// the user-facing failure text, `inner.error.errorStatus` the provider
-				// HTTP status when one was surfaced.
-				//   - "error" = an unexpected inner/provider failure → emit the
-				//     SessionError(ERROR) content frame AND preserve the ERRORED
-				//     lifecycle transition (compass.proto scopes ERRORED to the
-				//     OOM/panic/engine-restart class; an inner stream error is that
-				//     class, and board/presence/delivery key off it). Content first.
-				//   - "aborted" = a deliberate steer/user cancel, NOT a crash —
-				//     conflating it with ERRORED would misreport a normal abort as an
-				//     engine failure. Emit only the SessionError(ABORTED) content
-				//     frame, with NO lifecycle transition.
+				// The stream surfaced an inner error. `reason` splits the class (SDK:
+				// "aborted"|"error"), both surfacing content as a SessionError frame (DL-322).
+				// "error" = an unexpected failure → SessionError(ERROR) AND the ERRORED
+				// transition (content first); "aborted" = a deliberate cancel → ABORTED, no transition.
 				if (inner.reason === "error") {
 					return [
 						this.#sessionError(SessionErrorKind.ERROR, inner.error),
@@ -385,11 +341,9 @@ export class EventMapper {
 }
 
 // ── Runtime-narrowed readers (never an inline cast) ──────────────────────────
-// The SDK types tool `args`/`result`/`partialResult` as `any`; these read them
-// through the `isRecord` guard so every property access is on a known-object
-// value. The logic mirrors the ACP mapper's readers (acp-event-mapper.ts) so the
-// two produce equivalent output from the same SDK shapes — but compass-native
-// (its own target types), not an ACP dependency.
+// The SDK types tool `args`/`result`/`partialResult` as `any`; these read them through the
+// `isRecord` guard so every access is on a known-object value. Mirrors the ACP mapper's
+// readers but compass-native (its own target types), not an ACP dependency.
 
 // The one narrowing primitive: is `value` a non-null object we can index by key?
 // Every reader below narrows through this before any property read, so there is
@@ -404,11 +358,10 @@ function readString(value: unknown, key: string): string | undefined {
 	return typeof prop === "string" ? prop : undefined;
 }
 
-// A best-effort human-readable rendering of a tool result for the `output` field,
-// mirroring acp-event-mapper.ts:913 extractReadableText: a bare string, an
-// Error's message, a `text`/`errorMessage`/`message` property, else the JSON of
-// the value. Capped at OUTPUT_TEXT_LIMIT. Returns undefined when nothing readable
-// is present (the caller defaults to "").
+// A best-effort human-readable rendering of a tool result for the `output` field, mirroring
+// acp-event-mapper.ts extractReadableText: a bare string, an Error's message, a
+// `text`/`errorMessage`/`message` property, else the JSON. Capped at OUTPUT_TEXT_LIMIT;
+// undefined when nothing readable is present (the caller defaults to "").
 function extractReadableText(value: unknown): string | undefined {
 	if (typeof value === "string") return normalizeText(value);
 	if (value instanceof Error) return normalizeText(value.message);
@@ -441,11 +394,10 @@ function safeJsonStringify(value: unknown): string | undefined {
 	}
 }
 
-// Extract file diffs from a tool result, mirroring acp-event-mapper.ts:646
-// extractDiffToolCallContent: a `details.perFileResults[]` array (multi-file) or
-// the single `details` object, each carrying `path` + `oldText`/`newText`. A
-// creation has no `oldText` (SessionFileDiff.old_text is optional). Entries
-// flagged `isError` or lacking a path / any text are skipped.
+// Extract file diffs from a tool result, mirroring acp-event-mapper.ts
+// extractDiffToolCallContent: a `details.perFileResults[]` array or the single `details`,
+// each carrying `path` + `oldText`/`newText`. A creation has no `oldText`. Entries flagged
+// `isError` or lacking a path / any text are skipped.
 function extractDiffs(result: unknown): SessionFileDiff[] {
 	if (!isRecord(result)) return [];
 	const details = result.details;
@@ -475,11 +427,10 @@ function buildDiff(entry: unknown): SessionFileDiff | undefined {
 	});
 }
 
-// Extract plan entries from the `todo` tool result, mirroring
-// acp-event-mapper.ts:398 extractTodoPhases + :409 extractTodoEntries: a
-// `details.phases[].tasks[]` shape, each task a `{ content, status }`. Returns
-// undefined when the result is not a todo snapshot (caller emits no plan), an
-// empty array when the snapshot is present but has no valid tasks.
+// Extract plan entries from the `todo` tool result, mirroring acp-event-mapper.ts
+// extractTodoPhases/extractTodoEntries: a `details.phases[].tasks[]` shape, each task a
+// `{ content, status }`. Returns undefined when not a todo snapshot, an empty array when
+// present but with no valid tasks.
 function extractPlanEntries(result: unknown): AgentPlanEntry[] | undefined {
 	if (!isRecord(result)) return undefined;
 	const details = result.details;
@@ -521,11 +472,9 @@ function planStatus(status: unknown): AgentPlanEntryStatus {
 	}
 }
 
-// A display title for a tool call: the caller-supplied `intent` when present
-// (the agent's own human-readable label), else the tool name. The ACP mapper
-// builds elaborate command/eval/path titles (acp-event-mapper.ts:553); the
-// compass session renderer shows a plain title, so intent-or-name is the
-// faithful-but-simpler rendering (SessionToolCall.title is a display string).
+// A display title for a tool call: the caller-supplied `intent` when present (the agent's own
+// label), else the tool name. The ACP mapper builds elaborate titles; the compass session
+// renderer shows a plain title, so intent-or-name is the faithful-but-simpler rendering.
 function toolTitle(
 	toolName: string,
 	args: unknown,

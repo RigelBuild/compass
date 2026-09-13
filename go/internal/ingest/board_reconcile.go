@@ -1,28 +1,20 @@
 package ingest
 
-// The board reconciliation sweep (RIG-2883 T3, design.md:335-403): the
-// reliability backstop for the forge webhook-ingestion path AND the
-// cold-start/backfill path. It runs one immediate sweep at startup (healing any
-// downtime window and backfilling a freshly deployed or reinstalled App) then on
-// a slow ticker at the Backstop cadence (default 30 min). Per sweep it
-// enumerates the enabled repos (the BoardStore.ListEnabledRepos seam),
-// conditionally lists each repo's updated-order issues since its stored
-// watermark (the updatedLister seam, satisfied by forge.GitHub.ListUpdatedIssues
-// at T5), and sinks the rows through the SAME ingest pipeline (Ingester), then
-// advances the durable watermark AFTER the rows sank (the advance-after-sink
-// invariant). A zero/absent watermark = one full walk: the cold-start and
-// App-reinstall backfill answer with no separate mechanism.
-//
-// Requests are paced within the sweep (anti-burst); ErrBudgetExhausted aborts
-// the sweep (resumed next interval); a per-repo error is isolated (logged, sweep
-// continues); ctx cancellation returns promptly.
-//
-// Poisoned-row livelock is bounded: IngestIssues stops on the first sink error
-// (ingest.go:64-66), so a whole-repo advance-after-sink would let one
-// persistently-rejected row pin the watermark and re-walk a growing window every
-// sweep. The sweep instead sinks each row in isolation, skips-and-counts a
-// poison row, and advances the watermark past the HEALTHY rows so the re-walk
-// window stays bounded.
+// The board reconciliation sweep (RIG-2883 T3): the reliability backstop for the
+// forge webhook path AND the cold-start/backfill path. One immediate sweep at
+// startup, then a slow ticker (Backstop cadence, default 30 min).
+
+// Per sweep it enumerates enabled repos, conditionally lists updated issues since
+// each stored watermark, sinks them through the SAME Ingester, then advances the
+// watermark AFTER the sink. A zero watermark = one full walk (cold-start backfill).
+
+// Requests are paced (anti-burst); ErrBudgetExhausted aborts the sweep; a per-
+// repo error is isolated; ctx cancellation returns promptly.
+
+// Poisoned-row livelock is bounded: a whole-repo advance-after-sink would let one
+// persistently-rejected row pin the watermark and re-walk a growing window. The
+// sweep instead sinks each row in isolation, skips-and-counts a poison row, and
+// advances past the HEALTHY rows so the re-walk window stays bounded.
 
 import (
 	"context"

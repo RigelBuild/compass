@@ -11,26 +11,20 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// Session bindings: the durable record of WHICH LIVE SESSION speaks for an agent
-// account, and the Runner that session is attached to (RIG-3108 / RIG-2861 §T4).
-// Until now the RunnerHub held this only in RAM (sessionAccounts, accountSessions),
-// so a Server restart lost every binding and the relay resolved nothing for a
-// session it had itself minted moments earlier.
-//
-// A binding is NOT authorization, exactly as agent_placements is not:
-// SubscribeAgentSession authorizes through agent_sessions -> agent_accounts ->
-// channel_members and never reads this table. What a binding is for is the two
-// reads below — the relay resolving the account that owns an inbound session
-// (accountForSession), and the delivery consumer resolving the live session of a
-// recipient account it has already authorized (SessionForAccount).
-//
-// Nor is a binding cross-checked against agent_sessions: there is deliberately
-// no FK from session_id, so a binding may name a session with no agent_sessions
-// row, or disagree with one about the owner. agent_sessions remains the authz
-// root, and nothing read from here may stand in for it.
-//
-// PR2 adds the table and these methods only. Demoting the hub's in-RAM maps to
-// caches over this table is PR3; nothing in internal/runnerhub reads this yet.
+// Session bindings: the durable record of WHICH LIVE SESSION speaks for an
+// agent account, and the Runner it is attached to (RIG-3108/RIG-2861 §T4).
+// Formerly RAM-only in the RunnerHub, so a Server restart lost every binding.
+
+// A binding is NOT authorization (like agent_placements): SubscribeAgentSession
+// authorizes through agent_sessions and never reads this table. It serves the
+// relay's inbound-session owner lookup (accountForSession) and the delivery
+// consumer's live-session lookup for an authorized recipient (SessionForAccount).
+
+// Nor is a binding cross-checked against agent_sessions: no FK from session_id,
+// so it may name a session with no agent_sessions row. agent_sessions remains
+// the authz root, and nothing here may stand in for it.
+
+// PR2 adds the table and methods only; demoting the hub's in-RAM maps is PR3.
 
 // SessionBinding is one live binding: the session, the agent account it speaks
 // for, and the Runner it is attached to. Returned by
@@ -109,13 +103,10 @@ func (s *Store) RecordSessionBinding(ctx context.Context, sessionID string, acco
 	if accountID == "" {
 		return "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
-	// Unlike agent_placements.runner_id, '' is NOT an accepted unknown-runner
-	// sentinel here. A placement must OUTLIVE its Runner's attachment (it is
-	// where the agent runs, and the next provision self-heals the sentinel), but
-	// a binding exists ONLY while a Runner is attached, and runner_id is the
-	// sweep key that retires it. A binding stamped '' could never be swept by
-	// any real Runner's re-enroll, so it would linger as a stale session that
-	// outlives its Runner — the exact leak the sweep exists to prevent.
+	// Unlike agent_placements.runner_id, '' is NOT an accepted unknown sentinel:
+	// a placement outlives its Runner, but a binding exists only while a Runner
+	// is attached, and runner_id is the sweep key that retires it. A '' binding
+	// no real Runner's re-enroll could sweep would linger as a stale session.
 	if runnerID == "" {
 		return "", fmt.Errorf("%w: runner id is required", ErrInvalidArgument)
 	}

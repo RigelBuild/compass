@@ -1,20 +1,7 @@
-// A hand-written CommsClient double for driving the store's live comms path
-// without a server — the read side (a scripted SubscribeComms stream plus the
-// four snapshot read RPCs) and the write side (PostMessage / RespondToAsk
-// recorded verbatim, so a test asserts the exact wire request the UI issued).
-//
-// The write side also enforces the two server invariants a permissive double
-// would hide: PostMessage dedups on clientRequestId, and an ask is answerable
-// exactly ONCE (a second RespondToAsk throws, as the server's ErrConflict does).
-//
-// It lives beside the live layer rather than inline in one suite because the
-// store's live behavior is asserted from several angles (the store's own
-// reduction, the channel composer, the thread composer) and all three must
-// agree on ONE definition of "what the server looks like". stream.test.ts keeps
-// its own protocol-level fake: that suite drives cursors and reconnects, which
-// this double deliberately does not model.
-//
-// Dev/test-only, like comms-stub.ts — nothing in the shipped app imports it.
+// A hand-written CommsClient double for driving the store's live comms path without a
+// server — scripted reads plus writes recorded verbatim. Enforces two server invariants
+// a permissive double would hide: PostMessage dedups on clientRequestId, and an ask is
+// answerable exactly ONCE (a second RespondToAsk throws, as ErrConflict does). Dev/test-only.
 
 import {
 	AccountSchema,
@@ -233,13 +220,10 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 				postFailure = undefined;
 				throw err;
 			}
-			// Idempotency, as the server implements it: a retry carrying an
-			// already-seen clientRequestId returns the STORED message and records
-			// nothing new (the `(author_account_id, client_request_id)` partial
-			// unique index — go/internal/store/messages.go:79-84, migrations/
-			// 0001_init.sql:133-138). Modelled so the contract is asserted by
-			// consequence — one recorded post — rather than only by the keys being
-			// distinct. An empty key is NOT deduped, matching the partial index.
+			// Idempotency, as the server implements it: a retry carrying an already-seen
+			// clientRequestId returns the STORED message and records nothing new (the
+			// `(author_account_id, client_request_id)` partial unique index). Asserted by
+			// consequence — one recorded post. An empty key is NOT deduped, matching the index.
 			const stored = req.clientRequestId
 				? deduped.get(req.clientRequestId)
 				: undefined;
@@ -264,29 +248,19 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 			askId: string;
 			answers: Array<{ questionId: string; chosenOptionIds: string[] }>;
 		}) => {
-			// A gated respond parks here — still IN FLIGHT from the store's point
-			// of view — until the test settles it, so the test can push a stream
-			// event through in between. Resolving with an error is how `reject`
-			// refuses: the throw lands here, ahead of the answered-once
+			// A gated respond parks here — still IN FLIGHT from the store's point of view —
+			// until the test settles it, so the test can push a stream event through. An
+			// error throw is how `reject` refuses: it lands ahead of the answered-once
 			// bookkeeping, exactly where `failNextAskResponse`'s does.
 			if (askHold !== undefined) {
 				const held = askHold;
 				askHold = undefined;
 				await held;
 			}
-			// An ask is answered exactly ONCE. The server flips Ask.Answered on the
-			// first AnswerAsk and rejects every later one with ErrConflict →
-			// connect CodeAlreadyExists (go/internal/store/messages.go:404-406 and
-			// :438; internal/comms/context.go:50-51) — a re-answer would silently
-			// destroy the recorded audit value. A UI that fires one RespondToAsk
-			// per click on a multi-question ask therefore gets its SECOND click
-			// rejected by a real server; modelling it here is what makes that
-			// visible to a test instead of passing against a permissive double.
-			//
-			// A plain Error, like failNextPost's: ConnectError is not re-exported
-			// from @compass/client and the biome fence forbids importing
-			// @connectrpc/connect here, so the double carries the status in the
-			// message. The store surfaces `e.message` either way.
+			// An ask is answered exactly ONCE. The server flips Ask.Answered on the first
+			// AnswerAsk and rejects every later one with ErrConflict; modelling it here makes
+			// a UI's doomed second respond visible to a test. A plain Error carries the status
+			// in the message (ConnectError isn't re-exported); the store surfaces `e.message`.
 			if (askFailure) {
 				const err = askFailure;
 				askFailure = undefined;
@@ -361,6 +335,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 }
 
 // ── Wire builders ────────────────────────────────────────────────────────────
+
 // The generated-schema constructors every live-path suite feeds the fake with.
 // Shared so the store suite, the thread suite, and the component suites all
 // describe the SAME server; each takes only the fields whose value the tests

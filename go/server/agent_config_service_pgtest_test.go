@@ -3,16 +3,9 @@
 package server
 
 // Store-gated CompassService config-declaration handler contracts (RIG-1625 T2):
-// PutAgentConfig persists + returns the store version and emits a ConfigVersion
-// signal carrying that version; GetAgentConfigInfo returns an empty-but-valid
-// response on an unconfigured fleet and the bucketed member NAMES (never content)
-// on a configured one; DeleteAgentConfig clears the fleet and emits an
-// EMPTY-version signal. They need a real Postgres because PutAgentConfig writes
-// the singleton row and the handler reads a genuine caller identity. Driven
-// through the production bearer interceptor over a real connect client so the
-// handler resolves the caller the same way the shipped door supplies it. The
-// signaler is a recorder so a test asserts the emit path fired with the right
-// version. Behind `pgtest && unix` (SKIP when no runtime).
+// PutAgentConfig persists + returns the version and emits a ConfigVersion signal;
+// GetAgentConfigInfo returns member NAMES (never content); DeleteAgentConfig clears
+// the fleet. Driven through the production bearer interceptor. Behind `pgtest && unix`.
 
 import (
 	"archive/tar"

@@ -2,24 +2,10 @@
 
 package server
 
-// Store-gated end-to-end proofs for the RIG-2883 board webhook-ingestion serve
-// wiring: the pieces buildBoardIngestLane assembles (the boardTargetStore adapter
-// over a real *store.Store, the shared IssueProjection sink, the T1 webhook arm
-// behind the mounted /webhooks/github ingress) driven over the REAL signed
-// ingress against a REAL Postgres — no live GitHub (hydration is a fake). Behind
-// `pgtest && unix` (SKIP when no runtime). Each test opens its own isolated-schema
-// store (pgtest.RequireDSN + store.Open), so parallel packages never collide.
-//
-// The store-backed test-cycle items live here:
-//   - a signed fake `issues` webhook POSTed through the mounted /webhooks/github
-//     handler -> the board arm hydrates the coordinate and sinks the issue, which
-//     lands durably in the store at its forge coordinate;
-//   - App-config-ABSENT boot: buildBoardWebhookWiring returns all-nil (both
-//     lanes off), and warnDisabledBoardIngestion Warns when enabled subscription
-//     rows exist (no webhook mounted, no panic).
-//
-// These pgtests only need to COMPILE locally; the CI gate runs them against
-// suite Postgres.
+// Store-gated end-to-end proofs for the RIG-2883 board webhook-ingestion serve wiring:
+// buildBoardIngestLane's pieces driven over the REAL signed ingress against a REAL
+// Postgres. Covers a signed `issues` webhook landing durably, and App-absent boot
+// (all-nil, with warnDisabledBoardIngestion Warning on enabled rows). Behind `pgtest`.
 
 import (
 	"context"

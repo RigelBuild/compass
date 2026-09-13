@@ -1,30 +1,9 @@
 //go:build unix
 
-// The agent-initiated forge-write leg: forgeService implements the
-// runnerhub.ForgeCaller seam (relay_forge.go, T5 — the interface DEFINITION
-// lands there; this slice implements it) the RunnerHub delegates a
-// resolved-caller forge call into. It is the forge sibling of boardService
-// (board.go) and shares its trust model exactly, plus it is the ONE place
-// agent-authored forge artifacts get owner-attribution stamped (DL-050), the
-// create-idempotency memo consulted (F3), the credential role selected
-// (author vs reviewer, F1), and a provider/transport fault flattened into one
-// in-band ForgeCallError.
-//
-// Trust model (mirrors boardService). The caller AccountID is resolved
-// Server-side by the hub from its own session binding and passed in; the Runner
-// never asserts it. sessionID rides along because the DL-050 owner stamp
-// interpolates it into the header (owner.go:64 grammar). Per Resolved decision 2
-// (MVP, single-trust-domain) the caller is recorded for attribution but NO scope
-// rejection ships (A8).
-//
-// The in-band vs Connect split (mirrors boardCallError). A tool-level failure — a
-// forge 4xx/5xx, an over-limit body, an unconfigured coordinate — is returned
-// IN-BAND on the ForgeCallResult_Error arm the agent renders. ONLY a malformed
-// request (an unset oneof arm) or a missing caller resolution is a Connect error
-// the transport carries (A1). The oneof dispatch lives HERE (not in the hub as
-// executeBoardCall does) because forge has ten arms plus stamping, provider
-// selection, and store access, so the ForgeCaller seam is single-method and the
-// domain shape stays behind it (design.md:176-194).
+// The agent-initiated forge-write leg: forgeService implements the runnerhub.ForgeCaller
+// seam, the forge sibling of boardService, plus the ONE place agent forge artifacts get
+// owner-attribution stamped (DL-050), the F3 memo consulted, the credential role selected
+// (F1), and a fault flattened into one in-band ForgeCallError. The oneof dispatch lives here.
 package server
 
 import (
@@ -591,11 +570,9 @@ func screenIssueRefinements(rf resolvedForge, closeReason, workflowState string)
 // decision, not a fix applied here.
 func (s *forgeService) rememberTransition(ctx context.Context, rf resolvedForge, caller store.AccountID, repo string, kind store.ForgeArtifactKind, number uint64, state string) *compassv1internal.ForgeCallError {
 	if err := s.store.RecordStateTransition(ctx, store.ForgeProvider(rf.provider), rf.host, repo, kind, number, state, caller, s.now()); err != nil {
-		// The provider write ALREADY LANDED, so the error must name what
-		// succeeded: a caller told only "memo: db unavailable" reasonably
-		// retries an operation that is already done, and a human reading the
-		// trace cannot tell the forge state changed. The mapped code is
-		// unchanged — only the message gains the landed half.
+		// The provider write ALREADY LANDED, so the error must name what succeeded:
+		// a caller told only "memo: db unavailable" reasonably retries an operation
+		// that is already done. The mapped code is unchanged; the message gains it.
 		fe := storeForgeError(err)
 		fe.Message = fmt.Sprintf(
 			"forge: %s#%d was transitioned to %s, but recording the acting agent failed: %v",

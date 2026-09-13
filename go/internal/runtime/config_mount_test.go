@@ -3,31 +3,14 @@
 package runtime
 
 // Real-container substrate proof for config delivery (RIG-1675), against real
-// rootless podman. This is the seam the config-in-place-update design rests on
-// and that no other test exercises against a real container:
-//
-//  1. the materialized config tree is bind-mounted read-only at the production
-//     path /run/compass/agent-config,
-//  2. inside the container, current/ resolves to the active version dir and its
-//     contents are readable by the unprivileged agent user,
-//  3. a host-side current -> version symlink flip is visible LIVE inside the
-//     already-running container with no remount and no restart — the Runner
-//     mounts the PARENT dir (never the resolved version dir), so a later
-//     ConfigMaterializer flip is picked up without re-mounting,
-//  4. (only where SELinux labels mounts) the mount carries a per-container MCS label.
-//
-// The runner-half Go wiring (Provision -> Start -> RefreshConfig -> Reload) is
-// already proven end-to-end by config_refresh_test with the podman binary
-// stubbed; this test deliberately does NOT re-drive it. It builds the host
-// config tree by hand (mirroring config_materialize.go's layout) rather than
-// through ConfigMaterializer + the fetch stack, because the property under test
-// is the runtime substrate, not materialization (config_materialize_test covers
-// that). No agent binary is needed — a shell in the container observes the mount.
-//
-// Skipped (not failed) when podman isn't usable, matching lifecycle_test; the
-// MCS-label assertion is additionally skipped where SELinux does not label
-// mounts (e.g. a NixOS host with SELinux disabled), so it is real wherever it does.
-// Build-tagged (podman) so it is not part of the hermetic gate.
+// rootless podman. Asserts: the config tree is bind-mounted read-only, current/
+// resolves and is readable by the agent user, a host-side current->version flip
+// is visible LIVE (the Runner mounts the PARENT dir), and (SELinux) an MCS label.
+
+// The runner-half wiring is proven by config_refresh_test; this builds the host
+// tree by hand because the property under test is the runtime substrate, not
+// materialization. Skipped (not failed) without podman, and the MCS assertion
+// additionally skipped where SELinux does not label mounts. Build-tagged (podman).
 
 import (
 	"context"
@@ -54,23 +37,18 @@ func writeConfigTree(t *testing.T, versions []string, initial string) string {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir version dir %q: %v", v, err)
 		}
-		// 0o666, not 0o644: the sentinel and the root mode must move together.
-		// The root is pinned 0o755 below so the agent (uid 1000 under
-		// --userns=keep-id) can traverse it regardless of the invoking host uid;
-		// were the sentinel left 0o644, on a box where the invoker uid != 1000
-		// the agent (mapped as "other") could not write it even absent the ro
-		// mount, so assertion 2's write-rejection would come from file perms, not
-		// the read-only mount — a vacuous green. 0o666 keeps the ro mount the sole
-		// write barrier for any invoker uid.
+		// 0o666, not 0o644: the root is pinned 0o755 so the agent (uid 1000 under
+		// --userns=keep-id) can traverse regardless of invoker uid; a 0o644
+		// sentinel would make assertion 2's write-rejection come from file perms
+		// on a box where invoker uid != 1000, not the ro mount — a vacuous green.
 		if err := os.WriteFile(filepath.Join(dir, "config.txt"), []byte(v), 0o666); err != nil {
 			t.Fatalf("write config.txt for %q: %v", v, err)
 		}
 	}
-	// Pin the root 0o755, mirroring ConfigMaterializer.ensureRoot
-	// (config_materialize.go:180-186): t.TempDir defaults to 0o700, which only
-	// the owner can traverse, so a confined agent whose in-userns uid differs
-	// from the root owner could not resolve current/ into the tree. Production
-	// pins 0o755 for exactly this reason.
+	// Pin the root 0o755, mirroring ConfigMaterializer.ensureRoot: t.TempDir
+	// defaults to 0o700 (owner-only traverse), so a confined agent whose
+	// in-userns uid differs from the root owner could not resolve current/.
+	// Production pins 0o755 for this reason.
 	if err := os.Chmod(root, 0o755); err != nil {
 		t.Fatalf("pin config root %q mode: %v", root, err)
 	}
@@ -187,10 +165,9 @@ func TestConfigMountIsReadOnlyAndFlipVisibleLive(t *testing.T) {
 	}
 
 	// 4. SELinux MCS label: only meaningful where SELinux labels mounts. Where
-	// it is disabled (e.g. this NixOS box) MountLabel is empty and :Z is a no-op,
-	// so skip the sub-assertion with a note rather than fail. This branch is
-	// compile-checked only in the disabled case; its runtime path (the
-	// MountLabel read + non-empty check) is unverified pending an SELinux host.
+	// disabled (e.g. this NixOS box) MountLabel is empty and :Z a no-op, so skip
+	// with a note. The runtime path (MountLabel read + non-empty check) is
+	// unverified pending an SELinux host.
 	if selinuxLabelsMounts() {
 		label, err := NewPodmanCLI().MountLabel(ctx, handle.ID())
 		if err != nil {

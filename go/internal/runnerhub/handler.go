@@ -1,11 +1,9 @@
 //go:build unix
 
 // The RunnerService connect-go handler: the server surface the Runner dials out
-// to. It terminates the three established RPCs and drives them through the hub —
-// Enroll registers the Runner, Sessions binds the command router to the live
-// bidi stream and pumps results back, PublishEvents feeds each relayed frame
-// into Deliver. Mounted on serve.go beside the CompassService/CommsService
-// handlers, behind the Runner-subject bearer interceptor (auth.go).
+// to, driving its RPCs through the hub — Enroll registers the Runner, Sessions
+// binds the command router to the live bidi stream, PublishEvents feeds each
+// frame into Deliver. Behind the Runner-subject bearer interceptor (auth.go).
 package runnerhub
 
 import (
@@ -108,12 +106,10 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	router.attach(stream.Send)
 	defer router.detach(errStreamClosed)
 
-	// The Runner's command stream is now live — a Provision/Start can be served.
-	// Fire the runner-ready hook (first-launch supervisor seed) here, not on
-	// enroll: enroll only registers the Runner, the send stream attaches only
-	// now, so a hook fired on enroll would race this attach and fail its first
-	// command CodeUnavailable. Runs on its own goroutine (fireRunnerReady), since
-	// the seed drives commands back down this very stream.
+	// The command stream is now live. Fire the runner-ready hook here, not on
+	// enroll: the send stream attaches only now, so a hook fired on enroll would
+	// race this attach and fail its first command CodeUnavailable. Runs on its own
+	// goroutine, since the seed drives commands back down this very stream.
 	h.hub.fireRunnerReady()
 
 	for {
@@ -282,11 +278,9 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoResolver)
 	}
 	// Authorize against whichever binding the selector names, then resolve the
-	// same inject-all set for either (no per-agent differentiation in the MVP).
-	// A container_name authorizes the PROVISION-time initial materialize (bound
-	// from Provision, before any session); a session_id authorizes the
-	// post-Start rotation re-fetch. A foreign/unknown selector — or none — is
-	// rejected CodePermissionDenied, never a silent empty set.
+	// inject-all set. A container_name authorizes the PROVISION-time initial
+	// materialize; a session_id authorizes the post-Start rotation re-fetch. A
+	// foreign/unknown selector — or none — is rejected CodePermissionDenied.
 	switch sessionID, containerName := req.Msg.GetSessionId(), req.Msg.GetContainerName(); {
 	case sessionID != "" && containerName != "":
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets accepts a session_id or a container_name, not both"))

@@ -3,11 +3,8 @@
 package server
 
 // DB-free Serve-loop tests: the up-front DevHTTP loopback guard, which returns
-// before Serve opens the store, so it needs no Postgres and runs in the default
-// `go test ./...` lane. The store-gated serve tests (which call store.Open and
-// so require a real database) live in serve_pgtest_test.go behind the `pgtest`
-// tag, alongside the socket-readiness gate (waitListening) they use.
-//
+// before Serve opens the store, so it needs no Postgres and runs in the default lane.
+// The store-gated serve tests live in serve_pgtest_test.go behind the `pgtest` tag.
 // Hermetic: t.TempDir() socket paths, no fixed ports.
 
 import (

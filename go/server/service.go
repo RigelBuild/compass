@@ -1,17 +1,9 @@
 //go:build unix
 
-// The CompassService implementation — the server side of the compass.v1
-// contract. GetServerInfo is the connect-time liveness/version probe;
-// SubscribeEvents snapshots the event ring then tails live updates.
-//
-// The agent-session lifecycle mutators (StartAgentSession, StopAgentSession,
-// ReloadAgentSession) relay to the owning Runner over the RunnerHub; a server
-// built with no Runner door (hub nil, the socket-only path) returns Unavailable
-// for them. GetAgentStatus is served from the Bridge board projection (the
-// session snapshot), not a Runner relay — the board is the writer the RunnerHub
-// feeds and the reader this service snapshots. IssueToken is served here for the
-// network door (T3): it verifies the target account against the store, then
-// mints a bearer token in the token store.
+// The CompassService implementation — server side of the compass.v1 contract.
+// GetServerInfo probes liveness; SubscribeEvents snapshots the ring then tails.
+// The agent-session lifecycle mutators relay to the owning Runner (Unavailable on
+// the socket-only path). GetAgentStatus is served from the board; IssueToken mints.
 package server
 
 import (
@@ -143,12 +135,10 @@ func (s *service) ProvisionAgentWorkspace(
 	if s.hub == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
-	// SERVER-AUTHORITATIVE persona (compass.proto persona=6) and role (role=7):
-	// populate the outgoing persona and role from the store's AgentAccount,
-	// overwriting whatever the client sent, so a caller cannot inject a system
-	// prompt or a role prompt. A non-agent account carries neither, but the
-	// client values are still cleared for the same reason. The Runner receives
-	// these on the same relayed req.Msg.
+	// SERVER-AUTHORITATIVE persona and role: populate the outgoing persona/role from
+	// the store's AgentAccount, overwriting whatever the client sent, so a caller
+	// cannot inject a system or role prompt. A non-agent account carries neither;
+	// the client values are still cleared. The Runner receives these on req.Msg.
 	acc, err := s.store.GetAccount(ctx, store.AccountID(req.Msg.GetAgentHandle()))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -167,21 +157,10 @@ func (s *service) ProvisionAgentWorkspace(
 	if err != nil {
 		return nil, err
 	}
-	// Record the agent's durable PLACEMENT — which Runner it is on and the
-	// container name it runs under — only now that the Runner has created the
-	// container. Every field is trustworthy at exactly this point:
-	// agent_account_id is the Server's own request field, container_name is the
-	// Runner's response, and runnerID names the Runner that actually served this
-	// call, so the row is rooted on values the client cannot forge. Idempotent
-	// (upsert on the agent), matching the client_request_id provision-retry
-	// contract.
-	//
-	// This is the write that makes the Server's knowledge survive itself: before
-	// it, the container -> account mapping lived only in the RunnerHub's
-	// in-memory binding, so a Server restart or Runner re-enroll between
-	// Provision and Start left StartAgentSession unable to say whose session it
-	// was recording. It is also what RIG-1516 reattach recovery reads to name
-	// every agent stranded by a Runner restart.
+	// Record the agent's durable PLACEMENT — which Runner and container name — only
+	// now that the Runner created the container. Idempotent upsert. This is what makes
+	// the container->account mapping survive a Server restart, and what RIG-1516
+	// reattach recovery reads to name agents stranded by a Runner restart.
 	if err := s.store.RecordAgentPlacement(ctx, store.AccountID(req.Msg.GetAgentHandle()), runnerID, resp.GetContainerName()); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
 	}
@@ -204,16 +183,10 @@ func (s *service) StartAgentSession(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
 	// The resume branch: a non-empty resume_session_id relays through the resume
-	// handoff (authz-gate the caller, bind the lifetime, reconstruct the body,
-	// attach it to the INTERNAL start envelope), all BEFORE any Runner call for
-	// the authz + bind. A resume REUSES the logical session id as the live id, so
-	// its ownership row (session_id -> agent_account_id) already exists from the
-	// first lifetime and its caller was already authorized against that row by
-	// startResumeSession (RequireAgentSessionSubscriber) — so the resume branch
-	// does NOT re-record ownership (that INSERT would conflict on the existing
-	// row). A fresh start (empty id) mints a new id, so it takes the verbatim
-	// relay, attaches nothing, binds nothing (first-lifetime base defaults to 0
-	// per migration 0009), and records the ownership chain below.
+	// handoff (authz-gate, bind lifetime, reconstruct body, attach to the INTERNAL
+	// envelope), all BEFORE any Runner call. A resume REUSES the logical id as the
+	// live id, so its ownership row already exists and was already authorized — it
+	// does NOT re-record ownership. A fresh start mints a new id and records below.
 	if resumeID := req.Msg.GetResumeSessionId(); resumeID != "" {
 		resp, err := s.startResumeSession(ctx, resumeID, req.Msg)
 		if err != nil {
@@ -226,26 +199,10 @@ func (s *service) StartAgentSession(
 	if err != nil {
 		return nil, err
 	}
-	// Complete the durable ownership chain now that the Runner has started the
-	// fresh session: session_id (the server-minted response) -> agent_account_id,
-	// the chain SubscribeAgentSession resolves to authorize a subscriber. The
-	// request carries only container_name, so the owning account comes from the
-	// placement recorded at Provision — a durable read, not an in-memory binding,
-	// so the ownership record is written correctly even across a Server restart or
-	// a Runner re-enroll since the container was provisioned.
-	//
-	// Either store step can fail AFTER the Runner has irreversibly started an
-	// agent, and unlike Provision this does NOT self-heal: Provision's write is
-	// an idempotent upsert and its client_request_id dedups a retry at the
-	// router, whereas StartAgentSessionRequest carries no client_request_id (the
-	// relay id is minted per call above), so a client retry issues a genuinely
-	// NEW Start rather than rejoining this one. Returning the error alone would
-	// therefore discard the only handle to a LIVE session — the response, and
-	// with it the session id, never reaches the caller, so it can never Stop,
-	// Reload or Subscribe it, while the hub's promoteSession binding inside
-	// hub.Start already considers it live. So we tear the session back down and
-	// keep the invariant: either the session exists AND is recorded, or it does
-	// not exist.
+	// Complete the durable ownership chain now that the Runner started the session:
+	// session_id -> agent_account_id, from the placement recorded at Provision (a
+	// durable read, correct across restart). Either store step can fail AFTER the
+	// Runner started, and unlike Provision this does NOT self-heal, so we tear it down.
 	agentAccountID, err := s.store.AgentForContainer(ctx, req.Msg.GetContainerName())
 	if err != nil {
 		return nil, s.abandonStartedSession(ctx, req.Msg.GetContainerName(), resp.GetSessionId(),
@@ -273,14 +230,10 @@ func (s *service) StopAgentSession(
 	if err != nil {
 		return nil, err
 	}
-	// RIG-1667 T4 session-end flush (the third flush trigger, design.md §1040-1046):
-	// archive the remaining hot-tail as one session_end segment so history is
-	// COMPLETE for analytics. It does NOT prune the PG tail and is NEVER read on
-	// resume. BEST-EFFORT: the Stop relay already irreversibly killed the agent, so
-	// a flush failure must NEVER convert a successful Stop into a failure (the same
-	// anti-stranding invariant abandonStartedSession honors on Start). A nil object
-	// store (a socket-only dev server with no S3) surfaces here as a plain error and
-	// hits the same log-and-continue path, so Stop stays clean.
+	// RIG-1667 T4 session-end flush: archive the remaining hot-tail as one session_end
+	// segment so history is COMPLETE for analytics (not pruned, never read on resume).
+	// BEST-EFFORT: the Stop relay already killed the agent, so a flush failure must
+	// NEVER convert a successful Stop into a failure.
 	sessionID := req.Msg.GetSessionId()
 	if maxSeq, seqErr := s.store.SessionMaxEntrySeq(ctx, sessionID); seqErr != nil {
 		slog.ErrorContext(ctx, "session-end transcript flush skipped: could not read max entry seq",
@@ -497,11 +450,10 @@ func (s *service) SubscribeEvents(
 	// send error) rather than leaking it until an overrun or bus close. Safe
 	// after the bus has already closed the channel — Cancel is idempotent.
 	defer sub.Cancel()
-	// On a fresh subscribe (since_seq==0) send one leading snapshot-boundary
-	// frame before the tail: the subscribe-first ordering marker a client pairs
-	// with a ListBoardIssues read (register -> boundary -> tail, gap-free). The
-	// board is unversioned in v1 so the boundary carries snapshot_seq=0; the
-	// client unions the read with the full tail, id-keyed, to close the window.
+	// On a fresh subscribe (since_seq==0) send one leading snapshot-boundary frame
+	// before the tail: the ordering marker a client pairs with a ListBoardIssues
+	// read (register -> boundary -> tail, gap-free). The board is unversioned in v1
+	// so the boundary carries snapshot_seq=0; the client unions the read id-keyed.
 	if req.Msg.GetSinceSeq() == 0 {
 		if err := stream.Send(snapshotBoundary(s.bus.InstanceEpoch())); err != nil {
 			return err
@@ -553,14 +505,10 @@ func (s *service) SubscribeAgentSession(
 	// lag-drop). Safe after the tail has already closed the channel on a
 	// lag-drop — unsubscribe is a no-op once the sub is gone.
 	defer s.tail.unsubscribe(sessionID, sub)
-	// Leading registration-ack: the subscriber is now registered server-side, so
-	// flush one zero-payload frame (session_id only; no event, no transition) to
-	// unblock the client's OpenSessionTail RoundTrip on REGISTRATION rather than on
-	// the first relayed frame. This makes "open the tail before the post" a true
-	// happens-before for every caller — closing the idle-session drop where a driven
-	// injection races subscribe() and fans to zero subscribers (no replay ring). It
-	// mirrors SubscribeEvents' snapshotBoundary / SubscribeComms' commsSnapshotBoundary.
-	// A client hang-up here is a clean end, exactly like the recv loop's send error.
+	// Leading registration-ack: flush one zero-payload frame (session_id only) to
+	// unblock the client's OpenSessionTail RoundTrip on REGISTRATION rather than the
+	// first relayed frame. Makes "open the tail before the post" a true
+	// happens-before, closing the idle-session drop where an injection races subscribe().
 	if err := stream.Send(&compassv1.AgentSessionFrame{SessionId: sessionID}); err != nil {
 		return nil
 	}

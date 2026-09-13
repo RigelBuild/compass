@@ -1,17 +1,7 @@
-// The live comms state reducer: the pure core that turns a SubscribeComms event
-// stream into the four domain collections the store's comms accessors expose
-// (accounts, channelGroups, channels, messages). Pure over its inputs — no
-// Solid, no client, no network — so the snapshot-apply, the per-event
-// transitions, and the dedup-by-id invariant are all unit-testable in isolation;
-// the store (live/store wiring) drives it with the real stream and mirrors the
-// reduced state into signals.
-//
-// Message mapping is INJECTED (`MapMessage`), not imported: the durable-message
-// shape (text + the per-question Ask reshape landing in
-// franklin-sea-1195-ask-in-channel-impl) is a moving contract, so this engine
-// stays agnostic to it — it dedups and orders domain Messages by id/time and
-// never names a block shape. Account/Channel/ChannelGroup mapping is stable and
-// consumed directly from ./adapt.
+// The live comms state reducer: the pure core turning a SubscribeComms event stream into
+// the four domain collections the store's accessors expose. Pure over its inputs, so
+// snapshot-apply, per-event transitions, and dedup-by-id are unit-testable. Message mapping
+// is INJECTED (`MapMessage`) since the Ask shape moves; Account/Channel mapping is from ./adapt.
 
 import type {
 	Account as WireAccount,
@@ -223,17 +213,10 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 				...state,
 				channelGroups: upsertById(state.channelGroups, event.group),
 			};
-		// accountChanged updates only `accounts`; it does not re-derive existing
-		// channels' `alwaysSubscribed` (an adapt-time projection over the agent
-		// home-channel set). This is sound because home_channel_id is server-set
-		// and immutable (comms.proto AgentAccount, minted once at CreateAgent — no
-		// update RPC), so an existing home channel's always-subscribed flag can
-		// never go stale, and there is no account-removed event. The one residual
-		// is a NEW agent whose channelChanged(home) decodes before its
-		// accountChanged: that channel's flag stays unset until the next
-		// channelChanged/resync — a self-healing cosmetic transient (the cold
-		// subscribe via reduceSnapshot is always correct). Keeping this a pure
-		// upsert avoids coupling the reducer to the adapt-layer projection.
+		// accountChanged updates only `accounts`; it does not re-derive channels'
+		// `alwaysSubscribed` (an adapt-time projection). Sound because home_channel_id is
+		// server-set and immutable, so the flag can't go stale. The one residual — a new
+		// agent whose channelChanged(home) decodes before its accountChanged — self-heals.
 		case "accountChanged":
 			return { ...state, accounts: upsertById(state.accounts, event.account) };
 		// A topic created/renamed/merged/archived: upsert by id, keeping the topic

@@ -3,17 +3,12 @@
 package delivery
 
 // RIG-2257 T7 — the ask-answer recovery acceptance cycle, end-to-end over the
-// FULL stack against a REAL Postgres (the store of record is only proven against
-// the database it targets — no mock). The answer to an ask is a normal message
-// authored by the answerer, carrying a server-owned ask_answer block, so it
-// rides the existing message rail: fan-out, the ack-gated cursor sweep, the
-// OnSessionStarted resweep, and — for an out-of-sweep asker — the owed-mention
-// backstop re-derivable by the recovery scan. Each scenario drives the true
-// consumer (real *store.Store, the shared fakes for the hub's dispatch +
-// resolution roles) and gates on a durable observable effect — a cursor deliver,
-// an owed row, a steer — never a sleep. context.Background() is the test root
-// (rule://go-thread-context exemption for _test.go), threaded into Run and every
-// store read.
+// FULL stack against a REAL Postgres. The answer to an ask is a normal message
+// carrying a server-owned ask_answer block, so it rides the existing message rail.
+
+// Covered: fan-out, the ack-gated cursor sweep, the OnSessionStarted resweep,
+// and the owed-mention backstop re-derivable by the recovery scan. Each scenario
+// drives the true consumer and gates on a durable observable effect, never a sleep.
 
 import (
 	"context"

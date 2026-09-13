@@ -1,14 +1,11 @@
-// The agent lifecycle façade the Runner drives (design: architecture-lineage): build
-// the image, create and start the container, arm the egress firewall as root,
-// install scoped credentials, create the agent's checkout dir as the unprivileged
-// agent user, and tear it all down. Composed from the podman, egress, and
-// workspace pieces of this package.
-//
-// Deliberately stateless about container existence: the container engine is the
-// source of truth for what exists, so there's no in-memory registry to keep in
-// sync with reality for lifecycle decisions. Each call resolves the container by
-// its stable name. The optional AgentRegistry is a separate concern — a handle
-// cache the session RPCs resolve through, not lifecycle state.
+// The agent lifecycle façade the Runner drives: build the image, create and
+// start the container, arm egress as root, install scoped credentials, create
+// the agent's checkout dir as the unprivileged user, and tear it all down.
+// Composed from the podman, egress, and workspace pieces of this package.
+
+// Deliberately stateless about container existence — the engine is the source
+// of truth, so each call resolves by stable name. The optional AgentRegistry is
+// a separate handle cache for the session RPCs, not lifecycle state.
 
 package runtime
 
@@ -181,10 +178,9 @@ func (r *AgentRuntime) Launch(ctx context.Context, spec AgentSpec) (*AgentHandle
 	}
 	if err := r.provision(ctx, id, spec); err != nil {
 		// Best-effort cleanup: the launch already failed, so a remove error must
-		// not mask the original cause. Detach cancellation (WithoutCancel) so the
-		// cleanup still runs when the caller's context is already cancelled — the
-		// per-command timeout inside the runtime still bounds it, and a leaked
-		// container would otherwise collide with the next launch of the name.
+		// not mask the original cause. Detach cancellation (WithoutCancel) so it
+		// runs even under a cancelled ctx (the per-command timeout still bounds
+		// it); a leaked container would collide with the next launch of the name.
 		_ = r.runtime.Remove(context.WithoutCancel(ctx), id)
 		return nil, err
 	}
@@ -220,15 +216,10 @@ func (r *AgentRuntime) Teardown(ctx context.Context, handle *AgentHandle) error 
 	if err := r.runtime.Remove(ctx, handle.id); err != nil {
 		return atStage("remove", err)
 	}
-	// Deregister LAST — only after the container is stopped and removed. A
-	// Teardown that fails partway leaves the handle resolvable, so the caller's
-	// idempotency gate (agentHost.Remove resolves the handle before tearing
-	// down) re-runs teardown on retry rather than answering a lying success over
-	// a container that leaked. Deregister-first would orphan the container: the
-	// handle would be gone but the engine container still present and now
-	// unreachable. The "stop resolving an about-to-be-gone container" window is
-	// moot under the sequential dispatch that is the only registry resolver.
-	// No-op without a registry.
+	// Deregister LAST — only after stop+remove. A partial Teardown leaves the
+	// handle resolvable, so the caller's idempotency gate re-runs teardown rather
+	// than lying over a leaked container. Deregister-first would orphan it. No-op
+	// without a registry.
 	if r.registry != nil {
 		r.registry.Deregister(handle.Name())
 	}

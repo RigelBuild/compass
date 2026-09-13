@@ -295,10 +295,9 @@ func TestCachedPullNumberResolverNeverCachesInfraError(t *testing.T) {
 // concrete return would pass either way and prove nothing.
 func TestNewCachedPullNumberResolverNilBase(t *testing.T) {
 	// Passed through a func taking the interface, so the value genuinely crosses
-	// the seam boundary. An inline `var x PullNumberResolver = ...` would say
-	// the same thing, but staticcheck (ST1023) strips the annotation as
-	// inferable — and inferring the CONCRETE type is exactly the mistake this
-	// test exists to catch.
+	// the seam boundary. An inline annotation would say the same, but staticcheck
+	// (ST1023) strips it as inferable — and inferring the CONCRETE type is exactly
+	// the mistake this test catches.
 	assertNilSeam := func(t *testing.T, seam PullNumberResolver) {
 		t.Helper()
 		if seam != nil {
@@ -385,10 +384,9 @@ func TestCachedPullNumberResolverEvictsExpired(t *testing.T) {
 	}
 
 	// The read path evicts the key it looks up even when no store follows. Cache
-	// a sentinel, expire it, then make the re-resolve fail: an infrastructure
-	// fault stores nothing, so the only thing that can remove the dead key is
-	// the read itself. ccc stays resident throughout — its own TTL restarted
-	// when it was stored, which is why this asserts a delta, not an empty map.
+	// a sentinel, expire it, then make the re-resolve fail: an infra fault stores
+	// nothing, so only the read can remove the dead key. ccc stays resident (its
+	// TTL restarted when stored), which is why this asserts a delta, not empty.
 	if _, err := c.PullNumberForSHA(ctx, "octo/repo", "zzz"); !errors.Is(err, forge.ErrNoPullRequestForSHA) {
 		t.Fatalf("resolve zzz = %v, want the no-PR sentinel", err)
 	}

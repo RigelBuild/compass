@@ -1,19 +1,11 @@
 //go:build unix
 
-// Fake forge webhook SENDERS for the RIG-2848 notification e2e matrix — the
-// test doubles the existing coverage lacks. forge.FakeProvider models the
-// read/write CLIENT; nothing models a forge EMITTING a signed webhook. These
-// fakes do: given a high-level artifact mutation (a comment, a state flip, a
-// review, a check-suite completion), they produce the exact signed HTTP shape
-// GitHub / Linear post to the ingress, so a test drives the REAL landed ingress
-// (NewGitHubWebhookHandler + VerifyGitHubSignature + ParseGitHubEvent /
-// linearagent.VerifySignature + ParseLinearDataEvent) rather than a hand-forged
-// ForgeEvent struct.
-//
-// They are deliberately reusable: the composed matrix (forge_notify_matrix_test)
-// consumes them now against the landed ingress→router pipeline, and the
-// full-stack e2e consumes the same senders once the T7 /webhooks mount +
-// store-backed NotifyStore adapter land (RIG-2717, RIG-2732 T5/T7).
+// Fake forge webhook SENDERS for the RIG-2848 notification e2e matrix. forge.FakeProvider
+// models the read/write CLIENT; nothing models a forge EMITTING a signed webhook.
+// These fakes do: given a high-level artifact mutation, they produce the exact signed
+// HTTP shape GitHub / Linear post to the ingress, so a test drives the REAL landed
+// ingress rather than a hand-forged ForgeEvent. Reusable: the matrix consumes them
+// against the landed ingress→router pipeline, and the full-stack e2e reuses them.
 package server
 
 import (

@@ -51,20 +51,17 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
 	// D9 write-authz: the author must be a member of the target channel, so a
-	// non-member cannot persist (and fan out) into a private channel it can't
-	// see — the write-side mirror of the ListMessages/AnswerAsk read gate. A
-	// non-member gets ErrNotFound (the not-found/forbidden merge), never a hint
-	// that the channel exists. Checked in the same tx as the insert so a
-	// concurrent removal cannot race between the gate and the write.
+	// non-member cannot persist into a private channel it can't see. A
+	// non-member gets ErrNotFound, never a hint the channel exists. Checked in
+	// the insert tx so a concurrent removal cannot race the gate.
 	if err := requireChannelMember(ctx, tx, m.AuthorAccountID, ChannelID(channelID)); err != nil {
 		return Message{}, false, err
 	}
 
 	// T4 post policy: on an OWNER_ONLY channel, only owner_account_id may post.
-	// A non-owner is refused with the SAME ErrNotFound a non-member gets (the
-	// not-found/forbidden merge), so the policy leaks no oracle: a member who
-	// may not post is indistinguishable from a non-member. Checked in this same
-	// tx as the membership gate and the insert, under the committed policy.
+	// A non-owner is refused with the SAME ErrNotFound a non-member gets, so the
+	// policy leaks no oracle. Checked in this tx as the membership gate and the
+	// insert, under the committed policy.
 	policy, err := db.New(tx).GetChannelPostPolicy(ctx, channelID)
 	if err != nil {
 		if noRows(err) {
@@ -86,13 +83,10 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	inserted, err := insertMessageTx(ctx, tx, m, topicID, clientRequestID)
 	switch {
 	case errors.Is(err, errMessageInsertConflict):
-		// ON CONFLICT DO NOTHING suppressed the insert: a message with this
-		// idempotency key already exists (a retry). Nothing was written, so the
-		// tx rolls back (unwinding the topic get-or-create too); return the
-		// already-committed row with inserted=false so the handler suppresses a
-		// duplicate MessagePosted. AnswerAsk does NOT share this arm — its
-		// answer insert carries no idempotency key, so the conflict path is
-		// unreachable there (see insertMessageTx).
+		// ON CONFLICT DO NOTHING suppressed the insert: a row with this
+		// idempotency key exists (a retry). The tx rolls back; return the
+		// committed row with inserted=false so the handler suppresses a
+		// duplicate MessagePosted. AnswerAsk carries no key, so it never hits this.
 		stored, err := s.getMessageByRequestID(ctx, m.AuthorAccountID, clientRequestID)
 		return stored, false, err
 	case pgErrIs(err, pgForeignKeyViolation):
@@ -197,10 +191,8 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 
 	// Get-or-create is gated on Create (R5). When set, settle a concurrent
 	// create by the unique index, never a naive SELECT-then-INSERT: a concurrent
-	// inserter's uncommitted row makes this INSERT block until it commits, after
-	// which DO NOTHING fires and the re-SELECT below reads the surviving row.
-	// When unset, the mint is skipped entirely — a name that resolves to no row
-	// below is ErrNotFound.
+	// inserter's row makes this INSERT block, then DO NOTHING fires and the
+	// re-SELECT reads it. When unset, no row below is ErrNotFound.
 	if topic.Create {
 		if err := q.InsertTopicIgnore(ctx, db.InsertTopicIgnoreParams{
 			ID:                 newID(),
@@ -357,10 +349,9 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 	}
 
 	// One statement, so the authz predicate and the write cannot race: a
-	// membership revoked concurrently either lands before the UPDATE (which then
-	// matches no row) or after it, never between a separate check and the write.
-	// The EXISTS subquery is the membership half and the author_account_id
-	// equality the authorship half; both must hold for the row to match.
+	// concurrent membership revocation lands before the UPDATE (matches no row)
+	// or after it, never between. The EXISTS subquery is the membership half and
+	// the author_account_id equality the authorship half; both must hold.
 	row, err := s.q.UpdateMessageBlocksAsAuthor(ctx, db.UpdateMessageBlocksAsAuthorParams{
 		Blocks:          blocksJSON,
 		TextContent:     textContent(blocks),
@@ -440,11 +431,9 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 	var beforeSeq int64
 	if q.Page.BeforeMessageID != "" {
 		// Scope the cursor probe to the actor's membership too, so a non-member
-		// naming a real message in a channel it cannot see gets the same
-		// "not in channel" result as a fake id — no existence oracle across the
-		// visibility boundary (the D9 not-found/forbidden merge the main query and
-		// AnswerAsk also apply). The channel is the cursor message's topic's
-		// channel.
+		// naming a real message in a channel it cannot see gets the same "not in
+		// channel" result as a fake id — no existence oracle across the
+		// visibility boundary. The channel is the cursor message's topic's channel.
 		seq, err := s.q.GetPageCursorSeq(ctx, db.GetPageCursorSeqParams{
 			AccountID: string(q.Actor),
 			ID:        string(q.Page.BeforeMessageID),
@@ -459,25 +448,15 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 		beforeSeq = seq
 	}
 
-	// A zero beforeSeq (no cursor) reads the newest page; a positive one pages
-	// strictly older. seq is BIGSERIAL starting at 1, so 0 is below every row.
-	// The topic join resolves each message's channel, and the membership JOIN on
-	// that channel scopes the read to the actor's visible set. An empty $6
-	// TopicID reads the whole channel; a non-empty one narrows to that topic. A
-	// non-zero SnapshotSeq bounds the read to the point-in-time snapshot the
-	// client captured on subscribe (seq <= SnapshotSeq, comms.proto:353-368,
-	// design.md:807-817); zero reads the latest, no boundary.
-	// The boundary is point-in-time on set membership (which messages the page
-	// returns, by insert seq), not on content: a blocks update mutates m.blocks in
-	// place without bumping m.seq, so a row present at the boundary but edited
-	// mid-catch-up returns its post-boundary blocks. This is sufficient, not a
-	// lost update — the matching MessageUpdated also rides the live tail, so an
-	// id-deduping client converges to current content (last-write-wins).
-	// Freezing content too would need an update/change-seq and a larger schema
-	// change; membership-only is the ratified scope (RIG-1333 OQ5).
-	// SnapshotSeq is a server-issued boundary the client echoes back, so the
-	// value is in range by construction; an out-of-range client value degrades
-	// to an empty page (m.seq <= a negative bound matches nothing), never a fault.
+	// A zero beforeSeq reads the newest page; a positive one pages strictly
+	// older. The membership JOIN scopes the read to the actor's visible set; a
+	// non-zero SnapshotSeq bounds it to the subscribe-time snapshot on set
+	// MEMBERSHIP, not content.
+
+	// Membership-only is sufficient, not a lost update: the matching
+	// MessageUpdated rides the live tail, so an id-deduping client converges
+	// last-write-wins. Freezing content too would need a change-seq and a
+	// schema change; membership-only is the ratified scope.
 	snap := int64(q.Page.SnapshotSeq) //nolint:gosec // G115: server-issued seq, int64 domain
 	rows, err := s.q.ListMessages(ctx, db.ListMessagesParams{
 		AccountID: string(q.Actor),
@@ -506,12 +485,10 @@ func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope Searc
 	}
 	limit := clampLimit(page.Limit)
 
-	// websearch_to_tsquery parses a human query string (quoted phrases, OR, -)
-	// safely — no query-syntax injection, and an all-stopword query yields no
-	// rows rather than erroring. Visibility: the message's channel (resolved
-	// through the topic join) must be one the actor is a member of; the optional
-	// scope narrows within that set.
-	// SnapshotSeq is int64-safe by construction; see ListMessages.
+	// websearch_to_tsquery parses a human query safely — no injection, and an
+	// all-stopword query yields no rows. Visibility: the message's channel
+	// (via the topic join) must be one the actor is a member of; the optional
+	// scope narrows within that set. SnapshotSeq is int64-safe; see ListMessages.
 	snap := int64(page.SnapshotSeq) //nolint:gosec // G115: server-issued seq, int64 domain (see ListMessages)
 	rows, err := s.q.SearchMessages(ctx, db.SearchMessagesParams{
 		AccountID:          string(actor),
@@ -555,15 +532,10 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 		return Message{}, Message{}, fmt.Errorf("%w: ask id is required", ErrInvalidArgument)
 	}
 
-	// Serialized find-and-answer: the whole read-modify-write runs in one
-	// transaction with the matched message row locked FOR UPDATE, so two
-	// concurrent answers to different asks on the SAME message can't lost-update
-	// each other. Without the lock, each would read the pre-answer block set,
-	// answer its own ask in that snapshot, and write the full set back — the
-	// second commit clobbering the first's answer. The lock makes the second
-	// answer block until the first commits, then re-read the updated blocks
-	// (READ COMMITTED EvalPlanQual) and layer its own answer on top, so both
-	// survive (RIG-1226).
+	// Serialized find-and-answer in one tx with the matched row locked FOR
+	// UPDATE, so two concurrent answers to different asks on the SAME message
+	// can't lost-update: the second blocks, re-reads updated blocks
+	// (EvalPlanQual), layers its answer on top, so both survive (RIG-1226).
 	tx, err := s.beginTenantTx(ctx)
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: begin answer ask: %w", err)
@@ -571,10 +543,9 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
 	// Visibility + existence in one gate: the message's channel must be one the
-	// actor is a member of, and its blocks JSONB must contain an ask with askID.
-	// Zero rows -> ErrNotFound (never a distinct not-authorized), so ask
-	// existence cannot leak across a membership boundary. FOR UPDATE OF m locks
-	// the message row (not the membership row) for the transaction's duration.
+	// actor is a member of, and its blocks must contain an ask with askID. Zero
+	// rows -> ErrNotFound, so ask existence cannot leak across a membership
+	// boundary. FOR UPDATE OF m locks the message row for the tx.
 	filter, err := askIDContainmentFilter(askID)
 	if err != nil {
 		return Message{}, Message{}, fmt.Errorf("store: marshal ask filter: %w", err)
@@ -594,11 +565,10 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 		return Message{}, Message{}, err
 	}
 
-	// Locate the ask block and validate the answers cover its questions exactly,
-	// each answer against its question's offered options and arity, then record
-	// them in place. The answer-once guard inside applyAskAnswer is the sole
-	// single-fire mechanism: a second answer is ErrConflict here, BEFORE the
-	// answer message is built, so at most one answer message ever exists.
+	// Locate the ask block, validate the answers cover its questions exactly,
+	// then record them in place. The answer-once guard inside applyAskAnswer is
+	// the sole single-fire mechanism: a second answer is ErrConflict here,
+	// before the answer message is built, so at most one ever exists.
 	if err := applyAskAnswer(&msg, askID, answers); err != nil {
 		return Message{}, Message{}, err
 	}
@@ -606,18 +576,10 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 		return Message{}, Message{}, err
 	}
 
-	// Build the answer message: authored by the answerer (actor), in the ask's
-	// own topic, carrying a single ask_answer block snapshotting the
-	// just-answered ask with the asking agent (the ask message's author)
-	// denormalized as the target. Insert it in THIS tx via insertMessageTx, so
-	// the Answered flip and the delivering message commit atomically. NO
-	// idempotency key (clientRequestID="") — the answer-once guard above is the
-	// sole single-fire mechanism, so the ON CONFLICT dedup is unreachable. The
-	// membership/post-policy gates are NOT re-run: the actor's membership in the
-	// ask's channel is already proven by the visibility JOIN above, in this same
-	// tx. A zero-rows insert is an impossible-invariant violation (the answer
-	// carries no dedup key), so any insert error rolls the whole answer back
-	// rather than committing a flip with no message.
+	// Build the answer message: authored by the actor, in the ask's topic, one
+	// ask_answer block with the asking agent as target. Insert in THIS tx so
+	// the Answered flip and the message commit atomically. No idempotency key —
+	// the answer-once guard is the sole single-fire mechanism.
 	answered := findAsk(msg.Blocks, askID)
 	if answered == nil {
 		return Message{}, Message{}, fmt.Errorf("store: answered ask %q vanished from blocks", askID)

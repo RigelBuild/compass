@@ -4,11 +4,9 @@ import { join } from "node:path";
 import { goOverlayLockedRev, goPinVersion } from "./refresh-go-overlay.core.ts";
 
 // Unit tests for the pure transform core of refresh-go-overlay.ts (RIG-3100):
-// reading the go-overlay locked rev out of devenv.lock and the go version out
-// of go.nix. No nix / network / git — those shell-outs live in the entry point
-// and are exercised by the PR's own CI run. These assert the parsing that a
-// wrong line would silently corrupt (validating the eval against a stale rev or
-// an `undefined` version).
+// reading the go-overlay locked rev out of devenv.lock and the go version out of
+// go.nix. No nix/network/git — those live in the entry point. These assert the
+// parsing a wrong line would corrupt (a stale rev or an undefined version).
 
 const repoRoot = join(import.meta.dir, "..", "..");
 

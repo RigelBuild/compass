@@ -3,19 +3,12 @@
 package auth
 
 // The auth package's thin adapter over the shared real-Postgres harness
-// (internal/pgtest). The token seam the auth layer authenticates against —
-// IssueAccountToken persists a hash, ResolveToken/BearerInterceptor resolve it —
-// lives in the Postgres store of record (T1), so every test that mints or
-// resolves a real token needs a live database. pgtest owns the container
-// orchestration + per-test schema isolation and hands back a DSN, SKIPping (not
-// failing) when no runtime is usable; openTestStore opens a store.Store against
-// it.
-//
-// Build-tagged `pgtest && unix` so it is not part of the default `go test` gate;
-// the pure header-parse and admin-gate-classification tests that need no store
-// stay in the default lane (interceptor_test.go, admin_gate_test.go,
-// stream_test.go's parse rows). Set COMPASS_TEST_DATABASE_DSN to point every
-// test at an already-running Postgres instead of starting a container.
+// (internal/pgtest). The token seam auth authenticates against lives in the
+// Postgres store of record, so tests that mint or resolve a real token need a
+// live database; pgtest hands back a DSN, SKIPping when no runtime is usable.
+
+// Build-tagged `pgtest && unix`, out of the default `go test` gate. Set
+// COMPASS_TEST_DATABASE_DSN to point at an already-running Postgres.
 
 import (
 	"context"

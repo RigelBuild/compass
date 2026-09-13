@@ -2,18 +2,10 @@
 
 package server
 
-// Store-gated boot tests for resolveMasterKey's server_key_state tripwire. Each
-// opens its own isolated-schema store (pgtest.RequireDSN + store.Open), SKIPping
-// when no runtime/DSN is available. The fail-closed assertions sit AFTER the
-// store fixture (A8 ordering): a guard placed before it would fire in a
-// container-less sandbox where the suite is defined to skip.
-//
-// Covered: first-boot writes the tripwire row; a matching-key second boot passes
-// and returns the stored version; a mismatched-key boot fails startup before any
-// decrypt; and the COMPASS_MASTER_KEY row is constructible and resolves end to
-// end (the F1 regression guard that the rename did not leave a never-resolving
-// row). The migration CHECK's LIKE-escape (admits COMPASS_MASTER_KEY, rejects a
-// COMPASSX_ near-miss) is proven at the store layer in server_secrets_pgtest.
+// Store-gated boot tests for resolveMasterKey's server_key_state tripwire: first-boot
+// writes the tripwire row; a matching-key boot returns the stored version; a mismatched
+// boot fails before any decrypt; and the COMPASS_MASTER_KEY row resolves end to end (the
+// F1 rename regression guard). Fail-closed assertions sit AFTER the store fixture.
 
 import (
 	"bytes"

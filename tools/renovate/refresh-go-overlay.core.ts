@@ -1,10 +1,7 @@
-// Pure decision/transform core for refresh-go-overlay.ts (RIG-3100).
-//
-// Split out from the entry point so the load-bearing string/JSON reads — the
+// Pure decision/transform core for refresh-go-overlay.ts (RIG-3100): the
 // go-overlay input's locked rev out of devenv.lock and the go version out of
-// go.nix — are unit-testable without a nix runner, a network, or a git tree.
-// The entry point owns the shell-outs (re-lock, eval); this file owns the
-// parsing. NO shell-outs, NO fs beyond text passed in.
+// go.nix — unit-testable without a nix runner, network, or git tree. NO
+// shell-outs, NO fs beyond text passed in.
 
 /**
  * The concrete go-overlay rev the dev shell resolved, read from devenv.lock's
@@ -46,11 +43,10 @@ export function goOverlayLockedRev(devenvLockText: string): string {
 	return rev;
 }
 
-// The go pin literal in tools/toolchain/versions/go.nix, which single-sources
-// the go toolchain version version-only (`{ version = "1.26.6"; }`, hashes come
-// from go-overlay). The go customManager in config.json5 rewrites exactly this
-// value on a bump; the refresh task reads it back to know which version the new
-// overlay rev must provide.
+// The go pin literal in go.nix, which single-sources the toolchain version
+// (hashes come from go-overlay). The go customManager rewrites exactly this on a
+// bump; the refresh task reads it back to know which version the new overlay rev
+// must provide.
 const GO_PIN_VERSION_RE = /version\s*=\s*"([^"]+)"/;
 
 /**

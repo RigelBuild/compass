@@ -1,10 +1,9 @@
 //go:build unix
 
 // The production SessionHost: the Runner's authoritative session set over the
-// built AgentRuntime + StartAgent relay. It resolves a container by name, starts
-// the first-party agent in it, and tracks the live session set — the Runner is
-// authoritative for live session truth (OQ6), so Status answers from here and
-// the Server reconciles to it on reattach.
+// AgentRuntime + StartAgent relay. It resolves a container by name, starts the
+// agent in it, and tracks the live session set — the Runner is authoritative for
+// live session truth (OQ6), so Status answers here and the Server reconciles on reattach.
 package runner
 
 import (
@@ -24,12 +23,9 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-// agentSocketDir is the per-container subdirectory (under the Runner's runtime
-// dir) that holds one container's agent socket, and agentSocketFile is the
-// socket's fixed basename (OQ-5: RuntimeDir/containers/<container>/agent.sock,
-// container-keyed per Decision #4, never session-keyed). agentSocketMountPath is
-// the fixed in-container path the socket is bind-mounted to, so the agent needs
-// no per-session configuration — it always dials the same path.
+// Per-container agent socket layout: RuntimeDir/containers/<container>/agent.sock
+// (container-keyed per Decision #4, never session-keyed). The mount path is fixed
+// in-container so the agent always dials the same path with no per-session config.
 const (
 	agentSocketDir       = "containers"
 	agentSocketFile      = "agent.sock"
@@ -48,35 +44,25 @@ type SpecBuilder interface {
 }
 
 // vsockGatewayEngine is the unexported backend probe the microVM runtime
-// satisfies (MicroVMRuntime.AgentGatewayEndpoint): a session's AgentGateway is
-// served host-side over a per-session vsock AF_UNIX path resolved AFTER Launch,
-// not the pre-Launch bind-mounted socket the podman path uses. Provision and
-// RefreshConfig type-assert h.engine against it to gate the microVM-specific
-// serving/refresh legs; podman and every test fake lack the method, so their
-// paths stay byte-identical (record §(c), Global Constraints — never a verb on
-// the frozen WorkloadRuntime interface).
+// satisfies: a session's AgentGateway is served host-side over a per-session
+// vsock AF_UNIX path resolved AFTER Launch, not the pre-Launch bind-mounted
+// socket the podman path uses. Provision/RefreshConfig type-assert to gate it.
 type vsockGatewayEngine interface {
 	AgentGatewayEndpoint(name string) (endpoint string, ok bool)
 }
 
 // hostStateEngine is the unexported backend probe the host-process runtime
-// (HostRuntime) satisfies: each agent runs as a direct host child with NO bind
-// mounts, so its gateway socket and config tree are served inside the handle's
-// own private 0700 state dir and threaded to the agent as env vars, not mounted
-// at the frozen /run/compass paths. Provision type-asserts h.engine against it
-// to gate the host-specific leg; podman, the microVM backend, and every test
-// fake lack AgentStateDir, so their paths stay byte-identical (mirroring
-// vsockGatewayEngine — never a verb on the frozen WorkloadRuntime interface).
+// satisfies: each agent runs as a direct host child with no bind mounts, so its
+// gateway socket and config tree live in the handle's private state dir, threaded
+// as env vars. Provision type-asserts to gate the host-specific leg.
 type hostStateEngine interface {
 	AgentStateDir(id runtime.WorkloadID) (dir string, ok bool)
 }
 
 // hostAgentTransport is the per-agent socket + config-root paths the host leg
-// serves inside the handle's state dir and threads to the agent as env vars —
-// the host tier's stand-in for the container tiers' fixed bind-mount paths,
-// keyed by container name. Its presence also reroutes configMaterializerFor to
-// the state-dir root so a later ConfigVersion refresh materializes where the
-// agent actually reads.
+// serves inside the handle's state dir, keyed by container name. Its presence
+// reroutes configMaterializerFor to the state-dir root so a later refresh
+// materializes where the agent actually reads.
 type hostAgentTransport struct {
 	socketPath string
 	configRoot string
@@ -101,37 +87,20 @@ type agentHost struct {
 	sockets      map[string]*gateway.SocketListener
 	nextID       func() string
 	materializer *runtime.SecretMaterializer
-	// configVersions is the last config bundle version materialized into each
-	// container's per-container root, keyed by container name — the
-	// last-materialized-version tracking the ConfigVersion update path compares
-	// against so it only Reloads an agent when the version actually moved.
-	// Recorded at Provision (initial materialize) and, on a RefreshConfig pass,
-	// only after the agent's Reload succeeds — so a swallowed Reload failure
-	// leaves it unmoved and the next signal retries that container.
-	// Keyed by container, not session: config lifecycle is container-scoped
-	// (RIG-1659 per-container roots), and it must survive a Reload (which reuses
-	// the session but keeps the container).
+	// configVersions is the last config bundle version materialized per container,
+	// keyed by container name — compared on a ConfigVersion update so an agent is
+	// Reloaded only when the version moved. Recorded after Reload succeeds, so a
+	// swallowed failure leaves it unmoved and the next signal retries.
 	configVersions map[string]string
-	// containerLocks serializes the state-transitioning lifecycle ops per
-	// container name (Provision/Start/Stop/Remove/Reload), so concurrent dispatch
-	// (per-command goroutines) cannot interleave two transitions on one container
-	// — closing the Start TOCTOU documented below and linearizing Stop/Reload/
-	// Remove on a container. Guarded by h.mu for get-or-create ONLY; entries are
-	// NEVER deleted (not even by Remove), which is load-bearing: a deleted entry
-	// could race a concurrent op that already resolved the same *sync.Mutex, so
-	// retaining it is what makes the resolve-then-lock protocol safe. Growth is
-	// bounded by distinct container names ever provisioned — the same retention
-	// class as handled/configVersions, and T9's bounded-eviction (RIG-1328)
-	// covers them together. Status deliberately does NOT lock (it answers from
-	// the session set under h.mu), so it never queues behind a slow Provision.
-	// See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
+	// containerLocks serializes state-transitioning lifecycle ops per container name
+	// so concurrent dispatch cannot interleave two transitions on one container.
+	// Guarded by h.mu for get-or-create only; entries are NEVER deleted — a deleted
+	// entry could race an op holding the same *sync.Mutex, breaking resolve-then-lock.
 	containerLocks map[string]*sync.Mutex
 	// hostTransports records the per-agent socket + config-root paths the host
-	// backend's Provision leg serves inside each handle's state dir, keyed by
-	// container name. Empty for the podman and microVM tiers (which mount the
-	// socket/config at fixed paths); on the host tier it is the source agentEnv
-	// threads as env vars and configMaterializerFor reads to root a refresh.
-	// Set at Provision, removed at teardown (closeSocket).
+	// backend's Provision leg serves in each handle's state dir, keyed by container
+	// name. Empty for podman/microVM (fixed mount paths). Set at Provision, removed
+	// at teardown (closeSocket).
 	hostTransports map[string]hostAgentTransport
 }
 
@@ -213,21 +182,17 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	// name (the stable lifecycle key).
 	unlock := h.lockContainer(spec.Name)
 	defer unlock()
-	// The microVM backend serves the AgentGateway over a per-session vsock path
-	// that is not knowable until Launch mints the session runtime dir, so its
-	// provision order inverts: Launch first, then serve — and it refuses the
-	// socket + config bind mounts entirely (the socket is replaced by vsock; the
-	// config mount is deferred, record §(c)/§(f)). Probe absent (podman, every
-	// fake) keeps today's body byte-identical.
+	// microVM serves the AgentGateway over a per-session vsock path not knowable
+	// until Launch mints the session runtime dir, so it inverts order: Launch first,
+	// then serve — and refuses the socket/config bind mounts (record §(c)/§(f)).
+	// Probe absent (podman, every fake) keeps today's body byte-identical.
 	if vsockEngine, ok := h.engine.(vsockGatewayEngine); ok {
 		return h.provisionVsockGateway(ctx, spec, vsockEngine)
 	}
-	// The host-process backend runs each agent as a direct child with NO bind
-	// mounts, so its socket + config live inside the handle's own state dir and
-	// are threaded to the agent as env vars, not mounted. That dir is minted by
-	// Create inside Launch, so this leg — like the vsock one — inverts the order:
-	// Launch first, then serve. Probe absent (podman, every fake) keeps today's
-	// body byte-identical.
+	// The host-process backend runs each agent as a direct child with no bind mounts,
+	// so its socket + config live in the handle's state dir, threaded as env vars.
+	// The dir is minted by Create inside Launch, so this leg also inverts order.
+	// Probe absent (podman, every fake) keeps today's body byte-identical.
 	if hostEngine, ok := h.engine.(hostStateEngine); ok {
 		return h.provisionHostGateway(ctx, spec, hostEngine)
 	}
@@ -236,13 +201,10 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		return "", err
 	}
 	spec.Mounts = append(spec.Mounts, listener.Mount(agentSocketMountPath))
-	// Materialize the fleet config into a host tree and bind-mount it read-only.
-	// The mount target is the PARENT config dir (not the resolved version dir),
-	// so a later `current/` symlink flip by an update becomes visible inside the
-	// live container with no remount. It is read-only because the agent only
-	// reads config, never writes it. The mcsLabel is empty on this provision
-	// path: Materialize runs before the container exists, so there is no MCS
-	// category to target — the create-time :Z relabel covers the whole tree.
+	// Materialize the fleet config and bind-mount it read-only. Target is the PARENT
+	// config dir, so a later `current/` symlink flip is visible with no remount.
+	// mcsLabel empty — Materialize runs before the container exists, so the
+	// create-time :Z relabel covers the whole tree.
 	mount, err := h.configMaterializerFor(spec.Name).Materialize(ctx, "")
 	if err != nil {
 		// Config could not be materialized; abort provision rather than launch a
@@ -346,14 +308,9 @@ func (h *agentHost) Close(ctx context.Context) {
 func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string) (string, error) {
 	name := req.GetContainerName()
 	// Serialize transitions on this container across the whole Start: the
-	// existing-session check releases h.mu before the slow StartAgent below and
-	// re-acquires it to record, so two concurrent Starts for one container could
-	// both pass the check in that window (a TOCTOU minting a duplicate session).
-	// The per-container transition lock closes it: the second Start blocks here
-	// until the first records its session, then sees it and returns
-	// errAlreadyRunning. Concurrent dispatch (per-command goroutines) made this
-	// reachable; T9's in-process reattach (RIG-1328) consumes the same lock — do
-	// not reintroduce it. See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
+	// existing-session check releases h.mu before the slow StartAgent, so two
+	// concurrent Starts could both pass it (a TOCTOU minting a duplicate session).
+	// The per-container lock closes it; T9's reattach (RIG-1328) reuses this lock.
 	unlock := h.lockContainer(name)
 	defer unlock()
 
@@ -372,52 +329,27 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			return "", errAlreadyRunning
 		}
 	}
-	// A resume REUSES the logical session id (resume_session_id) as the live id,
-	// so the resumed lifetime's transcript frames commit under the SAME session
-	// key the prior lifetime used — the durable transcript is one lineage, and
-	// BindLifetime's entry_seq rebase (agent_transcripts.go) continues the stored
-	// sequence under that key exactly as designed. A fresh start has no prior id,
-	// so it mints a new one. The Server skips RecordAgentSession on resume because
-	// the row already exists under this id (service.go).
+	// A resume REUSES the logical session id as the live id, so resumed transcript
+	// frames commit under the SAME session key — one durable lineage, BindLifetime's
+	// entry_seq rebase continues under that key. A fresh start mints a new id. The
+	// Server skips RecordAgentSession on resume (row already exists).
 	sessionID := req.GetResumeSessionId()
 	if sessionID == "" {
 		sessionID = h.nextID()
 	} else if _, live := h.sessions[sessionID]; live {
-		// Reusing the logical id as the map key means a resume that races a
-		// still-live prior lifetime of the SAME session would clobber that
-		// lifetime's liveSession entry — orphaning its stream and goroutine
-		// (never Stop'd). The name loop above cannot catch this: it keys on
-		// container name, and a resume targets a fresh container under the same
-		// id. The single-orchestrator precondition (the Server tears lifetime-1
-		// down before resuming) keeps this unreachable in the intended flow, but
-		// guard it anyway so a precondition violation fails loud rather than
-		// leaking the prior stream under a clobbered key.
+		// Reusing the logical id as the map key means a resume racing a still-live
+		// prior lifetime would clobber its liveSession entry, orphaning its stream.
+		// The single-orchestrator precondition keeps this unreachable; guard so a
+		// violation fails loud rather than leaking the prior stream.
 		h.mu.Unlock()
 		return "", errAlreadyRunning
 	}
 	h.mu.Unlock()
 
-	// Materialize the agent's secrets into the container BEFORE exec'ing the
-	// agent, so its first provider/gh/env read never races an empty seed
-	// (RIG-1327 T5: materialize before the agent runs). The fetch authorizes on
-	// the container→account binding the Server recorded at Provision — not the
-	// session, which is only being minted now — so it is FetchSecretsByContainer,
-	// keyed on the container name. The frozen record placed this in the
-	// provision step, but the Server binds the container→account entry only
-	// after the relay-Provision returns, so the earliest point the by-container
-	// fetch is authorizable is here in Start, still strictly before StartAgent.
-	//
-	// A Server built with NO secrets surface (nil resolver) answers
-	// FetchSecrets with CodeFailedPrecondition — a legitimate deployment, not a
-	// failure: such a server has no secrets to inject, so the agent must still
-	// start. That one code is tolerated (skip the materialize, start the agent).
-	// It is deliberately distinct from CodeUnavailable: connect-go synthesizes
-	// CodeUnavailable for a transient transport fault (conn reset, GOAWAY, server
-	// restart), and a blip on this fetch against a Server that DOES have secrets
-	// must NOT be read as "no secrets" — the agent would otherwise come up
-	// silently missing credentials that exist. So every other fetch error — a
-	// transient Unavailable, an authz denial — fails the Start. Rotation (T6)
-	// rides the async SecretsVersion signal.
+	// Materialize the agent's secrets BEFORE exec'ing, so its first read never races
+	// an empty seed (RIG-1327 T5). CodeFailedPrecondition means no secrets surface and
+	// is tolerated (start anyway); every other error — including the transient
+	// CodeUnavailable against a Server that HAS secrets — fails the Start.
 	resolved, err := h.link.FetchSecretsByContainer(ctx, name)
 	switch {
 	case err == nil:
@@ -433,11 +365,10 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		return "", fmt.Errorf("fetching secrets before agent start for container %q: %w", name, err)
 	}
 
-	// On an authorized resume, materialize the server-reconstructed session
-	// file into the container BEFORE exec'ing the agent, so the agent's first
-	// read finds it (RIG-1570 T8). The absolute in-container path is exported to
-	// the agent as COMPASS_RESUME_SESSION_FILE. A fresh (non-resume) start does
-	// nothing here. The discriminator is a non-empty resume_session_id.
+	// On an authorized resume, materialize the server-reconstructed session file
+	// into the container BEFORE exec'ing the agent, so the agent's first read finds
+	// it (RIG-1570 T8). Exported as COMPASS_RESUME_SESSION_FILE. A fresh start does
+	// nothing here; the discriminator is a non-empty resume_session_id.
 	env := h.agentEnv(handle)
 	if id := req.GetResumeSessionId(); id != "" {
 		// The resume_session_id becomes a filename component below. The Server
@@ -457,11 +388,10 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			return "", fmt.Errorf("materializing resume session file for container %q: invalid resume_session_id", name)
 		}
 		if resumeBody == "" {
-			// An authorized id with no reconstructed body is a Server-side skew
-			// (authz passed but reconstruction produced nothing); materialize the
-			// empty file per the id-is-the-discriminator contract, but surface it
-			// so the reconstruction bug is visible here, not only as an agent that
-			// resumes from an empty transcript.
+			// An authorized id with no reconstructed body is Server-side skew (authz
+			// passed but reconstruction produced nothing); materialize the empty file
+			// per the id-is-the-discriminator contract, but surface the reconstruction
+			// bug here rather than only as an agent resuming from an empty transcript.
 			h.log.Warn("resume_session_id set with empty body; materializing empty resume file", "container", name, "resume_session_id", id)
 		}
 		h.log.Info("materializing resume session file", "container", name, "resume_session_id", id)
@@ -470,11 +400,9 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		}
 		env.ResumeSessionFile = filepath.Join(handle.HomeDir(), relPath)
 	} else if resumeBody != "" {
-		// The inverse skew: a Server sent a reconstructed body with no
-		// resume_session_id. The id is the sole discriminator, so this start is
-		// treated as fresh and the body is dropped — surface it so the skew is
-		// visible symmetrically with the empty-body warning above, rather than an
-		// agent silently starting without the transcript the Server tried to send.
+		// The inverse skew: a body with no resume_session_id. The id is the sole
+		// discriminator, so this start is treated as fresh and the body dropped —
+		// surfaced symmetrically with the empty-body warning above.
 		h.log.Warn("resume body supplied without resume_session_id; dropping", "container", name)
 	}
 
@@ -492,35 +420,19 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		state:          compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
 		agentAccountID: handle.AgentAccountID(),
 	}
-	// Create the session's control state here, under the same lock that records
-	// the session — the mirror of Stop's retirement. The Runner owning both ends
-	// is what lets the agent-driven paths refuse an id they do not know: an
-	// agent that subscribes or acks against a session the lifecycle never bound
-	// (or already retired) is turned away, instead of minting state nothing
-	// would ever reclaim.
+	// Create the session's control state here, under the same lock that records the
+	// session — the mirror of Stop's retirement. Owning both ends lets agent-driven
+	// paths refuse an id they do not know, instead of minting unreclaimable state.
 	listener, served := h.sockets[name]
 	if served {
 		listener.BindSession(sessionID)
 	}
 	h.mu.Unlock()
 
-	// Lift the agent's replay barrier so the first idle-deliver that starts the
-	// agent's turn is dispatched rather than refused: the barrier defaults closed
-	// and only the arrival of replay_complete lifts it. Sent on EVERY served
-	// start, fresh AND file-based resume. A file-based resume (RIG-1570) loads
-	// its transcript synchronously from COMPASS_RESUME_SESSION_FILE
-	// (cli.ts setSessionFile) BEFORE the agent subscribes to the control stream
-	// and runs, so replay_complete arriving on that stream is always processed
-	// after the transcript is loaded — it is the correct "replay done, live ops
-	// may flow" signal for resume too, not just fresh start. (The control-plane
-	// restart-replay path — gateway HoldForReplay + replay frames released on
-	// ReplayCompleteAck — has no production caller; the file-based resume is the
-	// only resume that runs, and it needs this lift or every channel-driven turn
-	// on a resumed agent is refused forever.) Sent after the h.mu release,
-	// mirroring Deliver's resolve-under-lock / send-outside discipline; the
-	// per-container transition lock held across Start guarantees no Stop/Retire
-	// races between the bind above and this send. See
-	// docs/designs/agent/compass-system-sender-first-turn/design.md.
+	// Lift the agent's replay barrier so the first idle-deliver is dispatched rather
+	// than refused: the barrier defaults closed and only replay_complete lifts it.
+	// Sent on EVERY served start (a file-based resume loads its transcript before
+	// subscribing); sent after the h.mu release, the per-container lock rules out races.
 	if served {
 		op := &compassv1internal.AgentControl{
 			Control: &compassv1internal.AgentControl_ReplayComplete{
@@ -528,10 +440,9 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			},
 		}
 		if err := listener.SendControl(sessionID, op); err != nil {
-			// A served listener always has a wired producer (gateway.Serve wires
-			// it), so this is an unreachable wiring fault in production, not a
-			// reason to fail an already-recorded Start (recorded => success). Log
-			// and continue, matching Start's other degraded-posture logging.
+			// A served listener always has a wired producer (gateway.Serve), so this
+			// is an unreachable wiring fault in production, not a reason to fail an
+			// already-recorded Start. Log and continue.
 			h.log.Error("sending replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
 		}
 	}
@@ -558,11 +469,10 @@ func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 	s, ok = h.sessions[sessionID]
 	if ok {
 		delete(h.sessions, sessionID)
-		// The socket outlives the session (a Stop/Start reuses the container and
-		// its socket), so the control producer keeps this session's retained ops
-		// unless the teardown says otherwise. Retire under the same lock that
-		// drops the session, so a concurrent Start on a fresh id cannot observe a
-		// half-torn state.
+		// The socket outlives the session (Stop/Start reuses the container and its
+		// socket), so retained ops survive unless teardown says otherwise. Retire
+		// under the same lock that drops the session, so a concurrent Start on a
+		// fresh id cannot observe a half-torn state.
 		if listener, served := h.sockets[s.containerName]; served {
 			listener.RetireSession(sessionID)
 		}
@@ -590,10 +500,9 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 	unlock := h.lockContainer(containerName)
 	defer unlock()
 	// Retire the live session bound to this container under h.mu — the mirror of
-	// Stop's retirement — so a concurrent lifecycle op cannot observe a
-	// half-torn state. The socket is closed unconditionally below, so it is not
-	// retired here (RetireSession only quiesces the control producer for a live
-	// session; a container with no bound session has nothing to retire).
+	// Stop's retirement — so a concurrent lifecycle op cannot observe a half-torn
+	// state. The socket is closed unconditionally below, so it is not retired here
+	// (a container with no bound session has nothing to retire).
 	h.mu.Lock()
 	var retired *liveSession
 	for id, s := range h.sessions {
@@ -822,12 +731,8 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 
 	for _, t := range targets {
 		// Take THIS container's transition lock for the whole leg — MountLabel +
-		// Materialize + relaunch run as one critical section, so a concurrent
-		// dispatch-driven Stop/Remove/Reload of the same container cannot
-		// interleave with the config update. The leg calls reloadLocked (NOT the
-		// public Reload, which would re-take this same non-reentrant lock and
-		// self-deadlock the worker forever, wedging every later transition on the
-		// container behind it). See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
+		// Materialize + relaunch run as one critical section. Calls reloadLocked, NOT
+		// public Reload (which would re-take this non-reentrant lock and self-deadlock).
 		if err := h.refreshOneContainer(ctx, t.sessionID, t.containerName, t.containerID, t.lastVersion); err != nil {
 			continue
 		}
@@ -851,16 +756,10 @@ func (h *agentHost) statusOf(s *liveSession) *compassv1.AgentSessionStatus {
 	}
 }
 
-// provisionVsockGateway is Provision's microVM leg: it launches the container
-// with NO agent-socket mount and NO config mount (record §(c)/§(f)), resolves
-// the per-session host-side gateway path the backend serves the AgentGateway on,
-// and serves the SAME generated handler there (gateway.Serve reused verbatim,
-// record §(b)) — recording the listener in the same h.sockets map keyed by
-// container name. A Serve failure after a successful Launch tears the launched
-// session down through the runtime Teardown path (the exact call Remove uses),
-// so no VM outlives a session whose gateway never came up. The config-version
-// seed is deliberately skipped — no config is materialized on this path — so
-// RefreshConfig's own probe gate must skip the session too (record §(f)).
+// provisionVsockGateway is Provision's microVM leg: launch with NO agent-socket or
+// config mount (§(c)/§(f)), resolve the per-session host gateway path, and serve the
+// same handler there (gateway.Serve, §(b)). A Serve failure after Launch tears the
+// session down; the config-version seed is skipped, so RefreshConfig skips it (§(f)).
 func (h *agentHost) provisionVsockGateway(ctx context.Context, spec runtime.AgentSpec, engine vsockGatewayEngine) (string, error) {
 	handle, err := h.runtime.Launch(ctx, spec)
 	if err != nil {
@@ -888,18 +787,10 @@ func (h *agentHost) provisionVsockGateway(ctx context.Context, spec runtime.Agen
 	return name, nil
 }
 
-// provisionHostGateway is Provision's host-process leg: the agent runs as a
-// direct host child with NO bind mounts, so its gateway socket and config tree
-// live inside the handle's own private 0700 state dir and are threaded to the
-// agent as env vars (agentEnv) rather than mounted at the frozen /run/compass
-// paths. Like the vsock leg it inverts the order — Launch first, because Create
-// mints the state dir, so there is nothing to serve into until the container
-// exists — and appends NO mounts. A serve or config-materialize failure after a
-// successful Launch tears BOTH the socket and the launched container down (the
-// exact legs Remove/teardownContainer use), so no agent outlives a session whose
-// transport never came up and no listener leaks. The config version is seeded
-// exactly as the default leg does, so a later RefreshConfig only Reloads when
-// the bundle actually moved past what this installed.
+// provisionHostGateway is Provision's host-process leg: the agent runs as a direct
+// host child with NO bind mounts, so its socket and config tree live in the handle's
+// private 0700 state dir, threaded as env vars. Like the vsock leg it inverts order.
+// A serve/materialize failure after Launch tears both socket and container down.
 func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.AgentSpec, engine hostStateEngine) (string, error) {
 	handle, err := h.runtime.Launch(ctx, spec)
 	if err != nil {
@@ -911,12 +802,9 @@ func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.Agent
 		h.teardownContainer(ctx, name)
 		return "", fmt.Errorf("resolving host state dir for container %q: backend reports no handle", name)
 	}
-	// The socket lands in the handle's 0700 socket subdir, which Create mints.
-	// The config tree is rooted under the same state dir but its root is created
-	// 0755 by the materializer, so the agent can traverse it; the 0700 state dir
-	// above it is what keeps it private. Record both paths BEFORE materializing:
-	// configMaterializerFor reads them to root the config tree in the state dir,
-	// and agentEnv reads them to thread the overrides onto the agent exec.
+	// The socket lands in the handle's 0700 socket subdir (Create mints it); the config
+	// tree is rooted under the same state dir (root 0755 so the agent can traverse it,
+	// the 0700 parent keeps it private). Record both paths BEFORE materializing.
 	transport := hostAgentTransport{
 		socketPath: filepath.Join(stateDir, "socket", agentSocketFile),
 		configRoot: filepath.Join(stateDir, "config"),
@@ -931,10 +819,9 @@ func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.Agent
 		h.teardownContainer(ctx, name)
 		return "", err
 	}
-	// Materialize the fleet config into the state-dir root. mcsLabel is empty:
-	// there is no container and no MCS category (the host backend's MountLabel
-	// returns ""), so Materialize takes its skip-chcon path and the agent reads
-	// the tree as the same uid that wrote it.
+	// Materialize the fleet config into the state-dir root. mcsLabel empty: no
+	// container, no MCS category (host MountLabel returns ""), so Materialize skips
+	// chcon and the agent reads the tree as the same uid that wrote it.
 	mount, err := h.configMaterializerFor(name).Materialize(ctx, "")
 	if err != nil {
 		// Config could not be materialized: tear the socket down (mirror the
@@ -950,11 +837,10 @@ func (h *agentHost) provisionHostGateway(ctx context.Context, spec runtime.Agent
 	return name, nil
 }
 
-// teardownContainer tears a just-launched container down through the runtime
-// Teardown (stop + remove + deregister) — the exact leg Remove uses — for the
-// provision-failure cleanup on the vsock path. A resolve miss or teardown error
-// is logged, not returned: the provision error the caller returns is the outcome
-// it acts on, and a best-effort teardown matches Remove's posture.
+// teardownContainer tears a just-launched container down through runtime Teardown
+// (the exact leg Remove uses) for provision-failure cleanup. A resolve miss or
+// teardown error is logged, not returned — the caller returns the provision error,
+// and a best-effort teardown matches Remove's posture.
 func (h *agentHost) teardownContainer(ctx context.Context, containerName string) {
 	handle, ok := h.registry.Resolve(containerName)
 	if !ok || handle == nil {
@@ -967,22 +853,17 @@ func (h *agentHost) teardownContainer(ctx context.Context, containerName string)
 }
 
 // refreshOneContainer runs one container's config-update leg under its transition
-// lock: read the live MCS label, re-materialize, and reloadLocked the agent iff
-// the bundle version moved. A per-container fault (MountLabel, Materialize,
-// Reload) is logged and returned so the caller skips this container this pass
-// without aborting the fleet; the tracked version advances only after a
-// successful reload. Split out of RefreshConfig so the container lock scopes to
-// exactly one leg via defer.
+// lock: read the live MCS label, re-materialize, reloadLocked iff the version moved.
+// A per-container fault is logged and returned so the caller skips it without aborting
+// the fleet; the tracked version advances only after a successful reload.
 func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containerName string, containerID runtime.WorkloadID, lastVersion string) error {
 	unlock := h.lockContainer(containerName)
 	defer unlock()
 
-	// A vsock-gateway backend serves config into the guest through no mount this
-	// refresh can touch: Provision skipped the config materialize+mount (record
-	// §(f)), so h.configVersions was never seeded and every pass would see a
-	// version change and Stop+StartAgent-churn the session mid-turn while
-	// delivering nothing. Skip it until the config-delivery slice gives the
-	// refresh something real to deliver (record §(f), OQ-3).
+	// A vsock-gateway backend serves config through no mount this refresh can touch:
+	// Provision skipped the config materialize+mount (§(f)), so h.configVersions was
+	// never seeded and every pass would churn the session mid-turn delivering nothing.
+	// Skip until the config-delivery slice gives the refresh something real (§(f), OQ-3).
 	if _, ok := h.engine.(vsockGatewayEngine); ok {
 		return nil
 	}
@@ -1007,31 +888,26 @@ func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containe
 		return nil
 	}
 	if err := h.reloadLocked(ctx, sessionID); err != nil {
-		// Reload failed: do NOT advance the tracked version, so the next
-		// ConfigVersion signal still sees a version change and retries the
-		// Reload. Materialize already flipped `current` to this version on
-		// disk (idempotently), so the retry re-materializes for free and
-		// only re-runs the Reload.
+		// Reload failed: do NOT advance the tracked version, so the next signal still
+		// sees a change and retries. Materialize already flipped `current` on disk
+		// (idempotently), so the retry re-materializes for free and re-runs Reload.
 		h.log.ErrorContext(ctx, "reloading agent after config update failed; will retry on next signal",
 			slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
 		return err
 	}
-	// Reload succeeded: record the version now so a same-version signal does
-	// not Reload the agent again. Materialize re-flips `current` on every
-	// pass, so tracking the version only after a successful Reload — not the
-	// on-disk state — is what gates the mid-turn interrupt.
+	// Reload succeeded: record the version now so a same-version signal does not
+	// Reload again. Materialize re-flips `current` every pass, so tracking the version
+	// only after a successful Reload — not the on-disk state — gates the interrupt.
 	h.mu.Lock()
 	h.configVersions[containerName] = mount.Version
 	h.mu.Unlock()
 	return nil
 }
 
-// lockContainer acquires the per-container transition lock for name, creating it
-// on first use, and returns the unlock. The get-or-create touches h.mu only
-// briefly (never a container lock while holding h.mu, and never h.mu while
-// holding a container lock — no lock is ever held across a slow call or a
-// stream.Send). The entry is never removed, so a caller that resolves the mutex
-// and a concurrent caller always contend on the same instance.
+// lockContainer acquires the per-container transition lock for name, creating it on
+// first use, and returns the unlock. Get-or-create touches h.mu only briefly (never
+// a container lock while holding h.mu, nor the reverse). The entry is never removed,
+// so resolving callers always contend on the same instance.
 func (h *agentHost) lockContainer(name string) (unlock func()) {
 	h.mu.Lock()
 	lock, ok := h.containerLocks[name]
@@ -1044,13 +920,10 @@ func (h *agentHost) lockContainer(name string) (unlock func()) {
 	return lock.Unlock
 }
 
-// reloadLocked performs the in-place agent relaunch assuming the caller holds
-// the session's container transition lock. It re-resolves the session and its
-// handle (a session dropped since the lock was taken is rejected as a true
-// no-op), runs the slow Stop + StartAgent, then swaps the stream under h.mu.
-// Callers: Reload (the public wrapper, which locks) and RefreshConfig's
-// per-container fan-out leg (which takes the container lock ITSELF so its
-// MountLabel + Materialize + relaunch run as one critical section).
+// reloadLocked performs the in-place agent relaunch assuming the caller holds the
+// session's container transition lock. It re-resolves the session and handle (a
+// session dropped since the lock was taken is a true no-op), runs Stop + StartAgent,
+// then swaps the stream under h.mu. Callers: Reload (locks) and refreshOneContainer.
 func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	h.mu.Lock()
 	s, ok := h.sessions[sessionID]
@@ -1058,11 +931,10 @@ func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
 	if !ok {
 		return errSessionUnknown
 	}
-	// Re-resolve the handle BEFORE stopping, so the relaunch carries the same
-	// identity and configuration the original Start did and a session whose
-	// container has since been dropped from the registry is rejected while its
-	// agent is still running: the error path is a true no-op, never a stopped
-	// agent left behind a session the live set still reports READY.
+	// Re-resolve the handle BEFORE stopping, so the relaunch carries the same identity
+	// the original Start did and a session whose container was dropped is rejected
+	// while its agent still runs — a true no-op, never a stopped agent left behind a
+	// session the live set still reports READY.
 	handle, ok := h.registry.Resolve(s.containerName)
 	if !ok {
 		return errSessionUnknown
@@ -1096,11 +968,10 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 		Persona: handle.Persona(),
 		Role:    handle.Role(),
 	}
-	// On the host tier the socket and config live inside the handle's own state
-	// dir, not at the frozen /run/compass paths (there are no mounts). Thread
-	// those overrides so the agent dials/reads where the host leg served them.
-	// Absent for the container tiers, whose transports map has no entry — the
-	// agent then resolves the frozen defaults.
+	// On the host tier the socket and config live in the handle's state dir, not at
+	// the frozen /run/compass paths (no mounts). Thread those overrides so the agent
+	// dials/reads where the host leg served them. Absent for container tiers, which
+	// resolve the frozen defaults.
 	h.mu.Lock()
 	transport, ok := h.hostTransports[handle.Name()]
 	h.mu.Unlock()
@@ -1111,18 +982,15 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 	return env
 }
 
-// configMaterializerFor builds a ConfigMaterializer rooted at the container's
-// own config subtree, <RuntimeDir>/containers/<container>/config — mirroring
-// the per-container agent-socket layout (serveSocket). A per-container root is
-// required because every bind mount is relabeled into the container's PRIVATE
-// SELinux MCS category (:Z, podman.go mountArg); a shared root would be
-// re-stolen by each new container's relabel on an enforcing host.
+// configMaterializerFor builds a ConfigMaterializer rooted at the container's own
+// config subtree, mirroring the per-container agent-socket layout. A per-container
+// root is required because every bind mount is relabeled into the container's PRIVATE
+// SELinux MCS category (:Z); a shared root would be re-stolen by each new relabel.
 func (h *agentHost) configMaterializerFor(containerName string) *ConfigMaterializer {
-	// On the host tier the config tree lives inside the handle's own state dir
-	// (recorded in hostTransports at provision), not under RuntimeDir/containers
-	// — there are no mounts, so a later refresh must re-materialize where the
-	// agent actually reads. Absent an entry (the container tiers), root at the
-	// per-container RuntimeDir subtree as before.
+	// On the host tier the config tree lives in the handle's state dir (recorded in
+	// hostTransports), not under RuntimeDir/containers — no mounts, so a refresh must
+	// re-materialize where the agent reads. Absent an entry (container tiers), root at
+	// the per-container RuntimeDir subtree as before.
 	h.mu.Lock()
 	transport, ok := h.hostTransports[containerName]
 	h.mu.Unlock()
@@ -1132,21 +1000,17 @@ func (h *agentHost) configMaterializerFor(containerName string) *ConfigMateriali
 	return NewConfigMaterializer(filepath.Join(h.runtimeDir, agentSocketDir, containerName, "config"), h.link, h.log)
 }
 
-// serveSocket creates and serves the per-container agent socket for
-// containerName, recording the listener so Provision can mount it and teardown
-// can Close it. A container already serving a socket (an idempotent provision
-// retry) is a no-op — the live listener is kept, never double-served. The
-// Gateway forwards to the Server over the Runner's own RunnerService client
-// (the link), resolving the container to its bound session via this host.
+// serveSocket creates and serves the per-container agent socket for containerName,
+// recording the listener so Provision can mount it and teardown can Close it. A
+// container already serving is a no-op (idempotent retry). The Gateway forwards to
+// the Server over the Runner's own RunnerService client, resolving container→session.
 func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gateway.SocketListener, error) {
 	return h.serveSocketAt(ctx, containerName, filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile))
 }
 
-// serveSocketAt is serveSocket with an explicit socket path: the container tiers
-// pass the fixed RuntimeDir/containers/<container>/agent.sock, the host tier
-// passes a path inside the handle's own state dir (no mount reaches it). The
-// idempotency + recording discipline is identical: a container already serving
-// keeps its live listener, never double-served.
+// serveSocketAt is serveSocket with an explicit socket path: container tiers pass the
+// fixed RuntimeDir socket, the host tier a path in the handle's state dir (no mount).
+// Idempotency is identical: a container already serving keeps its live listener.
 func (h *agentHost) serveSocketAt(ctx context.Context, containerName, path string) (*gateway.SocketListener, error) {
 	h.mu.Lock()
 	if listener, served := h.sockets[containerName]; served {

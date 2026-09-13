@@ -1,19 +1,17 @@
 #!/usr/bin/env bun
-// The toolchain version-parity gate: fail the build when the toolchain CI is
-// running is not the toolchain the dev shell defines.
-//
-// This is the thin execution shell — read files, run probes, exit. All parsing
-// and comparison, including the pass/fail decision, lives in ./parity-core.ts,
-// which is pure and unit-tested (./parity-core.test.ts). The two halves of the
-// toolchain and why they are checked differently are documented there.
-//
-// Run it anywhere: in CI as the first gate, or locally (`bun
-// tools/toolchain/parity.ts`) where it should always pass, since locally the
-// dev shell IS both sides of the comparison. That symmetry is deliberate — a
-// gate you cannot run outside CI is a gate nobody debugs.
-//
-// Exit 0 = every pinned tool matched. Exit 1 = at least one mismatched OR could
-// not be checked. Unverifiable is a failure, never a skip.
+// The toolchain version-parity gate: fail the build when the toolchain CI runs is
+// not the toolchain the dev shell defines.
+
+// Thin execution shell — read files, run probes, exit. Parsing and the pass/fail
+// decision live in ./parity-core.ts (pure, unit-tested), which documents the two
+// toolchain halves and why they are checked differently.
+
+// Run in CI as the first gate, or locally where it always passes (the dev shell
+// IS both sides). That symmetry is deliberate — a gate you cannot run outside CI
+// is a gate nobody debugs.
+
+// Exit 0 = every pinned tool matched; 1 = at least one mismatched or could not be
+// checked. Unverifiable is a failure, never a skip.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, realpathSync } from "node:fs";
@@ -127,14 +125,10 @@ if (devenvAttrs.length === 0 || Object.keys(langs).length === 0) {
 	process.exit(1);
 }
 
-// `--print-nix-attrs`: emit the dev shell's nixpkgs attribute list as a nix
-// list literal and stop. The workflow feeds it to gate-tools.nix to build the
-// PATH it will then be checked against, so the tools CI installs and the tools
-// the gate expects are derived from the one parse of devenv.nix — they cannot
-// disagree, and adding a tool to the dev shell needs no workflow edit. The
-// empty-source refusal above runs first on purpose: --print-nix-attrs stays a
-// fail-fast path, refusing before it emits an attr list built over a langs set
-// whose shape has moved out from under the gate.
+// --print-nix-attrs: emit the dev shell's nixpkgs attribute list as a nix list
+// literal and stop. The workflow feeds it to gate-tools.nix, so what CI installs
+// and what the gate expects both derive from one parse of devenv.nix. The
+// empty-source refusal above runs first, keeping this a fail-fast path.
 if (process.argv.includes("--print-nix-attrs")) {
 	console.log(`[${devenvAttrs.map((a) => `"${a}"`).join(" ")}]`);
 	process.exit(0);

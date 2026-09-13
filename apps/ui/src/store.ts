@@ -1,19 +1,10 @@
-// The Compass ADE UI's central state store.
-//
-// One store owns all cross-component state: which view is shown, what's
-// selected, which panes are open, and the left-sidebar folder collapse state.
-// Components read it through the AppStore context (see context.ts) and never hold
-// their own copies, so selection stays coherent across the shell — clicking an
-// agent in the tree, a card on the board, or a row in a swimlane all resolve to
-// the same selection.
-//
-// The comms surface reads LIVE: `createAppStore` takes an optional CommsClient
-// and runs `runCommsStream` over it, mirroring each reduced CommsState into the
-// accessors below. The accessors are the seam the components were written
-// against, so nothing above the store changed when the fixture went away. A
-// store built WITHOUT a client is offline: it starts from `initialComms` (the
-// fixture, in tests) and every write rejects — construction never needs a
-// network client.
+// The Compass ADE UI's central state store: one store owns all cross-component
+// state (view, selection, open panes, sidebar collapse). Components read it via the
+// AppStore context and never hold copies, so selection stays coherent across shell.
+
+// The comms surface reads LIVE: `createAppStore` takes an optional CommsClient and
+// runs `runCommsStream`, mirroring each reduced CommsState into the accessors. A
+// store built WITHOUT a client is offline: starts from `initialComms`, writes reject.
 
 import type { CommsClient, CompassClient } from "@compass/client";
 import type { QueryClient } from "@tanstack/solid-query";
@@ -736,26 +727,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	);
 
 	// ── Router seam (record A3): routes are the source of truth ──────────────
-	// The routed dimension — view + the surface's identifying param — is driven
-	// by the URL, not set imperatively. The store lives outside the router tree
-	// (index.tsx's app-lifetime createRoot), so the router is INJECTED as a seam
-	// rather than imported: createAppStore stays router-free and constructible
-	// with no router. Until App binds the real router, a default in-memory seam
-	// applies routes SYNCHRONOUSLY, so an offline store (unit/fragment tests, no
-	// <App>) drives openChannel/openAgent/show* and reads the routed state in the
-	// same tick — "test-constructible exactly as today". App swaps in the real
-	// @solidjs/router navigate + a reactive currentPath via bindRouter, after
-	// which navigation is asynchronous (navigate → location → route-sync effect
-	// → applyRoute), the ratified routes-as-truth contract.
+	// The routed dimension (view + identifying param) is driven by the URL. The store
+	// lives outside the router tree, so the router is INJECTED as a seam. A default
+	// in-memory seam applies routes SYNCHRONOUSLY until App swaps in @solidjs/router.
 	const [inMemoryPath, setInMemoryPath] = createSignal("/");
 	let routerNavigate = (path: string): void => {
-		// Pre-bind navigation: nothing in production navigates before App binds
-		// (the only pre-bind action sources — the async comms stream and the
-		// assigned-issues query — never navigate), so reaching here in a dev build
-		// signals a future violation where the URL would silently diverge from
-		// the in-memory path. Warn loudly rather than fail silent. Offline tests
-		// (run outside vite, import.meta.env.DEV undefined) drive this path by
-		// design and stay quiet.
+		// Pre-bind navigation: nothing in production navigates before App binds (comms
+		// stream and assigned-issues query never navigate), so reaching here in a dev
+		// build signals a future violation where the URL would silently diverge. Warn
+		// loudly. Offline tests (import.meta.env.DEV undefined) drive this path quietly.
 		if (import.meta.env?.DEV) {
 			// biome-ignore lint/suspicious/noConsole: DEV-only pre-bindRouter navigation warning
 			console.warn(
@@ -769,27 +749,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	let routerCurrentPath = (): string => inMemoryPath();
 	const navigateTo = (path: string): void => routerNavigate(path);
 	const currentPath = (): string => routerCurrentPath();
-	// Wire the real router (called once from App, inside the router tree + a
-	// reactive root). The route-sync effect is the SINGLE writer of the routed
-	// dimension under the real router: applyRoute resolves the current path to
-	// routed state. Created here so App's owner disposes it on unmount.
-	//
-	// The compute phase tracks the path AND the pending-aware resolution inputs
-	// (`firstSnapshotArrived`, `channels`, `topics` — all applyRoute reads to
-	// decide hold-vs-fallback). A deep-link onto an async-loaded surface holds
-	// while its id is not-yet-loaded, then the first snapshot flips
-	// firstSnapshotArrived and lands the channel/topic sets: those reads re-fire
-	// this effect (path unchanged) so applyRoute re-resolves and an id that is
-	// genuinely absent now falls back. Keeping resolution in applyRoute — one
-	// authority, re-run on path OR data change — is the routes-as-truth contract,
-	// and scales to any future routed dimension without a per-dimension fallback
-	// bolted onto the snapshot-adopt path. `channels`/`topics` are memos over
-	// `comms()`, so an unrelated event (a new message) that leaves the sets equal
-	// does not re-fire — contingent on the comms reducer preserving `channels`/
-	// `topics` array identity across a message-only push (a future reducer that
-	// rebuilds them every event would re-run applyRoute per message; harmless as
-	// applyRoute is idempotent, but wasteful). Writes stay in the apply phase
-	// (v2: no writes under a tracked compute).
+	// Wire the real router (once, from App). The route-sync effect is the SINGLE writer
+	// of the routed dimension. Its compute tracks the path AND the resolution inputs
+	// (`firstSnapshotArrived`, `channels`, `topics`), so a deep-link onto an async surface
+	// holds until the first snapshot lands, then re-fires applyRoute — routes-as-truth.
 	const bindRouter = (r: {
 		navigate: (path: string) => void;
 		currentPath: () => string;
@@ -809,13 +772,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		);
 	};
 
-	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the
-	// user's personal queue, read through a query keyed on the tracker handle: a
-	// handle change re-keys and refetches with no manual reload (§A3). The tracker
-	// seam is NOT yet a Connect RPC (tracker.ts is the fixture contract), so this
-	// is a plain solid-query key + queryFn over the seam — the store-internal
-	// query pattern (explicit `queryClient`, no provider ancestor), swappable to a
-	// connect-query-core descriptor when the daemon RPC lands.
+	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the user's
+	// personal queue, read through a query keyed on the tracker handle: a handle change
+	// re-keys and refetches (§A3). The tracker seam is NOT yet a Connect RPC, so this is
+	// a plain solid-query key + queryFn, swappable to connect-query-core when it lands.
 	const [trackerConfig, setTrackerConfigSignal] = createSignal<TrackerConfig>(
 		DEFAULT_TRACKER_CONFIG,
 	);
@@ -854,13 +814,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 
 	// ── Right sidebar (T6; dock-in-sidebar D1/D6; Record A §T2/T3/T5;
 	//    unreachable-pin amendment RIG-1645): active tab + pin set + repo/branch ──
-	// The pinned agent set: ordered, append-on-pin, persisted per workspace so one
-	// deployment's account ids never hydrate on another. Held as `{ id, handle }`
-	// pairs (RIG-1645 P0) — the handle cached at pin time is the degraded label an
-	// unreachable pin renders. A pin that resolves to no visible agent is RETAINED
-	// here (visibility fluctuates — the pin survives the agent returning) and still
-	// emits a marked item from the derivation below. Falls back to `callerId` when
-	// no workspace identity is supplied.
+
+	// The pinned agent set: ordered, append-on-pin, persisted per workspace. Held as
+	// `{ id, handle }` pairs (RIG-1645 P0); a pin resolving to no visible agent is
+	// RETAINED and still emits a marked item. Falls back to `callerId` when no identity.
 	const workspaceKey = options.workspaceKey ?? callerId;
 	const [pinnedAgents, setPinnedAgents] = createSignal<readonly PinnedAgent[]>(
 		loadPinnedAgents(workspaceKey),
@@ -868,12 +825,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const pinnedAgentIds = createMemo<readonly string[]>(() =>
 		pinnedAgents().map((p) => p.id),
 	);
-	// The single agent-resolution seam (RIG-1645 P5): resolve an account id to
-	// its visible agent. A REACTIVE read — a closure over the `agents` memo, so
-	// every consumer (`rightTabGroups`, transitively `activeFleetItem`) re-runs
-	// when the agent set changes. The live-agents migration this seam owed is
-	// discharged: `agents` is now the reactive join memo below (offline fixture,
-	// live `joinAgents(accounts(), presence())`), not a static const, so a
+	// The single agent-resolution seam (RIG-1645 P5): resolve an account id to its
+	// visible agent. A REACTIVE closure over the `agents` memo, so every consumer
+	// re-runs when the agent set changes. `agents` is the live join memo below, so a
 	// presence/account tick flips resolution live→reachable through this one seam.
 	const agentById = (accountId: string): Agent | undefined =>
 		agents().find((a) => a.account.id === accountId);
@@ -883,35 +837,24 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [activeRepoId, setActiveRepoId] = createSignal<string | null>(null);
 
 	// ── Comms: the channel surface (design: architecture-lineage) ──
-	// ONE reduced CommsState drives all four comms accessors. It starts at
-	// `initialComms` (EMPTY by default — the store no longer boots from the
-	// fixture) and is replaced wholesale by each `runCommsStream` push — bar the
-	// in-progress local ask answers `preserveLocalAsks` carries across, the one
-	// state the server cannot send back because it was never told; the local
-	// membership mutations below rewrite it the same immutable way. The four
-	// accessors are memos over it, so a message event leaves the channels array
-	// reference untouched and the rail doesn't re-render.
+	// ONE reduced CommsState drives all four comms accessors, starting at `initialComms`
+	// (EMPTY by default) and replaced wholesale by each push — bar the local ask picks
+	// `preserveLocalAsks` carries across. Accessors are memos, so a message event is absorbed.
 	const [comms, setComms] = createSignal<CommsState>(
 		options.initialComms ?? EMPTY_COMMS_STATE,
 	);
-	// CommsState's collections are `readonly` (a pure value the reducer rebuilds
-	// on every transition) and the accessors keep that: nothing here or in the
-	// components mutates in place — every write goes through setComms with a
-	// fresh array — and a `readonly` signature is what keeps the compiler able
-	// to hold that true, rather than a cast that silently permits the first
-	// in-place mutation someone adds.
+	// CommsState's collections are `readonly` (a pure value the reducer rebuilds each
+	// transition) and the accessors keep that: every write goes through setComms with a
+	// fresh array. The `readonly` signature is what lets the compiler hold that true.
 	const accounts = createMemo(() => comms().accounts);
 	const channelGroups = createMemo(() => comms().channelGroups);
 	const channels = createMemo(() => comms().channels);
 	const messages = createMemo(() => comms().messages);
 	const topics = createMemo(() => comms().topics);
-	// The board's fleet (§T3). An intermediate presence memo beside the
-	// per-collection memos: it re-notifies only when the presence map's identity
-	// actually changes — each posted message replaces the whole CommsState via
-	// `adoptComms`, and this memo's `===` equality plus the reducer's structural
-	// sharing absorb that, so a chat message does not re-join the roster. Then
-	// the join itself, gated on the live/offline switch: offline it is the
-	// fixture; live it re-joins only when accounts or presence change.
+	// The board's fleet (§T3). Intermediate presence memo: re-notifies only when the
+	// presence map's identity changes — each posted message replaces the whole
+	// CommsState, and `===` equality plus structural sharing absorb that. The join
+	// then gates on live/offline: offline the fixture, live re-joins on account/presence.
 	const presence = createMemo(() => comms().presence);
 	// Runtime markers arrive on the session-status stream, not the comms one, so
 	// they are their own signal joined in beside presence.
@@ -923,11 +866,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			? joinAgents(accounts(), presence(), runtimeMarkers())
 			: STUB_AGENTS,
 	);
-	// Boot default (Record A §T5): the first hydrated pin that resolves to a
-	// visible agent, else the static `status` pane. Boot has no mid-view state to
-	// preserve, so it lands on a live pane rather than an unreachable one (RIG-1645
-	// P4, OQ-1 ruled kept). An unresolvable leading pin is skipped here but still
-	// shows its (marked) bar item. The D6 no-auto-switch rule is unchanged.
+	// Boot default (Record A §T5): the first hydrated pin resolving to a visible
+	// agent, else the static `status` pane (RIG-1645 P4, OQ-1 ruled kept). An
+	// unresolvable leading pin is skipped but still shows its marked bar item.
 	const firstResolvablePin = pinnedAgentIds().find(
 		(id) => agentById(id) !== undefined,
 	);
@@ -935,11 +876,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		firstResolvablePin ? `agent:${firstResolvablePin}` : "status",
 	);
 	// The single public set seam (RIG-1645 P3): a plain pass-through. The old
-	// resolvability guard (coerce an unresolvable `agent:` tab to `status`) is
-	// retired — selecting or keeping an unresolvable agent tab is now valid and
-	// renders the unreachable pane, so an `agent:` tab no longer requires a visible
-	// agent. The unpin-active→status fallback (a user gesture) still routes through
-	// here. No fluctuation-watcher: a visibility change never coerces the tab.
+	// resolvability guard is retired — an unresolvable `agent:` tab is now valid and
+	// renders the unreachable pane. Unpin-active→status still routes here; a
+	// visibility change never coerces the tab.
 	const setActiveRightTab = (tab: RightSidebarTab) => {
 		setActiveRightTabRaw(tab);
 	};
@@ -958,24 +897,18 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// snapshot an absent channel id is merely not-yet-loaded (held, not bounced);
 	// after it, an absent id is genuinely unknown (redirected).
 	const [firstSnapshotArrived, setFirstSnapshotArrived] = createSignal(false);
-	// Adopt a state pushed by the stream and settle the selection onto it: the
-	// user's explicit pick wins as long as the channel is still visible, so a
-	// later snapshot/event can never yank the surface out from under them; an
-	// absent or vanished selection falls back to the first subscribed channel.
-	//
-	// The push is adopted WHOLESALE except for in-progress local ask answers,
-	// which the server has never been told about and so cannot send back — see
-	// `preserveLocalAsks`.
+	// Adopt a stream-pushed state and settle the selection: the user's explicit pick
+	// wins while its channel is visible, so a later push never yanks the surface away;
+	// an absent selection falls back to the first subscribed channel. Adopted WHOLESALE
+	// except in-progress local ask picks (never sent to server) — see `preserveLocalAsks`.
 	const adoptComms = (next: CommsState) => {
 		setComms((prev) => preserveLocalAsks(prev, next));
 		setFirstSnapshotArrived(true);
 		const current = selectedChannelId();
 		if (current && next.channels.some((c) => c.id === current)) return;
-		// The selection is absent from the pushed snapshot (vanished, or the boot
-		// null). Under routes-as-truth the channel surface is a route: if the
-		// current route names a channel, re-point it through navigate so the URL
-		// and selection stay one authority; then re-seed the signal as the
-		// "last visited channel" fallback for any other surface.
+		// The selection is absent from the pushed snapshot. Under routes-as-truth the
+		// channel surface is a route: if the current route names a channel, re-point it
+		// through navigate; then re-seed the signal as the "last visited" fallback.
 		const fallback = firstChannelId(next);
 		if (currentPath().startsWith("/channel/")) {
 			navigateTo(fallback ? `/channel/${fallback}` : "/");
@@ -989,11 +922,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		null,
 	);
 	// The live read path: run the SubscribeComms driver for the store's lifetime,
-	// mirroring each reduced state into the signals above. Aborted on teardown
-	// (index.tsx's root is never disposed, so in the app this runs forever; a
-	// test root's dispose stops it). `runCommsStream` resolves only on abort and
-	// retries internally, so nothing here awaits it — a rejection would be a
-	// driver bug, and it is surfaced rather than swallowed.
+	// mirroring each reduced state into the signals above. Aborted on teardown.
+	// `runCommsStream` resolves only on abort and retries internally, so nothing awaits
+	// it — a rejection is a driver bug, surfaced rather than swallowed.
 	if (options.comms) {
 		const client = options.comms;
 		const abort = new AbortController();
@@ -1010,26 +941,19 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		});
 	}
 
-	// The daemon banner reads LIVE: a one-shot GetServerInfo probe at boot flips
-	// the banner to the server's liveness/version. An offline store (no
-	// `options.compass`) keeps STUB_DAEMON — the stub banner shows exactly as
-	// before the wire. api_version-mismatch policy is deliberately NOT handled
-	// here (a parked design question): the banner surfaces what the probe
-	// returns, nothing more. One-shot async (not a stream), so no
-	// AbortController — a `disposed` flag guards a late-resolving probe from
-	// writing into a torn-down root; a rejection routes through onCommsError.
+	// The daemon banner reads LIVE: a one-shot GetServerInfo probe at boot flips the
+	// banner to the server's liveness/version. Offline (no `options.compass`) keeps
+	// STUB_DAEMON. api_version-mismatch is deliberately NOT handled (parked). One-shot
+	// async, so a `disposed` flag guards a late probe; a rejection routes through onCommsError.
 	const [daemon, setDaemon] = createSignal<DaemonInfo>(STUB_DAEMON);
 	if (options.compass) {
 		const client = options.compass;
 		let disposed = false;
 		if (getOwner()) onCleanup(() => (disposed = true));
 		// The live board read path: run the SubscribeEvents driver for the store's
-		// lifetime, replacing the STUB_ISSUES seed with the server's snapshot-as-
-		// events then live upserts. Aborted on teardown (a test root's dispose
-		// stops it; the app root never disposes). Reuses `options.compass` — the
-		// same client the daemon probe dials. `runEventStream` resolves only on
-		// abort and retries internally, so nothing awaits it; a rejection routes
-		// through onCommsError rather than being swallowed.
+		// lifetime, replacing STUB_ISSUES with the server's snapshot-as-events then live
+		// upserts. Aborted on teardown. Reuses `options.compass`. `runEventStream`
+		// resolves only on abort and retries internally; a rejection routes through onCommsError.
 		const eventsAbort = new AbortController();
 		if (getOwner()) onCleanup(() => eventsAbort.abort());
 		void runEventStream({
@@ -1055,34 +979,30 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			});
 	}
 
-	// The per-post idempotency key source: `clientRequestId` must be
-	// caller-unique, so a per-store random prefix plus a monotonic counter gives
-	// a fresh key per post. Not reactive — it only sources fresh ids on demand.
+	// The per-post idempotency key source: `clientRequestId` must be caller-unique, so
+	// a per-store random prefix plus a monotonic counter gives a fresh key per post.
+	// Not reactive — it only sources fresh ids on demand.
 	const requestIdPrefix = `ui-${Date.now().toString(36)}-${Math.random()
 		.toString(36)
 		.slice(2, 10)}`;
 	let requestCount = 0;
 
 	// ── Agent view (T7): tabs (pane groups) + active tab ──
-	// Each tab owns its own split tree of panes and its focused pane. A fresh
-	// agent shows only the chat tab (terminals hidden by default, D6). The
-	// list is empty until an agent is opened; `openAgent` seeds it.
+	// Each tab owns its own split tree of panes and focused pane. A fresh agent shows
+	// only the chat tab (terminals hidden, D6). Empty until an agent is opened.
 	const [tabs, setTabs] = createSignal<AgentTab[]>([]);
 	const [activeAgentTabId, setActiveAgentTabId] = createSignal<string | null>(
 		null,
 	);
-	// The agent id the agent-view state (tabs/split/branch) was last initialized
-	// for — distinct from `selectedAgentId`, which the board's `selectIssue`
-	// moves without initializing the view. `openAgent` keys its reset on THIS, so
-	// a roster move followed by opening that agent still initializes the view.
+	// The agent id the agent-view state (tabs/split/branch) was last initialized for —
+	// distinct from `selectedAgentId`, which the board's `selectIssue` moves without
+	// initializing. `openAgent` keys its reset on THIS, so a roster move then open still inits.
 	const [agentViewAgentId, setAgentViewAgentId] = createSignal<string | null>(
 		null,
 	);
-	// Monotonic counter for MINTED placeholder terminal panes (never reused, so
-	// ids stay globally unique across opens/closes — openTab's id-dedupe and
-	// splitPaneOnce's repeat-guard never collide). Not reactive: it only sources
-	// fresh ids on demand, so a plain counter, not a signal. The daemon will
-	// assign real terminal ids at this same seam later.
+	// Monotonic counter for MINTED placeholder terminal panes (never reused, so ids
+	// stay globally unique across opens/closes). Not reactive: a plain counter. The
+	// daemon will assign real terminal ids at this same seam later.
 	let mintedTerminalCount = 0;
 
 	const selectedAgent = createMemo(() =>
@@ -1096,13 +1016,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const selectedIssue = createMemo(() =>
 		issues().find((w) => w.id === selectedIssueId()),
 	);
-	// The selected agent's repo clones (T6). The fixture models one clone per
-	// agent — the monorepo — with the branches drawn from that agent's assigned
-	// issues (design "single clone until the daemon reports more"). The
-	// accessor returns an array so a multi-clone daemon is a fixture change, not
-	// a shape change. `currentBranch` is derived from the selected issue
-	// (each issue owns one branch) — so the dropdown, the detail panes, and
-	// the board selection are one source of truth and can't drift apart.
+	// The selected agent's repo clones (T6). The fixture models one clone per agent (the
+	// monorepo) with branches from that agent's assigned issues. Returns an array so a
+	// multi-clone daemon is a fixture change, not a shape change. `currentBranch` derives
+	// from the selected issue, so dropdown, panes, and board selection can't drift apart.
 	const agentRepos = createMemo<RepoClone[]>(() => {
 		const id = selectedAgentId();
 		if (!id) return [];
@@ -1145,32 +1062,26 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const selectedTopic = createMemo(() =>
 		topics().find((t) => t.id === selectedTopicId()),
 	);
-	// The agent workspace's chat channel: the selected agent's home DM, resolved
-	// O(1) off the account — NOT `selectedChannel`. Deriving it from the agent
-	// (not the shared selection signal) is what keeps the standalone channel
-	// surface and the workspace chat pane independent: a standalone channel the
-	// user opens moves `selectedChannel`, never this, so it can't bleed into the
-	// interactive workspace pane (D3). Undefined when no agent is selected or its
-	// home DM isn't in the channel set (the real-daemon partial-join case).
+	// The agent workspace's chat channel: the selected agent's home DM, resolved O(1) off
+	// the account — NOT `selectedChannel`. Deriving it from the agent keeps the standalone
+	// channel surface and the workspace chat pane independent (D3). Undefined when no agent
+	// is selected or its home DM isn't in the channel set (real-daemon partial-join).
 	const workspaceChannel = createMemo(() => {
 		const home = selectedAgent()?.account.homeChannelId;
 		return home ? channels().find((c) => c.id === home) : undefined;
 	});
-	// The selected agent's live session trace (the workspace's trace source), or
-	// undefined when no agent is selected or it has no trace. One id space after
-	// T1 makes the observed agent ≡ the selected agent (record §478-481).
-	// Sourced from the hand-written fixture unless the caller supplies sessions
-	// — fixture entries carry `fixture: true`, which keeps their never-minted
-	// ids off the wire (see `stopAgent`).
+	// The selected agent's live session trace, or undefined when none. One id space after
+	// T1 makes the observed agent ≡ the selected agent (record §478-481). Sourced from the
+	// fixture unless the caller supplies sessions — fixture entries carry `fixture: true`,
+	// keeping their never-minted ids off the wire (see `stopAgent`).
 	const sessions = options.sessions ?? STUB_SESSION_EVENTS;
 	const agentSession = createMemo<AgentSession | undefined>(() => {
 		const id = selectedAgentId();
 		return id ? sessions[id] : undefined;
 	});
 
-	// The agent view's tabs (T7): the chat tab first (always present), then the
-	// tabs the user has opened. Empty when no agent is selected; terminals are
-	// NOT auto-opened (design D6 "terminals hidden by default").
+	// The agent view's tabs (T7): the chat tab first (always present), then the tabs the
+	// user has opened. Empty when no agent is selected; terminals are NOT auto-opened (D6).
 	const agentTabs = createMemo<AgentTab[]>(() =>
 		selectedAgentId() ? tabs() : [],
 	);
@@ -1178,11 +1089,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		agentTabs().find((t) => t.id === activeAgentTabId()),
 	);
 
-	// ── Route application (record A3): the single writer of the routed
-	// dimension (view + selectedChannelId/selectedAgentId). Invoked
-	// synchronously by the default seam (offline) or by the bound route-sync
-	// effect (real router). It parses currentPath itself — the store is outside
-	// the router tree and cannot call useParams.
+	// ── Route application (record A3): the single writer of the routed dimension
+	// (view + selectedChannelId/selectedAgentId). Invoked synchronously by the default
+	// seam (offline) or the bound route-sync effect. It parses currentPath itself — the
+	// store is outside the router tree and cannot call useParams. ──
 	function applyRoute(path: string): void {
 		const segs = path.split("/").filter((s) => s.length > 0);
 		const [head, param, sub, subParam] = segs;
@@ -1221,16 +1131,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				return;
 		}
 	}
-	// Apply a `/channel/:channelId` route. Pending-aware: an id merely not-yet-
-	// loaded is HELD (ChannelView renders its empty state), NOT bounced — a valid
-	// deep-link into an async-loaded channel must survive boot. Only once the
-	// first snapshot has arrived is an absent id treated as genuinely unknown and
-	// redirected off (gating on first-snapshot arrival, never non-emptiness: a
-	// genuinely empty workspace is a valid resolved state). Deliberately does NOT
-	// clear selectedTopicId — the topic dimension has exactly one writer
-	// (applyTopicRoute); a stale id left here is inert because every read of
-	// selectedTopicId()/selectedTopic() is view()-guarded (TopicView unmounts and
-	// the sidebar's selected class gates on view() === "topic").
+	// Apply a `/channel/:channelId` route. Pending-aware: a not-yet-loaded id is HELD
+	// (empty state), NOT bounced — a valid deep-link must survive boot. Only after the
+	// first snapshot is an absent id redirected. Does NOT clear selectedTopicId: that
+	// dimension has one writer (applyTopicRoute) and stale reads are view()-guarded.
 	function applyChannelRoute(channelId: string): void {
 		setView("channel");
 		if (channels().some((c) => c.id === channelId)) {
@@ -1244,14 +1148,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		}
 		setSelectedChannelId(channelId);
 	}
-	// Apply a `/channel/:channelId/topic/:topicId` route — the topic message view.
-	// The SOLE writer of the topic dimension, following applyChannelRoute's
-	// pending-aware pattern: the channel selection is set the same way (held while
-	// not-yet-loaded, bounced to the fallback channel once the snapshot has
-	// arrived and it is genuinely absent), and the topic id is held on the signal
-	// so a deep-link into an async-loaded topic survives boot. An absent topic
-	// after the snapshot has arrived falls back to the channel's index rather than
-	// a blank topic view.
+	// Apply a `/channel/:id/topic/:id` route — the topic message view, SOLE writer of the
+	// topic dimension. Follows applyChannelRoute's pending-aware pattern: channel held
+	// while not-yet-loaded, bounced once the snapshot arrives and it is absent; topic id
+	// held so a deep-link survives boot, an absent topic after snapshot falls to the index.
 	function applyTopicRoute(channelId: string, topicId: string): void {
 		setView("topic");
 		const channelKnown = channels().some((c) => c.id === channelId);
@@ -1274,17 +1174,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		}
 		setSelectedTopicId(topicId);
 	}
-	// Apply an `/agent/:agentId` route — the workspace anchoring lifted verbatim
-	// from the old openAgent so the click path and a direct deep-link run the
-	// SAME code once. Anchor the issue selection to this agent: keep the current
-	// selection when this agent owns it (a card double-click selects the card's
-	// issue just before opening — often a non-primary one), else the agent's
-	// primary (first-owned). The reset guard keys on `agentViewAgentId` (the id
-	// the workspace was initialized for) — NOT `selectedAgentId`, which
-	// `selectIssue` moves from the board without initializing the workspace — so
-	// a roster move followed by opening that agent still initializes the view,
-	// and re-opening the already-initialized agent only re-asserts the selection
-	// and preserves the tabs the user has since opened.
+	// Apply an `/agent/:agentId` route — the workspace anchoring lifted verbatim from the
+	// old openAgent so click and deep-link run the SAME code. Anchor issue selection: keep
+	// the current when this agent owns it, else its primary. The reset guard keys on
+	// `agentViewAgentId`, so a roster move then open still initializes the view.
 	function applyAgentRoute(agentId: string): void {
 		setView("agent");
 		const owned = issues().filter((w) => w.assignee === agentId);
@@ -1304,17 +1197,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		setAgentViewAgentId(agentId);
 	}
 
-	// Open an agent's workspace: navigate — the route-sync effect (applyAgentRoute)
-	// runs the anchoring, so the click path and a `/agent/:agentId` deep-link share
-	// one home.
+	// Open an agent's workspace: navigate — the route-sync effect (applyAgentRoute) runs
+	// the anchoring, so the click path and a `/agent/:agentId` deep-link share one home.
 	const openAgent = (agentId: string) => {
 		navigateTo(`/agent/${agentId}`);
 	};
 
-	// Open a channel: route to the channel's topic index with it selected — unless
-	// it's a 1:1 agent DM, in which case its surface is the agent workspace, so
-	// delegate to openAgent (one entry point, no dead-end DM view). Unknown id is a
-	// no-op.
+	// Open a channel: route to its topic index with it selected — unless it's a 1:1 agent
+	// DM, whose surface is the agent workspace, so delegate to openAgent (one entry point,
+	// no dead-end DM view). Unknown id is a no-op.
 	const openChannel = (channelId: string) => {
 		const chan = channels().find((c) => c.id === channelId);
 		if (!chan) return;
@@ -1327,12 +1218,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		navigateTo(`/channel/${channelId}`);
 	};
 
-	// Drill into a topic's message view: navigate to
-	// `/channel/<channelId>/topic/<topicId>` — the route-sync effect
-	// (applyTopicRoute) is the single writer that sets view + selection, so the
-	// click path and a topic deep-link share one home. Resolves the topic's
-	// channel off the topic set; a no-op on an unknown topic id (nothing to route
-	// to). NEVER setView — navigation is the sole entry.
+	// Drill into a topic's message view: navigate to `/channel/<id>/topic/<id>` — the
+	// route-sync effect (applyTopicRoute) is the single writer of view + selection, so
+	// click and deep-link share one home. Resolves the channel off the topic set; a
+	// no-op on an unknown topic id. NEVER setView — navigation is the sole entry.
 	const openTopic = (topicId: string) => {
 		const topic = topics().find((t) => t.id === topicId);
 		if (!topic) return;
@@ -1349,27 +1238,16 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	};
 
 	// ── Comms mutations (design: architecture-lineage) ──
-	// Join / subscribe are NOT WIRED (Matt's ruling). The wire has no join or
-	// subscribe RPC yet — that slice is unbuilt — and the local-only mutation
-	// these used to perform was a lie against the live stream: `adoptComms`
-	// replaces the state wholesale on every push and `deriveMembership`
-	// (live/adapt.ts) re-derives membership from the server's member lists, so
-	// the toggle silently reverted mid-use (join → the composer enables → you
-	// type → the next snapshot flips the row back and the composer disables
-	// under your draft). A control that plainly does not work yet beats one that
-	// appears to work and undoes itself, so the rail renders these disabled
-	// (LeftSidebar) and the store fakes NO membership state.
-	//
-	// They keep their shape rather than being deleted: they are the seam the
-	// rail's controls are bound to, and the RPCs land here when the slice is
-	// built. Until then they are deliberately inert — `channelId` is unused
-	// because there is nothing yet to do with it.
+
+	// Join / subscribe are NOT WIRED (Matt's ruling): no such RPC yet, and the old
+	// local-only mutation lied against the live stream (`adoptComms` replaces state
+	// wholesale, `deriveMembership` re-derives), so it reverted mid-use. Rendered disabled;
+	// they keep their shape as the bind seam for when the slice lands. `channelId` unused.
 	const joinChannel = (_channelId: string) => {};
 	const toggleSubscribe = (_channelId: string) => {};
-	// Apply one answer to a question, or return the SAME question object when the
-	// answer is rejected (unknown option, or a settled single-select). Returning
-	// the identical reference is what lets answerAsk below tell "recorded" from
-	// "no-op" — and a no-op must send nothing on the wire.
+	// Apply one answer to a question, or return the SAME question object when rejected
+	// (unknown option, or a settled single-select). The identical reference is what lets
+	// answerAsk tell "recorded" from "no-op" — and a no-op must send nothing on the wire.
 	const answerQuestion = (
 		q: Ask["questions"][number],
 		optionId: string,
@@ -1385,12 +1263,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			: [optionId];
 		return { ...q, chosenOptionIds: chosen };
 	};
-	// Whether an ask has had its ONE RespondToAsk issued. Reactive so the render
-	// can lock a submitted ask, and the guard that keeps the store from ever
-	// issuing a second respond for the same ask (the server accepts exactly one:
-	// go/internal/store/messages.go:404-405 rejects a later one with ErrConflict,
-	// :438 flips Answered on the first). An ask is marked ONLY when a respond is
-	// actually issued, so an offline store (no `comms`) never marks anything.
+	// Whether an ask has had its ONE RespondToAsk issued. Reactive so the render can
+	// lock a submitted ask, and the guard against issuing a second respond (server
+	// accepts exactly one; a later one is ErrConflict). Marked only on a real respond,
+	// so an offline store (no `comms`) never marks anything.
 	const [submittedAskIds, setSubmittedAskIds] = createSignal<
 		ReadonlySet<string>
 	>(new Set());
@@ -1402,9 +1278,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			return next;
 		});
 	// The last refusal per ask, keyed by askId — what the ask block RENDERS so a
-	// refused respond is not user-invisible (the rollback makes the state honest,
-	// but the click would otherwise vanish with only a console line). Cleared
-	// when the user answers that ask again, i.e. on the next respond.
+	// refused respond is not user-invisible. Cleared on the next respond for that ask.
 	const [askErrors, setAskErrors] = createSignal<ReadonlyMap<string, string>>(
 		new Map(),
 	);
@@ -1428,35 +1302,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// the point at which one atomic RespondToAsk can carry the whole thing.
 	const isAskComplete = (ask: Ask) =>
 		ask.questions.every((q) => q.chosenOptionIds.length > 0);
-	// Whether two asks pose the SAME questions, in the same order, offering the
-	// same options — the shape test every ask-to-ask comparison starts from. An
-	// ask whose shape moved is a different ask as far as local state is
-	// concerned: there is nothing left to line the answers up against.
-	//
-	// The OPTION IDS are part of that shape, not decoration on it. The server's
-	// block-update path rewrites a message's entire block set and requires only
-	// that `ask_id` survive (go/internal/store/messages.go:151, :163-167), so an
-	// option's id can appear, vanish, or be replaced under a stable question id.
-	// Comparing question ids alone would miss that, leaving the UI rendering a
-	// WITHDRAWN option and shipping an option id the server no longer offers —
-	// which `validateQuestionAnswer` rejects as ErrInvalidArgument, a refusal the
-	// user cannot act on, because the option they need is not on screen. So the
-	// offered option ids, in order, are part of the shape the compare checks.
-	//
-	// What it deliberately does NOT distinguish: a revision to question text,
-	// option LABELS, or allowMultiple under stable question and option ids. When
-	// the ids all still line up, `preserveLocalAsks` carries the local ask copy
-	// forward whole, so such a revision would momentarily render with the local
-	// wording. That is tolerable only because the path is unwired (see below) and
-	// a text/label edit is cosmetic and self-corrects on the next resync. Wiring
-	// the block-update path live must instead overlay the local picks onto the
-	// PUSHED question objects, so a server revision to any non-id field is
-	// adopted while the in-progress pick survives.
-	//
-	// Scope honesty: this is designed-for, not yet wired. Nothing calls the
-	// block-update RPC today, so the widened compare defends a documented wire
-	// capability (comms.proto MessageUpdated carries the full CURRENT block set)
-	// rather than a bug in flight.
+	// Whether two asks pose the SAME questions, in order, offering the same OPTION IDS.
+	// The ids are part of the shape: block-update rewrites all blocks keeping only
+	// `ask_id`, so a changed option id under a stable question id would ship a withdrawn
+	// id → ErrInvalidArgument. Ignores text/labels/allowMultiple. Designed-for, not wired.
 	const sameQuestions = (a: Ask, b: Ask) =>
 		a.questions.length === b.questions.length &&
 		a.questions.every((q, i) => {
@@ -1468,11 +1317,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				q.options.every((o, j) => o.id === other.options[j]?.id)
 			);
 		});
-	// Whether an ask still carries exactly the answers that were SHIPPED — the
-	// test a rollback must pass, since restoring over an ask the stream moved
-	// meanwhile would overwrite the server's value with stale local state. A
-	// vanished ask (`current` undefined) counts as moved: there is nothing left
-	// to roll back into.
+	// Whether an ask still carries exactly the answers that were SHIPPED — the test a
+	// rollback must pass, since restoring over an ask the stream moved would overwrite
+	// the server's value with stale local state. A vanished ask counts as moved.
 	const sameAnswers = (current: Ask | undefined, shipped: Ask) =>
 		current !== undefined &&
 		sameQuestions(current, shipped) &&
@@ -1484,63 +1331,20 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				q.chosenOptionIds.every((id, j) => id === was.chosenOptionIds[j])
 			);
 		});
-	// An ask the server has said nothing about. The server's own `answered` flag
-	// is the authority: it flips exactly once, on the first RespondToAsk the
-	// server ACCEPTED, so `!answered` is precisely "no authoritative value yet".
-	//
-	// Scanning the questions for an empty `chosenOptionIds` CANNOT stand in for
-	// it, because two answer shapes the server accepts and records leave every
-	// question's chosen ids empty on a CLOSED ask: (a) a deliberate skip — an
-	// answer entry with no chosen ids and empty custom_text is an ACCEPTED skip
-	// that satisfies the wire's coverage-of-every-question contract (see
-	// `submitAsk`); (b) a custom_text-only answer to a free-text question, which
-	// carries no options to choose. Against either, a question scan reports "the
-	// server has no value" for an ask the server has already closed, so
-	// `preserveLocalAsks` restores stale local picks over it and the completing
-	// respond comes back ErrConflict (comms.proto Ask.answered).
+	// An ask the server has said nothing about. The server's `answered` flag is the
+	// authority — flips once, on the first ACCEPTED respond. A question scan for empty
+	// chosenOptionIds cannot substitute: a CLOSED ask leaves them empty on a skip or a
+	// custom_text-only answer, so a scan would restore stale picks over it → ErrConflict.
 	const serverHasNoAnswer = (ask: Ask) => !ask.answered;
-	// Carry in-progress LOCAL ask answers across a stream push.
-	//
-	// The wire is atomic — one RespondToAsk per ask, issued only on the click
-	// that COMPLETES it (see `sendAsk`) — so on a multi-question ask every choice
-	// but the last lives ONLY in this state. `adoptComms` otherwise replaces it
-	// wholesale, so a push landing mid-ask would silently discard the user's
-	// clicks, and the server could not send them back: it was never told.
-	//
-	// A local answer is kept ONLY where the server demonstrably has no value of
-	// its own, which keeps "a server value for an ask is AUTHORITATIVE" — the
-	// property `sendAsk`'s conditional rollback rests on — exactly true:
-	//
-	//   - the ask must not be SUBMITTED: once our respond is issued the local
-	//     record is a claim about what the server was told, not an edit in
-	//     progress, and the rollback decides by comparing it against whatever
-	//     the stream has since put in its place;
-	//   - the pushed ask must not be ANSWERED: once the server's `answered` flag
-	//     is set the ask is closed and its record — ours accepted, or another
-	//     participant's — wins;
-	//   - the questions must line up, or the ask's shape moved and it is new;
-	//   - the LOCAL ask must carry an unshipped pick at all: a wholly untouched
-	//     ask has nothing to carry, so it is skipped and the pushed state is
-	//     adopted by reference — the fast path nearly every push takes.
-	//
-	// A hoisted declaration so it can sit beside the ask machinery it reuses
-	// while `adoptComms`, defined above with the rest of the stream wiring,
-	// still calls it.
+	// Carry in-progress LOCAL ask picks across a stream push. The wire is atomic (one
+	// RespondToAsk on the completing click), so every pick but the last lives ONLY here.
+	// Kept only where the server has no value (not submitted, pushed ask not `answered`,
+	// questions line up, real unshipped pick), preserving "a server value is AUTHORITATIVE".
 	function preserveLocalAsks(prev: CommsState, next: CommsState): CommsState {
-		// The unsubmitted asks carrying a local pick, by message id then ask id.
-		// Empty whenever no ask is mid-answer — which is nearly every push — and
-		// then the pushed state is adopted untouched, references and all.
-		//
-		// This leg scans the LOCAL record's chosen ids on purpose, and does not
-		// consult `answered` on a `prev` entry at all: the question here is only
-		// "is there an unshipped edit worth carrying", which the chosen ids
-		// answer by themselves. A `prev` entry is the last SERVER state we
-		// adopted with our clicks layered over it — `answerAsk` spreads the ask
-		// it edits (`{ ...ask, questions }`), so a server `answered: true` rides
-		// straight through onto a locally-edited ask — which makes the flag on a
-		// `prev` entry a statement about the ask we ADOPTED, not about our edit.
-		// The authority question — has the server closed this ask — is asked
-		// where its answer lives: `serverHasNoAnswer` on the PUSHED ask below.
+		// Unsubmitted asks carrying a local pick, by message id then ask id. Empty on
+		// nearly every push (then pushed state is adopted untouched). Scans the local
+		// record's chosen ids on purpose — "is there an unshipped edit worth carrying";
+		// the authority question (has the server closed it) is asked on the PUSHED ask.
 		const local = new Map<string, Map<string, Ask>>();
 		for (const msg of prev.messages) {
 			for (const b of msg.blocks) {
@@ -1593,48 +1397,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			),
 		}));
 	};
-	// Issue the ask's ONE RespondToAsk. The wire is ATOMIC: exactly one
-	// AskQuestionAnswer per question (comms.proto RespondToAsk — the server
-	// rejects a request that omits one, and accepts a request exactly once per
-	// ask), so this ships every question's settled choice in a single call.
-	// `chosenOptionIds` is empty for a question the user skipped, which the wire
-	// permits: the contract is coverage of every question, not an answer to each.
-	//
-	// A REFUSED respond must not leave the UI showing an answer the server does
-	// not have: `rollback` (the ask as it stood before the click that triggered
-	// the send) is restored, and the submitted mark is cleared so the ask is
-	// retryable — the server only burns an ask on a respond it ACCEPTED. The
-	// refusal is also recorded against the ask so the block can SAY so: a
-	// rollback alone makes the state honest but silently erases the click.
-	//
-	// The restore is CONDITIONAL on the ask not having moved while the respond
-	// was in flight. An `adoptComms` stream push landing between the click and
-	// the refusal carries the AUTHORITATIVE server value (another participant's
-	// accepted answer, say); restoring over it would show an ask state the
-	// server never had, with no further push to correct it before a resync.
-	//
-	// A CLOSED ask is the case `sameAnswers` cannot see, because it compares
-	// answers and `answered` is not one. The server flips the flag in the very
-	// write that records the chosen ids (go/internal/store/messages.go:438,
-	// beside the :435 that records them) and refuses every later respond with
-	// ErrConflict (:404-406), so a pushed ask carrying `answered` is CLOSED —
-	// and on the accepted-then-lost-reply path (the server COMMITTED our respond
-	// and published the update, but our RPC's own reply never landed) that push
-	// carries OUR chosen ids, which is precisely what makes `sameAnswers` pass.
-	// Restoring there would overwrite the authoritative CLOSED state with the
-	// stale OPEN one, re-enable every option, and re-offer a click that can only
-	// produce ErrConflict — or ship a DIFFERENT answer than the one durably
-	// recorded, showing the user a state contradicting the audit record. So the
-	// guard sits at the SITE, not in `sameAnswers`: a rollback into a closed ask
-	// is never right whether or not the answers line up.
-	//
-	// The submitted mark is still cleared on that path, so the ask is not left
-	// falsely "in flight"; it is left CLOSED, which is the truth — and the write
-	// gates (`answerAsk`, `submitAsk`) read the flag, so nothing further ships.
-	//
-	// KNOWN-BROKEN END TO END (RIG-1310): the agent SDK's correlation key is
-	// unwired, so the answer does not reach the asking agent. The client side
-	// is correct and stays wired; nothing here assumes the round-trip lands.
+	// RespondToAsk is atomic: one accepted respond per ask, every question covered
+	// (empty chosenOptionIds = skipped). On REFUSED, restore `rollback` + clear the
+	// submitted mark so it retries — but NOT if a stream push moved the ask or it is
+	// CLOSED (`answered`), which is authoritative. RIG-1310: SDK correlation unwired.
 	const sendAsk = (messageId: string, ask: Ask, rollback?: Ask) => {
 		const comms = options.comms;
 		if (!comms) return;
@@ -1693,16 +1459,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 					blocks: msg.blocks.map((b) => {
 						if (b.kind !== "ask" || b.ask.askId !== askId) return b;
 						const ask = b.ask;
-						// The other way an ask is settled, and the one the submitted
-						// mark cannot see: the server burns an ask on the first
-						// RespondToAsk it ACCEPTS and refuses every later one with
-						// ErrConflict (go/internal/store/messages.go:404-406). An ask
-						// carrying `answered` is therefore closed no matter who closed
-						// it — us on a previous run, another participant, or a push we
-						// adopted already-closed — so recording a click here could only
-						// ever complete the ask into a respond the server is guaranteed
-						// to refuse. Refusing the click is the honest surface; shipping
-						// the doomed RPC and rendering its error is not.
+						// The other way an ask is settled, invisible to the submitted mark:
+						// the server burns an ask on the first ACCEPTED respond and refuses
+						// later ones with ErrConflict. An `answered` ask is closed no matter
+						// who closed it, so recording a click here could only ship a doomed RPC.
 						if (ask.answered) return b;
 						const questions = ask.questions.map((q) =>
 							q.questionId === questionId ? answerQuestion(q, optionId) : q,
@@ -1720,52 +1480,35 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// The user acted on this ask again: whatever the last refusal said is no
 		// longer what the block should be showing.
 		if (answered) clearAskError(askId);
-		// THE GATE (Matt's ruling): the click stays LOCAL until the ask is
-		// COMPLETE. A per-click respond would persist a partial answer and lock
-		// the ask against the rest of it — the server takes exactly one respond
-		// per ask, forever. A single-question ask completes on its only click, so
-		// it still sends there.
+		// THE GATE (Matt's ruling): the click stays LOCAL until the ask is COMPLETE. A
+		// per-click respond would persist a partial answer and lock the ask — the server
+		// takes exactly one respond per ask, forever. A single-question ask sends on its click.
 		if (!answered || !isAskComplete(answered)) return;
 		sendAsk(messageId, answered, before);
 	};
-	// The skip affordance. A question the user means to SKIP never gets an
-	// answer, so the ask never completes and `answerAsk` never sends it: this is
-	// the explicit "send what I have" — the answered questions plus an empty
-	// `chosenOptionIds` for each skipped one. Inert on an ask that is already
-	// submitted, CLOSED by the server, unknown, or wholly unanswered (there is
-	// nothing to submit).
+	// The skip affordance. A skipped question never gets an answer, so the ask never
+	// completes and `answerAsk` never sends it: this is the explicit "send what I have"
+	// — answered questions plus empty `chosenOptionIds` for each skip. Inert on an ask
+	// already submitted, CLOSED by the server, unknown, or wholly unanswered.
 	const submitAsk = (messageId: string, askId: string) => {
 		if (isAskSubmitted(askId)) return;
 		const ask = findAsk(messageId, askId);
 		if (!ask) return;
-		// Closed server-side: the ask's one accepted respond has already been
-		// taken, and messages.go:404-406 refuses a second with ErrConflict. The
-		// submitted mark does not cover this — the ask can arrive closed on a
-		// push, or be closed by another participant, without this client ever
-		// having issued a respond.
+		// Closed server-side: the ask's one accepted respond has been taken, and a second
+		// is refused with ErrConflict. The submitted mark does not cover this — the ask
+		// can arrive closed on a push, or be closed by another participant.
 		if (ask.answered) return;
-		// "Nothing staged" is a question about the LOCAL record, so it scans the
-		// chosen ids rather than the server's `answered` flag: this ask has never
-		// been shipped, so the server has no view of it to consult.
+		// "Nothing staged" is a question about the LOCAL record, so it scans the chosen
+		// ids rather than the server's `answered` flag: this ask has never been shipped.
 		if (ask.questions.every((q) => q.chosenOptionIds.length === 0)) return;
-		// No rollback target: nothing was recorded by this call, so a refusal
-		// leaves the local record exactly as the user staged it — still honest,
-		// still unsent, still retryable.
+		// No rollback target: nothing was recorded by this call, so a refusal leaves the
+		// local record as the user staged it — still honest, unsent, retryable.
 		sendAsk(messageId, ask);
 	};
-	// The one write path: PostMessage with the channel `container`, the `topic`
-	// oneof (post into an existing topic by id, or get-or-create by name), a
-	// single text block and a fresh clientRequestId (the server dedups a retry of
-	// the same key and suppresses the duplicate fan-out).
-	//
-	// NOTHING is inserted locally. PostMessage returns the stored Message AND
-	// SubscribeComms echoes it; comms-state's upsertMessage dedups by message id
-	// and splices into (atUnixMs, id) order, so letting the echo render it is
-	// what makes it appear exactly once — a local insert would render a
-	// duplicate under a different (minted) id until the next resync.
-	//
-	// Rejects rather than swallowing: the composer must be able to keep the
-	// user's typed text when a post fails.
+	// The one write path: PostMessage with the channel `container`, `topic` oneof, one
+	// text block and a fresh clientRequestId (server dedups a retried key). NOTHING is
+	// inserted locally — SubscribeComms echoes it and upsertMessage dedups by id, so it
+	// renders once. Rejects rather than swallowing so the composer keeps typed text.
 	const postMessage = async (
 		channelId: string,
 		topic:
@@ -1815,10 +1558,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		}
 		setActiveAgentTabId(pane.id);
 	};
-	// Mint a fresh placeholder terminal pane. The counter only ever increments,
-	// so the id (`term-<agentId>-<n>`) is unique across the session even as panes
-	// open and close — no collision with openTab's id-dedupe or splitPaneOnce's
-	// repeat-guard. `terminalId` mirrors the id and matches no fixture on purpose:
+	// Mint a fresh placeholder terminal pane. The counter only increments, so the id
+	// (`term-<agentId>-<n>`) is unique across the session — no collision with openTab's
+	// dedupe or splitPaneOnce's guard. `terminalId` mirrors the id and matches no fixture:
 	// the pane renders an empty "starting" state until the daemon attaches one.
 	const newTerminalPane = (agent: Agent): Pane => {
 		const n = ++mintedTerminalCount;
@@ -1886,45 +1628,32 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			),
 		);
 	};
-	// The last refused Stop, or undefined when the last attempt was not refused
-	// — the reactive hole the log panel RENDERS, the same shape `askError` gives
-	// the ask block. Without it a refusal is a console line and a refused Stop is
-	// observably identical to a successful one (nothing visibly happens either
-	// way). Cleared at the start of the next attempt.
+	// The last refused Stop, or undefined when the last attempt was not refused — the
+	// reactive hole the log panel RENDERS, the shape `askError` gives the ask block.
+	// Without it a refused Stop is observably identical to a successful one. Cleared at
+	// the start of the next attempt.
 	const [stopError, setStopError] = createSignal<string | undefined>(undefined);
 	// Record a refusal AND keep routing it to the shell funnel — additive.
 	const refuseStop = (error: unknown) => {
 		setStopError(error instanceof Error ? error.message : String(error));
 		options.onCommsError?.(error);
 	};
-	// The observation pane's stop control. Steering happens in the channel; this
-	// is the one non-observational control.
-	//
-	// StopAgentSession's whole request is the server-minted `session_id`
-	// (compass_pb.ts:831-836), so this stops the OBSERVED session — no selection,
-	// no session, nothing issued (an empty-string stop would be a wrong live
-	// request). It is CompassClient-backed, NOT comms: the two services are
-	// separate clients over the one Connection.
-	//
-	// Never rejects, and never swallows. The RPC is Runner-backed: a server with
-	// no RunnerHub attached answers `Unavailable` (go/server/service.go:152-154),
-	// which is a REAL condition on the socket-only path, not a bug. There is no
-	// user text to preserve (unlike a failed post, which rejects so the composer
-	// can keep it), so the honest shape is to resolve and route the failure —
-	// including the offline no-client case — to `onCommsError`, where the shell
-	// surfaces it. Stop is idempotent server-side, so a retry after a refusal is
-	// safe.
+	// The observation pane's stop control (the one non-observational control; steering
+	// happens in the channel). StopAgentSession's whole request is the server-minted
+	// `session_id`, so this stops the OBSERVED session. CompassClient-backed, NOT comms.
+
+	// Never rejects, never swallows. The RPC is Runner-backed: a server with no
+	// RunnerHub answers `Unavailable`, a REAL condition on the socket-only path. No
+	// user text to preserve, so it resolves and routes the failure to `onCommsError`.
+	// Stop is idempotent server-side, so a retry after a refusal is safe.
 	const stopAgent = async (): Promise<void> => {
 		setStopError(undefined);
 		const session = agentSession();
 		if (!session) return;
-		// A fixture-sourced session's id was never minted by a server. Issuing
-		// StopAgentSession for it is worse than doing nothing: the server's
-		// unknown-session path is idempotent-success (go/internal/runner/host.go:
-		// 217-228), so the RPC would return OK, stop nothing, and never reach
-		// onCommsError — a control that is inert in the one way indistinguishable
-		// from working. Refuse locally and say why instead. (The control also
-		// renders disabled for such a session — LogPanel.tsx.)
+		// A fixture-sourced session's id was never minted by a server. Issuing Stop for it
+		// is worse than nothing: the server's unknown-session path is idempotent-success,
+		// so the RPC returns OK, stops nothing, and never reaches onCommsError — inert in
+		// the one way indistinguishable from working. Refuse locally and say why.
 		if (session.fixture) {
 			refuseStop(
 				new Error(
@@ -1974,13 +1703,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		navigateTo("/settings");
 	};
 	// Command palette (RIG-2483): the open signal plus the D3 pre-open snapshot
-	// `{ zone, element }`. `openPalette` captures the snapshot ONLY on the
-	// false→true transition — the close-toggle leg re-enters `togglePalette` with
-	// focus already in the palette input (a null zone), so re-capturing there
-	// would clobber the real pre-open zone/element. `closePalette` restores focus
-	// to the captured element (if still connected) and clears the snapshot. The
-	// captured element stays store-internal; `paletteZone` exposes only the zone
-	// half (read by the palette's action-mode ranking).
+	// `{ zone, element }`. `openPalette` captures the snapshot ONLY on the false→true
+	// transition — re-entering with focus already in the palette input would clobber the
+	// real pre-open zone. `closePalette` restores focus and clears; only the zone is exposed.
 	const [paletteOpen, setPaletteOpen] = createSignal(false);
 	const [paletteZone, setPaletteZone] = createSignal<FocusZone | null>(null);
 	let paletteElement: HTMLElement | null = null;
@@ -2004,11 +1729,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	};
 	const toggleLeft = () => setLeftOpen((v) => !v);
 	const toggleRight = () => setRightOpen((v) => !v);
-	// The keyboard spine (RIG-2456): created here, after the `show*`/toggle
-	// closures exist, so `view.bridge` + the RIG-2482/2483 seeds are registered
-	// next to their behavior. App.tsx installs the one window keymap listener over
-	// its accessors. `view.shortcuts` (RIG-2482) rides `toggleShortcuts`;
-	// `palette.open` + the `view.*` seeds (RIG-2483) ride the closures below.
+	// The keyboard spine (RIG-2456): created here, after the `show*`/toggle closures
+	// exist, so `view.bridge` + the RIG-2482/2483 seeds register next to their behavior.
+	// App.tsx installs the one window keymap listener. `view.shortcuts` rides
+	// `toggleShortcuts`; `palette.open` + the `view.*` seeds ride the closures below.
 	const keyboard = createKeyboardSpine({
 		showBridge,
 		toggleShortcuts,
@@ -2060,10 +1784,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// ── Pins (Record A §T2/T3; unreachable-pin amendment RIG-1645) ──
 	const isPinned = (accountId: string) =>
 		pinnedAgents().some((p) => p.id === accountId);
-	// Append-on-pin, order-preserving; a re-pin is a no-op (no reorder — OQ1).
-	// The handle is cached at pin time (RIG-1645 P0) via the resolution seam,
-	// falling back to the id if somehow unresolvable at pin time. Persistence is
-	// synchronous (write-through) so a pin survives a page reload with no
+	// Append-on-pin, order-preserving; a re-pin is a no-op (no reorder — OQ1). The handle
+	// is cached at pin time (RIG-1645 P0) via the resolution seam, falling back to the id.
+	// Persistence is synchronous (write-through) so a pin survives a reload with no
 	// dependence on effect scheduling (§T3).
 	const pinAgent = (accountId: string) =>
 		setPinnedAgents((prev) => {
@@ -2084,11 +1807,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		});
 		if (activeRightTab() === `agent:${accountId}`) setActiveRightTab("status");
 	};
-	// The derivation (RIG-1645 P1): the fleet group is EVERY pin, in pin order —
-	// a pin that resolves to a visible agent via the P5 seam builds a live
-	// `fleetItemForAgent`, an unresolvable one builds a marked `unreachableFleetItem`
-	// (cached-handle label). Then the static `status` item; the issue group is the
-	// static issue items. Nothing is filtered — an unreachable pin keeps its item.
+	// The derivation (RIG-1645 P1): the fleet group is EVERY pin, in pin order — a pin
+	// resolving to a visible agent (P5 seam) builds a live `fleetItemForAgent`, an
+	// unresolvable one a marked `unreachableFleetItem`. Then the static `status` item
+	// and the issue items. Nothing is filtered — an unreachable pin keeps its item.
 	const rightTabGroups = createMemo<
 		readonly { group: RightTabGroup; items: readonly ActivityBarItem[] }[]
 	>(() => {

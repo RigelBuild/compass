@@ -1,29 +1,9 @@
 //go:build unix
 
 // The agent-initiated lifecycle leg: lifecycleService implements
-// runnerhub.LifecycleCaller (relay_lifecycle.go), the seam the RunnerHub
-// delegates a resolved-caller spawn/despawn into. It runs the SAME provisioning
-// paths a human-initiated ProvisionAgentWorkspace/StartAgentSession takes
-// (service.go), so authz, server-authoritative persona, and container placement
-// are identical — the hub depends only on the narrow LifecycleCaller surface and
-// never pulls the whole service in.
-//
-// Trust model (the load-bearing security leg). The caller AccountID is resolved
-// Server-side by the hub from its own session binding and passed in; the Runner
-// never asserts it. Two fail-closed authority rules follow (spawn/despawn record
-// F2 ownership):
-//
-//   - Spawn creates the new peer under the CALLER'S OWNER — never the caller
-//     agent itself, never the bootstrap admin — so a spawned peer shares the
-//     human owner of the agent that spawned it.
-//   - Despawn is same-owner only: a target owned by a different user (or unknown,
-//     or not an agent) is an INDISTINGUISHABLE CodeNotFound, so a caller can
-//     never probe a foreign peer's existence; despawning oneself is refused
-//     CodeInvalidArgument.
-//
-// A tool-level failure (dup handle, foreign target, self-despawn) is returned as
-// a Connect-coded error the hub renders IN-BAND (lifecycleCallError); only a
-// resolution miss / no-caller is a transport error, and that is the hub's job.
+// runnerhub.LifecycleCaller, running the SAME provisioning paths as service.go
+// with a Server-resolved caller. Fail-closed: spawn creates the peer under the
+// CALLER'S OWNER; despawn is same-owner only (foreign target = CodeNotFound).
 package server
 
 import (
@@ -105,10 +85,9 @@ func (l *lifecycleService) WakeAgent(ctx context.Context, agent store.AccountID)
 		return
 	}
 
-	// 2. Per-agent singleflight: the first caller for this agent runs the start;
-	// concurrent callers block on it and share its result (shared==true), so a
-	// burst at one offline agent produces exactly one resume/Start. The outcome
-	// the leader logs already records the attempt; a shared caller logs
+	// 2. Per-agent singleflight: the first caller runs the start, concurrent
+	// callers block and share its result (shared==true), so a burst at one offline
+	// agent produces exactly one resume/Start. A shared caller logs
 	// outcome=coalesced so the coalescing is visible.
 	outcome, _, shared := l.wakeGroup.Do(string(agent), func() (any, error) {
 		return l.wakeOnce(ctx, agent), nil
@@ -193,25 +172,16 @@ func (l *lifecycleService) SpawnAsAccount(
 	ctx, cancel := context.WithTimeout(ctx, spawnChainTimeout)
 	defer cancel()
 
-	// Role validation: every spawned node carries a role from the closed
-	// taxonomy, and the server is the authority on the set. This is the first
-	// check in the chain — a structurally-invalid role is the cheapest possible
-	// rejection (a pure in-memory set lookup), so reject it before any store I/O
-	// and before the create/resume switch below, so the guard also covers the
-	// idempotent-resume branch and a malformed role always returns the same
-	// CodeInvalidArgument regardless of unrelated handle state. The LABEL is
-	// validated here, never the prompt text: the container's block-0 prompt
-	// still arrives only via the operator config bundle (prompts/<role>/SYSTEM.md),
-	// so a valid label with an unshipped prompt degrades to the default block-0
-	// (a visible runtime warn, not a spawn failure), while an off-taxonomy label
-	// never reaches the store at all.
+	// Role validation: every spawned node carries a role from the closed taxonomy,
+	// and the server is the authority. First check in the chain, so it covers the
+	// idempotent-resume branch too. The LABEL is validated, never the prompt text:
+	// a valid label with an unshipped prompt degrades to default block-0 (a warn).
 	if _, ok := spawnableRoles[req.GetRole()]; !ok {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errUnknownRole)
 	}
 
-	// F2 ownership: the spawned peer inherits the CALLER'S OWNER. Resolve it
-	// from the store — the caller is an agent account, and its owner is who the
-	// new peer belongs to.
+	// F2 ownership: the spawned peer inherits the CALLER'S OWNER, resolved from the
+	// store (the caller is an agent account).
 	callerOwner, err := l.store.AgentOwner(ctx, caller)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -220,37 +190,28 @@ func (l *lifecycleService) SpawnAsAccount(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner: %w", err))
 	}
 
-	// Shadow guard (defense in depth): an agent may never be spawned onto a
-	// handle a user or the system account already holds. Storage permits the
-	// overlap — a user/system handle lives in the global partial-unique index
-	// (owner_user_id IS NULL) and an agent handle in the per-owner one, so they
-	// never collide on insert — but a peer that shadowed a human's handle could
-	// be addressed in its place. Refuse it up front with the same in-band
-	// already_exists a duplicate agent handle gets, never revealing the kind of
-	// account that holds it. UserByHandle resolves the bare handle in that global
-	// index (users AND the system sender); a clean miss (ErrNotFound) is the
-	// common case and falls through to the create.
+	// Shadow guard (defense in depth): an agent may never be spawned onto a handle
+	// a user or system account already holds. Storage permits the overlap, but a
+	// peer shadowing a human's handle could be addressed in its place. Refuse with
+	// the same in-band already_exists, never revealing the holder's account kind.
 	if _, err := l.store.UserByHandle(ctx, req.GetHandle()); err == nil {
 		return nil, connect.NewError(connect.CodeAlreadyExists, errHandleTaken)
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("checking handle for user shadow: %w", err))
 	}
 
-	// Persona and role are set-at-creation from the spawn request (org-management
-	// Manager creation): under the D9 owner-acts model the caller's OWNER is the
-	// authority, so a Manager-creating spawn legitimately carries role+persona at
-	// creation. Role is caller-SELECTED but server-VALIDATED (above); persona is
-	// free-text. Both are stored via CreateAgent (the source of record) and then
-	// threaded to the Runner from the CREATED store account below, never from the
-	// request directly.
+	// Persona and role are set-at-creation from the spawn request: under the D9
+	// owner-acts model the caller's OWNER is the authority. Role is caller-SELECTED
+	// but server-VALIDATED (above); persona is free-text. Both stored via
+	// CreateAgent and threaded to the Runner from the CREATED account, never the request.
 	created, err := l.store.CreateAgent(ctx, callerOwner, store.NewAgent{
 		Handle:      req.GetHandle(),
 		DisplayName: req.GetDisplayName(),
 		Persona:     req.GetPersona(),
 		Role:        req.GetRole(),
-		// Set-at-creation: the spawned peer's parent in the agent tree is its
-		// spawner (§T3). A new account has no descendants, so this edge cannot
-		// form a cycle — the cycle check lives only on the mutable ReparentAgent.
+		// Set-at-creation: the spawned peer's parent is its spawner (§T3). A new
+		// account has no descendants, so this edge cannot form a cycle — the cycle
+		// check lives only on the mutable ReparentAgent.
 		ParentAgentID: caller,
 	})
 	var resp *compassv1internal.SpawnPeerResponse
@@ -266,14 +227,10 @@ func (l *lifecycleService) SpawnAsAccount(
 		return nil, err
 	}
 
-	// Spawn auto-open (R8, design.md T3:755-762): after the spawn chain succeeds,
-	// open the manager<->new-peer DM and set DmChannelName on the response. This
-	// covers the fresh, resume, AND idempotent already-placed paths from one site
-	// — OpenDM is resolve-or-create, so every path yields the SAME name
-	// idempotently (a re-spawn returns the same DM). An open FAILURE post-spawn
-	// is logged and returned with an EMPTY dm_channel_name, NEVER a spawn
-	// rollback: the DM is recoverable next turn via comms_open_dm, the spawned
-	// peer is not.
+	// Spawn auto-open (R8): after the spawn chain succeeds, open the
+	// manager<->new-peer DM and set DmChannelName. OpenDM is resolve-or-create, so
+	// fresh/resume/already-placed all yield the SAME name idempotently. An open
+	// FAILURE is logged and returned with an EMPTY name, NEVER a spawn rollback.
 	if resp != nil && resp.GetAgentAccountId() != "" {
 		resp.DmChannelName = l.autoOpenSpawnDM(ctx, caller, store.AccountID(resp.GetAgentAccountId()))
 	}
@@ -301,20 +258,10 @@ func (l *lifecycleService) DespawnAsAccount(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
 	}
 
-	// Owner check, fail-closed and indistinguishable — and caller-FIRST to close
-	// a latency side-channel. Resolving the caller before the target means both
-	// the unknown-target and foreign-owner paths run exactly two AgentOwner
-	// queries (the caller always resolves — the hub only delegates for a resolved
-	// agent caller — then the target either hits or misses), so the two outcomes
-	// differ only by an O(1) string compare, never by round-trip count. Were the
-	// target resolved first, an unknown target would return after one query while
-	// a foreign-but-existing one ran two, and the latency itself would distinguish
-	// "foreign peer exists" from "no such id" — the exact existence-probe the
-	// indistinguishable merge exists to prevent. This mirrors the constant-shape
-	// bar of RequireAgentSessionSubscriber (agent_sessions.go:58), which folds
-	// unknown and forbidden into one error in one round-trip for the same reason.
-	// Resolving the caller first also correctly authenticates the caller
-	// (fail-closed errCallerNotAgent) before it probes the target at all.
+	// Owner check, fail-closed and indistinguishable — and caller-FIRST to close a
+	// latency side-channel: resolving the caller before the target means both the
+	// unknown-target and foreign-owner paths run exactly two AgentOwner queries, so
+	// the outcomes differ only by an O(1) compare, never by round-trip count.
 	callerOwner, err := l.store.AgentOwner(ctx, caller)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -550,11 +497,9 @@ func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) 
 			return wakeOutcomeResumed
 		case errors.Is(err, errWakeNoPlacement):
 			// A prior session with no current placement is a despawned agent
-			// (despawn deletes the placement; agent_sessions rows are never
-			// deleted). Benign and common, exactly like freshStart's no-placement
-			// arm — a logged no-op, NOT outcome=failed: the owed row waits for the
-			// agent's next natural start. Emitting ERROR here would trip error-rate
-			// alerting on a routine path and drift from the established OQ-7 enum.
+			// (despawn deletes the placement; agent_sessions rows are never deleted).
+			// Benign and common — a logged no-op, NOT outcome=failed. Emitting ERROR
+			// here would trip error-rate alerting on a routine path.
 			return wakeOutcomeNoPlacement
 		default:
 			slog.ErrorContext(ctx, "agent wake: resume failed", "agent_account_id", agent, "session_id", sessionID, "error", err)
@@ -620,13 +565,10 @@ func (l *lifecycleService) freshStart(ctx context.Context, agent store.AccountID
 		return wakeOutcomeFailed
 	}
 	if err := l.store.RecordAgentSession(ctx, startResp.GetSessionId(), agent); err != nil {
-		// The session is already live and started, and the pending message
-		// delivers via the live sweep this Start fired — so we deliberately do
-		// NOT roll the container back here (unlike provisionAndStart, which
-		// rolls back a post-Start failure). The only cost of the unrecorded
-		// session is that a FUTURE wake won't find it via LatestSessionForAccount
-		// and will fresh-start again; acceptable for a best-effort void wake on a
-		// rare DB-error path. outcome=failed still flags the record miss.
+		// The session is already live and started, and the pending message delivers
+		// via the live sweep this Start fired — so we deliberately do NOT roll the
+		// container back here. The only cost is that a FUTURE wake fresh-starts
+		// again; acceptable for a best-effort void wake. outcome=failed flags it.
 		slog.ErrorContext(ctx, "agent wake: recording fresh session failed", "agent_account_id", agent, "session_id", startResp.GetSessionId(), "error", err)
 		return wakeOutcomeFailed
 	}

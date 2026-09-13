@@ -65,11 +65,9 @@ func run() error {
 		return err
 	}
 	if showVersion {
-		// Genuine CLI output — the --version result printed to stdout, not a
-		// diagnostic — so an explicit writer, never slog and never a bare
-		// fmt.Print (go-no-fmt-print-logging). stdout write errors on --version
-		// are not actionable (the process is exiting cleanly regardless), so the
-		// return is deliberately discarded.
+		// Genuine CLI output — the --version result to stdout, not a diagnostic — so
+		// an explicit writer, never slog or a bare fmt.Print. A stdout write error
+		// here is not actionable (the process is exiting cleanly), so discarded.
 		_, _ = fmt.Fprintf(os.Stdout, "compass-server %s\n", version)
 		return nil
 	}

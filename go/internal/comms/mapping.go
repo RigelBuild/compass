@@ -10,9 +10,8 @@ import (
 )
 
 // This file maps the compass.v1 wire messages onto the store's domain types at
-// the service edge (store types.go:9-12: "the comms service maps proto <-> store
-// at their edge"), and publishes the write-through events onto the comms bus.
-// The store owns its own Go types, distinct from the generated stubs, so every
+// the service edge, and publishes the write-through events onto the comms bus. The
+// store owns its own Go types, distinct from the generated stubs, so every
 // crossing is explicit here — the one place the two shapes meet.
 
 // ---- store -> wire ----
@@ -414,10 +413,9 @@ func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBloc
 
 func askFromWire(a *compassv1.Ask) *store.Ask {
 	// ask_id is server-owned on the POST path: drop any caller-supplied value so
-	// the store's mintAskIDs always assigns a fresh, globally-unique id on append
-	// (comms.proto: "server-assigned and globally unique"). Honoring a wire value
-	// would let two posts share an ask_id, making RespondToAsk's containment
-	// SELECT match multiple rows and answer a nondeterministic one.
+	// the store's mintAskIDs assigns a fresh, globally-unique id on append. Honoring
+	// a wire value would let two posts share an ask_id, making RespondToAsk's
+	// containment SELECT match multiple rows and answer a nondeterministic one.
 	return &store.Ask{AskID: "", Questions: askQuestionsFromWire(a)}
 }
 
@@ -453,12 +451,9 @@ func askQuestionsFromWire(a *compassv1.Ask) []store.AskQuestion {
 }
 
 // ---- write-through event publishers ----
-//
-// Each mutation publishes the corresponding comms event onto the bus after the
-// store commit (write-through fan-out, design.md:1198-1201). The bus payload is
-// the whole SubscribeCommsResponse with only its payload oneof set; the bus
-// stamps seq/at_unix_ms/instance_epoch at publish, and the stream edge
-// (subscribe.go) copies them onto the delivered response.
+// Each mutation publishes its comms event onto the bus after the store commit. The
+// payload is the whole SubscribeCommsResponse with only its oneof set; the bus
+// stamps seq/at_unix_ms/instance_epoch at publish and the stream edge copies them.
 
 func (c *Comms) publishAccountChanged(a store.Account) {
 	c.bus.Publish(&compassv1.SubscribeCommsResponse{

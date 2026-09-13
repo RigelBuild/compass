@@ -4,10 +4,8 @@ package delivery
 
 // RIG-2490 T2 — the recovery scan (scanMissedMentions), RED-first. Each case
 // drives the scan SYNCHRONOUSLY (not through the bus) over hand-written fakes
-// and asserts the observable effects: owed rows recorded, wakes, steers, and the
-// mentions-routed mark. context.Background() is the test root
-// (rule://go-thread-context exemption for _test.go); it is passed straight into
-// scanMissedMentions and never re-rooted.
+// and asserts the observable effects: owed rows recorded, wakes, steers, and
+// the mentions-routed mark.
 
 import (
 	"context"

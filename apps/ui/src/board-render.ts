@@ -1,12 +1,7 @@
-// Shared render derivations over the canonical Issue/PullRequest types (DL-069).
-// One home for the total functions the card, the Done view, and the right-sidebar
-// PR pane must all agree on, so those surfaces can never drift.
-//
-// One deliberate exception: `authorLabel` (below) is the PR pane's ARTIFACT-author
-// label. The issue card foot does NOT share it — the card shows the issue's
-// assignee (the agent currently on it), a different fact from the artifact's
-// author, so a reassigned issue names its current holder on the card and its
-// original author in the PR pane. That divergence is intended, not drift.
+// Shared render derivations over the canonical Issue/PullRequest types (DL-069) — one home
+// for the total functions the card, the Done view, and the PR pane must agree on. One
+// deliberate exception: `authorLabel` is the PR pane's ARTIFACT-author label; the card
+// instead shows the issue's current assignee (a different fact). That divergence is intended.
 
 import type { PrLifecycle } from "./constants";
 import type {

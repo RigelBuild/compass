@@ -2,33 +2,10 @@
 
 package delivery
 
-// RIG-2490 T4 — the pre-settle mention-loss closure acceptance cycle, end-to-end
-// over the FULL T1–T3 stack against a REAL Postgres (the store of record is only
-// proven against the database it targets — design.md:1188; no mock). Each leg
-// drives the true consumer (real *store.Store as DeliveryReads, a real
-// events.Bus, the shared fakeDispatcher/fakeResolver for the hub's dispatch +
-// resolution roles) and gates on the durable observable effect — an owed_mentions
-// row, a recorded steer — never a sleep, never a retry (rule://no-retries).
-// Determinism comes from CONSTRUCTION, not timing:
-//
-//   - EVENT SEVERANCE. Run subscribes at since_seq=0 and replays the whole
-//     retained ring (events.go), so restarting a consumer over the SAME bus that
-//     saw the publish would REPLAY the event and mask the recovery scan. Every
-//     crash/restart leg therefore posts the mention THROUGH THE STORE (committed,
-//     mentions_routed_at NULL) with NO bus publish, and constructs the consumer
-//     over a FRESH events.Bus that never saw it — so sub.Replay is empty BY
-//     CONSTRUCTION and only the recovery scan (T3) can surface the message. The
-//     negative-control leg proves this severance is real (fresh Replay empty),
-//     which is what makes the crash leg's owed row attributable to the scan and
-//     not to an incidental bus delivery.
-//   - EXPLICIT EDGES. Session liveness is a c.OnSessionStarted call with the
-//     resolver bound, never a wait for a background wake.
-//   - BARRIERS, NOT SLEEPS. waitOwed polls the durable owed set; the overrun leg
-//     gates on the afterResubscribe seam (the scan runs before it fires).
-//
-// context.Background() is the test root (rule://go-thread-context exemption for
-// _test.go, matching consumer_test.go / scan_wiring_test.go); it is threaded into
-// Run via startConsumer and into every store read below, never re-rooted.
+// RIG-2490 T4 — the pre-settle mention-loss closure cycle, end-to-end over the FULL
+// T1–T3 stack against a REAL Postgres. Each leg drives the true consumer and gates
+// on the durable effect (an owed_mentions row, a steer). Crash/restart legs post the
+// mention THROUGH THE STORE over a FRESH bus, so only the recovery scan surfaces it.
 
 import (
 	"context"
@@ -204,12 +181,10 @@ func waitMarked(t *testing.T, ctx context.Context, s *store.Store, messageID str
 	}
 }
 
-// Leg 1 — CRASH. A mention to an offline, unsubscribed, non-home, non-mandatory
-// (out-of-sweep-set) agent member is committed with a NULL marker and its bus
-// event severed (fresh bus). Run's START scan (consumer.go:279) recovers it into
-// a durable owed row; the member's session start then sweeps it as EXACTLY ONE
-// steer; an ack clears the row so a second start sweeps nothing. The full
-// no-loss cycle: recover -> steer once -> ack -> quiescent.
+// Leg 1 — CRASH. A mention to an offline, out-of-sweep-set agent member is
+// committed with a NULL marker and its bus event severed (fresh bus). Run's START
+// scan recovers it into an owed row; the member's session start sweeps it as
+// EXACTLY ONE steer; an ack clears it so a second start sweeps nothing.
 func TestCrashRecoveryStartScanOwedThenOneSteerThenAckClears(t *testing.T) {
 	ctx := context.Background()
 	s := openDeliveryStore(t)
@@ -247,12 +222,10 @@ func TestCrashRecoveryStartScanOwedThenOneSteerThenAckClears(t *testing.T) {
 		t.Fatalf("dispatch = %+v, want {sess-member, %s, steer}", got[0], msg.ID)
 	}
 
-	// Ack clears the owed row (store T1, no cursor row needed); a second start
-	// edge then sweeps nothing — no re-steer, no leak. The load-bearing guard is
-	// the owedTotal==0 durable read below (synchronous, right after AckDelivery);
-	// the post-re-start dispatch-count assertion is belt-and-suspenders, not a
-	// reliable negative barrier (waitStartsDrained only proves the start edge was
-	// dequeued before the sweep, per introspect_test.go).
+	// Ack clears the owed row (store T1); a second start edge then sweeps nothing.
+	// The load-bearing guard is the owedTotal==0 durable read below (synchronous,
+	// right after AckDelivery); the post-restart dispatch-count assertion is
+	// belt-and-suspenders, not a reliable negative barrier.
 	if err := s.AckDelivery(ctx, member.ID, ch, string(msg.ID)); err != nil {
 		t.Fatalf("AckDelivery: %v", err)
 	}
@@ -266,23 +239,10 @@ func TestCrashRecoveryStartScanOwedThenOneSteerThenAckClears(t *testing.T) {
 	}
 }
 
-// Leg 2 — NEGATIVE CONTROL (severance proof). The same committed-NULL, unpublished
-// mention. This leg proves the fresh-bus severance the crash leg relies on is
-// REAL and that, absent the recovery scan running, the mention produces no owed
-// row — so the crash leg's owed row is attributable to the scan and nothing else:
-//
-//   - A fresh bus subscribed exactly as Run does (since_seq=0) has an EMPTY
-//     Replay: the store-only post published nothing, so the retained ring never
-//     saw it. A consumer relying solely on the bus (the pre-T3 behavior) would
-//     surface nothing.
-//   - The message IS in the committed-but-unmarked set — the scan's input exists.
-//   - Yet OwedMentions is empty: no owed row exists until the scan runs.
-//
-// (A pre-scan emptiness assertion is, by construction, green whether or not the
-// scan exists — an assertion of absence cannot itself flip red when the scan is
-// added. The genuine "red without the scan" evidence is the ablation of
-// consumer.go:279, which reddens the crash + overrun legs; this leg's job is to
-// prove the severance that makes that ablation meaningful — see the T4 report.)
+// Leg 2 — NEGATIVE CONTROL (severance proof). A fresh bus subscribed as Run does has
+// an EMPTY Replay and the message is in the committed-but-unmarked set, yet
+// OwedMentions is empty until the scan runs — so the crash leg's owed row is the
+// scan's alone (the start-scan ablation reddens Leg 1/4).
 func TestNegativeControlFreshBusSeversMentionNoOwedWithoutScan(t *testing.T) {
 	ctx := context.Background()
 	s := openDeliveryStore(t)
@@ -314,12 +274,10 @@ func TestNegativeControlFreshBusSeversMentionNoOwedWithoutScan(t *testing.T) {
 	}
 }
 
-// Leg 3 — AGENT-AUTHORED, held-then-restart. An agent-authored mention posted
-// while its author streams is HELD live (dispatch.go held path) and marked only
-// at the author's settle edge. A restart before that settle is modeled by a
-// FRESH bus + a FRESH consumer: no author session survives and c.held is empty,
-// so the committed-NULL message is scannable — the start scan recovers it into an
-// owed row exactly as a human-authored one, closing the held-message crash window.
+// Leg 3 — AGENT-AUTHORED, held-then-restart. An agent-authored mention posted while
+// its author streams is HELD live and marked only at settle. A restart before
+// settle is a fresh bus + fresh consumer: no author session, c.held empty, so the
+// committed-NULL message is scannable and the start scan recovers it.
 func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	ctx := context.Background()
 	s := openDeliveryStore(t)
@@ -351,16 +309,10 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	waitMarked(t, ctx, s, string(msg.ID))
 }
 
-// Leg 4 — LAGGED OVERRUN. A mention committed (NULL, unpublished) DURING a
-// bus-lag overrun window is recovered by the OVERRUN-branch scan
-// (consumer.go:343), not the start scan. Driven exactly like the bus-lag resync
-// harness (scan_wiring_test.go): a real live message stalls the consumer inside
-// its armed first dispatch, the mention is committed AFTER that entry (so Run's
-// start scan — which already ran at startup — cannot have seen it), the live
-// buffer is overrun, and release triggers the re-subscribe. Gating on the
-// afterResubscribe seam is a deterministic barrier: the overrun-branch scan runs
-// (consumer.go:343) strictly before that seam fires (consumer.go:344-346), so a
-// closed resubscribed channel means the scan has completed.
+// Leg 4 — LAGGED OVERRUN. A mention committed (NULL, unpublished) DURING a bus-lag
+// overrun window is recovered by the OVERRUN-branch scan, not the start scan. A live
+// message stalls the consumer inside its first dispatch, the mention is committed
+// after entry, the buffer overruns, and release triggers a deterministic re-subscribe.
 func TestLaggedOverrunBranchScanRecoversDroppedWindowMention(t *testing.T) {
 	ctx := context.Background()
 	s := openDeliveryStore(t)
@@ -397,10 +349,9 @@ func TestLaggedOverrunBranchScanRecoversDroppedWindowMention(t *testing.T) {
 	<-disp.enteredFirst
 	m1 := postThroughStore(t, ctx, s, ch, owner.ID, "@aa dropped in the overrun window")
 	// Overrun the live buffer so the subscription latches lagged and closes.
-	// These flood events are bus-only overrun fuel — un-stored, sharing a literal
-	// wire id and helpers' "chan-1" that has no row in this pgtest's real store;
-	// the consumer is stalled inside the armed first dispatch, so none is ever
-	// handled. The id/channel mismatch is inert by construction, not a defect.
+	// These flood events are bus-only overrun fuel with no store row; the consumer
+	// is stalled inside the armed first dispatch, so none is ever handled. The
+	// id/channel mismatch is inert by construction.
 	for range busLagFloodCount {
 		c.bus.Publish(postedResponse(wireText("flood", owner.ID, "x")))
 	}

@@ -1,12 +1,9 @@
 package forge
 
 // Unit tests for the GitHub App webhook ingress: the constant-time signature
-// verifier and the (event, body) -> ForgeEvent normalizer. Covers the T2 test
-// cycle (design.md:667-674): signature vectors (valid/tampered/missing), every
-// Approach event-table row (design.md:131-142) parses to the right
-// kind/coordinate/payload, ignored actions -> ok=false, PR-vs-issue comment
-// discrimination, check_suite.completed -> HeadSHA set + Checks nil, and
-// StripOwner applied at normalize.
+// verifier and the (event, body) -> ForgeEvent normalizer. Covers T2: signature
+// vectors, every event-table row parsing to the right kind/coordinate/payload,
+// ignored actions, PR-vs-issue discrimination, check_suite, and StripOwner.
 
 import (
 	"crypto/hmac"

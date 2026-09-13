@@ -9,19 +9,14 @@ import (
 )
 
 // Handle resolution at the service edge (RIG-2751 handle cutover): every
-// request-input account field carries a `@handle`, and the server resolves it to
-// an account id here — the store layer stays id-typed. A resolver miss flows
-// through edgeError as an in-band NOT_FOUND (never a transport teardown).
-//
-// Two resolution shapes, per §"Where resolution lives":
-//   - Member/owner fields (resolveHandles → store.AccountsByHandles) name users
-//     as well as agents and ARE visibility-scoped (OQ-6 SCOPED): the viewer is
-//     the caller, so an invisible handle misses like an unknown one.
-//   - Singular agent fields (resolveAgentHandle → store.AgentByHandle) are
-//     owner-namespaced but NOT viewer-scoped — an invisible-but-real agent in the
-//     resolution owner's namespace still resolves. The one exception is the
-//     roster vantage, which layers its OWN visibility check on top to close the
-//     vantage-probe oracle (resolveVisibleAgentHandle).
+// request-input account field carries a `@handle`, resolved to an id here so the
+// store stays id-typed. A resolver miss flows through edgeError as an in-band
+// NOT_FOUND, never a transport teardown.
+
+// Two resolution shapes: member/owner fields (resolveHandles) name users too and
+// ARE visibility-scoped, so an invisible handle misses like an unknown one;
+// singular agent fields (resolveAgentHandle) are owner-namespaced but NOT viewer-
+// scoped, except the roster vantage which layers its own check (resolveVisibleAgentHandle).
 
 // resolveHandles resolves a batch of member/owner handles (which legitimately
 // name users as well as agents) to their account ids, in the caller's own

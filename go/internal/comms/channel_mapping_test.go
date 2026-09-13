@@ -1,13 +1,9 @@
 // The channel-kind discriminant at the store <-> proto edge (mapping.go
-// channelKindToWire / channelKindFromWire). Both are pure functions of their
-// argument, so the contract is fully observable with NO database — this file is
-// untagged and runs on the default `go test` lane.
-//
-// GROUP_DM retirement (RIG-2962 T1): the kind is deprecated in place — never
-// PRODUCED on either side. A DM widens by converting to a named CHANNEL, so no
-// mapping arm may mint a GROUP_DM. The number stays reserved (tombstone), but a
-// legacy or hostile GROUP_DM input collapses to a plain channel rather than
-// round-tripping the retired kind.
+// channelKindToWire / channelKindFromWire). Pure, no database, default lane.
+
+// GROUP_DM retirement (RIG-2962 T1): the kind is deprecated in place, never
+// PRODUCED. No mapping arm may mint a GROUP_DM; the number stays reserved, but a
+// legacy or hostile GROUP_DM input collapses to a plain channel.
 
 package comms
 

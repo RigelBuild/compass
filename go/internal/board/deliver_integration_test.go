@@ -2,16 +2,10 @@
 
 package board
 
-// Integration seam between the RunnerHub and the real Bridge board — the central
-// design claim: a session lifecycle frame delivered through the REAL hub is
-// BOTH recorded into the board (queryable by GetAgentStatus's Snapshot) AND
-// fanned onto SubscribeEvents, off one source of truth. The board imports
-// runnerhub here (runnerhub does not import board, so there is no cycle) and
-// wires itself in as the hub's LifecycleSink — the structural contract serve.go
-// relies on.
-//
-// The negative (UNSPECIFIED skip) half is proven deterministically with a real
-// sentinel frame, mirroring projection_test.go's sentinel idiom — never a timer.
+// Integration seam between the RunnerHub and the real Bridge board: a session
+// lifecycle frame through the REAL hub is both recorded into the board and
+// fanned onto SubscribeEvents, off one source of truth. The negative (UNSPECIFIED
+// skip) half is proven with a real sentinel frame, never a timer.
 
 import (
 	"context"

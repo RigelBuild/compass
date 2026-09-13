@@ -64,11 +64,10 @@ func IssueAccountToken(ctx context.Context, st *store.Store, account store.Accou
 	return "", errors.New("persisting issued token: hash collision on two successive mints")
 }
 
-// Sentinel resolution failures returned by ResolveToken. They exist so the
-// server can LOG which case fired (audit), NOT so a door can tell them apart to
-// the client: a door MUST map all three to the same bare CodeUnauthenticated, or
-// the response becomes an oracle for whether a token is unknown, revoked, or
-// issued for the other door.
+// Sentinel resolution failures returned by ResolveToken. They exist so the server
+// can LOG which case fired (audit), NOT so a door tells them apart to the client:
+// a door MUST map all three to the same bare CodeUnauthenticated, or the response
+// becomes an oracle for whether a token is unknown, revoked, or for the other door.
 var (
 	// ErrTokenNotFound: the presented token was never issued (or the store has
 	// no live record of it). Any unexpected store error folds here too, so

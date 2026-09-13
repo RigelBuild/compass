@@ -22,10 +22,9 @@ import (
 )
 
 // Hermetic supervisor suite (§(b) acceptance): every row runs over an in-memory
-// h2c listener with real child processes (ordinary host commands, no KVM). It
-// proves the gate, uid enforcement, stdin-not-argv, exit-code-not-error,
-// stream demux ordering, Signal semantics, ctx-bound reap, and the peer-CID
-// pure function. The reboot(RB_POWER_OFF) path is U4's (needs real PID 1).
+// h2c listener with real child processes (no KVM). It proves the gate, uid
+// enforcement, stdin-not-argv, exit-code-not-error, stream demux ordering, Signal
+// semantics, ctx-bound reap, and the peer-CID pure function.
 
 // testCredential is the hermetic credentialFunc: it returns nil so a spawned
 // child runs as the test's own uid — the setuid path (linuxCredential) needs
@@ -277,15 +276,10 @@ func TestRunNftScriptCarriesExitStatus(t *testing.T) {
 }
 
 func TestRunNftScriptFloorsGuestPATH(t *testing.T) {
-	// The §(e) total-backend-outage regression: guestd is PID 1 with no PATH,
-	// and the arm is a spawn path SEPARATE from exec children, so it never
-	// inherits mergeEnv's PATH floor. Without an explicit floor the script's
-	// bare nft/getent/awk resolve against an empty PATH and fail
-	// "command not found", failing EVERY microVM Start. Prove the arm child
-	// runs with PATH == defaultGuestPATH: echo/redirection are shell builtins
-	// (no PATH needed), so the captured value reflects only the env the arm
-	// sets. With the bug the child inherits the test process's ambient PATH, so
-	// this mismatches (red); with the floor it matches (green).
+	// The §(e) total-backend-outage regression: guestd is PID 1 with no PATH, and the
+	// arm is a spawn path SEPARATE from exec children, so it never inherits mergeEnv's
+	// PATH floor. Without a floor the script's bare nft/getent/awk fail every microVM
+	// Start. Prove the arm child runs with PATH == defaultGuestPATH.
 	dir := t.TempDir()
 	out := dir + "/path"
 	if err := runNftScript(t.Context(), `echo "$PATH" > `+out); err != nil {
@@ -427,12 +421,10 @@ func TestExecOutputOverflowIsResourceExhausted(t *testing.T) {
 }
 
 func TestExecTimeoutKillsAndReapsChild(t *testing.T) {
-	// A one-shot Exec with timeout_seconds set must, on overrun, SIGKILL the
-	// child group and reap it before returning CodeDeadlineExceeded. One-shot
-	// Exec does not register in the exec table, so the reap is proven by the
-	// PROMPT return: the handler runs <-waitErr (the reap) between the SIGKILL
-	// and the return, so a bounded elapsed with the right code is the reap. A
-	// missed reap would block on <-waitErr forever and blow the 10s ceiling.
+	// A one-shot Exec with timeout_seconds set must, on overrun, SIGKILL the child
+	// group and reap it before returning CodeDeadlineExceeded. One-shot Exec does not
+	// register in the exec table, so the reap is proven by the PROMPT return; a missed
+	// reap would block on <-waitErr forever and blow the 10s ceiling.
 	client, _ := newTestSupervisor(t, true, uint32(syscall.Getuid()))
 	start := time.Now()
 	_, err := client.Exec(t.Context(), connect.NewRequest(&compassv1internal.ExecRequest{
@@ -452,13 +444,10 @@ func TestExecTimeoutKillsAndReapsChild(t *testing.T) {
 }
 
 func TestExecCanceledReapsChild(t *testing.T) {
-	// A caller cancelling the request ctx before the child exits must SIGKILL +
-	// reap the child and surface CodeCanceled. One-shot Exec does not register
-	// in the exec table (only ExecStream does), so the reap is proven two ways:
-	// the child spawns server-side (a marker file it touches on start), and the
-	// handler returns CodeCanceled promptly — it physically executes <-waitErr
-	// (the reap) between the SIGKILL and that return, so a bounded return is the
-	// reap.
+	// A caller cancelling the request ctx before the child exits must SIGKILL + reap
+	// the child and surface CodeCanceled. One-shot Exec does not register in the exec
+	// table, so the reap is proven two ways: the child spawns server-side (a marker
+	// file), and the handler returns CodeCanceled promptly (running <-waitErr first).
 	client, _ := newTestSupervisor(t, true, uint32(syscall.Getuid()))
 	marker := t.TempDir() + "/started"
 	ctx, cancel := context.WithCancel(t.Context())
@@ -520,11 +509,10 @@ func TestExecStreamDemuxOrdering(t *testing.T) {
 		t.Fatalf("first frame = %v, want ExecStarted with an id", first)
 	}
 
-	// Accumulate each stream's payload and assert the demux routed the right
-	// bytes onto the right frame: `out` must arrive ONLY as Stdout frames and
-	// `err` ONLY as Stderr frames. A streamWriter that swapped the stdout bool,
-	// dropped a stream, or merged them would fail here — the ordering-only
-	// checks (exactly one Exit, nothing after it) are kept alongside.
+	// Accumulate each stream's payload and assert the demux routed the right bytes
+	// onto the right frame: `out` ONLY as Stdout frames, `err` ONLY as Stderr. A
+	// streamWriter that swapped the stdout bool, dropped a stream, or merged them
+	// would fail here; the ordering-only checks are kept alongside.
 	var stdout, stderr []byte
 	var sawExit bool
 	var exitCount int
@@ -661,24 +649,10 @@ func TestBrokenExecStreamReapsChild(t *testing.T) {
 	}()
 	cancel()
 
-	// Event-gate primarily on the exec_id leaving the table: that removal is the
-	// deterministic signal that the ExecStream handler returned AFTER its reap
-	// (the defer unregister runs post-Wait). The pid check is a secondary guard
-	// only, and only while present — once reaped the pid is freed and the host
-	// can recycle it onto an unrelated process, so keying liveness on the raw
-	// pid after removal would flake. A short tick keeps the loop off a hot spin.
-	//
-	// The wait is bounded by the TEST's own deadline, not an invented per-test
-	// threshold: the reap latency is a transport-scheduling property (client
-	// cancel → HTTP/2 RST_STREAM → the handler's receive loop observing it over
-	// the loopback h2c transport), which on a saturated CI runner can exceed any
-	// fixed few-second ceiling while the reap ITSELF is correct and completes in
-	// ms unloaded. A fixed 30s ceiling therefore false-fails under load. Gating
-	// on t.Deadline() makes the outcome deterministic: a correct-but-slow reap
-	// always passes (reap latency is at most transport scheduling, never
-	// minutes), and ONLY a genuine never-reap hang fails — reported here with the
-	// pid diagnostic just before the suite -timeout would kill the run with a
-	// less actionable panic. A short tick keeps the loop off a hot spin.
+	// Event-gate on the exec_id leaving the table: that removal signals the ExecStream
+	// handler returned AFTER its reap. The wait is bounded by the TEST's own deadline,
+	// not an invented threshold: reap latency can exceed any fixed ceiling on a
+	// saturated runner, so only a genuine never-reap hang fails.
 	waitCeiling := time.Now().Add(2 * time.Minute) // fallback when -timeout=0 disables the deadline
 	if d, ok := t.Deadline(); ok {
 		// Leave margin so THIS test fails with its diagnostic before the whole
@@ -749,14 +723,10 @@ func TestRPCStopCancelsServingAndFlagsPowerOff(t *testing.T) {
 }
 
 func TestExecResolvesBareCommandViaSessionPATH(t *testing.T) {
-	// The PID-1 PATH regression: guestd runs as PID 1 with no process PATH, so
-	// a bare argv[0] must resolve against the SESSION env's PATH (base_env),
-	// never guestd's own env. Prove it hermetically: provision a base_env whose
-	// PATH points at a temp dir holding an executable that is absent from this
-	// test process's ambient PATH, then exec it by bare name. exec.Command's
-	// own LookPath (which reads the process env, not cmd.Env) can never find it
-	// — only session-PATH resolution can — so this fails before the fix and
-	// passes after.
+	// The PID-1 PATH regression: guestd runs as PID 1 with no process PATH, so a bare
+	// argv[0] must resolve against the SESSION env's PATH (base_env). Provision a
+	// base_env whose PATH holds an executable absent from this test's ambient PATH,
+	// then exec it by bare name — only session-PATH resolution can find it.
 	dir := t.TempDir()
 	probe := dir + "/probe"
 	if err := os.WriteFile(probe, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {

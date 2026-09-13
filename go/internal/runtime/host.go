@@ -1,8 +1,7 @@
 // Host validation and shell quoting shared by the egress allowlist and the
-// credential script. Both interpolate caller-supplied strings into shell
-// scripts that run as root inside the container (arming nftables, writing the
-// git credential helper), so untrusted values are validated or quoted here
-// rather than trusted.
+// credential script. Both interpolate caller-supplied strings into root shell
+// scripts inside the container (nftables, git credential helper), so untrusted
+// values are validated or quoted here.
 
 package runtime
 
@@ -38,10 +37,9 @@ func isValidHost(host string) bool {
 	}
 	if strings.Contains(host, ":") {
 		// Must be a bare IP literal. Reject a zone-scoped address (fe80::1%zone):
-		// netip.ParseAddr takes the zone text verbatim, so an attacker-controlled
-		// zone smuggles shell metacharacters and newlines into the root egress
-		// script and the credential heredoc (a dual sink). Rust's
-		// parse::<IpAddr>() rejects every zone; a.Zone() == "" restores that.
+		// ParseAddr takes the zone verbatim, so an attacker-controlled zone
+		// smuggles shell metacharacters into the root egress script and the
+		// credential heredoc (dual sink). a.Zone() == "" rejects every zone.
 		a, err := netip.ParseAddr(host)
 		return err == nil && a.Zone() == ""
 	}

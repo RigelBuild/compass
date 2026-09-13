@@ -97,10 +97,9 @@ func (f *Fabric) SubscribeBindingChanges(ctx context.Context, fn func(BindingCha
 		return nil, fmt.Errorf("fabric: subscribing %q: %w", subject, err)
 	}
 	// Flush so this returns only once the server has registered the interest.
-	// Load-bearing on core NATS in a way it is not on JetStream: the server
-	// DROPS a message with no matching interest, so a caller that subscribed
-	// and then triggered a binding change would race its own first
-	// invalidation and never learn it was lost. Same argument as Events'.
+	// Load-bearing on core NATS unlike JetStream: the server DROPS a message with no
+	// matching interest, so a caller that subscribed then triggered a binding change
+	// would race its own first invalidation and never learn it was lost.
 	if err := f.flush(ctx); err != nil {
 		if derr := sub.Unsubscribe(); derr != nil {
 			f.log.WarnContext(ctx, "fabric: unsubscribing after a failed flush", "subject", subject, "error", derr)
@@ -108,22 +107,10 @@ func (f *Fabric) SubscribeBindingChanges(ctx context.Context, fn func(BindingCha
 		return nil, fmt.Errorf("fabric: establishing the binding-change subscription on %q: %w", subject, err)
 	}
 
-	// One teardown path, reached from the caller's Unsubscribe, from ctx being
-	// done, or from the fabric closing, and run at most once — so the watchdog
-	// goroutine always exits and the subscription is never torn down twice.
-	//
-	// f.teardown is load-bearing, not a duplicate of ctx.Done(): a Close with
-	// an uncancelled ctx (a Server whose root context outlives the fabric —
-	// the ordinary shutdown shape) would otherwise leak this goroutine.
-	//
-	// Drain rather than Unsubscribe, mirroring the runner-events pump: it lets
-	// NATS deliver what it has already accepted for this subject before the
-	// interest goes away, so an invalidation this process already had in hand
-	// still reaches the cache. An already-closed connection is the expected
-	// shutdown outcome, not a failure — Close closes f.teardown before
-	// nc.Drain(), and the connection-level drain reclaims every subscription
-	// itself, so a later sub.Drain() reporting ErrConnectionClosed describes a
-	// subscription that WAS drained.
+	// One teardown path (Unsubscribe, ctx done, or fabric closing), run once so the
+	// watchdog never leaks. f.teardown is load-bearing, not ctx.Done(): a Close with
+	// an uncancelled ctx would leak this goroutine. Drain, not Unsubscribe, so an
+	// invalidation already accepted reaches the cache before the interest goes.
 	var once sync.Once
 	done := make(chan struct{})
 	stop := func() {
@@ -163,17 +150,10 @@ func (f *Fabric) handleBindingChange(ctx context.Context, msg *nats.Msg, fn func
 			"subject", msg.Subject, "error", err)
 		return
 	}
-	// The payload's tenant must match the subject's, exactly as handleEvent
-	// checks a comms ref. The read side subscribes tenant-wildcard and fn never
-	// sees the subject, so b.Tenant is the receiver's ONLY scope — and until
-	// OQ-3 lands per-tenant NATS authorization, any client that can reach the
-	// client port can publish any subject. Without this, a publish of
-	// {tenant: victim} on the attacker's own subject would hand a subscriber a
-	// victim-scoped change, and an "unbound" op is a stale NEGATIVE the
-	// receiver drops outright rather than a re-read that would self-correct.
-	//
-	// Dropped, not parked: this plane has no dead-letter subject, and a
-	// mismatch is as unprocessable as an undecodable payload.
+	// The payload's tenant must match the subject's, as handleEvent checks a comms
+	// ref. fn never sees the subject, so b.Tenant is the receiver's ONLY scope, and
+	// until OQ-3 any client can publish any subject — a {tenant: victim} publish would
+	// hand a subscriber a victim-scoped change. Dropped, not parked: no dead-letter.
 	want, subjErr := RoutingBindingSubject(b.Tenant)
 	if subjErr != nil {
 		f.log.ErrorContext(ctx, "fabric: dropping a binding change whose tenant is not a valid subject token",

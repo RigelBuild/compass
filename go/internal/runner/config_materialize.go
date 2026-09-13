@@ -1,14 +1,9 @@
 //go:build unix
 
-// The Runner-side ConfigMaterializer: turn a fetched fleet config bundle into a
-// versioned host dir under root whose `current` symlink a live container can
-// follow. The container mounts the PARENT dir (root) read-only, so an atomic
-// flip of `current` becomes visible inside the running container without a
-// remount. Unpack goes into a staging dir then renames into place, so a crashed
-// unpack never leaves a half-written version dir the flip could point at. The
-// tarball is untrusted: every validation (size/count caps, traversal, symlink/
-// hardlink, layout) is re-enforced here at unpack, failing closed before any
-// byte is written.
+// The Runner-side ConfigMaterializer: turn a fetched config bundle into a
+// versioned host dir whose `current` symlink a live container follows; an atomic
+// flip is visible without a remount, and unpack stages then renames so a crash
+// never leaves a half-written dir. The untrusted tarball is re-validated, failing closed.
 package runner
 
 import (
@@ -151,13 +146,10 @@ type ConfigMount struct {
 func (m *ConfigMaterializer) Materialize(ctx context.Context, mcsLabel string) (ConfigMount, error) {
 	bundle, err := m.fetch.FetchAgentConfig(ctx, "")
 	if err != nil {
-		// CodeFailedPrecondition is the Server's "no config surface" signal — no
-		// config store is wired to serve FetchAgentConfig (runnerhub handler
-		// contract). It is deliberately distinct from the CodeUnavailable of a
-		// transient transport fault: the Runner reads it as "no config to inject"
-		// and provisions anyway, exactly as it treats an unconfigured fleet. Any
-		// other error (transport CodeUnavailable, store CodeInternal, a contract
-		// skew) is a genuine fault that must abort provision, so it propagates.
+		// CodeFailedPrecondition is the Server's "no config surface" signal, distinct
+		// from the CodeUnavailable of a transient transport fault: the Runner reads
+		// it as "no config to inject" and provisions anyway. Any other error is a
+		// genuine fault that must abort provision, so it propagates.
 		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
 			// Logged at Warn so a config-less provision is visible — it is a
 			// degraded posture even when intended, mirroring the secrets path.
@@ -254,14 +246,10 @@ func (m *ConfigMaterializer) unpackVersion(bundle AgentConfigBundle, versionDir 
 		return fmt.Errorf("writing version file: %w", err)
 	}
 
-	// Pin modes across the whole staging tree before promoting it: os.MkdirAll
-	// and os.WriteFile above requested 0755/0644 but a non-022 process umask
-	// masks that down, and MkdirTemp forced the staging root to 0700. Under a
-	// restrictive umask a nested dir loses its traverse bit and the confined
-	// container agent (a distinct uid under keep-id) hits EACCES walking the
-	// mounted tree. Pinning here — after unpack, before the rename carries the
-	// modes across — makes the documented 0755-dir/0644-file invariant hold
-	// regardless of ambient umask.
+	// Pin modes across the staging tree before promoting: a non-022 umask masks
+	// the requested 0755/0644 down and MkdirTemp forced 0700, so a nested dir could
+	// lose its traverse bit and the confined container agent hits EACCES walking
+	// the tree. Pinning here makes the 0755-dir/0644-file invariant hold regardless.
 	if err := pinConfigModes(staging); err != nil {
 		return fmt.Errorf("pinning config tree modes: %w", err)
 	}
@@ -575,10 +563,9 @@ func validateNestedRegularMember(name, clean, top string, parts []string) (strin
 		return clean, nil
 	case topDirProfiles:
 		// Exactly profiles/<name>/profile.yml — three components, safe <name>,
-		// filename exactly profile.yml (RIG-2968 T1). The store door carries the
-		// profile SCHEMA validation (superset-key closure + models.agents
-		// frontmatter-name lint); the runner is the structural twin — layout
-		// only, no content schema (mirrors the settings/models asymmetry).
+		// filename exactly profile.yml. The store door carries the profile SCHEMA
+		// validation; the runner is the structural twin — layout only, no content
+		// schema (mirrors the settings/models asymmetry).
 		if len(parts) != 3 || parts[2] != memberProfileYML {
 			return "", fmt.Errorf("config bundle profiles member %q must be profiles/<name>/%s", name, memberProfileYML)
 		}

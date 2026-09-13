@@ -3,15 +3,9 @@
 package delivery
 
 // RIG-1569 T6 — the reconnect/start redelivery sweep, RED-first. A session-start
-// edge (OnSessionStarted, the hub's SessionStartSink hook fired at
-// promoteSession) enqueues into the consumer's ctx-rooted loop, which sweeps the
-// freshly-live session's owed messages (UndeliveredMessages) and re-dispatches
-// them ascending-seq per channel through the recipient's dispatch gate. Each case
-// drives the consumer through the real events bus + hand-written fakes and gates
-// on the recorder's observed dispatches — never a sleep, never a retry
-// (rule://no-retries). context.Background() is the test root
-// (rule://go-thread-context exemption for _test.go); it is threaded into Run and
-// never re-rooted below.
+// edge enqueues into the consumer's loop, which sweeps the freshly-live session's
+// owed messages and re-dispatches them ascending-seq per channel. Each case gates
+// on the recorder's observed dispatches — never a sleep, never a retry.
 
 import (
 	"testing"
@@ -20,10 +14,9 @@ import (
 )
 
 // Case T6-1: messages posted while NO session was live arrive as delivers on the
-// recipient's next start, in ascending seq order per channel, dispatched through
-// that session's gate. The recipient is NOT a live-channel subscriber here (it is
-// absent from res until the start edge names it), so the owed messages can ONLY
-// reach it via the start sweep — their arrival proves the reconnect path.
+// recipient's next start, in ascending seq order per channel. The recipient is NOT
+// a live-channel subscriber here, so the owed messages can ONLY reach it via the
+// start sweep — their arrival proves the reconnect path.
 func TestSessionStartSweepsOwedMessages(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -60,23 +53,10 @@ func TestSessionStartSweepsOwedMessages(t *testing.T) {
 	}
 }
 
-// Case T6-2: a message already acked is NOT re-swept. The cursor is the source of
-// truth: an acked message advances past the cursor (or lands in the above-set),
-// so UndeliveredMessages omits it — the sweep never re-issues it. This drives two
-// real start edges: the first sweeps the one owed message; between them the owed
-// set is emptied (modeling the recipient acking it, cursor advanced); the second
-// must dispatch NOTHING more.
-//
-// The barrier is a SENTINEL start edge, not queue-emptiness. drainStarts pops and
-// empties the queue slice under c.mu BEFORE it runs the sweep's store-read +
-// gate-held re-dispatch (settle.go:120-123), so waitStartsDrained returns the
-// instant the edge is DEQUEUED — before that edge's sweep completes. A snapshot
-// gated on it would race a bad re-dispatch. Instead: enqueue a THIRD edge for a
-// sentinel session owed exactly one distinct message, then block until that
-// message ARRIVES (disp.waitForMessage). Because drainStarts drains FIFO in a
-// SINGLE loop goroutine, one sweep at a time, the sentinel's message dispatching
-// proves every earlier edge's sweep — including the second sess-recip edge — has
-// already run to completion. That arrival is the true post-sweep barrier.
+// Case T6-2: an already-acked message is NOT re-swept — it advances past the cursor,
+// so UndeliveredMessages omits it. Two start edges: the first sweeps the owed
+// message, the owed set is emptied (the ack), the second dispatches NOTHING. Barrier
+// is a SENTINEL edge whose arrival (FIFO single-loop drain) proves every earlier sweep ran.
 func TestSessionStartDoesNotResweepAckedMessages(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -133,13 +113,10 @@ func TestSessionStartDoesNotResweepAckedMessages(t *testing.T) {
 	}
 }
 
-// Case T6-3: a live bus event posted mid-sweep queues BEHIND the start sweep and
-// lands after it — the per-session dispatch gate serialization (design.md:220-225,
-// 828). The start sweep for sess-recip holds the session gate for its whole
-// ordered re-dispatch; a live deliver for the SAME session published mid-sweep
-// must not dispatch until the sweep releases the gate, and then in order after it.
-// Deterministic via the beforeGate seam + the dispatcher's first-call barrier — no
-// sleep.
+// Case T6-3: a live bus event posted mid-sweep queues BEHIND the start sweep — the
+// per-session dispatch gate serialization. The start sweep holds the gate for its
+// whole ordered re-dispatch; a live deliver for the SAME session must not dispatch
+// until the sweep releases the gate, then in order. Deterministic via beforeGate.
 func TestLiveEventQueuesBehindStartSweep(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -162,13 +139,10 @@ func TestLiveEventQueuesBehindStartSweep(t *testing.T) {
 	c.OnSessionStarted("sess-recip", recipient)
 	<-disp.enteredFirst // the sweep's first re-dispatch is in-flight, loop parked
 
-	// Publish a live deliver for the SAME session while the sweep holds the loop.
-	// It buffers on the bus tail: the single-goroutine loop drains the start edge
-	// to completion before it ever selects the live event (design.md:220-225 — the
-	// sweep runs IN the loop, so live bus events for the session queue behind it;
-	// the per-session dispatch gate is the belt-and-suspenders that also holds
-	// when a sweep runs off-loop, exercised by TestLiveEventsQueueBehindSweep).
-	// Nothing has recorded yet: the armed dispatch blocks before appending.
+	// Publish a live deliver for the SAME session while the sweep holds the loop. It
+	// buffers on the bus tail: the single-goroutine loop drains the start edge before
+	// it selects the live event (the per-session gate is the off-loop
+	// belt-and-suspenders). Nothing has recorded yet: the armed dispatch blocks.
 	c.bus.Publish(postedResponse(wireText("live-1", author, "live")))
 	if got := disp.snapshot(); len(got) != 0 {
 		t.Fatalf("recorded %d dispatches while the start sweep holds the loop, want 0 (live deliver must queue behind)", len(got))
@@ -212,12 +186,9 @@ func TestSessionStartIgnoresEmptyBinding(t *testing.T) {
 }
 
 // RIG-2486 T1 (sweep coverage): the reconnect/start sweep denormalizes the
-// author's handle onto each redelivered deliver op (sweepSession, settle.go:266,
-// deliverOp(wire, c.authorHandle(ctx, wire))). Redelivery is exactly where
-// from_handle is load-bearing — an idle/reconnecting peer receives the deliver
-// via the sweep, not the live fan-out. Seeds the author's account and asserts
-// the swept deliver carries its handle. Mirrors
-// TestDeliverAndSteerCarryAuthorFromHandle's assertion (mention_test.go:261).
+// author's handle onto each redelivered deliver op. Redelivery is exactly where
+// from_handle is load-bearing — an idle/reconnecting peer receives the deliver via
+// the sweep, not the live fan-out. Mirrors TestDeliverAndSteerCarryAuthorFromHandle.
 func TestSweepSessionCarriesAuthorFromHandle(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -244,15 +215,10 @@ func TestSweepSessionCarriesAuthorFromHandle(t *testing.T) {
 	}
 }
 
-// RIG-2956 T0 (sweep coverage): the reconnect/start cursor sweep denormalizes the
-// source channel+topic names onto each redelivered deliver op (sweepSession,
-// settle.go: cn, tn := c.sourceNames(ctx, wire); deliverOp(wire, handle, cn, tn)).
-// Redelivery via the sweep is exactly where the source names are load-bearing —
-// an idle/reconnecting peer renders "Channel <name> › topic <name>:" off the
-// swept deliver, not the live fan-out. Seeds the message's topic names and
-// asserts the swept deliver carries them. Mirrors
-// TestDeliverAndSteerCarrySourceChannelAndTopicNames (mention_test.go) on the
-// sweep path; RED if the settle site drops the names (deliverOp(wire, handle, "", "")).
+// RIG-2956 T0 (sweep coverage): the reconnect/start sweep denormalizes the source
+// channel+topic names onto each redelivered deliver op — where an idle/reconnecting
+// peer renders "Channel <name> › topic <name>:" off the swept deliver, not the live
+// fan-out. RED if the settle site drops the names.
 func TestSweepSessionCarriesSourceChannelAndTopicNames(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"

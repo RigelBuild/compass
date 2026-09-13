@@ -1,11 +1,8 @@
 //go:build unix
 
-// The Server-facing command surface: the CompassService session RPCs
-// (ProvisionAgentWorkspace, Start/Stop/Reload/Status) route through here. Each
-// mints a request id, dispatches the command to the owning Runner over the
-// Sessions relay, waits for the correlated result, and maps a RunnerError to the
-// Connect status the client sees. This is where the OQ6 request-id lives on the
-// Server side: a caller that supplies a client_request_id reuses it so a
+// The Server-facing command surface: the CompassService session RPCs route here,
+// each dispatching to the owning Runner over the Sessions relay and mapping the
+// RunnerError result to a Connect status. A client_request_id is reused so a
 // timeout-retry dedupes to the original result (no duplicate container).
 package runnerhub
 
@@ -55,11 +52,9 @@ func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.Pr
 	}
 	resp := result.GetProvision()
 	// Record which agent account this container was provisioned for, so a later
-	// Start can promote it to a session binding RelayCommsCall resolves against
-	// (comms-tools design T2). The Runner never asserts this account; it is the
-	// Server's own record, keyed by the container name the Runner returned. This
-	// binding is the LIVE comms binding only, cleared on re-enroll; the DURABLE
-	// container/Runner placement is the caller's store write.
+	// Start can promote it to a session binding RelayCommsCall resolves against.
+	// The Runner never asserts this account; it is the Server's own record, keyed
+	// by the container name. Live comms binding only, cleared on re-enroll.
 	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentHandle()))
 	return resp, runnerID, nil
 }
@@ -80,10 +75,8 @@ func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartA
 	// account leaves no session binding, and its comms calls fail closed.
 	h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId())
 	// The initial secret materialize no longer rides a signal: the Runner
-	// materializes the container's set pre-exec at Start (host.Start,
-	// FetchSecretsByContainer authorized on the Provision-time container→account
-	// binding), before the agent runs. The SecretsVersion signal is now the T6
-	// ROTATION path only (SignalSecretsVersion, on a registry write).
+	// materializes the container's set pre-exec at Start, before the agent runs.
+	// The SecretsVersion signal is now the T6 ROTATION path only.
 	return resp, nil
 }
 
@@ -168,12 +161,10 @@ func (h *Hub) SessionState(ctx context.Context, sessionID string) (compassv1.Age
 			return st.GetState(), true
 		}
 	}
-	// A single-session Status request returns that session's status; if none
-	// matched by id, adopt the sole status ONLY when it carries no session id
-	// (the "Runner answered without echoing the id" case). A sole status with a
-	// non-empty MISMATCHED id is NOT this session's state — a Runner bug echoing
-	// a wrong id must not reconstruct a wrong presence — so it is unresolved
-	// (ok=false → OFFLINE). Absent any status, likewise unresolved.
+	// A single-session Status request returns that session's status; adopt the
+	// sole status ONLY when it carries no session id. A sole status with a
+	// non-empty MISMATCHED id is a Runner bug and must not reconstruct a wrong
+	// presence, so it is unresolved (ok=false → OFFLINE). Absent status likewise.
 	if s := resp.GetStatuses(); len(s) == 1 && s[0].GetSessionId() == "" {
 		return s[0].GetState(), true
 	}

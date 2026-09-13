@@ -1,10 +1,9 @@
 //go:build unix
 
 // The Runner-side FetchSecrets client: pull a session's resolved secret set from
-// the Server over the RunnerService connection and map the wire ResolvedSecret
-// back to the secrets-package resolve-surface type at this edge — the reverse of
-// runnerhub's resolvedSecretToProto, keeping the two enum translations symmetric.
-// The resolved values ride in memory only; nothing here logs a value.
+// the Server and map the wire ResolvedSecret back to the secrets-package type at
+// this edge — the reverse of runnerhub's resolvedSecretToProto. The resolved
+// values ride in memory only; nothing here logs a value.
 package runner
 
 import (

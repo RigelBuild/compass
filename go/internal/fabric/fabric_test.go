@@ -179,10 +179,9 @@ func TestCloseIsPromptWithCallerClosedHandler(t *testing.T) {
 		t.Fatalf("Close took %s; expected prompt return (caller ClosedHandler disarmed the drain signal?)", elapsed)
 	}
 	// The caller's handler is NOT synchronous with Close: nc.close notifies
-	// status listeners (which is what Close now waits on) before it pushes
-	// ClosedCB onto the connection's async-callback dispatcher, so the handler
-	// lands just after Close returns. pollUntil is the suite's FAILURE bound,
-	// not a wait — a suppressed handler still fails, it just takes `gate`.
+	// status listeners (what Close waits on) before pushing ClosedCB onto the
+	// async dispatcher, so the handler lands just after Close returns. pollUntil
+	// is the suite's FAILURE bound, not a wait.
 	pollUntil(t, "the caller's own ClosedHandler to run (the fabric must not suppress it)", callerRan.Load)
 }
 

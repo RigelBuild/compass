@@ -12,13 +12,10 @@ import {
 } from "./refresh-agent-image-nixpkgs.core.ts";
 import { FOD_ENTRIES } from "./refresh-fod-hashes.ts";
 
-// Unit tests for the pure core of refresh-agent-image-nixpkgs.ts: reading the
-// devenv-nixpkgs CHANNEL rev out of the agent base image's devenv lock, and the
-// scope geometry the relock depends on. No devenv / network / git — that
-// shell-out lives in the entry point and runs for real on the PR's own branch.
-// These assert what a wrong line would silently corrupt: relocking the wrong
-// scope (whose write the rule's two-file fileFilters then discards), or reading
-// the fork / inner-nixpkgs rev instead of the channel rev.
+// Unit tests for the pure core: reading the devenv-nixpkgs CHANNEL rev out of the
+// agent-image devenv lock, and the scope geometry the relock depends on. These
+// assert what a wrong line would silently corrupt: relocking the wrong scope
+// (whose write the two-file fileFilters discards), or reading the wrong rev.
 
 const repoRoot = join(import.meta.dir, "..", "..");
 
@@ -87,11 +84,9 @@ const INNER_REV = "2222222222222222222222222222222222222222";
 const FORK_REV = "3333333333333333333333333333333333333333";
 
 describe("agent-image scope geometry", () => {
-	// The cwd IS the scope selector — devenv resolves devenv.yaml/devenv.lock
-	// relative to it — so the relock directory must be the directory the lock
-	// lives in. A mismatch would relock the ROOT lock while this rule's
-	// fileFilters names the agent-image one, so Renovate would commit nothing
-	// and the rev bump would ship unrelocked.
+	// The cwd IS the scope selector — devenv resolves devenv.lock relative to it —
+	// so the relock directory must hold the lock. A mismatch relocks the ROOT lock
+	// while fileFilters names the agent-image one, so Renovate commits nothing.
 	test("the relock cwd is the directory holding the lock", () => {
 		expect(AGENT_IMAGE_LOCK.startsWith(`${AGENT_IMAGE_DIR}/`)).toBe(true);
 		expect(AGENT_IMAGE_LOCK.slice(AGENT_IMAGE_DIR.length + 1)).toBe(
@@ -99,11 +94,9 @@ describe("agent-image scope geometry", () => {
 		);
 	});
 
-	// The single named input, not a bare `devenv update`: relocking every input
-	// would bloat the PR's diff past the channel advance the branch is about.
-	// Asserted against the real devenv.yaml rather than against the constant's own
-	// literal — the hazard is the input being RENAMED upstream, which a
-	// self-referential equality check cannot see.
+	// The single named input, not a bare devenv update, which would bloat the PR
+	// diff. Asserted against the real devenv.yaml, not the constant's own literal —
+	// the hazard is the input being RENAMED upstream.
 	test("the relocked input names a real input of this scope", () => {
 		const yaml = Bun.YAML.parse(
 			readFileSync(join(repoRoot, AGENT_IMAGE_DIR, "devenv.yaml"), "utf8"),
@@ -120,12 +113,10 @@ describe("agent-image scope geometry", () => {
 		expect(agentImageNixpkgsRev(text)).toMatch(/^[a-f0-9]{40}$/);
 	});
 
-	// The rev read here is the one the FOD refresh hangs off: the channel
-	// resolves the bun entrypoint.nix's builder uses, so the FOD table must gate
-	// EVERY entry over that pin on this lock. If the table and this task disagree,
-	// the entry point throws rather than shipping a possibly-stale outputHash —
-	// assert the agreement here too so the drift fails in a unit test, not on a
-	// branch.
+	// The rev read here is the one the FOD refresh hangs off: the FOD table must
+	// gate every entrypoint.nix entry on this lock. If the table and this task
+	// disagree, the entry point throws — assert the agreement here too so the drift
+	// fails in a unit test.
 	test("every FOD entry for entrypoint.nix is gated on this lock", () => {
 		const entries = FOD_ENTRIES.filter(
 			(e) => e.file === "agent-image/entrypoint.nix",
@@ -139,12 +130,10 @@ describe("agent-image scope geometry", () => {
 		}
 	});
 
-	// This lock resolves the bun the OCI image build uses, so the shared
-	// outputHash is only actually CHECKED for that builder if some entry realises
-	// a vehicle whose pkgs come from this lock. Without one, the refresh reverts
-	// to a one-builder rewrite whose divergence surfaces only on the image build.
-	// The vehicle file must exist too — a table naming a deleted file would fail
-	// at realise time on a branch, not here.
+	// This lock resolves the bun the OCI image build uses, so the shared outputHash
+	// is CHECKED for that builder only if some entry realises a vehicle from this
+	// lock. Without one, the refresh reverts to a one-builder rewrite. The vehicle
+	// file must exist too — a deleted file would fail at realise time, not here.
 	test("a FOD entry realises entrypoint.nix through this lock's own pkgs", () => {
 		const viaThisLock = FOD_ENTRIES.filter(
 			(e) =>
@@ -168,11 +157,10 @@ describe("agentImageNixpkgsRev", () => {
 		).toBe(CHANNEL_REV);
 	});
 
-	// The three-node ambiguity is the whole risk: `nixpkgs-src` is the upstream
-	// nixpkgs the channel resolves TO (refreshed from the outer rev by the
-	// relock, never tracked), and `devenv` is the fork pin a sibling manager
-	// owns. Reading either would log a bogus advance and, worse, make the
-	// byte-identical guard reason about the wrong field.
+	// The three-node ambiguity is the whole risk: nixpkgs-src is the upstream
+	// nixpkgs the channel resolves TO, and devenv is the fork pin a sibling manager
+	// owns. Reading either would log a bogus advance and make the byte-identical
+	// guard reason about the wrong field.
 	test("reads neither the inner nixpkgs-src rev nor the devenv fork rev", () => {
 		const rev = agentImageNixpkgsRev(
 			agentImageLock(CHANNEL_REV, INNER_REV, FORK_REV),
@@ -214,15 +202,10 @@ describe("agentImageNixpkgsRev", () => {
 	});
 });
 
-// ── Entry-point tests: the SHIPPED script, end to end, offline ──────────────
-//
-// Everything above is pure. The branches that decide whether a channel bump
-// ships CORRECTLY live in the entry point: the self-gate against the base ref,
-// the base-ref resolution ladder, the byte-identical guard, and the argv/cwd of
-// the relock. Those are the lines a plausible bug hides in — an inverted
-// comparison, a wrong cwd, a swallowed failure — so they run here against a
-// throwaway git repo with a stub `nix` first on PATH. No network, no devenv,
-// no real nix; git is the real binary.
+// Entry-point tests: the SHIPPED script, end to end, offline. Everything above is
+// pure; the branches deciding whether a channel bump ships CORRECTLY live in the
+// entry point (self-gate, base-ref ladder, byte-identical guard, relock argv/cwd).
+// They run here against a throwaway git repo with a stub nix first on PATH.
 
 const HERMETIC_ENV = {
 	GIT_CONFIG_GLOBAL: "/dev/null",
@@ -269,11 +252,10 @@ fi
 exit 0
 `;
 
-// A stub `bun` is NOT used: the real bun runs the shipped script. But the FOD
-// refresh the script drives at the end shells `nix build`, which the stub above
-// answers with exit 0 and no `got:` line — so the FOD leg is neutralised by
-// pointing the table's triggers at files this fixture never changes. What these
-// tests cover is the relock half; the FOD half has its own suite.
+// A stub bun is NOT used: the real bun runs the shipped script. The FOD refresh it
+// drives shells nix build, which the stub answers with exit 0 and no got: line — so
+// the FOD leg is neutralised by pointing the table's triggers at unchanged files.
+// These tests cover the relock half; the FOD half has its own suite.
 async function buildEntryRepo(): Promise<string> {
 	const repo = await mkdtemp(join(tmpdir(), "rig3365-"));
 	await mkdir(join(repo, "tools", "renovate"), { recursive: true });

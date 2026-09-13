@@ -1,27 +1,12 @@
 // The ask answer-state ownership contract at the proto <-> store edge
-// (mapping.go askToWire/askFromWire), driven with NO database: both are pure
-// functions of their argument, so the contract is fully observable without a
-// store. This file is untagged, so it runs on the default `go test` lane — no
-// pgtest, no COMPASS_TEST_DATABASE_DSN. The DB-backed
-// TestPostMessageDropsCallerSuppliedAnswerState (comms_test.go) covers the same
-// boundary end-to-end through PostMessage; this one covers it exhaustively.
-//
-// The invariant (mapping.go:268-292):
-//   - Inbound, every server-owned field is dropped: Ask.ask_id and
-//     Ask.answered, plus each question's chosen_option_ids / custom_text /
-//     timed_out. An ask arriving over the wire is being POSTED, so it has by
-//     definition not been answered.
-//   - Inbound, every content field survives: over-dropping is as wrong as
-//     under-dropping — it silently discards agent-supplied question content.
-//   - Outbound, Ask.answered carries the store's flag, the only reliable
-//     answered-signal a client has.
-//
-// askFromWire drops by OMITTING fields from a keyed composite literal, which
-// compiles and vets clean with any subset set — so a field added to the proto
-// and wired into askToWire would be silently honored inbound, reintroducing the
-// defect. The guard is therefore written against the message DESCRIPTORS rather
-// than a hand-written field list: every field must appear in exactly one of the
-// two classification sets below, and a new one appearing in neither fails.
+// (mapping.go askToWire/askFromWire), pure, no database. Invariant: inbound,
+// every server-owned field (ask_id, answered, per-question answers) is dropped
+// and every content field survives; outbound, Ask.answered carries the flag.
+
+// askFromWire drops by OMITTING fields from a keyed literal, so a proto field
+// wired into askToWire would be silently honored inbound. The guard is written
+// against the message DESCRIPTORS: every field must appear in exactly one
+// classification set, and a new one in neither fails.
 
 package comms
 

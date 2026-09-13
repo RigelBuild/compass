@@ -1,40 +1,13 @@
 package auth
 
-// AdminGate + classifyProcedure + check contract tests (RIG-1195 T3a, the S3
-// "admin-guard" gate item), transcribed from the authoritative Rust suite in
-// crates/compass-daemon/src/auth.rs (#[cfg(test)] mod tests, the admin-gate
-// section: admin_gate_rejects_a_non_admin_on_a_gated_rpc,
-// admin_gate_allows_the_admin_on_a_gated_rpc,
-// admin_gate_rejects_a_gated_rpc_with_no_identity,
-// admin_gate_lets_a_non_admin_through_an_open_rpc,
-// admin_gate_covers_every_frozen_session_rpc). The Rust gate is a tower Layer
-// that inspects the HTTP method path and short-circuits with permission_denied;
-// the Go gate is a connect Interceptor that reads Spec().Procedure and returns a
-// connect.CodePermissionDenied error. The observable contract transcribed here
-// is: a non-admin (or no) caller on an adminOnly procedure is denied and the
-// wrapped handler never runs; the admin passes and the handler runs; every open
-// procedure passes for any authenticated account.
-//
-// Default lane (no store): the gate reads a caller identity set on the context
-// (withCaller with a store.AccountID literal) and a procedure path — neither
-// needs the Postgres store, so these do not gate on pgtest.
-//
-// White-box (package auth) so the tests reach the unexported classifyProcedure
-// (its (privilege, bool) partition) and check(ctx, procedure) directly, and the
-// unexported withCaller to build a caller context. The per-procedure
-// classification and denial logic is tested through check()/classifyProcedure —
-// cleaner and exact, because connect.Request carries its Procedure in an
-// unexported, unsettable field, so a hand-built unary request always presents an
-// empty Procedure. That empty path is itself the fail-closed default
-// (classifyProcedure("") == (adminOnly{}, false)), which the WrapUnary tests
-// exercise through the public interceptor surface; the streaming tests drive real
-// named procedures through a fake StreamingHandlerConn, whose interface is public.
-//
-// Proto-descriptor exhaustiveness (every generated procedure is classified,
-// including the additions CreateChannel + UpdateChannelMembers and the dropped
-// Share/UnshareAgentWorkspace) is covered separately in classify_exhaustive_test.go;
-// this file spot-checks specific known and unknown procedure paths and never
-// hardcodes the dropped procedures.
+// AdminGate contract tests (RIG-1195 T3a), transcribed from the Rust suite in
+// crates/compass-daemon/src/auth.rs: a non-admin or identity-less caller on an
+// adminOnly procedure is denied and the handler never runs; the admin passes.
+
+// White-box (package auth) to reach unexported classifyProcedure/check/withCaller.
+// connect.Request carries Procedure in an unsettable field, so a hand-built unary
+// request presents an empty path — itself the fail-closed default. Descriptor
+// exhaustiveness lives in classify_exhaustive_test.go; this file spot-checks paths.
 
 import (
 	"context"

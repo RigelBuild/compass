@@ -1,21 +1,11 @@
-// Test-support driver for the RIG-1678 T4 acceptance (g) that requires a
-// launch-frozen $HOME (design compass-agent-config-passthrough §CP-4).
-//
-// After the object-injection pivot, only ONE fleet member still reaches the SDK
-// by filesystem discovery rather than object injection: subagent definitions
-// (`agents/`). The runtime SDK (16.5.2) discovers those by walking the agent dir
-// via `discoverAgents` — there is no `createAgentSession` param to inject them —
-// so `main()` symlinks `$HOME/.omp/agent/agents` → the mount's current/agents.
-//
-// `discoverAgents`'s user-level dir anchors on `os.homedir()`, which Bun freezes
-// at module load and never re-reads from a mid-process `process.env.HOME`. So
-// the ONLY hermetic way to point discovery at a tempdir agent dir is to launch a
-// fresh process with `HOME` already set — which is what cli.config-passthrough
-// .test.ts does when it spawns this driver.
-//
-// The driver runs the SAME symlink effect main runs (loadMountedConfig →
-// ensureAgentDirLink for `agents`), then queries the SDK exactly as the `task`
-// tool would (discoverAgents/getAgent) and prints PROBE_RESULT:<json>.
+// Test-support driver for the RIG-1678 T4 acceptance (g) needing a launch-frozen $HOME
+// (design compass-agent-config-passthrough §CP-4). After the object-injection pivot, only
+// subagent definitions (`agents/`) still reach the SDK by filesystem discovery, via
+// `discoverAgents`, which anchors on `os.homedir()` — frozen by Bun at module load.
+
+// The only hermetic way to point discovery at a tempdir is a fresh process with `HOME`
+// preset. The driver runs the same symlink effect main runs, then queries the SDK as
+// `task` would and prints PROBE_RESULT:<json>.
 
 import { discoverAgents, getAgent } from "@oh-my-pi/pi-coding-agent";
 import { ensureAgentDirLink } from "./cli";

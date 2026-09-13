@@ -10,19 +10,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The agent-driven state-transition memo (design
-// docs/designs/server/compass-forge-state-transition/design.md §Actor
-// attribution): the durable carrier of WHICH agent drove a forge state
-// transition, across the write→webhook gap. A transition has no body, so the
-// DL-050 owner header cannot attribute it, and every Server-credential write
-// presents the shared App bot login — so the write chokepoint records the
-// acting agent here (strictly AFTER a provider success) and the notify lane
-// consumes the memo on match to resolve the echoed STATE event's actor.
-//
-// The memo is deliberately NOT the forge_authored_artifacts row at the same
-// coordinate: that row is a write-once AUTHORSHIP fact whose DO UPDATE would
-// destroy the original create's F3 idempotency memo, and keying suppression off
-// authorship is the author-row-proxy failure RIG-3326 rejects.
+// The agent-driven state-transition memo (design record §Actor attribution):
+// which agent drove a forge state transition, carried across the write→webhook
+// gap. A transition has no body and every write is the shared App bot, so the
+// chokepoint records the actor here for the notify lane to resolve the event.
+
+// NOT the forge_authored_artifacts row: that is a write-once AUTHORSHIP fact
+// whose DO UPDATE would destroy the create's F3 idempotency memo, and keying
+// suppression off authorship is the proxy failure RIG-3326 rejects.
 
 // TransitionStateOpen and TransitionStateClosed are the portable applied-state
 // domain a memo records — exactly the forge.Issue.State domain and the

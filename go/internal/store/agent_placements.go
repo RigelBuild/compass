@@ -7,21 +7,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// Agent placement: the durable record of WHERE each agent runs — which Runner,
-// under which container name — written at ProvisionAgentWorkspace, the one hop
-// where every fact is in hand (agent_account_id is the Server's own request
-// field, container_name the Runner's response, runner_id the Runner it relayed
-// to). Before 0004 the Server learned that triple and kept it only in RAM (the
-// RunnerHub's in-memory container->account binding), so a Server restart or a
-// Runner re-enroll lost it.
-//
-// Placement is NOT authorization. SubscribeAgentSession authorizes through
-// agent_sessions -> agent_accounts -> channel_members and never reads this
-// table; keeping the two apart is what stops the container hop 0003 introduced
-// from growing back into the security boundary. What placement is for is the
-// two reads below: StartAgentSession resolving the account that owns an incoming
-// container_name, and reattach recovery (RIG-1516) naming every agent stranded
-// by a Runner restart.
+// Agent placement: the durable record of WHERE each agent runs (Runner +
+// container name), written at ProvisionAgentWorkspace. It is NOT authorization
+// — SubscribeAgentSession authorizes through agent_sessions, never this table.
+// It serves StartAgentSession's owner lookup and reattach recovery (RIG-1516).
 
 // AgentPlacement is one agent's placement: the Runner it runs on and the
 // container name it runs under. Returned by ListAgentPlacementsForRunner, which

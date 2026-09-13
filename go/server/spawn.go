@@ -1,33 +1,9 @@
 //go:build unix
 
-// The composite start: SpawnAgent runs ProvisionAgentWorkspace then
-// StartAgentSession server-side under ONE client_request_id, so a UI brings an
-// agent online in a single call (DL-166). It reuses the existing human-path
-// handlers verbatim — it never reimplements provisioning — so persona/role
-// authority, durable placement, session-ownership recording, and the
-// anti-stranding rollback are identical to the two-call flow.
-//
-// Two behaviors the composite owns beyond calling the two handlers:
-//
-//   - End-to-end idempotency. A retry with the same client_request_id returns
-//     the same session_id and provisions no second container. The three lower
-//     primitives (provisionDedupID, the router in-flight join, the dispatcher
-//     handled map) each dedup one relayed command, but they do NOT compose a
-//     SEQUENTIAL completed retry (the router entry is deleted on complete, and
-//     Start mints a fresh relay id). The composite span the server adds is a
-//     client_request_id-keyed memo of the in-flight/completed spawn: a retry
-//     joins it and returns the original result rather than re-running either
-//     step. This is the "dedup-join lookup" the reject-on-live check is ordered
-//     after.
-//
-//   - Pre-Provision reject-on-live. On a cache miss ONLY, before issuing any
-//     Provision, scan the Runner's authoritative live-session set for one whose
-//     agent_account_id matches the request; on a hit return CodeAlreadyExists.
-//     Ordered after the dedup-join so a retry of an in-flight/completed spawn
-//     rejoins the original instead of being bounced (one container per agent
-//     account, DL-170). The scan reads the Runner (Hub.Status with an empty
-//     session id — "empty = every live session"), never Server in-memory state,
-//     which fails open after a Runner reconnect clears the bindings.
+// The composite start: SpawnAgent runs ProvisionAgentWorkspace then StartAgentSession
+// under ONE client_request_id (DL-166), reusing the human-path handlers verbatim. Two
+// behaviors it owns: end-to-end idempotency (a client_request_id-keyed memo, since the
+// lower primitives don't compose a sequential retry) and pre-Provision reject-on-live.
 package server
 
 import (
@@ -93,12 +69,10 @@ func (s *service) SpawnAgent(
 	}
 
 	crid := req.Msg.GetClientRequestId()
-	// The dedup-join lookup. A non-empty client_request_id memoizes the spawn,
-	// keyed by (account, id): the first caller runs it, every retry for the SAME
-	// account joins the same entry. An empty id is not memoized (each call is a
-	// distinct spawn) but still runs reject-on-live. Keying on the account too
-	// (not the id alone) matches provisionDedupID: a client_request_id reused
-	// across accounts is a distinct spawn, never a cross-account join.
+	// The dedup-join lookup. A non-empty client_request_id memoizes the spawn, keyed
+	// by (account, id): the first caller runs it, every retry for the SAME account
+	// joins the entry. An empty id is not memoized. Keying on the account matches
+	// provisionDedupID: an id reused across accounts is a distinct spawn.
 	if crid != "" {
 		key := spawnKey{account: req.Msg.GetAgentHandle(), crid: crid}
 		call, joined := s.joinOrBeginSpawn(key)
@@ -148,11 +122,9 @@ func awaitSpawn(ctx context.Context, call *spawnCall) (*connect.Response[compass
 // is identical to the two-call human path.
 func (s *service) runSpawn(ctx context.Context, msg *compassv1.SpawnAgentRequest) (*compassv1.SpawnAgentResponse, error) {
 	// Pre-Provision reject-on-live: consult the Runner (authoritative for live
-	// session truth) for every live session and reject if the target agent
-	// already holds one. Runs on the cache-miss path only, BEFORE Provision, so a
-	// rejected spawn churns no container. Sourced from the Runner's status scan,
-	// never Server in-memory state (which fails open after a reconnect clears the
-	// bindings and would let the spawn collide on the container name mid-Provision).
+	// session truth) and reject if the target agent already holds one. Cache-miss
+	// path only, BEFORE Provision, so a rejected spawn churns no container. Sourced
+	// from the Runner, never Server in-memory state (which fails open after reconnect).
 	if err := s.rejectIfAgentLive(ctx, msg.GetAgentHandle()); err != nil {
 		return nil, err
 	}

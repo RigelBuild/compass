@@ -306,16 +306,10 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 	}
 	above[seq] = true
 
-	// Advance the contiguous cursor across every next seq that is either acked
-	// (in the above-set) or self-authored in this channel (author_account_id =
-	// agent — never dispatched, so vacuously satisfied). Query the
-	// author-exclusion set once for the span above the cursor so a run of
-	// self-posts cannot wedge the contiguous advance. Note: this advance stops
-	// at the first un-acked owed seq, and because messages.seq is a table-global
-	// BIGSERIAL a cross-channel seq can sit in that position — so on a busy
-	// multi-channel deployment acked seqs above such a gap remain in above_seqs
-	// rather than draining. That boundedness gap is the parked design question
-	// (PR #55 Open Questions); correctness (no message loss) is unaffected.
+	// Advance the contiguous cursor across every next seq that is acked or
+	// self-authored (never dispatched). Query the exclusion set once so a run of
+	// self-posts can't wedge the advance. It stops at the first un-acked seq; a
+	// cross-channel BIGSERIAL gap leaves acked seqs undrained (parked, PR #55 OQ).
 	ownSeqList, err := qtx.SelfAuthoredSeqsAbove(ctx, db.SelfAuthoredSeqsAboveParams{
 		ChannelID:       string(channel),
 		Seq:             ackedSeq,
@@ -373,18 +367,10 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 // channel with no cursor contributes nothing rather than a full replay. Channels
 // with no owed messages are omitted from the map.
 func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[ChannelID][]Message, error) {
-	// One query over the agent's sweep channel set. The set is the D1 disjunct
-	// (design.md:118-120, :127-128, :343, :708): a channel the agent is
-	// subscribed to OR its home channel — the home channel always sweeps,
-	// independent of its channel_members.subscribed flag, so a home row flipped
-	// subscribed=false (addOrUpdateMember DO UPDATE) still delivers. $1 is always
-	// an agent, so the inner JOIN to agent_accounts matches exactly one row (no
-	// fan-out) and yields its home_channel_id. The cursor is LEFT JOINed: a
-	// present row gives its acked_seq/above_seqs; an absent row (legacy fail-safe)
-	// is coalesced to the channel head via a correlated MAX(seq), so the seq >
-	// cursor predicate admits nothing (caught-up, no replay). author_account_id
-	// <> agent excludes the agent's own posts; the array predicate excludes the
-	// retained above-set.
+	// One query over the agent's sweep set: the D1 disjunct — a channel the
+	// agent is subscribed to OR its home channel (which always sweeps). The
+	// cursor is LEFT JOINed: an absent row coalesces to the channel head (legacy
+	// fail-safe). Excludes the agent's own posts and the retained above-set.
 	rows, err := s.q.UndeliveredMessages(ctx, string(agent))
 	if err != nil {
 		return nil, fmt.Errorf("store: sweep undelivered messages: %w", err)

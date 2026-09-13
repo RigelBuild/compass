@@ -68,12 +68,10 @@ func TestBindingChangesFanOutToEverySubscriber(t *testing.T) {
 		t.Fatalf("PublishBindingChange: %v", err)
 	}
 
-	// Both are awaited concurrently rather than one after the other, and the
-	// gate is shared: under a queue group the server picks ONE subscriber, and
-	// which one is not deterministic — so a sequential receive would fail on
-	// whichever channel happened to lose, with a bare timeout that does not
-	// name the broken invariant. Counting arrivals fails the same way every
-	// time, and says what went wrong.
+	// Both are awaited concurrently with a shared gate: under a queue group the
+	// server picks ONE subscriber nondeterministically, so a sequential receive
+	// would fail on whichever channel lost with a bare timeout naming nothing.
+	// Counting arrivals fails the same way every time, and says what went wrong.
 	got := map[string]BindingChange{}
 	deadline := time.After(gate)
 	for range 2 {
@@ -332,10 +330,9 @@ func TestMalformedBindingChangeIsDropped(t *testing.T) {
 		}
 	}
 	// Flush the writer BEFORE the valid publish. Core NATS preserves order per
-	// publisher only, and these are two connections — without this the
-	// malformed bytes could still be in flight when the valid change is
-	// delivered, so the assertion below would pass without the drop path having
-	// run at all, and would keep passing if the rejection were deleted.
+	// publisher only, and these are two connections — without this the malformed
+	// bytes could still be in flight when the valid change is delivered, so the
+	// assertion would pass without the drop path having run.
 	if err := writer.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flushing the malformed publishes: %v", err)
 	}
@@ -572,7 +569,7 @@ func TestSubscribeBindingChangesWatchdogExitsOnClose(t *testing.T) {
 	// sibling test's live SubscribeBindingChanges is indistinguishable from a
 	// leak of this one's. Go runs non-parallel tests while the parallel ones
 	// are paused.
-	//
+
 	// New directly rather than newFabric: this test closes the fabric itself,
 	// and newFabric's cleanup would then fail the test on the second Close.
 	f, err := New(Config{URL: testServer(t)})

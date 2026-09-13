@@ -1,43 +1,23 @@
 //go:build microvm && unix
 
-// canary_microvm_test.go is the FIRST tagged microVM test. It exists so the CI
-// KVM leg (the `gates` job's "microVM suites" step) and its assert-ran guard
-// have a real tagged test to compile and run NOW — before V2a's boot spike
-// grows the actual boot/integration suites. The guard counts "the packages that
-// call microvmtest.Require ran ok"; that count is vacuous until at least one such
-// test exists. This is that test.
-//
-// It is a SMOKE TEST OF THE ENABLEMENT WAVE, not a boot. It proves the whole
-// chain the E-wave stands up is wired end to end:
-//   - /dev/kvm is openable by the invoking uid — the E5 udev-enable step on the
-//     GHA runner (and E6 on the dev box) — because Require probes it (and, under
-//     COMPASS_REQUIRE_MICROVM=1, hard-fails rather than skips when it is not).
-//   - the guest-image attrs (E3) were realized and exported — KernelImage /
-//     RootfsImage point at store paths the CI step built via
-//     `nix build -f guest-image/default.nix` and exported into the env.
-//   - the VMM binaries (E1) are on PATH — VMMPath / VirtiofsdPath resolved,
-//     which Require does with exec.LookPath.
-//
-// It deliberately does NOT spawn cloud-hypervisor or boot the guest: booting a
-// microVM is V2a's job and needs the runtime this record does not own. Asserting
-// the resolved Env is fully populated and the two image paths exist on disk is
-// the strongest claim this slice can make WITHOUT a boot — and it is a real
-// assertion, never a skip-always stub. This is distinct from the V5 boot canary,
-// runtime.(*MicroVMRuntime).BootCanary (microvm_preflight.go), which DOES do a
-// real Create→Start→Exec→Remove boot as the microVM startup preflight; despite
-// the shared "canary" word the two are unrelated artifacts (record §(g)).
-//
-// It lives in the EXTERNAL test package `microvmtest_test` (not in-package) and
-// calls the EXPORTED microvmtest.Require, for two reasons that both matter:
-//   - the assert-ran guard finds Require callers with `grep 'microvmtest\.Require'`
-//     (ci.yml), which only matches the qualified call an external package makes;
-//     an in-package `Require(t)` would leave the guard counting zero packages and
-//     reporting itself vacuous. This canary must be the thing that guard counts.
-//   - it exercises Require exactly as a real consumer does — through the exported
-//     surface — so it is a genuine contract test of the package's public API.
-// The test binary still compiles into internal/microvmtest, so `go test` reports
-// `ok github.com/RigelBuild/compass/go/internal/microvmtest`, which is what the
-// guard asserts.
+// The FIRST tagged microVM test. It exists so the CI KVM leg and its assert-ran
+// guard have a real tagged test to compile and run NOW — the guard counts "the
+// packages that call microvmtest.Require ran ok", vacuous until one such test
+// exists. This is that test.
+
+// A SMOKE TEST OF THE ENABLEMENT WAVE, not a boot. It proves the chain is wired:
+// /dev/kvm openable by the uid (E5/E6, via Require's probe), the guest-image
+// attrs realized and exported (E3), and the VMM binaries on PATH (E1).
+
+// It deliberately does NOT boot the guest — that is V2a's job. Asserting the Env
+// is populated and both image paths exist on disk is the strongest claim without
+// a boot. Distinct from the V5 boot canary (runtime.BootCanary), which DOES boot;
+// despite the shared word the two are unrelated (record §(g)).
+
+// It lives in the EXTERNAL package `microvmtest_test` and calls the EXPORTED
+// Require: the guard greps the qualified call (an in-package call would count
+// zero), and it exercises Require as a real consumer through the public surface.
+// The binary still compiles into internal/microvmtest, so `go test` reports ok.
 
 package microvmtest_test
 
@@ -58,11 +38,9 @@ import (
 func TestCanaryMicroVMEnv(t *testing.T) {
 	env := microvmtest.Require(t)
 
-	// Every field must be populated: an empty one means Require resolved a path
-	// this test would later boot with to nothing. Require already Fatalf's on the
-	// underlying misconfiguration, so these guard the contract rather than the
-	// environment — a future Require regression that returns a partial Env is
-	// caught here.
+	// Every field must be populated: an empty one means Require resolved a boot
+	// path to nothing. Require already Fatalf's on the misconfiguration, so these
+	// guard the contract — a future regression returning a partial Env is caught.
 	if env.KernelImage == "" {
 		t.Error("resolved Env.KernelImage is empty")
 	}
@@ -82,11 +60,9 @@ func TestCanaryMicroVMEnv(t *testing.T) {
 		t.Error("resolved Env.PasstPath is empty")
 	}
 
-	// The two guest-image paths must exist on disk: this is what proves E3's
-	// attrs were realized and exported, not merely that the env vars were set to
-	// some string. The VMM paths came from exec.LookPath inside Require, so they
-	// are known-present already; the image paths came from the environment, so
-	// they are verified here.
+	// The two guest-image paths must exist on disk: this proves E3's attrs were
+	// realized and exported, not merely that the env vars were set. The VMM paths
+	// came from exec.LookPath inside Require, so they are known-present already.
 	for _, img := range []struct {
 		name string
 		path string

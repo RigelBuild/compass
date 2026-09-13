@@ -2,15 +2,10 @@
 
 package server
 
-// Default-lane (no database) tests for the two forge state-transition arms
-// (compass-forge-state-transition design.md §The server arm / §Actor
-// attribution). They ride the same harness as forge_test.go — the exported
-// forge.FakeProvider plus the faithful in-memory forgeStore — so the arm
-// pipeline (resolveTarget → state-domain screen → refinement/provider screen →
-// author-client dispatch → mapForgeError → actor memo → updated artifact) is
-// observable end to end without Postgres. The memo's real-Postgres contract
-// (upsert-latest-wins, consume-once, freshness) is the store package's own
-// pgtest suite (forge_state_transitions_pgtest_test.go).
+// Default-lane (no database) tests for the two forge state-transition arms, on the
+// same harness as forge_test.go (forge.FakeProvider + in-memory forgeStore), so the
+// arm pipeline (resolveTarget → screens → dispatch → mapForgeError → memo → artifact)
+// is observable without Postgres. The memo's Postgres contract is the store suite.
 
 import (
 	"errors"

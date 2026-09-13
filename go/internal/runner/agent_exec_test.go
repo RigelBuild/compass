@@ -2,13 +2,10 @@
 
 package runner
 
-// StartAgent's exec tail after the C5 cutover: the agent's compass.v1 traffic
-// rides the per-container socket, so both pipes are pure diagnostics and are
-// drained to the log. Driven over a pipe-backed StreamingExec (the test writes
-// into IO.Stdout / IO.Stderr) with a capturing slog handler as the observable.
-// The relay-era tests (Runner-sequenced PublishEvents frames off stdout) are
-// retired with the relay itself; what survives is the property that outlived the
-// protocol — an undrained pipe stalls the agent, whatever the bytes mean.
+// StartAgent's exec tail: the agent's compass.v1 traffic rides the per-container
+// socket, so both pipes are pure diagnostics drained to the log. Driven over a
+// pipe-backed StreamingExec with a capturing slog handler as the observable. The
+// surviving property: an undrained pipe stalls the agent, whatever the bytes mean.
 
 import (
 	"context"

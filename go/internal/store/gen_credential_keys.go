@@ -87,14 +87,10 @@ func run() error {
 	if len(keys) == 0 {
 		return fmt.Errorf("no credential-marked paths found — schema shape changed, refusing to emit an empty denylist")
 	}
-	// Guard against UNDER-collection, which the empty-denylist check above
-	// cannot see: a def shape the parser mishandles yields a SHORT list, not an
-	// error, silently dropping a path from the door's denylist. The check is
-	// relative to the count recorded by the previous run (emitted into the
-	// generated file below), so it catches the realistic failure — losing a
-	// handful of keys to one new shape — rather than only a collapse. A
-	// legitimate schema shrink is adopted by regenerating, which makes the new
-	// count a reviewable line in the diff.
+	// Guard against UNDER-collection, which the empty-denylist check cannot see:
+	// a def shape the parser mishandles yields a SHORT list, not an error. Checked
+	// against the previous run's recorded count, so a legitimate shrink is adopted
+	// by regenerating (the new count is a reviewable diff line).
 	prev, err := committedSchemaTotal(filepath.Dir(self))
 	if err != nil {
 		return err

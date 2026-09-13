@@ -2,15 +2,10 @@
 
 package runnerhub
 
-// T6 (RIG-1667): the resume handoff on the Server->Runner start relay.
-// StartResume is the resume-carrying sibling of Start (commands.go): it relays
-// the SAME StartAgentSession command, but additionally attaches the
-// server-reconstructed session body onto the INTERNAL SessionsResponse.resume_body
-// envelope — an internal field OUTSIDE the public request, so no client can
-// supply a body. The public start request is relayed VERBATIM (only the
-// authz-checked resume_session_id it already carries). Kept a distinct entry
-// point rather than a new param on Start so the fresh-start relay path is
-// untouched.
+// The resume handoff on the start relay. StartResume relays the SAME
+// StartAgentSession command as Start, but attaches the server-reconstructed
+// session body onto the INTERNAL resume_body envelope — outside the public
+// request, so no client can supply a body. The public request is relayed VERBATIM.
 
 import (
 	"context"

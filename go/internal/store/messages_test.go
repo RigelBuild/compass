@@ -2,13 +2,10 @@
 
 package store
 
-// Message contracts: AppendMessage assigns id + timestamp and validates its
-// input; ListMessages pages newest-first with a working BeforeMessageID cursor
-// and a clamped limit; idempotency dedups on (author, non-empty request id) and
-// not on an empty key; updateMessageBlocksExec replaces the block set; blocks
-// (text and ask, with all ask fields) round-trip through JSONB unchanged; and
-// SearchMessages finds matches, scopes to the actor's visible channels, narrows
-// by scope, and tolerates punctuated queries.
+// Message contracts: AppendMessage assigns id + timestamp and validates input;
+// ListMessages pages newest-first with a working cursor and clamped limit;
+// idempotency dedups on (author, non-empty request id); blocks round-trip JSONB;
+// SearchMessages scopes to visible channels and tolerates punctuated queries.
 
 import (
 	"context"
@@ -79,12 +76,10 @@ func TestAppendMessageUnknownChannelNotFound(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	author := mustUser(t, s, "author")
-	// The D9 membership gate precedes the insert: an author who is not a member
-	// of the target channel is refused, and an unknown channel has no members —
-	// so an unknown channel and a private one the author cannot see both
-	// collapse to ErrNotFound (the not-found/forbidden merge), never a hint the
-	// channel exists. Pre-gate this reached the insert and the FK surfaced
-	// ErrInvalidArgument.
+	// The D9 membership gate precedes the insert: a non-member author is refused,
+	// and an unknown channel has no members — so both collapse to ErrNotFound
+	// (not-found/forbidden merge), never a hint the channel exists. Pre-gate this
+	// reached the insert and the FK surfaced ErrInvalidArgument.
 	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hi")}}, string("ghost"), TopicRef{Name: "general", Create: true}, "")
 	sentinelIs(t, err, ErrNotFound, "unknown channel")
 }
@@ -1077,10 +1072,9 @@ func TestAnswerAskConcurrentSameAskOneConflict(t *testing.T) {
 	}
 
 	// Two racers on the SAME ask, each choosing a different option. The start
-	// barrier maximizes overlap of the two read-modify-write windows; no sleeps
-	// — the WaitGroup gates completion and the row lock makes the winner
-	// deterministic-in-count (exactly one). Each goroutine records its own error
-	// in a private slot so the classification below sees both outcomes.
+	// barrier maximizes overlap of the read-modify-write windows; the row lock
+	// makes the winner deterministic (exactly one). Each goroutine records its
+	// own error so the classification below sees both outcomes.
 	opts := [2]string{"opt-a", "opt-b"}
 	var errs [2]error
 	start := make(chan struct{})

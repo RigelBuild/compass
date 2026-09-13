@@ -1,17 +1,7 @@
-// The live-daemon connection config: where the UI dials the Compass server and
-// the bearer it presents. Read once at boot from the Vite env and handed to the
-// store's client factory (index.tsx → createAppStore). The caller's own account
-// id is NOT part of this config: it is learned from the server via the WhoAmI
-// RPC right after the transport is up (live/client.ts resolveCaller), not read
-// from env — so no operator ever supplies an account id.
-//
-// Transport is chosen at client construction (compass-tauri-shell.md:110-124):
-// the browser MVP dials the T3b authenticated network door over gRPC-Web with a
-// bearer token (the T3-door account token → `authorization: Bearer`). The
-// hosted/handshake modes (GetServerInfo, a Wails custom-fetch to a UDS) are
-// sibling transports layered at this same seam later — this module is the one
-// place the baseUrl+token are resolved, so adding a mode never leaks a
-// local-assumption above the transport boundary.
+// The live-daemon connection config: where the UI dials the Compass server and the bearer
+// it presents. Read once at boot from the Vite env. The caller's account id is NOT part of
+// this: it is learned via WhoAmI after connect, not from env. This is the one place
+// baseUrl+token are resolved, so a new transport mode never leaks a local assumption upward.
 
 /** The resolved connection to the Compass server: the gRPC-Web door URL and the
  *  optional bearer. `token` undefined is a deliberate no-auth client (the dev

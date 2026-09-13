@@ -1,24 +1,9 @@
 //go:build unix
 
-// The agent-initiated board-write leg: boardService implements
-// runnerhub.BoardCaller (relay_board.go), the seam the RunnerHub delegates a
-// resolved-caller issue-state write into (agent primary lifecycle T3-a). It runs
-// the ONE transition executor every state producer shares — the frozen
-// compare-and-transition (compass-issue-model/design.md:513-521) — so a
-// tracker- or auto-sourced transition (PR-B/PR-C) reuses SetIssueState unchanged,
-// only supplying a different TransitionSource. The hub depends only on the narrow
-// BoardCaller surface and never pulls the whole board service in.
-//
-// Trust model (mirrors lifecycleService). The caller AccountID is resolved
-// Server-side by the hub from its own session binding and passed in; the Runner
-// never asserts it. Per Resolved decision 2 (MVP, single-trust-domain), the
-// caller is recorded for attribution but NO scope rejection ships — the
-// signature carries it so the later hierarchical scope check has its input
-// without a migration.
-//
-// A tool-level failure (unknown issue, UNSPECIFIED target) is returned as a
-// Connect-coded error the hub renders IN-BAND (boardCallError); only a
-// resolution miss / no-caller is a transport error, and that is the hub's job.
+// The agent-initiated board-write leg: boardService implements runnerhub.BoardCaller,
+// running the ONE compare-and-transition executor every state producer shares. The
+// caller AccountID is resolved Server-side (recorded, no scope rejection yet). A
+// tool-level failure is returned IN-BAND; a resolution miss is a transport error.
 package server
 
 import (
@@ -201,19 +186,10 @@ func (b *boardService) SetIssueState(
 	// upsert would demand forge fields and could not carry the state column).
 	b.issueBrd.RecordAndPublish(committed)
 
-	// Outbound tracker mirror on a real transition. Nil-safe (unset this PR).
-	// ARCHIVED has no tracker status, so it is elided from the outbound mirror
-	// (design.md:438-439 / compass-issue-model:558-563). The mirror runs AFTER
-	// the state is durable + published; PR-C's real mirror owns echo-suppression,
-	// tracker-status mapping, and any retry/failure refinement (Resolved decision 1).
-	// PR-C deferrals (do NOT change behavior in this PR):
-	//   (a) error-after-commit ordering: the mirror runs AFTER the state is
-	//       committed AND published, so PR-C's real mirror must not surface a
-	//       mirror failure as the transition's failure code (outbox/async or
-	//       log-and-continue) — the transition already succeeded here.
-	//   (b) lock scope: the mirror runs under transitionMu; PR-C's real
-	//       (network) mirror must move this call after releasing the lock so a
-	//       round-trip does not serialize the whole board.
+	// Outbound tracker mirror on a real transition. Nil-safe. ARCHIVED has no
+	// tracker status, so it is elided. The mirror runs AFTER the state is durable +
+	// published and under transitionMu; a network mirror must not surface its
+	// failure as the transition's code and must move off the lock to avoid serializing.
 	if b.mirror != nil && target != store.IssueStateArchived {
 		if err := b.mirror.MirrorIssueState(ctx, committed); err != nil {
 			return store.Issue{}, connect.NewError(connect.CodeInternal, fmt.Errorf("mirroring issue state: %w", err))

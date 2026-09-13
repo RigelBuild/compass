@@ -3,10 +3,9 @@
 package comms
 
 // SetChannelPolicy handler + policy enforcement at the RPC edge (RIG-1722 T4):
-// the handler sets the policy and echoes the updated channel; an OWNER_ONLY
-// non-owner post maps to CodeNotFound (the no-oracle in-band rejection); an
-// unsubscribe on a mandatory channel maps to CodeInvalidArgument. Driven
-// in-process via connect.NewRequest + WithActor against a real store and bus.
+// the handler sets the policy and echoes the channel; an OWNER_ONLY non-owner
+// post is CodeNotFound (no-oracle rejection); an unsubscribe on a mandatory
+// channel is CodeInvalidArgument. In-process via WithActor against a real store.
 
 import (
 	"context"

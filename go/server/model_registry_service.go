@@ -1,20 +1,11 @@
 //go:build unix
 
-// The fleet model-registry handlers — the operator-facing write path on
-// CompassService (RIG-3122 P2). PutModelRegistry / DeleteModelRegistry are
-// admin-gated on the network door (admin_gate.go classifies them adminOnly:
-// operator-scoped only, agents never author); GetModelRegistry is value-free of
-// credentials (the registry names providers/models, never holds keys) and
-// classified authenticatedOpen, mirroring GetAgentConfigInfo. They sit on the
-// same service struct as the rest of CompassService (service.go).
-//
-// The write is a COMPARE-AND-SET on the whole-registry version: the caller
-// carries the version it read (0 to seed), the store bumps only if the row still
-// holds it, and a stale version maps to CodeAborted — the connect/gRPC
-// convention for a failed CAS ("re-read and retry"), never CodeInvalidArgument.
-// A malformed payload or an orphaning removal is CodeInvalidArgument (fail
-// closed at the door). No version signal is wired here: the gateway read surface
-// is a later PR (deliverable 4), so there is no live consumer to prod yet.
+// The fleet model-registry handlers on CompassService (RIG-3122 P2).
+// PutModelRegistry / DeleteModelRegistry are admin-gated (operator-scoped);
+// GetModelRegistry is credential-free (names only) and authenticatedOpen. The
+// write is a COMPARE-AND-SET on the whole-registry version: a stale version maps
+// to CodeAborted (the CAS convention), a malformed payload or orphaning removal to
+// CodeInvalidArgument. No version signal is wired yet — no live consumer.
 package server
 
 import (

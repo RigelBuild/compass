@@ -1,17 +1,11 @@
-// Pure decision/transform core for refresh-devenv-nixpkgs.ts (RIG-2432).
-//
-// Split out from the entry point so the load-bearing string/JSON transforms —
-// reading the inner nixpkgs rev out of devenv.lock and rewriting the biome
-// catalog pin in package.json — are unit-testable without a nix runner, a
-// network, or a git tree. The entry point owns the shell-outs (re-lock, eval,
-// bun install); this file owns the parsing and rewriting.
+// Pure decision/transform core for refresh-devenv-nixpkgs.ts (RIG-2432): reading
+// the inner nixpkgs rev out of devenv.lock and rewriting the biome catalog pin
+// in package.json — unit-testable without a nix runner, network, or git tree.
 
-// The catalog key whose pin mirrors the baked biome linter (package.json
-// workspaces.catalog). Exact-version pin today; the dev-shell parity story
-// keeps it string-equal to the biome baked from the devenv-nixpkgs channel
-// (devenv.nix). Compass bakes rumdl from the same channel, but it
-// carries no catalog pin (package.json has no rumdl entry), so the
-// relock rewrites this one pin only.
+// The catalog key whose pin mirrors the baked biome linter. Exact-version pin;
+// the parity story keeps it string-equal to the biome baked from the channel.
+// rumdl is baked from the same channel but carries no catalog pin, so the relock
+// rewrites this one pin only.
 export const BIOME_CATALOG_KEY = "@biomejs/biome";
 
 /**
@@ -88,13 +82,10 @@ export function channelNixpkgsRev(devenvLockText: string): string {
 	return rev;
 }
 
-// The catalog object in the root package.json: `"catalog": { … }`. `[^}]*`
-// stops at the first `}` — the same scope the catalog customManager in
-// config.json5 already trusts (the block carries no nested objects; a nested
-// object there would break both this and that manager, and config.test.ts
-// guards against it). Scoping to this block is what keeps the rewrite off the
-// `"@biomejs/biome": "catalog:"` CONSUMER references elsewhere in the file,
-// which carry the literal `catalog:` value, not a version.
+// The catalog object in package.json: "catalog": { … }. [^}]* stops at the first
+// }, the same scope the catalog customManager in config.json5 trusts (no nested
+// objects; config.test.ts guards this). Scoping here keeps the rewrite off the
+// "catalog:" CONSUMER references elsewhere in the file.
 const CATALOG_BLOCK_RE = /"catalog"\s*:\s*\{[^}]*\}/;
 
 /**
@@ -136,13 +127,10 @@ export function rewriteCatalogPin(
 	);
 }
 
-// The nixpkgs input URL in the repo-root flake.nix, which hard-codes the
-// devenv-nixpkgs channel rev in the URL itself:
+// The nixpkgs input URL in flake.nix, which hard-codes the channel rev:
 //   inputs.nixpkgs.url = "github:cachix/devenv-nixpkgs/<40-hex-rev>";
-// The rev is captured; `flake.lock` records this same rev, and the
-// flake-parity gate (tools/toolchain/flake-parity.ts) fails CI when it skews
-// from devenv.lock's nixpkgs rev. A devenv-nixpkgs bump moves devenv.lock but
-// leaves this literal stale, so the refresh task rewrites it in lockstep.
+// flake.lock records this same rev; the flake-parity gate reds when it skews.
+// A devenv-nixpkgs bump leaves this literal stale, so the task rewrites it.
 const FLAKE_NIXPKGS_URL_RE =
 	/("github:cachix\/devenv-nixpkgs\/)([a-f0-9]{40})(")/;
 

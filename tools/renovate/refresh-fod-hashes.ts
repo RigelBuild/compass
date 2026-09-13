@@ -1,112 +1,59 @@
 #!/usr/bin/env bun
 // Renovate postUpgradeTask: refresh the pinned Nix fixed-output-derivation (FOD)
 // hashes a dependency bump invalidates, so a dep-bump PR lands green instead of
-// red on a `hash mismatch in fixed-output derivation` build break (the RIG-2432
-// easy-dep-bump goal, PR #579's failure class).
-//
-// Compass pins two FOD hash VALUES, each content-addressing a fetched dependency
-// set that MOVES when a manifest bumps.
-// The Go vendorHash is pinned in TWO files that share it by design (below):
-//
-//   guest-image/default.nix   vendorHash   compass-guestd's Go module set
-//   flake.nix                 vendorHash   compass-app + cmd-binaries' module set
-//                                          — the SAME proxyVendor hash over go/
-//                                          (flake.nix:46-52 documents the equality),
-//                                          both invalidated by a go/go.mod|go.sum
-//                                          bump. The build vehicle realises ONLY
-//                                          guestd's FOD; flake.nix is refreshed as a
-//                                          MIRROR — the identical value, no second
-//                                          realise — see FodEntry.mirrorFiles.
-//   agent-image/entrypoint.nix outputHash  compass-agent's installed node_modules
-//                                          tree (recursive FOD of `bun install`) —
-//                                          invalidated by a bun.lock bump, and
-//                                          refreshed on a devenv-nixpkgs channel
-//                                          bump too (devenv.lock): the channel
-//                                          moves pkgs.bun, the FOD's builder,
-//                                          which MAY move the recursive tree — so
-//                                          the entry gates on BOTH and the refresh
-//                                          reconciles the pin whichever moved.
-//
-// Neither is a URL hash a `nix store prefetch-file` can recompute (that is
-// refresh-toolchain-hashes.ts's job for the vendored-binary pins). A vendorHash /
-// outputHash is only knowable by REALISING the derivation: build it, read the SRI
-// Nix reports on the mismatch. Each entry names its OWN build vehicle, and with a
-// deliberately-wrong pin the build fails FAST at the FOD, never proceeding to the
-// heavy guestd compile, the erofs pack, or the agent bundle.
-//
-// ── ONE outputHash, TWO builders: why some entries WRITE and some VERIFY ──
-// `agent-image/entrypoint.nix` carries a SINGLE `outputHash` literal and is
-// imported by TWO consumers with two different nixpkgs pins:
-//
-//   guest-image/default.nix:66   with ROOT's `pkgs`   (root devenv.lock)
-//   agent-image/devenv.nix:34    with AGENT-IMAGE's `pkgs` (agent-image/devenv.lock)
-//
-// The FOD's builder takes `nativeBuildInputs = [ pkgs.bun ]`, so the two consumers
-// realise it with two bun derivations. One hash satisfies both only while those
-// two buns produce a byte-identical install tree. The table therefore carries the
-// entrypoint pin TWICE:
-//
-//   * an AUTHORITATIVE entry, realised through guest-image/default.nix (root's
-//     pkgs), which WRITES the canonical SRI; and
-//   * a VERIFY entry (`verifyOf`), realised through the agent-image vehicle
-//     (agent-image's pkgs), which recomputes and COMPARES against what the
-//     authoritative entry just wrote. Equal → log and no-op. Different → throw,
-//     naming both SRIs, both vehicles and both channel revs.
-//
-// A verify entry must never write: two entries writing one marker would be
-// last-write-wins, and the second value would silently overwrite the first —
-// hiding the very divergence this pair exists to catch. The write-then-verify
-// ORDER is therefore load-bearing, and refreshFodEntries() enforces it
-// structurally (it partitions the run set; it never trusts table order), backed
-// by the table invariants below (a verify entry must share its authoritative
-// entry's file+marker+triggers and use a DIFFERENT vehicle).
-//
-// Mechanism, per gated entry:
-//   1. Rewrite the entry's hash to a fixed FAKE value.
-//   2. `nix build` the entry's vehicle (--keep-going so a co-stale sibling FOD
-//      does not mask this one) — it fails with the entry's real `got:` SRI.
-//   3. Parse the `got:` for THIS entry's derivation (matched by a drv-name
-//      fragment, so a sibling FOD's mismatch in the same vehicle can never be
-//      misattributed).
-//   4. Write the real SRI back (authoritative), or compare it against the
-//      committed value and throw on divergence (verify). Fail LOUD (exit 1) if no
-//      `got:` is found — a silent no-op would ship the stale pin this task exists
-//      to fix.
-//
-// Self-gating: for each entry, act only when one of its trigger manifests differs
-// from the base branch (mirrors refresh-toolchain-hashes.ts's versions/*.nix
-// gate). So it is a cheap no-op on every branch that touches no trigger manifest,
-// a gomod bump refreshes only the Go vendorHash, and a bun.lock bump OR a
-// devenv-nixpkgs channel bump (devenv.lock) refreshes the bun outputHash.
-// Idempotent: re-running rewrites the same SRI — a no-op write when the realised
-// tree is unchanged (so gating on devenv.lock costs at most one extra realise).
-//
-// Wired from config.json5 at FIVE sites, all the same
-// `bun tools/renovate/refresh-fod-hashes.ts` command (allowlisted once in
-// bot-config.json5; config.test.ts pins them together): top-level
-// postUpgradeTasks (branch mode — gomod branches and pure-bun-first
-// TypeScript-rollup branches), the catalog packageRule (update mode —
-// catalog-first rollup branches, where the collapsed branch config evicts the
-// top-level branch task), the devenv-nixpkgs channel rule (branch mode — a
-// channel bump moves pkgs.bun; see that rule's note), the devenv fork (root)
-// rule (branch mode — relocks devenv.lock; a declared trigger), and the go ↔
-// go-overlay lockstep rule (branch mode — relocks devenv.lock via
-// `devenv update go-overlay`; a declared trigger).
-//
-// Requires `nix` (nix-command) + `bun` + `git` on PATH and network. The build is
-// self-contained: `nix build` fetches the Go/bun toolchains it needs into the
-// store itself, so only nix + network are load-bearing for the realise step (bun
-// runs this script; git drives the self-gate). The Renovate workflow's toolchain
-// bootstrap provides all of them (.github/workflows/renovate.yml).
-//
+// red on a "hash mismatch in fixed-output derivation" build break (RIG-2432,
+// PR #579's failure class).
+
+// Compass pins two FOD hash VALUES. The Go vendorHash lives in two files that
+// share it by design: guest-image/default.nix and flake.nix — the SAME
+// proxyVendor hash over go/, both moved by a go.mod|go.sum bump. The vehicle
+// realises only guestd's FOD; flake.nix is a MIRROR (FodEntry.mirrorFiles).
+
+// agent-image/entrypoint.nix's outputHash content-addresses compass-agent's
+// installed node_modules (a bun install FOD). Invalidated by a bun.lock bump AND
+// by a devenv-nixpkgs channel bump (the channel moves pkgs.bun, the FOD builder),
+// so the entry gates on both and reconciles the pin whichever moved.
+
+// Neither is a URL hash prefetch-file can recompute — a vendorHash/outputHash is
+// only knowable by REALISING the derivation and reading the SRI Nix reports on the
+// mismatch. Each entry names its own build vehicle; a wrong pin fails FAST at the
+// FOD, before the heavy guestd compile or agent bundle.
+
+// entrypoint.nix carries ONE outputHash but is imported by two consumers with two
+// nixpkgs pins (guest-image/default.nix with root's pkgs, agent-image/devenv.nix
+// with agent-image's), so two buns realise it. One hash satisfies both only while
+// they produce a byte-identical tree, so the table carries the entrypoint pin twice:
+
+//   * an AUTHORITATIVE entry (root's pkgs) that WRITES the canonical SRI; and
+//   * a VERIFY entry (verifyOf, agent-image's pkgs) that recomputes and COMPARES.
+//     Equal → no-op; different → throw, naming both SRIs, vehicles and channel revs.
+
+// A verify entry must never write (two writers would be last-write-wins, hiding
+// the divergence this pair catches), so the write-then-verify ORDER is load-bearing.
+// refreshFodEntries() enforces it structurally (it partitions the run set, never
+// trusts table order), backed by the table invariants below.
+
+// Mechanism, per gated entry: 1. rewrite the hash to a FAKE value; 2. nix build the
+// vehicle (--keep-going so a co-stale sibling FOD does not mask it), which fails with
+// the real got: SRI; 3. parse got: for THIS entry's drv (matched by name fragment);
+// 4. write it back (authoritative) or compare and throw (verify). Fail LOUD if no got:.
+
+// Self-gating: act only when a trigger manifest differs from base. A gomod bump
+// refreshes only the Go vendorHash; a bun.lock OR devenv-nixpkgs channel bump
+// refreshes the bun outputHash. Idempotent: re-running rewrites the same SRI.
+
+// Wired from config.json5 at FIVE sites, all the same command (allowlisted once,
+// config.test.ts pins them together): top-level postUpgradeTasks, the catalog
+// packageRule, the devenv-nixpkgs channel rule, the devenv fork (root) rule, and
+// the go ↔ go-overlay lockstep rule.
+
+// Requires nix + bun + git on PATH and network; nix build fetches the toolchains
+// itself. Provided by renovate.yml's bootstrap.
 // Design: docs/designs/repo/compass-renovate-migration.md
-//
-// Exit codes:
-//   0 - hash(es) refreshed and every verify entry agreed, or a no-op branch (no
-//       trigger manifest changed).
-//   1 - a step failed (build produced no `got:`, a marker was missing, or a
-//       verify entry's vehicle disagreed with the committed pin) — fail loud,
-//       never ship a half-refreshed or one-builder-only pin set.
+
+// Exit 0 = hash(es) refreshed and every verify entry agreed (or a no-op branch);
+// 1 = a step failed (no got:, a missing marker, or a verify disagreement) — fail
+// loud, never ship a half-refreshed or one-builder-only pin set.
 
 import { $ } from "bun";
 
@@ -132,31 +79,24 @@ export type FodEntry = {
 	// WITHIN one vehicle; two entries realising different vehicles may share it
 	// (that is exactly the two-builders-one-hash case above).
 	drvFragment: string;
-	// The build vehicle that realises this entry's FOD: the Nix file and the attr
-	// in it, both repo-root-relative (the runner cwd = repo root; main() chdirs
-	// there). Per ENTRY, not per module: the same pinned hash is realised through
-	// two vehicles resolving two different nixpkgs revs, and a shared global would
-	// make one of those unreachable.
+	// The build vehicle that realises this entry's FOD: the Nix file and attr,
+	// repo-root-relative. Per ENTRY, not per module: the same hash is realised
+	// through two vehicles at two nixpkgs revs, so a shared global would make one
+	// unreachable.
 	buildFile: string;
 	buildTarget: string;
-	// The devenv lock whose `nodes.nixpkgs.locked.rev` supplies `buildFile`'s
-	// `pkgs` (repo-root-relative). Load-bearing, not decorative: a scope-specific
-	// refresher selects its entries by this field, the table invariants below
-	// check it names the lock `buildFile` actually reads, and the divergence error
-	// quotes both revs so the reader does not have to go find them. Rewriting it
-	// to an equivalent-looking spelling (a leading `./`, an absolute path) breaks
-	// those lookups.
+	// The devenv lock whose nodes.nixpkgs.locked.rev supplies buildFile's pkgs
+	// (repo-root-relative). Load-bearing: a scope-specific refresher selects by
+	// this field, the invariants check it names the lock buildFile reads, and the
+	// divergence error quotes both revs. Do not respell it (leading ./, absolute).
 	vehicleChannelLock: string;
 	// Manifests whose change invalidates this FOD (repo-root-relative). The
 	// per-entry self-gate fires when any of these differs from the base branch.
 	triggers: string[];
-	// Extra files carrying the IDENTICAL pinned hash (same `marker`), equal to
-	// `file`'s by construction — e.g. a second buildGoModule with the same
-	// proxyVendor set over the same go/. They are NOT separately realised (the
-	// build vehicle content-addresses only `file`'s FOD, so a faked mirror pin
-	// would never surface in its output); each is rewritten to the SRI `file`'s
-	// realise reports. Absent for a lone pin. Never set on a verify entry — a
-	// verify entry writes nothing at all.
+	// Extra files carrying the IDENTICAL hash (same marker), equal to file's by
+	// construction. NOT separately realised (the vehicle content-addresses only
+	// file's FOD); each is rewritten to the SRI file's realise reports. Absent for
+	// a lone pin. Never set on a verify entry.
 	mirrorFiles?: string[];
 	// Set => this entry VERIFIES the pin another entry writes, and never writes
 	// itself. The value is that authoritative entry's `id`. See the header: it
@@ -182,39 +122,31 @@ export const FOD_ENTRIES: FodEntry[] = [
 		marker: 'outputHash = "sha256-',
 		drvFragment: "node-modules",
 		// The AUTHORITATIVE realise of the shared outputHash, through
-		// guest-image/default.nix — which imports the very same entrypoint.nix with
-		// ROOT's `pkgs` (that file documents the divergence as deliberate). This is
-		// the entry that WRITES the canonical value; the sibling below re-derives it
-		// through the agent-image scope and only compares.
+		// guest-image/default.nix (imports entrypoint.nix with ROOT's pkgs). This
+		// entry WRITES the canonical value; the sibling below re-derives it through
+		// the agent-image scope and only compares.
 		buildFile: "guest-image/default.nix",
 		buildTarget: "compass-guest-rootfs",
 		vehicleChannelLock: "devenv.lock",
-		// `bun.lock` moves the installed tree's version set. The two channel locks
-		// are declared beside it because each moves a BUILDER of this same FOD:
-		// `devenv.lock` supplies root's `pkgs` to the vehicle realised here, and
-		// `agent-image/devenv.lock` supplies the agent-image scope's `pkgs` to
-		// `agent-image/devenv.nix`, the OTHER importer of entrypoint.nix. All paths
-		// are repo-root-relative, as the gate's `git diff` pathspec expects. The
-		// verify entry below carries the IDENTICAL trigger list, which is what makes
-		// the two always gate together.
+		// bun.lock moves the installed tree. The two channel locks are declared
+		// beside it because each moves a BUILDER of this FOD: devenv.lock supplies
+		// root's pkgs here, agent-image/devenv.lock supplies the other importer's.
+		// The verify entry carries the IDENTICAL trigger list, gating them together.
 		triggers: ["bun.lock", "devenv.lock", "agent-image/devenv.lock"],
 	},
 	{
 		id: "agent-node-modules-agent-image-pkgs",
 		file: "agent-image/entrypoint.nix",
 		marker: 'outputHash = "sha256-',
-		// The SAME drv name as the entry above — it is literally the same
-		// derivation expression, evaluated against a different nixpkgs. Sharing the
-		// fragment is safe because attribution is scoped to a vehicle's own build
-		// output, and the two entries realise different vehicles (the table
-		// invariants below enforce exactly that).
+		// The SAME drv name as the entry above — literally the same derivation
+		// against a different nixpkgs. Safe because attribution is scoped to a
+		// vehicle's own output and the two entries realise different vehicles (the
+		// invariants enforce that).
 		drvFragment: "node-modules",
-		// The agent-image scope's own view of the shared hash. This vehicle exists
-		// solely for this check: it imports entrypoint.nix with the pkgs resolved
-		// from agent-image/devenv.lock, which is the bun the OCI image build
-		// actually uses. Without it, a channel-rev divergence that changes bun's
-		// install tree would leave this pin right for guest-image, silently wrong
-		// for the agent image, and unobservable until the image build.
+		// The agent-image scope's own view of the shared hash. Imports entrypoint.nix
+		// with pkgs from agent-image/devenv.lock, the bun the OCI build uses. Without
+		// it a channel-rev divergence that changes bun's tree would leave this pin
+		// right for guest-image, silently wrong for the agent image, until build.
 		buildFile: "tools/renovate/agent-image-fod-vehicle.nix",
 		buildTarget: "compass-agent",
 		vehicleChannelLock: "agent-image/devenv.lock",
@@ -223,13 +155,10 @@ export const FOD_ENTRIES: FodEntry[] = [
 	},
 ];
 
-// ── Table invariants, asserted at load so a bad edit fails HERE, not at run. ──
-// Each one closes a way the write/verify pairing could silently do the wrong
-// thing. One function per rule, so a failure's stack names the rule broken and
-// each stays readable whole; assertFodTableInvariants below composes them in the
-// order their diagnostics are most useful. Exported (the composer) so the test
-// can prove each guard is real by feeding it a table that violates exactly one
-// rule, rather than restating the properties in assertions that would drift.
+// Table invariants, asserted at load so a bad edit fails HERE, not at run.
+// Each closes a way the write/verify pairing could silently misbehave. One
+// function per rule so a failure's stack names the rule; the composer is
+// exported so the test can feed it a table violating exactly one rule.
 
 // Ids identify a row to `verifyOf` and to every diagnostic.
 function assertUniqueIds(entries: FodEntry[]): void {
@@ -322,12 +251,10 @@ function assertVerifiesTarget(entry: FodEntry, target: FodEntry): void {
 	}
 }
 
-// got: attribution. parseGotForFragment matches a mismatch block by
-// `drvName.includes(fragment)`, so within ONE vehicle's output two fragments
-// where one contains the other (e.g. "modules" vs "node-modules") would let one
-// entry's got: bind the other's block and write the WRONG hash. Scoped to the
-// vehicle because that is the only place the ambiguity can arise: entries
-// realising different vehicles never read each other's output.
+// got: attribution. parseGotForFragment matches a block by drvName.includes,
+// so within ONE vehicle two fragments where one contains the other (e.g.
+// "modules" vs "node-modules") would misbind. Scoped to the vehicle since
+// entries realising different vehicles never read each other's output.
 function assertDisjointFragmentsPerVehicle(entries: FodEntry[]): void {
 	for (const a of entries) {
 		for (const b of entries) {
@@ -409,15 +336,10 @@ export function hashOnMarker(
 	return sri;
 }
 
-// ── Parse the `got:` SRI for the derivation whose name contains `fragment`. ──
-// Nix prints, per mismatching FOD:
-//     error: hash mismatch in fixed-output derivation '/nix/store/…-<frag>.drv':
-//              specified: sha256-<fake>
-//                 got:    sha256-<real>
-// Scoping to the fragment means a co-stale sibling FOD's mismatch in the same
-// vehicle (only possible defensively — the two triggers never change on one
-// branch) is never misattributed. Returns undefined if this FOD did not report a
-// mismatch.
+// Parse the got: SRI for the derivation whose name contains fragment. Nix prints
+// "hash mismatch in fixed-output derivation '…-<frag>.drv': specified: <fake>
+// got: <real>". Scoping to the fragment keeps a co-stale sibling FOD's mismatch
+// in the same vehicle from being misattributed. undefined if no mismatch.
 export function parseGotForFragment(
 	nixOutput: string,
 	fragment: string,
@@ -493,16 +415,10 @@ async function vehicleChannelRev(lockFile: string): Promise<string> {
 	}
 }
 
-// Refresh ONE authoritative entry's pin (and its mirrors) in place: read the
-// current text, recompute the SRI by realising the entry's vehicle against a
-// faked pin, write the real value back, then propagate it to every declared
-// mirror. This is the per-entry body of main()'s gated loop, factored out so a
-// scope-specific refresher can drive a single FOD directly —
-// refresh-agent-image-nixpkgs.ts drives it (via refreshFodEntries) after its own
-// relock, having already established by its own base diff that the agent-image
-// entry's trigger moved. Extracting it keeps ONE realise-and-parse
-// implementation: a second copy would drift from the got:-attribution and
-// restore-on-failure discipline above.
+// Refresh ONE authoritative entry's pin (and its mirrors) in place: recompute the
+// SRI by realising the vehicle against a faked pin, write it back, propagate to
+// mirrors. Factored out of main()'s loop so refresh-agent-image-nixpkgs.ts can
+// drive a single FOD, keeping ONE realise-and-parse implementation.
 export async function refreshEntry(entry: FodEntry): Promise<void> {
 	if (entry.verifyOf) {
 		throw new Error(
@@ -531,16 +447,12 @@ export async function refreshEntry(entry: FodEntry): Promise<void> {
 }
 
 // Check ONE verify entry: recompute the shared pin through the SECOND builder and
-// compare it against what is on disk — which, by refreshFodEntries' ordering, is
-// the value `authoritative` has already written. Writes nothing on either path
-// (recompute restores the file it faked), so the authoritative value survives
-// intact whatever this finds.
-//
-// Equal is the expected outcome and the only quiet one. A difference means the
-// two vehicles' bun derivations produce different install trees, so NO single
-// `outputHash` literal can satisfy both consumers: throwing reds
-// `renovate/artifacts` on the branch that moved the pin, which is the whole point
-// of realising this second vehicle.
+// compare against disk — which, by refreshFodEntries' ordering, is the value
+// authoritative already wrote. Writes nothing (recompute restores its fake).
+
+// Equal is the quiet, expected outcome. A difference means the two vehicles' buns
+// produce different install trees, so no single outputHash satisfies both:
+// throwing reds renovate/artifacts on the branch that moved the pin.
 export async function verifyEntry(
 	entry: FodEntry,
 	authoritative: FodEntry,
@@ -550,11 +462,9 @@ export async function verifyEntry(
 			`renovate-fod: '${entry.id}' verifies '${entry.verifyOf}', not '${authoritative.id}'`,
 		);
 	}
-	// Read AFTER the authoritative write, so the baseline is the refreshed pin —
-	// comparing against the pre-write text would report every ordinary refresh as
-	// a divergence. ONE read serves both roles: it is the value being checked AND
-	// the text recompute restores after faking the pin, so the file cannot end in
-	// a state neither of them intended.
+	// Read AFTER the authoritative write, so the baseline is the refreshed pin
+	// (pre-write text would report every refresh as a divergence). ONE read is
+	// both the value checked and the text recompute restores after faking.
 	const currentText = await Bun.file(entry.file).text();
 	const committed = hashOnMarker(currentText, entry.marker, entry.file);
 	console.log(
@@ -588,12 +498,10 @@ export async function verifyEntry(
 	);
 }
 
-// Drive a set of gated entries in the ONE order that is correct: every
-// authoritative write first, then every verify. The ordering is structural — the
-// run set is partitioned here, never read in table order — because a verify that
-// ran first would compare the second builder's value against the STALE pin and
-// throw on an ordinary refresh, and a verify that was skipped would ship the
-// unverified pin this pairing exists to catch.
+// Drive gated entries in the ONE correct order: every authoritative write first,
+// then every verify. Structural — the run set is partitioned here, never read in
+// table order — because a verify running first would compare against the STALE
+// pin and throw on an ordinary refresh, and a skipped verify ships unverified.
 export async function refreshFodEntries(entries: FodEntry[]): Promise<void> {
 	const authoritative = entries.filter((e) => !e.verifyOf);
 	const verifiers = entries.filter((e) => e.verifyOf);

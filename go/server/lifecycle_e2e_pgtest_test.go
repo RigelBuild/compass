@@ -2,38 +2,10 @@
 
 package server
 
-// End-to-end T7 of the FROZEN spawn/despawn design (RIG-1617 / record RIG-1360):
-// the WHOLE agent-initiated spawn/despawn wire, driven over a REAL per-container
-// AgentGateway unix socket against a real Postgres + a real Runner-over-stub-
-// engine. Where lifecycle_pgtest_test.go (T5) drives the lifecycleService seam
-// DIRECTLY (newLifecycleService, no wire), this drives every hop the record
-// names:
-//
-//	in-container agent  ->  AgentGateway.Lifecycle (per-container unix socket)
-//	  ->  Runner gateway.Lifecycle (maps socket->container->bound session)
-//	  ->  RelayLifecycleCall(session_id, call)  (Runner asserts NO account)
-//	  ->  Hub.RelayLifecycleCall (resolves session_id->caller account, fail-closed)
-//	  ->  lifecycleService.Spawn/DespawnAsAccount under the resolved caller
-//	  ->  store (accounts + placements) + hub Provision/Start/Stop/Remove
-//
-// PACKAGE PLACEMENT (the decisive design question, resolved to option B). The
-// hub needs a real LifecycleCaller, which is *lifecycleService — unexported, in
-// package server. Only package server can construct it (newLifecycleService) and
-// wire it (hub.SetLifecycleCaller, serve.go:250), so the whole-wire lifecycle
-// test cannot live in runnerhub_test without exporting a new production
-// constructor (out of scope — T7 adds no production interfaces). So this test
-// lives in package server and ASSEMBLES the full wire inline, combining the
-// server-package hub wiring (newRunnerHub + SetLifecycleCaller) with the
-// real-runner-over-stub-engine socket shape. The socket scaffolding it needs —
-// the sun_path-bounded runtime dir, the h2c client, the cleartext-H2 dialer —
-// is the same shape runnerhub/integration_pgtest_test.go needs, so it lives in
-// the shared internal/runnertest package (ShortRuntimeDir carries the sun_path
-// budget; runnerloop.RunSessionsLoop carries the LIFO drain ordering) and both
-// tests import it rather than each carrying a copy.
-//
-// Each assertion carries a mutation comment: the plausible regression in the
-// (already merged, green) spine that would redden it — the "red-first" the
-// record's T7 acceptance means here.
+// End-to-end T7 of the FROZEN spawn/despawn design (RIG-1617): the WHOLE
+// agent-initiated spawn/despawn wire over a REAL AgentGateway socket, real Postgres,
+// and a real Runner-over-stub-engine, driving every hop through to lifecycleService.
+// Lives in package server (option B: the hub needs unexported *lifecycleService).
 
 import (
 	"context"
@@ -177,11 +149,9 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 	}
 
 	// F2 ownership — the load-bearing security frame. The peer is owned by the
-	// SUPERVISOR'S OWNER (a non-admin user), never the supervisor agent, never
-	// the bootstrap admin. Mutation: creating the peer under the caller agent
-	// id, or a hard-coded admin id, instead of the store-resolved caller owner
-	// reddens this — the admin-literal arm is real because the fixture owns the
-	// supervisor under a non-admin user distinct from admin.
+	// SUPERVISOR'S OWNER (a non-admin user), never the supervisor agent, never the
+	// bootstrap admin. Mutation: creating the peer under the caller agent id or a
+	// hard-coded admin id instead of the store-resolved caller owner reddens this.
 	owner, err := w.store.AgentOwner(ctx, peerID)
 	if err != nil {
 		t.Fatalf("AgentOwner(peer) = %v", err)
@@ -224,12 +194,10 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 func e2ePeerPostsUnderOwnAccount(t *testing.T, w *e2eWire, peerID store.AccountID, peerContainer string, peerHome store.ChannelID) {
 	t.Helper()
 	ctx := w.ctx
-	// Dial the PEER's per-container socket and post as the in-container peer
-	// agent would. The Server resolves the peer's session->account binding and
-	// attributes the post to the PEER — never the supervisor, never admin.
-	// Mutation: if spawn promoted the session binding onto the wrong account
-	// (or the supervisor's), this author check reddens — the proof that spawn
-	// wired a genuinely independent bound session.
+	// Dial the PEER's per-container socket and post as the in-container peer would.
+	// The Server resolves the peer's session->account binding and attributes the post
+	// to the PEER — never the supervisor. Mutation: if spawn promoted the binding onto
+	// the wrong account, this author check reddens — proof of an independent session.
 	client := w.dialPeer(t, peerContainer)
 	resp, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "peer-post-1",
@@ -305,25 +273,10 @@ func e2eDespawnPeer(t *testing.T, w *e2eWire, peerID store.AccountID, peerContai
 func e2ePeerFailsClosedAfterDespawn(t *testing.T, w *e2eWire, peerID store.AccountID, peerContainer string, peerHome store.ChannelID) {
 	t.Helper()
 	ctx := w.ctx
-	// The peer can no longer act. Despawn's hub.Remove tore the container's
-	// AgentGateway socket down (agentHost.Remove -> closeSocket removes the
-	// listener AND the socket file), AND hub.Stop unbound the session->account
-	// mapping first. So a fresh dial of the peer's (now-removed) socket fails
-	// closed at the TRANSPORT layer — the socket file is gone — which is the
-	// strongest fail-closed: the peer cannot even reach its door.
-	//
-	// LAYER NOTE (per the record's ask to document which layer returns what):
-	// the observable here is a Connect TRANSPORT error (dial of a removed unix
-	// socket), NOT the CodeNotFound RelayCommsCall would return. That
-	// CodeNotFound is what surfaces when a session is merely UNBOUND while its
-	// socket still serves (a Stop without a Remove); despawn does a full
-	// Remove, so the socket layer errors first. Either way the peer is fail-
-	// closed. A fresh client is dialed (not the scenario-2 client) because that
-	// client's cached conn was force-closed when the listener closed.
-	//
-	// Mutation: a despawn that stopped short of removing the container (or left
-	// the session bound) would let this post SUCCEED — the exact regression
-	// this pins.
+	// The peer can no longer act. Despawn's hub.Remove tore the container's socket
+	// down and hub.Stop unbound the session, so a fresh dial fails closed at the
+	// TRANSPORT layer (socket file gone). Mutation: a despawn that stopped short of
+	// removing the container would let this post SUCCEED — the regression this pins.
 	client := w.dialPeer(t, peerContainer)
 	_, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "peer-post-after-despawn",
@@ -353,11 +306,10 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	w := newE2EWire(t)
 	ctx := w.ctx
 
-	// A SECOND owner (user B) and its agent (owner B's agent). The peer under
-	// owner B is brought fully online through the REAL spawn chain (lc.Spawn-
-	// AsAccount, the same seam the wire delegates into) so it is a genuine placed
-	// + bound + socket-serving peer — the fixture is real, only the ASSERTION
-	// (the foreign despawn) rides the supervisor's wire.
+	// A SECOND owner (user B) and its agent. The peer under owner B is brought fully
+	// online through the REAL spawn chain so it is a genuine placed + bound +
+	// socket-serving peer — the fixture is real, only the ASSERTION differs. The
+	// foreign despawn rides the supervisor's wire.
 	userB, err := w.store.CreateUser(ctx, store.NewUser{Handle: "owner-b", DisplayName: "Owner B"})
 	if err != nil {
 		t.Fatalf("CreateUser(owner B) = %v", err)
@@ -387,19 +339,17 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 		t.Fatalf("Lifecycle(foreign despawn) over the socket = %v, want an in-band result", err)
 	}
 	// The foreign despawn rides back IN-BAND (the _Error variant), NOT a Connect
-	// transport error: relay_lifecycle.go renders a tool-level failure as
-	// LifecycleCallResult_Error so a single refused call never tears the transport
-	// down. Mutation: returning a Connect error here (or a distinct code) instead
-	// of the in-band not_found would redden this.
+	// transport error: a tool-level failure never tears the transport down. Mutation:
+	// returning a Connect error here (or a distinct code) instead of the in-band
+	// not_found would redden this.
 	e := resp.Msg.GetError()
 	if e == nil {
 		t.Fatalf("foreign despawn returned a success result %+v, want the in-band not_found error", resp.Msg.GetResult())
 	}
 	// The code is EXACTLY not_found — the same token an UNKNOWN id yields — so a
 	// foreign-but-existing peer is indistinguishable from one that does not exist.
-	// (connect.CodeNotFound.String() == "not_found".) Mutation: a
-	// PermissionDenied (or any code that betrays "this peer exists but is not
-	// yours") reddens this — the existence probe the merge exists to prevent.
+	// Mutation: a PermissionDenied (or any code that betrays "this peer exists but is
+	// not yours") reddens this — the existence probe the merge exists to prevent.
 	if got := e.GetCode(); got != connect.CodeNotFound.String() {
 		t.Fatalf("foreign despawn code = %q, want %q (indistinguishable not-found/forbidden merge)", got, connect.CodeNotFound.String())
 	}
@@ -417,11 +367,9 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	if ue == nil || ue.GetCode() != connect.CodeNotFound.String() {
 		t.Fatalf("unknown despawn error = %+v, want the SAME in-band not_found the foreign despawn returned", ue)
 	}
-	// Indistinguishability is not only the CODE — the in-band MESSAGE rides the
-	// wire too (LifecycleCallError.message = err.Error()). Lock message parity so a
-	// regression that returns not_found with a DISTINCT message on the foreign path
-	// (e.g. "peer not owned by you" vs "peer not found") — reopening the existence
-	// side-channel the merge exists to close — reddens here.
+	// Indistinguishability is not only the CODE — the in-band MESSAGE rides the wire
+	// too. Lock message parity so a regression that returns not_found with a DISTINCT
+	// message on the foreign path (reopening the existence side-channel) reddens here.
 	if e.GetMessage() != ue.GetMessage() {
 		t.Fatalf("foreign despawn message = %q, unknown despawn message = %q; the two MUST be byte-identical or the message leaks peer existence", e.GetMessage(), ue.GetMessage())
 	}
@@ -501,12 +449,10 @@ func newE2EWire(t *testing.T) *e2eWire {
 	if err != nil {
 		t.Fatalf("BootstrapAdmin: %v", err)
 	}
-	// Own the supervisor under a NON-admin user, not the bootstrap admin. This is
-	// what makes the F2 "never admin-literal" arm real: with supervisorOwner !=
-	// admin.ID, a regression that hard-coded the bootstrap admin as the peer's
-	// owner yields owner == admin.ID != supervisorOwner and reddens here, instead
-	// of silently matching the fixture. (admin still exists — comms is anchored to
-	// it — it just does not own the supervisor.)
+	// Own the supervisor under a NON-admin user. This makes the F2 "never
+	// admin-literal" arm real: with supervisorOwner != admin.ID, a regression that
+	// hard-coded the bootstrap admin as the peer's owner reddens here instead of
+	// silently matching the fixture. (admin still exists, it just does not own it.)
 	supervisorOwnerUser, err := st.CreateUser(ctx, store.NewUser{Handle: "supervisor-owner", DisplayName: "Supervisor Owner"})
 	if err != nil {
 		t.Fatalf("CreateUser(supervisor owner): %v", err)
@@ -515,21 +461,17 @@ func newE2EWire(t *testing.T) *e2eWire {
 	if err != nil {
 		t.Fatalf("CreateAgent(supervisor): %v", err)
 	}
-	// runnertest.ShortRuntimeDir budgeted the socket path against a MODEL of the account
-	// id (e2eAccountIDHexLen "f"s), before an account existed. Tie the model to
-	// the real minted width now: widen store ids and this reddens here, rather
-	// than silently invalidating the budget and letting the real socket path
-	// overrun.
+	// runnertest.ShortRuntimeDir budgeted the socket path against a MODEL of the
+	// account id, before an account existed. Tie the model to the real minted width:
+	// widen store ids and this reddens here rather than silently overrunning the path.
 	if got := len(supervisor.ID); got != e2eAccountIDHexLen {
 		t.Fatalf("minted account id is %d chars, but ShortRuntimeDir budgeted for %d; update e2eAccountIDHexLen", got, e2eAccountIDHexLen)
 	}
 
-	// The hub, wired exactly as the server package builds it (sinks.go
-	// newRunnerHub): the board as lifecycle sink, comms as the conversation sink +
-	// CommsCaller, a real session tail. comms is the real agent-comms execution
-	// leg the peer's socket Post rides. No relayed conversation/lifecycle frame
-	// reaches the write-through sinks on this path, so they are effectively
-	// no-ops; only the RelayCommsCall + RelayLifecycleCall legs are exercised.
+	// The hub, wired exactly as the server package builds it (sinks.go newRunnerHub):
+	// board as lifecycle sink, comms as conversation sink + CommsCaller, a real
+	// session tail. No relayed conversation/lifecycle frame reaches the write-through
+	// sinks here, so only the RelayCommsCall + RelayLifecycleCall legs are exercised.
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	brd := board.NewProjection(bus)
@@ -578,11 +520,9 @@ func newE2EWire(t *testing.T) *e2eWire {
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLogE2E(), nil)
 	// host.Close drains every per-container socket. Registered BEFORE
-	// runnerloop.RunSessionsLoop so under LIFO it runs AFTER the loop's cancel+drain — the
-	// production order (run.go: cancel, RunSessions returns, THEN host.Close), and
-	// still before the runtime-dir removal registered at the very top. The fresh
-	// bounded ctx is the sanctioned test-root exemption: the test ctx is cancelled
-	// by the time this runs (mirrors the reference's assertCleanShutdown close).
+	// runnerloop.RunSessionsLoop so under LIFO it runs AFTER the loop's cancel+drain
+	// — the production order. The fresh bounded ctx is the sanctioned test-root
+	// exemption: the test ctx is already cancelled by the time this runs.
 	if closer, ok := host.(interface{ Close(ctx context.Context) }); ok {
 		t.Cleanup(func() {
 			closeCtx, cancelClose := context.WithTimeout(context.Background(), e2eTimeout)
@@ -627,13 +567,10 @@ func (w *e2eWire) dialPeer(t *testing.T, containerName string) compassv1internal
 }
 
 // --- server-package-specific wire helpers -----------------------------------
-//
-// The generic socket scaffolding (runtime dir, h2c client, dialer, sessions
-// loop) lives in the shared internal/runnertest package. What remains here is
-// the wire this test builds on top of it and cannot share: the single-token
-// resolver, the stub runtime, and the server-package assembly helpers. They
-// carry an `E2E` suffix so they never collide with an existing server-package
-// test helper. The load-bearing WHY-comments are kept.
+
+// The generic socket scaffolding lives in the shared internal/runnertest package.
+// What remains here is the wire this test cannot share (the single-token resolver,
+// the stub runtime, the assembly helpers), suffixed `E2E` to avoid collisions.
 
 // e2eResolver accepts exactly one Runner token — the minimal TokenResolver the
 // mounted RunnerService door authenticates the stub Runner with.

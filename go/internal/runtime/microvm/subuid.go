@@ -3,23 +3,12 @@
 package microvm
 
 // The subuid(5)/subgid(5) reads behind virtiofsd's id mapping. virtiofsd shells
-// out to newuidmap(1)/newgidmap(1) for a non-trivial --uid-map/--gid-map, and
-// those setuid helpers VALIDATE the requested host range against subuid(5) /
-// subgid(5) respectively ("the range of subordinate user IDs must have been set
-// up via subuid(5)", virtiofsd README §--uid-map). So each base mapped to a
-// namespace id 0 is a per-host allocation that must be READ, not assumed:
-// shadow-utils happens to allocate 100000 to the first user, but a second user
-// on the same box gets 165536, and LDAP/AD-backed or container-image-provisioned
-// hosts routinely differ. Assuming it fails in the worst way — the map helper
-// refuses, virtiofsd dies, and the boot surfaces as an opaque "waiting for
-// daemon sockets" timeout (or worse: virtiofsd binds its socket BEFORE the
-// id-map step, so a mapping failure can leave a live-looking socket behind a
-// dead daemon — see waitForSockets' liveness check) with the real cause only in
-// virtiofsd.log.
-//
-// Split into a pure parse over an io.Reader plus a thin file-reading wrapper so
-// the argv tests can pin the exact mapping against fixed bases with no
-// dependence on the test box's own /etc/subuid or /etc/subgid.
+// out to newuidmap/newgidmap, which VALIDATE the host range against subuid/subgid.
+// Each base is a per-host allocation that must be READ, not assumed (first user
+// 100000, second 165536; LDAP/AD hosts differ) or virtiofsd dies opaquely.
+
+// Split into a pure parse over an io.Reader plus a thin file wrapper so the argv
+// tests pin the mapping against fixed bases, independent of the test box.
 
 import (
 	"bufio"
