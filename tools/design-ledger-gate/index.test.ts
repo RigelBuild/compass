@@ -16,6 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	type Changed,
+	conflictMarkerViolations,
 	type Deps,
 	evaluate,
 	HISTORICAL_CHAIN,
@@ -1036,5 +1037,66 @@ describe("runOnce", () => {
 			},
 		});
 		expect(await runOnce(d)).toBe(2);
+	});
+});
+
+describe("conflictMarkerViolations", () => {
+	test("flags git-style markers that leave every DL- row valid", () => {
+		// The dangerous shape: markers sit between rows, so id uniqueness, status
+		// grammar, and link resolution all still pass.
+		const text = [
+			"| DL-001 | a | Active (m, 2026-01-01) | [r](r.md) |",
+			"<<<<<<< HEAD",
+			"=======",
+			">>>>>>> theirs",
+		].join("\n");
+		const got = conflictMarkerViolations(LEDGER, text);
+		expect(got.map((v) => v.line)).toEqual([2, 3, 4]);
+		expect(got[0]?.message).toContain("unresolved merge conflict marker");
+	});
+
+	test("flags jj-style markers too", () => {
+		const text = [
+			"<<<<<<< conflict 1 of 1",
+			"%%%%%%% diff",
+			"+++++++ side",
+			">>>>>>> ends",
+		].join("\n");
+		expect(conflictMarkerViolations(LEDGER, text)).toHaveLength(4);
+	});
+
+	test("stays silent on ordinary prose", () => {
+		// Guards the false-positive edge: a table separator and a fenced diff both
+		// carry runs of = and +, but neither opens a conflict.
+		const text = ["| --- | --- |", "```diff", "+++ b/x", "```", "a === b"].join(
+			"\n",
+		);
+		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
+	});
+	test("flags lengthened markers — both tools widen past 7", () => {
+		// A conflict whose hunk holds a marker-like run makes git and jj emit
+		// wider markers; an exact-7 match misses the conflict entirely.
+		const text = [
+			"<<<<<<<<<<< conflict 1 of 1",
+			"%%%%%%%%%%% diff",
+			"+++++++++++ side",
+			">>>>>>>>>>> ends",
+		].join("\n");
+		const got = conflictMarkerViolations(LEDGER, text);
+		expect(got).toHaveLength(4);
+		expect(got[0]?.message).toContain("<<<<<<<<<<<");
+	});
+
+	test("stays silent on a long setext underline", () => {
+		// Governed records carry 14-char `=` underlines, so `=` must stay exact.
+		const text = ["A heading", "==============", "", "body"].join("\n");
+		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
+	});
+
+	test("stays silent on a marker shown as fenced example text", () => {
+		const text = ["```text", "<<<<<<< HEAD", ">>>>>>> theirs", "```"].join(
+			"\n",
+		);
+		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
 	});
 });
