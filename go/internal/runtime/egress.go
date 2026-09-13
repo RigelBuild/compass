@@ -29,8 +29,13 @@ import (
 // EgressPolicy is the set of destinations an agent container may reach. An empty
 // host set is pure default-deny (only loopback, established flows, and DNS to
 // the container's own resolver).
+//
+// The zero value means no policy was configured at all, which is distinct from
+// a configured-but-empty allowlist: empty is the strictest posture, so a tier
+// that cannot enforce egress has to tell the two apart to refuse the former.
 type EgressPolicy struct {
-	hosts []string
+	hosts      []string
+	configured bool
 }
 
 // AllowEgress builds a policy allowing exactly hosts (deduplicated and
@@ -50,7 +55,7 @@ func AllowEgress(hosts ...string) (EgressPolicy, error) {
 		deduped = append(deduped, host)
 	}
 	sort.Strings(deduped)
-	return EgressPolicy{hosts: deduped}, nil
+	return EgressPolicy{hosts: deduped, configured: true}, nil
 }
 
 // MustAllowEgress is a convenience for known-good literals (tests, static config).
@@ -66,6 +71,13 @@ func MustAllowEgress(hosts ...string) EgressPolicy {
 // Hosts returns the allowlisted hosts in sorted order.
 func (e EgressPolicy) Hosts() []string {
 	return e.hosts
+}
+
+// Configured reports whether this policy came from a constructor rather than
+// being a zero value. Callers that arm a firewall ignore this; it exists for
+// tiers that must reject a policy they cannot enforce.
+func (e EgressPolicy) Configured() bool {
+	return e.configured
 }
 
 // NftScript is the shell script an entrypoint runs (as root, with NET_ADMIN) to
