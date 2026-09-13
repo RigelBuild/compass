@@ -445,7 +445,10 @@ export function wireTextMessage(opts: {
  *  from the id). The block-update path rewrites a message's whole block set
  *  requiring only that `ask_id` survive, so an agent may restate an ask with
  *  the same question ids and a REVISED option set; this is how a test builds
- *  that push. */
+ *  that push.
+ *
+ *  `header` seeds a question's display chip; `recommended` its agent-recommended
+ *  option index; `preview` a per-option rich preview keyed by option id. */
 export function wireAskMessage(opts: {
 	id: string;
 	topicId: string;
@@ -458,6 +461,9 @@ export function wireAskMessage(opts: {
 	multi?: readonly string[];
 	recordedText?: Readonly<Record<string, string>>;
 	optionIds?: Readonly<Record<string, readonly string[]>>;
+	header?: Readonly<Record<string, string>>;
+	recommended?: Readonly<Record<string, number>>;
+	preview?: Readonly<Record<string, string>>;
 }): WireMessage {
 	const hasChosen = Object.values(opts.chosen ?? {}).some(
 		(ids) => ids.length > 0,
@@ -483,6 +489,8 @@ export function wireAskMessage(opts: {
 							create(AskQuestionSchema, {
 								questionId,
 								question: `${questionId}?`,
+								header: opts.header?.[questionId] ?? "",
+								recommended: opts.recommended?.[questionId],
 								customText: opts.recordedText?.[questionId] ?? "",
 								allowMultiple: opts.multi?.includes(questionId) ?? false,
 								chosenOptionIds: [...(opts.chosen?.[questionId] ?? [])],
@@ -495,7 +503,11 @@ export function wireAskMessage(opts: {
 										? []
 										: [`${questionId}-a`, `${questionId}-b`])
 								).map((id) =>
-									create(AskOptionSchema, { id, label: id.toUpperCase() }),
+									create(AskOptionSchema, {
+										id,
+										label: id.toUpperCase(),
+										preview: opts.preview?.[id] ?? "",
+									}),
 								),
 							}),
 						),

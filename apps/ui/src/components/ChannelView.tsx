@@ -11,13 +11,15 @@ import {
 	topicSummary,
 	topicsOf,
 } from "../comms";
-import type {
-	Account,
-	Ask,
-	AskQuestion,
-	Channel,
-	ConvBlock,
-	Message,
+import {
+	type Account,
+	type Ask,
+	type AskQuestion,
+	type Channel,
+	type ConvBlock,
+	isFreeTextQuestion,
+	isQuestionAnswered,
+	type Message,
 } from "../comms-stub";
 import { useStore } from "../context";
 import { MarkdownText } from "./MarkdownText";
@@ -67,52 +69,104 @@ const AskBlock: Component<{
 	// locked. A settled ask locks every question outright.
 	const locked = (q: AskQuestion) =>
 		closed() || (!q.allowMultiple && q.chosenOptionIds.length > 0);
-	const answeredCount = () =>
-		ask().questions.filter((q) => q.chosenOptionIds.length > 0).length;
+	const answeredCount = () => ask().questions.filter(isQuestionAnswered).length;
+	// The agent-recommended option index, but only when it names a real option:
+	// a hint that never selects, so an out-of-range value renders as if unset.
+	const recommendedIndex = (q: AskQuestion, index: number) => {
+		const r = q.recommended;
+		return (
+			r !== undefined &&
+			Number.isInteger(r) &&
+			r >= 0 &&
+			r < q.options.length &&
+			r === index
+		);
+	};
 	// The submit control is the only send path, so it drives `disabled`, not
 	// visibility: a live ask always shows it, enabled once anything is answered.
 	const canSubmit = () => answeredCount() > 0;
 
 	return (
-		<div
-			class={[
-				"block-ask",
-				{ answered: ask().questions.every((q) => locked(q)) },
-			]}
-		>
+		// The settled look tracks SETTLEMENT, not locked questions: a fully-picked
+		// ask is still live until its explicit submit, and dimming it there would
+		// tell the user they were done while the send was still theirs to make.
+		<div class={["block-ask", { answered: closed() }]}>
 			<For each={ask().questions} keyed={false}>
 				{(q) => (
 					<>
+						<Show when={q().header}>
+							<div class="ask-header">{q().header}</div>
+						</Show>
 						<div class="ask-question">{q().question}</div>
 						<div class="ask-hint">
-							{q().allowMultiple ? "choose any" : "choose one"} · async — answer
-							when ready
+							{isFreeTextQuestion(q())
+								? "type your answer"
+								: q().allowMultiple
+									? "choose any, or type"
+									: "choose one, or type your own"}{" "}
+							· async — answer when ready
 						</div>
-						<div class="ask-options">
-							<For each={q().options}>
-								{(option) => (
-									<button
-										type="button"
-										class={["ask-option", { chosen: chosen(q(), option.id) }]}
-										disabled={locked(q())}
-										onClick={() => {
-											store.answerAsk(
-												props.messageId,
-												ask().askId,
-												q().questionId,
-												option.id,
-											);
-										}}
-										aria-pressed={chosen(q(), option.id) ? "true" : "false"}
-									>
-										{option.label}
-										<Show when={option.description}>
-											<span class="ask-option-desc">{option.description}</span>
-										</Show>
-									</button>
-								)}
-							</For>
-						</div>
+						<Show when={q().options.length > 0}>
+							<div class="ask-options">
+								<For each={q().options}>
+									{(option, index) => (
+										<button
+											type="button"
+											class={[
+												"ask-option",
+												{
+													chosen: chosen(q(), option.id),
+													recommended: recommendedIndex(q(), index()),
+												},
+											]}
+											disabled={locked(q())}
+											onClick={() => {
+												store.answerAsk(
+													props.messageId,
+													ask().askId,
+													q().questionId,
+													option.id,
+												);
+											}}
+											aria-pressed={chosen(q(), option.id) ? "true" : "false"}
+										>
+											{option.label}
+											<Show when={recommendedIndex(q(), index())}>
+												<span class="ask-option-rec">recommended</span>
+											</Show>
+											<Show when={option.description}>
+												<span class="ask-option-desc">
+													{option.description}
+												</span>
+											</Show>
+											<Show when={option.preview}>
+												<code class="ask-option-preview">{option.preview}</code>
+											</Show>
+										</button>
+									)}
+								</For>
+							</div>
+						</Show>
+						<input
+							type="text"
+							class="ask-text"
+							value={q().customText}
+							disabled={locked(q())}
+							aria-label={q().question}
+							placeholder={
+								isFreeTextQuestion(q())
+									? "type your answer"
+									: "other — type your own"
+							}
+							onInput={(e) =>
+								store.answerAskText(
+									props.messageId,
+									ask().askId,
+									q().questionId,
+									e.currentTarget.value,
+								)
+							}
+						/>
 					</>
 				)}
 			</For>
@@ -125,7 +179,10 @@ const AskBlock: Component<{
 						title="Send this ask now, leaving the unanswered questions blank. An ask can only be answered once."
 						onClick={() => store.submitAsk(props.messageId, ask().askId)}
 					>
-						{answeredCount() < ask().questions.length
+						{/* Only a STARTED, partly-answered ask warns about the blanks.
+						    Untouched, there is nothing to skip yet — and on a
+						    one-question ask there is no "rest" to speak of. */}
+						{canSubmit() && answeredCount() < ask().questions.length
 							? "submit — skip the rest"
 							: "submit"}
 					</button>
