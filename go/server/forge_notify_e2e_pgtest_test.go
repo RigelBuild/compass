@@ -83,6 +83,7 @@ import (
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/forge"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/ingest"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
@@ -114,12 +115,33 @@ type notifyE2EWire struct {
 	adminID store.AccountID
 }
 
+// notifyE2ECfg holds the per-wire knobs a cell may vary. ghPulls is the GitHub
+// lane's head_sha->PR-number resolver: nil by default (matching production's
+// pre-RIG-2869 no-resolver posture and the CheckSuiteNoResolver cell), set only
+// by the CHECKS cell that must route a check_suite to a real artifact number.
+type notifyE2ECfg struct {
+	ghPulls ingest.PullNumberResolver
+}
+
+// notifyE2EOpt configures newNotifyE2EWire.
+type notifyE2EOpt func(*notifyE2ECfg)
+
+// withGitHubPulls wires a head_sha->PR-number resolver onto the GitHub notify
+// lane so a check_suite webhook (Number==0) resolves to a real artifact number.
+func withGitHubPulls(p ingest.PullNumberResolver) notifyE2EOpt {
+	return func(c *notifyE2ECfg) { c.ghPulls = p }
+}
+
 // newNotifyE2EWire stands up the store + hub + fake Runner door, builds the
 // GitHub and Linear notify lanes directly over the unexported forgeNotifyStore +
-// forgeNotifyDispatcher (NOT the App-gated buildForgeNotifyLane), and mounts the
-// real webhook handlers on a test server. Each lane's arm Run loop is bounded by
-// a child ctx cancelled at cleanup.
-func newNotifyE2EWire(t *testing.T) *notifyE2EWire {
+// forgeNotifyDispatcher + forgeIdentityResolver (NOT the App-gated
+// buildForgeNotifyLane), and mounts the real webhook handlers on a test server.
+// Each lane's arm Run loop is bounded by a child ctx cancelled at cleanup. The
+// real store-backed identity resolver is ALWAYS wired, so a plain (human-actored
+// or unstamped) event resolves an unqualified actor and delivers exactly as
+// before — self-origin suppression fires only for an owner-qualified stamped
+// actor that matches a subscriber.
+func newNotifyE2EWire(t *testing.T, opts ...notifyE2EOpt) *notifyE2EWire {
 	t.Helper()
 	ctx := context.Background() // the test root context (rule://go-thread-context _test.go exemption)
 	dsn := pgtest.RequireDSN(t)
@@ -147,30 +169,38 @@ func newNotifyE2EWire(t *testing.T) *notifyE2EWire {
 	hub := newRunnerHub(st, brd, tail, nil, slog.New(slog.DiscardHandler))
 	runner := attachFakeRunner(t, st, hub, false)
 
+	cfg := notifyE2ECfg{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	secret := []byte("notify-e2e-webhook-secret")
 	log := slog.New(slog.DiscardHandler)
 	secretFn := func(context.Context) ([]byte, error) { return secret, nil }
 
-	// The GitHub notify lane, assembled directly over the store adapter (the
-	// production seam serve.go's buildForgeNotifyLane wires, minus the App client).
+	// The GitHub notify lane, assembled directly over the store adapters (the
+	// production seam serve.go's buildForgeNotifyLane wires, minus the App
+	// client). The real store-backed identity resolver is wired exactly as
+	// production does, so self-origin suppression is exercised end to end.
 	ghRouter := ingest.NewNotifyRouter(
 		&forgeNotifyStore{st: st, provider: store.ForgeProviderGitHub, host: "github.com"},
 		&forgeNotifyDispatcher{hub: hub},
-		&matrixChecksRoller{}, // a CHECKS cell here carries no head SHA, so step 0 never resolves and the roller is never reached; a trivially-scripted roller is correct.
-		nil,                   // no pull-number resolver: this lane's fixtures carry explicit numbers.
-		nil,                   // no identity resolver: self-origin suppression is the T3 lane wiring, not this seam-level assembly.
+		&matrixChecksRoller{res: forge.ConditionalResult[forge.Checks]{V: forge.Checks{State: "success"}}},
+		cfg.ghPulls, // nil by default (fixtures carry explicit numbers); the CHECKS cell wires a real resolver.
+		&forgeIdentityResolver{st: st, provider: store.ForgeProviderGitHub, host: "github.com"},
 		mxRef(),
 		log,
 	)
 	ghArm := ingest.NewNotifyWebhookArm(ghRouter, ingest.NotifyArmConfig{Log: log})
 
-	// The Linear notify lane, its Linear-provider-bound sibling.
+	// The Linear notify lane, its Linear-provider-bound sibling — identity
+	// resolver wired the same way.
 	lnRouter := ingest.NewNotifyRouter(
 		&forgeNotifyStore{st: st, provider: store.ForgeProviderLinear, host: "linear.app"},
 		&forgeNotifyDispatcher{hub: hub},
 		&matrixChecksRoller{},
 		nil,
-		nil,
+		&forgeIdentityResolver{st: st, provider: store.ForgeProviderLinear, host: "linear.app"},
 		&compassv1.ForgeRef{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app"},
 		log,
 	)
@@ -919,5 +949,288 @@ func TestForgeNotifyE2E_LinearRemoveDropped(t *testing.T) {
 	}
 	if got[0].GetChange() != mxComment {
 		t.Errorf("Change = %v, want COMMENT (a frame from the removed issue would mean remove was mis-mapped to a delivering kind)", got[0].GetChange())
+	}
+}
+
+// --- T3: self-origin suppression cells ---------------------------------------
+
+// createUser mints a second human owner, so an agent can be seeded under an
+// owner other than admin — the owner-namespace-collision cell needs two owners.
+func (w *notifyE2EWire) createUser(t *testing.T, handle string) store.AccountID {
+	t.Helper()
+	u, err := w.store.CreateUser(w.ctx, store.NewUser{Handle: handle, DisplayName: handle})
+	if err != nil {
+		t.Fatalf("CreateUser(%q): %v", handle, err)
+	}
+	return u.ID
+}
+
+// seedAgentUnder creates an agent under an explicit owner (not admin), so two
+// owners can each hold a same-handle agent — the case owner-qualification exists
+// to keep apart.
+func (w *notifyE2EWire) seedAgentUnder(t *testing.T, owner store.AccountID, handle string) store.AccountID {
+	t.Helper()
+	a, err := w.store.CreateAgent(w.ctx, owner, store.NewAgent{Handle: handle, DisplayName: handle})
+	if err != nil {
+		t.Fatalf("CreateAgent(%q under %q): %v", handle, owner, err)
+	}
+	return a.ID
+}
+
+// recordAuthored writes the DL-055 ownership row an OPENED actor resolves
+// through — the durable "this agent authored this coordinate" record.
+func (w *notifyE2EWire) recordAuthored(t *testing.T, agent, owner store.AccountID, repo string, kind store.ForgeArtifactKind, number uint64) {
+	t.Helper()
+	if err := w.store.RecordAuthoredArtifact(w.ctx, store.AuthoredArtifact{
+		Provider: store.ForgeProviderGitHub, Host: "github.com", Repo: repo,
+		Kind: kind, Number: number,
+		AgentAccountID: agent, OwnerUserID: owner,
+		SessionID: "s1", CreatedAtUnixMS: 1,
+	}); err != nil {
+		t.Fatalf("RecordAuthoredArtifact(%s#%d): %v", repo, number, err)
+	}
+}
+
+// stampOwnerBody stamps an owner header onto a comment body so the parsed
+// CommentRef carries an owner-qualified actor (agentHandle + ownerHandle) — the
+// exact shape a real Compass-authored comment arrives with, and the only thing
+// that lets self-origin suppression fire.
+func stampOwnerBody(t *testing.T, body, agentHandle, ownerHandle string) string {
+	t.Helper()
+	out, err := forge.StampOwner(body, forge.Author{AgentHandle: agentHandle, OwnerHandle: ownerHandle, SessionID: "s1"}, 0)
+	if err != nil {
+		t.Fatalf("StampOwner: %v", err)
+	}
+	return out
+}
+
+// waitForDeliveredRevisionChange event-gates until the subscription's
+// delivered_revision moves off `from`, then returns the new value — the sync
+// point proving the router's suppress-path CAS advance ran, never a sleep.
+func waitForDeliveredRevisionChange(t *testing.T, st *store.Store, agent store.AccountID, subID, from string) string {
+	t.Helper()
+	deadline := timeAfter()
+	for {
+		got := deliveredRevision(t, st, agent, subID)
+		if got != from {
+			return got
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("delivered_revision on %q never moved off %q within %s", subID, from, testTimeout)
+		default:
+		}
+		runtime.Gosched()
+	}
+}
+
+// TestForgeNotifyE2E_SelfOriginSuppressed is the T3 whole-wire proof of
+// self-origin suppression through the REAL store-backed forgeIdentityResolver:
+// a Compass agent's own stamped comment on an artifact it authored and
+// subscribes to is skipped for that agent (and its caught-up cursor advances),
+// while a SECOND agent on the same artifact still receives it.
+func TestForgeNotifyE2E_SelfOriginSuppressed(t *testing.T) {
+	const (
+		selfSession  = "sess-self-origin-self"
+		otherSession = "sess-self-origin-other"
+		number       = uint64(11)
+	)
+	w := newNotifyE2EWire(t)
+	gh := newFakeGitHubForge(w.secret, notifyE2EGitHubRepo)
+
+	// The acting agent is "atlas" under owner "admin" — the owner-qualified
+	// identity a stamped comment header names. It authored issue 11 (DL-055 row)
+	// and subscribes to it.
+	selfAcct := w.seedAgent(t, "atlas")
+	otherAcct := w.seedAgent(t, "nomad")
+	w.recordAuthored(t, selfAcct, w.adminID, notifyE2EGitHubRepo, store.ForgeArtifactKindIssue, number)
+	selfSub := w.subscribe(t, store.AgentForgeSubscription{
+		AgentAccountID: selfAcct, Provider: store.ForgeProviderGitHub, Host: "github.com",
+		Repo: notifyE2EGitHubRepo, Kind: store.ForgeArtifactKindIssue, Number: number,
+		Scope: store.ForgeSubscriptionScopeArtifact,
+	})
+	w.subscribe(t, store.AgentForgeSubscription{
+		AgentAccountID: otherAcct, Provider: store.ForgeProviderGitHub, Host: "github.com",
+		Repo: notifyE2EGitHubRepo, Kind: store.ForgeArtifactKindIssue, Number: number,
+		Scope: store.ForgeSubscriptionScopeArtifact,
+	})
+	w.goLive(t, selfAcct, "compass-agent-self-origin-self", selfSession)
+	w.goLive(t, otherAcct, "compass-agent-self-origin-other", otherSession)
+	w.runner.forget()
+
+	// A human comment first: delivered to BOTH agents (a human actor is
+	// unqualified, so nothing suppresses), advancing the shared FETCH cursor.
+	w.postGitHub(t, gh.commentOnIssue(t, number, "https://gh/octo/repo/issues/11#c1", "human note", "octocat"))
+	waitForForgeNotification(t, w.runner, selfSession)
+	waitForForgeNotification(t, w.runner, otherSession)
+
+	// Simulate the acting agent's ack of that first comment: advance its
+	// delivered_revision to the current FETCH cursor revision, so it is CAUGHT UP
+	// before the self-comment (the precondition for the suppress-path advance).
+	cur, err := w.store.LoadForgeArtifactCursor(w.ctx, store.ForgeProviderGitHub, "github.com", notifyE2EGitHubRepo, store.ForgeArtifactKindIssue, number)
+	if err != nil || cur == nil {
+		t.Fatalf("LoadForgeArtifactCursor: %v (cur=%v)", err, cur)
+	}
+	if err := w.store.AdvanceForgeDeliveredRevision(w.ctx, selfAcct, selfSub, cur.Revision); err != nil {
+		t.Fatalf("simulate ack: %v", err)
+	}
+
+	// The self-comment: a body stamped for atlas@admin, so the parsed actor is
+	// owner-qualified {admin, atlas} and matches the atlas subscriber.
+	selfBody := stampOwnerBody(t, "my own comment", "atlas", "admin")
+	w.postGitHub(t, gh.commentOnIssue(t, number, "https://gh/octo/repo/issues/11#c2", selfBody, "atlas-bot"))
+
+	// The second agent (nomad) is a DIFFERENT handle, so the self-comment is NOT
+	// its self-origin — it must receive frame 2. Gating other to 2 frames also
+	// flushes the whole self-comment fan-out (FIFO, one arm goroutine).
+	waitForNForgeNotifications(t, w.runner, otherSession, 2)
+
+	// The acting agent's suppress-path CAS advance is the definitive sync point:
+	// once delivered_revision moves off the acked cursor revision, the suppressed
+	// dispatch is fully routed.
+	advanced := waitForDeliveredRevisionChange(t, w.store, selfAcct, selfSub, cur.Revision)
+
+	// The self-comment reached NO DeliverControl on the acting agent's session:
+	// it still holds exactly its one human-comment frame.
+	if selfFrames := w.runner.forgeNotificationsForSession(selfSession); len(selfFrames) != 1 {
+		t.Fatalf("acting-agent frames = %d, want 1 (its own comment must be suppressed — only the human comment)", len(selfFrames))
+	}
+
+	// The caught-up subscriber's delivered_revision advanced to the self-comment's
+	// route revision (the current FETCH cursor, since no later event moved it), so
+	// the reconcile sweep will not resurrect the suppressed self-notification.
+	after, err := w.store.LoadForgeArtifactCursor(w.ctx, store.ForgeProviderGitHub, "github.com", notifyE2EGitHubRepo, store.ForgeArtifactKindIssue, number)
+	if err != nil || after == nil {
+		t.Fatalf("LoadForgeArtifactCursor (post): %v (cur=%v)", err, after)
+	}
+	if advanced != after.Revision {
+		t.Errorf("delivered_revision = %q after suppress, want the advanced route revision %q", advanced, after.Revision)
+	}
+}
+
+// TestForgeNotifyE2E_ChecksNeverSuppressed proves the CHECKS never-suppressed
+// invariant through the real resolver: even the artifact's OWN authoring,
+// subscribing agent receives a CHECKS event, because a CHECKS event carries no
+// actor (actorHandle returns the zero Handle for CHECKS regardless of what the
+// store would resolve). The check_suite webhook is head-SHA-keyed with Number==0,
+// so a real head_sha->PR-number resolver supplies the coordinate.
+func TestForgeNotifyE2E_ChecksNeverSuppressed(t *testing.T) {
+	const (
+		inSession = "sess-checks-never-suppress"
+		number    = uint64(12)
+	)
+	w := newNotifyE2EWire(t, withGitHubPulls(&matrixPullNumbers{number: number}))
+	gh := newFakeGitHubForge(w.secret, notifyE2EGitHubRepo)
+
+	selfAcct := w.seedAgent(t, "atlas")
+	// The agent authored the PR and subscribes to it — the exact self-origin
+	// shape that WOULD suppress a COMMENT, proving CHECKS is exempt by kind.
+	w.recordAuthored(t, selfAcct, w.adminID, notifyE2EGitHubRepo, store.ForgeArtifactKindPullRequest, number)
+	w.subscribe(t, store.AgentForgeSubscription{
+		AgentAccountID: selfAcct, Provider: store.ForgeProviderGitHub, Host: "github.com",
+		Repo: notifyE2EGitHubRepo, Kind: store.ForgeArtifactKindPullRequest, Number: number,
+		Scope: store.ForgeSubscriptionScopeArtifact,
+	})
+	w.goLive(t, selfAcct, "compass-agent-checks-never", inSession)
+	w.runner.forget()
+
+	w.postGitHub(t, gh.completeCheckSuite(t, "headsha-12"))
+
+	got := waitForForgeNotification(t, w.runner, inSession)
+	if got[0].GetChange() != mxChecks {
+		t.Errorf("Change = %v, want CHECKS (a CHECKS event must never be suppressed and must reach the author)", got[0].GetChange())
+	}
+	if got[0].GetNumber() != number {
+		t.Errorf("Number = %d, want %d (the resolved PR coordinate)", got[0].GetNumber(), number)
+	}
+}
+
+// TestForgeNotifyE2E_OwnerNamespaceNoCrossSuppress is the most important T3
+// assertion: two DIFFERENT owners' agents both named "atlas" must NOT
+// cross-suppress. A comment stamped for atlas@admin, routed to a subscriber that
+// is atlas@beta, is a genuine cross-agent notification — a BARE-handle match
+// would false-suppress it (a fail-closed bug). Owner-qualification keeps them
+// apart, so the beta atlas receives the comment.
+func TestForgeNotifyE2E_OwnerNamespaceNoCrossSuppress(t *testing.T) {
+	const (
+		inSession = "sess-owner-namespace"
+		number    = uint64(20)
+	)
+	w := newNotifyE2EWire(t)
+	gh := newFakeGitHubForge(w.secret, notifyE2EGitHubRepo)
+
+	// Two owners, each with an "atlas" agent (agent handles are unique only per
+	// owner). Only owner-beta's atlas subscribes and is live.
+	ownerB := w.createUser(t, "beta")
+	w.seedAgent(t, "atlas")                        // atlas@admin — the actor the stamped header names; need not subscribe.
+	atlasB := w.seedAgentUnder(t, ownerB, "atlas") // atlas@beta — the subscriber that must NOT be cross-suppressed.
+	w.subscribe(t, store.AgentForgeSubscription{
+		AgentAccountID: atlasB, Provider: store.ForgeProviderGitHub, Host: "github.com",
+		Repo: notifyE2EGitHubRepo, Kind: store.ForgeArtifactKindIssue, Number: number,
+		Scope: store.ForgeSubscriptionScopeArtifact,
+	})
+	w.goLive(t, atlasB, "compass-agent-owner-namespace", inSession)
+	w.runner.forget()
+
+	// A comment stamped for atlas@admin — a DIFFERENT owner than the beta
+	// subscriber, so the owner leg of the qualified match differs.
+	body := stampOwnerBody(t, "cross-owner comment", "atlas", "admin")
+	w.postGitHub(t, gh.commentOnIssue(t, number, "https://gh/octo/repo/issues/20#c1", body, "atlas-bot"))
+
+	got := waitForForgeNotification(t, w.runner, inSession)
+	if len(got) != 1 {
+		t.Fatalf("beta-atlas frames = %d, want 1 (a same-bare-handle, different-owner actor must NOT cross-suppress)", len(got))
+	}
+	if got[0].GetChange() != mxComment {
+		t.Errorf("Change = %v, want COMMENT", got[0].GetChange())
+	}
+}
+
+// TestForgeNotifyE2E_SelfOriginOpenedSuppressed drives the OPENED arm, whose
+// actor comes from the DL-055 ownership row through the real adapter's
+// AuthorHandle rather than a stamped comment header. Without it the adapter's
+// AuthorHandle success path is unexercised end to end: a resolver returning a
+// bogus populated handle there would suppress a real cross-agent notification
+// and every other cell would stay green.
+func TestForgeNotifyE2E_SelfOriginOpenedSuppressed(t *testing.T) {
+	const (
+		authorSession = "sess-self-origin-opened-author"
+		otherSession  = "sess-self-origin-opened-other"
+		number        = uint64(77)
+	)
+	w := newNotifyE2EWire(t)
+	gh := newFakeGitHubForge(w.secret, notifyE2EGitHubRepo)
+
+	// The authoring agent opened issue 77 (DL-055 row) and watches the repo
+	// container, so the OPENED fan-out reaches it; a second agent watches the
+	// same container and is NOT the author.
+	authorAcct := w.seedAgent(t, "atlas")
+	otherAcct := w.seedAgent(t, "nomad")
+	w.recordAuthored(t, authorAcct, w.adminID, notifyE2EGitHubRepo, store.ForgeArtifactKindIssue, number)
+	for _, acct := range []store.AccountID{authorAcct, otherAcct} {
+		w.subscribe(t, store.AgentForgeSubscription{
+			AgentAccountID: acct, Provider: store.ForgeProviderGitHub, Host: "github.com",
+			Repo: notifyE2EGitHubRepo, Kind: store.ForgeArtifactKindIssue,
+			Scope: store.ForgeSubscriptionScopeContainer,
+		})
+	}
+	w.goLive(t, authorAcct, "compass-agent-self-origin-opened-author", authorSession)
+	w.goLive(t, otherAcct, "compass-agent-self-origin-opened-other", otherSession)
+	w.runner.forget()
+
+	w.postGitHub(t, gh.openIssue(t, number, "https://gh/octo/repo/issues/77"))
+
+	// The non-author receives the OPENED frame. Draining it also flushes the
+	// whole fan-out (FIFO, one arm goroutine), so the author's zero-read below
+	// is load-bearing rather than a race on an undelivered frame.
+	got := waitForForgeNotification(t, w.runner, otherSession)
+	if len(got) != 1 {
+		t.Fatalf("non-author frames = %d, want 1 (a different agent's OPENED is not self-origin)", len(got))
+	}
+	if got[0].GetChange() != mxOpened {
+		t.Errorf("Change = %v, want OPENED", got[0].GetChange())
+	}
+	if frames := w.runner.forgeNotificationsForSession(authorSession); len(frames) != 0 {
+		t.Fatalf("author frames = %d, want 0 (an agent's own OPENED artifact must be suppressed)", len(frames))
 	}
 }
