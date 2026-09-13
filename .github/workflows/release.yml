@@ -469,7 +469,13 @@ jobs:
     # release job (§A5(2)): a workflow_dispatch from a feature branch must never
     # mint release artifacts for unmerged code, even were release-please to emit
     # releases_created there.
-    needs: [release-pr, release-assets-macos]
+    # release-image is a needs edge so its resolved image_digest output reaches
+    # the generator below. Both jobs share the same `if:` (main ref + a real
+    # release cut), so this edge never skips release-assets on a release run. It
+    # DOES serialize release-assets behind release-image, which itself queues in
+    # the publish-agent-image concurrency group behind an in-flight publish-image
+    # — accepted added latency for a single authoritative digest.
+    needs: [release-pr, release-assets-macos, release-image]
     if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
     # Least privilege: write the Release, nothing else. NOT packages:write — the
     # release-notes generator reads the PUBLIC image digest anonymously, and this
@@ -634,12 +640,21 @@ jobs:
         # recorded-absence line when the image lane has not published this sha)
         # and runs `nix path-info` over the toolchain `langs` set, writing the
         # two files the release upload consumes.
+        # IMAGE_DIGEST is the digest release-image already resolved and verified.
+        # It is authoritative: the generator builds the image identity from it and
+        # skips its own GHCR probe, which would query `:git-<release-sha>` — a tag
+        # the paths-filtered image lane never published for a release commit that
+        # did not touch the image closure. Routed through env (not inlined ${{ }})
+        # to keep the context value off the run: command line.
+        env:
+          IMAGE_DIGEST: ${{ needs.release-image.outputs.image_digest }}
         run: |
           set -euo pipefail
           bun run tools/release-notes/index.ts \
             --sha "$SHA12" \
             --version "$VERSION" \
             --tag "$TAG" \
+            --image-digest "$IMAGE_DIGEST" \
             --asset "compass_${TAG}_linux-amd64" \
             --asset "compass-server_${TAG}_linux-amd64" \
             --asset "compass-runner_${TAG}_linux-amd64" \
@@ -729,6 +744,18 @@ jobs:
     # this trivially (§A5(2), mirrors publish-image).
     if: github.ref == 'refs/heads/main' && needs.release-pr.outputs.releases_created == 'true'
     timeout-minutes: 90
+    # Publish the resolved ancestor identity for release-assets to consume. The
+    # agent-image lane is paths-filtered (publish-image runs only when the image
+    # closure changes), so a release commit that touches nothing in that closure
+    # has NO `:git-<release-sha>` image — the release sha's tag was never built.
+    # This resolver already walks first-parent ancestors and proves the correct
+    # source digest (§A4 byte-identity). Rather than have release-assets re-probe
+    # `:git-<release-sha>` — a tag that does not exist, which hard-fails the notes
+    # generator — export the digest it already verified here as the single source
+    # of truth. release-assets reads `image_digest` and skips its own probe.
+    outputs:
+      image_digest: ${{ steps.retag.outputs.image_digest }}
+      resolved_sha12: ${{ steps.retag.outputs.resolved_sha12 }}
     steps:
       # Full history: the resolver walks first-parent ancestors of the release
       # sha (§A4/Plan T3), so a shallow checkout would truncate the walk.
@@ -800,6 +827,7 @@ jobs:
             --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
       - name: Digest-re-tag the newest ancestor image to the semver tag
+        id: retag
         # The load-bearing §A4 resolver: registry-anchored, NOT path-based. A
         # `git log -- <paths>` resolver was rejected (§A4:159-164) because the
         # per-push lane keys its tag on the PUSH HEAD sha, not the last
@@ -884,3 +912,10 @@ jobs:
             exit 1
           fi
           echo "verified: $ref:$tag re-tagged from :git-$resolved_sha12, config digests coherent"
+
+          # Publish the resolved identity for release-assets (see the job-level
+          # outputs: block). Reuse the digest the coherence check above already
+          # verified — never a second probe. release-assets treats image_digest
+          # as authoritative and skips its own GHCR query.
+          echo "image_digest=$src_digest" >> "$GITHUB_OUTPUT"
+          echo "resolved_sha12=$resolved_sha12" >> "$GITHUB_OUTPUT"
