@@ -23,7 +23,6 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/RigelBuild/compass/go/internal/agentuid"
 	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runner"
 	"github.com/RigelBuild/compass/go/internal/runtime"
@@ -145,15 +144,7 @@ func run() error {
 			return err
 		}
 	}
-	specs, err := runner.NewConfigSpecBuilder(runner.SpecDefaults{
-		Image:       img,
-		Egress:      egress,
-		CheckoutDir: *checkoutDir,
-		HomeDir:     *homeDir,
-		UID:         agentuid.AgentUID,
-		NamePrefix:  runner.AgentContainerNamePrefix,
-		Mounts:      mounts,
-	})
+	specs, err := newSpecBuilder(engine, img, egress, *checkoutDir, *homeDir, mounts)
 	if err != nil {
 		return err
 	}
@@ -180,6 +171,28 @@ func run() error {
 		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
 		HTTPClient: httpClient,
 	}, specs, log)
+}
+
+// newSpecBuilder assembles the config spec builder from the resolved engine and
+// operator inputs. The uid every workspace runs as is resolved per backend by
+// runner.ResolveWorkspaceUID (the host tier names its own euid; the container
+// tiers keep the baked fleet constant); everything else is the operator's
+// flags/env verbatim. The per-backend uid policy lives in internal/runner beside
+// the non-root check that validates the result — this binary stays a thin wrapper.
+func newSpecBuilder(engine runtime.WorkloadRuntime, image string, egress runtime.EgressPolicy, checkoutDir, homeDir string, mounts []runtime.Mount) (runner.SpecBuilder, error) {
+	uid, err := runner.ResolveWorkspaceUID(engine)
+	if err != nil {
+		return nil, err
+	}
+	return runner.NewConfigSpecBuilder(runner.SpecDefaults{
+		Image:       image,
+		Egress:      egress,
+		CheckoutDir: checkoutDir,
+		HomeDir:     homeDir,
+		UID:         uid,
+		NamePrefix:  runner.AgentContainerNamePrefix,
+		Mounts:      mounts,
+	})
 }
 
 // microVMPreflighter is the microVM backend's static host-capability probe:

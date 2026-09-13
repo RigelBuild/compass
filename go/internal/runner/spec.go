@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/agentuid"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
@@ -72,6 +73,31 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 			defaults.NamePrefix, len(defaults.NamePrefix), len(AgentContainerNamePrefix))
 	}
 	return &configSpecBuilder{defaults: defaults}, nil
+}
+
+// workspaceUIDResolver is the backend capability of naming the uid its agent
+// workspaces run as. The host backend implements it (it runs agents as direct
+// children under the Runner's own euid, so the uid is that euid); the container
+// tiers do not, because their userns remap maps the invoking host uid onto the
+// baked fleet constant, so they need no per-Runner uid.
+type workspaceUIDResolver interface {
+	WorkspaceUID() (uint32, error)
+}
+
+// ResolveWorkspaceUID resolves the uid every agent workspace runs as, keyed off
+// the resolved engine. A backend that names its own uid (the host tier) wins;
+// every other backend falls back to agentuid.AgentUID.
+//
+// Unlike verifyBackendPreflight's fail-closed default, an unrecognized backend
+// here is NOT an error: the container tiers legitimately do not implement this
+// capability, so AgentUID is the correct, deliberate default for them — not an
+// oversight. The result feeds NewConfigSpecBuilder's non-root check below, which
+// refuses a root uid at startup whichever branch produced it.
+func ResolveWorkspaceUID(engine runtime.WorkloadRuntime) (uint32, error) {
+	if r, ok := engine.(workspaceUIDResolver); ok {
+		return r.WorkspaceUID()
+	}
+	return agentuid.AgentUID, nil
 }
 
 // BuildSpec maps the request's agent account onto a full AgentSpec, filling

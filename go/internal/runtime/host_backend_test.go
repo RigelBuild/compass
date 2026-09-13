@@ -467,3 +467,37 @@ func TestHostExecStreamingRemovedDuringSpawn(t *testing.T) {
 		t.Fatalf("err = %v, want the removed-during-spawn refusal", err)
 	}
 }
+
+// TestHostWorkspaceUIDIsCapturedEuid: WorkspaceUID reports the euid captured at
+// construction — the same value checkUser enforces — so the uid handed to a
+// workspace is exactly the uid its execs are accepted under. Injects a known
+// non-zero, non-AgentUID euid so the value discriminates a stubbed constant.
+func TestHostWorkspaceUIDIsCapturedEuid(t *testing.T) {
+	const euid = 4242
+	h := &HostRuntime{euid: euid}
+	uid, err := h.WorkspaceUID()
+	if err != nil {
+		t.Fatalf("WorkspaceUID() err = %v, want nil", err)
+	}
+	if uid != euid {
+		t.Fatalf("WorkspaceUID() = %d, want the captured euid %d", uid, euid)
+	}
+	// The uid must be exactly the value checkUser accepts.
+	if err := h.checkUser(new(strconv.FormatUint(uint64(uid), 10))); err != nil {
+		t.Fatalf("checkUser(%d) = %v, want the resolved uid accepted", uid, err)
+	}
+}
+
+// TestHostWorkspaceUIDNegativeEuidRefused: os.Geteuid returns -1 where the
+// syscall is unavailable; WorkspaceUID must refuse it rather than wrap it into a
+// huge uint32, naming the offending euid so the startup failure is actionable.
+func TestHostWorkspaceUIDNegativeEuidRefused(t *testing.T) {
+	h := &HostRuntime{euid: -1}
+	_, err := h.WorkspaceUID()
+	if err == nil {
+		t.Fatal("WorkspaceUID() with euid=-1 err = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "-1") {
+		t.Fatalf("error %q does not name the offending euid", err)
+	}
+}
