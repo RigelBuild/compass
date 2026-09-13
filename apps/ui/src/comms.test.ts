@@ -84,9 +84,11 @@ const askBlock = (): ConvBlock => ({
 			{
 				questionId: "q1",
 				question: "q?",
+				header: "",
 				options: [],
 				allowMultiple: false,
 				chosenOptionIds: [],
+				customText: "",
 			},
 		],
 		answered: false,
