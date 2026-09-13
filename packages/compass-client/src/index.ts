@@ -504,12 +504,15 @@ export type {
 } from "./gen/compass/v1/compass_pb";
 export {
 	AgentSessionState,
+	AgentSessionStatusSchema,
 	CompassService,
+	EgressPosture,
 	ForgeProvider,
 	GetServerInfoResponseSchema,
 	IssueSchema,
 	IssueState,
 	PullRequestSchema,
+	RuntimeTier,
 	ServerState,
 	SubscribeEventsResponseSchema,
 } from "./gen/compass/v1/compass_pb";

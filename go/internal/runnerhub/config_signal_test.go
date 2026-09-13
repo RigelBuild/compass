@@ -14,6 +14,7 @@ import (
 	"context"
 	"testing"
 
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -25,7 +26,7 @@ import (
 // version), never a minted token.
 func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	bindSession(hub, "sess-a")
 	bindSession(hub, "sess-b")
 	router, _, err := hub.routerFor("any")
@@ -60,7 +61,7 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 // fleet-cleared marker the Runner reads as "materialize an empty dir".
 func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	bindSession(hub, "sess-a")
 	router, _, err := hub.routerFor("any")
 	if err != nil {
@@ -87,7 +88,7 @@ func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 // (nothing bound) pushes nothing and is a clean success.
 func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
 	hub := newHubOnly()
-	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
 	router.attach(rec.send)

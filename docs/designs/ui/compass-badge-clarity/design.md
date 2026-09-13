@@ -224,7 +224,7 @@ semantic tier correctly.
 
 ### The reference — a shape floor, but ahead on color routing
 
-The internal monorepo's company-site board is prior art here — its Bridge board
+A company-site board elsewhere in the fleet is prior art here — that Bridge board
 renders the same bare squares, 7px, no glyphs, so on **shape** it is a floor
 this record improves on.
 
@@ -629,7 +629,7 @@ above). The rationale each proceeded on is kept below for the executor.
   size and the open question already tracked at `components.md:111-114`. Whatever answer
   Matt gives there should bind these glyphs too.
 - **Q5 (non-load-bearing): should the chosen option back-port to
-  the internal monorepo's company-site board** (which has the same bare
+  the fleet's company-site board** (which has the same bare
   squares)? Assumption: yes eventually, out of scope for RIG-2117.
 
 ## Plan / Tasks

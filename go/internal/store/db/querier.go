@@ -16,6 +16,13 @@ type Querier interface {
 	ActivityFor(ctx context.Context, dollar_1 []string) ([]ActivityForRow, error)
 	AdvanceDeliveryCursor(ctx context.Context, arg AdvanceDeliveryCursorParams) error
 	AdvanceForgeDeliveredRevision(ctx context.Context, arg AdvanceForgeDeliveredRevisionParams) (int64, error)
+	// Compare-and-set advance for the notify-router suppress path: the write lands
+	// only when delivered_revision still equals $4 (the prior value the router read),
+	// so a concurrent route cannot erase a delivery gap it did not observe. Scoped to
+	// the owning agent (id AND agent_account_id). Zero rows affected is a lost CAS
+	// (someone else advanced first), NOT an error — the wrapper reports it as
+	// advanced=false.
+	AdvanceForgeDeliveredRevisionCAS(ctx context.Context, arg AdvanceForgeDeliveredRevisionCASParams) (int64, error)
 	AgentForContainer(ctx context.Context, containerName string) (string, error)
 	// Presence-component read queries (sqlc adoption T4, RIG-3034). These replace the
 	// const-hoisted SQL in internal/store/presence_reads.go (it was never in the

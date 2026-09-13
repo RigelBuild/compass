@@ -444,18 +444,21 @@ func TestSubscribersForArtifactGitHub(t *testing.T) {
 	if len(subs) != 1 || subs[0].AgentAccountID != exact {
 		t.Fatalf("not-opened subs = %+v, want just exact agent %q", subs, exact)
 	}
+	if subs[0].Scope != ForgeSubscriptionScopeArtifact {
+		t.Errorf("exact subscriber scope = %d, want ARTIFACT(%d)", subs[0].Scope, ForgeSubscriptionScopeArtifact)
+	}
 
 	// Opened event: exact + container.
 	subs, err = s.SubscribersForArtifact(ctx, provider, host, repo, kind, number, "", true)
 	if err != nil {
 		t.Fatalf("SubscribersForArtifact (opened): %v", err)
 	}
-	got := map[AccountID]bool{}
+	got := map[AccountID]ForgeSubscriptionScope{}
 	for _, sub := range subs {
-		got[sub.AgentAccountID] = true
+		got[sub.AgentAccountID] = sub.Scope
 	}
-	if len(subs) != 2 || !got[exact] || !got[ctr] {
-		t.Fatalf("opened subs = %+v, want exact %q + container %q", subs, exact, ctr)
+	if len(subs) != 2 || got[exact] != ForgeSubscriptionScopeArtifact || got[ctr] != ForgeSubscriptionScopeContainer {
+		t.Fatalf("opened subs = %+v, want exact %q (ARTIFACT) + container %q (CONTAINER)", subs, exact, ctr)
 	}
 }
 
@@ -711,11 +714,22 @@ func TestListForgeNotifyTargetsMixedArtifactAndContainer(t *testing.T) {
 	if len(artTarget.Subscribers) != 1 {
 		t.Fatalf("artifact subscribers = %d, want 1", len(artTarget.Subscribers))
 	}
+	// The sweep lane must project each subscriber's real scope — the router's
+	// artifact-scope-only cursor advance depends on it, and a missing copy
+	// would silently arrive as ARTIFACT(1) for a CONTAINER row.
+	if artTarget.Subscribers[0].Scope != ForgeSubscriptionScopeArtifact {
+		t.Errorf("artifact subscriber scope = %d, want ARTIFACT(%d)", artTarget.Subscribers[0].Scope, ForgeSubscriptionScopeArtifact)
+	}
 	if containerTarget == nil {
 		t.Fatalf("no collapsed container target (number=0) in %+v", targets)
 	}
 	if len(containerTarget.Subscribers) != 2 {
 		t.Fatalf("container subscribers = %d, want 2", len(containerTarget.Subscribers))
+	}
+	for _, sub := range containerTarget.Subscribers {
+		if sub.Scope != ForgeSubscriptionScopeContainer {
+			t.Errorf("container subscriber %s scope = %d, want CONTAINER(%d)", sub.AgentAccountID, sub.Scope, ForgeSubscriptionScopeContainer)
+		}
 	}
 }
 
@@ -765,6 +779,107 @@ func TestAdvanceForgeDeliveredRevision(t *testing.T) {
 	}
 	if got != "rev-9" {
 		t.Fatalf("delivered_revision after foreign advance = %q, want rev-9 (untouched)", got)
+	}
+}
+
+// ── T2: AdvanceForgeDeliveredRevisionCAS ──────────────────────────────────────
+
+// TestAdvanceForgeDeliveredRevisionCAS: the compare-and-set advance lands only
+// when the stored delivered_revision still equals prior. A matching prior
+// advances (true); a stale prior is a lost CAS (false, no error, row untouched);
+// an unknown/foreign id is (false, nil) — never folded into ErrNotFound so the
+// router distinguishes a lost CAS from a store fault; empty args are
+// ErrInvalidArgument.
+func TestAdvanceForgeDeliveredRevisionCAS(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner, _ := seedAgent(t, s, "t2-cas-owner")
+	foreign, _ := seedAgent(t, s, "t2-cas-foreign")
+
+	id, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+		AgentAccountID: owner, Provider: ForgeProviderGitHub, Host: "github.com",
+		Repo: "a/b", Kind: ForgeArtifactKindIssue, Number: 1, Scope: ForgeSubscriptionScopeArtifact,
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	readRevision := func() string {
+		t.Helper()
+		var got string
+		if err := s.pool.QueryRow(ctx,
+			`SELECT delivered_revision FROM agent_forge_subscriptions WHERE id = $1`, id,
+		).Scan(&got); err != nil {
+			t.Fatalf("read delivered_revision: %v", err)
+		}
+		return got
+	}
+
+	// Caught up: prior "" (the fresh default) matches, so the CAS advances.
+	advanced, err := s.AdvanceForgeDeliveredRevisionCAS(ctx, owner, id, "", "rev-1")
+	if err != nil {
+		t.Fatalf("cas caught-up: %v", err)
+	}
+	if !advanced {
+		t.Fatal("cas caught-up: advanced = false, want true")
+	}
+	if got := readRevision(); got != "rev-1" {
+		t.Fatalf("delivered_revision = %q, want rev-1", got)
+	}
+
+	// Stale prior: the row now holds rev-1, so a CAS with prior "" is a lost CAS
+	// — no advance, no error, row untouched.
+	advanced, err = s.AdvanceForgeDeliveredRevisionCAS(ctx, owner, id, "", "rev-2")
+	if err != nil {
+		t.Fatalf("cas stale prior: %v", err)
+	}
+	if advanced {
+		t.Fatal("cas stale prior: advanced = true, want false (lost CAS)")
+	}
+	if got := readRevision(); got != "rev-1" {
+		t.Fatalf("delivered_revision after lost CAS = %q, want rev-1 (untouched)", got)
+	}
+
+	// Matching prior again advances forward.
+	advanced, err = s.AdvanceForgeDeliveredRevisionCAS(ctx, owner, id, "rev-1", "rev-2")
+	if err != nil {
+		t.Fatalf("cas advance forward: %v", err)
+	}
+	if !advanced {
+		t.Fatal("cas advance forward: advanced = false, want true")
+	}
+	if got := readRevision(); got != "rev-2" {
+		t.Fatalf("delivered_revision = %q, want rev-2", got)
+	}
+
+	// Foreign agent on a real id, even with the right prior: no advance, no
+	// error (the agent scoping fails the WHERE, so zero rows), row untouched.
+	advanced, err = s.AdvanceForgeDeliveredRevisionCAS(ctx, foreign, id, "rev-2", "rev-x")
+	if err != nil {
+		t.Fatalf("cas foreign agent: %v", err)
+	}
+	if advanced {
+		t.Fatal("cas foreign agent: advanced = true, want false")
+	}
+	if got := readRevision(); got != "rev-2" {
+		t.Fatalf("delivered_revision after foreign CAS = %q, want rev-2 (untouched)", got)
+	}
+
+	// Unknown id: no advance, no error.
+	advanced, err = s.AdvanceForgeDeliveredRevisionCAS(ctx, owner, "no-such-id", "", "rev-x")
+	if err != nil {
+		t.Fatalf("cas unknown id: %v", err)
+	}
+	if advanced {
+		t.Fatal("cas unknown id: advanced = true, want false")
+	}
+
+	// Empty agent / empty subscription id -> ErrInvalidArgument (early guards).
+	if _, err := s.AdvanceForgeDeliveredRevisionCAS(ctx, "", id, "", "rev-x"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("cas empty agent: err = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := s.AdvanceForgeDeliveredRevisionCAS(ctx, owner, "", "", "rev-x"); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("cas empty id: err = %v, want ErrInvalidArgument", err)
 	}
 }
 

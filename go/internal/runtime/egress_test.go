@@ -73,6 +73,33 @@ func TestHostsAreDeduplicatedAndOrdered(t *testing.T) {
 	}
 }
 
+func TestConfiguredDistinguishesAnEmptyAllowlistFromNoPolicy(t *testing.T) {
+	// An empty allowlist is the strictest posture, not the absence of a policy;
+	// keying on len(Hosts()) would invert exactly the case this separates.
+	empty := MustAllowEgress()
+	if !empty.Configured() {
+		t.Error("MustAllowEgress() with no hosts: Configured() = false, want true (empty is default-deny, not unset)")
+	}
+	if got := empty.Hosts(); len(got) != 0 {
+		t.Errorf("MustAllowEgress().Hosts() = %q, want empty", got)
+	}
+
+	var unset EgressPolicy
+	if unset.Configured() {
+		t.Error("zero-value EgressPolicy: Configured() = true, want false")
+	}
+}
+
+func TestRejectedHostYieldsAnUnconfiguredPolicy(t *testing.T) {
+	policy, err := AllowEgress("github.com; rm -rf /")
+	if err == nil {
+		t.Fatal("AllowEgress with a shell-unsafe host: err = nil, want rejection")
+	}
+	if policy.Configured() {
+		t.Error("rejected AllowEgress: Configured() = true, want false (the returned policy must not read as enforceable)")
+	}
+}
+
 func TestEveryAllowlistedHostIsResolved(t *testing.T) {
 	script := MustAllowEgress("github.com", "api.anthropic.com").NftScript()
 

@@ -59,6 +59,7 @@ import {
 	type Agent,
 	type DaemonInfo,
 	type Issue,
+	type RuntimeMarker,
 	STUB_AGENTS,
 	STUB_DAEMON,
 	STUB_ISSUES,
@@ -912,8 +913,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// the join itself, gated on the live/offline switch: offline it is the
 	// fixture; live it re-joins only when accounts or presence change.
 	const presence = createMemo(() => comms().presence);
+	// Runtime markers arrive on the session-status stream, not the comms one, so
+	// they are their own signal joined in beside presence.
+	const [runtimeMarkers, setRuntimeMarkers] = createSignal<
+		ReadonlyMap<string, RuntimeMarker>
+	>(new Map());
 	const agents = createMemo<readonly Agent[]>(() =>
-		options.comms ? joinAgents(accounts(), presence()) : STUB_AGENTS,
+		options.comms
+			? joinAgents(accounts(), presence(), runtimeMarkers())
+			: STUB_AGENTS,
 	);
 	// Boot default (Record A §T5): the first hydrated pin that resolves to a
 	// visible agent, else the static `status` pane. Boot has no mid-view state to
@@ -1027,6 +1035,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		void runEventStream({
 			client,
 			onIssues: setIssues,
+			onRuntime: setRuntimeMarkers,
 			signal: eventsAbort.signal,
 			onError: (error) => options.onCommsError?.(error),
 		}).catch((error) => {

@@ -4,7 +4,7 @@ Status: Active
 
 > **Design record.** Citations name paths in `compass` = RigelBuild/compass at
 > `c25ce94f` (this repo, main at authoring). Line numbers drift as code evolves;
-> resolve against that revision. This is a public repo: the internal CD monorepo
+> resolve against that revision. This is a public repo: the CD pipeline elsewhere in the fleet
 > that consumes these artifacts is referred to by role, never by name, path, PR,
 > or quoted source.
 >
@@ -40,8 +40,8 @@ rebuilding from source.
 owns the surface: GitHub Releases attach to a GitHub repo, and the public
 `RigelBuild/compass` repo is where the release artifacts' sources live, where
 the existing GHA publish lane runs, and where an in-repo `GITHUB_TOKEN` can
-create Releases with zero new credentials. The internal CD monorepo is
-Woodpecker-driven and would need a cross-repo PAT to write Releases anywhere
+create Releases with zero new credentials. A Woodpecker-driven CD pipeline
+elsewhere in the fleet would need a cross-repo PAT to write Releases anywhere
 (§Fork 1).
 
 ## Approach
@@ -54,9 +54,9 @@ Four design forks, each with options, a recommendation, and tradeoffs.
 
 - **(a) compass repo, GitHub Actions** — a new `.github/workflows/release.yml`
   beside the existing publish lane.
-- **(b) the internal CD monorepo, Woodpecker CD** — a push→main CD job like its
+- **(b) a Woodpecker CD pipeline elsewhere in the fleet** — a push→main CD job like its
   image-publish lane, writing Releases on some GitHub repo via a PAT.
-- **(c) hybrid** — compass GHA creates the Release; the internal CD appends its
+- **(c) hybrid** — compass GHA creates the Release; a fleet CD pipeline appends its
   own assets to it.
 
 **Recommendation: (a) compass GHA.** Grounds:
@@ -82,7 +82,7 @@ Four design forks, each with options, a recommendation, and tradeoffs.
    ```
 
    A Release must attach to the repo whose commits it versions; releasing
-   compass artifacts on the internal monorepo would version them against the
+   compass artifacts on a different repo in the fleet would version them against the
    wrong history.
 
 2. *The GHA precedent already exists and is the right shape.* The compass repo
@@ -109,17 +109,17 @@ Four design forks, each with options, a recommendation, and tradeoffs.
    a *new* repo-scoped PAT to provision, rotate, and fork-gate (§Fork 4).
 
 4. *The public repo is the consumption point.* `RigelBuild/compass` is public,
-   so Release assets download anonymously — which is exactly what the internal
-   config-publish consumer needs (§Fork 3). The internal monorepo is not the
+   so Release assets download anonymously — which is exactly what the
+   config-publish consumer needs (§Fork 3). No out-of-tree repo offers that
    public surface.
 
-**Tradeoffs accepted:** (b) would co-locate the Release cut with the internal
-CD's other push→main GHCR legs, keeping one CD brain; but none of those legs
+**Tradeoffs accepted:** (b) would co-locate the Release cut with a fleet CD
+pipeline's other push→main GHCR legs, keeping one CD brain; but none of those legs
 produce compass artifacts, and the cross-repo PAT + Woodpecker↔GitHub seam
 outweighs the co-location. (c) hybrid is
-deferred as non-load-bearing: today no internally-built artifact belongs in a
-compass Release (the internal CD's images are CI step images, not product
-artifacts). If that changes, the internal CD can append assets to an existing
+deferred as non-load-bearing: today no fleet-built artifact belongs in a
+compass Release (that pipeline's images are CI step images, not product
+artifacts). If that changes, a fleet CD pipeline can append assets to an existing
 Release with a narrowly-scoped PAT without reopening this record.
 
 ### Fork 2: what artifacts, and how each is produced
@@ -424,7 +424,7 @@ ancestry guard; documented in the workflow header.
 **T4 — Consumer cutover: the internal config-publish job downloads the Release asset.**
 Sequenced strictly AFTER the in-flight RIG-2025 fixes (ci-go routing + module
 rename), which land now and independently — T4 is the later revert of that
-routing, not its substitute. In the internal CD monorepo, two reviewed steps:
+routing, not its substitute. In the fleet's CD pipeline, two reviewed steps:
 (1) **pin advance** — move the pinned-rev constant to the first released sha (no
 Release covers the current pin `a61d0caf` retroactively); (2) replace the
 `go install` provisioning with a download-and-verify of
@@ -445,7 +445,7 @@ lane; append the DECISIONS.md ledger rows for the choices in Forks 1-4 and the
 OQ-7 semver policy.
 
 Ordering: T1 → T2 fold into one PR if small; T3 independent after T1; T4 lands
-in the internal CD monorepo only after the RIG-2025 fixes are green on main AND
+in the fleet's CD pipeline only after the RIG-2025 fixes are green on main AND
 T1 has minted a Release at the advanced pin (the pin advance is T4 step 1); T5
 with the record freeze.
 

@@ -1,16 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import {
+	AgentSessionStatusSchema,
 	CompassService,
 	create,
 	createCompassClient,
 	createRouterTransport,
+	EgressPosture,
 	IssueSchema,
 	IssueState,
+	RuntimeTier,
 	type SubscribeEventsResponse,
 	SubscribeEventsResponseSchema,
 	type Issue as WireIssue,
 } from "@compass/client";
-import type { Issue as DomainIssue } from "../stub-data";
+import type { Issue as DomainIssue, RuntimeMarker } from "../stub-data";
 import { runEventStream } from "./events";
 
 // The SubscribeEvents read-driver seam (RIG-1729 read slice). A fake server is a
@@ -111,7 +114,86 @@ async function drainUntil(predicate: () => boolean): Promise<void> {
 	}
 }
 
+// An agent-session-status response carrying the runtime tier + egress posture,
+// the payload the driver keys by account id into its runtime map.
+function statusResp(
+	seq: bigint,
+	account: string,
+	tier: RuntimeTier,
+	posture: EgressPosture,
+): SubscribeEventsResponse {
+	return create(SubscribeEventsResponseSchema, {
+		seq,
+		instanceEpoch: 7n,
+		payload: {
+			case: "agentSessionStatus",
+			value: create(AgentSessionStatusSchema, {
+				sessionId: `sess-${account}`,
+				agentAccountId: account,
+				runtimeTier: tier,
+				egressPosture: posture,
+			}),
+		},
+	});
+}
+
 describe("runEventStream (RIG-1729 read driver)", () => {
+	test("decodes a session status into a runtime marker keyed by account", async () => {
+		const transport = scriptedTransport([
+			statusResp(1n, "acc-host", RuntimeTier.HOST, EgressPosture.UNENFORCED),
+			statusResp(2n, "acc-pod", RuntimeTier.PODMAN, EgressPosture.ARMED),
+		]);
+		const client = createCompassClient(transport);
+		const abort = new AbortController();
+		let runtime: ReadonlyMap<string, RuntimeMarker> = new Map();
+		void runEventStream({
+			client,
+			onIssues: () => {},
+			onRuntime: (next) => {
+				runtime = next;
+			},
+			signal: abort.signal,
+		});
+
+		await drainUntil(() => runtime.size >= 2);
+		abort.abort();
+
+		expect(runtime.get("acc-host")).toEqual({
+			tier: "host",
+			posture: "unenforced",
+		});
+		expect(runtime.get("acc-pod")).toEqual({
+			tier: "podman",
+			posture: "armed",
+		});
+	});
+
+	test("skips a status whose account binding is unresolvable", async () => {
+		// An empty account id would key every unbound status under "", attaching
+		// one agent's posture to all of them.
+		const transport = scriptedTransport([
+			statusResp(1n, "", RuntimeTier.HOST, EgressPosture.UNENFORCED),
+			statusResp(2n, "acc-real", RuntimeTier.HOST, EgressPosture.UNENFORCED),
+		]);
+		const client = createCompassClient(transport);
+		const abort = new AbortController();
+		let runtime: ReadonlyMap<string, RuntimeMarker> = new Map();
+		void runEventStream({
+			client,
+			onIssues: () => {},
+			onRuntime: (next) => {
+				runtime = next;
+			},
+			signal: abort.signal,
+		});
+
+		await drainUntil(() => runtime.has("acc-real"));
+		abort.abort();
+
+		expect(runtime.size).toBe(1);
+		expect(runtime.has("")).toBe(false);
+	});
+
 	test("pushes adapted domain issues; a repeat id REPLACES (upsert)", async () => {
 		const transport = scriptedTransport([
 			issueResp(1n, "a", { title: "first", state: IssueState.TODO }),

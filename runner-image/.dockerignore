@@ -1,0 +1,6 @@
+# Context prune for the runner image build. The context is runner-image/ itself,
+# which holds only the Dockerfile, the staged store/ closure and the
+# compass-runner entrypoint symlink — so this excludes the build OUTPUT (out/),
+# which would otherwise be re-transferred into every rebuild's context and grow
+# it without bound.
+out

@@ -787,6 +787,68 @@ func TestCloseJoinsConcurrentTeardowns(t *testing.T) {
 // started session appears with its live state, and a stopped one is gone. The
 // Runner is authoritative for live truth. A bug that answered from a stale or
 // external source would not reflect the live set.
+// hostTierStubRuntime is the streaming stub that also answers the tier and
+// unenforced-egress capabilities, standing in for the host backend so the
+// Status stamp is exercisable without spawning host children.
+type hostTierStubRuntime struct {
+	*stubStreamingRuntime
+}
+
+func (hostTierStubRuntime) Tier() runtime.WorkloadTier { return runtime.WorkloadTierHost }
+func (hostTierStubRuntime) EgressUnenforced() bool     { return true }
+
+// TestStatusStampsTheTierAndEgressPosture: the Runner reports both, because it
+// is the component that resolved the backend. BOTH arms must stamp them — the
+// targeted one and the all-sessions one — mirroring the account stamp below; a
+// client reading the all-arm would otherwise render an uncontained host session
+// as unspecified.
+func TestStatusStampsTheTierAndEgressPosture(t *testing.T) {
+	// The host tier refuses a configured policy, which is the point of the
+	// posture — so its spec carries none, as the Runner's own resolution does.
+	hostSpec := liveSpec()
+	hostSpec.Egress = runtime.EgressPolicy{}
+	specs := &fakeSpecBuilder{spec: hostSpec}
+	engine := hostTierStubRuntime{stubStreamingRuntime: newStubStreamingRuntime(t)}
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	var n int
+	host := NewSessionHost(link, rt, registry, engine, specs,
+		AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner(),
+		func() string { n++; return "sess-" + string(rune('0'+n)) })
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+
+	one, err := host.Status(ctx, sessionID)
+	if err != nil || len(one) != 1 {
+		t.Fatalf("Status(one) = %+v, %v", one, err)
+	}
+	if got := one[0].GetRuntimeTier(); got != compassv1.RuntimeTier_RUNTIME_TIER_HOST {
+		t.Errorf("Status(one) tier = %v, want RUNTIME_TIER_HOST", got)
+	}
+	if got := one[0].GetEgressPosture(); got != compassv1.EgressPosture_EGRESS_POSTURE_UNENFORCED {
+		t.Errorf("Status(one) posture = %v, want EGRESS_POSTURE_UNENFORCED", got)
+	}
+
+	all, err := host.Status(ctx, "")
+	if err != nil || len(all) != 1 {
+		t.Fatalf("Status(all) = %+v, %v", all, err)
+	}
+	if got := all[0].GetRuntimeTier(); got != compassv1.RuntimeTier_RUNTIME_TIER_HOST {
+		t.Errorf("Status(all) tier = %v, want RUNTIME_TIER_HOST (the all-arm must stamp it too)", got)
+	}
+	if got := all[0].GetEgressPosture(); got != compassv1.EgressPosture_EGRESS_POSTURE_UNENFORCED {
+		t.Errorf("Status(all) posture = %v, want EGRESS_POSTURE_UNENFORCED (the all-arm must stamp it too)", got)
+	}
+}
+
 func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
 	host, _, _ := newHostFixture(t, specs)

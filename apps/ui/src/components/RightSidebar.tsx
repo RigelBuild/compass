@@ -27,6 +27,7 @@ import {
 	STUB_FILES,
 } from "../stub-data";
 import { ChannelView } from "./ChannelView";
+import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
 const FILE_ICON: Record<string, string> = { dir: "▸", file: "·" };
@@ -689,7 +690,14 @@ export const RightSidebar: Component = () => {
 													{tab.icon}
 												</span>
 												<Show when={agent()}>
-													{(a) => <StateDot state={a().lifecycle ?? "idle"} />}
+													{(a) => (
+														<>
+															<StateDot state={a().lifecycle ?? "idle"} />
+															<Show when={a().runtime}>
+																{(m) => <RuntimeMarker marker={m()} />}
+															</Show>
+														</>
+													)}
 												</Show>
 											</button>
 										);

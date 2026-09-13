@@ -65,6 +65,15 @@ type AgentEnv struct {
 	// ResumeSessionFile is the absolute in-container path of the materialized
 	// resume session file, or empty for a fresh start.
 	ResumeSessionFile string
+	// SocketPath, when non-empty, overrides the agent's default gateway-socket
+	// path (agent-side AGENT_SOCKET_PATH). ConfigMountPath likewise overrides the
+	// default config-mount root (AGENT_CONFIG_MOUNT_PATH). Both are empty on the
+	// container tiers, which deliver the socket + config at the frozen paths by
+	// bind mount; the host-process tier has no mounts, so it serves both inside
+	// the handle's own state dir and threads the paths here. Empty is omitted, so
+	// a container-tier agent receives neither var and resolves the frozen defaults.
+	SocketPath      string
+	ConfigMountPath string
 }
 
 // execSpec builds the streaming exec that starts the agent: unprivileged, in
@@ -91,6 +100,12 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	}
 	if e.ResumeSessionFile != "" {
 		spec.Env["COMPASS_RESUME_SESSION_FILE"] = e.ResumeSessionFile
+	}
+	if e.SocketPath != "" {
+		spec.Env["COMPASS_AGENT_SOCKET_PATH"] = e.SocketPath
+	}
+	if e.ConfigMountPath != "" {
+		spec.Env["COMPASS_AGENT_CONFIG_MOUNT_PATH"] = e.ConfigMountPath
 	}
 	return spec
 }

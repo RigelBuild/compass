@@ -443,15 +443,17 @@ func TestRejectsPathOverSunPathLimit(t *testing.T) {
 			t.Fatal("listen on an over-long path must fail, got nil error")
 		}
 		// The diagnostic is the whole point: the message must carry both numbers
-		// and the flag to change, none of which the kernel's EINVAL does. Match
-		// the surrounding phrases, not the bare digits — a temp path carries
-		// random digits that could contain the cap by chance and pass a
-		// substring check against a message that never mentioned it.
+		// and something actionable to shorten, none of which the kernel's EINVAL
+		// does. Match the surrounding phrases, not the bare digits — a temp path
+		// carries random digits that could contain the cap by chance and pass a
+		// substring check against a message that never mentioned it. The remedy
+		// names the socket's parent, not one tier's flag: this function is
+		// shared, and the tiers root the path under different knobs.
 		msg := err.Error()
 		for _, want := range []string{
 			fmt.Sprintf("is %d bytes", len(path)),
 			fmt.Sprintf("over the %d-byte", sunPathMax),
-			"--runtime-dir",
+			"shorten the socket's parent directory",
 		} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("error %q does not contain %q", msg, want)

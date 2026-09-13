@@ -24,7 +24,7 @@ machinery that existed only to carry them.
 - **FROZEN (Matt, 2026-08-19): shared `RigelBuild/{devenv,nix2container,oh-my-pi}`
   repos + combined patch work.** Compass consumes the shared canonical fork
   repos — one canonical fork per upstream. Sealed patches useful to both the
-  internal monorepo and compass land in the shared repos, never duplicated. Do
+  fleet and compass land in the shared repos, never duplicated. Do
   not relitigate; tasks execute it.
 - **Shared-repo patch ownership is disjoint (forge coordination, 2026-08-19).**
   On the shared canonical repos each lane owns a disjoint patch set: forge owns
@@ -274,7 +274,7 @@ this record does not require it.
   repos: one fork per upstream, patch work combined. Two forks of the same
   upstream would duplicate the sealed patches and re-create the divergence this
   reversal exists to end. Frozen; not relitigated here.
-- **Defer until the internal monorepo's reversal fully lands** — rejected. Only
+- **Defer until the fleet's reversal fully lands** — rejected. Only
   the nix2container lane has a genuine cross-repo dependency (the shared
   nix-DB-drop fix); serializing the whole reversal behind that completion keeps
   7424 vendored files (and
@@ -576,7 +576,7 @@ Interfaces:
    `devenv.nix:476`, `ci.yml:812`, `publish-agent-image.yml:139,160`,
    `tools/agent-image-env-gate/index.ts:100,118`) —
    **LOAD-BEARING, but narrower than first framed.** The *flake-input* half is
-   settled: the internal monorepo's prior art froze the nix-flake-input class as
+   settled: the prior art froze the nix-flake-input class as
    `github:RigelBuild/<fork>` pinned **via lockfile** (the deliberate default
    plus a whole-repo narHash fix), so compass's one flake-input consumer,
    `agent-image/devenv.lock`, converges on that with no reason to diverge. What
@@ -598,7 +598,7 @@ Interfaces:
    has no prior-art analog. The coherent alternative is the literal style — keep
    the `github:…/<rev>` literals but have L1/L2 add a CI assert that each
    literal's rev equals the corresponding `devenv.lock` rev, named in the lane
-   gates; this mirrors the internal monorepo's terraform-provider class, a pinned
+   gates; this mirrors the prior art's terraform-provider class, a pinned
    **non-flake** consumption (tagged GitHub Release + committed sha256 manifest,
    verified at build time) — the prior-art shape for "pin and verify a path not
    resolved through a lockfile." This is the record's one genuine fork — Matt's
