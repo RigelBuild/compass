@@ -233,3 +233,41 @@ func TestBackendConfigSelectsMicroVM(t *testing.T) {
 		t.Fatalf("selectEngine() = %T, want *runtime.MicroVMRuntime", engine)
 	}
 }
+
+// The agent-image knob at the entrypoint seam, driven through the REAL microVM
+// runtime rather than a fake: under this backend the agent ships in the guest
+// rootfs, so a Runner must start with no agent image (the shipped runner image
+// sets the microVM env and no COMPASS_AGENT_IMAGE), and a configured one is
+// refused rather than silently ignored.
+//
+// This drives newSpecBuilder, not run(): run() gates on the backend preflight
+// first, whose microVM arm boots a canary VM, so covering this through run()
+// would need a bootable guest kernel. The seam below it is where the two image
+// guards actually live.
+func TestNewSpecBuilderAgentImageUnderMicroVM(t *testing.T) {
+	engine := runtime.NewMicroVMRuntime(runtime.MicroVMConfig{})
+
+	specs, err := newSpecBuilder(engine, "", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil)
+	if err != nil {
+		t.Fatalf("newSpecBuilder(microvm, no image) = %v, want a builder", err)
+	}
+	if specs == nil {
+		t.Fatal("newSpecBuilder(microvm, no image) returned no builder")
+	}
+
+	_, err = newSpecBuilder(engine, "compass-agent:latest", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil)
+	if err == nil {
+		t.Fatal("newSpecBuilder(microvm, image set) = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "microvm-rootfs") {
+		t.Fatalf("newSpecBuilder error = %v, want it to name the rootfs as the real pin", err)
+	}
+}
+
+// The container backend keeps the requirement, so the relaxation above is
+// scoped to the backend that cannot apply an image.
+func TestNewSpecBuilderAgentImageStillRequiredUnderPodman(t *testing.T) {
+	if _, err := newSpecBuilder(runtime.NewPodmanCLI(), "", runtime.EgressPolicy{}, "/work/repo", "/home/agent", nil); err == nil {
+		t.Fatal("newSpecBuilder(podman, no image) = nil error, want the required-image rejection")
+	}
+}
