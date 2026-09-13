@@ -292,7 +292,7 @@ DL-054 amendment).
 
 Every task below inherits these; task briefs do not restate them.
 
-- **Two-repo split.** This record lives in `sealed` (design corpus);
+- **Two-repo split.** This design corpus lives out of tree;
   implementation lands in `RigelBuild/compass`. All file:line citations
   below are into the compass clone.
 - **Additive-only proto changes.** New fields, new enum values, new RPCs, new

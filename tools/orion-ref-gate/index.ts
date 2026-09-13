@@ -43,8 +43,29 @@
 
 import { $ } from "bun";
 
-/** The private monorepo's token. Whole-word, case-insensitive. */
+/**
+ * The private repo's current name. Whole-word, case-insensitive: a bare
+ * `orion` in this repo is always the private repo.
+ */
 export const PRIVATE_TOKEN = "orion";
+
+/**
+ * The private repo's FORMER name, which imported records still carry. It
+ * cannot be scanned whole-word like the current one: `sealed` is also ordinary
+ * English this codebase uses constantly — a sealed sum type, a ciphertext
+ * sealed under a key, an egress-sealed agent. Measured over the tracked tree,
+ * a whole-word scan flags 60 lines, every one of them legitimate; a gate that
+ * is 100% false positives gets switched off.
+ *
+ * So match only the shapes that name the REPO: a path inside it, its docsite
+ * host, its possessive, or the word followed by a repo-ish noun.
+ */
+export const LEGACY_NAME_PATTERNS: readonly RegExp[] = [
+	/\bsealed\/[a-z]/i,
+	/\bsealed-docs\b/i,
+	/\bsealed's\b/i,
+	/\bsealed (repo|monorepo|design corpus|platform|convention|PR #)/i,
+];
 
 /**
  * Repo-relative path prefixes never scanned. A reference under one of these is
@@ -97,13 +118,15 @@ export function isCarveOut(path: string): boolean {
 }
 
 /**
- * Whole-word, case-insensitive match for the private token in one line. The
- * gate's own compound name (`orion-ref-gate`) is not a private-repo reference,
- * so a bare `orion` immediately followed by `-ref-gate` does not count.
+ * Case-insensitive match for a private-repo reference in one line: the current
+ * name whole-word, or one of the former name's repo-shaped patterns. The
+ * gate's own compound name (`orion-ref-gate`) is not a reference, so a bare
+ * `orion` immediately followed by `-ref-gate` does not count.
  */
 export function lineHasToken(text: string): boolean {
 	const stripped = text.replace(/orion-ref-gate/gi, "");
-	return new RegExp(`\\b${PRIVATE_TOKEN}\\b`, "i").test(stripped);
+	if (new RegExp(`\\b${PRIVATE_TOKEN}\\b`, "i").test(stripped)) return true;
+	return LEGACY_NAME_PATTERNS.some((re) => re.test(stripped));
 }
 
 /**
@@ -167,15 +190,20 @@ export async function runOnce(deps: Deps): Promise<number> {
 }
 
 /**
- * `git grep -nwI -i <token>` over tracked files. `git grep` exits 0 with
- * matches, 1 on no match (a legitimately clean, empty result), and >=2 on a
- * real error (e.g. not a git work tree). We must distinguish the last from the
- * clean case: swallowing it would make the gate report clean on a broken scan —
- * fail-OPEN, the exact false-green a fail-closed gate exists to stop. Exit >=2
- * throws, so runOnce's catch returns exit 2.
+ * `git grep -nEI` for either name over tracked files. The regex is a coarse
+ * pre-filter — `lineHasToken` makes the real decision, so this only has to be
+ * a superset of it. `sealed` is matched bare here and narrowed there.
+ *
+ * `git grep` exits 0 with matches, 1 on no match (a legitimately clean, empty
+ * result), and >=2 on a real error (e.g. not a git work tree). We must
+ * distinguish the last from the clean case: swallowing it would make the gate
+ * report clean on a broken scan — fail-OPEN, the exact false-green a
+ * fail-closed gate exists to stop. Exit >=2 throws, so runOnce's catch
+ * returns exit 2.
  */
 async function gitGrep(): Promise<string[]> {
-	const res = await $`git grep -nwiI ${PRIVATE_TOKEN}`.nothrow().quiet();
+	const pattern = `\\b(${PRIVATE_TOKEN}|sealed)`;
+	const res = await $`git grep -nEiI ${pattern}`.nothrow().quiet();
 	if (res.exitCode >= 2)
 		throw new Error(
 			`git grep exited ${res.exitCode}: ${res.stderr.toString().trim()}`,

@@ -7,7 +7,7 @@ a form they did not intend to publish.
 
 These five rules are the standing policy for every design record authored here
 going forward. Rules 1-4 match the sanitization the one-shot migration applied
-to the records imported from the private `sealed` repo (new records should be
+to records imported from out of tree (new records should be
 written this way from the start so they need no migration); rule 5 governs what
 happens to a record's inbound links when another record is deleted.
 
@@ -26,8 +26,8 @@ harmless. A dead `linear.app` URL is worse than no URL.
 
 ## 2. No `oss/compass/` path prefixes
 
-The private repo vendored Compass under `oss/compass/`. This repo **is** that
-tree, without the prefix. Cite paths relative to the repo root:
+Some imported records cite Compass paths under an `oss/compass/` prefix. This
+repo **is** that tree, without the prefix. Cite paths relative to the repo root:
 
 - `oss/compass/go/internal/runtime/image.go` → `go/internal/runtime/image.go`
 - `oss/compass/apps/ui/src/stub-data.ts` → `apps/ui/src/stub-data.ts`

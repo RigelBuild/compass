@@ -5,7 +5,7 @@
 # devenv toolchain on PATH. install/lint/format are inherited (bun tag →
 # root:install; biome + markdownlint are the root whole-repo sweep, which lints
 # the canonical docs/ sources — the generated src/content/docs/ mirror is
-# gitignored and exempt). Public counterpart to sealed/apps/docs: no Cloudflare
+# gitignored and exempt). Unlike the prior art's docs app: no Cloudflare
 # Access gate, no PostHog analytics.
 workspace:
   inheritedTasks:

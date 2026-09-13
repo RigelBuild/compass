@@ -5,8 +5,8 @@
 // GitHub Actions workflow (RIG-1765). The engineering docsite lives on
 // Cloudflare Pages under the compass-eng-docs project.
 //
-// Adapted from sealed apps/docs/scripts/deploy.ts — they share the same
-// Cloudflare Pages deploy + PR-preview-comment shape and the three constants
+// Shares the same Cloudflare Pages deploy + PR-preview-comment shape as the
+// prior art, including the three constants
 // below (PROJECT_NAME, COMMENT_MARKER, SITE_LABEL). This docsite build gathers
 // the compass repo's markdown, so its preview comment also deep-links the .md
 // pages a PR changed (changedDocPages + commentBody's "Changed pages" section).

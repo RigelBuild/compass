@@ -86,11 +86,10 @@ projects:
   stamp-gate: 'tools/stamp-gate'
   # The design-ledger gate: validates the Compass design-decision ledger
   # (docs/designs/DECISIONS.md), the per-record `Status:` headers, and
-  # dangling supersession/Record pointers (RIG-1187). Migrated from the sealed
-  # repo with the corpus it governs (RIG-1794).
+  # dangling supersession/Record pointers (RIG-1187).
   design-ledger-gate: 'tools/design-ledger-gate'
   # The orion-ref-gate boundary gate (RIG-2489): fail-closed scan that the PUBLIC
-  # compass repo carries no reference to the PRIVATE internal monorepo. Mirrors
+  # compass repo carries no out-of-tree reference the managed boundary forbids. Mirrors
   # design-ledger-gate; registered here so its check + typecheck + unit test run
   # in the moon-driven CI sweep — unregistered, moon never discovers it and the
   # boundary re-rots uncaught.
@@ -138,7 +137,7 @@ projects:
   # silently inert (moon discovers projects only from this map) and the config
   # drift it fences ships uncaught.
   renovate: 'tools/renovate'
-  # The Renovate preflight probe (ported from the internal monorepo's preflight probe):
+  # The Renovate preflight probe:
   # checks the minted App token can see the repo before `bunx renovate` runs,
   # failing fast with a named diagnosis instead of Renovate's opaque
   # platform-unknown-error. Registered so its own typecheck + unit test gate.

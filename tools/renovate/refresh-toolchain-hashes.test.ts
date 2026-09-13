@@ -6,8 +6,7 @@ import { dirname, join } from "node:path";
 import { $ } from "bun";
 import { readVersion, rewriteHash } from "./refresh-toolchain-hashes.ts";
 
-// Regression test for tools/renovate/refresh-toolchain-hashes.ts (RIG-2432,
-// ported from the internal monorepo's test).
+// Regression test for tools/renovate/refresh-toolchain-hashes.ts (RIG-2432).
 //
 // The bug this guards against: the script's path constants are all
 // repo-root-relative (the pin files), but the gate `git diff --quiet "$base_ref"

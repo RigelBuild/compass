@@ -2,7 +2,7 @@
 
 Status: Draft
 Linear: RIG-1663
-Supersedes: the pre-freeze draft of this record (sealed PR #1075; its
+Supersedes: the pre-freeze draft of this record (an out-of-tree PR; its
 DL-114..122 block never shipped)
 
 That pre-freeze draft was authored against a *provisional* brand identity; the

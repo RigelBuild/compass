@@ -8,10 +8,10 @@ Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 > `agent-image/*`, `.github/workflows/*`, `forks/*`, `go/cmd/*`, `ci.yml`,
 > `devenv.nix`, `packages/compass-agent/*`, and `docs/architecture/*` citation
 > below is a path in that repo at HEAD `b3fc25311`, not this one (line numbers
-> drift as the code evolves; resolve them against that commit). It lives in the
-> sealed design corpus (`docs/designs/infra/ci/`) because that is where the wave's design
+> drift as the code evolves; resolve them against that commit). It lives out of
+> tree because that is where the wave's design
 > records freeze; the `docs/designs/ui/*` cross-references (e.g. DL-112)
-> are paths in this (sealed) corpus.
+> are paths in this corpus.
 >
 > **Superseded in part** (RIG-1746, Matt 2026-08-25): the *CI-placement*
 > decision below — a separate `.github/workflows/publish-agent-image.yml`
@@ -517,11 +517,11 @@ Interfaces:
 
 ## Open Questions
 
-- **[Resolved] Record placement.** This record lives in the sealed design
-  corpus (`docs/designs/infra/ci/`), the wave's canonical home for frozen
+- **[Resolved] Record placement.** This record lives out of tree,
+  the wave's canonical home for frozen
   design records, beside the other `compass-*` records. T4 folds the durable
   operational content into the compass repo's `docs/architecture/build-and-ci.md`
-  once implemented; this record stays the design of record in sealed.
+  once implemented; this record stays the design of record out of tree.
 - **[Non-load-bearing] GA release tag.** RIG-1687 will likely want
   `:v<semver>` alongside `:git-<sha>`; T1's tag-list CLI makes that a
   no-redesign later add. Deferred to GA planning.

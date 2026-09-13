@@ -50,6 +50,44 @@ describe("lineHasToken — whole-word, case-insensitive", () => {
 	});
 });
 
+describe("lineHasToken — the former name, matched only in repo-shaped uses", () => {
+	test("a path inside the private repo is a reference", () => {
+		expect(lineHasToken("See `sealed/ci/pipeline.ts:554` for the job")).toBe(
+			true,
+		);
+	});
+	test("its possessive, docsite host, and repo-noun uses are references", () => {
+		expect(lineHasToken("following sealed's shape")).toBe(true);
+		expect(lineHasToken("deployed to sealed-docs.rigel.build")).toBe(true);
+		expect(lineHasToken("this record lives in the sealed design corpus")).toBe(
+			true,
+		);
+		expect(lineHasToken("per sealed convention a later change ADDS")).toBe(
+			true,
+		);
+	});
+	// The word is ordinary English throughout go/: a whole-word scan flags 60
+	// tracked lines, every one legitimate. These pin the narrowing that keeps
+	// the gate usable.
+	test("the English engineering word is not a reference", () => {
+		expect(lineHasToken("Frame is a sealed sum type")).toBe(false);
+		expect(lineHasToken("the row was sealed under a known key")).toBe(false);
+		expect(lineHasToken("an egress-sealed agent holds no server token")).toBe(
+			false,
+		);
+		expect(lineHasToken("gochecksumtype for sealed-interface sum types")).toBe(
+			false,
+		);
+	});
+	test("genuinely public names carrying the string are not references", () => {
+		expect(lineHasToken("github.com/sealedsecurity/compass/go")).toBe(false);
+		expect(lineHasToken("Sealed Security Inc → Rigel AI Software Inc")).toBe(
+			false,
+		);
+		expect(lineHasToken("ci.sealedsecurity.com")).toBe(false);
+	});
+});
+
 describe("isCarveOut", () => {
 	test("the gate's own source is carved out", () => {
 		expect(isCarveOut("tools/orion-ref-gate/index.ts")).toBe(true);

@@ -78,8 +78,8 @@ decisions, all three forks from the brief:
 use a diff library. `apps/ui/package.json:7-11` carries three
 runtime deps (`@compass/client`, `@tauri-apps/api`, `solid-js`); this adds
 one, `diff` (jsdiff) — verified resolvable from the workspace registry at
-`9.0.0` (`bun pm view diff version`), so the offline-leaning workspace (sealed
-monorepo, LAN registry) is not a blocker. jsdiff ships a battle-tested Myers
+`9.0.0` (`bun pm view diff version`), so an offline-leaning workspace
+(LAN registry) is not a blocker. jsdiff ships a battle-tested Myers
 O(ND) implementation: **linear space** (no `m×n` table), but O((m+n)·D) *time*
 in the edit distance D. The hand-rolled table's load-bearing risk was
 **memory** — `FileDiff` holds whole-file texts (`session-events.ts:22-27`) with

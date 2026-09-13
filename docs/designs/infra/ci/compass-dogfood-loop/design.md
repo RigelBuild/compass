@@ -8,7 +8,7 @@ Status: Active
 > end to end. The design targets the **`RigelBuild/compass`** repo (its
 > `devenv.nix`, `agent-image/`, and `go/cmd/*` binaries); every `devenv.nix:*`,
 > `agent-image/*`, and `go/cmd/*` citation below is a path in that repo at HEAD
-> `21241f720`, not this one. It lives in the sealed design corpus because that is
+> `21241f720`, not this one. It lives out of tree because that is
 > where the wave's design records freeze.
 
 ## Problem / Intent
@@ -26,7 +26,7 @@ self-signed cert) and idles, and a real session is driven end to end
 (`CommsService.CreateAgent` → `CompassService.ProvisionAgentWorkspace` →
 `StartAgentSession`), so a real container spawns and runs an agent turn.
 
-Note on ledgers: this record lives in the sealed design corpus
+Note on ledgers: this record lives out of tree
 (`docs/designs/platform/`), which the design-ledger-gate governs only for the
 **product** corpus (`docs/designs/product/DECISIONS.md`). A platform record adds
 no DECISIONS row and declares no ledger delta, so nothing here is ledger-tracked;

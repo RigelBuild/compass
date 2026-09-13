@@ -8,10 +8,9 @@ import config from "./config.json5";
 // module does no I/O at import (main() is behind import.meta.main).
 import { FOD_ENTRIES } from "./refresh-fod-hashes.ts";
 
-// Guard suite for compass's self-hosted Renovate config (RIG-2432). Ported from
-// the internal monorepo's config.test.ts and adapted to compass's config +
-// ecosystems (bun catalog, devenv-nixpkgs channel, toolchain pins, gomod, GitHub
-// Actions; no rust/pulumi/woodpecker). The .json5 configs load via Bun's loader.
+// Guard suite for compass's self-hosted Renovate config (RIG-2432). Covers compass's
+// config + ecosystems (bun catalog, devenv-nixpkgs channel, toolchain pins, gomod,
+// GitHub Actions; no rust/pulumi/woodpecker). The .json5 configs load via Bun's loader.
 
 type PostUpgradeTasks = {
 	commands?: string[];
@@ -503,7 +502,8 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 
 	// Branch-mode lockstep task over the files the script writes: devenv.lock +
 	// package.json (biome catalog) + bun.lock (steps 2/4/5), flake.nix + flake.lock
-	// (step 6), and agent-image/entrypoint.nix (the FOD outputHash).
+	// (step 6), and agent-image/entrypoint.nix (the FOD outputHash). compass has
+	// NO committed inner-rev guard file.
 
 	// The FOD refresh is required: a channel bump moves pkgs.bun (the FOD builder)
 	// and, when the biome pin moves, re-resolves the bun.lock closure — either can
