@@ -252,14 +252,17 @@ extension is a deployment concern and is not designed here.
 
 - **Per-workload agent images under microVM — ruled OUT on evidence.** Nothing
   can request one: `configSpecBuilder.BuildSpec` sets `Image: d.Image` (the
-  operator default) and the request contributes only the agent handle;
-  `proto/compass/v1/runner.proto` records inline-image blobs as deliberately
-  out of MVP scope; RIG-3722 made the microVM backend declare
-  `AgentImageIrrelevant()` (`go/internal/runtime/microvm.go`) and refuse a
-  configured image. A per-workload pull would add pull credentials, a
-  per-node conversion step, and a disk cache with eviction — to serve a knob
-  every caller sets identically. The guest agent stays pinned per deployment
-  by the rootfs the Runner was given.
+  operator default, `go/internal/runner/spec.go`), and
+  `ProvisionAgentWorkspaceRequest` (`proto/compass/v1/compass.proto`) carries
+  only `agent_handle` — there is no image field on the request. The backend
+  would have nothing to apply either: `Create` assembles the BootConfig from
+  the operator-configured kernel/rootfs/initrd paths and never reads
+  `spec.Image` (`go/internal/runtime/microvm_lifecycle.go`), so the guest
+  agent comes from the baked rootfs rather than a per-request pull. A
+  per-workload pull would add pull credentials, a per-node conversion step,
+  and a disk cache with eviction — to serve a knob every caller sets
+  identically. The guest agent stays pinned per deployment by the rootfs the
+  Runner was given.
 - **Re-importing `agent-image`'s nix expression under its own lock.** Closes
   the nixpkgs-pin divergence but not the real one: the container backends run
   the published artifact, and two builds of "the same" expression at
