@@ -28,6 +28,29 @@
 # execDir = `dirname(process.execPath)`, which is exactly that dir — so a cold
 # container with no node_modules and no network still loads the native addon.
 let
+  system = pkgs.stdenv.hostPlatform.system;
+
+  # Per-system native pins: the FOD hash covers the platform-specific
+  # optionalDependency, and the addon set differs by arch (x64 two, arm64 one).
+  nativeBySystem = {
+    "x86_64-linux" = {
+      outputHash = "sha256-JbgM44AwH7/b3Y/2T44+eBXwyvMi8owXToGVspEeCk4=";
+      nativesPkg = "pi-natives-linux-x64";
+      addons = [
+        "pi_natives.linux-x64-modern.node"
+        "pi_natives.linux-x64-baseline.node"
+      ];
+    };
+    "aarch64-linux" = {
+      outputHash = "sha256-asK46RRcPuByIjHMJUYL/UCp4f0UJBvPvZehUiyeW0I=";
+      nativesPkg = "pi-natives-linux-arm64";
+      addons = [ "pi_natives.linux-arm64.node" ];
+    };
+  };
+  native =
+    nativeBySystem.${system}
+      or (throw "compass-agent entrypoint: unsupported system ${system}");
+
   # The package's dependency closure, fetched once as a fixed-output derivation
   # (the only derivation here allowed network access). `--frozen-lockfile` pins
   # the VERSIONS to `bun.lock`; the output hash below pins the installed tree as
@@ -131,7 +154,7 @@ let
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-JbgM44AwH7/b3Y/2T44+eBXwyvMi8owXToGVspEeCk4=";
+    outputHash = native.outputHash;
   };
 
   # The package's own source. A BARE path here (`${../packages/…}`) would copy
@@ -205,19 +228,12 @@ let
       --external omp-legacy-pi-modules \
       --outfile=$out/compass-agent
 
-    # Ship the prebuilt native addon BESIDE the compiled binary. It is not
-    # inside `@oh-my-pi/pi-natives`; it ships in the platform optionalDependency
-    # `@oh-my-pi/pi-natives-linux-x64` (pinned in bun.lock, so present in the
-    # FOD tree). bun's isolated install keeps the platform package in its `.bun`
-    # virtual store and hoists it through the version-independent symlink
-    # `node_modules/.bun/node_modules/@oh-my-pi/pi-natives-linux-x64` (it is NOT
-    # hoisted to the plain top-level `node_modules/@oh-my-pi/`). It carries two
-    # CPU variants; the loader picks `modern` when the host has AVX2 else
-    # `baseline` (loader-state.js), so BOTH must be present for either host to
-    # resolve. `cp` follows the hoist symlink to copy the real files.
-    natives=node_modules/.bun/node_modules/@oh-my-pi/pi-natives-linux-x64
-    cp $natives/pi_natives.linux-x64-modern.node $out/
-    cp $natives/pi_natives.linux-x64-baseline.node $out/
+    # The prebuilt addon ships in the per-system optionalDependency
+    # `@oh-my-pi/pi-natives-linux-<arch>` (pinned in bun.lock, so in the FOD tree),
+    # hoisted into `.bun/node_modules/@oh-my-pi/`. x64 carries two AVX2 variants
+    # (modern/baseline); arm64 carries one. `cp` follows the hoist symlink.
+    natives=node_modules/.bun/node_modules/@oh-my-pi/${native.nativesPkg}
+    ${lib.concatMapStringsSep "\n" (f: "cp $natives/${f} $out/") native.addons}
   '';
 in
 # The bundle is now a STANDALONE compiled binary, not an interpreted `cli.js`,
