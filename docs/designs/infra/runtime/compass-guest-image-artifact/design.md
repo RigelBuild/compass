@@ -361,8 +361,13 @@ violation) and `lockFromInspect(repo: string, tag: string, manifest:
 unknown): PinLock`; CLI `bun tools/guest-image/pin-agent-image.ts --tag
 git-<sha12>` plus a `--relock` mode (self-gates: exits 0 when the lock is
 already consistent, the `refresh-devenv-lock.ts` posture); Renovate: a
-`customManagers` regex entry over `guest-image/agent-oci.lock`, a
-solo-branch packageRule with `postUpgradeTasks.commands: ["bun
+`customManagers` regex entry over `guest-image/agent-oci.lock` on a `docker`
+datasource tracking `ghcr.io/rigelbuild/compass-agent`. Detection keys on the
+moving `:latest` digest, because the pinned tag is a per-commit-immutable
+`git-<sha12>` that no datasource can order; the relock then derives the
+immutable tag from it, which is sound because the publish lane asserts
+`:latest` and `:git-<sha12>` share a config digest and fails closed otherwise.
+Plus a solo-branch packageRule with `postUpgradeTasks.commands: ["bun
 tools/guest-image/pin-agent-image.ts --relock"]` and `fileFilters:
 ["guest-image/agent-oci.lock"]`, and the matching `bot-config.json5`
 `allowedCommands` entry.
