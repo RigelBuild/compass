@@ -362,17 +362,16 @@ semantics are unchanged: a same-value re-set still hashes identically.
   two-system flow (`s.store.DeclareSecret` + `s.resolver.Set`) with its
   ErrConflict re-set branch and rollback-on-fresh-write-failure collapses
   into one `StoreResolver.Upsert` upsert transaction. Re-set of an existing name
-  stays a value rewrite (UPSERT). Scope on this verb: `SetSecret` writes the
-  TENANT row (`scope_kind = 0`, `scope_id = ''`), preserving today's
-  observable inject-all behavior — a wire surface for writing user- or
-  agent-scoped rows, and who may write each tier, is an open question
-  (`## Open questions`), deliberately not smuggled into this amendment. The
+  stays a value rewrite (UPSERT). Scope on this verb (D9): the request carries
+  a `SecretScope` selector; an unspecified or user scope writes
+  `(scope_kind = 1, scope_id = caller)`, and an explicit tenant scope writes
+  `(0, '')` and requires `UserRoleAdmin`, else `CodePermissionDenied`. The
   user-only gate (`requireUser`), empty value rejection,
   `secretRoutingFromProto`, and `bumpSecretsVersion` are unchanged.
 - **`DeleteSecret`** (`go/server/secrets_service.go`): one transaction
-  deleting the row (declaration and value are the same row), addressed at
-  the tenant coordinate (`scope_kind = 0`, `scope_id = ''`) until the scope
-  wire surface exists, matching `SetSecret`. PR #1066's
+  deleting the row (declaration and value are the same row), addressed at the
+  coordinate its own `SecretScope` selector resolves to (D9), the same
+  resolution `SetSecret` uses. PR #1066's
   reviewed semantics fold in as follows — carried forward: the guard that a
   reserved-prefix name never reaches the user delete door, split as
   `HasServerSecretPrefix` (byte-exact ADMIT check at the server door,
@@ -855,15 +854,44 @@ The fail-closed assertions sit AFTER the pgtest fixture (A8 ordering).
 
 ### T5 — Service cutover: SetSecret/DeleteSecret on the DB
 
-Rewrite the user handlers in `go/server/secrets_service.go` onto
-`StoreResolver` (A5): the `SetSecret` handler calls `StoreResolver.Upsert` at
-the tenant coordinate (`scope_kind = 0`, `scope_id = ''` — today's
-inject-all behavior preserved; the user/agent write surface is an open
-question) with the rollback machinery deleted; the `DeleteSecret` handler
-calls `StoreResolver.Remove` at the same tenant coordinate, with the
-reserved-prefix reject (`ShadowsServerSecretPrefix` → CodeInvalidArgument)
-ahead of any store call. `secretsService.resolver` field becomes
-`*secrets.StoreResolver`; `serverResolver` stays `secrets.Resolver`.
+Add a `SecretScope` enum and a `scope` field to
+`SetSecretRequest`/`DeleteSecretRequest` (`proto/compass/v1/compass.proto`),
+regenerating the Go connect and both TypeScript surfaces. Rewrite the user
+handlers in `go/server/secrets_service.go` onto `StoreResolver` (A5) with the
+D9 coordinate resolution: unspecified/user scope writes
+`(scope_kind=1, scope_id=caller)`; tenant scope writes `(0, "")` and requires
+`UserRoleAdmin`, else `CodePermissionDenied`. `requireUser` already fetches the
+caller's account, so it returns the role rather than issuing a second
+`GetAccount`. `SetSecret` calls `StoreResolver.Upsert` with the rollback
+machinery deleted; `DeleteSecret` calls `StoreResolver.Remove` at the same
+resolved coordinate, with the reserved-prefix reject
+(`ShadowsServerSecretPrefix` → CodeInvalidArgument) ahead of any store call.
+`secretsService.resolver` becomes `*secrets.StoreResolver`; `serverResolver`
+stays `secrets.Resolver`.
+
+The enum names the same tiers as `store.SecretScope*` but NOT the same numbers,
+because proto reserves 0 for unspecified:
+
+```protobuf
+enum SecretScope {
+  SECRET_SCOPE_UNSPECIFIED = 0;  // treated as USER — private by default
+  SECRET_SCOPE_USER = 1;
+  SECRET_SCOPE_TENANT = 2;       // admin-only
+}
+```
+
+`SECRET_SCOPE_UNSPECIFIED` and `SECRET_SCOPE_USER` are distinct wire values but
+the SAME coordinate, so an old client and a new explicit one land identically.
+There is no `SECRET_SCOPE_AGENT`: agents hold no write door, so it would name a
+coordinate no caller can write. The handler MAPS the wire value to the store
+value explicitly rather than casting — tenant is 0 in the store and 2 here, so
+a cast would turn an omitted field into a tenant write, the exact failure this
+default exists to prevent.
+
+The CLI carries the selector too: `compass secret set` gains a `--scope`
+string flag (`user` default, `tenant` explicit) parsed the way `--delivery` and
+`--kind` already are (`go/cmd/compass/secret.go`), and `compass secret delete`
+gains the same flag. Without it the ruling has no operator-reachable surface.
 
 Once `SetSecret` no longer calls `s.store.DeclareSecret`, remove the now-unused
 `DeclareSecret` store method and its `InsertSecret` query (kept live through
@@ -889,7 +917,15 @@ StoreResolver, A8): SetSecret persists an encrypted value a follow-up
 FetchSecrets-path ResolveFor returns; re-set rewrites and bumps the version
 signal; DeleteSecret removes it (NotFound after); agent-token callers still
 PermissionDenied; reserved-prefix set AND delete rejected case-insensitively;
-empty value rejected before any row exists.
+empty value rejected before any row exists. D9 adds: an omitted scope lands at
+the CALLER's user coordinate, not `(0, "")`; a non-admin requesting tenant
+scope is PermissionDenied on both set and delete; an admin requesting tenant
+scope succeeds; and the isolation property that motivated D9 — user A's
+user-scoped secret is NOT resolved by user B's agent, while a tenant row IS
+resolved by both. One more pins the surviving-row behavior above: after user A
+re-sets an existing tenant-scoped NAME at the default user scope, user B's
+agent still resolves the OLD tenant value for NAME. That test fails if anyone
+later "helpfully" makes a user-scope write delete the tenant row.
 
 ### T6 — D4 removal: server-secret write path
 
@@ -957,8 +993,10 @@ ledger rows (below) to `docs/designs/DECISIONS.md` in the design PR itself
       rename machinery (CHECK, prefix set, `masterKeyName`/`masterKeyCLIName`,
       strip list) that makes `COMPASS_MASTER_KEY` constructible and
       resolvable (F1).
-- [ ] T5 — Service cutover: `SetSecret`/`DeleteSecret` on the DB at the
-      tenant coordinate, PR #1066 delete semantics folded;
+- [ ] T5 — Service cutover: `SetSecret`/`DeleteSecret` on the DB with the D9
+      scope selector (`SecretScope` proto enum + `scope` field + `--scope` CLI
+      flag; unspecified/user → `(1, caller)`, tenant → `(0, '')` admin-gated at
+      the RPC edge), PR #1066 delete semantics folded;
       `DeclareSecret`/`InsertSecret` removed with
       their caller; `value_ciphertext`/`value_nonce` tightened to NOT NULL now
       the upsert is the sole writer.
@@ -984,21 +1022,31 @@ ledger rows (below) to `docs/designs/DECISIONS.md` in the design PR itself
 - `secrets.Version` stays SHA-256-of-value, computed at resolve time, never
   stored.
 - Store layer sees ciphertext only; crypto lives in `envelope`/`secrets`.
+- Public proto changes were ask-first; Matt ruled deletion (D4), so the two
+  server-secret RPCs and their four messages are removed in T6.
 - pgtest suites run under `COMPASS_TEST_USE_CONTAINER=1`; fail-closed guards
   ordered after the store fixture (A8).
 - `rule://red-green-testing`, `rule://no-inert-gating` (T6 removes the write
   path in the same PR that makes it unreachable — no dormant flag),
   `rule://go-no-fmt-print-logging`.
-- Public proto changes were ask-first; Matt ruled deletion (D4), so the two
-  server-secret RPCs and their four messages are removed in T6.
 
 ## Ledger delta
 
-`Ledger-impact: adds DL-350..DL-362 to docs/designs/DECISIONS.md (Server &
+`Ledger-impact: adds DL-350..DL-356, DL-360..DL-363 and DL-368 to docs/designs/DECISIONS.md (Server &
 store section); FLIPS the Status cell of DL-328 to Superseded by DL-355.`
 
 Highest existing id verified this session: DL-356 (DL-350..DL-356 landed with
-the original record; the A9 scope amendment adds DL-360..DL-362).
+the original record; the A9 scope amendment adds DL-360..DL-362; D8 adds
+DL-363; D9 adds DL-368 (364..367 were taken on main while this was in review).
+
+DL-368 supersedes a clause of two rows this same record adds. Those clauses are
+edited in place and marked SUPERSEDED IN PART, in both this table and
+`DECISIONS.md`: DL-361's "stay pinned to the tenant coordinate" and DL-363's
+store-door enforcement point. Both rows stay Active — only those clauses are
+replaced, and the rest of each decision stands. Editing them in place rather
+than appending a contradicting row matters here because an implementer reads
+the ledger literally; two live rows disagreeing about where the admin check
+lands is worse than either answer.
 
 DL-328's `Status` becomes `Superseded by DL-355 (Matt, 2026-09-11)` — it is the
 only existing row this record touches. The full-supersession form loses no
@@ -1019,9 +1067,10 @@ to `Active (key-custody clause superseded by the user-secret store record)`.
 | DL-355 | Master-key custody is operator-seeded, not compass-written: DL-328's zero-human-step auto-provision into a WRITABLE provider is superseded, because making boot secrets read-only removes the write path it needs (and it was never implemented — `go/internal/envelope` was absent and `server_key_state` had no non-test readers). First-run generation is a standalone `compass` CLI verb that mints a 256-bit key and seeds the configured provider; the nix/devenv seed script invokes that same verb, so a standard deploy needs no explicit step and a hand-rolled one needs a single documented command. Boot only reads, failing closed naming the verb. The key is renamed `GATEWAY_CREDENTIALS_MASTER_KEY` → `COMPASS_MASTER_KEY` and shared with the future `gateway_credentials` store, which MUST adopt its own distinct AAD domain label; a new `COMPASS_` reserved prefix joins the existing two in the CHECK constraint and both prefix predicates, without which the renamed key is undeclarable and therefore unresolvable | Active (Matt, 2026-09-11) | [user-secret store](compass-user-secret-store.md#resolved-decisions) |
 | DL-356 | `SetServerSecret`/`DeleteServerSecret` and their four request/response messages are DELETED from `proto/compass/v1/compass.proto`, together with the `compass server-secret set` verb, the two admin-gate procedures, and the generated Go connect + both TypeScript surfaces — a clean public-API cutover, not a CodeUnimplemented stub. Grounded on no consumer needing a runtime WRITE: server secret VALUES are in fact read at runtime (`newDeclaredSecretResolver` returns a per-call `Resolve` closure; the webhook secret is resolved on every unauthenticated `POST /webhooks/github` before the HMAC check, TTL-cached at `forgeTokenTTL`), which is precisely why provider-side rotation with the secretspec CLI suffices without any RPC. `ListServerSecrets`/`Statuses` survive; the unrelated store-layer `DeleteServerSecret` sqlc query (declaration removal) is untouched | Active (Matt, 2026-09-11) | [user-secret store](compass-user-secret-store.md#resolved-decisions) |
 | DL-360 | User secrets are scoped at THREE levels — tenant (0), user (1), agent (2) — via `scope_kind SMALLINT` + `scope_id TEXT` (empty string for a tenant row, the owning `accounts.id` for user/agent rows) with the `secrets` PK widened to `(name, scope_kind, scope_id)`; a tenant row is a real shared VALUE several users resolve, not a declaration placeholder. The scope↔id shape is CHECK-enforced (`secrets_scope_shape`); `scope_id` carries NO FK to `accounts` — a tenant row's `''` can never satisfy one and Postgres has no conditional FK — so user/agent referential integrity is enforced at the store door in the writing transaction | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
-| DL-361 | Secret resolution is most-specific-wins — `agent > user > tenant`, ONE value per name in the injected environment — collapsed in SQL (`DISTINCT ON` ordered by `scope_kind DESC`, the numeric encoding being the precedence) so shadowed rows never leave Postgres or get decrypted; `FetchSecrets` resolves per agent account using the identity the runnerhub authz maps (`sessionAccounts`/`containerAccounts`) already hold and previously discarded, the user tier reached through the single `agent_accounts.owner_user_id` FK hop. Scope is an ADDITIONAL filter inside a tenant — RLS tenant isolation stays the outer boundary, never replaced. The existing `SetSecret`/`DeleteSecret` verbs stay pinned to the tenant coordinate, preserving inject-all behavior until a scope wire surface is ruled | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
+| DL-361 | Secret resolution is most-specific-wins — `agent > user > tenant`, ONE value per name in the injected environment — collapsed in SQL (`DISTINCT ON` ordered by `scope_kind DESC`, the numeric encoding being the precedence) so shadowed rows never leave Postgres or get decrypted; `FetchSecrets` resolves per agent account using the identity the runnerhub authz maps (`sessionAccounts`/`containerAccounts`) already hold and previously discarded, the user tier reached through the single `agent_accounts.owner_user_id` FK hop. Scope is an ADDITIONAL filter inside a tenant — RLS tenant isolation stays the outer boundary, never replaced. SUPERSEDED IN PART by DL-368: the `SetSecret`/`DeleteSecret` verbs no longer pin to the tenant coordinate — they carry an explicit scope selector defaulting to user scope | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
 | DL-362 | The canonical user-secret AAD is the five-field tuple `"compass/user-secret/v1\x00" + tenantID + "\x00" + decimal(scopeKind) + "\x00" + scopeID + "\x00" + name + "\x00" + decimal(keyVersion)` (Go: `UserSecretAAD(tenantID string, scopeKind int16, scopeID, name string, keyVersion int16) []byte`; SMALLINTs rendered `strconv.FormatInt(int64(v), 10)`), every field bound unconditionally (a tenant row binds scopeID as the empty string) with `\x00` separators keeping the encoding injective. Fixed BEFORE any migration ships because the AAD is baked into every ciphertext — a scope field added later would force a re-encrypt of every row. Refines DL-351's four-field AAD clause; DL-351's other rulings stand | Active (Matt, 2026-09-11) | [user-secret store §A9](compass-user-secret-store.md#a9--scope-model-tenant--user--agent-most-specific-wins) |
-| DL-363 | Writing a tenant-scoped user-secret row requires an admin (`store.UserRoleAdmin`, `go/internal/store/types.go`), reusing the existing role elevation rather than introducing a permission concept: tenant (0) admin-only, user (1) and agent (2) writable by the owning user or an admin. The check lands in the store door inside the same writing transaction as DL-360's FK-substitute referential checks, so one place enforces both. READS are deliberately asymmetric — a plain user's agent resolves tenant rows, which is the point of a shared tenant value under DL-361; reading a shared secret is the feature, writing one is the privileged act. The wire surface for a scoped write stays undecided (a scope selector on `SetSecretRequest` is a public-proto fork) | Active (Matt, 2026-09-12) | [user-secret store §D8](compass-user-secret-store.md#resolved-decisions) |
+| DL-363 | Writing a tenant-scoped user-secret row requires an admin (`store.UserRoleAdmin`, `go/internal/store/types.go`), reusing the existing role elevation rather than introducing a permission concept: tenant (0) admin-only, user (1) and agent (2) writable by the owning user or an admin. SUPERSEDED IN PART by DL-368: the role check lands at the RPC edge, not the store door, which keeps DL-360's scope-shape and referential checks. READS are deliberately asymmetric — a plain user's agent resolves tenant rows, which is the point of a shared tenant value under DL-361; reading a shared secret is the feature, writing one is the privileged act. The wire surface is now ruled by DL-368 (a `SecretScope` selector on `SetSecretRequest`/`DeleteSecretRequest`) | Active (Matt, 2026-09-12) | [user-secret store §D8](compass-user-secret-store.md#resolved-decisions) |
+| DL-368 | `SetSecretRequest`/`DeleteSecretRequest` gain a `SecretScope scope` selector, and the default is USER scope — an unspecified scope writes `(scope_kind=1, scope_id=caller)`, so a client that omits the field gets the private-by-default coordinate rather than a tenant-wide value every other user's agents resolve. Tenant scope is explicit and requires `store.UserRoleAdmin`, checked at the RPC edge (where `requireUser`'s existing `GetAccount` already holds the role) rather than the store door, which keeps DL-360's scope-shape and referential checks. Agent scope gets no wire surface: agents hold no write door, so an agent-scoped write has no authenticated writer to authorize. SUPERSEDES DL-361's "pinned to the tenant coordinate" clause and DL-363's enforcement point, keeping DL-363's authorization matrix. Corrects a factual error in D8: no admin check existed on the user-secret write path — `classifyProcedure` returns `authenticatedOpen` for both verbs — so T5 adds the gate rather than documenting one. Behavior change stated not silent: a re-set writes a NEW user-scoped row and does NOT retire the pre-existing tenant row, which keeps resolving for every other user until an admin deletes it at explicit tenant scope | Active (Matt, 2026-09-12) | [user-secret store §D9](compass-user-secret-store.md#resolved-decisions) |
 
 ## Resolved decisions
 
@@ -1122,10 +1171,67 @@ the draft argued for, and because D1 supersedes part of a frozen record.
   checks, so one place enforces both. READS stay deliberately asymmetric: a
   plain user's agent resolves tenant rows, which is the entire point of a
   shared tenant value under DL-361 — reading a shared secret is the feature,
-  writing one is the privileged act. This also answers T2's two `(0, "")`
-  placeholders in `go/server/secrets_service.go`: they are tenant-scoped
-  writes and are already admin-gated at the door, so T5 verifies and
-  documents that gate rather than adding one. Ledger: DL-363.
+  writing one is the privileged act. D9 supersedes D8's ENFORCEMENT POINT (the
+  role check lands at the RPC edge, not the store door) while keeping its
+  matrix intact. This also bears on T2's two `(0, "")` placeholders in
+  `go/server/secrets_service.go`. D8 originally claimed they were "already
+  admin-gated at the door" — that is FALSE, corrected by D9: no admin check
+  exists on the user-secret write path. T5 adds one. Ledger: DL-363.
+- **D9 — `SetSecret`/`DeleteSecret` carry an explicit scope selector; the
+  default is USER scope (Matt, 2026-09-12, closes OQ "what wire surface
+  carries a scoped write").** Two corrections to D8 land with this ruling.
+
+  First, a **factual error in D8**: it asserts the two `(0, "")` coordinates in
+  `go/server/secrets_service.go` "are already admin-gated at the door, so T5
+  verifies and documents that gate rather than adding one." They are NOT.
+  `classifyProcedure` (`go/internal/auth/admin_gate.go`) returns
+  `authenticatedOpen{}` for `SetSecretProcedure` and `DeleteSecretProcedure`,
+  and `requireUser` checks only that the caller is not an agent — it never
+  reads `UserRole`. No admin check exists anywhere on the user-secret write
+  path. T5 ADDS the gate; it does not document an existing one.
+
+  Second, D8 + the pinned tenant coordinate would have made `SetSecret`
+  **admin-only in practice**, silently removing a shipped user-facing verb from
+  every ordinary user: `CreateUser` always seeds `UserRoleMember`
+  (`go/internal/store/accounts.go`), the only `UserRoleAdmin` account is the
+  bootstrap one (`BootstrapAdmin`), and NO role-promotion path exists — the
+  proto calls elevation "a separate admin-authorized path (deferred)"
+  (`proto/compass/v1/comms.proto`, `CreateUser`). So an admin-only tenant write
+  plus a tenant-pinned verb equals a verb no user can reach and no admin can
+  grant.
+
+  The ruling: **per-user credentials are the intended behavior** — a
+  user-scoped credential must NOT be visible to another user's agents.
+  `SetSecretRequest`/`DeleteSecretRequest` gain a `SecretScope scope` field
+  (a proto enum naming the same tiers as `store.SecretScope*`, though not the
+  same numbers — proto reserves 0 for unspecified), and the handler resolves
+  the coordinate from it:
+
+  - `SECRET_SCOPE_UNSPECIFIED` (0) and `SECRET_SCOPE_USER` both write
+    `(scope_kind=1, scope_id=caller)`. The unspecified default is USER, not
+    tenant, so an old client that omits the field gets the private-by-default
+    coordinate rather than silently writing a value every other user's agents
+    resolve. **A re-set does NOT retire the old shared value.** It writes a new
+    row at a different primary key, so the pre-existing `(0, '')` tenant row
+    survives: the re-setting user's own agents now see their private value
+    (user scope outranks tenant under DL-361), but every OTHER user in the
+    tenant keeps resolving the old shared one. Retiring it takes an admin
+    `DeleteSecret` at explicit tenant scope. Stated because the intuition runs
+    the other way — a user who re-sets a secret may believe they have
+    privatized it while the old value keeps reaching other users' agents.
+  - `SECRET_SCOPE_TENANT` writes `(0, "")` and **requires `UserRoleAdmin`**,
+    per D8's matrix. A non-admin requesting tenant scope is
+    `CodePermissionDenied`.
+
+  The admin check lives at the RPC edge (it needs the caller's role, which the
+  handler already fetches in `requireUser` via `GetAccount`), while the store
+  door keeps D8's scope-shape and referential checks. This splits D8's "one
+  place enforces both" — the role is an identity property known at the edge,
+  not a row property, and re-reading the account inside the write transaction
+  would add a query to every write to re-derive what the caller already holds.
+  `SECRET_SCOPE_AGENT` gets no wire surface here: agents hold no write door
+  (`requireUser` rejects agent tokens), so an agent-scoped write has no
+  authenticated writer to authorize. Ledger: DL-368.
 
 ## Open questions
 
@@ -1140,13 +1246,10 @@ needs a Matt ruling; none is silently decided by this amendment.
   provenance (whoever wrote the row), or does it carry authorization weight
   (only the declarer may rewrite/delete)? This record treats it as
   provenance only.
-- **What wire surface carries a scoped write.** The authorization matrix is
-  now ruled (D8), but the surface is not. T5 keeps the existing
-  `SetSecret`/`DeleteSecret` verbs pinned to the tenant coordinate — today's
-  observable behavior — so per-user/per-agent writes have NO surface yet:
-  `SetSecretRequest`/`DeleteSecretRequest` would need a scope selector, and
-  adding one is a public-proto change (an ask-first fork), so it is
-  deliberately not decided here.
+- ~~**What wire surface carries a scoped write.**~~ RESOLVED by D9
+  (2026-09-12): a `SecretScope scope` field on
+  `SetSecretRequest`/`DeleteSecretRequest`, defaulting to USER scope, with
+  tenant scope admin-gated.
 - **Lifecycle of scoped rows when their account goes away.** `scope_id`
   carries no FK (A9), so deleting an agent account neither cascades nor
   RESTRICTs its agent-scoped secret rows — they linger as unreachable
@@ -1155,7 +1258,7 @@ needs a Matt ruling; none is silently decided by this amendment.
   question holds for user deletion and user-scoped rows (`declared_by`'s
   ON DELETE RESTRICT already blocks deleting an account that DECLARED rows,
   which may mask this in practice).
-- **Whether `DeleteSecret` needs scope addressing before the write surface
-  lands.** With writes pinned to the tenant coordinate the pinned delete is
-  consistent; but the moment any user/agent row exists (e.g. operator-seeded),
-  the name-only wire delete cannot address it.
+- ~~**Whether `DeleteSecret` needs scope addressing before the write surface
+  lands.**~~ RESOLVED by D9 (2026-09-12): `DeleteSecret` carries the same
+  `SecretScope` selector as `SetSecret` and resolves to the caller's user
+  coordinate by default, so a name is addressable at every tier it can hold.
