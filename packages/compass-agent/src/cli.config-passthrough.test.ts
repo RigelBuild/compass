@@ -26,7 +26,14 @@
 // real one. Every fixture is a real tempdir, torn down after each test; no
 // timers, no sleeps, no retries — deterministic FS fixtures only.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	setDefaultTimeout,
+	test,
+} from "bun:test";
 import {
 	lstatSync,
 	mkdirSync,
@@ -62,6 +69,12 @@ function scratch(): string {
 	tmpdirs.push(dir);
 	return dir;
 }
+
+// Every test does real FS work; under the parallel pre-push gate that I/O
+// outruns bun's implicit 5s default and flakes (the starvation RIG-3609 fixed
+// for the afterEach). This file-wide floor covers the whole class; the (g)
+// probes' explicit 130_000 still overrides it.
+setDefaultTimeout(60_000);
 
 let savedHome: string | undefined;
 beforeEach(() => {
