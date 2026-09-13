@@ -32,12 +32,14 @@ func TestServeBindsSocketServesClientAndCleansUpOnCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
+	cfg := ServeConfig{
+		SocketPath:  socketPath,
+		Version:     "serve-test",
+		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
+	}
+	provisionMasterKeyProvider(t, &cfg)
 	go func() {
-		errCh <- Serve(ctx, ServeConfig{
-			SocketPath:  socketPath,
-			Version:     "serve-test",
-			DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
-		})
+		errCh <- Serve(ctx, cfg)
 	}()
 
 	// Event-gate on the socket being bound, then assert its mode and that a real
@@ -97,12 +99,14 @@ func TestServeShutdownIsClean(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
+	cfg := ServeConfig{
+		SocketPath:  socketPath,
+		Version:     "serve-test",
+		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
+	}
+	provisionMasterKeyProvider(t, &cfg)
 	go func() {
-		errCh <- Serve(ctx, ServeConfig{
-			SocketPath:  socketPath,
-			Version:     "serve-test",
-			DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
-		})
+		errCh <- Serve(ctx, cfg)
 	}()
 
 	// Gate on a SERVED RPC, not just the socket being connectable: Serve binds
@@ -156,12 +160,14 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	// pool for the remainder of the binary.
 	defer cancel()
 	errCh := make(chan error, 1)
+	cfg := ServeConfig{
+		SocketPath:  socketPath,
+		Version:     "serve-test",
+		DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
+	}
+	provisionMasterKeyProvider(t, &cfg)
 	go func() {
-		errCh <- Serve(serveCtx, ServeConfig{
-			SocketPath:  socketPath,
-			Version:     "serve-test",
-			DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
-		})
+		errCh <- Serve(serveCtx, cfg)
 	}()
 	waitListening(t, socketPath)
 

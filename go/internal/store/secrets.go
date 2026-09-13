@@ -42,7 +42,7 @@ const (
 )
 
 // secretNamePattern is SecretSpec's env-var-name grammar. A declared name is
-// validated against it at the store door (DeclareSecret) — before it can reach
+// validated against it at the store door (UpsertSecret) — before it can reach
 // a row — because it later becomes a path segment under $HOME/.compass/secrets/
 // and a line in a root-adjacent setup script (T5): constrained at the door, not
 // escaped downstream. The identical grammar is re-exported and re-checked by
@@ -69,57 +69,6 @@ type SecretDeclaration struct {
 	DeclaredBy AccountID
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-}
-
-// DeclareSecret adds a names-only registry row. It stores NO value — the value
-// lives in the SecretSpec provider. name is validated against SecretSpec's
-// env-var-name grammar at the door (a bad name is ErrInvalidArgument before
-// touching Postgres, since the name becomes a filesystem path and script token
-// downstream). A duplicate is ErrConflict at that COORDINATE: the PK is
-// (name, scope_kind, scope_id), so one name may be declared once per scope. An
-// unknown actor account is ErrInvalidArgument (the declared_by FK). provider is
-// meaningful only for a provider kind and host only for a gh kind.
-func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string, scopeKind int16, scopeID string, delivery SecretDelivery, kind SecretKind, provider, host string) error {
-	if !secretNamePattern.MatchString(name) {
-		return fmt.Errorf("%w: secret name %q must match %s", ErrInvalidArgument, name, secretNamePattern.String())
-	}
-	// F1 (design record D6): the user keyspace REJECTS reserved server-secret
-	// prefixes. Without this a user-path declare could mint a shadow `secrets`
-	// row under a server-secret name, which the inject-all delivery path then
-	// hands to every agent container. With it, the two doors partition the
-	// keyspace by name: a reserved-prefix name can only live in
-	// `server_secrets`, an unprefixed one only in `secrets`.
-	if HasServerSecretPrefix(name) {
-		return fmt.Errorf("%w: secret name %q uses a reserved server-secret prefix", ErrInvalidArgument, name)
-	}
-	if actor == "" {
-		return fmt.Errorf("%w: declaring account id is required", ErrInvalidArgument)
-	}
-	if err := validateKindRouting(kind, provider, host); err != nil {
-		return err
-	}
-	if err := validateScopeShape(scopeKind, scopeID); err != nil {
-		return err
-	}
-	if err := s.q.InsertSecret(ctx, db.InsertSecretParams{
-		Name:       name,
-		ScopeKind:  scopeKind,
-		ScopeID:    scopeID,
-		Delivery:   int16(delivery), //nolint:gosec // G115: SecretDelivery is a CHECK-constrained 0/1 enum (secrets.delivery), always within int16
-		Kind:       int16(kind),     //nolint:gosec // G115: SecretKind is a CHECK-constrained 0/1/2 enum (secrets.kind), always within int16
-		Provider:   provider,
-		Host:       host,
-		DeclaredBy: string(actor),
-	}); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			return fmt.Errorf("%w: secret %q already declared", ErrConflict, name)
-		}
-		if pgErrIs(err, pgForeignKeyViolation) {
-			return fmt.Errorf("%w: declaring account %q does not exist", ErrInvalidArgument, actor)
-		}
-		return fmt.Errorf("store: declare secret: %w", err)
-	}
-	return nil
 }
 
 // validateKindRouting enforces the kind↔provider/host invariant at the store

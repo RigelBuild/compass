@@ -216,16 +216,16 @@ func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
 // Remove clears the container's provisioned account binding — the teardown
 // counterpart to Provision's bindContainer. On a Provision->Remove path that
 // never reached Start (promoteSession clears it there), a lingering binding would
-// keep authorizing a pre-exec FetchSecrets materialize (HasContainerBinding) for
+// keep authorizing a pre-exec FetchSecrets materialize (AccountForContainer) for
 // a container that no longer exists.
 //
-// Mutation: dropping the unbindContainer call in Remove leaves HasContainerBinding
+// Mutation: dropping the unbindContainer call in Remove leaves AccountForContainer
 // true after teardown and reddens this.
 func TestRemoveClearsContainerBinding(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll(context.Background(), "runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}, compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("c1", testAgentAccount)
-	if !hub.HasContainerBinding("c1") {
+	if _, ok := hub.AccountForContainer("c1"); !ok {
 		t.Fatal("precondition: container c1 should be bound after bindContainer")
 	}
 	router, _, _ := hub.routerFor("any")
@@ -240,7 +240,7 @@ func TestRemoveClearsContainerBinding(t *testing.T) {
 	if _, err := hub.Remove(context.Background(), "req-rm", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err != nil {
 		t.Fatalf("Remove = %v, want success", err)
 	}
-	if hub.HasContainerBinding("c1") {
+	if _, ok := hub.AccountForContainer("c1"); ok {
 		t.Fatal("container c1 still bound after Remove, want the binding cleared (stale binding authorizes pre-exec secrets materialize)")
 	}
 }

@@ -2,34 +2,47 @@
 
 package store
 
-// Secret names-registry contracts (RIG-1327 T3): the round-trip of a declared
-// row with its delivery/kind/provider/host/actor intact and name-ordered, the
-// UNIQUE conflict on a duplicate name, the door name-validation that rejects a
-// bad name before any row is written, the declared_by FK on an unknown actor,
-// and the delete path (found → gone, unknown → ErrNotFound). NEVER a value:
-// the registry stores names only.
+// Secret registry door contracts on the UpsertSecret write path (T5 cutover):
+// the round-trip of a written row with its delivery/kind/provider/host/actor
+// intact and name-ordered, the door name-validation that rejects a bad name
+// before any row is written, the declared_by FK on an unknown actor, the
+// kind↔provider/host routing guard, and the delete path (found → gone, unknown →
+// ErrNotFound). UpsertSecret carries CIPHERTEXT; these door checks all run before
+// the store touches Postgres, so a dummy ciphertext/nonce pair is enough to reach
+// them (the encrypt+decrypt round-trip is the StoreResolver's own pgtest). The
+// scope model, value columns, and ciphertext-at-rest are proven in
+// secrets_scope_pgtest_test.go.
 
 import (
 	"context"
 	"testing"
 )
 
-func TestDeclareSecretRoundTrip(t *testing.T) {
+// dummyCT / dummyNonce are placeholder value bytes: UpsertSecret stores them
+// verbatim (the store never decrypts), and every door check these tests exercise
+// runs before the row is written, so their content is irrelevant.
+var (
+	dummyCT    = []byte("ciphertext")
+	dummyNonce = []byte("nonce")
+)
+
+func TestUpsertSecretRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
 
 	// A generic file secret, a provider secret carrying a Provider id, and a gh
-	// secret carrying a Host — the three routing classes, declared out of name
-	// order to prove the read orders them.
-	if err := s.DeclareSecret(ctx, actor.ID, "ZED_TOKEN", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGeneric, "", ""); err != nil {
-		t.Fatalf("declare generic: %v", err)
+	// secret carrying a Host — the three routing classes, written out of name
+	// order to prove the read orders them. Tenant scope so DeclaredSecrets (the
+	// value-free view ListSecrets and the server resolver read) lists them.
+	if err := s.UpsertSecret(ctx, actor.ID, "ZED_TOKEN", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1); err != nil {
+		t.Fatalf("upsert generic: %v", err)
 	}
-	if err := s.DeclareSecret(ctx, actor.ID, "ANTHROPIC_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindProvider, "anthropic", ""); err != nil {
-		t.Fatalf("declare provider: %v", err)
+	if err := s.UpsertSecret(ctx, actor.ID, "ANTHROPIC_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindProvider, "anthropic", "", dummyCT, dummyNonce, 1); err != nil {
+		t.Fatalf("upsert provider: %v", err)
 	}
-	if err := s.DeclareSecret(ctx, actor.ID, "GH_TOKEN", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGH, "", "github.com"); err != nil {
-		t.Fatalf("declare gh: %v", err)
+	if err := s.UpsertSecret(ctx, actor.ID, "GH_TOKEN", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGH, "", "github.com", dummyCT, dummyNonce, 1); err != nil {
+		t.Fatalf("upsert gh: %v", err)
 	}
 
 	got, err := s.DeclaredSecrets(ctx)
@@ -44,7 +57,7 @@ func TestDeclareSecretRoundTrip(t *testing.T) {
 	wantOrder := []string{"ANTHROPIC_KEY", "GH_TOKEN", "ZED_TOKEN"}
 	for i, w := range wantOrder {
 		if got[i].Name != w {
-			t.Errorf("row %d name = %q, want %q (name-ordered)", i, got[i].Name, w)
+			t.Errorf("row %d name = %q, want %q (name order not preserved)", i, got[i].Name, w)
 		}
 	}
 
@@ -62,31 +75,44 @@ func TestDeclareSecretRoundTrip(t *testing.T) {
 	if d := byName["ZED_TOKEN"]; d.Delivery != SecretDeliveryFile || d.Kind != SecretKindGeneric || d.Provider != "" || d.Host != "" {
 		t.Errorf("generic secret round-trip mismatch: %+v", d)
 	}
-	// Never a value: the struct has no value field; timestamps are set.
 	if byName["ZED_TOKEN"].CreatedAt.IsZero() {
 		t.Error("CreatedAt not populated on round-trip")
 	}
 }
 
-func TestDeclareSecretDuplicateConflict(t *testing.T) {
+func TestUpsertSecretReSetRewrites(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
 
-	if err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
-		t.Fatalf("first declare: %v", err)
+	// A re-write of an existing coordinate is the upsert's UPDATE arm, NOT an
+	// ErrConflict: declaration and value are one row, so a second Set is a value
+	// rewrite. The old declare-then-set ErrConflict branch is gone.
+	if err := s.UpsertSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1); err != nil {
+		t.Fatalf("first upsert: %v", err)
 	}
-	err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGeneric, "", "")
-	sentinelIs(t, err, ErrConflict, "duplicate secret name")
+	if err := s.UpsertSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryFile, SecretKindGeneric, "", "", []byte("ct2"), []byte("nonce2"), 1); err != nil {
+		t.Fatalf("re-upsert (value rewrite) = %v, want success", err)
+	}
+	got, err := s.DeclaredSecrets(ctx)
+	if err != nil {
+		t.Fatalf("DeclaredSecrets: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("re-upsert wrote %d rows, want 1 (a rewrite, not a second row)", len(got))
+	}
+	if got[0].Delivery != SecretDeliveryFile {
+		t.Errorf("delivery = %v after rewrite, want File (the second write's routing)", got[0].Delivery)
+	}
 }
 
-func TestDeclareSecretInvalidNameRejected(t *testing.T) {
+func TestUpsertSecretInvalidNameRejected(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
 
 	for _, bad := range []string{"bad-name", "", "a/b", "1abc", "a b", "../x"} {
-		err := s.DeclareSecret(ctx, actor.ID, bad, SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "")
+		err := s.UpsertSecret(ctx, actor.ID, bad, SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1)
 		sentinelIs(t, err, ErrInvalidArgument, "invalid secret name "+bad)
 	}
 
@@ -100,13 +126,13 @@ func TestDeclareSecretInvalidNameRejected(t *testing.T) {
 	}
 }
 
-func TestDeclareSecretUnknownActorInvalid(t *testing.T) {
+func TestUpsertSecretUnknownActorInvalid(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
 	// A well-formed name but an actor account that was never created → the
 	// declared_by FK yields ErrInvalidArgument.
-	err := s.DeclareSecret(ctx, AccountID("acct-never-created"), "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "")
+	err := s.UpsertSecret(ctx, AccountID("acct-never-created"), "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1)
 	sentinelIs(t, err, ErrInvalidArgument, "unknown declaring account")
 }
 
@@ -115,8 +141,8 @@ func TestDeleteSecretDeclaration(t *testing.T) {
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
 
-	if err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
-		t.Fatalf("declare: %v", err)
+	if err := s.UpsertSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1); err != nil {
+		t.Fatalf("upsert: %v", err)
 	}
 	if err := s.DeleteSecretDeclaration(ctx, actor.ID, "API_KEY", SecretScopeTenant, ""); err != nil {
 		t.Fatalf("delete: %v", err)
@@ -140,7 +166,7 @@ func TestDeleteUnknownSecretNotFound(t *testing.T) {
 	sentinelIs(t, err, ErrNotFound, "delete unknown secret")
 }
 
-func TestDeclareSecretKindRoutingRejected(t *testing.T) {
+func TestUpsertSecretKindRoutingRejected(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
@@ -164,7 +190,7 @@ func TestDeclareSecretKindRoutingRejected(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := s.DeclareSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, tc.kind, tc.provider, tc.host)
+			err := s.UpsertSecret(ctx, actor.ID, "API_KEY", SecretScopeTenant, "", SecretDeliveryEnv, tc.kind, tc.provider, tc.host, dummyCT, dummyNonce, 1)
 			sentinelIs(t, err, ErrInvalidArgument, tc.name)
 		})
 	}
@@ -179,7 +205,7 @@ func TestDeclareSecretKindRoutingRejected(t *testing.T) {
 	}
 }
 
-func TestDeclareSecretKindRoutingAccepted(t *testing.T) {
+func TestUpsertSecretKindRoutingAccepted(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	actor := mustUser(t, s, "declarer")
@@ -197,7 +223,7 @@ func TestDeclareSecretKindRoutingAccepted(t *testing.T) {
 		{"GENERIC_KEY", SecretKindGeneric, "", ""},
 	}
 	for _, tc := range cases {
-		if err := s.DeclareSecret(ctx, actor.ID, tc.name, SecretScopeTenant, "", SecretDeliveryEnv, tc.kind, tc.provider, tc.host); err != nil {
+		if err := s.UpsertSecret(ctx, actor.ID, tc.name, SecretScopeTenant, "", SecretDeliveryEnv, tc.kind, tc.provider, tc.host, dummyCT, dummyNonce, 1); err != nil {
 			t.Errorf("%s: valid combo rejected: %v", tc.name, err)
 		}
 	}

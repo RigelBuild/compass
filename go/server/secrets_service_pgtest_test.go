@@ -4,23 +4,25 @@ package server
 
 // Store-gated SecretsService authz contracts: the user-only Set/Delete gate
 // (the load-bearing regression, record §927), the user-AND-agent ListSecrets, the
-// is_set-without-resolve invariant, delete-not-found, and the SecretsVersion bump
-// on a successful write. They need a real Postgres because the write path declares
-// a registry row and the authz gate reads the caller's account KIND from the store
+// is_set-without-resolve invariant, delete-not-found, the SecretsVersion bump
+// on a successful write, and the D9 scope model end to end. They need a real
+// Postgres because the write path now lands an encrypted row through the DB-backed
+// StoreResolver and the authz gate reads the caller's account KIND from the store
 // (user vs agent). Driven through the production bearer + admin-gate interceptor
 // chain over a real connect client so the handler reads a genuine caller identity
 // the same way the shipped door supplies it. Behind `pgtest && unix` (SKIP when no
 // runtime).
 //
-// The resolver is a fake (no real SecretSpec provider in a unit test): Set/Delete
-// are recorded no-ops, and Resolve FAILS LOUDLY if ListSecrets ever calls it — the
-// is_set-without-resolve invariant is asserted by that fake, not just by reading
-// the code.
+// The USER resolver is the real StoreResolver (T5): SetSecret/DeleteSecret write
+// and delete encrypted rows, and a test observes the result through the same
+// production read the Runner uses (ResolveFor / SecretRecordsForAgent), not a fake.
+// The SERVER resolver is still a recording fake — the server-secret path keeps its
+// SpecResolver seam (Set/Delete/Statuses) at this task, so its tests script and
+// record that fake.
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -28,17 +30,19 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/envelope"
 	"github.com/RigelBuild/compass/go/internal/pgtest"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// recordingResolver is a fake secrets.Resolver for the SecretsService tests. Set
-// and Delete record their calls and succeed; Resolve fails loudly, so a test that
-// wires this into ListSecrets proves the list path never resolves values to
-// compute is_set (record §906-908 / brief item 7). Statuses returns a scripted
-// value-free report — the server-secret list path's probe — and can be scripted
-// to fail so a test proves a provider fault is not flattened into all-unset.
+// recordingResolver is a fake secrets.Resolver standing in for the SERVER-secret
+// resolver. Set and Delete record their calls and succeed; Resolve fails loudly,
+// so a test proves no server-secret path ever resolves values. Statuses returns a
+// scripted value-free report — the ListServerSecrets probe — and can be scripted
+// to fail so a test proves a provider fault is not flattened into all-unset. The
+// USER resolver is no longer a fake (it is the real StoreResolver); this type now
+// serves only the server side.
 type recordingResolver struct {
 	setErr      error
 	setNames    []string
@@ -100,13 +104,19 @@ type secretsFixture struct {
 	agentID    store.AccountID
 	adminToken string
 	// st is the live store, so a scope test can assert WHICH coordinate a write
-	// landed at rather than only that the RPC returned OK.
-	st       *store.Store
-	resolver *recordingResolver
-	// serverResolver is the SECOND fake, standing in for the server-secret
-	// resolver. Kept distinct from resolver so a test can prove a server-secret
-	// write lands ONLY on this one — the container-delivery registry must never
-	// see it.
+	// landed at rather than only that the RPC returned OK, and read a written
+	// value back through the production ResolveFor.
+	st *store.Store
+	// resolver is the REAL DB-backed user-secret resolver the service writes
+	// through — SetSecret/DeleteSecret land encrypted rows here, observed via the
+	// store (SecretRecordsForAgent / ResolveFor), never a fake.
+	resolver *secrets.StoreResolver
+	// key is the master key resolver was built with, so a test can ResolveFor a
+	// written value back (decrypt under the same key).
+	key envelope.Key
+	// serverResolver stands in for the server-secret resolver. Kept distinct from
+	// resolver so a test can prove a server-secret write lands ONLY on it — the
+	// container-delivery registry must never see it.
 	serverResolver *recordingResolver
 	signaler       *recordingSignaler
 }
@@ -141,7 +151,8 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 		t.Fatalf("IssueAccountToken(agent): %v", err)
 	}
 
-	resolver := &recordingResolver{}
+	key := secretsFixtureKey(t)
+	resolver := secrets.NewStoreResolver(st, key, 1)
 	serverResolver := &recordingResolver{}
 	signaler := &recordingSignaler{}
 	svc := newSecretsService(st, resolver, serverResolver, signaler)
@@ -163,9 +174,26 @@ func newSecretsFixture(t *testing.T) secretsFixture {
 		agentID:        agent.ID,
 		st:             st,
 		resolver:       resolver,
+		key:            key,
 		serverResolver: serverResolver,
 		signaler:       signaler,
 	}
+}
+
+// secretsFixtureKey is a fixed 32-byte master key for the encrypted round-trips.
+// The value is irrelevant — only that every Upsert and ResolveFor in one fixture
+// use the same one, so a written value decrypts back.
+func secretsFixtureKey(t *testing.T) envelope.Key {
+	t.Helper()
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+	k, err := envelope.NewKey(raw)
+	if err != nil {
+		t.Fatalf("NewKey: %v", err)
+	}
+	return k
 }
 
 func setReq(bearer, name, value string) *connect.Request[compassv1.SetSecretRequest] {
@@ -206,43 +234,30 @@ func listReq(bearer string) *connect.Request[compassv1.ListSecretsRequest] {
 }
 
 // TestSetSecretUserOnly is the load-bearing regression (record §927): an
-// AGENT-token caller is CodePermissionDenied, a USER-token caller succeeds. The
-// agent must never write a secret.
+// AGENT-token caller is CodePermissionDenied, a USER-token caller succeeds and the
+// value is written (resolvable back). The agent must never write a secret.
 func TestSetSecretUserOnly(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
 
-	// Agent: rejected, and the resolver is never reached (no value written).
+	// Agent: rejected, and no row is written (nothing resolves for the agent).
 	_, err := f.client.SetSecret(ctx, setReq(f.agentToken, "AGENT_TRY", "v"))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("SetSecret as agent code = %v, want PermissionDenied", got)
 	}
-	if len(f.resolver.setNames) != 0 {
-		t.Fatalf("resolver.Set called %v on a rejected agent SetSecret, want none", f.resolver.setNames)
+	if got := resolvedValues(t, ctx, f, f.agentID); len(got) != 0 {
+		t.Fatalf("a rejected agent SetSecret wrote rows: %v, want none", got)
 	}
 
-	// User: succeeds and writes the value. The literal is hoisted because the
-	// value-absence assertion below asserts on it — inlining it twice lets the
-	// two drift, silently retiring that assertion.
+	// User: succeeds and the value is written — resolved back through the same
+	// production read the Runner uses, decrypted under the fixture key.
 	const secretValue = "postgres://x"
 	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", secretValue)); err != nil {
 		t.Fatalf("SetSecret as user = %v, want success", err)
 	}
-	if len(f.resolver.setNames) != 1 || f.resolver.setNames[0] != "DB_URL" {
-		t.Fatalf("resolver.Set names = %v, want [DB_URL]", f.resolver.setNames)
-	}
-	// The handler must hand the resolver a non-empty reason bound to the
-	// AUTHENTICATED caller: the provider's require_reason policy refuses a
-	// reasonless write outright, and the audit record is only useful if it names
-	// which operator wrote the secret. The reason must never carry the value.
-	if len(f.resolver.setReasons) != 1 || strings.TrimSpace(f.resolver.setReasons[0]) == "" {
-		t.Fatalf("resolver.Set reasons = %q, want one non-empty reason", f.resolver.setReasons)
-	}
-	if !strings.Contains(f.resolver.setReasons[0], string(f.userID)) {
-		t.Fatalf("resolver.Set reason = %q, want it to name the calling user %q", f.resolver.setReasons[0], f.userID)
-	}
-	if strings.Contains(f.resolver.setReasons[0], secretValue) {
-		t.Fatalf("resolver.Set reason = %q, must never carry the secret value", f.resolver.setReasons[0])
+	got := resolvedValues(t, ctx, f, f.agentID)
+	if got["DB_URL"] != secretValue {
+		t.Fatalf("resolved DB_URL = %q, want the written value", got["DB_URL"])
 	}
 }
 
@@ -266,9 +281,10 @@ func TestSetSecretBumpsSecretsVersion(t *testing.T) {
 	}
 }
 
-// TestSetSecretReSetRewrites: a re-Set of an already-declared name is a value
-// rewrite (declare returns ErrConflict; the handler proceeds to resolver.Set), not
-// a failure — the brief's conflict policy.
+// TestSetSecretReSetRewrites: a re-Set of an existing coordinate is the upsert's
+// UPDATE arm — the value is rewritten, not an ErrConflict. The old
+// declare-then-set-then-ErrConflict branch is gone (declaration and value are one
+// row now).
 func TestSetSecretReSetRewrites(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
@@ -278,57 +294,23 @@ func TestSetSecretReSetRewrites(t *testing.T) {
 	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v2")); err != nil {
 		t.Fatalf("re-SetSecret (value rewrite) = %v, want success", err)
 	}
-	if len(f.resolver.setNames) != 2 {
-		t.Fatalf("resolver.Set called %d times across two Sets, want 2", len(f.resolver.setNames))
+	got := resolvedValues(t, ctx, f, f.agentID)
+	if got["DB_URL"] != "v2" {
+		t.Fatalf("resolved DB_URL = %q after re-set, want the second value v2", got["DB_URL"])
 	}
-}
-
-// TestSetSecretRollsBackDeclarationOnWriteFailure: a FRESH declaration whose
-// resolver.Set fails (a provider/exec fault) is rolled back — the RPC returns
-// CodeUnavailable and no orphaned declaration survives. An orphan would be
-// required=true in the resolve manifest and poison EVERY live session's
-// FetchSecrets, so the surface must be left clean. A follow-up re-Set (once the
-// provider recovers) then succeeds and the name appears, proving the failure left
-// nothing behind.
-func TestSetSecretRollsBackDeclarationOnWriteFailure(t *testing.T) {
-	f := newSecretsFixture(t)
-	ctx := context.Background()
-	f.resolver.setErr = errors.New("provider down")
-
-	_, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v"))
-	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
-		t.Fatalf("SetSecret with a failing provider write code = %v, want Unavailable", got)
-	}
-
-	// The failed fresh write must leave no orphaned declaration behind.
-	resp, err := f.client.ListSecrets(ctx, listReq(f.userToken))
+	// One row, not two: the re-set updated in place.
+	recs, err := f.st.SecretRecordsForAgent(ctx, f.agentID)
 	if err != nil {
-		t.Fatalf("ListSecrets = %v, want success", err)
+		t.Fatalf("SecretRecordsForAgent: %v", err)
 	}
-	for _, s := range resp.Msg.GetSecrets() {
-		if s.GetName() == "DB_URL" {
-			t.Fatal("declaration survived a failed fresh write — orphan left behind")
+	n := 0
+	for _, r := range recs {
+		if r.Name == "DB_URL" {
+			n++
 		}
 	}
-
-	// Provider recovers: a re-Set of the same name now succeeds and appears,
-	// proving the earlier failure left the surface clean (a fresh declaration).
-	f.resolver.setErr = nil
-	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
-		t.Fatalf("re-SetSecret after provider recovery = %v, want success", err)
-	}
-	resp, err = f.client.ListSecrets(ctx, listReq(f.userToken))
-	if err != nil {
-		t.Fatalf("ListSecrets after recovery = %v, want success", err)
-	}
-	var found bool
-	for _, s := range resp.Msg.GetSecrets() {
-		if s.GetName() == "DB_URL" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("DB_URL absent after a successful re-Set, want present")
+	if n != 1 {
+		t.Fatalf("DB_URL resolved to %d rows after a re-set, want 1 (an in-place rewrite)", n)
 	}
 }
 
@@ -343,21 +325,24 @@ func TestDeleteSecretUserOnly(t *testing.T) {
 	}
 	versionBefore := f.signaler.calls
 
-	// Agent: rejected, and the row survives (resolver.Delete never reached).
+	// Agent: rejected, and the row survives (still resolves for the owning agent).
 	_, err := f.client.DeleteSecret(ctx, delReq(f.agentToken, "DB_URL"))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("DeleteSecret as agent code = %v, want PermissionDenied", got)
 	}
-	if len(f.resolver.deleteNames) != 0 {
-		t.Fatalf("resolver.Delete called %v on a rejected agent DeleteSecret, want none", f.resolver.deleteNames)
+	if got := resolvedValues(t, ctx, f, f.agentID); got["DB_URL"] != "v" {
+		t.Fatalf("row did not survive a rejected agent DeleteSecret: resolved %q, want v", got["DB_URL"])
 	}
 
-	// User: succeeds and bumps the version.
+	// User: succeeds, bumps the version, and the row is gone (no longer resolves).
 	if _, err := f.client.DeleteSecret(ctx, delReq(f.userToken, "DB_URL")); err != nil {
 		t.Fatalf("DeleteSecret as user = %v, want success", err)
 	}
 	if f.signaler.calls != versionBefore+1 {
 		t.Fatalf("secrets version bumped to %d after Delete, want %d", f.signaler.calls, versionBefore+1)
+	}
+	if got := resolvedValues(t, ctx, f, f.agentID); len(got) != 0 {
+		t.Fatalf("row survived a user DeleteSecret: %v, want none", got)
 	}
 }
 
@@ -373,8 +358,10 @@ func TestDeleteSecretNotFound(t *testing.T) {
 }
 
 // TestListSecretsUserAndAgent: both a user and an agent token succeed and get
-// value-free SecretStatus with is_set=true for a declared row — and the resolver's
-// Resolve is NEVER called (is_set is computed without fetching values).
+// value-free SecretStatus with is_set=true for a declared row. ListSecrets reads
+// the declaration registry (DeclaredSecrets), never the resolver — so is_set is
+// computed without decrypting any value; that the service's StoreResolver is never
+// touched here is now structural, not something a fake can record.
 func TestListSecretsUserAndAgent(t *testing.T) {
 	f := newSecretsFixture(t)
 	ctx := context.Background()
@@ -409,10 +396,6 @@ func TestListSecretsUserAndAgent(t *testing.T) {
 				t.Fatalf("status delivery = %v, want ENV", s.GetDelivery())
 			}
 		})
-	}
-	// The is_set-without-resolve invariant: ListSecrets never resolved any value.
-	if f.resolver.resolveHit {
-		t.Fatal("ListSecrets resolved values to compute is_set — must not fetch secrets to list them")
 	}
 }
 
@@ -466,9 +449,8 @@ func TestSetServerSecretWritesOnlyTheServerResolver(t *testing.T) {
 	if len(f.serverResolver.setNames) != 1 || f.serverResolver.setNames[0] != "SERVER_LINEAR_FORGE_CLIENT_SECRET" {
 		t.Fatalf("server resolver sets = %v, want the one server secret", f.serverResolver.setNames)
 	}
-	if len(f.resolver.setNames) != 0 {
-		t.Fatalf("user resolver was written: %v — a server secret must never reach the container registry", f.resolver.setNames)
-	}
+	// The user registry (DeclaredSecrets, which the container-delivery path and
+	// the CLI read) must never see it — asserted directly through ListSecrets below.
 
 	// And it must not appear in the user-facing list, which is what the
 	// container-delivery path and the CLI both read.
@@ -793,6 +775,45 @@ func TestUserScopeResetDoesNotRetireTheTenantRow(t *testing.T) {
 	}
 }
 
+// TestTwoUsersSameNameDoNotClobber is the T5 cutover's headline regression: the
+// value path is now scope-keyed, so two different users setting the SAME name at
+// (default) user scope each keep their OWN value. Under the pre-cutover
+// name-keyed write, user B's Set overwrote user A's value — this asserts A's
+// value survives B's write, resolved back through each owner's agent.
+func TestTwoUsersSameNameDoNotClobber(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+
+	userB, err := f.st.CreateUser(ctx, store.NewUser{Handle: "userb", DisplayName: "userb"})
+	if err != nil {
+		t.Fatalf("CreateUser(b): %v", err)
+	}
+	agentB, err := f.st.CreateAgent(ctx, userB.ID, store.NewAgent{Handle: "agentb", DisplayName: "agentb"})
+	if err != nil {
+		t.Fatalf("CreateAgent(b): %v", err)
+	}
+	tokB, err := auth.IssueAccountToken(ctx, f.st, userB.ID)
+	if err != nil {
+		t.Fatalf("IssueAccountToken(b): %v", err)
+	}
+
+	// A writes DB_URL, then B writes DB_URL — same name, different callers.
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "a-value")); err != nil {
+		t.Fatalf("SetSecret(a): %v", err)
+	}
+	if _, err := f.client.SetSecret(ctx, setReq(tokB, "DB_URL", "b-value")); err != nil {
+		t.Fatalf("SetSecret(b): %v", err)
+	}
+
+	// Each owner's agent resolves ITS user's value — B's write did not clobber A.
+	if got := resolvedValues(t, ctx, f, f.agentID)["DB_URL"]; got != "a-value" {
+		t.Errorf("user A's agent resolved DB_URL = %q, want a-value (B's write clobbered A)", got)
+	}
+	if got := resolvedValues(t, ctx, f, agentB.ID)["DB_URL"]; got != "b-value" {
+		t.Errorf("user B's agent resolved DB_URL = %q, want b-value", got)
+	}
+}
+
 func resolvedNames(t *testing.T, ctx context.Context, f secretsFixture, agent store.AccountID) map[string]bool {
 	t.Helper()
 	recs, err := f.st.SecretRecordsForAgent(ctx, agent)
@@ -802,6 +823,23 @@ func resolvedNames(t *testing.T, ctx context.Context, f secretsFixture, agent st
 	out := make(map[string]bool, len(recs))
 	for _, r := range recs {
 		out[r.Name] = true
+	}
+	return out
+}
+
+// resolvedValues resolves an agent's visible secrets through the production
+// StoreResolver.ResolveFor (the same read the Runner's FetchSecrets drives) and
+// returns name→DECRYPTED value. It proves a write both landed AND is decryptable
+// under the fixture key — a stronger check than reading the row by primary key.
+func resolvedValues(t *testing.T, ctx context.Context, f secretsFixture, agent store.AccountID) map[string]string {
+	t.Helper()
+	resolved, err := f.resolver.ResolveFor(ctx, agent, "test resolve")
+	if err != nil {
+		t.Fatalf("ResolveFor: %v", err)
+	}
+	out := make(map[string]string, len(resolved))
+	for _, r := range resolved {
+		out[r.Name] = r.Value
 	}
 	return out
 }

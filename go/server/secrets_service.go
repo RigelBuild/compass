@@ -48,28 +48,32 @@ type secretsSignaler interface {
 }
 
 // secretsService implements compassv1connect.SecretsServiceHandler over the
-// store's names registry and the secret resolver. The store owns the value-free
-// declaration rows; the resolver is the provider write/resolve path; the signaler
-// notifies live sessions on a write. signaler may be nil on a server with no
-// Runner door (socket-only), in which case a write completes without a signal —
-// there is no live session to notify.
+// store's registry and the secret resolvers. The user path (Set/Delete) writes
+// through the DB-backed StoreResolver — declaration and encrypted value are one
+// atomic upsert; the serverResolver is the value-free server-secret READ surface
+// the ListServerSecrets probe uses; the signaler notifies live sessions on a
+// write. signaler may be nil on a server with no Runner door (socket-only), in
+// which case a write completes without a signal — there is no live session to
+// notify.
 type secretsService struct {
 	compassv1connect.UnimplementedSecretsServiceHandler
-	store    *store.Store
-	resolver secrets.Resolver
-	// serverResolver is the SECOND resolver instance, reading the separate
-	// server_secrets registry. It is a DISTINCT instance from resolver (whose
-	// manifest is the user registry the container-delivery path reads), so a
-	// server-secret write can never land in the container manifest. nil on a
-	// server with no server-secret wiring, in which case the admin RPCs
-	// fail closed with errNoServerResolver rather than silently writing to the
-	// user registry.
+	store *store.Store
+	// resolver is the DB-backed user-secret write path (StoreResolver.Upsert /
+	// Remove): declaration and encrypted value land in one atomic upsert, so the
+	// old declare-then-Set-then-rollback trio is gone. Concrete, not an interface
+	// (record A4): there is exactly one DB-backed store and nothing to swap in.
+	resolver *secrets.StoreResolver
+	// serverResolver reads the separate server_secrets registry — the value-free
+	// Statuses probe ListServerSecrets uses. It is a DISTINCT surface from the
+	// user write path, so a server secret can never land in the container-
+	// delivery table. nil on a server with no server-secret wiring, in which case
+	// the server-secret list RPC fails closed with errNoServerResolver.
 	serverResolver secrets.Resolver
 	signaler       secretsSignaler
 }
 
 // newSecretsService constructs the SecretsService handler.
-func newSecretsService(st *store.Store, resolver, serverResolver secrets.Resolver, signaler secretsSignaler) *secretsService {
+func newSecretsService(st *store.Store, resolver *secrets.StoreResolver, serverResolver secrets.Resolver, signaler secretsSignaler) *secretsService {
 	return &secretsService{store: st, resolver: resolver, serverResolver: serverResolver, signaler: signaler}
 }
 
@@ -86,23 +90,17 @@ var errNoResolver = errors.New("no secret resolver configured on this server")
 // path reads, inverting the whole point of the separate store.
 var errNoServerResolver = errors.New("no server secret resolver configured on this server")
 
-// SetSecret declares a secret's registry row and writes its value via the
-// resolver. USER-ONLY (record §911-927): an agent-token caller is
-// CodePermissionDenied. `value` is never logged.
+// SetSecret writes a user secret's declaration and encrypted value in ONE atomic
+// upsert at the caller-resolved scope coordinate. USER-ONLY (record §911-927): an
+// agent-token caller is CodePermissionDenied. `value` is never logged.
 //
-// Flow (declare-then-set): DeclareSecret records the value-free row, then
-// resolver.Set writes the value to the provider. A re-Set of an already-declared
-// name is a value REWRITE, not a failure: DeclareSecret returns ErrConflict for a
-// duplicate name (store/secrets.go), so on ErrConflict this proceeds to
-// resolver.Set anyway — the name already exists and we are rewriting its value.
-// (Conflict policy per the driver brief; not invented here.) An empty value is
-// rejected up front, before any row is declared. A failed FRESH write rolls back
-// the declaration so no orphan survives (an orphaned declaration is required=true
-// in the resolve manifest and would poison EVERY live session's FetchSecrets). On
-// a successful write the secrets version is bumped so live sessions re-fetch. The
-// declare/set/rollback trio is not atomic and assumes no concurrent same-name
-// writer (the single-Runner MVP: SetSecret is user-driven CLI); a future
-// multi-writer path must re-examine the race.
+// The declaration and the value are the same row now (A1), so the write is a
+// single StoreResolver.Upsert transaction — the old declare-then-Set-then-rollback
+// trio and its ErrConflict re-set branch are gone: a re-set of an existing
+// coordinate is just the upsert's UPDATE arm. An empty value is rejected up front,
+// before any row is touched; the scope coordinate is resolved per D9
+// (unspecified/user → the caller's private coordinate, tenant → admin-gated). On a
+// successful write the secrets version is bumped so live sessions re-fetch.
 func (s *secretsService) SetSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.SetSecretRequest],
@@ -128,49 +126,16 @@ func (s *secretsService) SetSecret(
 		return nil, err
 	}
 
-	declErr := s.store.DeclareSecret(ctx, callerID, msg.GetName(), scopeKind, scopeID, delivery, kind, msg.GetProvider(), msg.GetHost())
-	switch {
-	case declErr == nil:
-		// Fresh declaration.
-	case errors.Is(declErr, store.ErrConflict):
-		// Already declared: a re-Set rewrites the value (proceed to resolver.Set).
-	case errors.Is(declErr, store.ErrInvalidArgument):
-		return nil, connect.NewError(connect.CodeInvalidArgument, declErr)
-	default:
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("declaring secret: %w", declErr))
-	}
-
-	// The audit reason carries the authenticated caller, so the provider's log
-	// distinguishes which operator wrote a secret rather than recording every
-	// write anonymously. The RPC is the only path that reaches this write, so
-	// the prefix also records that provenance. callerID is resolved from the
-	// bearer token (auth.CallerFrom -> the token subject), never a request
-	// field, and every account id is server-minted hex (store/ids.go), so it
-	// cannot carry a quote or newline into the reason; the CLI additionally
-	// JSON-escapes the reason into its audit record, so a forged log entry is
-	// doubly unreachable.
-	reason := fmt.Sprintf("compass: operator secret write via SetSecret RPC (caller %s)", callerID)
-	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue(), reason); err != nil {
-		// The name was validated by DeclareSecret and the value was screened
-		// non-empty above, so a Set failure here is a provider/exec fault
-		// (CLI unreachable, non-zero exit) — retryable and operator-side, never
-		// the caller's argument, so CodeUnavailable, not CodeInvalidArgument.
-		// Roll back a FRESH declaration: an orphaned declaration is required=true
-		// in the resolve manifest and would fail EVERY live session's FetchSecrets
-		// (a global denial from one failed write). Leave an ErrConflict (re-Set)
-		// row alone — it legitimately pre-existed this call. The Set error wraps
-		// name/cli/stderr, never the value, so logging it server-side is safe; the
-		// client-facing error is value-free.
-		if declErr == nil {
-			// Roll back at the RESOLVED coordinate (D9): a fresh declaration lands
-			// wherever resolveSecretScope placed it, so the rollback must target the
-			// same coordinate, not a hardcoded tenant one.
-			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName(), scopeKind, scopeID); delErr != nil {
-				slog.ErrorContext(ctx, "rolling back secret declaration after failed write", "err", delErr)
-			}
+	// One atomic upsert: the store validates name grammar, the reserved-prefix
+	// partition, kind routing, and the scope shape at its door, so an invalid
+	// argument maps to CodeInvalidArgument. The value is encrypted before the
+	// store door and never logged; the error wraps the name only, never the value.
+	if err := s.resolver.Upsert(ctx, callerID, msg.GetName(), scopeKind, scopeID, msg.GetValue(), delivery, kind, msg.GetProvider(), msg.GetHost()); err != nil {
+		if errors.Is(err, store.ErrInvalidArgument) {
+			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		slog.ErrorContext(ctx, "writing secret value", "err", err)
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("writing secret value failed"))
+		return nil, connect.NewError(connect.CodeInternal, errors.New("writing secret value failed"))
 	}
 	s.bumpSecretsVersion(ctx)
 	return connect.NewResponse(&compassv1.SetSecretResponse{}), nil
@@ -215,9 +180,13 @@ func (s *secretsService) ListSecrets(
 	return connect.NewResponse(&compassv1.ListSecretsResponse{Secrets: out}), nil
 }
 
-// DeleteSecret removes a secret's provider value and registry row, then bumps the
-// secrets version. USER-ONLY (record §915-918): an agent-token caller is
-// CodePermissionDenied. A name that was never declared is CodeNotFound.
+// DeleteSecret removes a user secret's row (declaration and value are the same
+// row post-A1) at the caller-resolved coordinate, then bumps the secrets version.
+// USER-ONLY (record §915-918): an agent-token caller is CodePermissionDenied. A
+// name that was never declared at that coordinate is CodeNotFound. A reserved-
+// prefix name is rejected CodeInvalidArgument ahead of any store call — the F1
+// name partition keeps reserved names out of the user table, so a delete on one
+// is a malformed request (defense in depth beside Upsert's own reject).
 func (s *secretsService) DeleteSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.DeleteSecretRequest],
@@ -230,26 +199,21 @@ func (s *secretsService) DeleteSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
 	name := req.Msg.GetName()
+	if store.ShadowsServerSecretPrefix(name) {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("secret name %q uses a reserved server-secret prefix", name))
+	}
 	scopeKind, scopeID, err := resolveSecretScope(req.Msg.GetScope(), callerID, role)
 	if err != nil {
 		return nil, err
 	}
-	// Ordering note: resolver.Delete is a validate-only no-op today, so calling
-	// it before DeleteSecretDeclaration is inert. The provider verb it would
-	// shell EXISTS at this pin (`secretspec delete`, 0.18+); wiring it is a
-	// deferral (RIG-3436), not an upstream gap. When it lands, this MUST flip to
-	// declaration-first: the declaration is the source of truth Resolve reads, and
-	// deleting the provider value before the row would leave a required=true
-	// declaration pointing at a missing value — the same global resolve-poison as a
-	// failed Set, in reverse.
-	if err := s.resolver.Delete(ctx, name); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("deleting secret value: %w", err))
-	}
-	if err := s.store.DeleteSecretDeclaration(ctx, callerID, name, scopeKind, scopeID); err != nil {
+	// One transaction: declaration and value are the same row, so there is no
+	// half-deleted state to order or recover from (record A5).
+	if err := s.resolver.Remove(ctx, callerID, name, scopeKind, scopeID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("secret %q", name))
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("deleting secret declaration: %w", err))
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("deleting secret: %w", err))
 	}
 	s.bumpSecretsVersion(ctx)
 	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
@@ -474,28 +438,29 @@ func (s *secretsService) bumpSecretsVersion(ctx context.Context) {
 	}
 }
 
-// secretRoutingFromProto maps the public proto delivery/kind enums to the store
-// enums, rejecting an UNSPECIFIED value (the proto 0) as an invalid argument — a
-// SetSecret must name a concrete delivery and kind. The store's DeclareSecret
-// re-validates the kind↔provider/host routing invariant, so this only translates.
-func secretRoutingFromProto(d compassv1.SecretDelivery, k compassv1.SecretKind) (store.SecretDelivery, store.SecretKind, error) {
-	var delivery store.SecretDelivery
+// secretRoutingFromProto maps the public proto delivery/kind enums to the
+// resolve-surface (secrets package) enums StoreResolver.Upsert takes, rejecting
+// an UNSPECIFIED value (the proto 0) as an invalid argument — a SetSecret must
+// name a concrete delivery and kind. The store door re-validates the
+// kind↔provider/host routing invariant, so this only translates.
+func secretRoutingFromProto(d compassv1.SecretDelivery, k compassv1.SecretKind) (secrets.DeliveryKind, secrets.SecretKind, error) {
+	var delivery secrets.DeliveryKind
 	switch d {
 	case compassv1.SecretDelivery_SECRET_DELIVERY_FILE:
-		delivery = store.SecretDeliveryFile
+		delivery = secrets.DeliveryFile
 	case compassv1.SecretDelivery_SECRET_DELIVERY_ENV:
-		delivery = store.SecretDeliveryEnv
+		delivery = secrets.DeliveryEnv
 	default:
 		return 0, 0, errors.New("secret delivery is unspecified")
 	}
-	var kind store.SecretKind
+	var kind secrets.SecretKind
 	switch k {
 	case compassv1.SecretKind_SECRET_KIND_GENERIC:
-		kind = store.SecretKindGeneric
+		kind = secrets.SecretGeneric
 	case compassv1.SecretKind_SECRET_KIND_PROVIDER:
-		kind = store.SecretKindProvider
+		kind = secrets.SecretProvider
 	case compassv1.SecretKind_SECRET_KIND_GH:
-		kind = store.SecretKindGH
+		kind = secrets.SecretGH
 	default:
 		return 0, 0, errors.New("secret kind is unspecified")
 	}

@@ -412,11 +412,10 @@ CREATE TABLE secrets (
     -- host: the forge host for a gh secret. Empty for non-gh kinds.
     host        TEXT NOT NULL DEFAULT '',
     -- value_ciphertext/value_nonce: the AES-256-GCM ciphertext and its fresh
-    -- 96-bit nonce. NULLABLE in T2 only — the retained value-free
-    -- InsertSecret/DeclareSecret path writes no value through T5, which then
-    -- tightens both to NOT NULL once the upsert is the sole writer (A1).
-    value_ciphertext BYTEA,
-    value_nonce      BYTEA,
+    -- 96-bit nonce. NOT NULL in the final schema (T5): the upsert is the sole
+    -- writer and always writes both, so a value-free row can no longer exist (A1).
+    value_ciphertext BYTEA NOT NULL,
+    value_nonce      BYTEA NOT NULL,
     -- key_version: which master-key generation encrypted this row (A3, reserved
     -- for the deferred rotation record).
     key_version SMALLINT NOT NULL DEFAULT 1,
@@ -433,7 +432,7 @@ CREATE TABLE secrets (
     -- row (kind=1) carries a non-empty provider and no host; a gh row (kind=2) a
     -- non-empty host and no provider; a generic row (kind=0) neither. Without
     -- this a malformed row persists silently and misroutes at the T5 materializer;
-    -- the CHECK fails it at write time. DeclareSecret guards the same invariant so
+    -- the CHECK fails it at write time. UpsertSecret guards the same invariant so
     -- a caller gets ErrInvalidArgument, not a raw constraint violation.
     CONSTRAINT secrets_kind_routing CHECK (
         (kind = 0 AND provider = '' AND host = '')

@@ -266,7 +266,7 @@ func buildNetworkServer(
 	st *store.Store,
 	adminID store.AccountID,
 	netTLS *tls.Config,
-	resolver secrets.Resolver,
+	resolver *secrets.StoreResolver,
 	otelIC *otelconnect.Interceptor,
 	webhookSink ForgeEventSink,
 	webhookSecret func(ctx context.Context) ([]byte, error),
