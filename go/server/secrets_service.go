@@ -71,8 +71,8 @@ var errNoResolver = errors.New("no secret resolver configured on this server")
 
 // errNoServerResolver is the fail-closed cause when a server-secret RPC reaches
 // a service built with no SERVER resolver. It must never fall back to the user
-// resolver: that would write the value into the registry the container-delivery
-// path reads, inverting the whole point of the separate store.
+// resolver: the server-secret list would then report on the wrong registry,
+// inverting the whole point of the separate store.
 var errNoServerResolver = errors.New("no server secret resolver configured on this server")
 
 // SetSecret writes a user secret's declaration and encrypted value in ONE atomic
@@ -239,8 +239,7 @@ func (s *secretsService) ListServerSecrets(
 	if len(decls) == 0 {
 		return connect.NewResponse(&compassv1.ListServerSecretsResponse{}), nil
 	}
-	// The audit reason names this RPC specifically, matching the Set path's
-	// form, so the provider's log distinguishes a status probe from a write.
+	// The audit reason names this RPC so the provider log identifies the probe.
 	statuses, err := s.serverResolver.Statuses(ctx, "compass: server secret status probe via ListServerSecrets RPC")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("probing server secret values: %w", err))

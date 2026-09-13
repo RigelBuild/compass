@@ -69,8 +69,9 @@ var nameGrammar = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // maxNameLen caps a secret name's length. A name becomes an env-var name and a
 // filesystem path segment (under $HOME/.compass/secrets/), so it must stay a
-// sane segment; 255 bytes is the common path-segment limit. Every write is
-// authenticated at the RPC edge, so this bounds store bloat, not an exploit.
+// sane segment; 255 bytes is the common path-segment limit. User writes are
+// authenticated at the RPC edge and server-secret names are server-declared, so
+// this bounds store bloat, not an exploit.
 const maxNameLen = 255
 
 // ValidateName reports whether name is a legal secret name (SecretSpec's

@@ -12,8 +12,9 @@ package server
 //
 // The USER resolver is the real StoreResolver, and a test observes its writes
 // through the same production read the Runner uses (ResolveFor /
-// SecretRecordsForAgent), not a fake. The SERVER resolver is still a recording
-// fake — the server-secret path keeps its SpecResolver seam here.
+// SecretRecordsForAgent), not a fake. The SERVER resolver is a recording fake:
+// Resolve must never be hit (the list probe is value-free) and Statuses returns
+// a scripted report to assert against.
 
 import (
 	"context"
