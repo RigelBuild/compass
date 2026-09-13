@@ -71,8 +71,8 @@ covers the archive AS SKOPEO WRITES IT, and that byte layout is not
 guaranteed stable across skopeo/nixpkgs moves, so a root `devenv.lock` bump
 could redden the guest gate with ZERO change to the published image.
 Consuming the nix2container derivation directly (evaluating `agent-image`'s
-devenv container build in-eval) is the load-bearing fork this record leaves
-open — see OQ0.
+devenv container build in-eval) was weighed and rejected — see
+§Resolved decisions.
 
 **Reproducibility enforcement (a Global Constraint, not documentation).** The
 pin lives in a committed lock file, `guest-image/agent-oci.lock`:
@@ -148,8 +148,8 @@ This is a known structural cost of deriving from the published image, not a
 bug. It does NOT block pre-merge CI and is not circular: the gate fetches
 the PREVIOUSLY pinned digest, which exists and is public, and the agent
 source paths leave the gate's `inputs` (T2), so an agent-only PR does not
-reschedule the guest build at all. OQ0 records the alternative that removes
-this constraint.
+reschedule the guest build at all. §Resolved decisions records the weighed
+alternative that removes this constraint, and why it lost.
 
 ### (b) The guest assets publish as a digest-pinned, non-runnable OCI artifact
 
@@ -269,8 +269,8 @@ extension is a deployment concern and is not designed here.
   and its guest rootfs land ATOMICALLY in one PR — removing the two-merge
   constraint in §(a) entirely. Its real cost is the agent-image closure (the
   dominant CI cost, ~90 minutes cold) entering the pre-merge guest gate.
-  This is the genuine fork; it is held open as OQ0 (load-bearing), with the
-  recommendation to keep the published-digest FOD.
+  Weighed as a genuine fork and ruled against: the pinned digest keeps the
+  gate's cost flat and the pin reviewable (see §Resolved decisions).
 - **A runnable OCI image carrying the assets as ordinary layers.** Pullable by
   any engine, but invites `docker run` and misstates what it is; the empty
   config + artifactType manifest is strictly clearer and equally pullable.
@@ -543,26 +543,6 @@ flag on a dev box.
 
 ## Open Questions
 
-- **OQ0 (LOAD-BEARING — blocks the merge freeze until ruled):
-  FOD-on-published-image vs in-eval nix derivation.** With the parity
-  overclaim removed from §(a), the FOD's justification reduces to closure
-  cost plus pin ergonomics — not agent parity, since deploy-time digest
-  equality is unenforced either way. The alternative is stronger than a
-  flat rejection: consuming the `agent-image` nix derivation in-eval at
-  `agent-image`'s own `devenv.lock` is hermetic, needs no registry
-  round-trip, and lets an agent change and its guest rootfs land ATOMICALLY
-  in one PR — removing §(a)'s two-merge constraint entirely. Its real cost:
-  the agent-image closure enters the pre-merge guest gate (the nix group is
-  already the dominant CI cost), possibly mitigated by substituters since
-  the agent image is built on every main push. Note also that
-  `release.yml`'s own verify step asserts the published bytes match the
-  reviewed pin, so under a reproducible nix2container build the in-eval
-  result and the published bytes coincide. Recommendation: keep the
-  published-digest FOD — it keeps the guest gate's cost flat and the pin
-  reviewable as a one-line diff, and the two-merge latency is bounded by
-  one publish plus one Renovate cycle; atomic landing does not outweigh
-  dragging the dominant closure into every pre-merge guest gate run. The
-  fork is genuine; the human rules.
 - **OQ1 (non-load-bearing): referrers linkage.** Should the guest artifact
   also set OCI `subject` to the agent image manifest, so registries with the
   referrers API can enumerate guest artifacts derived from an agent image?
@@ -592,8 +572,16 @@ flag on a dev box.
   gate needs no new capability.
 - **Recon Q3 — how is the derivation kept hermetic?** Per-layer fixed-output
   fetches keyed by the lock's descriptor digests (manifest digest pins the
-  set); the in-eval nix2container alternative is held open as OQ0
-  (load-bearing), with the recommendation to keep the FOD.
+  set).
+- **The agent source: the published image, pinned by digest (ruled).** The
+  rootfs derives from the published agent image through the pinned
+  fixed-output fetch, not from the `agent-image` derivation in-eval. The
+  in-eval alternative is hermetic and would let an agent change and its guest
+  rootfs land atomically in one PR, but it drags the agent-image closure into
+  every pre-merge guest gate run, and that closure is already the dominant CI
+  cost. The pinned digest keeps the gate's cost flat and the pin reviewable as
+  a one-line diff. The accepted cost is the two-merge flow in §(a): an agent
+  change merges and publishes before the pin bump that picks it up.
 - **Per-workload guest agent images** stay ruled out (see
   §Alternatives considered).
 - **The Runner's three-file-path contract** stays frozen (see §Approach).
