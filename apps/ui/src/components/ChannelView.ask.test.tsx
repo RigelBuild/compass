@@ -123,8 +123,8 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: ["q-2-a"] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-a"], customText: "" },
 					],
 				},
 			]);
@@ -191,8 +191,8 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: [] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: [], customText: "" },
 					],
 				},
 			]);
