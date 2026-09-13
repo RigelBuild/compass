@@ -255,11 +255,14 @@ func TestForgeNotifyLaneWiresPullNumberResolver(t *testing.T) {
 	}
 }
 
-// TestNotifyLanesWireIdentityResolver pins that BOTH assembled lanes thread a
-// non-nil self-origin identity seam. The suppression suites build their own
-// routers, so a builder that passed nil here would leave every one of them green
-// while production notified each agent about its own actions forever — a nil
-// resolver disables suppression wholesale by design.
+// TestNotifyLanesWireIdentityResolver pins that BOTH assembled lanes RECORD a
+// non-nil self-origin identity seam — the test-observable proxy for the seam
+// each builder threaded into its router, the same proxy the pulls test above
+// uses. It catches a builder that resolved no identity seam at all; the e2e
+// cells cover the router's use of one. Without it nothing observes the
+// assembly, and a nil seam would compile and leave every suppression suite
+// green (they build their own routers) while production notified each agent
+// about its own actions forever.
 func TestNotifyLanesWireIdentityResolver(t *testing.T) {
 	cfg := ServeConfig{Forge: ForgeConfig{Host: "github.com", App: ForgeAppConfig{
 		AppID:                42,

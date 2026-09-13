@@ -1185,3 +1185,52 @@ func TestForgeNotifyE2E_OwnerNamespaceNoCrossSuppress(t *testing.T) {
 		t.Errorf("Change = %v, want COMMENT", got[0].GetChange())
 	}
 }
+
+// TestForgeNotifyE2E_SelfOriginOpenedSuppressed drives the OPENED arm, whose
+// actor comes from the DL-055 ownership row through the real adapter's
+// AuthorHandle rather than a stamped comment header. Without it the adapter's
+// AuthorHandle success path is unexercised end to end: a resolver returning a
+// bogus populated handle there would suppress a real cross-agent notification
+// and every other cell would stay green.
+func TestForgeNotifyE2E_SelfOriginOpenedSuppressed(t *testing.T) {
+	const (
+		authorSession = "sess-self-origin-opened-author"
+		otherSession  = "sess-self-origin-opened-other"
+		number        = uint64(77)
+	)
+	w := newNotifyE2EWire(t)
+	gh := newFakeGitHubForge(w.secret, notifyE2EGitHubRepo)
+
+	// The authoring agent opened issue 77 (DL-055 row) and watches the repo
+	// container, so the OPENED fan-out reaches it; a second agent watches the
+	// same container and is NOT the author.
+	authorAcct := w.seedAgent(t, "atlas")
+	otherAcct := w.seedAgent(t, "nomad")
+	w.recordAuthored(t, authorAcct, w.adminID, notifyE2EGitHubRepo, store.ForgeArtifactKindIssue, number)
+	for _, acct := range []store.AccountID{authorAcct, otherAcct} {
+		w.subscribe(t, store.AgentForgeSubscription{
+			AgentAccountID: acct, Provider: store.ForgeProviderGitHub, Host: "github.com",
+			Repo: notifyE2EGitHubRepo, Kind: store.ForgeArtifactKindIssue,
+			Scope: store.ForgeSubscriptionScopeContainer,
+		})
+	}
+	w.goLive(t, authorAcct, "compass-agent-self-origin-opened-author", authorSession)
+	w.goLive(t, otherAcct, "compass-agent-self-origin-opened-other", otherSession)
+	w.runner.forget()
+
+	w.postGitHub(t, gh.openIssue(t, number, "https://gh/octo/repo/issues/77"))
+
+	// The non-author receives the OPENED frame. Draining it also flushes the
+	// whole fan-out (FIFO, one arm goroutine), so the author's zero-read below
+	// is load-bearing rather than a race on an undelivered frame.
+	got := waitForForgeNotification(t, w.runner, otherSession)
+	if len(got) != 1 {
+		t.Fatalf("non-author frames = %d, want 1 (a different agent's OPENED is not self-origin)", len(got))
+	}
+	if got[0].GetChange() != mxOpened {
+		t.Errorf("Change = %v, want OPENED", got[0].GetChange())
+	}
+	if frames := w.runner.forgeNotificationsForSession(authorSession); len(frames) != 0 {
+		t.Fatalf("author frames = %d, want 0 (an agent's own OPENED artifact must be suppressed)", len(frames))
+	}
+}
