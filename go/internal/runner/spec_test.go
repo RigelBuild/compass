@@ -240,3 +240,94 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 		t.Fatalf("BuildSpec name = %q, want %q", spec.Name, want)
 	}
 }
+
+// imageIrrelevantFake stands in for a backend declaring whether it reads the
+// agent image, mirroring egressMarkerFakeRuntime in the runtime package: the
+// real microVM runtime needs a host VMM closure this unit lane has no business
+// provisioning.
+type imageIrrelevantFake struct {
+	runtime.WorkloadRuntime
+	irrelevant bool
+}
+
+func (f *imageIrrelevantFake) AgentImageIrrelevant() bool { return f.irrelevant }
+
+// A backend that never reads the agent image starts with none configured: the
+// microVM boot path runs the agent from the guest rootfs, so requiring an OCI
+// ref there would make the shipped Runner image unstartable (its Dockerfile
+// sets the microVM env but no COMPASS_AGENT_IMAGE).
+func TestResolveAgentImageNotRequiredWhenBackendNeverReadsIt(t *testing.T) {
+	img, irrelevant, err := ResolveAgentImage(&imageIrrelevantFake{irrelevant: true}, "")
+	if err != nil {
+		t.Fatalf("ResolveAgentImage(irrelevant backend, no image) = %v, want a startup", err)
+	}
+	if img != "" {
+		t.Fatalf("ResolveAgentImage returned image %q, want empty", img)
+	}
+	if !irrelevant {
+		t.Fatal("ResolveAgentImage reported the image as read, want irrelevant")
+	}
+}
+
+// A configured image on such a backend is refused rather than ignored: the
+// operator believes it pins the agent, and nothing on that path reads it. The
+// message must name where the pin actually lives, or the refusal is a dead end.
+func TestResolveAgentImageRefusesAConfiguredImageTheBackendCannotApply(t *testing.T) {
+	_, _, err := ResolveAgentImage(&imageIrrelevantFake{irrelevant: true}, "compass-agent:latest")
+	if err == nil {
+		t.Fatal("ResolveAgentImage(irrelevant backend, image set) = nil error, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "microvm-rootfs") {
+		t.Fatalf("ResolveAgentImage error = %v, want it to name the rootfs as the real pin", err)
+	}
+}
+
+// The container backends are untouched: an image is still required, and a
+// configured one still reaches the specs. A backend that does not implement the
+// capability at all takes the same path, so the relaxation cannot leak by
+// omission.
+func TestResolveAgentImageStillRequiredOnBackendsThatReadIt(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		engine runtime.WorkloadRuntime
+	}{
+		{"a backend declaring it reads the image", &imageIrrelevantFake{irrelevant: false}},
+		{"a backend without the capability at all", &imageOblivousFake{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ResolveAgentImage(tc.engine, ""); err == nil {
+				t.Fatal("ResolveAgentImage(no image) = nil error, want the required-image rejection")
+			}
+			img, irrelevant, err := ResolveAgentImage(tc.engine, "compass-agent:latest")
+			if err != nil {
+				t.Fatalf("ResolveAgentImage(image set) = %v, want the image", err)
+			}
+			if img != "compass-agent:latest" {
+				t.Fatalf("ResolveAgentImage returned %q, want the configured image", img)
+			}
+			if irrelevant {
+				t.Fatal("ResolveAgentImage reported the image as unread on a backend that reads it")
+			}
+		})
+	}
+}
+
+// imageOblivousFake implements no image capability, so it exercises the
+// type-assertion miss.
+type imageOblivousFake struct{ runtime.WorkloadRuntime }
+
+// The builder accepts an empty image only when the backend declared it unread,
+// so the second guard cannot fail a microVM Runner the resolver just cleared —
+// and cannot be relaxed for a backend that does read it.
+func TestNewConfigSpecBuilderAcceptsAnEmptyImageOnlyWhenDeclaredIrrelevant(t *testing.T) {
+	d := goodDefaults()
+	d.Image = ""
+	d.ImageIrrelevant = true
+	if _, err := NewConfigSpecBuilder(d); err != nil {
+		t.Fatalf("NewConfigSpecBuilder(empty image, declared irrelevant) = %v, want a builder", err)
+	}
+	d.ImageIrrelevant = false
+	if _, err := NewConfigSpecBuilder(d); err == nil {
+		t.Fatal("NewConfigSpecBuilder(empty image, not declared) = nil error, want a rejection")
+	}
+}
