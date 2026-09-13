@@ -9,15 +9,26 @@
 // sweep removed the existing references; this gate keeps the boundary from
 // silently re-rotting, the same way design-ledger-gate keeps the ledger honest.
 //
-// SCOPE: orion ONLY. This gate scans for one token and does not double as a
-// general brand-token gate; other one-time cleanups that are not being re-added
-// need no standing scan here.
+// SCOPE: the private repo's two names ONLY — the current one and the former
+// one imported records still carry. This gate does not double as a general
+// brand-token gate; other one-time cleanups that are not being re-added need
+// no standing scan here.
 //
-// What counts as a reference: the whole-word token `orion` (any case), which
-// catches the repo name, `RigelBuild/orion`, an `orion <path>` citation, and
-// "ported from orion" provenance prose alike. The scan is deliberately blunt —
-// a single blunt token with a small, explicit allowlist beats a clever regex
-// that tries to tell a "good" orion from a "bad" one.
+// What counts as a reference, and why the two names differ:
+//   - `orion` (current) is scanned WHOLE-WORD, any case — the repo name,
+//     `RigelBuild/orion`, an `orion <path>` citation, and "ported from orion"
+//     provenance prose alike. A bare `orion` in this repo is always the repo,
+//     so a blunt token with a small explicit allowlist is the right shape.
+//   - `sealed` (former) CANNOT be scanned that way: it is also ordinary
+//     English this codebase uses constantly (a sealed sum type, a ciphertext
+//     sealed under a key, an egress-sealed agent), and it is in the public
+//     company name. A whole-word scan measures 60 tracked lines, all
+//     legitimate. So it is matched only in repo-SHAPED uses —
+//     LEGACY_NAME_PATTERNS, whose docstring carries the tradeoff.
+//
+// The asymmetry is deliberate: blunt where the token is unambiguous, narrow
+// where it collides with English. A gate that is all false positives on one of
+// its tokens gets switched off, which protects neither.
 //
 // CARVE-OUTS (never scanned):
 //   - tools/orion-ref-gate/**  this gate's own source + fixtures name the token
@@ -57,12 +68,19 @@ export const PRIVATE_TOKEN = "orion";
  * a whole-word scan flags 60 lines, every one of them legitimate; a gate that
  * is 100% false positives gets switched off.
  *
- * So match only the shapes that name the REPO: a path inside it, its docsite
- * host, its possessive, or the word followed by a repo-ish noun.
+ * So match only the shapes that name the REPO: a path inside it (slash- or
+ * space-separated), its docsite host, its possessive, or the word followed by
+ * a repo-ish noun (spaced or hyphenated).
+ *
+ * The space-form arm requires the cited token to END in a source-file
+ * extension. A looser `sealed\s+\S*\/` matches ordinary prose, because English
+ * carries slashes too — "values sealed and/or rotated" and "sealed in
+ * transit/at rest" both false-positive without the extension anchor.
  */
 export const LEGACY_NAME_PATTERNS: readonly RegExp[] = [
 	/\bsealed\/[a-z]/i,
-	/\bsealed-docs\b/i,
+	/\bsealed\s+[\w.-]+(?:\/[\w.-]+)*\.(?:ts|tsx|js|jsx|go|nix|md|json5?|ya?ml|toml|sh|py|rs|lock)\b/i,
+	/\bsealed-(?:repo|monorepo|docs|private)\b/i,
 	/\bsealed's\b/i,
 	/\bsealed (repo|monorepo|design corpus|platform|convention|PR #)/i,
 ];
@@ -190,9 +208,10 @@ export async function runOnce(deps: Deps): Promise<number> {
 }
 
 /**
- * `git grep -nEI` for either name over tracked files. The regex is a coarse
- * pre-filter — `lineHasToken` makes the real decision, so this only has to be
- * a superset of it. `sealed` is matched bare here and narrowed there.
+ * `git grep -nEI` for either name over tracked files, unanchored. The regex is
+ * a coarse pre-filter — `lineHasToken` makes the real decision, so this only
+ * has to be a superset of it. Both names are matched bare here and narrowed
+ * there.
  *
  * `git grep` exits 0 with matches, 1 on no match (a legitimately clean, empty
  * result), and >=2 on a real error (e.g. not a git work tree). We must
@@ -202,7 +221,12 @@ export async function runOnce(deps: Deps): Promise<number> {
  * returns exit 2.
  */
 async function gitGrep(): Promise<string[]> {
-	const pattern = `\\b(${PRIVATE_TOKEN}|sealed)`;
+	// No `\b` here: it is a GNU extension, not base POSIX ERE. If a toolchain
+	// change ever made git treat it literally, the pre-filter would match
+	// nothing and git grep would exit 1 — a legitimately-clean signal — so the
+	// gate would fail OPEN. The pre-filter only has to be a superset;
+	// lineHasToken owns the word boundary.
+	const pattern = `(${PRIVATE_TOKEN}|sealed)`;
 	const res = await $`git grep -nEiI ${pattern}`.nothrow().quiet();
 	if (res.exitCode >= 2)
 		throw new Error(

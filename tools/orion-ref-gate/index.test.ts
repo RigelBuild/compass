@@ -56,6 +56,28 @@ describe("lineHasToken — the former name, matched only in repo-shaped uses", (
 			true,
 		);
 	});
+	// The space form, not the slash form: citing a file in another repo by
+	// `<repo> <path>` is the most natural shape, and every one of these is a
+	// line this scrub removed by hand — so the gate has to catch its own
+	// regression, not just the form that happened to be written with a slash.
+	test("a space-separated path or bare filename citation is a reference", () => {
+		expect(
+			lineHasToken("Adapted from sealed apps/docs/scripts/deploy.ts"),
+		).toBe(true);
+		expect(lineHasToken("mirrors `sealed gather.ts:25,203-205`")).toBe(true);
+		expect(lineHasToken("ported from sealed flake.nix")).toBe(true);
+	});
+	// Prose carries slashes too, so the space form anchors on a source-file
+	// extension rather than on any slash-bearing token.
+	test("slash-bearing English prose is not a reference", () => {
+		expect(lineHasToken("values sealed and/or rotated")).toBe(false);
+		expect(lineHasToken("rows sealed in transit/at rest")).toBe(false);
+	});
+	test("a hyphenated repo-noun is a reference", () => {
+		expect(lineHasToken("a sealed-monorepo domain")).toBe(true);
+		expect(lineHasToken("sealed-repo records")).toBe(true);
+		expect(lineHasToken('the "sealed-private" annotation')).toBe(true);
+	});
 	test("its possessive, docsite host, and repo-noun uses are references", () => {
 		expect(lineHasToken("following sealed's shape")).toBe(true);
 		expect(lineHasToken("deployed to sealed-docs.rigel.build")).toBe(true);
