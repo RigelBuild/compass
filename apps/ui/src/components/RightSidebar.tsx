@@ -15,7 +15,7 @@ import {
 	primaryPr,
 } from "../board-render";
 import type { Channel } from "../comms-stub";
-import type { ActivityBarItem } from "../constants";
+import type { AvatarTabItem } from "../constants";
 import { useStore } from "../context";
 import {
 	type Agent,
@@ -27,6 +27,7 @@ import {
 	STUB_FILES,
 } from "../stub-data";
 import { ChannelView } from "./ChannelView";
+import { Glyph } from "./Glyph";
 import { StateDot } from "./StateDot";
 
 const FILE_ICON: Record<string, string> = { dir: "▸", file: "·" };
@@ -425,10 +426,9 @@ const RepoBranchDropdown: Component = () => {
  *  agent's full workspace via store.openAgent. Only rendered for a RESOLVABLE
  *  pin (RIG-1645 P2): the pane arm resolves reachability before choosing this
  *  vs the unreachable block, so there is no unresolved-agentId fallback here. */
-const FleetPane: Component<{ item: ActivityBarItem }> = (props) => {
+const FleetPane: Component<{ item: AvatarTabItem }> = (props) => {
 	const store = useStore();
-	const agent = (): Agent | undefined =>
-		props.item.agentId ? store.agentById(props.item.agentId) : undefined;
+	const agent = (): Agent | undefined => store.agentById(props.item.agentId);
 	return (
 		<Show when={agent()}>
 			{(a) => {
@@ -460,7 +460,7 @@ const FleetPane: Component<{ item: ActivityBarItem }> = (props) => {
  *  affordance for an unreachable pin, whose left-tree row is gone (the tree
  *  renders the VISIBLE set). Unpinning routes through `store.unpinAgent`, which
  *  drops the pin and falls the active tab back to `status`. */
-const AgentUnreachable: Component<{ item: ActivityBarItem }> = (props) => {
+const AgentUnreachable: Component<{ item: AvatarTabItem }> = (props) => {
 	const store = useStore();
 	return (
 		<div class="fleet-pane fleet-unreachable">
@@ -470,13 +470,7 @@ const AgentUnreachable: Component<{ item: ActivityBarItem }> = (props) => {
 			<button
 				type="button"
 				class="r-unpin-agent"
-				// Both item builders (fleetItemForAgent, unreachableFleetItem) always set
-				// agentId, and AgentUnreachable only renders for a pinned item read out of
-				// rightTabGroups(), so it is never undefined here. Asserting (rather than
-				// `?? ""`) surfaces a genuinely-empty agentId as a bug instead of silently
-				// no-op-ing through unpinAgent("").
-				// biome-ignore lint/style/noNonNullAssertion: guaranteed by both builders (see above)
-				onClick={() => store.unpinAgent(props.item.agentId!)}
+				onClick={() => store.unpinAgent(props.item.agentId)}
 			>
 				Unpin {props.item.title}
 			</button>
@@ -573,13 +567,13 @@ export const RightSidebar: Component = () => {
 	// item-construction site. Never undefined for a pinned `agent:` tab (that was
 	// the blank-pane gap); undefined only for a non-`agent:` tab or an `agent:`
 	// tab with no matching pin (which falls through to `status`).
-	const activeFleetItem = (): ActivityBarItem | undefined => {
+	const activeFleetItem = (): AvatarTabItem | undefined => {
 		const active = store.activeRightTab();
 		if (!active.startsWith("agent:")) return undefined;
 		return store
 			.rightTabGroups()
 			.flatMap((g) => g.items)
-			.find((i) => i.id === active);
+			.find((i): i is AvatarTabItem => i.kind === "avatar" && i.id === active);
 	};
 
 	return (
@@ -658,8 +652,14 @@ export const RightSidebar: Component = () => {
 								</Show>
 								<For each={group.items}>
 									{(tab) => {
+										// Only the avatar arm carries an agentId / unreachable
+										// mark and a StateDot; the glyph arm draws a fixed symbol.
 										const agent = (): Agent | undefined =>
-											tab.agentId ? store.agentById(tab.agentId) : undefined;
+											tab.kind === "avatar"
+												? store.agentById(tab.agentId)
+												: undefined;
+										const unreachable = (): boolean =>
+											tab.kind === "avatar" && tab.unreachable === true;
 										return (
 											<button
 												type="button"
@@ -667,16 +667,16 @@ export const RightSidebar: Component = () => {
 													"r-tab",
 													{
 														active: store.activeRightTab() === tab.id,
-														unreachable: tab.unreachable === true,
+														unreachable: unreachable(),
 													},
 												]}
 												title={
-													tab.unreachable === true
+													unreachable()
 														? `${tab.title} (unreachable)`
 														: tab.title
 												}
 												aria-label={
-													tab.unreachable === true
+													unreachable()
 														? `${tab.title} (unreachable)`
 														: tab.title
 												}
@@ -685,8 +685,16 @@ export const RightSidebar: Component = () => {
 												}
 												onClick={() => store.setActiveRightTab(tab.id)}
 											>
-												<span class="r-tab-icon" aria-hidden="true">
-													{tab.icon}
+												<span
+													class="r-tab-icon"
+													data-kind={tab.kind}
+													aria-hidden="true"
+												>
+													{tab.kind === "glyph" ? (
+														<Glyph name={tab.name} />
+													) : (
+														tab.letter
+													)}
 												</span>
 												<Show when={agent()}>
 													{(a) => <StateDot state={a().lifecycle ?? "idle"} />}

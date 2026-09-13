@@ -1,7 +1,8 @@
 // Shared display constants for the Compass ADE UI: the board lane order and the
 // label/color lookups every surface reads. Static string-keyed tables → Record.
 
-import type { IssueTab, PinnedAgent, RightSidebarTab } from "./store";
+import type { GlyphName } from "./components/Glyph";
+import type { IssueTab, PinnedAgent } from "./store";
 import type { Agent, AgentState, IssueState } from "./stub-data";
 
 /** Board columns, left to right — the ACTIVE subset of the issue lifecycle
@@ -73,28 +74,40 @@ export const AGENT_STATE_LABEL: Record<AgentState, string> = {
  *  (design dock-in-sidebar D2). */
 export type RightTabGroup = "fleet" | "issue";
 
-/** An icon-per-tab item in the right-sidebar activity bar (design D5/T6,
- *  dock-in-sidebar D2), mirroring Orca's `ActivityBarItem`. The icon is a glyph
- *  string, matching the UI's existing glyph-icon convention (file rows, the
- *  branch dropdown). */
-export interface ActivityBarItem {
-	id: RightSidebarTab;
-	/** Single-glyph icon. */
-	icon: string;
+/** The shared fields of every activity-bar item (design D5/T6, dock-in-sidebar
+ *  D2), mirroring Orca's `ActivityBarItem`. */
+interface ActivityBarItemBase {
 	/** Short label under the icon / for the tooltip. */
 	title: string;
 	/** Activity-bar group: fleet renders above the divider, issue below. */
 	group: RightTabGroup;
-	/** Fleet agent tabs: the agent whose `StateDot` badges the tab icon. On an
-	 *  unreachable pin this is the pinned id that resolves to no visible agent, so
-	 *  it carries no live `StateDot` (RIG-1645). */
-	agentId?: string;
-	/** Fleet agent tabs (RIG-1645): true when the pinned agent no longer resolves
-	 *  to a visible agent (dead / despawned / filtered out). Absent/false = live.
-	 *  The activity bar and the pane render the unreachable state for a marked
-	 *  item. */
+}
+
+/** A static tab: a fixed chrome symbol from the closed glyph set, drawn as a
+ *  1-bit `<Glyph/>` (RIG-3603, compass-glyph-primitives). */
+export interface GlyphTabItem extends ActivityBarItemBase {
+	kind: "glyph";
+	id: StaticRightTab;
+	name: GlyphName;
+}
+
+/** A fleet agent tab: a person's initial, derived once from the handle via
+ *  `avatarInitial`. Only fleet tabs carry `agentId`/`unreachable` — the pinned
+ *  id whose `StateDot` badges the tab, and whether that pin resolves to a
+ *  visible agent (RIG-1645). An unreachable pin's `agentId` resolves no agent,
+ *  so it carries no live `StateDot`. */
+export interface AvatarTabItem extends ActivityBarItemBase {
+	kind: "avatar";
+	id: `agent:${string}`;
+	letter: string;
+	group: "fleet";
+	agentId: string;
 	unreachable?: boolean;
 }
+
+/** An activity-bar item, split at the item per Matt's frozen ruling: a static
+ *  glyph tab or a fleet avatar tab. */
+export type ActivityBarItem = GlyphTabItem | AvatarTabItem;
 
 /** The STATIC right-sidebar tabs — the ones present regardless of the pin set:
  *  `status` (the fleet metrics pane) in the fleet group, and the card-scoped
@@ -112,10 +125,34 @@ export type StaticRightTab = "status" | IssueTab;
 export const RIGHT_SIDEBAR_TAB_BY_ID: {
 	[K in StaticRightTab]: ActivityBarItem & { id: K };
 } = {
-	status: { id: "status", icon: "▦", title: "Fleet status", group: "fleet" },
-	files: { id: "files", icon: "🗀", title: "Files", group: "issue" },
-	vcs: { id: "vcs", icon: "⎇", title: "Version control", group: "issue" },
-	pr: { id: "pr", icon: "⇄", title: "Pull request", group: "issue" },
+	status: {
+		kind: "glyph",
+		id: "status",
+		name: "status",
+		title: "Fleet status",
+		group: "fleet",
+	},
+	files: {
+		kind: "glyph",
+		id: "files",
+		name: "files",
+		title: "Files",
+		group: "issue",
+	},
+	vcs: {
+		kind: "glyph",
+		id: "vcs",
+		name: "vcs",
+		title: "Version control",
+		group: "issue",
+	},
+	pr: {
+		kind: "glyph",
+		id: "pr",
+		name: "pr",
+		title: "Pull request",
+		group: "issue",
+	},
 };
 
 /** The static issue-group items, in declaration order — the card-scoped tabs the
@@ -139,17 +176,17 @@ export function avatarInitial(handle: string): string {
 }
 
 /** Build the fleet activity-bar item for a RESOLVABLE pinned agent (Record A
- *  §T2; RIG-1645 P1). The tab id is the `agent:`-prefixed account id (the open
- *  arm of `RightSidebarTab`); the icon is the agent handle's initial (matching
- *  the UI's glyph-icon convention — a per-agent glyph, no hardcoded Supervisor
- *  ◆), and the title is the LIVE agent handle. The item is left
+ *  §T2; RIG-1645 P1). The tab id is the `agent:`-prefixed account id; the
+ *  letter is the agent handle's initial (a per-agent glyph, no hardcoded
+ *  Supervisor ◆), and the title is the LIVE agent handle. The item is left
  *  unmarked (`unreachable` absent) so its `agentId` badges a real `StateDot`.
  *  An unresolvable pin is built by `unreachableFleetItem` instead — so a
  *  marked item can carry an `agentId` that resolves no agent. */
-export function fleetItemForAgent(agent: Agent): ActivityBarItem {
+export function fleetItemForAgent(agent: Agent): AvatarTabItem {
 	return {
+		kind: "avatar",
 		id: `agent:${agent.account.id}`,
-		icon: avatarInitial(agent.account.handle),
+		letter: avatarInitial(agent.account.handle),
 		title: agent.account.handle,
 		group: "fleet",
 		agentId: agent.account.id,
@@ -163,10 +200,11 @@ export function fleetItemForAgent(agent: Agent): ActivityBarItem {
  *  id }` fallback pin degrades to the id). The item is marked `unreachable` so
  *  the activity bar and the pane render the unreachable state; its `agentId`
  *  intentionally resolves no agent (no live `StateDot`). */
-export function unreachableFleetItem(pin: PinnedAgent): ActivityBarItem {
+export function unreachableFleetItem(pin: PinnedAgent): AvatarTabItem {
 	return {
+		kind: "avatar",
 		id: `agent:${pin.id}`,
-		icon: avatarInitial(pin.handle),
+		letter: avatarInitial(pin.handle),
 		title: pin.handle,
 		group: "fleet",
 		agentId: pin.id,

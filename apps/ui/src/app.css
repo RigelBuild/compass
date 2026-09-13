@@ -2261,7 +2261,32 @@
 	opacity: 0.55;
 }
 
-.r-tab .r-tab-icon {
+/* The glyph arm is an 11px 1-bit SVG box; the avatar arm is a 15px mono
+ * letter. They split so the glyph box carries NO font metrics (the SVG is the
+ * content) and the letter keeps its type. */
+.r-tab .r-tab-icon[data-kind="glyph"] {
+	display: block;
+	width: 11px;
+	height: 11px;
+	/* D2: an odd 11px box centered in the tab's 32px content box (34px −
+	 * 2×1px border, box-sizing: border-box) lands at (32 − 11) / 2 = 10.5px —
+	 * a half pixel that smears every 1px crispEdges cell across two device
+	 * pixels. Whole-integer margins that fill the content box exactly
+	 * (10 + 11 + 11 = 32 per axis) leave zero free space for centering to
+	 * split, so the box's offset is its whole-pixel margin (10px). */
+	margin: 10px 11px 11px 10px;
+}
+
+/* Seat the SVG at the box's top edge. An inline-level replaced box rides the
+ * parent's text baseline, so the inherited line-height pushes the glyph 2px
+ * down and out of its box — the whole-pixel margin above would then describe
+ * the span, not the pixels. state-dot.css carries the same rule for the same
+ * reason. */
+.r-tab .r-tab-icon[data-kind="glyph"] > svg {
+	display: block;
+}
+
+.r-tab .r-tab-icon[data-kind="avatar"] {
 	font-size: 15px;
 	line-height: 1;
 }
