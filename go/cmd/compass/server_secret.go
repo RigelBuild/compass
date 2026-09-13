@@ -17,44 +17,16 @@ import (
 )
 
 // newServerSecretCmd builds the server-secret noun: the DEPLOYMENT-owned secret
-// surface (set/list), disjoint from the fleet `secret` noun by reserved name
-// prefix. It carries no logic of its own; each verb is a child that dials the
-// Server and drives one SecretsService RPC. A server secret value is read from
-// stdin, never argv, so it cannot leak into the process table.
+// surface, disjoint from the fleet `secret` noun by reserved name prefix. It
+// carries no logic of its own; its verb is a child that dials the Server and
+// drives one SecretsService RPC.
 func newServerSecretCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server-secret",
-		Short: "Manage deployment-owned server secrets (set / list)",
+		Short: "Manage deployment-owned server secrets (list)",
 	}
-	cmd.AddCommand(newServerSecretSetCmd(), newServerSecretListCmd())
+	cmd.AddCommand(newServerSecretListCmd())
 	return cmd
-}
-
-// newServerSecretSetCmd builds `server-secret set <NAME>`: write a server
-// secret's value. The value is read from stdin, never a flag or positional, so
-// it cannot leak into the process table (the load-bearing convention shared
-// with the fleet `secret set` verb and the bearer token).
-//
-// The name is accepted with OR without the reserved prefix, because the two
-// sides spell it differently: the deployment's config carries the BARE name
-// (the operator writes `forge.appId`-style config, not a registry key) while
-// the server-secret registry carries the PREFIXED one (serve.go's
-// serverSecretName wraps every declared name). Accepting both and sending the
-// prefixed form means the operator can paste either spelling and still write
-// the row the Server reads.
-func newServerSecretSetCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "set <NAME>",
-		Short: "Write a server secret's value (value read from stdin, admin)",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := dialSecretsClient(cmd)
-			if err != nil {
-				return err
-			}
-			return runServerSecretSet(cmd.Context(), client, args[0], cmd.InOrStdin(), cmd.OutOrStdout())
-		},
-	}
 }
 
 // newServerSecretListCmd builds `server-secret list`: ListServerSecrets and
@@ -74,59 +46,6 @@ func newServerSecretListCmd() *cobra.Command {
 			return runServerSecretList(cmd.Context(), client, cmd.OutOrStdout())
 		},
 	}
-}
-
-// runServerSecretSet reads the value from in (trimming a single trailing
-// newline and rejecting an empty value) and calls SetServerSecret under the
-// prefixed name. The value is never taken from argv, so it cannot leak into the
-// process table.
-func runServerSecretSet(ctx context.Context, client compassv1connect.SecretsServiceClient, name string, in io.Reader, out io.Writer) error {
-	value, err := readSecretValue(in)
-	if err != nil {
-		return err
-	}
-	wire, err := serverSecretWireName(name)
-	if err != nil {
-		return err
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, rpcTimeout)
-	defer cancel()
-	if _, err := client.SetServerSecret(ctx, connect.NewRequest(&compassv1.SetServerSecretRequest{
-		Name:  wire,
-		Value: value,
-	})); err != nil {
-		return fmt.Errorf("setting server secret %s: %w", wire, err)
-	}
-	_, err = fmt.Fprintf(out, "set server secret %s\n", wire)
-	return err
-}
-
-// serverSecretWireName maps the operator's spelling to the registry's. A name
-// that already carries a reserved prefix is sent as-is (never double-prefixed);
-// a bare one is wrapped, matching serve.go's serverSecretName. The store's
-// HasServerSecretPrefix is the authority on what counts as prefixed, so the two
-// doors cannot drift.
-//
-// A bare name that would SHADOW the master-key row is refused rather than
-// wrapped. `list` strips any reserved prefix, so the master key prints as the
-// bare `MASTER_KEY`; feeding that spelling back here would wrap it to
-// `SERVER_MASTER_KEY`, which is a DIFFERENT secret. That name clears the
-// server's master-key guard (it compares the exact COMPASS_MASTER_KEY name),
-// so the write would silently mint a shadow row, leave the real key untouched,
-// and make `list` print the same bare name twice. Refusing is the only safe
-// answer: wrapping writes a different secret than the operator named, with no
-// error at any layer.
-func serverSecretWireName(name string) (string, error) {
-	if store.HasServerSecretPrefix(name) {
-		return name, nil
-	}
-	if store.CompassPrefix+name == store.MasterKeyName {
-		return "", fmt.Errorf(
-			"%s is the bare spelling of %s, which is provisioned and rotated by the server; pass the full name if you meant a different secret",
-			name, store.MasterKeyName)
-	}
-	return store.ServerSecretPrefix + name, nil
 }
 
 // runServerSecretList calls ListServerSecrets and renders each declared server
