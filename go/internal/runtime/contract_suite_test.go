@@ -25,6 +25,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -99,15 +100,84 @@ type backendCaps struct {
 	// engine's name-in-use *CommandError on podman. Carried as a closure so the
 	// shared body never names *DuplicateNameError (a unix-tagged symbol).
 	assertDuplicateName func(t *testing.T, err error)
+
+	// resizeErr is the sentinel rowResize expects from Resize. Nil means the
+	// shared ErrResizeNotImplemented (the engine legs' "reserved until C3"
+	// sentinel), so the podman/microVM legs need not set it. The host backend
+	// owns no cgroup and its Resize is a PERMANENT unsupported, so it sets
+	// ErrResizeUnsupportedOnHost — a deliberately distinct sentinel that must
+	// never be folded into the C3-reserved one.
+	resizeErr error
+
+	// euidOnly selects the host uid-enforcement posture in rowUIDEnforcement: a
+	// host child cannot switch user, so the ONLY accepted uid is the Runner's
+	// own euid (execUID) and any other uid (rejectedUID) is refused. Off for the
+	// engine legs, which switch the workload to a directed uid.
+	euidOnly bool
+
+	// execUID is the uid the directed exec rows run as, as a decimal string.
+	// Empty means "1000" (the baked agent uid the engine legs use). The host leg
+	// sets the Runner's own euid (os.Geteuid()), the only uid its execs may run
+	// as.
+	execUID string
+
+	// inheritsRunnerCaps: the workload inherits the Runner's own capability set
+	// rather than starting from an empty container set (host). It changes what
+	// "CapAdd granted nothing" means in rowCommandCapAddIgnored; the engine legs
+	// leave it false and keep the all-zero assertion.
+	inheritsRunnerCaps bool
+
+	// rejectedUID is a uid the host backend must REFUSE (any uid other than its
+	// euid); used only when euidOnly is set. The engine legs leave it empty.
+	rejectedUID string
 }
 
-// runContractSuite is called only from the two build-tagged entrypoints
-// (contract_podman_test.go, contract_microvm_test.go), so the untagged `unused`
-// lint pass (the module's `golangci-lint ./...` lane runs without build tags)
-// sees no caller for it or the row helpers it reaches. This blank reference is
-// the untagged build's root into the suite graph, marking the whole reachable
-// set used; under either build tag the real caller supersedes it.
-var _ = runContractSuite
+// execUser is the uid the directed exec/stream rows run their commands as. The
+// engine legs leave execUID empty and get "1000" (the baked agent uid their
+// containers map the invoking host uid to). The host leg runs commands as its
+// own euid — the only uid its checkUser accepts — which is NOT 1000 on a stock
+// GitHub-hosted runner (host uid 1001, portability_test.go), so it MUST set
+// execUID to os.Geteuid(); a hardcoded "1000" would fail every host exec row
+// with UnsupportedUserError off the dev box.
+func (c backendCaps) execUser() string {
+	if c.execUID != "" {
+		return c.execUID
+	}
+	return "1000"
+}
+
+// resize is the sentinel rowResize expects: the caps override when set, else the
+// shared C3-reserved ErrResizeNotImplemented the engine legs use.
+func (c backendCaps) resize() error {
+	if c.resizeErr != nil {
+		return c.resizeErr
+	}
+	return ErrResizeNotImplemented
+}
+
+// wantCapEff is the CapEff the workload must show for spec.CapAdd to have
+// granted nothing. The engine legs start from an empty container capability
+// set, so they expect all-zero. A host child inherits the Runner's own
+// capabilities, so "added nothing" there means "the same set the Runner has" —
+// expecting zero would instead assert the Runner is unprivileged, which is a
+// property of how CI launches the test, not of this backend.
+func (c backendCaps) wantCapEff(t *testing.T) string {
+	t.Helper()
+	if !c.inheritsRunnerCaps {
+		return "0000000000000000"
+	}
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		t.Skipf("reading own /proc/self/status: %v", err)
+	}
+	for line := range strings.SplitSeq(string(status), "\n") {
+		if rest, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	t.Fatal("no CapEff line in own /proc/self/status")
+	return ""
+}
 
 // runContractSuite runs the shared rows against one backend, created via
 // newRuntime and described by caps. The stateless exec/stream rows share one
@@ -120,13 +190,13 @@ func runContractSuite(t *testing.T, newRuntime func(t *testing.T) WorkloadRuntim
 	rt := newRuntime(t)
 	primary := startRunning(t, rt, caps, "contract-primary")
 
-	t.Run("exec_exit_codes", func(t *testing.T) { rowExecExitCodes(t, rt, primary) })
-	t.Run("exec_stdin", func(t *testing.T) { rowExecStdin(t, rt, primary) })
+	t.Run("exec_exit_codes", func(t *testing.T) { rowExecExitCodes(t, rt, caps, primary) })
+	t.Run("exec_stdin", func(t *testing.T) { rowExecStdin(t, rt, caps, primary) })
 	t.Run("streaming_stdio", func(t *testing.T) { rowStreamingStdio(t, rt, caps, primary) })
 	t.Run("kill_wait_deliberate", func(t *testing.T) { rowKillWait(t, rt, caps, primary) })
-	t.Run("ctx_cancel_reaps", func(t *testing.T) { rowCtxCancelReaps(t, rt, primary) })
+	t.Run("ctx_cancel_reaps", func(t *testing.T) { rowCtxCancelReaps(t, rt, caps, primary) })
 	t.Run("uid_enforcement", func(t *testing.T) { rowUIDEnforcement(t, rt, caps, primary) })
-	t.Run("resize_not_implemented", func(t *testing.T) { rowResize(t, rt, primary) })
+	t.Run("resize_not_implemented", func(t *testing.T) { rowResize(t, rt, caps, primary) })
 	t.Run("mount_label", func(t *testing.T) { rowMountLabel(t, rt, caps, primary) })
 	if caps.numericUIDOnly {
 		t.Run("non_numeric_user_refused", func(t *testing.T) { rowNonNumericUser(t, rt, primary) })
@@ -149,9 +219,9 @@ func runContractSuite(t *testing.T, newRuntime func(t *testing.T) WorkloadRuntim
 // echoed body; a non-zero exit is a SUCCESSFUL call returning the code, NEVER an
 // error. A regression that folded a non-zero exit into err would turn every
 // expected-failure probe (a denied firewall check) into a fatal.
-func rowExecExitCodes(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
+func rowExecExitCodes(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
-	out, err := rt.Exec(t.Context(), primary, NewExecSpec("sh", "-c", "echo hello-body").AsUser("1000"))
+	out, err := rt.Exec(t.Context(), primary, NewExecSpec("sh", "-c", "echo hello-body").AsUser(caps.execUser()))
 	if err != nil {
 		t.Fatalf("Exec(echo): %v", err)
 	}
@@ -161,7 +231,7 @@ func rowExecExitCodes(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 	if !strings.Contains(out.Stdout, "hello-body") {
 		t.Fatalf("Exec(echo) stdout = %q, want it to carry the echoed body", out.Stdout)
 	}
-	out, err = rt.Exec(t.Context(), primary, NewExecSpec("sh", "-c", "exit 7").AsUser("1000"))
+	out, err = rt.Exec(t.Context(), primary, NewExecSpec("sh", "-c", "exit 7").AsUser(caps.execUser()))
 	if err != nil {
 		t.Fatalf("a non-zero exit must be a successful call, got err %v", err)
 	}
@@ -176,9 +246,9 @@ func rowExecExitCodes(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 // rowExecStdin — row 2 (record 567-569, agent.go:238-246): the script-over-stdin
 // shape end to end (the secret-safe channel). `sh -s` reads the script from
 // stdin, so the body never appears in the argv / process list.
-func rowExecStdin(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
+func rowExecStdin(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
-	out, err := rt.Exec(t.Context(), primary, NewExecSpec("sh", "-s").WithStdin("echo from-stdin").AsUser("1000"))
+	out, err := rt.Exec(t.Context(), primary, NewExecSpec("sh", "-s").WithStdin("echo from-stdin").AsUser(caps.execUser()))
 	if err != nil {
 		t.Fatalf("Exec(sh -s): %v", err)
 	}
@@ -196,7 +266,7 @@ func rowExecStdin(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 // terminate.
 func rowStreamingStdio(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
-	stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec("cat").AsUser("1000"))
+	stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec("cat").AsUser(caps.execUser()))
 	if err != nil {
 		t.Fatalf("ExecStreaming(cat): %v", err)
 	}
@@ -227,7 +297,7 @@ func rowStreamingStdio(t *testing.T, rt WorkloadRuntime, caps backendCaps, prima
 // unregressed AND the microVM portable path works.
 func rowKillWait(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
-	stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec("sleep", "300").AsUser("1000"))
+	stream, err := rt.ExecStreaming(t.Context(), primary, NewStreamingExecSpec("sleep", "300").AsUser(caps.execUser()))
 	if err != nil {
 		t.Fatalf("ExecStreaming(sleep): %v", err)
 	}
@@ -244,10 +314,10 @@ func rowKillWait(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary Wor
 // no orphan survives a host-side cancel. Wait returning IS the reap signal (Wait
 // reaps). A bounded select fails loudly rather than hanging the suite if the
 // child is never reaped.
-func rowCtxCancelReaps(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
+func rowCtxCancelReaps(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
 	cctx, cancel := context.WithCancel(t.Context())
-	stream, err := rt.ExecStreaming(cctx, primary, NewStreamingExecSpec("sleep", "300").AsUser("1000"))
+	stream, err := rt.ExecStreaming(cctx, primary, NewStreamingExecSpec("sleep", "300").AsUser(caps.execUser()))
 	if err != nil {
 		cancel()
 		t.Fatalf("ExecStreaming(sleep): %v", err)
@@ -267,31 +337,50 @@ func rowCtxCancelReaps(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
 // rowUIDEnforcement — row 6 (record 576, microvm-runner.md:358-360): a uid-0
 // exec is refused on the microVM backend; the podman row asserts its equivalent
 // posture — a directed unprivileged exec runs as the requested uid, never
-// silently escalated to root.
+// silently escalated to root. The host leg (euidOnly) proves its distinct rule:
+// a host child runs as the Runner's own euid and no other uid is accepted.
 func rowUIDEnforcement(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
+	if caps.euidOnly {
+		// A host child cannot switch user, so an exec as the Runner's own euid
+		// runs and an exec naming any other uid is refused — the tier never runs
+		// a command under a uid the caller did not actually get.
+		out, err := rt.Exec(t.Context(), primary, NewExecSpec("id", "-u").AsUser(caps.execUser()))
+		if err != nil {
+			t.Fatalf("Exec(id -u) as the Runner's euid: %v", err)
+		}
+		if got := strings.TrimSpace(out.Stdout); got != caps.execUser() {
+			t.Fatalf("exec ran as uid %q, want the Runner's euid %q", got, caps.execUser())
+		}
+		if _, err := rt.Exec(t.Context(), primary, NewExecSpec("id", "-u").AsUser(caps.rejectedUID)); err == nil {
+			t.Fatalf("an exec naming uid %q (not the Runner's euid) must be refused; got no error", caps.rejectedUID)
+		}
+		return
+	}
 	if caps.refusesRootExec {
 		if _, err := rt.Exec(t.Context(), primary, NewExecSpec("id", "-u").AsUser("0")); err == nil {
 			t.Fatal("a uid-0 exec must be refused on this backend; got no error")
 		}
 		return
 	}
-	out, err := rt.Exec(t.Context(), primary, NewExecSpec("id", "-u").AsUser("1000"))
+	out, err := rt.Exec(t.Context(), primary, NewExecSpec("id", "-u").AsUser(caps.execUser()))
 	if err != nil {
 		t.Fatalf("Exec(id -u): %v", err)
 	}
-	if got := strings.TrimSpace(out.Stdout); got != "1000" {
-		t.Fatalf("directed unprivileged exec ran as uid %q, want 1000", got)
+	if got := strings.TrimSpace(out.Stdout); got != caps.execUser() {
+		t.Fatalf("directed unprivileged exec ran as uid %q, want %q", got, caps.execUser())
 	}
 }
 
-// rowResize — row 11 (record 577-578): Resize returns ErrResizeNotImplemented on
-// both backends until C3. The S1-frozen verb must refuse legibly, never fake a
-// limit change that never happened.
-func rowResize(t *testing.T, rt WorkloadRuntime, primary WorkloadID) {
+// rowResize — row 11 (record 577-578): Resize refuses legibly, never faking a
+// limit change that never happened. The expected sentinel is caps.resize():
+// ErrResizeNotImplemented (the engine legs' C3-reserved sentinel) or, for the
+// host leg, the distinct permanent ErrResizeUnsupportedOnHost.
+func rowResize(t *testing.T, rt WorkloadRuntime, caps backendCaps, primary WorkloadID) {
 	t.Helper()
-	if err := rt.Resize(t.Context(), primary, ResourceLimits{CPUShares: 512}); !errors.Is(err, ErrResizeNotImplemented) {
-		t.Fatalf("Resize err = %v, want ErrResizeNotImplemented", err)
+	want := caps.resize()
+	if err := rt.Resize(t.Context(), primary, ResourceLimits{CPUShares: 512}); !errors.Is(err, want) {
+		t.Fatalf("Resize err = %v, want %v", err, want)
 	}
 }
 
@@ -349,11 +438,11 @@ func rowCommandCapAddIgnored(t *testing.T, rt WorkloadRuntime, caps backendCaps)
 	if err := rt.Start(t.Context(), id); err != nil {
 		t.Fatalf("Start must succeed though spec.Command is bogus (Command ignored): %v", err)
 	}
-	out, err := rt.Exec(t.Context(), id, NewExecSpec("echo", "alive").AsUser("1000"))
+	out, err := rt.Exec(t.Context(), id, NewExecSpec("echo", "alive").AsUser(caps.execUser()))
 	if err != nil || !out.Success() || !strings.Contains(out.Stdout, "alive") {
 		t.Fatalf("exec must still work on the ignored-Command session: out=%+v err=%v", out, err)
 	}
-	status, err := rt.Exec(t.Context(), id, NewExecSpec("cat", "/proc/self/status").AsUser("1000"))
+	status, err := rt.Exec(t.Context(), id, NewExecSpec("cat", "/proc/self/status").AsUser(caps.execUser()))
 	if err != nil || !status.Success() {
 		t.Fatalf("reading /proc/self/status: out=%+v err=%v", status, err)
 	}
@@ -363,8 +452,9 @@ func rowCommandCapAddIgnored(t *testing.T, rt WorkloadRuntime, caps backendCaps)
 			capEff = strings.TrimSpace(rest)
 		}
 	}
-	if capEff != "0000000000000000" {
-		t.Fatalf("workload CapEff = %q, want the empty set (spec.CapAdd must grant the workload nothing)", capEff)
+	want := caps.wantCapEff(t)
+	if capEff != want {
+		t.Fatalf("workload CapEff = %q, want %q (spec.CapAdd must grant the workload nothing)", capEff, want)
 	}
 }
 
