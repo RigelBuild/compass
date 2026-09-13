@@ -16,9 +16,8 @@ package server
 // The USER resolver is the real StoreResolver (T5): SetSecret/DeleteSecret write
 // and delete encrypted rows, and a test observes the result through the same
 // production read the Runner uses (ResolveFor / SecretRecordsForAgent), not a fake.
-// The SERVER resolver is still a recording fake — the server-secret path keeps its
-// SpecResolver seam (Set/Delete/Statuses) at this task, so its tests script and
-// record that fake.
+// The SERVER resolver is a recording fake: Resolve must never be hit (the list
+// probe is value-free) and Statuses returns a scripted report to assert against.
 
 import (
 	"context"

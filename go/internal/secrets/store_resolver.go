@@ -24,12 +24,10 @@ type StoreResolver struct {
 	keyVersion int16
 }
 
-// Compile-time seam assertions. SpecResolver still satisfies the wide Resolver
-// interface at this task (its write half is deleted in T6). StoreResolver
-// deliberately does NOT: its Upsert/Remove/ResolveFor names and signatures share
-// nothing with Resolver's Resolve/Set/Delete/Statuses (record A4), so there is
-// no positive assertion to make for it — the absence is the contract, and adding
-// `var _ Resolver = (*StoreResolver)(nil)` here would fail the build.
+// Compile-time seam assertion. SpecResolver satisfies the read-only Resolver
+// interface; StoreResolver deliberately does NOT — its Upsert/Remove/ResolveFor
+// signatures share nothing with Resolve/Statuses, so the absence is the
+// contract and a `var _ Resolver = (*StoreResolver)(nil)` here would not build.
 var _ Resolver = (*SpecResolver)(nil)
 
 // NewStoreResolver constructs a StoreResolver over the store and the master key.
