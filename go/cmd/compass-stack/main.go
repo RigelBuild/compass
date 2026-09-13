@@ -332,13 +332,10 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 		Now:             time.Now,
 		ExpectedVersion: version,
 	}
-	// The container-backed postgres seams (start + teardown) are wired whenever
-	// a container postgres could be in play: the container start path (up with a
-	// PostgresImage) AND the cross-process down path (which reads a v2 container
-	// entry and needs Containers to tear it down, without knowing at down time
-	// whether up used the container). The external-DB path needs neither, but
-	// wiring them unconditionally when not external is simplest and the adapter
-	// is inert unless dispatched to. One adapter satisfies both seams.
+	// The container-backed postgres seams (start + teardown) are wired whenever a
+	// container postgres could be in play: the start path (up with a PostgresImage)
+	// AND the cross-process down path (which needs Containers to tear down a v2
+	// entry without knowing whether up used the container). Inert unless dispatched.
 	if !cfg.ExternalDatabase {
 		pc, err := adapters.NewPostgresContainer()
 		if err != nil {

@@ -1,15 +1,9 @@
 package linearagent
 
-// Unit tests for ResolveResponder (RIG-2717 T4). Table-driven over fakes for
-// the two seams (OwnershipIndex + ManagerResolver), asserting the four routing
-// outcomes of design §Part 2: a recorded coordinate whose authoring agent IS a
-// Manager, a recorded coordinate whose authoring agent is a PEER (the walk must
-// resolve peer -> owning Manager, never peer -> peer), an unknown coordinate
-// (store.ErrNotFound -> supervisor + routing channel), and a bare @mention with
-// no issue coordinate (-> supervisor + routing channel).
-//
-// context.Background() here is the test root — the sanctioned exemption to the
-// thread-ctx rule.
+// Unit tests for ResolveResponder (RIG-2717 T4). Table-driven over fakes for the
+// two seams, asserting the four routing outcomes: a coordinate whose author IS a
+// Manager, one whose author is a PEER (walk resolves to owning Manager), an
+// unknown coordinate (-> supervisor + routing channel), and a bare @mention.
 
 import (
 	"context"

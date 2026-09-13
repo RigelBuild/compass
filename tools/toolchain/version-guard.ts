@@ -1,27 +1,20 @@
 #!/usr/bin/env bun
-// The version.txt guard-parity gate: fail the build when flake.nix's
-// `versionBase` and devenv.nix's process-script guard would disagree about a
-// candidate version.txt. The two guards are independent hand-written
-// expressions in two languages, both feeding `-X main.version` from one file,
-// and nothing enforces their agreement by construction — so a skew means one
-// lane builds green while the other hard-fails on the same tree, or both build
-// and stamp different versions.
-//
-// This is the thin execution shell — extract each guard, run it, compare,
-// exit. The extraction and the comparison live in ./version-guard-core.ts,
-// which is pure and unit-tested (./version-guard-core.test.ts). Mirrors
-// flake-parity.ts.
-//
-// It runs the REAL guards, not models of them: the flake half is evaluated by
-// `nix eval` on the expression lifted verbatim out of flake.nix, and the devenv
-// half by `bash` on the snippet lifted out of devenv.nix. A model would let the
-// gate stay green while comparing two fictions.
-//
-// Run it anywhere: in CI (moon task flake-gate:version-guard) or locally (`bun
-// tools/toolchain/version-guard.ts`), where it should always pass.
-//
-// Exit 0 = both guards agree on every candidate. Exit 1 = they disagree OR a
-// guard could not be extracted or run. Unverifiable is a failure, never a skip.
+// The version.txt guard-parity gate: fail the build when flake.nix's versionBase
+// and devenv.nix's process-script guard would disagree about a candidate
+// version.txt. The two guards are independent hand-written expressions in two
+// languages feeding one -X main.version, with nothing enforcing agreement.
+
+// This is the thin execution shell — extract each guard, run it, compare, exit.
+// The extraction and comparison live in ./version-guard-core.ts (pure,
+// unit-tested). Mirrors flake-parity.ts.
+
+// It runs the REAL guards: the flake half via nix eval on the expression lifted
+// verbatim out of flake.nix, the devenv half via bash on the snippet from
+// devenv.nix. A model would let the gate stay green while comparing two fictions.
+
+// Run in CI (moon task flake-gate:version-guard) or locally. Exit 0 = both
+// guards agree on every candidate; 1 = they disagree or a guard could not be
+// extracted or run. Unverifiable is a failure, never a skip.
 
 import { spawnSync } from "node:child_process";
 import {
@@ -83,43 +76,29 @@ CANDIDATES.forEach(({ content }, index) => {
 	writeFileSync(path, content);
 });
 
-// The flake half, as ONE `nix eval` over every candidate rather than one per
-// candidate: `getFlake` re-evaluates the whole flake each invocation, which
-// turned a 24-row table into ~6 minutes of wall clock — too slow to sit in
-// `:ci`. Batching pays that cost once.
-//
-// The lifted binding becomes a function of `candidate` and is applied to each
-// path under `builtins.tryEval`. `nixpkgs` is resolved from THIS repo's
-// flake.lock so the gate exercises the same `lib.strings.trim` the real build
-// uses, not an ambient channel's.
-//
-// `tryEval` catches `throw` and `assert` — which is what both of the guard's
-// reject branches are, so `success = false` IS the reject verdict, with no
-// stderr scraping. It does NOT catch `readFile` I/O or encoding errors, and
-// `readFile` is the guard's first act. So content nix cannot represent as a
-// string — a NUL byte, or UTF-16 — is OUTSIDE this gate's comparable domain:
-// it aborts the whole batched eval into a harness error rather than scoring as
-// a verdict. That is a real skew the gate cannot see (bash silently drops NUL
-// from `$(cat)` and stamps, while the flake lane dies), so it is deliberately
-// not in CANDIDATES: a row for it would red the gate with an opaque "could not
-// run" that reads as harness breakage rather than the finding.
-//
-// The blast radius is bounded by the FLAKE lane failing closed, not by the
-// character class. bash drops the NUL and the surviving bytes can be perfectly
-// class-legal, so devenv accepts and stamps: `1.2.3\0999` becomes
-// `-X main.version=1.2.3999+dev` — a wrong stamp off a file that reads 1.2.3,
-// not a confusing error. Same for a UTF-16 file. What keeps this out of a
-// released artifact is that the flake lane hard-errors on the same input, so
-// the two lanes never both ship; the exposure is a dev-shell binary claiming a
-// version its version.txt does not. Hence deferred, not dismissed — see
-// RIG-3439, whose option to reject NUL explicitly is the real fix.
+// The flake half, as ONE nix eval over every candidate: getFlake re-evaluates
+// the whole flake per invocation, which turned a 24-row table into ~6 minutes.
+// Batching pays that cost once. nixpkgs is resolved from THIS repo's flake.lock
+// so the gate exercises the same lib.strings.trim the real build uses.
+
+// tryEval catches throw and assert — both of the guard's reject branches — so
+// success=false IS the reject verdict. It does NOT catch readFile I/O/encoding
+// errors, so content nix cannot represent as a string (a NUL byte, UTF-16) is
+// OUTSIDE the comparable domain and aborts the batch into a harness error.
+
+// That is a real skew the gate cannot see (bash drops NUL from $(cat) and
+// stamps, the flake lane dies), so it is deliberately not in CANDIDATES: a row
+// would red the gate with an opaque "could not run". The blast radius is bounded
+// by the flake lane failing closed — the two lanes never both ship.
+
+// Example: 1.2.3\0999 becomes -X main.version=1.2.3999+dev in bash, a wrong
+// stamp, while the flake lane hard-errors on the same input. Deferred, not
+// dismissed — see RIG-3439, whose option to reject NUL explicitly is the fix.
 const flakeVerdicts = (): Verdict[] | Error => {
-	// JSON.stringify, not bare interpolation: a checkout or TMPDIR path holding
-	// a `"` would otherwise break out of the nix string literal. Nothing can
-	// execute either way (nix has no command substitution, and both spawnSync
-	// calls are argv-form with no intervening shell), so this is hardening — it
-	// keeps a path with a quote in it from failing the gate for the wrong
-	// reason.
+	// JSON.stringify, not bare interpolation: a path holding a " would break out
+	// of the nix string literal. Nothing can execute either way (nix has no
+	// command substitution, spawnSync is argv-form), so this is hardening against
+	// a quoted path failing the gate for the wrong reason.
 	const paths = CANDIDATES.map(
 		(_row, index) => `(/. + ${JSON.stringify(candidatePath(index))})`,
 	).join(" ");
@@ -158,37 +137,26 @@ const flakeVerdicts = (): Verdict[] | Error => {
 	);
 };
 
-// The devenv half. The lifted snippet runs verbatim under bash with
-// version_base seeded exactly as the process script seeds it, then echoes the
-// surviving value — so the stamp compared is the one the ldflag would carry.
-// Cheap enough per candidate to stay a loop.
-//
-// `shopt -s globasciiranges` and `export LC_ALL=C` both make the comparison
-// locale-invariant, and either one alone is sufficient for the case that
-// motivates them: with NEITHER set, the negated class `[!0-9A-Za-z.+-]` under a
-// UTF-8 locale accepts `0.1.0é`, which the flake side (`builtins.match`,
-// locale-invariant unconditionally) rejects — a verdict differing by
-// environment rather than by expression. Setting either pin restores REJECT.
-//
-// Both are kept because they close it by different mechanisms, so no single
-// environment change can reopen it: `LC_ALL=C` fixes the collation locale but
-// is an env var an ambient `LC_ALL` or a future harness edit could displace,
-// while `globasciiranges` forces bracket ranges to collate by ASCII code point
-// whatever the locale, but is a bash build default a differently-built bash
-// need not carry. Together they make the parity verdict a property of the two
-// guards rather than of the environment the gate happens to run under.
+// The devenv half. The lifted snippet runs verbatim under bash with version_base
+// seeded as the process script seeds it, then echoes the surviving value — so
+// the stamp compared is the one the ldflag would carry. Loop, cheap per candidate.
+
+// shopt -s globasciiranges and export LC_ALL=C both make the comparison
+// locale-invariant. With NEITHER, [!0-9A-Za-z.+-] under a UTF-8 locale accepts
+// 0.1.0é, which the flake side (builtins.match) rejects — a verdict differing by
+// environment. Either pin alone restores REJECT.
+
+// Both are kept because they close it by different mechanisms: LC_ALL=C fixes the
+// collation locale but is an env var something could displace, while
+// globasciiranges forces ASCII-code-point ranges but is a bash build default.
+// Together the verdict is a property of the guards, not the environment.
 const devenvVerdict = (index: number): Verdict | Error => {
 	const script =
 		"set -u\nshopt -s globasciiranges\nexport LC_ALL=C\n" +
-		// Single-quoted so a scratch path containing `"`, `$`, or a backtick is
-		// inert; `'` itself cannot occur in an mkdtemp path, and the quote-escape
-		// dance would obscure the line for a byte that never appears. This is the
-		// one place the harness diverges textually from the shipped seed
-		// (devenv.nix uses double quotes), and it cannot move a verdict: the
-		// quoting governs how the PATH is resolved, while the candidate content
-		// reaches bash only as file BYTES through `$(cat)`. Both forms strip
-		// trailing newlines identically, which is the only `$(cat)` property the
-		// parity reasoning depends on.
+		// Single-quoted so a scratch path containing ", $, or a backtick is inert;
+		// ' cannot occur in an mkdtemp path. The one place the harness diverges
+		// textually from the shipped seed (devenv.nix uses double quotes); content
+		// reaches bash only as file BYTES through $(cat), so it cannot move a verdict.
 		`version_base="$(cat '${candidatePath(index)}')"\n` +
 		`${devenvGuard}\nprintf '%s' "$version_base"\n`;
 	const run = spawnSync("bash", ["-c", script], { encoding: "utf8" });

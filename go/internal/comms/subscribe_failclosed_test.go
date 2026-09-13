@@ -1,34 +1,21 @@
-// The M5 fail-closed / clean-end contract of the SubscribeComms visibility
-// filter (subscribe.go forwardComms + the SubscribeComms CodeInternal wrap),
-// driven with NO database. forwardComms consults visibility through the
-// eventVisibility interface, so a fake drives the two security-critical branches
-// the DB-backed tests never reach: a store fault (the real store returns
-// (bool, nil) on the happy path, never (_, err)) and a cancellation racing the
-// in-flight query. This file is untagged, so it runs on the default `go test`
-// lane — no pgtest, no COMPASS_TEST_DATABASE_DSN.
-//
-// The invariant (subscribe.go:76-85, :93-120):
-//   - Store fault resolving visibility  -> event NEVER sent (fail closed), the
-//     fault is propagated, and SubscribeComms surfaces connect.CodeInternal with
-//     the opaque errStreamVisibility text (no leak of the filtered event).
-//   - Cancellation (context.Canceled / DeadlineExceeded wrapping the visibility
-//     query) -> clean end (nil), no fault, no CodeInternal.
-//   - Visible (true, nil)      -> event delivered once.
-//   - Not visible (false, nil) -> event skipped, the stream continues.
-//
+// The M5 fail-closed / clean-end contract of the SubscribeComms visibility filter
+// (subscribe.go forwardComms), driven with NO database. A fake eventVisibility
+// drives the two security-critical branches the DB-backed tests never reach: a
+// store fault and a cancellation racing the in-flight query. Untagged, default lane.
+
+// Invariant: a store fault resolving visibility -> event NEVER sent (fail
+// closed), fault propagated, SubscribeComms surfaces CodeInternal with the
+// opaque errStreamVisibility text; cancellation -> clean end (nil); visible ->
+// delivered once; not visible -> skipped, stream continues.
+
 // A real *connect.ServerStream has no exported constructor, so forwardComms is
-// driven through a one-shot connect server-stream handler over httptest (the
-// same wire-through pattern as subscribe_test.go); Send calls are observed as
-// client-side receives (zero received == Send never called). The handler mirrors
-// SubscribeComms's error wrap (subscribe.go:49-60) verbatim — the only part of
-// the M5 path unreachable in a no-DB lane, since Comms holds the store
-// concretely — so the client-observable CodeInternal/opaque-message contract is
-// asserted against forwardComms's real return and the real errStreamVisibility.
-//
-// This file also hosts the untagged, no-database ring-lag resync and
-// replay-boundary tests (RIG-3538): they share driveForwardComms + a real
-// events.Bus, and the arm-2 underflow cases drive SubscribeComms with a nil
-// store, whose terminal resync precedes any store access.
+// driven through a one-shot server-stream handler over httptest; Send calls are
+// observed as client-side receives. The handler mirrors SubscribeComms's error
+// wrap verbatim — the one part unreachable in a no-DB lane.
+
+// Also hosts the untagged ring-lag resync and replay-boundary tests (RIG-3538):
+// they share driveForwardComms + a real events.Bus, and the arm-2 underflow
+// cases drive SubscribeComms with a nil store whose resync precedes store access.
 
 package comms
 

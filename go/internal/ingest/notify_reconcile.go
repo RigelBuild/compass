@@ -1,18 +1,14 @@
 package ingest
 
-// The reconciliation sweep (RIG-2732 T5, design.md:888-982): the reliability
-// backstop that heals a missed webhook without reintroducing a poll. It runs one
-// immediate sweep at startup (healing the downtime window) then on a ticker at
-// the Backstop cadence (default 30 min). Per sweep it enumerates the subscribed
-// coordinates (the NotifyStore.ListNotifyTargets seam), conditionally re-reads
-// each via the forge.NotifyReader, diffs the observation against the stored
-// snapshot (DetectChanges), feeds every detected change into the SAME
-// NotifyRouter.Route as a synthetic ForgeEvent, and — for a subscriber whose
-// delivered_revision trails the cursor with no pending diff — synthesizes ONE
-// payload-free UPDATE (advance rides the ack, W3). Requests are paced within the
-// sweep (anti-burst); ErrBudgetExhausted aborts the sweep (resumed next
-// interval, the board driver's treatment, driver.go:134-136); a per-target error
-// is isolated (logged, sweep continues); ctx cancellation returns promptly.
+// The reconciliation sweep (RIG-2732 T5): the reliability backstop that heals a
+// missed webhook without reintroducing a poll. One immediate sweep at startup,
+// then a ticker at the Backstop cadence (default 30 min).
+//
+// Per sweep it enumerates subscribed coordinates, conditionally re-reads each via
+// forge.NotifyReader, diffs against the stored snapshot, feeds every change into
+// the SAME NotifyRouter.Route, and for a subscriber trailing the cursor with no
+// pending diff synthesizes ONE payload-free UPDATE. Requests are paced (anti-
+// burst); ErrBudgetExhausted aborts; a per-target error is isolated.
 
 import (
 	"context"
@@ -177,11 +173,9 @@ func (rc *NotifyReconciler) reconcileTarget(ctx context.Context, tgt NotifyTarge
 		return err
 	}
 
-	// Route each detected change as a synthetic event through the SHARED router
-	// (it re-loads the just-upserted cursor, re-applies idempotently — the
-	// comment set is keyed by the stable comment key, state/checks overwrite,
-	// OPENED is max — so every
-	// notification carries the same final revision).
+	// Route each detected change as a synthetic event through the SHARED router,
+	// which re-loads the just-upserted cursor and re-applies idempotently, so
+	// every notification carries the same final revision.
 	for _, ev := range changes {
 		if err := rc.router.Route(ctx, ev); err != nil {
 			if errors.Is(err, forge.ErrBudgetExhausted) {
@@ -192,12 +186,10 @@ func (rc *NotifyReconciler) reconcileTarget(ctx context.Context, tgt NotifyTarge
 		}
 	}
 
-	// Lagging-subscriber recovery: when the diff was EMPTY (no synthetic change
-	// re-notified anyone) but a subscriber's delivered_revision trails the
-	// current cursor revision, the snapshot is current yet that subscriber never
-	// got acked up to it — synthesize exactly ONE payload-free UPDATE (advance
-	// rides the ack, W3). A non-empty diff already re-notified the exact-
-	// coordinate subscribers, so nothing is synthesized then.
+	// Lagging-subscriber recovery: when the diff was EMPTY but a subscriber's
+	// delivered_revision trails the current cursor, synthesize exactly ONE
+	// payload-free UPDATE (advance rides the ack, W3). A non-empty diff already
+	// re-notified the exact-coordinate subscribers.
 	if len(changes) == 0 {
 		for _, sub := range tgt.Subscribers {
 			if sub.DeliveredRevision != revision {

@@ -1,14 +1,7 @@
-// Live client construction: a resolved Connection → the typed compass.v1 clients
-// the store dials. The one place transport is chosen (compass-tauri-shell.md:
-// 110-124) — the browser MVP builds gRPC-Web clients over the T3b network door
-// through the shipped @compass/client factories; a hosted/Wails transport is a
-// sibling built here later without touching a caller above this seam.
-//
-// Two clients from one connection: the CommsClient (the channel surface — the
-// T7 body-swap's data source) and the CompassClient (server liveness/version via
-// GetServerInfo, the post-connect probe, plus the agent-lifecycle RPCs the
-// workspace drives — StopAgentSession). Both carry the same bearer as a
-// connect interceptor (the factories install it); no local-assumption leaks.
+// Live client construction: a resolved Connection → the typed compass.v1 clients the store
+// dials. The one place transport is chosen. Two clients from one connection: the CommsClient
+// (channel surface) and the CompassClient (GetServerInfo probe + agent-lifecycle RPCs).
+// Both carry the same bearer as a connect interceptor.
 
 import type {
 	CommsClient,

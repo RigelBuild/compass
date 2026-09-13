@@ -2,14 +2,10 @@
 
 package comms
 
-// Coordination-channel handler contracts (RIG-1722 T5, design.md:530-592): the
-// CreateAgent-with-parent and ReparentAgent RPC paths fire the store's in-tx
-// coordination hook (registered here via RegisterCoordinationHook) and emit the
-// coordination ChannelChanged post-commit, and the manual entrypoints
-// (EnsureCoordinationChannel, ReconcileCoordinationMembership) run the same
-// reconcile in their own tx. Reparent-out's removal rides
-// ChannelChanged.removed_account_ids. Driven in-process against a real store +
-// bus.
+// Coordination-channel handler contracts (RIG-1722 T5): CreateAgent-with-parent
+// and ReparentAgent fire the store's in-tx coordination hook and emit the
+// ChannelChanged post-commit; the manual entrypoints run the same reconcile.
+// Reparent-out rides removed_account_ids. In-process against a real store + bus.
 
 import (
 	"context"

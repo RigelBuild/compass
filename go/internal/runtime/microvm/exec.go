@@ -2,18 +2,14 @@
 
 package microvm
 
-// exec.go is the host-side exec layer over the U1 GuestControl client: a
-// GuestExec wrapping the GuestControl Connect client (dial.go GuestClient) with
-// a one-shot Exec and a streaming ExecStream that turns the bidi frame protocol
-// into live io.Pipe stdio plus a kill/wait handle (design §(c), record §Plan
-// U3).
-//
-// Package boundary: this layer produces plain structs mirroring the proto
-// (ExecCall/ExecResult/StreamCall/ExitStatus) rather than go/internal/runtime
-// types. runtime's MicroVMRuntime (U4) consumes GuestExec, so runtime imports
-// microvm; microvm importing runtime would cycle. The runtime-side adaptation
-// (spec -> ExecCall, ExitStatus -> ExecOutput/*runtime.ExitStatusError, the
-// newChildHandleFuncs kill/wait pair) is U4's, kept out of this package.
+// The host-side exec layer over the U1 GuestControl client: a GuestExec
+// wrapping the Connect client with a one-shot Exec and a streaming ExecStream
+// that turns the bidi frame protocol into live io.Pipe stdio plus a kill/wait
+// handle (design §(c)).
+
+// Package boundary: this produces plain structs mirroring the proto, not
+// runtime types — runtime imports microvm, so microvm importing runtime would
+// cycle. The runtime-side adaptation (spec->ExecCall, kill/wait pair) is U4's.
 
 import (
 	"context"
@@ -183,11 +179,10 @@ func isDeadline(err error) bool {
 // ExecExit frame arrives.
 func (g *GuestExec) ExecStream(ctx context.Context, call StreamCall) (_ *GuestStream, retErr error) {
 	stream := g.openBidi(ctx)
-	// Until the pumps below take ownership of the stream, any early-error return
-	// must reap both halves itself — the bidi stream is already open, so a bare
-	// `return nil, err` leaks its response-body reader / makeRequest goroutine
-	// for a failed spawn. The pumps own the reap once they start (return gs, nil
-	// leaves retErr nil, so this is a no-op on the success path).
+	// Until the pumps take ownership, any early-error return must reap both
+	// halves itself — the bidi stream is already open, so a bare `return nil,
+	// err` leaks its response-body reader / makeRequest goroutine. The pumps own
+	// the reap once they start (a no-op on the success path).
 	defer func() {
 		if retErr != nil {
 			_ = stream.CloseRequest()
@@ -357,21 +352,18 @@ func (s *GuestStream) pumpStdin() {
 // bytes — matching the runner's continuous-drain model.
 func (s *GuestStream) pumpResponses() {
 	defer close(s.done)
-	// On any terminal exit, also reap the stdin pump and free the response
-	// half: pumpStdin may be parked in stdinR.Read (a caller that never wrote
-	// or closed Stdin), and the muxed response half must not leak per exec.
-	// This defer runs before close(s.done), so by the time Wait returns the
-	// pump's reader end is closed.
+	// On any terminal exit, reap the stdin pump and free the response half:
+	// pumpStdin may be parked in stdinR.Read, and the muxed response half must
+	// not leak per exec. This defer runs before close(s.done), so by the time
+	// Wait returns the pump's reader end is closed.
 	defer s.reapStdinPump()
 	for {
 		resp, err := s.stream.Receive()
 		if err != nil {
-			// Stream ended without a terminal exit frame: EOF is a clean close,
-			// anything else (ctx cancel, transport break) is a broken stream. A
-			// ctx cancel is a deliberate teardown, which SIGKILLs the guest child
-			// (guestd binds the child to the stream ctx), so report SIGKILL so
-			// the runtime waitFunc recognizes a deliberate kill; a non-cancel
-			// break with no exit frame is reported as a non-zero code.
+			// Stream ended without a terminal exit frame: EOF is clean, anything
+			// else is a broken stream. A ctx cancel is a deliberate teardown that
+			// SIGKILLs the guest child, so report SIGKILL for the runtime
+			// waitFunc; a non-cancel break is reported as a non-zero code.
 			if s.ctx.Err() != nil {
 				s.status = ExitStatus{Signal: int(sigKill)}
 			} else if !errors.Is(err, io.EOF) {

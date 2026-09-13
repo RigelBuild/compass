@@ -1,20 +1,12 @@
 //go:build unix
 
-// The agent-forge Server leg: the RelayForgeCall resolution edge the Runner
-// forwards each agent-initiated forge call into (Compass forge write path T5).
-// It is the forge sibling of the RelayBoardCall board leg (relay_board.go), the
-// RelayLifecycleCall lifecycle leg (relay_lifecycle.go), and the RelayCommsCall
-// comms leg (relay_comms.go), and shares their trust model exactly.
-//
-// Trust model (the load-bearing security leg). The Runner is a pure forwarder:
-// it sends RelayForgeCall{session_id, call} and asserts NO account. The SERVER
-// resolves session_id -> caller agent account from THIS hub's own binding (the
-// same binding RelayBoardCall/RelayLifecycleCall/RelayCommsCall resolve against)
-// and delegates the call to the ForgeCaller under that resolved caller account,
-// passing the session id through (the ForgeCaller stamps the owner header from
-// it). An unknown, stopped, or reconnect-dropped session fails closed
-// CodeNotFound: never a stale account, never the bootstrap admin. A session_id
-// on the wire selects an account, it never carries one.
+// The agent-forge Server leg: the RelayForgeCall resolution edge, forge sibling
+// of the board, lifecycle, and comms legs, sharing their trust model exactly.
+
+// Trust model (load-bearing security leg): the Runner is a pure forwarder and
+// asserts NO account. The SERVER resolves session_id -> caller account and
+// delegates to the ForgeCaller under it (it stamps the owner header). Unknown/
+// stopped/dropped session fails closed CodeNotFound — never a stale account.
 package runnerhub
 
 import (
@@ -114,12 +106,10 @@ func (h *Hub) RelayForgeCall(
 		}, nil
 	}
 	if result == nil {
-		// Defensive: a ForgeCaller must return a non-nil result on the nil-error
-		// arm (the sibling legs get this for free from their internal executor,
-		// which always builds a fresh result; the forge leg calls the external
-		// ForgeCaller directly). A (nil, nil) return is a malformed reply, not a
-		// tool failure — surface it in-band as CodeInternal rather than nil-deref
-		// on this security-critical resolution edge.
+		// Defensive: the external ForgeCaller must return a non-nil result on the
+		// nil-error arm. A (nil, nil) return is a malformed reply, not a tool
+		// failure — surface it in-band as CodeInternal rather than nil-deref on
+		// this security-critical resolution edge.
 		return &compassv1internal.RelayForgeCallResponse{
 			Result: &compassv1internal.ForgeCallResult{
 				CallId: callID,

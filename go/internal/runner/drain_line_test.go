@@ -2,12 +2,10 @@
 
 package runner
 
-// readBoundedLine is the drain's whole safety property in one function: it must
-// keep the reader aligned to the next line no matter what the agent wrote, and
-// it must say when it dropped bytes. The drain-level tests reach exactly one of
-// its shapes (a long line then a short one), so every boundary is covered here
-// instead — against a plain strings.Reader, where an exact-size input is cheap
-// and a read error is actually producible (an io.Pipe cannot fail on read).
+// readBoundedLine is the drain's whole safety property: keep the reader aligned to
+// the next line no matter what the agent wrote, and say when it dropped bytes.
+// Every boundary is covered here against a plain strings.Reader, where an
+// exact-size input is cheap and a read error is producible (an io.Pipe cannot).
 
 import (
 	"bufio"

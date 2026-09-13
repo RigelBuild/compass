@@ -1,17 +1,14 @@
 package forge
 
-// The owner-header stamp/strip chokepoint (#995 Decision 2 + T3, DL-050). This
-// is the ONLY non-test file in the module that carries the literal owner-header
-// sentinel — the one place attribution is written and the one place it is read.
-//
-// The load-bearing security property: an agent CANNOT forge attribution.
-// StampOwner strips any pre-existing header (of any version) from an agent body
-// before writing exactly one header of its own at the top, so a hand-written
-// header naming a victim never survives — last stamp wins, and only the Server
-// stamps. On read, a parsed header is a plain display CLAIM only: a forge body is
-// untrusted, no verification exists, and the returned Author MUST NOT reach any
-// authz / routing / ownership decision (DL-094 supersedes the older "verified"
-// language; DL-050 keeps display out of decisions).
+// The owner-header stamp/strip chokepoint (#995 Decision 2 + T3, DL-050). The
+// ONLY non-test file carrying the literal owner-header sentinel — the one place
+// attribution is written and read.
+
+// Security property: an agent CANNOT forge attribution. StampOwner strips any
+// pre-existing header before writing exactly one of its own, so a hand-written
+// header naming a victim never survives — last stamp wins, only the Server
+// stamps. On read a parsed header is a display CLAIM only and MUST NOT reach any
+// authz/routing/ownership decision (DL-094).
 
 import (
 	"errors"

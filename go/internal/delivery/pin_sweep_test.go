@@ -2,16 +2,10 @@
 
 package delivery
 
-// RIG-1723 T7 — the session-start pin sweep, RED-first. A session-start edge
-// (OnSessionStarted) drains through the loop's drainStarts, which runs the
-// EXISTING cursor sweep (sweepSession) and then the new sibling pin step
-// (sweepPins): for every channel the agent sweeps (SweepChannels, the D1
-// disjunct), each PinnedEntry's message is dispatched as a DeliverControl
-// REGARDLESS of cursor position (design.md:640-663). Each case drives the
-// consumer through the real events bus + hand-written fakes and gates on the
-// recorder's observed dispatches — never a sleep. context.Background() is the
-// test root (rule://go-thread-context exemption for _test.go); it is threaded
-// into Run and never re-rooted below.
+// RIG-1723 T7 — the session-start pin sweep, RED-first. A session-start edge runs
+// the cursor sweep then the sibling pin step (sweepPins): for every channel the
+// agent sweeps, each PinnedEntry's message is dispatched REGARDLESS of cursor
+// position. Each case gates on the recorder's observed dispatches — never a sleep.
 
 import (
 	"testing"
@@ -20,12 +14,9 @@ import (
 )
 
 // Case T7-1: a FRESH session receives the channel's current pins even when the
-// delivery cursor is already caught up past the pinned message (acked_seq >= pin
-// seq), so the cursor sweep owes NOTHING. The pin's message is absent from the
-// owed set (UndeliveredMessages returns empty) yet the pin sweep still injects
-// it, because it dispatches regardless of cursor position (design.md:660-661).
-// The channel is in the agent's SweepChannels set; the pinned message resolves
-// via the message table. Its arrival is the whole point of the pin sweep.
+// cursor is already caught up past the pinned message, so the cursor sweep owes
+// NOTHING. The pin's message is absent from the owed set yet the pin sweep injects
+// it, because it dispatches regardless of cursor position.
 func TestPinSweepDeliversCurrentPinsWhenCursorCaughtUp(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -58,12 +49,9 @@ func TestPinSweepDeliversCurrentPinsWhenCursorCaughtUp(t *testing.T) {
 }
 
 // Case T7-2: pins the D1 live-edit path in isolation. A board edit mints a NEW
-// message via PostMessage → a normal MessagePosted on the bus → normal fan-out
-// to live subscribers (design.md:642-645). Here NO session-start edge fires, so
-// sweepPins is deliberately NOT exercised in this case: it only asserts that the
-// pre-existing D1 live path emits the edit's message exactly ONCE. The
-// sweep-side double-dispatch (a pin also owed by the cursor sweep) is covered
-// separately by TestPinSweepIsUnconditionalWhenAlsoOwed.
+// message → a normal MessagePosted → normal fan-out. NO session-start edge fires, so
+// sweepPins is NOT exercised: it only asserts the D1 live path emits the edit's
+// message exactly ONCE (the sweep-side double-dispatch is a separate test).
 func TestPinSweepDoesNotDoubleHandleLiveEdit(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -92,16 +80,10 @@ func TestPinSweepDoesNotDoubleHandleLiveEdit(t *testing.T) {
 	}
 }
 
-// Case T7-3: a message that is BOTH owed (cursor sweep) AND pinned (pin sweep) is
-// dispatched by BOTH sweeps server-side, on the one start pass — the pin sweep
-// does NOT itself skip an id the cursor sweep already dispatched this pass
-// (design.md:652-654: dispatch "REGARDLESS of cursor position"; no server-side
-// dedup). The single-delivery "injected once" guarantee is the AGENT-SIDE
-// per-session message_id dedup (DL-073/T5, design.md:263-264, :658-659) and is
-// out of scope for the Go delivery pkg — it belongs to an agent-side/integration
-// test, NOT a one-dispatch assertion here. This case asserts the server-observable
-// truth: the pin sweep is unconditional, so the owed+pinned message is dispatched
-// TWICE (once per sweep) and the pin sweep never conditions on the cursor.
+// Case T7-3: a message BOTH owed (cursor sweep) AND pinned (pin sweep) is dispatched
+// by BOTH sweeps server-side on the one start pass — the pin sweep does NOT skip an
+// id the cursor sweep already dispatched (no server-side dedup; the single-delivery
+// guarantee is AGENT-SIDE, DL-073/T5). Asserts the owed+pinned message dispatches TWICE.
 func TestPinSweepIsUnconditionalWhenAlsoOwed(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -136,11 +118,9 @@ func TestPinSweepIsUnconditionalWhenAlsoOwed(t *testing.T) {
 }
 
 // RIG-2486 T1 (pin-sweep coverage): the pin sweep denormalizes the author's
-// handle onto each pinned deliver op (sweepPins, settle.go:182,
-// deliverOp(wire, c.authorHandle(ctx, wire))). Seeds the author's account and
-// asserts the pin's deliver carries its handle. Mirrors
-// TestDeliverAndSteerCarryAuthorFromHandle's assertion (mention_test.go:261) and
-// reuses TestPinSweepDeliversCurrentPinsWhenCursorCaughtUp's harness.
+// handle onto each pinned deliver op. Seeds the author's account and asserts the
+// pin's deliver carries its handle. Mirrors TestDeliverAndSteerCarryAuthorFromHandle
+// and reuses TestPinSweepDeliversCurrentPinsWhenCursorCaughtUp's harness.
 func TestSweepPinsCarriesAuthorFromHandle(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
@@ -171,8 +151,7 @@ func TestSweepPinsCarriesAuthorFromHandle(t *testing.T) {
 }
 
 // RIG-2956 T0 (pin-sweep coverage): the pin sweep denormalizes the source
-// channel+topic names onto each re-delivered pin op (sweepPins, settle.go:
-// cn, tn := c.sourceNames(ctx, wire); deliverOp(wire, handle, cn, tn)). Reuses
+// channel+topic names onto each re-delivered pin op. Reuses
 // TestSweepPinsCarriesAuthorFromHandle's harness; RED if the settle site drops
 // the names.
 func TestSweepPinsCarriesSourceChannelAndTopicNames(t *testing.T) {

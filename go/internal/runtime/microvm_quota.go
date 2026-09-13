@@ -1,39 +1,9 @@
 package runtime
 
-// microvm_quota.go is V6's session-volume quota VERIFICATION path: the expected
-// bound (VolumeQuota), what a host probe observed (QuotaReading), and the pure
-// decision that turns a reading into a startup verdict (verifyVolumeQuota).
-//
-// Per D7 the Runner NEVER assigns quota. Project-quota assignment
-// (FS_IOC_FSSETXATTR + quotactl) and the loopback-image fallback (mount(2)) both
-// need CAP_SYS_ADMIN the rootless Runner lacks, and the frozen no-copy invariant
-// forbids swapping the virtio-fs volume for a quota-bounded block device. So the
-// multi-tenant deployment provisions per-directory project quota on the
-// session-volume filesystem via operator IaC at deploy, and this file's job is
-// exactly one read-only, rootless-safe question: *is that quota active?*
-//
-// Mechanism — statvfs-derived, deliberately NOT quotactl (record §(d) leaves the
-// choice to "the rootless-safe mechanism"). The obvious reads both fail rootless
-// or answer the wrong question:
-//   - quotactl(Q_XGETQUOTA, PRJQUOTA, …) returns the real limits AND usage, but
-//     the kernel gates a non-self quota id on CAP_SYS_ADMIN, and a project id is
-//     never "self" — so it EPERMs for exactly the caller this check exists for.
-//   - FS_IOC_FSGETXATTR yields the directory's project id, but a project id is
-//     only a *label*: it is set identically whether or not the filesystem is
-//     mounted with enforcement on, so it cannot answer "is the bound live".
-//
-// statfs(2) answers both at once, unprivileged. XFS (xfs_qm_statvfs, gated on
-// project quota ACCT+ENFD && a non-zero project id && FS_XFLAG_PROJINHERIT) and
-// ext4 (ext4_statfs_project, gated on the prjquota mount option, PROJINHERIT and
-// a non-zero block hard limit) both REWRITE the statfs block/inode totals of a
-// project-quota'd directory to the project's limit and usage. So a statfs on the
-// volume that reports SMALLER totals than a statfs at its mount root is precisely
-// the kernel telling us an enforced project quota is scoping this subtree — and
-// the same call hands back the utilization V7 will meter. No syscall wrapper, no
-// unsafe, no capability.
-//
-// The syscall half lives in microvm_quota_linux.go (with a named-refusal stub in
-// microvm_quota_unsupported.go); everything here is pure and hermetically tested.
+// Session-volume quota VERIFICATION (V6). The Runner never assigns quota (D7:
+// rootless, no CAP_SYS_ADMIN); it only asks "is an enforced quota active?" via
+// unprivileged statfs — quotactl EPERMs on a project id, FS_IOC_FSGETXATTR only
+// reads a label. Quota'd dirs report statfs totals below their mount root.
 
 import "fmt"
 

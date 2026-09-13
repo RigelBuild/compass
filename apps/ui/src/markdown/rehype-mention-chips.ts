@@ -1,18 +1,7 @@
-// Consumer-side @-mention chip injection (markdown design A3/R2). Under the
-// react-markdown-10 fork the `Components` map is HTML-tags-only — there is no
-// `text` component key to route prose text through (hast text nodes render as
-// raw strings inside `hast-util-to-jsx-runtime`, never through `components`).
-// So mention chips are injected at the hast stage instead: this rehype plugin
-// walks the tree AFTER `rehypeInertRaw` and `rehypeProseBreaks` and, for every
-// text node NOT inside a code subtree, splits it through the existing pure
-// `mentionRuns` splitter and replaces it with an interleaved sequence of text
-// nodes and `span.mention-chip` elements — so chips are real hast elements
-// before `toJsxRuntime` and render with zero component overrides.
-//
-// Ordering matters (design A3): this runs AFTER `rehypeInertRaw`, which retypes
-// `raw` HTML nodes to `text`, so raw-HTML prose text chips like any other prose
-// text — matching the old `text`-override behavior — and after
-// `rehypeProseBreaks`, which has already rescued softbreaks into `br`.
+// Consumer-side @-mention chip injection (markdown design A3/R2). The react-markdown-10
+// fork's `Components` map is HTML-tags-only — no `text` key — so chips are injected at
+// the hast stage: every non-code text node is split through the pure `mentionRuns`
+// splitter into text + `span.mention-chip` elements. Runs after inert-raw and prose-breaks.
 
 import type {
 	Element as HastElement,

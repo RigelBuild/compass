@@ -2,21 +2,10 @@
 
 package server
 
-// Default-lane (no database) tests for the DL-050 forge-write chokepoint
-// (forgeService.ExecuteForgeCallAsAccount). The service is driven against the
-// exported forge.FakeProvider (author + reviewer roles, so F1 dispatch is
-// observable) and a FAITHFUL in-memory forgeStore that models exactly the two
-// store contracts the chokepoint depends on: the caller→Author resolution and
-// the F3 memo hit/miss + DL-055 row (a row lands ONLY after a create success, so
-// a retry after a FAILED create finds no memo and re-attempts). The store
-// interface is narrow precisely so this lane can fake it — the real-Postgres
-// contract for the memo/row is proven in the store package's own pgtest suite
-// (forge_authored_pgtest_test.go), and the end-to-end socket proof is T5/T8's.
-//
-// Session ids here MUST satisfy the owner.go:40 handle grammar
-// (^[a-z0-9][a-z0-9-]{0,38}$): StampOwner interpolates the session id into the
-// header, so a non-conforming id is a StampOwner error — the coupling is pinned
-// here, not discovered in review (A9).
+// Default-lane (no database) tests for the DL-050 forge-write chokepoint. Driven
+// against forge.FakeProvider (author + reviewer, so F1 dispatch is observable) and a
+// faithful in-memory forgeStore modeling caller→Author resolution and the F3 memo +
+// DL-055 row. The real-Postgres contract is in the store pgtest suite.
 
 import (
 	"context"

@@ -2,14 +2,10 @@
 
 package comms
 
-// UpdatePinnedBoard handler contracts at the RPC edge (RIG-1723 T6,
-// design.md:626-637): the handler authorizes a board mutation against the
-// channel's post_policy (any member on OPEN, only the owner on OWNER_ONLY, a
-// non-owner collapsing to the SAME CodeNotFound a non-member gets — no oracle),
-// maps the request's op oneof to the pure-pointer store call (pin / pin-with-
-// replace CAS / unpin — never a message write), and emits ChannelChanged
-// carrying the updated board. Driven in-process via connect.NewRequest +
-// WithActor against a real store and bus.
+// UpdatePinnedBoard handler contracts at the RPC edge (RIG-1723 T6): authorizes
+// against post_policy (a non-owner collapsing to the SAME CodeNotFound a non-
+// member gets — no oracle), maps the op oneof to the pure-pointer store call
+// (pin / CAS replace / unpin), and emits ChannelChanged. Real store + bus.
 
 import (
 	"context"

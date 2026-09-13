@@ -1,28 +1,12 @@
-// The control boundary: the seam between the bytes on stdin and the typed
-// control ops the agent applies.
-//
-// The control CONTRACT is frozen (design: architecture-lineage, ratified additive
-// message `AgentControl`):
-//   oneof control {
-//     PromptControl prompt; SteerControl steer; DeliverControl deliver;
-//     ConfigControl config; TranscriptReplay replay; ReplayComplete
-//     replay_complete }
-// Replay barrier (frozen): TranscriptReplay is applied to context (never live
-// input); the Runner holds live prompt/steer until the agent acks
-// ReplayComplete. The set oneof field is the discriminator.
-//
-// `AgentControl` is an internal-only additive proto message (design §T5). Its
-// oneof VARIANTS are frozen (above); its payload message FIELDS are not — the
-// record leaves them open, and representing an inbound SDK `AgentMessage` /
-// `AgentTool` on a compass.v1 wire is a design decision pending Matt's ruling.
-// So — unlike `AgentFrame`, whose proto + gen have landed — `AgentControl` is
-// NOT in ./gen and its concrete stdin decoder is a parked follow-up (stacked
-// PR once the payload shape is ruled). What is built + tested here is the seam:
-// `AgentControl` below is the typed DOMAIN union the CompassAgent consumes (one
-// member per frozen variant), and `ControlSource` is the async stream that
-// yields them. The barrier + apply logic in CompassAgent switch on this union
-// and are decision-independent; only the decoder that produces `AgentControl`
-// waits on the ruling.
+// The control boundary: the seam between the bytes on stdin and the typed control ops the
+// agent applies. Frozen contract (design §T5, `AgentControl` oneof): prompt/steer/deliver/
+// config/replay/replay_complete. Replay barrier: TranscriptReplay applies to context, and
+// the Runner holds live prompt/steer until the agent acks ReplayComplete.
+
+// The oneof VARIANTS are frozen; the payload FIELDS are not — representing an inbound
+// SDK `AgentMessage`/`AgentTool` on the wire is a pending ruling. So `AgentControl` is
+// NOT in ./gen and its stdin decoder is a parked follow-up. Built + tested here is the
+// seam: the typed DOMAIN union the CompassAgent consumes and the `ControlSource` stream.
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 

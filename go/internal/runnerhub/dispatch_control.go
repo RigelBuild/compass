@@ -1,14 +1,9 @@
 //go:build unix
 
-// The Server->Runner control-relay dispatch arm (RIG-1569 T3 §5). Unlike the
-// client-facing session command relay (commands.go), a control deliver is
-// SEND-ONLY: a successful deliver returns NO synchronous result — success rides
-// a later AgentFrame.delivery_ack (Runner->Server), handled by the hub's ack
-// arm (hub.go deliverAck). So this path must NOT register a blocking inflight
-// call (router.dispatch / relay would hang on waitCall for a result that never
-// arrives); it uses the router's send-only send1. A refusal rides the Sessions
-// request stream as a RunnerError and is observed asynchronously by
-// router.complete (§5), which leaves the cursor unadvanced for the D2 sweep.
+// The Server->Runner control-relay dispatch arm. Unlike the session command
+// relay, a control deliver is SEND-ONLY: success rides a later delivery_ack, so
+// this path must NOT register a blocking inflight call; it uses send-only send1.
+// A refusal rides the request stream as a RunnerError, observed by router.complete.
 package runnerhub
 
 import (

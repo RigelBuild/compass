@@ -897,22 +897,15 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 	}
 	defer unsub()
 
-	// Two gates, in order, because the invariant needs both and neither implies
-	// the other.
-	//
-	// First: the callback must actually be parked on `release`. NumAckPending
-	// counts what the SERVER handed out, which can exceed one before the client
-	// has run a single callback — so gating only on it lets teardown race ahead
-	// of the first delivery, and the drain then legitimately finds nothing.
-	// `firstIn` is closed by the callback itself, so it cannot fire early.
+	// Two gates, in order. First: the callback must actually be parked on
+	// `release`. NumAckPending counts what the SERVER handed out, which can
+	// exceed one before any callback ran, so gating on it alone lets teardown
+	// race ahead of the first delivery. `firstIn` is closed by the callback.
 	<-firstIn
 
 	// Second: the server must have handed out more than that one delivery, so a
-	// buffer exists for teardown to drain. This one has to be the server's
-	// count — the pump is sequential, so while the first callback blocks no
-	// further delivery is observable client-side. It must not require all n:
-	// NumAckPending races JetStream's prefetch, so on a loaded box the rest may
-	// not have been pushed yet, which is the flake this replaces.
+	// buffer exists for teardown to drain. Not all n: NumAckPending races
+	// JetStream's prefetch, so on a loaded box the rest may not be pushed yet.
 	stream, err := f.ensureStream(ctx)
 	if err != nil {
 		t.Fatalf("ensureStream: %v", err)
@@ -935,10 +928,9 @@ func TestUnsubscribeDrainsBufferedEvents(t *testing.T) {
 	close(release)
 
 	// Drain what the subscriber actually saw. The exact count is not the
-	// invariant and cannot be pinned — how many the server had pushed when
-	// teardown began is genuinely nondeterministic. What must hold is that the
-	// drain delivered MORE THAN the one in flight (so buffered events were run,
-	// not discarded) and that nothing was duplicated or invented.
+	// invariant — how many the server had pushed at teardown is nondeterministic.
+	// What must hold: the drain delivered MORE THAN the one in flight (buffered
+	// events ran, not discarded) and nothing was duplicated or invented.
 	valid := make(map[string]bool, n)
 	for _, ref := range published {
 		valid[ref.RowID] = true

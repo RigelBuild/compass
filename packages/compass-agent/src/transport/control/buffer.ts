@@ -15,14 +15,10 @@ export interface Queued {
 // iterable `pull`s them. `close()` ends it cleanly (→ STOPPED); `fail()` ends it
 // with the drop error once the reconnect budget is spent.
 export class AsyncBuffer {
-	// Intentionally UNCAPPED, unlike the FrameSink's trace queue (TRACE_QUEUE_CAP,
-	// drop-oldest under a wedged consumer, OQ-2(c)). Control ops are NOT
-	// loss-tolerable — silently dropping the oldest would lose a prompt the
-	// agent must apply — so the trace path's drop-oldest is the wrong policy
-	// here. Unbounded growth is bounded in practice by the Runner's own retention:
-	// it only redelivers ops past the acked cursor, and control volume is low, so
-	// the backlog a parked consumer + reconnect can accumulate is small. The
-	// asymmetry with the trace cap is a deliberate decision, not an oversight.
+	// Intentionally UNCAPPED, unlike the FrameSink's trace queue: control ops are NOT
+	// loss-tolerable, so drop-oldest is the wrong policy. Growth is bounded in practice by
+	// the Runner's retention (it only redelivers past the acked cursor, and control volume is
+	// low). The asymmetry with the trace cap is deliberate, not an oversight.
 	#items: Queued[] = [];
 	#closed = false;
 	#error: unknown;

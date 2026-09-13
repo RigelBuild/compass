@@ -1,26 +1,7 @@
-// Raw-HTML inertion (markdown design A3/R2). `@rigelbuild/solid-markdown` pipes
-// `remarkRehype` with `allowDangerousHtml: true` (dist/index.jsx:14), so any
-// `<…>` in a message becomes a hast `raw` node — and its renderer,
-// `hast-util-to-jsx-runtime`, handles only `element`, `text`, and
-// `mdxJsx*`/`comment` nodes: a `raw` node is ignored and therefore renders as
-// NOTHING. `"use Vec<T>"` loses `<T>`, and a `<details>` block loses its whole
-// body. Since `<` is a raw-HTML opener to CommonMark, ordinary agent prose
-// about generics or JSX silently loses characters.
-//
-// Retyping each `raw` node as `text` renders the source characters verbatim,
-// escaped by the DOM text path. This restores the content WITHOUT making the
-// markup live — the inertness that makes the XSS surface clean today comes from
-// `raw` never becoming an element, and that still holds. Do NOT replace this
-// with `rehype-raw`, which would restore the text by parsing it into real
-// elements and hand agent-authored `<script>`/`<img onerror>` a live DOM.
-//
-// This is the FIRST pass of the rehype pipeline: an unconditional whole-tree
-// retype that reaches EVERY node (there is no `inCode` guard — a `raw` node
-// never actually occurs inside a code subtree, since fenced/indented code
-// becomes an mdast `code` node and only an mdast `html` node becomes `raw`, so
-// the retype is a no-op there rather than a hazard). The guarded softbreak
-// rescue is a SEPARATE second pass (`rehypeProseBreaks`), which sees a tree
-// with no `raw` nodes left.
+// Raw-HTML inertion (markdown design A3/R2). solid-markdown pipes `allowDangerousHtml`,
+// so any `<…>` becomes a hast `raw` node the renderer ignores, rendering as NOTHING.
+// Retyping each `raw` node as `text` renders the source verbatim WITHOUT making it live
+// — do NOT use `rehype-raw`, which would hand agent-authored `<script>` a live DOM.
 
 import type {
 	Parent as HastParent,

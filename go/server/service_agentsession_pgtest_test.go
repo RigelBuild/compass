@@ -2,19 +2,10 @@
 
 package server
 
-// Store-gated handler contracts for SubscribeAgentSession: the
-// three branches that reach RequireAgentSessionSubscriber and therefore need a
-// real Postgres behind the authz gate. Driven through the production network-door
-// interceptor chain (bearer + admin gate) over a real connect client so the
-// handler reads a genuine caller identity the same way the shipped door supplies
-// it — the caller-injection convention networkDoorHandler already uses; this test
-// does not invent a new path. Behind `pgtest && unix` via the shared pgtest
-// harness (SKIP when no runtime). The two store-free branches (nil tail, no
-// caller) live in service_agentsession_test.go on the default lane.
-//
-// No replay/snapshot is exercised: the handler has no replay phase
-// (service.go:276 "No snapshot replay: live tail"), so delivery is asserted only
-// for frames relayed AFTER the subscription is live.
+// Store-gated handler contracts for SubscribeAgentSession: the three branches that
+// reach RequireAgentSessionSubscriber and so need a real Postgres behind the authz
+// gate. Driven through the production network-door chain so the handler reads a genuine
+// caller identity. No replay phase, so delivery is asserted only for post-sub frames.
 
 import (
 	"context"

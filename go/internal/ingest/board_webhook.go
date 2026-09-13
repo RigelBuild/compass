@@ -1,18 +1,14 @@
 package ingest
 
-// The board webhook arm (RIG-2883 T1, design.md:227-302): the second consumer
-// behind the one GitHub ingress. The webhook handler fans each accepted event
-// to this arm's Enqueue (a non-blocking channel try-send, github_webhook.go:44-51),
-// and a single drain goroutine hydrates each changed coordinate via a
-// conditional GET and sinks the fresh issue through the shared Ingester — the
-// exact poll-path normalization (ingest.go:82-99), never re-implemented.
-//
-// The webhook payload carries only Number/HTMLURL/State (whIssue,
-// githubapp_webhook.go:52-57), not the Title/Body/Labels TranslateIssue maps,
-// so the arm HYDRATES on event (OQ-4): one conditional GET per DISTINCT changed
-// coordinate. The drain COALESCES per coordinate first (design.md:269-280): an
-// edit storm of N rapid events on one issue costs ONE GET, not N — the event
-// only proves "changed", so one fresh read serves the whole burst.
+// The board webhook arm (RIG-2883 T1): the second consumer behind the one GitHub
+// ingress. The handler fans each accepted event to Enqueue (a non-blocking try-
+// send), and a drain goroutine hydrates each changed coordinate via a conditional
+// GET and sinks it through the shared Ingester — the exact poll-path normalization.
+
+// The webhook payload carries only Number/HTMLURL/State, not the Title/Body/Labels
+// TranslateIssue maps, so the arm HYDRATES on event (OQ-4): one GET per distinct
+// coordinate. The drain COALESCES per coordinate, so an edit storm of N events on
+// one issue costs ONE GET — the event only proves "changed".
 
 import (
 	"context"
@@ -189,10 +185,8 @@ process:
 		if err := a.hydrateAndSink(ctx, c); err != nil {
 			if errors.Is(err, forge.ErrBudgetExhausted) {
 				// Budget exhausted pauses the drain: abandon the rest of this
-				// batch (the reconciler heals the un-hydrated coordinates), and
-				// the next batch resumes once the client gate reopens
-				// (github.go:83-102) — the reconciler's treatment
-				// (notify_reconcile.go:139-142).
+				// batch (the reconciler heals the un-hydrated coordinates) and
+				// resume once the client gate reopens.
 				a.log.WarnContext(ctx, "board webhook: budget exhausted, pausing drain (reconciler heals)",
 					"repo", c.repo, "number", c.number)
 				return

@@ -66,16 +66,10 @@ function resolveCursorStop(
  * and disposed with the caller.
  */
 export function createRovingGroup(opts: RovingGroupOptions): RovingGroupHandle {
-	// Sync tabindex + focus to (stops, cursor). Explicit compute/effect split
-	// (Solid-v2 two-arg createEffect). The effect drives tabindex on
-	// every run (the one-tab-stop invariant), but pulls DOM focus onto the cursor
-	// ONLY when focus already lives inside the group — a genuine in-group keyboard
-	// move. It must NOT focus on the mount run, nor on a stops-rebuild that
-	// recomputes the cursor while the user is elsewhere: either would steal focus
-	// and scroll the board on load / on a background data push (WCAG 3.2.1). The
-	// group is entered by native Tab (the cursor stop is the sole `tabindex=0`) or
-	// by an explicit `handle.focus()` (zone landing); once focus is in the group,
-	// a cursor move refocuses so focus never strands on a now-untabbable stop.
+	// Sync tabindex + focus to (stops, cursor) via a compute/effect split. The effect drives
+	// tabindex every run (one-tab-stop invariant), but pulls DOM focus onto the cursor ONLY
+	// when focus already lives inside the group — NOT on mount or a stops-rebuild, either of
+	// which would steal focus and scroll the board on load / a background push (WCAG 3.2.1).
 	let lastFocusedId: string | null = null;
 	createEffect(
 		() => [opts.stops(), opts.cursor()] as const,

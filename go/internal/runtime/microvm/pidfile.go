@@ -1,15 +1,13 @@
 //go:build unix
 
-// pidfile.go is the host-written per-session process record (V7 §(a)): the
-// three pidfiles under a session's runtime dir that make the dir the durable
-// record of the session's process set, so an orphan left by a Runner crash can
-// be identified and killed WITHOUT the risk of killing an innocent process that
-// inherited a recycled pid.
-//
-// The record is (pid, starttime, bootid), not a bare pid, and it is written in
-// TWO atomic steps around each spawn. Both choices are load-bearing and each is
-// argued at its own declaration below: writePidIntent for the pre-spawn step,
-// pidRecord.alive for the identity comparison.
+// The host-written per-session process record (V7 §(a)): three pidfiles under a
+// session's runtime dir that make the dir the durable record of its process
+// set, so a Runner-crash orphan can be killed WITHOUT hitting an innocent
+// process on a recycled pid.
+
+// The record is (pid, starttime, bootid), not a bare pid, written in TWO atomic
+// steps around each spawn — argued at writePidIntent (pre-spawn) and
+// pidRecord.alive (identity comparison).
 
 package microvm
 

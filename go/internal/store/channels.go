@@ -94,11 +94,10 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		return Channel{}, fmt.Errorf("%w: OWNER_ONLY requires an owner account", ErrInvalidArgument)
 	}
 
-	// Coherence: OPEN admits every member as an author, so an owner account is
-	// meaningless there — and a non-empty owner on an OPEN channel would let a
-	// member silently claim the operator slot (locking future policy changes to
-	// itself). owner-empty is the only legal state when OPEN, so reject a
-	// non-empty owner outright.
+	// Coherence: OPEN admits every member as an author, so an owner is
+	// meaningless and a non-empty owner would let a member claim the operator
+	// slot (locking future policy changes to itself). owner-empty is the only
+	// legal OPEN state, so reject a non-empty owner.
 	if c.Policy.PostPolicy == ChannelPostPolicyOpen && c.Policy.OwnerAccountID != "" {
 		return Channel{}, fmt.Errorf("%w: OPEN channel must not name an owner account", ErrInvalidArgument)
 	}
@@ -111,24 +110,19 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// D9 write-authz: a channel created inside a group is authorized against
-	// that parent group (design.md:362-367) — the actor must own the group or
-	// the group must be visible to them (VisibilityShared). An unknown group is
-	// ErrNotFound (the not-found/forbidden merge), so a non-owner cannot probe
-	// group ids. An ungrouped channel (DM/GROUP_DM, or a top-level channel) has
-	// no parent group to authorize against; the actor is a founding member by
-	// construction (expandOwnerMembership adds them), so no gate applies.
+	// that parent group (design.md:362-367) — actor must own it or it must be
+	// VisibilityShared. Unknown group is ErrNotFound. An ungrouped channel has
+	// no parent to authorize against; the actor is a founding member.
 	if c.GroupID != "" {
 		if err := requireGroupCreateAuthz(ctx, tx, actor, c.GroupID); err != nil {
 			return Channel{}, err
 		}
 	}
 
-	// R3 primary defense: the manual create path is server-forbidden from
-	// targeting a reserved per-owner DM group. Only the OpenDM path may write
-	// there (UpsertDMChannelTx), so rejecting a create here makes squatting a
-	// deterministic dm--… name impossible — no in-advance existence check
-	// needed. The rejection is the merged ErrNotFound (never confirms the group
-	// exists, so a stranger cannot probe the reserved namespace).
+	// R3 primary defense: the manual create path may not target a reserved
+	// per-owner DM group (only OpenDM writes there), which makes squatting a
+	// deterministic dm--… name impossible. Rejection is the merged ErrNotFound,
+	// so a stranger cannot probe the reserved namespace.
 	if c.GroupID != "" {
 		reserved, err := isReservedDMGroupTx(ctx, tx, c.GroupID)
 		if err != nil {
@@ -161,12 +155,10 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	if err != nil {
 		return Channel{}, err
 	}
-	// Coherence facet 1: an OWNER_ONLY channel whose owner is not itself a member
-	// is unpostable from birth — the post gate demands the author be BOTH a member
-	// AND the owner, so a non-member owner fails its own membership gate and no
-	// account can ever post. The owner MUST be among the channel's members. The
-	// expansion above is the authoritative final member set (actor + requested +
-	// transitive owners), so check the resolved owner against it before the insert.
+	// Coherence facet 1: an OWNER_ONLY channel's owner must be a member — the
+	// post gate demands author be BOTH member AND owner, so a non-member owner
+	// makes the channel unpostable from birth. `members` is the authoritative
+	// final set, so check the resolved owner against it before the insert.
 	if c.Policy.OwnerAccountID != "" && !slices.Contains(members, c.Policy.OwnerAccountID) {
 		return Channel{}, fmt.Errorf("%w: owner account %q must be a channel member", ErrInvalidArgument, c.Policy.OwnerAccountID)
 	}
@@ -182,18 +174,10 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 			return Channel{}, fmt.Errorf("store: insert channel member: %w", err)
 		}
 	}
-	// A channel born mandatory_subscription=true makes every member a delivery
-	// target via the D1 disjunct regardless of the subscribed flag, so each
-	// agent member's delivery cursor MUST be seeded in this same tx — an
-	// un-seeded delivery target is the fail-DANGEROUS D2 hazard
-	// (compass-notification-delivery/design.md:293-311). Symmetric with
-	// SetChannelPolicy's newly-mandatory seed. One set-based statement seeds
-	// every agent member of the channel; it is self-guarding (agent-only) and
-	// idempotent, so a human member is a no-op. The member INSERTs above have
-	// already landed in this tx's snapshot, so the statement's channel_members
-	// read sees exactly this channel's member set. A non-mandatory channel seeds
-	// nothing here — its members seed at subscribe time (addOrUpdateMember), the
-	// pre-substrate behavior.
+	// Born mandatory ⇒ every member is a delivery target (D1 disjunct,
+	// regardless of subscribed), so seed each agent member's cursor in this tx
+	// — an un-seeded target is the fail-DANGEROUS D2 hazard. Self-guarding
+	// (agent-only) and idempotent; non-mandatory channels seed at subscribe.
 	if c.Policy.MandatorySubscription {
 		if err := seedChannelDeliveryCursors(ctx, tx, ChannelID(id)); err != nil {
 			return Channel{}, err
@@ -378,27 +362,18 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// D9 write-authz: the actor must already be a member of the channel to
-	// mutate its membership (any current member may add/remove/subscribe —
-	// design.md:1782). This subsumes the existence check: a nonexistent channel
-	// has no members, so a non-member and an unknown channel both collapse to
-	// ErrNotFound (the not-found/forbidden merge), never leaking that a private
-	// channel exists.
+	// D9 write-authz: the actor must already be a member to mutate membership
+	// (any current member may add/remove/subscribe — design.md:1782). This
+	// subsumes the existence check: a non-member and an unknown channel both
+	// collapse to ErrNotFound, never leaking that a private channel exists.
 	if err := requireChannelMember(ctx, tx, actor, channelID); err != nil {
 		return Channel{}, nil, err
 	}
 
-	// T4/R4: read the channel's mandatory_subscription flag AND kind once under
-	// the tx. mandatory serves two purposes: (1) an explicit unsubscribe on a
-	// mandatory channel is refused; (2) a plain add to a mandatory channel must
-	// seed the new member's delivery cursor (else it mints an un-seeded delivery
-	// target, the fail-DANGEROUS D2 hazard). The read is FOR UPDATE so it
-	// serializes against a concurrent SetChannelPolicy mandatory flip (same
-	// channels-row lock), guaranteeing a member added concurrently with a flip is
-	// seeded by exactly one writer, never zero. kind drives the R4 DM guards: a
-	// genuine member ADD on a kind=DM channel is a conversion, and a remove may
-	// not strand a DM below two agent parties. policy/owner fields are server-set
-	// and never mutated through this path.
+	// T4/R4: read mandatory_subscription AND kind once under the tx. mandatory
+	// (1) refuses an explicit unsubscribe, (2) forces seeding a plain add's
+	// cursor (else the D2 hazard). FOR UPDATE serializes against a concurrent
+	// mandatory flip. kind drives the R4 DM guards.
 	lock, err := s.q.WithTx(tx).LockChannelMandatoryKind(ctx, string(channelID))
 	if err != nil {
 		return Channel{}, nil, fmt.Errorf("store: read channel mandatory flag: %w", err)
@@ -407,11 +382,8 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 	kind := ChannelKind(lock.Kind)
 	// The unsubscribe guard reads the PRE-convert mandatory state: a DM is
 	// born-mandatory, so an unsubscribe batched with a genuine convert-add is
-	// rejected here even though the post-convert channel is non-mandatory and
-	// would permit it. This mid-batch ambiguity is not reachable through the RPC
-	// surface (open_dm and member edits are distinct calls) and convert+unsubscribe
-	// is not a real use case; evaluating against the pre-convert state is the
-	// conservative choice.
+	// rejected even though the post-convert channel would permit it. Not
+	// reachable through the RPC surface; the pre-convert read is conservative.
 	for _, u := range updates {
 		if u.Unsubscribe {
 			if mandatory {
@@ -421,17 +393,10 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 		}
 	}
 
-	// R4 convert-on-add: a genuine member ADD (not a remove, not an unsubscribe,
-	// naming an account not already a member) on a kind=DM channel converts the
-	// two-party DM into a named CHANNEL before the add path runs. maybeConvertDM
-	// returns the channel's kind after any conversion (unchanged when no genuine
-	// add, or the channel was never a DM) and whether it converted this call. A
-	// convert clears mandatory_subscription in the DB (the result is a normal
-	// opt-in channel), so the caller's `mandatory` local — read pre-convert as
-	// TRUE for a born-mandatory DM — MUST be refreshed to FALSE, or the add loop
-	// below would seed the opt-in third member's delivery cursor as if the channel
-	// were still mandatory (a spurious seed: an unsubscribed add on a normal
-	// channel owes no cursor until it subscribes — the D2 seed-at-subscribe rule).
+	// R4 convert-on-add: a genuine ADD on a kind=DM channel converts the DM to
+	// a named CHANNEL first, clearing mandatory_subscription. So the caller's
+	// `mandatory` local (read pre-convert as TRUE for a born-mandatory DM) MUST
+	// refresh to FALSE, else the add loop spuriously seeds the third member.
 	kind, converted, err := maybeConvertDM(ctx, tx, channelID, kind, updates, opts)
 	if err != nil {
 		return Channel{}, nil, err
@@ -638,12 +603,10 @@ func addOrUpdateMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, u Me
 			}); err != nil {
 				return upsertMemberErr(err, m)
 			}
-			// Seed this member's delivery cursor in the SAME txn as the member
-			// insert when it is subscribed (D2 seed-at-subscribe) OR the channel
-			// is mandatory (every member is a delivery target regardless of the
-			// subscribed flag). The seed is self-guarding (agent-only via WHERE
-			// EXISTS), so a user member is a silent no-op — no separate kind
-			// lookup. Pulled-in owner rows (index > 0, DO NOTHING) are not seeded.
+			// Seed this member's cursor in the SAME txn as the insert when it is
+			// subscribed (D2 seed-at-subscribe) OR the channel is mandatory
+			// (every member is a delivery target). Self-guarding (agent-only),
+			// so a user member is a no-op; pulled-in owner rows are not seeded.
 			if u.Subscribed || mandatory {
 				if err := seedDeliveryCursor(ctx, tx, m, channelID); err != nil {
 					return err
@@ -722,15 +685,10 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	wasMandatory := lock.MandatorySubscription
 	currentOwner := lock.OwnerAccountID
 
-	// T4 owner-only policy gate. SetChannelPolicy is create-or-update of policy:
-	// an ownerless channel (empty owner, the only legal state when OPEN) has no
-	// owner to be yet, so any member may establish the first owner/policy. Once
-	// an owner EXISTS, only that owner may change policy or reassign ownership —
-	// a non-owner (including a plain member) is refused with the SAME ErrNotFound
-	// the non-member path returns (the not-found/forbidden merge, mirroring
-	// PostMessage's OWNER_ONLY gate), so the policy leaks no oracle. Because a
-	// non-owner can never reach the UPDATE, a member cannot reassign ownership to
-	// itself and bypass the OWNER_ONLY post-gate (privilege escalation).
+	// T4 owner-only policy gate. On an ownerless channel any member may set the
+	// first owner/policy. Once an owner exists, only that owner may change
+	// policy or reassign ownership — a non-owner gets the same ErrNotFound as a
+	// non-member (no oracle), blocking self-reassignment to escalate.
 	if currentOwner != "" && string(actor) != currentOwner {
 		return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 	}
@@ -743,24 +701,18 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 		return Channel{}, fmt.Errorf("%w: OWNER_ONLY requires an owner account", ErrInvalidArgument)
 	}
 
-	// Coherence facet 2: owner-empty is the only legal state when OPEN — OPEN
-	// admits every member as an author, so an owner account is meaningless there,
-	// and a non-empty owner would let a member silently claim the operator slot
-	// (locking future policy changes to itself). Reject a non-empty owner on OPEN.
-	// This is InvalidArgument and MUST stay after the no-oracle owner gate above:
-	// a non-owner already collapsed to ErrNotFound and never reaches here, so no
-	// InvalidArgument signal leaks channel existence to an unauthorized caller.
+	// Coherence facet 2: owner-empty is the only legal OPEN state — an owner is
+	// meaningless and a non-empty owner would let a member claim the operator
+	// slot. Reject on OPEN. MUST stay after the no-oracle owner gate: a
+	// non-owner already collapsed to ErrNotFound, so no existence leaks here.
 	if p.PostPolicy == ChannelPostPolicyOpen && p.OwnerAccountID != "" {
 		return Channel{}, fmt.Errorf("%w: OPEN channel must not name an owner account", ErrInvalidArgument)
 	}
 
-	// Coherence facet 1: the owner MUST be a member of the channel. An OWNER_ONLY
-	// channel whose owner is a non-member is unpostable — the post gate demands
-	// the author be BOTH a member AND the owner, so a non-member owner fails its
-	// own membership gate and no account can ever post. Reject before the write.
-	// Only the authorized actor (establishing on an ownerless channel, or the
-	// existing owner) reaches this after the owner gate, so the membership EXISTS
-	// reveals nothing an authorized caller should not already know.
+	// Coherence facet 1: the owner MUST be a channel member — the post gate
+	// demands author be BOTH member AND owner, so a non-member owner makes the
+	// channel unpostable. Reject before the write. Only the authorized actor
+	// reaches here, so the membership EXISTS reveals nothing new.
 	if p.OwnerAccountID != "" {
 		ownerIsMember, err := s.q.WithTx(tx).ChannelMemberExists(ctx, db.ChannelMemberExistsParams{
 			ChannelID: string(channelID),
@@ -787,10 +739,9 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	}
 
 	// Newly-mandatory: every member becomes a delivery target, so seed each
-	// agent member's cursor in this same txn — an un-seeded delivery target is
-	// the fail-DANGEROUS D2 hazard. One set-based statement seeds every agent
-	// member of the channel; it is self-guarding (agent-only) and idempotent, so
-	// seeding across the whole member set is safe (a human member is a no-op).
+	// agent member's cursor in this txn — an un-seeded target is the
+	// fail-DANGEROUS D2 hazard. One set-based statement, self-guarding
+	// (agent-only) and idempotent, so a human member is a no-op.
 	if p.MandatorySubscription && !wasMandatory {
 		if err := seedChannelDeliveryCursors(ctx, tx, channelID); err != nil {
 			return Channel{}, err
@@ -923,10 +874,9 @@ func (s *Store) OpenAgentWorkspace(ctx context.Context, actor AccountID, agentAc
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// D9 write-authz: the actor must be a member of the agent's home channel
-	// (the same projection the stream edge filters AgentWorkspaceChanged on). An
-	// unknown agent or a member gap both collapse to ErrNotFound. Checked in the
-	// same tx as the insert-or-return so a membership revoked mid-open cannot
-	// race the gate.
+	// (the same projection the stream edge filters AgentWorkspaceChanged on).
+	// Unknown agent or member gap both collapse to ErrNotFound. Checked in the
+	// insert-or-return tx so a mid-open revocation cannot race the gate.
 	authorized, err := isAgentWorkspaceVisible(ctx, tx, actor, agentAccountID)
 	if err != nil {
 		return AgentWorkspace{}, err

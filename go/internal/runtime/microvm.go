@@ -1,14 +1,9 @@
 package runtime
 
-// microvm.go is the microVM WorkloadRuntime backend seam: the operator config,
-// the MicroVMRuntime type + its per-session state table, and the config-driven
-// backend selection the Runner startup uses to choose between the microVM and
-// podman backends. The lifecycle method bodies — which boot a VMM, wire the
-// virtiofs share, and speak the guest control plane over vsock — live in
-// microvm_lifecycle.go behind a //go:build unix tag, because the microvm
-// package they call (Launch/GuestExec/VM) is itself unix-only. This file holds
-// only what backend selection needs to type-check on any platform: the config
-// structs, the type declaration, and SelectBackend.
+// The microVM WorkloadRuntime backend seam: the operator config, the
+// MicroVMRuntime type + per-session state table, and config-driven backend
+// selection. Lifecycle bodies live in microvm_lifecycle.go behind //go:build
+// unix; this file holds only what backend selection needs on any platform.
 
 import (
 	"fmt"

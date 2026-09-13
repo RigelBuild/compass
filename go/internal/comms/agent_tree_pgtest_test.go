@@ -3,13 +3,9 @@
 package comms
 
 // ReparentAgent + CreateAgent-with-parent handler contracts (Record C, T3),
-// after the RIG-2751 handle cutover: requests carry `@handle`s the edge resolves
-// owner-qualified, and the oracle-safe error contract (DL-269) collapses every
-// post-resolution authority/visibility failure on a handle-addressed target into
-// the SAME NOT_FOUND an unknown handle gets. So the happy path still emits
-// AccountChanged and a cycle is still FAILED_PRECONDITION, but the two former
-// PERMISSION_DENIED legs (foreign caller, cross-owner parent) are now NOT_FOUND.
-// Driven in-process via WithActor against a real store + bus.
+// after the RIG-2751 handle cutover: the oracle-safe error contract (DL-269)
+// collapses every post-resolution failure on a handle target into the SAME
+// NOT_FOUND an unknown handle gets. Cycle is FAILED_PRECONDITION. Via WithActor.
 
 import (
 	"context"
@@ -114,14 +110,9 @@ func TestReparentAgentCrossOwnerParentNotFound(t *testing.T) {
 	connectCodeIs(t, unknownErr, connect.CodeNotFound, "unknown parent")
 
 	// The oracle invariant: a foreign parent must be indistinguishable from an
-	// unknown one. Both must be NOT_FOUND (above) naming the SUBMITTED
-	// new_parent_handle — never the agent handle or a resolved id. Before the
-	// edge same-owner pre-check, the foreign case fell through to the store and
-	// was re-keyed to name the AGENT handle ("a"), while the unknown case named
-	// the parent handle — the exact divergence a caller uses to enumerate another
-	// owner's agents. Asserting each names its own parent spelling (and NOT the
-	// agent handle) closes that probe; the two cases are structurally identical,
-	// differing only by the handle the caller itself submitted.
+	// unknown one — both NOT_FOUND naming the SUBMITTED new_parent_handle. Before
+	// the same-owner pre-check the foreign case named the AGENT handle, the exact
+	// divergence a caller uses to enumerate another owner's agents.
 	if got := connect.CodeOf(foreignErr); got != connect.CodeOf(unknownErr) {
 		t.Fatalf("foreign vs unknown parent code differs: foreign=%v unknown=%v", got, connect.CodeOf(unknownErr))
 	}

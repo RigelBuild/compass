@@ -12,25 +12,19 @@ import (
 )
 
 // The fleet MODEL REGISTRY store (RIG-3122 P2). One fleet-wide singleton row
-// (model_registry, 0001_init.sql) holds the stable-name registry: per name, a
-// display name, an ordered candidate chain of {provider, model_id}, and listing
-// metadata. The gateway resolver reads it to route a request's modelId
-// (compass-stable-name-routing §P1/P2).
-//
-// UNLIKE agent_config_bundle (a content-hash upsert, current-only), the write
-// path is COMPARE-AND-SET on a monotonic whole-registry version: a Put carries
-// the version it read and only lands if the row still holds it, so a racing
-// operator write is never clobbered (the versioned-CAS discipline the sibling
-// gateway_credentials store also uses, compass-server-llm-gateway/design.md:
-// 324-329). The version keys the gateway resolver's in-memory ref (P1). This is
-// the first CAS-on-version writer in the store, so the discipline is built fresh
-// here; ErrVersionConflict (errors.go) is its sentinel.
-//
-// The payload is validated fail-closed at the RPC boundary via the pure
-// ValidateModelRegistry (schema shape + candidate shape); the orphan cross-check
-// (a removal that would strand a published profile's models.* reference) needs
-// the current config bundle, so it lives on the store methods (PutModelRegistry
-// for removals, DeleteModelRegistry for a full clear), not the pure validator.
+// holds the stable-name registry: per name, a display name, an ordered
+// candidate chain of {provider, model_id}, and listing metadata. The gateway
+// resolver reads it to route a request's modelId.
+
+// UNLIKE agent_config_bundle (a content-hash current-only upsert), the write is
+// COMPARE-AND-SET on a monotonic whole-registry version: a Put carries the
+// version it read and only lands if the row still holds it, so a racing
+// operator write is never clobbered. ErrVersionConflict is its sentinel.
+
+// The payload is validated fail-closed at the RPC boundary; the orphan
+// cross-check (a removal stranding a published profile's models.* reference)
+// needs the current config bundle, so it lives on the store methods
+// (PutModelRegistry, DeleteModelRegistry), not the pure validator.
 
 // ModelCandidate is one upstream (provider, model_id) in a stable name's ordered
 // chain — the pair the gateway resolver tries in order until one has a usable
@@ -264,20 +258,11 @@ func (s *Store) PutModelRegistry(ctx context.Context, actor AccountID, reg Model
 	// registry but absent from the new one is being removed, and a removal that
 	// strands a published profile's models.* reference fails closed. A seed
 	// (expectedVersion 0) has no prior registry, so nothing is removed.
-	//
-	// TOCTOU: this cross-check spans TWO stores non-transactionally. It reads the
-	// config bundle (CurrentAgentConfig, via checkNoOrphanedProfileRefs) here,
-	// then CAS-writes the registry row below; the version CAS protects only the
-	// registry row, never the separate config-bundle row. A PutAgentConfig that
-	// publishes a new profile reference in the window between this read and the
-	// write is unseen, so this removal can still strand that just-published ref.
-	// The reverse bundle-door lint (checkBundleProfileRefsAgainstRegistry, called from
-	// PutAgentConfig) has the symmetric window against a concurrent registry
-	// write. This is the ACCEPTED, self-healing degradation: both writers are
-	// admin-gated and low-frequency, a stranded ref surfaces only at gateway
-	// resolve, and the operator re-runs the write to clear it. We deliberately do
-	// NOT take a cross-store lock or span both rows in one transaction — a heavier
-	// guarantee judged unnecessary for admin-gated, low-frequency operator writes.
+
+	// TOCTOU: this cross-check spans TWO stores non-transactionally — it reads
+	// the config bundle here, then CAS-writes the registry row (the CAS guards
+	// only that row). A concurrent PutAgentConfig can still strand a ref;
+	// ACCEPTED, self-healing — both writers are admin-gated and re-runnable.
 	if expectedVersion > 0 {
 		priorVersion, prior, rerr := s.CurrentModelRegistry(ctx)
 		if rerr != nil && !errors.Is(rerr, ErrNotFound) {

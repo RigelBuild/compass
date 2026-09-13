@@ -1,20 +1,17 @@
 package runtime
 
-// applecontainer.go is the Apple `container` CLI WorkloadRuntime backend: the
-// macOS arm of the substrate, driving Apple's container tool the same way
-// podman.go drives podman — argv builders split from the shared cliEngine
-// subprocess seam (clispawn.go), so every serialized command shape is
-// unit-testable without a binary.
-//
+// The Apple `container` CLI WorkloadRuntime backend: the macOS arm, driving
+// Apple's container tool the way podman.go drives podman — argv builders split
+// from the shared cliEngine subprocess seam (clispawn.go), so every command
+// shape is unit-testable without a binary.
+
 // Deliberately untagged (no //go:build darwin): the driver is plain Go over a
 // subprocess, so its argv builders and version parser compile and test on any
 // host. Only the CLI it invokes is macOS-only.
-//
-// Two shape differences from podman, both measured on real hardware:
-//   - No userns remap. virtiofs performs identity translation at the host↔guest
-//     boundary, so podman's --userns=keep-id:uid=,gid= has no analogue and needs
-//     none; guest writes already land host-side as the invoking macOS user.
-//   - No SELinux. Mounts carry no :Z relabel and MountLabel reports no label.
+
+// Two shape differences from podman, measured on real hardware: no userns remap
+// (virtiofs translates identity at the host↔guest boundary, so --userns=keep-id
+// has no analogue), and no SELinux (mounts carry no :Z, MountLabel reports none).
 
 import (
 	"context"

@@ -1,15 +1,7 @@
-// Typed readers for the two startup globals the desktop shell injects into the
-// webview at window creation (T5.6, OQ-8): the launch mode and the server URL.
-// They are the SINGLE synchronous, no-IPC source of truth for how boot should
-// dispatch — the entry point (index.tsx) must pick the env-provider vs the
-// native-client boot path BEFORE any Go getter is reachable (a Go getter is an
-// IPC call only available inside the Wails shell), so the shell hands the mode
-// (and, for the client-mode connect screen, the read-only server URL) across the
-// window boundary as plain globals rather than a runtime round-trip.
-//
-// Injected by the shell (`application.WebviewWindowOptions` in run(), T5.6); in
-// a browser dev build (no shell) both are simply absent, which the readers
-// report as undefined so the caller falls back to the unchanged env path.
+// Typed readers for the two startup globals the desktop shell injects into the webview
+// (T5.6, OQ-8): the launch mode and the server URL. The SINGLE synchronous no-IPC source
+// for how boot dispatches, since the entry point must pick env vs native-client BEFORE any
+// Go getter is reachable. In a browser dev build both are absent (readers → undefined).
 
 /** The shell-injected launch mode. Client boots the connect-screen probe;
  *  embedded resolves the bridge connection directly. Owned here — the single

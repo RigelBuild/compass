@@ -3,14 +3,12 @@
 package delivery
 
 // RIG-2257 T5 — the ask_answer targeted-asker arm, RED-first. An answer message
-// (authored by the answerer, carrying a server-owned ask_answer block naming the
-// asking agent) must reach its asker even when the asker is a channel member
-// OUTSIDE the sweep set: the durable owed row is the offline backstop, the
-// live-session re-check is the latency path, and the arm is re-derived by the
-// recovery scan so a restart in the commit→fanOut window still backstops the
-// asker. Each case drives the consumer through the real bus + fakes and gates on
-// the recorder — never a sleep. context.Background() is the test root
-// (rule://go-thread-context exemption for _test.go), threaded into Run/scan.
+// naming the asking agent must reach its asker even when the asker is a channel
+// member OUTSIDE the sweep set.
+
+// The durable owed row is the offline backstop, the live-session re-check is the
+// latency path, and the arm is re-derived by the recovery scan so a restart in
+// the commit->fanOut window still backstops. Driven through the real bus + fakes.
 
 import (
 	"context"

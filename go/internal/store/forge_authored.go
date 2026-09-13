@@ -9,13 +9,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The DL-055 forge ownership index (design
-// docs/designs/server/compass-forge-write-path/design.md §T7): the durable
-// record of every forge artifact Compass AUTHORED on behalf of an agent. The
-// write chokepoint (T4) records the row AND the F3 idempotency memo in one
-// statement on a create success; a provider error records nothing. The dedup
-// lookup (AuthoredArtifactByRequestID) reads the memo before a write to collapse
-// a retry carrying the same client_request_id onto the already-authored artifact.
+// The DL-055 forge ownership index (design record §T7): the durable record of
+// every forge artifact Compass AUTHORED for an agent. The write chokepoint (T4)
+// records the row AND the F3 idempotency memo in one statement on create
+// success; the dedup lookup reads the memo to collapse a same-request retry.
 
 // ForgeArtifactKind is the store-side artifact kind on the forge coordinate:
 // an issue or a pull request. Mirrors the wire kind (issue=1, pull_request=2)

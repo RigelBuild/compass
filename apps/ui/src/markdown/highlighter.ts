@@ -1,15 +1,9 @@
 import type { HighlighterCore } from "shiki/core";
 
-// Shiki code highlighting with a fine-grained bundle.
-//
-// The Compass UI ships inside the Wails shell, so Shiki's pre-composed bundles
-// (full: 1.2 MB gzip; web: 695 KB) are disqualifying. Instead: `shiki/core`
-// (~12 KB) + the JavaScript regex engine (no WASM asset to ship or load in the
-// webview) + ONLY the grammars/themes this UI actually shows, imported as
-// dynamic `import()` so Vite splits each into an async chunk resolved on first
-// use. One lazily-created instance module-wide (a highlighter loads grammars and
-// holds an engine, so Shiki's guidance is create-one-and-reuse); the async-create
-// race is contained here.
+// Shiki code highlighting with a fine-grained bundle. Compass ships inside the Wails
+// shell, so Shiki's pre-composed bundles are disqualifying: instead `shiki/core` + the
+// JS regex engine (no WASM) + ONLY the grammars/themes this UI shows, dynamic-imported
+// into async chunks. One lazily-created instance module-wide; the async-create race is contained here.
 
 /** The active theme (UI is dark-leaning). Only this one is loaded — a payload
  *  paid for an unbuilt light/dark toggle is exactly the cost this module's

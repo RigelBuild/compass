@@ -1,34 +1,16 @@
-// host_backend.go is the host-process WorkloadRuntime backend: the lowest
-// substrate tier, running each agent as a direct child process of the Runner
-// under the Runner's own uid, with no container, VM, or kernel boundary. It is
-// a single-trust-domain tier — the operator is the only principal on the box —
-// so several of the nine WorkloadRuntime methods are degenerate by
-// construction, and each such method documents that at its definition.
-//
-// The model is a set of per-agent HANDLES keyed by workload id. A handle owns a
-// private 0700 state dir (workspace root, home overlay dir, socket dir) and,
-// once ExecStreaming launches the agent, the spawned child's process group. The
-// handle map is mutex-guarded because the Runner calls these methods
-// concurrently.
-//
-// WorkloadSpec field map on this backend:
-//   - Name        honored: the handle's stable name (Exists lookup key).
-//   - Env         ignored here: Exec/ExecStreaming take their environment
-//                 from the ExecSpec, and the launch leg that would apply this
-//                 field does not exist yet.
-//   - UID         interpreted: the process runs as the Runner's own euid; the
-//                 AsUser rule (below) enforces that, so this field is not a
-//                 second uid source here.
-//   - Image       ignored: there is no image to run.
-//   - CapAdd       ignored: a host child carries the Runner's own capabilities;
-//                 none are added or dropped here.
-//   - Mounts      ignored: a host process has no bind mounts; the agent reads
-//                 and writes the real host filesystem directly.
-//   - Command     ignored: the long-lived agent is launched by ExecStreaming
-//                 with its own command, not a container entrypoint.
-//   - Egress      ignored: egress is UNENFORCED on this tier. There is no
-//                 per-workload firewall and nothing here arms one, so this
-//                 backend never claims otherwise.
+// The host-process WorkloadRuntime backend: the lowest substrate tier, running
+// each agent as a direct child of the Runner under the Runner's own uid, no
+// container/VM/kernel boundary. Single-trust-domain (the operator is the only
+// principal), so several of the nine methods are degenerate — documented each.
+
+// The model is per-agent HANDLES keyed by workload id, each owning a private
+// 0700 state dir and, once ExecStreaming launches, the child's process group.
+// The handle map is mutex-guarded (the Runner calls these concurrently).
+
+// WorkloadSpec fields: Name is honored (stable-name lookup key) and UID is
+// interpreted as the Runner's own euid (AsUser enforces it). Env, Image, CapAdd,
+// Mounts, Command, and Egress are all ignored — a host child carries the
+// Runner's own capabilities, has no image/mounts, and egress is UNENFORCED here.
 
 package runtime
 

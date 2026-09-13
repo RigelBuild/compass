@@ -1,16 +1,9 @@
 //go:build unix
 
-// The per-Runner token mint (OQ7). A
-// dedicated Runner-subject mint path — NOT the Client-door IssueToken — issues a
-// token against store.Subject{Kind: SubjectRunner}, reusing T3's hash-only token
-// store under the distinct SubjectRunner keyspace so a Runner subject and an
-// account subject share one store but can never collide.
-//
-// Minting is an operator provisioning step, not an automated RPC: the plaintext
-// token is returned once, delivered to the Runner host out of band, and stored
-// there 0600 (the same class as the bootstrap-admin token). The store keeps only
-// the SHA-256 hash. This function is the seam a provisioning CLI/admin path
-// calls; there is deliberately no RunnerService RPC that mints.
+// The per-Runner token mint: a dedicated Runner-subject path (NOT the Client-door
+// IssueToken) issuing against SubjectRunner under a distinct keyspace so Runner
+// and account subjects never collide. An operator step: the plaintext is returned
+// once, delivered out of band, stored 0600; the store keeps only the SHA-256 hash.
 package runnerhub
 
 import (

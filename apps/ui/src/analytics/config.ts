@@ -1,14 +1,7 @@
-// The product-analytics embed config: whether the UI ships events to a PostHog
-// project, and which host it dials. Read once at boot from the Vite env and
-// handed to the analytics factory (index.tsx → createAnalytics). Unlike the live
-// connection, analytics is OPTIONAL: the deployment default is OFF, so an
-// unconfigured build emits ZERO analytics rather than failing to boot.
-//
-// PostHog here is a measurement/DATA SDK only — headless event capture, no
-// PostHog-rendered UI (no surveys widget, no toolbar, no session-replay UI). A
-// managed Compass points key+host at Rigel's PostHog; a self-host either leaves
-// it off (the default) or points host at its own PostHog. The enable gate is the
-// presence of a non-blank project key: no key ⇒ disabled, full stop.
+// The product-analytics embed config: whether the UI ships events to a PostHog project
+// and which host it dials. Read once at boot from the Vite env. OPTIONAL: the default is
+// OFF, so an unconfigured build emits ZERO analytics rather than failing. The enable gate
+// is a non-blank project key: no key ⇒ disabled, full stop.
 
 /** The resolved analytics target: the PostHog project key and the ingestion
  *  host. Present only when analytics is enabled (a non-blank key was set); its

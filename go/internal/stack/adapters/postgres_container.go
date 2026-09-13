@@ -40,15 +40,10 @@ const defaultSocketDir = "/var/run/postgresql"
 // teardown side later signals.
 type PostgresContainer struct {
 	cli containerCLI
-	// superuser is the postgres role POSTGRES_USER creates. It MUST equal the
-	// role a user-less DSN connects as so the frozen S4 DSN (host=<dir> port=<p>
-	// dbname=compass sslmode=disable — no user=) authenticates: pgx resolves a
-	// user-less DSN to the OS user, and under --userns=keep-id the container
-	// runs as that same host user, so the createdb superuser must be it too.
-	// The stock image otherwise defaults POSTGRES_USER=postgres, which a
-	// user-less DSN would fail against (role "<osuser>" does not exist). See the
-	// T8 DESIGN FORK note: S4 enumerated the env without POSTGRES_USER, but the
-	// byte-identical-DSN invariant it froze forces this addition.
+	// superuser is the postgres role POSTGRES_USER creates. It MUST equal the role
+	// a user-less DSN connects as: pgx resolves it to the OS user, and under
+	// --userns=keep-id the container runs as that same host user. The stock image
+	// otherwise defaults POSTGRES_USER=postgres, which a user-less DSN fails against.
 	superuser string
 }
 

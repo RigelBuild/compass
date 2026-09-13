@@ -1,28 +1,9 @@
 package forge
 
-// Linear is a hand-rolled net/http GraphQL client for the Linear issue tracker
-// (design.md §5), a co-equal forge write target beside GitHub. It mirrors
-// github.go's no-dependency posture (stdlib only, no go-github / GraphQL
-// library) and shares its seams: a TokenSource for the credential, a
-// mu-guarded fail-fast rate gate (a write burst respects the same reserve as
-// the poll driver so it cannot starve it), and an injectable clock.
-//
-// Linear is ISSUES-ONLY (DL-051): the PR/review half of Provider returns
-// ErrUnsupported. `repo` is the Linear TEAM KEY (e.g. "SEA"), not owner/name;
-// the client resolves key -> team id once and caches it (mu-guarded).
-//
-// Attribution (design.md §5, OQ-5/OQ-8): writes set Linear's createAsUser +
-// displayIconUrl to ONE constant shared Compass app identity, so native Linear
-// display shows a single "via Application" identity for every agent while the
-// fine-grained per-agent owner truth rides the Service's StampOwner header.
-// Both channels are Server-chosen (DL-050 unforgeability). Whether the client
-// may set createAsUser at all is governed by a one-time actor-capability probe
-// (A4, a stated design INTENT, not an asserted API behavior): a token that is
-// not an OAuth actor=app token degrades to stamp-only.
-//
-// Body handling matches the Provider contract: a Create/Comment body is
-// PRE-stamped by the Service and sent verbatim; a read returns the body RAW
-// (the Service strips/parses on read).
+// Linear is a hand-rolled net/http GraphQL client for the Linear issue tracker,
+// a co-equal forge write target beside GitHub, ISSUES-ONLY (DL-051). `repo` is the
+// Linear TEAM KEY. Writes attribute to ONE shared Compass app identity (DL-050)
+// while per-agent owner truth rides the StampOwner header (non-OAuth: stamp-only).
 
 import (
 	"bytes"
@@ -368,14 +349,10 @@ func (l *Linear) TransitionIssueState(ctx context.Context, repo string, number u
 	if err == nil {
 		return issue, nil
 	}
-	// Staleness recovery: the ONLY rejection this retry can fix is a state id
-	// Linear no longer knows, against a CACHED resolution. Linear answers that
-	// on HTTP 200 with linearStaleStateMarker in the message; every OTHER
-	// HTTP-200 GraphQL rejection (a permission denial, an issue-validation
-	// error, a Linear-side internal error) is refused for a reason a refetch
-	// cannot change, and — like a rate limit, an auth failure or a transport
-	// fault — must never burn the one retry on a re-issued mutation Linear
-	// already declined.
+	// Staleness recovery: the ONLY rejection this retry can fix is a state id Linear
+	// no longer knows against a CACHED resolution — answered on HTTP 200 with
+	// linearStaleStateMarker. Every OTHER HTTP-200 GraphQL rejection is refused for a
+	// reason a refetch cannot change, never burning the retry on a declined mutation.
 	se, isStatus := errors.AsType[*StatusError](err)
 	if !cached || !isStatus || se.Status != http.StatusOK ||
 		!strings.Contains(se.Message, linearStaleStateMarker) {
@@ -739,12 +716,10 @@ func (l *Linear) workflowStatesFor(ctx context.Context, repo string) ([]workflow
 	if len(states) == 0 {
 		return nil, false, &StatusError{Status: http.StatusNotFound, Message: fmt.Sprintf("no workflow states on team %q", repo)}
 	}
-	// A FULL page is read as truncation: the query is unpaginated, so a list at
-	// the cap may be missing states, and resolving against it would reject a
-	// name that really exists or default-map to an only-apparently-sole
-	// candidate. Fail loud instead — the cap is far above any real board, so
-	// hitting it is a Linear-side surprise a caller must be told about, not a
-	// pagination loop worth carrying.
+	// A FULL page is read as truncation: the query is unpaginated, so a list at the
+	// cap may be missing states, and resolving against it would reject a real name
+	// or default-map to a false sole candidate. Fail loud — the cap is far above any
+	// real board, so hitting it is a Linear-side surprise to report, not a loop.
 	if len(states) >= workflowStatePageCap {
 		return nil, false, invalidWorkflowState(
 			"team %q returned %d workflow states, the %d-state page cap: the list may be truncated, so no state can be resolved safely; pass an explicit workflow state",

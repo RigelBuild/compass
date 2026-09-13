@@ -2,17 +2,10 @@
 
 package server
 
-// The SpawnAgent composite handler (spawn.go), against a real Postgres AND a
-// real Runner door — the same placementFixture + recording fake Runner the
-// Provision/Start seam tests use, so every assertion reads a wire fact (which
-// commands the Server actually pushed), not a mock expectation. SpawnAgent is a
-// wire RPC, so these drive it through f.client.
-//
-// Each test pins one T0 acceptance leg with its mutation comment: the happy
-// Provision→Start path, end-to-end idempotency (exactly one Provision on a
-// repeated client_request_id), and the pre-Provision reject-on-live short-circuit
-// (zero Provision on the reject path — the teeth that separate a real
-// pre-Provision reject from an implementation that collides mid-Provision).
+// The SpawnAgent composite handler (spawn.go), against a real Postgres AND a real
+// Runner door (placementFixture + recording fake Runner), so every assertion reads a
+// wire fact. Pins each T0 leg: happy Provision→Start, idempotency (one Provision per
+// repeated client_request_id), and the pre-Provision reject-on-live short-circuit.
 
 import (
 	"context"

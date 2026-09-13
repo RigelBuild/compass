@@ -1,26 +1,7 @@
-// The boot guards for the steps that run BEFORE render(): resolving the live
-// connection from the Vite env, and (in index.tsx) learning the caller's own
-// account id from the server via the WhoAmI RPC once the transport is up.
-//
-// `resolveConnection` throws by design when VITE_COMPASS_BASE_URL is absent
-// (live/connection.ts) — a live build with no door URL is a misconfiguration,
-// and dialing a wrong default would be worse than failing. That requiredness is
-// correct and stays. The caller's account id is NOT a resolve-time env throw
-// anymore: it is learned from the server via WhoAmI after connect, so a failure
-// to learn it is a post-connect RPC failure at a different boundary (index.tsx),
-// not a missing-env throw here.
-//
-// What was wrong before this module existed is where the resolve throw landed:
-// at module initialization in index.tsx, so it killed the module before render()
-// ran and the developer saw an empty page with only a console error. So this
-// module catches at that boundary and paints the message into #root. Split the
-// same way connection.ts split itself: `bootConnection` is pure over its inputs
-// (an element + a connect thunk) and unit-testable; index.tsx is the thin
-// wrapper that passes the real root and `connectionFromEnv`.
-//
-// `renderBootError` is the shared screen-painter both boot failure paths use —
-// the env-resolve failure here and the WhoAmI failure in index.tsx — so the two
-// screens never drift in style, only in their (path-specific) wording.
+// The boot guards for the steps that run BEFORE render(): resolving the live connection
+// from the Vite env, and learning the caller's account id via WhoAmI once the transport
+// is up. A resolve throw at index.tsx module init used to kill it before render(), so
+// `bootConnection` (pure, testable) catches at that boundary and paints #root via `renderBootError`.
 
 import type { ResolvedConnection } from "./live/provider";
 

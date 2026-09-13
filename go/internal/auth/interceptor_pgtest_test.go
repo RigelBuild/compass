@@ -2,28 +2,17 @@
 
 package auth
 
-// Store-backed BearerInterceptor contract tests (RIG-1195 T3, the S3 gate),
-// transcribed from the authoritative Rust suite in
-// crates/compass-daemon/src/auth.rs (#[cfg(test)] mod tests, the bearer_auth
-// cases). BearerInterceptor now resolves a presented token against the Postgres
-// store of record, so these need a live database and live in the `pgtest` lane;
-// the shared spy/assert helpers (recordingSpy, bearerRequest, runInterceptor,
-// wantUnauthenticated, spyResult) come from the default-lane interceptor_test.go.
-//
-// The observable contract: on accept the wrapped handler runs and CallerFrom(ctx)
-// is the token's account; on reject the handler never runs and
-// connect.CodeOf(err) == CodeUnauthenticated. The reject matrix covers every
-// failure class the shared resolver surfaces (missing / non-bearer / unknown /
-// revoked / cross-kind), and the door collapses all of them to one
-// CodeUnauthenticated — the oracle-safety the server package pins on the wire.
-//
-// withCaller ALSO sets the comms actor (comms.WithActor), so a bearer-
-// authenticated comms RPC is attributed to the real token holder rather than the
-// bootstrap-admin fallback. comms exposes no reader, so that half is not
-// observable from the auth package; it is pinned end-to-end in the server package
-// (comms_actor_pgtest_test.go's TestNetworkDoorCommsActorIsBearerCallerNotAdmin:
-// a bearer caller's CreateChannelGroup over the real network door is owned by the
-// caller, not the admin).
+// Store-backed BearerInterceptor contract tests (RIG-1195 T3), transcribed from
+// crates/compass-daemon/src/auth.rs. BearerInterceptor resolves a token against
+// the Postgres store of record, so these live in the `pgtest` lane.
+
+// Contract: on accept the handler runs and CallerFrom(ctx) is the token's
+// account; on reject the handler never runs and CodeOf(err) is
+// CodeUnauthenticated. The reject matrix collapses every failure class
+// (missing / non-bearer / unknown / revoked / cross-kind) to one code.
+
+// withCaller also sets the comms actor; that half is unobservable here and is
+// pinned end-to-end in the server package's comms_actor_pgtest_test.go.
 
 import (
 	"context"

@@ -1,13 +1,9 @@
 package runtime
 
-// clispawn.go is the one subprocess seam every CLI-driven WorkloadRuntime
-// backend spawns through. PodmanCLI and AppleContainerCLI differ only in which
-// binary they invoke and which argv they assemble; the process handling around
-// that — timeout, stdin, exit-code mapping, streaming pipes, kill-on-abandon —
-// is identical, so it lives here once and each backend embeds cliEngine.
-//
-// Embedded (not a named field) so the backends keep referring to program and
-// timeout directly and the seam methods are promoted onto them unchanged.
+// The one subprocess seam every CLI-driven WorkloadRuntime backend spawns
+// through. PodmanCLI and AppleContainerCLI differ only in binary and argv; the
+// process handling — timeout, stdin, exit-code mapping, streaming pipes,
+// kill-on-abandon — is identical, so each backend embeds cliEngine.
 
 import (
 	"bytes"

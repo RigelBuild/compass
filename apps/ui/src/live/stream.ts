@@ -1,40 +1,7 @@
-// The SubscribeComms stream driver: the orchestrator that turns the live comms
-// subscription into a sequence of CommsState values, applying the
-// snapshot+tail+resync protocol as TWO SEPARATE CURSORS:
-//
-//   1. subscribe(since_seq = last stream seq; 0 on a cold start) — the server
-//      streams from that stream position. The FIRST response carries a
-//      `snapshot_seq` boundary token + the `instance_epoch`.
-//   2. snapshot state via the read RPCs, each passing that `snapshot_seq`
-//      VERBATIM — an opaque read boundary token, never interpreted, never
-//      compared to a stream seq.
-//   3. tail the live stream, applying each response's payload; the tail cursor
-//      advances from `SubscribeCommsResponse.seq` (the stream's own counter),
-//      NOT from snapshot_seq.
-//   4. message-id dedup (comms-state upsert) absorbs the overlap between the
-//      snapshot and the buffered tail — subscribing before the snapshot read
-//      means the live stream already covers everything the snapshot does.
-//
-//   A `resync_required` (or a cursor the server can't serve gap-free) resets
-//   both cursors and re-snapshots from scratch; a fresh `instance_epoch` is a
-//   server restart and self-heals the same way.
-//
-// The two cursors are kept apart on PURPOSE. `snapshot_seq` (the read-RPC
-// boundary) and the stream `seq` (the tail cursor) are two counters doing two
-// jobs, and the frozen design line "tail from snapshot_seq + 1" conflated them.
-// Under the RIG-1333 amendment the snapshot boundary may resolve as store-space
-// (durable BIGSERIAL) while the stream seq is bus-space (resets per boot) — the
-// two are incomparable, so any arithmetic across them silently drops rows after
-// a restart. This driver treats snapshot_seq as an opaque token and tails from
-// the stream seq, so it is gap-free under either fork resolution with zero
-// change here.
-//
-// This module owns the I/O and control flow; the pure reduction lives in
-// ./comms-state (applyEvent/reduceSnapshot) and the wire→domain mapping in
-// ./adapt. Message mapping is INJECTED (`MapMessage`) so the driver never names
-// the durable-message/Ask block shape (franklin's per-question reshape) — the
-// franklin-independent seam. The store wires this to its signals later
-// (createAppStore injection, deferred behind franklin's landed store.ts).
+// The SubscribeComms stream driver: turns the live comms subscription into CommsState
+// values via snapshot+tail+resync with TWO SEPARATE CURSORS — `snapshot_seq` (opaque
+// read boundary, never interpreted) and the stream `seq` (tail cursor), kept apart since
+// RIG-1333 makes them incomparable. I/O here; reduction in ./comms-state, mapping ./adapt.
 
 import type { CommsClient, SubscribeCommsResponse } from "@compass/client";
 import { RosterScope } from "@compass/client";
@@ -94,14 +61,10 @@ export async function fetchSnapshot(
 	signal?: AbortSignal,
 ): Promise<CommsSnapshot> {
 	const opts = { signal };
-	// GetRoster joins the SAME failure domain as the other snapshot reads — NOT
-	// best-effort. It carries no vantage_handle: the server defaults the vantage
-	// to the caller and resolves a user caller to its own owned set (R6).
-	// GetRosterRequest carries only scope + vantage_handle (no snapshotSeq), so
-	// the presence seed is unversioned and converges via the seq'd tail replay.
-	// A rejection propagates (throws) exactly like the sibling reads, is caught
-	// in runCommsStream, and retries the whole snapshot with backoff — never a
-	// swallow that would leave presence permanently empty.
+	// GetRoster joins the SAME failure domain as the other snapshot reads — NOT best-effort.
+	// No vantage_handle: the server defaults vantage to the caller (R6). Unversioned (no
+	// snapshotSeq), converging via the seq'd tail replay. A rejection propagates like the
+	// siblings, is caught in runCommsStream, and retries the whole snapshot with backoff.
 	const [accountsResp, groupsResp, channelsResp, rosterResp] =
 		await Promise.all([
 			client.listAccounts({ snapshotSeq }, opts),
@@ -110,11 +73,9 @@ export async function fetchSnapshot(
 			client.getRoster({ scope: RosterScope.OWNER }, opts),
 		]);
 
-	// Topics + messages page per channel. Topics list per channel (ListTopics is
-	// channel-scoped); messages page the whole channel (ListMessages topic filter
-	// empty), so the store's flat `messages()` accessor stays the whole visible
-	// list. (Lazy per-topic load would change the accessor contract; out of
-	// scope.)
+	// Topics + messages page per channel. ListTopics is channel-scoped; messages page
+	// the whole channel (empty topic filter), so the store's flat `messages()` accessor
+	// stays the whole visible list. (Lazy per-topic load would change the contract.)
 	const [perChannelTopics, perChannelMessages] = await Promise.all([
 		Promise.all(
 			channelsResp.channels.map((channel) =>
@@ -355,15 +316,10 @@ export async function runCommsStream(opts: CommsStreamOptions): Promise<void> {
 					pendingSnapshot = false;
 				}
 
-				// Advance the tail cursor from the STREAM's own seq (never
-				// snapshot_seq), guarding against an out-of-order redelivery lowering
-				// it. Every positioned response advances it, even one whose payload
-				// decodes to no domain event, so the resubscribe cursor stays
-				// gap-free. Forward advancement from a real (non-boundary) tail
-				// response is genuine progress: it keeps the next resubscribe
-				// immediate and clears the backoff ceiling. The snapshot boundary
-				// positions the tail but is NOT progress — a server that only replays
-				// it then cleanly closes is the tight-loop the backoff guards against.
+				// Advance the tail cursor from the STREAM's own seq (never snapshot_seq),
+				// guarding an out-of-order redelivery from lowering it. Every positioned
+				// response advances it (even one decoding to no event) so resubscribe stays
+				// gap-free. A real tail response is progress; the boundary is NOT.
 				if (resp.seq > tailSeq) {
 					tailSeq = resp.seq;
 					if (!isBoundary) {

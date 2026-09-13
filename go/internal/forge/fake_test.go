@@ -1,11 +1,9 @@
 package forge
 
 // Contracts for the exported FakeProvider: an ordered, inspectable call log
-// (so a test can assert exactly what a Service invoked — and that ZERO calls
-// happened when it short-circuits), scripted results and scripted errors
-// (including a *StatusError the 403/404 flattening reads via errors.As), and the
-// compile-time proof that *FakeProvider satisfies Provider. context.Background()
-// here is the test root — the sanctioned test exemption to F-ttsr.
+// (so a test can assert exactly what a Service invoked, and ZERO on short-
+// circuit), scripted results and errors (a *StatusError the 403/404 flattening
+// reads via errors.As), and the compile-time proof it satisfies Provider.
 
 import (
 	"context"

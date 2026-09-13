@@ -426,11 +426,9 @@ func (f *Fixture) seedSettledProbe(ctx context.Context, st *store.Store, deadlin
 	rctx, cancel := context.WithTimeout(ctx, perProbe)
 	defer cancel()
 	// The supervisor is a root agent owned by the bootstrap admin, so resolve the
-	// admin's account id first (bare user handle in the global index) and look
-	// the supervisor up in that owner's agent namespace (AgentByHandle is
-	// owner-qualified after the RIG-2751 handle cutover). A not-yet-created admin
-	// or supervisor is the same "still seeding" ErrNotFound the caller polls
-	// through.
+	// admin's account id first and look the supervisor up in that owner's agent
+	// namespace (AgentByHandle is owner-qualified after RIG-2751). A not-yet-created
+	// admin or supervisor is the same "still seeding" ErrNotFound the caller polls.
 	admin, adminErr := st.UserByHandle(rctx, bootstrapAdminHandle)
 	if adminErr != nil {
 		return classifySeedSettle(adminErr, nil)

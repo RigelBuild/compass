@@ -1,28 +1,12 @@
-// The module-private channel that threads the transport-owned ManagedRuntime
-// from createUnixSocketTransport into its sibling factories (frame-sink,
-// control-source) without putting an `effect` type on any exported signature
-// (design docs/designs/repo/compass-agent-effect-adoption/design.md, Global
-// Constraints: no `Effect<>`/`ManagedRuntime`/`Runtime` in a signature exported
-// from src/transport/; §T5: the runtime is threaded through a module-private
-// channel, never an exported factory parameter).
-//
-// Mechanism = a module-private WeakMap keyed by the transport instance, chosen
-// over the two alternatives in the record (a Symbol-keyed non-enumerable
-// property on the returned object; an internal-only interface the sibling
-// factories narrow to). The WeakMap is strictly the tightest of the three here:
-//   - `RunnerTransport` and the concrete object literal are untouched — no extra
-//     property, no cast at the read site, so the public shape and its `.d.ts`
-//     carry no trace of the channel or of `effect`.
-//   - The map is unreachable outside this file, so the channel cannot be read or
-//     written from anywhere but the src/transport/ modules — "private to the
-//     module boundary" is enforced by scope, not convention.
-//   - A fake transport (the unit-test carriers over `spineTransport`/`spySpine`
-//     and the in-process carriers in cli.test.ts) is simply never a key, so
-//     `getTransportRuntime` returns undefined and the borrowing factory falls
-//     back to its own default runtime — exactly the owned-vs-borrowed split §T5
-//     requires, with no sentinel to thread.
-//   - GC of a transport reclaims its map entry, so no runtime is retained past
-//     the transport that owns it.
+// The module-private channel that threads the transport-owned ManagedRuntime from
+// createUnixSocketTransport into its sibling factories (frame-sink, control-source) without
+// putting an `effect` type on any exported signature (design compass-agent-effect-adoption
+// Global Constraints; §T5: threaded through a module-private channel, never a factory param).
+
+// A module-private WeakMap keyed by the transport instance, the tightest of the record's
+// three options: `RunnerTransport` and the object literal stay untouched (no `.d.ts` trace),
+// the map is unreachable outside this file, and GC of a transport reclaims its entry. A fake
+// transport is never a key, so the borrowing factory falls back to its own default runtime.
 
 import type { ManagedRuntime } from "effect";
 import type { RunnerTransport } from "./index";

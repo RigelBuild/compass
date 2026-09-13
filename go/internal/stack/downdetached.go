@@ -34,18 +34,15 @@ var (
 	// state to drain (D3 drops rather than buffering), so it stops fast; the
 	// budget matches postgres's container-drain tier for parity.
 	collectorDrainBudget = 10 * time.Second
-	// natsDrainBudget bounds the nats container's graceful `podman stop` before
-	// the `podman rm -f` escalation. Unlike the collector, NATS flushes its
-	// JetStream file store on SIGTERM, so it gets the wider budget its in-process
-	// natsStopTimeout also reserves — a `rm -f` mid-flush is exactly the
-	// unclean-shutdown case the store has to recover from on next boot.
+	// natsDrainBudget bounds the nats container's graceful `podman stop` before the
+	// `podman rm -f` escalation. NATS flushes its JetStream store on SIGTERM, so it
+	// gets the wider budget its natsStopTimeout also reserves — a `rm -f` mid-flush
+	// is the unclean-shutdown case the store recovers from on next boot.
 	natsDrainBudget = 20 * time.Second
 	// postKillGrace bounds the confirm after the hard kill for the non-runner
-	// components (server, collector, nats, postgres): the kill is unblockable
-	// (group SIGKILL for the socket children, `podman rm -f` for the container),
-	// so a component still confirming alive past this grace — a socket still
-	// answering, or the container still existing — is a genuine survivor, not a
-	// zombie. The runner (group-ESRCH confirmed) needs no grace — see drainTarget.
+	// components: the kill is unblockable (group SIGKILL, or `podman rm -f`), so a
+	// component still confirming alive past this grace is a genuine survivor, not a
+	// zombie. The runner (group-ESRCH confirmed) needs no grace.
 	postKillGrace = 5 * time.Second
 	// downPollInterval paces the confirmation polls. Real wall-time; a test
 	// shrinks it so the suite does not pay a full interval per poll.
@@ -77,11 +74,10 @@ func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 		return err
 	}
 
-	// 1. Refuse to race a live up. The guard flock does NOT cover this — up
-	// releases the guard before spawnChain (lockfile.go:41-48) — so the
-	// lockfile-holder check is the real interlock: a live holder means an up is
-	// in flight (possibly parked in waitReady, not having written every child
-	// line yet), and tearing down a half-spawned set is wrong.
+	// 1. Refuse to race a live up. The guard flock does NOT cover this (up releases
+	// it before spawnChain), so the lockfile-holder check is the real interlock: a
+	// live holder means an up is in flight (possibly parked in waitReady), and
+	// tearing down a half-spawned set is wrong.
 	lockPath := filepath.Join(cfg.StateDir, lockFileName)
 	if live, err := lockHolderLive(lockPath); err != nil {
 		return fmt.Errorf("inspect stack lock: %w", err)
@@ -89,12 +85,10 @@ func DownDetached(ctx context.Context, cfg Config, deps Deps) error {
 		return ErrStackStarting
 	}
 
-	// 2. Read the record under the guard flock and CONSUME it (remove it) so two
-	// concurrent downs cannot both consume the same record and double-signal —
-	// the loser re-reads, finds no file, and no-ops. The guard is held ONLY for
-	// this read+consume decision and released before the long signal→wait→SIGKILL
-	// sequence, so a down never blocks a concurrent up's acquireGuard for the
-	// whole drain budget.
+	// 2. Read the record under the guard flock and CONSUME it so two concurrent
+	// downs cannot both consume it and double-signal — the loser re-reads, finds no
+	// file, no-ops. The guard is held ONLY for this read+consume and released before
+	// the long signal→wait→SIGKILL sequence, so a down never blocks a concurrent up.
 	rec, consumed, err := consumeRecord(ctx, cfg, deps)
 	if err != nil {
 		return err
@@ -200,18 +194,16 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		}},
 		{ComponentNats, natsDrainBudget, func(e pgidEntry) func() bool {
 			// Container existence: nats is a container child torn down by name,
-			// confirmed gone when `podman container exists` reports absent.
-			// Reverse start order places it after the server and runner (its
-			// future consumers, PR3/PR4) so no live consumer outlives the broker
-			// it publishes to.
+			// confirmed gone when `podman container exists` reports absent. Reverse
+			// start order places it after the server and runner (its consumers) so no
+			// live consumer outlives the broker it publishes to.
 			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
 		}},
 		{ComponentCollector, collectorDrainBudget, func(e pgidEntry) func() bool {
-			// Container existence: the collector is a container child (like the
-			// container-backed postgres), torn down by name; it is confirmed gone
-			// when `podman container exists` reports absent. Reverse start order
-			// places it after the server (which emits to it in T4b) and before
-			// postgres.
+			// Container existence: the collector is a container child torn down by
+			// name, confirmed gone when `podman container exists` reports absent.
+			// Reverse start order places it after the server (which emits to it) and
+			// before postgres.
 			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
 		}},
 		{ComponentPostgres, postgresDrainBudget, func(pgidEntry) func() bool {
@@ -240,12 +232,10 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 // alive at budget expiry after the SIGKILL — the survivor set for the
 // partial-failure rewrite.
 func drainTargets(ctx context.Context, deps Deps, targets []target) []Component {
-	// Phase A: SIGTERM all live groups up front. Signaling the server also makes
-	// a surviving runner exit when its link drops (run.go:115-119), belt-and-
-	// suspenders alongside directly signaling the runner group. A delivery error
-	// is not the verdict — the per-component confirm below is — so it is
-	// intentionally not fatal here (an ESRCH means the group vanished in the
-	// irreducible verify→signal gap, which the confirm reads as dead).
+	// Phase A: SIGTERM all live groups up front. Signaling the server also makes a
+	// surviving runner exit when its link drops, belt-and-suspenders alongside
+	// signaling the runner group. A delivery error is not the verdict — the confirm
+	// below is — so it is not fatal here (an ESRCH means the group already vanished).
 	for _, t := range targets {
 		signalTerm(deps, t.entry, t.budget)
 	}

@@ -7,12 +7,10 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store/db"
 )
 
-// The delivery consumer's read side (RIG-1569 T3, design record D1). These live
-// beside the T2 cursor methods (delivery_cursors.go) so the fan-out consumer's
-// store surface is proven against real Postgres in one pgtest-tagged file, the
-// same discipline the cursor reads follow. All four are pure reads — the
-// consumer never mutates through them (the only delivery mutation is
-// AckDelivery, T2).
+// The delivery consumer's read side (RIG-1569 T3, D1). These live beside the T2
+// cursor methods so the fan-out consumer's store surface is proven against real
+// Postgres in one pgtest-tagged file. All four are pure reads — the only
+// delivery mutation is AckDelivery (T2).
 
 // SubscribedAgents resolves the agent accounts that should receive a message
 // posted to channel, EXCLUDING the author (an agent never receives its own post

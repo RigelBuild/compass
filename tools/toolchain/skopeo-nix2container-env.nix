@@ -1,42 +1,26 @@
-# The out-of-band skopeo for the agent-image publish lane. The
-# RigelBuild/nix2container fork's patched skopeo understands the `nix:` transport
-# — it reads a nix2container image spec directly — which stock skopeo does not.
-# The publish workflow (login / publish.sh / verify) and the agent-image env-gate
-# drive it to inspect and copy the built image.
+# The out-of-band skopeo for the agent-image publish lane. The nix2container
+# fork's patched skopeo understands the `nix:` transport (reads a nix2container
+# image spec directly), which stock skopeo does not. The publish workflow and
+# the agent-image env-gate drive it to inspect and copy the built image.
 #
-# Realized here rather than through the shared gate-tools.nix / toolchain-parity
-# machinery, mirroring chromium-e2e-env.nix, for two reasons:
-#   - skopeo-nix2container is a dotted input reference
-#     (inputs.nix2container.packages.<system>.skopeo-nix2container), not a bare
-#     nixpkgs attr, so it cannot live in devenv.nix's parsed `packages` literal —
-#     the toolchain-parity gate resolves every bare attr in that literal and
-#     throws on any non-bare token.
-#   - it is a publish-lane tool, not a dev-shell CLI whose ambient-vs-pinned PATH
-#     drift the parity gate exists to catch, so keeping it out of the parsed
-#     attrs is conceptually right — it is a gate/publish input, not a toolchain.
+# Realized here rather than through gate-tools.nix (mirroring chromium-e2e-env):
+# it is a dotted input reference, not a bare nixpkgs attr, so it cannot live in
+# devenv.nix's parsed `packages` literal, and it is a publish-lane tool, not a
+# dev-shell CLI whose PATH drift the parity gate catches.
 #
-# It is deliberately NOT in agent-image/devenv.nix `packages`: that devenv is the
-# one the container module bakes into the published image via the entrypoint's
-# `source ${shell.envScript}`, so a package there lands skopeo's ~168 MB closure
-# in every agent image — a publish-only tool the running agent never invokes. It
-# IS in the root devenv.nix `packages` (a plain dev shell, nothing bakes it), so
-# a local `direnv`/`devenv shell` puts it on PATH; this file is how CI resolves
-# the identical derivation without entering that (banner-emitting) shell.
+# Deliberately NOT in agent-image/devenv.nix `packages`, whose packages get baked
+# into every published image — this would add skopeo's ~168 MB closure the agent
+# never uses. It IS in the root devenv.nix (nothing bakes it); this file is how
+# CI resolves the identical derivation without entering the banner-emitting shell.
 #
 # Pins BOTH the nix2container fork rev AND nixpkgs to the SAME root devenv.lock
-# revisions the root dev shell resolves (devenv.yaml's `nix2container` input
-# follows the shell's nixpkgs), so CI builds byte-for-byte the skopeo a local
-# dev box does — the single source of truth for the skopeo tool's two revs is
-# the root devenv.lock (OQ2 Decision 2: no raw nix2container flake-ref literal).
-# agent-image/devenv.lock pins nix2container separately and by design — a
-# different consumer (the image BUILD's phantom-store-path patch, not this
-# publish-time skopeo) — so the two locks are not kept in lockstep. Realized
-# with `nix build` (never `nix eval`, which strips the store context that would
-# build the derivation).
+# revs the dev shell resolves, so CI builds byte-for-byte the same skopeo — the
+# single source of truth is the root devenv.lock (OQ2 Decision 2). agent-image's
+# own lock pins nix2container separately by design (a different consumer), so the
+# two are not lockstep. Realized with `nix build`, never `nix eval` (which strips
+# the store context).
 #
-# One output the consumers read `bin/skopeo` off:
-#
-#   skopeo  the fork's patched skopeo derivation.
+# One output: `skopeo`, the fork's patched skopeo derivation.
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
 
@@ -53,8 +37,8 @@ let
     sha256 = n2cNode.narHash;
   };
   # nix2container's default.nix takes `{ pkgs }` and returns the package set
-  # directly (skopeo-nix2container at top level), not under packages.<system> —
-  # the system is implied by the nixpkgs it is imported with.
+  # directly (skopeo-nix2container at top level); the system is implied by the
+  # nixpkgs it is imported with.
   n2c = import n2cSrc { inherit pkgs; };
 in
 {

@@ -1,13 +1,9 @@
 //go:build unix
 
-// The Linear Agent responder's "Open in Compass" deep-link builder (RIG-2717
-// T5, design Part 2 / Part 6, OQ-4). The responder emits one externalUrls deep
-// link on a Linear `created` session, targeting the resolved Manager's HOME
-// CHANNEL (not the specific topic — Matt ruled OQ-4: link to the home channel
-// and let the human navigate to the thread). The link's base is the
-// per-deployment public URL (ServeConfig.PublicURL); the path is the UI's
-// channel hash route (apps/ui/src/routes.tsx:40, `/channel/:channelId` under
-// the HashRouter, so the on-the-wire form is `<base>/#/channel/<id>`).
+// The Linear Agent responder's "Open in Compass" deep-link builder (RIG-2717 T5).
+// It emits one externalUrls deep link on a Linear `created` session, targeting the
+// resolved Manager's HOME CHANNEL (OQ-4). Base is ServeConfig.PublicURL; the path
+// is the UI's channel hash route, so the wire form is `<base>/#/channel/<id>`.
 package server
 
 import (

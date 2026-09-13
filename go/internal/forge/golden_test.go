@@ -1,22 +1,13 @@
 package forge
 
-// Golden-fixture replay (leg 1 of the forge integration-testing record,
-// docs/designs/server/compass-forge-integration-testing/design.md §T1). A
-// plain, untagged test that replays committed request/response fixtures from
-// testdata/<provider>/ through the existing scriptedRoundTripper stub against
-// the REAL forge clients, asserting BOTH halves of each exchange: the request
-// our client emits (method, path, query, non-auth headers, body) AND the
-// decoded domain value both match the captured fixture. Zero network, zero
-// credentials.
-//
-// The schema (fixture/fixtureRequest/fixtureResponse), loadFixtures,
-// writeFixture, and the -update flag are the seam T2's //go:build livegithub
-// suite imports to run the SAME scenarios live and regenerate fixtures; the
-// live-capture body of the -update path is T2's concern. T1 delivers and tests
-// the replay/assert path (and writeFixture's round-trip).
-//
-// context.Background() here is the test root — the sanctioned F-ttsr exemption
-// (mirrors github_test.go / linear_test.go).
+// Golden-fixture replay (forge integration-testing record §T1). An untagged test
+// that replays committed fixtures from testdata/<provider>/ through the scripted
+// round-tripper against the REAL forge clients, asserting BOTH the request our
+// client emits and the decoded domain value. Zero network, zero credentials.
+
+// The schema, loadFixtures, writeFixture, and the -update flag are the seam T2's
+// livegithub suite imports to run the SAME scenarios live and regenerate
+// fixtures. T1 delivers and tests the replay/assert path.
 
 import (
 	"context"
@@ -231,13 +222,10 @@ func replayFixture(t *testing.T, provider string, f fixture) {
 
 	got, err := invoke(t, provider, rt, ts, f.Request)
 
-	// A rejection fixture asserts the FAILURE instead of a decoded value. Its
-	// Prelude holds the legs that DID run and Status/Body the last of them, so
-	// the same exact-count check still applies — and it is load-bearing here:
-	// without it a rejection that fires BEFORE reaching the wire (or one that
-	// runs the mutation anyway and fails after) would pass on the error alone.
-	// The transition path's whole point is that a rejection lands after the
-	// resolve and before the write.
+	// A rejection fixture asserts the FAILURE instead of a decoded value. The
+	// same exact-count check applies and is load-bearing: without it a rejection
+	// firing BEFORE the wire (or running the mutation anyway) would pass on the
+	// error alone. The point is that a rejection lands after resolve, before write.
 	if f.Response.WantError != nil {
 		wantN := len(f.Response.Prelude) + 1
 		if n := len(rt.requests); n != wantN {
@@ -251,9 +239,8 @@ func replayFixture(t *testing.T, provider string, f fixture) {
 		t.Fatalf("op %q: %v", f.Request.Op, err)
 	}
 
-	// (a) Request half: assert the client emitted EXACTLY the scripted number
-	// of requests — prelude probes + the asserted request + composite extras.
-	// A dropped or added leg (e.g. a regressed composite read that skips a
+	// (a) Request half: assert the client emitted EXACTLY the scripted number of
+	// requests. A dropped or added leg (a regressed composite read skipping a
 	// follow-on fetch) then fails loudly on its own, not only when the decoded
 	// value happens to depend on the missing leg's data.
 	wantN := len(f.Response.Prelude) + 1 + len(f.Response.Extra)

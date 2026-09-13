@@ -4,21 +4,8 @@ package server
 
 // The two placement-dependent handler seams, against a real Postgres AND a real
 // Runner door: ProvisionAgentWorkspace's placement write, and StartAgentSession's
-// placement read plus its post-relay roll-back. Both defects these cover live
-// exactly here — the store primitives are individually correct under either bug,
-// so only a test that drives the handler with a relay behind it can observe them.
-//
-// The Runner is a fake Sessions loop dialed into the REAL mounted RunnerService
-// door (the runnerhub seam's own test shape, runnerhub/seam_test.go): it records
-// every command the Server pushes and answers Provision/Start/Stop, so "the
-// handler stopped the session it could not record" is an observed wire command,
-// not a mock expectation.
-//
-// Two facts are seeded/read with pgx directly rather than through the Store: the
-// backfilled placement (runner_id = '' is exactly what RecordAgentPlacement
-// REFUSES, by design — only the migration writes it) and the raw agent_sessions
-// row (the store exposes only the authz predicate over it). Both go through the
-// pgtest DSN, so they land in this test's isolated schema.
+// placement read plus post-relay roll-back. Only a test driving the handler with a
+// relay behind it observes these; the Runner is a fake on the REAL mounted door.
 
 import (
 	"context"
@@ -147,13 +134,10 @@ func TestStartAgentSessionWithBackfilledPlacementRecordsSession(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 
-	// Exactly the row 0004's backfill INSERT produces: real agent, real
-	// container name, empty runner id. Seeded with SQL because
-	// RecordAgentPlacement refuses an empty runner id — only the migration
-	// writes this shape. tenant_id is resolved from the agent's account FK
-	// exactly as the T2 (0002_rls) backfill does — this raw owner-connection
-	// INSERT sets no compass.tenant_id GUC, so the column DEFAULT cannot stamp it
-	// and the NOT NULL constraint requires an explicit value.
+	// Exactly the row 0004's backfill INSERT produces: real agent, real container,
+	// empty runner id. Seeded with SQL because RecordAgentPlacement refuses an empty
+	// runner id. tenant_id is set explicitly: this raw owner-connection INSERT sets
+	// no compass.tenant_id GUC, so the DEFAULT can't stamp the NOT NULL column.
 	execSQL(t, ctx, f.dsn,
 		`INSERT INTO agent_placements (agent_account_id, runner_id, container_name, tenant_id)
 		 SELECT $1, '', $2, a.tenant_id FROM accounts a WHERE a.id = $1`,
@@ -383,11 +367,10 @@ func TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount(t *testing.T) {
 	adminID := seed.Agent.OwnerUserID
 
 	f.runner.forget() // discard the attach probe
-	// This call is EXPECTED to error: admin is a user account, absent from
-	// agent_accounts, so the placement write fails on its FK (CodeInternal). The
-	// persona-clear is still observable because the Provision command is recorded
-	// (persona cleared) before the placement write runs. The error is expected
-	// and not what this test pins, so it is deliberately discarded.
+	// EXPECTED to error: admin is a user account, absent from agent_accounts, so the
+	// placement write fails on its FK (CodeInternal). The persona-clear is still
+	// observable because the Provision command is recorded (persona cleared) before
+	// the placement write runs. The error is not what this test pins, so discarded.
 	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent",
 		Persona: "CLIENT-INJECTED-EVIL"}))
 
@@ -451,11 +434,10 @@ func TestProvisionAgentWorkspaceClearsRoleForNonAgentAccount(t *testing.T) {
 	adminID := seed.Agent.OwnerUserID
 
 	f.runner.forget() // discard the attach probe
-	// This call is EXPECTED to error: admin is a user account, absent from
-	// agent_accounts, so the placement write fails on its FK (CodeInternal). The
-	// role-clear is still observable because the Provision command is recorded
-	// (role cleared) before the placement write runs. The error is expected and
-	// not what this test pins, so it is deliberately discarded.
+	// EXPECTED to error: admin is a user account, absent from agent_accounts, so the
+	// placement write fails on its FK (CodeInternal). The role-clear is still
+	// observable because the Provision command is recorded (role cleared) before the
+	// placement write runs. The error is not what this test pins, so discarded.
 	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent-role",
 		Role: "client-injected-evil"}))
 
@@ -578,13 +560,9 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withhol
 	go rec.serve(stream, loopDone)
 	t.Cleanup(func() {
 		// Latch the loop out of sending BEFORE closing the request half. A
-		// CloseRequest issued under an in-flight Send makes connect-go fail that
-		// write with "write envelope: EOF" (CodeUnknown) and the loop reports a
-		// dirty end — the RIG-3606 flake. A cancelled wake is exactly when a reply
-		// is still being written: the server abandons hub.Start mid-answer, and
-		// the consumer's own shutdown wait bounds its Run goroutine, never this
-		// one. Taking sendMu waits out any Send already running; closing under it
-		// means no later Send can start.
+		// CloseRequest under an in-flight Send fails that write with EOF (CodeUnknown)
+		// and the loop reports a dirty end (the RIG-3606 flake). Taking sendMu waits
+		// out any Send already running; closing under it bars any later Send.
 		rec.stopSending()
 
 		// Close the request half: the loop's Receive then sees a clean EOF and
@@ -600,14 +578,11 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withhol
 		cancel()
 	})
 
-	// Gate on the SERVER-side router being live, not merely the client having
-	// sent. connect-go initiates the request on the loop's bootstrap Send, but
-	// the handler's router.attach runs asynchronously once that reaches the
-	// server; a command dispatched into that window gets a retriable Unavailable
-	// ("no live runner sessions stream"). Probing with a real round trip — a
-	// read-only Status the fake answers — is the observed attach, the same gate
-	// shape runnerhub's integration test uses. Yield between probes; the
-	// deadline turns a genuinely wedged seam into a fast failure, never a sleep.
+	// Gate on the SERVER-side router being live, not merely the client having sent.
+	// The handler's router.attach runs asynchronously after the bootstrap Send
+	// reaches the server; a command in that window gets a retriable Unavailable.
+	// Probing with a real round trip is the observed attach; the deadline turns a
+	// wedged seam into a fast failure, never a sleep.
 	select {
 	case <-rec.attached:
 	case <-timeAfter():

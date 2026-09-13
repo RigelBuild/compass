@@ -2,17 +2,10 @@
 
 package server
 
-// Store-gated Serve-loop integration tests: Serve opens the store of record (T1)
-// and bootstraps the admin before serving, so every test here needs a real
-// Postgres. They are behind the `pgtest` tag (with `unix` for the socket door)
-// so the default `go test ./...` lane — which passes no DatabaseDSN — never runs
-// them and never hangs on store.Open(""). DatabaseDSN comes from the shared
-// pgtest harness (COMPASS_TEST_DATABASE_DSN or a throwaway container; SKIP when
-// neither is available).
-//
-// The socket-bound-and-served, clean-shutdown, and shutdown-with-a-live-
-// SubscribeComms-subscriber contracts all live here because each drives a full
-// Serve against the database. Hermetic: t.TempDir() socket paths, no fixed ports.
+// Store-gated Serve-loop integration tests: Serve opens the store and bootstraps the
+// admin before serving, so each needs a real Postgres. Behind the `pgtest && unix`
+// tag so the default lane never runs them and never hangs on store.Open(""). Covers
+// the socket-bound-and-served, clean-shutdown, and live-subscriber-shutdown contracts.
 
 import (
 	"context"

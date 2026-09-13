@@ -7,13 +7,10 @@ import (
 	"strings"
 )
 
-// Message blocks are stored as JSONB (the messages.blocks column) and their
-// text is extracted into messages.text_content for the full-text index. The
-// on-disk JSON is this package's own tagged shape, not the compass.v1 wire
-// encoding: the store owns its column format, and T2 maps store ↔ proto at the
-// service edge. The block oneof is narrowed to text + ask (OQ-A) — the trace
-// variants left the comms surface — so exactly one of the two fields is set per
-// stored block.
+// Message blocks are stored as JSONB (messages.blocks) with text extracted into
+// messages.text_content for the full-text index. The on-disk JSON is this
+// package's own tagged shape, not compass.v1 wire (T2 maps store↔proto at the
+// edge). The block oneof is narrowed to text + ask (OQ-A), exactly one set.
 
 // blockKind tags a stored block's variant so the JSON round-trips the oneof
 // unambiguously.
@@ -120,15 +117,10 @@ func validateAskQuestions(a *Ask) error {
 		return fmt.Errorf("%w: %w", ErrInvalidArgument, err)
 	}
 	for _, q := range a.Questions {
-		// Recommended is a zero-based index into Options (types.go), agent-
-		// supplied. This is a write-path input-hygiene check: reject a
-		// malformed agent-supplied index on write rather than store it. It is
-		// NOT a load-bearing read invariant, so read-back does not re-enforce
-		// it — the frozen design (compass-ask-typed-derivation.md: the UI
-		// treats an out-of-range recommended as "no highlight", T6) tolerates
-		// an OOB index at render, so a stored OOB value is not a client hazard.
-		// A free-text-only question (no Options) with any Recommended set is
-		// therefore invalid on write, which is correct.
+		// Recommended is a zero-based index into Options (types.go). Write-path
+		// input hygiene only, NOT a read invariant: read-back doesn't re-enforce
+		// it — the frozen design renders an OOB index as "no highlight" (T6). A
+		// free-text-only question with any Recommended set is invalid on write.
 		if q.Recommended != nil && (*q.Recommended < 0 || int(*q.Recommended) >= len(q.Options)) {
 			return fmt.Errorf("%w: ask question %q recommended index %d out of range for %d options", ErrInvalidArgument, q.QuestionID, *q.Recommended, len(q.Options))
 		}
@@ -237,14 +229,10 @@ func unmarshalBlocks(data []byte) ([]MessageBlock, error) {
 			if sb.Ask == nil {
 				return nil, fmt.Errorf("store: block %d kind=ask but no ask payload", i)
 			}
-			// A stored ask must satisfy the same structural integrity the write
-			// path guarantees: at least one question, every question_id non-empty
-			// and unique. A row that fails this is corrupt or pre-reshape (the old
-			// {"question":…,"options":…} shape decodes to Questions:nil since Go
-			// ignores unknown keys; a duplicate/empty id would collapse
-			// applyAskAnswer's byID map into an unanswerable ask) — fail loud
-			// rather than decode a broken ask (the totality discipline). This is a
-			// stored-row defect, not caller input, so it is NOT ErrInvalidArgument.
+			// A stored ask must satisfy the write-path integrity: >=1 question,
+			// every question_id non-empty and unique. A failing row is corrupt or
+			// pre-reshape (the old shape decodes to Questions:nil; a dup/empty id
+			// makes an unanswerable ask) — fail loud (totality), NOT input error.
 			ask := fromStoredAsk(sb.Ask)
 			if err := askQuestionsWellFormed(ask); err != nil {
 				return nil, fmt.Errorf("store: block %d ask is corrupt or pre-reshape: %w", i, err)
@@ -254,12 +242,10 @@ func unmarshalBlocks(data []byte) ([]MessageBlock, error) {
 			if sb.AskAnswer == nil {
 				return nil, fmt.Errorf("store: block %d kind=ask_answer but no ask_answer payload", i)
 			}
-			// A stored ask_answer must satisfy the same invariant the write
-			// path guarantees: an answered snapshot (non-empty ask_id,
-			// answered=true, well-formed questions) and a non-empty
-			// asker_account_id. A row that fails this is corrupt — fail loud
-			// rather than decode a broken answer (the totality discipline). A
-			// stored-row defect, not caller input, so NOT ErrInvalidArgument.
+			// A stored ask_answer must satisfy the write-path invariant: an
+			// answered snapshot (non-empty ask_id, answered=true, well-formed
+			// questions) with a non-empty asker_account_id. A failing row is
+			// corrupt — fail loud (totality), NOT ErrInvalidArgument (not input).
 			ask := fromStoredAsk(&sb.AskAnswer.Ask)
 			if sb.AskAnswer.Ask.AskID == "" {
 				return nil, fmt.Errorf("store: block %d ask_answer snapshot has empty ask_id", i)

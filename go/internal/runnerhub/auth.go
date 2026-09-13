@@ -1,23 +1,9 @@
 //go:build unix
 
-// The RunnerService door's authentication: a bearer-token interceptor that
-// authenticates the Runner-subject token on every Enroll/Sessions/PublishEvents
-// call and rejects anything that is not a live SubjectRunner token with a bare
-// CodeUnauthenticated.
-//
-// OQ7: the security check itself is the
-// SHARED auth.ResolveToken helper (sha256 → ResolveTokenHash → Kind gate), built
-// once in the T3 network-door lane and consumed here verbatim — this door only
-// asks it for a SubjectRunner token. An account token that reaches this door
-// fails the Kind gate → Unauthenticated: that IS the RunnerService side of the
-// two mandatory cross-door rejection tests. not-found / revoked / wrong-kind all
-// map to the same bare Unauthenticated (no oracle); the distinct sentinels are
-// for server-side logging only (compass ruling).
-//
-// The resolver is injected as TokenResolver rather than imported directly so the
-// handler compiles and tests run before the T3 lane lands: a test drives a fake
-// resolver, and on the T3 rebase the binding is
-// `func(ctx, p, w) (store.Subject, error) { return auth.ResolveToken(ctx, st, p, w) }`.
+// RunnerService door auth: a bearer-token interceptor that Kind-gates the
+// presented token to SubjectRunner on every RPC. Any other token (account,
+// revoked, not-found) collapses to a bare CodeUnauthenticated — no oracle,
+// fail-closed; distinct store sentinels are for server-side logging only.
 package runnerhub
 
 import (

@@ -438,11 +438,10 @@ describe("traceResponseInterceptor round-trips through a real transport", () => 
 	const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
 	const spanId = "00f067aa0ba902b7";
 
-	// An in-memory compass.v1 server (the vendor's no-HTTP test path) whose
-	// GetServerInfo handler sets whatever `traceresponse` the test wants — the
-	// same header the Go otel interceptor sets in production. `sink` mirrors the
-	// production choice: supplied, the trace interceptor is installed; omitted,
-	// none is, which is the no-sink case.
+	// An in-memory compass.v1 server (the vendor's no-HTTP test path) whose GetServerInfo handler
+	// sets whatever `traceresponse` the test wants — the same header the Go otel interceptor sets in
+	// production. `sink` mirrors the production choice: supplied, the trace interceptor is installed;
+	// omitted, none is, the no-sink case.
 	function fakeServer(
 		traceResponse: string | undefined,
 		sink?: TraceIdSink,
@@ -603,17 +602,10 @@ describe("traceResponseInterceptor round-trips through a real transport", () => 
 	});
 });
 
-// A counting `next` returning a Symbol sentinel, plus a REAL `Headers` request
-// — the direct-interceptor seam, following the bearerAuthInterceptor precedent
-// above. The real `Headers` is what makes a `Headers.set` TypeError reachable,
-// and the sentinel is what proves nothing threw.
-//
-// This seam exists because `captureRequest` CANNOT witness a would-throw case:
-// its capturing fetch always throws, so it must gate on
-// `rejects.toThrow()` — which a broken interceptor's own TypeError satisfies —
-// and its header readback is a pre-initialized empty `Headers`, so absence also
-// passes. Both assertions go green on exactly the defect. Never route a
-// would-throw value onto the capture seam.
+// A counting `next` returning a Symbol sentinel, plus a REAL `Headers` request — the real `Headers`
+// is what makes a `Headers.set` TypeError reachable, and the sentinel is what proves nothing threw.
+// `captureRequest` cannot witness a would-throw case: its fetch always throws and its header
+// readback starts empty, so both assertions go green on exactly the defect.
 function directSeam() {
 	let calls = 0;
 	const sentinel = Symbol("next-response");
@@ -635,11 +627,10 @@ function directSeam() {
 describe("sessionIdInterceptor stamps only a sendable session id", () => {
 	const validId = "0199a1b2-3c4d-7e8f-9012-3456789abcde";
 
-	// The header name is a WIRE CONTRACT with the server's J1 interceptor
-	// (go/internal/otel/interceptor.go, PostHogSessionHeader) and is CORS-allowed
-	// by exactly that string in the network door. Every other case reads the
-	// header through the exported const, so all of them would stay green under a
-	// rename; only this pins the literal both ends must agree on.
+	// The header name is a WIRE CONTRACT with the server's J1 interceptor (interceptor.go,
+	// PostHogSessionHeader) and is CORS-allowed by exactly that string in the network door. Every
+	// other case reads the header through the exported const, so all would stay green under a rename;
+	// only this pins the literal both ends must agree on.
 	test("the header name is exactly X-POSTHOG-SESSION-ID", () => {
 		expect(posthogSessionHeader).toBe("X-POSTHOG-SESSION-ID");
 	});
@@ -704,10 +695,9 @@ describe("sessionIdInterceptor stamps only a sendable session id", () => {
 		expect(sessionId).toBeNull();
 	});
 
-	// The boundary the `<=` in `id.length <= MAX_SESSION_ID_LEN` owns: a `<`
-	// typo reddens HERE and nowhere else, because the 201 case stays green under
-	// both operators. 200 is legal on the server too — its check is
-	// `len(id) > maxSessionIDLen` — so refusing it would be needlessly stricter
+	// The boundary the `<=` in `id.length <= MAX_SESSION_ID_LEN` owns: a `<` typo reddens HERE and
+	// nowhere else, because the 201 case stays green under both operators. 200 is legal on the server
+	// too — its check is `len(id) > maxSessionIDLen` — so refusing it would be needlessly stricter
 	// than the wire contract.
 	test("exactly 200 ASCII chars ⇒ at the cap, the header is PRESENT", async () => {
 		const atCap = "a".repeat(200);
@@ -723,12 +713,10 @@ describe("sessionIdInterceptor stamps only a sendable session id", () => {
 		expect(sessionId).toBe(atCap);
 	});
 
-	// A Latin-1 value does NOT throw — `Headers.set` accepts U+0080–U+00FF — so
-	// the capture seam is the right one here and the readback IS the whole
-	// assertion. What the ASCII guard buys: without it a browser emits this as
-	// a single raw high byte, which fails the server's utf8.ValidString check,
-	// so the id is silently DROPPED. Not asserting transmitted bytes here —
-	// that is a transport-encoding property, not this interceptor's contract.
+	// A Latin-1 value does NOT throw — `Headers.set` accepts U+0080–U+00FF — so the capture seam is
+	// the right one here and the readback IS the whole assertion. What the ASCII guard buys: without
+	// it a browser emits this as a single raw high byte, which fails the server's utf8.ValidString
+	// check, so the id is silently DROPPED. Not asserting transmitted bytes — that is a transport property.
 	test("a Latin-1 value (sess-é) ⇒ the header is absent", async () => {
 		const { sessionId } = await captureRequest((fetch) =>
 			createCompassClient(
@@ -742,11 +730,10 @@ describe("sessionIdInterceptor stamps only a sendable session id", () => {
 		expect(sessionId).toBeNull();
 	});
 
-	// ONE transport, hence ONE interceptor instance, driven across two requests
-	// with a different capturing fetch each time. Building a fresh transport per
-	// request would let a construction-time memo re-read the getter and pass
-	// both multi-request cases below, which is exactly the defect they exist to
-	// catch — so the fetch is indirected through a mutable slot instead.
+	// ONE transport, hence ONE interceptor instance, driven across two requests with a different
+	// capturing fetch each time. Building a fresh transport per request would let a construction-time
+	// memo re-read the getter and pass both multi-request cases below, which is exactly the defect
+	// they exist to catch — so the fetch is indirected through a mutable slot instead.
 	function oneClientAcrossRequests(sessionId: () => string | undefined) {
 		let currentFetch: FetchLike = () =>
 			Promise.reject(new Error("oneClientAcrossRequests: no fetch installed"));
@@ -791,11 +778,10 @@ describe("sessionIdInterceptor stamps only a sendable session id", () => {
 		expect(second.sessionId).toBe(validId);
 	});
 
-	// The guard is deliberately NARROWER than `Headers.set`: set accepts a space,
-	// a tab, and DEL, and this rejects all three. Nothing else asserts that extra
-	// narrowing, so widening the class one codepoint (0x20 for 0x21) would put a
-	// space-bearing value on the wire unnoticed. Capture seam is correct here —
-	// none of these makes `Headers.set` throw, so the readback IS the assertion.
+	// The guard is deliberately NARROWER than `Headers.set`: set accepts a space, a tab, and DEL, and
+	// this rejects all three. Nothing else asserts that extra narrowing, so widening the class one
+	// codepoint (0x20 for 0x21) would put a space-bearing value on the wire unnoticed. Capture seam
+	// is correct here — none of these makes `Headers.set` throw, so the readback IS the assertion.
 	const narrowerThanHeadersSet: [string, string][] = [
 		["a space", "sess id"],
 		["a tab", "sess\tid"],
@@ -818,13 +804,10 @@ describe("sessionIdInterceptor stamps only a sendable session id", () => {
 	}
 });
 
-// Three values that make `Headers.set` THROW a TypeError, so a missing guard
-// would fail the whole RPC rather than merely lose a correlation key. Each case
-// asserts the full triple: header absent, `next` ran exactly once, and the
-// awaited result IS the sentinel — the third is load-bearing, since it cannot
-// pass if the interceptor threw before reaching `next`. Values are kept SHORT
-// on purpose: a long non-ASCII value is rejected by the length cap first and
-// never reaches `header.set`, so it could not exercise the throw at all.
+// Three values that make `Headers.set` THROW a TypeError, so a missing guard would fail the whole
+// RPC rather than merely lose a correlation key. Each case asserts the full triple: header absent,
+// `next` ran exactly once, and the awaited result IS the sentinel — the third cannot pass if the
+// interceptor threw before reaching `next`. Values kept SHORT: a long one hits the length cap first.
 describe("sessionIdInterceptor rejects would-throw values without failing the request", () => {
 	const wouldThrow: [string, string][] = [
 		["a non-Latin-1 id (> U+00FF)", "sess-日本語"],
@@ -847,13 +830,10 @@ describe("sessionIdInterceptor rejects would-throw values without failing the re
 	}
 });
 
-// `undefined` and `""` are absent-value cases rather than values `Headers.set`
-// rejects — but the GUARD can throw on them, which puts them in the class above:
-// a bare `SENDABLE.test(undefined)` coerces to the string "undefined" and
-// PASSES, so evaluation reaches `id.length` on undefined and throws. So the
-// capture seam cannot witness them either, and `undefined` is the case that
-// matters most: it is the shipped default (`NoopAnalytics.sessionId()`), so a
-// guard that throws on it fails EVERY request whenever analytics is off.
+// `undefined` and `""` are absent-value cases rather than values `Headers.set` rejects — but the
+// GUARD can throw on them: a bare `SENDABLE.test(undefined)` coerces to "undefined" and PASSES, so
+// evaluation reaches `id.length` on undefined and throws. The capture seam cannot witness them, and
+// `undefined` matters most: the shipped default, so a guard that throws on it fails EVERY request off.
 describe("sessionIdInterceptor survives an absent session id", () => {
 	const absent: [string, string | undefined][] = [
 		["undefined — analytics off, the shipped default", undefined],
@@ -876,12 +856,10 @@ describe("sessionIdInterceptor survives an absent session id", () => {
 });
 
 describe("callInterceptors installs only what was asked for", () => {
-	// The behavioral claim of the omitted-means-off rule: neither concern
-	// requested ⇒ the transport is handed `undefined`, NOT an empty list, so an
-	// unconfigured client's transport config is byte-identical to before either
-	// interceptor existed. Nothing but the transport factory's own argument can
-	// witness that, so the factory is spied and its argument read — the same
-	// seam apps/ui/src/live/provider.test.ts uses on this package's factory.
+	// The behavioral claim of the omitted-means-off rule: neither concern requested ⇒ the transport
+	// is handed `undefined`, NOT an empty list, so an unconfigured client's transport config is
+	// byte-identical to before either interceptor existed. Nothing but the transport factory's own
+	// argument can witness that, so the factory is spied and its argument read.
 	test("no token and no sink ⇒ interceptors is undefined, not []", () => {
 		const opts = transportOptionsFor(() =>
 			createCompassWebTransport("http://compass.localhost"),
@@ -920,11 +898,10 @@ describe("callInterceptors installs only what was asked for", () => {
 		expect(opts.interceptors).toHaveLength(2);
 	});
 
-	// The direction that catches an append placed inside the old early return:
-	// `callInterceptors` used to be `const bearer = ...; if (!traceSink) return
-	// bearer;`, so a session interceptor appended after that guard is skipped
-	// entirely whenever no trace sink is configured — and every OTHER
-	// membership direction below still passes. This is the only one that reddens.
+	// The direction that catches an append placed inside the old early return: `callInterceptors`
+	// used to be `const bearer = ...; if (!traceSink) return bearer;`, so a session interceptor
+	// appended after that guard is skipped entirely whenever no trace sink is configured — and every
+	// OTHER membership direction below still passes. This is the only one that reddens.
 	test("a sessionId getter alone ⇒ exactly one interceptor", () => {
 		const opts = transportOptionsFor(() =>
 			createCompassWebTransport("http://compass.localhost", undefined, {
@@ -959,14 +936,10 @@ describe("callInterceptors installs only what was asked for", () => {
 		expect(opts.interceptors).toHaveLength(3);
 	});
 
-	// Composition ORDER, not just membership. The restructure from an early
-	// return to an accumulating list made order a fresh degree of freedom, and
-	// every case above is order-blind (`toHaveLength` counts). Order is benign
-	// TODAY — the session interceptor writes a request header and the trace one
-	// reads a response header, so they commute — and this pins it so the suite
-	// notices if that stops being true. Each interceptor is identified by its
-	// observable effect: position 0 stamps authorization, position 2 stamps the
-	// session header, so trace is the middle by elimination.
+	// Composition ORDER, not just membership. The restructure from an early return to an accumulating
+	// list made order a fresh degree of freedom, and every case above is order-blind. Order is benign
+	// TODAY (session writes a request header, trace reads a response header, so they commute) — pinned
+	// so the suite notices if that stops being true. Effects: pos 0 authorization, pos 2 session.
 	test("token, sink and sessionId ⇒ bearer first, session last", async () => {
 		const sink: TraceIdSink = { current: undefined };
 		const opts = transportOptionsFor(() =>

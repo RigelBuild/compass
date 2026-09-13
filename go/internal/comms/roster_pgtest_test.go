@@ -2,14 +2,10 @@
 
 package comms
 
-// GetRoster roster-read contracts (RIG-1721 T2), driven against a real Postgres
-// store + real bus (no mocks — newHandler), each defending one clause of the
-// three-source join (design.md T2:426-452): the durable tree, the live presence
-// enum (an in-memory fake presence source), and the durable activity string
-// (agent_activity). Scoping, D9 visibility clip, OFFLINE default, activity
-// round-trip through the DURABLE store, and durability across a simulated restart
-// are pinned separately. context.Background() is the test root (test-root ctx
-// exemption).
+// GetRoster roster-read contracts (RIG-1721 T2) against a real Postgres store +
+// bus, each defending one clause of the three-source join: the durable tree, the
+// live presence enum (a fake source), and the durable activity string. Scoping,
+// D9 clip, OFFLINE default, activity round-trip, and restart durability are pinned.
 
 import (
 	"context"

@@ -2,16 +2,10 @@
 
 package board
 
-// pgtest suite for the IssueProjection: the live issue=16 fan-out, the
-// read-back-reflects-committed-state property, the sorted-clone Snapshot, and
-// the durable Rehydrate-from-Postgres recovery. Every case opens its own real
-// store (pgtest.RequireDSN + store.Open) — a projection over the store of record
-// is only proven against the database it targets (design.md:1188). SKIPs (never
-// fails) when no container runtime and no DSN are available.
-//
-// Every live-channel wait is event-gated with a deadline as a safety net, never
-// as a synchronization device (no sleep); negative assertions publish a real
-// sentinel after the ignored input and assert the sentinel arrives first.
+// pgtest suite for the IssueProjection: the live fan-out, read-back-reflects-
+// committed-state, the sorted-clone Snapshot, and durable Rehydrate recovery.
+// Each case opens its own real store; SKIPs when no runtime. Negative assertions
+// publish a sentinel and assert it arrives first, never a sleep.
 
 import (
 	"context"

@@ -1,24 +1,18 @@
-// Module-private OTel metric constants for the two OUTBOUND transport modules —
-// the publish spine (publish-spine.ts) and the durable frame sink (frame-sink.ts).
-// Decision 2 of docs/designs/repo/compass-agent-effect-otel/design.md
-// (the metric table) owns these seven names; the control.* rows live in O3.
-//
-// `Metric` is from core `effect` (already a dependency — this module adds none).
-// A `Metric.counter`/`Metric.gauge` value is a cheap module-level constant: with
-// no OTel provider installed it no-ops into Effect's in-memory registry, so the
-// black-box transport suites stay green and instrumentation is invisible without
-// a provider. These constants are NOT re-exported from the package entry, so no
-// `effect` type reaches the public `.d.ts` (export-surface.test.ts guards this).
-//
-// The names are the exact Decision-2 strings — do not rename without the record.
+// Module-private OTel metric constants for the two OUTBOUND transport modules — the
+// publish spine and the durable frame sink. Decision 2 of the compass-agent-effect-otel
+// design (the metric table) owns these seven names; the control.* rows live in O3.
+
+// `Metric` is from core `effect` (already a dependency). A Metric.counter/gauge value is
+// a cheap module-level constant: with no OTel provider it no-ops into Effect's in-memory
+// registry, so instrumentation is invisible without a provider. NOT re-exported from the
+// package entry (export-surface.test.ts guards this). Names are exact — do not rename.
 
 import { Metric } from "effect";
 
-// Trace/session frames lost, carrying a `reason` label. The two reasons sum to
-// today's `droppedTraceCount()` (publish-spine.ts): "overflow" is the bounded
-// trace queue evicting the oldest on a full offer; "failed_batch" is the trace
-// frames abandoned when a cycled batch send fails (loss-tolerable). Pre-tagged
-// constants (Metric.tagged) so each increment site names its reason directly.
+// Trace/session frames lost, carrying a `reason` label. The reasons sum to
+// droppedTraceCount(): "overflow" is the bounded queue evicting the oldest on a full
+// offer; "failed_batch" is the trace frames abandoned when a cycled batch send fails.
+// Pre-tagged constants (Metric.tagged) so each increment site names its reason directly.
 const traceFramesLost = Metric.counter(
 	"compass_agent.transport.publish.trace_frames_lost",
 	{ incremental: true },
@@ -48,15 +42,10 @@ export const priorityBatchRetries = Metric.counter(
 	{ incremental: true },
 );
 
-// The two publish-spine LEVEL gauges, built through a namespace-prefix factory.
-// A gauge is an absolute last-writer-wins level, so a test reading one back must
-// not share its registry key with a concurrent writer in a sibling test file:
-// the shared process-global registry keys structurally on the metric NAME, and
-// bun runs test files concurrently in one process. The builders take an optional
-// namespace prefix — production passes none, yielding the exact frozen name; a
-// test passes a unique prefix, yielding a private registry entry immune to the
-// cross-file gauge race. Counters are unaffected: they are read as a
-// before/after DELTA, which concurrent movement cannot corrupt.
+// The two publish-spine LEVEL gauges, built through a namespace-prefix factory. A gauge
+// is last-writer-wins, so a test reading one must not share its registry key with a
+// concurrent writer in a sibling file (the global registry keys on the NAME; bun runs
+// files concurrently). Production passes no prefix; a test a unique one. Counters read as a delta.
 export const priorityRetryDepthGauge = (
 	namespace = "",
 ): Metric.Metric.Gauge<number> =>
@@ -86,9 +75,8 @@ export const durableGiveUps = Metric.counter(
 );
 
 // -----------------------------------------------------------------------------
-// control source (O3) — the INBOUND control-stream lane (control-source.ts).
-// Decision 2 of docs/designs/repo/compass-agent-effect-otel/design.md owns
-// these four control.* names; same style as the O2 constants above.
+// control source (O3) — the INBOUND control-stream lane (control-source.ts). Decision 2
+// of the compass-agent-effect-otel design owns these four control.* names.
 // -----------------------------------------------------------------------------
 
 // Every reconnect backoff taken on the Control server-stream — the
@@ -98,13 +86,10 @@ export const reconnects = Metric.counter(
 	{ incremental: true },
 );
 
-// The consecutive-no-progress LEVEL gauge, built through the same namespace
-// factory as the publish-spine gauges above and for the same reason (the
-// cross-file gauge race). Set to `noProgress` after each drop's
-// progress check (against CONTROL_RECONNECT_NO_PROGRESS_MAX), reset to 0 when a
-// reconnect makes progress — a level, not a count, exactly like the publish
-// spine's priority_retry_depth gauge. Production passes no namespace (frozen
-// name); a test passes a unique prefix for a private registry entry.
+// The consecutive-no-progress LEVEL gauge, built through the same namespace factory as
+// the publish-spine gauges and for the same reason (the cross-file gauge race). Set to
+// `noProgress` after each drop's progress check, reset to 0 on progress. Production passes
+// no namespace; a test passes a unique prefix.
 export const noProgressDepthGauge = (
 	namespace = "",
 ): Metric.Metric.Gauge<number> =>
@@ -118,12 +103,10 @@ export const flapResets = Metric.counter(
 	{ incremental: true },
 );
 
-// Control ops counted-unmapped through the single `count()` funnel, labeled by
-// event type. The `event_type` label is DYNAMIC (the wire eventType varies per
-// call — `control:steer`, `control:replay`, …), so unlike O2's static `reason`
-// tags this is the BASE counter, tagged per-call at the increment site with
-// `Metric.tagged(controlUnmapped, "event_type", eventType)`. Piggybacks the
-// existing funnel; the `onUnmapped` callback contract is unchanged.
+// Control ops counted-unmapped through the single count() funnel, labeled by event type.
+// The `event_type` label is DYNAMIC (control:steer, control:replay, …), so unlike O2's
+// static reason tags this is the BASE counter, tagged per-call at the increment site with
+// Metric.tagged(controlUnmapped, "event_type", eventType).
 export const controlUnmapped = Metric.counter(
 	"compass_agent.transport.control.unmapped",
 	{ incremental: true },

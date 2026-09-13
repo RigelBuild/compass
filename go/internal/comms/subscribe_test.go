@@ -2,13 +2,10 @@
 
 package comms
 
-// SubscribeComms stream contracts, driven end-to-end over a real connect
-// server-stream: a post fans out to a live subscriber as MessagePosted, and a
-// reconnect with a stale cursor (a prior server instance's epoch) collapses to a
-// terminal CommsResyncRequired so the client re-snapshots from Postgres via
-// ListMessages — deduped by id. Mutations are driven in-process on the SAME
-// handler the stream server holds (so they share one bus and one store), while
-// the stream is consumed through the generated connect client.
+// SubscribeComms stream contracts, driven end-to-end over a real connect server-
+// stream: a post fans out to a live subscriber as MessagePosted, and a reconnect
+// with a stale cursor collapses to a terminal CommsResyncRequired so the client
+// re-snapshots from Postgres, deduped by id. Mutations share the handler's bus.
 
 import (
 	"context"
@@ -496,11 +493,9 @@ func TestSubscribeCommsStaleEpochResyncsAndRedelivers(t *testing.T) {
 	wantID := posted.Msg.GetMessage().GetId()
 
 	// A reconnect carrying a POSITIONED cursor from a prior instance (a stale
-	// epoch — simulating a server restart with a fresh instance_epoch) cannot be
-	// served gap-free, so the stream delivers a single terminal
-	// CommsResyncRequired stamped with the current epoch. The server flushes
-	// this frame immediately, so the subscribe returns without a concurrent
-	// mutation — but subscribeFirst keeps the half-duplex handling uniform.
+	// epoch) cannot be served gap-free, so the stream delivers a single terminal
+	// CommsResyncRequired stamped with the current epoch. subscribeFirst keeps
+	// the half-duplex handling uniform.
 	staleEpoch := h.bus.InstanceEpoch() + 1
 	got := awaitFirst(t, subscribeFirst(t, h, poster.ID, &compassv1.SubscribeCommsRequest{
 		SinceSeq: 1, InstanceEpoch: staleEpoch,

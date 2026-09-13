@@ -273,11 +273,10 @@ func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool 
 // pre-resolve.
 func (c ForgeConfig) forgeWriteAppsConfigured(declared []secrets.ResolvedSecret) (havePrimary, haveReviewer bool) {
 	fc := c.resolved()
-	// serverSecretName-wrapped: these are COMPARISONS against the SERVER
-	// resolver's resolved set. Unwrapped, both stay false forever and forge
-	// writes fail closed fleet-wide with no error at boot — the silent
-	// capability loss, which warnPartialForgeWriteSecrets cannot surface
-	// because both-absent reads as "not configured", not as partial.
+	// serverSecretName-wrapped: these COMPARE against the SERVER resolver's
+	// resolved set. Unwrapped, both stay false forever and forge writes fail
+	// closed fleet-wide with no error — a silent capability loss, since
+	// warnPartialForgeWriteSecrets reads both-absent as "not configured".
 	havePrimary = fc.App.AppID != 0 && secretDeclared(declared, serverSecretName(fc.App.AppPrivateKeySecret))
 	haveReviewer = fc.ReviewerApp.AppID != 0 && secretDeclared(declared, serverSecretName(fc.ReviewerApp.AppPrivateKeySecret))
 	return havePrimary, haveReviewer
@@ -484,29 +483,17 @@ func declareServerSecretNames(ctx context.Context, st *store.Store, cfg ServeCon
 		names = append(names, fc.App.AppPrivateKeySecret, fc.App.AppWebhookSecretName)
 	}
 	// The reviewer App is gated on its OWN AppID, independent of the primary,
-	// because forgeWriteAppsConfigured evaluates the two independently (:277-278).
-	// Nesting this under boardIngestionEnabled — which keys on the PRIMARY App
-	// id — would declare nothing for a reviewer-only deployment, so
-	// warnPartialForgeWriteSecrets would see havePrimary == haveReviewer == false
-	// and stay silent, reading a half-configured deployment as an unconfigured
-	// one. That turns the likely operator typo of configuring one of the two
-	// Apps into a silent misconfiguration instead of a diagnosable one.
+	// because forgeWriteAppsConfigured evaluates the two independently. Nesting
+	// it under boardIngestionEnabled (keyed on the primary) would declare
+	// nothing for a reviewer-only deployment, silencing warnPartialForgeWriteSecrets.
 	if fc.ReviewerApp.AppID != 0 {
 		names = append(names, fc.ReviewerApp.AppPrivateKeySecret)
 	}
-	// The Linear gate reads the RAW config, not the resolved one: resolved()
-	// DEFAULTS the two client-credential names, so a deployment running no
-	// Linear at all still has non-empty resolved names. Gating on those would
-	// declare Linear secrets for every deployment, make the server registry
-	// non-empty, and force a real provider Load on a server that never
-	// configured Linear. The live consumers gate the same way
-	// (buildLinearWebhookWiring on the raw LinearWebhookSecretName).
+	// The Linear gate reads the RAW config, not resolved(): resolved() DEFAULTS
+	// the client-credential names, so gating on those would declare Linear secrets
+	// for every deployment and force a provider Load. A half-set pair declares
+	// nothing, matching buildLinearTokenSource's both-absent off-state.
 	raw := cfg.Forge
-	// Predicate and appended values both read `raw`: whenever the predicate
-	// holds, both raw names are non-empty and resolved() returns them unchanged,
-	// so the two accessors are identical here and mixing them only invites a
-	// later reader to hunt for a difference that does not exist. A half-set pair
-	// declares nothing, matching buildLinearTokenSource's both-absent off-state.
 	if raw.LinearClientIDSecretName != "" && raw.LinearClientSecretName != "" {
 		names = append(names, raw.LinearClientIDSecretName, raw.LinearClientSecretName)
 	}
@@ -657,15 +644,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return err
 	}
 
-	// Bind the socket under a restrictive umask so it is born owner-only (0600)
-	// with no window in which a local peer could connect before the mode is
-	// tightened. net.Listen creates the socket file with 0666 & ^umask, so
-	// without this a permissive umask under a pre-existing traversable parent
-	// would expose a connectable socket until the chmod below; a connection
-	// opened in that window survives the later chmod. Startup is single-
-	// goroutine here (servers spawn afterward), so the process-global umask is
-	// safe to set and restore around the bind. The explicit chmod stays as
-	// belt-and-suspenders: it pins exactly 0600 regardless of the prior umask.
+	// Bind the socket under a restrictive umask so it is born owner-only (0600):
+	// net.Listen creates it with 0666 & ^umask, so a permissive umask under a
+	// traversable parent would expose a connectable socket until the chmod below.
+	// Startup is single-goroutine here, so the process-global umask is safe to set.
 	udsListener, err := listenUnixPrivate(cfg.SocketPath)
 	if err != nil {
 		listeners.close()
@@ -699,46 +681,29 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	defer st.Close()
 
-	// Seed the platform accounts before serving: the bootstrap admin, the
-	// reserved system sender @compass, and the reserved Linear bridge sender
-	// @linear. Created unconditionally — even socket-only — so the AdminGate
-	// always has a real admin id to compare against and the Linear responder
-	// (a later wave) always finds its bridge author. All idempotent
-	// find-or-create; a wrong-shape row under any reserved handle fails startup
-	// rather than being adopted. The helper logs each seeded row so it is
-	// observable at boot.
+	// Seed the platform accounts before serving: bootstrap admin, reserved system
+	// sender @compass, reserved Linear bridge sender @linear. Created
+	// unconditionally so AdminGate always has an admin id and the Linear responder
+	// finds its bridge author. Idempotent find-or-create; wrong-shape rows fail startup.
 	admin, systemAccount, err := seedBootstrapAccounts(ctx, st, cfg)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
 
-	// Log the resolved public base URL so an operator can see which host the
-	// Linear "Open in Compass" deep links will point at — there is no default, so
-	// a deploy that forgets --public-url/$COMPASS_PUBLIC_URL logs an empty base
-	// (and the responder-assembly boot guard rejects it when Linear webhooks are
-	// enabled), and this line is how that misconfiguration is observable.
+	// Log the resolved public base URL: there is no default, so a deploy that
+	// forgets --public-url/$COMPASS_PUBLIC_URL logs an empty base (and the
+	// responder-assembly guard rejects it when Linear webhooks are enabled).
 	slog.Default().Info("public base URL resolved", "public_url", cfg.PublicURL)
 
-	// The store of record backs the network door's bearer credentials: IssueToken
-	// persists a token hash into it, and the bearer interceptor resolves against it.
-	//
-	// The RunnerHub is the Server side of the Server<->Runner seam: it routes the
-	// container-lifecycle RPCs to the owning Runner and write-throughs relayed
-	// agent events. The Bridge board is its lifecycle sink: a session lifecycle
-	// transition is recorded into the board projection and fanned onto
-	// SubscribeEvents, and GetAgentStatus reads the board's snapshot — so one
-	// board instance is shared by the hub (writer) and the service (reader). Built
-	// unconditionally so a lifecycle RPC has a hub to route through; the
-	// RunnerService door a Runner enrolls over is mounted only on the network door
-	// (buildNetworkServer) — Runners are remote, so they dial the authenticated
-	// TLS door, never the loopback socket.
+	// The RunnerHub is the Server side of the Server<->Runner seam, routing
+	// container-lifecycle RPCs to the owning Runner. The Bridge board is its
+	// lifecycle sink, shared by the hub (writer) and the service (reader). The
+	// RunnerService door mounts only on the network door (Runners are remote).
 	brd := board.NewProjection(bus)
 
-	// The Server-authoritative issue board projection: the durable PG-rehydrated
-	// issue cache ListBoardIssues re-snapshots and the issue=16 live fan-out onto
-	// SubscribeEvents ride the same instance (part 4). Rehydrate seeds it from the
-	// store before serving so the first snapshot/fan-out is complete; nothing is
-	// subscribed yet at boot, so it does not publish.
+	// Server-authoritative issue board projection: ListBoardIssues re-snapshots
+	// and the issue=16 live fan-out share this instance (part 4). Rehydrate seeds
+	// it from the store before serving; nothing is subscribed yet at boot.
 	issueBrd := board.NewIssueProjection(bus, st)
 	if err := issueBrd.Rehydrate(ctx); err != nil {
 		return failStartup(udsListener, listeners, fmt.Errorf("rehydrating issue board: %w", err))
@@ -780,63 +745,48 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// construction cycles; see wireHubServiceCycles in sinks.go.
 	wireHubServiceCycles(hub, commsSvc, st, issueBrd)
 	// Seed the root Manager "supervisor" on first launch (RIG-1820). The seed
-	// needs a Runner whose command stream can serve Provision/Start, which is not
-	// up at boot — the embedded stack starts the Runner only after the server is
-	// serving, and its command stream attaches only after it enrolls — so it
-	// hangs off the hub's runner-ready hook, fired once a Runner's Sessions
-	// stream attaches. Idempotent (find-or-create-then-start, empty-tree-gated
-	// create), so a reconnect re-fire is safe. adminID is the bootstrap admin the
-	// supervisor is owned by.
+	// needs a Runner command stream, not up at boot, so it hangs off the hub's
+	// runner-ready hook, fired once a Runner's Sessions stream attaches.
+	// Idempotent, so a reconnect re-fire is safe. adminID owns the supervisor.
 	seedLog := slog.Default()
 	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, commsSvc, admin.ID, systemAccount.ID, seedLog) })
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
-	// it mounts on every account door (socket, dev, network) behind the same bearer +
-	// admin-gate chain, which classifies its three procedures authenticatedOpen — the
-	// door admits any authenticated account and the handler enforces the user-only
-	// writes / user-or-agent list. The hub is its SecretsVersion signaler (a Set/Delete
-	// notifies live sessions to re-fetch); it shares the one resolver with FetchSecrets.
+	// it mounts on every account door behind the same bearer + admin-gate chain
+	// (classified authenticatedOpen; the handler enforces user-only writes). The
+	// hub is its SecretsVersion signaler; it shares the one resolver with FetchSecrets.
 	secretsSvc := newSecretsService(st, resolver, serverResolver, hub)
 
 	// The forge read-side credentials, built BEFORE the doors because the network
-	// door mounts the board lane's webhook ingress (sink + secret resolver) and
-	// the Linear notify lane, both threaded into buildDoors. Fails fast HERE on
-	// the shared cleanup path. Board fields are nil when the GitHub App is absent;
-	// forge.linearTokens is nil when Linear is not configured. Serve starts each
-	// lane's arm + reconciler below.
-	// serverResolver: see buildSecretResolvers. The container instance stays on
-	// the FetchSecrets delivery path.
+	// door mounts the board lane's webhook ingress and the Linear notify lane,
+	// both threaded into buildDoors. Board fields are nil when the GitHub App is
+	// absent; forge.linearTokens is nil when Linear is not configured.
 	forgeWiring, err := buildForgeReadWiring(ctx, cfg, st, issueBrd, hub, serverResolver, hubLog)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
 
-	// Assemble the three compass.v1 doors (shipped Unix socket, optional dev
-	// loopback, optional authenticated network) plus the Linear notify lane the
-	// net door's /webhooks/linear handler feeds. On a net-door build error the
-	// listeners this Serve bound are still ours to close.
-	// buildDoors takes BOTH instances — see its parameter docs for why they
-	// must not be collapsed.
+	// Assemble the three compass.v1 doors (shipped socket, optional dev loopback,
+	// optional authenticated network) plus the Linear notify lane. On a net-door
+	// build error the listeners this Serve bound are still ours to close.
+	// buildDoors takes BOTH instances — see its parameter docs for why.
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver, serverResolver,
 		devListener, netListener, netTLS, forgeWiring.webhookSink, forgeWiring.webhookSecret, forgeWiring.linearTokens)
 	if err != nil {
 		return failStartup(udsListener, listeners, err)
 	}
 
-	// The forge-WRITE caller: enabled iff BOTH the primary and reviewer Apps are
-	// configured (the 2-App cutover). The author write leg REUSES the shared
-	// primary App client (forgeWiring.primaryClient) so it rides the one budget
-	// gate; the reviewer leg gets its own App client; the Linear coordinate rides
-	// the shared forgeWiring.linearTokens instance.
+	// The forge-WRITE caller: enabled iff BOTH primary and reviewer Apps are
+	// configured (the 2-App cutover). The author leg REUSES the shared primary App
+	// client so it rides the one budget gate; the reviewer leg gets its own; the
+	// Linear coordinate rides the shared forgeWiring.linearTokens instance.
 	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, serverResolver, hub, hubLog, forgeWiring.primaryClient, forgeWiring.linearTokens, udsListener, listeners); err != nil {
 		return err
 	}
 
-	// Run every door under one scoped group. errgroup.WithContext gives the
-	// listener/drain coordination scoped lifecycle, first-error-wins, and sibling
-	// cancellation in one audited primitive: gctx is cancelled when the parent ctx
-	// is cancelled (normal shutdown) or when a server self-terminates with an
-	// error (the first exit tears down the peers). The UDS door is primary; its
-	// error — recorded first by the group — wins over the drain result below.
+	// Run every door under one scoped group. errgroup.WithContext gives scoped
+	// lifecycle, first-error-wins, and sibling cancellation: gctx cancels on
+	// parent shutdown or a server self-terminating with an error. The UDS door is
+	// primary; its error — recorded first — wins over the drain result below.
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return classifyServe(doors.uds.Serve(udsListener), "compass.v1 UDS server") })
 	if doors.dev != nil {
@@ -852,25 +802,19 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		})
 	}
 	// The forge webhook-ingestion lanes (RIG-2883 board + RIG-2732 T7 notify):
-	// each lane's webhook-arm drain and reconciler sweep join the SAME scoped
-	// group so they inherit the doors' lifecycle exactly — cancelled on
-	// SIGINT/SIGTERM via gctx, first-error-wins, drained with everything else.
-	// The board + GitHub notify lanes are nil when the GitHub App is absent (they
-	// share the App gate); the Linear notify lane is nil when Linear is not
-	// configured (its client-credentials pair undeclared). A nil lane starts
-	// nothing. Every Run returns nil on ctx-cancel.
+	// each lane joins the SAME scoped group so it inherits the doors' lifecycle.
+	// The board + GitHub notify lanes are nil when the GitHub App is absent; the
+	// Linear notify lane is nil when Linear is not configured. A nil lane starts nothing.
 	startForgeIngestLanes(gctx, g, forgeWiring.boardLane, forgeWiring.notifyLane, doors.linearNotify)
 	// The comms-bus consumers (RIG-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
 	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
 	// ends when the comms bus closes in drainDoors).
 	startCommsBusConsumers(gctx, g, commsBus, st, hub, hubLog)
-	// Drain member of the same group: wake on gctx cancellation (parent shutdown
-	// or a server erroring), then hand off to drainDoors. A drain that overruns
-	// (a handler still wedged — e.g. a stream stuck mid replay to a stalled
-	// client) surfaces as the error rather than being swallowed into a false
-	// clean shutdown; because the group keeps the first error, a real serve error
-	// still wins over this drain.
+	// Drain member of the same group: wake on gctx cancellation, then hand off to
+	// drainDoors. A drain that overruns (a handler still wedged mid-replay)
+	// surfaces as the error rather than a false clean shutdown; a real serve
+	// error still wins because the group keeps the first error.
 	g.Go(func() error {
 		<-gctx.Done()
 		return drainDoors(drainSet{ //nolint:contextcheck // drainDoors deliberately takes no ctx: the inherited one is already cancelled (that cancellation is what woke this drain), so a bounded shutdown needs the fresh ctx drainDoors makes internally, not the dead one
@@ -938,13 +882,10 @@ func buildDoors(
 	webhookSecret func(ctx context.Context) ([]byte, error),
 	linearTokens *linearagent.TokenSource,
 ) (serveDoors, error) {
-	// otelconnect produces the server RPC span (and, once a MeterProvider is
-	// installed, RPC duration/count metrics); NewTraceResponseInterceptor stamps
-	// the span's trace id onto the "traceresponse" response header. Both are
-	// inert no-ops when OtelEndpoint is empty (no provider ⇒ no active span), so
-	// they are mounted unconditionally. otelconnect goes FIRST (outermost) in
-	// every chain so the span envelopes the security-critical interceptors and
-	// the AdminGate→Ambient ordering is unchanged relative to itself.
+	// otelconnect produces the server RPC span; NewTraceResponseInterceptor stamps
+	// the trace id onto "traceresponse". Both inert no-ops when OtelEndpoint is
+	// empty, so mounted unconditionally. otelconnect goes FIRST so the span
+	// envelopes the security-critical interceptors.
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {
 		return serveDoors{}, fmt.Errorf("otel: rpc interceptor: %w", err)
@@ -953,14 +894,10 @@ func buildDoors(
 	// mounts the same otelconnect + trace-response pair as CompassService.
 	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc,
 		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor()))
-	// Shipped door: the Unix socket serves native gRPC (cleartext HTTP/2),
-	// gRPC-Web, and Connect off the one connect-go handler. No CORS — the socket
-	// is same-origin (the shell's webview / a native client). The 0600 socket is
-	// the credential: the CompassService handler mounts the ambient-identity
-	// interceptor pair (bootstrap admin), and comms attributes every RPC to the
-	// bootstrap admin via its own actor fallback. Cleartext HTTP/2 is served
-	// natively (http.Protocols); these connections are tracked by
-	// http.Server.Shutdown and drain with the rest on shutdown.
+	// Shipped door: the Unix socket serves native gRPC, gRPC-Web, and Connect off
+	// the one connect-go handler. No CORS — the socket is same-origin. The 0600
+	// socket is the credential: CompassService mounts the ambient-identity pair,
+	// and comms attributes every RPC to the bootstrap admin. Drains on shutdown.
 	socketPath, socketHandler := compassv1connect.NewCompassServiceHandler(svc,
 		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
 			auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
@@ -976,26 +913,9 @@ func buildDoors(
 	udsServer := &http.Server{Handler: udsMux, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply; the network door below sets it
 
 	// Dev-only browser door: the same services with permissive CORS on the
-	// pre-bound loopback listener. Off unless DevHTTP is passed; the shipped path
-	// stays socket-only (no TCP port).
-	//
-	// Interceptor ORDER is load-bearing and security-critical. connect runs the
-	// first interceptor in the slice outermost, so AdminGate runs BEFORE the
-	// ambient pair attaches a caller:
-	//   - adminOnly RPCs (IssueToken, the agent-session lifecycle RPCs): AdminGate
-	//     runs first, finds no caller yet, and fail-closes to PermissionDenied —
-	//     the ambient interceptor never runs. Without this a page loaded against a
-	//     configured --dev-http could mint a bootstrap-admin token via IssueToken
-	//     and replay it against the TLS network door.
-	//   - authenticatedOpen RPCs (GetServerInfo, SubscribeEvents, and the
-	//     SubscribeAgentSession observation stream): AdminGate passes them, then
-	//     the ambient pair attaches the bootstrap admin so a handler that needs a
-	//     caller (SubscribeAgentSession authorizes home-channel membership) sees
-	//     one — the dev door thus mirrors the shipped Unix-socket door's
-	//     ambient-admin behavior for the session pane.
-	// Reversing the order (ambient before AdminGate) would attach caller=admin
-	// before the gate, ADMITTING IssueToken on the dev browser door — never do
-	// that. CommsService keeps its own per-account authz under the ambient admin.
+	// loopback listener, off unless DevHTTP is passed. Interceptor ORDER is
+	// security-critical: AdminGate runs BEFORE the ambient pair so adminOnly RPCs
+	// (IssueToken) fail-close; reversing it would ADMIT IssueToken on this door.
 	var devServer *http.Server
 	if devListener != nil {
 		devPath, devHandler := compassv1connect.NewCompassServiceHandler(svc,
@@ -1014,49 +934,29 @@ func buildDoors(
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
-	// The Linear agent-notification lane (RIG-2732 T7): App-INDEPENDENT, gated on
-	// the shared Linear client-credentials token source (nil when Linear is not
-	// configured). Built here — beside the webhook handler it feeds — so its
-	// data-change sink threads straight into buildLinearWebhookWiring below,
-	// replacing the injected-and-nil-for-now sink so a verified /webhooks/linear
-	// Issue/Comment event routes to subscribers instead of ack-and-drop. Nil when
-	// linearTokens is nil (the handler's data branch then acks-and-drops). The
-	// lane is returned in serveDoors so Serve can start its arm + reconciler on
-	// the serve group.
+	// Linear agent-notification lane (RIG-2732 T7): App-INDEPENDENT, gated on the
+	// shared client-credentials token source (nil when Linear is unconfigured).
+	// Built beside the webhook handler so its sink threads into the wiring;
+	// returned in serveDoors so Serve starts its arm + reconciler.
 	linearNotifyLane := buildLinearNotifyLane(st, hub, linearTokens, slog.Default())
 	var linearDataSink ForgeEventSink
 	if linearNotifyLane != nil {
 		linearDataSink = linearNotifyLane.sink
 	}
 
-	// The Linear webhook ingress (RIG-2732 T7d / RIG-2717): a shared
-	// POST /webhooks/linear handler (DL-302) built iff the Linear webhook secret
-	// is declared — an App-INDEPENDENT gate (a deployment can run Linear
-	// notifications without a GitHub App). Its data-change arm's sink is the
-	// Linear-provider-bound notify lane's sink (linearDataSink), so a verified
-	// Issue/Comment event routes to subscribers at the LINEAR/linear.app
-	// coordinate; nil when the notify lane is off (Linear not configured), and the
-	// handler's data branch then acks-and-drops. The two gates are independent:
-	// the webhook secret gates the handler; the Linear client-credentials pair
-	// gates the sink. Its session arm is left unwired (nil sessionSink -> logged-drop)
-	// until the RIG-2717 responder assembly wires a *linearagent.Dispatcher here.
-	// The handler is mounted only on the net door below, when one exists.
-	// serverResolver: the Linear webhook secret is a SERVER secret. Note
-	// buildNetworkServer below keeps the CONTAINER resolver — that one feeds
-	// FetchSecrets, which must keep reading `secrets`.
+	// Linear webhook ingress (RIG-2732 T7d): a shared POST /webhooks/linear
+	// handler built iff the Linear webhook secret is declared (App-INDEPENDENT).
+	// Its sink is linearDataSink; nil when the notify lane is off. serverResolver:
+	// the webhook secret is a SERVER secret (buildNetworkServer keeps CONTAINER).
 	linearWebhookHandler, err := buildLinearWebhookWiring(ctx, cfg, serverResolver, linearDataSink, slog.Default())
 	if err != nil {
 		return serveDoors{}, err
 	}
 
 	// Authenticated network door, built only when --listen is given. It mints and
-	// writes the bootstrap token 0600 under the state dir (so a socket-only start
-	// leaves none behind) and mounts the CompassService + CommsService behind the
-	// bearer + admin-gate interceptors, plus the internal RunnerService door a
-	// Runner enrolls over (Runner-subject bearer, separate from the account door)
-	// and — when the board lane is on (webhookSink != nil) — the internet-facing
-	// POST /webhooks/github ingress OUTSIDE the bearer/admin gate. On a build
-	// error the listeners this Serve bound are still ours to close.
+	// writes the bootstrap token 0600 under the state dir and mounts CompassService
+	// + CommsService behind bearer + admin-gate, the RunnerService door, and — when
+	// the board lane is on — the POST /webhooks/github ingress outside that gate.
 	var netServer *http.Server
 	// One variable feeds both the call and the record below, so the two cannot
 	// drift apart and the recorded instance is always the delivered one.
@@ -1069,11 +969,9 @@ func buildDoors(
 		netServer = s
 	}
 
-	// netResolver records WHICH instance reached the container delivery path.
-	// buildNetworkServer resolves nothing at build time, so this threading is
-	// otherwise unobservable and a swap here is silent — and a swap here is the
-	// severe one: runnerhub's FetchSecrets would serve `server_secrets`, handing
-	// every deployment secret to every agent container.
+	// netResolver records WHICH instance reached the container delivery path; a
+	// swap here is silent and severe: runnerhub's FetchSecrets would serve
+	// `server_secrets`, handing every deployment secret to every agent container.
 	return serveDoors{uds: udsServer, dev: devServer, net: netServer, netResolver: netResolver, linearNotify: linearNotifyLane}, nil
 }
 
@@ -1097,11 +995,9 @@ type drainSet struct {
 // load-bearing and was previously buried at the bottom of a 200-line function.
 func drainDoors(d drainSet) error {
 	// Close both buses so held-open streams end and release their handlers:
-	// the CompassService SubscribeEvents rides bus, the CommsService
-	// SubscribeComms rides commsBus, and both serve on every door. Closing only
-	// bus would leave a live SubscribeComms subscriber wedged (its ctx is not
-	// cancelled by Shutdown), stalling the drain to the deadline. Both closes
-	// are idempotent, so the deferred Close of each stays a safe no-op.
+	// SubscribeEvents rides bus, SubscribeComms rides commsBus, both on every
+	// door. Closing only bus would leave a live SubscribeComms subscriber wedged
+	// (Shutdown does not cancel its ctx), stalling the drain. Both closes idempotent.
 	d.bus.Close()
 	d.commsBus.Close()
 	// Fresh ctx is deliberate: the parent is already cancelled (that woke this
@@ -1832,11 +1728,10 @@ func buildLinearNotifyLane(
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR,
 		Host:     host,
 	}
-	// Nil pull-number resolver: Linear is issues-only and never produces a
-	// CHECKS event, so there is no head SHA to resolve (the router tolerates a
-	// nil resolver and keeps the pre-RIG-2869 guard behavior). The identity
-	// resolver IS wired: self-origin suppression applies to Linear COMMENT /
-	// OPENED / STATE the same as GitHub.
+	// Nil pull-number resolver: Linear is issues-only and never produces a CHECKS
+	// event, so there is no head SHA to resolve (the router tolerates nil). The
+	// identity resolver IS wired: self-origin suppression applies to Linear
+	// COMMENT / OPENED / STATE the same as GitHub.
 	identities := &forgeIdentityResolver{st: st, provider: provider, host: host}
 	router := ingest.NewNotifyRouter(notifyStore, dispatcher, checks, nil, identities, forgeRef, log)
 	arm := ingest.NewNotifyWebhookArm(router, ingest.NotifyArmConfig{Log: log})
@@ -2030,11 +1925,10 @@ func buildForgeWriteService(
 ) (*forgeService, error) {
 	fc := cfg.Forge.resolved()
 
-	// (1) The author write leg rides the shared primary App client. A defensive
-	// guard: the caller only reaches here when writes are enabled (primary App
-	// configured), so primaryClient is built — but a nil here would otherwise
-	// register a nil author client, so fail fast with a clear error rather than
-	// panic on first write.
+	// (1) The author write leg rides the shared primary App client. Defensive
+	// guard: the caller only reaches here when writes are enabled, so a nil here
+	// would register a nil author client — fail fast with a clear error rather
+	// than panic on first write.
 	if primaryClient == nil {
 		return nil, errors.New("forge write: primary App client is nil (writes enabled without a configured primary App)")
 	}
@@ -2062,18 +1956,10 @@ func buildForgeWriteService(
 	registry := newForgeProviderRegistry()
 	registerGitHubForgeCoordinate(registry, fc, primaryClient, reviewerClient)
 
-	// Linear write coordinate — registered ONLY when Linear is configured (the
-	// shared client-credentials token source is non-nil, else GitHub-only). Linear
-	// is issues-only (DL-051): its PR/review ops return ErrUnsupported, which the
-	// chokepoint flattens to in-band unimplemented. One client serves both roles —
-	// Linear has no author/reviewer split (no review concept), so the same client
-	// is the author and the reviewer entry. It rides the SAME linearTokens
-	// instance the notify lane rides (the one-instance rule, DEC-4). Its
-	// coordinate host is left empty so a Linear-provider ForgeRef with no host
-	// resolves it via the registry's per-provider default; the GraphQL endpoint
-	// default lives inside NewLinear. isDefault=false: the GitHub coordinate is the
-	// default a nil/unset ForgeRef resolves to, so Linear is the additive
-	// coordinate a LINEAR-addressed ForgeRef selects explicitly.
+	// Linear write coordinate — registered ONLY when Linear is configured (else
+	// GitHub-only). Linear is issues-only (DL-051): PR/review ops return ErrUnsupported.
+	// One client serves both roles, riding the SAME linearTokens instance (DEC-4).
+	// isDefault=false: GitHub is the default, Linear is selected explicitly.
 	if linearTokens != nil {
 		linear := forge.NewLinear(forge.LinearConfig{Token: linearTokens, Log: log})
 		registry.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}, linear, linear, false)

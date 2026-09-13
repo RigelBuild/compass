@@ -3,14 +3,9 @@
 package guestd
 
 // Hermetic suite for the serve step's h2c wiring (serveHandshake) and the Health
-// handler. It serves the GuestControl handler over an in-memory net.Listener
-// (no AF_VSOCK, no VM) with the same cleartextHTTP2 stack production uses, dials
-// it with a Connect h2c client, and asserts Health returns the boot state. This
-// proves the handler implements the generated interface AND that the h2c door
-// actually carries a Connect call — the pieces T4 exercises over real vsock.
-//
-// Shutdown is event-gated on the returned error channel + t.Context(); no
-// sleeps.
+// handler. It serves GuestControl over an in-memory net.Listener (no AF_VSOCK,
+// no VM) with the production cleartextHTTP2 stack, dials it with a Connect h2c
+// client, and asserts Health returns the boot state. Shutdown event-gated, no sleeps.
 
 import (
 	"context"

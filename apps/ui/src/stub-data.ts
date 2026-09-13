@@ -1,17 +1,7 @@
-// Dev-only stub data for the Compass ADE UI.
-//
-// Compass is an Agentic Development Environment: a persistent daemon (compassd)
-// with a Wails shell rendering this web UI, meeting at the compass.v1 gRPC
-// contract (docs/specs/product/compass.md). The real board / agent / ACP /
-// audit event payloads are not built yet — the daemon today reports liveness and
-// a daemon-status stream — so this module hand-fakes a representative fleet so
-// the full interface is explorable in `vite dev` with no daemon and no Wails IPC.
-//
-// Everything here is a plain in-memory fixture. When the daemon grows the board,
-// agent-runtime (ACP over compass.v1, design: architecture-lineage), and audit
-// streams, this module is deleted and the components read the generated
-// @compass/client instead — the shapes below intentionally mirror that eventual
-// contract. The data is drawn from a real multi-agent wave so it reads true.
+// Dev-only stub data for the Compass ADE UI. The real board / agent / ACP / audit payloads
+// aren't built yet, so this hand-fakes a representative fleet so the full interface is
+// explorable in `vite dev` with no daemon. Plain in-memory fixtures; deleted when the daemon
+// grows the streams and components read @compass/client (shapes here mirror that contract).
 
 // ── Enums ──────────────────────────────────────────────────────────────────
 
@@ -90,12 +80,10 @@ export type TrackerKind = "linear" | "jira" | "github";
 
 // ── Board ──────────────────────────────────────────────────────────────────
 
-// The canonical Compass board types — the forge artifact's fields PLUS the
-// Compass agent attribution PLUS the Compass machinery, translated from raw
-// forge data at server ingestion (DL-069). The raw forge shape is never a wire
-// type. Fixture-typed here until `@compass/client` generates them, then the
-// import flips to the generated type (the seam). camelCase field names mirror
-// the protobuf-es codegen convention; the proto is snake_case.
+// The canonical Compass board types — the forge artifact's fields PLUS the Compass agent
+// attribution PLUS the Compass machinery, translated from raw forge data at server
+// ingestion (DL-069). Fixture-typed here until `@compass/client` generates them, then the
+// import flips (the seam). camelCase field names mirror protobuf-es codegen; the proto is snake_case.
 
 /** Which forge (and host, for self-hosted instances) an artifact lives on.
  *  Carried on both Issue and PullRequest so multi-forge artifacts never collide
@@ -1310,12 +1298,10 @@ export const STUB_ISSUES: Issue[] = [
 	},
 ];
 
-// The current user's own tracker-assigned issues, for the Backlog view (D3) —
-// the human's personal queue, shown alongside the fleet's board. Distinct from
-// STUB_ISSUES (the agents' work): these are unassigned to any agent and carry
-// the tracker's native status. Linear-origin (DL-051's issues-only forge), so
-// their forge is Linear with the project key as `repo`. Read through the
-// TrackerSeam (tracker.ts).
+// The current user's own tracker-assigned issues, for the Backlog view (D3) — the human's
+// personal queue. Distinct from STUB_ISSUES (the agents' work): these are unassigned to any
+// agent and carry the tracker's native status. Linear-origin, so their forge is Linear with
+// the project key as `repo`. Read through the TrackerSeam (tracker.ts).
 const LINEAR_FORGE: ForgeRef = { provider: "linear", host: "linear.app" };
 export const STUB_ASSIGNED_ISSUES: Issue[] = [
 	{

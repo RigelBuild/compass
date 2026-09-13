@@ -2,31 +2,10 @@
 
 package server
 
-// Auth-door COMPOSITION tests (RIG-1946): proof that the authenticated
-// network door derives caller identity ONLY from the Authorization: Bearer
-// credential resolved against the store, and NEVER from any proxy-injected
-// header. The Compass Bridge will be fronted by `tailscale serve` (a reverse
-// proxy), so an attacker who can shape request headers must gain nothing from
-// them: no identity, no elevation, no revocation. These tests drive the REAL
-// served interceptor chain (BearerInterceptor outer, AdminGate inner) through
-// the shared h2c connect harness in network_door_test.go (networkDoorHandler /
-// newNetworkStore), so they exercise the same production seam a proxied client
-// would hit.
-//
-// The forged headers below (X-Forwarded-User, X-Forwarded-For, X-Remote-User,
-// Forwarded) are the identity-suggestive headers a reverse proxy conventionally
-// injects and a downstream might be tempted to trust. The production door reads
-// none of them: interceptor.go consults only authorizationHeader, and
-// admin_gate.go decides admin only via CallerFrom(ctx). These tests lock that
-// in — each names, in its doc comment, the concrete mutation that would redden
-// it (the "if the door ever trusted header X" scenario), and since the invariant
-// is a NEGATIVE (a header is NOT consulted), the teeth come from a differential:
-// the forged headers must produce a response byte-identical to the same request
-// without them.
-//
-// Store-gated and hermetic on the same terms as network_door_test.go: behind
-// `//go:build pgtest && unix`, each test captures one isolated-schema DSN via
-// newNetworkStore (which calls pgtest.RequireDSN → t.Skip when no runtime).
+// Auth-door COMPOSITION tests (RIG-1946): proof the network door derives caller
+// identity ONLY from the Bearer credential resolved against the store, NEVER from a
+// proxy-injected header (the Bridge is fronted by `tailscale serve`). Each test's
+// teeth are a differential: forged headers must produce a byte-identical response.
 
 import (
 	"context"
@@ -202,11 +181,9 @@ func TestNetworkDoorProxyHeadersAreInertForAdmin(t *testing.T) {
 	client := networkDoorHandler(t, svc, st, admin)
 
 	// issue drives the adminOnly IssueToken RPC with the admin bearer, optionally
-	// adding forged headers that name a DIFFERENT (non-admin) user — the shape
-	// that would trip a gate wrongly requiring header/bearer agreement. The target
-	// account id is the admin (an existing account), so a cleared gate reaches the
-	// handler and mints a token; the assertion is on success reaching the handler,
-	// identical with and without the forged headers.
+	// adding forged headers naming a DIFFERENT user — the shape that would trip a gate
+	// wrongly requiring header/bearer agreement. The assertion is on success reaching
+	// the handler, identical with and without the forged headers.
 	issue := func(withForged bool) error {
 		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
 		req.Header().Set("Authorization", "Bearer "+adminTok)
@@ -255,10 +232,9 @@ func TestNetworkDoorProxyHeadersGrantNoIdentityStreaming(t *testing.T) {
 	client := networkDoorHandler(t, svc, st, admin)
 
 	// open drives the authenticatedOpen SubscribeEvents server-stream with no
-	// Authorization header, optionally adding the forged proxy headers, and
-	// returns the client-visible connect.Error. A rejected stream surfaces its
-	// terminal error on the first Receive (the interceptor returns before the
-	// handler runs), matching the pattern in TestNetworkDoorStreamingBearerAuth.
+	// Authorization header, optionally adding the forged proxy headers, and returns
+	// the client-visible connect.Error. A rejected stream surfaces its terminal error
+	// on the first Receive (the interceptor returns before the handler runs).
 	open := func(withForged bool) *connect.Error {
 		req := connect.NewRequest(&compassv1.SubscribeEventsRequest{SinceSeq: 0})
 		if withForged {

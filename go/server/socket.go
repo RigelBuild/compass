@@ -143,11 +143,10 @@ func clearStaleSocket(socketPath string) error {
 		return fmt.Errorf("refusing to start: %s exists and is not a socket", socketPath)
 	}
 
-	// A live peer answers a connect; a stale socket refuses it. Only a refused
-	// or already-gone connect proves the socket is stale — any other probe error
-	// (timeout, permission, descriptor exhaustion) is propagated rather than
-	// treated as stale, so a transient failure never unlinks a live server's
-	// socket.
+	// A live peer answers a connect; a stale socket refuses it. Only a refused or
+	// already-gone connect proves staleness — any other probe error (timeout,
+	// permission, descriptor exhaustion) is propagated, so a transient failure never
+	// unlinks a live server's socket.
 	conn, err := net.DialTimeout("unix", socketPath, 250*time.Millisecond)
 	if err == nil {
 		conn.Close() //nolint:errcheck,gosec // the probe dial succeeded; closing the probe conn, its result is irrelevant to the liveness check (errcheck + its gosec G104 twin)

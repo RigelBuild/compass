@@ -107,9 +107,8 @@ func (s *Store) UpsertDMChannelTx(ctx context.Context, tx pgx.Tx, spec DMChannel
 
 	// The final member set: both agent parties plus each party's owning user(s)
 	// — the transitive owner-membership invariant (design.md:231-234), computed
-	// identically on the create and resume paths so a reconcile converges on
-	// exactly what a create would have produced. One party is the actor, the
-	// rest are the requested set.
+	// identically on create and resume so a reconcile converges on what a create
+	// would have produced.
 	members, err := expandOwnerMembership(ctx, tx, spec.Members[0], spec.Members[1:])
 	if err != nil {
 		return "", false, err
@@ -133,10 +132,9 @@ func (s *Store) UpsertDMChannelTx(ctx context.Context, tx pgx.Tx, spec DMChannel
 			return "", false, fmt.Errorf("store: resolve dm channel: %w", err)
 		}
 
-		// Free name (as of our SELECT): INSERT born kind=DM, zero-value policy
-		// (OPEN, no owner) + mandatory. ON CONFLICT DO NOTHING absorbs a row a
-		// concurrent open committed between our SELECT and this INSERT — zero
-		// rows returned rather than a raised unique-violation — so the tx is
+		// Free name (as of our SELECT): INSERT born kind=DM, OPEN + mandatory.
+		// ON CONFLICT DO NOTHING absorbs a row a concurrent open committed since
+		// our SELECT — zero rows instead of a unique-violation — so the tx is
 		// never poisoned; we loop and resume the committed row.
 		id := newID()
 		switch insertedID, err := qtx.InsertDMChannel(ctx, db.InsertDMChannelParams{
@@ -156,11 +154,10 @@ func (s *Store) UpsertDMChannelTx(ctx context.Context, tx pgx.Tx, spec DMChannel
 					return "", false, upsertMemberErr(err, m)
 				}
 			}
-			// Born mandatory ⇒ every member is a delivery target regardless of
-			// the subscribed flag (the D1 disjunct), so each agent member's
-			// delivery cursor MUST be seeded in this same tx — an un-seeded
-			// delivery target is the fail-DANGEROUS D2 hazard. Self-guarding
-			// (agent-only) and idempotent, so human members are a no-op.
+			// Born mandatory ⇒ every member is a delivery target (D1 disjunct),
+			// so seed each agent member's cursor in this tx — an un-seeded target
+			// is the fail-DANGEROUS D2 hazard. Self-guarding (agent-only) and
+			// idempotent, so human members are a no-op.
 			if err := seedChannelDeliveryCursors(ctx, tx, ChannelID(insertedID)); err != nil {
 				return "", false, err
 			}
@@ -213,12 +210,10 @@ func verifyReconcileDMTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, ki
 	if err := qtx.ReassertDMMandatory(ctx, string(channelID)); err != nil {
 		return fmt.Errorf("store: reassert dm mandatory: %w", err)
 	}
-	// Seed EVERY current agent member's delivery cursor (not only re-added ones),
-	// matching SetChannelPolicy's mandatory-flip discipline: a FALSE→TRUE
-	// re-assert makes every member a delivery target, so a pre-existing member
-	// that somehow lacked a cursor must not be left an un-seeded delivery target
-	// (the fail-DANGEROUS D2 hazard). Self-guarding (agent-only) and idempotent,
-	// so an already-seeded member is a no-op.
+	// Seed EVERY current agent member's cursor (not only re-added ones), per
+	// SetChannelPolicy's flip discipline: a FALSE→TRUE re-assert makes every
+	// member a delivery target, so none may be left un-seeded (the D2 hazard).
+	// Self-guarding (agent-only) and idempotent.
 	if err := seedChannelDeliveryCursors(ctx, tx, channelID); err != nil {
 		return err
 	}

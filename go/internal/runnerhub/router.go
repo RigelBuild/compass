@@ -1,16 +1,13 @@
 //go:build unix
 
 // The session-command router: the Server side of the Sessions bidi stream. A
-// client-facing session RPC (Start/Stop/Reload/Status on CompassService) routes
-// here; the router pushes the command down the Runner's Sessions response stream
-// and blocks for the matching result on the Runner's request stream, correlated
-// by request id.
-//
-// OQ6 idempotency: a command carries a
-// request id; a retry after a timeout reuses that id, and the router returns the
-// original in-flight/completed result rather than pushing a duplicate command —
-// so a relay-Start retried after a timeout creates no duplicate container and no
-// spurious ALREADY_RUNNING.
+// client-facing session RPC pushes its command down the Runner's response stream
+// and blocks for the matching result, correlated by request id.
+
+// OQ6 idempotency: a retry after a timeout reuses the request id, and the router
+// returns the original in-flight/completed result rather than pushing a duplicate
+// — so a retried relay-Start creates no duplicate container and no spurious
+// ALREADY_RUNNING.
 package runnerhub
 
 import (
@@ -71,25 +68,15 @@ type commandRouter struct {
 	// second command (idempotency).
 	inflight map[string]*pendingCall
 
-	// deliverRefusals is the bounded set of request ids for send-only DELIVER
-	// dispatches (send1) still awaiting a possible async refusal. A successful
-	// deliver returns NO synchronous result and rides a later
-	// AgentFrame.delivery_ack, so send1 registers no pendingCall and does not
-	// block (RIG-1569 §5). A REFUSAL does ride the Sessions request stream as a
-	// RunnerError result correlated by request id, which complete() would
-	// otherwise drop as "unknown". This set makes such a refusal OBSERVABLE
-	// (logged + counted) instead of silently dropped.
-	//
-	// A successful deliver's entry is never removed by complete() (no refusal ever
-	// lands for it), so an unbounded set would grow with total lifetime successful
-	// delivers, not the in-flight working set — the RIG-1610 leak. It is a bounded
-	// size-capped LRU (deliverRefusalsMax): once past the cap the oldest entries
-	// are evicted. Eviction is safe — a refusal arrives within one control
-	// round-trip of its send1, so at lookup time a real refusal's id is freshly
-	// added and present; the only ids that grow old unremoved are successful
-	// delivers, which never have a refusal to look up. The LRU is internally
-	// synchronized, but is still accessed under mu here (onEvict=nil, so no
-	// callback re-entrancy) to keep the same critical sections. Guarded by mu.
+	// deliverRefusals: bounded set of request ids for send-only DELIVER dispatches
+	// still awaiting a possible async refusal. A success rides a later delivery_ack
+	// and registers no pendingCall; a REFUSAL rides the request stream as a
+	// RunnerError, which complete() would drop — this set makes it OBSERVABLE.
+
+	// A success's entry is never removed, so an unbounded set would grow with
+	// lifetime delivers — the RIG-1610 leak. Bounded LRU; eviction is safe since a
+	// real refusal arrives within one round-trip and is present at lookup, while
+	// only successes grow old unremoved. Accessed under mu (onEvict=nil).
 	deliverRefusals *expirable.LRU[string, struct{}]
 	// refusedDelivers counts observed deliver refusals (RESOURCE_EXHAUSTED and
 	// any other RunnerError landing on a send1 id) — the diagnostic that a
@@ -281,13 +268,10 @@ func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.Ses
 	}
 	call := &pendingCall{done: make(chan struct{})}
 	r.inflight[id] = call
-	// Fail-fast on a full queue: a blocking command must never be silently
-	// dropped under a waiting caller. Delete the registration and return an
-	// error immediately — the exact shape of the old synchronous push-failure
-	// path, so OQ6 idempotent retry is untouched (a retry with the same id
-	// re-issues cleanly, a retry racing a still-queued first attempt joins its
-	// live pendingCall). The caller-side contract already surfaces a prompt
-	// error as CodeUnavailable.
+	// Fail-fast on a full queue: a blocking command must never be silently dropped
+	// under a waiting caller. Delete the registration and return immediately, so
+	// OQ6 idempotent retry is untouched (a retry with the same id re-issues, or
+	// joins a still-queued first attempt's live pendingCall).
 	if !r.enqueue(outFrame{cmd: cmd, class: frameCommand}) {
 		delete(r.inflight, id)
 		r.mu.Unlock()

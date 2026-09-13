@@ -2,14 +2,10 @@
 
 package gateway
 
-// publish.go is the telemetry ingest for the Publish client-stream: the agent
-// streams trace/session AgentFrames in emission order, and the Runner forwards
-// each up PublishEvents Runner-sequenced (the exact stamping relay.go does for
-// the retired stdout relay, minus the scanner + protojson decode). Two AgentFrame
-// variants that arrive here are NOT telemetry — ReplayCompleteAck and ControlAck
-// are control-plane acks routed to the control lane, never relayed upstream
-// (transport-consolidation record, ack routing). Stream end is the old stdout
-// EOF: close the upstream PublishEvents stream and await its ack.
+// The telemetry ingest for the Publish client-stream: the agent streams
+// trace/session AgentFrames in emission order and the Runner forwards each up
+// PublishEvents Runner-sequenced. ReplayCompleteAck and ControlAck are NOT
+// telemetry — they route to the control lane, never upstream. EOF closes the stream.
 
 import (
 	"context"
@@ -71,12 +67,10 @@ func (g *Gateway) Publish(
 			g.control.AckControl(sessionID, ack.GetAckedSeq(), ack.GetAppliedAbove())
 			continue
 		}
-		// Trace/session telemetry: forward Runner-sequenced. A durable
-		// conversation frame does NOT belong on this lossy stream (it takes the
-		// CommitConversationFrame unary); but if one arrives here it is still a
-		// valid AgentFrame the hub can classify, so forward it rather than drop
-		// it — the split is enforced agent-side, and dropping a durable frame
-		// silently is the exact loss the split exists to prevent.
+		// Trace/session telemetry: forward Runner-sequenced. A durable conversation
+		// frame belongs on the CommitConversationFrame unary, but if one arrives here
+		// it is still a valid AgentFrame — forward rather than drop it, since
+		// dropping a durable frame silently is the loss the split exists to prevent.
 		if err := pub.forward(frame); err != nil {
 			// A mid-stream upstream failure ends the relay; the agent reconnects.
 			// Release the shared upstream stream on the way out.

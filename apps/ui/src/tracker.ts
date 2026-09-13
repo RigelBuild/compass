@@ -1,14 +1,7 @@
-// The tracker seam (design D2/T11/T12) — Compass state is canonical; a tracker's
-// native status is a projection over it, through a user-editable mapping.
-//
-// Compass state is server-authoritative (DL-070): the canonical `Issue.state`
-// is computed and streamed by the server projection, and the tracker is a
-// projection OF it (DL-032), mirrored server-side on real working-state
-// transitions. This module is the UI-side client seam over that model; the
-// fixture implements it in-memory until the daemon's board projection lands,
-// when `listAssignedIssues` becomes a `@compass/client` call — a one-module
-// swap. The projection domain is the seven WORKING states; `archived` carries
-// no tracker status (DL-071).
+// The tracker seam (design D2/T11/T12) — Compass state is canonical; a tracker's native
+// status is a projection over it through a user-editable mapping (server-authoritative,
+// DL-070). This is the UI-side client seam; the fixture implements it in-memory until the
+// daemon's board projection lands. Domain is the seven WORKING states; `archived` has no status.
 
 import type {
 	Issue,

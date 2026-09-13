@@ -3,11 +3,9 @@
 package server
 
 // The one lifecycleService branch that fails BEFORE any store or hub call, so it
-// runs in the default lane with no Postgres: DespawnAsAccount's self-despawn
-// refusal, which is checked on target==caller before AgentOwner is ever read.
-// Every other branch (spawn ownership, resume, rollback, owner authz) reads the
-// store, so it lives behind the pgtest tag in lifecycle_pgtest_test.go — the same
-// split service_agentsession_test.go vs its pgtest sibling uses.
+// runs in the default lane: DespawnAsAccount's self-despawn refusal, checked on
+// target==caller before AgentOwner is read. Every other branch reads the store, so
+// it lives behind the pgtest tag in lifecycle_pgtest_test.go.
 
 import (
 	"context"

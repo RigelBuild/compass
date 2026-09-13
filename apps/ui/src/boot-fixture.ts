@@ -1,15 +1,7 @@
-// The offline fixture boot (T2). Reached ONLY via the dynamic `import()` in
-// index.tsx's inline `import.meta.env.MODE === "fixture"` branch — so in every
-// non-fixture build that branch dead-code-eliminates and this module's chunk is
-// never emitted (the hard wall, §A1). It mirrors `index.tsx main()` minus the
-// network: no comms client, no compass client, no WhoAmI round-trip. By the
-// store's existing gates that yields board = STUB_ISSUES, fleet = STUB_AGENTS,
-// banner = STUB_DAEMON, comms = the fixture — the exact clientless construction
-// every component test builds.
-//
-// The PROD tripwire below is defense-in-depth behind the AUTHORITATIVE gate,
-// the build-scan test `fixture-wall.test.ts`, which asserts FIXTURE_SENTINEL is
-// structurally absent from a production `dist/`.
+// The offline fixture boot (T2). Reached ONLY via the dynamic `import()` in index.tsx's
+// `import.meta.env.MODE === "fixture"` branch, so in every non-fixture build that branch
+// dead-code-eliminates and this chunk is never emitted (the hard wall, §A1). The PROD
+// tripwire below is defense-in-depth behind the build-scan gate `fixture-wall.test.ts`.
 
 import { createRoot } from "solid-js";
 import { STUB_COMMS_STATE } from "./comms-stub";
@@ -37,16 +29,10 @@ export function bootFixture(root: HTMLElement): () => void {
 
 	const queryClient = newAppQueryClient();
 
-	// The clientless store: NO comms, NO compass. The store seeds STUB_ISSUES /
-	// STUB_AGENTS / STUB_DAEMON and holds STUB_COMMS_STATE as the comms surface;
-	// callerId defaults to CALLER_ID, the identity the fixtures are authored
-	// around. createRoot gives the store's memos a stable owner (never disposed),
-	// as index.tsx's main() does.
-	// Fixture-ONLY empty-board affordance (T5): the visual harness sets `?empty`
-	// to capture the empty-board fallback. This module is dead-code-eliminated
-	// from prod by the `import.meta.env.MODE === "fixture"` wall (§A1), so the
-	// param never reaches a shipped build. When present, seed an empty issue
-	// list so the board renders its `.bridge-empty` message.
+	// The clientless store: NO comms, NO compass. It seeds STUB_ISSUES / STUB_AGENTS /
+	// STUB_DAEMON and holds STUB_COMMS_STATE; createRoot gives its memos a stable owner.
+	// Fixture-ONLY empty-board affordance (T5): `?empty` seeds an empty issue list so the
+	// board renders its `.bridge-empty` message (dead-code-eliminated from prod by the §A1 wall).
 	const emptyBoard = new URLSearchParams(location.search).has("empty");
 	const store = createRoot(() =>
 		createAppStore({

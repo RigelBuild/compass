@@ -1,18 +1,7 @@
-// A hand-written CompassClient double for driving the store's agent-lifecycle
-// and boot-probe paths without a server — today StopAgentSession (recorded
-// verbatim so a test asserts the exact wire request the UI issued) and
-// GetServerInfo (the boot liveness/version probe the daemon banner reads).
-//
-// It models the ONE server behaviour a permissive double would hide: the RPC is
-// Runner-backed, so a server built with no RunnerHub attached answers
-// `Unavailable` (go/server/service.go:152-154) rather than succeeding. That is a
-// real, expected condition on the socket-only path, and the UI must surface it —
-// `failNextStop` is how a test drives it; `failNextProbe` drives the boot
-// probe's rejection (server down / RPC error) the same one-shot way.
-//
-// Sibling of comms-fake.ts (the CommsClient double) and shaped the same way, so
-// every live-path suite describes ONE server. Dev/test-only — nothing in the
-// shipped app imports it.
+// A hand-written CompassClient double for driving the store's agent-lifecycle and
+// boot-probe paths without a server — StopAgentSession (recorded verbatim) and
+// GetServerInfo (the boot probe). Models the ONE behaviour a permissive double hides:
+// a Runner-backed RPC answers `Unavailable` with no RunnerHub. Sibling of comms-fake.ts. Dev/test-only.
 
 import type { CompassClient } from "@compass/client";
 
@@ -87,11 +76,9 @@ export function createFakeCompass(): FakeCompass {
 			}
 			return { accountId: whoAmIAccountId.accountId };
 		},
-		// The board read stream (RIG-1729). This double drives only the
-		// agent-lifecycle + probe paths, so the event stream yields NOTHING and
-		// holds open until the caller aborts — mirroring the real transport (a
-		// gRPC-Web call ends its response stream on abort) and comms-fake's
-		// subscribe. A test that needs scripted board events uses
+		// The board read stream (RIG-1729). This double drives only the agent-lifecycle +
+		// probe paths, so the event stream yields NOTHING and holds open until the caller
+		// aborts — mirroring the real transport. A test needing scripted board events uses
 		// events.test.ts's createRouterTransport fake instead.
 		subscribeEvents: async function* (
 			_req: unknown,

@@ -90,18 +90,10 @@ func run() error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	log := slog.Default()
 
-	// The SELECTED engine's static host-capability preflight runs ahead of
-	// every operator-input check. A refusal about a host fact the launch path
-	// depends on — the microVM host trio/KVM/guest images, or podman's userns
-	// remap support (--userns=keep-id:uid=,gid=, podman ≥ 4.3;
-	// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md) — must
-	// precede telling an operator to fix a token/id: otherwise an operator on an
-	// unsupported host sets a token, fixes that, re-runs, and only then learns
-	// the engine can never launch a container. It takes no operator configuration
-	// and its failure is unconditional, kept per selected backend. Select the
-	// engine first (its own errors — unknown backend name, non-numeric
-	// CPUS/MEMORY_MB — are legible startup refusals in their own right), then
-	// gate on its preflight.
+	// The SELECTED engine's static host-capability preflight runs ahead of every
+	// operator-input check: a refusal about a host fact must precede telling an
+	// operator to fix a token, or they fix it, re-run, and only then learn the
+	// engine can never launch. Select the engine first, then gate on its preflight.
 	engine, err := backends.selectEngine()
 	if err != nil {
 		return err

@@ -2,14 +2,10 @@
 
 package server
 
-// SpawnAsAccount role/persona thread-through (RIG-2673 T4): a Manager-creating
-// spawn carries role+persona set-at-creation. The values are stored via
-// store.CreateAgent (source of record) and threaded to the Runner's Provision
-// wire from the CREATED store account — so a spawn with role/persona set lands
-// them in agent_accounts AND on the Provision wire, and an empty-field spawn is
-// byte-identical to today (empty on both). Idempotent re-spawn keeps the stored
-// values. Driven through newLifecycleFixture directly, as the other spawn tests.
-// context.Background() is the test root (test-root ctx exemption).
+// SpawnAsAccount role/persona thread-through (RIG-2673 T4): a Manager-creating spawn
+// carries role+persona set-at-creation, stored via store.CreateAgent and threaded to
+// the Provision wire from the CREATED account — so a set spawn lands them in
+// agent_accounts AND on the wire; an empty-field spawn is byte-identical to today.
 
 import (
 	"context"

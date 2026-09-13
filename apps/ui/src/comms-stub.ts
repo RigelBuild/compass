@@ -1,31 +1,7 @@
-// Dev-only stub data for the Compass UI.
-//
-// Compass is a Discord/Slack-style multi-agent product: humans and agents
-// talk in channels + DMs, and — once inside an agent workspace — that channel
-// chat is the workspace's primary pane, with the agent's execution trace a
-// secondary observation companion beside it (design: architecture-lineage). Humans
-// and agents are first-class accounts; channels nest in channel groups
-// (a user's space, e.g. group "matt" -> channel "coordination").
-//
-// This module mirrors the compass.v1 comms contract
-// (proto/compass/v1/comms.proto): Account / ChannelGroup / Channel / Message /
-// MessageBlock / Ask. It is the walking-skeleton fixture — the shell renders it
-// through the comms store with no daemon, and when SubscribeComms lands this
-// module is deleted and the components read the generated @compass/client
-// instead (the shapes below intentionally mirror that eventual contract).
-//
-// Reframe deltas vs the raw proto, each annotated at its seam:
-//  - the durable conversation block set narrows to `text` + `ask`. The rich ACP
-//    blocks (thought/tool_call/plan/diff) do NOT appear in the channel — they
-//    live in the session observation panel, rendered by OMP's own renderer over
-//    opaque session frames.
-//  - threading is TWO-LEVEL (Zulip model): a channel holds named `Topic`s, and
-//    each `Message` belongs to exactly one topic (`Message.topicId`). There is
-//    no per-message parent — a topic IS the thread. (comms.proto Message.topic_id
-//    + Topic; field 2 reused as topic_id, parent_message_id removed.)
-//  - per-channel membership (joined / subscribed) is a still-in-design contract
-//    carrier — modeled here as a UI-side field. SEAM: expect the field name to
-//    settle.
+// Dev-only stub data for the Compass UI, mirroring the compass.v1 comms contract
+// (Account / ChannelGroup / Channel / Message / MessageBlock / Ask). The walking-skeleton
+// fixture: the shell renders it with no daemon; when SubscribeComms lands this module is
+// deleted and components read @compass/client. Durable blocks narrow to `text` + `ask`.
 
 // ── Accounts (comms.proto Account) ───────────────────────────────────────────
 
@@ -240,7 +216,7 @@ export const RESERVED_MENTIONS = ["everyone", "agents", "users"] as const;
 export type ReservedMention = (typeof RESERVED_MENTIONS)[number];
 
 // ── Fixture data ─────────────────────────────────────────────────────────────
-//
+
 // A representative multi-agent wave, drawn from a real Compass session so it
 // reads true: a human owner (matt) with owned agents, a shared announcements
 // channel, the owner's coordination + service channels, and DMs.
@@ -400,11 +376,10 @@ export const STUB_CHANNELS: Channel[] = [
 const T0 = Date.UTC(2026, 6, 18, 17, 0, 0);
 const min = (m: number): number => T0 + m * 60_000;
 
-// The channel's named topics — the two-level Zulip model's thread layer. Each
-// message below carries a `topicId` into one of these; the channel index renders
-// them ordered by last activity. `ch-svc-compass` carries TWO topics so the
-// index shows a real multi-topic channel; DMs carry a single home topic (a DM is
-// a flat conversation, one implicit topic).
+// The channel's named topics — the two-level Zulip model's thread layer. Each message
+// below carries a `topicId` into one of these; the index renders them by last activity.
+// `ch-svc-compass` carries TWO topics for a real multi-topic channel; DMs carry a single
+// home topic (a DM is a flat conversation, one implicit topic).
 export const STUB_TOPICS: Topic[] = [
 	{
 		id: "top-ann-posture",

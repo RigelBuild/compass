@@ -3,13 +3,9 @@
 package comms
 
 // Agent-initiated org-management adapter contracts (RIG-2673 T2): the
-// CreateChannelAsAccount / UpdateChannelMembersAsAccount / CreateChannelGroupAsAccount
-// adapters run the SAME handler path a human caller takes under WithActor, so
-// authz collapses to the same codes (an invisible/non-member target → the code a
-// human gets), an empty account short-circuits to errNoActor (CodeInvalidArgument),
-// and founding membership + the ChannelChanged fan-out are identical. Driven
-// in-process against a real store and bus. context.Background() is the test root
-// (test-root ctx exemption).
+// *AsAccount adapters run the SAME handler path a human takes under WithActor,
+// so authz collapses to the same codes, an empty account short-circuits to
+// errNoActor, and founding membership + fan-out are identical. Real store + bus.
 
 import (
 	"context"

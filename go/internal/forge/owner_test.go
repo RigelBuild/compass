@@ -1,11 +1,9 @@
 package forge
 
 // The security core: the owner-header stamp/strip chokepoint (#995 Decision 2 +
-// T3, DL-050). Every case here defends a real contract — the load-bearing
-// property is that an agent cannot forge attribution (strip-then-stamp, last
-// stamp wins, only the Server stamps) and that a parsed header is a plain
-// display CLAIM, never a verified fact (DL-094). No network, no I/O: pure
-// functions of their inputs (the source-guard walk excepted).
+// T3, DL-050). Cases defend that an agent cannot forge attribution (strip-then-
+// stamp, last stamp wins, only the Server stamps) and that a parsed header is a
+// display CLAIM, never a verified fact (DL-094). Pure functions, no I/O.
 
 import (
 	"errors"

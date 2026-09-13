@@ -2,16 +2,10 @@
 
 package server
 
-// DB-free unit tests for the RIG-1810 forge wiring that need no Postgres: the
-// ForgeConfig enable predicate + defaulting, the TTL-caching TokenSource
-// (record test 6), and the two distinct startup secret-validation error texts
-// (record test 7's discriminability — validateForgeSecret is a pure function of
-// the resolver, so the resolve-errors vs name-absent split is proven here; the
-// full Serve fail-fast + listener-cleanup path is proven in the pgtest lane).
-//
-// The store-backed halves — the seed reconcile, the polling-disabled Warn, and
-// the end-to-end boot pipeline — live in serve_forge_pgtest_test.go behind the
-// `pgtest` tag.
+// DB-free unit tests for the RIG-1810 forge wiring: the ForgeConfig enable predicate
+// + defaulting, the TTL-caching TokenSource (record test 6), and the two distinct
+// startup secret-validation error texts (test 7's discriminability). The store-backed
+// halves live in serve_forge_pgtest_test.go behind the `pgtest` tag.
 
 import (
 	"context"

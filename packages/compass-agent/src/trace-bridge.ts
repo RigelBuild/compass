@@ -1,14 +1,7 @@
-// Trace-continuity bridge: links each injected channel message to the agent
-// turn it drives, so a message span and its turn span share one trace.
-//
-// Design record (frozen contract):
-// docs/designs/observability/compass-agent-message-trace-continuity/design.md (### T1).
-//
-// The bridge is ONE object internally, but its type is SPLIT by consumer: the
-// agent sees only the OTel-type-free `TurnTracer`; `cli.ts` alone holds the full
-// `TraceBridge` with the `Span`-typed hook members. Only `TurnTracer` ever
-// appears on an exported CompassAgent/transport signature, so no OTel type
-// crosses the package barrel or the transport fence.
+// Trace-continuity bridge: links each injected channel message to the agent turn it drives,
+// so a message span and its turn span share one trace (design record ### T1). ONE object
+// internally, but its type is SPLIT by consumer: the agent sees only the OTel-type-free
+// `TurnTracer`; `cli.ts` alone holds the full `Span`-typed `TraceBridge` (the fence).
 
 import type { TelemetryHookContext } from "@oh-my-pi/pi-agent-core";
 import {
@@ -26,11 +19,9 @@ const FLAGS_LENGTH = 2;
 const ZERO_TRACE_ID = "0".repeat(TRACE_ID_LENGTH);
 const ZERO_SPAN_ID = "0".repeat(SPAN_ID_LENGTH);
 
-// Lowercase-only is intentional and W3C-mandated: `traceparent` fields are
-// lowercase hex on the wire, and compass-server (the stamper) emits lowercase.
-// Matching that exactly is required — a case-insensitive relax would accept
-// spec-violating input and yield ids that no longer byte-match the server's
-// stamp, breaking the trace join. Do not add the `i` flag.
+// Lowercase-only is intentional and W3C-mandated: `traceparent` fields are lowercase hex
+// and compass-server emits lowercase. A case-insensitive relax would accept spec-violating
+// input and yield ids that no longer byte-match the server's stamp. Do not add the `i` flag.
 function isHex(value: string): boolean {
 	return /^[0-9a-f]+$/.test(value);
 }
@@ -78,13 +69,10 @@ export interface TurnTracer {
 	runWithParent<T>(traceparent: string, fn: () => T): T;
 	linkActiveTurn(traceparent: string, messageId: string): void;
 	stampActiveTurn(messageIds: string): void;
-	// Turn-trigger re-attach (RIG-2894): the CURRENT turn's SINGLE parent
-	// message's decoded traceparent, or "" when the turn has no single parent.
-	// Set at the two 1:1-parent turn-starts (idle steer, N=1 deliver flush);
-	// cleared at every other turn-start. The comms broker reads it at post time
-	// to stamp `CommsCallRequest.trigger_traceparent`, so the server can link a
-	// reply's fresh trace back to the message that triggered the turn. Plain
-	// strings only — no OTel type crosses this surface (the fence).
+	// Turn-trigger re-attach (RIG-2894): the CURRENT turn's SINGLE parent message's
+	// decoded traceparent, or "" with no single parent. Set at the 1:1-parent turn-starts,
+	// cleared elsewhere. The comms broker reads it to stamp trigger_traceparent so the
+	// server links a reply's trace to the triggering message. Plain strings only (fence).
 	setTurnTrigger(traceparent: string): void;
 	clearTurnTrigger(): void;
 	currentTurnTrigger(): string;
@@ -100,19 +88,17 @@ export interface TraceBridge extends TurnTracer {
 	onSpanEnd(ctx: TelemetryHookContext): void;
 }
 
-// The single un-identified invoke_agent span is the MAIN turn: every
-// task-subagent loop runs with a non-undefined `agent` identity, and
-// AgentBusyError on concurrent prompts guarantees at most one un-identified
-// invoke_agent live at a time — so one slot is correct.
+// The single un-identified invoke_agent span is the MAIN turn: every task-subagent loop
+// runs with a non-undefined `agent` identity, and AgentBusyError on concurrent prompts
+// guarantees at most one un-identified invoke_agent live at a time — so one slot is correct.
 function isMainTurnSpan(ctx: TelemetryHookContext): boolean {
 	return ctx.kind === "invoke_agent" && ctx.agent === undefined;
 }
 
 export function createTraceBridge(): TraceBridge {
 	let capturedInvokeAgent: Span | undefined;
-	// The current turn's single-parent trigger traceparent (RIG-2894). Stored
-	// RAW — an opaque passthrough exactly like the wire value: no parse/validate
-	// (the server drops a malformed value on consume). "" means the turn has no
+	// The current turn's single-parent trigger traceparent (RIG-2894). Stored RAW, an
+	// opaque passthrough (the server drops a malformed value on consume). "" means no
 	// single parent (N>1 flush, mid-turn-steer-only, forge-only, telemetry-off).
 	let turnTrigger = "";
 

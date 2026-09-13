@@ -2,17 +2,10 @@
 
 package runner
 
-// agentHost.RefreshConfig: the fleet-wide ConfigVersion-driven update pass. On a
-// signal the host re-materializes the current config bundle into EACH live
-// session's own per-container root — reading that container's own live MCS label
-// — and Reloads the agent in place, but ONLY when the bundle version actually
-// moved past what that container last materialized. Every case pins a contract a
-// plausible bug would break: a version bump must Reload every live container
-// exactly once, each into its OWN root with its OWN label (a shared-root or
-// shared-label regression relabels one tree N times); an unchanged version must
-// re-materialize idempotently but never Reload (never interrupt a live agent);
-// and one container's failure must be swallowed so the rest of the fleet still
-// updates.
+// agentHost.RefreshConfig: the ConfigVersion-driven update pass. On a signal the
+// host re-materializes each live session's own root and Reloads in place, but ONLY
+// when the version moved. Cases pin: a bump Reloads each container once into its
+// OWN root/label; unchanged never Reloads; one container's failure is swallowed.
 
 import (
 	"context"

@@ -1,18 +1,12 @@
 //go:build unix
 
 // The agent-comms Server leg: the session->account binding lifecycle and the
-// RelayCommsCall handler the Runner forwards each agent-initiated comms call
-// into (transport design T3 -> comms-tools design T2).
-//
-// Trust model (OQ-2, ratified — the load-bearing security leg). The Runner is a
-// pure forwarder: it sends RelayCommsCall{session_id, call} and asserts NO
-// account. The SERVER resolves session_id -> agent account from THIS hub's own
-// binding — recorded from the Provision request's agent_account_id, promoted to
-// the minted session_id at Start — and executes the call under that account via
-// the CommsCaller (which sets comms.WithActor in-process). An unknown, stopped,
-// or reconnect-dropped session fails closed CodeNotFound: never a stale account,
-// never the bootstrap-admin fallback. The binding is authoritative Server-side
-// state; a session_id on the wire selects an account, it never carries one.
+// RelayCommsCall handler the Runner forwards each agent comms call into.
+
+// Trust model (load-bearing security leg): the Runner is a pure forwarder and
+// asserts NO account. The SERVER resolves session_id -> agent account from this
+// hub's binding and executes under it. Unknown/stopped/dropped session fails
+// closed CodeNotFound — never a stale account. A session_id selects, never carries.
 package runnerhub
 
 import (
@@ -71,12 +65,10 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 		h.mu.Unlock()
 		return
 	}
-	// Capture the store handle, the routing fabric, and the enrolled Runner id
-	// under the lock, then release BEFORE the store write: the binding row names
-	// the Runner the session is attached to (the sweep key a re-enroll retires
-	// it by), and a promote always follows a relay through that Runner, so one is
-	// enrolled. A nil store or an (unexpected) empty runner id keeps the maps as
-	// truth — today's behaviour — writing no durable row.
+	// Capture the store handle, routing fabric, and enrolled Runner id under the
+	// lock, then release BEFORE the store write: the binding row names the Runner
+	// the session is attached to (the sweep key a re-enroll retires it by). A nil
+	// store or empty runner id keeps the maps as truth, writing no durable row.
 	bindings := h.bindings
 	routing := h.routing
 	var runnerID string
@@ -93,11 +85,10 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 	if bindings != nil && runnerID != "" {
 		d, err := bindings.RecordSessionBinding(ctx, sessionID, account, runnerID)
 		if err != nil {
-			// A durable-write fault must not fail the Start that already
-			// succeeded on the Runner: log it and fall back to the in-RAM cache
-			// so the session resolves at least on this instance. The next
-			// re-enroll sweep or a cache-miss re-read reconciles against the
-			// table.
+			// A durable-write fault must not fail the Start that already succeeded
+			// on the Runner: log it and fall back to the in-RAM cache so the session
+			// resolves at least on this instance. The next re-enroll sweep or a
+			// cache-miss re-read reconciles against the table.
 			h.log.Error("record session binding failed; falling back to in-RAM cache",
 				"session_id", sessionID, "account", string(account), "error", err)
 		} else {
@@ -123,11 +114,9 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 		delete(h.sessionAccounts, displaced)
 	}
 	// Read both after-binding sinks under mu so a setter and this arm never race,
-	// then release BEFORE firing either: each sink only enqueues into its own
-	// consumer/component loop and returns promptly, so promoteSession never blocks
-	// on store work and never holds h.mu across a sink call (mirrors the settle
-	// edge at deliverSession). Both nil-safe (a hub with neither wired is today's
-	// behavior — RIG-1569 T6 session-start, T8 presence).
+	// then release BEFORE firing either: each sink enqueues into its own loop and
+	// returns promptly, so promoteSession never blocks on store work nor holds h.mu
+	// across a sink call. Both nil-safe.
 	sessionStart := h.sessionStart
 	presence := h.presence
 	h.mu.Unlock()
@@ -147,12 +136,10 @@ func (h *Hub) promoteSession(ctx context.Context, containerName, sessionID strin
 		sessionStart.OnSessionStarted(sessionID, account)
 	}
 
-	// The reconciliation edge (RIG-1569 T8, design.md:494-503): a Runner
-	// re-enroll clears bindings and each session re-promotes here, so presence is
-	// reconstructed on this edge. Notify AFTER releasing the lock and only once
-	// the binding is recorded, nil-safe; the sink enqueues into the component's
-	// own loop and returns promptly (the loop resolves the live state via the
-	// Status relay + the open-ask overlay, so it must not run under h.mu).
+	// The reconciliation edge: a Runner re-enroll clears bindings and each session
+	// re-promotes here, so presence is reconstructed on this edge. Notify AFTER
+	// releasing the lock and only once the binding is recorded; the sink enqueues
+	// into its own loop, which resolves live state and must not run under h.mu.
 	if presence != nil {
 		presence.OnSessionPromoted(account, sessionID)
 	}
@@ -191,13 +178,10 @@ func (h *Hub) publishBindingChange(ctx context.Context, routing RoutingFabric, t
 // lock-then-release-then-fire discipline promoteSession uses, so the sink (which
 // enqueues into the presence loop) never runs under h.mu.
 func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
-	// RIG-3108: the maps are a cache, so the durable row is deleted FIRST
-	// (DeleteSessionBinding, on the request ctx so it stays tenant-scoped), then
-	// the maps are evicted under h.mu. DeleteSessionBinding is by session id and
-	// idempotent — a session promoteSession already displaced has no row (the
-	// account row now names the newer session), so a stale release matches
-	// nothing and leaves the live binding alone, exactly the re-point guard the
-	// map eviction below keeps.
+	// The maps are a cache, so the durable row is deleted FIRST (on the request ctx
+	// so it stays tenant-scoped), then the maps are evicted under h.mu. Delete is
+	// by session id and idempotent — a session already displaced has no row, so a
+	// stale release matches nothing and leaves the live binding alone.
 	h.mu.Lock()
 	bindings := h.bindings
 	routing := h.routing
@@ -244,19 +228,11 @@ func (h *Hub) unbindSession(ctx context.Context, sessionID string) {
 
 	// The account now has NO live session: drive its presence OFFLINE. Skipped
 	// when the account was re-pointed to a newer session (wentOffline is false).
-	//
-	// Accepted race (RIG-1651): this edge and promoteSession's OnSessionPromoted
-	// both enqueue onto the presence FIFO after releasing h.mu, so a CONCURRENT
-	// same-account Stop(this)+Start(newer) could order the live promotion before
-	// this DISCONNECTED and strand the account OFFLINE until the next
-	// lifecycle/promotion edge repairs it. Left as-is: an account has at most one
-	// live session (the orchestrator's operating invariant), so concurrent
-	// same-account churn is unreachable, and any transient OFFLINE self-repairs on
-	// the next edge. Do NOT "fix" the fire-after-unlock discipline blind to this —
-	// the re-point guard above already covers every SEQUENTIAL ordering. If
-	// concurrent same-account teardown/promote ever becomes reachable, stamp a
-	// per-account generation under h.mu into each edge and drop a terminal edge
-	// older than the last-applied promotion (RIG-1651 option b).
+
+	// Accepted race (RIG-1651): this edge and OnSessionPromoted both enqueue onto
+	// the presence FIFO after releasing h.mu, but an account has at most one live
+	// session (orchestrator invariant), so concurrent same-account churn is
+	// unreachable and any transient OFFLINE self-repairs on the next edge.
 	if wentOffline && presence != nil {
 		presence.OnSessionLifecycle(account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
 	}
@@ -319,9 +295,8 @@ func (h *Hub) accountForSession(ctx context.Context, sessionID string) (store.Ac
 	}
 	// Populate the forward cache so a subsequent comms call for this restarted
 	// session hits without a table round-trip. Re-check under the lock: a
-	// concurrent promote/unbind may have run between the release and here, so a
-	// live map entry wins over the row just read (avoids clobbering a fresher
-	// binding with a staler one).
+	// concurrent promote/unbind may have run, so a live map entry wins over the
+	// row just read (avoids clobbering a fresher binding with a staler one).
 	h.mu.Lock()
 	if live, ok := h.sessionAccounts[sessionID]; ok {
 		h.mu.Unlock()
@@ -745,12 +720,10 @@ func (h *Hub) executeCall(
 			Result: &compassv1internal.CommsCallResult_Roster{Roster: resp},
 		}, nil
 	case *compassv1internal.CommsCallRequest_SetStatus:
-		// Ordered write-then-publish (design.md T3:473-486): the durable
-		// Store.SetActivity COMMITS first (returning the server-truncated value
-		// that landed in the table), THEN a best-effort PublishActivity fires the
-		// live event carrying exactly that truncated string. A lost publish
-		// self-heals on the next set_status; the table is the source of record,
-		// so the publish is never gated on and never errors the call.
+		// Ordered write-then-publish: Store.SetActivity COMMITS first (returning the
+		// server-truncated value that landed), THEN a best-effort PublishActivity
+		// fires the live event carrying exactly that string. A lost publish
+		// self-heals on the next set_status; the publish is never gated on.
 		truncated, err := h.comms.SetStatusAsAccount(ctx, account, c.SetStatus.GetActivity())
 		if err != nil {
 			return nil, err

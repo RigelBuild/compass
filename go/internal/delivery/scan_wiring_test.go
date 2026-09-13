@@ -4,11 +4,8 @@ package delivery
 
 // RIG-2490 T3 — the recovery scan wired at both consumer recovery points and the
 // mention-routed mark stamped on the live settle path, RED-first. Each case
-// drives the consumer through the real events bus + hand-written fakes and gates
-// on the observable durable effect (owed row, mark), never a sleep.
-// context.Background() is the test root (rule://go-thread-context exemption for
-// _test.go); it is threaded into Run via startConsumer and into a direct scan
-// call, never re-rooted below.
+// drives the consumer through the real events bus + fakes and gates on the
+// observable durable effect (owed row, mark), never a sleep.
 
 import (
 	"context"
@@ -59,10 +56,9 @@ func TestOverrunBranchScansMissedMention(t *testing.T) {
 	reads.members[ch] = []store.AccountID{agentA}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
 	// m1 is seeded AFTER the start scan has run (below, past <-disp.enteredFirst)
-	// so Run's start scan reads an empty unrouted set and cannot recover it —
-	// only the overrun-branch scan can. Without that isolation the start scan
-	// would grab m1 at loop entry and this test would pass with the overrun-branch
-	// scan removed (a false guard).
+	// so Run's start scan reads an empty unrouted set — only the overrun-branch
+	// scan can recover it. Without that isolation the start scan would grab m1 at
+	// loop entry and this test would pass with the overrun-branch scan removed.
 
 	resubscribed := make(chan struct{})
 	c.afterResubscribe = func() { close(resubscribed) }

@@ -1,33 +1,25 @@
 package vfs
 
-// This file is the P2 VolumeManager backend: one directory subtree per session
-// on the box's fast local storage, under an operator-configured base dir. It is
-// the whole of the volume lifecycle at P2 — create, resolve, attach, stamp,
-// reconcile, expire — with the snapshot/archive/restore verbs reserved behind
-// honest sentinels (see vfs.go).
-//
-// The load-bearing part is the close-stamp mechanism, which is what bounds the
-// storage leak the parent record's 14-day expiry policy exists to bound. A
-// stamp is a small JSON marker in the volume's metadata dir written by the
-// teardown path (Stamp) and read by the reaper (Expire), and the backend holds
-// three invariants over it:
-//
-//	(a) Attach clears the stamp before returning the path, so a reopened
-//	    closed-but-unexpired session never carries a past-deadline stamp into
-//	    its new life.
-//	(b) Expire takes a per-volume advisory file lock and RE-READS the stamp
-//	    under it, so a volume is never reaped in the window between the reaper
-//	    reading a stamp and a concurrent Attach clearing it. Attach takes the
-//	    same lock around its clear, and RE-VERIFIES under it that the volume
-//	    still exists — an Attach that was blocked behind the Expire which reaped
-//	    the volume returns ErrVolumeNotFound rather than a path to a deleted
-//	    tree. The lock file lives OUTSIDE the volume root, on a stable inode a
-//	    reap cannot unlink, which is what makes that under-lock verdict
-//	    authoritative across reap+recreate (see lockVolume).
-//	(c) The stamp carries close-vs-suspend intent, supplied by the caller. A
-//	    suspended session's volume is never eligible however old, because D4's
-//	    suspend uses the same stop+remove teardown path a close does — "the
-//	    container is gone" cannot distinguish them.
+// The P2 VolumeManager backend: one directory subtree per session on local
+// storage. It is the whole volume lifecycle at P2 — create, resolve, attach,
+// stamp, reconcile, expire — with snapshot/archive/restore reserved behind honest
+// sentinels (vfs.go).
+
+// The load-bearing part is the close-stamp: a small JSON marker written by
+// teardown (Stamp) and read by the reaper (Expire), which bounds the storage leak
+// the 14-day expiry exists to bound. The backend holds three invariants over it.
+
+// (a) Attach clears the stamp before returning the path, so a reopened
+// closed-but-unexpired session never carries a past-deadline stamp into new life.
+
+// (b) Expire takes a per-volume advisory lock and RE-READS the stamp under it, so
+// a volume is never reaped in the window between the reaper reading a stamp and a
+// concurrent Attach clearing it. Attach takes the same lock, RE-VERIFIES the
+// volume exists, and the lock file lives OUTSIDE the volume root on a stable inode.
+
+// (c) The stamp carries close-vs-suspend intent from the caller. A suspended
+// session's volume is never eligible however old, because suspend uses the same
+// stop+remove teardown a close does — "the container is gone" cannot distinguish them.
 
 import (
 	"context"
@@ -59,10 +51,9 @@ const (
 	// mis-decide eligibility.
 	stampFileName = "close-stamp.json"
 	// lockFileSuffix names the per-volume advisory lock file (invariant (b)),
-	// appended to the volume root path so the lock is a FILE SIBLING of the
-	// volume root dir: <baseDir>/<sessionID><lockFileSuffix>. Outside the
-	// reaped subtree by construction — see lockVolume for why that placement is
-	// load-bearing rather than incidental.
+	// appended to the volume root so the lock is a FILE SIBLING of the volume root
+	// dir: <baseDir>/<sessionID><lockFileSuffix>. Outside the reaped subtree by
+	// construction — see lockVolume for why that placement is load-bearing.
 	lockFileSuffix = ".compass-vfs.lock"
 	// stampTempPattern names the staging file for an atomic stamp write. It
 	// lives in the same dir as its target so the rename is same-filesystem.
@@ -422,13 +413,10 @@ func (m *LocalManager) ReconcileOrphans(ctx context.Context) error {
 // it: this pass exists only to make UNSTAMPED volumes reachable by the reaper,
 // and rewriting a suspended session's stamp would make it reapable.
 func stampOrphanLocked(root string, discoveredAt time.Time) error {
-	// A volume reaped out from under this pass — between eachVolume's marker
-	// stat and this lock acquisition — is not an orphan to stamp. Guard the
-	// mutation the way Attach and Stamp already guard theirs: without this,
-	// writeStamp's os.MkdirAll would resurrect the reaped root's shell, Lookup
-	// would then succeed on a reaped session, and the provision path would warm-
-	// Attach an EMPTY volume instead of cold-materializing — silently defeating
-	// the not-found-is-an-observable-signal contract.
+	// A volume reaped out from under this pass — between eachVolume's marker stat
+	// and this lock acquisition — is not an orphan to stamp. Without this guard
+	// writeStamp's MkdirAll would resurrect the reaped root's shell and the
+	// provision path would warm-Attach an EMPTY volume, defeating the not-found signal.
 	if err := requireVolumeRoot(root, filepath.Base(root)); err != nil {
 		if errors.Is(err, ErrVolumeNotFound) {
 			return nil

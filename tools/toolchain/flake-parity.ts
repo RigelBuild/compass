@@ -1,19 +1,15 @@
 #!/usr/bin/env bun
-// The flake nixpkgs-pin parity gate: fail the build when the repo-root flake's
-// flake.lock and devenv.lock pin different nixpkgs revisions (design record
-// compass-distribution §T6). The two locks are independent, so a devenv pin bump
-// silently skews the flake — this gate turns that drift into a red check.
-//
-// This is the thin execution shell — read the two lock files, compare, exit. All
-// parsing and the pass/fail decision live in ./flake-parity-core.ts, which is
-// pure and unit-tested (./flake-parity-core.test.ts). Mirrors parity.ts.
-//
-// Run it anywhere: in CI (moon task flake-gate:flake-parity) or locally (`bun
-// tools/toolchain/flake-parity.ts`), where it should always pass since both
-// locks are checked in.
-//
-// Exit 0 = both locks pin the same nixpkgs rev. Exit 1 = they differ OR a rev
-// could not be read. Unverifiable is a failure, never a skip.
+// The flake nixpkgs-pin parity gate: fail the build when the repo-root flake.lock
+// and devenv.lock pin different nixpkgs revisions (compass-distribution §T6). The
+// two locks are independent, so a devenv pin bump silently skews the flake — this
+// gate turns that drift into a red check.
+
+// Thin execution shell — read the two locks, compare, exit. Parsing and the
+// pass/fail decision live in ./flake-parity-core.ts (pure, unit-tested). Mirrors
+// parity.ts. Run in CI (moon task flake-gate:flake-parity) or locally.
+
+// Exit 0 = both locks pin the same nixpkgs rev; 1 = they differ or a rev could
+// not be read. Unverifiable is a failure, never a skip.
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";

@@ -2,17 +2,10 @@
 
 package server
 
-// Store-gated RevokeToken round-trip over the production network-door chain
-// (bearer + admin gate) via a real connect client: the same integration seam as
-// the IssueToken door tests. RevokeToken is admin-gated (classifyProcedure), so
-// the admin bearer is what clears the gate; the handler hashes the presented
-// plaintext server-side and marks the stored hash revoked. Behind `pgtest &&
-// unix` via the shared pgtest harness (SKIP when no runtime).
-//
-// The load-bearing assertion: after a revoke, auth.ResolveToken fails the token
-// as ErrTokenRevoked — the credential is genuinely withdrawn, not merely
-// reported revoked. Plus the two edge codes: an unknown token → CodeNotFound; an
-// already-revoked token → success (idempotent no-op).
+// Store-gated RevokeToken round-trip over the production network-door chain via a real
+// connect client. Admin-gated; the handler hashes the presented plaintext and marks the
+// stored hash revoked. Load-bearing: after a revoke, auth.ResolveToken fails as
+// ErrTokenRevoked. Edge codes: unknown → NotFound; already-revoked → idempotent success.
 
 import (
 	"context"

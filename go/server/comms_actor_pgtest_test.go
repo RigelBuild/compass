@@ -2,23 +2,10 @@
 
 package server
 
-// Comms-actor attribution over the authenticated network door (RIG-1195 T3b).
-// The isolated auth-package test (internal/auth/interceptor_pgtest_test.go's
-// TestBearerInterceptorSetsCommsActorNotAdminFallback) proves withCaller sets the
-// comms actor when driven through a hand-built BearerInterceptor; it cannot prove
-// buildNetworkServer actually MOUNTS that interceptor on the CommsService chain.
-// This test closes that gap end-to-end: it drives a real network door through the
-// production serving path (Serve → buildNetworkServer, --listen + TLS) and calls
-// CommsService.CreateChannelGroup over TLS as a non-admin bearer caller, asserting
-// the created group's owner is the caller — not the bootstrap-admin fallback comms
-// attributes when no actor is set. It reddens if buildNetworkServer dropped
-// withCaller, or mounted the comms handler on a chain that lost the caller, since
-// attribution would then fall back to the admin the comms service was built with.
-//
-// Store-gated (Serve opens the store, the bearer interceptor resolves the token
-// against it) so it lives in the `pgtest` lane. It reuses the TLS + door harness
-// from network_door_test.go (writeSelfSignedCert, freeLoopbackAddr,
-// serveInBackground, waitServing) and adds only its own TLS CommsService client.
+// Comms-actor attribution over the authenticated network door (RIG-1195 T3b). The
+// auth-package test proves withCaller sets the comms actor but not that
+// buildNetworkServer MOUNTS that interceptor on the CommsService chain; this asserts
+// a non-admin bearer caller's CreateChannelGroup is attributed to the caller.
 
 import (
 	"context"
@@ -74,11 +61,9 @@ func TestNetworkDoorCommsActorIsBearerCallerNotAdmin(t *testing.T) {
 	addr := freeLoopbackAddr(t)
 
 	// Open a store against the SAME per-test schema Serve will use, to seed the
-	// non-admin member, mint its bearer token, and learn the bootstrap-admin id
-	// (the fallback actor the assertion must reject). Migration is idempotent, so
-	// Serve re-opening this DSN is a no-op; BootstrapAdmin is idempotent by handle,
-	// so it returns the same admin id Serve then fetches. Done synchronously before
-	// Serve starts, so there is no concurrent-Open race on the admin insert.
+	// non-admin member, mint its bearer token, and learn the bootstrap-admin id.
+	// Migration and BootstrapAdmin are idempotent, so Serve re-opening this DSN is a
+	// no-op. Done synchronously before Serve starts, so no concurrent-Open race.
 	dsn := pgtest.RequireDSN(t)
 	st, err := store.Open(ctx, dsn)
 	if err != nil {

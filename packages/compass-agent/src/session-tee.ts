@@ -1,50 +1,24 @@
-// The tee seam (RIG-1570 T2): a container-local-filesystem `SessionStorageBackend`
-// (indexed-session-storage.ts:25-36 — the ten async methods) that TEES every
-// committed write upstream as a durable `TranscriptEntry` frame while keeping the
-// authoritative bytes on the local disk the SDK's own session loader reads.
-//
-// Wrapped in the SDK's `IndexedSessionStorage` and injected at the `cli.ts`
-// composition root (`SessionManager.create(cwd, sessionDir, storage)`), so the
-// SDK drives writes through this backend exactly as it drives the file backend:
-//   - `append(path, line)`  → local append + one DELTA frame (checkpoint: false)
-//   - `writeFull(path, …)`  → local atomic write + one CHECKPOINT frame
-//     (checkpoint: true) — EVERY SDK full-body rewrite funnels here
-//     (session-manager.ts #rewriteAtomically → writeTextAtomic → writeFull), so
-//     a checkpoint ALWAYS means "supersedes all prior entries" and a delta
-//     ALWAYS rides append.
-//   - reads (`readFull`/`readSlices`/`loadIndex`) → REAL local FS: load-bearing
-//     for resume, since `setSessionFile` reads the resume file back through the
-//     wrapper (session-manager.ts:973-974) and the wrapper throws ENOENT for
-//     un-indexed paths, so the Runner-materialized file must appear in the scan.
-//     loadIndex therefore ALSO indexes an explicit `resumeFile` (options,
-//     RIG-1570 T2 Option B) by its exact absolute path, so a resume file that
-//     lives OUTSIDE `sessionDir` is discoverable and need not live under it.
-//   - the rest (`updateSessionTitle`/`truncate`/`move`/`remove`) → local-only
-//     (titles are a Server-side rendering concern; nothing durable depends on
-//     them). Safe because no SDK write path invokes `truncate`/`move`/`remove`
-//     on the ACTIVE session file — the active-file write path is exclusively
-//     `append` + `writeFull` (`#rewriteAtomically`), verified vs
-//     session-manager.ts; if a future SDK compacts/relocates the active session
-//     via these, they would have to tee.
-//
-// ORDERING (design R-Ordering). The backend AWAITS each frame's durable send
-// inside the storage op the SDK's per-path tail chain serializes
-// (indexed-session-storage.ts:418-433) — so per-session emit order == send order
-// == commit order. An internal FIFO chain (#emitChain) serializes the upstream
-// sends themselves as belt-and-suspenders, so a buffered-then-retried frame can
-// never overtake a later one.
-//
-// ERRED-EMIT (design R4). The transcript lane does NOT inherit the sink's silent
-// give-up: a definitively-erred `emitDurable` (the sink's own bounded transport
-// retry, frame-sink.ts DURABLE_RETRY_BACKOFF_MS, already exhausted) enters the
-// backend's OWN bounded buffer and keeps retrying the erred transcript send on
-// an escalating warn → error schedule; at cap exhaustion the backend latches a
-// FATAL session error (surfaced loudly on stderr, mirroring the SDK's
-// `#diskFailure` fatal-by-design latch, session-manager.ts:674) that every
-// subsequent op re-throws, so the session stops rather than silently dropping
-// durable state. This is a production durable-write resilience tier (fails
-// closed + loud at the cap), not test-flake papering — cap is a tuning const,
-// not freeze-scope (design.md:777).
+// The tee seam (RIG-1570 T2): a container-local-filesystem `SessionStorageBackend` that
+// TEES every committed write upstream as a durable `TranscriptEntry` frame while keeping
+// the authoritative bytes on the local disk the SDK's session loader reads. Wrapped in the
+// SDK's `IndexedSessionStorage` and injected at the `cli.ts` composition root.
+
+// Writes: `append` → local append + one DELTA frame; `writeFull` → local atomic write + one
+// CHECKPOINT frame (every SDK full-body rewrite funnels here, so a checkpoint always means
+// "supersedes all prior"). Reads → REAL local FS, load-bearing for resume: the wrapper
+// throws ENOENT for un-indexed paths, and loadIndex also indexes an explicit `resumeFile`.
+
+// The rest (updateSessionTitle/truncate/move/remove) → local-only; safe because no
+// active-file write path invokes them — the active path is exclusively `append`/`writeFull`.
+
+// ORDERING (design R-Ordering): the backend AWAITS each frame's durable send inside the
+// SDK's per-path tail chain, so per-session emit order is send order is commit order; an
+// internal FIFO (#emitChain) serializes the sends themselves as belt-and-suspenders.
+
+// ERRED-EMIT (design R4): the transcript lane does NOT inherit the sink's silent give-up. A
+// definitively-erred `emitDurable` enters the backend's OWN bounded buffer and keeps
+// retrying on an escalating schedule; at cap it latches a FATAL session error (loud on
+// stderr) that every op re-throws, so the session stops rather than dropping durable state.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -61,16 +35,14 @@ import {
 } from "./compassv1";
 import type { FrameSink, OutboundFrame } from "./frame";
 
-// The semantic title-update shape the backend's write vectors carry, taken from
-// the SDK interface itself (not re-declared) so it can never drift.
+// The semantic title-update shape the backend's write vectors carry, taken from the SDK
+// interface itself (not re-declared) so it can never drift.
 type TitleUpdate = Parameters<SessionStorageBackend["writeFull"]>[3];
 
-// Bounded, escalating backoff for the backend's own transcript-send retry (ms).
-// The sink already retries transient unary errors to its own cap
-// (frame-sink.ts DURABLE_RETRY_BACKOFF_MS) and only REJECTS on definitive
-// give-up; this is the SECOND, coarser tier R4 mandates — after the last delay
-// the send is treated as unrecoverable and the session fails closed. Cap ==
-// length. Tuning, not frozen (design.md:777).
+// Bounded, escalating backoff for the backend's own transcript-send retry (ms). The sink
+// already retries transient errors and only REJECTS on definitive give-up; this is the
+// SECOND, coarser tier R4 mandates — after the last delay the send is unrecoverable and the
+// session fails closed. Cap is length. Tuning, not frozen (design.md:777).
 export const TEE_EMIT_BACKOFF_MS: readonly number[] = [100, 500, 2000, 5000];
 
 /** Tuning knobs; all optional so the frozen `(sink, sessionDir)` shape holds. */
@@ -245,11 +217,9 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 				throw err;
 			}
 		}
-		// RIG-1570 T2 (Option B): also index the explicit Runner-materialized
-		// resume file, which lives OUTSIDE the scanned session dir. Dedup by exact
-		// path (a resume file that happens to live in sessionDir is already
-		// listed). A not-yet-materialized resume file (ENOENT) is a valid fresh
-		// start → skip silently.
+		// RIG-1570 T2 (Option B): also index the explicit Runner-materialized resume file, which
+		// lives OUTSIDE the scanned session dir. Dedup by exact path. A not-yet-materialized
+		// resume file (ENOENT) is a valid fresh start → skip silently.
 		if (this.#resumeFile && !out.some((e) => e.path === this.#resumeFile)) {
 			try {
 				const stat = await fs.stat(this.#resumeFile);
@@ -293,12 +263,10 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 			const headLen = prefixBytes > 0 ? Math.min(prefixBytes, size) : 0;
 			const tailLen = suffixBytes > 0 ? Math.min(suffixBytes, size) : 0;
 			const head = headLen > 0 ? Buffer.allocUnsafe(headLen) : Buffer.alloc(0);
-			// Slice to bytesRead so a short read never surfaces uninitialized heap
-			// (allocUnsafe) or trailing zeros — only the bytes actually read decode.
-			// Belt-and-suspenders: headLen/tailLen are clamped to the file size, so
-			// a regular-file read of an in-bounds range always fully populates the
-			// buffer (bytesRead === requested); there is no deterministic short-read
-			// to test here, which is why no test exercises these bytesRead branches.
+			// Slice to bytesRead so a short read never surfaces uninitialized heap or
+			// trailing zeros. Belt-and-suspenders: headLen/tailLen are clamped to file
+			// size, so an in-bounds read always fully populates the buffer — no
+			// deterministic short-read to test, hence no test on these bytesRead branches.
 			const headBytes =
 				headLen > 0 ? (await handle.read(head, 0, headLen, 0)).bytesRead : 0;
 			const headStr = head.subarray(0, headBytes).toString("utf-8");
@@ -327,9 +295,8 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 		_title?: TitleUpdate,
 	): Promise<void> {
 		this.#throwIfFatal();
-		// Local atomic write (temp + rename), then the CHECKPOINT frame — content
-		// is the full body verbatim (title slot + header + entries), so the
-		// upstream store supersedes every prior entry on it (T4).
+		// Local atomic write (temp + rename), then the CHECKPOINT frame — content is the
+		// full body verbatim, so the upstream store supersedes every prior entry on it (T4).
 		const dir = path.dirname(filePath);
 		await fs.mkdir(dir, { recursive: true });
 		const tempPath = path.join(

@@ -2,14 +2,10 @@
 
 package delivery
 
-// Hand-written fakes for the delivery consumer's collaborators, mirroring the
-// runnerhub seam-test fakes (helpers_test.go fakeLifecycleSink /
-// integration_pgtest_test.go noopLifecycleSink): a recording ControlDispatcher,
-// an in-memory SessionResolver, and an in-memory DeliveryReads. Every test drives
-// the consumer through these and asserts on the recorded dispatches. Tests root
-// on context.Background() as the test root (rule://go-thread-context exemption
-// for _test.go); the consumer's Run(ctx) is fed that same root, so no fresh
-// context is minted mid-tree.
+// Hand-written fakes for the delivery consumer's collaborators: a recording
+// ControlDispatcher, an in-memory SessionResolver, and an in-memory
+// DeliveryReads. Every test drives the consumer through these and asserts on the
+// recorded dispatches.
 
 import (
 	"context"
@@ -103,11 +99,10 @@ func classifyOp(op *compassv1internal.AgentControl) (kind opKind, messageID, fro
 	}
 }
 
-// fakeDispatcher records every DispatchControl call and can be configured to
-// return a synchronous refusal for a given session (the "no live stream" edge).
-// Concurrency-safe: the consumer dispatches from its own goroutine and from the
-// settle drain. It signals each recorded call on a channel so a test event-gates
-// on the observed dispatch rather than sleeping.
+// fakeDispatcher records every DispatchControl call and can return a synchronous
+// refusal for a given session (the "no live stream" edge). Concurrency-safe, and
+// it signals each recorded call on a channel so a test event-gates on the
+// observed dispatch rather than sleeping.
 
 // errNoStream is the synchronous-refusal a dispatcher returns for a session with
 // no live stream — the edge the consumer treats as "fall to the sweep".

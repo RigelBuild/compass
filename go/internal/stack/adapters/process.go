@@ -82,11 +82,9 @@ func (s *ProcessSupervisor) Start(_ context.Context, spec stack.ProcessSpec) (st
 type process struct {
 	cmd *exec.Cmd
 	// stopped is set once Signal(SignalTerm) succeeds. The core calls Signal then
-	// Wait sequentially on one goroutine (drainChildren: Signal then Wait per
-	// child), so correctness needs no synchronization — but it is an atomic.Bool
-	// as cheap insurance so a future caller that overlaps Signal with Wait cannot
-	// data-race, and -race stays clean regardless of call ordering. The waiter
-	// goroutine Wait spawns touches only the done channel, never this field.
+	// Wait sequentially on one goroutine, so correctness needs no synchronization —
+	// it is an atomic.Bool as cheap insurance so a future caller overlapping Signal
+	// with Wait cannot data-race, and -race stays clean regardless of ordering.
 	stopped atomic.Bool
 }
 
@@ -137,14 +135,10 @@ func (p *process) Wait(ctx context.Context) error {
 
 	select {
 	case err := <-done:
-		// A stop we initiated: during drain, drainChildren only ever Waits after
-		// it Signaled, so any exit here IS the requested stop — a crash-vs-clean
-		// distinction while tearing down has no actionable difference. This is
-		// deliberately broader than compass-postgres's childExitError (which
-		// normalizes only a SIGTERM-signaled death): the embedded runner exits
-		// nonzero on graceful shutdown by library contract (RunSessions returns
-		// canceled:EOF, tolerated at server/lifecycle_e2e_pgtest_test.go:806), so
-		// a nonzero code after our SIGTERM must read as a clean drain too.
+		// A stop we initiated: drainChildren only ever Waits after it Signaled, so
+		// any exit here IS the requested stop. Broader than compass-postgres's
+		// childExitError: the embedded runner exits nonzero on graceful shutdown by
+		// library contract, so a nonzero code after our SIGTERM reads as a clean drain.
 		if err != nil && p.stopped.Load() {
 			return nil
 		}

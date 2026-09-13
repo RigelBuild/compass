@@ -1,16 +1,10 @@
 package store
 
 // Config-bundle DOOR contracts (RIG-1624 T1), default gate — pure functions
-// over []byte, no Postgres. validateAndHashConfigBundle is the security-critical
-// store door: it validates every tar member and computes the canonical content
-// version in one streamed pass. These tests exercise every rejection path
-// (whitelist, path escapes, symlink/hardlink members, name grammar, the
-// decompressed-size and file-count caps, invalid mcp JSON) and the version's
-// content-hash stability (identical content re-packed any which way → same
-// version; different content → different version). Fixtures are built in-test
-// with archive/tar + compress/gzip so a test controls tar ordering, mtimes,
-// gzip level, and typeflags directly. The pool round-trips live in the
-// pgtest-tagged sibling.
+// over []byte. validateAndHashConfigBundle is the security-critical store door:
+// it validates every tar member and computes the canonical content version in
+// one streamed pass. These tests exercise every rejection path and hash
+// stability; fixtures are built in-test to control tar ordering/mtimes/typeflags.
 
 import (
 	"archive/tar"
@@ -470,11 +464,10 @@ func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
 		{"profiles models.manager non-string", []tarEntry{{name: "profiles/candidate/profile.yml", content: "models:\n  manager:\n    nested: 1\n"}}},
 		{"profiles models.agents value non-string", []tarEntry{{name: "agents/impl.md", content: "---\nname: impl\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    impl:\n      k: v\n"}}},
 		{"profiles models.agents non-string key (numeric)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    123: sel\n"}}},
-		// on/off/yes/no are !!str under yaml.v3's YAML-1.2 core schema, so an `on:`
-		// key is a STRING key (map[string]any) and would NOT exercise the guard.
-		// An explicit bool `true:` is genuinely non-string → map[any]any, rejected
-		// by rejectNonStringKeys (the sole reason: drop the guard and the bundle is
-		// accepted, since map[any]any also defeats the cross-member lint's assertion).
+		// on/off/yes/no are !!str under YAML-1.2, so an `on:` key is a STRING key
+		// and would NOT exercise the guard. An explicit bool `true:` is
+		// non-string -> map[any]any, rejected by rejectNonStringKeys (drop the
+		// guard and the bundle is accepted, map[any]any defeats the lint too).
 		{"profiles models.agents non-string key (explicit bool)", []tarEntry{{name: "agents/impl.md", content: "---\nname: implementer\n---\nx"}, {name: "profiles/x/profile.yml", content: "models:\n  agents:\n    true: sel\n"}}},
 		{"profiles models non-string sibling key bypasses manager", []tarEntry{{name: "profiles/x/profile.yml", content: "models:\n  manager: litellm/x\n  0: y\n"}}},
 		{"profiles settings credential key", []tarEntry{{name: "profiles/x/profile.yml", content: "settings:\n  auth:\n    broker:\n      token: sekret\n"}}},
@@ -533,11 +526,10 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: \"Bearer sk-live-123\"\n"},
 			wantSub: "providers.x.headers.Authorization",
 		},
-		// A non-string sibling key flips the enclosing yaml.v3 node to
-		// map[any]any; a map[string]any-only descent fails OPEN and rides the
-		// credential past the door. rejectCredentialModels must descend through
-		// both map shapes (yamlMapEntries/yamlMapIndex) so no sibling can shield
-		// a credential leaf. Three shield sites, one per assertion the walk makes.
+		// A non-string sibling key flips the enclosing node to map[any]any; a
+		// map[string]any-only descent fails OPEN and rides the credential past
+		// the door. rejectCredentialModels must descend through both map shapes
+		// so no sibling can shield a credential leaf. Three shield sites.
 		{
 			// (a) provider-level shield: a non-string sibling under the provider
 			// flips the provider node, hiding its apiKey.
@@ -560,21 +552,19 @@ func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
 			wantSub: "providers.x.headers.Authorization",
 		},
 		{
-			// (d) combined shield: a non-string sibling at BOTH the providers
-			// node AND the provider node simultaneously. The two helpers descend
-			// linearly with no shared state, so this cannot fail if (a)+(b) pass;
-			// pinned explicitly to defend the composition against a future refactor
-			// that couples the descents.
+			// (d) combined shield: a non-string sibling at BOTH the providers node
+			// AND the provider node. The two helpers descend linearly with no
+			// shared state, so this cannot fail if (a)+(b) pass; pinned to defend
+			// the composition against a future refactor that couples the descents.
 			name:    "models apiKey shielded by non-string siblings at providers and provider",
 			member:  tarEntry{name: "models.yml", content: "providers:\n  0: junk\n  openai:\n    1: junk\n    apiKey: sk-secret\n"},
 			wantSub: "providers.openai.apiKey",
 		},
 		{
-			// The only denylist entry whose leaf is a RECORD rather than a
-			// scalar string — the first case where yamlPathIsSet terminates on
-			// a map node rather than a string. Same branch today, but it pins
-			// the door against a future change that treats a container leaf as
-			// "not set". Added by the SDK 18.x bump.
+			// The only denylist entry whose leaf is a RECORD not a scalar — the
+			// first case where yamlPathIsSet terminates on a map node. Pins the
+			// door against a future change that treats a container leaf as "not
+			// set". Added by the SDK 18.x bump.
 			name:    "settings record-valued credential leaf",
 			member:  tarEntry{name: "settings/config.yml", content: "images:\n  urls:\n    credentials:\n      s3: {key: v}\n"},
 			wantSub: "images.urls.credentials",
@@ -708,11 +698,10 @@ func TestValidateConfigBundleProfileAgentKeyLint(t *testing.T) {
 		}
 	})
 
-	// F2: a def whose SIBLING frontmatter field (description) is a YAML-ambiguous
-	// scalar (bare colon) must still have its name recovered so a profile keying
-	// that name is ACCEPTED — the door must be at least as permissive as the SDK
-	// loader. Reds before the agentDefFrontmatterName line-scan fallback (name
-	// parses to "" -> lint rejects), greens after.
+	// F2: a def whose SIBLING frontmatter field is a YAML-ambiguous scalar (bare
+	// colon) must still have its name recovered so a profile keying it is
+	// ACCEPTED — the door must be at least as permissive as the SDK loader. Reds
+	// before the line-scan name fallback, greens after.
 	t.Run("colon-bearing sibling field name recovered ACCEPTED", func(t *testing.T) {
 		b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
 			tarEntry{name: "agents/impl.md", content: "---\nname: implementer\ndescription: A thing: with a colon\n---\nROLE\n"},

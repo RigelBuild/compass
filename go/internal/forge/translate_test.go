@@ -1,12 +1,9 @@
 package forge
 
-// Contracts for the pure forge→canonical mappers (S1b). Each test defends an
-// observable mapping contract and must fail on a plausible bug: every
-// forge-sourced field lands in the right canonical field, attribution is passed
-// through untouched, bodies are copied VERBATIM (no owner-header stripping —
-// the mapper is pure), Compass-owned/projection fields stay zero, the uint64→
-// uint32 number narrow clamps at the boundary, and empty inputs yield nil
-// slices. Stdlib testing only — matching provider_test.go / owner_test.go.
+// Contracts for the pure forge->canonical mappers (S1b): every forge-sourced
+// field lands in the right canonical field, attribution passes through untouched,
+// bodies are copied VERBATIM (no owner-header stripping), Compass-owned fields
+// stay zero, the uint64->uint32 narrow clamps, and empty inputs yield nil slices.
 
 import (
 	"math"

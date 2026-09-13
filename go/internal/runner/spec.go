@@ -1,10 +1,9 @@
 //go:build unix
 
-// The config-driven SpecBuilder: it assembles a launchable runtime.AgentSpec
-// from operator-supplied defaults (the image, the default-deny egress allowlist,
-// the workspace layout). It is the production SpecBuilder the Runner binary
-// wires; the per-agent-account credential and egress derivation that later tiers
-// add plugs into the same SpecBuilder seam without changing Provision.
+// The config-driven SpecBuilder: it assembles a launchable runtime.AgentSpec from
+// operator-supplied defaults (image, default-deny egress allowlist, workspace
+// layout). The per-agent-account credential and egress derivation later tiers add
+// plugs into the same seam without changing Provision.
 package runner
 
 import (
@@ -60,13 +59,10 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	if defaults.UID == 0 {
 		return nil, errors.New("spec defaults require a non-root uid")
 	}
-	// Length is a separate property from shape, and the budget depends on it.
-	// The Runner's startup socket-path budget (validateRuntimeDir) models the
-	// container name as AgentContainerNamePrefix + a 32-char account id. A
-	// longer prefix would build a path wider than the budget cleared, so the
-	// runtime dir would pass at boot and the socket would then fail EINVAL at
-	// bind — the exact failure the budget check exists to prevent. Reject the
-	// prefix here instead, at the same startup edge, so the model stays true.
+	// The startup socket-path budget (validateRuntimeDir) models the container
+	// name as AgentContainerNamePrefix + a 32-char account id. A longer prefix
+	// would pass at boot but fail EINVAL at socket bind — the failure the budget
+	// check exists to prevent. Reject it here at the same startup edge.
 	if len(defaults.NamePrefix) > len(AgentContainerNamePrefix) {
 		return nil, fmt.Errorf(
 			"spec defaults name prefix %q (%d bytes) exceeds the %d bytes the agent socket path budget reserves for it",

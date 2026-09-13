@@ -2,21 +2,10 @@
 
 package gateway
 
-// forge.go is the Runner->Server forward for agent-initiated forge calls
-// (create/comment/get/list an issue or PR, submit a review): the
-// AgentGateway.Forge handler an in-container agent reaches over its per-container
-// socket. It is the sibling of Comms (gateway.go) and Lifecycle (lifecycle.go) —
-// same seam, same posture: map the socket -> the container it belongs to -> the
-// one session bound to that container, then forward the call to the Server as
-// RelayForgeCall(session_id, call). The Runner resolves NO account and sets NO
-// actor: the Server resolves session_id -> account from its own Provision-time
-// binding and stamps the owner header itself, fail-closed (Compass forge write
-// path T5).
-//
-// A call arriving before the container's session is bound (socket live at
-// Provision, before Start mints the session) fails closed CodePermissionDenied —
-// never a forward with an empty session id, never a bootstrap-admin-attributed
-// forge write.
+// The Runner->Server forward for agent-initiated forge calls (AgentGateway.Forge),
+// sibling of Comms and Lifecycle: map the socket -> container -> the one bound
+// session, then forward as RelayForgeCall. The Runner sets NO actor — the Server
+// resolves the account, fail-closed; a call before the session is bound is denied.
 
 import (
 	"context"

@@ -3,12 +3,9 @@
 package guestd
 
 // Hermetic suite for the boot orchestrator (run) — the fail-closed ordering gate
-// (§(d)). It injects fake seams and asserts the invariant that makes a
-// successful handshake proof of bringup: the serve step is reached ONLY after
-// net AND mount both succeed; a failing net aborts before the mount runs; a
-// failing mount aborts before the server starts. No VM, no sockets, no sleeps —
-// the fakes record each step synchronously and serve is event-gated on
-// t.Context().
+// (§(d)). It asserts the invariant that makes a successful handshake proof of
+// bringup: serve is reached ONLY after net AND mount both succeed; a failing net
+// or mount aborts before the next step. No VM, no sockets, no sleeps.
 
 import (
 	"context"
@@ -219,11 +216,10 @@ func TestBootReadsCmdlineOnlyAfterAPIMount(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- run(ctx, config{}, steps) }()
 
-	// Gate on serve being entered — reaching it proves the cmdline read (and
-	// net+mount) all succeeded, which only happens if the read followed the
-	// api mount. A read-before-mount regression fail-closes before serve, so
-	// also watch done: surface that as a clean assertion instead of hanging on
-	// reached until the package test timeout.
+	// Gate on serve being entered — reaching it proves cmdline read + net + mount
+	// all succeeded in order. A read-before-mount regression fail-closes before
+	// serve, so also watch done and surface it as a clean assertion instead of
+	// hanging until the test timeout.
 	select {
 	case <-reached:
 	case err := <-done:

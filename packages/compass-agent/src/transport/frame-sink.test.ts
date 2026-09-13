@@ -1,18 +1,12 @@
-// The socket FrameSink contract (transport-consolidation C4, outbound half):
-// createSocketFrameSink must split OutboundFrames by durability over a REAL
-// AgentGateway socket — trace/session frames onto the fire-and-forget Publish
-// client-stream (bounded, drop-oldest, lifecycle-priority), conversation frames
-// onto the delivered-or-erred PostConversationFrame unary (awaited, retried with
-// a stable idempotency key, drained at teardown). These tests stand up a live
-// connect-node h2c server bound to a Unix socket and drive real emit()/drain()
-// calls through it: a mock would restate the sink; only a live socket server
-// catches a broken route split, a dropped durable retry, or a terminal frame
-// stuck behind a saturated trace buffer.
-//
-// NOTE (author-run, not an independent test agent): the wave's Tester spawn hit
-// the frozen-session provisioning defect (FS-less phantom that sub-delegates
-// instead of reading), so these were authored by the implementer. Each case was
-// verified non-vacuous by the mutation described in its header comment.
+// The socket FrameSink contract (transport-consolidation C4, outbound half): createSocketFrameSink
+// must split OutboundFrames by durability over a REAL AgentGateway socket — trace/session frames
+// onto the fire-and-forget Publish client-stream (bounded, drop-oldest, lifecycle-priority),
+// conversation frames onto the delivered-or-erred PostConversationFrame unary (awaited, retried).
+
+// These tests stand up a live connect-node h2c server on a Unix socket and drive real
+// emit()/drain() calls: only a live socket server catches a broken route split, a dropped durable
+// retry, or a terminal frame stuck behind a saturated trace buffer. Authored by the implementer
+// (the Tester spawn hit the frozen-session defect); each case verified non-vacuous by its mutation.
 
 import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
@@ -326,13 +320,10 @@ test("the trace queue is bounded: overflow drops oldest and counts", async () =>
 });
 
 test("terminal STOPPED is flushed ahead of a queued trace backlog", async () => {
-	// The record's guarantee: a lifecycle frame (STOPPED) is never dropped and is
-	// drained ahead of any queued trace backlog. The sink emits a synchronous
-	// burst (a saturating trace backlog, then the terminal STOPPED) in one tick;
-	// the spine coalesces the tick and drains its priority lane first, so STOPPED
-	// leads the batch.
-	// Non-vacuity: if STOPPED shared the trace FIFO (no priority lane), it would
-	// arrive at position ~200, not first → firstStateSeen would be UNSPECIFIED.
+	// The record's guarantee: a lifecycle frame (STOPPED) is never dropped and is drained ahead of
+	// any queued trace backlog. The sink emits a synchronous burst (a saturating trace backlog, then
+	// STOPPED) in one tick; the spine coalesces the tick and drains its priority lane first, so
+	// STOPPED leads. Non-vacuity: if STOPPED shared the trace FIFO it would arrive at ~200, not first.
 	const rec = emptyRecorder();
 	let firstStateSeen: AgentSessionState | undefined;
 	const stoppedArrived = deferred();
@@ -359,13 +350,10 @@ test("terminal STOPPED is flushed ahead of a queued trace backlog", async () => 
 });
 
 test("a failed batch drops its trace frames but never its priority frames", async () => {
-	// M1: a batch send that throws (socket blip mid-teardown) must NOT silently
-	// abandon a priority frame (terminal STOPPED). The pump re-enqueues the
-	// batch's priority frames and retries; trace frames in a failed batch stay
-	// loss-tolerable. Non-vacuity: if a failed batch folded its priority frames
-	// into the trace-drop count and dropped them (the pre-fix behavior), STOPPED
-	// would never arrive → stoppedArrived never resolves (test times out) and
-	// failedPriorityCount would stay 0 while the frame was really lost.
+	// M1: a batch send that throws (socket blip mid-teardown) must NOT silently abandon a priority
+	// frame (terminal STOPPED). The pump re-enqueues the batch's priority frames and retries; trace
+	// frames stay loss-tolerable. Non-vacuity: if a failed batch folded its priority frames into the
+	// trace-drop count (the pre-fix behavior), STOPPED never arrives and failedPriorityCount stays 0.
 	const rec = emptyRecorder();
 	let failFirst = true;
 	const stoppedArrived = deferred();
@@ -396,13 +384,10 @@ test("a failed batch drops its trace frames but never its priority frames", asyn
 });
 
 test("a durable send gives up after the retry budget, rejecting emitDurable", async () => {
-	// M4(b): the retry-exhaustion branch. onDurable always throws, so the send
-	// exhausts DURABLE_RETRY_BACKOFF_MS and gives up. emitDurable PROPAGATES the
-	// definitive error to its caller (the tee backend buffers/retries/fatals),
-	// so the returned promise rejects — handled here, never an unhandled
-	// rejection. Assert the exact attempt count and that drain() still resolves
-	// within the retry budget. Non-vacuity: an off-by-one give-up or an unbounded
-	// retry would make the attempt count wrong or hang drain().
+	// M4(b): the retry-exhaustion branch. onDurable always throws, so the send exhausts
+	// DURABLE_RETRY_BACKOFF_MS and gives up. emitDurable PROPAGATES the definitive error to its
+	// caller, so the returned promise rejects. Assert the exact attempt count and that drain() still
+	// resolves. Non-vacuity: an off-by-one give-up or an unbounded retry makes the count wrong or hangs.
 	const rec = emptyRecorder();
 	let attempts = 0;
 	let unhandled = false;
@@ -440,23 +425,14 @@ test("a durable send gives up after the retry budget, rejecting emitDurable", as
 });
 
 test("emitDurable's give-up rejection carries the ORIGINAL ConnectError, not an Effect wrapper", async () => {
-	// RIG-2448 coverage gap (design record
-	// docs/designs/repo/compass-agent-effect-adoption/design.md, Global
-	// Constraints "Error identity is preserved at the promise boundary"; T2
-	// give-up seam). The durable send uses two-arg
-	// Effect.tryPromise({ try, catch: (e) => e }) so the raw rejection stays in
-	// the failure channel, and causeError unwraps it (Cause.failureOption /
-	// squash) at the reject seam — so emitDurable()'s rejection is the ORIGINAL
-	// ConnectError, never an Effect FiberFailure/UnknownException wrapper. The
-	// existing give-up test above asserts only rejected===true and discards the
-	// value, so a regression to single-arg tryPromise (which wraps in
-	// UnknownException) would stay green there. This pins the identity.
-	//
-	// Non-vacuity (mutation-verified): change the source's two-arg
-	// tryPromise({ try, catch: (err) => err }) in launchDurable to the single-arg
-	// Effect.tryPromise(() => ...) → the rejection becomes an UnknownException
-	// wrapper, so `instanceof ConnectError` and `.code === Code.Unavailable` both
-	// red.
+	// RIG-2448 coverage gap (design compass-agent-effect-adoption, "Error identity is preserved at
+	// the promise boundary"; T2 give-up seam). The durable send uses two-arg tryPromise so the raw
+	// rejection stays in the failure channel and causeError unwraps it — so emitDurable()'s rejection
+	// is the ORIGINAL ConnectError. The give-up test above discards the value; this pins the identity.
+
+	// Non-vacuity (mutation-verified): change the source's two-arg tryPromise({ try, catch: (err) =>
+	// err }) in launchDurable to the single-arg Effect.tryPromise(() => ...) → the rejection becomes
+	// an UnknownException wrapper, so `instanceof ConnectError` and `.code === Code.Unavailable` red.
 	const rec = emptyRecorder();
 	const thrown = new ConnectError("runner unavailable", Code.Unavailable);
 	const socketPath = await serve(rec, {
@@ -485,11 +461,10 @@ test("emitDurable's give-up rejection carries the ORIGINAL ConnectError, not an 
 });
 
 test("the trace queue drops the OLDEST frames, keeping the newest cap-worth", async () => {
-	// M4(c): assert drop-OLDEST semantics, not merely the drop count. Tag every
-	// trace frame with an ordinal, stall the consumer so the in-agent queue caps,
-	// then release and read which ordinals actually arrived. Non-vacuity: a queue
-	// that dropped NEWEST (or an unbounded queue) would deliver a different
-	// surviving set — the min surviving ordinal pins oldest-dropped.
+	// M4(c): assert drop-OLDEST semantics, not merely the drop count. Tag every trace frame with an
+	// ordinal, stall the consumer so the in-agent queue caps, then release and read which ordinals
+	// arrived. Non-vacuity: a queue that dropped NEWEST (or an unbounded queue) would deliver a
+	// different surviving set — the min surviving ordinal pins oldest-dropped.
 	const rec = emptyRecorder();
 	const release = deferred();
 	let stalled = false;
@@ -524,13 +499,10 @@ test("the trace queue drops the OLDEST frames, keeping the newest cap-worth", as
 });
 
 test("STOPPED leads across cycled batches with a live consumer and loses no trace", async () => {
-	// M4(d): the cross-batch property. Emit MORE than PUBLISH_BATCH_MAX traces
-	// (forcing multiple cycled stream batches) then the terminal STOPPED, against
-	// a LIVE (non-stalled) consumer, and assert STOPPED arrives ahead of the
-	// trace backlog AND every trace frame is delivered across the batch
-	// boundaries. Non-vacuity: a per-batch (not global) priority lane would let a
-	// full first batch of traces land before STOPPED; a lost frame at a cycle
-	// boundary would drop the received count below the emitted count.
+	// M4(d): the cross-batch property. Emit MORE than PUBLISH_BATCH_MAX traces (forcing multiple
+	// cycled stream batches) then STOPPED, against a LIVE consumer, and assert STOPPED arrives ahead
+	// of the trace backlog AND every trace is delivered across batch boundaries. Non-vacuity: a
+	// per-batch priority lane lets a full first batch land before STOPPED; a lost frame drops the count.
 	const rec = emptyRecorder();
 	const traceCount = PUBLISH_BATCH_MAX * 2 + 10;
 	const stoppedArrived = deferred();
@@ -563,17 +535,15 @@ test("STOPPED leads across cycled batches with a live consumer and loses no trac
 });
 
 test("a deliveryAck rides the Publish PRIORITY lane, not the durable unary", async () => {
-	// RIG-1310 §8: a per-message delivery receipt is a control-plane ack. Per the
-	// spine contract (publish-spine.ts:24-26,62) it rides the Publish spine's
-	// never-drop PRIORITY lane, NOT the durable PostConversationFrame unary — the
-	// Runner gateway's isConversationFrame guard REJECTS an ack on that unary, so
-	// a deliveryAck routed durable 400s and is silently swallowed (the delivery
-	// cursor never advances). Non-vacuity: with the pre-fix emit() the ack falls
-	// through to launchDurable → it lands in durableAttempts and publishFrames is
-	// empty → red. The priority (vs trace) choice is covered by emit() calling
-	// enqueuePriority in source (publish-spine.ts:24-26); the socket recorder does
-	// not distinguish the two Publish sub-lanes, so the observable contract here
-	// is Publish-not-durable.
+	// RIG-1310 §8: a per-message delivery receipt is a control-plane ack. Per the spine contract it
+	// rides the Publish spine's never-drop PRIORITY lane, NOT the durable PostConversationFrame unary
+	// — the Runner gateway's isConversationFrame guard REJECTS an ack on that unary, so a deliveryAck
+	// routed durable 400s and is silently swallowed (the cursor never advances).
+
+	// Non-vacuity: with the pre-fix emit() the ack falls through to launchDurable → it lands in
+	// durableAttempts and publishFrames is empty → red. The priority-vs-trace choice is covered by
+	// emit() calling enqueuePriority in source; the socket recorder does not distinguish the two
+	// Publish sub-lanes, so the observable contract here is Publish-not-durable.
 	const rec = emptyRecorder();
 	const sink = createSocketFrameSink(
 		createUnixSocketTransport(await serve(rec, {})),
@@ -619,11 +589,10 @@ function spySpine(): {
 	};
 }
 
-// A fake RunnerTransport whose publishSpine() hands back the injected spy. emit()
-// reaches its spine only through transport.publishSpine() (frame-sink.ts:82), so
-// this is the whole seam. The other RPCs are never touched by a deliveryAck
-// emit; they throw so a mistaken call is loud. Member shape grounded against the
-// fake carriers in control-source.test.ts / cli.test.ts:357.
+// A fake RunnerTransport whose publishSpine() hands back the injected spy. emit() reaches its spine
+// only through transport.publishSpine(), so this is the whole seam. The other RPCs are never touched
+// by a deliveryAck emit; they throw so a mistaken call is loud. Member shape grounded against the
+// fake carriers in control-source.test.ts / cli.test.ts.
 function spineTransport(spine: PublishSpine): RunnerTransport {
 	return {
 		comms: () => Promise.reject(new Error("comms not used by this test")),
@@ -642,16 +611,10 @@ function spineTransport(spine: PublishSpine): RunnerTransport {
 }
 
 test("a deliveryAck rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
-	// RIG-1310 §8 (re-review MEDIUM): the socket-level test above pins
-	// Publish-not-durable but CANNOT distinguish enqueuePriority from
-	// enqueueTrace (both land on publishFrames). A future edit flipping emit()'s
-	// deliveryAck arm (frame-sink.ts:178) to enqueueTrace would compile and pass
-	// every socket test while silently downgrading acks to the bounded,
-	// drop-oldest, loss-tolerable trace queue — reintroducing the MEDIUM #1
-	// cursor-strand class. This spy-spine test pins the priority-vs-trace choice
-	// the socket recorder is blind to. Non-vacuity: flip the source arm to
-	// enqueueTrace → the priority assertion reddens (0) and the trace assertion
-	// reddens (1).
+	// RIG-1310 §8 (re-review MEDIUM): the socket-level test above pins Publish-not-durable but CANNOT
+	// distinguish enqueuePriority from enqueueTrace (both land on publishFrames). A future edit
+	// flipping emit()'s deliveryAck arm to enqueueTrace would pass every socket test while downgrading
+	// acks to the drop-oldest queue. This spy-spine test pins the choice; flipping the arm reds it.
 	const { spine, priorityFrames, traceFrames } = spySpine();
 	const sink = createSocketFrameSink(spineTransport(spine));
 	sink.emit({
@@ -670,13 +633,10 @@ test("a deliveryAck rides the Publish PRIORITY sub-lane, never the drop-oldest t
 });
 
 test("a forgeNotificationAck rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
-	// RIG-2732 W3: the turn-end forge delivery receipt is a control-plane ack,
-	// the sibling of deliveryAck — it must ride the same never-drop PRIORITY lane
-	// so a busy trace stream can never drop it (a dropped ack strands the
-	// Server's delivered_revision cursor). Non-vacuity: the pre-fix emit() had no
-	// forgeNotificationAck arm, so the frame fell through to the no-op tail and
-	// NEVER reached the spine at all — both assertions below would redden (0 and
-	// 0). This pins the frame onto the priority lane, never the trace lane.
+	// RIG-2732 W3: the turn-end forge delivery receipt is a control-plane ack, the sibling of
+	// deliveryAck — it must ride the same never-drop PRIORITY lane so a busy trace stream can never
+	// drop it (a dropped ack strands the Server's delivered_revision cursor). Non-vacuity: the pre-fix
+	// emit() had no forgeNotificationAck arm, so the frame never reached the spine — both redden (0).
 	const { spine, priorityFrames, traceFrames } = spySpine();
 	const sink = createSocketFrameSink(spineTransport(spine));
 	sink.emit({
@@ -698,15 +658,10 @@ test("a forgeNotificationAck rides the Publish PRIORITY sub-lane, never the drop
 });
 
 test("a SessionInjection rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
-	// RIG-2486 (T1) F3: a SessionInjection is a "session" trace frame (state
-	// UNSPECIFIED), so by the default classification it would ride the bounded,
-	// drop-oldest trace lane — where a busy trace stream could silently drop the
-	// op-kind observation a cross-process test depends on. isInjection() pins it
-	// onto the never-drop priority lane instead. The socket recorder cannot
-	// distinguish the two Publish sub-lanes, so this spy-spine test is what pins
-	// the choice. Non-vacuity: drop the `|| isInjection(frame)` arm in emit()
-	// (frame-sink.ts) → the priority assertion reddens (0) and the trace assertion
-	// reddens (1).
+	// RIG-2486 (T1) F3: a SessionInjection is a "session" trace frame (state UNSPECIFIED), so by
+	// default it would ride the bounded, drop-oldest trace lane — where a busy stream could drop the
+	// op-kind observation a cross-process test depends on. isInjection() pins it onto the never-drop
+	// priority lane; this spy-spine test pins the choice. Non-vacuity: drop the arm → priority 0, trace 1.
 	const { spine, priorityFrames, traceFrames } = spySpine();
 	const sink = createSocketFrameSink(spineTransport(spine));
 	sink.emit({
@@ -739,15 +694,10 @@ test("a SessionInjection rides the Publish PRIORITY sub-lane, never the drop-old
 });
 
 test("a SessionError rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
-	// DL-323: a SessionError is a "session" trace frame (state UNSPECIFIED), so by
-	// the default classification it would ride the bounded, drop-oldest trace lane
-	// — where a busy trace stream could silently drop the surfaced failure content
-	// (for a reason=aborted failure, the SOLE signal). isSessionError() pins it
-	// onto the never-drop priority lane instead. The socket recorder cannot
-	// distinguish the two Publish sub-lanes, so this spy-spine test is what pins
-	// the choice. Non-vacuity: drop the `|| isSessionError(frame)` arm in emit()
-	// (frame-sink.ts) → the priority assertion reddens (0) and the trace assertion
-	// reddens (2). Both SessionErrorKinds ride the same lane.
+	// DL-323: a SessionError is a "session" trace frame (state UNSPECIFIED), so by default it would
+	// ride the bounded, drop-oldest trace lane — where a busy stream could drop the surfaced failure
+	// content (for a reason=aborted failure, the SOLE signal). isSessionError() pins it onto the
+	// never-drop priority lane. Non-vacuity: drop the arm → priority 0, trace 2. Both kinds share the lane.
 	for (const kind of [SessionErrorKind.ERROR, SessionErrorKind.ABORTED]) {
 		const { spine, priorityFrames, traceFrames } = spySpine();
 		const sink = createSocketFrameSink(spineTransport(spine));

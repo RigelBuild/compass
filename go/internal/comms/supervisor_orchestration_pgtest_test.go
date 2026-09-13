@@ -2,28 +2,15 @@
 
 package comms
 
-// The T8 acceptance E2E (design.md:1600-1604): the supervisor+bridge MVP
-// orchestration loop is "a supervisor assigns work to two workers over channels
-// and all coordination is auditable via SearchMessages" — implemented with the
-// existing comms RPCs, no bespoke assignment RPC. This drives the real
-// CommsService handler against a real Postgres store + real event bus (no
-// mocks), modelling the supervisor and the two workers as first-class agent
-// accounts and each assignment as a channel message. It defends four contracts
-// the record names explicitly:
-//
-//   - delivery: each worker, as a channel member, reads its assignment back
-//     through ListMessages with the supervisor as author and the assignment text
-//     intact;
-//   - audit: a search for a word common to both assignments returns BOTH from
-//     the owner's authorized view (design.md:1604 — all coordination auditable
-//     via SearchMessages);
-//   - visibility scoping (D9): an outsider account not in the coordination
-//     channel searching the same word gets ZERO hits — the audit trail never
-//     leaks past the channel's membership (mirrors
-//     TestSearchMessagesAuthorizationScoped);
-//   - per-assignment distinctness: a search for a word unique to one worker's
-//     assignment returns exactly that one message, so a single collapsed post
-//     could not pass for two.
+// The T8 acceptance E2E (design.md:1600-1604): the supervisor+bridge MVP loop —
+// a supervisor assigns work to two workers over channels, all coordination
+// auditable via SearchMessages — implemented with existing comms RPCs, no
+// bespoke assignment RPC, against a real Postgres store + event bus.
+
+// Four contracts the record names: delivery (each worker reads its assignment
+// back with the supervisor as author); audit (a common-word search returns BOTH
+// from the owner's view); D9 visibility scoping (an outsider gets ZERO hits);
+// per-assignment distinctness (a unique-word search returns exactly one message).
 
 import (
 	"context"

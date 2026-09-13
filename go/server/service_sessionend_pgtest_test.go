@@ -2,19 +2,10 @@
 
 package server
 
-// The RIG-1667 T4 session-end flush trigger (the third of three, design.md
-// §1040-1046), driven through the real StopAgentSession handler against a real
-// Postgres and a real Runner door. On a successful Stop the handler archives the
-// session's remaining hot-tail as ONE session_end segment so history is complete
-// for analytics — WITHOUT pruning the PG tail (session_end is never read on
-// resume). It is BEST-EFFORT: a flush failure never converts a successful Stop
-// into a failure, and a session with no transcript rows Stops cleanly recording
-// nothing.
-//
-// The placement fixture (service_placement_pgtest_test.go) supplies store + hub +
-// service + a fake Runner that answers Start/Stop; here we add the object-store
-// seam (FAKED, no live S3) so the flush's PUT lands and the manifest row is
-// assertable.
+// The RIG-1667 T4 session-end flush trigger, driven through the real StopAgentSession
+// handler against a real Postgres and Runner door. On a successful Stop the handler
+// archives the remaining hot-tail as ONE session_end segment WITHOUT pruning the PG
+// tail. BEST-EFFORT: a flush failure never fails a successful Stop. FAKED object store.
 
 import (
 	"context"

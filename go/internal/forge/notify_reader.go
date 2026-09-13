@@ -1,20 +1,9 @@
 package forge
 
-// The reconcile sweep's conditional-read capability (RIG-2732 T5,
-// design.md:894-942). NotifyReader is a CAPABILITY interface, deliberately NOT
-// a Provider widening: Provider carries a //nolint:interfacebloat waiver and
-// deliberately unconditional reads (provider.go:218-243); the conditional reads
-// the backstop sweep needs (If-None-Match / 304, the container LIST) are their
-// own seam, satisfied structurally by *GitHub and *Linear (the board driver's
-// structural pageLister precedent, driver.go:33-37).
-//
-// The GitHub arm is the real conditional path: a sibling of getJSON carrying
-// If-None-Match, a 304 short-circuit (budget recorded — a 304 on an authorized
-// request is NOT charged, github.go:60-67), and the getAllPages Link-chain walk
-// for the >1-page cases. The Linear arm has no ETags (GraphQL): its reads return
-// 200-equivalents with an empty ETag (a documented limitation, acceptable at the
-// tens-of-minutes backstop cadence against Linear's separate rate bucket); the
-// PR/checks arms are ErrUnsupported (Linear is issues-only, linear.go:277-302).
+// The reconcile sweep's conditional-read capability (RIG-2732 T5). NotifyReader is
+// a CAPABILITY interface, NOT a Provider widening: the conditional reads (304, the
+// container LIST) are their own seam, satisfied by *GitHub (the real conditional
+// path) and *Linear (no ETags; PR/checks arms ErrUnsupported).
 
 import (
 	"context"
@@ -296,12 +285,10 @@ func pathSafeSegment(s string) bool {
 //     stacked descendant). Both halves are total orders over the decoded rows,
 //     so the same association set always resolves to the same number.
 func (g *GitHub) PullRequestForSHA(ctx context.Context, repo, sha string) (uint64, error) {
-	// The SHA lands in the request PATH, so a malformed value does not merely
-	// 404 — a `?` truncates the path and shifts the remainder into the query
-	// string, silently addressing a different endpoint than the one intended.
-	// The value is GitHub-authenticated (it arrives on an HMAC-verified
-	// webhook), so this is not a trust boundary; it converts a confusing
-	// wrong-endpoint answer into a named failure.
+	// The SHA lands in the request PATH, so a malformed value does not merely 404 —
+	// a `?` truncates the path and shifts the remainder into the query string,
+	// silently addressing a different endpoint. GitHub-authenticated (HMAC webhook),
+	// so not a trust boundary; it converts a wrong-endpoint answer into a named fail.
 	if !pathSafeSegment(sha) {
 		return 0, fmt.Errorf("forge: github pull for %q@%q: head sha carries a url delimiter", repo, sha)
 	}
@@ -446,11 +433,9 @@ func (g *GitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.
 			iss := r.toIssue()
 			if !iss.UpdatedAt.IsZero() && iss.UpdatedAt.Before(since) {
 				// Newest-updated-first: strictly older than the watermark, so this
-				// and everything after it is old. A row == since is NOT Before it,
-				// so it is re-included (second-granularity dedup safety). A row
-				// whose updated_at failed to parse (zero time) is NOT a stop
-				// signal — treating it as one would let a single malformed row
-				// truncate the whole sweep persistently; skip it and keep walking.
+				// and everything after is old. A row == since is re-included
+				// (second-granularity dedup safety). A zero-time (unparseable)
+				// updated_at is NOT a stop signal — skip it and keep walking.
 				reachedOld = true
 				continue
 			}

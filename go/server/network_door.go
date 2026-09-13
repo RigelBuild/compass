@@ -162,9 +162,8 @@ func networkCORS(origin string) *cors.Cors {
 		AllowedMethods: connectcors.AllowedMethods(),
 		// otel.PostHogSessionHeader is the INBOUND mirror of the traceresponse
 		// exposure below: a browser cannot SEND a request header absent from
-		// Access-Control-Allow-Headers — the preflight fails and the whole
-		// request is blocked, not just the header stripped — so without it the
-		// J1 session-id interceptor is unreachable from the UI.
+		// Access-Control-Allow-Headers (the preflight fails), so without it the J1
+		// session-id interceptor is unreachable from the UI.
 		AllowedHeaders:   append(connectcors.AllowedHeaders(), "Authorization", otel.PostHogSessionHeader),
 		ExposedHeaders:   append(connectcors.ExposedHeaders(), "traceresponse"),
 		AllowCredentials: false,
@@ -222,17 +221,10 @@ var bodyDeadlineExempt = map[string]struct{}{
 func withBodyReadDeadline(next http.Handler, timeout time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, exempt := bodyDeadlineExempt[r.URL.Path]; !exempt {
-			// SetReadDeadline bounds the request-body read. A failure means the
-			// server does not support deadlines on this connection (never true
-			// for the network door's TLS/HTTP server: withBodyReadDeadline is
-			// outermost and rs/cors forwards the raw ResponseWriter, so
-			// NewResponseController reaches the underlying *response, which
-			// implements SetReadDeadline). So there is nothing to recover — fall
-			// through and serve rather than reject a legitimate request. But a
-			// future middleware inserted between this wrapper and the server
-			// that wraps w without an Unwrap() would silently disable the
-			// slow-body protection, so log the impossible-but-load-bearing
-			// failure rather than let it vanish without a trace.
+			// SetReadDeadline bounds the request-body read. A failure means no
+			// deadline support (never true for the network door), so fall through
+			// and serve. But a future middleware wrapping w without Unwrap() would
+			// silently disable slow-body protection, so log the load-bearing failure.
 			rc := http.NewResponseController(w)
 			if err := rc.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 				slog.Warn("network door body-read deadline not armed; slow-body protection disabled for this request",
@@ -285,23 +277,15 @@ func buildNetworkServer(
 	if err != nil {
 		return nil, err
 	}
-	// Log the path, never the token: a logged bearer credential lets anyone
-	// who can read process output or aggregated logs impersonate the admin.
+	// Log the path, never the token: a logged bearer credential lets anyone who can
+	// read process output or aggregated logs impersonate the admin.
 	slog.Info("network door bootstrap admin token written",
 		"path", tokenPath, "handle", handle, "listen", cfg.Listen)
 
-	// otelconnect (outermost) produces the RPC span and NewTraceResponseInterceptor
-	// stamps the traceresponse header, prepended to the shared bearer + admin-gate
-	// chain so every network-door service (CompassService, CommsService, and
-	// SecretsService, which rides the same chain) carries them. Both are inert
-	// no-ops when no provider is installed (empty OtelEndpoint). Ordering: otel
-	// first keeps the security-critical Bearer→AdminGate order unchanged relative
-	// to itself.
-	// NewSessionIDInterceptor is the inbound half of the same J1 seam: it reads
-	// the UI's X-POSTHOG-SESSION-ID and stamps semconv session.id on the handler
-	// span, so a product funnel in PostHog pivots to the backend trace. It sits
-	// after otelIC because otelIC is what CREATES the span it stamps, and before
-	// the auth chain so an unauthenticated failure still carries the key.
+	// otelconnect (outermost) produces the RPC span and stamps traceresponse,
+	// prepended to the shared bearer + admin-gate chain (inert when no provider).
+	// NewSessionIDInterceptor reads the UI's X-POSTHOG-SESSION-ID and stamps
+	// session.id; it sits after otelIC (which creates the span) and before auth.
 	interceptors := connect.WithInterceptors(
 		otelIC,
 		otel.NewTraceResponseInterceptor(),
@@ -310,18 +294,10 @@ func buildNetworkServer(
 		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(adminID),
 	)
-	// WithReadMaxBytes caps a single inbound message on the CompassService door
-	// (M1, defense in depth). connect-go imposes NO default read cap, so without
-	// this an operator could stream an arbitrarily large PutModelRegistry (or
-	// PutAgentConfig) message the server buffers whole in memory before the store
-	// door's own caps ever run. The bound is sized to the LARGEST legitimate
-	// message this mount carries: PutAgentConfig accepts a config bundle up to the
-	// store's 64 MiB decompressed cap (agent_config.go maxDecompressedBytes), so
-	// the transport cap must clear that with headroom for the gzip-compressed wire
-	// form plus proto framing. 128 MiB is that headroom; the model-registry
-	// payload (1 MiB store cap) sits far below it. Mirrors the WithReadMaxBytes
-	// posture the internal doors already take (guestd vsock.go:94 at 16 MiB, the
-	// agent gateway at maxAgentMessageBytes).
+	// WithReadMaxBytes caps a single inbound message (M1, defense in depth):
+	// connect-go has NO default cap, so an operator could otherwise stream a huge
+	// Put buffered whole in memory. Sized to PutAgentConfig's 64 MiB bundle plus
+	// wire/framing headroom; 128 MiB. Mirrors the internal doors' posture.
 	netPath, netHandler := compassv1connect.NewCompassServiceHandler(svc, interceptors, connect.WithReadMaxBytes(compassServiceMaxReadBytes))
 	netCommsPath, netCommsHandler := compassv1connect.NewCommsServiceHandler(commsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux := http.NewServeMux()
@@ -329,55 +305,37 @@ func buildNetworkServer(
 	netMux.Handle(netCommsPath, netCommsHandler)
 	// SecretsService rides the same bearer + admin-gate chain: the gate classifies
 	// its 3 procedures authenticatedOpen, so any authenticated account clears it and
-	// the handler enforces the user-only writes / user-or-agent list.
+	// the handler enforces the user-only writes.
 	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netSecretsPath, netSecretsHandler)
 
-	// The internal RunnerService door: the surface a Runner dials out to (Enroll +
-	// Sessions bidi + PublishEvents client-stream). It is mounted only here, on the
-	// authenticated network door — a Runner is a remote host, so it reaches the
-	// server over TLS, never the loopback socket. Its own bearer interceptor
-	// (runnerhub, applied by NewMountedHandler) authenticates every RPC through the
-	// shared auth.ResolveToken resolver, Kind-gated to a Runner-subject token: an
-	// account token is Unauthenticated here and a Runner token is Unauthenticated on
-	// the CompassService/CommsService doors above (OQ7 cross-door rejection). The
-	// admin gate is not applied — the RunnerService is not part of the account
-	// contract, and the Kind gate is its whole authorization.
+	// The internal RunnerService door: the surface a Runner dials out to, mounted
+	// only here on the authenticated network door (a Runner is remote, over TLS).
+	// Its bearer interceptor Kind-gates to a Runner-subject token (cross-door
+	// rejection, OQ7); the admin gate is not applied, the Kind gate is the authz.
 	runnerResolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)
 	}
 	// Wire the store of record as the runner door's fleet config-bundle surface:
-	// *store.Store satisfies AgentConfigStore via CurrentAgentConfig, so a Runner's
-	// FetchAgentConfig streams whatever the admin door's PutAgentConfig last wrote.
-	// A nil here would fail FetchAgentConfig CodeFailedPrecondition ("no config
-	// surface") and every agent would provision with no materialized config — no
-	// model provider, no skills — even with a bundle published to the store.
-	// otelIC is threaded in as the door's outermost interceptor (the same one the
-	// services above mount): it creates the RelayCommsCall origin span the agent
-	// reply's cross-turn link hangs off. No trace-response interceptor here — the
-	// Runner is not a browser and reads no traceresponse header.
+	// *store.Store satisfies AgentConfigStore, so FetchAgentConfig streams whatever
+	// PutAgentConfig last wrote (nil would leave every agent unconfigured). otelIC
+	// is the outermost interceptor (it creates the RelayCommsCall origin span).
 	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st, otelIC)
 	netMux.Handle(runnerPath, runnerHandler)
 
-	// The internet-facing GitHub App webhook ingress (RIG-2883 T5, OQ-7), mounted
-	// only when the board lane is on (webhookSink != nil). It sits on the TLS
-	// network door (a Runner/GitHub reaches the server over TLS, never the
-	// loopback socket) and OUTSIDE the bearer + admin-gate interceptors: GitHub
-	// signs each delivery with the webhook secret, not a bearer token, so the
-	// handler's own VerifyGitHubSignature is its whole authentication. The
-	// withBodyReadDeadline wrapper below still applies (it wraps the whole mux).
+	// The internet-facing GitHub App webhook ingress (RIG-2883 T5), mounted only
+	// when the board lane is on. It sits on the TLS door and OUTSIDE the bearer +
+	// admin-gate: GitHub signs each delivery with the webhook secret, so the
+	// handler's own VerifyGitHubSignature is its whole authentication.
 	if webhookSink != nil {
 		webhookPath, webhookHandler := NewGitHubWebhookHandler(webhookSecret, webhookSink, slog.Default())
 		netMux.Handle(webhookPath, webhookHandler)
 	}
 
-	// The internet-facing Linear webhook ingress (RIG-2732 T7d / RIG-2717),
-	// mounted only when the Linear webhook secret is declared
-	// (linearWebhookHandler != nil) — an App-INDEPENDENT gate. Like the GitHub
-	// ingress it sits OUTSIDE the bearer + admin-gate interceptors: Linear signs
-	// each delivery with the webhook secret (Linear-Signature), not a bearer
-	// token, so the handler's own VerifySignature is its whole authentication. It
-	// inherits withBodyReadDeadline + ReadHeaderTimeout for free (same mux).
+	// The internet-facing Linear webhook ingress (RIG-2732 T7d), mounted only when
+	// the Linear webhook secret is declared (App-INDEPENDENT). Like the GitHub
+	// ingress it sits OUTSIDE the bearer + admin-gate: Linear signs each delivery
+	// with the webhook secret, so VerifySignature is its whole authentication.
 	if linearWebhookHandler != nil {
 		netMux.Handle(linearWebhookPath, linearWebhookHandler)
 	}
@@ -387,23 +345,17 @@ func buildNetworkServer(
 		// operator-configured browser origin.
 		netRoot = networkCORS(cfg.CORSAllowedOrigin).Handler(netMux)
 	}
-	// Outermost: bound the request-body read so a slow-body drip cannot tie up
-	// a connection (RIG-1298). Wraps whatever netRoot is above (CORS or the bare
-	// mux) at the HTTP-body layer; the long-lived Runner request streams are
-	// exempt (bodyDeadlineExempt).
+	// Outermost: bound the request-body read so a slow-body drip cannot tie up a
+	// connection (RIG-1298). Long-lived Runner request streams are exempt.
 	netRoot = withBodyReadDeadline(netRoot, networkBodyReadTimeout)
 	return &http.Server{
 		Handler:   netRoot,
 		TLSConfig: netTLS,
 		Protocols: networkProtocols(),
-		// G112: the network door is the internet-facing surface, so bound the
-		// header read and idle connection lifetime to close the slow-loris DoS
-		// window (the UDS/dev doors are loopback/local). The request-body half
-		// of that window (a client that sends headers promptly then drips the
-		// body, RIG-1298) is closed by withBodyReadDeadline above rather than a
-		// blunt http.Server.ReadTimeout: a ReadTimeout caps the whole request
-		// lifetime and would kill the long-lived Runner request streams, so the
-		// body deadline is applied per-request and skips those (bodyDeadlineExempt).
+		// G112: the network door is the internet-facing surface, so bound the header
+		// read and idle lifetime to close the slow-loris window. The request-body
+		// half is closed by withBodyReadDeadline (per-request, skipping the exempt
+		// long-lived Runner streams) rather than a blunt whole-request ReadTimeout.
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}, nil

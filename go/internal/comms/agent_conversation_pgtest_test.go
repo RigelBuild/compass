@@ -3,25 +3,9 @@
 package comms
 
 // The conversation write-through (RIG-1364 T3): CommitAgentPost / CommitAgentUpdate
-// turn a relayed agent conversation frame into a durable comms row under the
-// account the RunnerHub resolved the session to. Every test drives the real
-// Postgres store + real bus (the newHandler / newStreamHarness harnesses the rest
-// of this package uses — no mocks) and defends one contract:
-//
-//   - a posted frame lands on the agent's HOME channel, attributed to the AGENT
-//     account, and fans out on SubscribeComms — indistinguishable downstream from
-//     a human post, because it IS the PostMessage handler path;
-//   - an updated frame edits the row in place through the AUTHORIZING store
-//     update, and fans out as MessageUpdated;
-//   - a cross-account update, an update from a revoked member, an ask block with
-//     no id, and an empty message.id are each REFUSED with the code a human
-//     caller would get — the refusals the hub then treats as non-fatal;
-//   - an empty account is a hard CodeInvalidArgument on both methods, never a
-//     silent fall-through to bootstrap-admin attribution.
-//
-// Gated `pgtest && unix` like agent_caller_pgtest_test.go: it SKIPs (via
-// pgtest.RequireDSN in newTestStore) when no Postgres/podman runtime exists, and
-// `unix` because agent_caller.go is unix-tagged.
+// drive the real PostMessage/update path, so agent posts are indistinguishable
+// downstream from human posts. Gated `pgtest && unix` (SKIPs without a Postgres
+// runtime; `unix` because agent_caller.go is unix-tagged).
 
 import (
 	"context"
@@ -74,12 +58,8 @@ func askBlockWireID(askID string) *compassv1.MessageBlock {
 }
 
 // A relayed posted frame becomes a real Message row on the agent's HOME channel,
-// authored by the AGENT account. This is the core dogfood contract the stub
-// broke: the frame was acked as committed and then discarded, so nothing landed.
-//
-// Mutation that reddens it: dropping the AppendMessage delegation (back to a log
-// line) → the read-back finds no row; hardcoding an actor → the author assertion
-// fails.
+// authored by the AGENT account — the core dogfood contract the stub broke (it
+// acked the frame as committed then discarded it, so nothing landed).
 func TestCommitAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -116,10 +96,9 @@ func TestCommitAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
 }
 
 // The fan-out half: a committed post reaches a live SubscribeComms subscriber as
-// MessagePosted, so a relayed agent turn is visible to a watching client exactly
-// as a human post is. Driven over the real stream (newStreamHarness) with the
-// subscribe running concurrently with the commit — connect server-streaming over
-// HTTP/1 is half-duplex, so the subscribe must not precede the mutation.
+// MessagePosted, exactly as a human post does. Driven over the real stream with
+// subscribe concurrent with the commit — connect server-streaming over HTTP/1 is
+// half-duplex, so the subscribe must not precede the mutation.
 func TestCommitAgentPostFansOutOnSubscribeComms(t *testing.T) {
 	h := newStreamHarness(t)
 	ctx := context.Background()
@@ -159,11 +138,10 @@ func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 	owner := mustUser(t, h.store, "owner")
 	agent := mustAgent(t, h.store, owner.ID, "agent")
 
-	// Seed the row to be edited through the STORE, not CommitAgentPost: a post
-	// publishes MessagePosted onto the bus, and a since_seq=0 subscribe replays
-	// it, so the update's own fan-out would not be the first event. Appending
-	// directly writes the row without an event, isolating the assertion to the
-	// MessageUpdated this test is about.
+	// Seed the row through the STORE, not CommitAgentPost: a post publishes
+	// MessagePosted that a since_seq=0 subscribe replays, so the update's own
+	// fan-out would not be the first event. A direct append isolates the
+	// assertion to the MessageUpdated this test is about.
 	seedText := "partial"
 	seed, _, err := h.store.AppendMessage(ctx, store.Message{
 		AuthorAccountID: agent.ID,
@@ -205,14 +183,9 @@ func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 }
 
 // THE cross-account security case at the comms seam: agent B cannot edit agent
-// A's message, even in a channel B can read. It collapses to CodeNotFound — the
-// same answer B gets for a message that does not exist — so B cannot enumerate
-// A's messages by id. The positive control (A editing its own row) keeps this
-// from passing vacuously.
-//
-// Mutation: route this through updateMessageBlocksExec (the bare-id, no-authz
-// core this fork exists to avoid) → B's edit succeeds and BOTH the error and the
-// untouched-content assertions redden.
+// A's message even in a channel B can read. It collapses to CodeNotFound (same
+// answer as a nonexistent message) so B cannot enumerate A's messages by id.
+// The positive control (A editing its own row) keeps this from passing vacuously.
 func TestCommitAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -297,14 +270,9 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 }
 
 // The two malformed-input refusals, both CodeInvalidArgument: an update whose
-// message.id is empty (a frame the agent never stamped) and an update carrying
-// an ask block with NO ask_id that has no stored counterpart to reconcile it
-// from — a genuinely id-less frame, distinct from an ask-bearing update carrying
-// its stored id (which now PERSISTS, see TestCommitAgentUpdatePersistsAskBlock)
-// and from one whose id merely disagrees with the stored row (see
-// TestCommitAgentUpdateRejectsAskIDMismatch). An id-less ask that cannot be
-// reconciled is still an error, because the store's immutable-ask_id contract
-// requires an update to carry the id the append minted.
+// message.id is empty, and one carrying an ask block with NO ask_id and no
+// stored counterpart to reconcile from. Distinct from an ask update carrying its
+// stored id (persists) or one whose id disagrees with the row (mismatch reject).
 func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -322,11 +290,9 @@ func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
 	})
 	t.Run("ask block with no ask id", func(t *testing.T) {
 		// The seeded row is text-only, so an ask block on the update has NO
-		// stored counterpart for reconcileUpdateAskIDs to fill its id from: it
-		// stays id-less and the store rejects it. This pins the truly id-less
-		// case (an update that cannot carry the immutable id the append would
-		// have minted), NOT that ask-bearing updates are unsupported — one
-		// carrying its stored id persists (TestCommitAgentUpdatePersistsAskBlock).
+		// stored counterpart to fill its id from: it stays id-less and the store
+		// rejects it. Pins the truly id-less case, not that ask-bearing updates
+		// are unsupported (one carrying its stored id persists).
 		_, err := svc.CommitAgentUpdate(ctx, agent.ID,
 			updatedFrame(posted.GetMessage().GetId(), []*compassv1.MessageBlock{askBlockWire()}))
 		connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(ask with no ask_id)")
@@ -345,12 +311,10 @@ func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
 	}
 }
 
-// Fail-closed identity on BOTH write-through methods, mirroring
-// TestPostAsAccountEmptyAccountFailsClosedNoAdminWrite for this leg: an empty
-// resolved account is a hard CodeInvalidArgument and writes NOTHING. Without the
-// guard, actorFromContext's admin fallback (comms.go:331-336) would attribute the
-// agent's words to the bootstrap admin — the exact silent misattribution the
-// fail-closed posture exists to prevent.
+// Fail-closed identity on BOTH write-through methods: an empty resolved account
+// is a hard CodeInvalidArgument that writes NOTHING. Without the guard,
+// actorFromContext's admin fallback would attribute the agent's words to the
+// bootstrap admin — the silent misattribution the fail-closed posture prevents.
 func TestCommitAgentFramesEmptyAccountFailsClosed(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -381,15 +345,10 @@ func TestCommitAgentFramesEmptyAccountFailsClosed(t *testing.T) {
 	}
 }
 
-// Idempotent dedup at the seam the relayed key WILL enter. The relayed frame
-// carries no idempotency key on this base — PublishEventsRequest is
-// {runner_seq, session_id, frame} (runner.proto:169-183) and the agent-minted
-// key terminates at the Runner (agent_gateway.proto:113-120) — so the
-// write-through leaves ClientRequestId unset and this contract cannot be
-// exercised THROUGH a relayed frame yet. It is pinned here, on the
-// PostMessageRequest the write-through builds and delegates, because that is the
-// exact field #894/T2 populates: when the key arrives, this test is already the
-// proof that a retry commits no second row.
+// Idempotent dedup at the seam the relayed key WILL enter. The relayed frame carries
+// no idempotency key on this base (the agent-minted key terminates at the Runner),
+// so the write-through leaves ClientRequestId unset. Pinned on the PostMessageRequest
+// the write-through builds, so when the key arrives a retry commits no second row.
 func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -424,14 +383,9 @@ func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 }
 
 // A relayed frame with no topic routing lands in the agent's home channel's home
-// topic: the committed row records that topic, and two frames from the same agent
-// share it. Threading is by topic now, not a parent pointer — a frame carries no
-// parent and no topic, so CommitAgentPost's unset Container+Topic route it to the
-// home topic (store.AppendMessage), which is what keeps a relayed agent's turns
-// in one conversation.
-//
-// Mutation: route CommitAgentPost's request to a non-home channel/topic → the two
-// frames land in different topics and the shared-topic assertion reddens.
+// topic, and two frames from the same agent share it. Threading is by topic now,
+// not a parent pointer: CommitAgentPost's unset Container+Topic route to the home
+// topic (store.AppendMessage), keeping a relayed agent's turns in one conversation.
 func TestCommitAgentPostLandsInHomeTopic(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -474,22 +428,10 @@ func TestCommitAgentPostLandsInHomeTopic(t *testing.T) {
 	}
 }
 
-// A session bound to a NON-AGENT account is refused, not a panic. homeChannel
-// reads acc.Agent.HomeChannelID, and scanAccount (store/accounts.go:313-322) sets
-// acc.Agent only for agent accounts — for a user account it is nil, so before
-// this guard the deref panicked inside the PublishEvents handler goroutine,
-// taking the relay down with it (rule://go-no-panic-in-lib).
-//
-// It is a CONTRACT DEFECT rather than an ordinary refusal, hence
-// CodeFailedPrecondition: a user-account binding is not a request the caller
-// could pose differently, it is the hub and the store disagreeing about what a
-// session resolves to. The hub counts it separately and logs it as a
-// misconfiguration (runnerhub/hub.go, isContractDefect) instead of burying it
-// among expected per-frame refusals.
-//
-// Both write-through methods and both *AsAccount methods are covered: every one
-// of them reaches homeChannel through the empty-container/empty-channel default,
-// so a guard on only one call site would leave the panic reachable.
+// A session bound to a NON-AGENT account is refused, not a panic. homeChannel reads
+// acc.Agent.HomeChannelID, which scanAccount leaves nil for a user account, so before
+// this guard the deref panicked and took the relay down. CodeFailedPrecondition; all
+// four *AsAccount / write-through methods reach homeChannel, so one guard is not enough.
 func TestAgentCallsWithANonAgentAccountAreRefusedNotPanics(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -507,17 +449,10 @@ func TestAgentCallsWithANonAgentAccountAreRefusedNotPanics(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeFailedPrecondition, "ListAsAccount(user account, empty channel)")
 }
 
-// THE positive contract this fix restores: an addressed conversation UPDATE
-// carrying an ask block WITH the stored ask_id PERSISTS, rather than being
-// refused. Before the fix, updateBlocksFromWire did not exist and the update
-// went through blocksFromWire -> askFromWire, which unconditionally stripped the
-// ask_id, so UpdateMessageBlocksAsAuthor rejected the id-less ask as
-// CodeInvalidArgument and the update never committed. Now the update path
-// preserves the wire ask_id and reconciles it against the stored row, so the
-// ask survives the write and round-trips its id.
-//
-// Mutation that reddens it: routing the update back through blocksFromWire (the
-// POST mapper) reintroduces the strip and the ask is refused again.
+// THE positive contract this fix restores: an update carrying an ask block WITH the
+// stored ask_id PERSISTS. Before the fix it went through the POST mapper, which
+// stripped the ask_id and the store rejected the id-less ask. The update path now
+// preserves and reconciles the wire ask_id, so the ask round-trips its id.
 func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -573,16 +508,10 @@ func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
 	}
 }
 
-// The distinct misclassification the review flagged: an ask-bearing update that
-// carries a NON-EMPTY ask_id disagreeing with the stored one is a forged/
-// malformed frame, refused CodeInvalidArgument — and refused by
-// reconcileUpdateAskIDs's own mismatch error, never conflated with the generic
-// id-less case and never silently overwriting the stored id. It stays
-// CodeInvalidArgument (still a caller error), but a distinct, clearly-messaged
-// one.
-//
-// Mutation that reddens it: blindly trusting the wire ask_id (dropping the
-// mismatch branch) lets the forged id through and the refusal disappears.
+// The distinct misclassification: an ask-bearing update whose NON-EMPTY ask_id
+// disagrees with the stored one is a forged frame, refused CodeInvalidArgument by
+// reconcileUpdateAskIDs's own mismatch error — never conflated with the id-less
+// case and never silently overwriting the stored id.
 func TestCommitAgentUpdateRejectsAskIDMismatch(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -621,19 +550,10 @@ func TestCommitAgentUpdateRejectsAskIDMismatch(t *testing.T) {
 	}
 }
 
-// The forgery vector the review flagged: a relayed UPDATE that appends a SURPLUS
-// ask block (beyond the stored ask count) carrying a caller-chosen non-empty
-// ask_id must be refused, not persisted. A surplus ask has no stored counterpart
-// to reconcile against, and an update cannot introduce a new ask (ask_id is
-// minted only on POST), so accepting a caller-supplied id would reopen exactly
-// the collision askFromWire strips to prevent on POST: a forged id shared with
-// another message makes RespondToAsk's containment SELECT match both rows. The
-// store guards only the empty-id case, so the edge must reject the non-empty
-// surplus.
-//
-// Mutation that reddens it: skipping surplus asks in reconcileUpdateAskIDs (the
-// pre-fix `if askIdx < len(storedAskIDs)` gate) lets the forged id through and
-// the row is silently updated with it.
+// The forgery vector: a relayed UPDATE appending a SURPLUS ask block with a
+// caller-chosen ask_id must be refused. A surplus ask has no stored counterpart and
+// an update cannot mint a new ask, so a supplied id reopens the collision askFromWire
+// strips on POST (a shared id matches both rows). The store guards only the empty case.
 func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()

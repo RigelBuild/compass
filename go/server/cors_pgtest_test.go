@@ -2,25 +2,10 @@
 
 package server
 
-// Integration test for the network door's CORS policy (RIG-1195 T3b), pinning
-// the spec Requirement "The network door defaults closed to browser origins"
-// (docs/specs/product/compass.md:693-707): unless --cors-allowed-origin names a
-// single explicit browser origin the door applies NO CORS at all; when set it
-// allows exactly that one origin (never a wildcard), never enables credentialed
-// CORS, and does not reflect a preflight from any other origin.
-//
-// It drives the REAL wiring: buildNetworkServer constructs the door and decides
-// whether to wrap the mux in networkCORS (network_door.go:197-202), so the test
-// asserts against buildNetworkServer's returned handler rather than networkCORS
-// in isolation — a dropped guard (always-on CORS) is only observable through the
-// build step. No TLS termination or serving is needed: the CORS layer is an
-// HTTP middleware in front of the mux, so the preflight is exercised in-process
-// with an httptest recorder against the returned handler.
-//
-// Store-gated (pgtest lane): buildNetworkServer mints and writes the bootstrap
-// admin token against the Postgres store of record, so it needs a real database
-// via the shared harness (newNetworkStore → an isolated-schema DSN, or t.Skip
-// when no runtime). Hermetic: the token file lives under t.TempDir().
+// Integration test for the network door's CORS policy (RIG-1195 T3b), pinning that
+// the door defaults closed to browser origins: without --cors-allowed-origin it
+// applies NO CORS; when set it allows exactly that one origin, never a wildcard or
+// credentialed CORS. Drives the REAL buildNetworkServer wiring. Store-gated.
 
 import (
 	"context"
@@ -145,13 +130,10 @@ func TestNetworkDoorCORSPolicy(t *testing.T) {
 		h := buildDoorHandler(t, "")
 		got := preflight(h, configured)
 
-		// The guard (network_door.go:198) leaves netRoot as the bare mux when
-		// no origin is configured, so the CORS middleware is entirely absent.
-		// The middleware's fingerprint is present on EVERY preflight it touches
-		// (even a rejected one): it echoes the allowed origin, names the method,
-		// and — because it always sets Vary — adds a Vary header. Asserting all
-		// three are absent reddens a dropped guard (always-on CORS), which would
-		// re-introduce at least the Vary header even for an unmatched origin.
+		// The guard leaves netRoot as the bare mux when no origin is configured, so
+		// the CORS middleware is entirely absent. Its fingerprint (allow-origin,
+		// allow-methods, and always a Vary header) is present on every preflight it
+		// touches, so asserting all three absent reddens a dropped guard.
 		for _, header := range []string{corsAllowOrigin, corsAllowMethods, corsAllowCredentials, "Vary"} {
 			if v := got.Get(header); v != "" {
 				t.Fatalf("empty --cors-allowed-origin still set %s = %q; the network door must add no CORS headers when closed", header, v)

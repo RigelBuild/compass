@@ -2,24 +2,10 @@
 
 package server
 
-// T4b server-emission integration: the OTel wiring T2 adds to the shipped
-// socket door and the network-door CORS policy, exercised end-to-end.
-//
-// The emission path is only observable through a REAL provider: otelconnect and
-// NewTraceResponseInterceptor both read the GLOBAL tracer provider (otelconnect
-// interceptor.go:56 otel.GetTracerProvider), so a test that would prove a span
-// carries compass.message.id and the response carries a matching traceresponse
-// header must install a global SDK provider with an in-memory exporter, then
-// drive PostMessage over the production socket door (Serve). resetGlobals-style
-// save/restore keeps the installed globals from leaking into sibling tests.
-//
-// Store-gated (Serve opens the store of record and PostMessage's D9 membership
-// gate is store-enforced), so behind `//go:build pgtest && unix` via the shared
-// pgtest harness (pgtest.RequireDSN → an isolated-schema DSN, or t.Skip when no
-// runtime). Hermetic: t.TempDir() socket + state paths, no fixed ports.
-//
-// context.Background() is the test root (rule://go-thread-context _test.go
-// exemption): threaded into store.Open, the pre-seed, and every RPC below.
+// T4b server-emission integration: the OTel wiring T2 adds to the shipped socket
+// door and the network-door CORS, end-to-end. The emission path is observable
+// only through a REAL global provider (otelconnect reads otel.GetTracerProvider),
+// so each test installs one + an in-memory exporter and drives PostMessage.
 
 import (
 	"context"

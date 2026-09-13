@@ -2,14 +2,10 @@
 
 package server
 
-// Handler-level contracts for SubscribeAgentSession, the
-// net-new server-stream RPC (service.go:279). Two of its five branches need no
-// store — they fail before the authz gate — so they run in the default lane
-// here, driven end to end through a real connect client over in-process h2c (the
-// shipped door's protocol). The store-gated branches (authorized delivery,
-// not-found/forbidden parity, and the client-hangup slot release, which all
-// require passing RequireAgentSessionSubscriber against a real Postgres) live in
-// service_agentsession_pgtest_test.go behind the pgtest tag.
+// Handler-level contracts for SubscribeAgentSession. Two of its five branches need no
+// store (they fail before the authz gate), so they run in the default lane here,
+// driven end to end through a real connect client over in-process h2c. The store-gated
+// branches live in service_agentsession_pgtest_test.go behind the pgtest tag.
 
 import (
 	"context"

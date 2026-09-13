@@ -2,35 +2,22 @@
 # `devenv.lock` pins — so CI gets the identical derivations the dev shell does,
 # and the parity gate has a concrete expected identity to compare against.
 #
-# `attrs` is passed in by tools/toolchain/parity.ts, which reads it out of
-# devenv.nix's `packages = with pkgs; [ … ]` list. It is never hand-listed here:
-# adding a tool to the dev shell must extend CI and the gate with no edit to
-# this file or to the workflow.
+# `attrs` is passed in by tools/toolchain/parity.ts, read out of devenv.nix's
+# `packages = with pkgs; [ … ]` list, never hand-listed here: adding a dev-shell
+# tool extends CI and the gate with no edit to this file.
 #
 # Three outputs, one per consumer:
-#
-#   env      a single symlink tree of every nixpkgs tool; CI prepends its bin/
-#            to PATH. This is how CI obtains buf/golangci-lint/biome/… — there
-#            is no `setup-*` action for them that could match a nixpkgs pin, and
-#            guessing a close-enough version is exactly the drift the gate
-#            exists to reject.
-#   identity attr -> { version, store, bins }. `store` is the derivation path
-#            the parity gate compares a resolved binary against; `bins` tells it
-#            which binaries to probe, since the attribute name is often not the
-#            command name (protobuf ships protoc, buf ships the protoc-gen-buf-*
-#            plugins). Deriving that from the built tree keeps a name mapping
-#            from having to be maintained by hand. The field is `store`, not
-#            `outPath`: nix string-coerces any attrset carrying an `outPath`, so
-#            naming it that collapses each entry to a bare path string.
-#   langs    name -> { version, store, bins } for the language toolchains
-#            (bun/node/moon/go) — the closed set the dev shell appends outside
-#            its parsed `packages` literal. Same identity shape as `identity`,
-#            so the parity gate checks it with the identical store-path method.
-#            bun/node/moon come from toolchain-tools.nix (the module the dev
-#            shell also imports); go comes from the go-overlay overlay applied
-#            to this same nixpkgs. `langs` never consumes `attrs` — the language
-#            set is closed, so it builds with no `--arg attrs`, which is why the
-#            head below gives `attrs` a default.
+#   env      a symlink tree of every nixpkgs tool; CI prepends its bin/ to PATH.
+#            The only way CI obtains buf/golangci-lint/biome/… at the pinned
+#            version — no `setup-*` action could match a nixpkgs pin.
+#   identity attr -> { version, store, bins }. `store` is the derivation path the
+#            parity gate compares against; `bins` names the binaries to probe
+#            (the attr name often differs from the command). The field is `store`,
+#            not `outPath`: nix string-coerces an attrset with `outPath`, which
+#            would collapse each entry to a bare path string.
+#   langs    name -> identity for the language toolchains (bun/node/moon/go), the
+#            closed set appended outside the parsed `packages` literal. Never
+#            consumes `attrs` (the set is closed), which is why the head defaults it.
 { attrs ? [ ] }:
 let
   lock = builtins.fromJSON (builtins.readFile ../../devenv.lock);
@@ -41,16 +28,11 @@ let
   };
   pkgs = import nixpkgsSrc { };
 
-  # go-overlay applied to the same devenv.lock-pinned nixpkgs the dev shell
-  # resolves go against, at the devenv.lock-pinned go-overlay rev — so CI and
-  # the dev shell build one go derivation. The overlay's root default.nix
-  # exposes `go-bin`, whose `versions` set is keyed by the raw version string
-  # (e.g. "1.26.6") — NOT the dots→underscores `go_1_26_6` flake attribute the
-  # dev shell selects. The two selectors are asymmetric on purpose: the overlay
-  # sets no top-level `go_1_26_6`, so mirroring the flake key here would be an
-  # eval failure on a nonexistent attribute. Both resolve one derivation
-  # because both build over this nixpkgs (devenv.yaml pins go-overlay's nixpkgs
-  # to follow the shell's) at one go-overlay rev.
+  # go-overlay applied to the same devenv.lock-pinned nixpkgs, at the pinned
+  # go-overlay rev — so CI and the dev shell build one go derivation. The overlay
+  # exposes `go-bin`, keyed by the raw version string ("1.26.6"), NOT the
+  # dots→underscores `go_1_26_6` flake attr the dev shell selects — mirroring the
+  # flake key here would eval-fail on a nonexistent attribute.
   goOverlayNode = lock.nodes.go-overlay.locked;
   goOverlaySrc = builtins.fetchTarball {
     url = "https://github.com/${goOverlayNode.owner}/${goOverlayNode.repo}/archive/${goOverlayNode.rev}.tar.gz";
@@ -62,15 +44,13 @@ let
 
   toolchainTools = import ./toolchain-tools.nix { inherit pkgs; };
 
-  # The Go analysis battery (golangci-lint/govulncheck/go-licenses/nilaway),
-  # each rebuilt with the go-overlay toolchain the dev shell uses
-  # (tools/toolchain/go-analysis.nix), passed the same goToolchain so CI and the
-  # dev shell resolve one store path per tool. Covered by the store-path `langs`
-  # verdict below, not the parsed `packages` attrs — none is a bare nixpkgs attr.
+  # The Go analysis battery, each rebuilt with the go-overlay toolchain the dev
+  # shell uses, passed the same goToolchain so CI and the dev shell resolve one
+  # store path per tool. Covered by the `langs` verdict, not the parsed attrs.
   goAnalysis = import ./go-analysis.nix { inherit pkgs goToolchain; };
 
   # Command names a derivation exposes. Dot-prefixed entries are nix wrapper
-  # internals (.go-licenses-wrapped), never on PATH as commands.
+  # internals, never on PATH as commands.
   binsOf = drv:
     let dir = "${drv}/bin";
     in

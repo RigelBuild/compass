@@ -1,12 +1,9 @@
 //go:build unix
 
 // The Runner-side FetchAgentConfig client: pull the fleet config bundle from the
-// Server over the RunnerService connection and reassemble the server-streamed
-// frames into one in-memory bundle. The first frame carries the version; every
-// subsequent frame carries a tarball byte chunk, so a bundle larger than the
-// connect/gRPC unary recv cap still rides the wire (RIG-1568 T3). The bundle
-// bytes ride in memory only; the security caps (decompressed size, file count)
-// are enforced downstream at unpack (T4's ConfigMaterializer), never here.
+// Server and reassemble the streamed frames into one in-memory bundle (first
+// frame version, rest tarball chunks, so a bundle over the unary recv cap still
+// rides). Security caps (size, file count) are enforced downstream at unpack.
 package runner
 
 import (
