@@ -10,6 +10,7 @@ import {
 import type { Agent, Terminal } from "../stub-data";
 import { ChannelView } from "./ChannelView";
 import { LogPanel } from "./LogPanel";
+import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
 /** A terminal pane: the fixture scrollback for the terminal a tab references. A
@@ -215,6 +216,9 @@ export const AgentView: Component = () => {
 				<div class="agent-view">
 					<div class="av-header">
 						<StateDot state={agent().lifecycle ?? "idle"} />
+						<Show when={agent().runtime}>
+							{(m) => <RuntimeMarker marker={m()} />}
+						</Show>
 						<span class="av-name">{agent().account.handle}</span>
 						<Show when={agent().model}>
 							<span class="av-model">{agent().model}</span>

@@ -26,6 +26,7 @@ import {
 	readMountedRules,
 	readMountedSettingsPath,
 	readMountedSkills,
+	resolveConfigMountPath,
 } from "./config-reader";
 
 const tmpdirs: string[] = [];
@@ -75,6 +76,27 @@ describe("AGENT_CONFIG_MOUNT_PATH", () => {
 		expect(currentConfigDir("/run/compass/agent-config")).toBe(
 			"/run/compass/agent-config/current",
 		);
+	});
+
+	// The mount path became env-overridable for the host tier (design "Agent
+	// transport: the socket and config paths"): the host-process backend has no
+	// bind mounts, so it materializes the config tree inside the agent handle's
+	// own state dir and threads the root via COMPASS_AGENT_CONFIG_MOUNT_PATH. The
+	// frozen literal stays the DEFAULT — a container-tier agent (no override)
+	// reads it unchanged.
+	test("resolveConfigMountPath defaults to the frozen path when unset or blank", () => {
+		expect(resolveConfigMountPath({})).toBe(AGENT_CONFIG_MOUNT_PATH);
+		expect(
+			resolveConfigMountPath({ COMPASS_AGENT_CONFIG_MOUNT_PATH: "   " }),
+		).toBe(AGENT_CONFIG_MOUNT_PATH);
+	});
+
+	test("resolveConfigMountPath returns the COMPASS_AGENT_CONFIG_MOUNT_PATH override when set", () => {
+		expect(
+			resolveConfigMountPath({
+				COMPASS_AGENT_CONFIG_MOUNT_PATH: "/state/agent-7/config",
+			}),
+		).toBe("/state/agent-7/config");
 	});
 });
 

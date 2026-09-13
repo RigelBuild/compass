@@ -1,0 +1,29 @@
+/* Runtime marker — .cx-runtime-marker[data-tier][data-posture]. A small mono
+   text token beside the state dot naming the session's runner backend. Rides
+   the low-emphasis meta color so it reads as metadata, not a live signal. An
+   uncontained (unenforced-egress) session flips to the warn color and shows a
+   `!` suffix so a host-network session is distinguishable at a glance; an
+   unknown tier/posture stays muted and never reads as contained. Consumes only
+   --cx-* tiers. */
+
+.cx-runtime-marker {
+	display: inline-flex;
+	align-items: center;
+	gap: 1px;
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-xs);
+	line-height: 1;
+	letter-spacing: 0.3px;
+	color: var(--cx-text-faint);
+}
+
+/* Uncontained egress (unenforced posture) — the one state a user must not read
+   as contained. Warn color + the `!` suffix carry it on both the color and the
+   shape axis, so it survives a monochrome or reduced-color view. */
+.cx-runtime-marker[data-uncontained="1"] {
+	color: var(--cx-warn);
+}
+
+.cx-runtime-uncontained {
+	font-weight: 700;
+}

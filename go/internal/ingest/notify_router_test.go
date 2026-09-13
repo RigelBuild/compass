@@ -30,10 +30,21 @@ type fakeNotifyStore struct {
 
 	lastOpened  bool
 	lastProject string
-	// advanceCalls MUST stay zero: the router never advances delivered_revision
-	// (W3). No NotifyStore method advances it; this counter is the runtime guard
-	// that no future edit sneaks an advance onto the router's path.
-	advanceCalls int
+	// advanceCalls counts every AdvanceDeliveredRevisionCAS call — it MUST stay
+	// zero on the normal (non-suppressed) path (W3), and on the suppress path is
+	// nonzero only after the Go-side caught-up gate passes for an artifact-scope
+	// sub. advanceArgs records each call's args so a test can assert the prior the
+	// router passed. The fake models the SQL CAS: advanced == (arg.prior ==
+	// casStoredPrior), so a test forces a lost CAS by setting casStoredPrior to a
+	// value the router won't pass. casErr forces a store fault.
+	advanceCalls   int
+	advanceArgs    []casCall
+	casStoredPrior string
+	casErr         error
+}
+
+type casCall struct {
+	agent, subscriptionID, prior, next string
 }
 
 func (f *fakeNotifyStore) LoadArtifactCursor(_ context.Context, _ string, _ compassv1internal.ForgeArtifactKind, _ uint64) (*ArtifactCursor, error) {
@@ -77,6 +88,19 @@ func (f *fakeNotifyStore) UpsertArtifactCursor(_ context.Context, cur ArtifactCu
 	f.upserts = append(f.upserts, cur)
 	f.cursor = &cur
 	return nil
+}
+
+// AdvanceDeliveredRevisionCAS records the call and models the SQL CAS: it
+// advances (returns true) iff the router-supplied prior equals casStoredPrior.
+// casErr forces a store fault. The router only reaches here after its own
+// Go-side caught-up gate, so a call at all means that gate passed.
+func (f *fakeNotifyStore) AdvanceDeliveredRevisionCAS(_ context.Context, agent, subscriptionID, prior, next string) (bool, error) {
+	f.advanceCalls++
+	f.advanceArgs = append(f.advanceArgs, casCall{agent: agent, subscriptionID: subscriptionID, prior: prior, next: next})
+	if f.casErr != nil {
+		return false, f.casErr
+	}
+	return prior == f.casStoredPrior, nil
 }
 
 // fakeDispatcher records every notification per account.
@@ -138,14 +162,14 @@ func testRef() *compassv1.ForgeRef {
 // every pre-RIG-2869 case exercises (a zero-number event is rejected).
 func newRouter(t *testing.T, st *fakeNotifyStore, d *fakeDispatcher, c *fakeChecksRoller) *NotifyRouter {
 	t.Helper()
-	return NewNotifyRouter(st, d, c, nil, testRef(), nil)
+	return NewNotifyRouter(st, d, c, nil, nil, testRef(), nil)
 }
 
 // newRouterWithPulls builds a router with the head_sha->number resolution seam
 // wired (the RIG-2869 shape the prod GitHub lane uses).
 func newRouterWithPulls(t *testing.T, st *fakeNotifyStore, d *fakeDispatcher, c *fakeChecksRoller, p PullNumberResolver) *NotifyRouter {
 	t.Helper()
-	return NewNotifyRouter(st, d, c, p, testRef(), nil)
+	return NewNotifyRouter(st, d, c, p, nil, testRef(), nil)
 }
 
 const (
@@ -157,6 +181,13 @@ const (
 	chOpened  = compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED
 	chUpdate  = compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_UPDATE
 	chReview  = compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_REVIEW
+
+	scopeArtifact  = compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_ARTIFACT
+	scopeContainer = compassv1internal.ForgeSubscriptionScope_FORGE_SUBSCRIPTION_SCOPE_CONTAINER
+
+	// selfAgent is the agent handle every suppression fixture uses; the owner
+	// leg is what the cases vary.
+	selfAgent = "atlas"
 )
 
 func ghComment(url, body, account string) *compassv1internal.CommentRef {
@@ -170,6 +201,56 @@ func commentEvent(url string) forge.ForgeEvent {
 		Host:     "github.com", Repo: "o/r", Kind: kindIssue, Number: 7,
 		URL: url, Change: chComment, Comment: ghComment(url, "hi", "octocat"),
 	}
+}
+
+// fakeIdentityResolver scripts the two identity-seam reads: an account-id ->
+// Handle map for HandleForAccount, and a single author Handle for AuthorHandle
+// (the OPENED coordinate). Either read can be forced to fault. authorMiss makes
+// AuthorHandle return a zero Handle with a nil error (the ErrNotFound / clean
+// miss the router treats as fail-open).
+type fakeIdentityResolver struct {
+	accounts    map[string]Handle
+	author      Handle
+	authorMiss  bool
+	accountErr  error
+	authorErr   error
+	authorCalls int
+}
+
+// The two error paths return a POPULATED handle alongside the error, so a
+// caller that used the value instead of failing open would suppress — that is
+// what makes the fault cases discriminating.
+func (f *fakeIdentityResolver) HandleForAccount(_ context.Context, accountID string) (Handle, error) {
+	if f.accountErr != nil {
+		return f.accounts[accountID], f.accountErr
+	}
+	return f.accounts[accountID], nil
+}
+
+func (f *fakeIdentityResolver) AuthorHandle(_ context.Context, _ string, _ compassv1internal.ForgeArtifactKind, _ uint64) (Handle, error) {
+	f.authorCalls++
+	if f.authorErr != nil {
+		return f.author, f.authorErr
+	}
+	if f.authorMiss {
+		return Handle{}, nil
+	}
+	return f.author, nil
+}
+
+// newRouterWithIDs builds a router with the identity seam wired — the shape the
+// self-origin suppression cases exercise.
+func newRouterWithIDs(t *testing.T, st *fakeNotifyStore, d *fakeDispatcher, ids IdentityResolver) *NotifyRouter {
+	t.Helper()
+	return NewNotifyRouter(st, d, &fakeChecksRoller{}, nil, ids, testRef(), nil)
+}
+
+// compassComment is a COMMENT event whose commenter is a Compass agent, carrying
+// the owner-qualified attribution the header parse stamps.
+func compassComment(owner string) forge.ForgeEvent {
+	ev := commentEvent("https://gh/o/r/issues/7#c1")
+	ev.Comment.Agent = &compassv1.AgentAttribution{AgentHandle: selfAgent, OwnerHandle: owner}
+	return ev
 }
 
 // ---- tests ----
@@ -685,4 +766,470 @@ func subIDs(ns []*compassv1internal.ForgeNotification) []string {
 		out[i] = n.GetSubscriptionId()
 	}
 	return out
+}
+
+// ---- self-origin suppression (T1) ----
+
+// TestSelfOriginCommentSuppressedOnMatch: a COMMENT whose actor's
+// owner-qualified handle equals the subscriber's is skipped.
+func TestSelfOriginCommentSuppressedOnMatch(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Errorf("notifications = %d, want 0 (self-origin suppressed)", len(d.sent))
+	}
+}
+
+// TestSelfOriginCommentDeliveredHumanCommenter: a human commenter (Agent unset)
+// always delivers — there is no actor handle to match.
+func TestSelfOriginCommentDeliveredHumanCommenter(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
+	// commentEvent leaves Comment.Agent nil (human commenter).
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), commentEvent("https://gh/c1")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (human commenter delivers)", len(d.sent))
+	}
+}
+
+// TestSelfOriginCommentDeliveredCrossOwnerSameAgent: the load-bearing
+// owner-namespace-collision case — atlas@owner-A acts, atlas@owner-B subscribes.
+// The bare agent handle matches but the owner differs, so this MUST deliver (a
+// bare-handle match would be a fail-CLOSED cross-agent suppression bug).
+func TestSelfOriginCommentDeliveredCrossOwnerSameAgent(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-B"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-B": {Owner: "owner-B", Agent: "atlas"}}}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), compassComment("owner-A")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (atlas@owner-A != atlas@owner-B, must deliver)", len(d.sent))
+	}
+}
+
+// TestSelfOriginReviewSuppressedOnMatch: REVIEW shares the CommentRef actor
+// source, so a self-review is suppressed the same way COMMENT is.
+func TestSelfOriginReviewSuppressedOnMatch(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
+	ev := compassComment("own")
+	ev.Kind = kindPR
+	ev.Change = chReview
+	ev.State = "approved"
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Errorf("notifications = %d, want 0 (self-review suppressed)", len(d.sent))
+	}
+}
+
+// TestSelfOriginOpenedSuppressedViaAuthorHandle: OPENED resolves the actor
+// through AuthorHandle; a match with the (container) subscriber suppresses.
+func TestSelfOriginOpenedSuppressedViaAuthorHandle(t *testing.T) {
+	st := &fakeNotifyStore{openedSub: []NotifySubscriber{
+		{SubscriptionID: "s", AgentAccountID: "acct-self", Project: "proj-A", Scope: scopeContainer},
+	}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		author:   Handle{Owner: "own", Agent: "atlas"},
+		accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}},
+	}
+	ev := forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app",
+		Repo: "RIG", Kind: kindIssue, Number: 42, Project: "proj-A", URL: "u", Change: chOpened,
+	}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if ids.authorCalls != 1 {
+		t.Errorf("AuthorHandle calls = %d, want 1 (OPENED resolves the actor once)", ids.authorCalls)
+	}
+	if len(d.sent) != 0 {
+		t.Errorf("notifications = %d, want 0 (self-opened suppressed)", len(d.sent))
+	}
+}
+
+// TestSelfOriginOpenedDeliveredOnAuthorMiss: the webhook-races-the-row case —
+// AuthorHandle is a clean miss (the DL-055 row not yet committed), so the actor
+// is unresolved and the OPENED dispatch delivers (fail open).
+func TestSelfOriginOpenedDeliveredOnAuthorMiss(t *testing.T) {
+	st := &fakeNotifyStore{openedSub: []NotifySubscriber{
+		{SubscriptionID: "s", AgentAccountID: "acct-self", Project: "proj-A", Scope: scopeContainer},
+	}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		authorMiss: true,
+		accounts:   map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}},
+	}
+	ev := forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app",
+		Repo: "RIG", Kind: kindIssue, Number: 42, Project: "proj-A", URL: "u", Change: chOpened,
+	}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (author-row miss delivers, fail open)", len(d.sent))
+	}
+}
+
+// TestSelfOriginOpenedDeliveredOnAuthorFault: a store fault resolving the
+// author row is logged and treated as a miss, so the dispatch delivers. The
+// subscriber WOULD match the faulting coordinate's author, so a fault that
+// suppressed instead would eat a real notification.
+func TestSelfOriginOpenedDeliveredOnAuthorFault(t *testing.T) {
+	st := &fakeNotifyStore{openedSub: []NotifySubscriber{
+		{SubscriptionID: "s", AgentAccountID: "acct-self", Project: "proj-A", Scope: scopeContainer},
+	}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		authorErr: errors.New("store unreachable"),
+		author:    Handle{Owner: "own", Agent: selfAgent},
+		accounts:  map[string]Handle{"acct-self": {Owner: "own", Agent: selfAgent}},
+	}
+	ev := forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app",
+		Repo: "RIG", Kind: kindIssue, Number: 42, Project: "proj-A", URL: "u", Change: chOpened,
+	}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (author fault delivers, fail open)", len(d.sent))
+	}
+}
+
+// TestSelfOriginChecksNeverSuppressed is the CHECKS invariant: CI results on an
+// agent's own push are the point of watching CI. The event carries a matching
+// Compass commenter, so the arm — not the absence of actor evidence — is what
+// keeps the dispatch.
+func TestSelfOriginChecksNeverSuppressed(t *testing.T) {
+	st := &fakeNotifyStore{
+		cursor:      &ArtifactCursor{Repo: "o/r", Kind: kindPR, Number: 7},
+		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}},
+	}
+	d := &fakeDispatcher{}
+	// A resolver that would match ANY subscriber — proving the CHECKS arm never
+	// consults it.
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
+	roller := &fakeChecksRoller{res: forge.ConditionalResult[forge.Checks]{
+		V: forge.Checks{HeadSHA: "sha1", State: "success"},
+	}}
+	r := NewNotifyRouter(st, d, roller, nil, ids, testRef(), nil)
+	ev := compassComment("own")
+	ev.Repo = "o/r"
+	ev.Kind = kindPR
+	ev.Number = 7
+	ev.Change = chChecks
+	ev.HeadSHA = "sha1"
+	if err := r.Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (CHECKS is never suppressed)", len(d.sent))
+	}
+}
+
+// TestSelfOriginUpdateNeverSuppressed: UPDATE never suppresses even when the
+// event carries an actor matching the subscriber, so the arm is what delivers.
+func TestSelfOriginUpdateNeverSuppressed(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
+	ev := compassComment("own")
+	ev.Kind = kindIssue
+	ev.Change = chUpdate
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (UPDATE never suppressed)", len(d.sent))
+	}
+}
+
+// TestSelfOriginStateDeliversWithNoMemoConsumer: STATE has no reachable actor
+// through the two-method seam (RIG-3331's memo consumer is not wired), so the
+// actor resolves to a zero Handle and STATE delivers (the safe interim). The
+// event is loaded so that EVERY other arm would match — a matching Compass
+// commenter and a matching author row — so delivering proves STATE fell
+// through to the no-actor arm. Routing STATE through the author row is the
+// fail-closed bug the record forbids: it would eat an agent's notification
+// that a HUMAN closed its issue.
+func TestSelfOriginStateDeliversWithNoMemoConsumer(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		author:   Handle{Owner: "own", Agent: selfAgent},
+		accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: selfAgent}},
+	}
+	ev := compassComment("own")
+	ev.Kind = kindPR
+	ev.Change = chState
+	ev.State = "closed"
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (STATE interim-open, no memo consumer)", len(d.sent))
+	}
+}
+
+// TestSelfOriginUnqualifiedActorDelivers: an actor whose owner (or agent) is
+// empty is unqualified, so no positive match is possible and the dispatch
+// delivers even to an identically-named subscriber.
+func TestSelfOriginUnqualifiedActorDelivers(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "", Agent: "atlas"}}}
+	// Actor has an empty owner (a body whose header carried no owner).
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), compassComment("")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (unqualified actor -> fail open)", len(d.sent))
+	}
+}
+
+// TestSelfOriginResolverFaultDelivers: a store fault from HandleForAccount is
+// logged and treated as a miss — the dispatch delivers (fail open).
+func TestSelfOriginResolverFaultDelivers(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		accountErr: errors.New("resolver boom"),
+		accounts:   map[string]Handle{"acct-self": {Owner: "own", Agent: selfAgent}},
+	}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (resolver fault -> fail open)", len(d.sent))
+	}
+}
+
+// TestSelfOriginNilResolverDeliversEverything: a nil IdentityResolver disables
+// suppression wholesale — even a self-comment that would otherwise match is
+// delivered.
+func TestSelfOriginNilResolverDeliversEverything(t *testing.T) {
+	st := &fakeNotifyStore{artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self"}}}
+	d := &fakeDispatcher{}
+	// nil ids via newRouter (the legacy shape).
+	if err := newRouter(t, st, d, &fakeChecksRoller{}).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Errorf("notifications = %d, want 1 (nil resolver disables suppression)", len(d.sent))
+	}
+}
+
+// ---- self-origin suppress-path delivery-cursor advance (T2) ----
+//
+// The suppress path advances a self-suppressed subscriber's delivered_revision
+// to the route revision — but ONLY for an artifact-scope sub that was already
+// caught up to the PRIOR cursor revision, via a compare-and-set. selfCommentIDs
+// resolves the self-comment fixture's actor to a matching subscriber, so every
+// case below suppresses (0 dispatched); what varies is whether the advance fires.
+func selfCommentIDs() *fakeIdentityResolver {
+	return &fakeIdentityResolver{accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}}}
+}
+
+// TestSuppressAdvancesCaughtUpArtifactScope: a suppressed ARTIFACT-scope
+// subscriber that is caught up to the prior cursor revision has its
+// delivered_revision advanced to the route revision. The cursor's prior revision
+// equals the subscriber's DeliveredRevision, so the caught-up gate passes and the
+// CAS lands.
+func TestSuppressAdvancesCaughtUpArtifactScope(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior},
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: prior, Scope: scopeArtifact}},
+		casStoredPrior: prior, // the CAS matches the caught-up prior.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Fatalf("notifications = %d, want 0 (self-origin suppressed)", len(d.sent))
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (caught-up artifact-scope advances)", st.advanceCalls)
+	}
+	got := st.advanceArgs[0]
+	if got.prior != prior {
+		t.Errorf("CAS prior = %q, want %q (the subscriber's caught-up revision)", got.prior, prior)
+	}
+	want := SnapshotRevision(new(ApplyEvent(decodeSnapshot(&ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior}), compassComment("own"))))
+	if got.next != want {
+		t.Errorf("CAS next = %q, want the route revision %q", got.next, want)
+	}
+	if got.subscriptionID != "s" || got.agent != "acct-self" {
+		t.Errorf("CAS target = %s/%s, want s/acct-self", got.subscriptionID, got.agent)
+	}
+}
+
+// TestSuppressDoesNotAdvanceTrailingSubscriber is the E1-never-learned safety
+// case — the most important test in the slice. A suppressed subscriber whose
+// DeliveredRevision TRAILS the prior cursor revision (an earlier undelivered
+// event) must NOT advance: advancing would erase the gap and the reconcile sweep
+// would never recover the missed event. The fixture is set up so the advance
+// WOULD fire if the caught-up gate were dropped — the CAS would match — so a
+// zero advanceCalls proves the Go gate, not the CAS, held the line.
+func TestSuppressDoesNotAdvanceTrailingSubscriber(t *testing.T) {
+	const (
+		priorCursor = "rev-cursor" // where the shared cursor is
+		trailing    = "rev-old"    // the subscriber trails it: a missed E1
+	)
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: priorCursor},
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: trailing, Scope: scopeArtifact}},
+		casStoredPrior: trailing, // the CAS WOULD match if the gate were dropped.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Fatalf("notifications = %d, want 0 (still suppressed)", len(d.sent))
+	}
+	if st.advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0 (a trailing subscriber must NOT advance — the E1 gap is left for the sweep)", st.advanceCalls)
+	}
+}
+
+// TestSuppressAdvancesFreshSubscriberNilCursor proves the nil-cursor guard: when
+// the coordinate was NEVER observed (cur == nil), the prior revision is "", which
+// matches a fresh subscriber's empty DeliveredRevision — so it counts as caught
+// up and advances. A missing nil guard is a nil-deref panic, so this asserts the
+// advance behaviour, not merely the absence of a crash.
+func TestSuppressAdvancesFreshSubscriberNilCursor(t *testing.T) {
+	st := &fakeNotifyStore{
+		cursor:         nil, // never observed.
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: "", Scope: scopeArtifact}},
+		casStoredPrior: "", // the CAS matches the empty caught-up prior.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (nil cursor -> prior \"\" == fresh sub's \"\", caught up)", st.advanceCalls)
+	}
+	if got := st.advanceArgs[0].prior; got != "" {
+		t.Errorf("CAS prior = %q, want \"\" (nil cursor)", got)
+	}
+}
+
+// TestSuppressNeverAdvancesContainerScope is the scope carve-out: a suppressed
+// CONTAINER-scope subscriber (the OPENED fan-out case) is skipped but NEVER
+// advanced, even when caught up — an artifact revision in a container cursor
+// poisons the container sweep. The subscriber is caught up and the CAS would
+// match, so a zero advanceCalls proves the scope check, not the caught-up gate,
+// held the line.
+func TestSuppressNeverAdvancesContainerScope(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "RIG", Kind: kindIssue, Number: 42, Revision: prior},
+		openedSub:      []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", Project: "proj-A", DeliveredRevision: prior, Scope: scopeContainer}},
+		casStoredPrior: prior, // the CAS WOULD match if the scope check were dropped.
+	}
+	d := &fakeDispatcher{}
+	ids := &fakeIdentityResolver{
+		author:   Handle{Owner: "own", Agent: "atlas"},
+		accounts: map[string]Handle{"acct-self": {Owner: "own", Agent: "atlas"}},
+	}
+	ev := forge.ForgeEvent{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, Host: "linear.app",
+		Repo: "RIG", Kind: kindIssue, Number: 42, Project: "proj-A", URL: "u", Change: chOpened,
+	}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), ev); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 0 {
+		t.Fatalf("notifications = %d, want 0 (self-opened suppressed)", len(d.sent))
+	}
+	if st.advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0 (container-scope is skipped but NEVER advanced)", st.advanceCalls)
+	}
+}
+
+// TestSuppressAdvanceLostCASRoutesCleanly: a lost CAS (advanced=false, no error)
+// degrades open — Route still returns nil. The caught-up gate passes (so the CAS
+// is attempted) but casStoredPrior differs from the subscriber's revision, so the
+// fake reports no advance.
+func TestSuppressAdvanceLostCASRoutesCleanly(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor:         &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior},
+		artifactSub:    []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: prior, Scope: scopeArtifact}},
+		casStoredPrior: "someone-else-advanced", // a concurrent route moved the row first.
+	}
+	d := &fakeDispatcher{}
+	if err := newRouterWithIDs(t, st, d, selfCommentIDs()).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route returned error on a lost CAS, want nil (degrade open): %v", err)
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (the CAS was attempted)", st.advanceCalls)
+	}
+}
+
+// TestSuppressAdvanceFaultRoutesCleanly: a store fault from the CAS is logged and
+// swallowed — Route still returns nil and the OTHER (delivered) subscriber is
+// unaffected. A second, non-self subscriber is present and must still receive its
+// notification.
+func TestSuppressAdvanceFaultRoutesCleanly(t *testing.T) {
+	const prior = "rev-prior"
+	st := &fakeNotifyStore{
+		cursor: &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: prior},
+		artifactSub: []NotifySubscriber{
+			{SubscriptionID: "self", AgentAccountID: "acct-self", DeliveredRevision: prior, Scope: scopeArtifact},
+			{SubscriptionID: "other", AgentAccountID: "acct-other", DeliveredRevision: prior, Scope: scopeArtifact},
+		},
+		casErr: errors.New("store unreachable"),
+	}
+	d := &fakeDispatcher{}
+	// acct-other resolves to a DIFFERENT handle, so it is not suppressed.
+	ids := &fakeIdentityResolver{accounts: map[string]Handle{
+		"acct-self":  {Owner: "own", Agent: "atlas"},
+		"acct-other": {Owner: "own", Agent: "borges"},
+	}}
+	if err := newRouterWithIDs(t, st, d, ids).Route(context.Background(), compassComment("own")); err != nil {
+		t.Fatalf("Route returned error on a CAS fault, want nil (swallowed): %v", err)
+	}
+	if st.advanceCalls != 1 {
+		t.Fatalf("advanceCalls = %d, want 1 (the self sub attempted its advance)", st.advanceCalls)
+	}
+	if len(d.sent) != 1 || d.sent[0].GetSubscriptionId() != "other" {
+		t.Fatalf("dispatched = %v, want exactly the non-self 'other' subscriber", subIDs(d.sent))
+	}
+}
+
+// TestDeliveredPathNeverAdvances: a normal (non-suppressed) dispatch never calls
+// the CAS — W3 still holds for the delivery path. The resolver matches no
+// subscriber (nil ids via newRouter), so every sub delivers and none advances.
+func TestDeliveredPathNeverAdvances(t *testing.T) {
+	st := &fakeNotifyStore{
+		cursor:      &ArtifactCursor{Repo: "o/r", Kind: kindIssue, Number: 7, Revision: "rev-prior"},
+		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "acct-self", DeliveredRevision: "rev-prior", Scope: scopeArtifact}},
+	}
+	d := &fakeDispatcher{}
+	if err := newRouter(t, st, d, &fakeChecksRoller{}).Route(context.Background(), commentEvent("https://gh/c1")); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(d.sent) != 1 {
+		t.Fatalf("notifications = %d, want 1 (delivered path)", len(d.sent))
+	}
+	if st.advanceCalls != 0 {
+		t.Fatalf("advanceCalls = %d, want 0 (W3: the delivery path never advances)", st.advanceCalls)
+	}
 }

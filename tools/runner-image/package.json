@@ -1,0 +1,14 @@
+{
+	"name": "@compass/runner-image",
+	"private": true,
+	"type": "module",
+	"description": "Build the compass-runner container image (R1): realise the nix closure, stage it into a build context, and build a Dockerfile on a minimal hardened base with rootless BuildKit. Nix is the builder, never the runtime.",
+	"module": "build.ts",
+	"bin": {
+		"runner-image-build": "./build.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

@@ -257,6 +257,13 @@ func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id WorkloadID, uid ui
 	return requireSuccess("write agent file", out)
 }
 
+// EgressPosture reports how this runtime constrains agent egress, so a caller
+// can surface it per session instead of inferring containment from a green
+// launch.
+func (r *AgentRuntime) EgressPosture() EgressPosture {
+	return PostureOf(r.runtime)
+}
+
 // createAndStart creates then starts the container, cleaning up a created but
 // unstarted container so a retry with the same name starts clean.
 func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (WorkloadID, error) {
@@ -299,13 +306,62 @@ type inGuestEgressArmer interface {
 	EgressArmedInGuest() bool
 }
 
+// egressUnenforcer is a backend that cannot enforce an egress policy at all,
+// because it has no isolation boundary to firewall — a host process shares the
+// host's network namespace. It is deliberately distinct from
+// inGuestEgressArmer: that marker means "someone armed it", this one means
+// "nobody did and nobody can", and conflating them would report a contained
+// posture for an uncontained launch. Like that marker, a WorkloadRuntime
+// decorator must re-expose EgressUnenforced: swallowing it would report an
+// uncontained launch as armed.
+type egressUnenforcer interface {
+	EgressUnenforced() bool
+}
+
+// EgressPosture is how an agent's egress is constrained for the life of a
+// workload: armed by a firewall, or structurally unenforceable on this tier.
+type EgressPosture string
+
+const (
+	// EgressPostureArmed means a default-deny allowlist firewall is in force.
+	EgressPostureArmed EgressPosture = "armed"
+	// EgressPostureUnenforced means the tier cannot constrain egress; the agent
+	// reaches whatever the host reaches.
+	EgressPostureUnenforced EgressPosture = "unenforced"
+)
+
+// UnenforceableEgressPolicyError is returned when a launch carries an egress
+// policy to a backend that cannot enforce one. Failing is deliberate: silently
+// dropping the policy would leave the caller believing egress was constrained.
+type UnenforceableEgressPolicyError struct {
+	Hosts []string
+}
+
+func (e *UnenforceableEgressPolicyError) Error() string {
+	return fmt.Sprintf(
+		"host backend cannot enforce an egress policy (%d allowlisted host(s)): this tier shares the host network namespace, so egress is unenforced — drop the policy to launch here, or use a container tier to keep it",
+		len(e.Hosts),
+	)
+}
+
 // provision runs the post-start steps, all inside the running container:
 // firewall (root), credentials (agent user), checkout dir (agent user). A
 // backend that self-arms egress in-guest (inGuestEgressArmer, the microVM
 // backend) has already armed by Start, so the host-side armEgress exec — which
-// on that backend would run capability-less and fail — is skipped.
+// on that backend would run capability-less and fail — is skipped. A backend
+// that cannot enforce egress (egressUnenforcer) refuses any configured policy
+// rather than dropping it.
 func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
-	if armer, ok := r.runtime.(inGuestEgressArmer); !ok || !armer.EgressArmedInGuest() {
+	// Unenforced is tested first so a backend claiming both markers refuses a
+	// policy it cannot honour rather than taking the self-arm branch and
+	// silently dropping it.
+	switch {
+	case r.egressUnenforced():
+		if spec.Egress.Configured() {
+			return &UnenforceableEgressPolicyError{Hosts: spec.Egress.Hosts()}
+		}
+	case r.selfArmsEgress(): // armed in-guest by Start; nothing host-side to do
+	default:
 		if err := r.armEgress(ctx, id, spec.Egress); err != nil {
 			return err
 		}
@@ -314,6 +370,15 @@ func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentS
 		return err
 	}
 	return r.ensureCheckoutDir(ctx, id, spec.Workspace)
+}
+
+func (r *AgentRuntime) egressUnenforced() bool {
+	return PostureOf(r.runtime) == EgressPostureUnenforced
+}
+
+func (r *AgentRuntime) selfArmsEgress() bool {
+	armer, ok := r.runtime.(inGuestEgressArmer)
+	return ok && armer.EgressArmedInGuest()
 }
 
 // armEgress arms the egress firewall as the image's default user (uid 1000)

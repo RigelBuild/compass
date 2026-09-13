@@ -5,9 +5,9 @@ Status: Active
 This record freezes on merge; later changes supersede by citation, never
 rewrite.
 
-Ported from the internal monorepo's prior record with
+Ported from a prior ancestor record with
 Matt-ruled amendments, re-grounded against the current compass tree
-(`main@origin`, 2026-08-07). The internal monorepo's prior decisions are
+(`main@origin`, 2026-08-07). The ancestor record's prior decisions are
 re-expressed here as DL-164..DL-171.
 
 > **Amendment (DL-185, Matt 2026-08-07):** the manual add-a-workstream /
@@ -36,9 +36,9 @@ control that starts a workstream agent (provision + start, with an optional
 initial prompt) from the board, and hardens the existing stop into the same
 control model.
 
-*(Port note — superseding the internal monorepo's premise: the source record
+*(Port note — superseding the ancestor record's premise: the source record
 described stop as a no-op stub, `const stopAgent = () => {};`. That was true of
-the internal monorepo's snapshot; compass has since shipped the real
+the ancestor record's snapshot; compass has since shipped the real
 `stopAgent`, so every stop-side task below hardens or extends shipped behavior
 rather than replacing a stub.)*
 
@@ -69,7 +69,7 @@ were consequences of the now-shipped change.)*
 
 ### Posture: live-wired from the start (amends the walking-skeleton posture — DL-165)
 
-The internal monorepo's prior record froze a walking-skeleton posture (its
+The ancestor record froze a walking-skeleton posture (its
 OQ-A) on three facts of that tree: `createAppStore` took no arguments,
 `SubscribeEvents` had zero UI consumers, and no live client seam existed.
 **All three are false in compass today**: `createAppStore(options:
@@ -244,7 +244,7 @@ lifecycle affordance is start/stop on an existing card:
    incidental property DL-170 exists to stop leaning on).
 
    The check **must not** be sourced from Server-side in-memory state.
-   Compass now carries the reverse index the internal monorepo lacked —
+   Compass now carries the reverse index the ancestor record lacked —
    `Hub.SessionForAccount` (`relay_comms.go:157-171`, over
    `accountSessions`) — but it is still **live-scoped and cleared on every
    Runner re-enroll** (`hub.go:707-711`, pinned by
@@ -305,7 +305,7 @@ agent-keyed map would bleed one card's pill onto siblings). The binding
 carries its `agentAccountId` for the RPC. Bindings are store-internal
 wire-lifecycle bookkeeping, not a fixture-shape change: the compass board's
 `Issue` (`stub-data.ts:202-240`) and `Agent` shapes stay frozen.
-*(Terminology port note: the internal monorepo's UI had a `Workstream` type; the compass
+*(Terminology port note: the ancestor record's UI had a `Workstream` type; the compass
 board renders `Issue` cards (`board.ts:39-56`, `components/IssueCard.tsx`)
 and has no `Workstream` symbol. This record keeps "workstream" for the
 concept — an issue promoted to a unit of work — and `workstreamId` binds to
@@ -355,7 +355,7 @@ equally.
 
 ### Alternatives considered
 
-- **Walking-skeleton-first** (the internal monorepo's prior ruling, Matt-ruled there): build the
+- **Walking-skeleton-first** (the prior, superseded ruling): build the
   control UX as fixture mutations, wire later in a stacked lane. Superseded
   by the shipped compass store: the injection seam and live streams the
   skeleton waited on already exist (`store.ts:551`, `:667`, `:897-932`), and
@@ -370,7 +370,7 @@ equally.
   session started by another client or surviving a refresh can't reconcile.
   Rejected (Matt ruled the wire attribution, DL-167).
 - **Server-side reject-on-live check over `SessionForAccount`**: compass now
-  has the reverse map the internal monorepo lacked (`relay_comms.go:157-171`), but it fails
+  has the reverse map the ancestor record lacked (`relay_comms.go:157-171`), but it fails
   open after a Runner re-enroll (`hub.go:707-711`); the Runner scan is
   authoritative. Rejected — the Control-flow section carries the argument.
 - **Browser `confirm()` for stop**: rejected — blocks the event loop,
@@ -761,7 +761,7 @@ the compass service-owner. Independent of the UI tasks, so no freeze block.
   (`compass.proto:59`). Request = `agent_account_id`=1, `initial_prompt`=2,
   `client_request_id`=3; Response = `session_id`=1, `container_name`=2.
   Server orchestrates the existing RunnerHub `Provision` then `Start`
-  (`runnerhub/commands.go:40-88`). *(The internal monorepo's T0 additionally relaxed the
+  (`runnerhub/commands.go:40-88`). *(The ancestor record's T0 additionally relaxed the
   repo requirement in `runner/spec.go` and guarded `cloneRepo` — all shipped
   in compass under RIG-1527; `BuildSpec` at `spec.go:76-88` already builds a
   repo-less spec. Dropped from scope.)*
@@ -870,11 +870,11 @@ the compass service-owner. Independent of the UI tasks, so no freeze block.
 
 ## Resolved decisions
 
-The internal monorepo's prior record resolved eight load-bearing forks with
+An ancestor record resolved eight load-bearing forks with
 Matt and ratified two deferrals. This port re-expresses them as compass ledger
-rows DL-164..DL-171, plus one port-amendment row (DL-165). The prior rulings'
-full arguments live in the source record; the compass-grounded substance is
-folded into the sections above. Mapping:
+rows DL-164..DL-171, plus one port-amendment row (DL-165). Each row below
+carries its own compass-grounded argument; the sections above hold the
+substance. Mapping:
 
 ### DL-164 (prior decision) — start-an-agent; multiple cards per agent; reject-on-live
 

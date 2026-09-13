@@ -50,12 +50,16 @@ type Projection struct {
 	sessions map[string]sessionEntry
 }
 
-// sessionEntry is the board's per-session record: the latest state and the
-// agent account it was attributed to (empty when the hub could not resolve the
-// binding — the stated DL-167 residual gap).
+// sessionEntry is the board's per-session record: the latest state, the agent
+// account it was attributed to (empty when the hub could not resolve the
+// binding — the stated DL-167 residual gap), and the owning Runner's runtime
+// tier and egress posture (stamped from enrollment, so the snapshot path carries
+// them too).
 type sessionEntry struct {
-	state   compassv1.AgentSessionState
-	account string
+	state         compassv1.AgentSessionState
+	account       string
+	tier          compassv1.RuntimeTier
+	egressPosture compassv1.EgressPosture
 }
 
 // NewProjection constructs an empty board over the SubscribeEvents bus it fans
@@ -95,7 +99,12 @@ func (p *Projection) PublishSessionStatus(status *compassv1.AgentSessionStatus) 
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.sessions[status.GetSessionId()] = sessionEntry{state: status.GetState(), account: status.GetAgentAccountId()}
+	p.sessions[status.GetSessionId()] = sessionEntry{
+		state:         status.GetState(),
+		account:       status.GetAgentAccountId(),
+		tier:          status.GetRuntimeTier(),
+		egressPosture: status.GetEgressPosture(),
+	}
 
 	p.bus.Publish(&compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_AgentSessionStatus{
@@ -151,7 +160,14 @@ func isTerminal(state compassv1.AgentSessionState) bool {
 }
 
 // statusOf builds one board entry from a retained session record, carrying the
-// DL-167 agent_account_id alongside the state.
+// DL-167 agent_account_id and the owning Runner's runtime tier and egress
+// posture alongside the state.
 func statusOf(sessionID string, entry sessionEntry) *compassv1.AgentSessionStatus {
-	return &compassv1.AgentSessionStatus{SessionId: sessionID, State: entry.state, AgentAccountId: entry.account}
+	return &compassv1.AgentSessionStatus{
+		SessionId:      sessionID,
+		State:          entry.state,
+		AgentAccountId: entry.account,
+		RuntimeTier:    entry.tier,
+		EgressPosture:  entry.egressPosture,
+	}
 }

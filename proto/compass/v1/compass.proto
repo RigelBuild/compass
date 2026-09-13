@@ -423,6 +423,35 @@ message AgentSessionStatus {
   // binding is no longer resolvable — a status emitted after a Runner reconnect
   // cleared the live-session maps carries none (the stated residual gap).
   string agent_account_id = 3;
+  // The runtime tier this session's workload runs on, and how its egress is
+  // constrained. Both are backward-compatible appends (buf: non-breaking) and
+  // both are reported by the Runner that owns the session, because it is the
+  // component that resolved the backend. Posture is carried separately rather
+  // than inferred from the tier: a tier's enforcement is a property of the
+  // backend, and a client deriving one from the other would render a stale
+  // answer the moment that changes.
+  RuntimeTier runtime_tier = 4;
+  EgressPosture egress_posture = 5;
+}
+
+// The runtime tier an agent workload runs on. `HOST` runs agents as direct
+// child processes of the Runner, with no container or VM boundary.
+enum RuntimeTier {
+  RUNTIME_TIER_UNSPECIFIED = 0;
+  RUNTIME_TIER_PODMAN = 1;
+  RUNTIME_TIER_MICROVM = 2;
+  RUNTIME_TIER_APPLE_CONTAINER = 3;
+  RUNTIME_TIER_HOST = 4;
+}
+
+// How an agent's egress is constrained. `UNENFORCED` means the tier cannot
+// constrain it at all — a host process shares the host's network namespace, so
+// there is no boundary to firewall. It is a declared posture, never a failed
+// arm, and a client must not render it as contained.
+enum EgressPosture {
+  EGRESS_POSTURE_UNSPECIFIED = 0;
+  EGRESS_POSTURE_ARMED = 1;
+  EGRESS_POSTURE_UNENFORCED = 2;
 }
 
 // Agent-session lifecycle states. `ERRORED` is an unexpected agent exit (OOM,

@@ -54,6 +54,30 @@ export type AgentState =
 	| "error"
 	| "disconnected";
 
+/** The runtime backend an agent session runs on — the marker beside the state
+ *  dot (Runner-reported, AgentSessionStatus.runtime_tier). `unknown` is an
+ *  unresolved/version-skewed tier, rendered honestly rather than assumed. */
+export type RuntimeTierMark =
+	| "podman"
+	| "microvm"
+	| "apple-container"
+	| "host"
+	| "unknown";
+
+/** How an agent session's egress is constrained (AgentSessionStatus.
+ *  egress_posture). `unenforced` is a DECLARED posture — the tier cannot
+ *  constrain egress at all (a host process shares the host network namespace),
+ *  so a user must read it as uncontained, never as a failed arm. `unknown` is
+ *  an unresolved posture, never rendered as contained. */
+export type EgressPostureMark = "armed" | "unenforced" | "unknown";
+
+/** The session runtime marker the roster renders beside the state dot: which
+ *  runner backend the session runs on and whether its egress is contained. */
+export interface RuntimeMarker {
+	readonly tier: RuntimeTierMark;
+	readonly posture: EgressPostureMark;
+}
+
 /** The kind of agent — the moat agents plus leveraged worker agents. */
 export type AgentRole = "supervisor" | "worker";
 
@@ -350,6 +374,11 @@ export interface Agent {
 	 *  process state. Absent/empty = none (the presence render shows the state
 	 *  dot + handle alone, as today). */
 	activity?: string;
+	/** The session runtime marker — which runner backend the current session
+	 *  runs on and whether its egress is contained (AgentSessionStatus, mapped by
+	 *  `adaptRuntimeMarker`). Absent when no session status has reached this
+	 *  client for the agent (the render shows the state dot alone). */
+	runtime?: RuntimeMarker;
 	/** UI-only roster config. Optional: a live agent has no fixture role. */
 	role?: AgentRole;
 	/** UI-only (the model the OMP SDK is set with). Optional for a live agent. */

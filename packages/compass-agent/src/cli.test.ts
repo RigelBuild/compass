@@ -53,6 +53,7 @@ import {
 	resolveModelSelector,
 	resolvePersona,
 	resolveRole,
+	resolveSocketPath,
 } from "./cli";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
@@ -115,6 +116,26 @@ afterEach(() => {
 describe("AGENT_SOCKET_PATH", () => {
 	test("matches the Runner's fixed in-container mount path", () => {
 		expect(AGENT_SOCKET_PATH).toBe("/run/compass/agent.sock");
+	});
+
+	// The path became env-overridable for the host tier (design "Agent transport:
+	// the socket and config paths"): the host-process backend has no bind mounts,
+	// so it serves the socket inside the agent handle's own state dir and threads
+	// the path via COMPASS_AGENT_SOCKET_PATH. The frozen literal stays the DEFAULT
+	// — a container-tier agent (no override) resolves it unchanged.
+	test("resolveSocketPath defaults to the frozen path when unset or blank", () => {
+		expect(resolveSocketPath({})).toBe(AGENT_SOCKET_PATH);
+		expect(resolveSocketPath({ COMPASS_AGENT_SOCKET_PATH: "   " })).toBe(
+			AGENT_SOCKET_PATH,
+		);
+	});
+
+	test("resolveSocketPath returns the COMPASS_AGENT_SOCKET_PATH override when set", () => {
+		expect(
+			resolveSocketPath({
+				COMPASS_AGENT_SOCKET_PATH: "/state/agent-7/socket/agent.sock",
+			}),
+		).toBe("/state/agent-7/socket/agent.sock");
 	});
 });
 
@@ -1010,6 +1031,32 @@ describe("main", () => {
 			},
 		);
 		expect(dialed).toEqual([AGENT_SOCKET_PATH]);
+	});
+
+	// The host tier serves the socket inside the agent handle's own state dir and
+	// threads its path via COMPASS_AGENT_SOCKET_PATH — so main must dial the
+	// OVERRIDE, not the frozen constant. Pinning it AT THE CALL SITE catches a
+	// main that resolved the env but still dialed the default. Non-vacuity:
+	// reverting cli.ts to dial AGENT_SOCKET_PATH reds this while the default-dial
+	// test above stays green.
+	test("dials the carrier at the COMPASS_AGENT_SOCKET_PATH override when set", async () => {
+		const dialed: string[] = [];
+		const session = fakeSession();
+		await main(
+			{
+				HOME: scratch(),
+				COMPASS_AGENT_SOCKET_PATH: "/state/agent-7/socket/agent.sock",
+			},
+			{
+				createSession: () =>
+					Promise.resolve({ session: session as unknown as AgentSession }),
+				createTransport: (socketPath) => {
+					dialed.push(socketPath);
+					return fakeCarrier(emptyLog(), { control: emptyControlStream });
+				},
+			},
+		);
+		expect(dialed).toEqual(["/state/agent-7/socket/agent.sock"]);
 	});
 
 	// COMPASS_MODEL / COMPASS_WORKDIR are the container's only two configuration
@@ -2654,6 +2701,40 @@ function toolNames(tools: unknown[] | undefined): string[] {
 }
 
 describe("main wires the mounted agent-config into createAgentSession", () => {
+	// The host tier materializes config inside the agent handle's state dir and
+	// threads the root via COMPASS_AGENT_CONFIG_MOUNT_PATH — NOT the deps.configMount
+	// test seam. This drives the mount through the ENV VAR alone (deps.configMount
+	// unset) and asserts a mounted skill reaches options.skills, proving main
+	// resolves the override end-to-end. Non-vacuity: reverting cli.ts to read
+	// AGENT_CONFIG_MOUNT_PATH reds this (the default path does not exist, so no
+	// skill loads) while the frozen-default main tests below stay green.
+	test("reads the mount at the COMPASS_AGENT_CONFIG_MOUNT_PATH override when deps.configMount is unset", async () => {
+		const mount = scratch();
+		writeMount(mount, "skills/host-skill/SKILL.md", mountSkill("host-skill"));
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_AGENT_CONFIG_MOUNT_PATH: mount },
+			{
+				connectMcp: () =>
+					Promise.resolve({
+						tools: [] as never,
+						disconnect: () => Promise.resolve(),
+					}),
+				createSession: (options) => {
+					seen.push({ skills: options.skills });
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		expect(skillNames(seen[0].skills)).toEqual(["host-skill"]);
+	});
+
 	test("a populated mount → skills, extension paths, and MCP tools all reach the options", async () => {
 		const mount = scratch();
 		writeMount(mount, "skills/alpha/SKILL.md", mountSkill("alpha"));
