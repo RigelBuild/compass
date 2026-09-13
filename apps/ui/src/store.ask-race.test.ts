@@ -11,10 +11,10 @@ import {
 import { type AppStore, createAppStore } from "./store";
 import { testQueryClient } from "./test-support";
 
-// The race between a MULTI-question ask being answered and the stream pushing a new state
-// under it. The wire is ATOMIC (one RespondToAsk on the completing click), so pre-last choices
-// live ONLY in local state and `adoptComms` replaces it wholesale, so a mid-ask push used to
-// discard clicks. Subject is narrowly `adoptComms`; rollback/gate contracts in store.live.test.ts.
+// The race between an ask being answered LOCALLY and the stream pushing a new state under it.
+// Recording never sends (only submitAsk does), so staged choices live ONLY in local state and
+// `adoptComms` replaces it wholesale, so a mid-ask push used to discard them. Subject is narrowly
+// `adoptComms`; the send-model + restage contracts live in store.live.test.ts.
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-1";
@@ -138,10 +138,12 @@ describe("adoptComms vs an in-progress ask", () => {
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			expect(chosenIn(store, "q-2")).toEqual([]);
 
-			// … and the ask is still live: completing it ships BOTH answers, which
+			// … and the ask is still live: submitting it ships BOTH answers, which
 			// is only possible if the surviving answer is real state and not just a
 			// rendered ghost.
 			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toEqual([
 				{
@@ -190,10 +192,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// A SHIPPED ask is the server's, full stop. Once the one RespondToAsk is issued the local
-	// record is a claim about what the server was told, so a push replaces it even when the
-	// pushed ask carries no answers yet. Keeping the local copy would re-break the conditional
-	// rollback in `sendAsk`. Mutation-check: dropping the submitted-ask gate reddens this.
+	// A SHIPPED ask is the server's, full stop. Once its one RespondToAsk is submitted the local
+	// record is a claim about what the server was told, so a push replaces it even when the pushed
+	// ask carries no answers yet. Keeping the local copy would re-break the conditional restage in
+	// `sendAsk`. Mutation-check: dropping the submitted-ask gate reddens this.
 	test("a shipped ask takes the pushed server value", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -202,8 +204,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 
 		await withLiveStore(fake, async (store, settled) => {
-			// A one-question ask completes on its only click, so this ships.
+			// Record then submit — the explicit gesture ships the one respond.
 			store.answerAsk("m-ask", "ask-1", "q-only", "q-only-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(store.isAskSubmitted("ask-1")).toBe(true);
 			expect(chosenIn(store, "q-only")).toEqual(["q-only-a"]);
@@ -324,8 +328,10 @@ describe("adoptComms vs an in-progress ask", () => {
 
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 
-			// And it is real state, not a ghost: completing the ask ships both.
+			// And it is real state, not a ghost: submitting the ask ships both.
 			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toEqual([
 				{
@@ -339,10 +345,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The write gate, one half. Once reconciliation ADOPTS a server-closed ask, the completing
-	// click would issue the one RespondToAsk the server already spent — refused with ErrConflict.
-	// Nothing says "submitted" here (the closing respond was someone else's), so the click must be
-	// refused where it is recorded. Mutation-check: gating `answerAsk` on `isAskSubmitted` reddens this.
+	// The write gate, one half. Once reconciliation ADOPTS a server-closed ask, recording a click
+	// would stage an answer the ask can never send — the server already spent its one respond.
+	// Nothing says "submitted" here (the closing respond was someone else's), so the record is
+	// refused where it lands. Mutation-check: dropping answerAsk's `answered` guard records the pick.
 	test("a click on a server-closed ask ships nothing", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -365,8 +371,8 @@ describe("adoptComms vs an in-progress ask", () => {
 			await settled();
 			expect(store.isAskSubmitted("ask-1")).toBe(false);
 
-			// A one-question ask completes on its only click, so this is the click
-			// that would ship the doomed respond.
+			// A click here would record a pick the closed ask can never send; the
+			// answered guard refuses it.
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
 			await settled();
 
@@ -517,10 +523,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The accepted-then-lost-reply race, the one case the rollback's answer comparison can't see.
+	// The accepted-then-lost-reply race, the case the restage's guards can't see by answers alone.
 	// The server COMMITTED our respond and published the MessageUpdated, but our RPC's reply never
 	// landed, so the promise rejects. The push carries OUR ids, so only `answered` distinguishes a
-	// restate from a CLOSE. Mutation-check: dropping `!current.answered` from the rollback reddens this.
+	// restate from a CLOSE. Mutation-check: dropping `!current.answered` from the restage reddens this.
 	test("a refusal after the server accepted does not reopen the closed ask", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -529,10 +535,12 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 
 		await withLiveStore(fake, async (store, settled) => {
-			// (1) the completing click on a one-question ask: shipped, and HELD in
-			// flight so the push can land before the refusal.
+			// (1) record the answer, then submit — shipped and HELD in flight so
+			// the push can land before the refusal.
 			const gate = fake.holdNextAskResponse();
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			expect(store.isAskSubmitted("ask-1")).toBe(true);
@@ -555,7 +563,7 @@ describe("adoptComms vs an in-progress ask", () => {
 			gate.reject(new Error("connection reset"));
 			await settled();
 
-			// The rollback DECLINED: the ask is still the server's closed record.
+			// The restage DECLINED: the ask is still the server's closed record.
 			expect(askIn(store)?.answered).toBe(true);
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			// The refusal really happened, so the user is told …
@@ -569,8 +577,49 @@ describe("adoptComms vs an in-progress ask", () => {
 			expect(store.isAskSubmitted("ask-1")).toBe(false);
 			const shipped = fake.askResponses.length;
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-b");
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toHaveLength(shipped);
+		});
+	});
+
+	// A submit HELD in flight, then a blank push adopted over the submitted ask, then the
+	// respond refused: the shipped answers restage over the blank, and the ask is retryable.
+	// Mutation-check: a catch that omits the restage leaves the adopted blank ask.
+	test("a refused submit restages the clicked answer over a blank push", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// (1) click records locally; submit ships, HELD in flight.
+			const gate = fake.holdNextAskResponse();
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(store.isAskSubmitted("ask-1")).toBe(true);
+
+			// (2) a blank unanswered restatement — adopted, because the preserve
+			// skips the submitted ask.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: { message: askMessage(["q-1", "q-2"]) },
+				},
+				1n,
+			);
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual([]);
+
+			// (3) the held respond is refused: the shipped answers restage over the
+			// blank push, and the ask is retryable.
+			gate.reject(new Error("server refused the ask"));
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
 		});
 	});
 
