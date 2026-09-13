@@ -106,6 +106,42 @@ func ResolveWorkspaceUID(engine runtime.WorkloadRuntime) (uint32, error) {
 	return agentuid.AgentUID, nil
 }
 
+// egressUnenforcer is the backend capability of declaring that it cannot
+// constrain egress. The host backend implements it (a host child shares the
+// host's network namespace, so there is no boundary to firewall); the container
+// tiers do not, because each has a netns of its own to arm.
+type egressUnenforcer interface {
+	EgressUnenforced() bool
+}
+
+// Compile-time regression guard, mirroring workspaceUIDResolver above: a
+// signature drift would otherwise silently restore the configured policy below
+// and fail every host launch at first provision instead of at startup.
+var _ egressUnenforcer = (*runtime.HostRuntime)(nil)
+
+// ResolveEgress decides the egress policy the Runner's specs carry. A backend
+// that cannot enforce egress gets the zero-value policy — deliberately
+// unconfigured, because AgentRuntime.provision refuses any policy that reaches
+// an unenforceable tier, and the operator's parsed default is a real policy even
+// when the allowlist is empty.
+//
+// A non-empty allowlist is different: it is explicit operator intent to confine
+// egress, and this tier cannot. Zeroing it would silently deliver the opposite
+// of what was asked, so startup fails instead. Every other backend keeps the
+// parsed policy untouched.
+func ResolveEgress(engine runtime.WorkloadRuntime, parsed runtime.EgressPolicy) (runtime.EgressPolicy, error) {
+	u, ok := engine.(egressUnenforcer)
+	if !ok || !u.EgressUnenforced() {
+		return parsed, nil
+	}
+	if hosts := parsed.Hosts(); len(hosts) > 0 {
+		return runtime.EgressPolicy{}, fmt.Errorf(
+			"this backend cannot enforce an egress allowlist, but %d host(s) were allowlisted: it runs agents as host processes sharing the host network namespace, so drop the allowlist to run here, or select a container backend to keep it",
+			len(hosts))
+	}
+	return runtime.EgressPolicy{}, nil
+}
+
 // BuildSpec maps the request's agent account onto a full AgentSpec, filling
 // image/egress/workspace-layout from the defaults.
 func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {

@@ -262,9 +262,9 @@ func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id WorkloadID, uid ui
 // launch.
 func (r *AgentRuntime) EgressPosture() EgressPosture {
 	if r.egressUnenforced() {
-		return EgressUnenforcedPosture
+		return EgressPostureUnenforced
 	}
-	return EgressArmed
+	return EgressPostureArmed
 }
 
 // createAndStart creates then starts the container, cleaning up a created but
@@ -314,7 +314,9 @@ type inGuestEgressArmer interface {
 // host's network namespace. It is deliberately distinct from
 // inGuestEgressArmer: that marker means "someone armed it", this one means
 // "nobody did and nobody can", and conflating them would report a contained
-// posture for an uncontained launch.
+// posture for an uncontained launch. Like that marker, a WorkloadRuntime
+// decorator must re-expose EgressUnenforced: swallowing it would report an
+// uncontained launch as armed.
 type egressUnenforcer interface {
 	EgressUnenforced() bool
 }
@@ -324,11 +326,11 @@ type egressUnenforcer interface {
 type EgressPosture string
 
 const (
-	// EgressArmed means a default-deny allowlist firewall is in force.
-	EgressArmed EgressPosture = "armed"
-	// EgressUnenforcedPosture means the tier cannot constrain egress; the agent
+	// EgressPostureArmed means a default-deny allowlist firewall is in force.
+	EgressPostureArmed EgressPosture = "armed"
+	// EgressPostureUnenforced means the tier cannot constrain egress; the agent
 	// reaches whatever the host reaches.
-	EgressUnenforcedPosture EgressPosture = "unenforced"
+	EgressPostureUnenforced EgressPosture = "unenforced"
 )
 
 // UnenforceableEgressPolicyError is returned when a launch carries an egress
@@ -353,12 +355,15 @@ func (e *UnenforceableEgressPolicyError) Error() string {
 // that cannot enforce egress (egressUnenforcer) refuses any configured policy
 // rather than dropping it.
 func (r *AgentRuntime) provision(ctx context.Context, id WorkloadID, spec AgentSpec) error {
+	// Unenforced is tested first so a backend claiming both markers refuses a
+	// policy it cannot honour rather than taking the self-arm branch and
+	// silently dropping it.
 	switch {
 	case r.egressUnenforced():
 		if spec.Egress.Configured() {
 			return &UnenforceableEgressPolicyError{Hosts: spec.Egress.Hosts()}
 		}
-	case r.selfArmsEgress():
+	case r.selfArmsEgress(): // armed in-guest by Start; nothing host-side to do
 	default:
 		if err := r.armEgress(ctx, id, spec.Egress); err != nil {
 			return err
