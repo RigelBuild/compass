@@ -767,11 +767,11 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 			// Both pins surface, in pin order, before the static status item.
 			expect(ids).toEqual([`agent:${SUP}`, `agent:${GHOST}`, "status"]);
 			const ghost = (fleet?.items ?? []).find((i) => i.id === `agent:${GHOST}`);
-			expect(ghost?.unreachable).toBe(true);
+			expect(ghost?.kind === "avatar" && ghost.unreachable).toBe(true);
 			expect(ghost?.title).toBe("ghosthandle");
 			// The resolvable pin is NOT marked.
 			const sup = (fleet?.items ?? []).find((i) => i.id === `agent:${SUP}`);
-			expect(sup?.unreachable).toBeUndefined();
+			expect(sup?.kind === "avatar" && sup.unreachable).toBeUndefined();
 		});
 		clearStorage();
 	});
