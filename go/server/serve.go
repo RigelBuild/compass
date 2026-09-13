@@ -752,8 +752,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, commsSvc, admin.ID, systemAccount.ID, seedLog) })
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
 	// it mounts on every account door behind the same bearer + admin-gate chain
-	// (classified authenticatedOpen; the handler enforces user-only writes). The
-	// hub is its SecretsVersion signaler; it shares the one resolver with FetchSecrets.
+	// (classified authenticatedOpen; the handler enforces user-only writes and the
+	// user-or-agent list). The hub is its SecretsVersion signaler; it shares the
+	// one resolver with FetchSecrets.
 	secretsSvc := newSecretsService(st, resolver, serverResolver, hub)
 
 	// The forge read-side credentials, built BEFORE the doors because the network

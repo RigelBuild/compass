@@ -450,8 +450,13 @@ func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Messag
 
 	// A zero beforeSeq reads the newest page; a positive one pages strictly
 	// older. The membership JOIN scopes the read to the actor's visible set; a
-	// non-zero SnapshotSeq bounds it to the subscribe-time snapshot (on set
-	// MEMBERSHIP, not content). An out-of-range SnapshotSeq yields an empty page.
+	// non-zero SnapshotSeq bounds it to the subscribe-time snapshot on set
+	// MEMBERSHIP, not content.
+
+	// Membership-only is sufficient, not a lost update: the matching
+	// MessageUpdated rides the live tail, so an id-deduping client converges
+	// last-write-wins. Freezing content too would need a change-seq and a
+	// schema change; membership-only is the ratified scope.
 	snap := int64(q.Page.SnapshotSeq) //nolint:gosec // G115: server-issued seq, int64 domain
 	rows, err := s.q.ListMessages(ctx, db.ListMessagesParams{
 		AccountID: string(q.Actor),

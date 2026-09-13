@@ -304,8 +304,8 @@ func buildNetworkServer(
 	netMux.Handle(netPath, netHandler)
 	netMux.Handle(netCommsPath, netCommsHandler)
 	// SecretsService rides the same bearer + admin-gate chain: the gate classifies
-	// its 3 procedures authenticatedOpen, so any authenticated account clears it and
-	// the handler enforces the user-only writes.
+	// its 3 procedures authenticatedOpen, so any authenticated account clears it
+	// and the handler enforces the split — user-only writes, user-or-agent list.
 	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors, connect.WithReadMaxBytes(siblingServiceMaxReadBytes))
 	netMux.Handle(netSecretsPath, netSecretsHandler)
 
