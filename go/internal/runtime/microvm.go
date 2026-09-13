@@ -125,6 +125,15 @@ func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
 	return m
 }
 
+// AgentImageIrrelevant marks this backend as never consulting the agent OCI
+// image. The agent toolchain is packed into the guest root filesystem at build
+// time, so Create/Start boot the rootfs/kernel/initrd triple and no code path
+// here reads spec.Image. This reports that the field is unread, never that the
+// agent is unpinned — the pin is the rootfs image the Runner was given.
+func (m *MicroVMRuntime) AgentImageIrrelevant() bool {
+	return true
+}
+
 // SelectBackend chooses the workload runtime backend from cfg. An empty or
 // "podman" backend returns the podman CLI runtime; "microvm" returns the
 // microVM runtime; "apple-container" returns the Apple `container` CLI runtime

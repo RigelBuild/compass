@@ -23,12 +23,15 @@ import (
 // host mounts (e.g. a bare-repo mirror cache). Everything here is policy set once
 // at Runner startup.
 type SpecDefaults struct {
-	Image       string
-	Egress      runtime.EgressPolicy
-	CheckoutDir string
-	HomeDir     string
-	UID         uint32
-	Mounts      []runtime.Mount
+	Image string
+	// ImageIrrelevant records that the selected backend never reads Image, so an
+	// empty Image is a valid configuration rather than a missing field.
+	ImageIrrelevant bool
+	Egress          runtime.EgressPolicy
+	CheckoutDir     string
+	HomeDir         string
+	UID             uint32
+	Mounts          []runtime.Mount
 	// NamePrefix prefixes the derived container name so containers are
 	// identifiable per Runner/agent; the agent account id is appended.
 	NamePrefix string
@@ -44,8 +47,13 @@ type configSpecBuilder struct {
 // incomplete (no image or no checkout dir), so a misconfigured Runner fails at
 // startup rather than at the first provision.
 func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
-	if defaults.Image == "" {
+	if defaults.Image == "" && !defaults.ImageIrrelevant {
 		return nil, errors.New("spec defaults require an image")
+	}
+	// The pair encodes one fact, so a contradiction would carry a stale image
+	// into every spec on a backend that declared the field unread.
+	if defaults.ImageIrrelevant && defaults.Image != "" {
+		return nil, errors.New("spec defaults declare the agent image irrelevant but also set one")
 	}
 	if defaults.CheckoutDir == "" || defaults.HomeDir == "" {
 		return nil, errors.New("spec defaults require checkout and home dirs")
@@ -140,6 +148,44 @@ func ResolveEgress(engine runtime.WorkloadRuntime, parsed runtime.EgressPolicy) 
 			len(hosts))
 	}
 	return runtime.EgressPolicy{}, nil
+}
+
+// imageIrrelevant is the backend capability of declaring that it never consults
+// the agent OCI image. The microVM backend implements it: the agent toolchain is
+// packed into the guest root filesystem at build time, so the boot path reads
+// the rootfs/kernel/initrd triple and never spec.Image.
+type imageIrrelevant interface {
+	AgentImageIrrelevant() bool
+}
+
+// Compile-time regression guard, mirroring egressUnenforcer above: a signature
+// drift would otherwise silently restore the required-image rule below and fail
+// every microVM Runner at startup.
+var _ imageIrrelevant = (*runtime.MicroVMRuntime)(nil)
+
+// ResolveAgentImage decides the agent image the Runner's specs carry, and
+// reports whether the backend reads it at all. A backend that never reads the
+// image yields ("", true), so startup does not demand an operator value the
+// boot path cannot use.
+//
+// A configured image is different: it is explicit operator intent to pin the
+// agent, and on this backend the pin lives in the guest rootfs the Runner was
+// given, not in an OCI ref. Ignoring it would leave the operator believing a
+// pin is in force that nothing reads, so startup fails instead. Every other
+// backend requires the image exactly as before.
+func ResolveAgentImage(engine runtime.WorkloadRuntime, configured string) (string, bool, error) {
+	i, ok := engine.(imageIrrelevant)
+	if !ok || !i.AgentImageIrrelevant() {
+		if configured == "" {
+			return "", false, errors.New("an agent image is required: pass --image or set $COMPASS_AGENT_IMAGE")
+		}
+		return configured, false, nil
+	}
+	if configured != "" {
+		return "", false, errors.New(
+			"this backend runs the agent from the guest root filesystem and cannot apply an agent image: the agent version is pinned by the --microvm-rootfs image, so drop --image/$COMPASS_AGENT_IMAGE to run here, or select a container backend to pin the agent by OCI reference")
+	}
+	return "", true, nil
 }
 
 // BuildSpec maps the request's agent account onto a full AgentSpec, filling

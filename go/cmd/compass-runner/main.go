@@ -124,10 +124,9 @@ func run() error {
 	if token == "" {
 		return errors.New("a runner token is required: set $COMPASS_RUNNER_TOKEN")
 	}
+	// The agent image is required by the container backends and unread by the
+	// microVM backend, so the engine decides — resolved in newSpecBuilder.
 	img := orEnv(*image, "COMPASS_AGENT_IMAGE")
-	if img == "" {
-		return errors.New("an agent image is required: pass --image or set $COMPASS_AGENT_IMAGE")
-	}
 	egress, err := parseEgress(*egressHosts)
 	if err != nil {
 		return err
@@ -188,14 +187,19 @@ func newSpecBuilder(engine runtime.WorkloadRuntime, image string, egress runtime
 	if err != nil {
 		return nil, err
 	}
+	image, imageIrrelevant, err := runner.ResolveAgentImage(engine, image)
+	if err != nil {
+		return nil, err
+	}
 	return runner.NewConfigSpecBuilder(runner.SpecDefaults{
-		Image:       image,
-		Egress:      egress,
-		CheckoutDir: checkoutDir,
-		HomeDir:     homeDir,
-		UID:         uid,
-		NamePrefix:  runner.AgentContainerNamePrefix,
-		Mounts:      mounts,
+		Image:           image,
+		ImageIrrelevant: imageIrrelevant,
+		Egress:          egress,
+		CheckoutDir:     checkoutDir,
+		HomeDir:         homeDir,
+		UID:             uid,
+		NamePrefix:      runner.AgentContainerNamePrefix,
+		Mounts:          mounts,
 	})
 }
 

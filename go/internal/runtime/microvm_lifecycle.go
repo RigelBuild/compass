@@ -203,10 +203,11 @@ func (e *UnsupportedMountError) Error() string {
 // refuses a duplicate name, mints a random session id + runtime dir + boot
 // nonce, validates the mount set down to the single workspace share, assembles
 // the BootConfig, records the uid/env for Provision, and stores the session in
-// the table. spec.Command and spec.CapAdd are IGNORED on this backend — a VM's
-// keep-alive is the VMM + guestd PID 1, not a sleep-loop entrypoint, and
-// CAP_NET_ADMIN is never granted to the workload boundary (record §(c)). No VM
-// is booted here; Start does that.
+// the table. spec.Command, spec.CapAdd and spec.Image are IGNORED on this
+// backend — a VM's keep-alive is the VMM + guestd PID 1, not a sleep-loop
+// entrypoint, CAP_NET_ADMIN is never granted to the workload boundary (record
+// §(c)), and the agent ships in the guest root filesystem rather than an OCI
+// image. No VM is booted here; Start does that.
 func (m *MicroVMRuntime) Create(_ context.Context, spec WorkloadSpec) (WorkloadID, error) {
 	shared, err := workspaceShare(spec.Mounts)
 	if err != nil {
