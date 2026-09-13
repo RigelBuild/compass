@@ -331,3 +331,14 @@ func TestNewConfigSpecBuilderAcceptsAnEmptyImageOnlyWhenDeclaredIrrelevant(t *te
 		t.Fatal("NewConfigSpecBuilder(empty image, not declared) = nil error, want a rejection")
 	}
 }
+
+// Image and ImageIrrelevant encode one fact, so the contradiction is refused at
+// startup: a caller that sets both would otherwise carry a stale image into
+// every spec on a backend that declared the field unread.
+func TestNewConfigSpecBuilderRejectsAnImageDeclaredIrrelevant(t *testing.T) {
+	d := goodDefaults()
+	d.ImageIrrelevant = true
+	if _, err := NewConfigSpecBuilder(d); err == nil {
+		t.Fatal("NewConfigSpecBuilder(image set, declared irrelevant) = nil error, want a rejection")
+	}
+}

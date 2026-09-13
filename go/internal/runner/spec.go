@@ -50,6 +50,11 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	if defaults.Image == "" && !defaults.ImageIrrelevant {
 		return nil, errors.New("spec defaults require an image")
 	}
+	// The pair encodes one fact, so a contradiction would carry a stale image
+	// into every spec on a backend that declared the field unread.
+	if defaults.ImageIrrelevant && defaults.Image != "" {
+		return nil, errors.New("spec defaults declare the agent image irrelevant but also set one")
+	}
 	if defaults.CheckoutDir == "" || defaults.HomeDir == "" {
 		return nil, errors.New("spec defaults require checkout and home dirs")
 	}
@@ -178,7 +183,7 @@ func ResolveAgentImage(engine runtime.WorkloadRuntime, configured string) (strin
 	}
 	if configured != "" {
 		return "", false, errors.New(
-			"this backend runs the agent from the guest root filesystem, so an agent image cannot be applied: the agent version is pinned by the --microvm-rootfs image, so drop --image/$COMPASS_AGENT_IMAGE to run here, or select a container backend to pin the agent by OCI reference")
+			"this backend runs the agent from the guest root filesystem and cannot apply an agent image: the agent version is pinned by the --microvm-rootfs image, so drop --image/$COMPASS_AGENT_IMAGE to run here, or select a container backend to pin the agent by OCI reference")
 	}
 	return "", true, nil
 }
