@@ -337,6 +337,104 @@ func TestInGuestArmerSkipsHostArmEgress(t *testing.T) {
 	}
 }
 
+// unenforcedEgressFakeRuntime is a fakeRuntime that cannot enforce egress: it
+// implements the egressUnenforcer marker, mirroring the host backend without
+// spawning host children. Distinct from inGuestArmingFakeRuntime — that one
+// claims egress WAS armed, this one that it cannot be.
+type unenforcedEgressFakeRuntime struct {
+	*fakeRuntime
+}
+
+func (f *unenforcedEgressFakeRuntime) EgressUnenforced() bool { return true }
+
+// TestUnenforcedEgressRefusesAConfiguredPolicy: a tier that cannot firewall
+// must fail the launch rather than drop the policy, so a caller never believes
+// egress was constrained when nothing constrained it.
+func TestUnenforcedEgressRefusesAConfiguredPolicy(t *testing.T) {
+	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)}
+	rt := NewAgentRuntime(fake)
+
+	_, err := rt.Launch(t.Context(), specWithCreds(true))
+	if err == nil {
+		t.Fatal("Launch with an egress policy on an unenforceable tier: err = nil, want refusal")
+	}
+	if _, ok := errors.AsType[*UnenforceableEgressPolicyError](err); !ok {
+		t.Fatalf("Launch error = %v, want UnenforceableEgressPolicyError", err)
+	}
+	if !strings.Contains(err.Error(), "cannot enforce an egress policy") {
+		t.Errorf("error %q does not contain \"cannot enforce an egress policy\"", err.Error())
+	}
+	for _, e := range fake.execsSnapshot() {
+		if slices.ContainsFunc(e.Command, func(tok string) bool { return strings.Contains(tok, "compass_egress") }) {
+			t.Errorf("an unenforceable tier must not run the arm exec; command = %v", e.Command)
+		}
+	}
+}
+
+// TestUnenforcedEgressLaunchesWithoutAPolicy: the zero-value policy is the
+// supported host-tier path — no arm exec runs, and provision still completes.
+// Paired with the refusal above, this is the presence-not-emptiness contract:
+// an empty-but-configured allowlist is refused, an absent one launches.
+func TestUnenforcedEgressLaunchesWithoutAPolicy(t *testing.T) {
+	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)}
+	rt := NewAgentRuntime(fake)
+	spec := specWithCreds(true)
+	spec.Egress = EgressPolicy{}
+
+	if _, err := rt.Launch(t.Context(), spec); err != nil {
+		t.Fatalf("Launch without an egress policy = %v, want success", err)
+	}
+	for _, e := range fake.execsSnapshot() {
+		if slices.ContainsFunc(e.Command, func(tok string) bool { return strings.Contains(tok, "compass_egress") }) {
+			t.Errorf("an unenforceable tier must not run the arm exec; command = %v", e.Command)
+		}
+	}
+	calls := fake.callsSnapshot()
+	if !slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "mkdir") }) {
+		t.Errorf("provision must still create the checkout dir; calls = %v", calls)
+	}
+}
+
+// TestUnenforcedEgressRefusesAConfiguredEmptyAllowlist is the presence-vs-emptiness
+// case: an empty allowlist is pure default-deny — the STRICTEST posture, not the
+// absence of a policy. Keying the refusal on len(Hosts()) would reject a looser
+// policy while silently discarding the tightest one.
+func TestUnenforcedEgressRefusesAConfiguredEmptyAllowlist(t *testing.T) {
+	fake := &unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)}
+	rt := NewAgentRuntime(fake)
+	spec := specWithCreds(true)
+	spec.Egress = MustAllowEgress()
+
+	_, err := rt.Launch(t.Context(), spec)
+	if err == nil {
+		t.Fatal("configured-but-empty allowlist on an unenforceable tier: err = nil, want refusal")
+	}
+	if _, ok := errors.AsType[*UnenforceableEgressPolicyError](err); !ok {
+		t.Fatalf("Launch error = %v, want UnenforceableEgressPolicyError", err)
+	}
+}
+
+// TestEgressPostureReportsUnenforcedOnlyForUnenforceableTiers pins the posture
+// the session surface renders: an unenforceable tier reads "unenforced", while
+// an arming tier — including one that armed in-guest — reads "armed". A tier
+// that self-armed must never be reported as unenforced.
+func TestEgressPostureReportsUnenforcedOnlyForUnenforceableTiers(t *testing.T) {
+	unenforced := NewAgentRuntime(&unenforcedEgressFakeRuntime{fakeRuntime: newFakeRuntime(t)})
+	if got := unenforced.EgressPosture(); got != EgressUnenforcedPosture {
+		t.Errorf("unenforceable tier: EgressPosture() = %q, want %q", got, EgressUnenforcedPosture)
+	}
+
+	selfArming := NewAgentRuntime(&inGuestArmingFakeRuntime{fakeRuntime: newFakeRuntime(t)})
+	if got := selfArming.EgressPosture(); got != EgressArmed {
+		t.Errorf("self-arming tier: EgressPosture() = %q, want %q", got, EgressArmed)
+	}
+
+	hostArming := NewAgentRuntime(newFakeRuntime(t))
+	if got := hostArming.EgressPosture(); got != EgressArmed {
+		t.Errorf("host-arming tier: EgressPosture() = %q, want %q", got, EgressArmed)
+	}
+}
+
 // TestCreateArgsIgnoresEgress pins the podman byte-identical constraint: setting
 // WorkloadSpec.Egress must not change the `podman create` argv at all. The
 // podman backend arms via AgentRuntime.armEgress, never from the spec field, so
