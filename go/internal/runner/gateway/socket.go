@@ -142,10 +142,13 @@ func listenAgentSocket(ctx context.Context, path string, h http.Handler, cancel 
 	// The bind's own error is "bind: invalid argument", an EINVAL naming neither
 	// the limit nor the actual length, which reads as a permissions or path
 	// problem. Check first, before any directory is created, so a misconfigured
-	// deployment is self-diagnosing at Provision and leaves nothing behind. The
-	// message names both knobs: the path alone does not say which one to shrink.
+	// deployment is self-diagnosing at Provision and leaves nothing behind.
+	// The message names the socket's parent, not a specific flag: the tiers root
+	// this path differently — the container tiers under the Runner's runtime dir,
+	// the host tier under the backend's state root — so naming one knob would
+	// send half the operators to a value that has no effect on their path.
 	if len(path) > sunPathMax {
-		return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id: %w", path, len(path), sunPathMax, ErrOperatorConfig)
+		return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the socket's parent directory or the agent account id: %w", path, len(path), sunPathMax, ErrOperatorConfig)
 	}
 
 	dir := filepath.Dir(path)

@@ -471,6 +471,23 @@ func (h *HostRuntime) Resize(_ context.Context, _ WorkloadID, _ ResourceLimits) 
 	return ErrResizeUnsupportedOnHost
 }
 
+// AgentStateDir returns the private 0700 state dir Create minted for the handle,
+// where the Runner's host Provision leg serves the agent's gateway socket and
+// materializes its config — the host tier has no bind mounts, so both live here
+// and are threaded to the agent by path. An unknown id returns ok=false. This is
+// the host backend's Provision-leg selector, the analogue of the microVM
+// backend's AgentGatewayEndpoint: only HostRuntime implements it, so podman and
+// the microVM backend leave the Runner's default leg byte-identical.
+func (h *HostRuntime) AgentStateDir(id WorkloadID) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	handle, ok := h.handles[id]
+	if !ok {
+		return "", false
+	}
+	return handle.stateDir, true
+}
+
 // checkUser enforces the host AsUser rule: nil runs as the Runner's own euid,
 // the euid as a numeric string is accepted, and any other uid is rejected — a
 // host child cannot switch user, so accepting a different uid would run the

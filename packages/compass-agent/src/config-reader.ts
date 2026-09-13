@@ -53,6 +53,24 @@ import type {
 export const AGENT_CONFIG_MOUNT_PATH = "/run/compass/agent-config";
 
 /**
+ * The agent-config mount root this agent reads through: the
+ * `COMPASS_AGENT_CONFIG_MOUNT_PATH` env override when set, else the frozen
+ * `AGENT_CONFIG_MOUNT_PATH` default.
+ *
+ * The container tiers bind-mount the bundle at the fixed default and set no
+ * override. The host-process tier has no bind mounts — it materializes the config
+ * tree inside the agent handle's own state dir and threads the root here (design
+ * "Agent transport: the socket and config paths"). Unset or blank is the default,
+ * matching the Runner's empty-omit of an unset var and every other `resolve*`:
+ * a blank override is not a valid root to read.
+ */
+export function resolveConfigMountPath(
+	env: Record<string, string | undefined>,
+): string {
+	return env.COMPASS_AGENT_CONFIG_MOUNT_PATH?.trim() || AGENT_CONFIG_MOUNT_PATH;
+}
+
+/**
  * The source tag stamped on skills loaded from the mount, in the
  * `provider:level` shape `loadSkillsFromDir` splits (skills.ts). Provenance
  * only: `main()` passes these skills to `createAgentSession`, which SKIPS
