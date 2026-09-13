@@ -107,6 +107,13 @@ projects:
   # file's --rigel-purple is the one narrow allowlist. WARN until the adoption
   # step-5 flip, then ERROR.
   cx-token-gate: 'tools/cx-token-gate'
+  # The font-coverage gate (RIG-3603 T8 precondition): parses the branded font
+  # cmaps (Space Mono / Departure Mono) and scans apps/ui/src for a rendered
+  # character they lack — the check that lets RIG-3742 retire the Unifont
+  # fallback pin. Registered so its typecheck + unit tests ride the moon-driven
+  # CI sweep; unregistered, moon never discovers it and the gate is silently
+  # inert. WARN until T8 (8 known-uncovered chars today), then ERROR.
+  font-coverage-gate: 'tools/font-coverage-gate'
   # The agent-image env gate (RIG-1444): builds the compass-agent image and
   # fails on wrong-image signals a green `container build` misses — a DEVENV_
   # env var whose value names a /nix/store path (a closure root nix2container

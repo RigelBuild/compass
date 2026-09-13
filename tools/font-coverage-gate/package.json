@@ -1,0 +1,14 @@
+{
+	"name": "@compass/font-coverage-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (RIG-3603 T8 precondition): fail when rendered UI source uses a character absent from the branded font faces (Space Mono / Departure Mono), the check that lets RIG-3742 retire the Unifont fallback pin.",
+	"module": "index.ts",
+	"bin": {
+		"font-coverage-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
