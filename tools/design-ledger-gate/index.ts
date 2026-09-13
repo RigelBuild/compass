@@ -283,6 +283,37 @@ function splitLedgerRow(row: string): string[] {
 	return cells;
 }
 
+/**
+ * Unresolved merge markers in a governed file. The ledger is one append-only
+ * file every lane appends to, so conflicts are routine — and markers can leave
+ * every `| DL-` row syntactically valid, which passes every other check here.
+ */
+export function conflictMarkerViolations(
+	file: string,
+	text: string,
+): Violation[] {
+	const out: Violation[] = [];
+	let inFence = false;
+	text.split("\n").forEach((line, i) => {
+		if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+		// A record may legitimately show a marker as fenced example text; the rest
+		// of this module skips fences for the same reason.
+		if (inFence) return;
+		// jj adds `%%%%%%%`/`+++++++` to git's three, and both tools LENGTHEN every
+		// marker past 7 when the conflicting hunk itself holds a marker-like run.
+		// `=` stays exact: governed records use long `=` setext underlines.
+		const m = /^(<{7,}|>{7,}|%{7,}|\+{7,}|={7})(\s|$)/.exec(line);
+		if (m) {
+			out.push({
+				file,
+				line: i + 1,
+				message: `unresolved merge conflict marker: ${m[1]}`,
+			});
+		}
+	});
+	return out;
+}
+
 /** Parse DECISIONS.md text into ledger rows (topic headings/prose skipped). */
 export function parseLedger(text: string): LedgerRow[] {
 	const rows: LedgerRow[] = [];
@@ -604,12 +635,16 @@ export async function runOnce(deps: Deps): Promise<number> {
 		});
 	}
 	const ledger = ledgerText === null ? [] : parseLedger(ledgerText);
+	if (ledgerText !== null) {
+		violations.push(...conflictMarkerViolations(DECISIONS_PATH, ledgerText));
+	}
 
 	const records: RecordHeader[] = [];
 	for (const path of recordFiles) {
 		const text = await readText(root, path);
 		if (text === null) continue; // listed but vanished — ignore
 		records.push(parseRecordHeader(path, text));
+		violations.push(...conflictMarkerViolations(path, text));
 	}
 
 	violations.push(
