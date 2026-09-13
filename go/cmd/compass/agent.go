@@ -69,15 +69,17 @@ func runAgentStatus(ctx context.Context, client compassv1connect.CompassServiceC
 	return renderAgentStatuses(out, statuses)
 }
 
-// renderAgentStatuses prints a session-id + state column for each status. The
-// state renders as the short operator-facing token (the enum name minus the
-// AGENT_SESSION_STATE_ prefix, lowercased), so a WORKING session reads "working".
+// renderAgentStatuses prints a session-id, state, runtime-tier, and egress-posture
+// column for each status. Each enum renders as its short operator-facing token (the
+// enum name minus its prefix, lowercased), so a WORKING host session with an armed
+// posture reads "working host armed".
 func renderAgentStatuses(out io.Writer, statuses []*compassv1.AgentSessionStatus) error {
-	if _, err := fmt.Fprintf(out, "%-40s %s\n", "SESSION", "STATE"); err != nil {
+	if _, err := fmt.Fprintf(out, "%-40s %-14s %-16s %s\n", "SESSION", "STATE", "TIER", "EGRESS"); err != nil {
 		return err
 	}
 	for _, s := range statuses {
-		if _, err := fmt.Fprintf(out, "%-40s %s\n", s.GetSessionId(), stateLabel(s.GetState())); err != nil {
+		if _, err := fmt.Fprintf(out, "%-40s %-14s %-16s %s\n",
+			s.GetSessionId(), stateLabel(s.GetState()), tierLabel(s.GetRuntimeTier()), egressLabel(s.GetEgressPosture())); err != nil {
 			return err
 		}
 	}
@@ -93,4 +95,40 @@ func stateLabel(state compassv1.AgentSessionState) string {
 		return unspecifiedLabel
 	}
 	return strings.ToLower(strings.TrimPrefix(name, "AGENT_SESSION_STATE_"))
+}
+
+// tierLabel renders a RuntimeTier as the token the --backend flag accepts, so a
+// tier a reader sees here is one they can select. That makes the mapping
+// explicit rather than derived: stripping the enum prefix would print
+// "apple_container", which the flag rejects. Unknown renders as unknown, never
+// a tier a reader could mistake for containment.
+func tierLabel(tier compassv1.RuntimeTier) string {
+	switch tier {
+	case compassv1.RuntimeTier_RUNTIME_TIER_PODMAN:
+		return "podman"
+	case compassv1.RuntimeTier_RUNTIME_TIER_MICROVM:
+		return "microvm"
+	case compassv1.RuntimeTier_RUNTIME_TIER_APPLE_CONTAINER:
+		return "apple-container"
+	case compassv1.RuntimeTier_RUNTIME_TIER_HOST:
+		return "host"
+	default:
+		return unspecifiedLabel
+	}
+}
+
+// egressLabel renders an EgressPosture as the short operator-facing token: the
+// enum name with the EGRESS_POSTURE_ prefix stripped and lowercased (ARMED →
+// "armed", UNENFORCED → "unenforced"). The unspecified/unknown value renders as
+// the shared unknown token — a user must never read an unknown posture as armed,
+// which would show an uncontained session as contained.
+func egressLabel(posture compassv1.EgressPosture) string {
+	if posture == compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED {
+		return unspecifiedLabel
+	}
+	name, ok := compassv1.EgressPosture_name[int32(posture)]
+	if !ok {
+		return unspecifiedLabel
+	}
+	return strings.ToLower(strings.TrimPrefix(name, "EGRESS_POSTURE_"))
 }

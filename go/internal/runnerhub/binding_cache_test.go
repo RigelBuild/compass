@@ -31,6 +31,7 @@ import (
 	"sync"
 	"testing"
 
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/fabric"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
@@ -228,7 +229,7 @@ func TestRestartResolvesPreRestartBindingBothDirections(t *testing.T) {
 
 	// A FIRST enroll on a fresh hub (the restart case): reattached is false, so
 	// enroll does NOT reap the durable rows — they are still valid.
-	if reattached := hub.enroll(context.Background(), "runner-1", runnerSubject()); reattached {
+	if reattached := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); reattached {
 		t.Fatal("first enroll on a fresh hub reported reattached=true, want false (no durable reap)")
 	}
 
@@ -255,7 +256,7 @@ func TestFailClosedStoppedNeverSeenAndPostReconnect(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
 	hub.SetSessionBindingStore(bindings)
-	hub.enroll(context.Background(), "runner-1", runnerSubject())
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	// Never-seen: no binding anywhere.
 	if acct, ok := hub.accountForSession(context.Background(), "ghost"); ok {
@@ -283,7 +284,7 @@ func TestFailClosedStoppedNeverSeenAndPostReconnect(t *testing.T) {
 		t.Fatalf("accountForSession(sess-pre) before reconnect = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
 	// Runner reconnects: a re-enroll (reattached=true) durably reaps.
-	if reattached := hub.enroll(context.Background(), "runner-1", runnerSubject()); !reattached {
+	if reattached := hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED); !reattached {
 		t.Fatal("second enroll reported reattached=false, want true (a Runner reconnect)")
 	}
 	if acct, ok := hub.accountForSession(context.Background(), "sess-pre"); ok {
@@ -320,7 +321,7 @@ func TestPeerBindingChangeEvictsOtherInstanceCache(t *testing.T) {
 	bindingsB.seed("sess-old")
 	hubB.SetSessionBindingStore(bindingsB)
 	hubB.SetRoutingFabric(routing)
-	hubB.enroll(context.Background(), "runner-1", runnerSubject())
+	hubB.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hubB.bindContainer("cont-new", testAgentAccount)
 
 	// B re-points the account onto sess-new: displaces sess-old, publishes the
@@ -360,7 +361,7 @@ func TestDisplacedSessionResolvesNowhere(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
 	hub.SetSessionBindingStore(bindings)
-	hub.enroll(context.Background(), "runner-1", runnerSubject())
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	// Bind the account to sess-old.
 	hub.bindContainer("cont-old", testAgentAccount)
@@ -406,7 +407,7 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 		hub.SetDeliveryStore(del)
 		// Enrolled Runner + empty maps (no bindSession) => the ack's account
 		// resolve is a cache MISS that falls through to the read-through table.
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		if err := hub.Deliver(context.Background(), RunnerEvent{
 			RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
@@ -434,7 +435,7 @@ func TestAckPathBindingReadNeverRunsUnderSystemRole(t *testing.T) {
 		hub.SetSessionBindingStore(bindings)
 		del := newFakeDeliveryStore()
 		hub.SetDeliveryStore(del)
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		if err := hub.Deliver(context.Background(), RunnerEvent{
 			RunnerSeq: 1, SessionID: "sess-1", Frame: forgeAckFrame("sub-1"),
@@ -470,7 +471,7 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		routing := &fakeRoutingFabric{}
 		hub.SetSessionBindingStore(bindings)
 		hub.SetRoutingFabric(routing)
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		hub.bindContainer("cont-1", testAgentAccount)
 		hub.promoteSession(context.Background(), "cont-1", "sess-1")
@@ -488,13 +489,13 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		hub := newHubOnly()
 		bindings := newFakeBindingStore()
 		hub.SetSessionBindingStore(bindings)
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 		hub.bindContainer("cont-1", testAgentAccount)
 		hub.promoteSession(context.Background(), "cont-1", "sess-1")
 
 		// The reconnect sweep now faults; the in-RAM snapshot must still drive it.
 		bindings.deleteForRunnerErr = faultErr
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
 			t.Fatalf("accountForSession(sess-1) = (%q, true) after a reconnect, want fail-closed: a reap fault must not leave a dead session resolvable", acct)
@@ -507,7 +508,7 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		bindings.seed("sess-1")
 		bindings.resolveErr = faultErr
 		hub.SetSessionBindingStore(bindings)
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); ok {
 			t.Fatalf("accountForSession(sess-1) = (%q, true), want fail-closed: a store fault must never resolve", acct)
@@ -520,7 +521,7 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		bindings.seed("sess-1")
 		bindings.reverseErr = faultErr
 		hub.SetSessionBindingStore(bindings)
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		if sess, ok := hub.SessionForAccount(context.Background(), testAgentAccount); ok {
 			t.Fatalf("SessionForAccount = (%q, true), want fail-closed: a store fault must never resolve", sess)
@@ -541,7 +542,7 @@ func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
 	hub.SetSessionBindingStore(bindings)
-	hub.enroll(context.Background(), "runner-1", runnerSubject())
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 	// A row from before the joint restart, under a DIFFERENT account.
 	bindings.mu.Lock()
@@ -580,7 +581,7 @@ func TestConcurrentResolveDuringAFaultingReapCannotResurrect(t *testing.T) {
 		release:          make(chan struct{}),
 	}
 	hub.SetSessionBindingStore(bindings)
-	hub.enroll(context.Background(), "runner-1", runnerSubject())
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("cont-1", testAgentAccount)
 	hub.promoteSession(context.Background(), "cont-1", "sess-1")
 
@@ -590,7 +591,7 @@ func TestConcurrentResolveDuringAFaultingReapCannotResurrect(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		hub.enroll(context.Background(), "runner-1", runnerSubject())
+		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	}()
 
 	<-bindings.entered // maps are cleared; the reap is in flight and will fail

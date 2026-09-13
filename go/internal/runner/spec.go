@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/agentuid"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
@@ -72,6 +73,73 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 			defaults.NamePrefix, len(defaults.NamePrefix), len(AgentContainerNamePrefix))
 	}
 	return &configSpecBuilder{defaults: defaults}, nil
+}
+
+// workspaceUIDResolver is the backend capability of naming the uid its agent
+// workspaces run as. The host backend implements it (it runs agents as direct
+// children under the Runner's own euid, so the uid is that euid); the container
+// tiers do not, because their userns remap maps the invoking host uid onto the
+// baked fleet constant, so they need no per-Runner uid.
+type workspaceUIDResolver interface {
+	WorkspaceUID() (uint32, error)
+}
+
+// Compile-time regression guard, mirroring the preflight probes' assertions:
+// the binding is structural and cross-package, so a signature drift on either
+// side would otherwise fall through to the AgentUID default below — silently,
+// late (at first provision), and invisibly on a euid-1000 box.
+var _ workspaceUIDResolver = (*runtime.HostRuntime)(nil)
+
+// ResolveWorkspaceUID resolves the uid every agent workspace runs as, keyed off
+// the resolved engine. A backend that names its own uid (the host tier) wins;
+// every other backend falls back to agentuid.AgentUID.
+//
+// Unlike verifyBackendPreflight's fail-closed default, an unrecognized backend
+// here is NOT an error: the container tiers legitimately do not implement this
+// capability, so AgentUID is the correct, deliberate default for them — not an
+// oversight. The result feeds NewConfigSpecBuilder's non-root check below, which
+// refuses a root uid at startup whichever branch produced it.
+func ResolveWorkspaceUID(engine runtime.WorkloadRuntime) (uint32, error) {
+	if r, ok := engine.(workspaceUIDResolver); ok {
+		return r.WorkspaceUID()
+	}
+	return agentuid.AgentUID, nil
+}
+
+// egressUnenforcer is the backend capability of declaring that it cannot
+// constrain egress. The host backend implements it (a host child shares the
+// host's network namespace, so there is no boundary to firewall); the container
+// tiers do not, because each has a netns of its own to arm.
+type egressUnenforcer interface {
+	EgressUnenforced() bool
+}
+
+// Compile-time regression guard, mirroring workspaceUIDResolver above: a
+// signature drift would otherwise silently restore the configured policy below
+// and fail every host launch at first provision instead of at startup.
+var _ egressUnenforcer = (*runtime.HostRuntime)(nil)
+
+// ResolveEgress decides the egress policy the Runner's specs carry. A backend
+// that cannot enforce egress gets the zero-value policy — deliberately
+// unconfigured, because AgentRuntime.provision refuses any policy that reaches
+// an unenforceable tier, and the operator's parsed default is a real policy even
+// when the allowlist is empty.
+//
+// A non-empty allowlist is different: it is explicit operator intent to confine
+// egress, and this tier cannot. Zeroing it would silently deliver the opposite
+// of what was asked, so startup fails instead. Every other backend keeps the
+// parsed policy untouched.
+func ResolveEgress(engine runtime.WorkloadRuntime, parsed runtime.EgressPolicy) (runtime.EgressPolicy, error) {
+	u, ok := engine.(egressUnenforcer)
+	if !ok || !u.EgressUnenforced() {
+		return parsed, nil
+	}
+	if hosts := parsed.Hosts(); len(hosts) > 0 {
+		return runtime.EgressPolicy{}, fmt.Errorf(
+			"this backend cannot enforce an egress allowlist, but %d host(s) were allowlisted: it runs agents as host processes sharing the host network namespace, so drop the allowlist to run here, or select a container backend to keep it",
+			len(hosts))
+	}
+	return runtime.EgressPolicy{}, nil
 }
 
 // BuildSpec maps the request's agent account onto a full AgentSpec, filling

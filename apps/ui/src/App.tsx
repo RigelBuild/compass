@@ -17,6 +17,7 @@ import {
 import { LeftSidebar } from "./components/LeftSidebar";
 import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
+import { RuntimeMarker } from "./components/RuntimeMarker";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { StateDot } from "./components/StateDot";
 import { UsageBar } from "./components/UsageBar";
@@ -111,6 +112,9 @@ const App: Component<RouteSectionProps> = (props) => {
 								onClick={() => store.openAgent(agent().account.id)}
 							>
 								<StateDot state={agent().lifecycle ?? "idle"} />
+								<Show when={agent().runtime}>
+									{(m) => <RuntimeMarker marker={m()} />}
+								</Show>
 								{agent().account.displayName}
 							</button>
 						)}

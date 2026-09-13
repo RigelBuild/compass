@@ -115,3 +115,83 @@ func TestStateLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderAgentStatusesTierEgress asserts the tier and egress columns render
+// the short operator-facing token a user reads. The zero-value case is
+// load-bearing: an unset posture must read as unknown, never "armed", because a
+// client that renders an unknown posture as armed would show an uncontained
+// session as contained.
+func TestRenderAgentStatusesTierEgress(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   *compassv1.AgentSessionStatus
+		wantTier string
+		wantEg   string
+	}{
+		{
+			name: "host unenforced",
+			status: &compassv1.AgentSessionStatus{
+				SessionId:     "s-host",
+				State:         compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+				RuntimeTier:   compassv1.RuntimeTier_RUNTIME_TIER_HOST,
+				EgressPosture: compassv1.EgressPosture_EGRESS_POSTURE_UNENFORCED,
+			},
+			wantTier: "host",
+			wantEg:   "unenforced",
+		},
+		{
+			name: "podman armed",
+			status: &compassv1.AgentSessionStatus{
+				SessionId:     "s-podman",
+				State:         compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+				RuntimeTier:   compassv1.RuntimeTier_RUNTIME_TIER_PODMAN,
+				EgressPosture: compassv1.EgressPosture_EGRESS_POSTURE_ARMED,
+			},
+			wantTier: "podman",
+			wantEg:   "armed",
+		},
+		{
+			// The rendered tier must be a token --backend accepts; a derived
+			// label would print "apple_container", which the flag rejects.
+			name: "apple-container renders the hyphenated flag token",
+			status: &compassv1.AgentSessionStatus{
+				SessionId:     "s-apple",
+				State:         compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+				RuntimeTier:   compassv1.RuntimeTier_RUNTIME_TIER_APPLE_CONTAINER,
+				EgressPosture: compassv1.EgressPosture_EGRESS_POSTURE_ARMED,
+			},
+			wantTier: "apple-container",
+			wantEg:   "armed",
+		},
+		{
+			name: "zero value renders unknown",
+			status: &compassv1.AgentSessionStatus{
+				SessionId: "s-zero",
+				State:     compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING,
+			},
+			wantTier: unspecifiedLabel,
+			wantEg:   unspecifiedLabel,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			if err := renderAgentStatuses(&out, []*compassv1.AgentSessionStatus{tc.status}); err != nil {
+				t.Fatalf("renderAgentStatuses: %v", err)
+			}
+			got := out.String()
+			for _, want := range []string{"TIER", "EGRESS", tc.status.GetSessionId(), tc.wantTier, tc.wantEg} {
+				if !strings.Contains(got, want) {
+					t.Errorf("rendered output %q missing %q", got, want)
+				}
+			}
+			if tc.name == "zero value renders unknown" {
+				for _, forbidden := range []string{"armed", "contained"} {
+					if strings.Contains(got, forbidden) {
+						t.Errorf("zero-value output %q must not contain %q", got, forbidden)
+					}
+				}
+			}
+		})
+	}
+}

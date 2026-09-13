@@ -128,8 +128,9 @@ func NewMicroVMRuntime(cfg MicroVMConfig) *MicroVMRuntime {
 // SelectBackend chooses the workload runtime backend from cfg. An empty or
 // "podman" backend returns the podman CLI runtime; "microvm" returns the
 // microVM runtime; "apple-container" returns the Apple `container` CLI runtime
-// (the macOS arm); any other value is an error naming the unknown backend and
-// the accepted values.
+// (the macOS arm); "host" returns the direct-host-process runtime (the
+// single-trust-domain tier); any other value is an error naming the unknown
+// backend and the accepted values.
 //
 // During the transitional period both backends ship and the default is podman:
 // the proven container path stays the floor while the microVM backend is
@@ -146,7 +147,9 @@ func SelectBackend(cfg BackendConfig) (WorkloadRuntime, error) {
 		return NewMicroVMRuntime(cfg.MicroVM), nil
 	case "apple-container":
 		return NewAppleContainerCLI(cfg.AppleContainer), nil
+	case "host":
+		return NewHostRuntime(defaultHostStateRoot()), nil
 	default:
-		return nil, fmt.Errorf("runtime: unknown backend %q: accepted values are \"podman\" (default), \"microvm\" and \"apple-container\"", cfg.Backend)
+		return nil, fmt.Errorf("runtime: unknown backend %q: accepted values are \"podman\" (default), \"microvm\", \"apple-container\" and \"host\"", cfg.Backend)
 	}
 }

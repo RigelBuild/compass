@@ -486,9 +486,11 @@ type Hub struct {
 // attachedRunner is one enrolled Runner: its id, its authenticated token
 // subject, and the command router that reaches its live Sessions stream.
 type attachedRunner struct {
-	id      string
-	subject store.Subject
-	router  *commandRouter
+	id            string
+	subject       store.Subject
+	router        *commandRouter
+	tier          compassv1.RuntimeTier
+	egressPosture compassv1.EgressPosture
 }
 
 // NewHub constructs a hub over the two write-through sinks and the agent-comms
@@ -801,8 +803,14 @@ func (h *Hub) deliverSession(ctx context.Context, sessionID string, sf *compassv
 	// unbindSession has not yet dropped it) carries its account; one published
 	// after a Runner reconnect cleared the maps carries none (the stated residual
 	// gap). accountForSession takes h.mu; deliverSession holds no lock here.
+	// runnerRuntimeIdentity reads the enrolled Runner's tier/posture under the
+	// same lock, so a status published after a reattach reflects the newly
+	// enrolled Runner's values, never the previous Runner's. It is a separate
+	// acquisition from the account read above, so the two can straddle a
+	// re-enroll; harmless while one Runner enrolls at a time.
 	account, hasAccount := h.accountForSession(ctx, sessionID)
-	status := &compassv1.AgentSessionStatus{SessionId: sessionID, State: state}
+	tier, egressPosture := h.runnerRuntimeIdentity()
+	status := &compassv1.AgentSessionStatus{SessionId: sessionID, State: state, RuntimeTier: tier, EgressPosture: egressPosture}
 	if hasAccount {
 		status.AgentAccountId = string(account)
 	}
@@ -1045,12 +1053,12 @@ type promotedPair struct {
 //
 // A hub with no binding store wired keeps the original in-RAM snapshot behaviour
 // (every existing enroll test), driving offline/reapedSessions from the maps.
-func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject) (reattached bool) {
+func (h *Hub) enroll(ctx context.Context, id string, subject store.Subject, tier compassv1.RuntimeTier, egressPosture compassv1.EgressPosture) (reattached bool) {
 	h.mu.Lock()
 	reattached = h.runner != nil
 	router := newCommandRouter()
 	router.log = h.log
-	h.runner = &attachedRunner{id: id, subject: subject, router: router}
+	h.runner = &attachedRunner{id: id, subject: subject, router: router, tier: tier, egressPosture: egressPosture}
 	// Snapshot the live (account -> session) bindings BEFORE clearing them, for
 	// the no-store path: each previously-bound account loses its live session on
 	// this re-enroll and must be driven to presence OFFLINE (RIG-1569 T8). enroll
@@ -1154,4 +1162,20 @@ func (h *Hub) routerFor(sessionID string) (*commandRouter, string, error) {
 		return nil, "", fmt.Errorf("no runner enrolled to serve session %q", sessionID)
 	}
 	return h.runner.router, h.runner.id, nil
+}
+
+// runnerRuntimeIdentity returns the enrolled Runner's declared runtime tier and
+// egress posture under h.mu, so a session status stamps the Runner that owns it
+// today rather than racing a re-enroll. No Runner enrolled yields UNSPECIFIED on
+// both — the wire's "we do not know", never a plausible default.
+func (h *Hub) runnerRuntimeIdentity() (compassv1.RuntimeTier, compassv1.EgressPosture) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.runner == nil {
+		// Reachable only before the first enroll: no disconnect path nils
+		// h.runner, and that is load-bearing — the board replaces its whole
+		// entry per publish, so a later UNSPECIFIED would regress a known tier.
+		return compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED
+	}
+	return h.runner.tier, h.runner.egressPosture
 }
