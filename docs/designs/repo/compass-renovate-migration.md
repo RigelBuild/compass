@@ -7,9 +7,9 @@ Status: Draft
 Compass runs GitHub Dependabot for its three ecosystems (`.github/dependabot.yml`:
 github-actions at `/`, bun at `/`, gomod at `/go`, all weekly single-group). Matt
 wants Dependabot off — it carries hidden GitHub-billed features, and the fleet
-should run ONE dependency manager, not two. The internal monorepo already runs
-self-hosted Renovate, proven through the catalog, devenv-nixpkgs, and toolchain-pin
-lockstep machinery. Migrate compass onto the same Renovate, adapted to compass's
+should run ONE dependency manager, not two. Self-hosted Renovate is proven prior
+art in the fleet, through the catalog, devenv-nixpkgs, and toolchain-pin
+lockstep machinery. Compass adopts that same Renovate, adapted to compass's
 layout — with the hard constraint that it runs in **GitHub Actions** (compass has
 no Woodpecker; all its CI is GHA). The repo is pre-prepped: the design-ledger
 gate already exempts `renovate/` branches (`tools/design-ledger-gate/index.ts:87`,
@@ -24,9 +24,9 @@ with `osvVulnerabilityAlerts: true` replacing the coverage.
 
 - **NEVER `vulnerabilityAlerts: { enabled: true }`** — a vuln fix injects a
   packageRule with `force.enabled` truthy, which clears `skipReason` and CANCELS
-  the fork fence (the internal monorepo's Renovate config). Use
+  the fork fence (a known Renovate-config hazard). Use
   `osvVulnerabilityAlerts: true` only. `config.test.ts` must guard both facts,
-  as the internal monorepo's does.
+  as the prior art does.
 - **`minimumReleaseAge: "5 days"` + `internalChecksFilter: "strict"`** —
   consistent with compass's `bunfig.toml:6` `minimumReleaseAge = 432000` (5
   days). Mirror bunfig's exact-name exemptions (`bunfig.toml:20-24`:
@@ -45,16 +45,16 @@ with `osvVulnerabilityAlerts: true` replacing the coverage.
   (root `forks/`, not a nested location). A packageRule
   `matchFileNames: ["forks/*/**"], enabled: false` (a scoped disable, never
   `ignorePaths`, which replaces Renovate's safe defaults, mirroring the
-  internal monorepo's prior art).
+  prior art).
 - **Toolchain pins auto-open solo branches** — Matt's standing ruling: every
-  toolchain bump (bun/node/moon/go) opens its own un-grouped PR (ported from
-  the internal monorepo's prior art).
+  toolchain bump (bun/node/moon/go) opens its own un-grouped PR (following the
+  prior art).
 - **Every postUpgradeTasks command in bot-config `allowedCommands`,
   `^…$`-anchored** — a repo config can't self-authorize a command; `config.test.ts`
-  pins the two lists together (as the internal monorepo's does).
+  pins the two lists together (as the prior art does).
 - **TypeScript `<7` cap (RIG-1867)** — compass's catalog pins
   `"typescript": "^6.0.3"` (`package.json:21`), so the Project Corsa cap applies:
-  TS 7.0 ships no stable programmatic API (ported from the internal monorepo).
+  TS 7.0 ships no stable programmatic API (following the prior art).
 - **Timezone/schedule alignment (RIG-1220)** — `timezone: "America/New_York"` in
   the repo config, and the GHA cron (UTC) must land inside the `schedule:daily`
   before-4am-ET window WITH margin: GHA scheduled runs are best-effort and
@@ -68,11 +68,11 @@ with `osvVulnerabilityAlerts: true` replacing the coverage.
   structurally out of reach — no extra rule needed; `config.test.ts` should pin
   this.)
 - **`RENOVATE_X_IGNORE_RE2=true`** on the runner — `bunx renovate` installs no
-  native re2 addon; take the RegExp fallback deliberately (as the internal
-  monorepo's CI/CD does).
+  native re2 addon; take the RegExp fallback deliberately (as the prior-art
+  CI/CD does).
 - **Writable HOME for postUpgradeTasks** — `customEnvVariables: { HOME: … }` in
   bot-config (RIG-2245: `devenv update nixpkgs` panics on an unwritable
-  `$HOME/.local/share/devenv`; ported from the internal monorepo). GHA runners have
+  `$HOME/.local/share/devenv`; following the prior art). GHA runners have
   a writable `$HOME` natively, but keep the declaration versioned and testable.
 - **A new `tools/*` test package is inert until registered in
   `.moon/workspace.yml`** — moon discovers projects ONLY from the explicit map
@@ -84,7 +84,7 @@ with `osvVulnerabilityAlerts: true` replacing the coverage.
 
 ## Approach
 
-Port the internal monorepo's proven self-hosted Renovate (repo config + bot config + lockstep
+Adopt the proven self-hosted Renovate prior art (repo config + bot config + lockstep
 scripts + config tests) into compass, adapted to compass's paths and ecosystems,
 and run it as a plain GitHub Actions workflow that provisions the language
 toolchains the same way compass's other CI jobs do, plus the `devenv` CLI
@@ -106,7 +106,7 @@ renovate@44.33.1` (exact pin — see below).
 
 Why B: compass's postUpgradeTasks need `nix` (toolchain-hash prefetch), `devenv`
 (devenv-nixpkgs relock shells `devenv update nixpkgs` from PATH, as in the
-internal monorepo), and `bun` (all three scripts +
+prior art), and `bun` (all three scripts +
 `bun install --lockfile-only`). Compass's GHA CI already provisions the
 language toolchains per job via `cachix/install-nix-action@630ae543…`
 (`.github/workflows/ci.yml:150`) + gate-tools.nix — the Renovate job composes
@@ -141,9 +141,9 @@ the initial pin). The pin line is itself a managed dependency: a `custom.regex`
 manager on `.github/workflows/renovate.yml` (datasource `npm`, depName
 `renovate`) bumps it through a reviewable PR under the normal soak, and a
 `config.test.ts` guard asserts the workflow pins an exact version (no bare
-`bunx renovate`). Note the internal monorepo has the same exposure — its meta job runs bare
+`bunx renovate`). Note this same exposure exists in the fleet's prior art — its meta job runs bare
 `bunx renovate` (its publish image bakes devenv/skopeo, NOT Renovate) —
-fix it there as a fleet follow-up, out of scope
+fix that as a fleet follow-up, out of scope
 here.
 
 Triggers: `on: schedule: - cron: "0 6 * * *"` (06:00 UTC = 02:00 EDT / 01:00
@@ -151,8 +151,8 @@ EST — inside the before-4am-ET `schedule:daily` window with 2-3h margin per
 the RIG-1220 constraint; GHA cron is best-effort and routinely 5-30+ minutes
 late, so a tighter cron like `0 7` — 60 min of EDT margin — risks a delayed
 start past 04:00 ET reproducing the RIG-1220 silent-zero-PR symptom) +
-`workflow_dispatch` for manual runs (the GHA analogue of the internal
-monorepo's Woodpecker `{event: manual}` trigger; it also revives the
+`workflow_dispatch` for manual runs (the GHA analogue of the prior art's
+Woodpecker `{event: manual}` trigger; it also revives the
 schedule if GHA auto-disables it after 60 days of repo inactivity — see T6).
 Cadence: daily (resolved decision, OQ5 — Matt 2026-08-21), dropping
 dependabot's weekly.
@@ -176,33 +176,33 @@ request the Workflows repository permission") — without it every
 github-actions bump PR fails to push with a workflows-scope error. Full App
 permission set: Contents (read/write — git access + non-workflow commits),
 Pull requests (read/write), Workflows (read/write), Issues (read/write — the
-dependency dashboard is an issue). The internal monorepo's second secret
-`RENOVATE_GITHUB_COM_TOKEN` is a read-only github.com PAT for release-notes
+dependency dashboard is an issue). The prior art carries a second secret
+`RENOVATE_GITHUB_COM_TOKEN`, a read-only github.com PAT for release-notes
 lookups against github.com from a non-github.com platform host; compass IS on
-github.com, so the App token covers it — do not port the second secret.
+github.com, so the App token covers it — no second secret is needed here.
 Registering/installing the App is a human action (T8;
 skill://human-action-handoff).
 
-Port the internal monorepo's `tools/renovate-preflight` probe
+Port the `tools/renovate-preflight` probe from the prior art
 so an expired/unscoped token fails with a named diagnosis instead of Renovate's
 opaque `platform-unknown-error`. The ported preflight reads `REPO` (owner/name)
 from the environment and exits fail-closed (exit 2) when it is missing — "could
-not evaluate (missing REPO env) — fail closed". The internal monorepo's CI/CD
-supplies `REPO` from `CI_REPO`; GHA has no `CI_REPO`, so T6's workflow sets
+not evaluate (missing REPO env) — fail closed". In the prior art's CI/CD `REPO`
+comes from `CI_REPO`; GHA has no `CI_REPO`, so T6's workflow sets
 `REPO: ${{ github.repository }}`.
 
 ### Managers
 
 `enabledManagers`: `bun`, `npm`, `gomod`, `github-actions`, `custom.regex`.
-Dropped from the internal monorepo's list: `cargo`, `rust-toolchain`
+Dropped from the prior art's list: `cargo`, `rust-toolchain`
 (compass has no Rust), `woodpecker` (no Woodpecker), and `nix` — Renovate's
 nix manager tracks `flake.lock`, and compass has NO root flake: the only
 `flake.lock` files in the tree live under `forks/devenv/` and
 `forks/nix2container/` (glob-verified), both inside the `forks/*/**` fence
 this record mandates `enabled: false`; `devenv.lock`/`devenv.yaml` are not
 `flake.lock` (the custom git-refs manager covers them), so a ported nix
-manager would be dead config. Added: **`github-actions`** — the internal
-monorepo deliberately omits it (its meta jobs moved off GHA), but compass
+manager would be dead config. Added: **`github-actions`** — the prior art
+deliberately omits it (its meta jobs moved off GHA), but compass
 keeps every workflow `uses:` pinned to a commit SHA precisely so a reviewable
 PR moves the pin forward (`.github/dependabot.yml:1-8`). Renovate's
 `github-actions` manager natively updates an existing SHA pin and keeps the
@@ -220,16 +220,16 @@ Dockerfiles in the tree are `forks/oh-my-pi/Dockerfile`,
 `forks/oh-my-pi/Dockerfile.robomp`, and
 `forks/devenv/containers/devcontainer/Dockerfile`, all inside the
 `forks/*/**` fence this record disables — a dockerfile manager would be dead
-config, same reasoning as the nix-manager drop above. (Auto-updating the internal
-monorepo's harvester `oven/bun` base image is a separate fleet follow-up, filed separately.)
+config, same reasoning as the nix-manager drop above. (Auto-updating the
+prior art's harvester `oven/bun` base image is a separate fleet follow-up, filed separately.)
 
-### customManagers: 6 of the internal monorepo's 7 port, +1 compass-new
+### customManagers: 6 of the 7 prior-art managers port, +1 compass-new
 
-| # | Internal-monorepo manager | Compass disposition |
+| # | Prior-art manager | Compass disposition |
 | --- | --- | --- |
 | 1 | Root `package.json` catalog regex | **Port unchanged.** Compass has the same unmanaged-catalog gap: `workspaces.catalog` (`package.json:12-22`, 9 pins) with `catalog:` consumers; Renovate's bun manager doesn't extract it. Keep `versioningTemplate: "npm"` (range preservation) and the recursive two-stage matchStrings; port the truncation-guard tests. |
 | 2 | devenv-nixpkgs channel git-refs digest | **Port unchanged.** Compass has the same shape: `devenv.yaml:9-10` → `github:cachix/devenv-nixpkgs/rolling`, locked in `devenv.lock`; `devenv.nix:75-81` bakes `biome` + `markdownlint-cli2` from that channel while `@biomejs/biome` is also a catalog pin (`package.json:15`) — the same dual-source lockstep applies. Compass difference: only **biome** is dual-sourced (markdownlint-cli2 has no catalog pin — `grep markdownlint compass/package.json` → none), so the ported relock script rewrites one catalog pin, not two. |
-| 3-5 | bun/node/moon toolchain pins | **Port with path change**: the internal monorepo's `versions/*.nix` → `tools/toolchain/versions/*.nix` (compass pin files confirmed: `tools/toolchain/versions/{bun,node,moon,go}.nix`; same `rec { version; srcs.{x86_64-linux,aarch64-linux,aarch64-darwin} }` shape, e.g. `bun.nix:2-17`). |
+| 3-5 | bun/node/moon toolchain pins | **Port with path change**: the prior art's `versions/*.nix` → `tools/toolchain/versions/*.nix` (compass pin files confirmed: `tools/toolchain/versions/{bun,node,moon,go}.nix`; same `rec { version; srcs.{x86_64-linux,aarch64-linux,aarch64-darwin} }` shape, e.g. `bun.nix:2-17`). |
 | 6 | Go version attr in devenv.nix | **Port, retargeted at `tools/toolchain/versions/go.nix`** — see "Go source of truth" below. |
 | 7 | googleworkspace provider lockstep | **Drop.** Compass has no pulumi and no `provider.lock.json`. |
 
@@ -239,7 +239,7 @@ regex on `.github/workflows/renovate.yml`'s `bunx renovate@<version>` line
 
 ### Go source of truth: `go.nix`, one regex manager
 
-Compass differs from the internal monorepo: there the go version lives ONLY in `devenv.nix` as the
+Compass differs from the prior art, which keeps the go version ONLY in `devenv.nix` as the
 `"go_1_26_5"` attr string, so that manager regexes `devenv.nix`. Compass
 single-sources the version in `tools/toolchain/versions/go.nix`
 (`{ version = "1.26.6"; }`, version-only — hashes come from go-overlay) and
@@ -250,14 +250,14 @@ goPin = import ./tools/toolchain/versions/go.nix;
 goToolchain = inputs.go-overlay.packages.${pkgs.stdenv.system}."go_${lib.replaceStrings [ "." ] [ "_" ] goPin.version}";
 ```
 
-So `devenv.nix` contains no literal `go_X_Y_Z` string — the internal monorepo's regex would match
+So `devenv.nix` contains no literal `go_X_Y_Z` string — the prior art's regex would match
 nothing there. Track `go.nix` instead: one regex manager,
 `managerFilePatterns: ["/^tools/toolchain/versions/go\\.nix$/"]`,
 `matchStrings: ["version = \"(?<currentValue>[^\"]+)\""]`,
 `datasourceTemplate: "golang-version"`, `depTypeTemplate: "toolchain"`. No
 dots↔underscores gymnastics (the version is dotted in the file), no
 postUpgradeTasks leg (go-overlay ships the hashes; the refresh script must
-self-gate past `go.nix` exactly as the internal monorepo's script no-ops on go,
+self-gate past `go.nix` exactly as the prior-art script no-ops on go,
 and `devenv.nix` updates automatically at
 eval time. One bump PR touches one line. This was OQ4, now decided (see
 Resolved decisions). Note the `go.nix:8-9` floor policy: the `go` directive in
@@ -271,7 +271,7 @@ go.mod follow-up.
 
 ### packageRules
 
-Port from the internal monorepo, adapted:
+Port from the prior art, adapted:
 
 - "TypeScript dependencies" rollup: `bun`/`npm`/`custom.regex` patch+minor.
   Drop the Rust rollup (no cargo).
@@ -304,15 +304,15 @@ Port from the internal monorepo, adapted:
   rule — an `overrides` pin, out of the catalog manager's reach, as Global
   Constraints already argue.)
 - Toolchain un-grouping: `matchFileNames: ["tools/toolchain/versions/*.nix"],
-  groupName: null` (ported from the internal monorepo, path adapted). Because the go manager now
+  groupName: null` (from the prior art, path adapted). Because the go manager now
   targets `go.nix` under the same glob, this one rule un-groups all four pins —
-  the internal monorepo's separate go un-group rule is NOT needed; note this in the
+  the prior art's separate go un-group rule is NOT needed; note this in the
   config comment and pin it in config.test.ts.
 - TypeScript `<7` cap: port as-is.
 - devenv-nixpkgs solo branch: own groupName, `schedule: ["before
-  4am"]` — DAILY, not the internal monorepo's weekly-Monday `["before 4am on monday"]`
+  4am"]` — DAILY, not the prior art's weekly-Monday `["before 4am on monday"]`
   (resolved decision, OQ5 — Matt: nixpkgs also daily; the deliberate
-  divergence from the internal monorepo's prior art gets a config comment), aligned with the
+  divergence from the prior art gets a config comment), aligned with the
   `0 6 * * *` UTC cron inside the before-4am-ET window;
   `minimumReleaseAge: null` (a moving-branch digest never clears a
   release-age window — the RIG-1220 silent-pending shape), branch-mode
@@ -321,10 +321,10 @@ Port from the internal monorepo, adapted:
 - Catalog lockfile coupling: `matchDepTypes: ["workspaces.catalog"]`,
   `postUpgradeTasks: { commands: ["bun install --lockfile-only"], fileFilters:
   ["bun.lock"], executionMode: "update" }`. `executionMode` MUST stay `"update"`
-  — the internal monorepo's comment documents the one-branch-mode-task-per-branch
+  — the prior art's comment documents the one-branch-mode-task-per-branch
   collision this avoids; port that rationale.
 - Fork fence: `matchFileNames: ["forks/*/**"], enabled: false` (adapted from
-  the internal monorepo's fork fence to compass's root `forks/`).
+  the prior art's fork fence to compass's root `forks/`).
 - Drop: "Nix flake inputs" group (dead config with the nix
   manager omitted; see Managers), provider solo branch, pulumi
   SDK disable, container-images group (compass has
@@ -342,13 +342,13 @@ resolved decision, see Resolved decisions):
 - **`refresh-toolchain-hashes.ts` + test** — port with compass paths
   (`BUN_NIX/NODE_NIX/MOON_NIX = "tools/toolchain/versions/*.nix"`) and the
   entire Rust FOD leg removed (`TOOLCHAIN_TOML`/`MANIFEST_HASH_NIX` constants,
-  `readChannel`, `channelManifestUrl`, `renderManifestHashFile` — from the internal
-  monorepo's script). Keep the self-gate, per-leg
+  `readChannel`, `channelManifestUrl`, `renderManifestHashFile` — from the
+  prior-art script). Keep the self-gate, per-leg
   rewrite, fail-loud, idempotence contracts.
 - **`refresh-devenv-nixpkgs.ts` + `.core.ts` + tests** — port; compass
   adaptation: only the biome catalog pin is rewritten (markdownlint-cli2 has no
   catalog pin in compass — `package.json:12-22`), and compass's baked-vs-catalog
-  coupling is the dev-shell parity story, not the internal monorepo's image gate; the
+  coupling is the dev-shell parity story, not the prior art's image gate; the
   relock still must refresh `devenv.lock` consistently (rev + narHash + inner
   nixpkgs-src) and re-resolve `bun.lock`.
 - **`config.test.ts`** — port the guard suite: allowedCommands ↔ postUpgradeTasks
@@ -371,15 +371,15 @@ Compass has no `ci/` directory — every first-party tool lives under `tools/*`
 workspace member (`package.json:10`), giving the scripts the standard
 tsconfig/test wiring. The bot config's `configFileNames:
 ["tools/renovate/config.json5"]` makes the repo-config path free (mirroring the
-internal monorepo's bot config). The workflow itself is `.github/workflows/renovate.yml`
+prior-art bot config). The workflow itself is `.github/workflows/renovate.yml`
 (GHA requires that location). The preflight probe ports to
-`tools/renovate-preflight/` (the internal monorepo's own location, already `tools/`-shaped).
+`tools/renovate-preflight/` (keeping the prior art's own location, already `tools/`-shaped).
 
 ### Bot config
 
 Port `bot-config.json5` with: `configFileNames: ["tools/renovate/config.json5"]`;
 `repositories: ["RigelBuild/compass"]` (must match the live slug — a renamed repo
-is silently skipped, as the internal monorepo's bot config documents); `platform: github`;
+is silently skipped, as the prior-art bot config documents); `platform: github`;
 `gitAuthor` = the App's `[bot]` noreply identity
 (`<app-id>+<app-slug>[bot]@users.noreply.github.com` — Renovate autodetects
 it from the installation token; pin it explicitly here once T8 registers the
@@ -390,7 +390,7 @@ exactly the three anchored entries compass's config declares:
 `^bun install --lockfile-only$`,
 `^bun tools/renovate/refresh-devenv-nixpkgs\.ts$`.
 
-Fleet note: the internal monorepo's own bot config still pins the
+Fleet note: the prior art's own bot config still pins the
 retired pre-RigelBuild-rename bot identity as its gitAuthor — a separate
 fleet cleanup, not fixed by this record. (For non-App contexts the fleet
 agent identity is `mintaka <mintaka@rigel.build>`, GitHub `rigel-mintaka`,
@@ -410,9 +410,9 @@ custom Renovate image (that's option C) or mounting a host toolchain into the
 container (fragile, and nix store paths don't relocate). Loses to B: same
 workflow-trigger surface, strictly less toolchain access.
 
-### C — bake a compass-ci image with renovate + devenv (the internal monorepo's approach)
+### C — bake a compass-ci image with renovate + devenv (the prior-art approach)
 
-The internal monorepo runs Renovate in its Woodpecker publish monolith — a CI
+The prior art runs Renovate in a Woodpecker publish monolith — a CI
 image that bakes devenv. Compass has no equivalent image: its only
 published image is the agent image (`publish-agent-image.yml`), not a CI
 toolchain image — compass CI provisions per-job via install-nix-action +
@@ -450,7 +450,7 @@ one human action and gates first live run, not the merge.
 
 ### T1 — Port the repo config: `tools/renovate/config.json5`
 
-Adapt the internal monorepo's repo config per Approach: extends
+Adapt the prior-art repo config per Approach: extends
 `config:recommended` + `schedule:daily` + `helpers:pinGitHubActionDigests`;
 `timezone: "America/New_York"`; `dependencyDashboard: true`; `rebaseWhen:
 "behind-base-branch"`; `osvVulnerabilityAlerts: true`; `minimumReleaseAge: "5
@@ -497,7 +497,7 @@ Interfaces:
 
 ### T3 — Port `refresh-toolchain-hashes.ts` + test
 
-Port the internal monorepo's `refresh-toolchain-hashes.ts` (+ `.test.ts`) to
+Port the prior-art `refresh-toolchain-hashes.ts` (+ `.test.ts`) to
 `tools/renovate/`: path constants become `BUN_NIX/NODE_NIX/MOON_NIX =
 "tools/toolchain/versions/{bun,node,moon}.nix"`; DELETE the Rust FOD leg
 entirely (`TOOLCHAIN_TOML`, `MANIFEST_HASH_NIX`, `readChannel`,
@@ -518,7 +518,7 @@ Interfaces:
 
 ### T4 — Port `refresh-devenv-nixpkgs.ts` + `.core.ts` + tests
 
-Port the internal monorepo's `refresh-devenv-nixpkgs{.ts,.core.ts,.test.ts,.core.test.ts}`
+Port the prior-art `refresh-devenv-nixpkgs{.ts,.core.ts,.test.ts,.core.test.ts}`
 to `tools/renovate/`. Compass adaptation: rewrite ONLY the `@biomejs/biome`
 catalog pin (compass's catalog has no markdownlint-cli2 entry — `package.json:12-22`;
 drop `MARKDOWNLINT_CATALOG_KEY` and its rewrite leg). Preserve: devenv.lock
@@ -535,14 +535,14 @@ Interfaces:
   `rewriteCatalogPin(packageJsonText, key, version): string`.
 - Reads/writes at runtime: `devenv.lock`, `package.json`, `bun.lock`.
 - Requires on PATH: `nix`, `devenv` (the VENDORED fork CLI via T6's shim —
-  the script shells `devenv update nixpkgs` from PATH, as in the internal
-  monorepo, and a nixpkgs devenv is rejected per
+  the script shells `devenv update nixpkgs` from PATH, as in the prior
+  art, and a nixpkgs devenv is rejected per
   Alternatives §D), `bun`, `git`; writable `$HOME` (bot config sets
   `/tmp/renovate-home`).
 
 ### T5 — Port `config.test.ts`
 
-Port the internal monorepo's `config.test.ts` guards, adapted: (1) every
+Port the prior-art `config.test.ts` guards, adapted: (1) every
 postUpgradeTasks command in config.json5 has an anchored allowedCommands entry
 in bot-config.json5 and vice versa; (2) `vulnerabilityAlerts.enabled` is absent
 and `osvVulnerabilityAlerts` is true; (3) real-manifest catalog extraction —
@@ -598,7 +598,7 @@ repo's standard runner label per `ci.yml`), steps:
    missing shim reds at setup instead of exit-127ing silently on the first
    channel-bump branch (a known regression class: on an image without devenv
    the relock "exits 127 (`devenv: command not found`) on every channel-bump
-   branch, shipping a half-refreshed lock", the internal monorepo's regression
+   branch, shipping a half-refreshed lock", the prior art's regression
    evidence, RIG-2245).
 6. Mint the App installation token:
    `actions/create-github-app-token@<pinned-sha> # vX` (SHA-pin + version
@@ -606,10 +606,10 @@ repo's standard runner label per `ci.yml`), steps:
    vars.RENOVATE_APP_CLIENT_ID }}` and `private-key: ${{
    secrets.RENOVATE_APP_PRIVATE_KEY }}`. Its `token` output feeds every later
    step — no long-lived PAT exists (see Approach §Secrets/Auth).
-7. Port `tools/renovate-preflight/` from the internal monorepo and run it with
+7. Port `tools/renovate-preflight/` from the prior art and run it with
    `GH_TOKEN=${{ steps.<mint>.outputs.token }}` and
    `REPO: ${{ github.repository }}` — the preflight reads `REPO` and exits
-   fail-closed when missing (as in the internal monorepo's preflight;
+   fail-closed when missing (as in the prior-art preflight;
    GHA has no `CI_REPO`, so the workflow must set it or every run dies at
    preflight). Adapt the ported index.ts comment (`REPO - owner/name (from
    github.repository)`). Register `tools/renovate-preflight` in
@@ -740,14 +740,14 @@ folded into the record as decisions:
   all first-party tooling is `tools/*`, a bun workspace glob
   (`package.json:10`), so the scripts and tests get standard wiring;
   `.github/` would strand TypeScript outside the workspace. The preflight
-  keeps the internal monorepo's own `tools/renovate-preflight/` naming. The bot config's
+  keeps the prior art's own `tools/renovate-preflight/` naming. The bot config's
   `configFileNames` makes any choice mechanically workable — convention only.
 - **Go source of truth: `go.nix`** (was OQ4) — compass derives the `go_X_Y_Z`
   attr at eval time (`devenv.nix:30-31`); there is no literal attr string for
-  the internal monorepo's devenv.nix regex to match, and `go.nix` is the declared single
+  the prior art's devenv.nix regex to match, and `go.nix` is the declared single
   source (`go.nix:1-9`). One regex manager on `go.nix`; `devenv.nix` untouched
   by Renovate; the gomod `go`-directive update disabled (see packageRules).
-- **Grouping: internal-monorepo parity** (was OQ6) — TS rollup, Go rollup, GitHub Actions
+- **Grouping: prior-art parity** (was OQ6) — TS rollup, Go rollup, GitHub Actions
   group; majors solo; toolchain pins solo. Same review granularity across the
   fleet; dependabot's old single-group-per-ecosystem shape maps 1:1
   (actions→"GitHub Actions", bun→"TypeScript dependencies", gomod→"Go
@@ -766,7 +766,7 @@ folded into the record as decisions:
   `bunx renovate@<pin>` requirement.
 - **Cadence: daily — top-level AND devenv-nixpkgs** (was OQ5; Matt
   2026-08-21) — `schedule:daily` with the `0 6 * * *` UTC cron, and the
-  devenv-nixpkgs solo branch drops the internal monorepo's weekly-Monday restriction to
-  `["before 4am"]` daily (a deliberate divergence from the internal monorepo's
-  prior art). `minimumReleaseAge: null` stays on that branch —
+  devenv-nixpkgs solo branch drops the prior art's weekly-Monday restriction to
+  `["before 4am"]` daily (a deliberate divergence from the prior
+  art). `minimumReleaseAge: null` stays on that branch —
   a moving-branch digest never clears a release-age window.
