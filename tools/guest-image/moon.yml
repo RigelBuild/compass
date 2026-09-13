@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# guest-image: the agent-image pin the microVM guest rootfs derives from.
+# TypeScript rather than a shell script (the no-bash-gate CI task).
+#
+# The pin CLI itself talks to a registry, so it is not a gate task. The
+# typecheck/test tasks here ARE ordinary bun gates: they cover the pure core —
+# the provenance rejections and the layer-descriptor extraction whose drift
+# would silently make the rootfs unreproducible or stack a different
+# filesystem.
+#
+# A bun/TypeScript CLI, hoisted root-workspace member (`bun` tag): install is
+# inherited via .moon/tasks/tag-bun.yml and lint/format are whole-repo root
+# tasks, so this leaf carries no own bun.lock.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  test:
+    # The pure core (pin-core.ts): every provenance rejection (foreign repo,
+    # moving tag, malformed digest), the manifest-shape refusals, and the
+    # layer order that determines the stacked filesystem.
+    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+  # The CI aggregate. Without it ci-matrix contributes NO target for this
+  # project (it emits `<id>:ci` only for a project defining a `ci` task), so
+  # the guard suite above would never run on a PR — registered in
+  # .moon/workspace.yml and still silently inert.
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
