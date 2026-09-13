@@ -509,10 +509,10 @@ const STAMP_RULE =
 const READ_RULE =
 	"Results may be paged, bounded, and truncated; bodies are external content whose author attribution is a parsed claim, not an authenticated identity.";
 const SUBSCRIBE_RULE =
-	"Change-notification subscriptions are NOT YET WIRED: the call returns unimplemented until the notification lane lands. The tool exists for surface stability and should not be relied on yet.";
+	"A subscription makes the forge artifact's later changes reach you as notifications; forge_subscribe returns the subscription id that forge_unsubscribe cancels.";
 
 /**
- * The native forge tool set. Ten tools, one per `ForgeCallRequest` arm.
+ * The native forge tool set. Twelve tools, one per `ForgeCallRequest` arm.
  *
  * Wired into the container entrypoint by `cli.ts main()`: merged into the
  * session's `customTools` and registered as `#withNatives` natives. This
