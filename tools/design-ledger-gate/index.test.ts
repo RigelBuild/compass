@@ -1073,4 +1073,30 @@ describe("conflictMarkerViolations", () => {
 		);
 		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
 	});
+	test("flags lengthened markers — both tools widen past 7", () => {
+		// A conflict whose hunk holds a marker-like run makes git and jj emit
+		// wider markers; an exact-7 match misses the conflict entirely.
+		const text = [
+			"<<<<<<<<<<< conflict 1 of 1",
+			"%%%%%%%%%%% diff",
+			"+++++++++++ side",
+			">>>>>>>>>>> ends",
+		].join("\n");
+		const got = conflictMarkerViolations(LEDGER, text);
+		expect(got).toHaveLength(4);
+		expect(got[0]?.message).toContain("<<<<<<<<<<<");
+	});
+
+	test("stays silent on a long setext underline", () => {
+		// Governed records carry 14-char `=` underlines, so `=` must stay exact.
+		const text = ["A heading", "==============", "", "body"].join("\n");
+		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
+	});
+
+	test("stays silent on a marker shown as fenced example text", () => {
+		const text = ["```text", "<<<<<<< HEAD", ">>>>>>> theirs", "```"].join(
+			"\n",
+		);
+		expect(conflictMarkerViolations(LEDGER, text)).toEqual([]);
+	});
 });
