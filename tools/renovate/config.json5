@@ -885,16 +885,32 @@
     },
     {
       // ── Agent image currency: the microVM guest rootfs ──
-      // Solo branch for the agent image guest-image/agent-oci.lock pins, on the
-      // same shape as the devenv-fork rules above: its own groupName so it
+      // Solo-grouped like the devenv-fork rules above: its own groupName so it
       // NEVER shares a branch with the "TypeScript dependencies" rollup (which
       // also matches custom.regex) nor with any other branch-mode rule. That
       // isolation is what makes the branch-mode postUpgradeTask safe — Renovate
       // builds exactly ONE branch-mode task per branch, so a dep that never
-      // shares a branch owns that single slot.
+      // shares a branch owns that single slot. It is a docker pin like
+      // postgres-stack, but does NOT inherit that rule's soak — see below.
       matchManagers: ["custom.regex"],
       matchDepNames: ["compass-agent-guest"],
       groupName: "compass-agent image (guest rootfs)",
+      // The repo-wide `minimumReleaseAge` + `internalChecksFilter: "strict"`
+      // measures age from a release timestamp, and this image HAS none: it is
+      // built by nix2container, which zeroes timestamps for reproducibility, so
+      // the registry reports `Created: 0001-01-01T00:00:00Z` (verified live).
+      // A strict cooldown over an unknown age keeps the digest permanently
+      // `pending` and cuts zero PRs — the stale-pin-forever outcome this rule
+      // exists to prevent. So the soak is nulled for THIS rule, matching the
+      // git-refs siblings and NOT the postgres pin, which keeps the soak
+      // precisely because Docker Hub carries a real timestamp for its digest.
+      // The compensating control is the mandatory human review before merge
+      // (no automerge is configured — see the top of this file).
+      minimumReleaseAge: null,
+      // Daily, in the same before-4am-ET window as the other currency rules:
+      // the agent image republishes on every push to main, so "keep current"
+      // means daily rather than on Renovate's default cadence.
+      schedule: ["before 4am"],
       // ── The relock task. ──
       // The regex update rewrites ONLY the digest, leaving `tag` and the
       // per-layer descriptor set describing the PREVIOUS manifest. Those

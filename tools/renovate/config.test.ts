@@ -1816,4 +1816,28 @@ describe("tools/renovate guest-rootfs agent-image pin lockstep", () => {
 			false,
 		);
 	});
+
+	test("the cooldown is nulled, so an unknown-age digest is not held forever", () => {
+		// nix2container zeroes timestamps for reproducibility, so this image
+		// reports Created: 0001-01-01T00:00:00Z and the repo-wide
+		// minimumReleaseAge + internalChecksFilter:"strict" would keep the digest
+		// permanently `pending` — zero PRs, pin stale forever. Unlike the
+		// postgres pin, which keeps the soak because its registry supplies a
+		// real timestamp.
+		expect(rule?.minimumReleaseAge).toBeNull();
+	});
+
+	test("the pin's dep resolves ENABLED, not swallowed by an unscoped rule", () => {
+		// Fails closed if any future rule disables this depName the way the
+		// `postgres` CI-service fence disables its namesake.
+		expect(
+			resolveGroupName({
+				manager: "custom.regex",
+				depName: "compass-agent-guest",
+				packageName: "ghcr.io/rigelbuild/compass-agent",
+				fileName: LOCK,
+				updateType: "digest",
+			}),
+		).toBe("compass-agent image (guest rootfs)");
+	});
 });
