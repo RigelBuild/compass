@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.2.2](https://github.com/RigelBuild/compass/compare/v0.2.1...v0.2.2) (2026-09-13)
+
+
+### Features
+
+* **cli:** show the runtime tier and egress posture per session ([#1153](https://github.com/RigelBuild/compass/issues/1153)) ([bb80c05](https://github.com/RigelBuild/compass/commit/bb80c05ea2e525019b04c1ec57346ee704ca26dd))
+* **ingest:** advance a suppressed subscriber's delivery cursor when caught up (RIG-3326) ([#1185](https://github.com/RigelBuild/compass/issues/1185)) ([bff25ca](https://github.com/RigelBuild/compass/commit/bff25ca068fd38d8afbcb4b924feb8433ce6b389))
+* **ingest:** self-origin notification suppression seam and predicate (RIG-3326) ([#1177](https://github.com/RigelBuild/compass/issues/1177)) ([9a53159](https://github.com/RigelBuild/compass/commit/9a531599840710b212e514c67e2ff14f9693181b))
+* **runner-image:** carry the Runner, KVM userland and guest assets in a container image (RIG-3720) ([#1164](https://github.com/RigelBuild/compass/issues/1164)) ([0dce952](https://github.com/RigelBuild/compass/commit/0dce952672a03a00e5a6771a2210f40a7c64f5b5))
+* **runner-image:** publish the runner image by digest (RIG-3721) ([#1181](https://github.com/RigelBuild/compass/issues/1181)) ([a2805af](https://github.com/RigelBuild/compass/commit/a2805afdbf23a7cc3b288505eb357c44ec0a2dc1))
+* **runner:** carry no egress policy on a backend that cannot enforce one ([#1145](https://github.com/RigelBuild/compass/issues/1145)) ([332c075](https://github.com/RigelBuild/compass/commit/332c075cc6d43170516a20d9c83b7f8094cbb6b1))
+* **runner:** declare the runtime tier and egress posture at enrollment ([#1156](https://github.com/RigelBuild/compass/issues/1156)) ([612b9cd](https://github.com/RigelBuild/compass/commit/612b9cd721834c68463188f9a68597b9e5e6b045))
+* **runner:** deliver the agent socket and config by path on the host backend (RIG-3512) ([#1135](https://github.com/RigelBuild/compass/issues/1135)) ([a9ce14a](https://github.com/RigelBuild/compass/commit/a9ce14a4dc5033fadbf13fbc203520d895c0f6ad))
+* **runner:** derive the agent uid from the Runner's euid on the host backend (RIG-3512) ([#1125](https://github.com/RigelBuild/compass/issues/1125)) ([684558b](https://github.com/RigelBuild/compass/commit/684558bfd30ccbd7a7ae86b93a5ea5c508da3e16))
+* **runner:** report the runtime tier and egress posture per session ([#1148](https://github.com/RigelBuild/compass/issues/1148)) ([4d0347b](https://github.com/RigelBuild/compass/commit/4d0347b8cca4961775f91c8de166b09850c92708))
+* **runtime:** add the host-process WorkloadRuntime backend (RIG-3512) ([#1120](https://github.com/RigelBuild/compass/issues/1120)) ([f9db16d](https://github.com/RigelBuild/compass/commit/f9db16de3700e5322b7e42d89143d58fb272bd1b))
+* **runtime:** distinguish a configured egress policy from an unset one ([#1142](https://github.com/RigelBuild/compass/issues/1142)) ([2108d46](https://github.com/RigelBuild/compass/commit/2108d469dcab3b7e32cb14a4a7f661a078ea2d63))
+* **runtime:** refuse an egress policy the host tier cannot enforce ([#1143](https://github.com/RigelBuild/compass/issues/1143)) ([ef908d5](https://github.com/RigelBuild/compass/commit/ef908d53bd045c6028b1a1149089d9cfb8643454))
+* **server:** wire the self-origin identity resolver into both notify lanes (RIG-3326) ([#1197](https://github.com/RigelBuild/compass/issues/1197)) ([b873481](https://github.com/RigelBuild/compass/commit/b87348155997155326125e2c187a5af754eac245))
+* **ui:** mark each agent's runtime tier and egress posture ([#1154](https://github.com/RigelBuild/compass/issues/1154)) ([2317604](https://github.com/RigelBuild/compass/commit/2317604eca45ace8cb0e2ee86f8b85417db3b4bf))
+
 ## [0.2.1](https://github.com/RigelBuild/compass/compare/v0.2.0...v0.2.1) (2026-09-12)
 
 
