@@ -9,6 +9,7 @@ import {
 } from "../store";
 import type { Agent, Terminal } from "../stub-data";
 import { ChannelView } from "./ChannelView";
+import { Glyph } from "./Glyph";
 import { LogPanel } from "./LogPanel";
 import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
@@ -86,7 +87,7 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 					aria-label="Split right"
 					onClick={() => splitWith("row")}
 				>
-					⊞▏
+					<Glyph name="split-right" />
 				</button>
 				<button
 					type="button"
@@ -95,7 +96,7 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 					aria-label="Split down"
 					onClick={() => splitWith("column")}
 				>
-					⊞▁
+					<Glyph name="split-down" />
 				</button>
 				<Show when={props.pane.kind !== "chat"}>
 					<button
@@ -105,7 +106,7 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 						aria-label="Close pane"
 						onClick={() => store.closePane(props.pane.id)}
 					>
-						✕
+						<Glyph name="close" />
 					</button>
 				</Show>
 			</div>
@@ -265,7 +266,7 @@ export const AgentView: Component = () => {
 												title={`Close ${tab.title}`}
 												onClick={() => store.closeTab(tab.id)}
 											>
-												✕
+												<Glyph name="close" />
 											</button>
 										</Show>
 									</div>

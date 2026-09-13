@@ -14,6 +14,7 @@ import {
 	CoachTipContent,
 	CoachTipTrigger,
 } from "./components/CoachTip";
+import { Glyph } from "./components/Glyph";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
@@ -77,7 +78,7 @@ const App: Component<RouteSectionProps> = (props) => {
 			<header class="topbar">
 				<div class="brand">
 					<span class="logo" aria-hidden="true">
-						◇
+						<Glyph name="logo" />
 					</span>
 					<span class="title">Compass</span>
 					<span class="subtitle">ADE</span>
@@ -95,7 +96,7 @@ const App: Component<RouteSectionProps> = (props) => {
 							aria-keyshortcuts={bridgeAria}
 						>
 							<span class="tab-glyph" aria-hidden="true">
-								▦
+								<Glyph name="status" />
 							</span>
 							Bridge
 						</CoachTipTrigger>
@@ -146,7 +147,7 @@ const App: Component<RouteSectionProps> = (props) => {
 							)}
 							onClick={() => store.toggleLeft()}
 						>
-							▐
+							<Glyph name="panel-left" />
 						</CoachTipTrigger>
 						<CoachTipContent
 							label="Toggle left sidebar"
@@ -165,7 +166,7 @@ const App: Component<RouteSectionProps> = (props) => {
 							)}
 							onClick={() => store.toggleRight()}
 						>
-							▌
+							<Glyph name="panel-right" />
 						</CoachTipTrigger>
 						<CoachTipContent
 							label="Toggle right sidebar"

@@ -18,6 +18,7 @@ import { detectPlatform } from "../keyboard/dispatch";
 import { shortcutForAria } from "../keyboard/keymap";
 import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
 import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
+import { Glyph } from "./Glyph";
 import { RuntimeMarker } from "./RuntimeMarker";
 import { StateDot } from "./StateDot";
 
@@ -51,7 +52,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 				<span class="name">{a().account.handle}</span>
 				<Show when={a().role !== undefined && a().role !== "worker"}>
 					<span class="role-pip" data-role={a().role} title={a().role}>
-						◆
+						<Glyph name="role" />
 					</span>
 				</Show>
 				<Show when={props.badge !== undefined}>
@@ -83,7 +84,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 						: store.pinAgent(a().account.id)
 				}
 			>
-				{pinned() ? "★" : "☆"}
+				{pinned() ? <Glyph name="pin" /> : <Glyph name="pin-outline" />}
 			</button>
 		</div>
 	);
@@ -107,7 +108,9 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 					aria-label={`${collapsed() ? "Expand" : "Collapse"} ${props.node.agent.account.handle}'s agents`}
 					onClick={() => store.toggleAgent(agentId())}
 				>
-					<span class={["folder-caret", { collapsed: collapsed() }]}>▼</span>
+					<span class={["folder-caret", { collapsed: collapsed() }]}>
+						<Glyph name="disclosure-open" />
+					</span>
 				</button>
 				<AgentLeaf
 					agent={props.node.agent}
@@ -217,7 +220,7 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 								title="Always subscribed — this subscription is implicit and can't be turned off."
 								aria-label="Always subscribed"
 							>
-								◉
+								<Glyph name="subscribed" />
 							</span>
 						}
 					>
@@ -232,7 +235,11 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 							}
 							aria-pressed={subscribed() ? "true" : "false"}
 						>
-							{subscribed() ? "◉" : "○"}
+							{subscribed() ? (
+								<Glyph name="subscribed" />
+							) : (
+								<Glyph name="unsubscribed" />
+							)}
 						</button>
 					</Show>
 				</Show>
@@ -276,7 +283,9 @@ const BrowseChannels: Component<{ channels: Channel[] }> = (props) => {
 				onClick={() => setOpen((o) => !o)}
 				aria-expanded={open() ? "true" : "false"}
 			>
-				<span class={["browse-caret", { open: open() }]}>▸</span>
+				<span class={["browse-caret", { open: open() }]}>
+					<Glyph name="disclosure" />
+				</span>
 				browse channels
 				<span class="browse-count">{props.channels.length}</span>
 			</button>
@@ -330,7 +339,9 @@ const ChannelsSection: Component = () => {
 				onClick={() => store.toggleSection("channels")}
 				aria-expanded={!collapsed() ? "true" : "false"}
 			>
-				<span class={["ws-caret", { open: !collapsed() }]}>▸</span>
+				<span class={["ws-caret", { open: !collapsed() }]}>
+					<Glyph name="disclosure" />
+				</span>
 				Channels
 			</button>
 			<Show when={!collapsed()}>
@@ -387,7 +398,9 @@ const AgentsSection: Component = () => {
 				onClick={() => store.toggleSection("agents")}
 				aria-expanded={!collapsed() ? "true" : "false"}
 			>
-				<span class={["ws-caret", { open: !collapsed() }]}>▸</span>
+				<span class={["ws-caret", { open: !collapsed() }]}>
+					<Glyph name="disclosure" />
+				</span>
 				Agent workspaces
 			</button>
 			<Show when={!collapsed()}>
@@ -449,7 +462,7 @@ export const LeftSidebar: Component = () => {
 					aria-keyshortcuts={ariaChord("view.bridge")}
 				>
 					<span class="glyph" aria-hidden="true">
-						▦
+						<Glyph name="status" />
 					</span>
 					<span>Bridge</span>
 					<span class="count">{inFlightCount()}</span>
@@ -465,7 +478,7 @@ export const LeftSidebar: Component = () => {
 					aria-keyshortcuts={ariaChord("view.backlog")}
 				>
 					<span class="glyph" aria-hidden="true">
-						▤
+						<Glyph name="list" />
 					</span>
 					<span>Backlog</span>
 					<span class="count">{backlogCount()}</span>
@@ -484,7 +497,7 @@ export const LeftSidebar: Component = () => {
 					aria-keyshortcuts={ariaChord("view.done")}
 				>
 					<span class="glyph" aria-hidden="true">
-						✓
+						<Glyph name="check" />
 					</span>
 					<span>Done</span>
 				</CoachTipTrigger>
@@ -499,7 +512,7 @@ export const LeftSidebar: Component = () => {
 					aria-keyshortcuts={ariaChord("view.settings")}
 				>
 					<span class="glyph" aria-hidden="true">
-						⚙
+						<Glyph name="gear" />
 					</span>
 					<span>Settings</span>
 				</CoachTipTrigger>
