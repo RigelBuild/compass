@@ -485,7 +485,7 @@ transcript-scoped, not container-scoped.)
 
 ### Spec impact — supersession, by citation
 
-Per the sealed frozen-record convention, merged records are never edited;
+Per the frozen-record convention, merged records are never edited;
 this record supersedes specific claims by citing them, and the **impl PR's
 living-spec update** carries the replacement into
 `docs/specs/product/compass.md`:

@@ -5,7 +5,7 @@ Status: Draft
 Tracker: RIG-2490.
 
 Sibling follow-up to: `compass-mention-offline-redelivery.md` (RIG-1641) — per
-the sealed frozen-record convention this record ADDS a sibling; the merged
+the frozen-record convention this record ADDS a sibling; the merged
 RIG-1641 record is never edited in place. All file+line grounding below was
 verified against the working tree this run (jj workspace off main `48d4a7cd`).
 

@@ -50,6 +50,66 @@ describe("lineHasToken — whole-word, case-insensitive", () => {
 	});
 });
 
+describe("lineHasToken — the former name, matched only in repo-shaped uses", () => {
+	test("a path inside the private repo is a reference", () => {
+		expect(lineHasToken("See `sealed/ci/pipeline.ts:554` for the job")).toBe(
+			true,
+		);
+	});
+	// The space form, not the slash form: citing a file in another repo by
+	// `<repo> <path>` is the most natural shape, and every one of these is a
+	// line this scrub removed by hand — so the gate has to catch its own
+	// regression, not just the form that happened to be written with a slash.
+	test("a space-separated path or bare filename citation is a reference", () => {
+		expect(
+			lineHasToken("Adapted from sealed apps/docs/scripts/deploy.ts"),
+		).toBe(true);
+		expect(lineHasToken("mirrors `sealed gather.ts:25,203-205`")).toBe(true);
+		expect(lineHasToken("ported from sealed flake.nix")).toBe(true);
+	});
+	// Prose carries slashes too, so the space form anchors on a source-file
+	// extension rather than on any slash-bearing token.
+	test("slash-bearing English prose is not a reference", () => {
+		expect(lineHasToken("values sealed and/or rotated")).toBe(false);
+		expect(lineHasToken("rows sealed in transit/at rest")).toBe(false);
+	});
+	test("a hyphenated repo-noun is a reference", () => {
+		expect(lineHasToken("a sealed-monorepo domain")).toBe(true);
+		expect(lineHasToken("sealed-repo records")).toBe(true);
+		expect(lineHasToken('the "sealed-private" annotation')).toBe(true);
+	});
+	test("its possessive, docsite host, and repo-noun uses are references", () => {
+		expect(lineHasToken("following sealed's shape")).toBe(true);
+		expect(lineHasToken("deployed to sealed-docs.rigel.build")).toBe(true);
+		expect(lineHasToken("this record lives in the sealed design corpus")).toBe(
+			true,
+		);
+		expect(lineHasToken("per sealed convention a later change ADDS")).toBe(
+			true,
+		);
+	});
+	// The word is ordinary English throughout go/: a whole-word scan flags 60
+	// tracked lines, every one legitimate. These pin the narrowing that keeps
+	// the gate usable.
+	test("the English engineering word is not a reference", () => {
+		expect(lineHasToken("Frame is a sealed sum type")).toBe(false);
+		expect(lineHasToken("the row was sealed under a known key")).toBe(false);
+		expect(lineHasToken("an egress-sealed agent holds no server token")).toBe(
+			false,
+		);
+		expect(lineHasToken("gochecksumtype for sealed-interface sum types")).toBe(
+			false,
+		);
+	});
+	test("genuinely public names carrying the string are not references", () => {
+		expect(lineHasToken("github.com/sealedsecurity/compass/go")).toBe(false);
+		expect(lineHasToken("Sealed Security Inc → Rigel AI Software Inc")).toBe(
+			false,
+		);
+		expect(lineHasToken("ci.sealedsecurity.com")).toBe(false);
+	});
+});
+
 describe("isCarveOut", () => {
 	test("the gate's own source is carved out", () => {
 		expect(isCarveOut("tools/orion-ref-gate/index.ts")).toBe(true);

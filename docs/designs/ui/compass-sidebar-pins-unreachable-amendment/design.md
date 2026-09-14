@@ -15,12 +15,12 @@ escape hatch is needed in the PR body.
 
 > **Amends `compass-sidebar-pins` (frozen).** This record is a sibling
 > amendment to `docs/designs/ui/compass-sidebar-pins/design.md` (RIG-1632,
-> DL-096). The merged record is frozen; per sealed convention a later change
+> DL-096). The merged record is frozen; per the frozen-record convention a later change
 > ADDS a record. This amendment supersedes the frozen record's §T2
 > unresolvable-pin filtering and §T3 fluctuation-coercion clauses per Matt's
 > ruling of 2026-08-02 (PR #98's review medium). All file+line grounding below
-> was verified against the working trees this run: the frozen record in the
-> sealed repo, the shipped implementation in the compass repo
+> was verified against the working trees this run: the frozen record out of
+> tree, the shipped implementation in the compass repo
 > (`apps/ui/src/…`, post-merge #98).
 
 ## Problem / Intent

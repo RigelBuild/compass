@@ -8,11 +8,10 @@
 # whole-repo tasks on the root project (/moon.yml), so this leaf has no own
 # bun.lock and never runs its own install.
 #
-# Migrated from the sealed repo (RIG-1794): the Compass design corpus + ledger
-# now live here, so the gate that governs them lives here too. Compass CI is a
+# Compass CI is a
 # single moon-driven `CI` job (.github/workflows/ci.yml runs `moon run :ci`),
 # so the `ci` aggregate below is swept automatically — no separate meta.ts
-# wiring (unlike sealed's Woodpecker pipeline).
+# wiring (unlike the prior art's Woodpecker pipeline).
 layer: 'tool'
 language: 'typescript'
 tags: ['bun', 'ci-group.bun']

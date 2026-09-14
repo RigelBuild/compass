@@ -278,7 +278,7 @@ In dependency order — T2 depends on T1, T3 on T1+T2.
     (window-scoped to each recipient's turn settle): peer-1 no `deliver`, spawner
     no `steer` for that id.
 
-Note on ledgers: this record lives in the sealed platform design corpus
+Note on ledgers: this record lives out of tree
 (`docs/designs/platform/`), which the design-ledger-gate governs only for the
 **product** corpus (`docs/designs/product/DECISIONS.md`). A platform record adds
 no DECISIONS row and declares no ledger delta, mirroring its frozen parent
