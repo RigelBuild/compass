@@ -192,6 +192,118 @@ The existing exported methods `droppedTraceCount()` / `failedPriorityCount()`
 (`frame-sink.test.ts:315,389`) and they are the frozen `PublishSpine` shape.
 Metrics are additive, driven from the same increment sites.
 
+### Decision 2a — flush-shape instrumentation (RIG-3694 amendment)
+
+*Added by RIG-3694 after the record froze; Decision 2's rows above are
+untouched. Decision 2 rejected histograms "in this cut" and explicitly
+reserved "a later record once a concrete dashboard needs one" — this
+amendment is that reserved rider, with RIG-3694 as the concrete need.*
+
+**Problem.** RIG-3694 asks whether turn coalescing produces
+pathological flush shapes — many tiny cycled batches versus batches that
+saturate the cap. No existing instrument answers it: the 12 Decision-2
+metrics count losses, retries, and depths, never flush shape, and a raw
+batch *rate* is uninterpretable without knowing WHY each batch flushed.
+The spine has **no timed flush**, so the filed size/timer/shutdown
+taxonomy is wrong. Verified in `pumpLoop`
+(`packages/compass-agent/src/transport/publish-spine.ts`): the only idle
+wait is the wake latch — `while (priority.length === 0 && traceSize()
+=== 0 && !ended) { yield* Queue.take(wake); }` — and the sole
+`Effect.sleep(Duration.millis(delay))` is the priority-retry backoff.
+`takeBatch` never waits for a fuller batch: it drains priority first
+(`while (batch.length < PUBLISH_BATCH_MAX && priority.length > 0)`),
+then takes only what is already queued (`const traceFrames = yield*
+Queue.takeUpTo(traceQ, room)`). Every batch therefore flushes
+immediately, for exactly one of four code-true reasons:
+
+- **`full`** — the take hit `PUBLISH_BATCH_MAX` (256): the cap, not the
+  queue's emptiness, closed the batch.
+- **`drain`** — teardown flush: `ended` was set by `drain()` and the
+  batch carries the residue (the loop exits only at `if (ended &&
+  priority.length === 0 && traceSize() === 0) return;`, so a non-empty
+  residue still flushes through the normal send).
+- **`short`** — the lanes held between 1 and 255 frames at the take: the
+  immediate-flush steady state, and the coalescing signal RIG-3694 is
+  after.
+- **`empty`** — `batch.length === 0`. A stale coalesced wake exits the
+  idle loop, and the terminal guard returns only when `ended`, so
+  `takeBatch` runs against two empty lanes and the spine opens a stream
+  carrying no frames. `takeBatch` has no empty guard and `pumpLoop` does
+  not skip the send, so this is a real, reachable path — its own comment
+  names it ("a stale coalesced wake causes at most one immediate take
+  before re-blocking"). Counting it separately keeps the other three
+  honest: folded into `short` it would inflate the tiny-batch rate that
+  is precisely RIG-3694's signal, making a wasted round trip look like
+  aggressive coalescing.
+
+Precedence `full` > `drain` > `empty` > `short`: a cap-filled batch
+during drain flushed because of the cap; an empty batch is a stale-wake
+artifact whether or not `ended` is set, and `drain` otherwise explains
+the short residue. A `timer` reason is deliberately EXCLUDED — nothing
+in the code can ever increment it, and an inert label is forbidden
+(`rule://no-inert-gating`).
+
+**New rows** (same table shape as Decision 2; sites cited by symbol +
+file, per the citation rule for post-freeze amendments):
+
+| Source (quoted) | Metric | Kind |
+| --- | --- | --- |
+| `pumpLoop` in `packages/compass-agent/src/transport/publish-spine.ts` — each cycled batch send, `const result = yield* Effect.either(Effect.tryPromise(() => publish(oneBatch())))`, classified from `batch.length` / `ended` at the take | `compass_agent.transport.publish.batches_flushed` `{reason="full"\|"drain"\|"short"\|"empty"}` | counter |
+| same site — `batch.length`, bounded 0..`PUBLISH_BATCH_MAX`. Zero is reachable: a stale coalesced wake exits the idle loop with both lanes empty, and the terminal guard returns only when `ended`, so `takeBatch` can produce an empty batch (`pumpLoop`'s own comment: "a stale coalesced wake causes at most one immediate take before re-blocking") | `compass_agent.transport.publish.batch_size` | histogram |
+
+**Counter shape.** One base `Metric.counter(name, { incremental: true })`
+plus four `Metric.tagged(base, "reason", …)` pre-tagged constants —
+exactly the `trace_frames_lost` pattern in
+`packages/compass-agent/src/transport/otel-metrics.ts` (static reason
+set ⇒ pre-tagged constants; the dynamic-label BASE-counter pattern is
+reserved for `control.unmapped`'s open `event_type` set). No deviation.
+
+**What is counted.** Batch send *attempts*, aligned with the Decision-1
+`…publish.batch` span (which also fires per attempt, carrying
+`batch_size` / `priority_count` / `retry_index` as span attributes): a
+failed priority batch re-enqueued at the front is re-taken and counted
+again on retry, visible against `priority_batch_retries`. Both
+instruments update at one site — in `pumpLoop`, immediately after `const
+{ batch, priorityCount } = yield* takeBatch;`, before the send — so the
+classification reads `batch.length` and `ended` in the same tick as the
+take.
+
+**Histogram buckets.** Effect 3.22.1 requires an explicit boundary spec:
+`Metric.histogram` is typed `(name: string, boundaries:
+MetricBoundaries.MetricBoundaries, description?: string)`
+(`effect@3.22.1/dist/dts/Metric.d.ts`), and
+`MetricBoundaries.exponential({ start, factor, count })`
+(`dist/dts/MetricBoundaries.d.ts`) builds `count - 1` finite boundaries
+(internal: `Arr.makeBy(options.count - 1, i => options.start *
+Math.pow(options.factor, i))`) with `fromIterable` appending the
+terminal `+Inf` bucket (`Arr.appendAll(Chunk.of(
+Number.POSITIVE_INFINITY))`, both in
+`dist/cjs/internal/metric/boundaries.js`). Choose
+`MetricBoundaries.exponential({ start: 1, factor: 2, count: 10 })` ⇒
+finite boundaries **[1, 2, 4, 8, 16, 32, 64, 128, 256]** (+`+Inf`).
+Rationale: the value is bounded 0..256 and the question is
+tiny-versus-saturated, so power-of-two buckets give constant *relative*
+resolution across the whole range — the `le=1` bucket holds both the
+empty stale-wake batch and the single-frame batch (the `empty` counter
+reason separates them), `le=2` isolates the coalesced-turn tiny-batch
+signature, the top boundary lands exactly on `PUBLISH_BATCH_MAX` so
+saturation is the `(128, 256]` bucket delta, and the `+Inf` bucket is
+structurally empty — a cheap invariant check, since `takeBatch` caps at
+`PUBLISH_BATCH_MAX`.
+Linear buckets would waste resolution: at width 26 the entire 1..26
+tiny-batch region — where the interesting variation lives — collapses
+into one bucket. Nine finite buckets is one time series per bucket per
+agent, negligible cardinality.
+
+**Registry namespace.** Neither new metric takes the gauge factory's
+test-namespace prefix: histogram bucket counts and counter counts are
+monotone and delta-readable under bun's concurrent test files, which is
+the module's stated reason counters skip the factory
+(`otel-metrics.ts`: "Counters read as a delta"; the same rule stated at
+the factory's consumer, `createPublishSpine` in `publish-spine.ts`:
+"Counters take no namespace — read as a delta"; only last-writer-wins
+gauges race).
+
 ### Decision 3 — exporter wiring against the deployed stack
 
 **There is no existing OTLP/Grafana endpoint config on the agent today**
