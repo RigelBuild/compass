@@ -9,15 +9,26 @@
 // sweep removed the existing references; this gate keeps the boundary from
 // silently re-rotting, the same way design-ledger-gate keeps the ledger honest.
 //
-// SCOPE: orion ONLY. This gate scans for one token and does not double as a
-// general brand-token gate; other one-time cleanups that are not being re-added
-// need no standing scan here.
+// SCOPE: the private repo's two names ONLY — the current one and the former
+// one imported records still carry. This gate does not double as a general
+// brand-token gate; other one-time cleanups that are not being re-added need
+// no standing scan here.
 //
-// What counts as a reference: the whole-word token `orion` (any case), which
-// catches the repo name, `RigelBuild/orion`, an `orion <path>` citation, and
-// "ported from orion" provenance prose alike. The scan is deliberately blunt —
-// a single blunt token with a small, explicit allowlist beats a clever regex
-// that tries to tell a "good" orion from a "bad" one.
+// What counts as a reference, and why the two names differ:
+//   - `orion` (current) is scanned WHOLE-WORD, any case — the repo name,
+//     `RigelBuild/orion`, an `orion <path>` citation, and "ported from orion"
+//     provenance prose alike. A bare `orion` in this repo is always the repo,
+//     so a blunt token with a small explicit allowlist is the right shape.
+//   - `sealed` (former) CANNOT be scanned that way: it is also ordinary
+//     English this codebase uses constantly (a sealed sum type, a ciphertext
+//     sealed under a key, an egress-sealed agent), and it is in the public
+//     company name. A whole-word scan measures 60 tracked lines, all
+//     legitimate. So it is matched only in repo-SHAPED uses —
+//     LEGACY_NAME_PATTERNS, whose docstring carries the tradeoff.
+//
+// The asymmetry is deliberate: blunt where the token is unambiguous, narrow
+// where it collides with English. A gate that is all false positives on one of
+// its tokens gets switched off, which protects neither.
 //
 // CARVE-OUTS (never scanned):
 //   - tools/orion-ref-gate/**  this gate's own source + fixtures name the token
@@ -43,8 +54,42 @@
 
 import { $ } from "bun";
 
-/** The private monorepo's token. Whole-word, case-insensitive. */
+/**
+ * The private repo's current name. Whole-word, case-insensitive: a bare
+ * `orion` in this repo is always the private repo.
+ */
 export const PRIVATE_TOKEN = "orion";
+
+/**
+ * The private repo's FORMER name, which imported records still carry. It
+ * cannot be scanned whole-word like the current one: `sealed` is also ordinary
+ * English this codebase uses constantly — a sealed sum type, a ciphertext
+ * sealed under a key, an egress-sealed agent. A whole-word scan of the tracked
+ * tree flags dozens of lines (59 outside this gate's own carve-out when the
+ * scan was widened), every one of them legitimate; a gate that is 100% false
+ * positives gets switched off.
+ *
+ * So match only the shapes that name the REPO: a path inside it (slash- or
+ * space-separated), its docsite host, its possessive, or the word followed by
+ * a repo-ish noun (spaced or hyphenated).
+ *
+ * The space-form arm requires the cited token to END in a source-file
+ * extension. Drop that anchor and the same arm matches ordinary prose, because
+ * English carries slashes too: "values sealed and/or rotated" and "rows sealed
+ * in transit/at rest" both false-positive once the extension is optional.
+ *
+ * It therefore misses a directory-only citation ("sealed apps/docs/") and an
+ * extension outside the list. That is the accepted trade: broadening to a bare
+ * `sealed <word>/<word>` re-introduces those prose hits, and an all-false-
+ * positive gate gets switched off, which protects nothing.
+ */
+export const LEGACY_NAME_PATTERNS: readonly RegExp[] = [
+	/\bsealed\/[a-z]/i,
+	/\bsealed\s+[\w.-]+(?:\/[\w.-]+)*\.(?:ts|tsx|js|jsx|go|nix|md|json5?|ya?ml|toml|sh|py|rs|lock)\b/i,
+	/\bsealed-(?:repo|monorepo|docs|private)\b/i,
+	/\bsealed's\b/i,
+	/\bsealed (repo|monorepo|design corpus|platform|convention|PR #)/i,
+];
 
 /**
  * Repo-relative path prefixes never scanned. A reference under one of these is
@@ -97,13 +142,15 @@ export function isCarveOut(path: string): boolean {
 }
 
 /**
- * Whole-word, case-insensitive match for the private token in one line. The
- * gate's own compound name (`orion-ref-gate`) is not a private-repo reference,
- * so a bare `orion` immediately followed by `-ref-gate` does not count.
+ * Case-insensitive match for a private-repo reference in one line: the current
+ * name whole-word, or one of the former name's repo-shaped patterns. The
+ * gate's own compound name (`orion-ref-gate`) is not a reference, so a bare
+ * `orion` immediately followed by `-ref-gate` does not count.
  */
 export function lineHasToken(text: string): boolean {
 	const stripped = text.replace(/orion-ref-gate/gi, "");
-	return new RegExp(`\\b${PRIVATE_TOKEN}\\b`, "i").test(stripped);
+	if (new RegExp(`\\b${PRIVATE_TOKEN}\\b`, "i").test(stripped)) return true;
+	return LEGACY_NAME_PATTERNS.some((re) => re.test(stripped));
 }
 
 /**
@@ -167,15 +214,26 @@ export async function runOnce(deps: Deps): Promise<number> {
 }
 
 /**
- * `git grep -nwI -i <token>` over tracked files. `git grep` exits 0 with
- * matches, 1 on no match (a legitimately clean, empty result), and >=2 on a
- * real error (e.g. not a git work tree). We must distinguish the last from the
- * clean case: swallowing it would make the gate report clean on a broken scan —
- * fail-OPEN, the exact false-green a fail-closed gate exists to stop. Exit >=2
- * throws, so runOnce's catch returns exit 2.
+ * `git grep -nEI` for either name over tracked files, unanchored. The regex is
+ * a coarse pre-filter — `lineHasToken` makes the real decision, so this only
+ * has to be a superset of it. Both names are matched bare here and narrowed
+ * there.
+ *
+ * `git grep` exits 0 with matches, 1 on no match (a legitimately clean, empty
+ * result), and >=2 on a real error (e.g. not a git work tree). We must
+ * distinguish the last from the clean case: swallowing it would make the gate
+ * report clean on a broken scan — fail-OPEN, the exact false-green a
+ * fail-closed gate exists to stop. Exit >=2 throws, so runOnce's catch
+ * returns exit 2.
  */
 async function gitGrep(): Promise<string[]> {
-	const res = await $`git grep -nwiI ${PRIVATE_TOKEN}`.nothrow().quiet();
+	// No `\b` here: it is a GNU extension, not base POSIX ERE. If a toolchain
+	// change ever made git treat it literally, the pre-filter would match
+	// nothing and git grep would exit 1 — a legitimately-clean signal — so the
+	// gate would fail OPEN. The pre-filter only has to be a superset;
+	// lineHasToken owns the word boundary.
+	const pattern = `(${PRIVATE_TOKEN}|sealed)`;
+	const res = await $`git grep -nEiI ${pattern}`.nothrow().quiet();
 	if (res.exitCode >= 2)
 		throw new Error(
 			`git grep exited ${res.exitCode}: ${res.stderr.toString().trim()}`,

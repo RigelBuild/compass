@@ -23,7 +23,7 @@ machinery that existed only to carry them.
 
 - **FROZEN (Matt, 2026-08-19): shared `RigelBuild/{devenv,nix2container,oh-my-pi}`
   repos + combined patch work.** Compass consumes the shared canonical fork
-  repos — one canonical fork per upstream. Sealed patches useful to both the
+  repos — one canonical fork per upstream. Patches useful to both the
   fleet and compass land in the shared repos, never duplicated. Do
   not relitigate; tasks execute it.
 - **Shared-repo patch ownership is disjoint (forge coordination, 2026-08-19).**
@@ -133,7 +133,7 @@ is compass's review point — not a mechanical path swap.
   `moon.yml` check task carries `/forks/devenv/**` as an affected-detection
   input glob (`agent-image-env-gate/moon.yml:58`).
 
-**The sealed patch is compass-specific and load-bearing.** All of it sits in
+**The `containers.nix` patch is compass-specific and load-bearing.** All of it sits in
 `forks/devenv/src/modules/containers.nix`:
 
 - Per-container `user`/`group`/`homeDir` options (`containers.nix:373` —
@@ -154,7 +154,7 @@ UPSTREAM (verified 2026-08-19 against `RigelBuild/devenv@afed7bf3`
 `src/modules/containers.nix`: `homeDir = "/env";` hardcoded in a module-scope
 `let`, `envContainerName = builtins.getEnv "DEVENV_CONTAINER"` present, no
 per-container identity options). The shared `RigelBuild/devenv` fork carries no
-sealed diff for this and has no devenv consumer of its own. Per Matt's ruling,
+diff for this and has no devenv consumer of its own. Per Matt's ruling,
 compass's `containers.nix` patch set therefore **lands INTO `RigelBuild/devenv`
 first** (harmless to other consumers, required by compass), and only then does
 compass repoint to `github:RigelBuild/devenv`. A naive repoint before the patch
@@ -177,7 +177,7 @@ rationale.
   path:../forks/nix2container#skopeo-nix2container`. The env-gate also globs
   `/forks/nix2container/**` (`agent-image-env-gate/moon.yml:59`).
 
-**The sealed patch is shared.** `forks/nix2container/default.nix:396-399` drops
+**This patch is shared.** `forks/nix2container/default.nix:396-399` drops
 relocated copyToRoot paths from the initialized nix DB:
 
 ```nix
@@ -216,9 +216,9 @@ merge and the rev were re-verified at source before this fold.)
 ### oh-my-pi
 
 **Consumer shape: no *build* consumer, one *tooling* consumer.** The tree is
-plain upstream at tag `v17.1.8` with no sealed diff (`forks/README.md:151-155` —
-"Sealed changes: NONE … verified byte-identical to `can1357/oh-my-pi` at
-`v17.1.8`"); no compass image or app build consumes it (`forks/README.md:214`).
+plain upstream at tag `v17.1.8` with no local diff at all — verified
+byte-identical to `can1357/oh-my-pi` at `v17.1.8` — and no compass image or
+app build consumes it.
 But it is **not** consumer-free: the store door's credential-denylist generator
 reads the subtree directly — `go/internal/store/gen_credential_keys.go:42`
 (`const schemaRelPath = "../../../forks/oh-my-pi/packages/coding-agent/src/config/settings-schema.ts"`),
@@ -244,7 +244,7 @@ removes 5892 of the 7424 vendored files in one move. The one real consumer —
 the generator — should read the npm-installed schema the agent actually runs
 (`packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts`, pinned
 at `packages/compass-agent/package.json:19`), so the denylist tracks the version
-in production rather than a vendored snapshot. The sealed deltas catalogued in
+in production rather than a vendored snapshot. The deltas catalogued in
 `forks/README.md:156-197` live in the monorepo fork and are
 `RigelBuild/oh-my-pi`'s concern, not compass's. Drop-vs-consume is a
 load-bearing Open Question (OQ1) — but the one real consumer wanting the npm
@@ -272,7 +272,7 @@ this record does not require it.
 - **Compass-own fork repos** (`RigelBuild/compass-devenv` etc., or reviving the
   per-upstream Copybara spoke repos) — rejected. Matt ruled shared canonical
   repos: one fork per upstream, patch work combined. Two forks of the same
-  upstream would duplicate the sealed patches and re-create the divergence this
+  upstream would duplicate the patch work and re-create the divergence this
   reversal exists to end. Frozen; not relitigated here.
 - **Defer until the fleet's reversal fully lands** — rejected. Only
   the nix2container lane has a genuine cross-repo dependency (the shared
@@ -304,7 +304,7 @@ Contribute compass's devenv patch set into `RigelBuild/devenv`, and confirm the
 nix2container shared fix has landed.
 
 - **L0a — land the `containers.nix` patch in `RigelBuild/devenv`.** Port the
-  full sealed diff from `forks/devenv/src/modules/containers.nix` (per-container
+  full diff from `forks/devenv/src/modules/containers.nix` (per-container
   `user`/`group`/`homeDir` options with upstream values as defaults,
   `containers.nix:373-389`; the `$HOME`-staging guard; the `imageEnv`
   DEVENV_-filter, `containers.nix:181`; the config-only `buildingContainer`
@@ -342,7 +342,7 @@ nix2container shared fix has landed.
 
 Interfaces:
 
-- Consumes: `forks/devenv/src/modules/containers.nix` (the sealed diff, source
+- Consumes: `forks/devenv/src/modules/containers.nix` (the diff, source
   of truth for L0a); the shared nix-DB-drop fix on `RigelBuild/nix2container`.
 - Produces: `RigelBuild/devenv` `main` rev carrying the patch;
   `RigelBuild/nix2container` `master` rev carrying the shared fix. These two

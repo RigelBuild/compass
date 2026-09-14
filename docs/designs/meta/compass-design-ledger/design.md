@@ -203,7 +203,7 @@ fast-follow diff-aware core promotes it to gate-checked (merge-base compare).
 ### 4. The workflow rule — same-PR ledger flip + code-comment citation
 
 The ledger is the ONE living exception to freeze-on-merge, BY DESIGN. It
-stays consistent with the freeze model the same way specs do — the sealed
+stays consistent with the freeze model the same way specs do — the
 convention "update the matching `docs/specs/` doc *in the same PR* as the
 code" (`AGENTS.md:73-74`) extends to the ledger: **the PR that freezes a
 record also appends its new decision rows and flips any rows it supersedes.**

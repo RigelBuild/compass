@@ -27,7 +27,7 @@ this record). Two problems:
    also collides with the fleet-wide sense of "platform" (the shared
    infrastructure layer), making it doubly ambiguous in a product repo. The
    bucket is an accident of migration: the eng-docs migration record itself asserted
-   "`platform/` — a sealed-monorepo domain — does not exist in compass"
+   "`platform/` — an out-of-tree domain — does not exist in compass"
    (`docs/designs/repo/compass-eng-docs/design.md:386-387`), yet 17 records now
    live there.
 
@@ -205,7 +205,7 @@ docs/designs/platform/compass-renovate-migration.md"), `buf.gen.yaml:9`,
 `packages/compass-agent/src/transport/*` file comments, and gate/test fixtures
 (`tools/design-ledger-gate/index.test.ts`, `tools/orion-ref-gate/index.test.ts`
 — fixture strings, not live paths). Inside the corpus, 41 more `docs/designs/platform`
-prose citations. Two cited paths are **already dead** (sealed-repo records that
+prose citations. Two cited paths are **already dead** (out-of-tree records that
 never migrated, pre-existing rot, out of scope but noted): `buf.gen.yaml:9`
 (`docs/designs/platform/go-toolchain-default.md`) and `devenv.nix:208`
 (`docs/designs/platform/ci-toolchain-shared-defs.md`).
@@ -486,8 +486,8 @@ the gate expansion it forces, and the migration strategy:
    *metadata* edits ride the same standard: Status-header normalization to the
    gate grammar (`index.ts:87`) for newly-governed records, and one-line
    corrections of a record's stale self-described location
-   (`compass-agent-image-publish.md:8-11,500-504` says it "lives in the sealed
-   design corpus") — location metadata and machine-checked headers, not
+   (`compass-agent-image-publish.md:8-11,500-504` says it "lives out of tree")
+   — location metadata and machine-checked headers, not
    decisions.
 
 ## Alternatives considered
@@ -849,8 +849,8 @@ Interfaces:
 ### T9 — Post-move verification sweep
 
 Repo-wide grep proves zero live references to `docs/designs/platform/` (the
-two pre-existing dead sealed citations `buf.gen.yaml:9` / `devenv.nix:208` are
-re-pointed to prose or left with an explicit "sealed-private" annotation —
+two pre-existing dead citations `buf.gen.yaml:9` / `devenv.nix:208` are
+re-pointed to prose or left with an explicit "out-of-tree" annotation —
 executor's call, flagged in the PR) and that the only remaining
 `docs/designs/product/` paths are the T10-deferred native-family records and
 their Record cells. Docsite build renders every record; spot-check routes for

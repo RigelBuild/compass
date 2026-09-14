@@ -13,9 +13,9 @@
 // bump re-prefetches bun.nix alone. Requires nix (nix-command) on PATH, provided
 // by the runner; run via bun.
 
-// bun/TypeScript port of the internal monorepo's refresh-toolchain-hashes
-// (RIG-2432), scoped to compass's three vendored binary toolchains. Every
-// observable behaviour is preserved 1:1.
+// Scoped to compass's three vendored binary toolchains (bun, node, moon). A
+// per-file self-gate, per-leg hash refresh that fails loud on a missing marker /
+// hash line, and idempotence.
 
 import { $ } from "bun";
 

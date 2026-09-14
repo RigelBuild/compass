@@ -11,7 +11,7 @@ Status: Draft
 > for the Dogfood milestone. The design targets the **`RigelBuild/compass`**
 > repo; every `go/*`, `proto/*`, `packages/*`, `apps/*`, and `devenv.nix:*`
 > citation below is a path in that repo at origin/main HEAD `abdb412c`, not
-> this one. It lives in the sealed design corpus because that is where the
+> this one. It lives out of tree because that is where the
 > wave's design records freeze.
 
 ## Problem / Intent
@@ -45,7 +45,7 @@ messaging with @mention delivery, (5) teardown + resume from durable state —
 becomes the first scenario set authored on the harness and remains the
 concrete Dogfood acceptance gate.
 
-Note on ledgers: this record lives in the sealed design corpus
+Note on ledgers: this record lives out of tree
 (`docs/designs/platform/`), which the design-ledger-gate governs only for the
 **product** corpus (`docs/designs/product/DECISIONS.md`). A platform record
 adds no DECISIONS row and declares no ledger delta, so nothing here is
