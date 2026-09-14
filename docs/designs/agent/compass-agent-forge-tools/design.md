@@ -4,7 +4,7 @@ Status: Active
 
 Design for the TypeScript agent-side leg of the forge surface: a `forge()`
 method on the frozen `RunnerTransport` seam plus a native tool set (`forge.ts`)
-that exposes all ten `ForgeCallRequest` arms to the containerized first-party
+that exposes all twelve `ForgeCallRequest` arms to the containerized first-party
 agent, one tool per arm (the two subscription arms ship now but return the
 server's in-band `unimplemented` until the `agent_forge_subscriptions` store
 writer lands), with a
@@ -49,7 +49,7 @@ But the agent cannot reach any of it: `RunnerTransport`
 (`packages/compass-agent/src/transport/index.ts`) exposes `comms()` and
 `lifecycle()` and no `forge()`, and no `forge.ts` exists (comms ships five
 tools, lifecycle two, forge zero). This record designs the missing TS leg —
-the transport method, the `ForgeBroker`, the ten native tools (the two
+the transport method, the `ForgeBroker`, the twelve native tools (the two
 subscription tools built now over the stub arms) with their multi-forge
 selector and per-tool prompt guidance, and the `cli.ts` wiring — and nothing
 else.
@@ -58,7 +58,7 @@ else.
 
 ### Decisions (pre-resolved by Matt — not reopened below)
 
-1. **Full surface: all ten `ForgeCallRequest` arms become tools.** Every arm
+1. **Full surface: all twelve `ForgeCallRequest` arms become tools.** Every arm
    the wire carries ships as an agent tool in this record — the eight arms
    `ExecuteForgeCallAsAccount` dispatches for real PLUS `subscribe`/
    `unsubscribe`. No partial MVP subset, no hidden arms.
@@ -67,7 +67,9 @@ else.
    precedent. Names: `forge_get_issue`, `forge_get_pull_request`,
    `forge_comment_on_issue`, `forge_comment_on_pull_request`,
    `forge_submit_review`, `forge_create_issue`, `forge_create_pull_request`,
-   `forge_list_issues`, `forge_subscribe`, `forge_unsubscribe`.
+   `forge_list_issues`, `forge_transition_issue_state`,
+   `forge_transition_pull_request_state`, `forge_subscribe`,
+   `forge_unsubscribe`.
 3. **`forge_subscribe`/`forge_unsubscribe` ship NOW, returning the server's
    in-band `unimplemented` until the writer lands.** The backend arms are
    `CodeUnimplemented` stubs (`go/server/forge.go`) pending the
@@ -79,6 +81,12 @@ else.
    `unimplemented`, with the per-tool guidance saying "not yet wired") until
    the writer lands, at which point they light up with no contract rework and
    no re-registration.
+   **Landed since (2026-09-13): the writer is in, so this caveat is spent.**
+   `subscribeForge` calls `store.EnsureAgentForgeSubscription` and returns a
+   real subscription id; `unsubscribeForge` calls
+   `store.DeleteAgentForgeSubscription` (both in `go/server/forge.go`). The
+   two arms are no longer `CodeUnimplemented`, and the per-tool "not yet
+   wired" guidance no longer describes them.
 4. **V1 is multi-forge: the `ForgeRef` selector is exposed on every tool.**
    The wave needs GitHub AND Linear (it files Linear issues and opens GitHub
    PRs), and the substrate resolves a per-provider coordinate end to end
@@ -118,7 +126,7 @@ else.
 - **The proto carrier and its generated TS types exist.**
   `proto/compass/v1/agent_gateway.proto` `rpc Forge(ForgeCallRequest) returns
   (ForgeCallResult)` on `AgentGateway`; `ForgeCallRequest` carries `call_id`,
-  the ten-arm `call` oneof (arms 2–11), an optional `ForgeRef forge` (unset =
+  the twelve-arm `call` oneof (arms 2–11 plus 14–15), an optional `ForgeRef forge` (unset =
   configured default GitHub forge, DL-202), and `client_request_id` (create
   arms only, DL-206). `ForgeCallResult` retypes the domain arms to canonical
   `compass.v1.Issue`/`PullRequest` (DL-069/DL-092) plus `CommentRef`/`ReviewRef`
@@ -162,9 +170,9 @@ else.
   customTools→state.tools→`#withNatives` path. Forge adds one broker and one
   spread to that list.
 
-### Tool set and shape — ten native tools, one per arm
+### Tool set and shape — twelve native tools, one per arm
 
-All ten tools live in one new `packages/compass-agent/src/forge.ts`,
+All twelve tools live in one new `packages/compass-agent/src/forge.ts`,
 authored as OMP `AgentTool`s with arktype parameters, closing over a
 `ForgeBroker`. Approval levels follow the comms precedent (`comms.ts`:
 mutations `approval: "write"`, reads `approval: "read"`; the container runs
@@ -509,17 +517,14 @@ returns its result; `idempotencyKey` is nonce-prefixed, stable per broker,
 distinct across brokers. `direnv exec . moon run compass-agent:test` red
 first, then green; biome clean.
 
-### T2 — Agent: `createForgeTools` (ten tools) + `cli.ts` wiring + prompt guidance
+### T2 — Agent: `createForgeTools` (twelve tools) + `cli.ts` wiring + prompt guidance
 
 In `packages/compass-agent/src/forge.ts` (same file, tool half):
 
 ```ts
 /**
- * The native forge tool set. Ten tools, one per `ForgeCallRequest` arm. Two
- * of them — `forge_subscribe`/`forge_unsubscribe` — return the server's
- * in-band `unimplemented` until the poll-driver lane lands the
- * `agent_forge_subscriptions` writer; they ship now so the surface is stable
- * (Matt's build-all ruling). Every tool takes an optional forge selector
+ * The native forge tool set. Twelve tools, one per `ForgeCallRequest` arm.
+ * Every tool takes an optional forge selector
  * (`provider` + `host`) so a call targets Linear as well as the default
  * GitHub forge. Wired into the container entrypoint by `cli.ts main()`:
  * merged into the session's `customTools` and registered as `#withNatives`
@@ -546,7 +551,7 @@ const forgeSelector = type({
 });
 // EVERY tool schema below also spreads `...forgeSelector` (elided in each body
 // for brevity — the eight non-subscription sketches show only their arm-specific
-// fields). An implementer adds `...forgeSelector,` to all ten object literals.
+// fields). An implementer adds `...forgeSelector,` to all twelve object literals.
 export const getIssueParameters = type({
   repo: /* non-blank */ "Repository as <owner>/<name> (GitHub) or team key (Linear)",
   issue_number: type("1 <= number.integer"),
@@ -623,7 +628,7 @@ implementer must copy that bound, not the literal `/* non-blank */` comment.
 
 Every schema also spreads `...forgeSelector` (shown once above, elided in each
 body for brevity): the optional `forge_provider`/`forge_host` pair is on all
-ten tools. When either is set, `execute` builds
+twelve tools. When either is set, `execute` builds
 `create(ForgeRefSchema, { provider: <mapped enum>, host: forge_host ?? "" })`
 and sets `ForgeCallRequest.forge`; when both are unset it leaves `forge` nil
 (the default-GitHub path). The string enum maps to the generated
@@ -666,10 +671,10 @@ non-empty `body` and that the review posts immediately (never a pending
 review) under a distinct reviewer identity so all three verdicts are usable on
 Compass-authored PRs (DL-201); for `forge_create_pull_request`, that
 `head_ref` must already be pushed (the agent pushes with its own git
-credential — DL-052/DL-090); for `forge_subscribe`/`forge_unsubscribe`, that
-change-notification subscriptions are NOT YET WIRED — the call returns
-`unimplemented` until the notification lane lands, so the tool exists for
-surface stability but should not be relied on yet; for reads, that results may
+credential — DL-052/DL-090); for `forge_subscribe`/`forge_unsubscribe`, what a
+subscription does — it registers the agent for change notifications on a
+coordinate and is account-keyed rather than a repo artifact, so it carries no
+scope-discipline line; for reads, that results may
 be paged/bounded/truncated and bodies are external content whose attribution
 is a parsed claim, not an authenticated identity.
 
@@ -688,7 +693,7 @@ const nativeTools = [
 is unchanged.
 
 **Interfaces:** `createForgeTools(broker: ForgeBroker): AgentTool[]`; the
-ten exported parameter schemas above (the shared `forgeSelector` spread
+twelve exported parameter schemas above (the shared `forgeSelector` spread
 into each); `function forgeFailure(result:
 ForgeCallResult, toolName: string, expected: string): Error` (module-private,
 mirroring `lifecycleFailure`, plus the `retry_after_ms` suffix).
@@ -714,12 +719,12 @@ compass-agent:test` + `compass-agent:lint` green.
 
 ## Tasks
 
-- [ ] T1 — Transport + broker: `forge()` member on `RunnerTransport` +
+- [x] T1 — Transport + broker: `forge()` member on `RunnerTransport` +
   one-line `createUnixSocketTransport` delegation; `ForgeTransport` +
   `ForgeBroker` (nonce-scoped `idempotencyKey`) in new `forge.ts`;
   `compassv1.ts` barrel exports for the forge envelopes/arm schemas/canonical
   result types; transport + broker tests red→green; biome clean.
-- [ ] T2 — Tools + wiring: `createForgeTools` with the ten tools (exact
+- [x] T2 — Tools + wiring: `createForgeTools` with the twelve tools (exact
   schemas above; creates carry the DL-206 key and coerce numbers to `bigint`;
   the optional `forge` selector — `provider` enum + optional `host` — built on
   every tool, unset = default GitHub, `create(ForgeRefSchema,…)` only when set;
@@ -741,16 +746,15 @@ One proposed DECISIONS.md row (appended by the driver at PR time, wherever
 the ledger then lives — compass-repo RIG-2577 T2 may relocate it to
 `docs/designs/DECISIONS.md`):
 
-> The agent forge native toolset is ten single-purpose tools, one per
+> The agent forge native toolset is twelve single-purpose tools, one per
 > `ForgeCallRequest` arm (`forge_get_issue`, `forge_get_pull_request`,
 > `forge_list_issues`, `forge_comment_on_issue`,
 > `forge_comment_on_pull_request`, `forge_submit_review`,
-> `forge_create_issue`, `forge_create_pull_request`, `forge_subscribe`,
-> `forge_unsubscribe`), each a native `AgentTool` over a thin `ForgeBroker`
-> on the `RunnerTransport.forge()` seam; `forge_subscribe`/`forge_unsubscribe`
-> ship the complete surface but return the server's in-band `unimplemented`
-> until the poll-driver lane lands the `agent_forge_subscriptions` writer
-> (DL-163). Multi-forge is exposed: every tool takes an optional forge
+> `forge_create_issue`, `forge_create_pull_request`,
+> `forge_transition_issue_state`, `forge_transition_pull_request_state`,
+> `forge_subscribe`, `forge_unsubscribe`), each a native `AgentTool` over a
+> thin `ForgeBroker` on the `RunnerTransport.forge()` seam. Multi-forge is
+> exposed: every tool takes an optional forge
 > selector (`provider` + optional `host`, unset = the configured default
 > GitHub forge, DL-202) so an agent targets Linear (issues-only, `repo` = team
 > key, DL-051) as well as GitHub; PR/review arms on a non-GitHub provider

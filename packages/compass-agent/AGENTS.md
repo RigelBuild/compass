@@ -73,7 +73,7 @@ Both tools render names/handles only — never account, container, or session id
 
 ## The forge toolset
 
-Ten native forge tools ship (`src/forge.ts`), one per `ForgeCallRequest` arm,
+Twelve native forge tools ship (`src/forge.ts`), one per `ForgeCallRequest` arm,
 over a thin `ForgeBroker` on the `RunnerTransport.forge()` seam — the same
 broker/identity/registration shape as comms:
 
@@ -81,7 +81,9 @@ broker/identity/registration shape as comms:
   `forge_list_issues`.
 - Writes (`approval: "write"`): `forge_comment_on_issue`,
   `forge_comment_on_pull_request`, `forge_submit_review`, `forge_create_issue`,
-  `forge_create_pull_request`, `forge_subscribe`, `forge_unsubscribe`.
+  `forge_create_pull_request`, `forge_transition_issue_state`,
+  `forge_transition_pull_request_state`, `forge_subscribe`,
+  `forge_unsubscribe`.
 
 `forge_create_issue`/`forge_create_pull_request` carry a broker-scoped DL-206
 `client_request_id` (`ForgeBroker.idempotencyKey`); the other arms send none.
@@ -89,10 +91,12 @@ Every tool spreads an optional forge selector (`forge_provider` +
 `forge_host`): unset = the configured default GitHub forge (DL-202);
 `forge_provider: "linear"` targets the issues-only Linear provider (DL-051)
 where `repo` is the team key and the PR/review arms return in-band
-`unimplemented`. `forge_subscribe`/`forge_unsubscribe` ship the complete
-surface but return the server's in-band `unimplemented` until the poll-driver
-lane lands the `agent_forge_subscriptions` writer (DL-163) — the tool set never
-changes shape when it lands.
+`unimplemented`. `forge_subscribe`/`forge_unsubscribe` are live: subscribe
+persists an account-keyed row (`EnsureAgentForgeSubscription`) and returns its
+id, unsubscribe deletes it (`DeleteAgentForgeSubscription`). They were in-band
+`unimplemented` until the poll-driver lane landed the
+`agent_forge_subscriptions` writer (DL-163), and the tool set did not change
+shape when it did.
 
 **The forge surface is prompt-contained, not authz-contained.** Unlike comms
 (channel membership), the substrate ships no scope rejection (A8): one forge

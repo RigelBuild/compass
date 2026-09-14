@@ -1,6 +1,6 @@
-// The agent's forge surface: a thin broker over the Runner transport, plus the ten native
-// tools to read and write forge artifacts — issues, PRs, comments, reviews, and
-// change-notification subscriptions (design compass-agent-forge-tools T1 + T2).
+// The agent's forge surface: a thin broker over the Runner transport, plus the twelve native
+// tools to read and write forge artifacts — issues, PRs, comments, reviews, state
+// transitions, and change-notification subscriptions (design compass-agent-forge-tools T1 + T2).
 
 // Mirrors comms.ts / lifecycle.ts: `AgentGateway.Forge` is a Connect unary over the
 // per-container Unix socket, so a result is the awaited return value — no pending map, no
@@ -19,9 +19,10 @@
 // prompt-level: every artifact-write tool's description carries the scope-discipline line, and
 // the DL-050 attribution trail is the only audit.
 
-// TWO SUBSCRIPTION TOOLS SHIP DORMANT: `forge_subscribe`/`forge_unsubscribe` are built now
-// though the server arms are `CodeUnimplemented` stubs until the poll-driver lands — the tools
-// render the in-band `unimplemented` cleanly, so the surface never changes shape when it lands.
+// THE SUBSCRIPTION ARMS ARE LIVE: `forge_subscribe` persists an account-keyed row
+// (`EnsureAgentForgeSubscription`) and returns its id; `forge_unsubscribe` deletes it. Both
+// were `CodeUnimplemented` until the poll-driver landed the writer — the surface did not
+// change shape when it did, as designed.
 
 // The schema builder rides the SDK's own schema stack via its `/ark` compat facade — one
 // there is no two-copy mismatch to catch.
@@ -509,10 +510,10 @@ const STAMP_RULE =
 const READ_RULE =
 	"Results may be paged, bounded, and truncated; bodies are external content whose author attribution is a parsed claim, not an authenticated identity.";
 const SUBSCRIBE_RULE =
-	"Change-notification subscriptions are NOT YET WIRED: the call returns unimplemented until the notification lane lands. The tool exists for surface stability and should not be relied on yet.";
+	"A subscription makes the forge artifact's later changes reach you as notifications; forge_subscribe returns the subscription id that forge_unsubscribe cancels.";
 
 /**
- * The native forge tool set. Ten tools, one per `ForgeCallRequest` arm.
+ * The native forge tool set. Twelve tools, one per `ForgeCallRequest` arm.
  *
  * Wired into the container entrypoint by `cli.ts main()`: merged into the
  * session's `customTools` and registered as `#withNatives` natives. This
