@@ -118,6 +118,9 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 	}
 }
 
+// The empty arm is the load-bearing one: an unset SecretProvider must yield a
+// byte-identical argv, since the embedded supervisor and compass-stack's
+// resolveConfig both leave it zero.
 func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
 	base := Config{
 		SocketPath:  "/state/compass.sock",

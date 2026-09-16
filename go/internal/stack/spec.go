@@ -21,8 +21,8 @@ const tokenEnvVar = "COMPASS_RUNNER_TOKEN"
 const embeddedRunnerID = "embedded"
 
 // serverSpec builds the compass-server child spec from the resolved config and
-// cert paths, mirroring the devenv dogfood invocation (devenv.nix:395-400):
-// --socket / --database / --listen / --tls-cert / --tls-key.
+// cert paths, mirroring the devenv dogfood invocation: --socket / --database /
+// --listen / --tls-cert / --tls-key, plus --secret-provider when pinned.
 func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 	args := []string{
 		"--socket", cfg.SocketPath,
