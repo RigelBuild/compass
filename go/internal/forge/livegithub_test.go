@@ -513,6 +513,185 @@ func TestLiveGitHubAuthFailureInvalidates(t *testing.T) {
 	}
 }
 
+// --- transition oracle (design §T7, DL-210) ----------------------------------
+//
+// These legs cover every transition fixture reproducible live. Three are
+// golden-replay-only, each needing live state a test cannot create:
+// transition_pull_request_reopen_merged (a merged PR), transition_issue_duplicate_name
+// (two states sharing a name), transition_issue_ambiguous_default (two
+// completed-type states).
+
+// TestLiveGitHubTransitionIssueClose closes a freshly-created issue (default
+// reason) and asserts the decoded issue matches the committed fixture.
+func TestLiveGitHubTransitionIssueClose(t *testing.T) {
+	repo, author, _ := requireLive(t)
+	ctx := context.Background()
+	gh := liveGitHub(author)
+
+	f := liveFixture(t, providerGitHub, "transition_issue_close_default")
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+
+	got, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed})
+	if err != nil {
+		t.Fatalf("TransitionIssueState close: %v", err)
+	}
+	assertMatchesFixture(t, got, f.Response.Want)
+}
+
+// TestLiveGitHubTransitionIssueCloseReason closes with an explicit not_planned
+// state_reason on a labeled issue and asserts the decoded issue matches the
+// fixture (State closed, the label preserved through the close).
+func TestLiveGitHubTransitionIssueCloseReason(t *testing.T) {
+	repo, author, _ := requireLive(t)
+	ctx := context.Background()
+	gh := liveGitHub(author)
+
+	f := liveFixture(t, providerGitHub, "transition_issue_close_reason")
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclosereason-" + newRunID(), Labels: []string{"bug"}})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+
+	got, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed, CloseReason: "not_planned"})
+	if err != nil {
+		t.Fatalf("TransitionIssueState close_reason: %v", err)
+	}
+	assertMatchesFixture(t, got, f.Response.Want)
+}
+
+// TestLiveGitHubTransitionIssueReopen closes then reopens an issue and asserts
+// the reopen response matches the fixture (State open).
+func TestLiveGitHubTransitionIssueReopen(t *testing.T) {
+	repo, author, _ := requireLive(t)
+	ctx := context.Background()
+	gh := liveGitHub(author)
+
+	f := liveFixture(t, providerGitHub, "transition_issue_reopen")
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+
+	// Close first so the reopen is a real state change, not a no-op on an open issue.
+	if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("TransitionIssueState close (setup): %v", err)
+	}
+	got, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateOpen})
+	if err != nil {
+		t.Fatalf("TransitionIssueState reopen: %v", err)
+	}
+	assertMatchesFixture(t, got, f.Response.Want)
+}
+
+// TestLiveGitHubTransitionPullRequestClose closes a freshly-opened PR. The PR
+// transition decodes ghPullDetail, which populates the live diff stats (Changed)
+// the committed fixture cannot pin, so the leg asserts the state fold directly
+// rather than through assertMatchesFixture.
+func TestLiveGitHubTransitionPullRequestClose(t *testing.T) {
+	repo, author, _ := requireLive(t)
+	ctx := context.Background()
+	gh := liveGitHub(author)
+
+	head := "compass-live-" + newRunID()
+	seedHeadBranch(t, ctx, author, repo, head)
+	pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+		return gh.CreatePullRequest(ctx, repo, CreatePR{Title: "compass-live-tprclose-" + newRunID(), HeadRef: head, BaseRef: "main", Draft: true})
+	})
+	if err != nil {
+		t.Fatalf("CreatePullRequest (setup): %v", err)
+	}
+	t.Cleanup(func() { teardownGitHubPR(t, author, repo, pr.Number, head) })
+
+	got, err := gh.TransitionPullRequestState(ctx, repo, pr.Number, TransitionState{State: stateClosed})
+	if err != nil {
+		t.Fatalf("TransitionPullRequestState close: %v", err)
+	}
+	if got.State != stateClosed {
+		t.Errorf("TransitionPullRequestState close State = %q, want %q", got.State, stateClosed)
+	}
+}
+
+// TestLiveGitHubTransitionPullRequestReopen closes then reopens a PR, asserting
+// the state fold directly (see TestLiveGitHubTransitionPullRequestClose).
+func TestLiveGitHubTransitionPullRequestReopen(t *testing.T) {
+	repo, author, _ := requireLive(t)
+	ctx := context.Background()
+	gh := liveGitHub(author)
+
+	head := "compass-live-" + newRunID()
+	seedHeadBranch(t, ctx, author, repo, head)
+	pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+		return gh.CreatePullRequest(ctx, repo, CreatePR{Title: "compass-live-tprreopen-" + newRunID(), HeadRef: head, BaseRef: "main", Draft: true})
+	})
+	if err != nil {
+		t.Fatalf("CreatePullRequest (setup): %v", err)
+	}
+	t.Cleanup(func() { teardownGitHubPR(t, author, repo, pr.Number, head) })
+
+	if _, err := gh.TransitionPullRequestState(ctx, repo, pr.Number, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("TransitionPullRequestState close (setup): %v", err)
+	}
+	got, err := gh.TransitionPullRequestState(ctx, repo, pr.Number, TransitionState{State: stateOpen})
+	if err != nil {
+		t.Fatalf("TransitionPullRequestState reopen: %v", err)
+	}
+	if got.State != stateOpen {
+		t.Errorf("TransitionPullRequestState reopen State = %q, want %q", got.State, stateOpen)
+	}
+}
+
+// TestLiveGitHubTransitionCrossOp is the T7 cross-op oracle: create -> close ->
+// an INDEPENDENT GetIssue confirming the state changed -> reopen -> GetIssue
+// confirming it reopened. The separate read proves the write took effect, which
+// a single-call fixture compare cannot show.
+func TestLiveGitHubTransitionCrossOp(t *testing.T) {
+	repo, author, _ := requireLive(t)
+	ctx := context.Background()
+	gh := liveGitHub(author)
+
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-xop-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+
+	if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("TransitionIssueState close: %v", err)
+	}
+	closed, err := gh.GetIssue(ctx, repo, issue.Number)
+	if err != nil {
+		t.Fatalf("GetIssue after close: %v", err)
+	}
+	if closed.State != stateClosed {
+		t.Errorf("GetIssue after close State = %q, want %q", closed.State, stateClosed)
+	}
+
+	if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateOpen}); err != nil {
+		t.Fatalf("TransitionIssueState reopen: %v", err)
+	}
+	reopened, err := gh.GetIssue(ctx, repo, issue.Number)
+	if err != nil {
+		t.Fatalf("GetIssue after reopen: %v", err)
+	}
+	if reopened.State != stateOpen {
+		t.Errorf("GetIssue after reopen State = %q, want %q", reopened.State, stateOpen)
+	}
+}
+
 // --- Linear scenarios (co-equal) ---------------------------------------------
 
 // TestLiveLinearCreateIssue creates a uniquely-named issue on the test team and
@@ -637,6 +816,200 @@ func TestLiveLinearPRUnsupported(t *testing.T) {
 
 	if _, err := ln.CreatePullRequest(ctx, team, CreatePR{}); !errors.Is(err, ErrUnsupported) {
 		t.Errorf("Linear CreatePullRequest err = %v, want ErrUnsupported", err)
+	}
+}
+
+// TestLiveLinearTransitionIssueClose closes a freshly-created issue via the
+// default (completed) mapping and asserts the decoded issue matches the fixture.
+func TestLiveLinearTransitionIssueClose(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx := context.Background()
+	ln := liveLinear(ts)
+
+	f := liveFixture(t, providerLinear, "transition_issue_close_default")
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+
+	got, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed})
+	if err != nil {
+		t.Fatalf("TransitionIssueState close: %v", err)
+	}
+	assertMatchesFixture(t, got, f.Response.Want)
+}
+
+// TestLiveLinearTransitionIssueCloseByName closes an issue onto a NAMED workflow
+// state and asserts the decoded issue matches the fixture. The name is
+// DISCOVERED from the live team rather than hardcoded, so a team whose columns
+// are named differently cannot red this leg down the unknown-name path.
+func TestLiveLinearTransitionIssueCloseByName(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx := context.Background()
+	ln := liveLinear(ts)
+
+	named := liveStateNameOfType(t, ctx, ln, team, "canceled")
+	f := liveFixture(t, providerLinear, "transition_issue_close_by_name")
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+
+	got, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: named})
+	if err != nil {
+		t.Fatalf("TransitionIssueState close_by_name: %v", err)
+	}
+	assertMatchesFixture(t, got, f.Response.Want)
+}
+
+// TestLiveLinearTransitionIssueReopen closes then reopens an issue via the
+// default (unstarted) mapping and asserts the reopen matches the fixture.
+func TestLiveLinearTransitionIssueReopen(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx := context.Background()
+	ln := liveLinear(ts)
+
+	f := liveFixture(t, providerLinear, "transition_issue_reopen_default")
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+
+	// Close first so the reopen is a real state change.
+	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("TransitionIssueState close (setup): %v", err)
+	}
+	got, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateOpen})
+	if err != nil {
+		t.Fatalf("TransitionIssueState reopen: %v", err)
+	}
+	assertMatchesFixture(t, got, f.Response.Want)
+}
+
+// TestLiveLinearTransitionUnknownName asserts the error contract for a target
+// workflow-state name that cannot exist on the team: a *StatusError 422 whose
+// message names the team, the failure, and the offending name (the fixture's
+// RIG is team-specific, so the live leg substitutes the live team key).
+func TestLiveLinearTransitionUnknownName(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx := context.Background()
+	ln := liveLinear(ts)
+
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tunknown-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+
+	_, err = ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: "compass-live-nonexistent-state"})
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("unknown-name transition: want *StatusError 422, got %v", err)
+	}
+	for _, sub := range []string{team, "no workflow state named", "compass-live-nonexistent-state"} {
+		if !strings.Contains(se.Message, sub) {
+			t.Errorf("unknown-name error %q does not name %q", se.Message, sub)
+		}
+	}
+}
+
+// TestLiveLinearTransitionTypeContradiction asserts the error contract for a
+// named state whose type contradicts the portable target: closing onto a
+// started-type state must be a *StatusError 422 naming the clash. The state is
+// DISCOVERED from the live team, never hardcoded — a team without the assumed
+// name would otherwise fail down the unknown-name path and pass this assertion
+// for the wrong reason.
+func TestLiveLinearTransitionTypeContradiction(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx := context.Background()
+	ln := liveLinear(ts)
+
+	started := liveStateNameOfType(t, ctx, ln, team, "started")
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tcontra-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+
+	_, err = ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: started})
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != http.StatusUnprocessableEntity {
+		t.Fatalf("type-contradiction transition: want *StatusError 422, got %v", err)
+	}
+	for _, sub := range []string{team, started, "started", "contradicts", stateClosed} {
+		if !strings.Contains(se.Message, sub) {
+			t.Errorf("type-contradiction error %q does not name %q", se.Message, sub)
+		}
+	}
+}
+
+// liveStateNameOfType returns the name of a workflow state of the given Linear
+// type on the live team, skipping when the team has none — the by-name contracts
+// are unobservable without one, and a skip is loud via CI's assert-ran guard.
+func liveStateNameOfType(t *testing.T, ctx context.Context, ln *Linear, team, stateType string) string {
+	t.Helper()
+	states, _, err := ln.workflowStatesFor(ctx, team)
+	if err != nil {
+		t.Fatalf("workflowStatesFor(%q): %v", team, err)
+	}
+	for _, s := range states {
+		if s.Type == stateType {
+			return s.Name
+		}
+	}
+	t.Skipf("live linear oracle: team %q has no %s-type workflow state; the by-name leg needs one", team, stateType)
+	return ""
+}
+
+// TestLiveLinearTransitionCrossOp is the Linear half of the T7 cross-op oracle:
+// create -> close -> an INDEPENDENT GetIssue confirming the state changed ->
+// reopen -> GetIssue confirming it reopened.
+func TestLiveLinearTransitionCrossOp(t *testing.T) {
+	ts, team := requireLinear(t)
+	ctx := context.Background()
+	ln := liveLinear(ts)
+
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return ln.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-xop-" + newRunID()})
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue (setup): %v", err)
+	}
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
+
+	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
+		t.Fatalf("TransitionIssueState close: %v", err)
+	}
+	closed, err := ln.GetIssue(ctx, team, issue.Number)
+	if err != nil {
+		t.Fatalf("GetIssue after close: %v", err)
+	}
+	if closed.State != stateClosed {
+		t.Errorf("GetIssue after close State = %q, want %q", closed.State, stateClosed)
+	}
+
+	if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateOpen}); err != nil {
+		t.Fatalf("TransitionIssueState reopen: %v", err)
+	}
+	reopened, err := ln.GetIssue(ctx, team, issue.Number)
+	if err != nil {
+		t.Fatalf("GetIssue after reopen: %v", err)
+	}
+	if reopened.State != stateOpen {
+		t.Errorf("GetIssue after reopen State = %q, want %q", reopened.State, stateOpen)
 	}
 }
 
@@ -1163,13 +1536,125 @@ func githubUpdateSpecs() []captureSpec {
 				return fixtureRequest{Op: "comment_on_issue", Repo: repo, Number: issue.Number,
 					Input: &fixtureInput{Body: body}}
 			}},
+		{provider: providerGitHub, name: "transition_issue_close_default", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				setup := setupGitHub(author)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed}); err != nil {
+					t.Fatalf("TransitionIssueState close: %v", err)
+				}
+				return fixtureRequest{Op: "transition_issue_state", Repo: repo, Number: issue.Number,
+					Input: &fixtureInput{State: stateClosed}}
+			}},
+		{provider: providerGitHub, name: "transition_issue_close_reason", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				setup := setupGitHub(author)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-tclosereason-" + newRunID(), Labels: []string{"bug"}})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed, CloseReason: "not_planned"}); err != nil {
+					t.Fatalf("TransitionIssueState close_reason: %v", err)
+				}
+				return fixtureRequest{Op: "transition_issue_state", Repo: repo, Number: issue.Number,
+					Input: &fixtureInput{State: stateClosed, CloseReason: "not_planned"}}
+			}},
+		{provider: providerGitHub, name: "transition_issue_reopen", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				setup := setupGitHub(author)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+				if _, err := setup.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateClosed}); err != nil {
+					t.Fatalf("TransitionIssueState close (setup): %v", err)
+				}
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.TransitionIssueState(ctx, repo, issue.Number, TransitionState{State: stateOpen}); err != nil {
+					t.Fatalf("TransitionIssueState reopen: %v", err)
+				}
+				return fixtureRequest{Op: "transition_issue_state", Repo: repo, Number: issue.Number,
+					Input: &fixtureInput{State: stateOpen, CloseReason: "completed"}}
+			}},
+		{provider: providerGitHub, name: "transition_pull_request_close", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				head := "compass-live-" + newRunID()
+				seedHeadBranch(t, ctx, author, repo, head)
+				setup := setupGitHub(author)
+				pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+					return setup.CreatePullRequest(ctx, repo, CreatePR{Title: "compass-live-tprclose-" + newRunID(), HeadRef: head, BaseRef: "main", Draft: true})
+				})
+				if err != nil {
+					t.Fatalf("CreatePullRequest (setup): %v", err)
+				}
+				t.Cleanup(func() { teardownGitHubPR(t, author, repo, pr.Number, head) })
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.TransitionPullRequestState(ctx, repo, pr.Number, TransitionState{State: stateClosed}); err != nil {
+					t.Fatalf("TransitionPullRequestState close: %v", err)
+				}
+				return fixtureRequest{Op: "transition_pull_request_state", Repo: repo, Number: pr.Number,
+					Input: &fixtureInput{State: stateClosed}}
+			}},
+		{provider: providerGitHub, name: "transition_pull_request_reopen", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				head := "compass-live-" + newRunID()
+				seedHeadBranch(t, ctx, author, repo, head)
+				setup := setupGitHub(author)
+				pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+					return setup.CreatePullRequest(ctx, repo, CreatePR{Title: "compass-live-tprreopen-" + newRunID(), HeadRef: head, BaseRef: "main", Draft: true})
+				})
+				if err != nil {
+					t.Fatalf("CreatePullRequest (setup): %v", err)
+				}
+				t.Cleanup(func() { teardownGitHubPR(t, author, repo, pr.Number, head) })
+				if _, err := setup.TransitionPullRequestState(ctx, repo, pr.Number, TransitionState{State: stateClosed}); err != nil {
+					t.Fatalf("TransitionPullRequestState close (setup): %v", err)
+				}
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.TransitionPullRequestState(ctx, repo, pr.Number, TransitionState{State: stateOpen}); err != nil {
+					t.Fatalf("TransitionPullRequestState reopen: %v", err)
+				}
+				return fixtureRequest{Op: "transition_pull_request_state", Repo: repo, Number: pr.Number,
+					Input: &fixtureInput{State: stateOpen}}
+			}},
 	}
 }
 
 // linearUpdateSpecs is the Linear half of the capture table. create/comment run
 // resolveTeamID|resolveIssueID + the actor probe BEFORE the mutation (prelude 2);
-// get/list issue reads are single-shot (prelude 0). Each run drives the SAME live
-// op its sibling oracle scenario runs, with the same teardown hygiene.
+// a transition runs resolveTeamID + workflowStates + resolveIssueID (prelude 3, no
+// actor probe — a transition creates no content to attribute); get/list issue
+// reads are single-shot (prelude 0). Each run drives the SAME live op its sibling
+// oracle scenario runs, with the same teardown hygiene.
 func linearUpdateSpecs() []captureSpec {
 	return []captureSpec{
 		{provider: providerLinear, name: "create_issue", prelude: 2,
@@ -1247,6 +1732,72 @@ func linearUpdateSpecs() []captureSpec {
 				}
 				return fixtureRequest{Op: "comment_on_issue", Repo: team, Number: issue.Number,
 					Input: &fixtureInput{Body: body}}
+			}},
+		{provider: providerLinear, name: "transition_issue_close_default", prelude: 3,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team := requireLinear(t)
+				ctx := context.Background()
+				setup := setupLinear(ts)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclose-" + newRunID()})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				ln := recordingLinear(ts, rt)
+				if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
+					t.Fatalf("TransitionIssueState close: %v", err)
+				}
+				return fixtureRequest{Op: "transition_issue_state", Repo: team, Number: issue.Number,
+					Input: &fixtureInput{State: stateClosed}}
+			}},
+		{provider: providerLinear, name: "transition_issue_close_by_name", prelude: 3,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team := requireLinear(t)
+				ctx := context.Background()
+				setup := setupLinear(ts)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-tclosename-" + newRunID()})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				// Discovered on the NON-recording setup client, so the lookup spends no
+				// prelude slot on the recording transport.
+				named := liveStateNameOfType(t, ctx, setup, team, "canceled")
+				ln := recordingLinear(ts, rt)
+				if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed, WorkflowState: named}); err != nil {
+					t.Fatalf("TransitionIssueState close_by_name: %v", err)
+				}
+				return fixtureRequest{Op: "transition_issue_state", Repo: team, Number: issue.Number,
+					Input: &fixtureInput{State: stateClosed, WorkflowState: named}}
+			}},
+		{provider: providerLinear, name: "transition_issue_reopen_default", prelude: 3,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team := requireLinear(t)
+				ctx := context.Background()
+				setup := setupLinear(ts)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-treopen-" + newRunID()})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				if _, err := setup.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateClosed}); err != nil {
+					t.Fatalf("TransitionIssueState close (setup): %v", err)
+				}
+				ln := recordingLinear(ts, rt)
+				if _, err := ln.TransitionIssueState(ctx, team, issue.Number, TransitionState{State: stateOpen}); err != nil {
+					t.Fatalf("TransitionIssueState reopen: %v", err)
+				}
+				return fixtureRequest{Op: "transition_issue_state", Repo: team, Number: issue.Number,
+					Input: &fixtureInput{State: stateOpen}}
 			}},
 	}
 }
