@@ -200,6 +200,20 @@ func TestWaitForSocketsFailsFastOnADeadDaemon(t *testing.T) {
 	if !strings.Contains(err.Error(), diagnostic) {
 		t.Errorf("error %q does not carry the daemon's own log tail (%q); the real cause would be lost", err.Error(), diagnostic)
 	}
+	// The two assertions above are satisfied by text on EITHER SIDE of the slot
+	// where the death cause belongs — the daemon name before it, the log tail
+	// after — so they both passed while that slot rendered the literal
+	// "%!w(<nil>)". A startup death is an *exec.ExitError, which waitResult
+	// deliberately maps to nil (a non-zero exit is the expected TEARDOWN
+	// outcome), and %w on a nil error prints that marker. So assert the slot
+	// itself: no formatting-verb marker, and the real exit status present.
+	if strings.Contains(err.Error(), "%!") {
+		t.Errorf("error %q carries a Go formatting-verb error; the death cause was fed a nil", err.Error())
+	}
+	if !strings.Contains(err.Error(), "exit status 1") {
+		t.Errorf("error %q does not report the daemon's exit status; an operator cannot tell "+
+			"a non-zero exit from a clean one", err.Error())
+	}
 	// Fast: the exit short-circuits the poll instead of burning the window.
 	if elapsed > socketReadyTimeout/2 {
 		t.Errorf("waitForSockets took %v of a %v budget; a dead child must short-circuit the poll", elapsed, socketReadyTimeout)

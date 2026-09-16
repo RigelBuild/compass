@@ -261,8 +261,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	// between the last poll iteration and here must not be handed to the VMM.
 	for _, c := range waiting {
 		if c.hasExited() {
-			return nil, fmt.Errorf("microvm: %s exited before cloud-hypervisor was started: %w; log tail:\n%s",
-				c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+			return nil, fmt.Errorf("microvm: %s exited before cloud-hypervisor was started: %s; log tail:\n%s",
+				c.name, deathCause(c), tailFile(c.logPath))
 		}
 	}
 
@@ -510,8 +510,8 @@ func waitForSockets(ctx context.Context, paths []string, waiting []*child, timeo
 		// readiness, so this check precedes the Stat sweep.
 		for _, c := range waiting {
 			if c.hasExited() {
-				return fmt.Errorf("%s exited before its socket was serving: %w; log tail:\n%s",
-					c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+				return fmt.Errorf("%s exited before its socket was serving: %s; log tail:\n%s",
+					c.name, deathCause(c), tailFile(c.logPath))
 			}
 		}
 		missing := ""
@@ -650,6 +650,28 @@ func waitResult(name string, err error) error {
 		return nil // killed/non-zero exit is the expected teardown outcome
 	}
 	return fmt.Errorf("waiting for %s: %w", name, err)
+}
+
+// deathCause renders why a child that has already exited died, for an operator
+// reading a startup failure.
+//
+// It deliberately does NOT go through waitResult. waitResult answers a
+// different question — "did the wait itself fail?" — and returns nil for an
+// *exec.ExitError, because a signalled or non-zero exit is the expected
+// outcome of a deliberate teardown. A daemon that dies during STARTUP is also
+// an ExitError, so routing that through waitResult yields nil and a caller
+// wrapping it with %w renders the literal "%!w(<nil>)" where the cause belongs,
+// with errors.Unwrap returning nil. That destroys the whole point of the
+// message. Verified: an exit-1 startup death gives *exec.ExitError, waitResult
+// returns nil, and "%w" prints %!w(<nil>).
+//
+// The returned string is for humans, not for errors.Is — a startup death has no
+// sentinel worth matching, and the ExitError is already reported verbatim.
+func deathCause(c *child) string {
+	if c.waitErr == nil {
+		return "exited cleanly (status 0) without serving"
+	}
+	return c.waitErr.Error()
 }
 
 // Running reports whether the named child's process is still alive. It is used
@@ -814,8 +836,8 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 // and no window exists where the dir under-names a child that may have run.
 func pidfileWriteError(c *child, err error) error {
 	if procReadMeansGone(err) && c.hasExited() {
-		return fmt.Errorf("microvm: %s exited before its pidfile could be recorded: %w; log tail:\n%s",
-			c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+		return fmt.Errorf("microvm: %s exited before its pidfile could be recorded: %s; log tail:\n%s",
+			c.name, deathCause(c), tailFile(c.logPath))
 	}
 	return fmt.Errorf("microvm: recording %s pidfile: %w", c.name, err)
 }
