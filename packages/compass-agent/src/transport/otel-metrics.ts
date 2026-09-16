@@ -43,12 +43,9 @@ export const priorityBatchRetries = Metric.counter(
 	{ incremental: true },
 );
 
-// Flush shape: why each cycled batch was sent, and how big it was. `reason` and
-// `lane` are both static sets, so both are pre-tagged like trace_frames_lost.
-// Namespaced like the gauges below, for a different reason: a test asserting a
-// reason is EXCLUSIVE needs the two non-selected counters to read exactly zero,
-// which a concurrent sibling's flush on the shared key breaks. Production passes
-// no prefix.
+// Flush shape: why each cycled batch was sent. `reason` is a static set, so the
+// arms are pre-tagged like trace_frames_lost. The namespace defaults to "" —
+// production yields the frozen name; a test passes a private prefix.
 export const batchesFlushedBy = (
 	namespace = "",
 ): Record<"full" | "drain" | "short", Metric.Metric.Counter<number>> => {
@@ -63,18 +60,18 @@ export const batchesFlushedBy = (
 	};
 };
 
-// Batch size, bucketed by powers of two. The value is bounded 1..PUBLISH_BATCH_MAX,
-// so the top boundary lands on saturation and the +Inf bucket stays empty — a free
-// invariant check. `lane` separates a healthy one-at-a-time ack stream from trace
-// coalescing genuinely failing, which share the same tiny-batch signature.
-// The boundaries are hoisted, not rebuilt per call: a histogram's registry key
-// includes the boundaries OBJECT, so a fresh one per call would yield a fresh
-// key and an empty read — which is what makes the namespace factory below work.
+// Hoisted, not rebuilt per call: a histogram's registry key includes the
+// boundaries OBJECT, so a fresh one per call reads back empty.
 const BATCH_SIZE_BOUNDARIES = MetricBoundaries.exponential({
 	start: 1,
 	factor: 2,
 	count: 10,
 });
+
+// Batch size. Bounded 1..PUBLISH_BATCH_MAX, so the top boundary lands on
+// saturation and +Inf stays empty — a free invariant check. `lane` separates a
+// healthy one-at-a-time ack stream from trace coalescing genuinely failing,
+// which share the same tiny-batch signature.
 export const batchSizeBy = (
 	namespace = "",
 ): Record<"priority" | "trace" | "mixed", Metric.Metric.Histogram<number>> => {

@@ -88,11 +88,9 @@ export interface PublishSpine {
 // runtime is passed by argument. When absent (test paths) it falls back to its OWN runtime
 // and disposes it at drain() end; a borrowed one is NEVER disposed here.
 
-// A `metricNamespace` prefixes the two LEVEL gauges (trace_queue_depth, priority_retry_
-// depth) and the flush-shape rows. Defaults to "" — production yields the frozen names. A
-// test passes a unique prefix so its reads hit a private registry entry, immune to the
-// cross-file race (the global registry keys on the metric name): a gauge is last-writer-
-// wins, and an exclusivity assertion needs the counters it did NOT expect to read zero.
+// `metricNamespace` prefixes the gauges and the flush-shape rows. Defaults to ""
+// — production yields the frozen names; a test passes a unique prefix so its
+// reads hit a private registry entry (the global registry keys on the name).
 export function createPublishSpine(
 	publish: (stream: AsyncIterable<PublishFrameRequest>) => Promise<unknown>,
 	borrowedRuntime?: TransportRuntime,
