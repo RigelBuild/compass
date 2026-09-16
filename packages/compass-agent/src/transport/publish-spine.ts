@@ -31,6 +31,12 @@ import {
 } from "effect";
 import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
 import {
+	batchesFlushedDrain,
+	batchesFlushedFull,
+	batchesFlushedShort,
+	batchSizeMixed,
+	batchSizePriority,
+	batchSizeTrace,
 	priorityBatchRetries,
 	priorityFramesLost,
 	priorityRetryDepthGauge,
@@ -190,6 +196,24 @@ export function createPublishSpine(
 			}
 			if (ended && priority.length === 0 && traceSize() === 0) return;
 			const { batch, priorityCount } = yield* takeBatch;
+			// Flush shape, classified in the same tick as the take. `drain` means
+			// taken after teardown began, so a full batch during teardown still
+			// reads `full` — saturation is the more specific fact.
+			yield* Metric.increment(
+				batch.length === PUBLISH_BATCH_MAX
+					? batchesFlushedFull
+					: ended
+						? batchesFlushedDrain
+						: batchesFlushedShort,
+			);
+			yield* Metric.update(
+				priorityCount === batch.length
+					? batchSizePriority
+					: priorityCount === 0
+						? batchSizeTrace
+						: batchSizeMixed,
+				batch.length,
+			);
 			async function* oneBatch(): AsyncGenerator<PublishFrameRequest> {
 				for (const frame of batch) yield frame;
 			}

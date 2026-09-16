@@ -29,6 +29,11 @@ import {
 import { createSocketFrameSink, DURABLE_RETRY_BACKOFF_MS } from "./frame-sink";
 import type { RunnerTransport } from "./index";
 import {
+	batchesFlushedDrain,
+	batchesFlushedFull,
+	batchesFlushedShort,
+	batchSizePriority,
+	batchSizeTrace,
 	durableAttempts,
 	durableGiveUps,
 	priorityBatchRetries,
@@ -41,6 +46,7 @@ import {
 import {
 	createPublishSpine,
 	PRIORITY_BATCH_RETRY_MS,
+	PUBLISH_BATCH_MAX,
 	type PublishSpine,
 	TRACE_QUEUE_CAP,
 } from "./publish-spine";
@@ -295,4 +301,74 @@ test("a successful durable send counts its one attempt and no give-up", async ()
 	expect(counterCount(durableAttempts) - attemptsBefore).toBe(1);
 	// The success arm never touches the give-up counter.
 	expect(counterCount(durableGiveUps) - giveUpsBefore).toBe(0);
+});
+
+// Read a histogram's sample count for one pre-tagged lane, same global registry
+// and same delta discipline as counterCount above.
+function histCount(metric: Metric.Metric.Histogram<number>): number {
+	return Effect.runSync(Metric.value(metric)).count;
+}
+
+test("a saturated batch flushes as reason=full, and its size lands in the top bucket", async () => {
+	// PUBLISH_BATCH_MAX trace frames queue before the deferred first take, so the
+	// first batch is exactly saturated. `full` outranks `drain` even though
+	// drain() set `ended` — saturation is the more specific fact.
+	const fullBefore = counterCount(batchesFlushedFull);
+	const shortBefore = counterCount(batchesFlushedShort);
+	const spine = createPublishSpine(() => Promise.resolve(undefined));
+	for (let i = 0; i < PUBLISH_BATCH_MAX; i++) spine.enqueueTrace(traceFrame());
+	await spine.drain();
+	expect(counterCount(batchesFlushedFull) - fullBefore).toBe(1);
+	// Non-vacuity: a saturated batch must not also be counted short.
+	expect(counterCount(batchesFlushedShort) - shortBefore).toBe(0);
+});
+
+test("an ordinary partial batch flushes as reason=short", async () => {
+	// `short` needs a take while the spine is still LIVE: drain() sets `ended`
+	// before the deferred first take, so an enqueue-then-drain batch is always
+	// `drain`. Await the send itself, then drain the (now empty) spine.
+	const before = counterCount(batchesFlushedShort);
+	const drainBefore = counterCount(batchesFlushedDrain);
+	let sent!: () => void;
+	const firstSend = new Promise<void>((resolve) => {
+		sent = resolve;
+	});
+	const spine = createPublishSpine(async (frames) => {
+		for await (const _ of frames) {
+		}
+		sent();
+	});
+	spine.enqueueTrace(traceFrame());
+	spine.enqueueTrace(traceFrame());
+	await firstSend;
+	expect(counterCount(batchesFlushedShort) - before).toBe(1);
+	// Non-vacuity: this batch predates teardown, so it is not a drain batch.
+	expect(counterCount(batchesFlushedDrain) - drainBefore).toBe(0);
+	await spine.drain();
+});
+
+test("a batch taken after teardown began flushes as reason=drain", async () => {
+	// enqueuePriority before drain(), but the pump's first take is deferred one
+	// scheduler yield — so drain() sets `ended` first and the take sees it.
+	const before = counterCount(batchesFlushedDrain);
+	const spine = createPublishSpine(() => Promise.resolve(undefined));
+	spine.enqueuePriority(traceFrame());
+	await spine.drain();
+	expect(counterCount(batchesFlushedDrain) - before).toBe(1);
+});
+
+test("batch_size records the lane a batch was composed from", async () => {
+	// priorityCount is fixed before trace frames are appended, so a priority-only
+	// batch is lane=priority and a trace-only one is lane=trace. Each spine is
+	// separate so the two batches cannot coalesce into one mixed take.
+	const priorityBefore = histCount(batchSizePriority);
+	const traceBefore = histCount(batchSizeTrace);
+	const prioritySpine = createPublishSpine(() => Promise.resolve(undefined));
+	prioritySpine.enqueuePriority(traceFrame());
+	await prioritySpine.drain();
+	const traceSpine = createPublishSpine(() => Promise.resolve(undefined));
+	traceSpine.enqueueTrace(traceFrame());
+	await traceSpine.drain();
+	expect(histCount(batchSizePriority) - priorityBefore).toBe(1);
+	expect(histCount(batchSizeTrace) - traceBefore).toBe(1);
 });

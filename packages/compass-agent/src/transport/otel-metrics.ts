@@ -1,13 +1,14 @@
 // Module-private OTel metric constants for the two OUTBOUND transport modules — the
 // publish spine and the durable frame sink. Decision 2 of the compass-agent-effect-otel
-// design (the metric table) owns these seven names; the control.* rows live in O3.
+// design (the metric table) owns these names, Decision 2a the two flush-shape rows;
+// the control.* rows live in O3.
 
 // `Metric` is from core `effect` (already a dependency). A Metric.counter/gauge value is
 // a cheap module-level constant: with no OTel provider it no-ops into Effect's in-memory
 // registry, so instrumentation is invisible without a provider. NOT re-exported from the
 // package entry (export-surface.test.ts guards this). Names are exact — do not rename.
 
-import { Metric } from "effect";
+import { Metric, MetricBoundaries } from "effect";
 
 // Trace/session frames lost, carrying a `reason` label. The reasons sum to
 // droppedTraceCount(): "overflow" is the bounded queue evicting the oldest on a full
@@ -41,6 +42,40 @@ export const priorityBatchRetries = Metric.counter(
 	"compass_agent.transport.publish.priority_batch_retries",
 	{ incremental: true },
 );
+
+// Flush shape: why each cycled batch was sent, and how big it was. `reason` and
+// `lane` are both static sets, so both are pre-tagged like trace_frames_lost.
+const batchesFlushed = Metric.counter(
+	"compass_agent.transport.publish.batches_flushed",
+	{ incremental: true },
+);
+export const batchesFlushedFull = Metric.tagged(
+	batchesFlushed,
+	"reason",
+	"full",
+);
+export const batchesFlushedDrain = Metric.tagged(
+	batchesFlushed,
+	"reason",
+	"drain",
+);
+export const batchesFlushedShort = Metric.tagged(
+	batchesFlushed,
+	"reason",
+	"short",
+);
+
+// Batch size, bucketed by powers of two. The value is bounded 1..PUBLISH_BATCH_MAX,
+// so the top boundary lands on saturation and the +Inf bucket stays empty — a free
+// invariant check. `lane` separates a healthy one-at-a-time ack stream from trace
+// coalescing genuinely failing, which share the same tiny-batch signature.
+const batchSize = Metric.histogram(
+	"compass_agent.transport.publish.batch_size",
+	MetricBoundaries.exponential({ start: 1, factor: 2, count: 10 }),
+);
+export const batchSizePriority = Metric.tagged(batchSize, "lane", "priority");
+export const batchSizeTrace = Metric.tagged(batchSize, "lane", "trace");
+export const batchSizeMixed = Metric.tagged(batchSize, "lane", "mixed");
 
 // The two publish-spine LEVEL gauges, built through a namespace-prefix factory. A gauge
 // is last-writer-wins, so a test reading one must not share its registry key with a
