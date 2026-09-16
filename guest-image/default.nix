@@ -36,9 +36,13 @@ let
   checkedLock =
     let
       bad =
-        if agentLock.repo or null != agentRepo then
+        if !builtins.isAttrs agentLock then
+          "lock must be a JSON object"
+        else if !builtins.isString (agentLock.repo or null) || agentLock.repo != agentRepo then
           "repo must be ${agentRepo}, got ${toString (agentLock.repo or "<missing>")}"
-        else if builtins.match "git-[0-9a-f]{12}" (agentLock.tag or "") == null then
+        else if
+          !builtins.isString (agentLock.tag or null) || builtins.match "git-[0-9a-f]{12}" agentLock.tag == null
+        then
           "tag must match git-<sha12>, got ${toString (agentLock.tag or "<missing>")}"
         else if !isSha256 (agentLock.digest or "") then
           "digest must be sha256:<64 hex>, got ${toString (agentLock.digest or "<missing>")}"
@@ -365,30 +369,39 @@ in
             unset IFS
           done
 
-          printf '%s\n' "$members" | { grep '\.wh\.' || true; } | while read -r marker; do
+          # A marker is a `.wh.`-prefixed final COMPONENT. Matching the
+          # substring anywhere would read an ordinary path that merely contains
+          # `.wh.` as a delete order against a file the layer legitimately
+          # ships.
+          printf '%s\n' "$members" | { grep -E '(^|/)\.wh\.' || true; } | while read -r marker; do
             dir=$(dirname "$marker")
             base=$(basename "$marker")
+            case "$base" in
+              .wh.*) ;;
+              *) continue ;;
+            esac
             if [ "$base" = ".wh..wh..opq" ]; then
-              find "$root/$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+              # A marker naming a path the lower layers never created means the
+              # layer stack is not what this build thinks it is; fail loudly
+              # rather than swallowing the status.
+              if [ ! -d "$root/$dir" ]; then
+                echo "guest-image: BUILD-BREAK — opaque marker names a missing directory $dir." >&2
+                exit 1
+              fi
+              find "$root/$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
             else
               rm -rf "$root/$dir/''${base#.wh.}"
             fi
           done
 
-          # --overwrite and the chmod are load-bearing: nix2container layers carry
-          # /nix/store paths with the store's read-only modes, so without them tar
-          # fails "File exists" on a duplicated entry and "Permission denied"
-          # writing into an already-extracted r-xr-xr-x directory.
-          tar -xzf "$layer" -C "$root" --overwrite --no-same-permissions \
+          # -p restores each member's recorded mode; without it every member
+          # takes the builder's umask instead (measured: /bin packed 0755 where
+          # the image ships 0555). Staging write access is re-opened on
+          # DIRECTORIES only, leaving file modes as published.
+          tar -xzpf "$layer" -C "$root" --overwrite \
             --exclude='.wh.*' --exclude='*/.wh.*'
-          chmod -R u+w "$root"
+          find "$root" -type d -exec chmod u+w {} +
         done
-
-        # cp -a preserves the store's read-only dir modes; make the staged tree
-        # writable so the boot layer and /nix/store population can proceed
-        # (--all-root normalizes ownership; -T0 normalizes timestamps, so these
-        # staging perms never reach the packed image).
-        chmod -R u+w "$root"
 
         # Lay the boot layer over the unpacked image. It wins on any path
         # conflict: /sbin/init, /sbin/modprobe, /lib/modules and the writable
@@ -399,9 +412,9 @@ in
         # The boot layer's own store closure. The agent layers already carry
         # their /nix/store paths, so only these are added.
         mkdir -p "$root/nix/store"
-        for p in $(cat ${bootClosure}/store-paths); do
+        while IFS= read -r p; do
           cp -a "$p" "$root/nix/store/"
-        done
+        done < ${bootClosure}/store-paths
 
         # A setuid/setgid binary is a privilege path back to root, which the
         # guest's non-root agent must not have. Belt-and-braces: the unprivileged
@@ -413,7 +426,20 @@ in
           printf '%s\n' "$suid" >&2
           exit 1
         fi
-        chmod -R u+w "$root"
+
+        # Re-extract the directory members to restore their published modes,
+        # undoing the staging u+w. / is then set outright: `cp -a ${bootLayer}/.`
+        # stamps the store's 0555 onto it, so leaving it to a chmod's residue
+        # makes / untraversable or accidentally right depending on ordering.
+        for layer in ${lib.concatStringsSep " " agentLayers}; do
+          # Select directory members by tar's type flag: these layers list
+          # directories with no trailing slash, so matching on one restores
+          # nothing.
+          if tar -tvzf "$layer" | awk '$1 ~ /^d/ {print $NF}' > dirs.txt; then
+            tar -xzpf "$layer" -C "$root" --overwrite --no-recursion -T dirs.txt
+          fi
+        done
+        chmod 0755 "$root"
 
         # The userland contract, checked on the ASSEMBLED tree. EVERY component
         # resolves inside $root, as the kernel will after switch_root: following
@@ -424,11 +450,6 @@ in
           rest="/$p"
           hops=0
           while [ -n "$rest" ]; do
-            hops=$((hops + 1))
-            if [ "$hops" -gt 40 ]; then
-              echo "guest-image: BUILD-BREAK — /$p is a symlink loop in the image." >&2
-              exit 1
-            fi
             comp=''${rest#/}
             comp=''${comp%%/*}
             tail=''${rest#/"$comp"}
@@ -446,6 +467,13 @@ in
             esac
             resolved="$resolved/$comp"
             if [ -L "$root$resolved" ]; then
+              # Count symlink traversals, not path components: a deep
+              # symlink-free path is not a loop, and Linux's own ELOOP is 40.
+              hops=$((hops + 1))
+              if [ "$hops" -gt 40 ]; then
+                echo "guest-image: BUILD-BREAK — /$p is a symlink loop in the image." >&2
+                exit 1
+              fi
               link=$(readlink "$root$resolved")
               case "$link" in
                 /*)
