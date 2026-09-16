@@ -33,7 +33,11 @@ import (
 	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
 
-const connectTestTimeout = 5 * time.Second
+// A hang guard, not a latency assertion: connectMu serializes arm→probe→persist,
+// so a queued caller's budget must cover every call ahead of it. A deadline near
+// one call's cost makes queueing look unreachable, since classifyConnectErr
+// folds DeadlineExceeded into bad-url.
+const connectTestTimeout = 2 * time.Minute
 
 const probeToken = "s3cr3t-connect-token"
 
