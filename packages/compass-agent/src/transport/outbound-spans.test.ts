@@ -125,6 +125,7 @@ function spansNamed(
 	return exporter.getFinishedSpans().filter((s) => s.name === name);
 }
 
+// biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on the durable send committing; the ceiling only bounds a send that never settles.
 test("a durable send opens one durable_send parent with a durable_attempt child per attempt, parented via the fiber tree, indexed 0..N", async () => {
 	// Drive ONE durable send whose unary fails the first two attempts and
 	// succeeds on the third (two forced failures → three attempts total).
@@ -179,6 +180,7 @@ test("a durable send opens one durable_send parent with a durable_attempt child 
 	await runtime.dispose();
 }, 10_000);
 
+// biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on the durable send exhausting its retry ladder and rejecting; the ceiling only bounds a send that never settles.
 test("an always-failing durable send records ERROR status on the durable_send span after the retry ladder exhausts", async () => {
 	// Drive one durable send whose unary ALWAYS fails, so it exhausts the
 	// DURABLE_RETRY_BACKOFF_MS ladder and gives up. Because the durable_send
@@ -215,6 +217,7 @@ test("an always-failing durable send records ERROR status on the durable_send sp
 	await runtime.dispose();
 }, 10_000);
 
+// biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on sink.drain() resolving; the ceiling only bounds a drain that never completes.
 test("drain opens both the frame_sink.drain and publish.drain spans, finished before the test disposes its runtime", async () => {
 	// Build a sink over a fake transport whose spine is a REAL spine on the
 	// injected runtime, drive a couple of frames, then call sink.drain(). The
@@ -260,6 +263,7 @@ test("drain opens both the frame_sink.drain and publish.drain spans, finished be
 	await runtime.dispose();
 }, 10_000);
 
+// biome-ignore lint/plugin: 10s backstops a hung fiber: the assertions event-gate on spine.drain() joining the pump; the ceiling only bounds a drain that never completes.
 test("a cycled batch send opens a publish.batch span carrying batch_size/priority_count/retry_index", async () => {
 	// Drive one batch directly through a real spine on the injected runtime:
 	// enqueue a single priority frame (so a batch cycles), then drain to flush

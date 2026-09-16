@@ -4,7 +4,10 @@
 	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
 	"files": { "includes": ["**", "!**/gen", "!**/*.grit"] },
 	"formatter": { "indentStyle": "tab" },
-	"plugins": ["tools/biome-plugins/no-fixed-sleep.grit"],
+	"plugins": [
+		"tools/biome-plugins/no-fixed-sleep.grit",
+		"tools/biome-plugins/no-fixed-test-budget.grit"
+	],
 	"linter": {
 		"enabled": true,
 		"domains": {

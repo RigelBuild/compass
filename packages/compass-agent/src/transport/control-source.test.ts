@@ -1034,6 +1034,7 @@ test("F2(a): a quiet-but-healthy session flapping MORE than the backoff length s
 	expect(ops[0]).toMatchObject({ kind: "prompt", input: "survived" });
 });
 
+// biome-ignore lint/plugin: 15s backstops a spin: the pass is a named Promise.race (overBudget) that resolves on the observed reconnect count, not the clock; the ceiling only bounds a source that spins forever.
 test("F2(b): a rapid sub-floor flap still fails, bounded — the iterable rejects after exactly 5 opens (M1 infinite-loop guard)", async () => {
 	// Every open yields nothing then drops immediately. The injected clock is a SETTABLE value the
 	// server never advances, so every connection reports uptime 0 < the 5000 floor → the flap never
@@ -1077,6 +1078,7 @@ test("F2(b): a rapid sub-floor flap still fails, bounded — the iterable reject
 	expect(rec.controlOpens).toBe(5); // initial + 4 bounded retries, then gives up
 }, 15000);
 
+// biome-ignore lint/plugin: 15s backstops a spin: the pass is a named Promise.race (overBudget) that resolves on the observed reconnect count, not the clock; the ceiling only bounds a source that spins forever.
 test("F2(c): a SLOW-failing socket terminates — past-floor drops reset the backoff every time, so the NO-PROGRESS budget is what bounds it", async () => {
 	// The gap F2(a)/F2(b) leave open: the reset-on-open flap-detector clears `attempt` on ANY drop
 	// from a connection that outlived the min-uptime floor. A socket that stays up past the floor
@@ -1130,6 +1132,7 @@ test("F2(c): a SLOW-failing socket terminates — past-floor drops reset the bac
 	expect(rec.controlOpens).toBe(CONTROL_RECONNECT_NO_PROGRESS_MAX);
 }, 15000);
 
+// biome-ignore lint/plugin: 30s backstops a spin: the pass is a named Promise.race (ackGate.starved) that resolves on the observed op count, not the clock; the ceiling only bounds a source that spins forever.
 test("F2(d): the SAME drop shape as F2(c) survives indefinitely once ops are APPLIED — progress, not rate, is what separates them", async () => {
 	// The other half of the budget's contract, and the case a reconnect-RATE window provably could
 	// not express. This is F2(c) with one variable changed: identical connection lifetimes, clock
@@ -1199,6 +1202,7 @@ test("F2(d): the SAME drop shape as F2(c) survives indefinitely once ops are APP
 	);
 }, 30000);
 
+// biome-ignore lint/plugin: 15s backstops a spin: the pass is a named Promise.race (opensStalled) that resolves on the observed reconnect count, not the clock; the ceiling only bounds a source that spins forever.
 test("a long apply survives >budget socket flaps — an op in flight is progress (RIG-1540)", async () => {
 	// The latent kill this fix closes. The source is apply-then-ack and its single consumer awaits
 	// the WHOLE turn before pulling the next op, so while a long turn applies op N the ack cursor
