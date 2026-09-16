@@ -19,16 +19,16 @@ import {
 } from "solid-js";
 import { type PrRow, prRows } from "./board";
 import { agentDmAccountId } from "./comms";
-import type {
-	Account,
-	Ask,
-	Channel,
-	ChannelGroup,
-	ConvBlock,
-	Message,
-	Topic,
+import {
+	type Account,
+	type Ask,
+	type Channel,
+	type ChannelGroup,
+	type ConvBlock,
+	isQuestionAnswered,
+	type Message,
+	type Topic,
 } from "./comms-stub";
-import { isQuestionAnswered } from "./comms-stub";
 import {
 	type ActivityBarItem,
 	fleetItemForAgent,
@@ -1320,10 +1320,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		}
 		return undefined;
 	};
-	// Whether two asks pose the SAME questions, in order, offering the same OPTION IDS.
-	// The ids are part of the shape: block-update rewrites all blocks keeping only
-	// `ask_id`, so a changed option id under a stable question id would ship a withdrawn
-	// id → ErrInvalidArgument. Ignores text/labels/allowMultiple. Guards the refusal restage.
+	// Whether two asks pose the same questions, in order, with the same arity and
+	// option ids — the axes whose staleness the server REJECTS. Labels are ignored
+	// on purpose: guarding them would discard a half-typed answer on a benign
+	// reword, at the cost of a relabelled-in-place option re-pointing a pick.
 	const sameQuestions = (a: Ask, b: Ask) =>
 		a.questions.length === b.questions.length &&
 		a.questions.every((q, i) => {
@@ -1331,6 +1331,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			return (
 				other !== undefined &&
 				q.questionId === other.questionId &&
+				q.allowMultiple === other.allowMultiple &&
 				q.options.length === other.options.length &&
 				q.options.every((o, j) => o.id === other.options[j]?.id)
 			);
