@@ -34,6 +34,7 @@ const askMessage = (
 		answered?: boolean;
 		freeText?: readonly string[];
 		optionIds?: Readonly<Record<string, readonly string[]>>;
+		recordedText?: Readonly<Record<string, string>>;
 	},
 ) =>
 	wireAskMessage({
@@ -46,6 +47,7 @@ const askMessage = (
 		answered: over?.answered,
 		freeText: over?.freeText,
 		optionIds: over?.optionIds,
+		recordedText: over?.recordedText,
 	});
 
 // The chosen option ids of one question, read out of the store's reactive
@@ -59,6 +61,20 @@ const chosenIn = (
 		if (b.kind !== "ask" || b.ask.askId !== "ask-1") continue;
 		const q = b.ask.questions.find((q) => q.questionId === questionId);
 		if (q) return [...q.chosenOptionIds];
+	}
+	return undefined;
+};
+// The staged custom text of one question, read out of the store's reactive
+// message list — the public observation of what the LOCAL draft holds.
+const customTextIn = (
+	store: AppStore,
+	questionId: string,
+): string | undefined => {
+	const msg = store.messages().find((m) => m.id === "m-ask");
+	for (const b of msg?.blocks ?? []) {
+		if (b.kind !== "ask" || b.ask.askId !== "ask-1") continue;
+		const q = b.ask.questions.find((q) => q.questionId === questionId);
+		if (q) return q.customText;
 	}
 	return undefined;
 };
@@ -149,8 +165,8 @@ describe("adoptComms vs an in-progress ask", () => {
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: ["q-2-a"] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-a"], customText: "" },
 					],
 				},
 			]);
@@ -337,8 +353,8 @@ describe("adoptComms vs an in-progress ask", () => {
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: ["q-2-a"] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-a"], customText: "" },
 					],
 				},
 			]);
@@ -661,6 +677,135 @@ describe("adoptComms vs an in-progress ask", () => {
 					?.options.map((o) => o.id),
 			).toEqual(["q-1-b", "q-1-c"]);
 			expect(chosenIn(store, "q-1")).toEqual([]);
+		});
+	});
+
+	// A stream push does not discard a typed draft. A draft is an unshipped
+	// edit just as a click is, so the widened preserve scan must carry it across a
+	// restatement of the same unanswered ask. Mutation-check: a scan that saw only
+	// chosen ids lets the push replace the draft with "".
+	test("a stream push does not discard a typed draft", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage(["q-1", "q-free"], undefined, { freeText: ["q-free"] }),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAskText("m-ask", "ask-1", "q-free", "my draft");
+			await settled();
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+
+			// A push restating the ask exactly as the server holds it: still unanswered.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-free"], undefined, {
+							freeText: ["q-free"],
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+		});
+	});
+
+	// A push carrying a CLOSED free-text ask wins over the draft: the local
+	// draft yields and the server's recorded custom_text shows (the audit payoff).
+	// Mutation-check: a preserve that carried the draft over an answered push
+	// reddens the yields leg; dropping the customText mapping reddens the shows leg.
+	test("a closed free-text push beats the draft and shows the recorded text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage(["q-1", "q-free"], undefined, { freeText: ["q-free"] }),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAskText("m-ask", "ask-1", "q-free", "my draft");
+			await settled();
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+
+			// The push: answered, with the server's recorded free-text answer.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-free"], undefined, {
+							answered: true,
+							freeText: ["q-free"],
+							recordedText: { "q-free": "the recorded answer" },
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			// The draft yielded, and the server's value shows.
+			expect(customTextIn(store, "q-free")).toBe("the recorded answer");
+		});
+	});
+
+	// The typed half of the refusal restage. A submit HELD in flight, a
+	// blank push adopted over the submitted ask, then the respond refused: the
+	// shipped answers restage over the blank, so BOTH the click and the typed
+	// draft come back. Mutation-check: a catch that omits the restage leaves the
+	// draft blank.
+	test("a refused submit restages the typed draft alongside the click", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage(["q-1", "q-free"], undefined, { freeText: ["q-free"] }),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			const gate = fake.holdNextAskResponse();
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-free", "my draft");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(store.isAskSubmitted("ask-1")).toBe(true);
+
+			// A blank unanswered restatement — adopted, because the preserve skips
+			// the submitted ask.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-free"], undefined, {
+							freeText: ["q-free"],
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual([]);
+			expect(customTextIn(store, "q-free")).toBe("");
+
+			// The held respond is refused: both the click and the draft restage.
+			gate.reject(new Error("server refused the ask"));
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
 		});
 	});
 });
