@@ -9,7 +9,14 @@
 // here against a captured wire log and a recorded ordering. Nothing touches a socket, a
 // real model, or a real credential; no timers — the composition tests gate on events.
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	setDefaultTimeout,
+	test,
+} from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +28,7 @@ import type {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
-import { context, type Span, trace } from "@opentelemetry/api";
+import { context, propagation, type Span, trace } from "@opentelemetry/api";
 import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
@@ -65,6 +72,12 @@ import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
 import { createTeeSessionStorage } from "./session-tee";
 import type { RunnerTransport } from "./transport/index";
 import { createPublishSpine } from "./transport/publish-spine";
+
+// These tests do real FS work and gate on events, not sleeps; under the parallel
+// pre-push gate that I/O outruns bun's implicit 5s default and flakes (the same
+// starvation RIG-3611 floored this file's afterEach for). This file-wide floor
+// covers the test bodies too (RIG-3794); any explicit per-test bound overrides it.
+setDefaultTimeout(60_000);
 
 const tmpdirs: string[] = [];
 
@@ -2184,10 +2197,11 @@ describe("main activates loop OpenTelemetry", () => {
 	describe("forwards the wire traceparent into the CompassAgent", () => {
 		let traceProvider: NodeTracerProvider | undefined;
 		afterEach(async () => {
-			// Full-suite safety: never leave a registered global TracerProvider or
-			// context manager behind for a sibling test (design record F3).
+			// Full-suite safety: never leave a registered global TracerProvider,
+			// context manager, or W3C propagator behind for a sibling test (F3, RIG-3489).
 			trace.disable();
 			context.disable();
+			propagation.disable();
 			await traceProvider?.shutdown();
 			traceProvider = undefined;
 		});

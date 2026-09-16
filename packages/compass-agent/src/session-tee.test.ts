@@ -19,7 +19,14 @@
 // No sockets, no timers-as-sleeps: ordering is gated on a deferred the test
 // controls, not a wall-clock wait.
 
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import {
+	afterEach,
+	describe,
+	expect,
+	setDefaultTimeout,
+	spyOn,
+	test,
+} from "bun:test";
 import {
 	existsSync,
 	mkdtempSync,
@@ -36,6 +43,12 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import type { OutboundFrame } from "./frame";
 import { createTeeSessionStorage, TranscriptTeeBackend } from "./session-tee";
+
+// These tests do real FS work and gate on a test-controlled deferred, not sleeps;
+// under the parallel pre-push gate that I/O outruns bun's implicit 5s default and
+// flakes (the same starvation RIG-3611 floored this file's afterEach for). This
+// file-wide floor covers the test bodies too (RIG-3794); explicit bounds override it.
+setDefaultTimeout(60_000);
 
 const tmpdirs: string[] = [];
 
