@@ -1,3 +1,9 @@
+// Flags a hard-coded wall-clock budget passed as the positional 3rd arg to
+// test()/it(). Coverage gap (0 live sites, matches the no-fixed-sleep sibling):
+// the object form test(name, fn, { timeout: N }), the test.each(...)(...) member
+// call, and a computed literal (20 * 1000) are NOT matched -- prefer the
+// positional literal so this gate sees it.
+
 or {
   `test($_, $_, $timeout)` as $c where {
     $timeout <: r"^[0-9_]+$",
