@@ -16,23 +16,14 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// fakeServerSecrets is a fake SecretsService handler recording the request each
-// server-secret verb constructs and returning a canned ListServerSecrets
-// response, so the subcommand RPC wiring is tested without a live Server or
-// Postgres (mirroring fakeSecrets for the user-facing verbs).
+// fakeServerSecrets is a fake SecretsService handler returning a canned
+// ListServerSecrets response, so the list subcommand's RPC wiring is tested
+// without a live Server or Postgres (mirroring fakeSecrets for the user-facing
+// verbs).
 type fakeServerSecrets struct {
 	compassv1connect.UnimplementedSecretsServiceHandler
-	gotSet   *compassv1.SetServerSecretRequest
-	setCalls int
-	list     *compassv1.ListServerSecretsResponse
-	gotAuth  string
-}
-
-func (f *fakeServerSecrets) SetServerSecret(_ context.Context, req *connect.Request[compassv1.SetServerSecretRequest]) (*connect.Response[compassv1.SetServerSecretResponse], error) {
-	f.setCalls++
-	f.gotSet = req.Msg
-	f.gotAuth = req.Header().Get("Authorization")
-	return connect.NewResponse(&compassv1.SetServerSecretResponse{}), nil
+	list    *compassv1.ListServerSecretsResponse
+	gotAuth string
 }
 
 func (f *fakeServerSecrets) ListServerSecrets(_ context.Context, req *connect.Request[compassv1.ListServerSecretsRequest]) (*connect.Response[compassv1.ListServerSecretsResponse], error) {
@@ -132,108 +123,5 @@ func TestRunServerSecretListEmpty(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "no server secrets declared") {
 		t.Errorf("empty-list output %q does not report an empty registry", out.String())
-	}
-}
-
-// TestRunServerSecretSetPrefixesName asserts the value comes from stdin (never
-// argv) and that a bare operator-facing name is sent PREFIXED on the wire, while
-// an already-prefixed name is not double-prefixed.
-func TestRunServerSecretSetPrefixesName(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "bare name is prefixed", input: "FORGE_APP_PEM", want: "SERVER_FORGE_APP_PEM"},
-		{name: "prefixed name is unchanged", input: "SERVER_FORGE_APP_PEM", want: "SERVER_FORGE_APP_PEM"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fake := &fakeServerSecrets{}
-			client := startFakeServerSecretsServer(t, fake)
-
-			var out strings.Builder
-			in := strings.NewReader("s3cr3t\n")
-			if err := runServerSecretSet(context.Background(), client, tt.input, in, &out); err != nil {
-				t.Fatalf("runServerSecretSet: %v", err)
-			}
-			if fake.gotSet == nil {
-				t.Fatal("SetServerSecret was not called")
-			}
-			if fake.gotSet.GetName() != tt.want {
-				t.Errorf("name = %q, want %q", fake.gotSet.GetName(), tt.want)
-			}
-			if fake.gotSet.GetValue() != "s3cr3t" {
-				t.Errorf("value = %q, want s3cr3t (trailing newline trimmed, from stdin)", fake.gotSet.GetValue())
-			}
-			if fake.gotAuth != "Bearer test-token" {
-				t.Errorf("Authorization = %q, want Bearer test-token", fake.gotAuth)
-			}
-		})
-	}
-}
-
-// TestRunServerSecretSetRefusesBareMasterKey pins the round-trip hazard: `list`
-// strips any reserved prefix, so the master key prints as bare MASTER_KEY.
-// Wrapping that spelling would send SERVER_MASTER_KEY — a DIFFERENT secret that
-// clears the server's exact-name master-key guard, minting a shadow row while
-// the real key stays unprovisioned and `list` prints the same bare name twice.
-// It must be refused before any RPC.
-func TestRunServerSecretSetRefusesBareMasterKey(t *testing.T) {
-	fake := &fakeServerSecrets{}
-	client := startFakeServerSecretsServer(t, fake)
-
-	var out strings.Builder
-	in := strings.NewReader("s3cr3t\n")
-	err := runServerSecretSet(context.Background(), client, "MASTER_KEY", in, &out)
-	if err == nil {
-		t.Fatal("bare MASTER_KEY was accepted; it must be refused rather than re-prefixed to a different secret")
-	}
-	if fake.gotSet != nil {
-		t.Errorf("SetServerSecret was called with %q; the refusal must precede any RPC", fake.gotSet.GetName())
-	}
-	if !strings.Contains(err.Error(), store.MasterKeyName) {
-		t.Errorf("error %q does not name %s, so it is not actionable", err, store.MasterKeyName)
-	}
-}
-
-// TestRunServerSecretSetAcceptsFullMasterKeyName asserts the refusal is narrow:
-// the FULL master-key name still reaches the server, which is what fail-closes
-// on it (secrets_service.go's store.MasterKeyName guard). The CLI must not become a
-// second, divergent authority on which names are writable.
-func TestRunServerSecretSetAcceptsFullMasterKeyName(t *testing.T) {
-	fake := &fakeServerSecrets{}
-	client := startFakeServerSecretsServer(t, fake)
-
-	var out strings.Builder
-	in := strings.NewReader("s3cr3t\n")
-	if err := runServerSecretSet(context.Background(), client, store.MasterKeyName, in, &out); err != nil {
-		t.Fatalf("runServerSecretSet: %v", err)
-	}
-	if fake.gotSet == nil {
-		t.Fatal("SetServerSecret was not called; the server must be the authority on this refusal")
-	}
-	if fake.gotSet.GetName() != store.MasterKeyName {
-		t.Errorf("name = %q, want %q unchanged", fake.gotSet.GetName(), store.MasterKeyName)
-	}
-}
-
-// TestRunServerSecretSetEmptyStdin asserts an empty stdin value is rejected with
-// the shared empty-value error BEFORE any RPC — a blank pipe must never clear a
-// populated server secret.
-func TestRunServerSecretSetEmptyStdin(t *testing.T) {
-	fake := &fakeServerSecrets{}
-	client := startFakeServerSecretsServer(t, fake)
-
-	var out strings.Builder
-	err := runServerSecretSet(context.Background(), client, "FORGE_APP_PEM", strings.NewReader("\n"), &out)
-	if err == nil {
-		t.Fatal("runServerSecretSet with empty stdin = nil error, want rejection")
-	}
-	if !strings.Contains(err.Error(), "value is required") {
-		t.Errorf("error %q does not mention the required value", err.Error())
-	}
-	if fake.setCalls != 0 {
-		t.Errorf("SetServerSecret called %d times despite an empty value", fake.setCalls)
 	}
 }

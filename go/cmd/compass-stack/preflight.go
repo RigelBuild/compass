@@ -15,7 +15,8 @@ import (
 // preflight is the T9 host bring-up gate: it surfaces the KVM/podman/microVM and
 // secretspec-CLI prerequisites at install-time rather than at first `up`. A thin
 // consumer of the runtime lane's internal/hostcheck core, keeping only the
-// stack-specific podman-rootless and secretspec-CLI checks. Do not grow it.
+// stack-specific podman-rootless and secretspec-CLI checks. No Go code spawns
+// the CLI; it is the operator's server-secret rotation path. Do not grow it.
 
 // podmanBinary is the podman executable name, resolved on PATH. It is the check
 // name and the LookPath target, so it is named once here (goconst).
@@ -87,7 +88,7 @@ func runPreflight(args []string) error {
 		checks = append(checks, checkBinaryVersion(f))
 	}
 	// After the trio so the microVM group stays contiguous and the output order
-	// is stable: secretspec is the secrets write path's dependency, not a microVM
+	// is stable: secretspec is the operator's rotation dependency, not a microVM
 	// userspace binary.
 	checks = append(checks, checkBinaryVersion(hostcheck.SecretSpecFloor))
 

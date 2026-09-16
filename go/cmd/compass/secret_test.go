@@ -73,7 +73,7 @@ func TestRunSecretSet(t *testing.T) {
 
 	var out strings.Builder
 	in := strings.NewReader("s3cr3t\n")
-	args := secretSetArgs{name: "OPENAI_KEY", delivery: "env", kind: "generic"}
+	args := secretSetArgs{name: "OPENAI_KEY", delivery: "env", kind: "generic", scope: "user"}
 	if err := runSecretSet(context.Background(), client, args, in, &out); err != nil {
 		t.Fatalf("runSecretSet: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestRunSecretSetProviderKind(t *testing.T) {
 	client := startFakeSecretsServer(t, fake)
 
 	var out strings.Builder
-	args := secretSetArgs{name: "ANTHROPIC", delivery: "file", kind: "provider", provider: "anthropic"}
+	args := secretSetArgs{name: "ANTHROPIC", delivery: "file", kind: "provider", provider: "anthropic", scope: "user"}
 	if err := runSecretSet(context.Background(), client, args, strings.NewReader("v"), &out); err != nil {
 		t.Fatalf("runSecretSet: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestRunSecretSetGhKind(t *testing.T) {
 	client := startFakeSecretsServer(t, fake)
 
 	var out strings.Builder
-	args := secretSetArgs{name: "GH", delivery: "env", kind: "gh", host: "github.com"}
+	args := secretSetArgs{name: "GH", delivery: "env", kind: "gh", host: "github.com", scope: "user"}
 	if err := runSecretSet(context.Background(), client, args, strings.NewReader("tok"), &out); err != nil {
 		t.Fatalf("runSecretSet: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestRunSecretSetRejections(t *testing.T) {
 		},
 		{
 			name: "empty stdin value",
-			args: secretSetArgs{name: "X", delivery: "env", kind: "generic"},
+			args: secretSetArgs{name: "X", delivery: "env", kind: "generic", scope: "user"},
 			in:   "\n",
 			want: "value is required",
 		},
@@ -262,7 +262,7 @@ func TestRunSecretDelete(t *testing.T) {
 	fake := &fakeSecrets{}
 	client := startFakeSecretsServer(t, fake)
 	var out strings.Builder
-	if err := runSecretDelete(context.Background(), client, "OPENAI_KEY", &out); err != nil {
+	if err := runSecretDelete(context.Background(), client, "OPENAI_KEY", "user", &out); err != nil {
 		t.Fatalf("runSecretDelete: %v", err)
 	}
 	if fake.deleteCalls != 1 {
@@ -339,7 +339,7 @@ func TestRunSecretSetBound(t *testing.T) {
 		client := startFakeSecretsServer(t, fake)
 		var out strings.Builder
 		in := strings.NewReader(strings.Repeat("a", maxSecretBytes+1))
-		err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic"}, in, &out)
+		err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic", scope: "user"}, in, &out)
 		if err == nil {
 			t.Fatal("runSecretSet with oversized stdin = nil error, want rejection")
 		}
@@ -356,7 +356,7 @@ func TestRunSecretSetBound(t *testing.T) {
 		client := startFakeSecretsServer(t, fake)
 		var out strings.Builder
 		in := strings.NewReader(strings.Repeat("a", maxSecretBytes))
-		if err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic"}, in, &out); err != nil {
+		if err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic", scope: "user"}, in, &out); err != nil {
 			t.Fatalf("runSecretSet at cap: %v", err)
 		}
 		if fake.gotSet == nil {
@@ -372,7 +372,7 @@ func TestRunSecretSetBound(t *testing.T) {
 		client := startFakeSecretsServer(t, fake)
 		var out strings.Builder
 		in := strings.NewReader(strings.Repeat("a", maxSecretBytes) + "\n")
-		if err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic"}, in, &out); err != nil {
+		if err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic", scope: "user"}, in, &out); err != nil {
 			t.Fatalf("runSecretSet at cap with trailing newline: %v", err)
 		}
 		if fake.gotSet == nil {

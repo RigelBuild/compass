@@ -78,20 +78,10 @@ func (q *Queries) DeleteSecret(ctx context.Context, arg DeleteSecretParams) (int
 	return result.RowsAffected(), nil
 }
 
-const insertSecret = `-- name: InsertSecret :exec
+const isUserAccount = `-- name: IsUserAccount :one
 
-INSERT INTO secrets (name, scope_kind, delivery, kind, provider, host, declared_by)
-VALUES ($1, 0, $2, $3, $4, $5, $6)
+SELECT EXISTS (SELECT 1 FROM user_accounts WHERE account_id = $1)
 `
-
-type InsertSecretParams struct {
-	Name       string
-	Delivery   int16
-	Kind       int16
-	Provider   string
-	Host       string
-	DeclaredBy string
-}
 
 // Secrets-registry queries (sqlc adoption T6, RIG-3034). These back the
 // hand-written Store methods, which keep their signatures, the door-side
@@ -99,27 +89,9 @@ type InsertSecretParams struct {
 // ErrConflict/ErrInvalidArgument/ErrNotFound mapping, and the RowsAffected
 // branch (DeleteSecretDeclaration is :execrows).
 //
-// InsertSecret/DeclaredSecrets are the retained value-free path (T5 caller); the
-// scoped, encrypted path is UpsertSecret + SecretRecordsForAgent (A1/A9).
-// InsertSecret writes the value-free declaration at the tenant coordinate
-// (scope_kind 0, empty scope_id); the value columns stay NULL. Retained for the T5
-// SetSecret caller, removed with it in T5.
-func (q *Queries) InsertSecret(ctx context.Context, arg InsertSecretParams) error {
-	_, err := q.db.Exec(ctx, insertSecret,
-		arg.Name,
-		arg.Delivery,
-		arg.Kind,
-		arg.Provider,
-		arg.Host,
-		arg.DeclaredBy,
-	)
-	return err
-}
-
-const isUserAccount = `-- name: IsUserAccount :one
-SELECT EXISTS (SELECT 1 FROM user_accounts WHERE account_id = $1)
-`
-
+// DeclaredSecrets is the retained value-free READ path (the SERVER SpecResolver's
+// declarations view); the scoped, encrypted path is UpsertSecret +
+// SecretRecordsForAgent (A1/A9), now the sole writer.
 // IsUserAccount reports whether an id names a human account — the user-scope
 // (scope_kind 1) referential check the UpsertSecret door runs in lieu of an FK
 // (A9). The agent-scope check reuses IsAgentAccount.

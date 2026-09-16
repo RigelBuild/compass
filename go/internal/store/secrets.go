@@ -10,7 +10,7 @@ import (
 )
 
 // SecretDelivery is how a declared secret is delivered into a container — the
-// load-bearing file-vs-env split that determines how it rotates (T5/T6). Stored
+// load-bearing file-vs-env split that determines how it rotates. Stored
 // as the small int the secrets resolve surface uses (secrets.DeliveryKind),
 // mapped at that package's edge like every other store↔proto enum (types.go).
 type SecretDelivery int32
@@ -24,7 +24,7 @@ const (
 	SecretDeliveryEnv SecretDelivery = 1
 )
 
-// SecretKind is the routing class the T5 materializer switches on: a generic
+// SecretKind is the routing class the materializer switches on: a generic
 // declared secret, a provider (LLM) credential that rides the OMP SDK auth
 // surface, or a gh credential placed into ~/.config/gh/hosts.yml.
 type SecretKind int32
@@ -42,20 +42,20 @@ const (
 )
 
 // secretNamePattern is SecretSpec's env-var-name grammar. A declared name is
-// validated against it at the store door (DeclareSecret) — before it can reach
+// validated against it at the store door (UpsertSecret) — before it can reach
 // a row — because it later becomes a path segment under $HOME/.compass/secrets/
-// and a line in a root-adjacent setup script (T5): constrained at the door, not
+// and a line in a root-adjacent setup script: constrained at the door, not
 // escaped downstream. The identical grammar is re-exported and re-checked by
 // internal/secrets (defense in depth at materialization).
 var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
-// SecretDeclaration is one names-only registry row: a declared secret's name,
-// how it is delivered/routed, and who declared it — NEVER its value. The value
-// lives only in the SecretSpec provider; the Server resolves it at fetch time
-// (internal/secrets) and never persists it.
+// SecretDeclaration is the value-free view of a user-secret row: the name, how
+// it is delivered/routed, and who declared it. The struct carries no value, but
+// the underlying row does — the value is AES-256-GCM ciphertext beside it, read
+// and decrypted through StoreResolver rather than resolved from a provider.
 type SecretDeclaration struct {
 	Name string
-	// Delivery is the file-vs-env split (T5/T6 rotation shape).
+	// Delivery is the file-vs-env split that fixes how the secret rotates.
 	Delivery SecretDelivery
 	// Kind is the materializer routing class.
 	Kind SecretKind
@@ -65,54 +65,10 @@ type SecretDeclaration struct {
 	// else "").
 	Host string
 	// DeclaredBy is the account that declared the secret (write path is
-	// user-only, enforced at the T7 RPC edge).
+	// user-only, enforced at the RPC edge).
 	DeclaredBy AccountID
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
-}
-
-// DeclareSecret adds a names-only registry row (RIG-1327 T3). It stores NO
-// value — the value lives in the SecretSpec provider. name is validated against
-// SecretSpec's env-var-name grammar at the door (a bad name is
-// ErrInvalidArgument before touching Postgres, since the name becomes a
-// filesystem path and script token downstream). A duplicate name is
-// ErrConflict; an unknown actor account is ErrInvalidArgument (the declared_by
-// FK). provider is meaningful only for a provider kind and host only for a gh
-// kind; callers pass "" otherwise.
-func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string, delivery SecretDelivery, kind SecretKind, provider, host string) error {
-	if !secretNamePattern.MatchString(name) {
-		return fmt.Errorf("%w: secret name %q must match %s", ErrInvalidArgument, name, secretNamePattern.String())
-	}
-	// F1 (D6): the user keyspace REJECTS reserved server-secret prefixes. Else a
-	// user-path declare could mint a shadow row under a server-secret name that
-	// the inject-all path hands every agent. This partitions the keyspace: a
-	// reserved-prefix name lives only in server_secrets, an unprefixed in secrets.
-	if HasServerSecretPrefix(name) {
-		return fmt.Errorf("%w: secret name %q uses a reserved server-secret prefix", ErrInvalidArgument, name)
-	}
-	if actor == "" {
-		return fmt.Errorf("%w: declaring account id is required", ErrInvalidArgument)
-	}
-	if err := validateKindRouting(kind, provider, host); err != nil {
-		return err
-	}
-	if err := s.q.InsertSecret(ctx, db.InsertSecretParams{
-		Name:       name,
-		Delivery:   int16(delivery), //nolint:gosec // G115: SecretDelivery is a CHECK-constrained 0/1 enum (secrets.delivery), always within int16
-		Kind:       int16(kind),     //nolint:gosec // G115: SecretKind is a CHECK-constrained 0/1/2 enum (secrets.kind), always within int16
-		Provider:   provider,
-		Host:       host,
-		DeclaredBy: string(actor),
-	}); err != nil {
-		if pgErrIs(err, pgUniqueViolation) {
-			return fmt.Errorf("%w: secret %q already declared", ErrConflict, name)
-		}
-		if pgErrIs(err, pgForeignKeyViolation) {
-			return fmt.Errorf("%w: declaring account %q does not exist", ErrInvalidArgument, actor)
-		}
-		return fmt.Errorf("store: declare secret: %w", err)
-	}
-	return nil
 }
 
 // validateKindRouting enforces the kind↔provider/host invariant at the store
@@ -121,7 +77,7 @@ func (s *Store) DeclareSecret(ctx context.Context, actor AccountID, name string,
 // and no provider, a generic row (kind=0) neither. A caller that violates it
 // gets an actionable ErrInvalidArgument here rather than a raw constraint
 // violation from the INSERT — and an out-of-invariant row can never reach the
-// T5 materializer, where an empty provider id would silently misroute.
+// materializer, where an empty provider id would silently misroute.
 func validateKindRouting(kind SecretKind, provider, host string) error {
 	switch kind {
 	case SecretKindGeneric:
