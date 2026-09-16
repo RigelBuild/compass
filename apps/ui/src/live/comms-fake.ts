@@ -42,6 +42,7 @@ export interface RecordedAskResponse {
 	readonly answers: ReadonlyArray<{
 		readonly questionId: string;
 		readonly chosenOptionIds: readonly string[];
+		readonly customText: string;
 	}>;
 }
 
@@ -246,7 +247,11 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		},
 		respondToAsk: async (req: {
 			askId: string;
-			answers: Array<{ questionId: string; chosenOptionIds: string[] }>;
+			answers: Array<{
+				questionId: string;
+				chosenOptionIds: string[];
+				customText: string;
+			}>;
 		}) => {
 			// A gated respond parks here — still IN FLIGHT from the store's point of view —
 			// until the test settles it, so the test can push a stream event through. An
@@ -277,6 +282,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 				answers: req.answers.map((a) => ({
 					questionId: a.questionId,
 					chosenOptionIds: [...a.chosenOptionIds],
+					customText: a.customText,
 				})),
 			});
 			return {};
@@ -429,11 +435,20 @@ export function wireTextMessage(opts: {
  *  answerable by custom_text alone, so a recorded answer to one leaves its
  *  `chosenOptionIds` empty even though the ask is closed.
  *
+ *  `multi` names the questions the server holds as allow_multiple — where options
+ *  and custom_text coexist, so a respond may carry both for one question.
+ *
+ *  `recordedText` seeds a question's server-recorded custom_text — the audit
+ *  value a closed free-text ask carries back.
+ *
  *  `optionIds` overrides one question's OFFERED option ids (labels are derived
  *  from the id). The block-update path rewrites a message's whole block set
  *  requiring only that `ask_id` survive, so an agent may restate an ask with
  *  the same question ids and a REVISED option set; this is how a test builds
- *  that push. */
+ *  that push.
+ *
+ *  `header` seeds a question's display chip; `recommended` its agent-recommended
+ *  option index; `preview` a per-option rich preview keyed by option id. */
 export function wireAskMessage(opts: {
 	id: string;
 	topicId: string;
@@ -443,7 +458,12 @@ export function wireAskMessage(opts: {
 	chosen?: Readonly<Record<string, readonly string[]>>;
 	answered?: boolean;
 	freeText?: readonly string[];
+	multi?: readonly string[];
+	recordedText?: Readonly<Record<string, string>>;
 	optionIds?: Readonly<Record<string, readonly string[]>>;
+	header?: Readonly<Record<string, string>>;
+	recommended?: Readonly<Record<string, number>>;
+	preview?: Readonly<Record<string, string>>;
 }): WireMessage {
 	const hasChosen = Object.values(opts.chosen ?? {}).some(
 		(ids) => ids.length > 0,
@@ -469,7 +489,10 @@ export function wireAskMessage(opts: {
 							create(AskQuestionSchema, {
 								questionId,
 								question: `${questionId}?`,
-								allowMultiple: false,
+								header: opts.header?.[questionId] ?? "",
+								recommended: opts.recommended?.[questionId],
+								customText: opts.recordedText?.[questionId] ?? "",
+								allowMultiple: opts.multi?.includes(questionId) ?? false,
 								chosenOptionIds: [...(opts.chosen?.[questionId] ?? [])],
 								// A free-text question carries no options at all: it is
 								// answered by custom_text alone, which is why a recorded
@@ -480,7 +503,11 @@ export function wireAskMessage(opts: {
 										? []
 										: [`${questionId}-a`, `${questionId}-b`])
 								).map((id) =>
-									create(AskOptionSchema, { id, label: id.toUpperCase() }),
+									create(AskOptionSchema, {
+										id,
+										label: id.toUpperCase(),
+										preview: opts.preview?.[id] ?? "",
+									}),
 								),
 							}),
 						),

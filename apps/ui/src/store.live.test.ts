@@ -33,10 +33,10 @@ import { testQueryClient } from "./test-support";
 //     no-optimistic-update design rests on),
 //   - postMessage issues a PostMessage carrying a clientRequestId and inserts
 //     NOTHING locally (the stream echo is what renders it),
-//   - answerAsk keeps clicks LOCAL until every question in the ask has an
-//     answer and then issues exactly ONE complete RespondToAsk (the ask is
-//     answerable once, server-side), submitAsk is the skip affordance, and a
-//     refused respond rolls the local answer back.
+//   - answerAsk (and every recorder) keeps answers LOCAL and sends nothing;
+//     submitAsk is the ONE send path, issuing exactly one RespondToAsk (the ask
+//     is answerable once, server-side), and a refused respond restages the
+//     staged answers rather than rolling them back.
 //
 // The reduction itself (dedup, ordering, wire→domain adaptation) is covered in
 // live/comms-state.test.ts and live/adapt.test.ts; here the subject is the
@@ -92,6 +92,22 @@ const chosenIn = (
 		if (b.kind !== "ask" || b.ask.askId !== askId) continue;
 		const q = b.ask.questions.find((q) => q.questionId === questionId);
 		if (q) return [...q.chosenOptionIds];
+	}
+	return undefined;
+};
+// The staged custom text of one question — the public observation of what the
+// local free-text draft holds.
+const customTextIn = (
+	store: AppStore,
+	messageId: string,
+	askId: string,
+	questionId: string,
+): string | undefined => {
+	const msg = store.messages().find((m) => m.id === messageId);
+	for (const b of msg?.blocks ?? []) {
+		if (b.kind !== "ask" || b.ask.askId !== askId) continue;
+		const q = b.ask.questions.find((q) => q.questionId === questionId);
+		if (q) return q.customText;
 	}
 	return undefined;
 };
@@ -323,17 +339,11 @@ describe("store live write path", () => {
 		});
 	});
 
-	// THE GATE (Matt's ruling). An ask is answerable exactly ONCE server-side
-	// (go/internal/store/messages.go:404-406 rejects a second respond, :438 sets
-	// Answered on the first), so a per-click respond would persist a partial
-	// answer and lock the ask against the rest of it. Clicks therefore stay
-	// LOCAL until every question is settled, and the completing click issues
-	// exactly one RespondToAsk carrying every question's answer.
-	//
-	// Mutation-check: the old fire-on-every-click behaviour reddens the
-	// after-first-click leg (one response, not zero); a mapper that sends only
-	// the clicked question drops the q-2 entry and reddens the toEqual.
-	test("answerAsk sends nothing until the ask is complete, then one full RespondToAsk", async () => {
+	// Matt's ruling: recording never sends. Both clicks of a TWO-question ask
+	// stay LOCAL (askResponses empty); only the explicit submitAsk issues the
+	// one RespondToAsk carrying every question's answer. Mutation-check: an
+	// auto-sending recorder reddens an empty leg; a partial mapper drops q-2.
+	test("answerAsk never sends; submitAsk ships the full respond", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
 			channels: [wireChannel(CHANNEL)],
@@ -347,30 +357,33 @@ describe("store live write path", () => {
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
 			await settled();
 			expect(chosenIn(store, "m-ask", "ask-1", "q-1")).toEqual(["q-1-a"]);
-			// … and sends NOTHING: the ask is still incomplete.
+			// … and sends NOTHING: recording never reaches the wire.
 			expect(fake.askResponses).toEqual([]);
 
-			// (b) the completing click issues exactly one complete respond.
+			// (b) the completing click also records locally and sends nothing.
 			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-b");
 			await settled();
+			expect(fake.askResponses).toEqual([]);
 
+			// (c) only the explicit submit issues one complete respond.
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
 			expect(fake.askResponses).toEqual([
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: ["q-2-b"] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-b"], customText: "" },
 					],
 				},
 			]);
 		});
 	});
 
-	// The gate must not regress the ONE-question ask — the shape every current
-	// fixture uses. Its only click completes it, so it still sends on that
-	// click. Mutation-check: a gate that waited for a second question (or for an
-	// explicit submit) sends nothing and reddens.
-	test("a single-question ask still sends on its only click", async () => {
+	// A one-question ask is the shape that used to send on its own click: now the
+	// only click sends NOTHING, and submitAsk ships it. Mutation-check: a
+	// recorder that auto-sends reddens the empty leg.
+	test("a single-question ask's only click sends nothing; submitAsk ships it", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
 			channels: [wireChannel(CHANNEL)],
@@ -382,11 +395,20 @@ describe("store live write path", () => {
 		await withLiveStore(fake, async (store, settled) => {
 			store.answerAsk("m-one", "ask-one", "q-only", "q-only-a");
 			await settled();
+			expect(fake.askResponses).toEqual([]);
 
+			store.submitAsk("m-one", "ask-one");
+			await settled();
 			expect(fake.askResponses).toEqual([
 				{
 					askId: "ask-one",
-					answers: [{ questionId: "q-only", chosenOptionIds: ["q-only-a"] }],
+					answers: [
+						{
+							questionId: "q-only",
+							chosenOptionIds: ["q-only-a"],
+							customText: "",
+						},
+					],
 				},
 			]);
 		});
@@ -419,19 +441,18 @@ describe("store live write path", () => {
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: [] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: [], customText: "" },
 					],
 				},
 			]);
 		});
 	});
 
-	// At most ONE respond per ask, from either send path. Once the ask has been
-	// submitted the store refuses further local answers too — recording a click
-	// it can never send would put the UI back in the exact lying state the gate
-	// exists to remove. Mutation-check: dropping the sent-ask guard fires a
-	// second respond (which the double rejects, as the server does).
+	// At most ONE respond per ask. Two clicks record; submitAsk sends and marks
+	// the ask submitted; every further path — a later answer, a second submit —
+	// is inert. Mutation-check: dropping the submitted-ask guard fires a second
+	// respond (which the double rejects, as the server does).
 	test("a completed ask takes no further answer and issues no second respond", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -444,6 +465,12 @@ describe("store live write path", () => {
 		await withLiveStore(fake, async (store, settled) => {
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
 			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-a");
+			await settled();
+			// Recorded, not sent: the ask is not submitted until the explicit gesture.
+			expect(fake.askResponses).toEqual([]);
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
+
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses.length).toBe(1);
 			expect(store.isAskSubmitted("ask-1")).toBe(true);
@@ -458,13 +485,11 @@ describe("store live write path", () => {
 		});
 	});
 
-	// A REFUSED respond must not leave the UI showing an answer the server does
-	// not have. The local record rolls back to its pre-click state — which also
-	// leaves the ask retryable, because the server only burns an ask on a
-	// respond it ACCEPTED. Mutation-check: the old fire-and-forget catch (route
-	// to onCommsError and keep the local answer) reddens the rollback leg; a
-	// rollback that forgot to clear the sent mark reddens the retry leg.
-	test("a refused RespondToAsk rolls the local answer back and stays retryable", async () => {
+	// A REFUSED respond restages the staged answer rather than rolling it back:
+	// submit records nothing, so the local answer the user staged stays honest
+	// and retryable. Mutation-check: a catch that dropped the staged answer
+	// reddens the survives-the-refusal leg; forgetting to unmark reddens retry.
+	test("a refused RespondToAsk leaves the staged answer in place and stays retryable", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
 			channels: [wireChannel(CHANNEL)],
@@ -481,24 +506,31 @@ describe("store live write path", () => {
 
 				store.answerAsk("m-one", "ask-one", "q-only", "q-only-a");
 				await settled();
+				store.submitAsk("m-one", "ask-one");
+				await settled();
 
 				// The refusal surfaced …
 				expect((errors[0] as Error).message).toBe("server refused the ask");
-				// … the local record does NOT show the refused answer …
-				expect(chosenIn(store, "m-one", "ask-one", "q-only")).toEqual([]);
-				// … and the ask is not burnt: it can be answered again.
+				// … the staged answer stays put — submit recorded nothing to undo …
+				expect(chosenIn(store, "m-one", "ask-one", "q-only")).toEqual([
+					"q-only-a",
+				]);
+				// … and the ask is not burnt: it can be submitted again.
 				expect(store.isAskSubmitted("ask-one")).toBe(false);
 
-				store.answerAsk("m-one", "ask-one", "q-only", "q-only-b");
+				store.submitAsk("m-one", "ask-one");
 				await settled();
 
-				expect(chosenIn(store, "m-one", "ask-one", "q-only")).toEqual([
-					"q-only-b",
-				]);
 				expect(fake.askResponses).toEqual([
 					{
 						askId: "ask-one",
-						answers: [{ questionId: "q-only", chosenOptionIds: ["q-only-b"] }],
+						answers: [
+							{
+								questionId: "q-only",
+								chosenOptionIds: ["q-only-a"],
+								customText: "",
+							},
+						],
 					},
 				]);
 			},
@@ -506,14 +538,10 @@ describe("store live write path", () => {
 		);
 	});
 
-	// The rollback is CONDITIONAL: it restores the pre-click ask only while that
-	// ask has not moved since the respond shipped. A `messageUpdated` push that
-	// lands between the click and the refusal carries the AUTHORITATIVE server
-	// value (here another participant's accepted answer), and an unconditional
-	// restore would overwrite it with stale local state — leaving the UI showing
-	// an ask state the server never had, uncorrected until a full resync.
-	// Mutation-check: making the restore unconditional again reddens the
-	// survives-the-refusal leg.
+	// The restage is CONDITIONAL: a messageUpdated push landing between submit
+	// and the refusal carries the AUTHORITATIVE server value (another
+	// participant's accepted answer), and `!current.answered` declines the
+	// restage. Mutation-check: dropping that guard reddens the survives leg.
 	test("a refused respond does not clobber an ask the stream moved meanwhile", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -527,9 +555,11 @@ describe("store live write path", () => {
 		await withLiveStore(
 			fake,
 			async (store, settled) => {
-				// (1) the click: local answer recorded, respond HELD in flight.
+				// (1) record the answer, then submit — the respond is HELD in flight.
 				const gate = fake.holdNextAskResponse();
 				store.answerAsk("m-one", "ask-one", "q-only", "q-only-a");
+				await settled();
+				store.submitAsk("m-one", "ask-one");
 				await settled();
 				expect(chosenIn(store, "m-one", "ask-one", "q-only")).toEqual([
 					"q-only-a",
@@ -574,10 +604,8 @@ describe("store live write path", () => {
 	});
 
 	// First-responder-wins holds ACROSS the wire: a second single-select answer
-	// is a local no-op, so the answer the completing click ships is the FIRST
-	// one — re-answering must never overwrite the winner in the audit record.
-	// Mutation-check: dropping the "was the answer recorded?" guard ships
-	// q-1-b.
+	// is a local no-op, so submit ships the FIRST answer. Mutation-check:
+	// dropping the "was it recorded?" guard ships q-1-b.
 	test("a rejected single-select answer does not reach the wire", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -592,6 +620,8 @@ describe("store live write path", () => {
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-b");
 			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-a");
 			await settled();
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
 
 			expect(fake.askResponses.length).toBe(1);
 			expect(fake.askResponses[0].answers[0].chosenOptionIds).toEqual([
@@ -600,8 +630,9 @@ describe("store live write path", () => {
 		});
 	});
 
-	// A miss on any coordinate records nothing locally and sends nothing — the
-	// wire must never carry an answer the local guard rejected.
+	// A miss on any coordinate records nothing locally; with recording no longer
+	// a send path the wire assertion is now vacuous, kept as records-nothing
+	// coverage. Mutation-check: a guard that recorded a miss reddens chosenIn.
 	test("an unknown ask coordinate sends no RespondToAsk", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -618,7 +649,235 @@ describe("store live write path", () => {
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-nope");
 			await settled();
 
+			// Nothing recorded locally, so a later submit has nothing to send.
+			expect(chosenIn(store, "m-ask", "ask-1", "q-1")).toEqual([]);
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
 			expect(fake.askResponses).toEqual([]);
+		});
+	});
+
+	// The design's central safety claim: typing that COMPLETES an ask still
+	// sends nothing; only submitAsk ships, carrying the trimmed text. Mutation-
+	// check: a text recorder that sent reddens the empty leg; dropping the trim
+	// at the seam reddens the shipped value.
+	test("typing that completes an ask sends nothing; submitAsk ships the trimmed text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					wireAskMessage({
+						id: "m-ask",
+						topicId: TOPIC,
+						authorAccountId: CALLER,
+						askId: "ask-1",
+						questionIds: ["q-1", "q-free"],
+						freeText: ["q-free"],
+					}),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-free", "  ship it  ");
+			await settled();
+			// The ask is now complete, yet recording never reaches the wire.
+			expect(fake.askResponses).toEqual([]);
+
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses).toEqual([
+				{
+					askId: "ask-1",
+					answers: [
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{
+							questionId: "q-free",
+							chosenOptionIds: [],
+							customText: "ship it",
+						},
+					],
+				},
+			]);
+		});
+	});
+
+	// Whitespace-only text is a skip: the trim seam ships customText "", the
+	// accepted-skip shape. Mutation-check: shipping the raw draft reddens the
+	// empty customText.
+	test("whitespace-only typed text ships as an empty custom text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					wireAskMessage({
+						id: "m-ask",
+						topicId: TOPIC,
+						authorAccountId: CALLER,
+						askId: "ask-1",
+						questionIds: ["q-1", "q-free"],
+						freeText: ["q-free"],
+					}),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-free", "   ");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses[0].answers).toEqual([
+				{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+				{ questionId: "q-free", chosenOptionIds: [], customText: "" },
+			]);
+		});
+	});
+
+	// Single-select exclusivity, both directions. A pick clears any staged
+	// draft, so submit ships the id with customText ""; and once picked, a later
+	// answerAskText is a no-op. The pair (id + non-empty text) is what the server
+	// refuses, burning the one respond. Mutation-check: dropping the click-side
+	// clear reddens the cleared-draft leg; dropping the text-side gate reddens the
+	// no-op leg.
+	test("a single-select pick clears the draft, and text after a pick is a no-op", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [askMessage("m-ask", "ask-1")],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// Type a draft on the single-select q-1, then pick an option.
+			store.answerAskText("m-ask", "ask-1", "q-1", "my own answer");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe(
+				"my own answer",
+			);
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			// The pick cleared the draft — the staged state never holds both.
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe("");
+			expect(chosenIn(store, "m-ask", "ask-1", "q-1")).toEqual(["q-1-a"]);
+
+			// The other direction: text after the pick is refused.
+			store.answerAskText("m-ask", "ask-1", "q-1", "sneak it back");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe("");
+
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses[0].answers[0]).toEqual({
+				questionId: "q-1",
+				chosenOptionIds: ["q-1-a"],
+				customText: "",
+			});
+		});
+	});
+
+	// allowMultiple carries both: an option and typed text coexist and ship
+	// together in one answer entry, which the server accepts. Mutation-check: a
+	// send seam that blanked text whenever an option was present reddens the
+	// carries-both leg.
+	test("a multi-select ships both the chosen id and the trimmed text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					wireAskMessage({
+						id: "m-ask",
+						topicId: TOPIC,
+						authorAccountId: CALLER,
+						askId: "ask-1",
+						questionIds: ["q-multi"],
+						multi: ["q-multi"],
+					}),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-multi", "q-multi-a");
+			store.answerAskText("m-ask", "ask-1", "q-multi", "  and this  ");
+			await settled();
+			// Both survive on the staged copy — the toggle did not clear the text.
+			expect(chosenIn(store, "m-ask", "ask-1", "q-multi")).toEqual([
+				"q-multi-a",
+			]);
+			expect(customTextIn(store, "m-ask", "ask-1", "q-multi")).toBe(
+				"  and this  ",
+			);
+
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses[0].answers[0]).toEqual({
+				questionId: "q-multi",
+				chosenOptionIds: ["q-multi-a"],
+				customText: "and this",
+			});
+		});
+	});
+
+	// answerAskText no-op gates, beside the answerAsk gate coverage: a settled
+	// single-select (a chosen option already answered it), a submitted ask, and a
+	// server-closed ask each refuse a recorded draft. Mutation-check: dropping any
+	// gate lets the matching leg record text.
+	test("answerAskText no-ops on a settled, submitted, or closed ask", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage("m-ask", "ask-1"),
+					singleQuestionAskMessage("m-one", "ask-one"),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// (a) settled single-select: a pick answered q-1, so text is refused.
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			store.answerAskText("m-ask", "ask-1", "q-1", "too late");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe("");
+
+			// (b) submitted ask: q-2 has no pick, but the ask is in flight.
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(store.isAskSubmitted("ask-1")).toBe(true);
+			store.answerAskText("m-ask", "ask-1", "q-2", "after submit");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-2")).toBe("");
+
+			// (c) server-closed ask: a push closes ask-one, so text is refused.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: wireAskMessage({
+							id: "m-one",
+							topicId: TOPIC,
+							authorAccountId: CALLER,
+							askId: "ask-one",
+							questionIds: ["q-only"],
+							answered: true,
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			store.answerAskText("m-one", "ask-one", "q-only", "closed");
+			await settled();
+			expect(customTextIn(store, "m-one", "ask-one", "q-only")).toBe("");
 		});
 	});
 });

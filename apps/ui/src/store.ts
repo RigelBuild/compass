@@ -19,14 +19,15 @@ import {
 } from "solid-js";
 import { type PrRow, prRows } from "./board";
 import { agentDmAccountId } from "./comms";
-import type {
-	Account,
-	Ask,
-	Channel,
-	ChannelGroup,
-	ConvBlock,
-	Message,
-	Topic,
+import {
+	type Account,
+	type Ask,
+	type Channel,
+	type ChannelGroup,
+	type ConvBlock,
+	isQuestionAnswered,
+	type Message,
+	type Topic,
 } from "./comms-stub";
 import {
 	type ActivityBarItem,
@@ -437,29 +438,36 @@ export interface AppStore {
 	/** NOT WIRED YET — inert, for the same reason as `joinChannel`. The rail's
 	 *  subscribe toggle renders disabled. */
 	toggleSubscribe: (channelId: string) => void;
-	/** Record an answer to a question within an ask, LOCALLY. The wire
-	 *  `RespondToAsk` is gated on COMPLETENESS: the server accepts exactly one
-	 *  respond per ask (go/internal/store/messages.go:404-405 rejects a later one,
-	 *  :438 sets the flag that gate reads), so answers
-	 *  accumulate locally and exactly ONE atomic respond — every question's
-	 *  answer in one call — is issued on the click that completes the ask. A
-	 *  single-question ask completes on its only click. Single-select is
-	 *  first-responder-wins (a later answer is a local no-op); multi-select
-	 *  toggles. No-op for an unknown message/ask/question/option, and for an ask
-	 *  already submitted. A REFUSED respond rolls the local answer back and
-	 *  clears the submitted mark (the ask stays retryable); the error also
-	 *  reaches `onCommsError`. */
+	/** Record an answer to a question within an ask, LOCALLY — recording never
+	 *  sends. The server accepts exactly ONE `RespondToAsk` per ask (the
+	 *  answer-once guard in `applyAskAnswer`, `go/internal/store/messages.go`,
+	 *  rejects a later one), so answers accumulate on the local ask copy and
+	 *  only `submitAsk` ever ships them. Single-select is first-responder-wins
+	 *  (a later answer is a local no-op); multi-select toggles. No-op for an
+	 *  unknown message/ask/question/option, an ask already submitted, and a
+	 *  CLOSED (`answered`) ask. */
 	answerAsk: (
 		messageId: string,
 		askId: string,
 		questionId: string,
 		optionId: string,
 	) => void;
-	/** Submit an INCOMPLETE ask — the skip affordance. Issues the ask's one
-	 *  `RespondToAsk` with the answers recorded so far and an empty
-	 *  `chosenOptionIds` for every skipped question (the wire requires coverage
-	 *  of each question, not an answer to each). No-op on an unknown ask, an ask
-	 *  already submitted, and a wholly unanswered one. */
+	/** Record the free-text answer to a question, LOCALLY — like every
+	 *  recorder, it never sends; re-typing replaces the draft until the
+	 *  explicit submit. No-op on a single-select question already settled by a
+	 *  chosen option (exclusivity), an unknown message/ask/question, a
+	 *  submitted ask, and a CLOSED (`answered`) ask. */
+	answerAskText: (
+		messageId: string,
+		askId: string,
+		questionId: string,
+		text: string,
+	) => void;
+	/** The ONE send path. Issues the ask's single `RespondToAsk` with the
+	 *  answers recorded so far and an empty `chosenOptionIds` for every skipped
+	 *  question (the wire requires coverage of each question, not an answer to
+	 *  each). No-op on an unknown ask, an ask already submitted, a CLOSED
+	 *  (`answered`) ask, and a wholly unanswered one. */
 	submitAsk: (messageId: string, askId: string) => void;
 	/** Whether this ask's one `RespondToAsk` has been issued — reactive, so the
 	 *  render locks a submitted ask. Cleared again if the respond is refused. */
@@ -1261,7 +1269,21 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				? q.chosenOptionIds.filter((id) => id !== optionId)
 				: [...q.chosenOptionIds, optionId]
 			: [optionId];
-		return { ...q, chosenOptionIds: chosen };
+		// A single-select pick settles the question, so it clears any staged draft:
+		// the server rejects an option plus custom text on a non-multi question.
+		return q.allowMultiple
+			? { ...q, chosenOptionIds: chosen }
+			: { ...q, chosenOptionIds: chosen, customText: "" };
+	};
+	// Record free text, or return the SAME question when it changes nothing: a
+	// single-select already settled by a pick (exclusivity), or an unchanged draft.
+	const answerQuestionText = (
+		q: Ask["questions"][number],
+		text: string,
+	): Ask["questions"][number] => {
+		if (!q.allowMultiple && q.chosenOptionIds.length > 0) return q;
+		if (text === q.customText) return q;
+		return { ...q, customText: text };
 	};
 	// Whether an ask has had its ONE RespondToAsk issued. Reactive so the render can
 	// lock a submitted ask, and the guard against issuing a second respond (server
@@ -1298,14 +1320,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		}
 		return undefined;
 	};
-	// An ask is COMPLETE once every question holds at least one chosen option —
-	// the point at which one atomic RespondToAsk can carry the whole thing.
-	const isAskComplete = (ask: Ask) =>
-		ask.questions.every((q) => q.chosenOptionIds.length > 0);
-	// Whether two asks pose the SAME questions, in order, offering the same OPTION IDS.
-	// The ids are part of the shape: block-update rewrites all blocks keeping only
-	// `ask_id`, so a changed option id under a stable question id would ship a withdrawn
-	// id → ErrInvalidArgument. Ignores text/labels/allowMultiple. Designed-for, not wired.
+	// Whether two asks pose the same questions, in order, with the same arity and
+	// option ids — the axes whose staleness the server REJECTS. Labels are ignored
+	// on purpose: guarding them would discard a half-typed answer on a benign
+	// reword, at the cost of a relabelled-in-place option re-pointing a pick.
 	const sameQuestions = (a: Ask, b: Ask) =>
 		a.questions.length === b.questions.length &&
 		a.questions.every((q, i) => {
@@ -1313,22 +1331,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			return (
 				other !== undefined &&
 				q.questionId === other.questionId &&
+				q.allowMultiple === other.allowMultiple &&
 				q.options.length === other.options.length &&
 				q.options.every((o, j) => o.id === other.options[j]?.id)
-			);
-		});
-	// Whether an ask still carries exactly the answers that were SHIPPED — the test a
-	// rollback must pass, since restoring over an ask the stream moved would overwrite
-	// the server's value with stale local state. A vanished ask counts as moved.
-	const sameAnswers = (current: Ask | undefined, shipped: Ask) =>
-		current !== undefined &&
-		sameQuestions(current, shipped) &&
-		current.questions.every((q, i) => {
-			const was = shipped.questions[i];
-			return (
-				was !== undefined &&
-				q.chosenOptionIds.length === was.chosenOptionIds.length &&
-				q.chosenOptionIds.every((id, j) => id === was.chosenOptionIds[j])
 			);
 		});
 	// An ask the server has said nothing about. The server's `answered` flag is the
@@ -1350,7 +1355,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			for (const b of msg.blocks) {
 				if (b.kind !== "ask") continue;
 				if (isAskSubmitted(b.ask.askId)) continue;
-				if (b.ask.questions.every((q) => q.chosenOptionIds.length === 0))
+				if (
+					b.ask.questions.every(
+						(q) => q.chosenOptionIds.length === 0 && q.customText === "",
+					)
+				)
 					continue;
 				const byAsk = local.get(msg.id) ?? new Map<string, Ask>();
 				byAsk.set(b.ask.askId, b.ask);
@@ -1378,8 +1387,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		});
 		return touched ? { ...next, messages } : next;
 	}
-	// Replace an ask in place — the one write used both to record an answer and
-	// to roll a refused one back.
+	// Replace an ask in place — records a local answer, and restages the shipped
+	// answers over a blank push after a refused respond.
 	const putAsk = (messageId: string, ask: Ask) => {
 		setComms((prev) => ({
 			...prev,
@@ -1398,10 +1407,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		}));
 	};
 	// RespondToAsk is atomic: one accepted respond per ask, every question covered
-	// (empty chosenOptionIds = skipped). On REFUSED, restore `rollback` + clear the
-	// submitted mark so it retries — but NOT if a stream push moved the ask or it is
-	// CLOSED (`answered`), which is authoritative. RIG-1310: SDK correlation unwired.
-	const sendAsk = (messageId: string, ask: Ask, rollback?: Ask) => {
+	// (empty chosenOptionIds = skipped). Only `submitAsk` calls this. On REFUSED,
+	// clear the submitted mark so it retries and restage the shipped answers if a
+	// blank push replaced them meanwhile. RIG-1310: SDK correlation unwired.
+	const sendAsk = (messageId: string, ask: Ask) => {
 		const comms = options.comms;
 		if (!comms) return;
 		setSubmittedAskIds((prev) => new Set(prev).add(ask.askId));
@@ -1412,18 +1421,28 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				answers: ask.questions.map((q) => ({
 					questionId: q.questionId,
 					chosenOptionIds: [...q.chosenOptionIds],
+					// A single-select holding an option ships no text: the server rejects
+					// the pair. Trim here, at the audit seam — the staged draft stays raw.
+					customText:
+						!q.allowMultiple && q.chosenOptionIds.length > 0
+							? ""
+							: q.customText.trim(),
 				})),
 			})
 			.catch((error) => {
 				unmarkAskSubmitted(ask.askId);
 				const current = findAsk(messageId, ask.askId);
+				// A refusal must not cost staged work: a blank push adopted while the
+				// respond was in flight took the local answers, and the shipped ask still
+				// holds them. Declines when the ask CLOSED meanwhile (the
+				// accepted-then-lost-reply race) or its shape moved.
 				if (
-					rollback &&
 					current &&
+					current !== ask &&
 					!current.answered &&
-					sameAnswers(current, ask)
+					sameQuestions(current, ask)
 				) {
-					putAsk(messageId, rollback);
+					putAsk(messageId, ask);
 				}
 				setAskErrors((prev) => {
 					const next = new Map(prev);
@@ -1436,19 +1455,17 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				options.onCommsError?.(error);
 			});
 	};
-	const answerAsk = (
+	// Apply a question reducer to one ask, LOCALLY. Both recorders share this: a
+	// gate that lived in only one of them would be a hole in the other.
+	const recordAnswer = (
 		messageId: string,
 		askId: string,
 		questionId: string,
-		optionId: string,
+		reduce: (q: Ask["questions"][number]) => Ask["questions"][number],
 	) => {
-		// A submitted ask is settled on the wire: recording a further click would
-		// put the UI back into the exact lying state the gate removes.
 		if (isAskSubmitted(askId)) return;
-		// The ask BEFORE and AFTER the local edit. `before` is the rollback target
-		// if the send this click triggers is refused; both stay undefined when the
-		// coordinates miss or the answer is rejected — then nothing is sent.
-		let before: Ask | undefined;
+		// The ask AFTER the local edit; stays undefined when the coordinates miss
+		// or the answer is rejected.
 		let answered: Ask | undefined;
 		setComms((prev) => ({
 			...prev,
@@ -1461,16 +1478,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 						const ask = b.ask;
 						// The other way an ask is settled, invisible to the submitted mark:
 						// the server burns an ask on the first ACCEPTED respond and refuses
-						// later ones with ErrConflict. An `answered` ask is closed no matter
-						// who closed it, so recording a click here could only ship a doomed RPC.
+						// later ones with ErrConflict, so recording here could only ship a
+						// doomed RPC — whoever closed it.
 						if (ask.answered) return b;
 						const questions = ask.questions.map((q) =>
-							q.questionId === questionId ? answerQuestion(q, optionId) : q,
+							q.questionId === questionId ? reduce(q) : q,
 						);
 						// Reference-identical questions ⇒ the answer was rejected (or the
 						// questionId named no question): leave the block untouched.
 						if (questions.every((q, i) => q === ask.questions[i])) return b;
-						before = ask;
 						answered = { ...ask, questions };
 						return { kind: "ask", ask: answered };
 					}),
@@ -1480,16 +1496,33 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// The user acted on this ask again: whatever the last refusal said is no
 		// longer what the block should be showing.
 		if (answered) clearAskError(askId);
-		// THE GATE (Matt's ruling): the click stays LOCAL until the ask is COMPLETE. A
-		// per-click respond would persist a partial answer and lock the ask — the server
-		// takes exactly one respond per ask, forever. A single-question ask sends on its click.
-		if (!answered || !isAskComplete(answered)) return;
-		sendAsk(messageId, answered, before);
+		// Recording is LOCAL, always: the server takes exactly one respond per
+		// ask, forever, and only the explicit submit (`submitAsk`) ever sends one.
 	};
-	// The skip affordance. A skipped question never gets an answer, so the ask never
-	// completes and `answerAsk` never sends it: this is the explicit "send what I have"
-	// — answered questions plus empty `chosenOptionIds` for each skip. Inert on an ask
-	// already submitted, CLOSED by the server, unknown, or wholly unanswered.
+	const answerAsk = (
+		messageId: string,
+		askId: string,
+		questionId: string,
+		optionId: string,
+	) => {
+		recordAnswer(messageId, askId, questionId, (q) =>
+			answerQuestion(q, optionId),
+		);
+	};
+	const answerAskText = (
+		messageId: string,
+		askId: string,
+		questionId: string,
+		text: string,
+	) => {
+		recordAnswer(messageId, askId, questionId, (q) =>
+			answerQuestionText(q, text),
+		);
+	};
+	// The ONE send path. Answers accumulate locally — clicks and typed text
+	// alike — and this explicit gesture ships them atomically, with an empty
+	// answer for each skipped question. Inert on a submitted, CLOSED, unknown,
+	// or wholly unanswered ask.
 	const submitAsk = (messageId: string, askId: string) => {
 		if (isAskSubmitted(askId)) return;
 		const ask = findAsk(messageId, askId);
@@ -1498,11 +1531,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// is refused with ErrConflict. The submitted mark does not cover this — the ask
 		// can arrive closed on a push, or be closed by another participant.
 		if (ask.answered) return;
-		// "Nothing staged" is a question about the LOCAL record, so it scans the chosen
-		// ids rather than the server's `answered` flag: this ask has never been shipped.
-		if (ask.questions.every((q) => q.chosenOptionIds.length === 0)) return;
-		// No rollback target: nothing was recorded by this call, so a refusal leaves the
-		// local record as the user staged it — still honest, unsent, retryable.
+		// "Nothing staged" is a question about the LOCAL record: a wholly blank respond
+		// says nothing, so it stays inert. Typed text counts as an answer here too.
+		if (!ask.questions.some(isQuestionAnswered)) return;
+		// Nothing was recorded by this call, so a refusal leaves the local record
+		// as the user staged it — still honest, unsent, retryable.
 		sendAsk(messageId, ask);
 	};
 	// The one write path: PostMessage with the channel `container`, `topic` oneof, one
@@ -1903,6 +1936,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		joinChannel,
 		toggleSubscribe,
 		answerAsk,
+		answerAskText,
 		submitAsk,
 		isAskSubmitted,
 		askError,

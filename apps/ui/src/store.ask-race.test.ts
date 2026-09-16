@@ -11,10 +11,10 @@ import {
 import { type AppStore, createAppStore } from "./store";
 import { testQueryClient } from "./test-support";
 
-// The race between a MULTI-question ask being answered and the stream pushing a new state
-// under it. The wire is ATOMIC (one RespondToAsk on the completing click), so pre-last choices
-// live ONLY in local state and `adoptComms` replaces it wholesale, so a mid-ask push used to
-// discard clicks. Subject is narrowly `adoptComms`; rollback/gate contracts in store.live.test.ts.
+// The race between an ask being answered LOCALLY and the stream pushing a new state under it.
+// Recording never sends (only submitAsk does), so staged choices live ONLY in local state and
+// `adoptComms` replaces it wholesale, so a mid-ask push used to discard them. Subject is narrowly
+// `adoptComms`; the send-model + restage contracts live in store.live.test.ts.
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-1";
@@ -34,6 +34,8 @@ const askMessage = (
 		answered?: boolean;
 		freeText?: readonly string[];
 		optionIds?: Readonly<Record<string, readonly string[]>>;
+		recordedText?: Readonly<Record<string, string>>;
+		multi?: readonly string[];
 	},
 ) =>
 	wireAskMessage({
@@ -46,6 +48,8 @@ const askMessage = (
 		answered: over?.answered,
 		freeText: over?.freeText,
 		optionIds: over?.optionIds,
+		recordedText: over?.recordedText,
+		multi: over?.multi,
 	});
 
 // The chosen option ids of one question, read out of the store's reactive
@@ -59,6 +63,20 @@ const chosenIn = (
 		if (b.kind !== "ask" || b.ask.askId !== "ask-1") continue;
 		const q = b.ask.questions.find((q) => q.questionId === questionId);
 		if (q) return [...q.chosenOptionIds];
+	}
+	return undefined;
+};
+// The staged custom text of one question, read out of the store's reactive
+// message list — the public observation of what the LOCAL draft holds.
+const customTextIn = (
+	store: AppStore,
+	questionId: string,
+): string | undefined => {
+	const msg = store.messages().find((m) => m.id === "m-ask");
+	for (const b of msg?.blocks ?? []) {
+		if (b.kind !== "ask" || b.ask.askId !== "ask-1") continue;
+		const q = b.ask.questions.find((q) => q.questionId === questionId);
+		if (q) return q.customText;
 	}
 	return undefined;
 };
@@ -138,17 +156,19 @@ describe("adoptComms vs an in-progress ask", () => {
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			expect(chosenIn(store, "q-2")).toEqual([]);
 
-			// … and the ask is still live: completing it ships BOTH answers, which
+			// … and the ask is still live: submitting it ships BOTH answers, which
 			// is only possible if the surviving answer is real state and not just a
 			// rendered ghost.
 			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toEqual([
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: ["q-2-a"] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-a"], customText: "" },
 					],
 				},
 			]);
@@ -190,10 +210,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// A SHIPPED ask is the server's, full stop. Once the one RespondToAsk is issued the local
-	// record is a claim about what the server was told, so a push replaces it even when the
-	// pushed ask carries no answers yet. Keeping the local copy would re-break the conditional
-	// rollback in `sendAsk`. Mutation-check: dropping the submitted-ask gate reddens this.
+	// A SHIPPED ask is the server's, full stop. Once its one RespondToAsk is submitted the local
+	// record is a claim about what the server was told, so a push replaces it even when the pushed
+	// ask carries no answers yet. Keeping the local copy would re-break the conditional restage in
+	// `sendAsk`. Mutation-check: dropping the submitted-ask gate reddens this.
 	test("a shipped ask takes the pushed server value", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -202,8 +222,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 
 		await withLiveStore(fake, async (store, settled) => {
-			// A one-question ask completes on its only click, so this ships.
+			// Record then submit — the explicit gesture ships the one respond.
 			store.answerAsk("m-ask", "ask-1", "q-only", "q-only-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(store.isAskSubmitted("ask-1")).toBe(true);
 			expect(chosenIn(store, "q-only")).toEqual(["q-only-a"]);
@@ -324,25 +346,27 @@ describe("adoptComms vs an in-progress ask", () => {
 
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 
-			// And it is real state, not a ghost: completing the ask ships both.
+			// And it is real state, not a ghost: submitting the ask ships both.
 			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toEqual([
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: ["q-2-a"] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-a"], customText: "" },
 					],
 				},
 			]);
 		});
 	});
 
-	// The write gate, one half. Once reconciliation ADOPTS a server-closed ask, the completing
-	// click would issue the one RespondToAsk the server already spent — refused with ErrConflict.
-	// Nothing says "submitted" here (the closing respond was someone else's), so the click must be
-	// refused where it is recorded. Mutation-check: gating `answerAsk` on `isAskSubmitted` reddens this.
+	// The write gate, one half. Once reconciliation ADOPTS a server-closed ask, recording a click
+	// would stage an answer the ask can never send — the server already spent its one respond.
+	// Nothing says "submitted" here (the closing respond was someone else's), so the record is
+	// refused where it lands. Mutation-check: dropping answerAsk's `answered` guard records the pick.
 	test("a click on a server-closed ask ships nothing", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -365,8 +389,8 @@ describe("adoptComms vs an in-progress ask", () => {
 			await settled();
 			expect(store.isAskSubmitted("ask-1")).toBe(false);
 
-			// A one-question ask completes on its only click, so this is the click
-			// that would ship the doomed respond.
+			// A click here would record a pick the closed ask can never send; the
+			// answered guard refuses it.
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
 			await settled();
 
@@ -517,10 +541,10 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 	});
 
-	// The accepted-then-lost-reply race, the one case the rollback's answer comparison can't see.
+	// The accepted-then-lost-reply race, the case the restage's guards can't see by answers alone.
 	// The server COMMITTED our respond and published the MessageUpdated, but our RPC's reply never
 	// landed, so the promise rejects. The push carries OUR ids, so only `answered` distinguishes a
-	// restate from a CLOSE. Mutation-check: dropping `!current.answered` from the rollback reddens this.
+	// restate from a CLOSE. Mutation-check: dropping `!current.answered` from the restage reddens this.
 	test("a refusal after the server accepted does not reopen the closed ask", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
@@ -529,10 +553,12 @@ describe("adoptComms vs an in-progress ask", () => {
 		});
 
 		await withLiveStore(fake, async (store, settled) => {
-			// (1) the completing click on a one-question ask: shipped, and HELD in
-			// flight so the push can land before the refusal.
+			// (1) record the answer, then submit — shipped and HELD in flight so
+			// the push can land before the refusal.
 			const gate = fake.holdNextAskResponse();
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			expect(store.isAskSubmitted("ask-1")).toBe(true);
@@ -555,7 +581,7 @@ describe("adoptComms vs an in-progress ask", () => {
 			gate.reject(new Error("connection reset"));
 			await settled();
 
-			// The rollback DECLINED: the ask is still the server's closed record.
+			// The restage DECLINED: the ask is still the server's closed record.
 			expect(askIn(store)?.answered).toBe(true);
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			// The refusal really happened, so the user is told …
@@ -569,8 +595,49 @@ describe("adoptComms vs an in-progress ask", () => {
 			expect(store.isAskSubmitted("ask-1")).toBe(false);
 			const shipped = fake.askResponses.length;
 			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-b");
+			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toHaveLength(shipped);
+		});
+	});
+
+	// A submit HELD in flight, then a blank push adopted over the submitted ask, then the
+	// respond refused: the shipped answers restage over the blank, and the ask is retryable.
+	// Mutation-check: a catch that omits the restage leaves the adopted blank ask.
+	test("a refused submit restages the clicked answer over a blank push", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// (1) click records locally; submit ships, HELD in flight.
+			const gate = fake.holdNextAskResponse();
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(store.isAskSubmitted("ask-1")).toBe(true);
+
+			// (2) a blank unanswered restatement — adopted, because the preserve
+			// skips the submitted ask.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: { message: askMessage(["q-1", "q-2"]) },
+				},
+				1n,
+			);
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual([]);
+
+			// (3) the held respond is refused: the shipped answers restage over the
+			// blank push, and the ask is retryable.
+			gate.reject(new Error("server refused the ask"));
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
 		});
 	});
 
@@ -612,6 +679,179 @@ describe("adoptComms vs an in-progress ask", () => {
 					?.options.map((o) => o.id),
 			).toEqual(["q-1-b", "q-1-c"]);
 			expect(chosenIn(store, "q-1")).toEqual([]);
+		});
+	});
+
+	// A stream push does not discard a typed draft. A draft is an unshipped
+	// edit just as a click is, so the widened preserve scan must carry it across a
+	// restatement of the same unanswered ask. Mutation-check: a scan that saw only
+	// chosen ids lets the push replace the draft with "".
+	test("a stream push does not discard a typed draft", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage(["q-1", "q-free"], undefined, { freeText: ["q-free"] }),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAskText("m-ask", "ask-1", "q-free", "my draft");
+			await settled();
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+
+			// A push restating the ask exactly as the server holds it: still unanswered.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-free"], undefined, {
+							freeText: ["q-free"],
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+		});
+	});
+
+	// A push carrying a CLOSED free-text ask wins over the draft: the local
+	// draft yields and the server's recorded custom_text shows (the audit payoff).
+	// Mutation-check: a preserve that carried the draft over an answered push
+	// reddens the yields leg; dropping the customText mapping reddens the shows leg.
+	test("a closed free-text push beats the draft and shows the recorded text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage(["q-1", "q-free"], undefined, { freeText: ["q-free"] }),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAskText("m-ask", "ask-1", "q-free", "my draft");
+			await settled();
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+
+			// The push: answered, with the server's recorded free-text answer.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-free"], undefined, {
+							answered: true,
+							freeText: ["q-free"],
+							recordedText: { "q-free": "the recorded answer" },
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			// The draft yielded, and the server's value shows.
+			expect(customTextIn(store, "q-free")).toBe("the recorded answer");
+		});
+	});
+
+	// The typed half of the refusal restage. A submit HELD in flight, a
+	// blank push adopted over the submitted ask, then the respond refused: the
+	// shipped answers restage over the blank, so BOTH the click and the typed
+	// draft come back. Mutation-check: a catch that omits the restage leaves the
+	// draft blank.
+	test("a refused submit restages the typed draft alongside the click", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage(["q-1", "q-free"], undefined, { freeText: ["q-free"] }),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			const gate = fake.holdNextAskResponse();
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-free", "my draft");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(store.isAskSubmitted("ask-1")).toBe(true);
+
+			// A blank unanswered restatement — adopted, because the preserve skips
+			// the submitted ask.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-free"], undefined, {
+							freeText: ["q-free"],
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual([]);
+			expect(customTextIn(store, "q-free")).toBe("");
+
+			// The held respond is refused: both the click and the draft restage.
+			gate.reject(new Error("server refused the ask"));
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(customTextIn(store, "q-free")).toBe("my draft");
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
+		});
+	});
+
+	// A question's ARITY is part of its shape, not a label. On a multi-select an
+	// option and typed text legally coexist; if a push flips that question to
+	// single-select, carrying the local pair forward would ship an option plus
+	// text the server now rejects — and re-adopt it on every later push, so it
+	// never self-heals. The pushed shape wins instead, exactly as a revised
+	// option id already does. Mutation-check: dropping `allowMultiple` from
+	// `sameQuestions` carries the stale pair and reddens every leg below.
+	test("a pushed ask that flipped a question to single-select beats the local pair", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [askMessage(["q-1"], undefined, { multi: ["q-1"] })],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// Legal on a multi-select: a chosen option AND a typed answer.
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-1", "typed");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(customTextIn(store, "q-1")).toBe("typed");
+
+			// The agent restates the ask single-select, same question and option ids.
+			await fake.emit(
+				{ case: "messageUpdated", value: { message: askMessage(["q-1"]) } },
+				1n,
+			);
+			await settled();
+
+			// The pushed shape is adopted and the now-illegal pair is gone.
+			expect(askIn(store)?.questions[0]?.allowMultiple).toBe(false);
+			expect(chosenIn(store, "q-1")).toEqual([]);
+			expect(customTextIn(store, "q-1")).toBe("");
+
+			// Nothing was staged, so a submit says nothing rather than shipping a
+			// respond the server would refuse with ErrInvalidArgument.
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses).toEqual([]);
 		});
 	});
 });

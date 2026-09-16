@@ -1140,6 +1140,16 @@
 	background: var(--cx-bg-panel);
 }
 
+.ask-header {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--cx-text-dim);
+	border: 1px solid var(--cx-border-strong);
+	border-radius: var(--cx-radius-sm);
+	padding: 1px 6px;
+	align-self: flex-start;
+}
+
 .ask-question {
 	font-size: 13px;
 	line-height: 1.5;
@@ -1179,6 +1189,44 @@
 	color: var(--cx-text-dim);
 }
 
+/* The agent's recommendation is a visual mark, never a selection: a small
+ * accent badge beside the option label. */
+.ask-option-rec {
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--cx-accent);
+}
+
+.ask-option.recommended {
+	border-color: var(--cx-border-focus);
+}
+
+/* Preview is a presentation aid, not answer state, so a pathological one is
+ * capped rather than allowed to blow up the channel column. */
+.ask-option-preview {
+	font-size: 11px;
+	color: var(--cx-text-faint);
+	white-space: pre-wrap;
+	max-height: 11em;
+	overflow: hidden;
+}
+
+/* Free text is an answer path on every question; sized to sit with the option
+ * row so a mixed ask reads as one block. */
+.ask-text {
+	font-size: 12px;
+	padding: 6px 12px;
+	border: 1px solid var(--cx-border-strong);
+	border-radius: var(--cx-radius-sm);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+}
+
+.ask-text:focus {
+	border-color: var(--cx-border-focus);
+	outline: none;
+}
+
 .ask-option.chosen {
 	background: var(--cx-accent);
 	border-color: var(--cx-border-focus);
@@ -1193,10 +1241,8 @@
 	opacity: 1;
 }
 
-/* The skip affordance on a partially answered multi-question ask. An ask is
- * answerable exactly ONCE, so this is the deliberate "send what I have and
- * leave the rest blank" — quieter than an option, since answering the rest is
- * the ordinary path. */
+/* The ONE send path: an explicit submit on every live ask, shipping the staged
+ * answers and a blank for each skipped question. */
 .ask-submit-row {
 	display: flex;
 }
