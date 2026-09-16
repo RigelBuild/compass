@@ -71,8 +71,8 @@ var errNoResolver = errors.New("no secret resolver configured on this server")
 
 // errNoServerResolver is the fail-closed cause when a server-secret RPC reaches
 // a service built with no SERVER resolver. It must never fall back to the user
-// resolver: that would write the value into the registry the container-delivery
-// path reads, inverting the whole point of the separate store.
+// resolver: the server-secret list would then report on the wrong registry,
+// inverting the whole point of the separate store.
 var errNoServerResolver = errors.New("no server secret resolver configured on this server")
 
 // SetSecret writes a user secret's declaration and encrypted value in ONE atomic
@@ -204,112 +204,10 @@ func (s *secretsService) DeleteSecret(
 	return connect.NewResponse(&compassv1.DeleteSecretResponse{}), nil
 }
 
-// SetServerSecret declares a SERVER secret in the separate server_secrets
-// registry and writes its value through the SERVER resolver. Admin-only at the
-// door (classifyProcedure), which IS the authorization — a server secret is
-// deployment-owned, so there is no per-account check to fall back on.
-//
-// Mirrors SetSecret's declare-then-Set flow and its rollback discipline: an
-// empty value is rejected before any row is declared, an already-declared name
-// is a legitimate re-Set, and a failed FRESH write rolls the declaration back so
-// no orphan survives. The reserved-prefix requirement lives at the store door
-// (DeclareServerSecret), so an unprefixed name is rejected there and surfaces
-// as CodeInvalidArgument.
-func (s *secretsService) SetServerSecret(
-	ctx context.Context,
-	req *connect.Request[compassv1.SetServerSecretRequest],
-) (*connect.Response[compassv1.SetServerSecretResponse], error) {
-	callerID, err := s.requireCaller(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if s.serverResolver == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoServerResolver)
-	}
-	msg := req.Msg
-	name := msg.GetName()
-	if name == store.MasterKeyName {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("%s is provisioned and rotated by the server, never set through this RPC", store.MasterKeyName))
-	}
-	if strings.TrimSpace(msg.GetValue()) == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("secret value is empty"))
-	}
-
-	declErr := s.store.DeclareServerSecret(ctx, callerID, name)
-	switch {
-	case declErr == nil:
-		// Fresh declaration.
-	case errors.Is(declErr, store.ErrConflict):
-		// Already declared: a re-Set rewrites the value.
-	case errors.Is(declErr, store.ErrInvalidArgument):
-		return nil, connect.NewError(connect.CodeInvalidArgument, declErr)
-	default:
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("declaring server secret: %w", declErr))
-	}
-
-	// The audit reason names the SERVER-secret RPC specifically and carries the
-	// authenticated admin caller. Same injection reasoning as the user path:
-	// callerID comes from the bearer token, never a request field, server-minted hex.
-	reason := fmt.Sprintf("compass: server secret write via SetServerSecret RPC (caller %s)", callerID)
-	if err := s.serverResolver.Set(ctx, name, msg.GetValue(), reason); err != nil {
-		// Name validated at the store door and value screened non-empty above, so
-		// a Set failure is a provider/exec fault — retryable and operator-side,
-		// never the caller's argument. Roll back only a FRESH declaration; an
-		// ErrConflict row legitimately pre-existed this call.
-		if declErr == nil {
-			if delErr := s.store.DeleteServerSecretDeclaration(ctx, name); delErr != nil {
-				slog.ErrorContext(ctx, "rolling back server secret declaration after failed write", "err", delErr)
-			}
-		}
-		slog.ErrorContext(ctx, "writing server secret value", "err", err)
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("writing server secret value failed"))
-	}
-	// Deliberately NO bumpSecretsVersion: a server secret never reaches a live
-	// session's FetchSecrets, so there is nothing for a session to re-fetch.
-	return connect.NewResponse(&compassv1.SetServerSecretResponse{}), nil
-}
-
-// DeleteServerSecret removes a SERVER secret's registry row and its provider
-// value. Admin-only at the door. The reserved master-key name is refused for the
-// same reason SetServerSecret refuses it.
-func (s *secretsService) DeleteServerSecret(
-	ctx context.Context,
-	req *connect.Request[compassv1.DeleteServerSecretRequest],
-) (*connect.Response[compassv1.DeleteServerSecretResponse], error) {
-	if _, err := s.requireCaller(ctx); err != nil {
-		return nil, err
-	}
-	if s.serverResolver == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoServerResolver)
-	}
-	name := req.Msg.GetName()
-	if name == store.MasterKeyName {
-		return nil, connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("%s is provisioned and rotated by the server, never deleted through this RPC", store.MasterKeyName))
-	}
-
-	// Provider value first, then the declaration: the same order as DeleteSecret,
-	// so a failure leaves the declaration intact rather than orphaning a value
-	// with no row naming it.
-	if err := s.serverResolver.Delete(ctx, name); err != nil {
-		slog.ErrorContext(ctx, "deleting server secret value", "err", err)
-		return nil, connect.NewError(connect.CodeUnavailable, errors.New("deleting server secret value failed"))
-	}
-	if err := s.store.DeleteServerSecretDeclaration(ctx, name); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, err)
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("deleting server secret declaration: %w", err))
-	}
-	return connect.NewResponse(&compassv1.DeleteServerSecretResponse{}), nil
-}
-
 // ListServerSecrets returns every declared SERVER secret's name with its
 // set/unset state — names only, NEVER a value. Admin-only at the door
-// (classifyProcedure), the same gate as its Set/Delete siblings and for the
-// same reason: the rows are deployment-owned, so there is no per-account
-// authorization to fall back on.
+// (classifyProcedure): the rows are deployment-owned, so there is no
+// per-account authorization to fall back on.
 //
 // is_set is a PROVIDER PROBE here, unlike ListSecrets which hardcodes true.
 // That asymmetry is structural, not an inconsistency: on the user path declare
@@ -341,8 +239,7 @@ func (s *secretsService) ListServerSecrets(
 	if len(decls) == 0 {
 		return connect.NewResponse(&compassv1.ListServerSecretsResponse{}), nil
 	}
-	// The audit reason names this RPC specifically, matching the Set path's
-	// form, so the provider's log distinguishes a status probe from a write.
+	// The audit reason names this RPC so the provider log identifies the probe.
 	statuses, err := s.serverResolver.Statuses(ctx, "compass: server secret status probe via ListServerSecrets RPC")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("probing server secret values: %w", err))
