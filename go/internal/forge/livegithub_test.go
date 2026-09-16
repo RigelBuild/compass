@@ -597,8 +597,8 @@ func TestLiveGitHubTransitionIssueReopen(t *testing.T) {
 
 // TestLiveGitHubTransitionPullRequestClose closes a freshly-opened PR. The PR
 // transition decodes ghPullDetail, which populates the live diff stats (Changed)
-// the committed fixture cannot pin, so the leg asserts the state fold directly
-// rather than through assertMatchesFixture.
+// and the retained draft flag — neither volatile, neither reproducible by a
+// seeded PR — so the leg asserts the state fold directly, not via the fixture.
 func TestLiveGitHubTransitionPullRequestClose(t *testing.T) {
 	repo, author, _ := requireLive(t)
 	ctx := context.Background()
@@ -843,9 +843,10 @@ func TestLiveLinearTransitionIssueClose(t *testing.T) {
 }
 
 // TestLiveLinearTransitionIssueCloseByName closes an issue onto a NAMED workflow
-// state and asserts the decoded issue matches the fixture. The name is
-// DISCOVERED from the live team rather than hardcoded, so a team whose columns
-// are named differently cannot red this leg down the unknown-name path.
+// state, DISCOVERED from the live team so a differently-named board cannot red
+// this leg down the unknown-name path. Which column it landed on is NOT
+// observable here (forge.Issue folds every closed type to "closed"); the golden
+// fixture pins the resolved stateId offline.
 func TestLiveLinearTransitionIssueCloseByName(t *testing.T) {
 	ts, team := requireLinear(t)
 	ctx := context.Background()
@@ -956,9 +957,15 @@ func TestLiveLinearTransitionTypeContradiction(t *testing.T) {
 	}
 }
 
+// liveBoardStateSkipPrefix is the STABLE one-line prefix of the board-state
+// skip, greppable by CI's assert-ran guard exactly as the credential literals
+// are — a skipped subtest still lets the package report ok, so without this the
+// leg would silently assert nothing and the required check would stay green.
+const liveBoardStateSkipPrefix = "live linear oracle: the testbed team lacks a workflow-state type the by-name leg needs"
+
 // liveStateNameOfType returns the name of a workflow state of the given Linear
-// type on the live team, skipping when the team has none — the by-name contracts
-// are unobservable without one, and a skip is loud via CI's assert-ran guard.
+// type on the live team. A team with no such state skips: the contract is
+// unobservable without one, and the guard turns that skip into a red.
 func liveStateNameOfType(t *testing.T, ctx context.Context, ln *Linear, team, stateType string) string {
 	t.Helper()
 	states, _, err := ln.workflowStatesFor(ctx, team)
@@ -970,7 +977,7 @@ func liveStateNameOfType(t *testing.T, ctx context.Context, ln *Linear, team, st
 			return s.Name
 		}
 	}
-	t.Skipf("live linear oracle: team %q has no %s-type workflow state; the by-name leg needs one", team, stateType)
+	t.Skipf("%s (team %q, type %q)", liveBoardStateSkipPrefix, team, stateType)
 	return ""
 }
 
@@ -1400,9 +1407,10 @@ func TestLiveUpdateFixtures(t *testing.T) {
 	}
 }
 
-// updateCaptureSpecs is the capture table: one spec per committed fixture across
-// both providers, split by provider so each half documents its own prelude-count
-// grounding (githubUpdateSpecs / linearUpdateSpecs).
+// updateCaptureSpecs is the capture table: one spec per REPRODUCIBLE committed
+// fixture, split by provider so each half documents its own prelude-count
+// grounding. Rejection (WantError) and golden-replay-only fixtures are
+// hand-written and have no spec — see deriveFixtureHalves.
 func updateCaptureSpecs() []captureSpec {
 	return append(githubUpdateSpecs(), linearUpdateSpecs()...)
 }

@@ -1308,8 +1308,9 @@ jobs:
           src=internal/forge/livegithub_test.go
           ghskip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' "$src")
           lnskip=$(sed -n 's/.*liveLinearSkipMessage = "\(.*\)"/\1/p' "$src")
-          if [ -z "$ghskip" ] || [ -z "$lnskip" ]; then
-            echo "::error::could not read the skip messages out of $src (github='$ghskip' linear='$lnskip') — this guard has drifted from the harness and is no longer checking anything"
+          boardskip=$(sed -n 's/.*liveBoardStateSkipPrefix = "\(.*\)"/\1/p' "$src")
+          if [ -z "$ghskip" ] || [ -z "$lnskip" ] || [ -z "$boardskip" ]; then
+            echo "::error::could not read the skip messages out of $src (github='$ghskip' linear='$lnskip' board='$boardskip') — this guard has drifted from the harness and is no longer checking anything"
             exit 1
           fi
           if grep -qF "$ghskip" /tmp/forge-oracle.log; then
@@ -1320,6 +1321,13 @@ jobs:
           if grep -qF "$lnskip" /tmp/forge-oracle.log; then
             echo "::error::forge live-contract oracle skipped the Linear legs — the LINEAR_FORGE credential was not reached, so the co-equal Linear contract was not asserted"
             grep -nF "$lnskip" /tmp/forge-oracle.log | head
+            exit 1
+          fi
+          # A board-state skip leaves the package reporting ok, so only an
+          # explicit grep keeps the by-name contracts from silently vanishing.
+          if grep -qF "$boardskip" /tmp/forge-oracle.log; then
+            echo "::error::forge live-contract oracle skipped a by-name transition leg — the testbed team's board lacks a needed workflow-state type, so that contract was not asserted"
+            grep -nF "$boardskip" /tmp/forge-oracle.log | head
             exit 1
           fi
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/internal/forge[[:space:]]" /tmp/forge-oracle.log; then
