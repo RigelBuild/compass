@@ -32,9 +32,7 @@ import {
 import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
 import {
 	batchesFlushedBy,
-	batchSizeMixed,
-	batchSizePriority,
-	batchSizeTrace,
+	batchSizeBy,
 	priorityBatchRetries,
 	priorityFramesLost,
 	priorityRetryDepthGauge,
@@ -103,6 +101,7 @@ export function createPublishSpine(
 	const traceQueueDepth = traceQueueDepthGauge(metricNamespace);
 	const priorityRetryDepth = priorityRetryDepthGauge(metricNamespace);
 	const batchesFlushed = batchesFlushedBy(metricNamespace);
+	const batchSize = batchSizeBy(metricNamespace);
 	// Effect is confined module-private behind the spine: it backs the sliding trace queue,
 	// the wake latch, and the forked pump fiber. The default logger is removed on the
 	// fallback runtime so a handled pump-send failure does not double-report (the loss
@@ -208,10 +207,10 @@ export function createPublishSpine(
 			);
 			yield* Metric.update(
 				priorityCount === batch.length
-					? batchSizePriority
+					? batchSize.priority
 					: priorityCount === 0
-						? batchSizeTrace
-						: batchSizeMixed,
+						? batchSize.trace
+						: batchSize.mixed,
 				batch.length,
 			);
 			async function* oneBatch(): AsyncGenerator<PublishFrameRequest> {

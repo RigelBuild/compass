@@ -67,16 +67,27 @@ export const batchesFlushedBy = (
 // so the top boundary lands on saturation and the +Inf bucket stays empty — a free
 // invariant check. `lane` separates a healthy one-at-a-time ack stream from trace
 // coalescing genuinely failing, which share the same tiny-batch signature.
-// Not namespaced like the counters above: a histogram rebuilt from the same name
-// is a DISTINCT instrument (it carries its boundaries), so a factory would read
-// an empty copy rather than the recorded one. Tests read it as a delta instead.
-const batchSize = Metric.histogram(
-	"compass_agent.transport.publish.batch_size",
-	MetricBoundaries.exponential({ start: 1, factor: 2, count: 10 }),
-);
-export const batchSizePriority = Metric.tagged(batchSize, "lane", "priority");
-export const batchSizeTrace = Metric.tagged(batchSize, "lane", "trace");
-export const batchSizeMixed = Metric.tagged(batchSize, "lane", "mixed");
+// The boundaries are hoisted, not rebuilt per call: a histogram's registry key
+// includes the boundaries OBJECT, so a fresh one per call would yield a fresh
+// key and an empty read — which is what makes the namespace factory below work.
+const BATCH_SIZE_BOUNDARIES = MetricBoundaries.exponential({
+	start: 1,
+	factor: 2,
+	count: 10,
+});
+export const batchSizeBy = (
+	namespace = "",
+): Record<"priority" | "trace" | "mixed", Metric.Metric.Histogram<number>> => {
+	const base = Metric.histogram(
+		`${namespace}compass_agent.transport.publish.batch_size`,
+		BATCH_SIZE_BOUNDARIES,
+	);
+	return {
+		priority: Metric.tagged(base, "lane", "priority"),
+		trace: Metric.tagged(base, "lane", "trace"),
+		mixed: Metric.tagged(base, "lane", "mixed"),
+	};
+};
 
 // The two publish-spine LEVEL gauges, built through a namespace-prefix factory. A gauge
 // is last-writer-wins, so a test reading one must not share its registry key with a
