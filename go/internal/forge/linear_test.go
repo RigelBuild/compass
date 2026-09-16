@@ -1057,3 +1057,19 @@ func TestLinearTransitionPullRequestStateUnsupported(t *testing.T) {
 		t.Fatalf("err = %v, want ErrUnsupported", err)
 	}
 }
+
+// TestLinearIDFilterVariablesAreDeclaredID pins the GraphQL declared TYPE of
+// every variable that lands in an id comparator. Linear rejects a String!
+// variable in an ID position with an http 400 the fixtures cannot show: a
+// golden replay answers our own request, so a malformed query replays green
+// forever. Only the live oracle caught it, and only this pins it.
+func TestLinearIDFilterVariablesAreDeclaredID(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(workflowStatesQuery, "$team: ID!") {
+		t.Errorf("workflowStatesQuery must declare $team as ID! (it filters on team.id.eq); got:\n%s", workflowStatesQuery)
+	}
+	if strings.Contains(workflowStatesQuery, "$team: String") {
+		t.Errorf("workflowStatesQuery declares $team as String, which Linear rejects in an id comparator; got:\n%s", workflowStatesQuery)
+	}
+}

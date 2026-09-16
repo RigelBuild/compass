@@ -675,7 +675,10 @@ type workflowStateCacheEntry struct {
 // workflowStatesQuery is the team workflow-state selection, built once so the
 // page cap has ONE source (workflowStatePageCap) shared by the query and the
 // truncation guard below rather than a literal repeated in both.
-var workflowStatesQuery = fmt.Sprintf(`query CompassTeamWorkflowStates($team: String!) {
+//
+// $team is ID, not String: it lands in an IDComparator (`id: {eq:}`), and Linear
+// rejects a String! variable in that position outright (http 400).
+var workflowStatesQuery = fmt.Sprintf(`query CompassTeamWorkflowStates($team: ID!) {
   workflowStates(filter: {team: {id: {eq: $team}}}, first: %d) {
     nodes { id name type }
   }
