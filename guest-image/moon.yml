@@ -48,14 +48,10 @@ tasks:
     options:
       cache: false
       runInCI: true
-    # The rootfs build closure. The agent userland now comes from the pinned
-    # OCI image, not a local nix build of the agent sources, so the agent-side
-    # input is `agent-oci.lock` alone (covered by the `**/*` glob below): a
-    # change to the agent reaches this build only by the pin moving, and a pin
-    # move IS a change to that file. The remaining entries are the BOOT
-    # layer's closure. A glob that misses one silently skips a build that
-    # should have run and leaves the E4 cache stale (§ E3). A leading `/` is
-    # workspace-root-relative; the bare glob is this project's own tree.
+    # The agent userland comes from the pinned OCI image, so the agent-side
+    # input is `agent-oci.lock` alone, covered by `**/*` below; the rest is the
+    # boot layer's closure. A glob that misses one silently skips a build that
+    # should have run. A leading `/` is workspace-root-relative.
     inputs:
       - '**/*'
       # The microVM boot leg (ci.yml `microvm` job) realizes this VMM-env

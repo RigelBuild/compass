@@ -54,6 +54,32 @@ let
     else
       throw "guest-image: agent-oci.lock is not a valid pin: ${bad}. Rewrite it with `bun tools/guest-image/pin-agent-image.ts --relock`, never by hand.";
 
+  # The pinned manifest, fetched fixed-output against the lock's digest: a
+  # manifest digest IS the sha256 of its body, so nix's hash check authenticates
+  # it outright. Without this the digest would be decoration -- the layer
+  # descriptors alone decide what gets unpacked.
+  agentManifest = pkgs.fetchurl {
+    url = "https://${agentRegistry}/v2/${agentPath}/manifests/${checkedLock.digest}";
+    curlOptsList = [
+      "-H"
+      "Authorization: Bearer QQ=="
+      "-H"
+      "Accept: application/vnd.oci.image.manifest.v1+json"
+    ];
+    hash = checkedLock.digest;
+  };
+
+  # The manifest's own ordered layer list. Reading it here rather than trusting
+  # the lock's copy binds the unpacked bytes to the pinned image: a hand-edited
+  # lock pairing this digest with another image's valid layers no longer builds.
+  manifestLayers = map (l: l.digest) (builtins.fromJSON (builtins.readFile agentManifest)).layers;
+
+  lockedLayers =
+    if manifestLayers == checkedLock.layers then
+      checkedLock.layers
+    else
+      throw "guest-image: agent-oci.lock layers do not match the manifest it pins (${checkedLock.digest}). Rewrite it with `bun tools/guest-image/pin-agent-image.ts --relock`, never by hand.";
+
   # Each layer blob, fetched fixed-output against its descriptor digest -- the
   # registry's own content address, where one archive's narHash would track
   # skopeo's byte layout. The bearer is GHCR's literal anonymous public-read
@@ -68,7 +94,7 @@ let
       ];
       hash = digest;
     }
-  ) checkedLock.layers;
+  ) lockedLayers;
 
   # The guest-side supervisor, running as guest PID 1: mounts the API
   # filesystems, brings networking up, serves the vsock Health handshake. Static
@@ -314,7 +340,32 @@ in
         # extracted -- an opaque marker applied afterwards would delete the
         # sibling files that same layer adds.
         for layer in ${lib.concatStringsSep " " agentLayers}; do
-          tar -tzf "$layer" | sed 's|^\./||' | { grep '\.wh\.' || true; } | while read -r marker; do
+          members=$(tar -tzf "$layer" | sed 's|^\./||')
+
+          # Archive names drive the rm -rf and tar writes below, so a `..`
+          # component fails the build rather than being sanitized: tar would
+          # follow it out of the staged tree.
+          if printf '%s\n' "$members" | grep -qE '(^|/)\.\.(/|$)'; then
+            echo "guest-image: BUILD-BREAK — layer $layer has a '..' member path." >&2
+            exit 1
+          fi
+
+          # A layer replacing a lower layer's symlink with a real directory is
+          # legitimate OCI, but tar would write THROUGH the stale symlink --
+          # outside $root when its target is absolute. Drop such parents so tar
+          # materializes a directory instead.
+          for d in $(printf '%s\n' "$members" | sed -n 's|/[^/]*$||p' | sort -u); do
+            p=""
+            IFS=/
+            for c in $d; do
+              [ -n "$c" ] || continue
+              p="$p/$c"
+              if [ -L "$root$p" ]; then rm -f "$root$p"; fi
+            done
+            unset IFS
+          done
+
+          printf '%s\n' "$members" | { grep '\.wh\.' || true; } | while read -r marker; do
             dir=$(dirname "$marker")
             base=$(basename "$marker")
             if [ "$base" = ".wh..wh..opq" ]; then
@@ -351,6 +402,17 @@ in
         for p in $(cat ${bootClosure}/store-paths); do
           cp -a "$p" "$root/nix/store/"
         done
+
+        # A setuid/setgid binary is a privilege path back to root, which the
+        # guest's non-root agent must not have. Belt-and-braces: the unprivileged
+        # builder cannot set those bits anyway (tar drops them), so this catches
+        # a future privileged builder or a cp that preserves them.
+        suid=$(find "$root" -type f -perm /6000 -printf '%M %P\n' || true)
+        if [ -n "$suid" ]; then
+          echo "guest-image: BUILD-BREAK — setuid/setgid files in the rootfs:" >&2
+          printf '%s\n' "$suid" >&2
+          exit 1
+        fi
         chmod -R u+w "$root"
 
         # The userland contract, checked on the ASSEMBLED tree. EVERY component
@@ -401,9 +463,9 @@ in
             fi
           done
           target="$resolved"
-          if [ ! -e "$root$target" ]; then
-            echo "guest-image: BUILD-BREAK — /$p does not resolve inside the rootfs." >&2
-            echo "  It resolves to $target, which the image does not carry." >&2
+          if [ ! -f "$root$target" ] || [ ! -x "$root$target" ]; then
+            echo "guest-image: BUILD-BREAK — /$p is not an executable in the rootfs." >&2
+            echo "  It resolves to $target, which the image does not carry as one." >&2
             echo "  The guest userland comes from the pinned agent image" >&2
             echo "  (${checkedLock.repo}@${checkedLock.digest})." >&2
             echo "  Either that image stopped shipping it, or a layer failed to" >&2
