@@ -2,6 +2,7 @@ import { type Component, createSignal, For, Show } from "solid-js";
 import { isMultiForge, issueKey } from "../board-render";
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
+import { Glyph } from "./Glyph";
 
 /** A single Linear-style issue row: id · title · priority · state · tracker.
  *  Clicking the row selects the issue (staying on the view). Not the board
@@ -63,7 +64,9 @@ const BacklogSection: Component<{
 				aria-controls={contentId}
 				onClick={() => setOpen(!open())}
 			>
-				<span class={["backlog-chevron", { open: open() }]}>▸</span>
+				<span class={["backlog-chevron", { open: open() }]} aria-hidden="true">
+					<Glyph name="disclosure" />
+				</span>
 				<span class="backlog-section-title">{props.title}</span>
 				<span class="backlog-count">{props.rows.length}</span>
 			</button>

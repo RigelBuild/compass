@@ -32,7 +32,8 @@ export type GlyphName =
 	| "gear"
 	| "logo"
 	| "panel-right"
-	| "panel-left";
+	| "panel-left"
+	| "stop";
 
 /** [x, y] of each lit cell (11×11, one CSS px per cell), transcribed from the
  *  frozen ASCII grids in `design/components.md` §Glyphs (`#` = lit). Keying on
@@ -910,6 +911,60 @@ const GLYPH_CELLS: Record<
 		[7, 9],
 		[8, 9],
 		[9, 9],
+	],
+	// A filled 7×7 square (rows/cols 2..8) — the halt mark on the log-panel Stop
+	// control, replacing the uncovered `■` U+25A0. One solid block, deliberately
+	// centered with a 2-cell margin so it reads square, not full-bleed.
+	stop: [
+		[2, 2],
+		[3, 2],
+		[4, 2],
+		[5, 2],
+		[6, 2],
+		[7, 2],
+		[8, 2],
+		[2, 3],
+		[3, 3],
+		[4, 3],
+		[5, 3],
+		[6, 3],
+		[7, 3],
+		[8, 3],
+		[2, 4],
+		[3, 4],
+		[4, 4],
+		[5, 4],
+		[6, 4],
+		[7, 4],
+		[8, 4],
+		[2, 5],
+		[3, 5],
+		[4, 5],
+		[5, 5],
+		[6, 5],
+		[7, 5],
+		[8, 5],
+		[2, 6],
+		[3, 6],
+		[4, 6],
+		[5, 6],
+		[6, 6],
+		[7, 6],
+		[8, 6],
+		[2, 7],
+		[3, 7],
+		[4, 7],
+		[5, 7],
+		[6, 7],
+		[7, 7],
+		[8, 7],
+		[2, 8],
+		[3, 8],
+		[4, 8],
+		[5, 8],
+		[6, 8],
+		[7, 8],
+		[8, 8],
 	],
 };
 

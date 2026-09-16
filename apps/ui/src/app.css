@@ -1586,6 +1586,15 @@
 	font-family: var(--cx-font-ui);
 }
 
+/* Seat the inline branch glyph (state-dot.css §seating). */
+.usage-git-glyph {
+	display: inline-flex;
+}
+
+.usage-git-glyph > svg {
+	display: block;
+}
+
 /* ── Shared helpers ─────────────────────────────────────────────────────── */
 
 .muted {
@@ -1640,9 +1649,15 @@
 
 .backlog-chevron {
 	color: var(--cx-text-faint);
-	font-size: 10px;
+	display: inline-flex;
 	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the RIG-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s ease;
+}
+
+/* Seat the inline glyph SVG (state-dot.css §seating): an inline replaced box
+ * otherwise rides the text baseline and overflows its box. */
+.backlog-chevron > svg {
+	display: block;
 }
 
 .backlog-chevron.open {
@@ -3485,6 +3500,17 @@
 	cursor: default;
 }
 
+/* The Stop control's halt-mark glyph, seated inline beside the "stop" label. */
+.obs-stop-glyph {
+	display: inline-flex;
+	vertical-align: middle;
+	color: currentColor;
+}
+
+.obs-stop-glyph > svg {
+	display: block;
+}
+
 /* A REFUSED stop, said beside the control rather than left in the console —
  * same weight and colour as the ask block's refusal (.ask-error). */
 .obs-error {
@@ -3505,6 +3531,26 @@
 
 .obs-min:hover {
 	color: var(--cx-text);
+}
+
+/* The minimize/expand toggle's caret glyph. `disclosure` points right; the open
+ * panel keeps that (the old `⟩`), and the minimized rail rotates it 180° to
+ * point left (the old `⟨`, the expand affordance). Both states are one glyph so
+ * the pair can never misalign the way the old character pair could. */
+.obs-min-glyph {
+	display: inline-flex;
+	color: currentColor;
+	transform: rotate(180deg);
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the RIG-2034 cutover lane, which never scoped the motion axis */
+	transition: transform 0.12s ease;
+}
+
+.obs-min-glyph.open {
+	transform: rotate(0deg);
+}
+
+.obs-min-glyph > svg {
+	display: block;
 }
 
 .log-panel .obs-body {
