@@ -246,6 +246,53 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 	}
 }
 
+// TestDeathErrorReportsTheCauseForEveryStartupPhase locks the death-cause slot
+// for all three startup sites at once. The %!w(<nil>) defect existed at three
+// sites because each built its own message, and a per-site test caught it at
+// one: reintroducing the bug at the pidfile site left that site's test green,
+// because name-and-log-tail assertions straddle the slot without binding it.
+// Every site now routes through deathError, so this covers them together.
+func TestDeathErrorReportsTheCauseForEveryStartupPhase(t *testing.T) {
+	// Every phase string deathError is called with in launch.go.
+	phases := []string{
+		"cloud-hypervisor was started",
+		"its socket was serving",
+		"its pidfile could be recorded",
+	}
+	for _, phase := range phases {
+		t.Run(phase, func(t *testing.T) {
+			dir := t.TempDir()
+			const diagnostic = "Couldn't setup id mappings: newgidmap failed"
+			c := &child{
+				name:    "virtiofsd",
+				logPath: filepath.Join(dir, "virtiofsd.log"),
+				cmd: exec.CommandContext(t.Context(), "/bin/sh", "-c",
+					"printf '%s\\n' \"$DIAGNOSTIC\" >&2; exit 1"),
+			}
+			c.cmd.Env = append(os.Environ(), "DIAGNOSTIC="+diagnostic)
+			if err := startChild(c); err != nil {
+				t.Fatalf("startChild(dead-daemon fake): %v", err)
+			}
+			<-c.exited // the cause is only settled once the reaper has run
+
+			got := deathError(c, phase).Error()
+			if strings.Contains(got, "%!") {
+				t.Errorf("error %q carries a Go formatting-verb error; the death cause was fed a nil", got)
+			}
+			if !strings.Contains(got, "exit status 1") {
+				t.Errorf("error %q does not report the daemon's exit status; an operator cannot "+
+					"tell a non-zero exit from a clean one", got)
+			}
+			if !strings.Contains(got, "virtiofsd") || !strings.Contains(got, phase) {
+				t.Errorf("error %q does not name the daemon and the phase it failed to reach", got)
+			}
+			if !strings.Contains(got, diagnostic) {
+				t.Errorf("error %q does not carry the daemon's own log tail (%q)", got, diagnostic)
+			}
+		})
+	}
+}
+
 // readPidFile reads the pid a fake recorded. It does NOT poll: each fake writes
 // its pid BEFORE it touches its socket, and the caller has already confirmed
 // launch got past the socket wait, which orders the write before this read. So a

@@ -261,8 +261,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	// between the last poll iteration and here must not be handed to the VMM.
 	for _, c := range waiting {
 		if c.hasExited() {
-			return nil, fmt.Errorf("microvm: %s exited before cloud-hypervisor was started: %s; log tail:\n%s",
-				c.name, deathCause(c), tailFile(c.logPath))
+			return nil, fmt.Errorf("microvm: %w",
+				deathError(c, "cloud-hypervisor was started"))
 		}
 	}
 
@@ -482,7 +482,8 @@ func startChild(c *child) error {
 		// The single Wait for this child. waitErr is written BEFORE the close, so
 		// any reader that received from c.exited sees it (happens-before). An
 		// *exec.ExitError from a killed daemon is expected and filtered by
-		// waitResult at each reader, not here.
+		// waitResult at each teardown reader, not here; a startup reader renders
+		// it through deathCause instead.
 		c.waitErr = c.cmd.Wait()
 		close(c.exited)
 	}()
@@ -510,8 +511,7 @@ func waitForSockets(ctx context.Context, paths []string, waiting []*child, timeo
 		// readiness, so this check precedes the Stat sweep.
 		for _, c := range waiting {
 			if c.hasExited() {
-				return fmt.Errorf("%s exited before its socket was serving: %s; log tail:\n%s",
-					c.name, deathCause(c), tailFile(c.logPath))
+				return deathError(c, "its socket was serving")
 			}
 		}
 		missing := ""
@@ -662,8 +662,7 @@ func waitResult(name string, err error) error {
 // an ExitError, so routing that through waitResult yields nil and a caller
 // wrapping it with %w renders the literal "%!w(<nil>)" where the cause belongs,
 // with errors.Unwrap returning nil. That destroys the whole point of the
-// message. Verified: an exit-1 startup death gives *exec.ExitError, waitResult
-// returns nil, and "%w" prints %!w(<nil>).
+// message.
 //
 // The returned string is for humans, not for errors.Is — a startup death has no
 // sentinel worth matching, and the ExitError is already reported verbatim.
@@ -672,6 +671,16 @@ func deathCause(c *child) string {
 		return "exited cleanly (status 0) without serving"
 	}
 	return c.waitErr.Error()
+}
+
+// deathError builds the error a startup site reports when a child it was
+// waiting on has already exited. Every such site goes through here so the
+// death cause cannot regress at one site while another stays guarded: the
+// %!w(<nil>) defect this replaced existed at three sites because each built
+// its own message. phase names what the child failed to reach.
+func deathError(c *child, phase string) error {
+	return fmt.Errorf("%s exited before %s: %s; log tail:\n%s",
+		c.name, phase, deathCause(c), tailFile(c.logPath))
 }
 
 // Running reports whether the named child's process is still alive. It is used
@@ -822,7 +831,7 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 // dead. Reporting a /proc path there buries the real cause, which is in the
 // daemon's own log, so a confirmed-dead child gets the SAME error shape launch
 // uses for a daemon that died before the VMM was started (name the daemon,
-// wrap waitResult, carry the log tail).
+// render deathCause, carry the log tail).
 //
 // BOTH conditions are required: procReadMeansGone alone could describe a /proc
 // that vanished under a still-live pid (it cannot, but the pairing makes the
@@ -836,8 +845,8 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 // and no window exists where the dir under-names a child that may have run.
 func pidfileWriteError(c *child, err error) error {
 	if procReadMeansGone(err) && c.hasExited() {
-		return fmt.Errorf("microvm: %s exited before its pidfile could be recorded: %s; log tail:\n%s",
-			c.name, deathCause(c), tailFile(c.logPath))
+		return fmt.Errorf("microvm: %w",
+			deathError(c, "its pidfile could be recorded"))
 	}
 	return fmt.Errorf("microvm: recording %s pidfile: %w", c.name, err)
 }
