@@ -3,8 +3,9 @@
 //
 // House in-memory OTel recipe: a NodeTracerProvider (installs a real context
 // manager, so `context.with` propagates into `fn`) with an InMemorySpanExporter
-// + SimpleSpanProcessor, registered via `provider.register()`. `trace.disable()`
-// + `context.disable()` in teardown so no global leaks into sibling tests.
+// + SimpleSpanProcessor, registered via `provider.register()`. Teardown calls
+// `trace.disable()` + `context.disable()` + `propagation.disable()` so no global
+// tracer, context manager, or W3C propagator leaks into a sibling test (RIG-3489).
 
 import { afterEach, expect, test } from "bun:test";
 import type {
@@ -12,7 +13,7 @@ import type {
 	TelemetryHookContext,
 	TelemetrySpanKind,
 } from "@oh-my-pi/pi-agent-core";
-import { context, type Span, trace } from "@opentelemetry/api";
+import { context, propagation, type Span, trace } from "@opentelemetry/api";
 import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
@@ -52,6 +53,7 @@ function hookCtx(
 afterEach(async () => {
 	trace.disable();
 	context.disable();
+	propagation.disable();
 	await provider?.shutdown();
 	provider = undefined;
 });
