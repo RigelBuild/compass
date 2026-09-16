@@ -48,10 +48,40 @@ SKOPEO=(skopeo)
 log() { printf '>> %s\n' "$*" >&2; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
+# --arch-suffix <arch> publishes ONE immutable per-arch tag (git-<sha>-<arch>)
+# and no moving :latest. Parsed off the front, before any positional tags.
+ARCH_SUFFIX=""
+if [[ "${1:-}" == "--arch-suffix" ]]; then
+  ARCH_SUFFIX="${2:-}"
+  # A per-arch tag is immutable once pushed, so a typo would strand a wrong
+  # name on the registry permanently — the guard protects it like any other.
+  case "$ARCH_SUFFIX" in
+    amd64 | arm64) ;;
+    *)
+      err "--arch-suffix must be amd64 or arm64, got: '${ARCH_SUFFIX}'"
+      exit 1
+      ;;
+  esac
+  shift 2
+elif [[ "${1:-}" == -* ]]; then
+  # No tag begins with a dash, so a leading dash is a mistyped or equals-form
+  # flag; it would otherwise become a literal tag and fail deep inside skopeo.
+  err "unknown flag: ${1}"
+  exit 1
+fi
+
 # Default tag set: immutable pin FIRST, then the moving tag, so :git-<sha>
 # exists before :latest moves onto it. A GA add is one more positional arg
 # (./publish.sh git-<sha> v<semver> latest).
-if [[ $# -gt 0 ]]; then
+if [[ -n "$ARCH_SUFFIX" ]]; then
+  # Reject --arch-suffix plus positional tags: a caller passing both has a bug.
+  if [[ $# -gt 0 ]]; then
+    err "--arch-suffix cannot be combined with explicit positional tags"
+    exit 1
+  fi
+  SHA="$(git rev-parse --short=12 HEAD)"
+  TAGS=("git-${SHA}-${ARCH_SUFFIX}")
+elif [[ $# -gt 0 ]]; then
   TAGS=("$@")
 else
   SHA="$(git rev-parse --short=12 HEAD)"
