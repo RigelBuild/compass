@@ -28,7 +28,6 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
-	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
@@ -581,7 +580,7 @@ func newMountedH2CServer(t *testing.T, hub *Hub, resolve TokenResolver) string {
 // newMountedH2CServerWithResolver is newMountedH2CServer with a secret resolver
 // threaded into the handler, so a FetchSecrets test drives the resolve path over
 // the real wire.
-func newMountedH2CServerWithResolver(t *testing.T, hub *Hub, resolve TokenResolver, resolver secrets.Resolver) string {
+func newMountedH2CServerWithResolver(t *testing.T, hub *Hub, resolve TokenResolver, resolver secretResolver) string {
 	t.Helper()
 	return newMountedH2CServerWith(t, hub, resolve, resolver, nil)
 }
@@ -598,7 +597,7 @@ func newMountedH2CServerWithConfig(t *testing.T, hub *Hub, resolve TokenResolver
 // may be nil) on an httptest h2c server and returns its base URL. The
 // otelconnect interceptor is real (NewMountedHandler forbids nil) but inert:
 // these tests install no tracer provider, so it reads the no-op global.
-func newMountedH2CServerWith(t *testing.T, hub *Hub, resolve TokenResolver, resolver secrets.Resolver, configStore AgentConfigStore) string {
+func newMountedH2CServerWith(t *testing.T, hub *Hub, resolve TokenResolver, resolver secretResolver, configStore AgentConfigStore) string {
 	t.Helper()
 	otelIC, err := otelconnect.NewInterceptor()
 	if err != nil {

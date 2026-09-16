@@ -63,7 +63,7 @@ const (
 // nameGrammar is SecretSpec's env-var-name grammar. A declared secret name must
 // match it: it becomes both a manifest key and, downstream, a path segment
 // under $HOME/.compass/secrets/ and a token in a root-adjacent setup script
-// (T5). Validated at the store door (store.DeclareSecret) and re-checked here as
+// (T5). Validated at the store door (store.UpsertSecret) and re-checked here as
 // defense in depth before a name is ever emitted into a generated manifest.
 var nameGrammar = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 

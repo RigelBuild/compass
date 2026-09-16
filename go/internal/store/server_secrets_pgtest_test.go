@@ -127,7 +127,7 @@ func TestT0KeyspacePartition(t *testing.T) {
 
 	// User door REJECTS those same prefixes.
 	for _, name := range []string{"SERVER_LINEAR_FORGE_CLIENT_SECRET", "GATEWAY_CREDENTIALS_MASTER_KEY"} {
-		err := s.DeclareSecret(ctx, actor, name, SecretDeliveryEnv, SecretKindGeneric, "", "")
+		err := s.UpsertSecret(ctx, actor, name, SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1)
 		if !errors.Is(err, ErrInvalidArgument) {
 			t.Fatalf("user declare of reserved name %s: want ErrInvalidArgument, got %v", name, err)
 		}
@@ -137,7 +137,7 @@ func TestT0KeyspacePartition(t *testing.T) {
 	// A legitimate user secret is declared first so this check has something to
 	// iterate: without it the loop ran zero times and would have passed even if
 	// both registries shared one table.
-	if err := s.DeclareSecret(ctx, actor, "PLAIN_USER_TOKEN", SecretDeliveryEnv, SecretKindGeneric, "", ""); err != nil {
+	if err := s.UpsertSecret(ctx, actor, "PLAIN_USER_TOKEN", SecretScopeTenant, "", SecretDeliveryEnv, SecretKindGeneric, "", "", dummyCT, dummyNonce, 1); err != nil {
 		t.Fatalf("declare user secret: %v", err)
 	}
 	userRows, err := s.DeclaredSecrets(ctx)

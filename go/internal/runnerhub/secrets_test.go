@@ -26,32 +26,26 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// fakeResolverSecrets is a hand-written secrets.Resolver: Resolve returns a fixed
-// set (and records that it was called), Set/Delete are no-op successes. It lets
-// the FetchSecrets seam test drive the resolve path without a real SecretSpec
-// provider. resolveErr, when set, makes Resolve fail.
+// fakeResolverSecrets is a hand-written secretResolver: ResolveFor returns a
+// fixed set (and records that it was called AND for which agent), letting the
+// FetchSecrets seam test drive the scoped resolve path without a real store or
+// crypto. resolveErr, when set, makes ResolveFor fail. The fixed set ignores the
+// agent arg — these tests exercise the handler's authz+binding→account→resolve
+// wiring, not the A9 precedence (that is the store/StoreResolver pgtest's job).
 type fakeResolverSecrets struct {
 	set          []secrets.ResolvedSecret
 	resolveErr   error
 	resolveCalls int
+	gotAgent     store.AccountID
 }
 
-func (f *fakeResolverSecrets) Resolve(_ context.Context, _ string) ([]secrets.ResolvedSecret, error) {
+func (f *fakeResolverSecrets) ResolveFor(_ context.Context, agent store.AccountID, _ string) ([]secrets.ResolvedSecret, error) {
 	f.resolveCalls++
+	f.gotAgent = agent
 	if f.resolveErr != nil {
 		return nil, f.resolveErr
 	}
 	return f.set, nil
-}
-
-func (f *fakeResolverSecrets) Set(_ context.Context, _, _, _ string) error { return nil }
-func (f *fakeResolverSecrets) Delete(_ context.Context, _ string) error    { return nil }
-
-// Statuses satisfies the Resolver interface. These tests exercise the container
-// secrets-delivery seam, which never lists set/unset state, so it returns
-// nothing rather than modelling a provider probe.
-func (f *fakeResolverSecrets) Statuses(_ context.Context, _ string) ([]secrets.SecretStatus, error) {
-	return nil, nil
 }
 
 // runnerResolverForFetch is the token resolver the FetchSecrets door uses: it
