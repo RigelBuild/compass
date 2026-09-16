@@ -34,14 +34,16 @@ export function isDm(channel: Channel): boolean {
 }
 
 /** The glyph before a channel name, by kind (Discord-style: # for a channel,
- *  @ for a DM, a cluster glyph for a group DM). One home so the rail row and
- *  the channel header never drift. */
+ *  @ for a DM, & for a group DM — the "cluster" marker). One home so the rail
+ *  row and the channel header never drift. All three are ASCII, covered by the
+ *  brand face; this stays DATA (a string in the marker column), not a `<Glyph>`
+ *  — a bitmap for one kind only would mix glyph and character in one column. */
 export function channelGlyph(kind: Channel["kind"]): string {
 	switch (kind) {
 		case "dm":
 			return "@";
 		case "group_dm":
-			return "⌗";
+			return "&";
 		default:
 			return "#";
 	}

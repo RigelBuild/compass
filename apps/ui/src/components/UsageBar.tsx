@@ -1,5 +1,6 @@
 import { type Component, For } from "solid-js";
 import { STUB_USAGE } from "../stub-data";
+import { Glyph } from "./Glyph";
 
 const fmtTokens = (n: number): string =>
 	n >= 1_000_000
@@ -41,7 +42,10 @@ export const UsageBar: Component = () => (
 		</For>
 		<span class="usage-spacer" />
 		<span class="usage-git">
-			<span aria-hidden="true">⎇</span> compass · main
+			<span class="usage-git-glyph" aria-hidden="true">
+				<Glyph name="vcs" />
+			</span>{" "}
+			compass · main
 		</span>
 	</footer>
 );
