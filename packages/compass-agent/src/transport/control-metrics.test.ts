@@ -393,6 +393,7 @@ test("a progress-making reconnect resets no_progress_depth to 0", async () => {
 // flap_resets
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/plugin: 15s backstops a spin, not a budget: both parts event-gate on drive() resolving (clean close / bounded fail); the ceiling only bounds a source that never terminates.
 test("flap_resets fires only when a past-floor drop resets the ladder", async () => {
 	// Part 1: one past-floor drop (6000ms > 5000 floor) resets the ladder → one
 	// flap_reset; then a clean close. delta == 1.

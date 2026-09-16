@@ -1,0 +1,16 @@
+// Flags a hard-coded wall-clock budget passed as the positional 3rd arg to
+// test()/it(). Coverage gap (0 live sites, matches the no-fixed-sleep sibling):
+// the object form test(name, fn, { timeout: N }), the test.each(...)(...) member
+// call, and a computed literal (20 * 1000) are NOT matched -- prefer the
+// positional literal so this gate sees it.
+
+or {
+  `test($_, $_, $timeout)` as $c where {
+    $timeout <: r"^[0-9_]+$",
+    register_diagnostic(span=$c, message="A hard-coded test(..., N) budget is a wall-clock timing dependency: a slow-but-correct test races the fixed ceiling under load (rule://no-retries, same discipline as fixed sleeps). Event-gate on the observed signal, or -- for a genuine hung-child crash guard set far above any correct run -- keep it with `// biome-ignore lint/plugin: <reason>`.")
+  },
+  `it($_, $_, $timeout)` as $c where {
+    $timeout <: r"^[0-9_]+$",
+    register_diagnostic(span=$c, message="A hard-coded it(..., N) budget is a wall-clock timing dependency: a slow-but-correct test races the fixed ceiling under load (rule://no-retries, same discipline as fixed sleeps). Event-gate on the observed signal, or -- for a genuine hung-child crash guard set far above any correct run -- keep it with `// biome-ignore lint/plugin: <reason>`.")
+  }
+}

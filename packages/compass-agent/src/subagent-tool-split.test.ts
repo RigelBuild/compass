@@ -189,6 +189,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 	// runner while its siblings passed. Not time-gated on purpose: the awaits
 	// below already gate on the session being ready, so this ceiling only bounds
 	// a genuine hang.
+	// biome-ignore lint/plugin: 30s bounds a real session boot (this first case also pays ~7s one-time module init; siblings ~1.2-1.6s); the awaits gate on the session being ready, so the ceiling only bounds a genuine hang.
 	test("the Manager session carries exactly the Compass native tool set", async () => {
 		const cwd = scratch();
 		const active = new Set(await managerActiveToolNames(cwd));
@@ -203,6 +204,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 		expect(missing).toEqual([]);
 	}, 30_000);
 
+	// biome-ignore lint/plugin: 30s bounds a real session boot (~1.2-1.6s warm); the awaits gate on the session being ready, so the ceiling only bounds a genuine hang.
 	test("a subagent session carries NONE of the Compass native tools", async () => {
 		const cwd = scratch();
 		const active = new Set(await subagentActiveToolNames(cwd));
@@ -216,6 +218,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 		expect(leaked).toEqual([]);
 	}, 30_000);
 
+	// biome-ignore lint/plugin: 30s bounds a real session boot (~1.2-1.6s warm); the awaits gate on the session being ready, so the ceiling only bounds a genuine hang.
 	test("a subagent session still carries hub (the COOP-advertised peer channel)", async () => {
 		const cwd = scratch();
 		const active = new Set(await subagentActiveToolNames(cwd));
@@ -231,6 +234,7 @@ describe("subagent comms/hub tool split (design §T7)", () => {
 		expect(active.has("hub")).toBe(true);
 	}, 30_000);
 
+	// biome-ignore lint/plugin: 30s bounds two real session boots (~1.2-1.6s warm each); the awaits gate on the sessions being ready, so the ceiling only bounds a genuine hang.
 	test("the Manager carries Compass tools that the subagent drops — the split is real", async () => {
 		const cwd = scratch();
 		const managerActive = new Set(await managerActiveToolNames(cwd));
