@@ -73,11 +73,10 @@ import { createTeeSessionStorage } from "./session-tee";
 import type { RunnerTransport } from "./transport/index";
 import { createPublishSpine } from "./transport/publish-spine";
 
-// The composition tests do real FS work (scratch tempdirs, tee storage) and
-// gate on events, not sleeps; under the parallel pre-push gate that I/O outruns
-// bun's implicit 5s default and flakes (the starvation RIG-3609 fixed for the
-// afterEach). This file-wide floor covers the test bodies (RIG-3794); any
-// explicit per-test bound still overrides it.
+// These tests do real FS work and gate on events, not sleeps; under the parallel
+// pre-push gate that I/O outruns bun's implicit 5s default and flakes (the same
+// starvation RIG-3611 floored this file's afterEach for). This file-wide floor
+// covers the test bodies too (RIG-3794); any explicit per-test bound overrides it.
 setDefaultTimeout(60_000);
 
 const tmpdirs: string[] = [];

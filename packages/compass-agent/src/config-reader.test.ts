@@ -30,9 +30,9 @@ import {
 } from "./config-reader";
 
 // Every test does real FS work; under the parallel pre-push gate that I/O
-// outruns bun's implicit 5s default and flakes (the same starvation RIG-3609
-// fixed for the afterEach hook). This file-wide floor covers the test bodies
-// too (RIG-3794); any explicit per-test bound still overrides it.
+// outruns bun's implicit 5s default and flakes (the same starvation RIG-3611
+// floored this file's afterEach for). This file-wide floor covers the test
+// bodies too (RIG-3794); any explicit per-test bound still overrides it.
 setDefaultTimeout(60_000);
 
 const tmpdirs: string[] = [];
