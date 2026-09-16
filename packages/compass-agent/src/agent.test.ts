@@ -17,7 +17,7 @@ import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
 } from "@oh-my-pi/pi-coding-agent";
-import { context, type Span, trace } from "@opentelemetry/api";
+import { context, propagation, type Span, trace } from "@opentelemetry/api";
 import {
 	InMemorySpanExporter,
 	SimpleSpanProcessor,
@@ -2247,6 +2247,7 @@ let traceProvider: NodeTracerProvider | undefined;
 afterEach(async () => {
 	trace.disable();
 	context.disable();
+	propagation.disable();
 	await traceProvider?.shutdown();
 	traceProvider = undefined;
 });
