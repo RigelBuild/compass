@@ -113,38 +113,60 @@ func TestLaunchFailClosedTeardown(t *testing.T) {
 	}
 }
 
-// longLivedFakeBody builds the body of a shell stub that records its pid, runs
-// setup, and then STAYS ALIVE as the given command.
+// longLivedStayAlive builds shell text that runs setup and then STAYS ALIVE as
+// the given command. It is the single place the `exec` is spelled, for every
+// stub in this file that has to outlive the call under test.
 //
-// The `exec` is the point of this helper and is why the tail is not written by
-// hand at the callsites. Without it /bin/sh forks the tail and lives on as its
-// parent, so `echo $$` records the SHELL: teardown's SIGTERM then kills the
-// recorded pid, a no-orphan assertion keyed on that pid passes, and the tail is
-// reparented to init and survives its full lifetime. Measured at +10 leaked
-// processes per -count=5 run of TestLaunchFailClosedTeardown before the exec
-// was added, 0 after. Keeping the spelling in one place means a future edit
-// cannot reintroduce that leak by dropping a keyword from a string literal.
-func longLivedFakeBody(pidFile, setup, tailBin string, tailArgs ...string) string {
+// Without the exec, /bin/sh forks the tail and lives on as its parent. A
+// teardown that signals the child it started then reaches only that shell, and
+// the tail is reparented to init and survives its full lifetime — while the pid
+// a caller recorded, or the pid Go handed it, IS reaped, so a no-orphan
+// assertion keyed on it passes. Measured at +10 leaked processes per -count=5
+// run of TestLaunchFailClosedTeardown before the exec was added, 0 after.
+//
+// `sh -c` does exec its LAST command implicitly, so a stub whose sleep happens
+// to be last leaks nothing today. That is an accident of the shell, not a
+// property of the test: appending one trailing command restores the leak, and
+// nothing in this package can observe it. Hence one helper rather than the
+// spelling repeated per callsite.
+func longLivedStayAlive(setup, tailBin string, tailArgs ...string) string {
 	tail := strings.Join(append([]string{tailBin}, tailArgs...), " ")
-	return "echo $$ > " + pidFile + "\n" + setup + "\nexec " + tail
+	return setup + "\nexec " + tail
 }
 
-// TestLongLivedFakeBodyExecsItsTail pins the property above at the point it is
-// decided. Asserting it on a running stub is not possible without a poll: the
-// only observable difference is /proc/<pid>/comm after the exec, and there is
-// no happens-before edge to that moment — a readiness signal the stub emits
-// necessarily precedes its own exec. So the invariant is checked where it is
-// actually established, in the string every fake is built from.
-func TestLongLivedFakeBodyExecsItsTail(t *testing.T) {
-	body := longLivedFakeBody("/tmp/x.pid", ": > /tmp/sock", "/bin/sleep", "30")
-	lines := strings.Split(body, "\n")
-	tail := lines[len(lines)-1]
-	if !strings.HasPrefix(tail, "exec ") {
-		t.Errorf("stub tail is %q, want an `exec ` prefix — without it the shell forks the tail and "+
-			"teardown cannot reach the process that stays alive", tail)
+// longLivedFakeBody is longLivedStayAlive plus the pid record the fail-closed
+// teardown test reads back.
+func longLivedFakeBody(pidFile, setup, tailBin string, tailArgs ...string) string {
+	return "echo $$ > " + pidFile + "\n" + longLivedStayAlive(setup, tailBin, tailArgs...)
+}
+
+// TestLongLivedStayAliveExecsItsTail pins the property above at the point it is
+// decided, for both constructors.
+//
+// It cannot be asserted on a running stub without a poll. The only observable
+// difference is /proc/<pid>/comm after the exec, and there is no happens-before
+// edge to that moment: a readiness signal a stub emits necessarily precedes its
+// own exec. A post-teardown residue scan can see the leak itself, but it
+// reports on whichever stubs a test happens to start; this reports on the
+// string every long-lived stub in the file is built from, which is the property
+// that actually has to hold. Both constructors are covered so neither can drift
+// away from the other.
+func TestLongLivedStayAliveExecsItsTail(t *testing.T) {
+	for name, body := range map[string]string{
+		"longLivedStayAlive": longLivedStayAlive(": > /tmp/sock", "/bin/sleep", "30"),
+		"longLivedFakeBody":  longLivedFakeBody("/tmp/x.pid", ": > /tmp/sock", "/bin/sleep", "30"),
+	} {
+		lines := strings.Split(body, "\n")
+		tail := lines[len(lines)-1]
+		if !strings.HasPrefix(tail, "exec ") {
+			t.Errorf("%s tail is %q, want an `exec ` prefix — without it the shell forks the tail "+
+				"and teardown cannot reach the process that stays alive", name, tail)
+		}
 	}
-	if !strings.HasPrefix(body, "echo $$ > /tmp/x.pid\n") {
-		t.Errorf("stub must record its pid first, got %q", body)
+	// The pid record must come first, since the teardown test reads it back.
+	if body := longLivedFakeBody("/tmp/x.pid", ": > /tmp/sock", "/bin/sleep", "30"); !strings.HasPrefix(
+		body, "echo $$ > /tmp/x.pid\n") {
+		t.Errorf("longLivedFakeBody must record its pid first, got %q", body)
 	}
 }
 
@@ -257,10 +279,20 @@ func TestWaitForSocketsFailsFastOnADeadDaemon(t *testing.T) {
 func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 	dir := t.TempDir()
 	socket := filepath.Join(dir, "live.sock")
+	sleepBin, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatalf("resolving sleep on PATH (the fake needs it to stay alive): %v", err)
+	}
+	// Built with longLivedStayAlive for the same reason the launch fakes are:
+	// the tail must be exec'd, or this stub is a shell parenting the sleep and
+	// reap's SIGTERM orphans the sleep to init. `sh -c` happens to exec its
+	// LAST command implicitly, so the bare form leaked nothing — but appending
+	// one trailing command silently restores the leak, which no test here can
+	// see. Going through the helper makes it explicit instead of incidental.
 	c := &child{
 		name:    "virtiofsd",
 		logPath: filepath.Join(dir, "virtiofsd.log"),
-		cmd:     exec.CommandContext(t.Context(), "/bin/sh", "-c", ": > "+socket+"; sleep 30"),
+		cmd:     exec.CommandContext(t.Context(), "/bin/sh", "-c", longLivedStayAlive(": > "+socket, sleepBin, "30")),
 	}
 	if err := startChild(c); err != nil {
 		t.Fatalf("startChild(live fake): %v", err)
