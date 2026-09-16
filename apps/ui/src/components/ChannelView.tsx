@@ -32,17 +32,13 @@ function hhmm(atUnixMs: number): string {
 	return `${h}:${m}`;
 }
 
-/** An inline async ask (comms.proto Ask): a question with selectable options,
- *  answerable in place — never a blocking modal. A single-select question locks
- *  once answered; a multi-select stays open so choices can toggle.
- *
- *  The wire send is GATED on completeness in the store: the server accepts
- *  exactly ONE RespondToAsk per ask, so clicks accumulate locally and the
- *  completing click ships them all at once. A question the user means to SKIP
- *  would never complete the ask, so a partially answered ask grows a `submit`
- *  control that ships what is answered with the skipped questions empty. Once
- *  the ask is SETTLED — our respond issued, or the server's own `answered` flag
- *  set by whoever answered it first — every option locks. */
+/** An inline async ask (comms.proto Ask): questions with selectable
+ *  options and an always-available free-text input, answerable in place —
+ *  never a blocking modal. Every answer stays LOCAL until submit: the
+ *  server accepts exactly ONE RespondToAsk per ask, so the submit control
+ *  is the only send path, and unanswered questions ship blank (its copy
+ *  says so). Once the ask is SETTLED — our respond issued, or the server's
+ *  `answered` flag set by whoever answered first — every control locks. */
 const AskBlock: Component<{
 	messageId: string;
 	ask: Ask;
@@ -54,9 +50,9 @@ const AskBlock: Component<{
 	// The ask's one respond has been issued: it is settled server-side, so no
 	// further click may record an answer the server will never receive.
 	const submitted = () => store.isAskSubmitted(ask().askId);
-	// The last refusal for this ask, if any. A refused respond rolls the local
-	// answer back, so without this the user's click just disappears — the same
-	// hole the composer's error span closes for a failed post.
+	// The last refusal for this ask, if any. Surfacing it keeps the user's
+	// submit from disappearing into a console line — the same hole the
+	// composer's error span closes for a failed post.
 	const error = () => store.askError(ask().askId);
 	// The server burns an ask on the first RespondToAsk it ACCEPTS and refuses
 	// every later one with ErrConflict (go/internal/store/messages.go:404-406),
@@ -73,13 +69,9 @@ const AskBlock: Component<{
 		closed() || (!q.allowMultiple && q.chosenOptionIds.length > 0);
 	const answeredCount = () =>
 		ask().questions.filter((q) => q.chosenOptionIds.length > 0).length;
-	// The skip affordance is meaningful only in between: an untouched ask has
-	// nothing to submit, a complete one has already been sent by its completing
-	// click, and a settled one takes no further respond at all.
-	const canSubmit = () =>
-		!closed() &&
-		answeredCount() > 0 &&
-		answeredCount() < ask().questions.length;
+	// The submit control is the only send path, so it drives `disabled`, not
+	// visibility: a live ask always shows it, enabled once anything is answered.
+	const canSubmit = () => answeredCount() > 0;
 
 	return (
 		<div
@@ -124,15 +116,18 @@ const AskBlock: Component<{
 					</>
 				)}
 			</For>
-			<Show when={canSubmit()}>
+			<Show when={!closed()}>
 				<div class="ask-submit-row">
 					<button
 						type="button"
 						class="ask-submit"
+						disabled={!canSubmit()}
 						title="Send this ask now, leaving the unanswered questions blank. An ask can only be answered once."
 						onClick={() => store.submitAsk(props.messageId, ask().askId)}
 					>
-						submit — skip the rest
+						{answeredCount() < ask().questions.length
+							? "submit — skip the rest"
+							: "submit"}
 					</button>
 				</div>
 			</Show>
