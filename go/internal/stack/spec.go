@@ -24,15 +24,20 @@ const embeddedRunnerID = "embedded"
 // cert paths, mirroring the devenv dogfood invocation (devenv.nix:395-400):
 // --socket / --database / --listen / --tls-cert / --tls-key.
 func serverSpec(cfg Config, cert CertResult) ProcessSpec {
+	args := []string{
+		"--socket", cfg.SocketPath,
+		"--database", cfg.DatabaseDSN,
+		"--listen", cfg.ListenAddr,
+		"--tls-cert", cert.CertPath,
+		"--tls-key", cert.KeyPath,
+	}
+	// Omit an empty provider so the server can use its own env-based resolution.
+	if cfg.SecretProvider != "" {
+		args = append(args, "--secret-provider", cfg.SecretProvider)
+	}
 	return ProcessSpec{
 		Component: ComponentServer,
-		Args: []string{
-			"--socket", cfg.SocketPath,
-			"--database", cfg.DatabaseDSN,
-			"--listen", cfg.ListenAddr,
-			"--tls-cert", cert.CertPath,
-			"--tls-key", cert.KeyPath,
-		},
+		Args:      args,
 	}
 }
 
