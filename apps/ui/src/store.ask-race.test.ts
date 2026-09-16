@@ -35,6 +35,7 @@ const askMessage = (
 		freeText?: readonly string[];
 		optionIds?: Readonly<Record<string, readonly string[]>>;
 		recordedText?: Readonly<Record<string, string>>;
+		multi?: readonly string[];
 	},
 ) =>
 	wireAskMessage({
@@ -48,6 +49,7 @@ const askMessage = (
 		freeText: over?.freeText,
 		optionIds: over?.optionIds,
 		recordedText: over?.recordedText,
+		multi: over?.multi,
 	});
 
 // The chosen option ids of one question, read out of the store's reactive
@@ -806,6 +808,50 @@ describe("adoptComms vs an in-progress ask", () => {
 			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
 			expect(customTextIn(store, "q-free")).toBe("my draft");
 			expect(store.isAskSubmitted("ask-1")).toBe(false);
+		});
+	});
+
+	// A question's ARITY is part of its shape, not a label. On a multi-select an
+	// option and typed text legally coexist; if a push flips that question to
+	// single-select, carrying the local pair forward would ship an option plus
+	// text the server now rejects — and re-adopt it on every later push, so it
+	// never self-heals. The pushed shape wins instead, exactly as a revised
+	// option id already does. Mutation-check: dropping `allowMultiple` from
+	// `sameQuestions` carries the stale pair and reddens every leg below.
+	test("a pushed ask that flipped a question to single-select beats the local pair", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [askMessage(["q-1"], undefined, { multi: ["q-1"] })],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// Legal on a multi-select: a chosen option AND a typed answer.
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-1", "typed");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(customTextIn(store, "q-1")).toBe("typed");
+
+			// The agent restates the ask single-select, same question and option ids.
+			await fake.emit(
+				{ case: "messageUpdated", value: { message: askMessage(["q-1"]) } },
+				1n,
+			);
+			await settled();
+
+			// The pushed shape is adopted and the now-illegal pair is gone.
+			expect(askIn(store)?.questions[0]?.allowMultiple).toBe(false);
+			expect(chosenIn(store, "q-1")).toEqual([]);
+			expect(customTextIn(store, "q-1")).toBe("");
+
+			// Nothing was staged, so a submit says nothing rather than shipping a
+			// respond the server would refuse with ErrInvalidArgument.
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses).toEqual([]);
 		});
 	});
 });
