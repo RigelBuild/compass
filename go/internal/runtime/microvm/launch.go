@@ -682,19 +682,26 @@ const (
 	phasePidfile  startupPhase = "its pidfile could be recorded"
 )
 
-// allStartupPhases is the list the guard test ranges over. phaseText's switch
-// is what keeps it honest: adding a constant without adding it here fails the
-// exhaustive linter, so the list cannot quietly stop describing production. It
-// returns a fresh slice so no test can scribble on another's copy.
+// allStartupPhases is the list the guard test ranges over. Keep it in step with
+// the const block by hand: phaseText's switch fails a constant that is never
+// handled, but nothing checks membership of THIS list, so a phase handled there
+// and missing here is covered by no test and caught by no gate. It returns a
+// fresh slice so no test can scribble on another's copy.
 func allStartupPhases() []startupPhase {
 	return []startupPhase{phaseVMMStart, phaseSocket, phasePidfile}
 }
 
 // phaseText renders a phase. The switch is deliberate rather than a plain
-// string conversion: exhaustive fails it when a constant is added and not
-// handled, which is the only gate that catches a phase the guard test never
-// covers. An unlisted value still renders, so a mistake here degrades the
-// message rather than killing the launch it was reporting on.
+// string conversion: it gives exhaustive something to check, so adding a
+// constant and not handling it fails lint. Two gaps it does NOT close — a
+// constant handled here but absent from allStartupPhases, and a bare untyped
+// literal at a callsite, which a defined string type accepts silently. An
+// unlisted value still renders, so a mistake degrades the message rather than
+// killing the launch it was reporting on.
+//
+// The fallthrough return MUST stay outside the switch: the repo sets
+// exhaustive's default-signifies-exhaustive, so folding it into a default arm
+// disables the check with no lint or test failure to announce it.
 func phaseText(phase startupPhase) string {
 	switch phase {
 	case phaseVMMStart, phaseSocket, phasePidfile:
