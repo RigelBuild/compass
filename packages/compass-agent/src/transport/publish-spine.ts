@@ -31,9 +31,7 @@ import {
 } from "effect";
 import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
 import {
-	batchesFlushedDrain,
-	batchesFlushedFull,
-	batchesFlushedShort,
+	batchesFlushedBy,
 	batchSizeMixed,
 	batchSizePriority,
 	batchSizeTrace,
@@ -93,9 +91,10 @@ export interface PublishSpine {
 // and disposes it at drain() end; a borrowed one is NEVER disposed here.
 
 // A `metricNamespace` prefixes the two LEVEL gauges (trace_queue_depth, priority_retry_
-// depth). Defaults to "" — production yields the frozen names. A test passes a unique prefix
-// so its gauge reads hit a private registry entry, immune to the cross-file gauge race (the
-// global registry keys on the metric name). Counters take no namespace — read as a delta.
+// depth) and the flush-shape rows. Defaults to "" — production yields the frozen names. A
+// test passes a unique prefix so its reads hit a private registry entry, immune to the
+// cross-file race (the global registry keys on the metric name): a gauge is last-writer-
+// wins, and an exclusivity assertion needs the counters it did NOT expect to read zero.
 export function createPublishSpine(
 	publish: (stream: AsyncIterable<PublishFrameRequest>) => Promise<unknown>,
 	borrowedRuntime?: TransportRuntime,
@@ -103,6 +102,7 @@ export function createPublishSpine(
 ): PublishSpine {
 	const traceQueueDepth = traceQueueDepthGauge(metricNamespace);
 	const priorityRetryDepth = priorityRetryDepthGauge(metricNamespace);
+	const batchesFlushed = batchesFlushedBy(metricNamespace);
 	// Effect is confined module-private behind the spine: it backs the sliding trace queue,
 	// the wake latch, and the forked pump fiber. The default logger is removed on the
 	// fallback runtime so a handled pump-send failure does not double-report (the loss
@@ -201,10 +201,10 @@ export function createPublishSpine(
 			// reads `full` — saturation is the more specific fact.
 			yield* Metric.increment(
 				batch.length === PUBLISH_BATCH_MAX
-					? batchesFlushedFull
+					? batchesFlushed.full
 					: ended
-						? batchesFlushedDrain
-						: batchesFlushedShort,
+						? batchesFlushed.drain
+						: batchesFlushed.short,
 			);
 			yield* Metric.update(
 				priorityCount === batch.length

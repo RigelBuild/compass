@@ -29,9 +29,7 @@ import {
 import { createSocketFrameSink, DURABLE_RETRY_BACKOFF_MS } from "./frame-sink";
 import type { RunnerTransport } from "./index";
 import {
-	batchesFlushedDrain,
-	batchesFlushedFull,
-	batchesFlushedShort,
+	batchesFlushedBy,
 	batchSizeMixed,
 	batchSizePriority,
 	batchSizeTrace,
@@ -304,136 +302,144 @@ test("a successful durable send counts its one attempt and no give-up", async ()
 	expect(counterCount(durableGiveUps) - giveUpsBefore).toBe(0);
 });
 
-// Read a histogram's sample count for one pre-tagged lane, same global registry
-// and same delta discipline as counterCount above.
-function histCount(metric: Metric.Metric.Histogram<number>): number {
-	return Effect.runSync(Metric.value(metric)).count;
+// A histogram's sample count and running total for one pre-tagged lane. `sum`
+// pins the exact sizes recorded; the buckets are cumulative (`le`), so a
+// per-bucket delta cannot tell a 1 from a 2 and is never asserted on.
+function histShape(metric: Metric.Metric.Histogram<number>): {
+	count: number;
+	sum: number;
+} {
+	const state = Effect.runSync(Metric.value(metric));
+	return { count: state.count, sum: state.sum };
 }
 
-// Per-bucket counts keyed by upper bound, so a test can assert WHICH bucket a
-// sample landed in rather than merely that one arrived. `null` is the +Inf row.
-function histBuckets(
-	metric: Metric.Metric.Histogram<number>,
-): Map<number | null, number> {
-	return new Map(Effect.runSync(Metric.value(metric)).buckets);
-}
-
-// Deltas for all three reasons at once: asserting the two NOT selected stayed
-// flat is what proves the precedence is exclusive rather than merely reached.
-function reasonDeltas(baseline: [number, number, number]): {
+// All three reason counters for one private namespace. Absolute reads, not
+// deltas: a unique namespace means nothing else can touch these keys, which is
+// what lets a test assert the two NOT selected are exactly zero. On the shared
+// key a concurrent sibling flush moves them and the exclusivity check flakes.
+function reasonCounts(namespace: string): {
 	full: number;
 	drain: number;
 	short: number;
 } {
+	const m = batchesFlushedBy(namespace);
 	return {
-		full: counterCount(batchesFlushedFull) - baseline[0],
-		drain: counterCount(batchesFlushedDrain) - baseline[1],
-		short: counterCount(batchesFlushedShort) - baseline[2],
+		full: counterCount(m.full),
+		drain: counterCount(m.drain),
+		short: counterCount(m.short),
 	};
 }
 
-function reasonBaseline(): [number, number, number] {
-	return [
-		counterCount(batchesFlushedFull),
-		counterCount(batchesFlushedDrain),
-		counterCount(batchesFlushedShort),
-	];
+// A unique registry prefix per test, so no two tests (or files) share a key.
+function privateNamespace(): string {
+	return `${crypto.randomUUID()}.`;
 }
 
 test("a saturated batch flushes as reason=full, exclusively", async () => {
 	// PUBLISH_BATCH_MAX trace frames queue before the deferred first take, so the
 	// first batch is exactly saturated. `full` outranks `drain` even though
 	// drain() set `ended` — saturation is the more specific fact.
-	const base = reasonBaseline();
-	const bucketsBefore = histBuckets(batchSizeTrace);
-	const spine = createPublishSpine(() => Promise.resolve(undefined));
+	const ns = privateNamespace();
+	const sizeBefore = histShape(batchSizeTrace);
+	const spine = createPublishSpine(
+		() => Promise.resolve(undefined),
+		undefined,
+		ns,
+	);
 	for (let i = 0; i < PUBLISH_BATCH_MAX; i++) spine.enqueueTrace(traceFrame());
 	await spine.drain();
-	expect(reasonDeltas(base)).toEqual({ full: 1, drain: 0, short: 0 });
-	// A saturated batch sizes exactly to the top finite boundary, so +Inf stays
-	// empty: that emptiness is the invariant, not an accident of this input.
-	const after = histBuckets(batchSizeTrace);
-	expect(
-		(after.get(PUBLISH_BATCH_MAX) ?? 0) -
-			(bucketsBefore.get(PUBLISH_BATCH_MAX) ?? 0),
-	).toBe(1);
-	expect((after.get(null) ?? 0) - (bucketsBefore.get(null) ?? 0)).toBe(0);
+	expect(reasonCounts(ns)).toEqual({ full: 1, drain: 0, short: 0 });
+	// One sample sized exactly to the cap. `sum` pins the value, which a
+	// cumulative bucket count cannot; a delta because the histogram is shared.
+	const sizeAfter = histShape(batchSizeTrace);
+	expect(sizeAfter.count - sizeBefore.count).toBe(1);
+	expect(sizeAfter.sum - sizeBefore.sum).toBe(PUBLISH_BATCH_MAX);
 });
 
 test("an ordinary partial batch flushes as reason=short, exclusively", async () => {
 	// `short` needs a take while the spine is still LIVE: drain() sets `ended`
 	// before the deferred first take, so an enqueue-then-drain batch is always
 	// `drain`. Await the send itself, then drain the (now empty) spine.
-	const base = reasonBaseline();
+	const ns = privateNamespace();
 	let sent!: () => void;
 	const firstSend = new Promise<void>((resolve) => {
 		sent = resolve;
 	});
-	const spine = createPublishSpine(async (frames) => {
-		for await (const _ of frames) {
-		}
-		sent();
-	});
+	const spine = createPublishSpine(
+		async (frames) => {
+			for await (const _ of frames) {
+			}
+			sent();
+		},
+		undefined,
+		ns,
+	);
 	spine.enqueueTrace(traceFrame());
 	spine.enqueueTrace(traceFrame());
 	await firstSend;
-	expect(reasonDeltas(base)).toEqual({ full: 0, drain: 0, short: 1 });
+	expect(reasonCounts(ns)).toEqual({ full: 0, drain: 0, short: 1 });
 	await spine.drain();
 });
 
 test("a batch taken after teardown began flushes as reason=drain, exclusively", async () => {
 	// enqueuePriority before drain(), but the pump's first take is deferred one
 	// scheduler yield — so drain() sets `ended` first and the take sees it.
-	const base = reasonBaseline();
-	const spine = createPublishSpine(() => Promise.resolve(undefined));
+	const ns = privateNamespace();
+	const spine = createPublishSpine(
+		() => Promise.resolve(undefined),
+		undefined,
+		ns,
+	);
 	spine.enqueuePriority(traceFrame());
 	await spine.drain();
-	expect(reasonDeltas(base)).toEqual({ full: 0, drain: 1, short: 0 });
+	expect(reasonCounts(ns)).toEqual({ full: 0, drain: 1, short: 0 });
 });
 
 test("a failed publish still counts its batch shape", async () => {
 	// The update sits immediately after the take, so shape is recorded per send
 	// ATTEMPT. Moving it after a successful publish would lose exactly the
 	// batches an operator most wants to size.
-	const base = reasonBaseline();
-	const sizeBefore = histCount(batchSizeTrace);
-	const spine = createPublishSpine(() => Promise.reject(new Error("boom")));
+	const ns = privateNamespace();
+	const sizeBefore = histShape(batchSizeTrace);
+	const spine = createPublishSpine(
+		() => Promise.reject(new Error("boom")),
+		undefined,
+		ns,
+	);
 	spine.enqueueTrace(traceFrame());
 	await spine.drain();
-	expect(reasonDeltas(base)).toEqual({ full: 0, drain: 1, short: 0 });
-	expect(histCount(batchSizeTrace) - sizeBefore).toBe(1);
+	expect(reasonCounts(ns)).toEqual({ full: 0, drain: 1, short: 0 });
+	expect(histShape(batchSizeTrace).count - sizeBefore.count).toBe(1);
 });
 
 test("batch_size tags the lane a batch was composed from", async () => {
 	// priorityCount is fixed before trace frames are appended, so a batch holding
 	// both is `mixed`. Separate spines keep the pure-lane batches from coalescing
-	// into one mixed take.
-	const priorityBefore = histBuckets(batchSizePriority);
-	const traceBefore = histBuckets(batchSizeTrace);
-	const mixedBefore = histBuckets(batchSizeMixed);
+	// into one mixed take; one shared namespace keeps all three lanes readable.
+	const ns = privateNamespace();
+	const priorityBefore = histShape(batchSizePriority);
+	const traceBefore = histShape(batchSizeTrace);
+	const mixedBefore = histShape(batchSizeMixed);
+	const spineOn = () =>
+		createPublishSpine(() => Promise.resolve(undefined), undefined, ns);
 
-	const prioritySpine = createPublishSpine(() => Promise.resolve(undefined));
+	const prioritySpine = spineOn();
 	prioritySpine.enqueuePriority(traceFrame());
 	await prioritySpine.drain();
 
-	const traceSpine = createPublishSpine(() => Promise.resolve(undefined));
-	traceSpine.enqueueTrace(traceFrame());
-	traceSpine.enqueueTrace(traceFrame());
+	const traceSpine = spineOn();
+	for (let i = 0; i < 2; i++) traceSpine.enqueueTrace(traceFrame());
 	await traceSpine.drain();
 
-	const mixedSpine = createPublishSpine(() => Promise.resolve(undefined));
+	const mixedSpine = spineOn();
 	mixedSpine.enqueuePriority(traceFrame());
-	mixedSpine.enqueueTrace(traceFrame());
+	for (let i = 0; i < 2; i++) mixedSpine.enqueueTrace(traceFrame());
 	await mixedSpine.drain();
 
-	// Bucket-level, so swapping two lane tags cannot pass: each lane's sample
-	// carries a different batch size (1, 2, 2-mixed) recorded against its own tag.
-	const delta = (
-		before: Map<number | null, number>,
-		after: Map<number | null, number>,
-		bound: number,
-	) => (after.get(bound) ?? 0) - (before.get(bound) ?? 0);
-	expect(delta(priorityBefore, histBuckets(batchSizePriority), 1)).toBe(1);
-	expect(delta(traceBefore, histBuckets(batchSizeTrace), 2)).toBe(1);
-	expect(delta(mixedBefore, histBuckets(batchSizeMixed), 2)).toBe(1);
+	// Each lane gets a DISTINCT size (1, 2, 3), so swapping any two lane tags
+	// moves a sum and fails. Equal sizes, or a cumulative bucket count, would
+	// let a swap pass.
+	expect(histShape(batchSizePriority).sum - priorityBefore.sum).toBe(1);
+	expect(histShape(batchSizeTrace).sum - traceBefore.sum).toBe(2);
+	expect(histShape(batchSizeMixed).sum - mixedBefore.sum).toBe(3);
 });

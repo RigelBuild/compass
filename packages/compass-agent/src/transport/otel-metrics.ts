@@ -1,7 +1,7 @@
 // Module-private OTel metric constants for the two OUTBOUND transport modules — the
 // publish spine and the durable frame sink. Decision 2 of the compass-agent-effect-otel
-// design (the metric table) owns these names, Decision 2a the two flush-shape rows;
-// the control.* rows live in O3.
+// design (the metric table) owns these names, and Decision 2a owns the two flush-shape
+// rows; the control.* rows live in O3.
 
 // `Metric` is from core `effect` (already a dependency). A Metric.counter/gauge value is
 // a cheap module-level constant: with no OTel provider it no-ops into Effect's in-memory
@@ -45,30 +45,31 @@ export const priorityBatchRetries = Metric.counter(
 
 // Flush shape: why each cycled batch was sent, and how big it was. `reason` and
 // `lane` are both static sets, so both are pre-tagged like trace_frames_lost.
-const batchesFlushed = Metric.counter(
-	"compass_agent.transport.publish.batches_flushed",
-	{ incremental: true },
-);
-export const batchesFlushedFull = Metric.tagged(
-	batchesFlushed,
-	"reason",
-	"full",
-);
-export const batchesFlushedDrain = Metric.tagged(
-	batchesFlushed,
-	"reason",
-	"drain",
-);
-export const batchesFlushedShort = Metric.tagged(
-	batchesFlushed,
-	"reason",
-	"short",
-);
+// Namespaced like the gauges below, for a different reason: a test asserting a
+// reason is EXCLUSIVE needs the two non-selected counters to read exactly zero,
+// which a concurrent sibling's flush on the shared key breaks. Production passes
+// no prefix.
+export const batchesFlushedBy = (
+	namespace = "",
+): Record<"full" | "drain" | "short", Metric.Metric.Counter<number>> => {
+	const base = Metric.counter(
+		`${namespace}compass_agent.transport.publish.batches_flushed`,
+		{ incremental: true },
+	);
+	return {
+		full: Metric.tagged(base, "reason", "full"),
+		drain: Metric.tagged(base, "reason", "drain"),
+		short: Metric.tagged(base, "reason", "short"),
+	};
+};
 
 // Batch size, bucketed by powers of two. The value is bounded 1..PUBLISH_BATCH_MAX,
 // so the top boundary lands on saturation and the +Inf bucket stays empty — a free
 // invariant check. `lane` separates a healthy one-at-a-time ack stream from trace
 // coalescing genuinely failing, which share the same tiny-batch signature.
+// Not namespaced like the counters above: a histogram rebuilt from the same name
+// is a DISTINCT instrument (it carries its boundaries), so a factory would read
+// an empty copy rather than the recorded one. Tests read it as a delta instead.
 const batchSize = Metric.histogram(
 	"compass_agent.transport.publish.batch_size",
 	MetricBoundaries.exponential({ start: 1, factor: 2, count: 10 }),
