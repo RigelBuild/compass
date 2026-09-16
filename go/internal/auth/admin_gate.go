@@ -112,13 +112,11 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.SecretsServiceDeleteSecretProcedure:
 		return authenticatedOpen{}, true
 
-	// The SERVER-secret RPCs are ADMIN-only, unlike their user-facing siblings. They
-	// read/write the separate server_secrets registry, whose rows are deployment-owned
-	// with no per-account authorization to fall back on, so the door gate IS the
-	// authorization. The LIST is gated as tightly as the writes.
-	case compassv1connect.SecretsServiceSetServerSecretProcedure,
-		compassv1connect.SecretsServiceDeleteServerSecretProcedure,
-		compassv1connect.SecretsServiceListServerSecretsProcedure:
+	// ListServerSecrets is ADMIN-only: the declared server-secret names are the
+	// deployment's own inventory (forge App PEMs, webhook secrets, the gateway
+	// master-key family), not something an agent token has any business
+	// enumerating.
+	case compassv1connect.SecretsServiceListServerSecretsProcedure:
 		return adminOnly{}, true
 
 	default:
