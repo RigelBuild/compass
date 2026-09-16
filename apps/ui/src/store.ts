@@ -28,6 +28,7 @@ import type {
 	Message,
 	Topic,
 } from "./comms-stub";
+import { isQuestionAnswered } from "./comms-stub";
 import {
 	type ActivityBarItem,
 	fleetItemForAgent,
@@ -450,6 +451,17 @@ export interface AppStore {
 		askId: string,
 		questionId: string,
 		optionId: string,
+	) => void;
+	/** Record the free-text answer to a question, LOCALLY — like every
+	 *  recorder, it never sends; re-typing replaces the draft until the
+	 *  explicit submit. No-op on a single-select question already settled by a
+	 *  chosen option (exclusivity), an unknown message/ask/question, a
+	 *  submitted ask, and a CLOSED (`answered`) ask. */
+	answerAskText: (
+		messageId: string,
+		askId: string,
+		questionId: string,
+		text: string,
 	) => void;
 	/** The ONE send path. Issues the ask's single `RespondToAsk` with the
 	 *  answers recorded so far and an empty `chosenOptionIds` for every skipped
@@ -1257,7 +1269,21 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				? q.chosenOptionIds.filter((id) => id !== optionId)
 				: [...q.chosenOptionIds, optionId]
 			: [optionId];
-		return { ...q, chosenOptionIds: chosen };
+		// A single-select pick settles the question, so it clears any staged draft:
+		// the server rejects an option plus custom text on a non-multi question.
+		return q.allowMultiple
+			? { ...q, chosenOptionIds: chosen }
+			: { ...q, chosenOptionIds: chosen, customText: "" };
+	};
+	// Record free text, or return the SAME question when it changes nothing: a
+	// single-select already settled by a pick (exclusivity), or an unchanged draft.
+	const answerQuestionText = (
+		q: Ask["questions"][number],
+		text: string,
+	): Ask["questions"][number] => {
+		if (!q.allowMultiple && q.chosenOptionIds.length > 0) return q;
+		if (text === q.customText) return q;
+		return { ...q, customText: text };
 	};
 	// Whether an ask has had its ONE RespondToAsk issued. Reactive so the render can
 	// lock a submitted ask, and the guard against issuing a second respond (server
@@ -1328,7 +1354,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			for (const b of msg.blocks) {
 				if (b.kind !== "ask") continue;
 				if (isAskSubmitted(b.ask.askId)) continue;
-				if (b.ask.questions.every((q) => q.chosenOptionIds.length === 0))
+				if (
+					b.ask.questions.every(
+						(q) => q.chosenOptionIds.length === 0 && q.customText === "",
+					)
+				)
 					continue;
 				const byAsk = local.get(msg.id) ?? new Map<string, Ask>();
 				byAsk.set(b.ask.askId, b.ask);
@@ -1390,6 +1420,12 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				answers: ask.questions.map((q) => ({
 					questionId: q.questionId,
 					chosenOptionIds: [...q.chosenOptionIds],
+					// A single-select holding an option ships no text: the server rejects
+					// the pair. Trim here, at the audit seam — the staged draft stays raw.
+					customText:
+						!q.allowMultiple && q.chosenOptionIds.length > 0
+							? ""
+							: q.customText.trim(),
 				})),
 			})
 			.catch((error) => {
@@ -1418,14 +1454,14 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 				options.onCommsError?.(error);
 			});
 	};
-	const answerAsk = (
+	// Apply a question reducer to one ask, LOCALLY. Both recorders share this: a
+	// gate that lived in only one of them would be a hole in the other.
+	const recordAnswer = (
 		messageId: string,
 		askId: string,
 		questionId: string,
-		optionId: string,
+		reduce: (q: Ask["questions"][number]) => Ask["questions"][number],
 	) => {
-		// A submitted ask is settled on the wire: recording a further click would
-		// put the UI back into the exact lying state the gate removes.
 		if (isAskSubmitted(askId)) return;
 		// The ask AFTER the local edit; stays undefined when the coordinates miss
 		// or the answer is rejected.
@@ -1441,11 +1477,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 						const ask = b.ask;
 						// The other way an ask is settled, invisible to the submitted mark:
 						// the server burns an ask on the first ACCEPTED respond and refuses
-						// later ones with ErrConflict. An `answered` ask is closed no matter
-						// who closed it, so recording a click here could only ship a doomed RPC.
+						// later ones with ErrConflict, so recording here could only ship a
+						// doomed RPC — whoever closed it.
 						if (ask.answered) return b;
 						const questions = ask.questions.map((q) =>
-							q.questionId === questionId ? answerQuestion(q, optionId) : q,
+							q.questionId === questionId ? reduce(q) : q,
 						);
 						// Reference-identical questions ⇒ the answer was rejected (or the
 						// questionId named no question): leave the block untouched.
@@ -1462,6 +1498,26 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// Recording is LOCAL, always: the server takes exactly one respond per
 		// ask, forever, and only the explicit submit (`submitAsk`) ever sends one.
 	};
+	const answerAsk = (
+		messageId: string,
+		askId: string,
+		questionId: string,
+		optionId: string,
+	) => {
+		recordAnswer(messageId, askId, questionId, (q) =>
+			answerQuestion(q, optionId),
+		);
+	};
+	const answerAskText = (
+		messageId: string,
+		askId: string,
+		questionId: string,
+		text: string,
+	) => {
+		recordAnswer(messageId, askId, questionId, (q) =>
+			answerQuestionText(q, text),
+		);
+	};
 	// The ONE send path. Answers accumulate locally — clicks and typed text
 	// alike — and this explicit gesture ships them atomically, with an empty
 	// answer for each skipped question. Inert on a submitted, CLOSED, unknown,
@@ -1474,9 +1530,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// is refused with ErrConflict. The submitted mark does not cover this — the ask
 		// can arrive closed on a push, or be closed by another participant.
 		if (ask.answered) return;
-		// "Nothing staged" is a question about the LOCAL record, so it scans the chosen
-		// ids rather than the server's `answered` flag: this ask has never been shipped.
-		if (ask.questions.every((q) => q.chosenOptionIds.length === 0)) return;
+		// "Nothing staged" is a question about the LOCAL record: a wholly blank respond
+		// says nothing, so it stays inert. Typed text counts as an answer here too.
+		if (!ask.questions.some(isQuestionAnswered)) return;
 		// Nothing was recorded by this call, so a refusal leaves the local record
 		// as the user staged it — still honest, unsent, retryable.
 		sendAsk(messageId, ask);
@@ -1879,6 +1935,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		joinChannel,
 		toggleSubscribe,
 		answerAsk,
+		answerAskText,
 		submitAsk,
 		isAskSubmitted,
 		askError,

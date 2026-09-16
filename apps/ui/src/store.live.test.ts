@@ -95,6 +95,22 @@ const chosenIn = (
 	}
 	return undefined;
 };
+// The staged custom text of one question — the public observation of what the
+// local free-text draft holds.
+const customTextIn = (
+	store: AppStore,
+	messageId: string,
+	askId: string,
+	questionId: string,
+): string | undefined => {
+	const msg = store.messages().find((m) => m.id === messageId);
+	for (const b of msg?.blocks ?? []) {
+		if (b.kind !== "ask" || b.ask.askId !== askId) continue;
+		const q = b.ask.questions.find((q) => q.questionId === questionId);
+		if (q) return q.customText;
+	}
+	return undefined;
+};
 
 /** Build a live store over the fake inside a reactive root, run the async body,
  *  then close the stream and dispose. The store's stream boot is async (the
@@ -356,8 +372,8 @@ describe("store live write path", () => {
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: ["q-2-b"] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-b"], customText: "" },
 					],
 				},
 			]);
@@ -386,7 +402,13 @@ describe("store live write path", () => {
 			expect(fake.askResponses).toEqual([
 				{
 					askId: "ask-one",
-					answers: [{ questionId: "q-only", chosenOptionIds: ["q-only-a"] }],
+					answers: [
+						{
+							questionId: "q-only",
+							chosenOptionIds: ["q-only-a"],
+							customText: "",
+						},
+					],
 				},
 			]);
 		});
@@ -419,8 +441,8 @@ describe("store live write path", () => {
 				{
 					askId: "ask-1",
 					answers: [
-						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
-						{ questionId: "q-2", chosenOptionIds: [] },
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{ questionId: "q-2", chosenOptionIds: [], customText: "" },
 					],
 				},
 			]);
@@ -502,7 +524,13 @@ describe("store live write path", () => {
 				expect(fake.askResponses).toEqual([
 					{
 						askId: "ask-one",
-						answers: [{ questionId: "q-only", chosenOptionIds: ["q-only-a"] }],
+						answers: [
+							{
+								questionId: "q-only",
+								chosenOptionIds: ["q-only-a"],
+								customText: "",
+							},
+						],
 					},
 				]);
 			},
@@ -626,6 +654,230 @@ describe("store live write path", () => {
 			store.submitAsk("m-ask", "ask-1");
 			await settled();
 			expect(fake.askResponses).toEqual([]);
+		});
+	});
+
+	// The design's central safety claim: typing that COMPLETES an ask still
+	// sends nothing; only submitAsk ships, carrying the trimmed text. Mutation-
+	// check: a text recorder that sent reddens the empty leg; dropping the trim
+	// at the seam reddens the shipped value.
+	test("typing that completes an ask sends nothing; submitAsk ships the trimmed text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					wireAskMessage({
+						id: "m-ask",
+						topicId: TOPIC,
+						authorAccountId: CALLER,
+						askId: "ask-1",
+						questionIds: ["q-1", "q-free"],
+						freeText: ["q-free"],
+					}),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-free", "  ship it  ");
+			await settled();
+			// The ask is now complete, yet recording never reaches the wire.
+			expect(fake.askResponses).toEqual([]);
+
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses).toEqual([
+				{
+					askId: "ask-1",
+					answers: [
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+						{
+							questionId: "q-free",
+							chosenOptionIds: [],
+							customText: "ship it",
+						},
+					],
+				},
+			]);
+		});
+	});
+
+	// Whitespace-only text is a skip: the trim seam ships customText "", the
+	// accepted-skip shape. Mutation-check: shipping the raw draft reddens the
+	// empty customText.
+	test("whitespace-only typed text ships as an empty custom text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					wireAskMessage({
+						id: "m-ask",
+						topicId: TOPIC,
+						authorAccountId: CALLER,
+						askId: "ask-1",
+						questionIds: ["q-1", "q-free"],
+						freeText: ["q-free"],
+					}),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			store.answerAskText("m-ask", "ask-1", "q-free", "   ");
+			await settled();
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses[0].answers).toEqual([
+				{ questionId: "q-1", chosenOptionIds: ["q-1-a"], customText: "" },
+				{ questionId: "q-free", chosenOptionIds: [], customText: "" },
+			]);
+		});
+	});
+
+	// Single-select exclusivity, both directions. A pick clears any staged
+	// draft, so submit ships the id with customText ""; and once picked, a later
+	// answerAskText is a no-op. The pair (id + non-empty text) is what the server
+	// refuses, burning the one respond. Mutation-check: dropping the click-side
+	// clear reddens the cleared-draft leg; dropping the text-side gate reddens the
+	// no-op leg.
+	test("a single-select pick clears the draft, and text after a pick is a no-op", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [askMessage("m-ask", "ask-1")],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// Type a draft on the single-select q-1, then pick an option.
+			store.answerAskText("m-ask", "ask-1", "q-1", "my own answer");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe(
+				"my own answer",
+			);
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			// The pick cleared the draft — the staged state never holds both.
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe("");
+			expect(chosenIn(store, "m-ask", "ask-1", "q-1")).toEqual(["q-1-a"]);
+
+			// The other direction: text after the pick is refused.
+			store.answerAskText("m-ask", "ask-1", "q-1", "sneak it back");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe("");
+
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses[0].answers[0]).toEqual({
+				questionId: "q-1",
+				chosenOptionIds: ["q-1-a"],
+				customText: "",
+			});
+		});
+	});
+
+	// allowMultiple carries both: an option and typed text coexist and ship
+	// together in one answer entry, which the server accepts. Mutation-check: a
+	// send seam that blanked text whenever an option was present reddens the
+	// carries-both leg.
+	test("a multi-select ships both the chosen id and the trimmed text", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					wireAskMessage({
+						id: "m-ask",
+						topicId: TOPIC,
+						authorAccountId: CALLER,
+						askId: "ask-1",
+						questionIds: ["q-multi"],
+						multi: ["q-multi"],
+					}),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-multi", "q-multi-a");
+			store.answerAskText("m-ask", "ask-1", "q-multi", "  and this  ");
+			await settled();
+			// Both survive on the staged copy — the toggle did not clear the text.
+			expect(chosenIn(store, "m-ask", "ask-1", "q-multi")).toEqual([
+				"q-multi-a",
+			]);
+			expect(customTextIn(store, "m-ask", "ask-1", "q-multi")).toBe(
+				"  and this  ",
+			);
+
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(fake.askResponses[0].answers[0]).toEqual({
+				questionId: "q-multi",
+				chosenOptionIds: ["q-multi-a"],
+				customText: "and this",
+			});
+		});
+	});
+
+	// answerAskText no-op gates, beside the answerAsk gate coverage: a settled
+	// single-select (a chosen option already answered it), a submitted ask, and a
+	// server-closed ask each refuse a recorded draft. Mutation-check: dropping any
+	// gate lets the matching leg record text.
+	test("answerAskText no-ops on a settled, submitted, or closed ask", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					askMessage("m-ask", "ask-1"),
+					singleQuestionAskMessage("m-one", "ask-one"),
+				],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// (a) settled single-select: a pick answered q-1, so text is refused.
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			store.answerAskText("m-ask", "ask-1", "q-1", "too late");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-1")).toBe("");
+
+			// (b) submitted ask: q-2 has no pick, but the ask is in flight.
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+			expect(store.isAskSubmitted("ask-1")).toBe(true);
+			store.answerAskText("m-ask", "ask-1", "q-2", "after submit");
+			await settled();
+			expect(customTextIn(store, "m-ask", "ask-1", "q-2")).toBe("");
+
+			// (c) server-closed ask: a push closes ask-one, so text is refused.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: wireAskMessage({
+							id: "m-one",
+							topicId: TOPIC,
+							authorAccountId: CALLER,
+							askId: "ask-one",
+							questionIds: ["q-only"],
+							answered: true,
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+			store.answerAskText("m-one", "ask-one", "q-only", "closed");
+			await settled();
+			expect(customTextIn(store, "m-one", "ask-one", "q-only")).toBe("");
 		});
 	});
 });
