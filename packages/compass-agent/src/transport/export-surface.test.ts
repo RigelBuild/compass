@@ -47,6 +47,7 @@ const PKG_ROOT = resolve(import.meta.dir, "..", "..");
 const FORBIDDEN =
 	/[/\\]node_modules[/\\](effect|@effect[/\\]opentelemetry|@opentelemetry[/\\])/;
 
+// biome-ignore lint/plugin: 130s is a deliberate slow-body budget (RIG-3784), not a crash guard: a correct tsc --emitDeclarationOnly emit runs ~5s local but 45-68s on a contended runner (~9-14x), and the sync spawnSync has no intermediate signal to event-gate on. See the tail comment for the near-floor measurement.
 test("the package public type surface carries no effect/@effect/opentelemetry/@opentelemetry type", () => {
 	// Emit signature-only declarations into a temp dir under the package root.
 	// node/tsc bundler resolution probes `<ancestor>/node_modules` at each

@@ -501,6 +501,7 @@ function probeFixture(): { home: string; mount: string; cwd: string } {
 }
 
 describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-frozen)", () => {
+	// biome-ignore lint/plugin: 130s crash-guards a hung probe subprocess (RIG-3455); runProbe event-gates on proc.exited, and 0 is unavailable in a file with lifecycle hooks (falls back to 5s) — see the inline note below.
 	test("with the agents symlink in place, discoverAgents finds the mounted subagent", async () => {
 		const { home, mount, cwd } = probeFixture();
 		writeMember(
@@ -531,6 +532,7 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 
 	// The remove path, end-to-end: an unconfigured mount leaves nothing for
 	// discovery to find (no dangling link, no stale content).
+	// biome-ignore lint/plugin: 130s crash-guards a hung probe subprocess (RIG-3455); runProbe event-gates on proc.exited — see the sibling test above.
 	test("an unconfigured mount leaves the SDK discovering no fleet subagent", async () => {
 		const { home, mount, cwd } = probeFixture();
 		mkdirSync(join(mount, "current"), { recursive: true });
