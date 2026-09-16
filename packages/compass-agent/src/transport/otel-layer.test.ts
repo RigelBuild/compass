@@ -80,6 +80,7 @@ test("a runtime built with the merged OTel layer runs withSpan + Metric and disp
 // exporter drops that signal's POST, so its awaited promise hangs the test to a
 // deadline failure. The explicit per-test timeout is the framework deadline that
 // turns a broken/absent export into a bounded failure rather than a hang.
+// biome-ignore lint/plugin: 15s is the framework deadline turning an absent/broken OTLP export into a bounded failure; the pass event-gates on the collector's traces+metrics POSTs, not the clock.
 test("with an endpoint set, the layer exports a span and a metric over OTLP and flushes on dispose", async () => {
 	const seen = new Set<string>();
 	let resolveTraces!: () => void;
