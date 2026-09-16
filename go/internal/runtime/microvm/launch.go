@@ -262,7 +262,7 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	for _, c := range waiting {
 		if c.hasExited() {
 			return nil, fmt.Errorf("microvm: %w",
-				deathError(c, "cloud-hypervisor was started"))
+				deathError(c, phaseVMMStart))
 		}
 	}
 
@@ -511,7 +511,7 @@ func waitForSockets(ctx context.Context, paths []string, waiting []*child, timeo
 		// readiness, so this check precedes the Stat sweep.
 		for _, c := range waiting {
 			if c.hasExited() {
-				return deathError(c, "its socket was serving")
+				return deathError(c, phaseSocket)
 			}
 		}
 		missing := ""
@@ -673,12 +673,28 @@ func deathCause(c *child) string {
 	return c.waitErr.Error()
 }
 
+// startupPhase names what a child failed to reach before it died. It is a
+// named type with a fixed set of values so the guard test enumerates the same
+// phases the callers pass, instead of hand-copied literals that can drift into
+// covering wording production no longer emits.
+type startupPhase string
+
+const (
+	phaseVMMStart startupPhase = "cloud-hypervisor was started"
+	phaseSocket   startupPhase = "its socket was serving"
+	phasePidfile  startupPhase = "its pidfile could be recorded"
+)
+
+// allStartupPhases is every phase deathError is called with. The guard test
+// ranges over it, so a new phase is covered without touching the test.
+var allStartupPhases = []startupPhase{phaseVMMStart, phaseSocket, phasePidfile}
+
 // deathError builds the error a startup site reports when a child it was
 // waiting on has already exited. Every such site goes through here so the
 // death cause cannot regress at one site while another stays guarded: the
 // %!w(<nil>) defect this replaced existed at three sites because each built
-// its own message. phase names what the child failed to reach.
-func deathError(c *child, phase string) error {
+// its own message.
+func deathError(c *child, phase startupPhase) error {
 	return fmt.Errorf("%s exited before %s: %s; log tail:\n%s",
 		c.name, phase, deathCause(c), tailFile(c.logPath))
 }
@@ -846,7 +862,7 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 func pidfileWriteError(c *child, err error) error {
 	if procReadMeansGone(err) && c.hasExited() {
 		return fmt.Errorf("microvm: %w",
-			deathError(c, "its pidfile could be recorded"))
+			deathError(c, phasePidfile))
 	}
 	return fmt.Errorf("microvm: recording %s pidfile: %w", c.name, err)
 }

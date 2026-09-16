@@ -253,14 +253,8 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 // because name-and-log-tail assertions straddle the slot without binding it.
 // Every site now routes through deathError, so this covers them together.
 func TestDeathErrorReportsTheCauseForEveryStartupPhase(t *testing.T) {
-	// Every phase string deathError is called with in launch.go.
-	phases := []string{
-		"cloud-hypervisor was started",
-		"its socket was serving",
-		"its pidfile could be recorded",
-	}
-	for _, phase := range phases {
-		t.Run(phase, func(t *testing.T) {
+	for _, phase := range allStartupPhases {
+		t.Run(string(phase), func(t *testing.T) {
 			dir := t.TempDir()
 			const diagnostic = "Couldn't setup id mappings: newgidmap failed"
 			c := &child{
@@ -283,7 +277,7 @@ func TestDeathErrorReportsTheCauseForEveryStartupPhase(t *testing.T) {
 				t.Errorf("error %q does not report the daemon's exit status; an operator cannot "+
 					"tell a non-zero exit from a clean one", got)
 			}
-			if !strings.Contains(got, "virtiofsd") || !strings.Contains(got, phase) {
+			if !strings.Contains(got, "virtiofsd") || !strings.Contains(got, string(phase)) {
 				t.Errorf("error %q does not name the daemon and the phase it failed to reach", got)
 			}
 			if !strings.Contains(got, diagnostic) {
