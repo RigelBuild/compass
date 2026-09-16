@@ -349,8 +349,8 @@ vs an 18px integer-multiple — is resolved: 9px is the intended shipped size.
 ## Glyphs
 
 - **Classes:** none of its own — the `<Glyph name>` primitive renders a bare
-  inline SVG that the consuming control positions and colors. Adopted first by
-  the right-sidebar activity bar (`.r-tab .r-tab-icon[data-kind="glyph"]`).
+  inline SVG that the consuming control positions and colors. The glyph owns
+  its bitmap and its 11×11 box; the consumer owns placement and color.
 - **Geometry:** an 11×11 1-bit bitmap grid, `shape-rendering="crispEdges"` (no
   anti-aliasing); one `<rect width="1" height="1">` per lit cell, filled on
   `currentColor` so the consumer's color flows through. 11×11 (not the state
@@ -359,9 +359,11 @@ vs an 18px integer-multiple — is resolved: 9px is the intended shipped size.
   `role="img"` and no `aria-label`. A name-bearing label belongs on the
   consuming control, never on the glyph (this is the deliberate difference from
   the axis badge, whose glyph carries status meaning).
-- **Names:** the closed set is `status | files | vcs | pr` — the four static
-  activity-bar tabs. The set grows semantic names (never character names) as
-  the chrome audit converts further sites.
+- **Names:** a closed set of 23 semantic names, exported as `GLYPH_NAMES` and
+  derived from the `GLYPH_CELLS` table itself. Names describe what the mark
+  means, never the character it replaced (`disclosure`, not `caret`), so one
+  grid can serve several sites — `disclosure` is also the log-panel toggle,
+  rotated in CSS. A new site reuses an existing name before adding a grid.
 
 ### The four canonical glyph grids (11×11)
 
@@ -433,7 +435,7 @@ diverging to a top-right node:
 ...........
 ```
 
-### T5b glyph grids (RightSidebar + AgentView, 11×11)
+### Glyph grids — RightSidebar + AgentView (11×11)
 
 `cross` — a bold ballot X (replaces `✗`, the changes-requested verdict mark):
 
@@ -515,7 +517,7 @@ diverging to a top-right node:
 ...........
 ```
 
-### T5a glyph grids (LeftSidebar + App, 11×11)
+### Glyph grids — LeftSidebar + App (11×11)
 
 `disclosure` — a right-pointing triangle (replaces `▸`, the closed disclosure
 caret; CSS rotates it 90° open):
@@ -729,7 +731,7 @@ toggle-right-sidebar control):
 ...........
 ```
 
-### T5c glyph grid (LogPanel, 11×11)
+### Glyph grid — LogPanel (11×11)
 
 `stop` — a filled square halt mark (replaces `■`, the log-panel Stop control):
 
@@ -747,7 +749,7 @@ toggle-right-sidebar control):
 ...........
 ```
 
-### Chrome conversion audit (T5a + T5b)
+### Chrome conversion audit — sidebars, App and AgentView
 
 Every chrome site converted from a character to a `<Glyph>`, with the
 accessibility decision each one forced. `<Glyph>` is always `aria-hidden`, so a
@@ -795,7 +797,7 @@ The two name-bearing rows are the hazard this table exists to catch: a bare
 `✓`/`✗` verdict mark reads as nothing once the glyph is hidden, so those sites
 carry the verdict word on the wrapper. `RightSidebar.prpane.test.tsx` pins that.
 
-### Chrome conversion audit (T5c)
+### Chrome conversion audit — Bridge, Backlog, Settings, LogPanel and UsageBar
 
 The final chrome-pictograph slice: the remaining characters no brand face
 covers (`■ ⟩ ⟨ ⎇ ⌗ ▸`) and the `→` style calls. All converted sites below are
@@ -808,8 +810,8 @@ covers (`■ ⟩ ⟨ ⎇ ⌗ ▸`) and the `→` style calls. All converted site
 | `LogPanel` minimize toggle | `⟩` `⟨` | `disclosure` (CSS rotates 180°) |
 | `UsageBar` branch mark | `⎇` | `vcs` |
 
-Only `stop` is a new bitmap; the rest reuse existing glyphs. The minimize
-toggle is the two-state case (record T5c brief §2): both states are the one
+Only `stop` is a new bitmap; the rest reuse existing glyphs. The `LogPanel`
+minimize toggle is the two-state case: both states are the one
 `disclosure` glyph, rotated by CSS — `⟩` open, `⟨` (180°) minimized — so the
 pair can never misalign the way two separate characters could.
 
