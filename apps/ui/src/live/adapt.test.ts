@@ -650,6 +650,49 @@ describe("adaptAsk", () => {
 		);
 		expect(r.questions[0]?.options).toEqual([]);
 	});
+
+	test("maps the widened wire shape: header, recommended, customText, preview", () => {
+		const r = adaptAsk(
+			create(AskSchema, {
+				askId: "ask-4",
+				questions: [
+					create(AskQuestionSchema, {
+						questionId: "q-1",
+						question: "Which lane?",
+						header: "Routing",
+						recommended: 1,
+						customText: "the typed answer",
+						options: [
+							create(AskOptionSchema, {
+								id: "o-a",
+								label: "A",
+								preview: "a preview",
+							}),
+							create(AskOptionSchema, { id: "o-b", label: "B" }),
+						],
+					}),
+					create(AskQuestionSchema, {
+						questionId: "q-2",
+						question: "Free?",
+					}),
+				],
+			}),
+		);
+		const [q1, q2] = r.questions;
+		// header + customText carry verbatim, non-empty and empty alike.
+		expect(q1?.header).toBe("Routing");
+		expect(q1?.customText).toBe("the typed answer");
+		expect(q2?.header).toBe("");
+		expect(q2?.customText).toBe("");
+		// recommended survives present and unset — undefined must not become 0.
+		expect(q1?.recommended).toBe(1);
+		expect(q2?.recommended).toBeUndefined();
+		// preview follows the empty-string→absent convention description uses.
+		const opts = q1?.options ?? [];
+		expect(opts[0]?.preview).toBe("a preview");
+		expect(opts[1]?.preview).toBeUndefined();
+		expect(opts[1]?.preview).not.toBe("");
+	});
 });
 
 describe("adaptMessage", () => {
