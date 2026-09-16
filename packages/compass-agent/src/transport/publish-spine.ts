@@ -154,6 +154,10 @@ export function createPublishSpine(
 	// needs the split to treat a failed batch's priority frames (never-drop)
 	// differently from its trace frames (loss-tolerable).
 	const takeBatch = Effect.gen(function* () {
+		// Snapshot the teardown flag FIRST: the trace drain below yields, and
+		// drain() can set `ended` inside that window, which would misclassify a
+		// batch taken while the spine was still live as a drain batch.
+		const takenAfterTeardown = ended;
 		const batch: PublishFrameRequest[] = [];
 		while (batch.length < PUBLISH_BATCH_MAX && priority.length > 0) {
 			// biome-ignore lint/style/noNonNullAssertion: length checked
@@ -169,7 +173,7 @@ export function createPublishSpine(
 			const traceFrames = yield* Queue.takeUpTo(traceQ, room);
 			for (const frame of traceFrames) batch.push(frame);
 		}
-		return { batch, priorityCount };
+		return { batch, priorityCount, takenAfterTeardown };
 	});
 
 	// The pump: drain the lanes one cycled stream at a time. Each iteration opens a fresh
@@ -194,14 +198,14 @@ export function createPublishSpine(
 				yield* Queue.take(wake);
 			}
 			if (ended && priority.length === 0 && traceSize() === 0) return;
-			const { batch, priorityCount } = yield* takeBatch;
-			// Flush shape, classified in the same tick as the take. `drain` means
-			// taken after teardown began, so a full batch during teardown still
-			// reads `full` — saturation is the more specific fact.
+			const { batch, priorityCount, takenAfterTeardown } = yield* takeBatch;
+			// Flush shape, classified on the flag as it stood AT the take. `drain`
+			// means taken after teardown began, so a full batch during teardown
+			// still reads `full` — saturation is the more specific fact.
 			yield* Metric.increment(
 				batch.length === PUBLISH_BATCH_MAX
 					? batchesFlushed.full
-					: ended
+					: takenAfterTeardown
 						? batchesFlushed.drain
 						: batchesFlushed.short,
 			);
