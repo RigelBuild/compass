@@ -2,6 +2,7 @@ import { type Component, Show } from "solid-js";
 import { useStore } from "../context";
 import { foldSession } from "../session-events";
 import type { Agent } from "../stub-data";
+import { Glyph } from "./Glyph";
 import { SessionTrace } from "./SessionTrace";
 
 /** The trace observation pane: the selected agent's typed execution trace. The
@@ -82,7 +83,10 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 						}
 						onClick={() => void store.stopAgent()}
 					>
-						■ stop
+						<span class="obs-stop-glyph" aria-hidden="true">
+							<Glyph name="stop" />
+						</span>{" "}
+						stop
 					</button>
 				</Show>
 				{/* A refused stop (a server with no RunnerHub answers `Unavailable`,
@@ -104,7 +108,12 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 					title={store.logOpen() ? "Minimize log panel" : "Expand log panel"}
 					onClick={() => store.toggleLog()}
 				>
-					{store.logOpen() ? "⟩" : "⟨"}
+					<span
+						class={["obs-min-glyph", { open: store.logOpen() }]}
+						aria-hidden="true"
+					>
+						<Glyph name="disclosure" />
+					</span>
 				</button>
 			</div>
 			<Show when={store.logOpen()}>

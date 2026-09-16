@@ -729,6 +729,24 @@ toggle-right-sidebar control):
 ...........
 ```
 
+### T5c glyph grid (LogPanel, 11×11)
+
+`stop` — a filled square halt mark (replaces `■`, the log-panel Stop control):
+
+```text
+...........
+...........
+..#######..
+..#######..
+..#######..
+..#######..
+..#######..
+..#######..
+..#######..
+...........
+...........
+```
+
 ### Chrome conversion audit (T5a + T5b)
 
 Every chrome site converted from a character to a `<Glyph>`, with the
@@ -776,6 +794,38 @@ Kept as text, covered by the brand face — not conversions:
 The two name-bearing rows are the hazard this table exists to catch: a bare
 `✓`/`✗` verdict mark reads as nothing once the glyph is hidden, so those sites
 carry the verdict word on the wrapper. `RightSidebar.prpane.test.tsx` pins that.
+
+### Chrome conversion audit (T5c)
+
+The final chrome-pictograph slice: the remaining characters no brand face
+covers (`■ ⟩ ⟨ ⎇ ⌗ ▸`) and the `→` style calls. All converted sites below are
+**decorative** — adjacent text or an `aria-label` on the control names them.
+
+| Site | Was | Glyph |
+| --- | --- | --- |
+| `BacklogView` section caret | `▸` | `disclosure` |
+| `LogPanel` Stop mark | `■` | `stop` |
+| `LogPanel` minimize toggle | `⟩` `⟨` | `disclosure` (CSS rotates 180°) |
+| `UsageBar` branch mark | `⎇` | `vcs` |
+
+Only `stop` is a new bitmap; the rest reuse existing glyphs. The minimize
+toggle is the two-state case (record T5c brief §2): both states are the one
+`disclosure` glyph, rotated by CSS — `⟩` open, `⟨` (180°) minimized — so the
+pair can never misalign the way two separate characters could.
+
+`comms.channelGlyph` returns the group-DM marker as DATA (a string in the
+marker column beside `@` and `#`), so a `<Glyph>` cannot go there. The old `⌗`
+U+2317 was uncovered; it swaps to `&` U+0026, covered by the brand face — a
+bitmap for one kind alone would mix glyph and character in one column.
+
+Kept as text — the `→` U+2192 is in the cmap, so a bitmap is a style call, not
+a coverage fix, and the typographic arrow reads at least as well:
+
+| Site | Char | Why |
+| --- | --- | --- |
+| `Bridge` lane open cue (2) | `→` | reads no better as a bitmap at 11px |
+| `SettingsView` map arrows (2) | `→` | chrome arrow; kept with the prose |
+| `SettingsView` prose arrows (2) | `→` | mid-sentence — a bitmap breaks type |
 
 ## Tabs
 
