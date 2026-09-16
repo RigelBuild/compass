@@ -19,7 +19,14 @@
 // No sockets, no timers-as-sleeps: ordering is gated on a deferred the test
 // controls, not a wall-clock wait.
 
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import {
+	afterEach,
+	describe,
+	expect,
+	setDefaultTimeout,
+	spyOn,
+	test,
+} from "bun:test";
 import {
 	existsSync,
 	mkdtempSync,
@@ -36,6 +43,13 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import type { OutboundFrame } from "./frame";
 import { createTeeSessionStorage, TranscriptTeeBackend } from "./session-tee";
+
+// The recording-sink tests do real FS work (scratch session dirs) and gate on a
+// test-controlled deferred, not sleeps; under the parallel pre-push gate that
+// I/O outruns bun's implicit 5s default and flakes (the starvation RIG-3609
+// fixed for the afterEach). This file-wide floor covers the test bodies
+// (RIG-3794); any explicit per-test bound still overrides it.
+setDefaultTimeout(60_000);
 
 const tmpdirs: string[] = [];
 

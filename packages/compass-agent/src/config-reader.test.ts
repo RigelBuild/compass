@@ -9,7 +9,7 @@
 // yield empty rather than throw — a missing mount must never crash the agent.
 // No timers, no sleeps: pure FS fixtures, deterministic results.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,12 @@ import {
 	readMountedSkills,
 	resolveConfigMountPath,
 } from "./config-reader";
+
+// Every test does real FS work; under the parallel pre-push gate that I/O
+// outruns bun's implicit 5s default and flakes (the same starvation RIG-3609
+// fixed for the afterEach hook). This file-wide floor covers the test bodies
+// too (RIG-3794); any explicit per-test bound still overrides it.
+setDefaultTimeout(60_000);
 
 const tmpdirs: string[] = [];
 
