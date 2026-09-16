@@ -80,7 +80,14 @@ jobs:
     name: release-pr
     runs-on: ubuntu-latest
     # Cut/refresh the standing Release PR and, on its merge commit, the vX.Y.Z
-    # tag + GitHub Release. Nothing else.
+    # tag + GitHub Release. The Release is created as a DRAFT here and is
+    # published only later by release-assets, once every asset is attached.
+    # WHY: an immutable release locks its assets AND its tag at the moment of
+    # publication, so publishing before the assets exist strands the release
+    # permanently empty and burns the tag forever — the tag of a deleted
+    # immutable release can never be reused. GitHub also defers tag creation
+    # for drafts, so `force-tag-creation` in release-please-config.json makes
+    # the tag exist up front; release-assets addresses the release by tag.
     permissions:
       contents: write
       pull-requests: write
@@ -689,12 +696,13 @@ jobs:
       - name: Upload assets and append the appendix to the Release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        # The Release already EXISTS: release-please cut it (tag + generated
-        # changelog notes) on the merge commit. This lane never creates it — it
-        # attaches the built assets with --clobber (idempotent on re-run) and
-        # APPENDS the generator's binaries/image/nix-outputs appendix BELOW
-        # release-please's generated notes, preserving the changelog rather than
-        # overwriting it. Not `--prerelease`: this is a real release.
+        # The Release already EXISTS as an unpublished DRAFT: release-please cut
+        # it (tag + generated changelog notes) on the merge commit but left it
+        # unpublished. This lane never creates it — it attaches the built assets
+        # with --clobber (idempotent on re-run), APPENDS the generator's
+        # binaries/image/nix-outputs appendix BELOW release-please's generated
+        # notes, preserving the changelog rather than overwriting it, and only
+        # then publishes. Not `--prerelease`: this is a real release.
         run: |
           set -euo pipefail
           assets=(
@@ -731,7 +739,10 @@ jobs:
             printf '%s\n\n<!-- release-notes-appendix -->\n\n---\n\n' "$changelog"
             cat RELEASE_BODY.md
           } > "$notes"
-          gh release edit "$TAG" --notes-file "$notes"
+          # Publishing the draft is the LAST release-mutating action, folded
+          # into the same edit that writes the notes. It must stay after the
+          # upload above: publication locks the assets and the tag for good.
+          gh release edit "$TAG" --draft=false --notes-file "$notes"
 
   release-image:
     name: release-image
