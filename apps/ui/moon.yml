@@ -85,12 +85,11 @@ tasks:
   visual-gate:
     # The visual-regression gate: renders the 11 committed shots and compares
     # them against apps/ui/e2e/__screens__ at the ratio thresholds in
-    # playwright.config.ts. Baselines are captured BY CI, not on a dev box —
-    # a dev-box capture differs from CI's Chromium in font rasterization and
-    # anti-aliasing on 10 of the 11 shots (measured, RIG-2154 T5), so a
-    # locally-regenerated baseline reds this task on CI for a change that
-    # altered nothing. Regenerate via the `regen-visual-baselines` dispatch
-    # lane and merge the bot PR it opens.
+    # playwright.config.ts. Both halves of tools/toolchain/chromium-e2e-env.nix
+    # are exported so a dev run matches CI: dropping FONTCONFIG_FILE reds 30 of
+    # the 11 shots' assertions outright, and the browser is pinned because
+    # nothing else pins the rasterizer. Regenerate via the
+    # `regen-visual-baselines` dispatch lane and merge the bot PR it opens.
     #
     # `cache: false` for the same reason `dev-smoke` sets it: a cached green
     # would survive a real rendering change whose inputs moon cannot hash
