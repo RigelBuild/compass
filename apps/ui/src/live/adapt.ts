@@ -224,22 +224,25 @@ export function agentHomeChannelIds(
 	return ids;
 }
 
-/** Map a wire AskQuestion to the domain one, preserving option order. The wire's
- *  presentation/audit extras (header, recommended, customText, timedOut) are not
- *  in the domain contract and are deliberately dropped here rather than carried
- *  half-rendered. The option `description` follows the file's empty-string→absent
- *  convention. */
+/** Map a wire AskQuestion to the domain one, preserving option order. Only the
+ *  wire's `timedOut` audit field is dropped — it is not in the domain contract
+ *  and nothing renders it, the criterion for carrying a field. The option
+ *  `description`/`preview` follow the file's empty-string→absent convention. */
 function adaptAskQuestion(w: WireAskQuestion): AskQuestion {
 	return {
 		questionId: w.questionId,
 		question: w.question,
+		header: w.header,
 		options: w.options.map((o) => ({
 			id: o.id,
 			label: o.label,
 			description: o.description || undefined,
+			preview: o.preview || undefined,
 		})),
 		allowMultiple: w.allowMultiple,
+		recommended: w.recommended,
 		chosenOptionIds: w.chosenOptionIds,
+		customText: w.customText,
 	};
 }
 

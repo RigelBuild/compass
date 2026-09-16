@@ -128,6 +128,8 @@ export interface AskOption {
 	label: string;
 	/** Optional explanatory text shown under the label. */
 	description?: string;
+	/** Optional rich preview content (comms.proto AskOption.preview). */
+	preview?: string;
 }
 
 /** One question within an Ask, carrying its own options and answer state
@@ -137,11 +139,23 @@ export interface AskQuestion {
 	 *  (comms.proto AskQuestion.question_id). */
 	questionId: string;
 	question: string;
+	/** Optional short display chip above the question (comms.proto
+	 *  AskQuestion.header). "" = absent, the wire's own convention. */
+	header: string;
 	options: AskOption[];
 	/** Whether more than one option may be chosen. */
 	allowMultiple: boolean;
+	/** Zero-based index into `options` of the agent-recommended option; absent
+	 *  when nothing was recommended (comms.proto AskQuestion.recommended,
+	 *  proto3 optional). A UI hint ONLY: it never pre-selects, and an
+	 *  out-of-range value is ignored. */
+	recommended?: number;
 	/** The chosen option ids once answered; empty while pending (kept for audit). */
 	chosenOptionIds: string[];
+	/** Free-text answer (comms.proto AskQuestion.custom_text): the locally
+	 *  staged DRAFT while the ask is neither answered nor submitted; the
+	 *  server's recorded audit value once it is. "" when absent either way. */
+	customText: string;
 }
 
 /** A structured question set an agent asks: one or more questions, each with its
@@ -162,6 +176,22 @@ export interface Ask {
 	 *  `chosenOptionIds` empty, so scanning the questions cannot tell a CLOSED
 	 *  ask from a pending one (comms.proto Ask.answered). */
 	answered: boolean;
+}
+
+/** An option-less question — free text is the ONLY way to answer it
+ *  (comms.proto AskQuestion.options MAY be empty). Free text itself is
+ *  available on EVERY question; this predicate only picks the option-less
+ *  copy (hint line, placeholder). */
+export function isFreeTextQuestion(q: AskQuestion): boolean {
+	return q.options.length === 0;
+}
+
+/** Whether this question holds an answer — a chosen option, or a
+ *  non-whitespace draft/recorded text. Whitespace-only text is a skip: the
+ *  wire records empty custom_text + no chosen ids as an accepted skip, so
+ *  counting it would enable a submit over a question the wire drops. */
+export function isQuestionAnswered(q: AskQuestion): boolean {
+	return q.chosenOptionIds.length > 0 || q.customText.trim() !== "";
 }
 
 /** A durable content block inside a channel message. The comms model
@@ -512,8 +542,10 @@ export const STUB_MESSAGES: Message[] = [
 							questionId: "q1",
 							question:
 								"Q2 (live-daemon integration CI) — new sub-issue, or fold into RIG-1023?",
+							header: "",
 							allowMultiple: false,
 							chosenOptionIds: [],
+							customText: "",
 							options: [
 								{
 									id: "opt-new",
@@ -586,8 +618,10 @@ export const STUB_MESSAGES: Message[] = [
 							questionId: "q1",
 							question:
 								"Board demotion — keep the top-bar Bridge tab, or move it into the left rail?",
+							header: "",
 							allowMultiple: false,
 							chosenOptionIds: [],
+							customText: "",
 							options: [
 								{
 									id: "opt-topbar",
@@ -660,8 +694,10 @@ export const STUB_MESSAGES: Message[] = [
 							questionId: "q1",
 							question:
 								"compass-native's gate just cleared — put it on the flaky-CI lane next, or pull it onto the compass-ui review backlog?",
+							header: "",
 							allowMultiple: false,
 							chosenOptionIds: [],
+							customText: "",
 							options: [
 								{
 									id: "opt-flaky-ci",
