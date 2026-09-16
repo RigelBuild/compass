@@ -247,13 +247,13 @@ func TestWaitForSocketsSucceedsForALiveDaemon(t *testing.T) {
 }
 
 // TestDeathErrorReportsTheCauseForEveryStartupPhase locks the death-cause slot
-// for all three startup sites at once. The %!w(<nil>) defect existed at three
-// sites because each built its own message, and a per-site test caught it at
-// one: reintroducing the bug at the pidfile site left that site's test green,
-// because name-and-log-tail assertions straddle the slot without binding it.
-// Every site now routes through deathError, so this covers them together.
+// in the shared BUILDER, for every phase the callers pass. It does not prove a
+// callsite still delegates to the builder — the socket site is covered by
+// TestWaitForSocketsFailsFastOnADeadDaemon and the pidfile site by
+// TestStartRecordedChildNamesADeadChildNotAProcPath, both of which assert the
+// slot through production. The VMM site at launch.go has no test of its own.
 func TestDeathErrorReportsTheCauseForEveryStartupPhase(t *testing.T) {
-	for _, phase := range allStartupPhases {
+	for _, phase := range allStartupPhases() {
 		t.Run(string(phase), func(t *testing.T) {
 			dir := t.TempDir()
 			const diagnostic = "Couldn't setup id mappings: newgidmap failed"
@@ -277,8 +277,11 @@ func TestDeathErrorReportsTheCauseForEveryStartupPhase(t *testing.T) {
 				t.Errorf("error %q does not report the daemon's exit status; an operator cannot "+
 					"tell a non-zero exit from a clean one", got)
 			}
-			if !strings.Contains(got, "virtiofsd") || !strings.Contains(got, string(phase)) {
-				t.Errorf("error %q does not name the daemon and the phase it failed to reach", got)
+			if !strings.Contains(got, "virtiofsd") {
+				t.Errorf("error %q does not name the daemon", got)
+			}
+			if !strings.Contains(got, string(phase)) {
+				t.Errorf("error %q does not name the phase it failed to reach (%q)", got, phase)
 			}
 			if !strings.Contains(got, diagnostic) {
 				t.Errorf("error %q does not carry the daemon's own log tail (%q)", got, diagnostic)

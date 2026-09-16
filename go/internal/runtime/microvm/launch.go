@@ -483,7 +483,7 @@ func startChild(c *child) error {
 		// any reader that received from c.exited sees it (happens-before). An
 		// *exec.ExitError from a killed daemon is expected and filtered by
 		// waitResult at each teardown reader, not here; a startup reader renders
-		// it through deathCause instead.
+		// it through deathError instead.
 		c.waitErr = c.cmd.Wait()
 		close(c.exited)
 	}()
@@ -673,10 +673,7 @@ func deathCause(c *child) string {
 	return c.waitErr.Error()
 }
 
-// startupPhase names what a child failed to reach before it died. It is a
-// named type with a fixed set of values so the guard test enumerates the same
-// phases the callers pass, instead of hand-copied literals that can drift into
-// covering wording production no longer emits.
+// startupPhase names what a child failed to reach before it died.
 type startupPhase string
 
 const (
@@ -685,9 +682,26 @@ const (
 	phasePidfile  startupPhase = "its pidfile could be recorded"
 )
 
-// allStartupPhases is every phase deathError is called with. The guard test
-// ranges over it, so a new phase is covered without touching the test.
-var allStartupPhases = []startupPhase{phaseVMMStart, phaseSocket, phasePidfile}
+// allStartupPhases is the list the guard test ranges over. phaseText's switch
+// is what keeps it honest: adding a constant without adding it here fails the
+// exhaustive linter, so the list cannot quietly stop describing production. It
+// returns a fresh slice so no test can scribble on another's copy.
+func allStartupPhases() []startupPhase {
+	return []startupPhase{phaseVMMStart, phaseSocket, phasePidfile}
+}
+
+// phaseText renders a phase. The switch is deliberate rather than a plain
+// string conversion: exhaustive fails it when a constant is added and not
+// handled, which is the only gate that catches a phase the guard test never
+// covers. An unlisted value still renders, so a mistake here degrades the
+// message rather than killing the launch it was reporting on.
+func phaseText(phase startupPhase) string {
+	switch phase {
+	case phaseVMMStart, phaseSocket, phasePidfile:
+		return string(phase)
+	}
+	return string(phase)
+}
 
 // deathError builds the error a startup site reports when a child it was
 // waiting on has already exited. Every such site goes through here so the
@@ -696,7 +710,7 @@ var allStartupPhases = []startupPhase{phaseVMMStart, phaseSocket, phasePidfile}
 // its own message.
 func deathError(c *child, phase startupPhase) error {
 	return fmt.Errorf("%s exited before %s: %s; log tail:\n%s",
-		c.name, phase, deathCause(c), tailFile(c.logPath))
+		c.name, phaseText(phase), deathCause(c), tailFile(c.logPath))
 }
 
 // Running reports whether the named child's process is still alive. It is used
@@ -846,8 +860,8 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 // read fails for a reason that is NOT a pidfile fault: the child is simply
 // dead. Reporting a /proc path there buries the real cause, which is in the
 // daemon's own log, so a confirmed-dead child gets the SAME error shape launch
-// uses for a daemon that died before the VMM was started (name the daemon,
-// render deathCause, carry the log tail).
+// uses for a daemon that died before the VMM was started: it goes through
+// the same deathError builder.
 //
 // BOTH conditions are required: procReadMeansGone alone could describe a /proc
 // that vanished under a still-live pid (it cannot, but the pairing makes the
