@@ -79,6 +79,10 @@ jobs:
   release-pr:
     name: release-pr
     runs-on: ubuntu-latest
+    # workflow_dispatch accepts any ref, and release-please defaults its
+    # target-branch to the default branch. Require main so no other ref can
+    # cut a release.
+    if: github.ref == 'refs/heads/main'
     # Cut/refresh the standing Release PR and, on its merge commit, the vX.Y.Z
     # tag + GitHub Release. The Release is created as a DRAFT here and is
     # published only later by release-assets, once every asset is attached.
@@ -118,6 +122,9 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+          # Pinned, not left to the action's default-branch default, so the
+          # branch it releases from is stated rather than inferred.
+          target-branch: main
 
   publish-image:
     name: publish-image
