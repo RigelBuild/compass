@@ -613,7 +613,8 @@ Interfaces:
 
 - Consumes: T2's generated `@compass/client` RPCs.
 - Correction (RIG-1715): those RPCs are `UsageService.GetUsageSeries` and
-  `GetProviderQuota`, consumed directly — T2 adds no usage surface of its own.
+  `GetProviderQuota`, consumed directly — T2 adds no usage surface of its
+  own, so the series JSON below comes from `GetUsageSeries`, not T2.
 - Produces: `UsageBar` reading live per-account usage (replacing the
   `STUB_USAGE` import); a usage/spend view rendering T2's time-series JSON.
 
@@ -707,8 +708,9 @@ Track B — unblocked (do first):
 
 Track A — blocked on the OMP-gateway prerequisite:
 
-[UNBLOCKED (RIG-1715): the prerequisite is met, so T1 and T3 are executable.
-T2 is superseded — see its entry below.]
+[UNBLOCKED (RIG-1715): the gateway record has landed, so the prerequisite is
+met. T1 is executable now; T3 additionally waits on that record's T4 shipping
+the UsageService RPCs. T2 is superseded — see its entry below.]
 
 - [ ] PREREQUISITE (upstream, not a task here — write its design record FIRST):
       OMP-gateway-into-Server — gates T1-T3.
