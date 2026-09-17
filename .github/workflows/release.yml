@@ -74,6 +74,18 @@ env:
     flake.lock
     tools/toolchain/microvm-vmm-env.nix
     .github/workflows/release.yml
+  # The guest artifact's own closure set, SEPARATE from the two above: this
+  # publishes the three guest assets, so an agent- or runner-only change must
+  # not republish it. Derived from guest-image/moon.yml's build.inputs plus the
+  # publish lane itself; the agent pin travels inside guest-image/.
+  GUEST_IMAGE_CLOSURE_PATHS: |
+    guest-image/**
+    tools/guest-image/**
+    go/go.mod
+    go/go.sum
+    go/cmd/compass-guestd/**
+    go/internal/**
+    .github/workflows/release.yml
 
 jobs:
   release-pr:
@@ -1278,3 +1290,151 @@ jobs:
             --repo ghcr.io/rigelbuild/compass-runner --sha "$sha12")"
           echo "published $ref"
           echo "runner image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+
+  publish-guest-image:
+    name: publish-guest-image
+    runs-on: ubuntu-latest
+    # Least privilege: read the tree, write the GHCR package, nothing else.
+    permissions:
+      contents: read
+      packages: write
+    # Its own group: a different package from the agent and runner images, so
+    # serializing against those would only add latency. Within this package,
+    # publishes must serialize — two runs pushing one tag race over which bytes
+    # it names.
+    concurrency:
+      group: publish-guest-image
+      cancel-in-progress: false
+      queue: max
+    # A dispatch from a feature branch must never publish assets for unmerged
+    # code. Main pushes satisfy this trivially.
+    if: github.ref == 'refs/heads/main'
+    # The rootfs is a ~2 GiB erofs built from source; that nix build sizes this.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Decide whether this push touches the guest-image closure
+        id: gate
+        # The same push-event tree diff the sibling publish jobs use, over
+        # GUEST_IMAGE_CLOSURE_PATHS. Every fallback ERRS TOWARD PUBLISHING (the
+        # no-drop invariant): a dispatch, a first push with no diff base, or an
+        # unreachable before-sha force-publish rather than silently drop a
+        # closure change.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "workflow_dispatch: force-publish (no push range to diff)"
+            exit 0
+          fi
+
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "no diff base (first push to branch): force-publish"
+            exit 0
+          fi
+
+          git fetch --no-tags --depth=1 origin "$BEFORE_SHA" >/dev/null 2>&1 || true
+
+          if ! changed="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" 2>/dev/null)"; then
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+            echo "before-sha unreachable: force-publish (no-drop errs toward publishing)"
+            exit 0
+          fi
+
+          should_publish=false
+          while IFS= read -r pattern; do
+            [ -n "$pattern" ] || continue
+            case "$pattern" in
+              *'/**')
+                prefix="${pattern%'/**'}/"
+                while IFS= read -r f; do
+                  [ -n "$f" ] || continue
+                  case "$f" in
+                    "$prefix"*) should_publish=true ;;
+                  esac
+                done <<< "$changed"
+                ;;
+              *)
+                while IFS= read -r f; do
+                  [ "$f" = "$pattern" ] && should_publish=true
+                done <<< "$changed"
+                ;;
+            esac
+            [ "$should_publish" = true ] && break
+          done <<< "$GUEST_IMAGE_CLOSURE_PATHS"
+
+          echo "should_publish=$should_publish" >> "$GITHUB_OUTPUT"
+          echo "changed-path gate over the guest-image closure set: should_publish=$should_publish"
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        if: steps.gate.outputs.should_publish == 'true'
+        with:
+          # Declared here rather than via `accept-flake-config`, which would
+          # make nix trust the nixConfig of any flake it evaluates.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the pinned bun and skopeo on PATH
+        if: steps.gate.outputs.should_publish == 'true'
+        # Resolved from the same gate-tools pin the dev shell uses, so the lane
+        # runs byte-identical binaries here and on a dev box. `jq -r` renders a
+        # missing `.store` as the literal string `null`, so guard for it.
+        run: |
+          set -euo pipefail
+          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
+          if [ -z "$store" ] || [ "$store" = null ]; then
+            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
+            exit 1
+          fi
+          nix build --no-link "$store"
+          echo "$store/bin" >>"$GITHUB_PATH"
+          # The publish lane shells out to skopeo for the tag probe and the push.
+          skopeo=$(nix build --no-link --print-out-paths nixpkgs#skopeo)
+          echo "$skopeo/bin" >>"$GITHUB_PATH"
+
+      - name: Log in to GHCR
+        if: steps.gate.outputs.should_publish == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        # skopeo reads registry creds from a docker config file. A 0600 umask in
+        # a private dir keeps the token off argv and out of any process listing.
+        run: |
+          set -euo pipefail
+          auth_dir="$RUNNER_TEMP/docker"
+          mkdir -p "$auth_dir"
+          chmod 700 "$auth_dir"
+          umask 077
+          # base64(actor:token) is credential-equivalent, but Actions log-masking
+          # matches only the RAW token — a transformed form is NOT auto-redacted.
+          auth="$(printf '%s:%s' "$ACTOR" "$GITHUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" \
+            > "$auth_dir/config.json"
+          echo "DOCKER_CONFIG=$auth_dir" >>"$GITHUB_ENV"
+
+      - name: Publish the guest artifact by digest
+        if: steps.gate.outputs.should_publish == 'true'
+        # The lane realises the three assets, assembles the layout, scans its
+        # annotations before any push, and asserts the registry resolved the
+        # manifest it built. The deployable `repo@sha256:…` lands in the summary:
+        # GHCR has no server-side tag immutability, so nothing resolves by tag.
+        run: |
+          set -euo pipefail
+          # `--short=12` returns the shortest UNIQUE length >= 12, so a collision
+          # would yield 13+ chars and fail the lane's strict 12-hex check. A
+          # deterministic truncation keeps the contract exact.
+          sha12="$(git rev-parse HEAD | cut -c1-12)"
+          ref="$(bun tools/guest-image/publish.ts \
+            --repo ghcr.io/rigelbuild/compass-guest-image --sha "$sha12")"
+          echo "published $ref"
+          echo "guest image: \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
