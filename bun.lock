@@ -159,6 +159,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/font-coverage-gate": {
+      "name": "@compass/font-coverage-gate",
+      "bin": {
+        "font-coverage-gate": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/forge-linear-token": {
       "name": "@compass/forge-linear-token",
       "bin": {
@@ -484,6 +494,8 @@
     "@compass/design-ledger-gate": ["@compass/design-ledger-gate@workspace:tools/design-ledger-gate"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
+
+    "@compass/font-coverage-gate": ["@compass/font-coverage-gate@workspace:tools/font-coverage-gate"],
 
     "@compass/forge-linear-token": ["@compass/forge-linear-token@workspace:tools/forge-linear-token"],
 
