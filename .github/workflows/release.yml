@@ -1383,7 +1383,7 @@ jobs:
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
-      - name: Put the pinned bun and skopeo on PATH
+      - name: Put the pinned bun on PATH
         if: steps.gate.outputs.should_publish == 'true'
         # Resolved from the same gate-tools pin the dev shell uses, so the lane
         # runs byte-identical binaries here and on a dev box. `jq -r` renders a
@@ -1397,30 +1397,52 @@ jobs:
           fi
           nix build --no-link "$store"
           echo "$store/bin" >>"$GITHUB_PATH"
-          # The publish lane shells out to skopeo for the tag probe and the push.
-          skopeo=$(nix build --no-link --print-out-paths nixpkgs#skopeo)
-          echo "$skopeo/bin" >>"$GITHUB_PATH"
+
+      - name: Put the fork's patched skopeo on PATH
+        if: steps.gate.outputs.should_publish == 'true'
+        # The publish lane probes and copies with a plain `skopeo` (the
+        # RigelBuild/nix2container fork's patched build). Resolve it from the
+        # shared pinned helper so this privileged job cannot run a mutable
+        # upstream build, the same pattern the sibling publish jobs use.
+        run: |
+          set -euo pipefail
+          # `--print-out-paths` prints every output (skopeo ships a `-man` output
+          # too); take the one carrying bin/skopeo, not a fixed line.
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
+      - name: Pin the registry auth file
+        if: steps.gate.outputs.should_publish == 'true'
+        # LOAD-BEARING. The login and the lane's own skopeo calls are SEPARATE
+        # processes and must resolve the SAME creds file; the default location
+        # is environment-dependent on hosted runners, and a mismatch greens the
+        # login then 401s the push.
+        run: echo "REGISTRY_AUTH_FILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
         if: steps.gate.outputs.should_publish == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the actor through env rather than interpolating ${{ }} into the
+          # shell, keeping context values off the run: command line.
           ACTOR: ${{ github.actor }}
-        # skopeo reads registry creds from a docker config file. A 0600 umask in
-        # a private dir keeps the token off argv and out of any process listing.
+        # The token is passed via env and `--password-stdin` only — never on a
+        # command line or in a log.
         run: |
-          set -euo pipefail
-          auth_dir="$RUNNER_TEMP/docker"
-          mkdir -p "$auth_dir"
-          chmod 700 "$auth_dir"
-          umask 077
-          # base64(actor:token) is credential-equivalent, but Actions log-masking
-          # matches only the RAW token — a transformed form is NOT auto-redacted.
-          auth="$(printf '%s:%s' "$ACTOR" "$GITHUB_TOKEN" | base64 -w0)"
-          echo "::add-mask::$auth"
-          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" \
-            > "$auth_dir/config.json"
-          echo "DOCKER_CONFIG=$auth_dir" >>"$GITHUB_ENV"
+          skopeo \
+            login ghcr.io -u "$ACTOR" --password-stdin \
+            --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
       - name: Publish the guest artifact by digest
         if: steps.gate.outputs.should_publish == 'true'

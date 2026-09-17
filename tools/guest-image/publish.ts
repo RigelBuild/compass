@@ -210,9 +210,13 @@ if (dryRun) {
 }
 
 const tag = buildTag(repo, sha);
+// The login runs in a separate process, so every call must name the same creds
+// file; skopeo's default location is environment-dependent on hosted runners.
+const authFile = process.env.REGISTRY_AUTH_FILE;
+const auth = authFile === undefined ? [] : ["--authfile", authFile];
 const probe = run(
 	"skopeo",
-	["inspect", "--raw", `docker://${tag}`],
+	["inspect", ...auth, "--raw", `docker://${tag}`],
 	workspaceRoot,
 );
 const disposition = tagDisposition(
@@ -229,7 +233,7 @@ if (disposition.action === "skip") {
 
 const pushed = run(
 	"skopeo",
-	["copy", `oci:${layoutDir}`, `docker://${tag}`],
+	["copy", ...auth, `oci:${layoutDir}`, `docker://${tag}`],
 	workspaceRoot,
 );
 if (!pushed.ok)
@@ -239,7 +243,7 @@ if (!pushed.ok)
 // fail closed rather than have its digest published as ours.
 const resolved = run(
 	"skopeo",
-	["inspect", "--raw", `docker://${tag}`],
+	["inspect", ...auth, "--raw", `docker://${tag}`],
 	workspaceRoot,
 );
 if (!resolved.ok)
