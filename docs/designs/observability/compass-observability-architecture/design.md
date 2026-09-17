@@ -545,8 +545,8 @@ Interfaces:
   today) and **token-usage** events from the bundled OMP gateway (the upstream
   prerequisite); the existing store open/migration machinery behind
   `0001_init.sql`.
-- The token-usage events arrive as RIG-1715 `TokenUsageEvent`; that record's
-  T4 emits them, and this task owns the `UsageStore` they land in.
+- Since (RIG-1715): the token-usage events are that record's
+  `TokenUsageEvent`, emitted by its T4 into the `UsageStore` this task owns.
 - Produces: a **`UsageStore` interface** over an append-only event write plus
   rollup/series reads (keyed by tenant × account × window), with a Postgres
   implementation as the sole backend the core ships, plus an in-memory reference.
@@ -595,8 +595,8 @@ Interfaces:
   {bucket, tokensIn, tokensOut, cost}`), regenerated Go + TS clients via
   `moon run compass-proto:gen`; tenant scope enforced server-side, never
   client-supplied trust.
-- T2 usage RPCs: superseded by RIG-1715 `UsageService`, merged into that
-  record's single service — no duplicate proto surface here.
+- Correction: these RPCs are superseded by RIG-1715 `UsageService` — one
+  service, so there is no duplicate proto surface to add here.
 
 ### T3 — In-app charts (Plane A UI)
 
@@ -612,8 +612,8 @@ time-series charts are needed.
 Interfaces:
 
 - Consumes: T2's generated `@compass/client` RPCs.
-- T3 consumes RIG-1715 `UsageService.GetUsageSeries`/`GetProviderQuota`
-  directly, since T2 adds no usage RPCs of its own.
+- Correction (RIG-1715): those RPCs are `UsageService.GetUsageSeries` and
+  `GetProviderQuota`, consumed directly — T2 adds no usage surface of its own.
 - Produces: `UsageBar` reading live per-account usage (replacing the
   `STUB_USAGE` import); a usage/spend view rendering T2's time-series JSON.
 
