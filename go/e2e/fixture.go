@@ -35,6 +35,11 @@ const agentImage = "compass-agent:latest"
 // which always spawns a fresh stack under its own short root.
 const expectedVersion = "e2e-test"
 
+// fixtureMasterKey is a throwaway at-rest key for the fixture's own stack: 64
+// hex chars, the only length the server's boot decode accepts. Never a real
+// deployment key — every fixture is torn down with its data.
+const fixtureMasterKey = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
 // Fixture is one test's live embedded stack plus the authenticated clients and
 // store handle the harness legs consume. It is produced by NewFixture, which
 // registers teardown on the test, so a consumer never manages the stack's
@@ -439,13 +444,24 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// SocketDir/.s.PGSQL.<port>.
 	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 
+	// The server resolves the master key at boot and fails closed, so the fixture
+	// seeds its own provider instead of inheriting one. This dotenv is the WHOLE
+	// declared set because the fixture configures no forge, and buildManifest
+	// marks every declared name required — one more would fail the Load wholesale.
+	// t.TempDir, not root: root is shared per-PID across ephemeral legs.
+	secretsPath := filepath.Join(t.TempDir(), "secrets.env")
+	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+fixtureMasterKey+"\n"), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+
 	cfg := stack.Config{
-		StateDir:    stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
-		SocketPath:  serverSock,
-		ListenAddr:  "127.0.0.1:" + strconv.Itoa(listenPort),
-		DatabaseDSN: dsn,
-		AgentImage:  agentImage,
-		RuntimeDir:  runtimeDir,
+		StateDir:       stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
+		SocketPath:     serverSock,
+		ListenAddr:     "127.0.0.1:" + strconv.Itoa(listenPort),
+		DatabaseDSN:    dsn,
+		SecretProvider: "dotenv://" + secretsPath,
+		AgentImage:     agentImage,
+		RuntimeDir:     runtimeDir,
 		// The A4 plumbing under test: non-zero values so the green case proves
 		// they reach the runner's flags (asserted deterministically in the
 		// runnerSpec unit test; here they exercise the real forward path).

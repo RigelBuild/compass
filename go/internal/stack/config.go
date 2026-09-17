@@ -29,6 +29,9 @@ type Config struct {
 	// DatabaseDSN is the postgres DSN compass-server opens the store of record
 	// on.
 	DatabaseDSN string
+	// SecretProvider is the secretspec provider URI forwarded to compass-server.
+	// Empty leaves the server's own env/default resolution unchanged.
+	SecretProvider string
 	// PostgresImage selects how the private store-of-record postgres is brought
 	// up (S4 / DL-257). Non-empty is the installed-stack default: a
 	// container-backed postgres run from this image ref (the pinned stock
