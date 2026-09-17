@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.3.0](https://github.com/RigelBuild/compass/compare/v0.2.1...v0.3.0) (2026-09-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* **server:** delete the server-secret write path ([#1220](https://github.com/RigelBuild/compass/issues/1220))
+
+### Features
+
+* **agent-image:** add a per-arch publish mode to publish.sh (RIG-3750) ([#1243](https://github.com/RigelBuild/compass/issues/1243)) ([435e847](https://github.com/RigelBuild/compass/commit/435e84765fb6a771427707610c2a694e1939ea3c))
+* **agent-image:** make the entrypoint FOD hash and native-addon copy per-system (RIG-3749) ([#1195](https://github.com/RigelBuild/compass/issues/1195)) ([beaee31](https://github.com/RigelBuild/compass/commit/beaee31acb78e42c40027a96219652a93df7c5eb))
+* **cli:** show the runtime tier and egress posture per session ([#1153](https://github.com/RigelBuild/compass/issues/1153)) ([bb80c05](https://github.com/RigelBuild/compass/commit/bb80c05ea2e525019b04c1ec57346ee704ca26dd))
+* **ingest:** advance a suppressed subscriber's delivery cursor when caught up (RIG-3326) ([#1185](https://github.com/RigelBuild/compass/issues/1185)) ([bff25ca](https://github.com/RigelBuild/compass/commit/bff25ca068fd38d8afbcb4b924feb8433ce6b389))
+* **ingest:** self-origin notification suppression seam and predicate (RIG-3326) ([#1177](https://github.com/RigelBuild/compass/issues/1177)) ([9a53159](https://github.com/RigelBuild/compass/commit/9a531599840710b212e514c67e2ff14f9693181b))
+* **runner-image:** carry the Runner, KVM userland and guest assets in a container image (RIG-3720) ([#1164](https://github.com/RigelBuild/compass/issues/1164)) ([0dce952](https://github.com/RigelBuild/compass/commit/0dce952672a03a00e5a6771a2210f40a7c64f5b5))
+* **runner-image:** publish the runner image by digest (RIG-3721) ([#1181](https://github.com/RigelBuild/compass/issues/1181)) ([a2805af](https://github.com/RigelBuild/compass/commit/a2805afdbf23a7cc3b288505eb357c44ec0a2dc1))
+* **runner:** carry no egress policy on a backend that cannot enforce one ([#1145](https://github.com/RigelBuild/compass/issues/1145)) ([332c075](https://github.com/RigelBuild/compass/commit/332c075cc6d43170516a20d9c83b7f8094cbb6b1))
+* **runner:** declare the runtime tier and egress posture at enrollment ([#1156](https://github.com/RigelBuild/compass/issues/1156)) ([612b9cd](https://github.com/RigelBuild/compass/commit/612b9cd721834c68463188f9a68597b9e5e6b045))
+* **runner:** deliver the agent socket and config by path on the host backend (RIG-3512) ([#1135](https://github.com/RigelBuild/compass/issues/1135)) ([a9ce14a](https://github.com/RigelBuild/compass/commit/a9ce14a4dc5033fadbf13fbc203520d895c0f6ad))
+* **runner:** derive the agent uid from the Runner's euid on the host backend (RIG-3512) ([#1125](https://github.com/RigelBuild/compass/issues/1125)) ([684558b](https://github.com/RigelBuild/compass/commit/684558bfd30ccbd7a7ae86b93a5ea5c508da3e16))
+* **runner:** report the runtime tier and egress posture per session ([#1148](https://github.com/RigelBuild/compass/issues/1148)) ([4d0347b](https://github.com/RigelBuild/compass/commit/4d0347b8cca4961775f91c8de166b09850c92708))
+* **runtime:** add the host-process WorkloadRuntime backend (RIG-3512) ([#1120](https://github.com/RigelBuild/compass/issues/1120)) ([f9db16d](https://github.com/RigelBuild/compass/commit/f9db16de3700e5322b7e42d89143d58fb272bd1b))
+* **runtime:** distinguish a configured egress policy from an unset one ([#1142](https://github.com/RigelBuild/compass/issues/1142)) ([2108d46](https://github.com/RigelBuild/compass/commit/2108d469dcab3b7e32cb14a4a7f661a078ea2d63))
+* **runtime:** refuse an egress policy the host tier cannot enforce ([#1143](https://github.com/RigelBuild/compass/issues/1143)) ([ef908d5](https://github.com/RigelBuild/compass/commit/ef908d53bd045c6028b1a1149089d9cfb8643454))
+* **server:** delete the server-secret write path ([#1220](https://github.com/RigelBuild/compass/issues/1220)) ([647ba81](https://github.com/RigelBuild/compass/commit/647ba816909bbe6a6f007b8e1d3a0f8448819062))
+* **server:** scope user-secret writes per caller (RIG-3655) ([#1187](https://github.com/RigelBuild/compass/issues/1187)) ([e1619c9](https://github.com/RigelBuild/compass/commit/e1619c9821ee3ec860cab98e5ae845ec6e365ccb))
+* **server:** wire the self-origin identity resolver into both notify lanes (RIG-3326) ([#1197](https://github.com/RigelBuild/compass/issues/1197)) ([b873481](https://github.com/RigelBuild/compass/commit/b87348155997155326125e2c187a5af754eac245))
+* **ui:** add the dot-matrix Glyph primitive and its four chrome bitmaps (RIG-3736) ([#1194](https://github.com/RigelBuild/compass/issues/1194)) ([cd55098](https://github.com/RigelBuild/compass/commit/cd55098ab837ca7c6d5ebe7ef536225706e3f9c2))
+* **ui:** an ask sends only on an explicit submit (RIG-1330) ([#1229](https://github.com/RigelBuild/compass/issues/1229)) ([9ed0c35](https://github.com/RigelBuild/compass/commit/9ed0c35946a6e9ee58295eea4c7b599cdb6675ed))
+* **ui:** carry the full ask wire shape into the domain (RIG-1330) ([#1230](https://github.com/RigelBuild/compass/issues/1230)) ([6e30118](https://github.com/RigelBuild/compass/commit/6e301180b266ce81ca80c9c7aa9568dd7838a8d8))
+* **ui:** convert the chrome pictographs to dot-matrix glyphs (RIG-3739) ([#1211](https://github.com/RigelBuild/compass/issues/1211)) ([81aff4d](https://github.com/RigelBuild/compass/commit/81aff4d0e3b66616985b4d309bc081320e7860a1))
+* **ui:** derive the activity-bar avatar initial through one owner (RIG-3737) ([#1199](https://github.com/RigelBuild/compass/issues/1199)) ([9a783ef](https://github.com/RigelBuild/compass/commit/9a783ef5191795d1a8650befed5842c0101b9383))
+* **ui:** finish the chrome glyph conversion (RIG-3739) ([#1219](https://github.com/RigelBuild/compass/issues/1219)) ([0a059d0](https://github.com/RigelBuild/compass/commit/0a059d0bfa0acfa72ac60259ce72e9e55e4bdaa1))
+* **ui:** mark each agent's runtime tier and egress posture ([#1154](https://github.com/RigelBuild/compass/issues/1154)) ([2317604](https://github.com/RigelBuild/compass/commit/2317604eca45ace8cb0e2ee86f8b85417db3b4bf))
+* **ui:** record and ship a free-text ask answer (RIG-1330) ([#1231](https://github.com/RigelBuild/compass/issues/1231)) ([92ae829](https://github.com/RigelBuild/compass/commit/92ae829d914d3dd897617c91d46eaabf02bf9214))
+* **ui:** render the free-text ask input and its presentation axes (RIG-1330) ([#1233](https://github.com/RigelBuild/compass/issues/1233)) ([6930737](https://github.com/RigelBuild/compass/commit/69307378fad1fa5a66330e29d3a8ecae1abf958e))
+* **ui:** split ActivityBarItem into its glyph and avatar arms (RIG-3738) ([#1202](https://github.com/RigelBuild/compass/issues/1202)) ([001b861](https://github.com/RigelBuild/compass/commit/001b861e6062d4234adc3e60c91484a76aaf6ebd))
+
+
+### Bug Fixes
+
+* **ci:** register release-notes with moon and fix its manifest path spread (RIG-3731) ([#1174](https://github.com/RigelBuild/compass/issues/1174)) ([f5443bc](https://github.com/RigelBuild/compass/commit/f5443bc05f3395aab11f75b7c1811c93365237c0))
+* **design-ledger-gate:** fail on unresolved merge conflict markers ([#1203](https://github.com/RigelBuild/compass/issues/1203)) ([ce6735c](https://github.com/RigelBuild/compass/commit/ce6735c8d9e0af984eeee189804d7b09a79502d3))
+* **release:** carry release-image's resolved digest to the notes generator (RIG-3731) ([#1190](https://github.com/RigelBuild/compass/issues/1190)) ([d940147](https://github.com/RigelBuild/compass/commit/d940147d8b4f0462c5ac0aefa61f850264dbf899))
+* **release:** publish the Release only after its assets attach (RIG-3731) ([#1236](https://github.com/RigelBuild/compass/issues/1236)) ([628655c](https://github.com/RigelBuild/compass/commit/628655c347143536d787078181305c559a3c34e6))
+* **runner:** stop requiring an agent image on the microVM backend (RIG-3722) ([#1205](https://github.com/RigelBuild/compass/issues/1205)) ([cee7829](https://github.com/RigelBuild/compass/commit/cee78290543a5d43b6e55a678db3f51fd662e7eb))
+* **ui:** treat a question's arity as part of its shape (RIG-1330) ([#1232](https://github.com/RigelBuild/compass/issues/1232)) ([abd1219](https://github.com/RigelBuild/compass/commit/abd12190739e4c56dc501b09ce0728fddf8605e5))
+
 ## [0.2.1](https://github.com/RigelBuild/compass/compare/v0.2.0...v0.2.1) (2026-09-12)
 
 
