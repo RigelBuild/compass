@@ -263,10 +263,10 @@ export function adaptAsk(w: WireAsk): Ask {
 
 /** Map a wire MessageBlock's oneof to a durable domain block, or `undefined` for
  *  any other/unset case. The domain narrows the proto oneof to the two DURABLE
- *  conversation kinds (comms-stub.ts:143-147): the rich ACP blocks
- *  (thought/tool_call/plan/diff) are execution trace that renders in the session
- *  observation panel, not the conversation, so a non-durable case is DROPPED —
- *  not mapped to a placeholder (which would render as a phantom message body)
+ * conversation kinds (comms-stub.ts:143-147): rich execution blocks
+ * (thought/tool_call/plan/diff) are session trace rendered in the observation
+ * panel, not conversation content, so a non-durable case is DROPPED — not mapped
+ * to a placeholder (which would render a phantom message body)
  *  and not thrown on (which would blank the whole channel over one block). */
 function adaptBlock(w: WireMessage["blocks"][number]): ConvBlock | undefined {
 	switch (w.block.case) {

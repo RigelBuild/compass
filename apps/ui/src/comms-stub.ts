@@ -35,8 +35,8 @@ export interface ChannelGroup {
 }
 
 /** A channel's kind (comms.proto ChannelKind). A plain channel is the default;
- *  DMs are direct conversations. An agent's ACP surface is NOT a channel — it is
- *  the agent workspace (the session observation panel), a separate surface. */
+ * DMs are direct conversations. An agent's session observation surface is not a
+ * channel — it is a separate workspace panel. */
 export type ChannelKind = "channel" | "dm" | "group_dm";
 
 /** Per-channel membership state — the still-in-design join/subscribe model
@@ -197,8 +197,8 @@ export function isQuestionAnswered(q: AskQuestion): boolean {
 /** A durable content block inside a channel message. The comms model
  *  narrows the proto's MessageBlock oneof to the two durable conversation kinds:
  *  `text` (settled markdown, may carry @-mentions) and `ask` (an inline async
- *  question). The rich ACP blocks (thought/tool_call/plan/diff) are NOT part of
- *  the conversation — they render in the session observation panel. */
+ * question). Rich execution blocks (thought/tool_call/plan/diff) are not part of
+ * the conversation — they render in the session observation panel. */
 export type ConvBlock =
 	| { kind: "text"; text: string }
 	| { kind: "ask"; ask: Ask };

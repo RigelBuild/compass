@@ -564,9 +564,8 @@ describe("EventMapper — tool call title is intent-or-toolName", () => {
 });
 
 describe("EventMapper — tool result output extraction", () => {
-	// The `output` field mirrors the ACP mapper's extractReadableText: a bare
-	// string trimmed, an Error's message, a `text`/`errorMessage`/`message`
-	// property, and a hard cap at 4000 chars (adding "…").
+	// The `output` field renders a bare string trimmed, an Error's message, a
+	// `text`/`errorMessage`/`message` property, capped at 4000 chars with "…".
 	function outputOf(result: unknown): string {
 		const ev = soleTyped(
 			mapper().map({

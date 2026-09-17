@@ -12,8 +12,8 @@ import type { AgentState } from "./stub-data";
  * set, the projection falls back to the pure enum mapping.
  */
 export interface AgentStreamRefinement {
-	/** An ACP permission / `ask` request is open on the stream — the agent has
-	 *  asked for input. Refines `WORKING` → `waiting` (Matt's "ask tool" state). */
+	/** An agent permission / `ask` request is open on the stream — the agent has
+	 * asked for input. Refines `WORKING` → `waiting`. */
 	awaitingInput?: boolean;
 	/** The agent completed a turn and no human has opened its view yet. Refines
 	 *  `READY` → `done` (emerald check, deliberately not idle grey). */

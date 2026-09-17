@@ -57,9 +57,8 @@ export type MapOutput = OutboundFrame | UnmappedEvent;
 // asserted exactly.
 export type Clock = () => number;
 
-// Cap on emitted tool-call `output` text, mirroring the ACP mapper's ACP_TEXT_LIMIT
-// (acp-event-mapper.ts:130) so a pathological tool result does not put an unbounded
-// string on the wire. The session renderer shows a disclosure, not the full blob.
+// Cap emitted tool-call output at 4,000 characters so pathological results do
+// not put an unbounded string on the wire. The renderer shows a disclosure.
 const OUTPUT_TEXT_LIMIT = 4_000;
 
 // Maps the agent's session-event stream to compass.v1 frames. Stateful on the
@@ -135,10 +134,8 @@ export class EventMapper {
 						}),
 					}),
 				];
-				// The `todo` tool's result is the authoritative plan snapshot — emit a
-				// SessionPlan alongside the tool-call settle (mirrors the ACP mapper's
-				// mapTodoResultToPlanUpdate, acp-event-mapper.ts:378). A failed todo or
-				// an unparseable result yields no plan (the extractor returns undefined).
+				// A successful `todo` result is the authoritative plan snapshot. Emit a
+				// SessionPlan alongside the settled tool call; invalid results emit none.
 				if (event.toolName === "todo" && !event.isError) {
 					const entries = extractPlanEntries(event.result);
 					if (entries !== undefined) {
@@ -153,9 +150,7 @@ export class EventMapper {
 				return out;
 			}
 			case "todo_reminder":
-				// A periodic plan nudge carrying the current todos — emit the plan
-				// snapshot (mirrors the ACP mapper's todo_reminder arm,
-				// acp-event-mapper.ts:247). The todos are already typed on the event.
+				// A periodic SDK reminder carries current todos; emit the plan snapshot.
 				return [
 					this.#sessionEvent({
 						case: "plan",
@@ -170,8 +165,7 @@ export class EventMapper {
 					}),
 				];
 			case "todo_auto_clear":
-				// The todo list was cleared → an empty plan (mirrors
-				// acp-event-mapper.ts:255).
+				// The SDK cleared the todo list; emit an empty plan.
 				return [
 					this.#sessionEvent({
 						case: "plan",
@@ -341,9 +335,8 @@ export class EventMapper {
 }
 
 // ── Runtime-narrowed readers (never an inline cast) ──────────────────────────
-// The SDK types tool `args`/`result`/`partialResult` as `any`; these read them through the
-// `isRecord` guard so every access is on a known-object value. Mirrors the ACP mapper's
-// readers but compass-native (its own target types), not an ACP dependency.
+// SDK tool payloads are narrowed through `isRecord` before property access.
+// The readers emit Compass-native target types.
 
 // The one narrowing primitive: is `value` a non-null object we can index by key?
 // Every reader below narrows through this before any property read, so there is
@@ -358,10 +351,8 @@ function readString(value: unknown, key: string): string | undefined {
 	return typeof prop === "string" ? prop : undefined;
 }
 
-// A best-effort human-readable rendering of a tool result for the `output` field, mirroring
-// acp-event-mapper.ts extractReadableText: a bare string, an Error's message, a
-// `text`/`errorMessage`/`message` property, else the JSON. Capped at OUTPUT_TEXT_LIMIT;
-// undefined when nothing readable is present (the caller defaults to "").
+// Render a tool result for `output`: strings, Error messages, known text fields,
+// or JSON. Cap at OUTPUT_TEXT_LIMIT; undefined lets the caller default to "".
 function extractReadableText(value: unknown): string | undefined {
 	if (typeof value === "string") return normalizeText(value);
 	if (value instanceof Error) return normalizeText(value.message);
@@ -394,10 +385,8 @@ function safeJsonStringify(value: unknown): string | undefined {
 	}
 }
 
-// Extract file diffs from a tool result, mirroring acp-event-mapper.ts
-// extractDiffToolCallContent: a `details.perFileResults[]` array or the single `details`,
-// each carrying `path` + `oldText`/`newText`. A creation has no `oldText`. Entries flagged
-// `isError` or lacking a path / any text are skipped.
+// Extract file diffs from a tool result's `details.perFileResults[]` or `details`.
+// Skip errors and entries lacking a path or any text.
 function extractDiffs(result: unknown): SessionFileDiff[] {
 	if (!isRecord(result)) return [];
 	const details = result.details;
@@ -427,10 +416,8 @@ function buildDiff(entry: unknown): SessionFileDiff | undefined {
 	});
 }
 
-// Extract plan entries from the `todo` tool result, mirroring acp-event-mapper.ts
-// extractTodoPhases/extractTodoEntries: a `details.phases[].tasks[]` shape, each task a
-// `{ content, status }`. Returns undefined when not a todo snapshot, an empty array when
-// present but with no valid tasks.
+// Extract plan entries from `details.phases[].tasks[]`. Return undefined when the
+// result is not a todo snapshot, or an empty array when it has no valid tasks.
 function extractPlanEntries(result: unknown): AgentPlanEntry[] | undefined {
 	if (!isRecord(result)) return undefined;
 	const details = result.details;
@@ -457,9 +444,8 @@ function extractPlanEntries(result: unknown): AgentPlanEntry[] | undefined {
 	return entries;
 }
 
-// Map an SDK todo status (string literal) to the compass plan-entry status enum,
-// mirroring acp-event-mapper.ts:367 todoStatusMap: "abandoned" folds to COMPLETED
-// (the plan enum has no abandoned state), an unknown/absent status → PENDING.
+// Map an SDK todo status to the Compass plan-entry enum. Unknown or absent status
+// becomes PENDING; the enum has no separate abandoned state.
 function planStatus(status: unknown): AgentPlanEntryStatus {
 	switch (status) {
 		case "in_progress":
@@ -472,9 +458,8 @@ function planStatus(status: unknown): AgentPlanEntryStatus {
 	}
 }
 
-// A display title for a tool call: the caller-supplied `intent` when present (the agent's own
-// label), else the tool name. The ACP mapper builds elaborate titles; the compass session
-// renderer shows a plain title, so intent-or-name is the faithful-but-simpler rendering.
+// Display the caller's `intent` when present, otherwise the tool name. The
+// session renderer uses this plain title rather than elaborating tool arguments.
 function toolTitle(
 	toolName: string,
 	args: unknown,
@@ -482,8 +467,7 @@ function toolTitle(
 ): string {
 	const trimmed = intent?.trim();
 	if (trimmed !== undefined && trimmed.length > 0) return trimmed;
-	// `args` is accepted for parity with the ACP title builder's signature and to
-	// leave a grounded seam for richer titles; the dumb emitter does not read it.
+	// `args` remains part of the mapper signature for future richer titles.
 	void args;
 	return toolName;
 }

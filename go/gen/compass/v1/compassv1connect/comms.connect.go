@@ -3,7 +3,7 @@
 // agents are first-class accounts in a management hierarchy. Channels nest in
 // channel groups, so a user's space (e.g. group "matt" → channel
 // "coordination", the path "matt.coordination") carries group-level
-// permissions. An agent's interactive surface — its ACP UI: the conversation
+// permissions. An agent's interactive surface: the session conversation
 // (text and structured asks) plus terminal and file panes — renders in the
 // agent's channel; the AgentWorkspace is the observation pane over that session
 // (D5), its access a projection of channel membership. All
@@ -152,9 +152,9 @@ type CommsServiceClient interface {
 	// emits AccountChanged; surfaces re-derive the tree from the changed
 	// parent_agent_id with no surface-specific plumbing.
 	ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error)
-	// Open (or fetch) the caller's agent workspace for an agent — its ACP surface
-	// (D5). Idempotent: created on first open, returned after. Authorized: the
-	// caller must be a member of the agent's channel.
+	// Open (or fetch) the caller's agent workspace for an agent — its session
+	// observation surface (D5). Idempotent: created on first open, returned after.
+	// Authorized: the caller must be a member of the agent's channel.
 	OpenAgentWorkspace(context.Context, *connect.Request[v1.OpenAgentWorkspaceRequest]) (*connect.Response[v1.OpenAgentWorkspaceResponse], error)
 	// Page a channel's message history, newest-first. The channel is one the
 	// caller may see.
@@ -507,9 +507,9 @@ type CommsServiceHandler interface {
 	// emits AccountChanged; surfaces re-derive the tree from the changed
 	// parent_agent_id with no surface-specific plumbing.
 	ReparentAgent(context.Context, *connect.Request[v1.ReparentAgentRequest]) (*connect.Response[v1.ReparentAgentResponse], error)
-	// Open (or fetch) the caller's agent workspace for an agent — its ACP surface
-	// (D5). Idempotent: created on first open, returned after. Authorized: the
-	// caller must be a member of the agent's channel.
+	// Open (or fetch) the caller's agent workspace for an agent — its session
+	// observation surface (D5). Idempotent: created on first open, returned after.
+	// Authorized: the caller must be a member of the agent's channel.
 	OpenAgentWorkspace(context.Context, *connect.Request[v1.OpenAgentWorkspaceRequest]) (*connect.Response[v1.OpenAgentWorkspaceResponse], error)
 	// Page a channel's message history, newest-first. The channel is one the
 	// caller may see.

@@ -1,6 +1,6 @@
 /* Compass ADE — dev UI styling. Dark, dense, board-first. An Orca-inspired
  * shell: a left folder tree of agents, a central Bridge (swimlane board) or
- * agent (ACP + terminals) view, and a right sidebar carrying the fleet
+ * agent (session + terminals) view, and a right sidebar carrying the fleet
  * conversations (Supervisor · Status) above the issue files/VCS/PR
  * tabs, plus a bottom usage bar. All read one store. */
 
@@ -761,7 +761,7 @@
 	color: var(--cx-error);
 }
 
-/* ── Agent view: ACP conversation + terminals ──────────────────────────── */
+/* ── Agent view: session conversation + terminals ───────────────────────── */
 
 .agent-view {
 	display: grid;
@@ -915,8 +915,8 @@
 	padding: 1px 4px;
 }
 
-/* ACP conversation column. */
-.acp {
+/* Session conversation column. */
+.session {
 	display: flex;
 	flex-direction: column;
 	min-height: 0;
@@ -924,7 +924,7 @@
 	overflow: hidden;
 }
 
-.acp-stream {
+.session-stream {
 	flex: 1;
 	overflow-y: auto;
 	padding: 14px;
@@ -1283,7 +1283,7 @@
 }
 
 /* The prompt composer (non-functional in the mockup). */
-.acp-composer {
+.session-composer {
 	flex: none;
 	border-top: 1px solid var(--cx-border);
 	padding: 10px 12px;
@@ -1292,7 +1292,7 @@
 	align-items: flex-end;
 }
 
-.acp-composer .field {
+.session-composer .field {
 	flex: 1;
 	background: var(--cx-bg-panel);
 	border: 1px solid var(--cx-border);
@@ -1302,7 +1302,7 @@
 	font-size: 12px;
 }
 
-.acp-composer .send {
+.session-composer .send {
 	background: var(--cx-accent);
 	border: none;
 	border-radius: var(--cx-radius-sm);
@@ -2362,14 +2362,14 @@
 
 /* Fleet panes host a full-height flex conversation, not a scrolling document —
  * the counterpart of .r-pane { overflow-y: auto }. The border-right suppression
- * mirrors the dock's own .acp override against .acp's base border
+ * mirrors the dock's own session override against the session base border
  * (dock-in-sidebar D3/T1). */
 .r-pane.fleet {
 	display: flex;
 	overflow: hidden;
 }
 
-.r-pane.fleet .acp {
+.r-pane.fleet .session {
 	flex: 1;
 	min-height: 0;
 	border-right: none;
@@ -2716,7 +2716,7 @@
 	overflow: hidden;
 }
 
-.av-pane-body .acp {
+.av-pane-body .session {
 	flex: 1;
 	min-height: 0;
 	border-right: none;
@@ -3246,7 +3246,7 @@
 	font-size: 11px;
 }
 
-/* Conversation messages reuse the .msg family from the ACP view (role coloring,
+/* Conversation messages reuse the .msg family from the session view (role coloring,
  * head layout). Channel-specific bits below. */
 .msg-text {
 	white-space: pre-wrap;

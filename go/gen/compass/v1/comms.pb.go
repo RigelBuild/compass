@@ -3,7 +3,7 @@
 // agents are first-class accounts in a management hierarchy. Channels nest in
 // channel groups, so a user's space (e.g. group "matt" → channel
 // "coordination", the path "matt.coordination") carries group-level
-// permissions. An agent's interactive surface — its ACP UI: the conversation
+// permissions. An agent's interactive surface: the session conversation
 // (text and structured asks) plus terminal and file panes — renders in the
 // agent's channel; the AgentWorkspace is the observation pane over that session
 // (D5), its access a projection of channel membership. All
@@ -942,16 +942,14 @@ func (x *PinnedEntry) GetPinnedByAccountId() string {
 	return ""
 }
 
-// An agent's interactive surface: the observation pane for one agent account —
-// the ACP conversation plus the terminal and file panes the ADE hosts. Demoted
-// to the observation pane (D5, fork f): no longer a message container, and its
-// access is a projection of the agent's channel membership rather than a
-// separate participant ACL.
+// An agent's interactive surface: the session observation pane for one agent
+// account, including the conversation, terminal, and file panes the ADE hosts.
+// Demoted to the observation pane (D5, fork f); access projects channel membership.
 type AgentWorkspace struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Server-assigned stable id.
 	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	// The agent account whose ACP session this surface renders.
+	// The agent account whose session this surface renders.
 	AgentAccountId string `protobuf:"bytes,2,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
@@ -1096,8 +1094,8 @@ func (x *Topic) GetArchived() bool {
 }
 
 // A message in a channel — the persisted unit of the comms layer, held in the
-// Server store of record (D12). An agent's ACP turn is a channel message whose
-// blocks stream in and update as the session runs (see MessageUpdated).
+// Server store of record (D12). An agent turn is a channel message whose blocks
+// stream in and update as the session runs (see MessageUpdated).
 type Message struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Server-assigned stable id.
@@ -1111,7 +1109,7 @@ type Message struct {
 	// The posting account (a user or an agent).
 	AuthorAccountId string `protobuf:"bytes,3,opt,name=author_account_id,json=authorAccountId,proto3" json:"author_account_id,omitempty"`
 	AtUnixMs        int64  `protobuf:"varint,4,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
-	// Ordered content; mirrors ACP session/update blocks (D5).
+	// Ordered content; mirrors session-update blocks from the SDK (D5).
 	Blocks        []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1183,10 +1181,9 @@ func (x *Message) GetBlocks() []*MessageBlock {
 }
 
 // One content block in a message: the durable conversation the comms layer
-// persists. `text` is settled markdown; `ask` is a structured question the ACP
-// surface needs (D5). The execution trace (thought / tool calls / plans /
-// diffs) is delivered as opaque OMP-native session data on a dedicated stream,
-// not as comms blocks.
+// persists. `text` is settled markdown; `ask` is a structured question the
+// session surface needs (D5). The execution trace (thought / tool calls / plans /
+// diffs) is delivered as opaque OMP-native session data on a dedicated stream.
 type MessageBlock struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Block:
@@ -3884,8 +3881,8 @@ func (x *UpdatePinnedBoardResponse) GetChannel() *Channel {
 
 type OpenAgentWorkspaceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The agent account to open the workspace (ACP surface) for. A `@handle`; the
-	// server resolves it to an account id; unknown → NOT_FOUND.
+	// The agent account to open the workspace (session surface) for. A `@handle`;
+	// the server resolves it to an account id; unknown → NOT_FOUND.
 	AgentHandle   string `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
