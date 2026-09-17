@@ -118,15 +118,13 @@ func TestCrossProcessTeardown(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman not usable in this environment")
 	}
-
 	ctx := context.Background() // test root context (rule://go-thread-context exemption for a _test.go root)
-
 	// 1. Build the three stack child binaries AND the compass-stack binary itself
 	// into one dir. The subprocesses resolve the children via exec.LookPath, so
 	// the dir must be first on their PATH; compass-stack is invoked by full path.
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(binDir)
+	env := stackEnv(t, binDir)
 
 	// A short-path, free-port config resolved through the SAME resolveConfig the
 	// CLI uses (no duplicated config logic); the fixture's derived socket paths
@@ -283,7 +281,11 @@ func buildStackBinary(t *testing.T, binDir string) string {
 // children (looked up by bare name via exec.LookPath) to the freshly built
 // binaries. PATH is rebuilt (not merely re-appended) so there is exactly one
 // PATH entry and binDir is unambiguously first.
-func stackEnv(binDir string) []string {
+func stackEnv(t *testing.T, binDir string) []string {
+	t.Helper()
+	// Seeded here, not left to the caller: this snapshots the environment, so a
+	// provider exported afterwards would never reach the subprocess.
+	seedMasterKeyProvider(t)
 	base := os.Environ()
 	out := make([]string, 0, len(base)+1)
 	oldPath := ""
