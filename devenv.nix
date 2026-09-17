@@ -205,6 +205,12 @@ in
     # Linux-only: chromium is Linux-only so darwin cannot run the gate, and
     # FONTCONFIG_FILE is process-tree-wide.
     FONTCONFIG_FILE = (import tools/toolchain/chromium-e2e-env.nix).fontconfig;
+
+    # The gate's baselines are captured against this exact Chromium, so a dev
+    # shell that leaves it unset falls through playwright.config.ts's default to
+    # the host browser and reds every shot on version skew alone.
+    PLAYWRIGHT_CHROMIUM_PATH =
+      "${(import tools/toolchain/chromium-e2e-env.nix).chromium}/bin/chromium";
   };
 
   enterShell = ''

@@ -2,9 +2,27 @@ import { createServer } from "node:net";
 import { defineConfig, devices } from "@playwright/test";
 
 // The repo's first browser harness (RIG-2034 T1). Drives `vite dev` against the in-memory
-// stub store and pixel-diffs full-page screenshots of the core surfaces. Browser resolution:
-// the cached ms-playwright binaries are unpatched for NixOS (fail on libnspr4.so), so we
-// point Playwright at the nix-wrapped Chromium via launchOptions.executablePath.
+// stub store and pixel-diffs full-page screenshots of the core surfaces.
+
+// Both of these come from the dev shell (devenv.nix) or CI, which realize them from the
+// same pinned helper. There is no fallback on purpose: development is devenv-only, and
+// every default here is silently wrong. The cached ms-playwright binaries are unpatched
+// for NixOS (they fail on libnspr4.so), and an unpinned browser or font universe makes the
+// committed baselines a function of the box rather than the repo.
+function requirePinnedEnv(name: string): string {
+	const value = process.env[name];
+	if (value === undefined || value === "") {
+		throw new Error(
+			`${name} is not set. The visual gate needs the pinned browser and font ` +
+				`config from the dev shell; run this under devenv (\`direnv exec . moon run ` +
+				`compass-ui:visual-gate\`) rather than a bare shell.`,
+		);
+	}
+	return value;
+}
+
+const chromiumPath = requirePinnedEnv("PLAYWRIGHT_CHROMIUM_PATH");
+requirePinnedEnv("FONTCONFIG_FILE");
 
 // The fixture dev server binds an OS-assigned ephemeral port, never a fixed one. A fixed
 // port collides with any dev server already on it and `--strictPort` turns that into a
@@ -51,15 +69,7 @@ export default defineConfig({
 		screenshot: "off",
 		reducedMotion: "reduce",
 		deviceScaleFactor: 1,
-		launchOptions: {
-			// Env-overridable so this config carries no box-specific path in the
-			// shared tree. Default is the nix-wrapped Chromium on Matt's dev box
-			// (the cached ms-playwright binaries are unpatched for NixOS — see
-			// above); CI or another box exports PLAYWRIGHT_CHROMIUM_PATH.
-			executablePath:
-				process.env.PLAYWRIGHT_CHROMIUM_PATH ??
-				"/etc/profiles/per-user/mattw/bin/chromium",
-		},
+		launchOptions: { executablePath: chromiumPath },
 	},
 	projects: [
 		{
