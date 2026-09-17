@@ -545,6 +545,8 @@ Interfaces:
   today) and **token-usage** events from the bundled OMP gateway (the upstream
   prerequisite); the existing store open/migration machinery behind
   `0001_init.sql`.
+- The token-usage events arrive as RIG-1715 `TokenUsageEvent`; that record's
+  T4 emits them, and this task owns the `UsageStore` they land in.
 - Produces: a **`UsageStore` interface** over an append-only event write plus
   rollup/series reads (keyed by tenant × account × window), with a Postgres
   implementation as the sole backend the core ships, plus an in-memory reference.
@@ -610,6 +612,8 @@ time-series charts are needed.
 Interfaces:
 
 - Consumes: T2's generated `@compass/client` RPCs.
+- T3 consumes RIG-1715 `UsageService.GetUsageSeries`/`GetProviderQuota`
+  directly, since T2 adds no usage RPCs of its own.
 - Produces: `UsageBar` reading live per-account usage (replacing the
   `STUB_USAGE` import); a usage/spend view rendering T2's time-series JSON.
 
@@ -688,7 +692,7 @@ prerequisite. Execute Track B first; Track A unblocks when the gateway record
 lands.
 
 [UNBLOCKED (RIG-1715): the gateway record has landed, so Track A's
-prerequisite is met. T2 is superseded — see its entry below.]
+prerequisite is met.]
 
 Track B — unblocked (do first):
 
@@ -702,6 +706,9 @@ Track B — unblocked (do first):
       Grafana dashboards for operators + Rigel.
 
 Track A — blocked on the OMP-gateway prerequisite:
+
+[UNBLOCKED (RIG-1715): the prerequisite is met, so T1 and T3 are executable.
+T2 is superseded — see its entry below.]
 
 - [ ] PREREQUISITE (upstream, not a task here — write its design record FIRST):
       OMP-gateway-into-Server — gates T1-T3.
