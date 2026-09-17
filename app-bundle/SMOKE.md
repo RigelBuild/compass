@@ -1,23 +1,135 @@
-# Compass client-app dev-box smoke (T-4)
+# Compass packaged-app smoke
 
-Acceptance for the packaged client tarball: the packaged `compass-app` — resolved
-off the unpacked bundle `bin/` (the `/nix/store` symlink the tarball ships),
-never a `go build` output and never the devenv PATH — launches, connects to a
-**live headless stack** over its TLS network door, renders the board, drives one
-agent session to a running container the stack owns, and reconnects from the OS
-keychain on relaunch with no bearer re-entry.
+This runbook validates the packaged `compass-app` in embedded and client modes.
+Build the tarball with `moon run compass-app-bundle:build`, then unpack the
+result. The bundle is a non-relocatable dev-box artifact. Its `bin` entry is a
+`/nix/store` symlink. The bundle ships the `compass-app` shell and three
+sidecars: `compass-stack`, `compass-server`, and `compass-runner`
+(`app-bundle/build.sh:88-97`). It does not ship postgres tooling; embedded mode
+runs stock postgres:18 in a rootless podman container (`app-bundle/build.sh:6-7`).
 
-The client bundle ships only the shell (`compass-app` + `dist/` + desktop file +
-LICENSE, DL-238). It spawns, supervises, and tears down **no** stack: the stack
-is a separate headless deployment the app dials. So this runbook has no embedded
-bring-up — the client never spawns the stack. The stack is stood up on its own by
-`compass-stack` (step 1), and `compass-app` only dials it.
+Run this on one Linux dev box with the build's `/nix/store` realized. Use the
+bundle's binaries under `bin/`, never a `go build` output or an ambient build
+PATH.
 
-Run it on **one dev box** that plays both roles: `compass-stack` brings the
-headless stack (its private postgres + a podman-run agent container) up locally,
-and `compass-app` dials it over the **loopback** TLS door (`https://127.0.0.1`).
-That exercises the whole client path — connect screen → TLS probe → keychain →
-board → one agent session to a real container — end to end.
+## What the automated gates cover
+
+- **`ci / e2e`** stands up a real headless stack with `compass-stack`,
+  `compass-postgres`, and a podman-run agent container. It gates the stack-side
+  bring-up.
+- The **multi-window gtk4 e2e** lane compiles and runs `compass-app` under a
+  virtual framebuffer and exercises the shell and windowing surface.
+
+Neither gate drives the packaged tarball's webview against a live stack and a
+real agent container. The packaged-app smoke therefore remains manual.
+
+## Part (a): embedded mode
+
+Embedded mode is the zero-config path. The app runs host preflight, brings up
+the local stack, resolves the caller identity, and then opens the board. The
+pipeline order is preflight, `compass-stack up`, then `WhoAmI`
+(`go/cmd/compass-app/embedded.go:111-114`).
+
+### 1. Check embedded prerequisites
+
+Embedded mode requires Linux or macOS, rootless podman, and podman 4.3 or
+newer. These are fatal host checks. The agent image is checked locally but is
+pulled from GHCR by the stack when it is missing
+(`go/internal/preflight/preflight.go:96-101`,
+`go/internal/preflight/preflight.go:156-174`,
+`go/cmd/compass-app/embedded.go:407-423`). Confirm rootless podman and the
+image before the smoke to avoid a cold pull:
+
+```bash
+podman info --format '{{.Host.Security.Rootless}}'   # -> true
+podman version --format '{{.Client.Version}}'         # -> 4.3 or newer
+podman pull ghcr.io/rigelbuild/compass-agent:latest
+```
+
+### 2. Build and unpack the bundle
+
+```bash
+moon run compass-app-bundle:build
+PREFIX=$(mktemp -d)
+tar -xzf app-bundle/compass-app-<version>-linux-amd64.tar.gz -C "$PREFIX"
+BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
+```
+
+`<version>` is `0.1.0+g<short-sha>`. Keep the bundle's `bin/compass-app`,
+`bin/compass-stack`, `bin/compass-server`, and `bin/compass-runner` together.
+The build stages all three sidecars into that directory
+(`app-bundle/build.sh:88-97`).
+
+### 3. Launch with no `app.toml`
+
+Do not create an `app.toml` for this part. An absent file resolves to embedded
+mode, the zero-config default (`go/internal/appconfig/appconfig.go:170-208`).
+The app resolves `compass-stack` as a sibling of the running `compass-app`
+executable before falling back to PATH
+(`go/cmd/compass-app/embedded.go:297-323`). It prepends that same `bin/`
+directory for the supervised sidecars (`go/cmd/compass-app/embedded.go:325-355`).
+Do not install `compass-stack` on PATH.
+
+On a headless box, launch through the same virtual framebuffer setup used by
+the existing client smoke:
+
+```bash
+BINENV=$(nix build --no-link --print-out-paths \
+  -f tools/toolchain/gtk-e2e-env.nix bin)
+PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
+  xvfb-run -a "$BUNDLE/bin/compass-app"
+```
+
+The embedded app invokes this exact stack command:
+
+```text
+compass-stack up --state-dir <state-dir> --image ghcr.io/rigelbuild/compass-agent:latest --socket <socket>
+```
+
+`stackUpArgs` passes only `up`, `--state-dir`, `--image`, and `--socket`
+(`go/cmd/compass-app/embedded.go:134-150`). It deliberately does not pass
+`--database`, `--postgres-image`, `--collector-image`, or `--listen`.
+
+### 4. Confirm the embedded board and run one session
+
+Wait for the app to bring the stack to Ready. It then resolves the caller with
+`WhoAmI` over the local socket (`go/cmd/compass-app/embedded.go:268-273`).
+Confirm that the app opens the board directly, without a client connect screen
+or bearer entry. Embedded mode has no client `server_url` or `ca_cert`
+configuration (`go/internal/appconfig/appconfig.go:78-85`), and its identity
+comes from that local-socket call.
+
+From the board, start one agent session. Confirm that it reaches a running
+agent container under the stack's podman runtime.
+
+### 5. Quit and stop the embedded stack
+
+Use the app action that explicitly quits and stops the stack. The quit
+controller runs `compass-stack down` and then quits the app
+(`go/cmd/compass-app/lifecycle.go:38-74`). Do not run a manual `compass-stack
+down` for this part. After the app closes, confirm that no stack containers or
+private postgres container remain:
+
+```bash
+podman ps -a
+```
+
+A lingering stack here is a real failure, but the app exits either way: if
+`compass-stack down` fails the app still quits and logs the error, because
+trapping the user in a live window is worse and a lingering stack is the safe
+failure (OQ-6, `go/cmd/compass-app/lifecycle.go:57-60`). So read the app's log
+as well as `podman ps -a` before calling this step green.
+
+Remove the unpacked bundle and any temporary state after confirming teardown:
+
+```bash
+rm -rf "$PREFIX"
+```
+
+## Part (b): client mode
+
+This part points the packaged app at a live headless stack. The client uses the
+stack's TLS network door and does not spawn or supervise that stack.
 
 > **Why loopback, not a second machine.** `compass-stack` self-generates its TLS
 > anchor with **loopback-only SANs** (`127.0.0.1`, `::1`, `localhost` —
@@ -29,46 +141,21 @@ board → one agent session to a real container — end to end.
 > (OQ-3). The loopback bring-up drives the identical `compass-app` code path; the
 > only untested delta is cross-host networking, which is not client-app logic.
 
-## What the automated gates cover
-
-- **`ci / e2e`** stands up a real headless stack (`compass-stack` /
-  `compass-postgres` / a podman-run agent container) and drives it end to end on
-  every PR. That is the stack-side regression check; a green PR has already
-  proven the headless bring-up.
-- The **multi-window gtk4 e2e** step compiles and runs `compass-app` under a
-  virtual framebuffer and exercises the shell/windowing surface.
-
-Neither drives the **packaged tarball's** GUI webview against a live stack and a
-real agent container — a rendered webview over a TLS door plus a podman container
-is the leg a bare CI runner cannot reach, so it stays manual.
-
-## What stays manual (this runbook)
-
-Run this on a Linux dev box with the build's `/nix/store` realized (the build
-box, or one sharing its store — the bundle is a non-relocatable dev-box artifact,
-its `bin` entry being a store symlink), and with **rootless podman** available
-(the stack runs the agent container).
-
 ### 1. Bring up a headless stack to connect to
 
-The stack runs the agent container over rootless podman; pre-pull the image so
+The stack runs the agent container over rootless podman. Pre-pull the image so
 bring-up does not cold-pull:
 
 ```bash
-podman info --format '{{.Host.Security.Rootless}}'   # → true
-# The bundle does NOT ship the agent image (DL-112); compass-stack pulls
-# ghcr.io/rigelbuild/compass-agent:latest from GHCR at first run. Pre-pull to
-# avoid a cold-pull timeout on bring-up.
+podman info --format '{{.Host.Security.Rootless}}'   # -> true
 podman pull ghcr.io/rigelbuild/compass-agent:latest
 ```
 
-Stand up the stack with its **TLS network door** on the loopback port (the client
-dials `https://`, never cleartext — `go/internal/appconfig/appconfig.go:132-135`).
-`compass-stack` self-manages the door's cert — it generates a loopback keypair
-under `--state-dir` (`tls.crt`/`tls.key`,
-`go/internal/stack/adapters/cert.go:53-55`) and threads it into the
-`compass-server` it spawns (`go/internal/stack/spec.go:25-33`), so you pass **no**
-cert flags:
+Stand up the stack with its TLS network door on the loopback port. The client
+dials `https://`, never cleartext (`go/internal/appconfig/appconfig.go:130-168`).
+`compass-stack` generates the loopback certificate under `--state-dir` and
+passes it to `compass-server` (`go/internal/stack/adapters/cert.go:53-55`,
+`go/internal/stack/spec.go:25-33`):
 
 ```bash
 STATE=$(mktemp -d); RT=$(mktemp -d)
@@ -76,82 +163,66 @@ compass-stack up \
   --state-dir "$STATE" --socket "$RT/server.sock" \
   --listen 127.0.0.1:50052 --linger \
   --image ghcr.io/rigelbuild/compass-agent:latest
-# returns once the stack is Ready (private postgres + compass-server +
-# compass-runner up); the children linger.
 ```
 
-The spawned `compass-server` writes a **bootstrap-admin token** (0600) at startup
-(`go/cmd/compass-server/main.go:277-283`). `compass-stack` does not pass the
-server a `--state-dir`, so the server defaults it to the socket's parent
-(`main.go:279`) — i.e. `$RT` here — and the token lands at `$RT/admin-token`. Read
-it out as the bearer the client will paste:
+The spawned server writes a bootstrap-admin token at `$RT/admin-token`
+(`go/cmd/compass-server/main.go:277-283`). Read it for the connect screen:
 
 ```bash
-cat "$RT/admin-token"      # the bearer for step 3's connect screen
+cat "$RT/admin-token"
 ```
 
-The client also needs the door's cert as its `ca_cert` trust anchor: it is the
-`compass-stack`-generated `$STATE/tls.crt` (step 2). The loopback `server_url` is
+The client trust anchor is `$STATE/tls.crt`, and its server URL is
 `https://127.0.0.1:50052`.
 
-### 2. Build + unpack the client bundle
+### 2. Build and unpack the client bundle
 
 ```bash
-moon run compass-app-bundle:build            # → app-bundle/compass-app-<version>-linux-amd64.tar.gz
+moon run compass-app-bundle:build
 PREFIX=$(mktemp -d)
 tar -xzf app-bundle/compass-app-<version>-linux-amd64.tar.gz -C "$PREFIX"
 BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 ```
 
-`<version>` is `0.1.0+g<short-sha>`.
-
-Point the client's `app.toml` at the stack: `mode = "client"`, `server_url =
-"https://127.0.0.1:50052"` (a validated https URL), and `ca_cert =
-"$STATE/tls.crt"` (the stack's self-signed door cert)
-(`compass-native-client-mode/design.md:67-71`). The bearer goes in the connect
-screen, **never** in `app.toml` (DL-109).
+Create the client's `app.toml` with `mode = "client"`, the HTTPS
+`server_url`, and `ca_cert` set to `$STATE/tls.crt`
+(`compass-native-client-mode/design.md:67-71`). Put the bearer in the connect
+screen, never in `app.toml` (DL-109).
 
 ### 3. Launch, connect, and render the board
 
-A virtual framebuffer is required on a headless box:
-
 ```bash
-# realize xvfb the same way CI's gtk4 e2e gate does (path is repo-root-relative)
 BINENV=$(nix build --no-link --print-out-paths \
   -f tools/toolchain/gtk-e2e-env.nix bin)
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
   xvfb-run -a "$BUNDLE/bin/compass-app"
 ```
 
-With no stored token, the app paints the **connect screen**: the `server_url`
-shown read-only (it comes from `app.toml`, not user entry) and one input for the
-**bearer** (the step-1 `admin-token`). Paste it and connect. The Go shell probes
-`GetServerInfo` → `apiVersion == "compass.v1"` → `WhoAmI`, writes the token to
-the OS keychain, arms the bearer injector, and boots into the board
-(`compass-native-client-mode/design.md:185-226`). The board renders live over
-the TLS door — "connected as `<account>`".
+With no stored token, the app paints the connect screen. The server URL is
+read-only and comes from `app.toml`; the bearer is the `$RT/admin-token` value.
+Paste it and connect. The shell probes `GetServerInfo`, calls `WhoAmI`, writes
+the token to the OS keychain, arms the bearer injector, and boots into the
+board (`compass-native-client-mode/design.md:185-226`). Confirm the board
+renders live over the TLS door.
 
 ### 4. Drive one agent session to a running container
 
-From the board, start one agent session. Confirm the session reaches a
-**running container** — the container comes up under the stack's podman runtime
-(the client only renders). This exercises the full client → TLS door → server →
-runner → agent-container path against the live stack.
+From the board, start one agent session. Confirm the session reaches a running
+container under the stack's podman runtime.
 
-### 5. Quit + relaunch reconnects from the keychain
+### 5. Quit and relaunch from the keychain
 
-Quit the app, then relaunch it exactly as in step 3:
+Quit the app, then relaunch it:
 
 ```bash
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
   xvfb-run -a "$BUNDLE/bin/compass-app"
 ```
 
-Auto-connect reads the stored bearer from the OS keychain, the probe succeeds,
-and boot proceeds **straight to the board** — no connect screen, no bearer
-re-entry (`compass-native-client-mode/design.md:185-186`, the restart-survives
-gate requirement). The keychain entry is keyed by `service "compass-app"` + the
-server URL, so it binds to this exact stack.
+Auto-connect reads the stored bearer from the OS keychain and boots straight to
+the board with no connect screen or bearer re-entry
+(`compass-native-client-mode/design.md:185-186`). The keychain entry is keyed
+by service `compass-app` and the server URL.
 
 ### 6. Cleanup
 
@@ -161,22 +232,30 @@ compass-stack down \
   --state-dir "$STATE" --socket "$RT/server.sock" \
   --listen 127.0.0.1:50052 \
   --image ghcr.io/rigelbuild/compass-agent:latest
-# stops the compass-server + private postgres + agent container.
 rm -rf "$STATE" "$RT"
 ```
 
 ## Manual checklist
 
-What a human confirms on the dev box (the headless bring-up itself is the
-`ci / e2e` gate's job — not on this list):
+### Embedded mode
 
-- [ ] client `app.toml` is client-only (`mode = "client"`, https `server_url`,
-      `ca_cert` = the stack's `tls.crt`); no token in it (§2)
-- [ ] `compass-app` launches and paints the connect screen with the server URL
-      read-only and one bearer input (§3)
-- [ ] pasting the stack's bearer connects and the board renders live over the
-      TLS door — "connected as `<account>`" (§3)
-- [ ] one agent session driven from the board reaches a running container under
-      the stack's podman runtime (§4)
-- [ ] quit + relaunch auto-connects from the OS keychain — straight to the
-      board, no connect screen, no bearer re-entry (§5)
+- [ ] no `app.toml` is present, so launch selects embedded mode (§Part (a), 3)
+- [ ] rootless podman and podman 4.3 or newer are available (§Part (a), 1)
+- [ ] the bundle contains the shell and three sidecars (§Part (a), 2)
+- [ ] the app brings the stack to Ready and opens the board without a connect
+      screen or bearer (§Part (a), 4)
+- [ ] one agent session reaches a running container (§Part (a), 4)
+- [ ] explicit quit-and-stop closes the app and leaves no stack containers or
+      private postgres container (§Part (a), 5)
+
+### Client mode
+
+- [ ] client `app.toml` has `mode = "client"`, an HTTPS `server_url`, and
+      `ca_cert`; it has no bearer (§Part (b), 2)
+- [ ] the app launches with a read-only server URL and one bearer input (§Part
+      (b), 3)
+- [ ] pasting the bearer connects and the board renders over the TLS door (§Part
+      (b), 3)
+- [ ] one agent session reaches a running container (§Part (b), 4)
+- [ ] quit and relaunch auto-connects from the OS keychain, with no connect
+      screen or bearer re-entry (§Part (b), 5)
