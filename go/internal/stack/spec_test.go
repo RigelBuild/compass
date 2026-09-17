@@ -117,3 +117,53 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 		})
 	}
 }
+
+// The empty arm is the load-bearing one: an unset SecretProvider must yield a
+// byte-identical argv, since the embedded supervisor and compass-stack's
+// resolveConfig both leave it zero.
+func TestServerSpecForwardsSecretProviderConditionally(t *testing.T) {
+	base := Config{
+		SocketPath:  "/state/compass.sock",
+		DatabaseDSN: "host=/state/pg dbname=compass",
+		ListenAddr:  "127.0.0.1:50052",
+	}
+	cert := CertResult{CertPath: "/state/tls.crt", KeyPath: "/state/tls.key"}
+
+	tests := []struct {
+		name           string
+		secretProvider string
+		want           []string
+	}{
+		{
+			name: "empty provider preserves five-flag argv",
+			want: []string{
+				"--socket", base.SocketPath,
+				"--database", base.DatabaseDSN,
+				"--listen", base.ListenAddr,
+				"--tls-cert", cert.CertPath,
+				"--tls-key", cert.KeyPath,
+			},
+		},
+		{
+			name:           "provider set appends flag and value",
+			secretProvider: "dotenv:///state/secrets.env",
+			want: []string{
+				"--socket", base.SocketPath,
+				"--database", base.DatabaseDSN,
+				"--listen", base.ListenAddr,
+				"--tls-cert", cert.CertPath,
+				"--tls-key", cert.KeyPath,
+				"--secret-provider", "dotenv:///state/secrets.env",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := base
+			cfg.SecretProvider = tt.secretProvider
+			if got := serverSpec(cfg, cert).Args; !slices.Equal(got, tt.want) {
+				t.Fatalf("serverSpec Args = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
