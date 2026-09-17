@@ -261,8 +261,8 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err
 	// between the last poll iteration and here must not be handed to the VMM.
 	for _, c := range waiting {
 		if c.hasExited() {
-			return nil, fmt.Errorf("microvm: %s exited before cloud-hypervisor was started: %w; log tail:\n%s",
-				c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+			return nil, fmt.Errorf("microvm: %w",
+				deathError(c, phaseVMMStart))
 		}
 	}
 
@@ -482,7 +482,8 @@ func startChild(c *child) error {
 		// The single Wait for this child. waitErr is written BEFORE the close, so
 		// any reader that received from c.exited sees it (happens-before). An
 		// *exec.ExitError from a killed daemon is expected and filtered by
-		// waitResult at each reader, not here.
+		// waitResult at each teardown reader, not here; a startup reader renders
+		// it through deathError instead.
 		c.waitErr = c.cmd.Wait()
 		close(c.exited)
 	}()
@@ -510,8 +511,7 @@ func waitForSockets(ctx context.Context, paths []string, waiting []*child, timeo
 		// readiness, so this check precedes the Stat sweep.
 		for _, c := range waiting {
 			if c.hasExited() {
-				return fmt.Errorf("%s exited before its socket was serving: %w; log tail:\n%s",
-					c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+				return deathError(c, phaseSocket)
 			}
 		}
 		missing := ""
@@ -650,6 +650,74 @@ func waitResult(name string, err error) error {
 		return nil // killed/non-zero exit is the expected teardown outcome
 	}
 	return fmt.Errorf("waiting for %s: %w", name, err)
+}
+
+// deathCause renders why a child that has already exited died, for an operator
+// reading a startup failure.
+//
+// It deliberately does NOT go through waitResult. waitResult answers a
+// different question — "did the wait itself fail?" — and returns nil for an
+// *exec.ExitError, because a signalled or non-zero exit is the expected
+// outcome of a deliberate teardown. A daemon that dies during STARTUP is also
+// an ExitError, so routing that through waitResult yields nil and a caller
+// wrapping it with %w renders the literal "%!w(<nil>)" where the cause belongs,
+// with errors.Unwrap returning nil. That destroys the whole point of the
+// message.
+//
+// The returned string is for humans, not for errors.Is — a startup death has no
+// sentinel worth matching, and the ExitError is already reported verbatim.
+func deathCause(c *child) string {
+	if c.waitErr == nil {
+		return "exited cleanly (status 0) without serving"
+	}
+	return c.waitErr.Error()
+}
+
+// startupPhase names what a child failed to reach before it died.
+type startupPhase string
+
+const (
+	phaseVMMStart startupPhase = "cloud-hypervisor was started"
+	phaseSocket   startupPhase = "its socket was serving"
+	phasePidfile  startupPhase = "its pidfile could be recorded"
+)
+
+// allStartupPhases is the list the guard test ranges over. Keep it in step with
+// the const block by hand: phaseText's switch fails a constant that is never
+// handled, but nothing checks membership of THIS list, so a phase handled there
+// and missing here is covered by no test and caught by no gate. It returns a
+// fresh slice so no test can scribble on another's copy.
+func allStartupPhases() []startupPhase {
+	return []startupPhase{phaseVMMStart, phaseSocket, phasePidfile}
+}
+
+// phaseText renders a phase. The switch is deliberate rather than a plain
+// string conversion: it gives exhaustive something to check, so adding a
+// constant and not handling it fails lint. Two gaps it does NOT close — a
+// constant handled here but absent from allStartupPhases, and a bare untyped
+// literal at a callsite, which a defined string type accepts silently. An
+// unlisted value still renders, so a mistake degrades the message rather than
+// killing the launch it was reporting on.
+//
+// The fallthrough return MUST stay outside the switch: the repo sets
+// exhaustive's default-signifies-exhaustive, so folding it into a default arm
+// disables the check with no lint or test failure to announce it.
+func phaseText(phase startupPhase) string {
+	switch phase {
+	case phaseVMMStart, phaseSocket, phasePidfile:
+		return string(phase)
+	}
+	return string(phase)
+}
+
+// deathError builds the error a startup site reports when a child it was
+// waiting on has already exited. Every such site goes through here so the
+// death cause cannot regress at one site while another stays guarded: the
+// %!w(<nil>) defect this replaced existed at three sites because each built
+// its own message.
+func deathError(c *child, phase startupPhase) error {
+	return fmt.Errorf("%s exited before %s: %s; log tail:\n%s",
+		c.name, phaseText(phase), deathCause(c), tailFile(c.logPath))
 }
 
 // Running reports whether the named child's process is still alive. It is used
@@ -799,8 +867,8 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 // read fails for a reason that is NOT a pidfile fault: the child is simply
 // dead. Reporting a /proc path there buries the real cause, which is in the
 // daemon's own log, so a confirmed-dead child gets the SAME error shape launch
-// uses for a daemon that died before the VMM was started (name the daemon,
-// wrap waitResult, carry the log tail).
+// uses for a daemon that died before the VMM was started: it goes through
+// the same deathError builder.
 //
 // BOTH conditions are required: procReadMeansGone alone could describe a /proc
 // that vanished under a still-live pid (it cannot, but the pairing makes the
@@ -814,8 +882,8 @@ func (vm *VM) startRecordedChild(c *child, dir, pidfileName string) error {
 // and no window exists where the dir under-names a child that may have run.
 func pidfileWriteError(c *child, err error) error {
 	if procReadMeansGone(err) && c.hasExited() {
-		return fmt.Errorf("microvm: %s exited before its pidfile could be recorded: %w; log tail:\n%s",
-			c.name, waitResult(c.name, c.waitErr), tailFile(c.logPath))
+		return fmt.Errorf("microvm: %w",
+			deathError(c, phasePidfile))
 	}
 	return fmt.Errorf("microvm: recording %s pidfile: %w", c.name, err)
 }
