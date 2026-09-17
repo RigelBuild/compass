@@ -85,32 +85,21 @@ const workspaceRoot = join(here, "..", "..");
 const guestDir = join(workspaceRoot, "guest-image");
 const layoutDir = flag("layout") ?? join(guestDir, "oci-layout");
 
-// The same three attrs the build gate realises, so a publish never packs a
-// triple the gate has not already built.
-const built = run(
-	"nix",
-	[
-		"build",
-		"-f",
-		"default.nix",
-		"compass-guest-kernel",
-		"compass-guest-rootfs",
-		"compass-guest-initrd",
-		"--no-link",
-		"--print-out-paths",
-	],
-	guestDir,
-);
+// Realise through the gate's own build task, so one command definition governs
+// both the pre-merge build and what gets published; a second copy of the nix
+// invocation here could drift from the gate without either side noticing.
+const built = run("moon", ["run", "compass-guest-image:build"], workspaceRoot);
 if (!built.ok)
 	fail(
 		EXIT.badLayout,
 		`realising the guest assets failed: ${built.stderr.trim()}`,
 	);
+// moon frames task output with banner lines carrying its block glyphs and a
+// trailing summary, so drop those rather than trusting line positions.
 const outPaths = built.stdout
-	.trim()
 	.split("\n")
 	.map((line) => line.trim())
-	.filter((line) => line !== "");
+	.filter((line) => line.startsWith("/"));
 const [kernelDir, rootfsPath, initrdPath] = outPaths;
 if (
 	kernelDir === undefined ||
