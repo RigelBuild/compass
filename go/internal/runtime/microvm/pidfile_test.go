@@ -679,6 +679,15 @@ func TestStartRecordedChildNamesADeadChildNotAProcPath(t *testing.T) {
 	if !strings.Contains(msg, "could not setup id mappings") {
 		t.Errorf("error %q does not carry the daemon's log tail", msg)
 	}
+	// The death-cause slot, asserted through the production callsite rather
+	// than the builder: the assertions above straddle it (the name before, the
+	// log tail after), so they stayed green while it rendered "%!w(<nil>)".
+	if strings.Contains(msg, "%!") {
+		t.Errorf("error %q carries a Go formatting-verb error; the death cause was fed a nil", msg)
+	}
+	if !strings.Contains(msg, "exit status") {
+		t.Errorf("error %q does not report the daemon's exit status", msg)
+	}
 }
 
 // TestPidfileWriteErrorKeepsGenuineFaultsFatal is the other arm: only a
