@@ -21,10 +21,10 @@ export const attr = (v: string, fence?: string): string =>
 
 // `attr` guards a tag attribute; `flat` guards a marker LINE — a line break in an untrusted
 // value would split a one-line `[ask]`/`[answered]` record into a second line with no fence
-// or marker. Constrain rather than enumerate: `\n` alone missed `\r`, U+2028/2029, VT, FF,
-// NEL and C0 controls incl. ESC, so the class (`Cc`/`Zl`/`Zp` + whitespace) is the property.
+// or marker. Tab and plain spaces survive for display fidelity; every other control and
+// space separator collapses, since Zs (U+3000, NBSP) can forge alignment inside the line.
 export const flat = (v: string): string =>
-	v.replaceAll(/[\p{Cc}\p{Zl}\p{Zp}\s]+/gu, " ");
+	v.replaceAll(/(?:(?![\t ])[\p{Cc}\p{Zs}\p{Zl}\p{Zp}]|\r|\n)+/gu, " ");
 
 // `attr` guards an id-shaped value; `ref` guards a URL or `<owner>/<name>` slug that
 // `attr`'s `[\w.:-]+` rejects (no `/`). `ref` widens to `/ ? # = & % ~ + @` but keeps the
