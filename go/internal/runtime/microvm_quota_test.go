@@ -14,8 +14,8 @@ package runtime
 //
 // The real statfs probe is Linux-only; it is exercised in
 // microvm_quota_linux_test.go. Enforcement itself is proven by the
-// ENOSPC/EDQUOT leg in microvm_isolation_microvm_test.go, which needs an
-// operator-provided quota'd filesystem.
+// ENOSPC/EDQUOT leg in microvm_isolation_microvm_test.go, which needs the
+// microvm tag and an operator-provided quota'd filesystem.
 
 import (
 	"errors"
