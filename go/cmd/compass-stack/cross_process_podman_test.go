@@ -280,7 +280,8 @@ func buildStackBinary(t *testing.T, binDir string) string {
 // compass-stack subprocess resolves the compass-postgres/-server/-runner
 // children (looked up by bare name via exec.LookPath) to the freshly built
 // binaries. PATH is rebuilt (not merely re-appended) so there is exactly one
-// PATH entry and binDir is unambiguously first.
+// PATH entry and binDir is unambiguously first. It also seeds the master-key
+// provider before snapshotting, so the subprocess inherits it.
 func stackEnv(t *testing.T, binDir string) []string {
 	t.Helper()
 	// Seeded here, not left to the caller: this snapshots the environment, so a
