@@ -8,9 +8,12 @@ package runtime
 //
 // These are separate from microvm_quota_test.go because mountRoot and deviceOf
 // only exist under //go:build linux — the pure decision they feed is covered
-// there, on every GOOS.
+// there, on every GOOS. The two readVolumeQuota probes at the end are here for
+// the same reason: off Linux they reach the refusal stub, so one fails outright
+// and the other passes for the wrong reason.
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,5 +209,47 @@ func TestReadVolumeQuotaPropagatesInconclusiveMountRoot(t *testing.T) {
 	if err == nil {
 		t.Fatalf("readVolumeQuota(%q) = %s with no error; an unreachable mount root must propagate so a "+
 			"required-quota startup fails closed with the real cause", volume, reading)
+	}
+}
+
+// TestReadVolumeQuotaOnRealPath exercises the PRODUCTION statfs probe against a
+// real directory. What it can honestly assert without root is bounded but real:
+// the probe succeeds, reports a plausible filesystem, resolves a mount root, and
+// — since no test box's temp dir carries a project quota — reads as NOT active.
+// That negative is load-bearing: it is what proves the detection does not
+// false-positive and pass an unbounded volume off as quota'd.
+func TestReadVolumeQuotaOnRealPath(t *testing.T) {
+	dir := t.TempDir()
+	reading, err := readVolumeQuota(dir)
+	if err != nil {
+		t.Fatalf("readVolumeQuota(%q) = %v, want a successful rootless read", dir, err)
+	}
+	if reading.LimitBytes <= 0 {
+		t.Fatalf("reading %s has no block total; statfs must report the filesystem size", reading)
+	}
+	if reading.MountRoot == "" {
+		t.Fatalf("reading %s resolved no mount root", reading)
+	}
+	if reading.UsedBytes < 0 || reading.UsedBytes > reading.LimitBytes {
+		t.Fatalf("reading %s has nonsensical usage", reading)
+	}
+	if reading.Active() {
+		t.Fatalf("reading %s reports an active project quota on a plain temp dir; "+
+			"the detection must not false-positive (that would pass an unbounded volume as quota'd)", reading)
+	}
+	// The utilization the preflight logs must be finite and in range even with
+	// no quota — V7 meters this value.
+	if ratio := reading.UsedRatio(); ratio < 0 || ratio > 1 || math.IsNaN(ratio) {
+		t.Fatalf("UsedRatio() = %v on reading %s, want a finite ratio in [0,1]", ratio, reading)
+	}
+}
+
+// TestReadVolumeQuotaAbsentPath: a path that does not exist is a probe ERROR,
+// not a silent "no quota". Under QuotaRequired that difference decides whether
+// startup fails with the real cause (an unreachable volume) or with a misleading
+// missing-quota message.
+func TestReadVolumeQuotaAbsentPath(t *testing.T) {
+	if _, err := readVolumeQuota(t.TempDir() + "/does-not-exist"); err == nil {
+		t.Fatal("readVolumeQuota on an absent path = nil error, want a failure naming the path")
 	}
 }
