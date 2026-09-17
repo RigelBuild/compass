@@ -168,10 +168,10 @@ func sweepScript(needle, roots string) string {
 	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
 	// the caller's `found` accumulator keeps grep's semantics across batches.
 	//
-	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk makes an unopenable
-	// input FATAL, aborting there and dropping every later path plus the batch's
-	// contribution to the exit status. It covers OPEN errors only — a read error
-	// still aborts, the second reason the scan below leaves stderr unsuppressed.
+	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk (agent-image ships
+	// pkgs.gawk) makes an unopenable input FATAL, aborting there and dropping
+	// later paths plus the batch's exit-status contribution. It covers OPEN
+	// errors only — a read error still aborts, why the scan below shows stderr.
 	const awkProg = `BEGINFILE { if (ERRNO) nextfile } ` +
 		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
 	return "export SWEEP_NEEDLE='" + needle + "'; " +
