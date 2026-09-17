@@ -61,6 +61,26 @@ import (
 	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
+// stackMasterKey is a throwaway key for tests that boot compass-server; it fails
+// closed without an at-rest key, and boot decoding requires exactly 64 hex chars.
+const stackMasterKey = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+// seedMasterKeyProvider supplies the provider through the test environment because
+// a spawned compass-server inherits it, avoiding a test-only CLI flag. Idempotent:
+// a test reaches it through both its fixture and stackEnv, and the second call must
+// not repoint the provider at an empty file the first one already wrote past.
+func seedMasterKeyProvider(t *testing.T) {
+	t.Helper()
+	if os.Getenv("COMPASS_SECRET_PROVIDER") != "" {
+		return
+	}
+	secretsPath := filepath.Join(t.TempDir(), "secrets.env")
+	if err := os.WriteFile(secretsPath, []byte("COMPASS_MASTER_KEY="+stackMasterKey+"\n"), 0o600); err != nil {
+		t.Fatalf("write secrets file: %v", err)
+	}
+	t.Setenv("COMPASS_SECRET_PROVIDER", "dotenv://"+secretsPath)
+}
+
 // agentImage is a small, pullable public image standing in for the agent image:
 // the stack pulls it and hands it to the runner, but never runs it as a
 // container at up (see the file header). Same image the runtime lifecycle test
@@ -146,7 +166,7 @@ type stackFixture struct {
 // t.TempDir — only the socket/runtime paths are budget-constrained.
 func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 	t.Helper()
-
+	seedMasterKeyProvider(t)
 	pgSockDir := filepath.Join(shortRoot, "pg")
 	runtimeDir := filepath.Join(shortRoot, "rt")
 	serverSock := filepath.Join(shortRoot, "s.sock")

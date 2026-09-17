@@ -71,7 +71,7 @@ func TestContainerPostgresUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(binDir)
+	env := stackEnv(t, binDir)
 
 	fx := newContainerFixture(t, shortRoot(t, "-ctr"))
 	cfg := fx.cfg
@@ -144,7 +144,7 @@ func TestExternalDatabaseUpDown(t *testing.T) {
 
 	binDir := buildBinariesFromModuleRoot(t)
 	stackBin := buildStackBinary(t, binDir)
-	env := stackEnv(binDir)
+	env := stackEnv(t, binDir)
 
 	// The "external" postgres: a throwaway TCP-published container the test owns.
 	externalDSN := startExternalPostgres(t)
@@ -238,6 +238,7 @@ func (c containerCfg) args(sub string, extra ...string) []string {
 // lives under one unique per-pid dir.
 func newContainerFixture(t *testing.T, root string) containerFixture {
 	t.Helper()
+	seedMasterKeyProvider(t)
 	pgSockDir := filepath.Join(root, "pgsock")
 	runtimeDir := filepath.Join(root, "rt")
 	serverSock := filepath.Join(root, "s.sock")
