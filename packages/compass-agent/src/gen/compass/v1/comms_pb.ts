@@ -3,7 +3,7 @@
 // agents are first-class accounts in a management hierarchy. Channels nest in
 // channel groups, so a user's space (e.g. group "matt" → channel
 // "coordination", the path "matt.coordination") carries group-level
-// permissions. An agent's interactive surface — its ACP UI: the conversation
+// permissions. An agent's interactive surface: the session conversation
 // (text and structured asks) plus terminal and file panes — renders in the
 // agent's channel; the AgentWorkspace is the observation pane over that session
 // (D5), its access a projection of channel membership. All
@@ -364,11 +364,9 @@ export const PinnedEntrySchema: GenMessage<PinnedEntry> = /*@__PURE__*/
   messageDesc(file_compass_v1_comms, 6);
 
 /**
- * An agent's interactive surface: the observation pane for one agent account —
- * the ACP conversation plus the terminal and file panes the ADE hosts. Demoted
- * to the observation pane (D5, fork f): no longer a message container, and its
- * access is a projection of the agent's channel membership rather than a
- * separate participant ACL.
+ * An agent's interactive surface: the session observation pane for one agent
+ * account, including the conversation, terminal, and file panes the ADE hosts.
+ * Demoted to the observation pane (D5, fork f); access projects channel membership.
  *
  * @generated from message compass.v1.AgentWorkspace
  */
@@ -381,7 +379,7 @@ export type AgentWorkspace = Message$1<"compass.v1.AgentWorkspace"> & {
   id: string;
 
   /**
-   * The agent account whose ACP session this surface renders.
+   * The agent account whose session this surface renders.
    *
    * @generated from field: string agent_account_id = 2;
    */
@@ -455,8 +453,8 @@ export const TopicSchema: GenMessage<Topic> = /*@__PURE__*/
 
 /**
  * A message in a channel — the persisted unit of the comms layer, held in the
- * Server store of record (D12). An agent's ACP turn is a channel message whose
- * blocks stream in and update as the session runs (see MessageUpdated).
+ * Server store of record (D12). An agent turn is a channel message whose blocks
+ * stream in and update as the session runs (see MessageUpdated).
  *
  * @generated from message compass.v1.Message
  */
@@ -492,7 +490,7 @@ export type Message = Message$1<"compass.v1.Message"> & {
   atUnixMs: bigint;
 
   /**
-   * Ordered content; mirrors ACP session/update blocks (D5).
+   * Ordered content; mirrors session-update blocks from the SDK (D5).
    *
    * @generated from field: repeated compass.v1.MessageBlock blocks = 5;
    */
@@ -508,10 +506,9 @@ export const MessageSchema: GenMessage<Message> = /*@__PURE__*/
 
 /**
  * One content block in a message: the durable conversation the comms layer
- * persists. `text` is settled markdown; `ask` is a structured question the ACP
- * surface needs (D5). The execution trace (thought / tool calls / plans /
- * diffs) is delivered as opaque OMP-native session data on a dedicated stream,
- * not as comms blocks.
+ * persists. `text` is settled markdown; `ask` is a structured question the
+ * session surface needs (D5). The execution trace (thought / tool calls / plans /
+ * diffs) is delivered as opaque OMP-native session data on a dedicated stream.
  *
  * @generated from message compass.v1.MessageBlock
  */
@@ -1829,8 +1826,8 @@ export const UpdatePinnedBoardResponseSchema: GenMessage<UpdatePinnedBoardRespon
  */
 export type OpenAgentWorkspaceRequest = Message$1<"compass.v1.OpenAgentWorkspaceRequest"> & {
   /**
-   * The agent account to open the workspace (ACP surface) for. A `@handle`; the
-   * server resolves it to an account id; unknown → NOT_FOUND.
+   * The agent account to open the workspace (session surface) for. A `@handle`;
+   * the server resolves it to an account id; unknown → NOT_FOUND.
    *
    * @generated from field: string agent_handle = 1;
    */
@@ -2616,9 +2613,9 @@ export const CommsService: GenService<{
     output: typeof ReparentAgentResponseSchema;
   },
   /**
-   * Open (or fetch) the caller's agent workspace for an agent — its ACP surface
-   * (D5). Idempotent: created on first open, returned after. Authorized: the
-   * caller must be a member of the agent's channel.
+   * Open (or fetch) the caller's agent workspace for an agent — its session
+   * observation surface (D5). Idempotent: created on first open, returned after.
+   * Authorized: the caller must be a member of the agent's channel.
    *
    * @generated from rpc compass.v1.CommsService.OpenAgentWorkspace
    */
