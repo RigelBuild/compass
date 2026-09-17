@@ -31,6 +31,8 @@ import {
 } from "effect";
 import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
 import {
+	batchesFlushedBy,
+	batchSizeBy,
 	priorityBatchRetries,
 	priorityFramesLost,
 	priorityRetryDepthGauge,
@@ -86,10 +88,9 @@ export interface PublishSpine {
 // runtime is passed by argument. When absent (test paths) it falls back to its OWN runtime
 // and disposes it at drain() end; a borrowed one is NEVER disposed here.
 
-// A `metricNamespace` prefixes the two LEVEL gauges (trace_queue_depth, priority_retry_
-// depth). Defaults to "" — production yields the frozen names. A test passes a unique prefix
-// so its gauge reads hit a private registry entry, immune to the cross-file gauge race (the
-// global registry keys on the metric name). Counters take no namespace — read as a delta.
+// `metricNamespace` prefixes the gauges and the flush-shape rows. Defaults to ""
+// — production yields the frozen names; a test passes a unique prefix so its
+// reads hit a private registry entry (the global registry keys on the name).
 export function createPublishSpine(
 	publish: (stream: AsyncIterable<PublishFrameRequest>) => Promise<unknown>,
 	borrowedRuntime?: TransportRuntime,
@@ -97,6 +98,8 @@ export function createPublishSpine(
 ): PublishSpine {
 	const traceQueueDepth = traceQueueDepthGauge(metricNamespace);
 	const priorityRetryDepth = priorityRetryDepthGauge(metricNamespace);
+	const batchesFlushed = batchesFlushedBy(metricNamespace);
+	const batchSize = batchSizeBy(metricNamespace);
 	// Effect is confined module-private behind the spine: it backs the sliding trace queue,
 	// the wake latch, and the forked pump fiber. The default logger is removed on the
 	// fallback runtime so a handled pump-send failure does not double-report (the loss
@@ -149,6 +152,10 @@ export function createPublishSpine(
 	// needs the split to treat a failed batch's priority frames (never-drop)
 	// differently from its trace frames (loss-tolerable).
 	const takeBatch = Effect.gen(function* () {
+		// Snapshot the teardown flag FIRST: the trace drain below yields, and
+		// drain() can set `ended` inside that window, which would misclassify a
+		// batch taken while the spine was still live as a drain batch.
+		const takenAfterTeardown = ended;
 		const batch: PublishFrameRequest[] = [];
 		while (batch.length < PUBLISH_BATCH_MAX && priority.length > 0) {
 			// biome-ignore lint/style/noNonNullAssertion: length checked
@@ -164,7 +171,7 @@ export function createPublishSpine(
 			const traceFrames = yield* Queue.takeUpTo(traceQ, room);
 			for (const frame of traceFrames) batch.push(frame);
 		}
-		return { batch, priorityCount };
+		return { batch, priorityCount, takenAfterTeardown };
 	});
 
 	// The pump: drain the lanes one cycled stream at a time. Each iteration opens a fresh
@@ -189,7 +196,25 @@ export function createPublishSpine(
 				yield* Queue.take(wake);
 			}
 			if (ended && priority.length === 0 && traceSize() === 0) return;
-			const { batch, priorityCount } = yield* takeBatch;
+			const { batch, priorityCount, takenAfterTeardown } = yield* takeBatch;
+			// Flush shape, classified on the flag as it stood AT the take. `drain`
+			// means taken after teardown began, so a full batch during teardown
+			// still reads `full` — saturation is the more specific fact.
+			yield* Metric.increment(
+				batch.length === PUBLISH_BATCH_MAX
+					? batchesFlushed.full
+					: takenAfterTeardown
+						? batchesFlushed.drain
+						: batchesFlushed.short,
+			);
+			yield* Metric.update(
+				priorityCount === batch.length
+					? batchSize.priority
+					: priorityCount === 0
+						? batchSize.trace
+						: batchSize.mixed,
+				batch.length,
+			);
 			async function* oneBatch(): AsyncGenerator<PublishFrameRequest> {
 				for (const frame of batch) yield frame;
 			}
