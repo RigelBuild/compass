@@ -12,11 +12,8 @@ package runtime
 // quotaReadFn precisely so it is covered here rather than left to a leg that
 // skips.
 //
-// The real statfs probe (readVolumeQuota) is exercised too, but only for what is
-// honestly assertable without a quota'd filesystem: that it reads a real path,
-// and that an unquota'd tree correctly reads as NOT active. A green here does
-// not claim quota enforcement was proven — the guest-side ENOSPC/EDQUOT proof is
-// the root-gated leg in microvm_isolation_microvm_test.go.
+// The real statfs probe is Linux-only; its two probes live in
+// microvm_quota_linux_test.go.
 
 import (
 	"errors"

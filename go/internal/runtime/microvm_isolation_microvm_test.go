@@ -168,12 +168,11 @@ func sweepScript(needle, roots string) string {
 	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
 	// the caller's `found` accumulator keeps grep's semantics across batches.
 	//
-	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk treats an unopenable
-	// input as FATAL, so without it one unreadable file aborts the invocation,
-	// skips END, and exits 2 — losing the other 199 paths in the batch and
-	// rendering the result indistinguishable from genuine confinement. The
-	// guest's /bin/awk is gawk (guest-image/default.nix), so the extension is
-	// available even though the program is invoked as `awk`.
+	// BEGINFILE/ERRNO is load-bearing, not defensive: gawk makes an unopenable
+	// input FATAL, so one bad path aborts the invocation there, skips END, exits
+	// 2, and drops every path after it plus any hit already printed. It covers
+	// OPEN errors only — a read error still aborts, the other reason stderr
+	// stays visible. The guest's /bin/awk is gawk (guest-image/default.nix).
 	const awkProg = `BEGINFILE { if (ERRNO) nextfile } ` +
 		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
 	return "export SWEEP_NEEDLE='" + needle + "'; " +
@@ -253,9 +252,9 @@ func TestMicroVMSweepScriptFindsANeedleAcrossBatches(t *testing.T) {
 	// Comfortably more than two full batches, so at least two mid-loop flushes
 	// happen before the trailing one.
 	fileCount := sweepBatchSize*2 + 25
-	// Zero-padded so the glob's LEXICOGRAPHIC order matches numeric order.
-	// Unpadded, f425.txt sorts to glob index 362 — inside a mid-loop batch — so
-	// the "final batch" row below never reached the trailing flush it names.
+	// Zero-padded so the glob's lexicographic order matches numeric order in ANY
+	// collation. Unpadded, f425.txt sorts mid-run (index 362 in the guest's C
+	// locale), so the "final batch" row never reached the trailing flush it names.
 	plant := "mkdir -p /workspace/many && for i in $(seq 1 " + strconv.Itoa(fileCount) + "); do " +
 		"printf 'filler line %s\\n' \"$i\" > \"$(printf '/workspace/many/f%03d.txt' \"$i\")\"; done && ls /workspace/many | wc -l"
 	out, code := guestSh(t, m, id, plant)
