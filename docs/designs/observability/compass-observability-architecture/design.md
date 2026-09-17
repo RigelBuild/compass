@@ -587,6 +587,7 @@ Interfaces:
   {bucket, tokensIn, tokensOut, cost}`), regenerated Go + TS clients via
   `moon run compass-proto:gen`; tenant scope enforced server-side, never
   client-supplied trust.
+- T2 usage RPCs: superseded by RIG-1715 `UsageService`, merged into the LLM-gateway record's `UsageService` (single service; no duplicate proto surface).
 
 ### T3 — In-app charts (Plane A UI)
 
@@ -694,6 +695,7 @@ Track A — blocked on the OMP-gateway prerequisite:
 
 - [ ] PREREQUISITE (upstream, not a task here — write its design record FIRST):
       OMP-gateway-into-Server — gates T1-T3.
+      SATISFIED by the LLM-gateway record (RIG-1715): `docs/designs/server/compass-server-llm-gateway/design.md`.
 - [ ] T1 — Usage/event store + write contract (Owner: compass-server) — the
       runtime compute-usage accounting instrumentation (new in `go/`) + two
       append-only event kinds (compute-usage = billing-grade from the runtime;
