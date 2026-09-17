@@ -19,12 +19,15 @@ export const attr = (v: string, fence?: string): string =>
 			? "(malformed)"
 			: `(malformed ${fence})`;
 
-// `attr` guards a tag attribute; `flat` guards a marker LINE — a line break in an untrusted
-// value would split a one-line `[ask]`/`[answered]` record into a second line with no fence
-// or marker. Tab and plain spaces survive for display fidelity; every other control and
-// space separator collapses, since Zs (U+3000, NBSP) can forge alignment inside the line.
+// `attr` guards a tag attribute; `flat` guards a marker LINE — an untrusted value must not
+// split the one-line `[ask]`/`[answered]` record or forge structure inside it. Tab and space
+// survive for display fidelity; every other control, format (BOM, bidi overrides) and space
+// separator collapses, and a long run is bounded so padding cannot exhaust a caller's budget.
 export const flat = (v: string): string =>
-	v.replaceAll(/(?:(?![\t ])[\p{Cc}\p{Zs}\p{Zl}\p{Zp}]|\r|\n)+/gu, " ");
+	v
+		.replaceAll(/(?:(?![\t ])[\p{Cc}\p{Cf}\p{Zs}\p{Zl}\p{Zp}])+/gu, " ")
+		.replaceAll(/[\t ]{12,}/g, " ")
+		.trim();
 
 // `attr` guards an id-shaped value; `ref` guards a URL or `<owner>/<name>` slug that
 // `attr`'s `[\w.:-]+` rejects (no `/`). `ref` widens to `/ ? # = & % ~ + @` but keeps the
