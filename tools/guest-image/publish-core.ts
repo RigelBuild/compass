@@ -57,12 +57,16 @@ export type LayoutPlan = {
 	readonly index: string;
 };
 
-/** Env/label NAME shapes whose presence must block the push. Match is on the
- * name, not the value: a value-shaped heuristic both misses an unusual token
- * and fires on a harmless path. The `(^|_)…($|_)` boundary keeps a keyword from
- * matching mid-word, so `PAT` never fires on `PATH`. */
+/** Credential-shaped NAME segments whose presence must block the push. The
+ * boundary spans `_`, `.` and `-`, because OCI annotation keys are
+ * dot-and-dash separated (`org.compass.guest.registry-token`) — an
+ * underscore-only boundary, the shape this pattern has in env-var land, is
+ * inert against every key this lane actually emits. Matching on the name, not
+ * the value: a value-shaped heuristic both misses an unusual token and fires
+ * on a harmless path. The boundary still keeps a keyword from matching
+ * mid-word, so `PAT` never fires on `PATH`. */
 const SECRET_NAME_PATTERN =
-	/(^|_)(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|APIKEY|API_KEY|KEY|CREDENTIAL|CREDENTIALS|PRIVATE_KEY|SESSION|AUTH|PAT|BEARER)($|_)/i;
+	/(^|[_.-])(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|APIKEY|API_KEY|KEY|CREDENTIAL|CREDENTIALS|PRIVATE_KEY|SESSION|AUTH|PAT|BEARER)([_.-]|$)/i;
 
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
@@ -229,8 +233,12 @@ export function tagDisposition(
 			reason: `tag already holds ${remote}, refusing to overwrite`,
 		};
 	}
+	// Only a registry's own "this name/manifest does not exist" answer means the
+	// tag is free. Anything else — auth, transport, a local creds problem — is
+	// ambiguous, and treating it as absence would overwrite a published
+	// artifact, so it aborts.
 	if (
-		/manifest unknown|manifest .*not found|name unknown|was not found/i.test(
+		/(^|\W)(manifest unknown|name unknown|manifest not found)(\W|$)/i.test(
 			probe.stderr,
 		)
 	) {

@@ -1316,11 +1316,9 @@ jobs:
 
       - name: Decide whether this push touches the guest-image closure
         id: gate
-        # The same push-event tree diff the sibling publish jobs use, over
-        # GUEST_IMAGE_CLOSURE_PATHS. Every fallback ERRS TOWARD PUBLISHING (the
-        # no-drop invariant): a dispatch, a first push with no diff base, or an
-        # unreachable before-sha force-publish rather than silently drop a
-        # closure change.
+        # The sibling publish jobs' push-event tree diff, over
+        # GUEST_IMAGE_CLOSURE_PATHS. Every fallback errs toward publishing, so
+        # a missing diff base never silently drops a closure change.
         env:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE_SHA: ${{ github.event.before }}
@@ -1383,20 +1381,24 @@ jobs:
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
-      - name: Put the pinned bun on PATH
+      - name: Put the pinned bun and moon on PATH
         if: steps.gate.outputs.should_publish == 'true'
-        # Resolved from the same gate-tools pin the dev shell uses, so the lane
-        # runs byte-identical binaries here and on a dev box. `jq -r` renders a
-        # missing `.store` as the literal string `null`, so guard for it.
+        # Both come from the gate-tools pin, so the lane runs byte-identical
+        # binaries here and on a dev box. moon is required, not incidental: the
+        # lane realises its assets through the gate's own build task.
         run: |
           set -euo pipefail
-          store=$(nix eval --json -f tools/toolchain/gate-tools.nix langs.bun | jq -r '.store')
-          if [ -z "$store" ] || [ "$store" = null ]; then
-            echo "::error::gate-tools.nix langs.bun produced no store path" >&2
-            exit 1
-          fi
-          nix build --no-link "$store"
-          echo "$store/bin" >>"$GITHUB_PATH"
+          for lang in bun moon; do
+            # `jq -r` renders a missing `.store` as the string `null`, a value
+            # rather than an absence, so test for it explicitly.
+            store=$(nix eval --json -f tools/toolchain/gate-tools.nix "langs.$lang" | jq -r '.store')
+            if [ -z "$store" ] || [ "$store" = null ]; then
+              echo "::error::gate-tools.nix langs.$lang produced no store path" >&2
+              exit 1
+            fi
+            nix build --no-link "$store"
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
 
       - name: Put the fork's patched skopeo on PATH
         if: steps.gate.outputs.should_publish == 'true'

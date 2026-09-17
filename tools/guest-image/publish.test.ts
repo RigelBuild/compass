@@ -136,17 +136,73 @@ describe("the dry-run contract", () => {
 
 	test("clears a stale layout, so the digest assertion cannot read a previous run's blobs", () => {
 		mkdirSync(join(layoutPath(), "blobs", "sha256"), { recursive: true });
+		// The marker is what identifies this as a layout the lane may replace.
+		writeFileSync(
+			join(layoutPath(), "oci-layout"),
+			'{"imageLayoutVersion":"1.0.0"}',
+		);
 		const stale = join(layoutPath(), "blobs", "sha256", "stale");
 		writeFileSync(stale, "LEFTOVER");
 		dryRun();
 		expect(existsSync(stale)).toBe(false);
 	});
 
+	test("refuses to recursively delete a --layout path that is not a layout", () => {
+		mkdirSync(layoutPath(), { recursive: true });
+		const bystander = join(layoutPath(), "important.txt");
+		writeFileSync(bystander, "DO NOT DELETE");
+		const { code } = dryRun();
+		expect(code).toBe(EXIT.usage);
+		expect(readFileSync(bystander, "utf8")).toBe("DO NOT DELETE");
+	});
 	test("a build failure is a layout fault, not a push attempt", () => {
 		stub("moon", 'echo "boom" >&2; exit 1');
 		const { code, stdout } = dryRun();
 		expect(code).toBe(EXIT.badLayout);
 		expect(stdout.trim()).toBe("");
+	});
+
+	test("an empty --repo is a usage error before any realisation work", () => {
+		const { code } = runCli([
+			"--repo",
+			"",
+			"--sha",
+			SHA,
+			"--layout",
+			layoutPath(),
+			"--dry-run",
+		]);
+		expect(code).toBe(EXIT.usage);
+		// The multi-GiB realisation must not have run to reject an empty flag.
+		expect(existsSync(layoutPath())).toBe(false);
+	});
+
+	test("a malformed agent-oci.lock is a layout fault, not a stack trace", () => {
+		const lock = join(
+			import.meta.dir,
+			"..",
+			"..",
+			"guest-image",
+			"agent-oci.lock",
+		);
+		const saved = readFileSync(lock, "utf8");
+		writeFileSync(lock, "{ not json");
+		try {
+			expect(dryRun().code).toBe(EXIT.badLayout);
+		} finally {
+			writeFileSync(lock, saved);
+		}
+	});
+
+	test("an asset path that stats but is not a regular file fails closed", () => {
+		// A directory where a blob belongs: stat succeeds, reading it does not.
+		stub(
+			"moon",
+			`echo "${join(storeDir, "linux-0.0.0")}"
+echo "${storeDir}"
+echo "${join(storeDir, "initrd")}"`,
+		);
+		expect(dryRun().code).toBe(EXIT.badLayout);
 	});
 
 	test("a build emitting the wrong number of store paths fails closed", () => {

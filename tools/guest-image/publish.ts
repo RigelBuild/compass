@@ -6,8 +6,13 @@
 
 import { spawnSync } from "node:child_process";
 import {
+	closeSync,
+	copyFileSync,
+	existsSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
+	readSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -67,16 +72,31 @@ function run(
 	};
 }
 
+/** Hash in chunks: the rootfs is multi-GiB, so reading it whole to hash it
+ * would put all of it in this process's heap. */
 function sha256OfFile(path: string): string {
 	const hasher = new Bun.CryptoHasher("sha256");
-	hasher.update(readFileSync(path));
+	const fd = openSync(path, "r");
+	try {
+		const buffer = Buffer.allocUnsafe(4 * 1024 * 1024);
+		let read = readSync(fd, buffer, 0, buffer.byteLength, null);
+		while (read > 0) {
+			hasher.update(buffer.subarray(0, read));
+			read = readSync(fd, buffer, 0, buffer.byteLength, null);
+		}
+	} finally {
+		closeSync(fd);
+	}
 	return `sha256:${hasher.digest("hex")}`;
 }
 
 const repo = flag("repo");
 const sha = flag("sha");
 const dryRun = process.argv.includes("--dry-run");
-if (repo === undefined || sha === undefined) fail(EXIT.usage, USAGE);
+// An empty value is a usage error, not a late throw: without this the lane
+// does the whole multi-GiB realisation before digestRef rejects it.
+if (repo === undefined || sha === undefined || repo === "")
+	fail(EXIT.usage, USAGE);
 if (!/^[0-9a-f]{12}$/.test(sha))
 	fail(EXIT.usage, `--sha must be 12 lowercase hex characters, got ${sha}`);
 
@@ -123,13 +143,19 @@ const assetPaths: Readonly<Record<AssetName, string>> = {
 const assets: Record<AssetName, Asset> = {} as Record<AssetName, Asset>;
 for (const name of ASSET_ORDER) {
 	const path = assetPaths[name];
-	let size: number;
+	// One try covers stat AND the hashing read: a path that stats but is not a
+	// readable regular file (a directory, most obviously) must still be a
+	// layout fault with its own exit code, not an uncaught throw.
 	try {
-		size = statSync(path).size;
+		const stats = statSync(path);
+		if (!stats.isFile()) throw new Error("not a regular file");
+		assets[name] = { digest: sha256OfFile(path), size: stats.size };
 	} catch (error) {
-		fail(EXIT.badLayout, `${name}: ${path} is not readable (${String(error)})`);
+		fail(
+			EXIT.badLayout,
+			`${name}: ${path} is not a readable file (${String(error)})`,
+		);
 	}
-	assets[name] = { digest: sha256OfFile(path), size };
 }
 
 const revision = run("git", ["rev-parse", "HEAD"], workspaceRoot);
@@ -139,8 +165,12 @@ if (!revision.ok)
 		`reading the source revision failed: ${revision.stderr.trim()}`,
 	);
 
-const lockText = readFileSync(join(guestDir, "agent-oci.lock"), "utf8");
-const lock: unknown = JSON.parse(lockText);
+let lock: unknown;
+try {
+	lock = JSON.parse(readFileSync(join(guestDir, "agent-oci.lock"), "utf8"));
+} catch (error) {
+	fail(EXIT.badLayout, `reading agent-oci.lock failed: ${String(error)}`);
+}
 if (
 	typeof lock !== "object" ||
 	lock === null ||
@@ -168,6 +198,14 @@ const violations = annotationViolations(plan.annotations);
 if (violations.length > 0)
 	fail(EXIT.secretFound, `secret-shaped annotations: ${violations.join(", ")}`);
 
+// Refuse to clear anything but a layout this lane made: `--layout` is
+// caller-supplied and this is a recursive delete.
+if (existsSync(layoutDir) && !existsSync(join(layoutDir, "oci-layout"))) {
+	fail(
+		EXIT.usage,
+		`${layoutDir} exists and is not an OCI layout; refusing to delete it`,
+	);
+}
 // A stale layout would let the digest assertion below compare against blobs
 // this run never wrote.
 rmSync(layoutDir, { recursive: true, force: true });
@@ -182,8 +220,12 @@ writeFileSync(
 	plan.configBytes,
 );
 for (const name of ASSET_ORDER) {
-	const digest = assets[name].digest.slice("sha256:".length);
-	writeFileSync(join(blobs, digest), readFileSync(assetPaths[name]));
+	// copyFile keeps the kernel/rootfs/initrd out of this process's heap; the
+	// rootfs alone is ~2.3 GiB, and it was already read once to hash it.
+	copyFileSync(
+		assetPaths[name],
+		join(blobs, assets[name].digest.slice("sha256:".length)),
+	);
 }
 writeFileSync(
 	join(blobs, plan.manifestDescriptor.digest.slice("sha256:".length)),

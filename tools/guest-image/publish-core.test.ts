@@ -135,6 +135,18 @@ describe("annotationViolations", () => {
 		).toEqual(["GITHUB_TOKEN", "note"]);
 	});
 
+	test.each([
+		"org.compass.guest.registry-token",
+		"org.compass.guest.password",
+		"org.compass.guest.api-key",
+		"org.compass.guest.auth",
+		"org.compass.guest.session",
+	])("catches %s, the dot-and-dash shape this lane emits", (name) => {
+		// An underscore-only boundary is inert against every real key here, so
+		// the scan would report clean while leaking.
+		expect(annotationViolations({ [name]: "value" })).toEqual([name]);
+	});
+
 	test("the real provenance annotation set is clean", () => {
 		expect(annotationViolations(plan().annotations)).toEqual([]);
 	});
@@ -149,13 +161,27 @@ describe("annotationViolations", () => {
 describe("tagDisposition", () => {
 	const local = `sha256:${hex("b")}`;
 
-	test("an absent tag publishes", () => {
+	test.each(["manifest unknown", "name unknown", "manifest not found"])(
+		"%s is a definitive absence, so the tag is free",
+		(stderr) => {
+			expect(
+				tagDisposition({ exitCode: 1, stdout: "", stderr }, local).action,
+			).toBe("publish");
+		},
+	);
+
+	test.each([
+		[
+			"a local credentials fault",
+			"creds was not found in the docker config file",
+		],
+		["an auth rejection", "unauthorized: authentication required"],
+		["a transport fault", "i/o timeout"],
+		["an unrelated missing file", "error: file was not found"],
+	])("%s aborts rather than reading as absence", (_label, stderr) => {
 		expect(
-			tagDisposition(
-				{ exitCode: 1, stdout: "", stderr: "manifest unknown" },
-				local,
-			).action,
-		).toBe("publish");
+			tagDisposition({ exitCode: 1, stdout: "", stderr }, local).action,
+		).toBe("abort");
 	});
 
 	test("a tag already holding this exact manifest is an idempotent skip", () => {
