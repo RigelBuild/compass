@@ -56,6 +56,11 @@ projects:
   # the CI sweep — that suite is what catches a build-arg or closure-root drift,
   # since no compass CI step can build the image itself today.
   runner-image: 'tools/runner-image'
+  # The agent-image pin the microVM guest rootfs derives from. Registered so
+  # its typecheck + pure-core unit tests ride the CI sweep — that suite is what
+  # catches a provenance or layer-order drift, and moon discovers projects only
+  # from this map, so unregistered the whole guard suite is silently inert.
+  guest-image: 'tools/guest-image'
   # The Compass native-app release bundle: a heavy nix build (realises the
   # WebKitGTK cc/pkg-config closure) that stages the versioned tarball. Same
   # affected-detection posture as compass-agent-image — registered here so the
