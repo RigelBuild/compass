@@ -335,8 +335,8 @@ export class EventMapper {
 }
 
 // ── Runtime-narrowed readers (never an inline cast) ──────────────────────────
-// SDK tool payloads are narrowed through `isRecord` before property access.
-// The readers emit Compass-native target types.
+// The SDK types tool `args`/`result`/`partialResult` as `any`; these read them
+// through the `isRecord` guard so every access is on a known-object value.
 
 // The one narrowing primitive: is `value` a non-null object we can index by key?
 // Every reader below narrows through this before any property read, so there is
@@ -444,8 +444,8 @@ function extractPlanEntries(result: unknown): AgentPlanEntry[] | undefined {
 	return entries;
 }
 
-// Map an SDK todo status to the Compass plan-entry enum. Unknown or absent status
-// becomes PENDING; the enum has no separate abandoned state.
+// Map an SDK todo status to the Compass plan-entry enum: "abandoned" folds to
+// COMPLETED (the enum has no abandoned state); unknown or absent is PENDING.
 function planStatus(status: unknown): AgentPlanEntryStatus {
 	switch (status) {
 		case "in_progress":

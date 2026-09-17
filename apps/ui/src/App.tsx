@@ -38,7 +38,8 @@ import { shortcutForAria } from "./keyboard/keymap";
 // the in-memory stub (stub-data.ts) through one store (store.ts), so it renders
 // and is clickable in `vite dev` with no daemon and no Wails IPC. When the
 // daemon grows the real board / agent / session / audit streams, the store's
-// accessors swap the fixture for the generated @compass/client and components stay as-is.
+// accessors swap the fixture for the generated @compass/client and the
+// components stay as-is.
 
 // App is the router ROOT LAYOUT (record A1): the shell chrome (topbar,
 // sidebars, UsageBar) stays outside the routed region, and the `<main>` center

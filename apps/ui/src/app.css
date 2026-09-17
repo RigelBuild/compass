@@ -3246,8 +3246,8 @@
 	font-size: 11px;
 }
 
-/* Conversation messages reuse the .msg family from the session view (role coloring,
- * head layout). Channel-specific bits below. */
+/* Conversation messages reuse the .msg family from the agent view (role
+ * coloring, head layout). Channel-specific bits below. */
 .msg-text {
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
