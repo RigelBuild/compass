@@ -179,6 +179,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/guest-image": {
+      "name": "@compass/guest-image",
+      "bin": {
+        "guest-image-pin-agent": "./pin-agent-image.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/inline-sql-gate": {
       "name": "@compass/inline-sql-gate",
       "bin": {
@@ -498,6 +508,8 @@
     "@compass/font-coverage-gate": ["@compass/font-coverage-gate@workspace:tools/font-coverage-gate"],
 
     "@compass/forge-linear-token": ["@compass/forge-linear-token@workspace:tools/forge-linear-token"],
+
+    "@compass/guest-image": ["@compass/guest-image@workspace:tools/guest-image"],
 
     "@compass/inline-sql-gate": ["@compass/inline-sql-gate@workspace:tools/inline-sql-gate"],
 
