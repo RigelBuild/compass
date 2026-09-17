@@ -3,12 +3,12 @@
 // agents are first-class accounts in a management hierarchy. Channels nest in
 // channel groups, so a user's space (e.g. group "matt" → channel
 // "coordination", the path "matt.coordination") carries group-level
-// permissions. An agent's interactive surface: the session conversation
-// (text and structured asks) plus terminal and file panes — renders in the
-// agent's channel; the AgentWorkspace is the observation pane over that session
-// (D5), its access a projection of channel membership. All
-// comms flow through this layer, so audit and search are properties of the
-// substrate, not a separate pipeline (D1).
+// permissions. An agent's interactive surface — the session conversation (text
+// and structured asks) plus terminal and file panes — renders in the agent's
+// channel; the AgentWorkspace is the observation pane over that session (D5),
+// its access a projection of channel membership. All comms flow through this
+// layer, so audit and search are properties of the substrate, not a separate
+// pipeline (D1).
 //
 // This lives alongside compass.proto in the same owned `compass.v1` package as
 // an additive surface (new file, new service) that evolves the contract from a
@@ -366,7 +366,9 @@ export const PinnedEntrySchema: GenMessage<PinnedEntry> = /*@__PURE__*/
 /**
  * An agent's interactive surface: the session observation pane for one agent
  * account, including the conversation, terminal, and file panes the ADE hosts.
- * Demoted to the observation pane (D5, fork f); access projects channel membership.
+ * Demoted to the observation pane (D5, fork f): no longer a message container,
+ * and its access is a projection of the agent's channel membership rather than
+ * a separate participant ACL.
  *
  * @generated from message compass.v1.AgentWorkspace
  */
@@ -507,8 +509,9 @@ export const MessageSchema: GenMessage<Message> = /*@__PURE__*/
 /**
  * One content block in a message: the durable conversation the comms layer
  * persists. `text` is settled markdown; `ask` is a structured question the
- * session surface needs (D5). The execution trace (thought / tool calls / plans /
- * diffs) is delivered as opaque OMP-native session data on a dedicated stream.
+ * session surface needs (D5). The execution trace (thought / tool calls / plans
+ * / diffs) is delivered as opaque OMP-native session data on a dedicated
+ * stream, not as comms blocks.
  *
  * @generated from message compass.v1.MessageBlock
  */

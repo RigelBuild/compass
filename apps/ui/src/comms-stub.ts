@@ -197,8 +197,8 @@ export function isQuestionAnswered(q: AskQuestion): boolean {
 /** A durable content block inside a channel message. The comms model
  *  narrows the proto's MessageBlock oneof to the two durable conversation kinds:
  *  `text` (settled markdown, may carry @-mentions) and `ask` (an inline async
- * question). Rich execution blocks (thought/tool_call/plan/diff) are not part of
- * the conversation — they render in the session observation panel. */
+ *  question). Rich execution blocks (thought/tool_call/plan/diff) are not part
+ *  of the conversation — they render in the session observation panel. */
 export type ConvBlock =
 	| { kind: "text"; text: string }
 	| { kind: "ask"; ask: Ask };

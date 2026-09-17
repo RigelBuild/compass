@@ -3,12 +3,12 @@
 // agents are first-class accounts in a management hierarchy. Channels nest in
 // channel groups, so a user's space (e.g. group "matt" → channel
 // "coordination", the path "matt.coordination") carries group-level
-// permissions. An agent's interactive surface: the session conversation
-// (text and structured asks) plus terminal and file panes — renders in the
-// agent's channel; the AgentWorkspace is the observation pane over that session
-// (D5), its access a projection of channel membership. All
-// comms flow through this layer, so audit and search are properties of the
-// substrate, not a separate pipeline (D1).
+// permissions. An agent's interactive surface — the session conversation (text
+// and structured asks) plus terminal and file panes — renders in the agent's
+// channel; the AgentWorkspace is the observation pane over that session (D5),
+// its access a projection of channel membership. All comms flow through this
+// layer, so audit and search are properties of the substrate, not a separate
+// pipeline (D1).
 //
 // This lives alongside compass.proto in the same owned `compass.v1` package as
 // an additive surface (new file, new service) that evolves the contract from a
