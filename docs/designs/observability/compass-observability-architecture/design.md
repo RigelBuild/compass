@@ -67,6 +67,9 @@ instrumentation **T1 owns** on the write path (distinct from T4b's OTel
 telemetry: billing compute cannot be derived from traces any more than from
 token counts).
 
+[SATISFIED (RIG-1715): the gateway record has landed; see the Plan's
+prerequisite note.]
+
 **Store and read path.** Usage/spend events land in Postgres rollup tables in
 the compass-server store (the store today is a single squashed migration,
 `go/internal/store/migrations/0001_init.sql:1-8`), behind an append-only write
@@ -505,6 +508,9 @@ Grafana) is the posture Matt explicitly declined.
 yet): bundling the OMP gateway into the Server.** The gateway is the Class-2
 event source; T1-T3 depend on it. Its design record must land first.
 
+[SATISFIED (RIG-1715): that record has since landed at
+`docs/designs/server/compass-server-llm-gateway/design.md`.]
+
 **Out of scope (managed-plane — named, deferred):** the managed control
 plane — cross-tenant analytics and aggregate observability, billing, any
 OLAP-backend adoption (Class 3), tenant scheduling, per-tenant telemetry export.
@@ -587,7 +593,8 @@ Interfaces:
   {bucket, tokensIn, tokensOut, cost}`), regenerated Go + TS clients via
   `moon run compass-proto:gen`; tenant scope enforced server-side, never
   client-supplied trust.
-- T2 usage RPCs: superseded by RIG-1715 `UsageService`, merged into the LLM-gateway record's `UsageService` (single service; no duplicate proto surface).
+- T2 usage RPCs: superseded by RIG-1715 `UsageService`, merged into that
+  record's single service — no duplicate proto surface here.
 
 ### T3 — In-app charts (Plane A UI)
 
@@ -680,6 +687,9 @@ code. **Track A (Plane A) is blocked** on the undesigned OMP-gateway-into-Server
 prerequisite. Execute Track B first; Track A unblocks when the gateway record
 lands.
 
+[UNBLOCKED (RIG-1715): the gateway record has landed, so Track A's
+prerequisite is met. T2 is superseded — see its entry below.]
+
 Track B — unblocked (do first):
 
 - [ ] T4 — Plane-B fan-in collector (Owner: compass-server/distribution) —
@@ -695,7 +705,8 @@ Track A — blocked on the OMP-gateway prerequisite:
 
 - [ ] PREREQUISITE (upstream, not a task here — write its design record FIRST):
       OMP-gateway-into-Server — gates T1-T3.
-      SATISFIED by the LLM-gateway record (RIG-1715): `docs/designs/server/compass-server-llm-gateway/design.md`.
+      SATISFIED (RIG-1715) by the LLM-gateway record,
+      `docs/designs/server/compass-server-llm-gateway/design.md`.
 - [ ] T1 — Usage/event store + write contract (Owner: compass-server) — the
       runtime compute-usage accounting instrumentation (new in `go/`) + two
       append-only event kinds (compute-usage = billing-grade from the runtime;
@@ -704,6 +715,8 @@ Track A — blocked on the OMP-gateway prerequisite:
 - [ ] T2 — Tenant-scoped read gRPC (Owner: compass-server) — `compass.v1`
       schema change (fixed granularity enum) + regenerated clients + server-side
       tenant scoping.
+      SUPERSEDED (RIG-1715): the usage RPCs merge into that record's
+      `UsageService`; no `compass.v1` usage surface to add here.
 - [ ] T3 — In-app charts (Owner: compass-ui) — UsageBar wired to live data,
       then time-series usage/spend views, native Solid rendering.
 - [ ] T6 — PostHog embed + correlation-key join seam (Owner: compass-ui +
