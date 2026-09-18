@@ -1057,8 +1057,12 @@ func (h *agentHost) closeSocket(ctx context.Context, containerName string) {
 func randomIDs() func() string {
 	return func() string {
 		var b [16]byte
-		// crypto/rand.Read is infallible on supported platforms, matching store.newID.
-		_, _ = rand.Read(b[:])
+		if _, err := rand.Read(b[:]); err != nil {
+			// crypto/rand.Read never returns an error on the supported platforms
+			// (it reads from the OS RNG); a failure here means the OS entropy source
+			// is unavailable, which is unrecoverable for a session ID.
+			panic("runner: OS RNG for a fresh session ID: " + err.Error())
+		}
 		return "sess-" + hex.EncodeToString(b[:])
 	}
 }
