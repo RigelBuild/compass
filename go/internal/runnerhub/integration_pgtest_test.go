@@ -130,7 +130,7 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	}
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
-	host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLog(), nil)
+    host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLog())
 	loopDone := runnerloop.RunSessionsLoop(t, ctx, cancel, link, host, integrationTimeout)
 
 	// Provision serves the per-container AgentGateway socket (before container
