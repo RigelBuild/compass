@@ -73,17 +73,7 @@ export interface Finding {
 /** The highest codepoint Unicode defines; a cmap range past it is malformed. */
 const UNICODE_MAX = 0x10ffff;
 
-/**
- * Ceiling on how many codepoints ONE font's cmap may enumerate, summed over
- * every range of every subtable.
- *
- * WHY this exists on top of the U+10FFFF bound: the bound caps the SET (at
- * most 1,114,112 distinct codepoints) but not the WORK — a crafted font can
- * repeat a maximal in-Unicode range group after group, each costing a full
- * codespace walk for coverage it already has. Sizing is one-sided: rejecting a
- * real face breaks the gate, so the ceiling sits far above any legitimate face
- * while still bounding a hostile one to a few codespace walks.
- */
+/** Font-wide cap on cmap expansion work; duplicated subtables share this budget. */
 const MAX_CMAP_EXPANSION = 4 * (UNICODE_MAX + 1);
 
 /**
@@ -104,26 +94,23 @@ type ChargeRange = (start: number, end: number, what: string) => void;
 export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 	const need = (end: number, what: string): void => {
-		if (end > dv.byteLength) {
+		if (end > dv.byteLength)
 			throw new Error(`cmap: truncated font — ${what} runs past end of file`);
-		}
 	};
 	const u16 = (o: number): number => {
 		need(o + 2, "uint16");
 		return dv.getUint16(o);
 	};
-	const i16 = (o: number): number => {
-		need(o + 2, "int16");
-		return dv.getInt16(o);
-	};
 	const u32 = (o: number): number => {
 		need(o + 4, "uint32");
 		return dv.getUint32(o);
 	};
-
 	need(12, "sfnt header");
 	const numTables = u16(4);
 	let cmapOffset = -1;
+	let cmapLength = 0;
+	let maxpOffset = -1;
+	let maxpLength = 0;
 	for (let t = 0; t < numTables; t++) {
 		const rec = 12 + t * 16;
 		need(rec + 16, "table record");
@@ -135,53 +122,90 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 		);
 		if (tag === "cmap") {
 			cmapOffset = u32(rec + 8);
-			break;
+			cmapLength = u32(rec + 12);
+		}
+		if (tag === "maxp") {
+			maxpOffset = u32(rec + 8);
+			maxpLength = u32(rec + 12);
 		}
 	}
 	if (cmapOffset < 0) throw new Error("cmap: no cmap table in font");
-
+	if (maxpOffset < 0) throw new Error("cmap: no maxp table in font");
+	need(cmapOffset + cmapLength, "cmap table");
+	need(maxpOffset + maxpLength, "maxp table");
+	if (maxpLength < 6) throw new Error("cmap: truncated maxp table");
+	const numGlyphs = u16(maxpOffset + 4);
+	const cmapEnd = cmapOffset + cmapLength;
 	const covered = new Set<number>();
-
-	// A cmap's ranges are attacker-controlled data. `need` bounds every READ
-	// against the file, so a hostile font cannot declare more range RECORDS
-	// than it has bytes for — but nothing bounds how WIDE each record claims
-	// to be. So every range is checked and charged before it is expanded, and
-	// the budget is font-wide: it spans subtables rather than resetting per
-	// subtable, so duplicated subtables cannot each spend a fresh allowance.
 	let budget = MAX_CMAP_EXPANSION;
 	const charge: ChargeRange = (start, end, what) => {
-		if (start > end) return; // degenerate: no codepoints to walk
+		if (start > end) return;
 		const where = `${what} 0x${start.toString(16)}..0x${end.toString(16)}`;
-		if (end > UNICODE_MAX) {
+		if (end > UNICODE_MAX)
 			throw new Error(`cmap: malformed font — ${where} runs past U+10FFFF`);
-		}
 		const width = end - start + 1;
-		if (width > budget) {
+		if (width > budget)
 			throw new Error(
 				`cmap: malformed font — ${where} overruns the ${MAX_CMAP_EXPANSION}-codepoint cmap expansion budget`,
 			);
-		}
 		budget -= width;
 	};
-
+	const boundedReaders = (base: number, length: number) => {
+		const end = base + length;
+		if (base < cmapOffset + 4 || end > cmapEnd)
+			throw new Error("cmap: malformed font — subtable runs past cmap table");
+		const bounded = (offset: number, size: number, what: string): void => {
+			if (offset < base || offset + size > end)
+				throw new Error(
+					`cmap: truncated subtable — ${what} runs past declared length`,
+				);
+		};
+		return {
+			u16: (offset: number) => {
+				bounded(offset, 2, "uint16");
+				return dv.getUint16(offset);
+			},
+			i16: (offset: number) => {
+				bounded(offset, 2, "int16");
+				return dv.getInt16(offset);
+			},
+			u32: (offset: number) => {
+				bounded(offset, 4, "uint32");
+				return dv.getUint32(offset);
+			},
+		};
+	};
 	const numSub = u16(cmapOffset + 2);
 	for (let s = 0; s < numSub; s++) {
 		const rec = cmapOffset + 4 + s * 8;
+		need(rec + 8, "cmap encoding record");
 		const subOffset = cmapOffset + u32(rec + 4);
 		const format = u16(subOffset);
-		if (format === 4) readFormat4(subOffset, covered, u16, i16, charge);
-		else if (format === 12) readFormat12(subOffset, covered, u32, charge);
-		// Any other format: ignore, not fatal.
+		if (format === 4) {
+			const bounded = boundedReaders(subOffset, u16(subOffset + 2));
+			readFormat4(
+				subOffset,
+				covered,
+				bounded.u16,
+				bounded.i16,
+				numGlyphs,
+				charge,
+			);
+		} else if (format === 12) {
+			const bounded = boundedReaders(subOffset, u32(subOffset + 4));
+			readFormat12(subOffset, covered, bounded.u32, numGlyphs, charge);
+		}
 	}
 	return covered;
 }
 
-/** Format 4: segment-mapped BMP coverage. A codepoint is covered iff its glyph id is non-zero. */
+/** Format 4 coverage bounded by maxp.numGlyphs. */
 function readFormat4(
 	base: number,
 	out: Set<number>,
 	u16: (o: number) => number,
 	i16: (o: number) => number,
+	numGlyphs: number,
 	charge: ChargeRange,
 ): void {
 	const segCount = u16(base + 6) / 2;
@@ -212,7 +236,7 @@ function readFormat4(
 				glyph = u16(gaddr);
 				if (glyph !== 0) glyph = (glyph + delta) & 0xffff;
 			}
-			if (glyph !== 0) out.add(c);
+			if (glyph !== 0 && glyph < numGlyphs) out.add(c);
 		}
 	}
 }
@@ -225,27 +249,34 @@ function readFormat12(
 	base: number,
 	out: Set<number>,
 	u32: (o: number) => number,
+	numGlyphs: number,
 	charge: ChargeRange,
 ): void {
 	const numGroups = u32(base + 12);
 	const groupBase = base + 16;
-	// Two passes, as in readFormat4: charge every group before expanding any.
+	// Two passes: validate ranges and glyph-id arithmetic before expansion.
 	for (let g = 0; g < numGroups; g++) {
 		const rec = groupBase + g * 12;
-		charge(u32(rec), u32(rec + 4), "format 12 group");
+		const start = u32(rec);
+		const end = u32(rec + 4);
+		const startGlyphId = u32(rec + 8);
+		charge(start, end, "format 12 group");
+		if (start <= end && startGlyphId > 0xffffffff - (end - start)) {
+			throw new Error(
+				"cmap: malformed font — format 12 glyph id overflows uint32",
+			);
+		}
 	}
 	for (let g = 0; g < numGroups; g++) {
 		const rec = groupBase + g * 12;
 		const start = u32(rec);
 		const end = u32(rec + 4);
 		if (start > end) continue;
-		// A group maps codepoint c to glyph startGlyphId + (c - start): the ids
-		// ascend one per codepoint. Glyph 0 is .notdef, i.e. NOT covered (the
-		// format-4 rule), and ascending ids put it on the first codepoint of a
-		// startGlyphId=0 group and nowhere else — so skipping that one
-		// codepoint is the whole of the rule here.
-		const from = u32(rec + 8) === 0 ? start + 1 : start;
-		for (let c = from; c <= end; c++) out.add(c);
+		const startGlyphId = u32(rec + 8);
+		const from = startGlyphId === 0 ? start + 1 : start;
+		for (let c = from; c <= end; c++) {
+			if (startGlyphId + (c - start) < numGlyphs) out.add(c);
+		}
 	}
 }
 

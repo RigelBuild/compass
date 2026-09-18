@@ -24,9 +24,23 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install']
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs:
+      - '*.ts'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/apps/eng-docs/public/fonts/SpaceMono-Regular.ttf'
+      - '/apps/eng-docs/public/fonts/DepartureMono-Regular.otf'
   test:
-    inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
+    inputs:
+      - '*.ts'
+      - 'tsconfig.json'
+      - '/tsconfig.base.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/apps/eng-docs/public/fonts/SpaceMono-Regular.ttf'
+      - '/apps/eng-docs/public/fonts/DepartureMono-Regular.otf'
   check:
     # The coverage gate: parse the branded font cmaps and scan the real
     # apps/ui/src tree for rendered characters Space Mono lacks. Run from the
