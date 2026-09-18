@@ -103,7 +103,7 @@ export class EventMapper {
 						case: "toolCall",
 						value: create(SessionToolCallSchema, {
 							toolCallId: event.toolCallId,
-							title: toolTitle(event.toolName, event.args, event.intent),
+							title: toolTitle(event.toolName, event.intent),
 							status: AgentToolCallStatus.IN_PROGRESS,
 						}),
 					}),
@@ -460,14 +460,8 @@ function planStatus(status: unknown): AgentPlanEntryStatus {
 
 // Display the caller's `intent` when present, otherwise the tool name. The
 // session renderer uses this plain title rather than elaborating tool arguments.
-function toolTitle(
-	toolName: string,
-	args: unknown,
-	intent: string | undefined,
-): string {
+function toolTitle(toolName: string, intent: string | undefined): string {
 	const trimmed = intent?.trim();
 	if (trimmed !== undefined && trimmed.length > 0) return trimmed;
-	// `args` remains part of the mapper signature for future richer titles.
-	void args;
 	return toolName;
 }
