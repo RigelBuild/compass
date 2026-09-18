@@ -77,16 +77,12 @@ const UNICODE_MAX = 0x10ffff;
  * Ceiling on how many codepoints ONE font's cmap may enumerate, summed over
  * every range of every subtable.
  *
- * WHY this exists on top of the U+10FFFF bound: the bound caps the SET (at most
- * 1,114,112 distinct codepoints) but not the WORK — a crafted font can repeat a
- * maximal in-Unicode range group after group, each costing a full codespace
- * walk for coverage it already has. Sizing is one-sided: rejecting a real face
- * breaks the gate, so the ceiling sits far above any legitimate font. An sfnt
- * addresses at most 65,535 glyphs, so a pan-Unicode face enumerates ~65k per
- * subtable and a few duplicated (platform 0 / platform 3) subtables a small
- * multiple of that; the two bundled faces enumerate 1,250 and 4,298. Four whole
- * codespaces is ~68x the largest plausible face and still caps a hostile font's
- * parse in the hundreds of milliseconds.
+ * WHY this exists on top of the U+10FFFF bound: the bound caps the SET (at
+ * most 1,114,112 distinct codepoints) but not the WORK — a crafted font can
+ * repeat a maximal in-Unicode range group after group, each costing a full
+ * codespace walk for coverage it already has. Sizing is one-sided: rejecting a
+ * real face breaks the gate, so the ceiling sits far above any legitimate face
+ * while still bounding a hostile one to a few codespace walks.
  */
 const MAX_CMAP_EXPANSION = 4 * (UNICODE_MAX + 1);
 
@@ -148,11 +144,10 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 
 	// A cmap's ranges are attacker-controlled data. `need` bounds every READ
 	// against the file, so a hostile font cannot declare more range RECORDS
-	// than it has bytes for — but nothing bounds how WIDE each record claims to
-	// be. One 12-byte format-12 group saying start=0/end=0xffffffff is 4.29
-	// BILLION Set inserts out of a font that parsed clean, and 32768 maximal
-	// format-4 segments are ~2.1 billion more. So every range is checked and
-	// charged against one budget for the whole font before it is expanded.
+	// than it has bytes for — but nothing bounds how WIDE each record claims
+	// to be. So every range is checked and charged before it is expanded, and
+	// the budget is font-wide: it spans subtables rather than resetting per
+	// subtable, so duplicated subtables cannot each spend a fresh allowance.
 	let budget = MAX_CMAP_EXPANSION;
 	const charge: ChargeRange = (start, end, what) => {
 		if (start > end) return; // degenerate: no codepoints to walk
@@ -222,7 +217,10 @@ function readFormat4(
 	}
 }
 
-/** Format 12: segmented coverage, full Unicode range (Departure Mono needs this). */
+/**
+ * Format 12: segmented coverage, full Unicode range (Departure Mono needs
+ * this). As in format 4, a codepoint is covered iff its glyph id is non-zero.
+ */
 function readFormat12(
 	base: number,
 	out: Set<number>,
@@ -241,7 +239,13 @@ function readFormat12(
 		const start = u32(rec);
 		const end = u32(rec + 4);
 		if (start > end) continue;
-		for (let c = start; c <= end; c++) out.add(c);
+		// A group maps codepoint c to glyph startGlyphId + (c - start): the ids
+		// ascend one per codepoint. Glyph 0 is .notdef, i.e. NOT covered (the
+		// format-4 rule), and ascending ids put it on the first codepoint of a
+		// startGlyphId=0 group and nowhere else — so skipping that one
+		// codepoint is the whole of the rule here.
+		const from = u32(rec + 8) === 0 ? start + 1 : start;
+		for (let c = from; c <= end; c++) out.add(c);
 	}
 }
 
