@@ -35,8 +35,8 @@ export interface ChannelGroup {
 }
 
 /** A channel's kind (comms.proto ChannelKind). A plain channel is the default;
- * DMs are direct conversations. An agent's session observation surface is not a
- * channel — it is a separate workspace panel. */
+ *  DMs are direct conversations. An agent's session observation surface is not a
+ *  channel — it is a separate workspace panel. */
 export type ChannelKind = "channel" | "dm" | "group_dm";
 
 /** Per-channel membership state — the still-in-design join/subscribe model
