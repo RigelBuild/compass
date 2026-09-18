@@ -92,78 +92,97 @@ export type TraceItem =
  *
  * Pure: input events are never mutated; all TraceItems are freshly built.
  */
+type ToolTraceItem = Extract<TraceItem, { kind: "tool" }>;
+
+function appendTextItem(
+	items: TraceItem[],
+	event: Extract<SessionEvent, { kind: "assistant_text" | "thinking" }>,
+): void {
+	const traceKind = event.kind === "assistant_text" ? "text" : "thinking";
+	const last = items[items.length - 1];
+	if (
+		last &&
+		(last.kind === "text" || last.kind === "thinking") &&
+		last.kind === traceKind &&
+		last.messageId === event.messageId
+	) {
+		items[items.length - 1] = {
+			kind: last.kind,
+			messageId: last.messageId,
+			text: last.text + event.text,
+		};
+		return;
+	}
+	items.push({ kind: traceKind, messageId: event.messageId, text: event.text });
+}
+
+function appendToolCall(
+	items: TraceItem[],
+	toolsById: Map<string, ToolTraceItem>,
+	event: Extract<SessionEvent, { kind: "tool_call" }>,
+): void {
+	const item: ToolTraceItem = {
+		kind: "tool",
+		toolCallId: event.toolCallId,
+		call: event,
+		status: event.status,
+	};
+	items.push(item);
+	toolsById.set(event.toolCallId, item);
+}
+
+function appendToolUpdate(
+	items: TraceItem[],
+	toolsById: Map<string, ToolTraceItem>,
+	event: Extract<SessionEvent, { kind: "tool_call_update" }>,
+): void {
+	const existing = toolsById.get(event.toolCallId);
+	if (existing) {
+		existing.status = event.status;
+		if (event.output !== undefined) existing.output = event.output;
+		if (event.diffs !== undefined) existing.diffs = event.diffs;
+		return;
+	}
+	const item: ToolTraceItem = {
+		kind: "tool",
+		toolCallId: event.toolCallId,
+		call: undefined,
+		status: event.status,
+		...(event.output !== undefined ? { output: event.output } : {}),
+		...(event.diffs !== undefined ? { diffs: event.diffs } : {}),
+	};
+	items.push(item);
+	toolsById.set(event.toolCallId, item);
+}
+
+function appendPlan(items: TraceItem[], entries: PlanEntry[]): void {
+	const priorIndex = items.findIndex((item) => item.kind === "plan");
+	if (priorIndex !== -1) items.splice(priorIndex, 1);
+	items.push({ kind: "plan", entries });
+}
+
 export function foldSession(events: readonly SessionEvent[]): TraceItem[] {
 	const items: TraceItem[] = [];
-	const toolsById = new Map<string, Extract<TraceItem, { kind: "tool" }>>();
+	const toolsById = new Map<string, ToolTraceItem>();
 
 	for (const event of events) {
 		switch (event.kind) {
 			case "assistant_text":
-			case "thinking": {
-				const traceKind = event.kind === "assistant_text" ? "text" : "thinking";
-				const last = items[items.length - 1];
-				if (
-					last &&
-					(last.kind === "text" || last.kind === "thinking") &&
-					last.kind === traceKind &&
-					last.messageId === event.messageId
-				) {
-					// Coalesce: rebuild the last item with the concatenated text.
-					items[items.length - 1] = {
-						kind: last.kind,
-						messageId: last.messageId,
-						text: last.text + event.text,
-					};
-				} else {
-					items.push({
-						kind: traceKind,
-						messageId: event.messageId,
-						text: event.text,
-					});
-				}
+			case "thinking":
+				appendTextItem(items, event);
 				break;
-			}
-			case "tool_call": {
-				const item: Extract<TraceItem, { kind: "tool" }> = {
-					kind: "tool",
-					toolCallId: event.toolCallId,
-					call: event,
-					status: event.status,
-				};
-				items.push(item);
-				toolsById.set(event.toolCallId, item);
+			case "tool_call":
+				appendToolCall(items, toolsById, event);
 				break;
-			}
-			case "tool_call_update": {
-				const existing = toolsById.get(event.toolCallId);
-				if (existing) {
-					existing.status = event.status;
-					if (event.output !== undefined) existing.output = event.output;
-					if (event.diffs !== undefined) existing.diffs = event.diffs;
-				} else {
-					const item: Extract<TraceItem, { kind: "tool" }> = {
-						kind: "tool",
-						toolCallId: event.toolCallId,
-						call: undefined,
-						status: event.status,
-						...(event.output !== undefined ? { output: event.output } : {}),
-						...(event.diffs !== undefined ? { diffs: event.diffs } : {}),
-					};
-					items.push(item);
-					toolsById.set(event.toolCallId, item);
-				}
+			case "tool_call_update":
+				appendToolUpdate(items, toolsById, event);
 				break;
-			}
-			case "plan": {
-				const priorIndex = items.findIndex((i) => i.kind === "plan");
-				if (priorIndex !== -1) items.splice(priorIndex, 1);
-				items.push({ kind: "plan", entries: event.entries });
+			case "plan":
+				appendPlan(items, event.entries);
 				break;
-			}
-			case "notice": {
+			case "notice":
 				items.push({ kind: "notice", event });
 				break;
-			}
 		}
 	}
 
