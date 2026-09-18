@@ -89,16 +89,20 @@ tasks:
     # are exported so a dev run matches CI, and playwright.config.ts now fails
     # closed when either is missing rather than guessing a host path.
     #
-    # Both axes are measured, not assumed: with the browser pinned, dropping
-    # FONTCONFIG_FILE reds 30 assertions; on a tree still rendering its chrome
-    # as font glyphs, a browser-version skew red 2 shots at ~4k pixels each.
-    # That second one currently reds nothing only because those pictographs
-    # became dot-matrix SVG, so the pin is what stops it returning silently
-    # the next time a captured surface gains text.
+    # Both axes are measured, not assumed: unsetting FONTCONFIG_FILE fails
+    # closed before tests run because playwright.config.ts requires it;
+    # pointing it at the host font config instead reds 10 of 11 assertions.
+    # Host Chromium 153 vs pinned 150 is live-red on current main: 2 of 11
+    # assertions fail, including `bridge.png` at 4311 pixels and
+    # `bridge-prs.png` at 3957 pixels. The pin is a live fix, not latent
+    # hardening; it keeps future captures independent of host state.
     #
-    # A local red is more often a stale baseline than a real regression: the
-    # shots live in the tree, so a working copy whose parent predates the last
-    # recapture reds until it rebases. Check that before regenerating.
+    # A local red is an explicit browser/font override first and a stale
+    # baseline second: an unset variable fails closed with an error. Check for
+    # an overridden or stale-profile FONTCONFIG_FILE or
+    # PLAYWRIGHT_CHROMIUM_PATH first, then a stale baseline: the shots live in
+    # the tree, so a working copy whose parent predates the last recapture reds
+    # until it rebases. Check those before regenerating.
     # Regenerate via the `regen-visual-baselines` dispatch lane and merge the
     # bot PR it opens.
     #
