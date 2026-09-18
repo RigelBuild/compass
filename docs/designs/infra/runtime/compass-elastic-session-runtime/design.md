@@ -1,6 +1,5 @@
 # Compass hosted agent platform — the elastic session runtime (end-state)
 
-Status: Draft
 Tracking: RIG-1717
 
 > **Design record.** This designs the hosted multi-tenant agent-platform

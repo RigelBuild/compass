@@ -1,7 +1,5 @@
 # microVM Runner V2b — in-guest supervisor + vsock exec control plane
 
-Status: PROPOSED — details the V2b milestone under the frozen parent [microvm-runner.md](./microvm-runner.md) (its Plan § V2b, microvm-runner.md:466-490).
-
 ## Problem / Intent
 
 V2a proved the channel: a nix-packed guest boots rootless under

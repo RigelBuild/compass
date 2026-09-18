@@ -1,6 +1,5 @@
 # Design: reorganize `docs/designs/`
 
-Status: Draft
 Tracking: RIG-2577
 
 Matt's trigger, verbatim: "why do we have a platform dir in compass? i think we

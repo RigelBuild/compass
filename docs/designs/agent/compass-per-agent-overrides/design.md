@@ -1,7 +1,5 @@
 # Compass per-Manager profiles and in-process subagent topology
 
-Status: Active
-
 Refs: RIG-2936 (this record). Sibling: RIG-2935 (harness/OMP profile lane —
 FROZEN 2026-08-29, owns the shared profile concept, registry discipline, and
 selector grammar this record adopts; its cross-lane contract is the

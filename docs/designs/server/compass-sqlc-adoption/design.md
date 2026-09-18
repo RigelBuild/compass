@@ -1,7 +1,5 @@
 # Compass sqlc adoption — typed queries from SQL, and the inline-SQL ban
 
-Status: Draft
-
 > **Design record** for RIG-3034. Matt's ruling: "migration and sqlc. and then
 > also banning future inline sql." This record designs (1) adopting `sqlc`
 > (typed Go generated from `.sql` query files, validated against the schema)

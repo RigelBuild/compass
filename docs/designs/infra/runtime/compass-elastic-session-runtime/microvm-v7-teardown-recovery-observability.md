@@ -1,6 +1,5 @@
 # microVM Runner V7 — teardown, crash recovery, observability
 
-Status: PROPOSED — details the V7 milestone under the frozen parent
 [microvm-runner.md](./microvm-runner.md) (its Plan § V7,
 microvm-runner.md:583-598; Approach (f) "Teardown and mid-session death",
 microvm-runner.md:238-261; Approach (g) "Observability + kill switch",

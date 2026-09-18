@@ -1,6 +1,5 @@
 # Compass UX foundation — target design system + interaction model
 
-Status: Draft
 Linear: RIG-1663
 Supersedes: the pre-freeze draft of this record (an out-of-tree PR; its
 DL-114..122 block never shipped)

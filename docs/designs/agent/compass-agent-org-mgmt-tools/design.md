@@ -1,7 +1,5 @@
 # Agent org-management tools (RIG-2673)
 
-Status: Draft
-
 Refs: RIG-2673 (parent RIG-1681). Design only — this record is the contract; no Go/proto/TS changes ship with it.
 
 ## Problem / Intent

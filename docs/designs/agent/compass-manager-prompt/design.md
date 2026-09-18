@@ -1,7 +1,5 @@
 # Compass Manager & implementer block-0 prompt + first skills (Dogfood cut)
 
-Status: Draft
-
 > Freezes on merge; later changes supersede by citation, never rewrite.
 > Tracked as RIG-1732. Parent primitive-gaps: §3.5 of the source distillation
 > (`manager-prompt-distillation.md`, Matt's ratified draft, §0.5 decisions

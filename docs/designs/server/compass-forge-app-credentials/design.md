@@ -1,7 +1,5 @@
 # Compass forge App-credential cutover (GitHub + Linear)
 
-Status: Active
-
 Tracking: RIG-2991 (thread 1, already filed as the W1 deferral) + the
 five sibling threads Matt directed this session. Predecessors: RIG-2883
 (read-path App-only cutover, Done), DL-201/F1 (two write identities),

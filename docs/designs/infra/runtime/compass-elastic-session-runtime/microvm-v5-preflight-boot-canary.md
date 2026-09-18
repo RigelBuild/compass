@@ -1,6 +1,5 @@
 # microVM Runner V5 — preflight, boot canary, hard-fail startup gate
 
-Status: PROPOSED — details the V5 milestone under the frozen parent
 [microvm-runner.md](./microvm-runner.md) (its Plan § V5,
 microvm-runner.md:534-552; Approach (e), microvm-runner.md:211-236) and its
 frozen KVM-absent hard-fail decision D3 (microvm-runner.md:693-703).

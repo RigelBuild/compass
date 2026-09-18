@@ -1,7 +1,5 @@
 # Compass configurable sidebar pins
 
-Status: Active
-
 Tracker: RIG-1632.
 
 Ledger: this record's PR appends DL-096 to

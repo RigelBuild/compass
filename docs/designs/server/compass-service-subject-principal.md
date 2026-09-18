@@ -1,6 +1,5 @@
 # Design addendum: Service subject principal (`SubjectService = 2`)
 
-Status: Active
 Tracking: RIG-2863 / RIG-3122 (parent RIG-1715, RIG-2845)
 
 Ledger: DL-327 (this PR), Topology & tiers. Amends the two-kind token-subject

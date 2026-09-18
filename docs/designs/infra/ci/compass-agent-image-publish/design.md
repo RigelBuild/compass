@@ -1,6 +1,5 @@
 # Publish the compass-agent image to GHCR
 
-Status: Draft
 Tracking: RIG-1690 (blocks compass-native RIG-1683/T2, RIG-1685/T4, RIG-1687/T6)
 
 > **Design record.** This designs the GHCR publish lane for the `compass-agent`

@@ -1,7 +1,5 @@
 # Compass agent forge tools
 
-Status: Active
-
 Design for the TypeScript agent-side leg of the forge surface: a `forge()`
 method on the frozen `RunnerTransport` seam plus a native tool set (`forge.ts`)
 that exposes all twelve `ForgeCallRequest` arms to the containerized first-party

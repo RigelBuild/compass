@@ -1,6 +1,5 @@
 # Compass forge integration testing
 
-Status: Active
 Follow-on to: [forge write path](../compass-forge-write-path/design.md) (RIG-2170, frozen) — this record ADDS the live-contract test tiers; it does not re-open that record.
 
 ## Problem / Intent

@@ -1,7 +1,5 @@
 # Design: Leader/Mnemonic Keyboard Chords, Focus-Context-Gated (RIG-2484)
 
-Status: Draft
-
 Parent: RIG-1661 (keyboard-first product). Builds on the SHIPPED discoverability
 net — all three impl PRs are merged to `main`: RIG-2482 `?` overlay (PR #526),
 RIG-2483 Cmd+K palette + point-of-use chips (PR #529), RIG-2529 tier-3 scope

@@ -1,6 +1,5 @@
 # Compass badge clarity (RIG-2117)
 
-Status: Active
 Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: RIG-2117 (CI/review badges convey meaning by color alone, and the token tier maps
 CI-pass ≡ review-approved and CI-fail ≡ review-changes to the same hues). Sibling to the

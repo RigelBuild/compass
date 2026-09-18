@@ -1,7 +1,5 @@
 # Compass dogfood loop
 
-Status: Active
-
 > **Design record.** The full `devenv up` dogfood loop for Compass: build + load
 > the `compass-agent` image, bring up postgres + a TLS-door `compass-server`,
 > mint a runner token, enroll `compass-runner`, and drive one real agent session

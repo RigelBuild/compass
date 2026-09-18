@@ -1,6 +1,5 @@
 # Compass Native App — Multi-Window Support
 
-Status: Draft
 Parent: [compass-native-app/design.md](../compass-native-app/design.md) (DL-106..DL-112)
 Composes with: [compass-native-client-mode/design.md](../compass-native-client-mode/design.md) (frozen T5)
 

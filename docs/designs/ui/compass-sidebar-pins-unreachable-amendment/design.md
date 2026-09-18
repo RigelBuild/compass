@@ -1,7 +1,5 @@
 # Compass sidebar pins — unreachable-pin amendment
 
-Status: Active
-
 Tracker: RIG-1645.
 
 Amends: `compass-sidebar-pins` (RIG-1632, DL-096) §T2/§T3.

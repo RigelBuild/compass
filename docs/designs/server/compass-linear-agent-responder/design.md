@@ -1,7 +1,5 @@
 # Compass Linear Agent Session responder
 
-Status: Draft
-
 Tracking: RIG-2717 (greenlit by Matt 2026-08-25; scoped to production, not a
 throwaway spike — Matt 2026-08-25: "Prod. Not really a spike now, we've figured
 out the model, we need to be a Linear Agent App to make sense to users").

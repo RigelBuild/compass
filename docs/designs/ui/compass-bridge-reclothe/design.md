@@ -1,6 +1,5 @@
 # Design: Compass Bridge re-clothe (RIG-2111)
 
-Status: Active
 Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: RIG-2111 (live board doesn't match the company-site reference render);
 after the RIG-2034 DS-token cutover (merged, main `18e988b5`). Two adjacent

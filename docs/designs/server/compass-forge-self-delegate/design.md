@@ -1,7 +1,5 @@
 # Design: Forge self-delegate write path (Record A)
 
-Status: Active
-
 ## Problem / Intent
 
 Compass agents file Linear issues but cannot take delegation of them — mark a

@@ -1,6 +1,5 @@
 # Decision: adopt Effect on the compass agent-runner
 
-Status: Active
 Linear: RIG-2501 (decision lineage: RIG-2384)
 
 This is the compass-owned statement of a single decision: **the compass

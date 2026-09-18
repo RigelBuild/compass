@@ -1,8 +1,5 @@
 # Drop proto: devenv/nix as the single toolchain owner
 
-Status: Draft
-
-Tracker: RIG-1983. Template: the proto-drop prior art —
 "refactor(ci): drop proto; pin bun/node/moon via nix, go via go-overlay".
 Compass diverges from that template wherever the CI substrate does: the
 prior art runs a Woodpecker CI/CD pipeline against a nix-built CI

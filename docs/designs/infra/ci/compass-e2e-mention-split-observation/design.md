@@ -1,6 +1,5 @@
 # Design: E2E observation seam for the mention steer/deliver split (RIG-1788 / H4)
 
-Status: Active
 The three load-bearing forks below were ruled by Matt (2026-08-19); this record
 freezes on merge as the contract T1–T6 execute against. No implementation in
 this record's PR.

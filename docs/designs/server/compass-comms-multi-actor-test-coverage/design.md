@@ -1,7 +1,5 @@
 # Multi-actor test coverage for the Compass comms surface (RIG-3473)
 
-Status: Draft
-
 ## Problem / Intent
 
 The comms surface is densely covered *horizontally* and barely covered *vertically*. Measured across four tiers: the store tier alone carries **370 pgtest funcs**, `go/internal/comms` another 83 pgtest + 41 untagged/unix, and `pgtest` is **not** a soft gate — it runs on every Go PR (its `pgtest_affected` flag is "setup's closure contains compass-go", `ci.yml:457-461`) under `-race` with a fail-closed anti-skip guard (`ci.yml:596-620`). So the DB tier is real and enforced, and *"add more DB tests"* is the **lowest**-value axis available.

@@ -1,7 +1,5 @@
 # Compass Live Roster — the agent tree reads the live roster (RIG-2033)
 
-Status: Draft
-
 ## Problem / Intent
 
 The Compass UI's agent surfaces (workspaces tree, board swimlanes, fleet

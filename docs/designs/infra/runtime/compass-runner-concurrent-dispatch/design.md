@@ -1,7 +1,5 @@
 # Design: Runner concurrent per-command Sessions dispatch
 
-Status: Active
-
 Linear: RIG-1575. Follow-up Matt ordered when resolving the spawn/despawn
 record's OQ-6 ("accept for MVP, file follow up to design fully later",
 2026-07-29).

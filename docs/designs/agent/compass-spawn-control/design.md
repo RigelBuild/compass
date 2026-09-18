@@ -1,7 +1,5 @@
 # Compass spawn control — start/stop a workstream agent from the Bridge board
 
-Status: Active
-
 This record freezes on merge; later changes supersede by citation, never
 rewrite.
 

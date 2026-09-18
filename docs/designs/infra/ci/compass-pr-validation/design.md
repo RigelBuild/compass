@@ -1,7 +1,5 @@
 # Compass PR validation — agent-self-tested coverage, evidence on the PR
 
-Status: Draft
-
 > **Design record.** How a Compass PR gets validated without a human pulling
 > the branch: an expanded agent-self-run e2e harness for behavioral changes,
 > results surfaced ON the PR, a previewable UI build, and a validation skill

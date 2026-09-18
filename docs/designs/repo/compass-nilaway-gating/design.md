@@ -1,7 +1,5 @@
 # Nilaway: advisory → gating
 
-Status: Draft
-
 Tracker: RIG-1534. Placement: `docs/designs/repo/` — the nilaway lane is
 repo-wide Go tooling posture (the same bucket as `compass-renovate-migration.md`
 and `compass-drop-proto.md`), not a CI-substrate change: the gate mechanism

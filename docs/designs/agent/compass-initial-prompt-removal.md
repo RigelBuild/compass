@@ -1,6 +1,5 @@
 # Remove dead `initial_prompt` from the agent-session start path
 
-Status: Active
 Tracking: RIG-1959. Ruled by Matt as a separate cutover shipping ahead of the
 runner deliver-leg build (2026-08-12).
 

@@ -1,7 +1,5 @@
 # Compass agent trees
 
-Status: Active
-
 Tracker: SEA (the spawning agent fills the issue id when the PR opens).
 
 Ledger: this record's PR appends DL-095 to

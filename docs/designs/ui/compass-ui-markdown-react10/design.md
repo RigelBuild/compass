@@ -1,7 +1,5 @@
 # Adopt react-markdown-10 rewrite (solid-markdown #44 + #45) into @rigelbuild/solid-markdown
 
-Status: Draft
-
 Supersedes: DL-208's `solid-markdown` clause (Matt's ruling, 2026-08-19).
 DL-207, DL-209, and DL-208's `@tanstack/solid-virtual` clause are unaffected.
 Parent record: [compass-ui-solid-v2](../compass-ui-solid-v2/design.md)

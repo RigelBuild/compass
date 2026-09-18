@@ -1,6 +1,5 @@
 # Compass UI fixture boot — fully offline, fixture-seeded UI
 
-Status: Draft
 Ledger-impact: none (assessment at the end)
 
 ## Problem / Intent

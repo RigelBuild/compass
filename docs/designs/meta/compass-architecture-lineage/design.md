@@ -1,7 +1,5 @@
 # Compass architecture lineage
 
-Status: Active
-
 The early Compass milestone records (v0.3 through v0.8) are retired. Every
 load-bearing decision they made is now a row in
 [`DECISIONS.md`](../../DECISIONS.md) — the canonical index of current truth — so the

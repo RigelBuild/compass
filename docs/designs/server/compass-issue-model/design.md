@@ -1,7 +1,5 @@
 # Compass Issue model
 
-Status: Active
-
 Tracker: SEA (the spawning agent fills the issue id when the PR opens).
 
 Ledger: this record's PR appends DL-067 … DL-070 plus DL-091 to

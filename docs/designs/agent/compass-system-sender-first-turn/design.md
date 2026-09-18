@@ -1,7 +1,5 @@
 # Compass `@compass` system sender + root-supervisor first turn (RIG-1820 case-1)
 
-Status: Draft
-
 ## Problem / Intent
 
 The merged first-turn-delivery record removed `initial_prompt` and froze the

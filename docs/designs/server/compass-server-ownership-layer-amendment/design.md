@@ -1,6 +1,5 @@
 # Compass server ownership layer — amendment: one canonical type family
 
-Status: Active
 Tracker: SEA
 
 > **Extends #995 (frozen).** This record is a sibling amendment to

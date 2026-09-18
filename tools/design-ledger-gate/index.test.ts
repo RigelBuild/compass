@@ -68,26 +68,26 @@ describe("slugify", () => {
 });
 
 describe("parseStatusValue", () => {
-	test("Draft / Active / Historical map to their kinds", () => {
-		expect(parseStatusValue("Status: Draft")).toEqual({ kind: "Draft" });
-		expect(parseStatusValue("Status: Active")).toEqual({ kind: "Active" });
+	test("Historical and Superseded map to their kinds", () => {
 		expect(parseStatusValue("Status: Historical")).toEqual({
 			kind: "Historical",
 		});
-	});
-	test("Superseded captures the path", () => {
 		expect(
 			parseStatusValue("Status: Superseded by ../compass-0.8/design.md"),
-		).toEqual({ kind: "Superseded", path: "../compass-0.8/design.md" });
+		).toEqual({
+			kind: "Superseded",
+			path: "../compass-0.8/design.md",
+		});
 	});
-	test("trailing prose after the keyword → null", () => {
-		expect(parseStatusValue("Status: Draft (freezes on merge).")).toBeNull();
+	test("lifecycle and unknown values are rejected", () => {
+		expect(parseStatusValue("Status: Draft")).toBeNull();
+		expect(parseStatusValue("Status: Active")).toBeNull();
+		expect(parseStatusValue("Status: approved")).toBeNull();
 	});
-	test("lowercase keyword → null", () => {
-		expect(parseStatusValue("Status: draft")).toBeNull();
-	});
-	test("a lone trailing space is trimEnd'd → Active passes", () => {
-		expect(parseStatusValue("Status: Active ")).toEqual({ kind: "Active" });
+	test("blockquote and emphasis prefixes are tolerated", () => {
+		expect(parseStatusValue("> **Status: Historical**")).toEqual({
+			kind: "Historical",
+		});
 	});
 });
 
@@ -265,6 +265,22 @@ describe("recordContentFromText", () => {
 		expect(recordContentFromText(text).headings).toEqual(["t"]);
 	});
 });
+describe("parseRecordHeader reach", () => {
+	test("finds bare Status below a preamble and blockquoted Status", () => {
+		expect(
+			parseRecordHeader(
+				"docs/designs/ui/x.md",
+				"# X\nBanner\n\nStatus: Historical\n",
+			).statusLine,
+		).toBe("Status: Historical");
+		expect(
+			parseRecordHeader(
+				"docs/designs/ui/x.md",
+				"# X\n> **Status: Historical**\n",
+			).statusLine,
+		).toBe("> **Status: Historical**");
+	});
+});
 
 // ---------------------------------------------------------------------------
 // The pure core: evaluate.
@@ -283,20 +299,12 @@ function row(overrides: Partial<LedgerRow> = {}): LedgerRow {
 
 function header(overrides: Partial<RecordHeader> = {}): RecordHeader {
 	return {
-		// A top-level record NOT in the version-narrative chain, so a
-		// baseline `Status: Active` is valid.
 		path: "docs/designs/ui/compass-tauri-shell.md",
-		statusLine: "Status: Active",
+		statusLine: null,
 		line: 3,
 		...overrides,
 	};
 }
-
-describe("evaluate — happy path", () => {
-	test("valid row + valid header + empty changed → no violations", () => {
-		expect(evaluate([row()], [header()], noChange, smallRecord)).toEqual([]);
-	});
-});
 
 describe("evaluate — duplicate DL id", () => {
 	test("two rows same id → one 'duplicate' on the second row's line", () => {
@@ -694,65 +702,27 @@ describe("evaluate — Record link resolution", () => {
 		);
 		expect(vs).toEqual([]);
 	});
-	test("Record cell is not a markdown link → 'not a markdown link'", () => {
-		const vs = evaluate(
-			[row({ recordCell: "plain text" })],
-			[],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("not a markdown link");
-		expect(vs[0]?.line).toBe(5);
-	});
 });
-
 describe("evaluate — record Status: header presence & grammar", () => {
-	test("statusLine null → 'missing'", () => {
-		const vs = evaluate(
-			[row()],
-			[header({ statusLine: null, line: 3 })],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("missing");
-		expect(vs[0]?.file).toBe("docs/designs/ui/compass-tauri-shell.md");
-		expect(vs[0]?.line).toBe(3);
+	test("absent Status is conformant", () => {
+		expect(
+			evaluate([row()], [header({ statusLine: null })], noChange, smallRecord),
+		).toEqual([]);
 	});
-	test("malformed status header → 'malformed'", () => {
+	test("Draft and Active are prohibited", () => {
+		for (const statusLine of ["Status: Draft", "Status: Active"]) {
+			const vs = evaluate([], [header({ statusLine })], noChange, smallRecord);
+			expect(vs.some((v) => v.message.includes("prohibited"))).toBe(true);
+		}
+	});
+	test("malformed status header is rejected", () => {
 		const vs = evaluate(
-			[row()],
+			[],
 			[header({ statusLine: "Status: Draft (freezes on merge)." })],
 			noChange,
 			smallRecord,
 		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("malformed");
-		expect(vs[0]?.line).toBe(3);
-	});
-	test("a record under any governed bucket, statusLine null → 'missing'", () => {
-		// Every governed bucket (repo/, infra/, ui/, …) is header-enforced
-		// identically — which is why compass-eng-docs/design.md had to gain
-		// `Status: Active`. This locks that a record under a governed bucket
-		// other than the one the fixtures above use is enforced the same way,
-		// so no bucket can be silently un-enforced.
-		const vs = evaluate(
-			[row()],
-			[
-				header({
-					path: "docs/designs/repo/compass-eng-docs/design.md",
-					statusLine: null,
-					line: 3,
-				}),
-			],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("missing");
-		expect(vs[0]?.file).toBe("docs/designs/repo/compass-eng-docs/design.md");
-		expect(vs[0]?.line).toBe(3);
+		expect(vs.some((v) => v.message.includes("malformed"))).toBe(true);
 	});
 });
 
@@ -783,20 +753,14 @@ describe("evaluate — Historical-set membership", () => {
 		expect(vs.length).toBe(1);
 		expect(vs[0]?.message).toContain("not in the version-narrative chain");
 	});
-	test("an out-of-chain record marked Active → no violation", () => {
-		expect(
-			evaluate(
-				[],
-				[
-					header({
-						path: "docs/designs/ui/compass-tauri-shell.md",
-						statusLine: "Status: Active",
-					}),
-				],
-				noChange,
-				smallRecord,
-			),
-		).toEqual([]);
+	test("an out-of-chain record marked Active is rejected", () => {
+		const vs = evaluate(
+			[],
+			[header({ statusLine: "Status: Active" })],
+			noChange,
+			smallRecord,
+		);
+		expect(vs.some((v) => v.message.includes("prohibited"))).toBe(true);
 	});
 });
 
@@ -972,6 +936,15 @@ describe("evaluate — touch-coupling (DL-Q1)", () => {
 // The I/O wiring: runOnce.
 // ---------------------------------------------------------------------------
 
+test("renovate exemption does not skip Status validation", () => {
+	const vs = evaluate(
+		[],
+		[header({ statusLine: "Status: Draft" })],
+		changed([], "Ledger-impact: none", "renovate/update"),
+		smallRecord,
+	);
+	expect(vs.some((v) => v.message.includes("prohibited"))).toBe(true);
+});
 describe("runOnce", () => {
 	const validLedger = [
 		"| ID | Decision | Status | Record |",
@@ -990,9 +963,7 @@ describe("runOnce", () => {
 		const d: Deps = {
 			root: "/fake",
 			readText: async (_root, rel) =>
-				rel === "docs/designs/DECISIONS.md"
-					? validLedger
-					: "# Title\n\nStatus: Active\n",
+				rel === "docs/designs/DECISIONS.md" ? validLedger : "# Title\n\nBody\n",
 			listRecordFiles: async () => [oneRecord],
 			readRecord: () => ({ headings: [], sizeBytes: 100 }),
 			changed: { files: [], body: null, headBranch: "" },

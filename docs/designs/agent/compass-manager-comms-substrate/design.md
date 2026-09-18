@@ -1,6 +1,5 @@
 # Compass Manager comms substrate — roster query, coordination channel, pinned board
 
-Status: Draft
 Tracker: RIG-1721, RIG-1722, RIG-1723
 
 > DRAFT — all nine Open Questions ratified by Matt 2026-07-31 (see Decisions

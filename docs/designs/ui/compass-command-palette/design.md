@@ -1,7 +1,5 @@
 # Compass command palette (Cmd/Ctrl+K) + shortcut chips at point-of-use (RIG-2483)
 
-Status: Draft
-
 Parent: RIG-1661 (keyboard discoverability net). Builds on the App-root
 keyboard spine (RIG-2456, `compass-keyboard-spine-app-root/design.md`, merged).
 Sibling: RIG-2482 (`?` shortcuts overlay) is a separate record designed in

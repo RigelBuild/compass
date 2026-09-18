@@ -1,6 +1,5 @@
 # Design: Compass automated visual-regression gate (RIG-2154)
 
-Status: Draft
 Owner lane: compass-ux (design) → compass-ux (execution)
 Refs: RIG-2154
 Governing spec: docs/designs/ui/compass-ui-fixture-boot/design.md (Decision D7)

@@ -1,7 +1,5 @@
 # Compass UI dev-boot smoke gate (RIG-1536)
 
-Status: Draft
-
 ## Problem / Intent
 
 `vite dev` can serve a completely broken app — blank page, `render()` never

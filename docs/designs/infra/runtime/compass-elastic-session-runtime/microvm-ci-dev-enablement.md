@@ -1,7 +1,5 @@
 # microVM CI + Dev Enablement
 
-Status: PROPOSED — this record freezes on merge.
-
 Parent: [microvm-runner.md](./microvm-runner.md) (RIG-2394, frozen) — this
 record enables that record's KVM-gated impl tasks (V2a→V8) to be developed and
 CI-verified across the compass dev shell and GitHub Actions, with a self-hosted

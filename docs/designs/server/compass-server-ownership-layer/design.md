@@ -1,7 +1,5 @@
 # Server as the ownership layer
 
-Status: Active
-
 Ledger: this record's PR appends DL-048 … DL-055 to
 `docs/designs/product/DECISIONS.md` in the same diff (see §Ledger delta) and
 supersedes no existing row, so it satisfies the ledger gate's touch-coupling

@@ -1,7 +1,5 @@
 # Compass agent config passthrough — fleet OMP config delivery (settings, AGENTS.md, rules, subagent defs, models.yml)
 
-Status: Draft
-
 > **Amendment (2026-07-31) — settings/rules/AGENTS.md delivered by object
 > injection.** The frozen record grounded CP-1/CP-2/CP-4's agent-side
 > consumption on the vendored 17.1.8 fork (`forks/oh-my-pi`), whose `Settings`

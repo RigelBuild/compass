@@ -1,7 +1,5 @@
 # Compass message surface — virtualized thread list + streaming markdown (RIG-1332)
 
-Status: Active
-
 Docs-only record; implementation is a separate follow-on lane that rebases onto
 franklin's RIG-1337 ChannelView restructure (seam stated in §Approach).
 

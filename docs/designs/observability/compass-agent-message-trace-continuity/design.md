@@ -1,6 +1,5 @@
 # Design: End-to-end trace continuity — inbound message → turn → tool calls
 
-Status: Draft
 Linear: RIG-2508 (follow-on; the sibling record deferred this).
 Sibling record: `docs/designs/observability/compass-agent-loop-otel/design.md`
 (FROZEN; merged in PR #561 at `2740d2d3`). This record does NOT reopen its OQ1

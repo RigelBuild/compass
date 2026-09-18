@@ -1,7 +1,5 @@
 # Design: Tier-2 forge e2e leg, agent to server (RIG-3823)
 
-Status: Active
-
 ## Problem / Intent
 
 An agent's forge tool call is tested at every seam and assembled nowhere: each layer is verified against a fake of its neighbour, and the podman e2e lane has no forge leg at all. `grep -Ric forge go/e2e/` matches exactly one line across 27 files, and it is a comment in `NewFixture` explaining why the fixture's dotenv is complete *because* it configures no forge — no e2e leg exercises a forge call. A `ForgeCallRequest` oneof arm routed to the wrong handler, a field dropped between the TS tool and the proto, or a registry resolving the wrong coordinate is invisible today. DL-210 split forge verification into two tiers; tier 1 (provider to real forge API, the `livegithub` oracle) is done. This record designs tier 2: one podman e2e leg proving a real container agent's forge tool call traverses agent → gateway → runner → hub → `forgeService` → the real provider client, with its payload intact at the provider's HTTP boundary — with no forge credential and no live egress.

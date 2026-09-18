@@ -1,42 +1,31 @@
 // design-ledger-gate — validate the Compass design-decision ledger (RIG-1187).
 //
-// The design corpus under docs/designs/<bucket>/ freezes on merge; later
-// records supersede specific decisions by citation. Supersession was only
-// visible forward (the superseding record cites the superseded one, nothing
-// points back), so an agent grounding on a single record could not tell a
-// decision in it was overturned elsewhere. The fix (design record:
-// docs/designs/meta/compass-design-ledger/design.md) is a canonical
-// read-first ledger (DECISIONS.md), machine-checkable per-record `Status:`
-// headers, and this gate against dangling pointers + a forgotten same-PR
-// ledger flip.
+// The design corpus under docs/designs/<bucket>/ derives ordinary record status
+// from presence on main. Only Historical and Superseded by pointers remain as
+// explicit metadata; later records supersede specific decisions by citation.
 //
 // This gate has TWO legs sharing one pure core (evaluate):
 //   * SNAPSHOT — pointer/grammar integrity over a single tree state at
 //     GATE_ROOT: ledger row grammar, dangling/self/cyclic supersessions,
-//     unresolvable Record links (missing path, dead #anchor, or a >50 KB
-//     record link without the required anchor), and every record's `Status:`
-//     header (present, grammar-conformant, correct Historical-set membership).
-//     Runs on every event (the tool's own `moon run design-ledger-gate:gate`).
-//   * TOUCH-COUPLING (DL-Q1) — a PR whose changed set touches a governed design
-//     record MUST also touch DECISIONS.md, unless it declares `Ledger-impact:`
-//     in the PR body. PR-event-only (needs PR context); on non-PR events the
-//     changed set is empty and this leg no-ops.
-//
-// What the SNAPSHOT core does NOT prove (rows are append-only; frozen
-// `Decision`-cell prose is immutable-after-append) is review-enforced in v1; a
-// fast-follow diff-aware core promotes it to gate-checked (merge-base compare).
+//     unresolvable Record links, and every record's optional Status header.
+//     Runs on every event (the tool's own moon gate).
+//   * TOUCH-COUPLING (DL-Q1) — a PR whose changed set touches a governed
+//     design record MUST also touch DECISIONS.md, unless it declares
+//     Ledger-impact in the PR body. PR-event-only.
 //
 // Inputs (env):
 //   GATE_ROOT  - directory to scan (default: git toplevel). Tests point the
 //                injected reads at fixtures instead.
-//   REPO, PR_NUMBER, GH_TOKEN - set by the `design-ledger` meta job on
-//                pull_request events, for the touch-coupling leg (mirrors
-//                tools/spec-impact-gate).
+//   REPO, PR_NUMBER, GH_TOKEN - set by the design-ledger meta job on
+//                pull_request events, for the touch-coupling leg.
 // Exit codes:
 //   0 - all checks pass
 //   1 - one or more violations (printed one per line as `<file>:<line>: <msg>`)
 //   2 - usage / internal error (e.g. cannot read the tree)
-
+//
+// What the SNAPSHOT core does NOT prove (rows are append-only; frozen
+// `Decision`-cell prose is immutable-after-append) is review-enforced in v1; a
+// future diff-aware core may promote it to gate-checked.
 import { existsSync, readFileSync } from "node:fs";
 import { posix as pathPosix } from "node:path";
 import { $ } from "bun";
@@ -96,8 +85,8 @@ const LEDGER_IMPACT_RE = /^\s*>?\s*ledger-impact:\s*(\S.*)$/im;
  */
 export const EXEMPT_BRANCH_PREFIXES = ["renovate/"];
 
-/** The anchored record-level `Status:` grammar (design record §Approach part 2). */
-const STATUS_RE = /^Status: (Draft|Active|Historical|Superseded by (\S+))$/;
+/** The record-level Status grammar is reject-by-default. */
+const STATUS_RE = /^Status:\s*(Historical|Superseded\s+by\s+(\S+))$/i;
 
 /** A ledger row's `Active (<who>, YYYY-MM-DD)` status cell. */
 const ROW_ACTIVE_RE = /^Active \(.+, \d{4}-\d{2}-\d{2}\)$/;
@@ -168,10 +157,8 @@ export interface Violation {
 	message: string;
 }
 
-/** The record-level `Status:` value, parsed. */
+/** The surviving record-level `Status:` values. */
 export type StatusValue =
-	| { kind: "Draft" }
-	| { kind: "Active" }
 	| { kind: "Historical" }
 	| { kind: "Superseded"; path: string };
 
@@ -193,18 +180,16 @@ export function slugify(heading: string): string {
 		.replace(/\s/g, "-");
 }
 
-/** Parse a record-level `Status:` line against the anchored grammar. */
 export function parseStatusValue(statusLine: string): StatusValue | null {
-	const m = STATUS_RE.exec(statusLine.trimEnd());
-	if (!m) return null;
-	const kw = m[1];
-	if (kw === "Draft") return { kind: "Draft" };
-	if (kw === "Active") return { kind: "Active" };
-	if (kw === "Historical") return { kind: "Historical" };
-	// biome-ignore lint/style/noNonNullAssertion: the `Superseded by (\S+)` branch guarantees group 2.
-	return { kind: "Superseded", path: m[2]! };
+	let value = statusLine.trim();
+	value = value.replace(/^\s*(?:>\s*)+/, "");
+	value = value.replace(/^\*\*\s*/, "").replace(/\s*\*\*\s*$/, "");
+	const match = STATUS_RE.exec(value);
+	if (!match) return null;
+	if (match[1]?.toLowerCase() === "historical") return { kind: "Historical" };
+	const pointer = match[2];
+	return pointer === undefined ? null : { kind: "Superseded", path: pointer };
 }
-
 /** Split a Record cell's markdown link into its path + optional `#anchor`. */
 export function splitLink(
 	cell: string,
@@ -340,19 +325,13 @@ export function parseLedger(text: string): LedgerRow[] {
 	return rows;
 }
 
-/**
- * Parse a record's `Status:` header slot: the first non-blank line after the
- * H1. If that slot is a `Status:`-keyed line it's the header (even when
- * malformed); anything else (a prose preamble) means no header is present.
- */
+/** Parse Status anywhere in the header zone, skipping fenced examples. */
 export function parseRecordHeader(path: string, text: string): RecordHeader {
 	const lines = text.split("\n");
 	let h1 = -1;
 	let inFence = false;
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i] ?? "";
-		// Skip `#`-shaped lines inside a fenced code block (a record opens with a
-		// real H1, so this only guards a pathological pre-H1 fence).
 		if (/^\s*(```|~~~)/.test(line)) {
 			inFence = !inFence;
 			continue;
@@ -363,15 +342,20 @@ export function parseRecordHeader(path: string, text: string): RecordHeader {
 		}
 	}
 	if (h1 === -1) return { path, statusLine: null, line: 1 };
+	inFence = false;
 	for (let i = h1 + 1; i < lines.length; i++) {
 		const raw = lines[i] ?? "";
-		if (raw.trim() === "") continue;
-		if (/^status:/i.test(raw.trim())) {
+		if (/^\s*(```|~~~)/.test(raw)) {
+			inFence = !inFence;
+			continue;
+		}
+		if (inFence) continue;
+		if (/^##\s/.test(raw)) break;
+		if (/^\s*(?:>\s*)*(?:\*\*)?Status:/i.test(raw)) {
 			return { path, statusLine: raw.trimEnd(), line: i + 1 };
 		}
-		return { path, statusLine: null, line: i + 1 }; // slot is prose, not a header
 	}
-	return { path, statusLine: null, line: h1 + 1 };
+	return { path, statusLine: null, line: h1 + 2 };
 }
 
 // ---------------------------------------------------------------------------
@@ -512,23 +496,23 @@ export function evaluate(
 		}
 	}
 
-	// --- Record `Status:` headers: presence, grammar, Historical-set membership,
-	//     and resolvable record-level supersession pointers. ---
-	for (const rec of records) {
-		if (rec.statusLine === null) {
-			v(
-				rec.path,
-				rec.line,
-				"missing a parseable `Status:` header (first non-blank line after the H1)",
-			);
-			continue;
+	// --- Record `Status:` headers: absent is ordinary; present is
+	//     reject-by-default, with Historical and resolving Superseded only. ---
+	const rowByRecord = new Map<string, LedgerRow>();
+	for (const ledgerRow of ledger) {
+		const link = splitLink(ledgerRow.recordCell);
+		if (link !== null && link.anchor === null) {
+			rowByRecord.set(pathPosix.join(DESIGNS_ROOT, link.path), ledgerRow);
 		}
+	}
+	for (const rec of records) {
+		if (rec.statusLine === null) continue;
 		const value = parseStatusValue(rec.statusLine);
 		if (value === null) {
 			v(
 				rec.path,
 				rec.line,
-				"malformed `Status:` header (want `^Status: (Draft|Active|Historical|Superseded by <path>)$`, no trailing text)",
+				"malformed or prohibited `Status:` header (only `Historical` or resolving `Superseded by <path>` is allowed)",
 			);
 			continue;
 		}
@@ -540,18 +524,7 @@ export function evaluate(
 				"`Status: Historical` but the record is not in the version-narrative chain",
 			);
 		}
-		if (inChain && value.kind !== "Historical" && value.kind !== "Draft") {
-			v(
-				rec.path,
-				rec.line,
-				`in-chain record must be \`Status: Historical\` (or Draft), not ${value.kind}`,
-			);
-		}
 		if (value.kind === "Superseded") {
-			// `rec.path` is repo-relative; readRecord + resolveRecordRelative work
-			// in designs-root-relative space. The Superseded pointer is
-			// record-relative (resolved from the record's own directory), unlike a
-			// ledger Record cell (designs-root-relative / bucket-qualified).
 			const recDesignsRel = rec.path.startsWith(`${DESIGNS_ROOT}/`)
 				? rec.path.slice(DESIGNS_ROOT.length + 1)
 				: rec.path;
@@ -560,34 +533,35 @@ export function evaluate(
 				v(
 					rec.path,
 					rec.line,
-					`\`Status: Superseded by ${value.path}\` does not resolve to a record`,
+					`Status supersession does not resolve to a record: ${value.path}`,
+				);
+			}
+			const linkedRow = rowByRecord.get(rec.path);
+			if (
+				linkedRow !== undefined &&
+				!ROW_SUPERSEDED_RE.test(linkedRow.status)
+			) {
+				v(
+					rec.path,
+					rec.line,
+					"record Status supersession disagrees with its ledger row",
 				);
 			}
 		}
 	}
 
-	// --- Touch-coupling (DL-Q1): PR-event-only. A changed set that touches a
-	//     governed record but not DECISIONS.md, with no `Ledger-impact:` body
-	//     declaration, fails. Off PR events the changed set is empty → no-op.
-	//     An automation-exempt head branch (renovate/) skips this leg — it
-	//     cannot author a declaration (mirrors spec-impact-gate); the SNAPSHOT
-	//     checks above still ran. ---
+	// --- Touch-coupling (DL-Q1): declaration exempts only this leg. ---
 	const exemptBranch = EXEMPT_BRANCH_PREFIXES.some((p) =>
 		changed.headBranch.startsWith(p),
 	);
+	const declared = LEDGER_IMPACT_RE.test(changed.body ?? "");
 	const touchedRecord = !exemptBranch && changed.files.some(touchesRecord);
-	if (touchedRecord) {
-		const touchedLedger = changed.files.includes(DECISIONS_PATH);
-		const declared = LEDGER_IMPACT_RE.test(changed.body ?? "");
-		if (!touchedLedger && !declared) {
-			v(
-				"(pull request)",
-				0,
-				"PR touches a governed docs/designs/<bucket>/ design record but neither updates " +
-					`${DECISIONS_PATH} nor declares \`Ledger-impact:\` in the body. Append/flip ` +
-					"the record's ledger rows in this PR, or add a `Ledger-impact: none` line.",
-			);
-		}
+	if (touchedRecord && !changed.files.includes(DECISIONS_PATH) && !declared) {
+		v(
+			"(pull request)",
+			0,
+			"PR touches a governed design record without DECISIONS.md or Ledger-impact declaration",
+		);
 	}
 
 	return violations;
@@ -653,7 +627,7 @@ export async function runOnce(deps: Deps): Promise<number> {
 
 	if (violations.length === 0) {
 		log(
-			`design-ledger-gate: OK — ${ledger.length} ledger row(s), ${records.length} record header(s) valid.`,
+			`design-ledger-gate: OK — ${ledger.length} ledger row(s), ${records.length} record(s) status-checked.`,
 		);
 		return 0;
 	}

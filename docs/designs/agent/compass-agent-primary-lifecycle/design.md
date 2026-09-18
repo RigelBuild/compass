@@ -1,6 +1,5 @@
 # Agent-primary issue-state write model (amendment)
 
-Status: Active
 Tracker: SEA
 
 > **Amends frozen contract (#1018, DL-091 / DL-032).** This record is a

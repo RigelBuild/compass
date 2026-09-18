@@ -1,7 +1,5 @@
 # Design: Forge self-origin notification suppression
 
-Status: Active
-
 ## Problem / Intent
 
 When a Compass agent takes a forge action on an artifact it is also subscribed

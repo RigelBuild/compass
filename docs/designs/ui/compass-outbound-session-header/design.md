@@ -1,6 +1,5 @@
 # Outbound `X-POSTHOG-SESSION-ID` interceptor + boot reorder (RIG-2874 slice 2)
 
-Status: Active
 Tracker: RIG-2874
 
 Note on Go citations: this design was authored in a working copy whose `go/` tree predates the merged server half. Every `go/**` file+line below was read from `origin/main` at squash commit `69669259` ("feat(otel): stamp the PostHog session id onto backend spans (J1 inbound half) (#996)"), via `git show origin/main:<path>`. All `apps/ui/**` and `packages/**` citations are the working copy.

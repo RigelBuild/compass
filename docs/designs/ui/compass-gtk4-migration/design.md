@@ -1,6 +1,5 @@
 # Design: Compass native shell GTK4 / webkitgtk-6.0 migration (RIG-1770)
 
-Status: Draft
 Linear: RIG-1770 (GTK3 → GTK4/webkitgtk-6.0 migration of the Compass native
 shell). Matt's steer 2026-08-26: migrate proactively (option b) ahead of the
 Wails v3.1 gtk3 removal.

@@ -1,6 +1,5 @@
 # Compass native app — embedded vs remote architecture
 
-Status: Draft
 Supersedes: DL-044 (compass-tauri-shell)
 Linear: RIG-1662
 

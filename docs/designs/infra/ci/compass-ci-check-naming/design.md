@@ -1,7 +1,5 @@
 # Compass CI check naming — the check-name convention, and suppressing the no-op `edited` phantom run
 
-Status: Draft
-
 > **Design record** for RIG-2791. Two decisions, ruled by Matt (2026-08-26):
 > **A1** — a slash-namespaced kebab check-name convention for every CI job —
 > and **B1** — a no-op PR body/title edit stops polluting the PR checks

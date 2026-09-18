@@ -1,7 +1,5 @@
 # Compass keyboard spine at the App root (RIG-2456)
 
-Status: Draft
-
 Realization design for the slice the parent record froze and RIG-2130
 deferred: the parent record
 `docs/designs/ui/compass-bridge-keyboard-nav/design.md` T1 (§352-416)

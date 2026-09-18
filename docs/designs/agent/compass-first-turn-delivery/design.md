@@ -1,7 +1,5 @@
 # Compass first-turn delivery — remove `initial_prompt`
 
-Status: Draft
-
 ## Problem / Intent
 
 Compass carries an `initial_prompt` field through its whole start contract

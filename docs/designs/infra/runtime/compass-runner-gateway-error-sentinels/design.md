@@ -1,7 +1,5 @@
 # Design: Runner gateway/operator-fault error sentinels
 
-Status: Active
-
 Linear: RIG-1442. Approach ruled by Matt (full fix across all three lanes:
 proto enum value + server mapping arm + runner sentinels); this record
 documents and decomposes the decided approach — it does not re-open the

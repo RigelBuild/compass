@@ -1,6 +1,5 @@
 # Compass Linear webhook mount — amendment: provider-suffixed path, mount owned by the forge notification lane
 
-Status: Active
 Tracker: RIG-2717
 
 > **Extends #625 (frozen).** This record is a sibling amendment to

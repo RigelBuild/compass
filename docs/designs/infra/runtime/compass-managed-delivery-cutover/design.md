@@ -1,6 +1,5 @@
 # Design: Compass T3 delivery→EventFabric cutover (RIG-3107)
 
-Status: Active
 Ratified: OQ-1..OQ-4 decided by Matt (2026-09-05, see Resolved decisions); frozen on merge
 Parent: `docs/designs/infra/runtime/compass-managed-multitenancy/design.md` (frozen), T3
 Ledger-impact: appends DL-331..337 for the OQ-1/OQ-2/OQ-3/OQ-4 rulings, the reconnect-seam shape, and the double-publish interpretation (design-ledger-gate)

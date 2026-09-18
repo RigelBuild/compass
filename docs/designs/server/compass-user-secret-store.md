@@ -1,7 +1,5 @@
 # Compass user-secret store (Postgres, encrypted at rest)
 
-Status: Draft
-
 Tracking: RIG-3655 (research record: RIG-3637)
 
 Sibling record: [`compass-gateway-credentials-at-rest-encryption`](./compass-gateway-credentials-at-rest-encryption.md)

@@ -1,7 +1,5 @@
 # Compass coaching keyboard-discoverability tooltips (RIG-2530)
 
-Status: Draft
-
 Parent: RIG-1661 (keyboard discoverability net). Refines DL-234 (point-of-use
 chips, RIG-2483), which explicitly deferred the `.cx-menu`/hover-tooltip
 adoption to this record. Forward-compatible with RIG-2484 (leader chords,

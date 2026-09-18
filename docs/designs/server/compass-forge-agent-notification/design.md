@@ -1,6 +1,5 @@
 # Compass forge agent-notification (RIG-2732 Pieces 2 + 3) — webhook-only
 
-Status: Active
 Lane: compass-server
 Tracker: RIG
 

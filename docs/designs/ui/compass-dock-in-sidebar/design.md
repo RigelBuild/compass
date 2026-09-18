@@ -1,7 +1,5 @@
 # Compass ADE shell — fold the bottom dock into the right sidebar
 
-Status: Active
-
 > Internal design record — July 2026. A UI/UX design pass on the Compass ADE dev
 > shell, amending the frozen shell record
 > ([`../compass-ade-shell/design.md`](../compass-ade-shell/design.md), merged in

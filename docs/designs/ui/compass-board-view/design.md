@@ -1,7 +1,5 @@
 # Compass board: Issues/PRs tabs, cross-linking, PR-card badges
 
-Status: Active
-
 Tracker: RIG-1633.
 
 Ledger: this record's PR appends DL-097 to

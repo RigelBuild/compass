@@ -1,6 +1,5 @@
 # Compass native app — client-only (retire embedded mode)
 
-Status: Draft
 Linear: RIG-2542
 Supersedes: DL-106 (dual-mode charter), DL-215/DL-217 (embedded packaging).
 DL-108/DL-109 stay Active with DL-236/DL-237 refining them by citation (partial
