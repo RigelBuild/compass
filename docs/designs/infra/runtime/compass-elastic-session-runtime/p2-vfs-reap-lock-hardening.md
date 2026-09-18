@@ -162,8 +162,10 @@ touches a leftover — it is a stamping pass over live volumes only.
 
 `lockVolume(root, block bool)` splits into two functions with no boolean:
 
-- `tryLockVolume(ctx, root) (*volumeLock, error)` — one `LOCK_EX|LOCK_NB`
-  attempt; `(nil, nil)` on contention. Used by `Expire` and
+- `tryLockVolume(ctx, root) (*volumeLock, error)` — never parks in
+  `flock`; `(nil, nil)` on contention at whichever inode it last observed.
+  It is not literally one attempt: the inode re-verify below can re-open and
+  re-attempt, bounded by `ctx` only. Used by `Expire` and
   `ReconcileOrphans` (today's `block=false`).
 - `lockVolume(ctx, root) (*volumeLock, error)` — loops `tryLockVolume`-style
   attempts on one open fd, waiting between attempts on
@@ -214,9 +216,11 @@ no-concurrent-`Attach` precondition, which this record keeps.
 
 On the same base-dir scan, an entry named `<sessionID>.compass-vfs.lock` is
 a lock file. `Expire` checks, **unlocked**, whether the session's root
-exists: if it does the lock file is live — keep it, no lock taken (this is
-the common case, so live volumes cost the pass one extra stat, not a lock
-cycle). If the root is absent: `tryLockVolume`; contended → skip; else
+**or its reaping leftover** exists: if either does the lock file is live —
+keep it, no lock taken (a live volume costs the pass two stats, not a lock
+cycle; a leftover's lock file is reclaimed by the leftover visitor after its
+own `RemoveAll` succeeds, so the lock visitor never pays a second lock cycle
+for it). If both are absent: `tryLockVolume`; contended → skip; else
 re-check under the lock that both the root and the reaping leftover are
 absent, and if so `os.Remove` the lock file — **the final act of the
 critical section** — then release. `ErrNotExist` on the unlink is success
@@ -233,8 +237,8 @@ for the Runner's lifetime, so a startup-only pass bounds nothing; `Expire`
 is the periodic pass and already the only destroyer.
 
 The unlocked fast path is safe in the conservative direction only: a root
-present unlocked is kept without proof, and keeping is never wrong; a root
-absent unlocked is re-proven under the lock before the unlink.
+or leftover present unlocked is kept without proof, and keeping is never
+wrong; both absent unlocked is re-proven under the lock before the unlink.
 
 ### The scan: one `ReadDir`, classified by name
 
@@ -331,10 +335,15 @@ Numbered so a task brief and a test name can cite them.
   on the per-volume lock past the caller's context. A cancelled wait
   returns `ctx.Err()` (via `errors.Is`), closes its fd, and has mutated
   nothing on disk.
-- **I-5 (lock identity).** A returned `*volumeLock` holds `LOCK_EX` on the
-  inode currently at `<root><lockFileSuffix>`. An acquisition that lands on
-  any other inode is discarded and retried. Consequently, at any instant, at
-  most one actor holds a verified lock for a session id.
+- **I-5 (lock identity).** A returned `*volumeLock` was verified, at
+  acquisition, to hold `LOCK_EX` on the inode then at
+  `<root><lockFileSuffix>`; an acquisition that lands on any other inode is
+  discarded and retried. The verification is a point-in-time fact, not a
+  standing one: inside a reclaim's unlink-to-release window (I-6) the
+  reclaimer still holds the unlinked inode while a newcomer may already hold
+  the live one, and that overlap is harmless only because the reclaimer
+  mutates nothing after the unlink (GC-6). Outside that window at most one
+  actor holds a verified lock for a session id.
 - **I-6 (reclaim is terminal).** A lock file is unlinked only by its holder,
   only after an under-lock proof that the session has neither a root nor a
   reaping leftover, and as the last mutation of that critical section.
@@ -351,9 +360,10 @@ Numbered so a task brief and a test name can cite them.
 | --- | --- |
 | `RemoveAll` of the renamed tree fails partway (`EACCES` on a subdir, `EBUSY` on a leaked mount inside the tree) | Root absent; `Lookup`/`Attach` → `ErrVolumeNotFound`; leftover at `<root>.compass-vfs.reaping`; pass returns the joined error; next pass sweeps the leftover (I-3). |
 | `os.Rename` fails | Volume intact, stamp intact, still eligible; joined error; retried next pass (I-2). |
+| Clear-first `RemoveAll` fails on a stale leftover of the same session id | Rename not attempted; volume intact and still eligible (I-2); the joined error names the leftover path, not the root. The recreated session's volume cannot be reaped until the leftover converges or is repaired (OQ-2). |
 | Crash between rename and `RemoveAll` | Leftover on disk; next `Expire` sweeps it. `ReconcileOrphans` ignores it (name classification). |
 | Crash between the reclaim unlink and release | The kernel drops the lock with the process; the path is gone; the next acquirer creates a fresh inode. No state to repair. |
-| `ctx` cancelled while `Attach`/`Stamp` waits | `ctx.Err()`; fd closed; no stamp change, no clear, no path returned (I-4). The provision path treats it as any other launch abort. |
+| `ctx` cancelled while `Attach`/`Stamp` waits | `ctx.Err()`; fd closed; no stamp change, no clear, no path returned (I-4). The provision path treats it as any other launch abort. Behavior change from W1: a relaunch racing a multi-GB reap used to block to completion and then cold-materialize on `ErrVolumeNotFound`; now it aborts at the caller's deadline and the caller retries. OQ-1 (remove after release) is the lever if that abort rate matters. |
 | `ctx` already cancelled on entry | `Lookup`'s existing check returns `ctx.Err()` before the lock namespace is touched; no lock file is created. |
 | Lock file unlinked from under a waiter | The waiter acquires the dead inode, fails the `SameFile` check, re-opens, and contends on the live inode (I-5). |
 | `Attach` polling while `Expire` acquires in the gap after a holder's release | `Expire` wins the lock, reaps on its under-lock stamp read, releases; `Attach`'s next attempt wins, `requireVolumeRoot` finds no root, `ErrVolumeNotFound`; the provision path cold-materializes. Bounded by `lockPollMax`; W1's "must win" is softened to "may lose a same-instant race at the deadline" (§ (b)). |
@@ -438,10 +448,11 @@ its own doc-comment rewrite (GC-8). Lane hint: `implement-go`; H1 is the
       lockPollMax     = 50 * time.Millisecond
   )
 
-  // tryLockVolume makes ONE non-blocking attempt on the session's sibling
-  // lock file. (nil, nil) means contended — the caller skips this volume.
-  // A successful flock is verified against the inode currently at the lock
-  // path (I-5); a mismatch re-opens and re-attempts, bounded by ctx.
+  // tryLockVolume never parks in flock. (nil, nil) means contended at the
+  // inode it last observed — the caller skips this volume. A successful
+  // flock is verified against the inode currently at the lock path (I-5);
+  // a mismatch re-opens and re-attempts, bounded by ctx only, so this is a
+  // loop that converges, not literally one attempt.
   // Replaces lockVolume(root, false).
   func tryLockVolume(ctx context.Context, root string) (*volumeLock, error)
 
@@ -454,9 +465,12 @@ its own doc-comment rewrite (GC-8). Lane hint: `implement-go`; H1 is the
   // lockAttempt is the shared core: open (O_CREATE|O_RDWR, stampFileMode),
   // flock(LOCK_EX|LOCK_NB), then os.SameFile(f.Stat(), os.Stat(path)). On
   // EWOULDBLOCK/EAGAIN it returns (nil, nil) and keeps nothing open. A
-  // mismatch is a different inode at path OR no file at path (the reclaim
-  // unlinked it): it closes f, re-opens, and tries again (ctx-bounded).
-  // Any other error closes f and is returned joined with the close error.
+  // mismatch is a different inode at path OR ErrNotExist from os.Stat(path)
+  // (the reclaim unlinked it): it closes f, re-opens, and tries again
+  // (ctx-bounded). Any other error — from open, flock, f.Stat, or a
+  // non-ErrNotExist os.Stat — closes f and is returned joined with the
+  // close error; it is never treated as a mismatch, so an EACCES on the
+  // base dir cannot spin the re-open loop.
   func lockAttempt(ctx context.Context, path string) (*volumeLock, error)
   ```
 
@@ -464,8 +478,15 @@ its own doc-comment rewrite (GC-8). Lane hint: `implement-go`; H1 is the
   the same fd is the cheap path); it re-opens only after a `SameFile`
   mismatch. The wait is
   `select { case <-ctx.Done(): return nil, ctx.Err(); case <-timer.C: }` on a
-  `time.Timer` created in the caller's goroutine — which is what makes the
-  parked state durably-blocked under `testing/synctest`.
+  `time.Timer` created inside `lockVolume` itself, in the waiting goroutine
+  — which is what makes the parked state durably-blocked under
+  `testing/synctest` (a timer created outside the bubble is not). Write the
+  loop so every `return l, nil` is dominated by `l != nil`:
+  `l, err := lockAttempt(…); if err != nil { return nil, err }; if l != nil
+  { return l, nil }; select …`. That shape is what lets nilaway prove the
+  "never `(nil, nil)`" contract at the `Attach`/`Stamp` call sites; GC-9's
+  nilaway clause covers a finding elsewhere and is not a license to keep
+  those guards.
 - **Consumes:** `volumeLock`, `release`, `lockFileSuffix`, `stampFileMode`
   unchanged.
 - **Call-site edits:** `Attach` and `Stamp` call `lockVolume(ctx,
@@ -594,8 +615,13 @@ its own doc-comment rewrite (GC-8). Lane hint: `implement-go`; H1 is the
     directory itself, so the fully-deletable `.compass-vfs-meta` subtree is
     gone from the leftover while `pinned/held` survives — this leftover is
     marker-less, and an assertion that `readStamp(reapingPath(root))` still
-    returns the aged stamp fails on correct code. Name-first classification
-    is proven by the two manufactured-leftover tests below, not here.
+    returns the aged stamp fails on correct code (and would prove nothing
+    even if the stamp survived: `stampOrphanLocked` never overwrites an
+    existing stamp). After `ReconcileOrphans` assert
+    `!exists(reapingPath(root) + lockFileSuffix)` instead — a pass that
+    treated the leftover as a volume would have materialized a lock file
+    beside it. Name-first classification is proven by the two
+    manufactured-leftover tests below, where the marker survives.
     Restore the mode; `Expire` returns nil and the leftover is gone. Against
     W1 this test fails at the first `Lookup` (the gutted root is still a
     directory).
@@ -639,10 +665,11 @@ its own doc-comment rewrite (GC-8). Lane hint: `implement-go`; H1 is the
   1. `reapLocked` after a successful final `RemoveAll` — the common case
      leaves no orphan at all;
   2. `Expire`'s `entryReaping` visitor after a successful `RemoveAll`;
-  3. `Expire`'s `entryLock` visitor: unlocked `os.Stat(root)` — present →
-     return nil without locking (live volume, common case); absent →
-     `tryLockVolume`, skip on contention, `reclaimLockLocked(root)`,
-     release.
+  3. `Expire`'s `entryLock` visitor: unlocked `os.Stat(root)` and
+     `os.Stat(reapingPath(root))` — either present → return nil without
+     locking (a live volume is the common case; a leftover's lock is call
+     site 2's to reclaim); both absent → `tryLockVolume`, skip on
+     contention, `reclaimLockLocked(root)`, release.
 - **Consumes:** H2's `scanBaseDir`/`entryLock`, H1's `tryLockVolume` and
   I-5 (the property that makes an unlink under a polling waiter safe).
 - **Doc edits:** `lockVolume`'s doc gets the reclaim rule (unlink-last,
@@ -674,7 +701,8 @@ its own doc-comment rewrite (GC-8). Lane hint: `implement-go`; H1 is the
 | I-1 atomic destruction | `TestReapIsAtomicUnderPartialRemoveFailure` | a reap that removes in place (W1) |
 | I-2 rename failure non-destructive | `TestReapRenameFailureLeavesVolumeIntact` | a reap that removes before or without renaming |
 | I-3 leftovers inert + convergent | `TestExpireSweepsAReapingLeftoverWhateverItsStamp`, `TestReconcileOrphansIgnoresAReapingLeftover`, the partial-failure test's second `Expire` | a scan that classifies by marker before name; a sweep that consults the stamp |
-| I-4 ctx-bounded waits | `TestAttachReturnsCtxErrWhileLockIsHeld` (Attach + Stamp), `TestAttachWithCancelledCtxTouchesNoLock` | a blocking flock; a helper goroutine that mutates after the caller returned |
+| I-4 ctx-bounded waits | `TestAttachReturnsCtxErrWhileLockIsHeld` (Attach + Stamp) | a blocking flock; a helper goroutine that mutates after the caller returned |
+| I-4 "mutated nothing on disk" | `TestAttachWithCancelledCtxTouchesNoLock` | a `lockVolume` that opens the fd (`O_CREATE`) before checking `ctx`. Passes on W1 today (`Lookup` already checks `ctx.Err()` first); it is a regression pin, not a W1-red test |
 | I-5 lock identity | `TestLockAcquisitionConvergesOnTheLiveInode`, `TestVolumeLockSurvivesAReap` (migrated) | an acquire without the `SameFile` check |
 | I-6 reclaim terminal + uncontended | `TestExpireReclaimsOrphanLockFilesOnlyWhenUncontended`, `TestExpireReclaimsTheLockAfterSweepingALeftover`, `TestReapLeavesNoOrphanLockInTheCommonCase` | a reclaim that ignores contention; one that unlinks a live volume's lock |
 | I-7 W1 invariants intact | every existing W1 test, unchanged in assertion (only the lock-helper signature migrates); `TestAttachRacingAReapDoesNotReturnAReapedPath` re-gated on synctest | any regression of (a)/(b)/(c), P2-GC-c, P2-GC-d |
@@ -686,9 +714,15 @@ Mechanics the executor must not rediscover:
   never enqueues a kernel waiter, so W1's `/proc/locks` gate cannot observe
   the new parked state; the backoff `select` on a bubble-created timer is
   durably blocking, so `synctest.Wait()` returns exactly when the waiter is
-  parked. `t.Context()` inside `synctest.Test` is bubble-associated; the
-  test goroutine advances the virtual clock by blocking on a bubble channel
-  (`<-done`), never by sleeping. `t.Run` is not allowed inside a bubble —
+  parked. `t.Context()` inside `synctest.Test` is bubble-associated. Two
+  traps: (1) **never call `synctest.Wait()` to make a parked waiter
+  re-poll** — with the waiter parked on its timer and the test goroutine
+  running, virtual time is frozen and `Wait` returns immediately with the
+  waiter still parked; only a blocking receive on a bubble channel
+  (`<-done`) lets the clock advance past the timer. (2) The backoff timer
+  must be created in the waiter's own goroutine, which was started inside
+  the bubble; a timer made by the test goroutine or at package level makes
+  the select non-durably-blocking. `t.Run` is not allowed inside a bubble —
   Attach/Stamp variants are two loop iterations, not subtests. Flock,
   stat, rename, and remove are ordinary syscalls inside the bubble: not
   durably blocking, but they complete.
