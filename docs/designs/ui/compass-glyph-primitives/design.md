@@ -1,6 +1,5 @@
 # Compass glyph primitives (RIG-3603)
 
-Status: Active
 Ledger: DL-367
 Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: RIG-3603. Adopts the technique frozen by DL-150 (state dot: 9×9

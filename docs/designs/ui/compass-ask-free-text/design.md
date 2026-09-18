@@ -1,6 +1,5 @@
 # Always-explicit ask submission + free-text (`custom_text`) answers (RIG-1330)
 
-Status: Active
 Tracker: RIG-1330
 
 Ledger placeholder: the decisions below are marked

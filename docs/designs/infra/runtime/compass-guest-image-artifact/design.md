@@ -1,7 +1,5 @@
 # Compass guest image artifact
 
-Status: Draft
-
 Tracking: RIG-3775
 
 Owner: compass-managed

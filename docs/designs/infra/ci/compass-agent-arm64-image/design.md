@@ -1,6 +1,5 @@
 # Publish the compass-agent image for linux/arm64
 
-Status: Draft
 Tracking: RIG-3625
 
 > **Design record.** This designs the multi-arch (linux/amd64 + linux/arm64)
