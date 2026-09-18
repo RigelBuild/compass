@@ -452,8 +452,8 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 	return &Hub{
 		lifecycle:         lifecycle,
 		tail:              tail,
-		comms:              comms,
-		log:                log,
+		comms:             comms,
+		log:               log,
 		freshSessionID:    mintFreshSessionID,
 		containerAccounts: make(map[string]store.AccountID),
 		sessionAccounts:   make(map[string]store.AccountID),

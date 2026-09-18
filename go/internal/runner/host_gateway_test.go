@@ -162,7 +162,7 @@ func TestHostProvisionServesInStateDirWithNoMounts(t *testing.T) {
 
 	// The recorded listener serves the real generated handler: a bound session
 	// round-trips over the state-dir socket.
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -199,7 +199,7 @@ func TestHostStartThreadsTransportEnvVars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}

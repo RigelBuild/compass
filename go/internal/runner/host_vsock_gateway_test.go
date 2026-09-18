@@ -147,7 +147,7 @@ func TestVsockProvisionServesAtSuffixedPathWithNoRefusedMounts(t *testing.T) {
 
 	// The recorded listener serves the real generated handler: a bound session
 	// round-trips, an unbound one fails closed.
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -279,7 +279,7 @@ func TestVsockRefreshConfigSkipsProbedSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}

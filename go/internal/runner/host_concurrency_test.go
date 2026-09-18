@@ -90,7 +90,7 @@ func TestStartSameContainerSerializesClosingTOCTOU(t *testing.T) {
 	// (once T4 lands).
 	first := make(chan startResult, 1)
 	go func() {
-		id, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+		id, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 		first <- startResult{id, err}
 	}()
 	select {
@@ -102,7 +102,7 @@ func TestStartSameContainerSerializesClosingTOCTOU(t *testing.T) {
 	// Second Start against the SAME container, launched while the first is parked.
 	second := make(chan startResult, 1)
 	go func() {
-		id, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+		id, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 		second <- startResult{id, err}
 	}()
 
@@ -181,7 +181,7 @@ func TestStartDifferentContainersOverlap(t *testing.T) {
 	done := make(chan startResult, 2)
 	for _, name := range []string{nameA, nameB} {
 		go func() {
-			id, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+			id, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 			done <- startResult{id, err}
 		}()
 	}

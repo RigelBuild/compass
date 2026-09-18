@@ -329,17 +329,17 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			return "", errAlreadyRunning
 		}
 	}
-    // A resume reuses its authorized logical id. Fresh starts must use the id
-    // minted by the Server; accepting a local fallback would reintroduce reuse
-    // after Runner restarts.
-    sessionID := req.GetResumeSessionId()
-    if sessionID == "" {
-        if freshSessionID == "" {
-            h.mu.Unlock()
-            return "", fmt.Errorf("fresh session start missing server-minted session id")
-        }
-        sessionID = freshSessionID
-    } else if _, live := h.sessions[sessionID]; live {
+	// A resume reuses its authorized logical id. Fresh starts must use the id
+	// minted by the Server; accepting a local fallback would reintroduce reuse
+	// after Runner restarts.
+	sessionID := req.GetResumeSessionId()
+	if sessionID == "" {
+		if freshSessionID == "" {
+			h.mu.Unlock()
+			return "", fmt.Errorf("fresh session start missing server-minted session id")
+		}
+		sessionID = freshSessionID
+	} else if _, live := h.sessions[sessionID]; live {
 		// Reusing the logical id as the map key means a resume racing a still-live
 		// prior lifetime would clobber its liveSession entry, orphaning its stream.
 		// The single-orchestrator precondition keeps this unreachable; guard so a

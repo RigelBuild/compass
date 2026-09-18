@@ -237,7 +237,7 @@ func TestVsockGateway_HostServesSuffixedSocket(t *testing.T) {
 	// Bind the session, then a host-side Connect client dialing the suffixed
 	// path directly (a plain AF_UNIX socket, no vsock needed host-side) round-
 	// trips a Comms call through the real Gateway to the fake Server and back.
-	sessionID, err := h.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+	sessionID, err := h.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 	if err != nil {
 		t.Fatalf("Start (bind session + launch inert in-guest keep-alive) = %v", err)
 	}
@@ -355,7 +355,7 @@ func TestVsockGateway_InGuestRoundTripOverVsock(t *testing.T) {
 		t.Fatalf("Provision = %v", err)
 	}
 	t.Cleanup(func() { _ = h.Remove(context.WithoutCancel(t.Context()), name) })
-	sessionID, err := h.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" )
+	sessionID, err := h.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -402,7 +402,7 @@ func TestVsockGateway_InGuestVsockIsNotIP(t *testing.T) {
 		t.Fatalf("Provision = %v", err)
 	}
 	t.Cleanup(func() { _ = h.Remove(context.WithoutCancel(t.Context()), name) })
-	if _, err := h.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session" ); err != nil {
+	if _, err := h.Start(t.Context(), &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session"); err != nil {
 		t.Fatalf("Start = %v", err)
 	}
 	id := resolveContainerID(t, h, name)
