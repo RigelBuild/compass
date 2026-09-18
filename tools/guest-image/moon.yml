@@ -1,13 +1,13 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# guest-image: the agent-image pin the microVM guest rootfs derives from.
+# guest-image: the agent-image pin the microVM guest rootfs derives from, and
+# the lane that publishes the guest triple as an OCI artifact.
 # TypeScript rather than a shell script (the no-bash-gate CI task).
 #
-# The pin CLI itself talks to a registry, so it is not a gate task. The
-# typecheck/test tasks here ARE ordinary bun gates: they cover the pure core —
-# the provenance rejections and the layer-descriptor extraction whose drift
-# would silently make the rootfs unreproducible or stack a different
-# filesystem.
+# Both CLIs talk to a registry, so neither is a gate task. The typecheck/test
+# tasks here ARE ordinary bun gates: they cover the pure cores — the provenance
+# rejections, the layer-descriptor extraction whose drift would silently make
+# the rootfs unreproducible, and the artifact mapping a registry would reject.
 #
 # A bun/TypeScript CLI, hoisted root-workspace member (`bun` tag): install is
 # inherited via .moon/tasks/tag-bun.yml and lint/format are whole-repo root
@@ -22,9 +22,10 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   test:
-    # The pure core (pin-core.ts): every provenance rejection (foreign repo,
-    # moving tag, malformed digest), the manifest-shape refusals, and the
-    # layer order that determines the stacked filesystem.
+    # The pure cores: every provenance rejection (foreign repo, moving tag,
+    # malformed digest), the manifest-shape refusals, the layer order that
+    # determines the stacked filesystem, and the artifact descriptors plus
+    # fail-closed tag disposition the publish lane maps.
     inputs: ['*.ts', 'tsconfig.json', '/tsconfig.base.json', 'package.json', '/bun.lock']
   # The CI aggregate. Without it ci-matrix contributes NO target for this
   # project (it emits `<id>:ci` only for a project defining a `ci` task), so
@@ -33,4 +34,11 @@ tasks:
   ci:
     deps: ['typecheck', 'test']
     options:
+      cache: false
+  # Publishing needs network and GHCR credentials, so it runs in the release
+  # workflow, never the gate — the gate's cost stays the guest-image build.
+  publish:
+    command: 'bun publish.ts'
+    options:
+      runInCI: false
       cache: false
