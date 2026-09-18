@@ -119,21 +119,14 @@ type crossSessionAttempt struct {
 	forbid []string
 }
 
-// sweepBatchSize is how many paths one awk invocation is handed. The scan's
-// dominant cost is process creation, against the HARD 120s per-exec cap
-// (execDefaultTimeout, microvm_lifecycle.go). One-spawn-per-file over roots
-// including "/" ran the cross-tenant row at ~72s — ~60% of the cap, i.e. a flake
-// waiting for a loaded box. Batching collapses that fork cost to per-batch,
-// since awk takes many FILENAMEs per run and reports which file each match came
-// from itself.
+// sweepBatchSize is how many paths one awk invocation is handed. Process
+// creation is the scan's dominant cost, and each exec has a hard 120s cap
+// (execDefaultTimeout, microvm_lifecycle.go). Batching bounds that cost by the
+// number of batches: awk takes many FILENAMEs per run and reports which file
+// each match came from itself.
 //
-// Measured in-guest on this box over an identical 425-file tree, needle in the
-// last file: 644ms at batch size 1 versus 47ms at 200 — a 13.7x reduction, i.e.
-// batching removes essentially all of the ~1.5ms/file spawn overhead.
-//
-// 200 is bounded by the guest's ARG_MAX rather than by taste: paths average well
-// under 128 bytes, so a 200-path argv stays far inside the limit while cutting
-// spawns by two orders of magnitude.
+// Keep the batch bounded by ARG_MAX. Paths are short enough that 200 entries
+// leave ample argv headroom while avoiding one process per file.
 const sweepBatchSize = 200
 
 // sweepScript builds a recursive content search the guest can actually run. The
@@ -148,10 +141,9 @@ const sweepBatchSize = 200
 // and the path appears if a file under another tenant's volume was reachable at
 // all.
 //
-// BATCHED, one awk per sweepBatchSize files rather than one per file: the
-// per-file variant spent nearly all its time forking (see sweepBatchSize) and
-// sat at ~60% of the 120s exec cap. awk is handed many FILENAMEs at once and
-// reports the matching one itself, so the output contract is unchanged.
+// BATCHED, one awk per sweepBatchSize files rather than one per file, to bound
+// process creation and execution time. awk is handed many FILENAMEs at once
+// and reports the matching one itself, so the output contract is unchanged.
 //
 // Two things stop the sweep from finding ITS OWN needle, which would be a false
 // escape report rather than a real one:
