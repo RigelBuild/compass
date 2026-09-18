@@ -12,7 +12,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -43,7 +45,7 @@ import (
 // idempotency scoping (store/migrations/0001_init.sql), keyed to the agent
 // account the provision creates an isolated container for.
 func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.ProvisionAgentWorkspaceRequest) (*compassv1.ProvisionAgentWorkspaceResponse, string, error) {
-	result, runnerID, err := h.relay(ctx, "", &compassv1internal.SessionsResponse{
+	result, target, err := h.relay(ctx, "", &compassv1internal.SessionsResponse{
 		RequestId: provisionDedupID(requestID, req),
 		Command:   &compassv1internal.SessionsResponse_Provision{Provision: req},
 	})
@@ -56,24 +58,34 @@ func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.Pr
 	// The Runner never asserts this account; it is the Server's own record, keyed
 	// by the container name. Live comms binding only, cleared on re-enroll.
 	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentHandle()))
-	return resp, runnerID, nil
+	return resp, target.runnerID, nil
 }
 
 // Start relays a StartAgentSession command to the owning Runner.
 func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartAgentSessionRequest) (*compassv1.StartAgentSessionResponse, error) {
-	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
+	result, target, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
 		RequestId: orNewRequestID(requestID),
 		Command:   &compassv1internal.SessionsResponse_Start{Start: req},
 	})
 	if err != nil {
 		return nil, err
 	}
-	resp := result.GetStart()
+	resp, err := startResponse(result)
+	if err != nil {
+		return nil, err
+	}
 	// Promote the container's provisioned account binding onto the live session
 	// id the Runner minted, so RelayCommsCall for this session resolves the
 	// agent account (comms-tools design T2). A container with no recorded
 	// account leaves no session binding, and its comms calls fail closed.
-	h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId())
+	//
+	// RIG-3696: a REFUSED promotion (the session id is durably owned by another
+	// account) leaves the session started on the Runner but bindable to nobody,
+	// so it is rolled back rather than left running unbound — the alternative is
+	// a live agent whose comms calls resolve nowhere and which no Stop reaps.
+	if promoteErr := h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId()); promoteErr != nil {
+		return nil, h.rollbackStartedSession(ctx, target, resp.GetSessionId(), promoteErr)
+	}
 	// The initial secret materialize no longer rides a signal: the Runner
 	// materializes the container's set pre-exec at Start, before the agent runs.
 	// The SecretsVersion signal is now the T6 ROTATION path only.
@@ -171,27 +183,159 @@ func (h *Hub) SessionState(ctx context.Context, sessionID string) (compassv1.Age
 	return compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED, false
 }
 
+// relayTarget names the Runner attachment that served one relay: its command
+// router and its id. It travels OUT of relay so a caller that must reach the
+// SAME Runner again — or attribute the call to it — names the attachment that
+// ACTUALLY served the command, rather than re-reading h.runner afterwards and
+// racing a re-enroll onto a replacement.
+type relayTarget struct {
+	router   *commandRouter
+	runnerID string
+}
+
 // relay dispatches one built command through the owning Runner's router and maps
 // the outcome to a Connect status: a RunnerError result becomes the mapped
 // Connect code; a transport failure (no Runner, stream drop) becomes
 // Unavailable. sessionKey selects the owning Runner (single-Runner MVP: any
-// non-empty key resolves the one Runner). The served Runner's id is returned
-// alongside the result for the one caller that must attribute the command to a
-// Runner (Provision, recording a durable placement); the rest discard it.
-func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, string, error) {
+// non-empty key resolves the one Runner).
+//
+// The served Runner's ATTACHMENT travels out alongside the result, for the two
+// callers that must not re-resolve it after the round trip: Provision records a
+// durable placement against the Runner id that ran it, and the start legs carry
+// the attachment into rollbackStartedSession so a rollback Stop reaches the
+// Runner that started the session. The rest discard it.
+func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, relayTarget, error) {
 	router, runnerID, err := h.routerFor(sessionKey)
 	if err != nil {
-		return nil, "", connect.NewError(connect.CodeUnavailable, err)
+		return nil, relayTarget{}, connect.NewError(connect.CodeUnavailable, err)
 	}
-	result, err := router.dispatch(ctx, cmd)
+	target := relayTarget{router: router, runnerID: runnerID}
+	result, err := h.relayVia(ctx, target, cmd)
 	if err != nil {
-		return nil, "", connect.NewError(connect.CodeUnavailable, err)
+		return nil, relayTarget{}, err
+	}
+	return result, target, nil
+}
+
+// relayVia dispatches one built command through an ALREADY-RESOLVED attachment,
+// mapping the outcome exactly as relay does. It is the direct-target half of the
+// relay: it never consults h.runner, so a Runner that re-enrolled since target
+// was resolved cannot redirect the command onto the replacement's router.
+//
+// That is load-bearing for rollbackStartedSession. enroll installs a FRESH
+// attachedRunner carrying a FRESH commandRouter on every re-enroll (hub.go), so
+// re-resolving the router at rollback time would push the Stop down a stream the
+// started session was never on: the Runner that started it keeps it running
+// unreaped — the exact stranding the rollback exists to prevent — and against a
+// replacement that re-minted the same session id the Stop would tear down an
+// UNRELATED session (enroll drops every binding for precisely that reason).
+func (h *Hub) relayVia(ctx context.Context, target relayTarget, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, error) {
+	if target.router == nil {
+		// Only a zero-value target reaches here — every relay-produced one carries
+		// the router routerFor returned. Fail closed rather than nil-deref.
+		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("no runner attachment to serve command %q", cmd.GetRequestId()))
+	}
+	result, err := target.router.dispatch(ctx, cmd)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 	if runnerErr := result.GetError(); runnerErr != nil {
-		return nil, "", runnerErrorToConnect(runnerErr)
+		return nil, runnerErrorToConnect(runnerErr)
 	}
-	return result, runnerID, nil
+	return result, nil
 }
+
+// startResponse extracts the StartAgentSession response from a start relay's
+// result, or fails the Start when the Runner's answer does not carry one. Both
+// start legs (Start and StartResume) go through it, so neither can report a
+// success it has no response for.
+//
+// A relay that returned no error has established only that the Runner answered
+// without a RunnerError — NOT that it answered the command that was asked. A nil
+// result, an unset result oneof, and a DIFFERENT variant (a Stop response
+// correlated onto a Start's request id) all leave GetStart() nil, and reading
+// that straight through returned (nil, nil): promoteSession's own
+// empty-session-id guard refuses to promote, so the leg fell through to a
+// success carrying no response at all. The handler then wraps a nil message into
+// a Connect response and records session ownership under an EMPTY session id,
+// while whatever the Runner did start is left running under an id nobody holds.
+//
+// So a malformed answer is CodeInternal: the Runner broke its own contract and
+// the fault is ours to surface, never a client's to retry. NO rollback is
+// attempted — the answer names no session to Stop, and the promotion never ran,
+// so there is no binding to undo. rollbackStartedSession is for a session we
+// know started under an id we hold; this is the case where we hold none.
+func startResponse(result *compassv1internal.SessionsRequest) (*compassv1.StartAgentSessionResponse, error) {
+	if resp := result.GetStart(); resp != nil {
+		return resp, nil
+	}
+	if result.GetResult() == nil {
+		return nil, connect.NewError(connect.CodeInternal,
+			errors.New("runnerhub: runner answered a start command with no result variant"))
+	}
+	return nil, connect.NewError(connect.CodeInternal,
+		fmt.Errorf("runnerhub: runner answered a start command with a %T result, want a start response", result.GetResult()))
+}
+
+// rollbackStartedSession tears down a session the Runner already started but
+// whose account binding was REFUSED (RIG-3696), and returns the error the Start
+// fails with. Used by both start legs (Start and StartResume): a started session
+// no binding can authorize is a live agent whose comms calls resolve nowhere,
+// so it is stopped rather than stranded.
+//
+// The Stop goes to target — the attachment the START relay returned — through
+// relayVia, NEVER re-resolved from h.runner. A re-enroll between the Start and
+// this rollback installs a fresh router, and a Stop pushed down that stream
+// would never reach the Runner holding the session (relayVia).
+//
+// It relays the Stop command DIRECTLY rather than calling Hub.Stop, and that is
+// the load-bearing choice. Hub.Stop follows its relay with unbindSession, which
+// DELETES the durable session_bindings row by session id — and on this path that
+// row belongs to the OTHER account, the durable owner whose ownership is the
+// exact reason the promotion was refused. Stopping through Hub.Stop would
+// therefore destroy the binding the conflict protected, converting a fail-closed
+// refusal into the silent unbind it exists to prevent. The refused promotion
+// wrote nothing to this hub's maps either, so there is no cache state to evict:
+// a bare relay is the whole rollback.
+//
+// The Stop runs on context.WithoutCancel(ctx) bounded by rollbackStopTimeout:
+// the session is live regardless of the caller's context, and the dispatch path
+// has no deadline of its own, so an unbounded Stop against a Runner that accepts
+// the command but never answers would hang the Start
+// (server/service.go abandonStartedSession takes the same posture for the same
+// reason). A Stop failure is folded into the returned error with errors.Join
+// rather than masking the conflict: the session is then running unreapable, and
+// only an operator who can see BOTH causes can clean it up.
+func (h *Hub) rollbackStartedSession(ctx context.Context, target relayTarget, sessionID string, cause error) error {
+	if sessionID == "" {
+		// The Runner answered with no session id, so there is nothing to stop —
+		// and nothing was started under an id anyone can name.
+		return connect.NewError(connect.CodeInternal, cause)
+	}
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackStopTimeout)
+	defer cancel()
+	_, stopErr := h.relayVia(stopCtx, target, &compassv1internal.SessionsResponse{
+		RequestId: orNewRequestID(""),
+		Command: &compassv1internal.SessionsResponse_Stop{
+			Stop: &compassv1.StopAgentSessionRequest{SessionId: sessionID},
+		},
+	})
+	if stopErr != nil {
+		h.log.Error("session binding was refused and the started session could not be stopped; it is running unreapable",
+			"session_id", sessionID, "runner_id", target.runnerID, "cause", cause, "stop_error", stopErr)
+		return connect.NewError(connect.CodeInternal, errors.Join(cause, fmt.Errorf("stopping the started session %q: %w", sessionID, stopErr)))
+	}
+	h.log.Error("session binding was refused; stopped the started session to avoid stranding it",
+		"session_id", sessionID, "runner_id", target.runnerID, "cause", cause)
+	return connect.NewError(connect.CodeInternal, cause)
+}
+
+// rollbackStopTimeout bounds the best-effort Stop in rollbackStartedSession. The
+// runnerhub dispatch path has no deadline of its own, so without this bound a
+// Runner that accepts the Stop command and never answers would hang the Start
+// that is rolling back. Mirrors server/service.go's rollbackStopTimeout, the
+// same bound on the same class of teardown. A var so a test can shorten it.
+var rollbackStopTimeout = 30 * time.Second
 
 // runnerErrorToConnect maps a RunnerError to the Connect status the client sees.
 func runnerErrorToConnect(e *compassv1internal.RunnerError) error {

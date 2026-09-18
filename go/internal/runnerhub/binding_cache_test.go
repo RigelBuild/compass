@@ -265,7 +265,7 @@ func TestFailClosedStoppedNeverSeenAndPostReconnect(t *testing.T) {
 
 	// Stopped: bound, then Stop's unbindSession removes it (durable delete too).
 	hub.bindContainer("cont-1", testAgentAccount)
-	hub.promoteSession(context.Background(), "cont-1", "sess-stop")
+	mustPromote(t, hub, "cont-1", "sess-stop")
 	if acct, ok := hub.accountForSession(context.Background(), "sess-stop"); !ok || acct != testAgentAccount {
 		t.Fatalf("accountForSession(sess-stop) before stop = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
@@ -326,7 +326,7 @@ func TestPeerBindingChangeEvictsOtherInstanceCache(t *testing.T) {
 
 	// B re-points the account onto sess-new: displaces sess-old, publishes the
 	// two changes, which fan synchronously to hubA.OnBindingChange.
-	hubB.promoteSession(context.Background(), "cont-new", "sess-new")
+	mustPromote(t, hubB, "cont-new", "sess-new")
 
 	// A published both an unbound-old and a bound-new (the publish-side contract).
 	pub := routing.publishedSnapshot()
@@ -365,14 +365,14 @@ func TestDisplacedSessionResolvesNowhere(t *testing.T) {
 
 	// Bind the account to sess-old.
 	hub.bindContainer("cont-old", testAgentAccount)
-	hub.promoteSession(context.Background(), "cont-old", "sess-old")
+	mustPromote(t, hub, "cont-old", "sess-old")
 	if acct, ok := hub.accountForSession(context.Background(), "sess-old"); !ok || acct != testAgentAccount {
 		t.Fatalf("accountForSession(sess-old) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
 
 	// Re-point the SAME account onto sess-new: displaces sess-old.
 	hub.bindContainer("cont-new", testAgentAccount)
-	hub.promoteSession(context.Background(), "cont-new", "sess-new")
+	mustPromote(t, hub, "cont-new", "sess-new")
 
 	// sess-new resolves; sess-old resolves nowhere.
 	if acct, ok := hub.accountForSession(context.Background(), "sess-new"); !ok || acct != testAgentAccount {
@@ -474,7 +474,9 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
 		hub.bindContainer("cont-1", testAgentAccount)
-		hub.promoteSession(context.Background(), "cont-1", "sess-1")
+		// A non-conflict record fault still promotes: the in-RAM fallback is the
+		// deliberate availability choice, so this must NOT return an error.
+		mustPromote(t, hub, "cont-1", "sess-1")
 
 		if acct, ok := hub.accountForSession(context.Background(), "sess-1"); !ok || acct != testAgentAccount {
 			t.Fatalf("accountForSession(sess-1) = (%q, %v), want (%s, true): a durable fault must not lose the live session", acct, ok, testAgentAccount)
@@ -491,7 +493,7 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 		hub.SetSessionBindingStore(bindings)
 		hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 		hub.bindContainer("cont-1", testAgentAccount)
-		hub.promoteSession(context.Background(), "cont-1", "sess-1")
+		mustPromote(t, hub, "cont-1", "sess-1")
 
 		// The reconnect sweep now faults; the in-RAM snapshot must still drive it.
 		bindings.deleteForRunnerErr = faultErr
@@ -529,39 +531,109 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 	})
 }
 
-// TestReusedSessionIDConflictIsSwallowed WITNESSES a known gap rather than a
-// guarantee: production mints session ids with a counter that resets on every
-// Runner restart, so a joint Server+Runner restart re-mints "sess-1" over a
-// surviving row. The store answers ErrConflict to keep the binding
-// single-valued; promoteSession currently treats it as a transient fault and
-// falls back to RAM, leaving the durable row pointing at the OLD account. The
-// single-instance MVP shadows that row and later retires it, but a second
-// Server instance would read the stale durable truth. Pinned so the behaviour
-// cannot change silently while the fix is decided (RIG-3108 review F1).
-func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
+// TestFreshSessionBindingUsesNewLogicalID covers the NON-conflicting half of the
+// restart case: a fresh session's id does not collide with a surviving row, so
+// the durable binding records for the new account and the promotion succeeds. It
+// proves promoteSession's success path is undisturbed by the fail-closed branch
+// below — it does NOT prove anything about the id allocator (that is
+// runner.randomIDs, proven in runner/host_test.go).
+func TestFreshSessionBindingUsesNewLogicalID(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
 	hub.SetSessionBindingStore(bindings)
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
-	// A row from before the joint restart, under a DIFFERENT account.
+	// A row from before the restart, under a DIFFERENT account.
 	bindings.mu.Lock()
-	bindings.bindings["sess-1"] = store.SessionBinding{SessionID: "sess-1", AccountID: "acct-stale", RunnerID: "runner-1"}
+	bindings.bindings["sess-old"] = store.SessionBinding{SessionID: "sess-old", AccountID: "acct-stale", RunnerID: "runner-1"}
 	bindings.mu.Unlock()
 
 	hub.bindContainer("cont-1", testAgentAccount)
-	hub.promoteSession(context.Background(), "cont-1", "sess-1")
+	mustPromote(t, hub, "cont-1", "sess-new")
 
-	// This instance resolves the NEW account from RAM.
-	if acct, ok := hub.accountForSession(context.Background(), "sess-1"); !ok || acct != testAgentAccount {
-		t.Fatalf("accountForSession(sess-1) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
+	if acct, ok := hub.accountForSession(context.Background(), "sess-new"); !ok || acct != testAgentAccount {
+		t.Fatalf("accountForSession(sess-new) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
-	// ...but the durable row still names the stale account: the divergence.
 	bindings.mu.Lock()
-	got := bindings.bindings["sess-1"].AccountID
+	got := bindings.bindings["sess-new"].AccountID
 	bindings.mu.Unlock()
-	if got != "acct-stale" {
-		t.Fatalf("durable binding for sess-1 = %q, want %q — if this now agrees with the cache, the ErrConflict gap was fixed and this witness test should become a real assertion", got, "acct-stale")
+	if got != testAgentAccount {
+		t.Fatalf("durable binding for sess-new = %q, want %q", got, testAgentAccount)
+	}
+}
+
+// TestPromotionConflictFailsClosedLeavingBothStatesUntouched is the RIG-3696
+// security property, and the direct inverse of the witness test this replaces
+// (the old TestReusedSessionIDConflictIsSwallowed, which PINNED the divergence
+// as a known gap). A session id the durable table already binds to a DIFFERENT
+// account must REFUSE the promotion: the store's session_bindings_session_key
+// conflict is the arbiter saying this id is not this account's, so caching the
+// promotion anyway would leave this instance authorizing the session's comms
+// calls under an account Postgres says it does not speak for.
+//
+// It asserts all four halves of "fail closed leaves nothing changed": the error
+// carries store.ErrConflict (so a caller can branch on it), NO in-RAM binding is
+// installed in EITHER direction, the durable row still names the original owner,
+// and no peer invalidation is published for a binding that does not exist.
+//
+// Mutation: reverting promoteSession's ErrConflict arm to the in-RAM fallback
+// reddens both the returned-error and the accountForSession assertions.
+func TestPromotionConflictFailsClosedLeavingBothStatesUntouched(t *testing.T) {
+	hub := newHubOnly()
+	bindings := newFakeBindingStore()
+	routing := &fakeRoutingFabric{}
+	hub.SetSessionBindingStore(bindings)
+	hub.SetRoutingFabric(routing)
+	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
+
+	// The durable row that owns "sess-1", under a DIFFERENT account. The fake
+	// raises ErrConflict on a re-bind of it (session_bindings_session_key).
+	const contestedSession = "sess-1"
+	bindings.mu.Lock()
+	bindings.bindings[contestedSession] = store.SessionBinding{SessionID: contestedSession, AccountID: "acct-durable-owner", RunnerID: "runner-1"}
+	bindings.mu.Unlock()
+
+	hub.bindContainer("cont-1", testAgentAccount)
+	err := hub.promoteSession(context.Background(), "cont-1", contestedSession)
+
+	if err == nil {
+		t.Fatal("promoteSession onto a session id owned by another account = nil, want an error: the in-RAM binding would authorize comms calls under an account the durable arbiter says the session does not speak for")
+	}
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("promoteSession error = %v, want one wrapping store.ErrConflict — the caller branches on the sentinel to roll the started session back", err)
+	}
+	// The security invariant, stated precisely: the session NEVER resolves to the
+	// PROMOTING account. It is NOT "resolves nothing" — the maps are a
+	// read-through cache, so with no RAM entry installed the resolve falls
+	// through to the durable table and correctly returns the DURABLE OWNER. That
+	// is the arbiter answering, which is exactly right: the session speaks for
+	// the account Postgres says owns it. What must never happen is the promoting
+	// account resolving, which is what the pre-fix in-RAM fallback produced.
+	acct, ok := hub.accountForSession(context.Background(), contestedSession)
+	if ok && acct == testAgentAccount {
+		t.Fatalf("accountForSession(%s) after a refused promotion = %q — the PROMOTING account resolved, so its comms calls would run under an identity the durable arbiter says the session does not speak for", contestedSession, acct)
+	}
+	if ok && acct != "acct-durable-owner" {
+		t.Fatalf("accountForSession(%s) = %q, want the durable owner acct-durable-owner (a read-through of the untouched row) or an unresolved miss", contestedSession, acct)
+	}
+	// REVERSE direction: the promoting account must have NO live session. Nothing
+	// bound it (the fake's reverse lookup finds no row for it either), so a
+	// delivery dispatch cannot push to the session it failed to claim.
+	if sess, ok := hub.SessionForAccount(context.Background(), testAgentAccount); ok {
+		t.Fatalf("SessionForAccount(%s) after a refused promotion = (%q, true), want ok=false — the promoting account claimed no session, so the reverse map must stay untouched", testAgentAccount, sess)
+	}
+	// The durable row is exactly as it was: the original owner, not overwritten.
+	bindings.mu.Lock()
+	owner := bindings.bindings[contestedSession].AccountID
+	bindings.mu.Unlock()
+	if owner != "acct-durable-owner" {
+		t.Fatalf("durable binding for %s = %q, want acct-durable-owner — the refused promotion must not have written the table", contestedSession, owner)
+	}
+	// Nothing was published: a peer told to invalidate would re-read the table
+	// and find the original owner, but announcing a binding that was refused is
+	// a lie on the fabric.
+	if pub := routing.publishedSnapshot(); len(pub) != 0 {
+		t.Fatalf("published = %+v, want none: a refused promotion announces no binding change", pub)
 	}
 }
 
@@ -583,7 +655,7 @@ func TestConcurrentResolveDuringAFaultingReapCannotResurrect(t *testing.T) {
 	hub.SetSessionBindingStore(bindings)
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 	hub.bindContainer("cont-1", testAgentAccount)
-	hub.promoteSession(context.Background(), "cont-1", "sess-1")
+	mustPromote(t, hub, "cont-1", "sess-1")
 
 	// The reconnect's reap will fault, leaving the sess-1 row in place.
 	bindings.deleteForRunnerErr = errors.New("durable fault")
