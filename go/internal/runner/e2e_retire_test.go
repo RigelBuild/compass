@@ -89,7 +89,7 @@ func TestStopRetiresTheSessionsControlState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "")
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", "test-session")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
