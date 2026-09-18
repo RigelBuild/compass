@@ -14,7 +14,6 @@ import (
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/internal/runtime"
-	"strconv"
 	"testing"
 )
 
@@ -27,10 +26,8 @@ func newRefreshHostFixture(t *testing.T, fetch *fakeFetchServer) (SessionHost, *
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, fetch))
-	var n int
-	newID := func() string { n++; return "sess-" + strconv.Itoa(n) }
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
-	host := NewSessionHost(link, rt, registry, engine, cfg2SpecBuilder(), cfg, discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, cfg2SpecBuilder(), cfg, discardLoggerRunner())
 	return host, engine
 }
 

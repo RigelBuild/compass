@@ -104,7 +104,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
 		RuntimeDir: cfg.RuntimeDir,
 		AgentModel: cfg.AgentModel,
-	}, log, nil)
+	}, log)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);
 	// close them all on shutdown, draining any in-flight call.
