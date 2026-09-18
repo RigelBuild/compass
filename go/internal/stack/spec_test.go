@@ -118,6 +118,29 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 	}
 }
 
+func TestRunnerSpecGuestArgs(t *testing.T) {
+	base := Config{ListenAddr: "127.0.0.1:50052", AgentImage: "agent:latest", RuntimeDir: "/run/compass"}
+	cert := CertResult{CertPath: "/state/tls.crt"}
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantEnd []string
+	}{
+		{name: "non-microvm remains unchanged", cfg: base, wantEnd: nil},
+		{name: "backend without guest paths", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "container"}, wantEnd: []string{"--backend", "container"}},
+		{name: "microvm guest dir", cfg: Config{ListenAddr: base.ListenAddr, AgentImage: base.AgentImage, RuntimeDir: base.RuntimeDir, RuntimeBackend: "microvm", GuestDir: "/state/guest"}, wantEnd: []string{"--backend", "microvm", "--microvm-kernel", "/state/guest/kernel", "--microvm-rootfs", "/state/guest/rootfs.erofs", "--microvm-initrd", "/state/guest/initrd", "--microvm-image-manifest", "/state/guest/manifest.sha256"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := runnerSpec(tt.cfg, cert, "token").Args
+			want := append(baseRunnerArgs(tt.cfg, cert), tt.wantEnd...)
+			if !slices.Equal(got, want) {
+				t.Fatalf("runnerSpec Args = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // The empty arm is the load-bearing one: an unset SecretProvider must yield a
 // byte-identical argv, since the embedded supervisor and compass-stack's
 // resolveConfig both leave it zero.

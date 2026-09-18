@@ -112,6 +112,20 @@ type Config struct {
 	// the agent's ~/.omp/agent (RIG-1787 H3); the embedded supervisor and the
 	// compass-stack CLI leave it unset.
 	Mounts []string
+	// RuntimeBackend selects the runner's session backend (e.g. "microvm").
+	// Empty omits --backend entirely, leaving the runner on its own resolution
+	// — the core applies no default, the CLI slice resolves one if it wants.
+	RuntimeBackend string
+	// GuestArtifact is the digest-pinned repo@sha256:... guest image the
+	// stack materialises before spawning the runner. A tag-pinned ref is
+	// rejected: a mutable tag would defeat the content-addressed state dir.
+	// Mutually exclusive with GuestDir; empty means no artifact is fetched.
+	GuestArtifact string
+	// GuestDir points the stack at an already-materialised guest directory and
+	// skips all fetching — the air-gapped path, where no pull is ever
+	// mandatory. Mutually exclusive with GuestArtifact. Empty leaves the guest
+	// paths unset, which keeps the assets baked into the Runner image live.
+	GuestDir string
 }
 
 // sunPathMax is the longest NUL-terminated path an AF_UNIX address holds on this
@@ -131,8 +145,8 @@ var agentSocketTailWidth = len(filepath.Join(
 )) + 1 // +1 for the separator joining RuntimeDir to the tail
 
 // Validate enforces the config invariants that would otherwise surface as opaque
-// runtime failures far from the misconfiguration: an unbindable network door and
-// an over-budget runner socket path.
+// runtime failures far from the misconfiguration: an unbindable network door,
+// an over-budget runner socket path, and coherent guest image settings.
 func (c Config) Validate() error {
 	if c.ListenAddr == "" {
 		return errors.New("stack config: ListenAddr is required (a fixed loopback TLS door, e.g. 127.0.0.1:50052)")
@@ -142,6 +156,15 @@ func (c Config) Validate() error {
 	// real port — reject it up front rather than spawn an unreachable door.
 	if _, port, ok := splitPort(c.ListenAddr); ok && port == "0" {
 		return fmt.Errorf("stack config: ListenAddr %q must be a fixed port, not :0 (no bound-address discovery API exists)", c.ListenAddr)
+	}
+	if c.GuestArtifact != "" && c.GuestDir != "" {
+		return fmt.Errorf("stack config: GuestArtifact %q and GuestDir %q are mutually exclusive", c.GuestArtifact, c.GuestDir)
+	}
+	if c.GuestArtifact != "" && !isDigestPinned(c.GuestArtifact) {
+		return fmt.Errorf("stack config: GuestArtifact %q must be a digest-pinned repo@sha256:<64 hex> reference", c.GuestArtifact)
+	}
+	if c.RuntimeBackend != "microvm" && (c.GuestArtifact != "" || c.GuestDir != "") {
+		return fmt.Errorf("stack config: GuestArtifact/GuestDir require RuntimeBackend %q, got %q", "microvm", c.RuntimeBackend)
 	}
 	// The runner builds agent sockets at RuntimeDir/containers/
 	// compass-agent-<32hex>/agent.sock; the fixed tail is agentSocketTailWidth
@@ -154,6 +177,23 @@ func (c Config) Validate() error {
 		)
 	}
 	return nil
+}
+
+// isDigestPinned reports whether ref carries a @sha256:<64 lowercase hex>
+// tail. Lowercase is deliberate: the pin and publish lanes emit only lowercase
+// and the digest string keys the content-addressed state dir, so accepting an
+// uppercase variant would fetch to a second dir for identical content.
+func isDigestPinned(ref string) bool {
+	i := strings.LastIndex(ref, "@sha256:")
+	if i <= 0 || len(ref)-i-len("@sha256:") != 64 {
+		return false
+	}
+	for _, ch := range ref[i+len("@sha256:"):] {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // splitPort extracts the port from a host:port authority without importing net's
