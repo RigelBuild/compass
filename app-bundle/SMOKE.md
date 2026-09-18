@@ -153,6 +153,7 @@ containers or private postgres container remain:
 ```bash
 podman ps -a --filter name='^compass-(postgres|otel-collector|nats|agent)-'
 ```
+
 The filter should match the stack's containers while it is up. After teardown,
 an empty result is meaningful.
 
