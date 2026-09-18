@@ -200,10 +200,7 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
 
 With no stored token, the app paints the connect screen. The server URL is
 read-only and comes from `app.toml`; the bearer is the `$RT/admin-token` value.
-Paste it and connect. The shell probes `GetServerInfo`, calls `WhoAmI`, writes
-the token to the OS keychain, arms the bearer injector, and boots into the
-board (`compass-native-client-mode/design.md:185-226`). Confirm the board
-renders live over the TLS door.
+Paste it and connect. Confirm the board renders live over the TLS door.
 
 ### 4. Drive one agent session to a running container
 
@@ -220,8 +217,7 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
 ```
 
 Auto-connect reads the stored bearer from the OS keychain and boots straight to
-the board with no connect screen or bearer re-entry
-(`compass-native-client-mode/design.md:185-186`). The keychain entry is keyed
+the board with no connect screen or bearer re-entry. The keychain entry is keyed
 by service `compass-app` and the server URL.
 
 ### 6. Cleanup
