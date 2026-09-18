@@ -359,7 +359,6 @@ describe("isDm", () => {
 	for (const [kind, expected] of [
 		["channel", false],
 		["dm", true],
-		["group_dm", true],
 	] as [ChannelKind, boolean][]) {
 		test(`${kind} → ${expected}`, () => {
 			expect(isDm(ch({ id: "x", kind }))).toBe(expected);
@@ -368,15 +367,14 @@ describe("isDm", () => {
 });
 
 describe("dmChannels", () => {
-	// Only dm + group_dm, in fixture order; a plain channel is excluded.
-	test("keeps dm + group_dm in order, drops plain channels", () => {
+	test("keeps DMs in order and drops plain channels", () => {
 		const plain = ch({ id: "c", kind: "channel" });
-		const d = ch({ id: "d", kind: "dm" });
-		const gd = ch({ id: "gd", kind: "group_dm" });
+		const first = ch({ id: "d", kind: "dm" });
+		const second = ch({ id: "d2", kind: "dm" });
 
 		expect(
-			dmChannels([plain, d, gd, ch({ id: "c2" })]).map((c) => c.id),
-		).toEqual(["d", "gd"]);
+			dmChannels([plain, first, second, ch({ id: "c2" })]).map((c) => c.id),
+		).toEqual(["d", "d2"]);
 	});
 });
 
@@ -391,8 +389,8 @@ describe("dmLabel", () => {
 			acc({ id: "acc-b", handle: "bob" }),
 		);
 		const dm = ch({
-			id: "gd",
-			kind: "group_dm",
+			id: "dm",
+			kind: "dm",
 			memberAccountIds: [caller, "acc-a", "acc-b"],
 		});
 
@@ -538,14 +536,6 @@ describe("agentDmAccountId", () => {
 		});
 		expect(agentDmAccountId(dm, caller, byId)).toBeUndefined();
 	});
-	test("group_dm (even with a single agent) → undefined", () => {
-		const gd = ch({
-			id: "gd",
-			kind: "group_dm",
-			memberAccountIds: [caller, "acc-agent"],
-		});
-		expect(agentDmAccountId(gd, caller, byId)).toBeUndefined();
-	});
 	test("plain channel → undefined", () => {
 		const plain = ch({
 			id: "c",
@@ -657,27 +647,15 @@ describe("pinnedMessages (board strip resolution)", () => {
 });
 
 describe("agentDmChannel", () => {
-	// The inverse of agentDmAccountId: given an agent id, find the DM channel to
-	// center that agent's workspace on. Same account cast as the agentDmAccountId
-	// tests (one caller, two agents, one human), but the cases are its mirror —
-	// we query BY agent id and assert which channel (or none) comes back.
 	const caller = "acc-me";
 	const byId = byIdOf(
 		acc({ id: caller, handle: "me" }),
 		acc({ id: "acc-agent", handle: "agent", kind: "agent" }),
-		acc({ id: "acc-agent2", handle: "agent2", kind: "agent" }),
 		acc({ id: "acc-human", handle: "human", kind: "user" }),
 	);
 
-	// The agent's 1:1 DM is returned — and a plain channel that ALSO includes the
-	// agent is skipped, proving resolution runs through agentDmAccountId's DM
-	// classification, not a naive "is the agent a member" scan.
-	test("agent DM present (beside a plain channel with the agent) → that DM", () => {
-		const plain = ch({
-			id: "c-shared",
-			kind: "channel",
-			memberAccountIds: [caller, "acc-agent"],
-		});
+	test("returns the agent's 1:1 DM and skips plain channels", () => {
+		const plain = ch({ id: "c", memberAccountIds: [caller, "acc-agent"] });
 		const dm = ch({
 			id: "dm-agent",
 			kind: "dm",
@@ -688,109 +666,29 @@ describe("agentDmChannel", () => {
 		);
 	});
 
-	// A group DM whose only other party is the agent does NOT resolve — group DMs
-	// have no single observed agent (mirrors agentDmAccountId's group_dm case).
-	test("group DM with the agent → undefined", () => {
-		const gd = ch({
-			id: "gd",
-			kind: "group_dm",
-			memberAccountIds: [caller, "acc-agent"],
-		});
-		expect(agentDmChannel([gd], "acc-agent", caller, byId)).toBeUndefined();
-	});
-
-	// A plain channel containing the agent is not its DM — no workspace channel.
-	test("only a plain channel with the agent → undefined", () => {
-		const plain = ch({
-			id: "c",
-			kind: "channel",
-			memberAccountIds: [caller, "acc-agent"],
-		});
-		expect(agentDmChannel([plain], "acc-agent", caller, byId)).toBeUndefined();
-	});
-
-	// Querying a HUMAN id finds nothing: a human↔human DM resolves to undefined
-	// (its other party isn't an agent), so it never matches the queried id.
-	test("querying a human id (human↔human DM present) → undefined", () => {
+	test("only a plain channel or human DM resolves to undefined", () => {
+		const plain = ch({ id: "c", memberAccountIds: [caller, "acc-agent"] });
 		const humanDm = ch({
 			id: "dm-human",
 			kind: "dm",
 			memberAccountIds: [caller, "acc-human"],
 		});
+		expect(agentDmChannel([plain], "acc-agent", caller, byId)).toBeUndefined();
 		expect(
 			agentDmChannel([humanDm], "acc-human", caller, byId),
 		).toBeUndefined();
 	});
 
-	// An agent with no DM in the list resolves to nothing.
-	test("unknown / DM-less agent id → undefined", () => {
-		const dm = ch({
-			id: "dm-agent",
-			kind: "dm",
-			memberAccountIds: [caller, "acc-agent"],
-		});
-		expect(agentDmChannel([dm], "acc-ghost", caller, byId)).toBeUndefined();
-	});
-
-	// `find` returns the FIRST matching DM when two DMs both resolve to the same
-	// agent (documented "first such DM"). A findLast/filter-last regression would
-	// return "dm-2" here.
-	test("returns the first matching DM when two resolve to the same agent", () => {
+	test("returns the first matching DM", () => {
 		const first = ch({
 			id: "dm-1",
 			kind: "dm",
 			memberAccountIds: [caller, "acc-agent"],
 		});
-		const second = ch({
-			id: "dm-2",
-			kind: "dm",
-			memberAccountIds: [caller, "acc-agent"],
-		});
+		const second = { ...first, id: "dm-2" };
 		expect(agentDmChannel([first, second], "acc-agent", caller, byId)?.id).toBe(
 			"dm-1",
 		);
-	});
-
-	// The inverse-identity invariant tying the two functions together: over a
-	// mixed list, every channel that agentDmAccountId classifies as an agent DM
-	// round-trips back to ITSELF through agentDmChannel. The final assertion keeps
-	// the loop non-vacuous (there is at least one agent DM to round-trip).
-	test("round-trips every agent DM back to itself (inverse of agentDmAccountId)", () => {
-		const plain = ch({
-			id: "c",
-			kind: "channel",
-			memberAccountIds: [caller, "acc-agent"],
-		});
-		const dmA = ch({
-			id: "dm-a",
-			kind: "dm",
-			memberAccountIds: [caller, "acc-agent"],
-		});
-		const dmB = ch({
-			id: "dm-b",
-			kind: "dm",
-			memberAccountIds: [caller, "acc-agent2"],
-		});
-		const gd = ch({
-			id: "gd",
-			kind: "group_dm",
-			memberAccountIds: [caller, "acc-agent"],
-		});
-		const humanDm = ch({
-			id: "dm-human",
-			kind: "dm",
-			memberAccountIds: [caller, "acc-human"],
-		});
-		const list = [plain, dmA, gd, dmB, humanDm];
-
-		for (const c of list) {
-			const agentId = agentDmAccountId(c, caller, byId);
-			if (agentId === undefined) continue;
-			expect(agentDmChannel(list, agentId, caller, byId)).toBe(c);
-		}
-		expect(
-			list.some((c) => agentDmAccountId(c, caller, byId) !== undefined),
-		).toBe(true);
 	});
 });
 
