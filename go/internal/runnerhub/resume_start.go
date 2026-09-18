@@ -31,8 +31,15 @@ import (
 // id as the live id, so it is the leg where a durably-owned id is reachable at
 // all — the conflict means the resumed id belongs to a different account, which
 // is precisely the resume that must not proceed.
+//
+// The Runner's answer goes through startResponse before anything is promoted
+// (commands.go), so a malformed result — nil, an unset oneof, or a non-start
+// variant correlated onto this request id — fails the resume CodeInternal
+// instead of returning a nil response with a nil error. And the rollback Stop
+// goes to the attachment THIS relay returned, so a re-enroll in between cannot
+// redirect it onto a replacement Runner.
 func (h *Hub) StartResume(ctx context.Context, requestID string, req *compassv1.StartAgentSessionRequest, resumeBody []byte) (*compassv1.StartAgentSessionResponse, error) {
-	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
+	result, target, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
 		RequestId:  orNewRequestID(requestID),
 		Command:    &compassv1internal.SessionsResponse_Start{Start: req},
 		ResumeBody: &compassv1internal.ResumeBody{SessionBody: string(resumeBody)},
@@ -40,9 +47,12 @@ func (h *Hub) StartResume(ctx context.Context, requestID string, req *compassv1.
 	if err != nil {
 		return nil, err
 	}
-	resp := result.GetStart()
+	resp, err := startResponse(result)
+	if err != nil {
+		return nil, err
+	}
 	if promoteErr := h.promoteSession(ctx, req.GetContainerName(), resp.GetSessionId()); promoteErr != nil {
-		return nil, h.rollbackStartedSession(ctx, resp.GetSessionId(), promoteErr)
+		return nil, h.rollbackStartedSession(ctx, target, resp.GetSessionId(), promoteErr)
 	}
 	return resp, nil
 }
