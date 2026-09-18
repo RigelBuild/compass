@@ -116,6 +116,10 @@ type Config struct {
 	// Empty omits --backend entirely, leaving the runner on its own resolution
 	// — the core applies no default, the CLI slice resolves one if it wants.
 	RuntimeBackend string
+	// GuestArtifact is the digest-pinned OCI reference the guest image is
+	// fetched from into the state dir. Mutually exclusive with GuestDir; empty
+	// leaves the guest paths unset, which keeps baked Runner assets live.
+	GuestArtifact string
 	// GuestDir points the stack at an already-materialised guest directory and
 	// skips all fetching — the air-gapped path, where no pull is ever mandatory.
 	// Empty leaves the guest paths unset, which keeps baked Runner assets live.
@@ -151,10 +155,22 @@ func (c Config) Validate() error {
 	if _, port, ok := splitPort(c.ListenAddr); ok && port == "0" {
 		return fmt.Errorf("stack config: ListenAddr %q must be a fixed port, not :0 (no bound-address discovery API exists)", c.ListenAddr)
 	}
-	if c.RuntimeBackend != "microvm" && c.GuestDir != "" {
-		return fmt.Errorf("stack config: GuestDir requires RuntimeBackend %q, got %q", "microvm", c.RuntimeBackend)
+	// Both guest knobs name the same thing by different means, so accepting
+	// both would leave which one wins unspecified.
+	if c.GuestArtifact != "" && c.GuestDir != "" {
+		return fmt.Errorf("stack config: GuestArtifact %q and GuestDir %q are mutually exclusive", c.GuestArtifact, c.GuestDir)
 	}
-	if c.RuntimeBackend == "microvm" && c.GuestDir != "" && !filepath.IsAbs(c.GuestDir) {
+	if !c.microVM() && (c.GuestArtifact != "" || c.GuestDir != "") {
+		return fmt.Errorf("stack config: GuestArtifact/GuestDir require RuntimeBackend %q, got %q", runtimeBackendMicroVM, c.RuntimeBackend)
+	}
+	// Validated by the SAME parser the fetcher uses, so a reference accepted
+	// here can never be refused later, mid-startup, by the fetch path.
+	if c.GuestArtifact != "" {
+		if _, err := parseGuestRef(c.GuestArtifact); err != nil {
+			return fmt.Errorf("stack config: %w", err)
+		}
+	}
+	if c.GuestDir != "" && !filepath.IsAbs(c.GuestDir) {
 		return fmt.Errorf("stack config: GuestDir %q must be an absolute path", c.GuestDir)
 	}
 	if budget := sunPathMax - agentSocketTailWidth; len(c.RuntimeDir) > budget {

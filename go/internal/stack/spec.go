@@ -4,7 +4,6 @@ package stack
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 )
 
@@ -44,20 +43,26 @@ func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 
 // runnerSpec builds the compass-runner child spec (devenv.nix:497-502): it dials
 // the server's TLS door over https, trusts the same cert as its --ca anchor,
-// runs cfg.AgentImage, and mints per-container sockets under cfg.RuntimeDir. The
-// token rides in Env only.
-func runnerSpec(cfg Config, cert CertResult, token string) ProcessSpec {
-	// The five unconditional flags every runner spawn carries. The two A4 flags
-	// below are appended only when set, so a caller that leaves both zero (the
-	// embedded supervisor, the compass-stack CLI's resolveConfig) gets a
-	// byte-identical Args to before this feature existed.
+// and mints per-container sockets under cfg.RuntimeDir. The token rides in Env
+// only; guest is resolved by the caller (zero = the Runner image's baked copy).
+func runnerSpec(cfg Config, cert CertResult, token string, guest GuestPaths) ProcessSpec {
+	// The four unconditional flags every runner spawn carries. Each optional
+	// flag below is appended only when set, so a caller that leaves them zero
+	// (the embedded supervisor, the compass-stack CLI's resolveConfig) gets a
+	// byte-identical Args to before those features existed.
 	args := []string{
 		"--runner-id", embeddedRunnerID,
 		"--server", "https://" + cfg.ListenAddr,
 		"--ca", cert.CertPath,
-		"--image", cfg.AgentImage,
-		"--runtime-dir", cfg.RuntimeDir,
 	}
+	// AgentImage: the microVM backend runs the agent from the guest rootfs and
+	// REFUSES a configured --image (runner.ResolveAgentImage), so forwarding one
+	// would make every microVM runner fail at startup. Omit it there; every
+	// container backend still requires it exactly as before.
+	if !cfg.microVM() {
+		args = append(args, "--image", cfg.AgentImage)
+	}
+	args = append(args, "--runtime-dir", cfg.RuntimeDir)
 	// AgentModel: forward a single --agent-model only when pinned. Forwarding
 	// --agent-model "" would break an embedded supervisor that relies on the
 	// runner's own default, so an empty selector must omit the flag entirely.
@@ -86,12 +91,15 @@ func runnerSpec(cfg Config, cert CertResult, token string) ProcessSpec {
 	}
 	if cfg.RuntimeBackend != "" {
 		args = append(args, "--backend", cfg.RuntimeBackend)
-		if cfg.GuestDir != "" {
+		// The four guest flags travel as a set or not at all: a partially
+		// configured triple would fail the runner's own preflight, and an
+		// unverified path set is worse than the baked default.
+		if guest != (GuestPaths{}) {
 			args = append(args,
-				"--microvm-kernel", filepath.Join(cfg.GuestDir, "kernel"),
-				"--microvm-rootfs", filepath.Join(cfg.GuestDir, "rootfs.erofs"),
-				"--microvm-initrd", filepath.Join(cfg.GuestDir, "initrd"),
-				"--microvm-image-manifest", filepath.Join(cfg.GuestDir, "manifest.sha256"),
+				"--microvm-kernel", guest.Kernel,
+				"--microvm-rootfs", guest.Rootfs,
+				"--microvm-initrd", guest.Initrd,
+				"--microvm-image-manifest", guest.Manifest,
 			)
 		}
 	}
