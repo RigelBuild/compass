@@ -17,6 +17,7 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -143,6 +144,9 @@ type ForgeConfig struct {
 	// under this host, so changing it between boots abandons (does not migrate)
 	// the prior host's rows.
 	Host string
+	// ForgeCAPath is an optional PEM CA bundle trusted by GitHub/App clients.
+	// Empty preserves the default system roots and existing behavior.
+	ForgeCAPath string
 	// SeedRepos are "owner/name" repos boot-reconciled into
 	// forge_repo_subscriptions (bootstrap-only insert, ON CONFLICT DO NOTHING;
 	// lowercased for GITHUB) — a declarative SEED, not the live target set. The
@@ -155,29 +159,15 @@ type ForgeConfig struct {
 	App ForgeAppConfig
 	// ReviewerApp is the SECOND GitHub App credential — a distinct App
 	// definition (own AppID + private key + one installation) serving ONLY the
-	// reviewer write client (the submit_review arm). A distinct GitHub identity
-	// from the primary App so an agent approving a PR it authored dispatches
-	// submit_review on a different account than it authored with, dissolving the
-	// author-approving-own-PR 422 at the credential layer (F1, DEC-1). The
-	// reviewer App registers NO webhook and no read lane, so its
-	// AppWebhookSecretName is unused; reads/webhooks/board/author-writes all ride
-	// the primary App (2-App topology, DEC-3).
+	// reviewer write client (the submit_review arm).
 	ReviewerApp ForgeAppConfig
 	// LinearClientIDSecretName / LinearClientSecretName are the declared
 	// server_only secret NAMEs holding the Linear OAuth client-credentials pair
-	// (actor=app, the RIG-2682 "Compass" app). The Linear write + notify lanes
-	// mint one shared client-credentials token from this pair (never a member
-	// PAT); a Linear coordinate + notify lane are wired iff BOTH names resolve to
-	// a declared secret (the VALUEs never cross config or a flag). Default to
-	// LINEAR_FORGE_CLIENT_ID / LINEAR_FORGE_CLIENT_SECRET.
+	// (actor=app, the RIG-2682 "Compass" app).
 	LinearClientIDSecretName string
 	LinearClientSecretName   string
 	// LinearWebhookSecretName is the declared server_only secret NAME holding
-	// the Linear webhook signing secret the shared POST /webhooks ingress
-	// verifies deliveries against (the VALUE never crosses config or a flag).
-	// The Linear data-change arm runs iff this resolves to a declared secret —
-	// INDEPENDENT of the GitHub App gate (a deployment can run Linear
-	// notifications without a GitHub App and vice versa).
+	// the Linear webhook signing secret.
 	LinearWebhookSecretName string
 }
 
@@ -270,6 +260,40 @@ func (c ForgeConfig) resolved() ForgeConfig {
 func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool {
 	havePrimary, haveReviewer := c.forgeWriteAppsConfigured(declared)
 	return havePrimary && haveReviewer
+}
+
+// forgeHTTPClient returns the default system-root client, optionally extending
+// its roots with the operator-provided forge CA bundle. Linear and unrelated
+// clients never use this client.
+func forgeHTTPClient(path string) (*http.Client, error) {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		transport = &http.Transport{}
+	}
+	transport = transport.Clone()
+	if path != "" {
+		pem, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read forge CA bundle: %w", err)
+		}
+		roots, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, fmt.Errorf("load system cert pool: %w", err)
+		}
+		if roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return nil, errors.New("forge CA bundle contains no certificates")
+		}
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		} else {
+			transport.TLSClientConfig = transport.TLSClientConfig.Clone()
+		}
+		transport.TLSClientConfig.RootCAs = roots
+	}
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second}, nil
 }
 
 // forgeWriteAppsConfigured reports which of the two required write Apps — the
@@ -1225,7 +1249,11 @@ func buildBoardWebhookWiring(
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
 	}
-	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok})
+	httpClient, err := forgeHTTPClient(rc.ForgeCAPath)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok, Client: httpClient})
 
 	lane, err := buildBoardIngestLane(ctx, cfg, st, issueBrd, client, log)
 	if err != nil {
@@ -1979,13 +2007,16 @@ func buildForgeWriteService(
 	if err != nil {
 		return nil, fmt.Errorf("forge reviewer app token source: %w", err)
 	}
-	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: reviewerTok})
+	reviewerHTTP, err := forgeHTTPClient(fc.ForgeCAPath)
+	if err != nil {
+		return nil, err
+	}
+	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: reviewerTok, Client: reviewerHTTP})
 
 	// (3) The provider registry: the GitHub coordinate (author = shared primary
 	// client, reviewer = reviewer App client, F1) plus a Linear coordinate when
 	// the shared Linear token source is configured.
 	registry := newForgeProviderRegistry()
-	registerGitHubForgeCoordinate(registry, fc, primaryClient, reviewerClient)
 
 	// Linear write coordinate — registered ONLY when Linear is configured (else
 	// GitHub-only). Linear is issues-only (DL-051): PR/review ops return ErrUnsupported.
