@@ -74,6 +74,7 @@ import type { MapMessage } from "./comms-state";
 const CHANNEL_KIND: Record<ChannelKind, DomainChannelKind> = {
 	[ChannelKind.CHANNEL]: "channel",
 	[ChannelKind.DM]: "dm",
+	[ChannelKind.GROUP_DM]: "channel",
 } satisfies Record<ChannelKind, DomainChannelKind>;
 
 /** The wire `ChannelGroupVisibility` enum → the domain's string literal. Total,
