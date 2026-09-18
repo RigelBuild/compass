@@ -486,6 +486,10 @@ in
     "dogfood:clean" = {
       exec = ''
         set -euo pipefail
+        # Same guard the compass-runner process uses, and it runs FIRST: under
+        # `set -u` an unset XDG_RUNTIME_DIR otherwise aborts the task after the
+        # containers are already removed, so it half-succeeds and reports failure.
+        : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
         # Uses the host's rootless podman — the same binary/storage the runner
         # execs to create these containers, so it sees them (a nix-pinned podman
         # could resolve a different containers-storage config).
