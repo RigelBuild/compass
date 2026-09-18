@@ -69,7 +69,7 @@ func TestForgeThroughAgentLoop(t *testing.T) {
 		t.Fatalf("AgentByHandle: %v", err)
 	}
 	for i, prompt := range []string{"create an issue", "read the issue", "comment on the issue", "close the issue", "verify the issue"} {
-		if _, err := f.PostMessage(ctx, string(agent.HomeChannelID), "general", prompt); err != nil {
+		if _, err := f.PostMessage(ctx, string(agent.Agent.HomeChannelID), "general", prompt); err != nil {
 			t.Fatalf("PostMessage trigger %d: %v", i+1, err)
 		}
 		if err := f.AwaitTurnSettled(ctx, tail); err != nil {
