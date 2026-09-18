@@ -16,11 +16,13 @@ package runner
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,17 +35,38 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
-func TestRandomIDsAreIndependentPathSafeSessionIDs(t *testing.T) {
-	first := randomIDs()()
-	second := randomIDs()()
+func monotonicIDs() func() string {
+	var n uint64
+	return func() string {
+		n++
+		return "sess-" + strconv.FormatUint(n, 10)
+	}
+}
+func TestNewSessionHostNilAllocatorMintsIndependentPathSafeSessionIDs(t *testing.T) {
+	firstHost := NewSessionHost(nil, nil, nil, nil, nil, AgentHostConfig{}, nil, nil).(*agentHost)
+	secondHost := NewSessionHost(nil, nil, nil, nil, nil, AgentHostConfig{}, nil, nil).(*agentHost)
+	first := firstHost.nextID()
+	second := secondHost.nextID()
 	if first == second {
-		t.Fatalf("independent allocators minted duplicate session id %q", first)
+		t.Fatalf("independent host lifetimes minted duplicate session id %q", first)
 	}
-	if len(first) != 37 || filepath.Base(first) != first || strings.ContainsAny(first, `/\\.`) {
-		t.Fatalf("session id %q is not a safe path element", first)
-	}
-	if strings.ContainsAny(first, "*>") {
-		t.Fatalf("session id %q is not safe as a fabric subject token", first)
+	for _, id := range []string{first, second} {
+		if !strings.HasPrefix(id, "sess-") {
+			t.Fatalf("session id %q does not have the sess- prefix", id)
+		}
+		payload := strings.TrimPrefix(id, "sess-")
+		if len(payload) != 32 || hex.DecodedLen(len(payload)) != 16 {
+			t.Fatalf("session id %q has payload length %d, want 32 hex characters", id, len(payload))
+		}
+		if _, err := hex.DecodeString(payload); err != nil {
+			t.Fatalf("session id %q payload is not hex: %v", id, err)
+		}
+		if filepath.Base(id) != id || strings.ContainsAny(id, `/\\.`) {
+			t.Fatalf("session id %q is not a safe path element", id)
+		}
+		if strings.ContainsAny(id, "*>") {
+			t.Fatalf("session id %q is not safe as a fabric subject token", id)
+		}
 	}
 }
 

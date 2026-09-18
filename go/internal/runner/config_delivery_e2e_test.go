@@ -289,7 +289,7 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", name).Run() })
 
 	cfg := AgentHostConfig{RuntimeDir: shortRuntimeDir(t)}
-	host := NewSessionHost(link, rt, registry, engine, e2eSpecBuilder{name: name}, cfg, log.logger(), randomIDs()).(*agentHost)
+	host := NewSessionHost(link, rt, registry, engine, e2eSpecBuilder{name: name}, cfg, log.logger(), monotonicIDs()).(*agentHost)
 	// Close the host last: it Closes the per-container socket listener that
 	// Provision opens, which neither Stop (agent stream only) nor the container
 	// force-remove reaches. Mirrors e2e_transport_test.go.
