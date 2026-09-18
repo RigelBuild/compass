@@ -38,14 +38,17 @@ export async function reconcile(
 	deps: ReconcileDeps = {},
 ): Promise<void> {
 	if (token.length === 0) throw new Error("DL_CLAIM_TOKEN is required");
-	const response = await (deps.fetchFn ?? fetch)("https://dl.rigel.build/reconcile", {
-		method: "POST",
-		headers: {
-			Authorization: `Bearer ${token}`,
-			"Content-Type": "application/json",
+	const response = await (deps.fetchFn ?? fetch)(
+		"https://dl.rigel.build/reconcile",
+		{
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${token}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify(body),
 		},
-		body: JSON.stringify(body),
-	});
+	);
 	if (!response.ok) {
 		throw new Error(`reconciliation failed with HTTP ${response.status}`);
 	}

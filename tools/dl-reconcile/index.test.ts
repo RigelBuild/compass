@@ -21,7 +21,9 @@ describe("parseLedger", () => {
 describe("reconcile", () => {
 	test("posts the exact body, including repo and all rows", async () => {
 		const requests: Request[] = [];
-		const body = buildRequestBody("| DL-001 | one | x | y |\n| DL-001 | two | x | y |");
+		const body = buildRequestBody(
+			"| DL-001 | one | x | y |\n| DL-001 | two | x | y |",
+		);
 		await reconcile(body, "test-token", {
 			fetchFn: async (input, init) => {
 				requests.push(new Request(input, init));
