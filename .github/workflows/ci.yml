@@ -2475,6 +2475,19 @@ jobs:
             exit 1
           fi
           echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
+          test_names=$(sed -nE 's/^[[:space:]]*func[[:space:]]+(TestComms[A-Za-z0-9_]*)[[:space:]]*\(.*/\1/p' \
+            e2e/legcomms_*_test.go | sort -u)
+          if [ -z "$test_names" ]; then
+            echo "::error::could not derive any TestComms* names from go/e2e/legcomms_*_test.go"
+            exit 1
+          fi
+          while IFS= read -r test_name; do
+            if ! grep -qF -- "--- PASS: $test_name" /tmp/e2e.log; then
+              echo "::error::deterministic e2e did not report PASS for $test_name"
+              exit 1
+            fi
+          done <<< "$test_names"
+          echo "dogfood e2e: every source-derived TestComms* leg reported PASS"
 
   rollup:
     name: rollup
