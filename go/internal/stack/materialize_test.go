@@ -441,12 +441,12 @@ func TestMaterializeGuestRetriesMidStreamDrop(t *testing.T) {
 	dropped := false
 	base := reg.server.Config.Handler
 	reg.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasSuffix(req.URL.Path, "blobs/"+rootfsDigest) {
+		if strings.HasSuffix(req.URL.Path, "blobs/"+rootfsDigest) { //nolint:nestif
 			mu.Lock()
 			first := !dropped
 			dropped = true
 			mu.Unlock()
-			if first { //nolint:nestif // nested response handling models the deliberate mid-stream connection drop
+			if first {
 				// Declare the full length, send part of it, then hijack the
 				// connection and close it — the client sees an unexpected EOF
 				// mid-body rather than a clean short response.
@@ -636,7 +636,7 @@ func TestParseGuestRef(t *testing.T) { //nolint:gocognit // the exhaustive inval
 			"empty":               "",
 			"trailing newline":    "ghcr.io/guest@" + digest + "\n",
 			"leading space":       " ghcr.io/guest@" + digest,
-			"embedded tab":        "ghcr.io/\tguest@" + digest,
+			"embedded tab":        "ghcr.io\tguest@" + digest,
 			"absolute path host":  "/ghcr.io/guest@" + digest,
 			"empty repository":    "ghcr.io/@" + digest,
 			"double slash":        "ghcr.io/rigel//guest@" + digest,
