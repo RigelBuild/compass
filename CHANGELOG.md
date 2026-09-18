@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.1](https://github.com/RigelBuild/compass/compare/v0.3.0...v0.3.1) (2026-09-18)
+
+
+### Features
+
+* **compass-agent:** record publish flush shape and batch size (RIG-3694) ([#1245](https://github.com/RigelBuild/compass/issues/1245)) ([67304fd](https://github.com/RigelBuild/compass/commit/67304fde79ab67071f66adaab0960b54d37c3ba0))
+* **design-ledger:** derive Compass record status from main (RIG-3662) ([#1284](https://github.com/RigelBuild/compass/issues/1284)) ([c10b267](https://github.com/RigelBuild/compass/commit/c10b26718d6b96015bfb0759aada37214f4b6137))
+* **guest-image:** derive the guest rootfs from the pinned agent OCI image ([#1252](https://github.com/RigelBuild/compass/issues/1252)) ([d8ccbb3](https://github.com/RigelBuild/compass/commit/d8ccbb3bac6818fb27b5f72f5fb85a11c532cccd))
+* **guest-image:** pin the agent OCI image the guest rootfs derives from (RIG-3786) ([#1215](https://github.com/RigelBuild/compass/issues/1215)) ([cc9e600](https://github.com/RigelBuild/compass/commit/cc9e600956bd46740dd84cc883043cb2ce90875f))
+* **guest-image:** publish the guest triple as a non-runnable OCI artifact ([#1268](https://github.com/RigelBuild/compass/issues/1268)) ([99f867f](https://github.com/RigelBuild/compass/commit/99f867f1e342de32c464cca3e22f230a0d2d1094))
+* **runner:** mint server session IDs (RIG-3696) ([#1283](https://github.com/RigelBuild/compass/issues/1283)) ([640a019](https://github.com/RigelBuild/compass/commit/640a019890b92294ed5957146d0fbcbb7a8b9a5f))
+* **tools:** add the font-coverage gate (RIG-3603) ([#1208](https://github.com/RigelBuild/compass/issues/1208)) ([a51dd4d](https://github.com/RigelBuild/compass/commit/a51dd4d38b133acc346ddc33123c2b5503a98d2e))
+
+
+### Bug Fixes
+
+* **tools:** parse UI source with the TypeScript compiler in the font gate (RIG-3855) ([#1274](https://github.com/RigelBuild/compass/issues/1274)) ([d320592](https://github.com/RigelBuild/compass/commit/d320592677c790a47d65d6801d3b390df195c9c7))
+
 ## [0.3.0](https://github.com/RigelBuild/compass/compare/v0.2.1...v0.3.0) (2026-09-16)
 
 
