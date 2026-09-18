@@ -115,8 +115,8 @@ func guestSh(t *testing.T, m *MicroVMRuntime, id WorkloadID, script string) (str
 // (`ls`, `grep -r` on paths) needs its own forbidden strings, or the assertion
 // is vacuously true and the row proves nothing.
 type crossSessionAttempt struct {
-	script             string
-	forbid             []string
+	script              string
+	forbid              []string
 	probeErrorSensitive bool
 }
 
@@ -450,7 +450,7 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 			// secret is walked.
 			script: sweepScript(tenantBSecret,
 				"/tmp /mnt /media /run /var /home /workspace "+filepath.Dir(volumeB)),
-			forbid:             []string{volumeB},
+			forbid:              []string{volumeB},
 			probeErrorSensitive: true,
 		},
 	}
