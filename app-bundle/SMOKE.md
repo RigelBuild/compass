@@ -186,8 +186,8 @@ BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 
 Create the client's `app.toml` with `mode = "client"`, the HTTPS
 `server_url`, and `ca_cert` set to `$STATE/tls.crt`
-(`compass-native-client-mode/design.md:67-71`). Put the bearer in the connect
-screen, never in `app.toml` (DL-109).
+(`docs/designs/ui/compass-native-client-mode/design.md:66-73`). Put the bearer
+in the connect screen, never in `app.toml` (DL-109).
 
 ### 3. Launch, connect, and render the board
 
