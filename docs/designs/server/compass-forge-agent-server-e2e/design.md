@@ -10,33 +10,25 @@ An agent's forge tool call is tested at every seam and assembled nowhere: each l
 
 ### What exists today (grounding)
 
-**Four seams, four fakes.** `packages/compass-agent/src/forge.test.ts` drives the twelve tools against a `FakeTransport`; `go/internal/runner/gateway/forge_test.go` drives the gateway against a `fakeForgeRelay`; the seventeen `TestForgeTransition*` cases in `go/server/forge_transition_test.go` drive the server arm over `forge.FakeProvider` and a fake store; `go/internal/forge/livegithub_test.go` drives the providers against the real APIs. The widest hermetic assembly is `forgeE2EWire` in `go/server/forge_e2e_pgtest_test.go`, which its header scopes precisely:
+**Four seams, four fakes.** `packages/compass-agent/src/forge.test.ts` drives the twelve tools against a `FakeTransport`; `go/internal/runner/gateway/forge_test.go` drives the gateway against a `fakeForgeRelay`; the thirteen `TestForgeTransition*` functions (22 subtest leaves) in `go/server/forge_transition_test.go` drive the server arm over `forge.FakeProvider` and a fake store; `go/internal/forge/livegithub_test.go` drives the providers against the real APIs. The widest hermetic assembly is `forgeE2EWire` in `go/server/forge_e2e_pgtest_test.go`, which its header scopes precisely:
 
 > the WHOLE agent-initiated forge-WRITE wire over a REAL per-container AgentGateway socket, chokepoint mounted via hub.SetForgeCaller over forge.FakeProvider fakes. Drives every hop: agent -> AgentGateway.Forge -> Runner -> RelayForgeCall -> Hub -> forgeService.
 
 Its "agent" is a test-authored proto sent over the socket, and its provider is a fake. Two hops are therefore never exercised together: the TS tool's parameter-to-proto mapping inside the real container, and the real `*forge.GitHub` client's HTTP request shape.
 
-**The failure class is real.** RIG-3331 T7 found `workflowStatesQuery` in `go/internal/forge/linear.go` declaring its team variable as `String!` where Linear requires `ID` — an HTTP 400 on the first hop of every Linear transition. `main` now carries the fix ("Linear rejects a String! variable in that position outright (http 400)"), but the bug survived three PRs because every test above the provider asserted against a fake that accepted the malformed query, and golden replay pins response bodies, never request text. The same shape as RIG-3326, where a test passed while production was wired to nothing.
+**The failure class is real.** RIG-3331 T7 found `workflowStatesQuery` in `go/internal/forge/linear.go` declaring its team variable as `String!` where Linear requires `ID` — an HTTP 400 on the first hop of every Linear transition. `main` now carries the fix ("Linear rejects a String! variable in that position outright (http 400)"), but the bug survived because tests above the provider asserted against a fake that accepted the malformed query, and golden replay pins response bodies, never request text.
 
-**The dispatch under test.** `ExecuteForgeCallAsAccount` in `go/server/forge.go` is the oneof switch:
-
-> case *compassv1internal.ForgeCallRequest_CreateIssue: return s.createIssue(…) … case *compassv1internal.ForgeCallRequest_TransitionIssueState: return s.transitionIssueState(…) … case *compassv1internal.ForgeCallRequest_GetIssue: return s.getIssue(…)
-
-and the TS side of the same field set, `createForgeTools` in `packages/compass-agent/src/forge.ts`:
+**The dispatch under test.** `ExecuteForgeCallAsAccount` in `go/server/forge.go` is the oneof switch, and `createForgeTools` in `packages/compass-agent/src/forge.ts` maps tool parameters into the same field set:
 
 > case: "createIssue", value: create(CreateIssueRequestSchema, { repo: params.repo, title: params.title, body: params.body ?? "", labels: params.labels ?? [] })
 
-**The harness pattern to copy.** `go/e2e/cannedmodel.go` is the model backend the podman legs settle on, and its header states the posture this record inherits:
+**The harness pattern to copy.** `go/e2e/cannedmodel.go` is deliberately untagged for the same reason the forge stub is: its pure `net/http` server is unit-tested without podman and consumed by the tagged fixture. `TestCommsPostMessageThroughAgentLoop` in `go/e2e/legcomms_test.go` is the canonical tool-call leg.
 
-> This file is DELIBERATELY UNTAGGED (no `//go:build podman`): the stub is pure net/http with no container dependency, so it compiles in the hermetic (non-podman) unit lane where cannedmodel_test.go exercises it, AND is consumed by the podman-tagged fixture.
-
-`TestCommsPostMessageThroughAgentLoop` in `go/e2e/legcomms_test.go` is the canonical tool-call leg: `NewFixture(ctx, t, WithCannedScript(CannedToolCall("comms_post_message", postArgsJSON), CannedText(settleReply)))`, then `AwaitTurnSettled`, then store-side reads via `store.Open(ctx, f.DSN())`.
-
-**How the server is configured in the harness.** `serverSpec` in `go/internal/stack/spec.go` passes only `--socket / --database / --listen / --tls-cert / --tls-key`, and `stack.Config` has no forge field. But `ProcessSupervisor.Start` in `go/internal/stack/adapters/process.go` inherits the harness process environment:
+**How the server is configured in the harness.** `serverSpec` in `go/internal/stack/spec.go` passes only `--socket / --database / --listen / --tls-cert / --tls-key`, and `stack.Config` has no forge field. `ProcessSupervisor.Start` inherits the harness process environment:
 
 > cmd.Env = append(os.Environ(), spec.Env...)
 
-and every forge flag in `registerForgeFlags` (`go/cmd/compass-server/main.go`) defaults to an environment variable — `COMPASS_FORGE_HOST`, `COMPASS_FORGE_APP_ID`, `COMPASS_FORGE_INSTALLATION_ID`, `COMPASS_FORGE_APP_KEY_SECRET`, `COMPASS_FORGE_APP_WEBHOOK_SECRET`, `COMPASS_FORGE_REVIEWER_APP_ID`, `COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID`, `COMPASS_FORGE_REVIEWER_APP_KEY_SECRET` — plus `COMPASS_SECRET_PROVIDER` for `ServeConfig.SecretProvider`. The CI e2e step already uses exactly this channel for the master key ("Stage the secretspec cdylib and seed a throwaway master key" in `.github/workflows/ci.yml` writes `COMPASS_MASTER_KEY=…` to a dotenv and exports `COMPASS_SECRET_PROVIDER=dotenv://…`). The agent container does NOT inherit this environment: `podman.go` in `go/internal/runtime` passes only `spec.Env` as explicit `-e` pairs.
+The forge flags in `registerForgeFlags` (`go/cmd/compass-server/main.go`) resolve from `COMPASS_FORGE_*`; the fixture scrubs unrelated forge and Linear variables, then sets only the stub host, App ids, installation ids, and secret names before `stack.Up`. The CI e2e step no longer exports the master key or secret provider; commit `c328d25d` moved that responsibility into the fixture's dotenv, which this design extends. The agent container does not inherit the server environment.
 
 ### Decision 1: the boundary is a loopback HTTPS forge stub, not `forge.FakeProvider`
 
@@ -50,89 +42,77 @@ The stub records every request (method, path, `Authorization`, body) and serves 
 
 `buildForgeWriteService` in `go/server/serve.go` fail-fasts without a primary App client, and App auth mints installation tokens against the forge host. Both are satisfiable inside the lane, with no real credential:
 
-1. **The mint endpoint derives from the same host.** `appAPIBase` in `go/internal/forge/githubapp.go` mirrors `apiBase`, and `mint` POSTs to `%s/app/installations/%d/access_tokens` on it, then decodes `installationToken{Token, ExpiresAt}` and fails only when `out.Token == ""`. A stub answering that path with `{"token":"…","expires_at":"…"}` completes the mint. The JWT the client sends is signed with the configured key but the stub never verifies it — the stub asserts transport, not GitHub's auth.
+1. **The mint endpoint derives from the same host.** `appAPIBase` in `go/internal/forge/githubapp.go` mirrors `apiBase`, and `mint` POSTs to `%s/app/installations/%d/access_tokens` on it. With the non-`github.com` stub host, that means `/api/v3/app/installations/{id}/access_tokens`; the REST issue routes use the same prefix. The response decodes `installationToken{Token, ExpiresAt}` and fails only when `out.Token == ""`. A stub answering that path with `{"token":"…","expires_at":"…"}` completes the mint. The JWT is signed with the configured key but the stub never verifies it.
 2. **Any RSA key mints.** `PrivateKey` on `GitHubAppConfig` is a lazily resolved PEM; the parser accepts PKCS#1 or PKCS#8. `testAppPEM` in `go/server/serve_forge_armed_pgtest_test.go` already generates a throwaway `rsa.GenerateKey` PEM for the armed-server pgtest; the fixture does the same. A key generated per run and registered nowhere is not a credential.
-3. **The secret path extends the fixture's existing dotenv — it cannot be a second provider.** `NewFixture` in `go/e2e/fixture.go` already writes one and pins it on `stack.Config`, and `serverSpec` in `go/internal/stack/spec.go` passes it as an explicit flag whenever it is non-empty ("Omit an empty provider so the server can use its own env-based resolution"), so a `COMPASS_SECRET_PROVIDER` environment variable would be **defeated by `--secret-provider`**. The fixture's own comment states the constraint: that dotenv "is the WHOLE declared set because the fixture configures no forge, and buildManifest marks every declared name required — one more would fail the Load wholesale." So `WithForgeStub` must write the three forge secret names *into the same dotenv* the fixture already seeds, alongside `COMPASS_MASTER_KEY`, rather than introducing a provider of its own. `declareServerSecretNames` wraps each via `serverSecretName` (`SERVER_` + name); `writeDeclaredDotenv` and `dotenvValue` in `go/server/serve_forge_armed_pgtest_test.go` show the escaping a multiline PEM needs. The requirement is symmetric: the forge names are required only when declared, so the dotenv and the `COMPASS_FORGE_*` variables must be written together or not at all. T1 therefore threads the secret set through the fixture's existing writer instead of `t.Setenv`-ing a provider.
-4. **Mint is lazy.** `Token` on `appTokenSource` mints on first use, and no boot path calls it: `buildBoardIngestLane` seeds only `cfg.Forge.SeedRepos` (left empty), and both reconcilers sweep `ListEnabledRepos`/notify targets from the store, which hold no rows. The first request the stub sees is the leg's own mint, so the stub's request log is a complete ledger of forge traffic.
-5. **Boot gates.** `forgeWritesEnabled` requires both App ids non-zero and both key names declared; `validateForgeSecret` resolves them once. The fixture sets all eight `COMPASS_FORGE_*` variables above; `COMPASS_FORGE_REPOS` stays unset.
+3. **The secret path extends the fixture's existing dotenv — it cannot be a second provider.** `NewFixture` in `go/e2e/fixture.go` writes one provider file and pins it on `stack.Config`; `serverSpec` passes it as an explicit flag, so `COMPASS_SECRET_PROVIDER` cannot replace it. `WithForgeStub` records a forge option in `fixtureConfig`; at the existing dotenv write site, `NewFixture` starts the stub, generates the two keys, appends the three `SERVER_`-wrapped entries using the `dotenvValue` escaping pattern, sets the forge variables and `COMPASS_FORGE_CA`, stores the stub in the eventual `Fixture`, then calls `stack.Up`. The option owns cleanup through `t.Cleanup`; it does not set a second provider. `buildManifest` requires every declared name, so declarations and values are written together.
+4. **Mint is lazy.** `Token` on `appTokenSource` mints on first use, and no boot path calls it: `buildBoardIngestLane` seeds only `cfg.Forge.SeedRepos` (left empty), and both reconcilers sweep empty store targets. The first request the stub sees is the leg's own mint, so the stub's request log is a complete ledger of forge traffic.
+5. **Boot gates.** `forgeWritesEnabled` requires both App ids non-zero and both key names declared; `validateForgeSecret` resolves them once. The fixture sets all eight `COMPASS_FORGE_*` variables above; `COMPASS_FORGE_REPOS` and all Linear selector variables are scrubbed.
 
-### Decision 3: TLS trust rides `SSL_CERT_FILE`
+### Decision 3: TLS trust uses a dedicated forge CA flag
 
-`NewGitHub` and `NewAppTokenSource` fall back to `&http.Client{Timeout: 30 * time.Second}` — system roots, no injectable pool from config. The Go toolchain's `loadSystemRoots` in `crypto/x509/root.go` honours `SSL_CERT_FILE` ("If set this overrides the system default"), so the fixture exports the stub's self-signed PEM through that variable in the harness environment the server inherits. Nothing else is affected: the harness clients (`newAuthedClients` in `go/e2e/clients.go`) and the runner both pin the stack anchor through `runner.NewCATrustClient`, which builds its own pool, and the container never sees the variable. The stub's certificate comes from `certgen.Generate([]string{"127.0.0.1"}, 0)` in `go/internal/certgen` — the same generator that mints the stack's own anchor, so one certificate convention.
+`NewGitHub` and `NewAppTokenSource` use default clients without an injectable pool. Add a dedicated `--forge-ca`/`COMPASS_FORGE_CA` server setting that installs the stub PEM as the forge clients' trust pool only. The harness clients and runner continue to pin the stack anchor through `runner.NewCATrustClient`. The stub certificate comes from `certgen.Generate([]string{"127.0.0.1"}, 0)` in `go/internal/certgen`.
 
-Adding a `--forge-ca` flag or a `Client` on `ForgeConfig` would be production surface for a test-only need; rejected (OQ-2 records the alternative).
+### Decision 4: five arms earn the leg; one leg, one stack
 
-### Decision 4: three arms earn the leg; one leg, one stack
-
-The leg scripts three tool calls in one agent turn, chosen so every transport variant and every payload shape crosses the wire once:
+The leg scripts five tool calls in one agent turn, chosen so every transport variant and payload shape crosses the wire once:
 
 | Tool | Why it earns a slot | What the stub sees |
 | --- | --- | --- |
-| `forge_create_issue` | The create arm: stamp (`StampOwner`), F3 dedup, DL-055 row; `title`/`body`/`labels` cross TS → proto → JSON | `POST /api/v3/repos/{repo}/issues` with the stamped body |
-| `forge_get_issue` | The read arm; owner header stripped on return; a `uint64` number crosses as a `bigint` | `GET /api/v3/repos/{repo}/issues/{n}` |
-| `forge_transition_issue_state` | The RIG-3331 arm that was dead; `state` + `close_reason` → `state_reason`; `forge_state_transitions` memo | `PATCH /api/v3/repos/{repo}/issues/{n}` with `{"state":"closed","state_reason":"not_planned"}` |
+| `forge_create_issue` | Create arm: stamp, F3 dedup, DL-055 row; `title`/`body`/`labels` cross TS → proto → JSON | `POST /api/v3/repos/{repo}/issues` |
+| `forge_get_issue` | Read arm; owner header stripped on return; a `uint64` number crosses as a `bigint` | `GET /api/v3/repos/{repo}/issues/{n}` |
+| `forge_transition_issue_state` | RIG-3331 arm; `state` + `close_reason` → `state_reason`; transition memo | `PATCH /api/v3/repos/{repo}/issues/{n}` |
+| `forge_comment_on_issue` | Comment write body crosses the author client and stamped-body path | `POST /api/v3/repos/{repo}/issues/{n}/comments` |
+| `forge_create_pull_request` | PR create adds the PR payload and result arm | `POST /api/v3/repos/{repo}/pulls` |
 
-PR, review and comment arms add no new transport variant; subscribe is store-only. A stack bring-up costs minutes, so this is one own-stack leg (`NewFixture`, not `sharedFixture`: the leg sets process environment with `t.Setenv`, which forbids `t.Parallel`; no e2e leg is parallel today).
+The get arm reaches the provider because the issue projection is empty in this lane: no forge subscriptions, webhook deliveries, or ingest rows exist. Review adds no new transport variant and subscribe is store-only. This remains one own-stack leg using `NewFixture`; the fixture option sets environment before `stack.Up`.
 
 ### Decision 5: the tool call comes from the canned model, not a direct gateway call
 
 The pgtest wire already drives a hand-built `ForgeCallRequest` through gateway → hub → service. What tier 2 adds is the real container agent turning model-emitted arguments into that proto, so the leg drives the turn through `WithCannedScript` exactly as the comms leg does. The stub is deterministic (it returns a fixed issue number), so the get and transition turns hard-code that number.
 
-### Decision 6: Linear is out of this leg's reach without a production seam
+### Decision 6: Linear follows after a production endpoint seam
 
-`buildLinearTokenSource` in `go/server/serve.go` builds `linearagent.NewTokenSource(clientID, clientSecret, &http.Client{…}, "")`, and `NewTokenSource` in `go/internal/linearagent/client.go` resolves the empty URL to the constant `https://api.linear.app/oauth/token`, then performs a boot-time `tokens.Token(ctx)` that fails `Serve` on error. `buildLinearNotifyLane` hard-codes `host = "linear.app"` and builds `forge.NewLinear(forge.LinearConfig{Token: tokens, Log: log})` with no `Host`, although `LinearConfig` accepts one. So configuring Linear in the lane would egress to `api.linear.app` at boot. A Linear leg needs a config-exposed endpoint/token-URL override first; that is a design ruling on production config, parked as OQ-1, not smuggled into this record.
-
-A related finding from the same reading, since verified hop-by-hop against `origin/main` and filed as **RIG-3870**: `buildForgeWriteService` registers the Linear write coordinate with an empty host (`forgeCoordinate{provider: LINEAR}`), `register` makes that empty string the provider's `defaultHost` so the A3 empty-host fallback cannot rescue it, `resolve` carries it into `resolvedForge.host`, and `record` passes it to `RecordAuthoredArtifact`, whose `validCoordinate` in `go/internal/store/forge_cursors.go` rejects `host == ""` with "forge host is required". A Linear `forge_create_issue` therefore creates the issue on Linear and then returns an in-band `invalid_argument` with no DL-055 row and no F3 memo. It is out of this record's scope and tracked separately.
+`buildLinearTokenSource` in `go/server/serve.go` uses a hardcoded token URL and performs a boot-time mint; a later issue will expose the API host and token URL before adding a GraphQL-shaped stub leg. This record keeps Linear on tier 1 and golden replay until that seam lands. RIG-3870 remains a separate pgtest because its empty-host write-coordinate failure is independent of this e2e leg.
 
 ### Redden proof
 
-The acceptance criterion is that a mis-plumbed arm or a dropped field turns the leg red. Mapping:
+The acceptance criterion is that a mis-plumbed arm or dropped field turns the leg red:
 
-- Dropped or renamed TS field (`labels`, `close_reason`) → the stub's recorded JSON lacks it → assertion on the decoded body fails.
-- Wrong oneof arm on either side (e.g. `GetIssue` dispatched to `listIssues`) → wrong method or path in the stub log → fails.
-- Wrong coordinate or host → connection refused → in-band `ForgeCallError` → the transcript never carries the tool's ack text → fails.
-- Wrong credential role (reviewer token on an author write) → the stub's per-App mint tokens differ and the `Authorization` assertion fails.
+- Dropped `labels` or `close_reason` → the stub's recorded JSON lacks the field → its body assertion fails.
+- A valid wrong-arm mutation constructs a `ListIssuesRequest` from the GetIssue repo; the list path differs from `/issues/{n}` → request-log assertion fails.
+- A wrong coordinate or host → connection refused → in-band `ForgeCallError` → the bounded turn never settles.
+- A reviewer-token-on-author-write mutation adds a second mint and changes the bearer → the exact request ledger fails.
 
-T3 proves two of these by throwaway mutation before the PR is promoted. One constraint the harness already carries: the TS under test is whatever `compass-agent:latest` holds, which CI rebuilds from the tree when the image inputs change (the `image_affected` step in `ci.yml`) and pulls otherwise.
+T3 records these four throwaway mutations and their failure lines in the PR body. The TS image must be rebuilt when the image inputs change; the `image_affected` step in `ci.yml` controls that path.
 
 ## Global Constraints
 
-- **No forge credentials, no live egress.** Keys are generated per run and registered nowhere; the stub binds loopback; `EgressAllow` and the container's firewall are untouched because only the server process dials the stub. `COMPASS_FORGE_REPOS` stays unset so no boot sweep exists.
-- **Stub untagged, leg tagged.** `forgestub.go` and its unit test have no build tag; the leg is `//go:build podman` and an own-stack `NewFixture` leg with no `t.Parallel`.
-- **Environment reaches the server through inheritance** (`t.Setenv` before `NewFixture`); no change to `stack.Config`, `serverSpec`, `go/server/**` or `go/internal/forge/**`.
-- **Citations** in code comments and the PR use `` `symbol` in `path` ``; comments 1–2 lines (hard ceiling 4); markdown passes `rumdl check`.
-- **Assertion posture** mirrors the existing legs: bounded waits (`AwaitTurnSettled`, `awaitTranscriptPersisted`), no sleeps, store reads via `store.Open(ctx, f.DSN())`, test root `context.Background()` with every bound derived from it.
-- **Names.** Secret names are the leg's own (`FORGE_APP_PRIVATE_KEY`, `FORGE_APP_WEBHOOK_SECRET`, `FORGE_REVIEWER_APP_PRIVATE_KEY`), written to the dotenv wrapped as `SERVER_<name>`; the repo is `e2e-owner/e2e-repo`; the stub's issue number is a package constant.
-
-## Plan
+- **No forge credentials, no live egress.** Keys are generated per run and registered nowhere; the stub binds loopback. Ambient forge and Linear variables are scrubbed; only loopback forge values and the dedicated forge CA are set. `COMPASS_FORGE_REPOS` stays unset.
+- **Stub untagged, leg tagged.** `forgestub.go` and its unit test have no build tag; the leg is `//go:build podman`.
+- **Environment reaches the server through inheritance** (`t.Setenv` inside the fixture option, before `stack.Up`). The dedicated forge CA is a new server/stack configuration surface; the implementation updates its flag/config plumbing and forge client construction.
+- **Assertions** use bounded waits, no sleeps or retries, and store reads through `store.Open(ctx, f.DSN())`.
+- **Citations** use `` `symbol` in `path` ``; comments stay within the repository's 1–2 line norm; markdown passes `rumdl check`.
 
 ### T0 — the forge stub (`go/e2e/forgestub.go`, untagged)
 
-A loopback HTTPS server shaped like the GitHub REST API on `/api/v3`, recording every request. Serves: `POST /app/installations/{id}/access_tokens` → 201 `{"token": <per-App token>, "expires_at": now+1h}`; `POST /repos/{owner}/{name}/issues` → 201 `ghIssue` with the fixed number and the echoed title/body; `GET /repos/{owner}/{name}/issues/{n}` → 200; `PATCH …/issues/{n}` → 200 echoing the requested `state`. Anything else → 404 with a body naming the path (a test bug, never a hang — the canned model's exhaustion posture). Certificate from `certgen.Generate`, PEM written under a `t.TempDir()`.
+A loopback HTTPS server records every request and serves the GitHub-shaped `/api/v3` routes emitted by the real client: `POST /api/v3/app/installations/{id}/access_tokens` → 201 with a token keyed by installation id; `POST /api/v3/repos/{owner}/{name}/issues` → 201; `GET /api/v3/repos/{owner}/{name}/issues/{n}` → 200; `PATCH /api/v3/repos/{owner}/{name}/issues/{n}` → 200; `POST /api/v3/repos/{owner}/{name}/issues/{n}/comments` → 201; and `POST /api/v3/repos/{owner}/{name}/pulls` → 201. Each response includes `number`, `title`, `body`, `state`, `html_url`, `user.login`, and labels where applicable, so every `ghIssue` decode is observable. Anything else returns 404. Certificate from `certgen.Generate`, written under `t.TempDir()`.
 
 Interfaces:
 
 ```go
-// newForgeStub starts the stub on a loopback TLS listener; t.Cleanup closes it.
 func newForgeStub(t *testing.T) *forgeStub
-func (s *forgeStub) Host() string                 // "127.0.0.1:<port>" — the COMPASS_FORGE_HOST value
-func (s *forgeStub) CAPath() string               // PEM path for SSL_CERT_FILE
-func (s *forgeStub) MintToken(appID int64) string // deterministic per-App installation token
-func (s *forgeStub) Requests() []forgeStubRequest // copy, in arrival order
-
-type forgeStubRequest struct {
-	Method, Path, Authorization string
-	Body                        []byte
-}
-
+func (s *forgeStub) Host() string
+func (s *forgeStub) CAPath() string
+func (s *forgeStub) MintToken(installationID int64) string
+func (s *forgeStub) Requests() []forgeStubRequest
 const forgeStubIssueNumber uint64 = 4242
 ```
 
-Hermetic test (`forgestub_test.go`): a real `forge.NewAppTokenSource` + `forge.NewGitHub` pointed at `Host()` with a client trusting `CAPath()` performs a mint and a `CreateIssue`, and the recorded requests carry the expected method, path, bearer and body. That test is the stub's own contract and proves the provider-client compatibility before any container is involved.
+The hermetic provider-client test uses a custom trust client pointed at `CAPath`, performs a mint and `CreateIssue`, and asserts the recorded `/api/v3` paths, bearer, and body.
 
 ### T1 — fixture option `WithForgeStub` (`go/e2e/fixture.go`)
 
-`configureForgeStub(t, stub)` mirrors `configureCannedModel`: generates two RSA PEMs (primary App id 1001, reviewer App id 1002, installation ids 1 and 2), then adds the three `SERVER_`-wrapped key names **to the dotenv `NewFixture` already writes** (values escaped as `dotenvValue` does), leaving `stack.Config.SecretProvider` as the single pinned provider. It does not set `COMPASS_SECRET_PROVIDER`: `serverSpec` passes `--secret-provider` whenever the config field is non-empty, and the flag beats the environment. Because `buildManifest` marks every declared name required, the dotenv entries and the `COMPASS_FORGE_*` variables are written as one unit — declaring a name without seeding it fails `Load` wholesale, and the fixture's existing dotenv is complete only while no forge is configured. `t.Setenv` still carries what is genuinely process environment: `SSL_CERT_FILE=<stub CA>`, `COMPASS_FORGE_HOST=<stub host>` and the seven App variables. `Fixture` gains `ForgeStub() *forgeStub`. The option must run before `stack.Up` (env is captured at `Start`).
+`WithForgeStub()` records a forge-enabled option. At the existing dotenv write site, `NewFixture` constructs the stub, generates two RSA PEMs (primary App 1001 / installation 1 and reviewer App 1002 / installation 2), appends the three `SERVER_`-wrapped key entries using `dotenvValue` escaping, sets `COMPASS_FORGE_HOST`, the seven App variables, and `COMPASS_FORGE_CA`, and stores the stub in `Fixture`. It scrubs all unrelated `COMPASS_FORGE_*`, `COMPASS_SECRET_PROVIDER`, and Linear selector variables before setting the intended values. `t.Cleanup` closes the stub. This runs before `stack.Up`; no option accesses a future dotenv path.
 
 Interfaces:
 
@@ -141,41 +121,28 @@ func WithForgeStub() fixtureOption
 func (f *Fixture) ForgeStub() *forgeStub
 ```
 
-The small dotenv escaping helper duplicates `dotenvValue` from the server package's test file (unexported, un-importable); the copy names its twin in a one-line comment.
+The dotenv helper duplicates the unexported `dotenvValue` escaping pattern from `go/server/serve_forge_armed_pgtest_test.go`. The leg's five canned arguments use distinct payloads. The stub echoes meaningful `number`, `title`, `body`, `state`, `html_url`, `user.login`, and labels; assertions check decoded GET/PATCH/PR results, not only request logs. Capture `fresh := time.Now().Add(-time.Minute)` immediately before triggering the turn, then require `ConsumeStateTransition(ctx, ForgeProviderGitHub, stub.Host(), repo, ForgeArtifactKindIssue, 4242, "closed", fresh)` to return the agent account with `ok=true` and `err=nil`.
 
 ### T2 — the leg (`go/e2e/legforge_test.go`, `//go:build podman`)
 
-`TestForgeCallsThroughAgentLoop`: skip guard, `ctx := context.Background()`, `NewFixture(ctx, t, WithForgeStub(), WithCannedScript(create, get, transition, CannedText(settleReply)))`, agent create/provision/session/tail/post as in the comms leg, `AwaitTurnSettled`, `awaitTranscriptPersisted(ctx, st, sessionID, settleReply)`. Assertions, in order:
-
-1. `f.ForgeStub().Requests()` is exactly four: one mint for App 1001, then `POST`, `GET`, `PATCH` on the repo paths; every API request's `Authorization` equals `"Bearer " + MintToken(1001)`.
-2. The `POST` body decodes to `title` verbatim, `labels` verbatim, and a `body` that contains the original text and exactly one `<!-- compass:owner ` header naming the leg agent's handle.
-3. The `PATCH` body is `{"state":"closed","state_reason":"not_planned"}`.
-4. The transcript contains `Created issue #4242 in e2e-owner/e2e-repo:` (the `createAck` text) and the transition ack.
-5. Store: `AuthoredArtifactByCoordinate(ctx, ForgeProviderGitHub, stub.Host(), repo, ForgeArtifactKindIssue, 4242)` names the leg agent; `ConsumeStateTransition(ctx, …, "closed", fresh)` returns the same account.
-
-Canned arguments are the JSON the model would emit, e.g. `{"repo":"e2e-owner/e2e-repo","title":"tier-2 leg","body":"hello from the leg","labels":["e2e"]}` and `{"repo":"e2e-owner/e2e-repo","issue_number":4242,"state":"closed","close_reason":"not_planned"}`.
+Drive five scripted tools from the canned model: create issue, get issue, transition issue, comment on issue, and create pull request. Use the existing agent create/provision/session/tail/post sequence and bounded transcript waits. Assert the request ledger has one installation-token mint plus the five API calls, with the expected paths and author bearer; assert create, transition, comment, and PR bodies plus decoded response fields; assert the create ack and fence-independent transition state text; and assert the authored-artifact row plus `ConsumeStateTransition` with `ok=true`, `err=nil`, and `fresh` captured before the scripted turn.
 
 ### T3 — redden proof (throwaway, recorded in the PR body)
 
-Two mutations, each reverted before push: drop `labels` from the `createIssue` mapping in `forge.ts` (rebuild the image, run the leg → red on assertion 2); swap the `ForgeCallRequest_GetIssue` case body for `s.listIssues` in `go/server/forge.go` (run the leg → red on assertion 1). Paste the two failure lines into the PR body. No permanent test is added for the mutations.
+Run four valid mutations, reverting each before push: drop `labels`; drop `close_reason`; dispatch GetIssue through a constructed `ListIssuesRequest`; and use the reviewer client for an author write. Rebuild the image where required, run the leg, and record each bounded failure line. A wrong host mutation is covered by the request ledger and needs no separate image build.
 
-### T4 — ledger row (proposed for the driver; this record does not edit `DECISIONS.md`)
+### T4 — ledger row
 
-DL-next: "Tier-2 forge e2e stops at the provider's HTTP boundary: the podman lane dials a loopback HTTPS forge stub through the real provider client and App-token mint path, with per-run generated keys that are never registered; forge credentials never enter the deterministic tier, and Linear stays on tiers 1 and golden until a config-exposed endpoint override exists."
+Add the exact tier-2 boundary row to `DECISIONS.md` in the existing forge ledger section before implementation begins. The row states that the podman lane uses a loopback HTTPS stub through the real provider client and App-token mint path, with per-run generated keys, no forge credentials in the deterministic tier, and Linear deferred until endpoint and token-URL overrides exist.
 
 ## Tasks
 
-- [ ] T0 — `go/e2e/forgestub.go` + `forgestub_test.go` (untagged): loopback HTTPS GitHub-shaped stub with request log, mint endpoint, and the hermetic provider-client round-trip test.
-- [ ] T1 — `WithForgeStub` fixture option: throwaway RSA keys, dotenv, `t.Setenv` of the forge/secret/TLS variables, `Fixture.ForgeStub()`.
-- [ ] T2 — `TestForgeCallsThroughAgentLoop`: three-call canned turn, stub/transcript/store assertions.
-- [ ] T3 — two throwaway mutations proving the leg reddens; evidence in the PR body.
-- [ ] T4 — ledger row proposed to the driver.
+- [ ] T0 — untagged forge stub and hermetic provider-client test.
+- [ ] T1 — fixture option, dotenv extension, forge CA setting, and scrubbed environment.
+- [ ] T2 — five-call canned agent loop and request/decode/store assertions.
+- [ ] T3 — four valid throwaway mutations with recorded red failures.
+- [ ] T4 — exact ledger row before implementation.
 
 ## Open Questions
 
-- **OQ-1 (Matt): Linear coverage.** Options: (a) add a config-exposed Linear endpoint + token-URL override (`ForgeConfig` → `LinearConfig.Host` and `NewTokenSource`'s `tokenURL`) as its own issue, then a Linear leg against a GraphQL-shaped stub; (b) leave Linear on tier 1 and golden replay. Recommendation: (a), scheduled after this leg lands. Note that RIG-3870 (the empty-host `record` path in Decision 6) needs its own pgtest regardless of this ruling — that bug is not gated on a Linear e2e leg.
-- **OQ-2 (Matt): trust anchor.** `SSL_CERT_FILE` in the inherited environment (recommended, zero production surface) versus a `--forge-ca` flag on the server.
-- **OQ-3 (Matt): environment delivery.** `t.Setenv` inside the fixture option (recommended; no `stack.Config` change) versus a `ServerEnv` field on `stack.Config` threaded through `serverSpec`.
-- **OQ-4: leg scope.** Three arms as designed (recommended) versus adding comment/PR arms, which add assertions but no new transport variant.
-
-This record runs over the design-record target; the extra length sits in *Decision 2* (the App-credential feasibility the brief required resolved from code rather than asserted) and *Decision 6* (the Linear infeasibility and the latent finding), both of which a reader must have to accept the tiering.
+None for this leg. Linear endpoint/token-URL overrides and a later GraphQL stub leg are a follow-up design; RIG-3870 remains a separate pgtest.
