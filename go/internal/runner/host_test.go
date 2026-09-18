@@ -33,6 +33,20 @@ import (
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
+func TestRandomIDsAreIndependentPathSafeSessionIDs(t *testing.T) {
+	first := randomIDs()()
+	second := randomIDs()()
+	if first == second {
+		t.Fatalf("independent allocators minted duplicate session id %q", first)
+	}
+	if len(first) != 37 || filepath.Base(first) != first || strings.ContainsAny(first, `/\\.`) {
+		t.Fatalf("session id %q is not a safe path element", first)
+	}
+	if strings.ContainsAny(first, "*>") {
+		t.Fatalf("session id %q is not safe as a fabric subject token", first)
+	}
+}
+
 // fakeSpecBuilder is a hand-written SpecBuilder: it records the request it was
 // asked to build and returns a scripted spec (or error), so Provision's wiring
 // to Launch is asserted without deriving a real image/egress spec.

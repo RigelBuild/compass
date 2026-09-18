@@ -8,10 +8,11 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -134,13 +135,13 @@ type AgentHostConfig struct {
 // NewSessionHost builds the production SessionHost over the link, the agent
 // runtime + registry (so a launched container resolves by name), the container
 // engine, the spec builder Provision derives its AgentSpec from, and the host's
-// own config. newID mints session ids; nil uses a monotonic counter.
+// own config. newID mints session ids; nil uses a crypto-random allocator.
 func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtime.AgentRegistry, engine runtime.WorkloadRuntime, specs SpecBuilder, cfg AgentHostConfig, log *slog.Logger, newID func() string) SessionHost {
 	if log == nil {
 		log = slog.Default()
 	}
 	if newID == nil {
-		newID = monotonicIDs()
+		newID = randomIDs()
 	}
 	return &agentHost{
 		link:           link,
@@ -1049,15 +1050,15 @@ func (h *agentHost) closeSocket(ctx context.Context, containerName string) {
 	}
 }
 
-// monotonicIDs returns a session-id minter — a simple monotonic counter,
-// sufficient for the single-Runner MVP where ids are Runner-local.
-func monotonicIDs() func() string {
-	var mu sync.Mutex
-	var n uint64
+// randomIDs returns a session-id minter backed by the OS CSPRNG. The sess-
+// prefix preserves the operator-facing session shape; hex encoding keeps the
+// id safe as a path element and fabric subject while making separate Runner
+// lifetimes overwhelmingly unlikely to collide.
+func randomIDs() func() string {
 	return func() string {
-		mu.Lock()
-		defer mu.Unlock()
-		n++
-		return "sess-" + strconv.FormatUint(n, 10)
+		var b [16]byte
+		// crypto/rand.Read is infallible on supported platforms, matching store.newID.
+		_, _ = rand.Read(b[:])
+		return "sess-" + hex.EncodeToString(b[:])
 	}
 }

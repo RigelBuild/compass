@@ -529,39 +529,31 @@ func TestStoreFaultsFallBackWithoutLosingFailClosed(t *testing.T) {
 	})
 }
 
-// TestReusedSessionIDConflictIsSwallowed WITNESSES a known gap rather than a
-// guarantee: production mints session ids with a counter that resets on every
-// Runner restart, so a joint Server+Runner restart re-mints "sess-1" over a
-// surviving row. The store answers ErrConflict to keep the binding
-// single-valued; promoteSession currently treats it as a transient fault and
-// falls back to RAM, leaving the durable row pointing at the OLD account. The
-// single-instance MVP shadows that row and later retires it, but a second
-// Server instance would read the stale durable truth. Pinned so the behaviour
-// cannot change silently while the fix is decided (RIG-3108 review F1).
-func TestReusedSessionIDConflictIsSwallowed(t *testing.T) {
+// TestFreshSessionBindingUsesNewLogicalID asserts the approved restart invariant:
+// a fresh session uses a distinct logical id, so the durable binding can be
+// recorded for the new account without conflicting with an older session row.
+func TestFreshSessionBindingUsesNewLogicalID(t *testing.T) {
 	hub := newHubOnly()
 	bindings := newFakeBindingStore()
 	hub.SetSessionBindingStore(bindings)
 	hub.enroll(context.Background(), "runner-1", runnerSubject(), compassv1.RuntimeTier_RUNTIME_TIER_UNSPECIFIED, compassv1.EgressPosture_EGRESS_POSTURE_UNSPECIFIED)
 
-	// A row from before the joint restart, under a DIFFERENT account.
+	// A row from before the restart, under a DIFFERENT account.
 	bindings.mu.Lock()
-	bindings.bindings["sess-1"] = store.SessionBinding{SessionID: "sess-1", AccountID: "acct-stale", RunnerID: "runner-1"}
+	bindings.bindings["sess-old"] = store.SessionBinding{SessionID: "sess-old", AccountID: "acct-stale", RunnerID: "runner-1"}
 	bindings.mu.Unlock()
 
 	hub.bindContainer("cont-1", testAgentAccount)
-	hub.promoteSession(context.Background(), "cont-1", "sess-1")
+	hub.promoteSession(context.Background(), "cont-1", "sess-new")
 
-	// This instance resolves the NEW account from RAM.
-	if acct, ok := hub.accountForSession(context.Background(), "sess-1"); !ok || acct != testAgentAccount {
-		t.Fatalf("accountForSession(sess-1) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
+	if acct, ok := hub.accountForSession(context.Background(), "sess-new"); !ok || acct != testAgentAccount {
+		t.Fatalf("accountForSession(sess-new) = (%q, %v), want (%s, true)", acct, ok, testAgentAccount)
 	}
-	// ...but the durable row still names the stale account: the divergence.
 	bindings.mu.Lock()
-	got := bindings.bindings["sess-1"].AccountID
+	got := bindings.bindings["sess-new"].AccountID
 	bindings.mu.Unlock()
-	if got != "acct-stale" {
-		t.Fatalf("durable binding for sess-1 = %q, want %q — if this now agrees with the cache, the ErrConflict gap was fixed and this witness test should become a real assertion", got, "acct-stale")
+	if got != testAgentAccount {
+		t.Fatalf("durable binding for sess-new = %q, want %q", got, testAgentAccount)
 	}
 }
 
