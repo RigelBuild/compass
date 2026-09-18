@@ -8,9 +8,11 @@ sidecars: `compass-stack`, `compass-server`, and `compass-runner`
 (`app-bundle/build.sh:88-97`). It does not ship postgres tooling; embedded mode
 runs stock postgres:18 in a rootless podman container (`app-bundle/build.sh:6-7`).
 
-Run this on one Linux dev box with the build's `/nix/store` realized. Use the
-bundle's binaries under `bin/`, never a `go build` output or an ambient build
-PATH.
+Run this on one Linux dev box with the build's `/nix/store` realized. What is
+under test is the packaged `compass-app`, so always launch it from the unpacked
+bundle's `bin/`, never from a `go build` output. Part (b) step 1 is the one
+exception, and it is not the app: it stands up a standalone headless stack
+before the bundle exists.
 
 ## What the automated gates cover
 
@@ -62,25 +64,52 @@ The build stages all three sidecars into that directory
 
 ### 3. Launch with no `app.toml`
 
-Do not create an `app.toml` for this part. An absent file resolves to embedded
-mode, the zero-config default (`go/internal/appconfig/appconfig.go:170-208`).
-The app resolves `compass-stack` as a sibling of the running `compass-app`
-executable before falling back to PATH
-(`go/cmd/compass-app/embedded.go:297-323`). It prepends that same `bin/`
-directory for the supervised sidecars (`go/cmd/compass-app/embedded.go:325-355`).
-Do not install `compass-stack` on PATH.
-
-On a headless box, launch through the same virtual framebuffer setup used by
-the existing client smoke:
+The resolved `app.toml` path is `${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. Do not create that file
+for this part, and remove one left by an earlier client smoke. An absent file
+resolves to embedded mode, the zero-config default
+(`go/internal/appconfig/appconfig.go:170-208`), so a leftover client config
+silently makes this part launch in the wrong mode:
 
 ```bash
+APP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml"
+# no app.toml: this part is the zero-config path
+rm -f "$APP_CONFIG"
+```
+
+The stack binary resolution order is the `--compass-stack` flag,
+`COMPASS_STACK_BIN`, a `compass-stack` sibling of the running `compass-app`,
+then `PATH` (`go/cmd/compass-app/embedded.go:297-323`). For this smoke, do not
+pass `--compass-stack` and require `COMPASS_STACK_BIN` to be unset:
+
+```bash
+unset COMPASS_STACK_BIN
+```
+
+The app resolves `compass-stack` as a sibling of the running `compass-app`
+executable, preferred over PATH (`go/cmd/compass-app/embedded.go:297-323`), and
+prepends that same `bin/` directory for the supervised sidecars
+(`go/cmd/compass-app/embedded.go:325-355`). So the bundle's staged
+`compass-stack` wins even when an ambient one is on PATH, which is what the
+launch below relies on.
+
+Pin the stack's state directory and socket for the smoke. Left unset they
+default under `$HOME/.compass` (`go/cmd/compass-app/client.go:56-67`,
+`go/cmd/compass-app/main.go:359-370`), which mixes smoke state into the real
+dev-box install and leaves nothing safe to delete afterwards:
+
+```bash
+ESTATE=$(mktemp -d); ERT=$(mktemp -d)
 BINENV=$(nix build --no-link --print-out-paths \
   -f tools/toolchain/gtk-e2e-env.nix bin)
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
-  xvfb-run -a "$BUNDLE/bin/compass-app"
+  xvfb-run -a "$BUNDLE/bin/compass-app" \
+    --state-dir "$ESTATE" --socket "$ERT/server.sock"
 ```
 
-The embedded app invokes this exact stack command:
+`xvfb-run` is the same virtual-framebuffer setup the client part uses, needed on
+a headless box.
+
+With those flags the app invokes this stack command:
 
 ```text
 compass-stack up --state-dir <state-dir> --image ghcr.io/rigelbuild/compass-agent:latest --socket <socket>
@@ -88,7 +117,9 @@ compass-stack up --state-dir <state-dir> --image ghcr.io/rigelbuild/compass-agen
 
 `stackUpArgs` passes only `up`, `--state-dir`, `--image`, and `--socket`
 (`go/cmd/compass-app/embedded.go:134-150`). It deliberately does not pass
-`--database`, `--postgres-image`, `--collector-image`, or `--listen`.
+`--database`, `--postgres-image`, `--collector-image`, or `--listen`. The image
+ref is the locked GHCR default unless `--image` or `$COMPASS_AGENT_IMAGE`
+overrides it (`go/cmd/compass-app/embedded.go:358-369`).
 
 ### 4. Confirm the embedded board and run one session
 
@@ -104,10 +135,11 @@ agent container under the stack's podman runtime.
 
 ### 5. Quit and stop the embedded stack
 
-Use the app action that explicitly quits and stops the stack. The quit
-controller runs `compass-stack down` and then quits the app
-(`go/cmd/compass-app/lifecycle.go:38-74`). Do not run a manual `compass-stack
-down` for this part. After the app closes, confirm that no stack containers or
+Use the explicit **Quit and stop stack** action, not a plain window close or
+OS quit. Plain close exits the app but leaves the detached stack running for a
+later relaunch; **Quit and stop stack** runs `compass-stack down` and then quits
+the app (`go/cmd/compass-app/lifecycle.go:6-16`, `:38-74`). Do not run a manual
+`compass-stack down` for this part. After the app closes, confirm that no stack containers or
 private postgres container remain:
 
 ```bash
@@ -120,11 +152,16 @@ trapping the user in a live window is worse and a lingering stack is the safe
 failure (OQ-6, `go/cmd/compass-app/lifecycle.go:57-60`). So read the app's log
 as well as `podman ps -a` before calling this step green.
 
-Remove the unpacked bundle and any temporary state after confirming teardown:
+Remove the unpacked bundle and the pinned stack state after confirming
+teardown. Pinning them in step 3 is what makes this safe to delete: an unpinned
+run writes into the real `$HOME/.compass` install instead.
 
 ```bash
-rm -rf "$PREFIX"
+rm -rf "$PREFIX" "$ESTATE" "$ERT"
 ```
+
+Embedded mode stores no bearer, so there is no keychain entry to clear here
+(the local socket is a filesystem-permission boundary, not a bearer door).
 
 ## Part (b): client mode
 
@@ -155,7 +192,12 @@ Stand up the stack with its TLS network door on the loopback port. The client
 dials `https://`, never cleartext (`go/internal/appconfig/appconfig.go:130-168`).
 `compass-stack` generates the loopback certificate under `--state-dir` and
 passes it to `compass-server` (`go/internal/stack/adapters/cert.go:53-55`,
-`go/internal/stack/spec.go:25-33`):
+`go/internal/stack/spec.go:25-33`).
+
+This step runs the stack as a standalone headless deployment, before the bundle
+is built, so `compass-stack` here is any working build on PATH rather than the
+bundle's staged sidecar. That is the point of client mode: the stack is a
+separate deployment the app only dials.
 
 ```bash
 STATE=$(mktemp -d); RT=$(mktemp -d)
@@ -165,8 +207,12 @@ compass-stack up \
   --image ghcr.io/rigelbuild/compass-agent:latest
 ```
 
-The spawned server writes a bootstrap-admin token at `$RT/admin-token`
-(`go/cmd/compass-server/main.go:277-283`). Read it for the connect screen:
+The spawned server writes a bootstrap-admin token at `$RT/admin-token`.
+`adminTokenFile` names that file (`go/server/network_door.go:35-38`); when
+`--state-dir` is omitted for the network door, the socket parent is the state
+directory (`go/server/network_door.go:267-276`), and the token is minted and
+written there with the writer (`go/server/network_door.go:364-388`). Read it
+for the connect screen:
 
 ```bash
 cat "$RT/admin-token"
@@ -184,10 +230,20 @@ tar -xzf app-bundle/compass-app-<version>-linux-amd64.tar.gz -C "$PREFIX"
 BUNDLE="$PREFIX/compass-app-<version>-linux-amd64"
 ```
 
-Create the client's `app.toml` with `mode = "client"`, the HTTPS
-`server_url`, and `ca_cert` set to `$STATE/tls.crt`
-(`docs/designs/ui/compass-native-client-mode/design.md:66-73`). Put the bearer
-in the connect screen, never in `app.toml` (DL-109).
+The resolved client `app.toml` path is `${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml`. Create that file
+with `mode = "client"`, the HTTPS `server_url`, and `ca_cert` set to
+`$STATE/tls.crt` (`docs/designs/ui/compass-native-client-mode/design.md:66-73`).
+Put the bearer in the connect screen, never in `app.toml` (DL-109).
+
+```bash
+APP_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml"
+mkdir -p "$(dirname "$APP_CONFIG")"
+cat >"$APP_CONFIG" <<EOF
+mode = "client"
+server_url = "https://127.0.0.1:50052"
+ca_cert = "$STATE/tls.crt"
+EOF
+```
 
 ### 3. Launch, connect, and render the board
 
@@ -200,7 +256,10 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
 
 With no stored token, the app paints the connect screen. The server URL is
 read-only and comes from `app.toml`; the bearer is the `$RT/admin-token` value.
-Paste it and connect. Confirm the board renders live over the TLS door.
+Paste it and connect. The shell probes `GetServerInfo`, calls `WhoAmI`, writes
+the token to the OS keychain, arms the bearer injector, and boots into the
+board (`docs/designs/ui/compass-native-client-mode/design.md:185-226`). Confirm the board
+renders live over the TLS door.
 
 ### 4. Drive one agent session to a running container
 
@@ -217,7 +276,8 @@ PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
 ```
 
 Auto-connect reads the stored bearer from the OS keychain and boots straight to
-the board with no connect screen or bearer re-entry. The keychain entry is keyed
+the board with no connect screen or bearer re-entry
+(`docs/designs/ui/compass-native-client-mode/design.md:185-186`). The keychain entry is keyed
 by service `compass-app` and the server URL.
 
 ### 6. Cleanup
@@ -231,23 +291,70 @@ compass-stack down \
 rm -rf "$STATE" "$RT"
 ```
 
+The bearer outlives all of that. Step 3 stored it under the OS keychain service
+`compass-app`, keyed by the server URL, or in a 0600 `remote-token` file under
+the state dir when no keychain backend is available
+(`go/internal/tokenstore/tokenstore.go:27-32`, `:34-54`). The stack it
+authenticates is gone, but the credential is not. The packaged app has no
+logout action, so delete the token with the supported store API from a one-off
+helper; `Store.Delete` selects the bound backend and treats an absent token as
+success (`go/internal/tokenstore/tokenstore.go:111-118`, `:180-184`). This
+prints no token:
+
+```bash
+cleanup_test=go/internal/tokenstore/smoke_cleanup_test.go
+trap 'rm -f "$cleanup_test"' EXIT
+cat >"$cleanup_test" <<'EOF'
+package tokenstore_test
+
+import (
+  "os"
+  "testing"
+
+  "github.com/RigelBuild/compass/go/internal/tokenstore"
+)
+
+func TestSmokeCleanup(t *testing.T) {
+  if err := tokenstore.New(os.Getenv("COMPASS_SMOKE_STATE")).Delete(os.Getenv("COMPASS_SMOKE_URL")); err != nil {
+    t.Fatal(err)
+  }
+}
+EOF
+COMPASS_SMOKE_STATE="$STATE" \
+  COMPASS_SMOKE_URL="https://127.0.0.1:50052" \
+  go -C go test ./internal/tokenstore -run '^TestSmokeCleanup$' -count=1
+rm "$cleanup_test"
+trap - EXIT
+rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/compass/app.toml"
+```
+
+The temporary test calls the supported `tokenstore.Store.Delete` API, which
+selects the same keychain-or-file backend as the client and prints no token.
+Run it from the repository root so the internal import is allowed. Removing
+`app.toml` also matters for part (a): a leftover client config stops that part
+from taking the absent-file embedded path.
+
 ## Manual checklist
 
 ### Embedded mode
 
 - [ ] no `app.toml` is present, so launch selects embedded mode (§Part (a), 3)
-- [ ] rootless podman and podman 4.3 or newer are available (§Part (a), 1)
+- [ ] rootless podman and podman 4.3 or newer are available, and the agent image
+      is pulled so bring-up does not cold-pull (§Part (a), 1)
 - [ ] the bundle contains the shell and three sidecars (§Part (a), 2)
 - [ ] the app brings the stack to Ready and opens the board without a connect
       screen or bearer (§Part (a), 4)
 - [ ] one agent session reaches a running container (§Part (a), 4)
-- [ ] explicit quit-and-stop closes the app and leaves no stack containers or
-      private postgres container (§Part (a), 5)
+- [ ] **Quit and stop stack** (not plain close) closes the app, `podman ps -a`
+      shows no stack or postgres container, and the app log reports no teardown
+      failure (§Part (a), 5)
+- [ ] the pinned `--state-dir`/`--socket` paths are removed and `$HOME/.compass`
+      was not touched (§Part (a), 5)
 
 ### Client mode
 
-- [ ] client `app.toml` has `mode = "client"`, an HTTPS `server_url`, and
-      `ca_cert`; it has no bearer (§Part (b), 2)
+- [ ] the resolved client `app.toml` has `mode = "client"`, an HTTPS
+      `server_url`, and `ca_cert`; it has no bearer (§Part (b), 2)
 - [ ] the app launches with a read-only server URL and one bearer input (§Part
       (b), 3)
 - [ ] pasting the bearer connects and the board renders over the TLS door (§Part
@@ -255,3 +362,5 @@ rm -rf "$STATE" "$RT"
 - [ ] one agent session reaches a running container (§Part (b), 4)
 - [ ] quit and relaunch auto-connects from the OS keychain, with no connect
       screen or bearer re-entry (§Part (b), 5)
+- [ ] the stored bearer is cleared from the keychain (or `remote-token`) and the
+      client `app.toml` is removed (§Part (b), 6)
