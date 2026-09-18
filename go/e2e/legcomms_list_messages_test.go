@@ -27,7 +27,7 @@ func TestCommsListMessagesChannelResolution(t *testing.T) {
 	}
 	ctx := context.Background()
 	const settle = "list messages standing by"
-	f := NewFixture(ctx, t, WithCannedMarkerScript(listMessagesMarker,
+	f := NewFixture(ctx, t, WithCannedScript(CannedText("list messages positional fallback")), WithCannedMarkerScript(listMessagesMarker,
 		CannedToolCall("comms_list_messages", fmt.Sprintf(`{"channel":%q}`, listMessagesChannel)),
 		CannedText(settle),
 		CannedToolCall("comms_list_messages", `{}`),
