@@ -195,7 +195,8 @@ export class EventMapper {
 	// A lifecycle transition: a session frame carrying only the board state, no
 	// trace event (SessionFrame.typed_event stays empty — "no trace, state only").
 	// The Runner extracts the state into an AgentSessionStatus, stamping the
-	// session_id it owns (the agent mints no server ids; comms.proto:230).
+	// session_id it owns (the agent mints no server ids; see `AgentSessionStatus` in
+	// `compass.proto`).
 	#sessionState(state: AgentSessionState): OutboundFrame {
 		const value: SessionFrame = create(SessionFrameSchema, { state });
 		return { kind: "session", value };
