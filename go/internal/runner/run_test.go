@@ -108,18 +108,19 @@ func TestSunPathMaxIsPlatformDerived(t *testing.T) {
 	}
 }
 
-// This test binds agentAccountIDWidth to the server-issued account ID shape.
-// validAccountID rejects any incoming id that is not exactly this wide, so a
-// request can never widen the socket path past what the budget cleared; but
-// nothing binds the constant to the account ID construction, so if that shape
-// ever changed the two would drift silently. Pin it against the actual
-// construction rather than against the literal 32 — the server-issued id is
+// This test binds agentAccountIDWidth to the minting site. validAccountID now
+// rejects any incoming id that is not exactly this wide, so a request can never
+// widen the socket path past what the budget cleared; but nothing binds the
+// constant to store.newID's actual output, so if the minting site ever changed
+// width the two would drift silently. TestSunPathMaxMatchesTheKernel binds
+// sunPathMax to reality; this binds the width. Pin it against the actual
+// construction rather than against the literal 32 — store.newID is
 // hex.EncodeToString of a 16-byte array, and asserting `32 == 32` would restate
 // the constant instead of testing it.
 func TestAgentAccountIDWidthMatchesTheMintingSite(t *testing.T) {
 	var minted [16]byte
 	if got := len(hex.EncodeToString(minted[:])); got != agentAccountIDWidth {
-		t.Fatalf("agentAccountIDWidth = %d, but the server-issued account id has %d chars (hex of %d bytes); the socket-path budget in validateRuntimeDir is now wrong",
+		t.Fatalf("agentAccountIDWidth = %d, but store.newID mints %d chars (hex of %d bytes); the socket-path budget in validateRuntimeDir is derived from this width and is now wrong",
 			agentAccountIDWidth, got, len(minted))
 	}
 }

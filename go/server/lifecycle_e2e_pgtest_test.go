@@ -518,7 +518,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	}
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
-    host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLogE2E())
+	host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLogE2E())
 	// host.Close drains every per-container socket. Registered BEFORE
 	// runnerloop.RunSessionsLoop so under LIFO it runs AFTER the loop's cancel+drain
 	// — the production order. The fresh bounded ctx is the sanctioned test-root
