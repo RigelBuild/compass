@@ -118,7 +118,9 @@ func TestCrossProcessTeardown(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman not usable in this environment")
 	}
+
 	ctx := context.Background() // test root context (rule://go-thread-context exemption for a _test.go root)
+
 	// 1. Build the three stack child binaries AND the compass-stack binary itself
 	// into one dir. The subprocesses resolve the children via exec.LookPath, so
 	// the dir must be first on their PATH; compass-stack is invoked by full path.
