@@ -16,16 +16,14 @@
 // and plausibility-checked too (it proves the format-12 path and guards the
 // future display-face work), but Space Mono is the covered set findings clear.
 //
-// Adoption posture (RIG-3742 / T8): WARN until T8, then ERROR. There are 8
-// known-uncovered rendered characters TODAY, so a fail-closed gate would be red
-// on arrival. In WARN it prints findings and exits 0; in ERROR it exits 1 on
-// any finding. Mode is FONT_COVERAGE_GATE=warn|error (default warn). THE FLIP:
-// at T8 (RIG-3742), change the default below from "warn" to "error" so an
-// uncovered rendered glyph fails the build.
+// Adoption posture (RIG-3742 / T8): T8 is complete and ERROR is now the
+// default. In WARN it prints findings and exits 0; in ERROR it exits 1 on any
+// finding. Mode is FONT_COVERAGE_GATE=warn|error (default error). Set WARN
+// explicitly when a non-blocking report is needed.
 //
-// KNOWN BLIND SPOTS — the T8 flip assumes these stay absent, so widening the
-// gate is cheaper than discovering one after it is fail-closed:
-//   * Only LITERAL non-ASCII bytes are seen. A "\u25b8" escape, a &#9656;
+// KNOWN BLIND SPOTS — the fail-closed T8 gate assumes these stay absent, so
+// widening the gate is cheaper than discovering one after it is enforced:
+//   * Only LITERAL non-ASCII characters/code points are seen. A "\u25b8" escape, a &#9656;
 //     entity, or String.fromCodePoint renders the glyph invisibly to the scan.
 //     The tree writes literal glyphs throughout, which is what makes this safe.
 //   * Only UI_SRC_DIR is scanned; apps/ui/e2e authors baselines too.
@@ -34,7 +32,7 @@
 //
 // Inputs (env):
 //   GATE_ROOT            - directory to scan (default: git toplevel).
-//   FONT_COVERAGE_GATE   - "warn" (default) or "error".
+//   FONT_COVERAGE_GATE   - "warn" or "error" (default: error).
 // Exit codes:
 //   0 - no findings, OR findings in WARN mode (printed, non-blocking)
 //   1 - one or more findings in ERROR mode
@@ -72,12 +70,40 @@ export interface Finding {
 // cmap parser (pure, exported).
 // ---------------------------------------------------------------------------
 
+/** The highest codepoint Unicode defines; a cmap range past it is malformed. */
+const UNICODE_MAX = 0x10ffff;
+
+/**
+ * Ceiling on how many codepoints ONE font's cmap may enumerate, summed over
+ * every range of every subtable.
+ *
+ * WHY this exists on top of the U+10FFFF bound: the bound caps the SET (at most
+ * 1,114,112 distinct codepoints) but not the WORK — a crafted font can repeat a
+ * maximal in-Unicode range group after group, each costing a full codespace
+ * walk for coverage it already has. Sizing is one-sided: rejecting a real face
+ * breaks the gate, so the ceiling sits far above any legitimate font. An sfnt
+ * addresses at most 65,535 glyphs, so a pan-Unicode face enumerates ~65k per
+ * subtable and a few duplicated (platform 0 / platform 3) subtables a small
+ * multiple of that; the two bundled faces enumerate 1,250 and 4,298. Four whole
+ * codespaces is ~68x the largest plausible face and still caps a hostile font's
+ * parse in the hundreds of milliseconds.
+ */
+const MAX_CMAP_EXPANSION = 4 * (UNICODE_MAX + 1);
+
+/**
+ * Validate one cmap range and charge it against the font's expansion budget.
+ * Throws for a range running past U+10FFFF or one that overruns the budget; a
+ * degenerate (start > end) range is legal and costs nothing.
+ */
+type ChargeRange = (start: number, end: number, what: string) => void;
+
 /**
  * Union the codepoint coverage of a font's cmap subtables. Parses the sfnt
  * table directory (TrueType 0x00010000 / 'true', or CFF 'OTTO') and reads the
  * `cmap` table, supporting subtable format 4 (BMP) and format 12 (astral);
- * other formats are ignored, not fatal. A malformed/truncated file throws — a
- * partial set would silently read as "uncovered" and green a broken gate.
+ * other formats are ignored, not fatal. A malformed/truncated file, or one
+ * whose ranges are out of Unicode or implausibly wide, throws — a partial set
+ * would silently read as "uncovered" and green a broken gate.
  */
 export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -119,13 +145,37 @@ export function cmapCodepoints(bytes: Uint8Array): Set<number> {
 	if (cmapOffset < 0) throw new Error("cmap: no cmap table in font");
 
 	const covered = new Set<number>();
+
+	// A cmap's ranges are attacker-controlled data. `need` bounds every READ
+	// against the file, so a hostile font cannot declare more range RECORDS
+	// than it has bytes for — but nothing bounds how WIDE each record claims to
+	// be. One 12-byte format-12 group saying start=0/end=0xffffffff is 4.29
+	// BILLION Set inserts out of a font that parsed clean, and 32768 maximal
+	// format-4 segments are ~2.1 billion more. So every range is checked and
+	// charged against one budget for the whole font before it is expanded.
+	let budget = MAX_CMAP_EXPANSION;
+	const charge: ChargeRange = (start, end, what) => {
+		if (start > end) return; // degenerate: no codepoints to walk
+		const where = `${what} 0x${start.toString(16)}..0x${end.toString(16)}`;
+		if (end > UNICODE_MAX) {
+			throw new Error(`cmap: malformed font — ${where} runs past U+10FFFF`);
+		}
+		const width = end - start + 1;
+		if (width > budget) {
+			throw new Error(
+				`cmap: malformed font — ${where} overruns the ${MAX_CMAP_EXPANSION}-codepoint cmap expansion budget`,
+			);
+		}
+		budget -= width;
+	};
+
 	const numSub = u16(cmapOffset + 2);
 	for (let s = 0; s < numSub; s++) {
 		const rec = cmapOffset + 4 + s * 8;
 		const subOffset = cmapOffset + u32(rec + 4);
 		const format = u16(subOffset);
-		if (format === 4) readFormat4(subOffset, covered, u16, i16);
-		else if (format === 12) readFormat12(subOffset, covered, u32);
+		if (format === 4) readFormat4(subOffset, covered, u16, i16, charge);
+		else if (format === 12) readFormat12(subOffset, covered, u32, charge);
 		// Any other format: ignore, not fatal.
 	}
 	return covered;
@@ -137,12 +187,19 @@ function readFormat4(
 	out: Set<number>,
 	u16: (o: number) => number,
 	i16: (o: number) => number,
+	charge: ChargeRange,
 ): void {
 	const segCount = u16(base + 6) / 2;
 	const endBase = base + 14;
 	const startBase = endBase + segCount * 2 + 2; // +2 reservedPad
 	const deltaBase = startBase + segCount * 2;
 	const rangeBase = deltaBase + segCount * 2;
+	// Two passes on purpose: every segment is validated and charged BEFORE any
+	// is expanded, so a malformed table throws after O(segCount) reads instead
+	// of first spending a whole budget's worth of Set inserts.
+	for (let i = 0; i < segCount; i++) {
+		charge(u16(startBase + i * 2), u16(endBase + i * 2), "format 4 segment");
+	}
 	for (let i = 0; i < segCount; i++) {
 		const end = u16(endBase + i * 2);
 		const start = u16(startBase + i * 2);
@@ -170,9 +227,15 @@ function readFormat12(
 	base: number,
 	out: Set<number>,
 	u32: (o: number) => number,
+	charge: ChargeRange,
 ): void {
 	const numGroups = u32(base + 12);
 	const groupBase = base + 16;
+	// Two passes, as in readFormat4: charge every group before expanding any.
+	for (let g = 0; g < numGroups; g++) {
+		const rec = groupBase + g * 12;
+		charge(u32(rec), u32(rec + 4), "format 12 group");
+	}
 	for (let g = 0; g < numGroups; g++) {
 		const rec = groupBase + g * 12;
 		const start = u32(rec);
@@ -266,11 +329,9 @@ export function evaluate(findings: Finding[], covered: Set<number>): Finding[] {
 	return findings.filter((f) => !covered.has(f.codepoint));
 }
 
-/** Resolve the blocking posture from env (default WARN). */
+/** Resolve the blocking posture from env (default ERROR; invalid values fail closed). */
 export function resolveMode(env: Record<string, string | undefined>): Mode {
-	return (env.FONT_COVERAGE_GATE ?? "").toLowerCase() === "error"
-		? "error"
-		: "warn";
+	return env.FONT_COVERAGE_GATE?.toLowerCase() === "warn" ? "warn" : "error";
 }
 
 /** Render a codepoint as U+XXXX (at least 4 hex digits, uppercase). */
@@ -347,7 +408,7 @@ if (import.meta.main) {
 	if (mode === "error" && uncovered.length > 0) process.exit(1);
 	if (uncovered.length > 0) {
 		console.log(
-			"font-coverage-gate: WARN mode — reported, not blocking. Flip default to ERROR at T8 (RIG-3742).",
+			"font-coverage-gate: WARN mode — reported, not blocking (explicit opt-in).",
 		);
 	}
 	process.exit(0);
