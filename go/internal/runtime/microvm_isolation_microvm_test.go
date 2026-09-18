@@ -166,8 +166,7 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
-func shellQuoteWords(s string) string {
-	words := strings.Fields(s)
+func shellQuoteWords(words ...string) string {
 	quoted := make([]string, 0, len(words))
 	for _, word := range words {
 		quoted = append(quoted, shellQuote(word))
@@ -175,7 +174,8 @@ func shellQuoteWords(s string) string {
 	return strings.Join(quoted, " ")
 }
 
-func sweepScript(needle, roots string) string {
+func sweepScript(needle string, roots ...string) string {
+
 	// The awk program: scan every FILENAME handed to this invocation, print
 	// `<path>:<line>` per match, and exit non-zero when the batch had none — so
 	// the caller's `found` accumulator keeps grep's semantics across batches.
@@ -198,7 +198,7 @@ func sweepScript(needle, roots string) string {
 		"scan() { ((${#batch[@]})) || return 0; " +
 		"awk '" + awkProg + "' \"${batch[@]}\"; status=$?; batch=(); " +
 		"case $status in 0) found=0;; 1) ;; *) return $status;; esac; }; " +
-		"for root in " + shellQuoteWords(roots) + "; do " +
+		"for root in " + shellQuoteWords(roots...) + "; do " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
 		// "//proc/self/environ", which a /proc/* pattern does NOT match —
@@ -466,7 +466,7 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 			// parent is included explicitly so the one tree that could hold the
 			// secret is walked.
 			script: sweepScript(tenantBSecret,
-				"/tmp /mnt /media /run /var /home /workspace "+filepath.Dir(volumeB)),
+				"/tmp", "/mnt", "/media", "/run", "/var", "/home", "/workspace", filepath.Dir(volumeB)),
 			forbid:              []string{volumeB},
 			probeErrorSensitive: true,
 		},
