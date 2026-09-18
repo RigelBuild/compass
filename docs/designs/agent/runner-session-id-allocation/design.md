@@ -62,7 +62,7 @@ sequenceDiagram
     C->>S: StartAgentSessionRequest{container_name[, resume_session_id]}
     alt fresh
         S->>H: Start(req)
-        H->>H: rid = orNewRequestID(""); id = mintSessionID(rid)
+        H->>H: rid = orNewRequestID(""); id = mintSessionID(rid, container_name)
         H->>R: SessionsResponse{request_id=rid, start=req, fresh_session_id=id}
     else resume
         S->>H: StartResume(req, body)
@@ -85,18 +85,21 @@ sequenceDiagram
    tag 13 records that 12 is not reused). 14 is the next free tag. Field
    numbers under 16 encode in one byte; a rarely-set string costs nothing when
    empty (proto3 omits zero values).
-2. **Id shape: derived from the request id (Matt's ruling).** The fresh
+2. **Id shape: derived from the request id and container name (Matt's ruling).** The fresh
    session id is bound to the Sessions envelope's `request_id` so a retry that
    reuses the request id also reuses the session id, preserving the
    idempotency the envelope documents ("`request_id` is the OQ6 idempotency
    key: a retry reuses it and the Runner returns the original result" —
    `dispatcher.handle` returns the recorded first result; `commandRouter.dispatch`
-   joins a concurrent same-id call to the in-flight one). Derivation, in
-   `mintSessionID(requestID string) string`:
-   `hex(sha256(len-prefixed "compass.session.v1" || len-prefixed requestID))`
+   joins a concurrent same-id call to the in-flight one) — and to the target
+   `container_name`, so one request id replayed against another container
+   cannot derive the same session id (Matt's ruling). Derivation, in
+   `mintSessionID(requestID, containerName string) string`:
+   `hex(sha256(len-prefixed "compass.session.v1" || len-prefixed requestID || len-prefixed containerName))`
    — the exact domain-separated, length-prefixed construction
-   `provisionDedupID` already uses, so a request id can never be shifted into
-   the session-id space of another domain. Output is 64 lowercase hex chars,
+   `provisionDedupID` already uses, so no field can be shifted into another
+   and no request id can land in another domain's id space. Output is 64
+   lowercase hex chars,
    no `sess-` prefix (no non-test code reads the prefix; grep `"sess-"` in
    `go/` finds only `monotonicIDs` and fixtures). The 64-hex id is a bare
    path element, so the Runner's `filepath.Base` resume-id guard is
@@ -109,10 +112,11 @@ sequenceDiagram
    and never client-derivable; if a client-suppliable request id is ever added
    to Start, this derivation MUST be revisited (recorded in DL-371).
 3. **Minting site.** `Hub.Start` computes `requestID := orNewRequestID(requestID)`
-   once, then `freshID := h.newSessionID(requestID)`. `newSessionID func(string) string`
+   once, then `freshID := h.newSessionID(requestID, req.GetContainerName())`.
+   `newSessionID func(requestID, containerName string) string`
    is a field on `Hub` (`go/internal/runnerhub/hub.go`), defaulted in `NewHub`
    to `mintSessionID`, overridable through an exported
-   `SetSessionIDMinter(func(requestID string) string)` seam in the style of
+   `SetSessionIDMinter(func(requestID, containerName string) string)` seam in the style of
    `SetSessionBindingStore`. The setter exists for the `go/server` pgtest
    fixtures, which are out-of-package and assert on literal ids; production
    never calls it. `Hub.StartResume` never mints.
@@ -142,24 +146,22 @@ sequenceDiagram
    Server never sends both; a Runner that sees both is observing a Server bug
    and must not silently pick the fresh id (which would orphan the resume
    lineage).
-7. **`TestReusedSessionIDConflictIsSwallowed` is deleted, its lineage moves
-   to the ledger.** The witness pins a Runner behaviour (re-minting `sess-1`
-   on restart) that T2 makes impossible: after T2 the Runner has no minter,
-   so no fresh start can carry an id the Server did not choose, and the
-   scenario the witness names cannot be constructed against the real host.
-   A conversion that seeds a stale row and re-`enroll`s does not work either:
-   a re-enroll durably reaps that Runner's rows (`Hub.enroll` →
-   `DeleteSessionBindingsForRunner`, mirrored by `fakeBindingStore`), so the
-   second start never reaches the conflict; and "two random ids differ" is a
-   property of the hash, not of the design. The regression pair that replaces
-   it is T2's `TestStartWithoutServerMintedIDFailsClosed` (the Runner cannot
-   fall back to a local id) and T3's
-   `TestStartCarriesFreshSessionIDAndResumeDoesNot` (the Server always sends
-   one). The RIG-3108 review-F1 lineage the witness carried is recorded in
-   the DL-371 row text so it stays one hop from the ledger. The
-   `promoteSession` fallback-to-RAM behaviour itself is untouched (Matt's
-   ruling: do not handle the conflict downstream); its existing coverage in
-   `TestStoreFaultsFallBackWithoutLosingFailClosed` stands.
+7. **`TestReusedSessionIDConflictIsSwallowed` is kept and renamed (Matt's
+   ruling).** The witness pins `promoteSession`'s swallow-and-fall-back on
+   `ErrConflict`, and that posture is deliberately unchanged (no downstream
+   handling). What changes is what reaching it MEANS: after T2 the Runner
+   has no minter, so a fresh start can never carry an id the Server did not
+   derive, and a conflict can only come from a Server-side collision — a
+   bug. The test is renamed to say so, its `"sess-1"` fixture becomes a
+   64-hex literal, and its comment drops the "become a real assertion when
+   fixed" clause (this fix does not make the durable row agree with the
+   cache; it makes the row unreachable from a restart). The regression pair
+   that proves the restart class is closed is T2's
+   `TestStartWithoutServerMintedIDFailsClosed` and T3's
+   `TestStartCarriesFreshSessionIDAndResumeDoesNot`. Re-`enroll`-based
+   conversions were rejected: a re-enroll reaps that Runner's rows
+   (`Hub.enroll` → `DeleteSessionBindingsForRunner`, mirrored by
+   `fakeBindingStore`), so a seeded row never reaches the conflict.
 8. **The Server checks the Runner echoed its id, and reaps on mismatch.**
    `RecordAgentSession` still runs after the Runner answers, keyed by
    `resp.GetSessionId()`. `Hub.Start` compares `resp.GetSessionId()` to the
@@ -194,7 +196,7 @@ server-minted envelope.
 
 `sess-<enroll-nonce>-<n>`: keeps log-orderable ids and closes the restart
 collision. Lost for the same authority reason as A, plus it needs the Runner
-to learn the nonce at `Enroll` (a second proto touch for no gain over B's
+to learn the nonce at `Enroll` (a second proto touch for no gain over A's
 random id).
 
 ### C. Handle `ErrConflict` in `promoteSession`
@@ -216,7 +218,8 @@ differs from the Server's id is a skewed (older) Runner. Rejected: the check
 is the only thing that turns that skew into a loud, named error instead of a
 silently mis-keyed binding. With the request-id binding of Decision 2 the
 check has no false positive on a retry, and Decision 8's bounded Stop means
-a true positive strands nothing.
+a true positive is reaped when the Stop succeeds and named for an operator
+when it does not.
 
 ### F. Per-call random session id, unbound from the request id
 
@@ -248,10 +251,12 @@ construction `provisionDedupID` already uses.
 - **Tag 14, and only 14.** Do not reuse 12 (DL-065's abandoned
   `ResumeContext`); keep the existing comment on tag 13 that records why.
 - **Id shape.** 64 lowercase hex chars:
-  `hex(sha256(lenprefix("compass.session.v1") || lenprefix(request_id)))`,
+  `hex(sha256(lenprefix("compass.session.v1") || lenprefix(request_id) || lenprefix(container_name)))`,
   the `provisionDedupID` construction. No prefix. The request id is
   `orNewRequestID(requestID)` computed ONCE in `Hub.Start` and used for both
-  the envelope's `request_id` and the derivation — never two calls.
+  the envelope's `request_id` and the derivation — never two calls; the
+  container name is `req.GetContainerName()`, the same value the relay
+  routes on.
 - **Retry idempotency is preserved.** Two `Hub.Start` calls with the same
   request id derive the same session id, so the Runner's request-id dedup
   (`dispatcher.handle`) and the router's in-flight join
@@ -416,11 +421,12 @@ Interfaces:
 
 In `go/internal/runnerhub/hub.go`:
 
-- Add `newSessionID func(requestID string) string` to `Hub` (comment:
-  derives the live id for a fresh start from the envelope request id,
-  RIG-3696; defaulted to `mintSessionID`; read under mu).
+- Add `newSessionID func(requestID, containerName string) string` to `Hub`
+  (comment: derives the live id for a fresh start from the envelope request
+  id and the target container, RIG-3696; defaulted to `mintSessionID`; read
+  under mu).
 - `NewHub`: `newSessionID: mintSessionID`.
-- Add `func (h *Hub) SetSessionIDMinter(mint func(requestID string) string)`
+- Add `func (h *Hub) SetSessionIDMinter(mint func(requestID, containerName string) string)`
   beside the other `Set*` seams (lock, assign, unlock; a nil argument
   restores `mintSessionID`).
 
@@ -429,8 +435,9 @@ In `go/internal/runnerhub/commands.go`:
 - Add `var mismatchStopTimeout = 30 * time.Second` with the
   `rollbackStopTimeout` comment shape (the dispatch path has no deadline; a
   package var only so a test can shorten it).
-- Add `func mintSessionID(requestID string) string`: SHA-256 over the
-  length-prefixed fields `"compass.session.v1"` and `requestID`, exactly the
+- Add `func mintSessionID(requestID, containerName string) string`: SHA-256
+  over the length-prefixed fields `"compass.session.v1"`, `requestID`,
+  `containerName` in that order, exactly the
   loop body of `provisionDedupID` (8-byte big-endian length, then bytes),
   `hex.EncodeToString(h.Sum(nil))`. Comment: this is the ONLY minting site
   for a fresh live session id; the Runner never mints; the derivation binds
@@ -440,7 +447,11 @@ In `go/internal/runnerhub/commands.go`:
   another derivation. Extract the shared length-prefixed hashing into a
   small unexported helper `hashFields(domain string, fields ...string) string`
   used by both `provisionDedupID` and `mintSessionID` — one construction,
-  two callers, no second convention.
+  two callers, no second convention. `mintSessionID(requestID, containerName string)`
+  hashes the fields in that order under domain `"compass.session.v1"`; the
+  container name is the second input (Matt's ruling) so the same request
+  id replayed against a DIFFERENT container can never derive the same
+  session id — the container is what the id keys on the Runner side.
 - `Hub.Start`:
 
   ```go
@@ -452,7 +463,7 @@ In `go/internal/runnerhub/commands.go`:
       h.mu.Lock()
       mint := h.newSessionID
       h.mu.Unlock()
-      freshID := mint(requestID)
+      freshID := mint(requestID, req.GetContainerName())
       result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
           RequestId:      requestID,
           Command:        &compassv1internal.SessionsResponse_Start{Start: req},
@@ -462,6 +473,11 @@ In `go/internal/runnerhub/commands.go`:
           return nil, err
       }
       resp := result.GetStart()
+      if resp == nil {
+          // A start result with no start variant is a wire-contract skew; there
+          // is no session id to stop, so fail loud without a Stop.
+          return nil, connect.NewError(connect.CodeInternal, errors.New("runner answered Start with no start result"))
+      }
       if got := resp.GetSessionId(); got != freshID {
           // Skew: a Runner that ignored fresh_session_id and minted its own. The
           // agent is live under an id no account will ever resolve; reap it
@@ -469,10 +485,12 @@ In `go/internal/runnerhub/commands.go`:
           stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), mismatchStopTimeout)
           defer cancel()
           if _, stopErr := h.Stop(stopCtx, "", &compassv1.StopAgentSessionRequest{SessionId: got}); stopErr != nil {
-              h.log.Error("stopping mis-keyed session after fresh_session_id mismatch failed; session may be stranded",
+              // Remedy: an operator stops runner_session_id (or removes the
+              // container) by hand; both ids and the container are named here.
+              h.log.Error("stopping mis-keyed session after fresh_session_id mismatch failed; session is stranded live",
                   "container", req.GetContainerName(), "runner_session_id", got, "server_session_id", freshID, "error", stopErr)
           }
-          return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("runner answered Start with session %q, want the server-minted %q (Server/Runner version skew; session %q stopped)", got, freshID, got))
+          return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("runner answered Start with session %q, want the server-minted %q (Server/Runner version skew; stop of %q attempted)", got, freshID, got))
       }
       h.promoteSession(ctx, req.GetContainerName(), freshID)
       return resp, nil
@@ -493,24 +511,30 @@ In `go/internal/runnerhub/commands.go`:
 
 `go/server/service.go` and `go/server/lifecycle.go` need no code change: they
 read `resp.GetSessionId()` and that is now the Server's own id; on a
-`Hub.Start` error the hub has already stopped any mis-keyed session, so
-`service.StartAgentSession`'s bare `return nil, err` and
-`lifecycle.provisionAndStart`'s `rollbackSpawn(ctx, container, "")` strand
-nothing. Update the comment on `StartAgentSession` ("A fresh start mints a
+`Hub.Start` error the hub has already attempted the Stop of any mis-keyed
+session, so `service.StartAgentSession`'s bare `return nil, err` and
+`lifecycle.provisionAndStart`'s `rollbackSpawn(ctx, container, "")` add no
+second strand on the happy Stop. If the Stop itself fails, the agent IS
+stranded live; the remedy is the Error log line above, which names the
+container and both ids so an operator can `StopAgentSession` the
+Runner-reported id (or `RemoveAgentWorkspace` the container) by hand — the
+same posture `abandonStartedSession` takes when its Stop fails.
+Update the comment on `StartAgentSession` ("A fresh start mints a
 new id and records below") to say the hub derives it from the relay request
 id.
 
 Interfaces:
 
 - Consumes: `SessionsResponse.FreshSessionId` (T1).
-- Produces: `Hub.SetSessionIDMinter(func(requestID string) string)`;
-  `mintSessionID(requestID string) string`; `hashFields`;
+- Produces: `Hub.SetSessionIDMinter(func(requestID, containerName string) string)`;
+  `mintSessionID(requestID, containerName string) string`; `hashFields`;
   `mismatchStopTimeout`; `Hub.Start` now rejects a `resume_session_id` with
   `CodeInvalidArgument` and a mismatched Runner echo with a bounded Stop +
   `CodeInternal`.
-- Proof (focused, `go test ./go/internal/runnerhub/ -run 'TestStart|TestSessionIDMint'`):
+- Proof (focused, `go test ./go/internal/runnerhub/ -run 'TestStart|TestSessionIDMint|TestReusedSessionID'`):
   a fresh `Start` puts a non-empty 64-hex `fresh_session_id` equal to
-  `mintSessionID(cmd.GetRequestId())` on the pushed envelope and returns it;
+  `mintSessionID(cmd.GetRequestId(), cmd.GetStart().GetContainerName())` on
+  the pushed envelope and returns it;
   two `Start`s with the same explicit request id (the second joined to the
   first in-flight call, or dispatched after it settled with the fake echoing
   the first id) both succeed with the same session id, the router pushed ONE
@@ -546,10 +570,11 @@ New tests (each defends one observable contract; none asserts wiring):
     path (or a sibling) that the dispatcher threads `cmd.FreshSessionId`
     through unchanged.
 - `go/internal/runnerhub/commands_test.go`
-  - `TestSessionIDMintIsDerivedFromRequestID`: `mintSessionID("r")` is 64
-    hex chars, equals itself on a second call, differs from
-    `mintSessionID("s")`, and differs from `provisionDedupID("r", …)` for
-    the same input (domain separation).
+  - `TestSessionIDMintIsDerivedFromRequestIDAndContainer`:
+    `mintSessionID("r", "c")` is 64 hex chars, equals itself on a second
+    call, differs from `mintSessionID("s", "c")` and from
+    `mintSessionID("r", "d")`, and differs from `provisionDedupID("r", …)`
+    for overlapping input (domain separation).
   - `TestStartCarriesFreshSessionIDAndResumeDoesNot`: attach a router that
     captures `cmd.GetRequestId()`/`cmd.GetFreshSessionId()` and echoes the
     fresh id; fresh `Start` → captured fresh id equals
@@ -571,7 +596,18 @@ New tests (each defends one observable contract; none asserts wiring):
   - `TestStartRejectsResumeIDOnFreshPath`: `Start` with `ResumeSessionId`
     set is `CodeInvalidArgument` and pushes nothing on the router.
 - `go/internal/runnerhub/binding_cache_test.go`
-  - Delete `TestReusedSessionIDConflictIsSwallowed` (Decision 7). Update the
+  - KEEP `TestReusedSessionIDConflictIsSwallowed`, renamed
+    `TestReusedSessionIDConflictIsAServerBug` (Matt's ruling), with its
+    `"sess-1"` fixture replaced by a 64-hex literal (e.g. `strings.Repeat("ab", 32)`)
+    so the fixture matches what the Server now mints. Its doc comment is
+    rewritten: the Runner can no longer re-mint over a surviving row (T2
+    deleted its minter), so reaching this path now means a Server-side id
+    collision — a bug, not a restart — and the test pins that
+    `promoteSession` STILL swallows the `ErrConflict` and falls back to RAM
+    (Matt: no downstream handling), leaving the durable row on the stale
+    account. The assertions are unchanged; the failure message's "if this
+    now agrees with the cache … become a real assertion" sentence is
+    dropped because the fix chosen does not make them agree. Also update the
     comment inside `fakeBindingStore.RecordSessionBinding` (same file,
     `binding_cache_test.go`) that says "a Runner restart re-mints "sess-1",
     so id reuse is routine" to say id reuse is now a Server bug (DL-371) and
@@ -614,14 +650,17 @@ Fixture conversions (mechanical; no new assertions):
   `StartAgentSessionResponse{SessionId:` across `go/`; today:
   `runnerhub/commands_test.go` (`"sess-ok"` ×2, in
   `TestStartRelayReturnsSessionIdOnSuccess` and the responder below it),
-  `runnerhub/seam_test.go` (`"sess-wire"`), `runnerhub/relay_comms_test.go`
+  `runnerhub/seam_test.go` (`"sess-wire"`, once), `runnerhub/relay_comms_test.go`
   (`"sess-live"` ×2, whose `accountForSession("sess-live")` assertions then
   read the captured envelope id instead), `runnerhub/concurrent_dispatch_test.go`
   (`"sess-" + cmd.GetRequestId()` — the `want := "sess-" + id` assertion
   becomes "equals the id captured from its own command", still proving no
-  interleaving), `runnerhub/seam_test.go`, and
-  `go/server/service_placement_pgtest_test.go` `recordingRunner` (both the
-  `answer` arm and the `nextStartID` serve-loop arm).
+  interleaving), and `go/server/service_placement_pgtest_test.go`
+  `recordingRunner` (both the `answer` arm and the `nextStartID` serve-loop
+  arm). EXCLUDED on purpose: `runnerhub/router_test.go`'s `startResult`
+  helper (`"sess-42"`, `"sess-a"`, …) — those cases drive `commandRouter`
+  directly and never pass through `Hub.Start`, so the echo check does not
+  run and the literals stay.
 - `go/server/service_placement_pgtest_test.go`: delete the `startIDs` FIFO
   and `setStartIDs`/`nextStartID`. `placementFixture` calls
   `hub.SetSessionIDMinter` with a FIFO minter that yields `fakeSessionID`
@@ -654,9 +693,10 @@ Interfaces:
   (Matt's ruling: beside DL-065's lineage; a row cannot follow prose inside
   a Markdown table):
   "Fresh live session ids are SERVER-MINTED and DERIVED from the Sessions
-  envelope's Server-generated `request_id`
-  (`hex(sha256(domain "compass.session.v1" ‖ request_id))`, 64 hex, no
-  prefix — the `provisionDedupID` construction) so a same-request-id retry
+  envelope's Server-generated `request_id` and the target `container_name`
+  (`hex(sha256(domain "compass.session.v1" ‖ request_id ‖ container_name))`,
+  64 hex, no prefix — the `provisionDedupID` construction) so a
+  same-request-id retry
   or router join yields the same session id and the envelope's OQ6
   idempotency holds; carried Server→Runner on
   `SessionsResponse.fresh_session_id = 14` (internal lane, top-level sibling
@@ -666,8 +706,10 @@ Interfaces:
   Server checks the Runner echoed its id and on mismatch stops the
   Runner-reported session (bounded) before failing `CodeInternal`. Resume
   keeps reusing the authorized logical id; `promoteSession`'s `ErrConflict`
-  fallback is NOT a recovery path (RIG-3108 review F1's witness test is
-  retired here — the Runner can no longer re-mint over a surviving row).
+  fallback is NOT a recovery path — its RIG-3108 review-F1 witness test is
+  KEPT and renamed to say the reused id is now a Server bug, with a 64-hex
+  fixture id (the Runner can no longer re-mint over a surviving row, but the
+  Server's swallow-and-fall-back posture on a conflict is unchanged).
   Server and Runner deploy together; no version handshake exists. If a
   client-suppliable request id is ever added to Start, the derivation must
   be revisited (Alternative D)". Status cell: `Active (Matt, YYYY-MM-DD)`
@@ -697,14 +739,15 @@ Interfaces:
 - [ ] T2 — Runner: `SessionHost.Start` takes `freshSessionID`; selection
       resume → fresh → `errMissingSessionID` (`FAILED_PRECONDITION`);
       `monotonicIDs` and `NewSessionHost`'s `newID` deleted; `run.go` updated.
-- [ ] T3 — Server: `hashFields` + `mintSessionID(requestID)` +
+- [ ] T3 — Server: `hashFields` + `mintSessionID(requestID, containerName)` +
       `Hub.newSessionID` + `SetSessionIDMinter` + `mismatchStopTimeout`;
       `Hub.Start` computes the request id once, derives the session id,
       rejects a resume id, checks the Runner echo and Stops the mis-keyed
       session on mismatch; `StartResume` untouched.
 - [ ] T4 — Regression tests (runner host ×3, dispatcher ×2, runnerhub ×5
       incl. same-request-id retry and mismatch-Stop, two real-seam e2e
-      assertions); witness test deleted; the complete fixture list above.
+      assertions); witness test kept and renamed; the complete fixture list
+      above.
 - [ ] T5 — `DL-371` under § Storage beside DL-065's tag-12 note; close PR
       #1280 and PR #1283; RIG-3696 description updated.
 
@@ -713,14 +756,16 @@ Interfaces:
 Rulings folded from the design-critic pass (F1–F7) and Matt's review; the
 record above is the decided outcome.
 
-1. **Session id bound to the request id** (critique F1 → Matt): derived
-   `hex(sha256(domain ‖ request_id))`, never a per-call random value, so
-   the envelope's request-id idempotency survives the echo check. Decision
-   2, Alternatives F/G, T3.
+1. **Session id bound to the request id AND container name** (critique F1
+   → Matt): derived `hex(sha256(domain ‖ request_id ‖ container_name))`,
+   never a per-call random value, so the envelope's request-id idempotency
+   survives the echo check and a request id reused across containers cannot
+   derive one id for two sessions. Decision 2, Alternatives F/G, T3.
 2. **Bounded Stop on echo mismatch** (F2): the Runner-reported session is
    stopped under `mismatchStopTimeout` before `CodeInternal`. Decision 8, T3.
 3. **Deploy together; both skews named** (F3): Global Constraints.
-4. **Witness test deleted, lineage in DL-371** (F4): Decision 7, T4, T5.
+4. **Witness test kept and renamed with a 64-hex fixture** (F4 → Matt):
+   Decision 7, T4, T5.
 5. **DL-371 under § Storage beside DL-065** (F5 → Matt): Global
    Constraints, T5.
 6. **Complete fixture and e2e proof list** (F6): T4.
@@ -738,3 +783,13 @@ record above is the decided outcome.
    after DL-370 (before the tag-12 blockquote) with its Record cell pointing
    at `agent/runner-session-id-allocation/design.md#decisions` and its date
    written at implement-time. Global Constraints, T5.
+10. **`Status: Draft` on this record and `Active` on the DL-371 row are
+    left exactly as written** (Matt's ruling): the contradiction is
+    transitional and intentional — the design PR carries `Draft` while it
+    is reviewed, and the ledger row is authored `Active` so the merge that
+    freezes the record needs no second edit to the row.
+11. **Review lows folded**: nil `start` result guarded before the mismatch
+    Stop (T3); the "strands nothing" claim softened and the Stop-failed
+    remedy documented (Alternative E, T3); `seam_test.go` listed once and
+    `router_test.go`'s `startResult` literals excluded with the reason
+    (T4); Alternative B's "no gain over A's random id" typo fixed.
