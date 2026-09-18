@@ -87,9 +87,9 @@ then `PATH` (`go/cmd/compass-app/embedded.go:297-323`). For this smoke, do not
 pass `--compass-stack` and require all launch overrides to be unset:
 
 ```bash
-unset COMPASS_STACK_BIN COMPASS_APP_MODE COMPASS_AGENT_IMAGE
+unset COMPASS_STACK_BIN COMPASS_APP_MODE COMPASS_AGENT_IMAGE COMPASS_STATE_DIR COMPASS_SOCKET
 find "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/compass" "$HOME/.compass" \
-  -maxdepth 2 -type s -o -type f 2>/dev/null || true
+  -maxdepth 2 \( -type s -o -type f \) 2>/dev/null || true
 ```
 
 The app resolves `compass-stack` as a sibling of the running `compass-app`
@@ -151,8 +151,10 @@ the app (`go/cmd/compass-app/lifecycle.go:6-16`, `:38-74`). Do not run a manual
 containers or private postgres container remain:
 
 ```bash
-podman ps -a --filter label=io.compass.stack
+podman ps -a --filter name='^compass-(postgres|otel-collector|nats|agent)-'
 ```
+The filter should match the stack's containers while it is up. After teardown,
+an empty result is meaningful.
 
 A lingering stack here is a real failure, but the app exits either way: if
 `compass-stack down` fails the app still quits and logs the error, because
@@ -173,6 +175,8 @@ Embedded mode stores no bearer, so there is no keychain entry to clear here
 (the local socket is a filesystem-permission boundary, not a bearer door).
 
 ## Part (b): client mode
+
+### 1. Bring up a headless stack to connect to
 
 The stack runs the agent container over rootless podman. Pre-pull the image so
 bring-up does not cold-pull:
@@ -237,6 +241,7 @@ mode = "client"
 server_url = "https://127.0.0.1:50052"
 ca_cert = "$CSTATE/tls.crt"
 EOF
+```
 
 ### 3. Launch, connect, and render the board
 
@@ -266,7 +271,9 @@ Quit the app, then relaunch it:
 
 ```bash
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \
-  xvfb-run -a "$BUNDLE/bin/compass-app"
+  xvfb-run -a "$BUNDLE/bin/compass-app" \
+    --state-dir "$CSTATE" --socket "$CRT/server.sock" \
+    2>>"$CRT/app.log"
 ```
 
 Auto-connect reads the stored bearer from the OS keychain and boots straight to
@@ -335,8 +342,8 @@ rm -rf "$PREFIX" "$CSTATE" "$CRT"
       is pulled so bring-up does not cold-pull (§Part (a), 1)
 - [ ] the bundle contains the shell and three sidecars (§Part (a), 2)
 - [ ] **Quit and stop stack** (not plain close) closes the app; `podman ps -a
-      --filter label=io.compass.stack` is empty and `$ERT/app.log` reports no
-      teardown failure (§Part (a), 5)
+      --filter name='^compass-(postgres|otel-collector|nats|agent)-'` is empty
+      and `$ERT/app.log` reports no teardown failure (§Part (a), 5)
 - [ ] the pinned `--state-dir`/`--socket` paths are removed and `$HOME/.compass`
       was not touched (§Part (a), 5)
 
