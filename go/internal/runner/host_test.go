@@ -56,9 +56,9 @@ func (b *fakeSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceReques
 }
 
 // newHostFixture builds an agentHost over the stub-streaming runtime (real,
-// terminatable Process) with its registry + runtime wired, a live PublishEvents
-// wire for the link's client, and a deterministic id minter. Returns the host, the
-// engine, the registry, and the spec builder.
+// terminatable Process) with its registry + runtime wired, and a live
+// PublishEvents wire for the link's client. Returns the host, engine, and
+// registry.
 func newHostFixture(t *testing.T, specs SpecBuilder) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
 	t.Helper()
 	return newHostFixtureWithModel(t, specs, "")
@@ -75,10 +75,8 @@ func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (Ses
 	// newLink needs a RunnerService client; the capture server terminates a real
 	// wire so nothing in the host path blocks on a missing handler.
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-	var n int
-	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir(), AgentModel: model}
-	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner())
 	return host, engine, registry
 }
 
@@ -92,10 +90,8 @@ func newHostFixtureWithPublish(t *testing.T, specs SpecBuilder) (SessionHost, *s
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	pub := newCapturePublish()
 	link := newLink(newRunnerServiceServer(t, pub))
-	var n int
-	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
-	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner())
 	return host, engine, pub
 }
 
@@ -210,7 +206,7 @@ func TestProvisionConfigMaterializeErrorAborts(t *testing.T) {
 	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, errors.New("config fetch down")))
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
-	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner(), nil)
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner())
 
 	_, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
 	if err == nil {
@@ -241,7 +237,7 @@ func TestProvisionToleratesNoConfigSurface(t *testing.T) {
 	pub.setConfigErr(connect.NewError(connect.CodeFailedPrecondition, errors.New("no config store wired")))
 	link := newLink(newRunnerServiceServer(t, pub))
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
-	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner(), nil)
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner())
 
 	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
 	if err != nil {
@@ -812,10 +808,7 @@ func TestStatusStampsTheTierAndEgressPosture(t *testing.T) {
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-	var n int
-	host := NewSessionHost(link, rt, registry, engine, specs,
-		AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner(),
-		func() string { n++; return "sess-" + string(rune('0'+n)) })
+	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
@@ -1331,10 +1324,8 @@ func newHostFixtureWithRecordingExec(t *testing.T, specs SpecBuilder) (SessionHo
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
-	var n int
-	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
-	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner())
 	return host, engine
 }
 
@@ -1428,18 +1419,76 @@ func TestStartWithoutResumeDoesNotMaterializeOrSetEnv(t *testing.T) {
 	}
 }
 
-// A fresh start without a server-minted ID must fail closed.
-func TestStartFreshMissingServerIDFailsClosed(t *testing.T) {
-	specs := &fakeSpecBuilder{spec: liveSpec()}
-	host, _, _ := newHostFixture(t, specs)
+// A fresh start returns the exact server-issued ID and uses it for the live
+// session. The returned value is the wire contract; a local replacement would
+// break Server-owned identity continuity.
+func TestStartFreshUsesServerIssuedID(t *testing.T) {
+	host, engine, _ := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
 	ctx := context.Background()
 	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{})
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", ""); err == nil {
-		t.Fatal("Start without server-minted ID = nil, want failure")
+	const wantID = "server-session-42"
+	gotID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", wantID)
+	if err != nil {
+		t.Fatalf("Start = %v", err)
 	}
+	if gotID != wantID {
+		t.Fatalf("Start returned session id %q, want server-issued %q", gotID, wantID)
+	}
+	if len(engine.streamingSpecs()) != 1 {
+		t.Fatal("fresh Start did not launch the agent")
+	}
+	t.Cleanup(func() {
+		if err := host.Stop(context.Background(), gotID); err != nil {
+			t.Logf("cleanup Stop(%q): %v", gotID, err)
+		}
+	})
+}
+
+// A missing fresh ID fails before any secret fetch or agent exec. This keeps a
+// Runner restart from silently reusing a locally minted logical identity.
+func TestStartFreshMissingServerIDFailsBeforeExec(t *testing.T) {
+	host, engine, _ := newHostFixture(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "", ""); !errors.Is(err, errFreshSessionIDMissing) {
+		t.Fatalf("Start without server-issued ID = %v, want errFreshSessionIDMissing", err)
+	}
+	if got := len(engine.streamingSpecs()); got != 0 {
+		t.Fatalf("ExecStreaming called %d times after missing fresh ID, want 0", got)
+	}
+}
+
+// A resume's authorized logical ID wins over the fresh-ID field. The fresh ID
+// is ignored whenever resume_session_id is present.
+func TestStartResumeIDWinsOverFreshID(t *testing.T) {
+	host, engine := newHostFixtureWithRecordingExec(t, &fakeSpecBuilder{spec: liveSpec()})
+	ctx := context.Background()
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	const resumeID = "resume-server-7"
+	const freshID = "fresh-server-8"
+	gotID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: resumeID}, "resume body", freshID)
+	if err != nil {
+		t.Fatalf("Start resume = %v", err)
+	}
+	if gotID != resumeID {
+		t.Fatalf("resume Start returned session id %q, want %q", gotID, resumeID)
+	}
+	if len(engine.stubStreamingRuntime.streamingSpecs()) != 1 {
+		t.Fatal("resume Start did not launch the agent")
+	}
+	t.Cleanup(func() {
+		if err := host.Stop(context.Background(), gotID); err != nil {
+			t.Logf("cleanup Stop(%q): %v", gotID, err)
+		}
+	})
 }
 
 // TestStartResumeBodyWithoutIDStartsFresh: a resume body with an EMPTY

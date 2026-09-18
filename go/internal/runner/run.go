@@ -34,10 +34,10 @@ import (
 // because it is a property of the OS, not of either package.
 const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 
-// agentAccountIDWidth is the character width of a server-minted agent account
-// id: 16 random bytes hex-encoded, fixed at the minting site (store/ids.go
-// newID), hence exactly 32 chars. The Runner never shortens or truncates it, so
-// it is a constant contributor to every agent socket path.
+// agentAccountIDWidth is the character width of a server-issued agent account
+// id: 16 random bytes hex-encoded, hence exactly 32 chars. The Runner never
+// shortens or truncates it, so it is a constant contributor to every agent
+// socket path.
 const agentAccountIDWidth = 32
 
 // AgentContainerNamePrefix is the container-name prefix prepended to the agent
@@ -104,7 +104,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
 		RuntimeDir: cfg.RuntimeDir,
 		AgentModel: cfg.AgentModel,
-	}, log, nil)
+	}, log)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);
 	// close them all on shutdown, draining any in-flight call.

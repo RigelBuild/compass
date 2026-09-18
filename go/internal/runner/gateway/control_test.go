@@ -1139,11 +1139,11 @@ func TestControlAckOnlyRouterRefusesSubscription(t *testing.T) {
 
 // sessionCount reports how many sessions the producer is holding state for.
 // The map IS the contract under test here: Retire exists because `sessions`
-// was create-only, so a Runner reusing one container across Stop/Start — a
-// fresh session id per cycle — accumulated one controlSession per cycle for
-// the life of the process, each pinning up to maxRetainedOps retained ops.
-// Nothing on the public surface can observe an entry that is merely leaked, so
-// this counts it directly.
+// was create-only, so a Runner reusing one container across Stop/Start — with
+// a new server-issued session id per cycle — accumulated one controlSession per
+// cycle for the life of the process, each pinning up to maxRetainedOps retained
+// ops. Nothing on the public surface can observe an entry that is merely leaked,
+// so this counts it directly.
 func (p *controlProducer) sessionCount() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1191,8 +1191,8 @@ func (p *controlProducer) subscribeDone(t *testing.T, sink controlSink) (<-chan 
 // also clears `ops`, so a Retire that quiesced the session but left the entry
 // behind would still deliver nothing stale — yet nextSeq would carry over and
 // the reused id would keep counting from the retired session's high-water
-// mark. A fresh session id (which is what the Runner mints each Stop/Start
-// cycle) starting at control_seq 1 is the observable proof the state is gone.
+// mark. A new server-issued session id starting at control_seq 1 is the
+// observable proof the state is gone.
 func TestControlRetireReclaimsSessionState(t *testing.T) {
 	p := newTestProducer()
 

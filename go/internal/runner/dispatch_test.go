@@ -414,9 +414,8 @@ func TestExecuteMapsEachVariantToItsResult(t *testing.T) {
 	}
 }
 
-// A host sentinel error maps to its wire RunnerErrorCode: errAlreadyRunning →
-// ALREADY_RUNNING, errSessionUnknown → NOT_FOUND, any other error → INTERNAL. A
-// bug in the mapping hands the Server the wrong Connect code.
+// Host sentinels map to their wire RunnerErrorCode, including the fresh-start
+// precondition that the Server must supply a logical session ID.
 func TestExecuteMapsHostSentinelsToCodes(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -425,6 +424,7 @@ func TestExecuteMapsHostSentinelsToCodes(t *testing.T) {
 	}{
 		{"already running", errAlreadyRunning, compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING},
 		{"session unknown", errSessionUnknown, compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND},
+		{"fresh session ID missing", errFreshSessionIDMissing, compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION},
 		{"other error", errors.New("engine exploded"), compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL},
 		{"wrapped already running", errWrap(errAlreadyRunning), compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING},
 	}

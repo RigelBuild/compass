@@ -209,10 +209,10 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 	}, nil
 }
 
-// validAccountID refuses an agent account id that is not a fixed-width lowercase
+// validAccountID refuses an agent account id that is a fixed-width lowercase
 // hex string — exactly agentAccountIDWidth (32) characters, each in [0-9a-f].
-// This is the exact shape the server mints (16 random bytes hex-encoded,
-// store/ids.go newID), so a well-formed request always passes.
+// This is the exact shape of the server-issued account id, so a well-formed
+// request always passes.
 //
 // The id is not merely a label: it is concatenated into the container name
 // (spec.go BuildSpec) and that name becomes a path segment of the agent socket,

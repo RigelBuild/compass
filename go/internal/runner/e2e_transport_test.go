@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -118,10 +117,8 @@ func newTransportFixture(t *testing.T, relay compassv1internalconnect.RunnerServ
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	link := newLink(newRunnerServiceServer(t, relay))
-	var n int
-	newID := func() string { n++; return "sess-" + strconv.Itoa(n) }
 	specs := &fakeSpecBuilder{spec: liveSpec()}
-	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner())
 	return host.(*agentHost)
 }
 

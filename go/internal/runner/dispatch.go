@@ -64,8 +64,9 @@ type SessionHost interface {
 // exported from package gateway and errorResult maps it to
 // RUNNER_ERROR_CODE_FAILED_PRECONDITION.
 var (
-	errAlreadyRunning = errors.New("session already running on container")
-	errSessionUnknown = errors.New("session unknown to runner")
+	errAlreadyRunning        = errors.New("session already running on container")
+	errSessionUnknown        = errors.New("session unknown to runner")
+	errFreshSessionIDMissing = errors.New("fresh session start missing server-minted session id")
 )
 
 // dispatcher runs the Sessions command loop with request-id idempotency.
@@ -414,7 +415,7 @@ func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *com
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING
 	case errors.Is(err, errSessionUnknown):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
-	case errors.Is(err, gateway.ErrOperatorConfig):
+	case errors.Is(err, errFreshSessionIDMissing), errors.Is(err, gateway.ErrOperatorConfig):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION
 	}
 
