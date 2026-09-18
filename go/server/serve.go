@@ -272,7 +272,7 @@ func forgeHTTPClient(path string) (*http.Client, error) {
 	}
 	transport = transport.Clone()
 	if path != "" {
-		pem, err := os.ReadFile(path)
+		pem, err := os.ReadFile(path) //nolint:gosec // operator-configured forge CA bundle
 		if err != nil {
 			return nil, fmt.Errorf("read forge CA bundle: %w", err)
 		}

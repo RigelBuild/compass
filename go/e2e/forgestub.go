@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -160,40 +161,36 @@ func (s *forgeStub) handleIssue(w http.ResponseWriter, r *http.Request, parts []
 		jsonOut(w, http.StatusCreated, value)
 		return
 	}
-	if len(parts) == 5 {
-		number, err := strconv.ParseUint(parts[4], 10, 64)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method == http.MethodGet || r.Method == http.MethodPatch {
-			s.mu.Lock()
-			value := s.issues[number]
-			if value == nil {
-				value = issue(number, nil, "open", "/issues/"+parts[4])
-				s.issues[number] = value
-			}
-			if r.Method == http.MethodPatch {
-				var input map[string]any
-				if err := json.Unmarshal(body, &input); err != nil {
-					s.mu.Unlock()
-					http.Error(w, "json", http.StatusBadRequest)
-					return
-				}
-				for key, item := range input {
-					value[key] = item
-				}
-			}
-			s.mu.Unlock()
-			jsonOut(w, http.StatusOK, value)
-			return
-		}
-	}
 	if len(parts) == 6 && parts[5] == "comments" && r.Method == http.MethodPost {
 		jsonOut(w, http.StatusCreated, map[string]any{"id": 1, "body": "comment", "user": map[string]any{"login": "forge-stub"}})
 		return
 	}
-	http.NotFound(w, r)
+	if len(parts) != 5 || (r.Method != http.MethodGet && r.Method != http.MethodPatch) {
+		http.NotFound(w, r)
+		return
+	}
+	number, err := strconv.ParseUint(parts[4], 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.Lock()
+	value := s.issues[number]
+	if value == nil {
+		value = issue(number, nil, "open", "/issues/"+parts[4])
+		s.issues[number] = value
+	}
+	if r.Method == http.MethodPatch {
+		var input map[string]any
+		if err := json.Unmarshal(body, &input); err != nil {
+			s.mu.Unlock()
+			http.Error(w, "json", http.StatusBadRequest)
+			return
+		}
+		maps.Copy(value, input)
+	}
+	s.mu.Unlock()
+	jsonOut(w, http.StatusOK, value)
 }
 
 func issue(number uint64, input map[string]any, state, path string) map[string]any {
@@ -227,5 +224,7 @@ func issue(number uint64, input map[string]any, state, path string) map[string]a
 func jsonOut(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(value)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		http.Error(w, "encode response", http.StatusInternalServerError)
+	}
 }
