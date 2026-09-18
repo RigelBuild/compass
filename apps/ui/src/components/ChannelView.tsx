@@ -22,6 +22,7 @@ import {
 	type Message,
 } from "../comms-stub";
 import { useStore } from "../context";
+import { avatarInitial } from "../constants";
 import { MarkdownText } from "./MarkdownText";
 
 /** UTC HH:MM for a message timestamp — deterministic, locale-independent (the
@@ -428,7 +429,7 @@ const TopicRow: Component<{
 								title={`@${handleOf(props.byId, id)}`}
 								aria-label={`@${handleOf(props.byId, id)}`}
 							>
-								{handleOf(props.byId, id).charAt(0).toUpperCase()}
+								{avatarInitial(handleOf(props.byId, id))}
 							</span>
 						)}
 					</For>
