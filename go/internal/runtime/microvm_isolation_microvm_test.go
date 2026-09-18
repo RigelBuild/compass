@@ -115,8 +115,9 @@ func guestSh(t *testing.T, m *MicroVMRuntime, id WorkloadID, script string) (str
 // (`ls`, `grep -r` on paths) needs its own forbidden strings, or the assertion
 // is vacuously true and the row proves nothing.
 type crossSessionAttempt struct {
-	script string
-	forbid []string
+	script             string
+	forbid             []string
+	probeErrorSensitive bool
 }
 
 // sweepBatchSize is how many paths one awk invocation is handed. Process
@@ -135,6 +136,8 @@ const sweepBatchSize = 200
 // confinement. bash's globstar walks the trees and awk does the matching, and
 // the exit status mirrors grep's: 0 when the needle was found, 1 when it was
 // not, so a caller can still assert the non-zero exit a confined command owes.
+// An input-open error exits 2 so the caller can distinguish a broken probe
+// from the expected no-match exit 1.
 //
 // Matching files are printed as `<path>:<line>`, so BOTH discriminators are
 // live: the secret body appears in the output if any file's content was read,
@@ -165,8 +168,8 @@ func sweepScript(needle, roots string) string {
 	// later paths plus the batch's exit-status contribution. It covers OPEN
 	// errors only; read errors still abort too, and stderr stays unsuppressed so
 	// that signal remains visible.
-	const awkProg = `BEGINFILE { if (ERRNO) nextfile } ` +
-		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { exit !hit }`
+	const awkProg = `BEGINFILE { if (ERRNO != "") { probeError=1; nextfile } } ` +
+		`index($0, ENVIRON["SWEEP_NEEDLE"]) { print FILENAME ":" $0; hit=1 } END { if (probeError) exit 2; exit !hit }`
 	return "export SWEEP_NEEDLE='" + needle + "'; " +
 		"shopt -s globstar nullglob dotglob; found=1; batch=(); " +
 		// scan() runs one awk over the accumulated batch and clears it. Guarded
@@ -447,7 +450,8 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 			// secret is walked.
 			script: sweepScript(tenantBSecret,
 				"/tmp /mnt /media /run /var /home /workspace "+filepath.Dir(volumeB)),
-			forbid: []string{volumeB},
+			forbid:             []string{volumeB},
+			probeErrorSensitive: true,
 		},
 	}
 	for name, attempt := range attempts {
@@ -467,6 +471,10 @@ func TestMicroVMCrossSessionVolumeUnreachable(t *testing.T) {
 					t.Fatalf("tenant A's %s NAMED %q — tenant B's volume is reachable from A.\noutput: %q",
 						name, forbidden, truncate(out))
 				}
+			}
+			if attempt.probeErrorSensitive && code >= 2 {
+				t.Errorf("cross-tenant attempt %q had probe error exit %d (output %q); the confinement probe is broken",
+					name, code, truncate(out))
 			}
 			if code == 0 {
 				t.Errorf("cross-tenant attempt %q exited 0 (output %q); a confined command must fail",
