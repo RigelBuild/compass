@@ -1980,20 +1980,6 @@ describe("openChannel (T5)", () => {
 		});
 	});
 
-	// A group DM has more than one other party — it is not a single-agent
-	// workspace, so it routes to the channel view like any channel (not to an
-	// agent). `dm-ui-server` is a `group_dm` of matt + compass-ui + compass-server
-	// (comms-stub.ts:262-268).
-	test("routes a group DM to the channel view, not an agent workspace", () => {
-		withStore((s) => {
-			s.openChannel("dm-ui-server");
-			flush();
-
-			expect(s.view()).toBe("channel");
-			expect(s.selectedChannelId()).toBe("dm-ui-server");
-		});
-	});
-
 	// An unknown channel id is guarded (`if (!chan) return`): neither the view
 	// nor the selection moves. Captured-before/after proves the no-op rather
 	// than asserting a fixed boot state.

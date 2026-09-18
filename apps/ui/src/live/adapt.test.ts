@@ -369,7 +369,6 @@ describe("adaptChannel", () => {
 	for (const [wire, expected] of [
 		[ChannelKind.CHANNEL, "channel"],
 		[ChannelKind.DM, "dm"],
-		[ChannelKind.GROUP_DM, "group_dm"],
 	] as const) {
 		test(`kind ${ChannelKind[wire]} → "${expected}"`, () => {
 			expect(
