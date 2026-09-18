@@ -117,24 +117,34 @@ const format12 = (groups: readonly Range[], startGlyphId = 1): Uint8Array => {
 };
 
 /** Wrap cmap subtables in the smallest sfnt the parser will walk. */
-const font = (subtables: readonly Uint8Array[]): Uint8Array => {
-	const recordsSize = subtables.length * 8;
+const font = (
+	subtables: readonly Uint8Array[],
+	numGlyphs = 0xffff,
+): Uint8Array => {
+	const recordsSize = 2 * 16;
 	const bodiesSize = subtables.reduce((n, s) => n + s.length, 0);
-	const cmapSize = 4 + recordsSize + bodiesSize;
-	const cmapOffset = 12 + 16; // sfnt header + the single table record
+	const maxpOffset = 12 + recordsSize;
+	const cmapOffset = maxpOffset + 6;
+	const records = 4 + subtables.length * 8;
+	const cmapSize = records + bodiesSize;
 	const out = new Uint8Array(cmapOffset + cmapSize);
 	const dv = new DataView(out.buffer);
-	dv.setUint32(0, 0x00010000); // sfnt version (TrueType)
-	dv.setUint16(4, 1); // numTables
-	for (const [i, ch] of [..."cmap"].entries()) out[12 + i] = ch.charCodeAt(0);
-	dv.setUint32(12 + 8, cmapOffset);
-	dv.setUint32(12 + 12, cmapSize);
+	dv.setUint32(0, 0x00010000);
+	dv.setUint16(4, 2);
+	for (const [i, ch] of [..."maxp"].entries()) out[12 + i] = ch.charCodeAt(0);
+	dv.setUint32(20, maxpOffset);
+	dv.setUint32(24, 6);
+	dv.setUint32(maxpOffset, 0x00010000);
+	dv.setUint16(maxpOffset + 4, numGlyphs);
+	for (const [i, ch] of [..."cmap"].entries()) out[28 + i] = ch.charCodeAt(0);
+	dv.setUint32(36, cmapOffset);
+	dv.setUint32(40, cmapSize);
 	dv.setUint16(cmapOffset + 2, subtables.length);
-	let bodyAt = 4 + recordsSize; // subtable offsets are cmap-relative
+	let bodyAt = records;
 	for (const [i, body] of subtables.entries()) {
 		const rec = cmapOffset + 4 + i * 8;
-		dv.setUint16(rec, 3); // platformId: Windows
-		dv.setUint16(rec + 2, 10); // encodingId: UCS-4
+		dv.setUint16(rec, 3);
+		dv.setUint16(rec + 2, 10);
 		dv.setUint32(rec + 4, bodyAt);
 		out.set(body, cmapOffset + bodyAt);
 		bodyAt += body.length;
@@ -149,6 +159,21 @@ describe("cmapCodepoints — hostile cmap ranges", () => {
 		expect(() => cmapCodepoints(font([format12([[0, 0xffffffff]])]))).toThrow(
 			/runs past U\+10FFFF/,
 		);
+	});
+
+	test("rejects a format-4 subtable that reads beyond its declared length", () => {
+		const subtable = format4([
+			[0x41, 0x41],
+			[0xffff, 0xffff],
+		]);
+		new DataView(subtable.buffer).setUint16(2, 16); // segment data lies after declaration
+		expect(() => cmapCodepoints(font([subtable]))).toThrow(/declared length/);
+	});
+
+	test("rejects format-12 glyph IDs that overflow uint32", () => {
+		expect(() =>
+			cmapCodepoints(font([format12([[0x41, 0x42]], 0xffffffff)])),
+		).toThrow(/glyph id overflows uint32/);
 	});
 
 	test("format 12 groups summing past the expansion budget throw", () => {
@@ -203,7 +228,7 @@ describe("cmapCodepoints — hostile cmap ranges", () => {
 		// The bound is inclusive of U+10FFFF: an off-by-one here would reject a
 		// legitimate pan-Unicode face and fail the gate closed on a good font.
 		expect(cmapCodepoints(font([format12([[0, 0x10ffff]])])).size).toBe(
-			0x110000,
+			0xffff - 1,
 		);
 	});
 
