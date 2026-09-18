@@ -325,7 +325,8 @@ type Hub struct {
 	tail      SessionTailSink
 	comms     CommsCaller
 	log       *slog.Logger
-	// settle is the delivery consumer's settle-edge sink (RIG-1569 T3), notified at
+	// freshSessionID mints globally collision-resistant IDs for fresh starts.
+	freshSessionID func() (string, error)
 	// deliverSession right after the LifecycleSink publish. Nil until SetSettleSink
 	// wires it; read under mu. Nil-safe (today's behavior).
 	settle SettleSink
@@ -451,8 +452,9 @@ func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, lo
 	return &Hub{
 		lifecycle:         lifecycle,
 		tail:              tail,
-		comms:             comms,
-		log:               log,
+		comms:              comms,
+		log:                log,
+		freshSessionID:    mintFreshSessionID,
 		containerAccounts: make(map[string]store.AccountID),
 		sessionAccounts:   make(map[string]store.AccountID),
 		accountSessions:   make(map[store.AccountID]string),

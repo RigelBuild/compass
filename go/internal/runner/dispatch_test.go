@@ -98,7 +98,7 @@ type fakeSessionHost struct {
 	provisionExitGate chan struct{}
 }
 
-func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessionRequest, _ string) (string, error) {
+func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessionRequest, _, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.startCalls++

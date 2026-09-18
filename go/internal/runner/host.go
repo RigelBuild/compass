@@ -302,10 +302,10 @@ func (h *agentHost) Close(ctx context.Context) {
 }
 
 // Start resolves the launched container by name and starts the agent relay in
-// it. A container already hosting a live session returns errAlreadyRunning (a
-// genuine double start; the dispatcher's request-id dedup handles idempotent
-// retries before this is reached).
-func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string) (string, error) {
+// it. A container already hosting a live session returns errAlreadyRunning.
+// Fresh starts require a non-empty server-minted freshSessionID; resumes use
+// resume_session_id and ignore freshSessionID.
+func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody, freshSessionID string) (string, error) {
 	name := req.GetContainerName()
 	// Serialize transitions on this container across the whole Start: the
 	// existing-session check releases h.mu before the slow StartAgent, so two
@@ -329,14 +329,17 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			return "", errAlreadyRunning
 		}
 	}
-	// A resume REUSES the logical session id as the live id, so resumed transcript
-	// frames commit under the SAME session key — one durable lineage, BindLifetime's
-	// entry_seq rebase continues under that key. A fresh start mints a new id. The
-	// Server skips RecordAgentSession on resume (row already exists).
-	sessionID := req.GetResumeSessionId()
-	if sessionID == "" {
-		sessionID = h.nextID()
-	} else if _, live := h.sessions[sessionID]; live {
+    // A resume reuses its authorized logical id. Fresh starts must use the id
+    // minted by the Server; accepting a local fallback would reintroduce reuse
+    // after Runner restarts.
+    sessionID := req.GetResumeSessionId()
+    if sessionID == "" {
+        if freshSessionID == "" {
+            h.mu.Unlock()
+            return "", fmt.Errorf("fresh session start missing server-minted session id")
+        }
+        sessionID = freshSessionID
+    } else if _, live := h.sessions[sessionID]; live {
 		// Reusing the logical id as the map key means a resume racing a still-live
 		// prior lifetime would clobber its liveSession entry, orphaning its stream.
 		// The single-orchestrator precondition keeps this unreachable; guard so a

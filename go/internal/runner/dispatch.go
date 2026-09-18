@@ -23,11 +23,8 @@ import (
 // subset of the Runner's runtime work a session command touches. The production
 // Runner implements it over AgentRuntime + StartAgent; a test drives a fake.
 type SessionHost interface {
-	// Start brings a session online: resolves the container and starts the agent relay,
-	// returning the live session id. A start for a container already running a session
-	// returns errAlreadyRunning. resumeBody is the reconstructed session-JSONL body
-	// materialized before the agent starts; empty means a fresh start.
-	Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string) (sessionID string, err error)
+    // Start brings a session online and returns the live session id. freshSessionID is server-minted for fresh starts.
+    Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody, freshSessionID string) (sessionID string, err error)
 	// Provision creates the isolated per-agent container for a workstream via the
 	// AgentRuntime façade, returning its stable container_name. Provision and
 	// start are separate: a container can exist idle before a session runs in it.
@@ -309,15 +306,15 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		return d.errorResult(ctx, id, errors.New("sessions stream: command frame missing command variant"))
 	}
 	switch c := command.(type) {
-	case *compassv1internal.SessionsResponse_Start:
-		sessionID, err := d.host.Start(ctx, c.Start, cmd.GetResumeBody().GetSessionBody())
-		if err != nil {
-			return d.errorResult(ctx, id, err)
-		}
-		return &compassv1internal.SessionsRequest{
-			RequestId: id,
-			Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: sessionID}},
-		}
+    case *compassv1internal.SessionsResponse_Start:
+        sessionID, err := d.host.Start(ctx, c.Start, cmd.GetResumeBody().GetSessionBody(), cmd.GetFreshSessionId())
+        if err != nil {
+            return d.errorResult(ctx, id, err)
+        }
+        return &compassv1internal.SessionsRequest{
+            RequestId: id,
+            Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: sessionID}},
+        }
 	case *compassv1internal.SessionsResponse_Provision:
 		// Bound concurrent Provisions to provisionConcurrency (T-cap): acquire a
 		// slot before the heavy podman work and release on the arm's exit. Only
