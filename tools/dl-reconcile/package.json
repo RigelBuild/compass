@@ -1,0 +1,14 @@
+{
+	"name": "@compass/dl-reconcile",
+	"private": true,
+	"type": "module",
+	"description": "Reconcile Compass design-ledger IDs with the deployment service.",
+	"module": "index.ts",
+	"bin": {
+		"dl-reconcile": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

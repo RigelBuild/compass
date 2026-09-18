@@ -1,0 +1,22 @@
+name: design-ledger-reconcile
+
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@v2
+      - name: Reconcile design ledger
+        env:
+          DL_CLAIM_TOKEN: ${{ secrets.DL_CLAIM_TOKEN }}
+        run: bun run tools/dl-reconcile/index.ts

@@ -834,7 +834,7 @@ jobs:
         #
         # RECOVERY, if any step here fails: the Release stays an unpublished
         # DRAFT, which is the safe direction — a draft's assets are not locked
-        # and its tag is still reusable. Re-run FAILED jobs: that preserves
+        # and its tag is still reusable. Re-run all jobs: that preserves
         # release-pr's releases_created=true, so this job runs again and
         # publishes. "Re-run all jobs" instead SILENTLY skips this job: the
         # first successful create already relabelled the merged Release PR
@@ -866,7 +866,7 @@ jobs:
           # includes the separator that follows it) and any CR from GitHub's
           # CRLF-normalized body, then capture via `$(...)` so all trailing
           # newlines collapse, and reconstruct with a fixed separator. Repeated
-          # "Re-run failed jobs" runs produce byte-identical notes — not a stack of
+          # "Re-run all jobs" runs produce byte-identical notes — not a stack of
           # duplicate appendices, nor a single appendix atop a growing blank-line
           # gap (the CR strip is what makes the fixpoint hold against the live
           # API, which returns the body CRLF-terminated). The release-image
