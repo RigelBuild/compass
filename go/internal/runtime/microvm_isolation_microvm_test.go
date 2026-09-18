@@ -176,22 +176,23 @@ func sweepScript(needle, roots string) string {
 		// stderr is NOT suppressed: it carries the one signal that separates a
 		// real negative from a dead probe.
 		"scan() { ((${#batch[@]})) || return 0; " +
-		"if awk '" + awkProg + "' \"${batch[@]}\"; then found=0; fi; batch=(); }; " +
+		"awk '" + awkProg + "' \"${batch[@]}\"; status=$?; batch=(); " +
+		"case $status in 0) found=0;; 1) ;; *) return $status;; esac; }; " +
 		"for root in " + roots + "; do " +
 		"for f in \"$root\"/**/*; do " +
 		// Collapse repeated slashes before matching: a "/" root globs to
-		// "//proc/self/environ", which a /proc/* pattern does NOT match — the
-		// sweep would then read its own environ and report finding the needle
-		// it was given, a false escape.
+		// "//proc/self/environ", which a /proc/* pattern does NOT match —
+		// the sweep would then read its own environ and report finding the
+		// needle it was given, a false escape.
 		"n=$f; while [[ $n == //* ]]; do n=${n#/}; done; " +
 		"case $n in /proc/*|/sys/*|/dev/*) continue;; esac; " +
 		"[[ -f $f && -r $f ]] || continue; " +
 		"batch+=(\"$f\"); " +
-		"((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")) && scan; " +
+		"if ((${#batch[@]} >= " + strconv.Itoa(sweepBatchSize) + ")); then scan || exit $?; fi; " +
 		// One `done` closes the per-file loop, the next the per-root loop.
 		"done; " +
 		"done; " +
-		"scan; exit $found"
+		"scan || exit $?; exit $found"
 }
 
 // TestMicroVMSweepScriptFindsItsNeedle is the non-vacuity control for
