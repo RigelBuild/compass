@@ -662,15 +662,16 @@ func readGuestManifestFile(path string) (map[string]string, error) {
 		return nil, fmt.Errorf("read guest manifest %q: %w", path, err)
 	}
 	out := make(map[string]string, len(guestAssets))
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(raw), "\n"), "\n") {
 		digest, name, ok := strings.Cut(line, "  ")
-		if !ok || !isLowerHex64(digest) || name == "" {
-			return nil, fmt.Errorf("guest manifest %q has a malformed line %q: want `<64 lowercase hex>  <basename>`", path, line)
+		if ok && isLowerHex64(digest) && name != "" {
+			if _, dup := out[name]; dup {
+				return nil, fmt.Errorf("guest manifest %q records %q twice", path, name)
+			}
+			out[name] = digest
+			continue
 		}
-		if _, dup := out[name]; dup {
-			return nil, fmt.Errorf("guest manifest %q records %q twice", path, name)
-		}
-		out[name] = digest
+		return nil, fmt.Errorf("guest manifest %q has a malformed line %q: want `<64 lowercase hex>  <basename>`", path, line)
 	}
 	return out, nil
 }
@@ -742,7 +743,7 @@ func isLowerHex64(s string) bool {
 		return false
 	}
 	for _, ch := range s {
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
 			return false
 		}
 	}

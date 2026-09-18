@@ -301,7 +301,7 @@ func TestMaterializeGuestExistingDirCorruptFailsClosed(t *testing.T) {
 	}{
 		{
 			name: "asset content diverged from the manifest",
-			corrupt: func(t *testing.T, paths GuestPaths) {
+			corrupt: func(t *testing.T, paths GuestPaths) { //nolint:thelper // callback is a table case, not a test helper
 				if err := os.WriteFile(paths.Rootfs, []byte("tampered"), 0o644); err != nil {
 					t.Fatalf("tamper rootfs: %v", err)
 				}
@@ -309,7 +309,7 @@ func TestMaterializeGuestExistingDirCorruptFailsClosed(t *testing.T) {
 		},
 		{
 			name: "asset removed entirely",
-			corrupt: func(t *testing.T, paths GuestPaths) {
+			corrupt: func(t *testing.T, paths GuestPaths) { //nolint:thelper // callback is a table case, not a test helper
 				if err := os.Remove(paths.Initrd); err != nil {
 					t.Fatalf("remove initrd: %v", err)
 				}
@@ -317,7 +317,7 @@ func TestMaterializeGuestExistingDirCorruptFailsClosed(t *testing.T) {
 		},
 		{
 			name: "manifest removed",
-			corrupt: func(t *testing.T, paths GuestPaths) {
+			corrupt: func(t *testing.T, paths GuestPaths) { //nolint:thelper // callback is a table case, not a test helper
 				if err := os.Remove(paths.Manifest); err != nil {
 					t.Fatalf("remove manifest: %v", err)
 				}
@@ -441,7 +441,7 @@ func TestMaterializeGuestRetriesMidStreamDrop(t *testing.T) {
 	dropped := false
 	base := reg.server.Config.Handler
 	reg.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasSuffix(req.URL.Path, "blobs/"+rootfsDigest) {
+		if strings.HasSuffix(req.URL.Path, "blobs/"+rootfsDigest) { //nolint:nestif // test handler intentionally nests retry and connection-drop branches
 			mu.Lock()
 			first := !dropped
 			dropped = true
@@ -572,7 +572,7 @@ func TestMaterializeGuestImageRejectsUnpinnedRef(t *testing.T) {
 // a valid reference yields the registry base URL, the repository path, and the
 // digest; a reference whose repository could address a different endpoint (a
 // traversal component, an absent repository) is refused.
-func TestParseGuestRef(t *testing.T) {
+func TestParseGuestRef(t *testing.T) { //nolint:gocognit // the exhaustive invalid-reference table documents the parser boundary
 	const digest = "sha256:" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 	t.Run("valid reference splits into registry, repository, digest", func(t *testing.T) {
@@ -636,7 +636,7 @@ func TestParseGuestRef(t *testing.T) {
 			"empty":               "",
 			"trailing newline":    "ghcr.io/guest@" + digest + "\n",
 			"leading space":       " ghcr.io/guest@" + digest,
-			"embedded tab":        "ghcr.io/\tguest@" + digest,
+			"embedded tab":        "ghcr.io\tguest@" + digest,
 			"absolute path host":  "/ghcr.io/guest@" + digest,
 			"empty repository":    "ghcr.io/@" + digest,
 			"double slash":        "ghcr.io/rigel//guest@" + digest,
@@ -709,13 +709,21 @@ func TestResolveGuestDir(t *testing.T) {
 			name    string
 			arrange func(t *testing.T, dir string)
 		}{
-			{name: "missing kernel", arrange: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, guestKernelFile)) }},
-			{name: "missing rootfs", arrange: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, guestRootfsFile)) }},
-			{name: "missing initrd", arrange: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, guestInitrdFile)) }},
-			{name: "missing manifest", arrange: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, guestManifestFile)) }},
+			{name: "missing kernel", arrange: func(t *testing.T, dir string) { //nolint:thelper // table callback, not a test helper
+				remove(t, filepath.Join(dir, guestKernelFile))
+			}},
+			{name: "missing rootfs", arrange: func(t *testing.T, dir string) { //nolint:thelper // table callback, not a test helper
+				remove(t, filepath.Join(dir, guestRootfsFile))
+			}},
+			{name: "missing initrd", arrange: func(t *testing.T, dir string) { //nolint:thelper // table callback, not a test helper
+				remove(t, filepath.Join(dir, guestInitrdFile))
+			}},
+			{name: "missing manifest", arrange: func(t *testing.T, dir string) { //nolint:thelper // table callback, not a test helper
+				remove(t, filepath.Join(dir, guestManifestFile))
+			}},
 			{
 				name: "empty asset",
-				arrange: func(t *testing.T, dir string) {
+				arrange: func(t *testing.T, dir string) { //nolint:thelper // table callback, not a test helper
 					if err := os.WriteFile(filepath.Join(dir, guestRootfsFile), nil, 0o644); err != nil {
 						t.Fatalf("truncate rootfs: %v", err)
 					}
@@ -723,7 +731,7 @@ func TestResolveGuestDir(t *testing.T) {
 			},
 			{
 				name: "directory where an asset belongs",
-				arrange: func(t *testing.T, dir string) {
+				arrange: func(t *testing.T, dir string) { //nolint:thelper // table callback, not a test helper
 					remove(t, filepath.Join(dir, guestInitrdFile))
 					if err := os.Mkdir(filepath.Join(dir, guestInitrdFile), 0o700); err != nil {
 						t.Fatalf("mkdir over initrd: %v", err)
