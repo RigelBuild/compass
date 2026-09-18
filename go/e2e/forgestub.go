@@ -110,6 +110,10 @@ func (s *forgeStub) handle(w http.ResponseWriter, r *http.Request) {
 		Body:          append([]byte(nil), body...),
 	})
 	s.mu.Unlock()
+	if strings.HasPrefix(r.URL.Path, "/api/v3/repos/") && !s.validAuthorization(r.Header.Get("Authorization")) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v3/"), "/"), "/")
 	if len(parts) == 4 && parts[0] == "app" && parts[1] == "installations" && parts[3] == "access_tokens" && r.Method == http.MethodPost {
@@ -219,6 +223,16 @@ func issue(number uint64, input map[string]any, state, path string) map[string]a
 		out[key] = value
 	}
 	return out
+}
+func (s *forgeStub) validAuthorization(value string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, token := range s.tokens {
+		if value == "Bearer "+token {
+			return true
+		}
+	}
+	return false
 }
 
 func jsonOut(w http.ResponseWriter, status int, value any) {
