@@ -112,6 +112,14 @@ type Config struct {
 	// the agent's ~/.omp/agent (RIG-1787 H3); the embedded supervisor and the
 	// compass-stack CLI leave it unset.
 	Mounts []string
+	// RuntimeBackend selects the runner's session backend (e.g. "microvm").
+	// Empty omits --backend entirely, leaving the runner on its own resolution
+	// — the core applies no default, the CLI slice resolves one if it wants.
+	RuntimeBackend string
+	// GuestDir points the stack at an already-materialised guest directory and
+	// skips all fetching — the air-gapped path, where no pull is ever mandatory.
+	// Empty leaves the guest paths unset, which keeps baked Runner assets live.
+	GuestDir string
 }
 
 // sunPathMax is the longest NUL-terminated path an AF_UNIX address holds on this
@@ -131,8 +139,8 @@ var agentSocketTailWidth = len(filepath.Join(
 )) + 1 // +1 for the separator joining RuntimeDir to the tail
 
 // Validate enforces the config invariants that would otherwise surface as opaque
-// runtime failures far from the misconfiguration: an unbindable network door and
-// an over-budget runner socket path.
+// runtime failures far from the misconfiguration: an unbindable network door,
+// an over-budget runner socket path, and coherent guest image settings.
 func (c Config) Validate() error {
 	if c.ListenAddr == "" {
 		return errors.New("stack config: ListenAddr is required (a fixed loopback TLS door, e.g. 127.0.0.1:50052)")
@@ -143,10 +151,12 @@ func (c Config) Validate() error {
 	if _, port, ok := splitPort(c.ListenAddr); ok && port == "0" {
 		return fmt.Errorf("stack config: ListenAddr %q must be a fixed port, not :0 (no bound-address discovery API exists)", c.ListenAddr)
 	}
-	// The runner builds agent sockets at RuntimeDir/containers/
-	// compass-agent-<32hex>/agent.sock; the fixed tail is agentSocketTailWidth
-	// bytes, so RuntimeDir may not exceed sunPathMax-tail. Name the budget so an
-	// operator knows exactly how far to shorten it.
+	if c.RuntimeBackend != "microvm" && c.GuestDir != "" {
+		return fmt.Errorf("stack config: GuestDir requires RuntimeBackend %q, got %q", "microvm", c.RuntimeBackend)
+	}
+	if c.RuntimeBackend == "microvm" && c.GuestDir != "" && !filepath.IsAbs(c.GuestDir) {
+		return fmt.Errorf("stack config: GuestDir %q must be an absolute path", c.GuestDir)
+	}
 	if budget := sunPathMax - agentSocketTailWidth; len(c.RuntimeDir) > budget {
 		return fmt.Errorf(
 			"stack config: RuntimeDir %q (%d bytes) is too long: the per-container agent socket tail adds %d bytes, over this platform's AF_UNIX sun_path limit of %d; RuntimeDir must be at most %d bytes (shorten it by at least %d)",
