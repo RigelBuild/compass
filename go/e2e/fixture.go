@@ -3,24 +3,57 @@
 package e2e
 
 import (
-	"context"
-	"fmt"
-	"net"
-	"os"
-	"os/exec" //nolint:depguard // e2e harness: LookPath-resolved stack child binaries + podman image probe
-	"path/filepath"
-	"strconv"
-	"strings"
-	"testing"
-	"time"
+    "context"
+    "crypto/rand"
+    "crypto/rsa"
+    "crypto/x509"
+    "encoding/pem"
+    "fmt"
+    "net"
+    "os"
+    "os/exec" //nolint:depguard // e2e harness: LookPath-resolved stack child binaries + podman image probe
+    "path/filepath"
+    "strconv"
+    "strings"
+    "testing"
+    "time"
 
-	"connectrpc.com/connect"
+    "connectrpc.com/connect"
 
-	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
-	"github.com/RigelBuild/compass/go/internal/stack"
-	"github.com/RigelBuild/compass/go/internal/stack/adapters"
-	"github.com/RigelBuild/compass/go/internal/store"
+    compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+    "github.com/RigelBuild/compass/go/internal/stack"
+    "github.com/RigelBuild/compass/go/internal/stack/adapters"
+    "github.com/RigelBuild/compass/go/internal/store"
 )
+
+func dotenvForgeValue(v string) string {
+    v = strings.ReplaceAll(v, `\`, `\\`)
+    v = strings.ReplaceAll(v, `"`, `\"`)
+    v = strings.ReplaceAll(v, "\n", `\n`)
+    return `"` + v + `"`
+}
+
+func forgePEM(t *testing.T) []byte {
+    t.Helper()
+    key, err := rsa.GenerateKey(rand.Reader, 2048)
+    if err != nil { t.Fatalf("generate forge key: %v", err) }
+    return pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+}
+
+func configureForgeStub(t *testing.T, secretsPath string) *forgeStub {
+    t.Helper()
+    stub := newForgeStub(t)
+    primary, reviewer := forgePEM(t), forgePEM(t)
+    file, err := os.OpenFile(secretsPath, os.O_APPEND|os.O_WRONLY, 0o600)
+    if err != nil { t.Fatalf("open forge secrets: %v", err) }
+    _, writeErr := fmt.Fprintf(file, "SERVER_FORGE_APP_PRIVATE_KEY=%s\nSERVER_FORGE_APP_WEBHOOK_SECRET=forge-stub-webhook\nSERVER_FORGE_REVIEWER_APP_PRIVATE_KEY=%s\n", dotenvForgeValue(string(primary)), dotenvForgeValue(string(reviewer)))
+    closeErr := file.Close()
+    if writeErr != nil { t.Fatalf("append forge secrets: %v", writeErr) }
+    if closeErr != nil { t.Fatalf("close forge secrets: %v", closeErr) }
+    for _, name := range []string{"COMPASS_FORGE_REPOS", "COMPASS_FORGE_HOST", "COMPASS_FORGE_APP_ID", "COMPASS_FORGE_INSTALLATION_ID", "COMPASS_FORGE_APP_KEY_SECRET", "COMPASS_FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID", "COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET", "COMPASS_FORGE_LINEAR_CLIENT_ID", "COMPASS_FORGE_LINEAR_CLIENT_SECRET", "COMPASS_FORGE_LINEAR_WEBHOOK_SECRET", "COMPASS_SECRET_PROVIDER", "LINEAR_FORGE_CLIENT_ID", "LINEAR_FORGE_CLIENT_SECRET", "LINEAR_FORGE_WEBHOOK_SECRET"} { t.Setenv(name, "") }
+    for k, v := range map[string]string{"COMPASS_FORGE_HOST": stub.Host(), "COMPASS_FORGE_APP_ID": "1001", "COMPASS_FORGE_INSTALLATION_ID": "1", "COMPASS_FORGE_APP_KEY_SECRET": "FORGE_APP_PRIVATE_KEY", "COMPASS_FORGE_APP_WEBHOOK_SECRET": "FORGE_APP_WEBHOOK_SECRET", "COMPASS_FORGE_REVIEWER_APP_ID": "1002", "COMPASS_FORGE_REVIEWER_APP_INSTALLATION_ID": "2", "COMPASS_FORGE_REVIEWER_APP_KEY_SECRET": "FORGE_REVIEWER_APP_PRIVATE_KEY", "COMPASS_FORGE_CA": stub.CAPath()} { t.Setenv(k, v) }
+    return stub
+}
 
 // agentImage is the REAL agent image the dogfood stack runs — present in the
 // local containers-storage on the dev/CI box, never a public stand-in. The
@@ -64,6 +97,7 @@ type Fixture struct {
 	// WithCannedModel, else nil. Its lifecycle rides a t.Cleanup registered at
 	// startup, so a consumer never closes it directly.
 	stub *cannedModelServer
+	forgeStub *forgeStub
 	// now is the injectable wall-clock for the enrollment-readiness poll;
 	// defaults to time.Now. A test overrides it to drive the budget-timeout
 	// branch of waitRunnerEnrolled — the enrollment counterpart to the stack's
@@ -91,6 +125,7 @@ type fixtureConfig struct {
 	// Up (WithStackObserver), so a caller with a detached t can still reap the
 	// children if a later construction gate aborts. nil is the default.
 	onUp func(*stack.Stack)
+	forge bool
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
@@ -185,6 +220,11 @@ func WithStackObserver(onUp func(*stack.Stack)) fixtureOption {
 	}
 }
 
+// WithForgeStub makes NewFixture stand up the deterministic forge stub backend.
+func WithForgeStub() fixtureOption {
+	return func(fc *fixtureConfig) { fc.forge = true }
+}
+
 // Compass is the authenticated CompassService client dialed at the loopback TLS
 // door with the admin bearer.
 func (f *Fixture) Compass() compassServiceClient { return f.compass }
@@ -211,6 +251,9 @@ func (f *Fixture) CAPath() string { return f.caPath }
 // client-mode leg that arms its own bridge target; it is the same credential the
 // authed clients carry. Never log it.
 func (f *Fixture) AdminToken() string { return f.adminToken }
+
+// ForgeStub returns the fixture's forge stub backend, when configured.
+func (f *Fixture) ForgeStub() *forgeStub { return f.forgeStub }
 
 // RuntimeDir is this fixture's unique runner runtime-dir (shortRoot/rt). Exposed
 // so a process-hygiene assertion can scope its /proc scan to this fixture's own
@@ -454,6 +497,11 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		t.Fatalf("write secrets file: %v", err)
 	}
 
+	var forgeStub *forgeStub
+	if fc.forge {
+		forgeStub = configureForgeStub(t, secretsPath)
+	}
+
 	cfg := stack.Config{
 		StateDir:       stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
 		SocketPath:     serverSock,
@@ -554,6 +602,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		adminToken: adminToken,
 		runtimeDir: runtimeDir,
 		stub:       stub,
+		forgeStub:  forgeStub,
 		now:        time.Now,
 	}
 
