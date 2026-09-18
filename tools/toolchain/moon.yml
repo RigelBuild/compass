@@ -39,12 +39,14 @@ tasks:
     # edit to one must invalidate this task — otherwise it stays cached and the
     # assertion silently stops re-running against the thing it constrains.
     # ci.yml + pgtest.go: a test asserts their two Postgres image digests are
-    # equal. flake.nix + devenv.nix: version-guard-core.test.ts lifts the real
+    # equal. release.yml: a test pins the release-pr main-ref guard.
+    # flake.nix + devenv.nix: version-guard-core.test.ts lifts the real
     # version.txt guards out of both and asserts they are still extractable.
     inputs:
       - '*.ts'
       - '/bun.lock'
       - '/.github/workflows/ci.yml'
+      - '/.github/workflows/release.yml'
       - '/go/internal/pgtest/pgtest.go'
       - '/flake.nix'
       - '/devenv.nix'
