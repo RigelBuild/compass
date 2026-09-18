@@ -441,7 +441,7 @@ func TestMaterializeGuestRetriesMidStreamDrop(t *testing.T) {
 	dropped := false
 	base := reg.server.Config.Handler
 	reg.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if strings.HasSuffix(req.URL.Path, "blobs/"+rootfsDigest) { //nolint:nestif
+		if strings.HasSuffix(req.URL.Path, "blobs/"+rootfsDigest) { //nolint:nestif // test handler intentionally nests retry and connection-drop branches
 			mu.Lock()
 			first := !dropped
 			dropped = true
