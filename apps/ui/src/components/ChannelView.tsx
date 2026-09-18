@@ -21,8 +21,8 @@ import {
 	isQuestionAnswered,
 	type Message,
 } from "../comms-stub";
-import { useStore } from "../context";
 import { avatarInitial } from "../constants";
+import { useStore } from "../context";
 import { MarkdownText } from "./MarkdownText";
 
 /** UTC HH:MM for a message timestamp — deterministic, locale-independent (the
