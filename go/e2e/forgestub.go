@@ -204,9 +204,21 @@ func issue(number uint64, input map[string]any, state, path string) map[string]a
 		"state":    state,
 		"html_url": "https://forge.stub" + path,
 		"user":     map[string]any{"login": "forge-stub"},
-		"labels":   []any{},
+		"labels":   []map[string]string{},
 	}
 	for key, value := range input {
+		if key == "labels" {
+			if labels, ok := value.([]any); ok {
+				normalized := make([]map[string]string, 0, len(labels))
+				for _, label := range labels {
+					if name, ok := label.(string); ok {
+						normalized = append(normalized, map[string]string{"name": name})
+					}
+				}
+				out[key] = normalized
+				continue
+			}
+		}
 		out[key] = value
 	}
 	return out

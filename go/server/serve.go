@@ -1237,21 +1237,20 @@ func buildBoardWebhookWiring(
 	if err := validateForgeSecret(ctx, resolver, "board webhook secret", rc.App.AppWebhookSecretName); err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	// Build the ONE shared App token source + GitHub client both lanes ride.
-	// appTokenSource is safe for concurrent use (mint singleflighted), so the
-	// read lanes and the poll driver sharing one client is sound.
+	// Build one CA-aware client for both installation-token minting and API calls.
+	httpClient, err := forgeHTTPClient(rc.ForgeCAPath)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
 	tok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
 		AppID:          rc.App.AppID,
 		InstallationID: rc.App.InstallationID,
 		PrivateKey:     newDeclaredSecretResolver(resolver, rc.App.AppPrivateKeySecret),
 		Host:           rc.Host,
+		Client:         httpClient,
 	})
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("board webhook app token source: %w", err)
-	}
-	httpClient, err := forgeHTTPClient(rc.ForgeCAPath)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
 	}
 	client := forge.NewGitHub(forge.GitHubConfig{Host: rc.Host, Token: tok, Client: httpClient})
 
@@ -1993,9 +1992,12 @@ func buildForgeWriteService(
 	}
 
 	// (2) The reviewer App client: validate its key secret (distinct fail-fast
-	// text), then build its own installation-token source + client — a distinct
-	// GitHub identity from the primary App so F1's author-cannot-approve holds.
+	// Build the reviewer token source with the same CA-aware transport used for API calls.
 	if err := validateForgeSecret(ctx, resolver, "forge reviewer app key", fc.ReviewerApp.AppPrivateKeySecret); err != nil {
+		return nil, err
+	}
+	reviewerHTTP, err := forgeHTTPClient(fc.ForgeCAPath)
+	if err != nil {
 		return nil, err
 	}
 	reviewerTok, err := forge.NewAppTokenSource(forge.GitHubAppConfig{
@@ -2003,20 +2005,17 @@ func buildForgeWriteService(
 		InstallationID: fc.ReviewerApp.InstallationID,
 		PrivateKey:     newDeclaredSecretResolver(resolver, fc.ReviewerApp.AppPrivateKeySecret),
 		Host:           fc.Host,
+		Client:         reviewerHTTP,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("forge reviewer app token source: %w", err)
 	}
-	reviewerHTTP, err := forgeHTTPClient(fc.ForgeCAPath)
-	if err != nil {
-		return nil, err
-	}
 	reviewerClient := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: reviewerTok, Client: reviewerHTTP})
-
 	// (3) The provider registry: the GitHub coordinate (author = shared primary
 	// client, reviewer = reviewer App client, F1) plus a Linear coordinate when
 	// the shared Linear token source is configured.
 	registry := newForgeProviderRegistry()
+	registerGitHubForgeCoordinate(registry, fc, primaryClient, reviewerClient)
 
 	// Linear write coordinate — registered ONLY when Linear is configured (else
 	// GitHub-only). Linear is issues-only (DL-051): PR/review ops return ErrUnsupported.
