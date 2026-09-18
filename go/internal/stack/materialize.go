@@ -743,7 +743,7 @@ func isLowerHex64(s string) bool {
 		return false
 	}
 	for _, ch := range s {
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
 			return false
 		}
 	}

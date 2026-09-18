@@ -329,7 +329,7 @@ const testGuestArtifact = "ghcr.io/rigelbuild/compass-guest-image@sha256:" +
 // case is the LAST one: with no flags and no env, all three stay empty — an
 // implicit "microvm" here would route every stack onto a backend its host may
 // not support.
-func TestResolveConfigGuestFlags(t *testing.T) {
+func TestResolveConfigGuestFlags(t *testing.T) { //nolint:funlen,gocognit // this table of independent CLI acceptance cases is intentionally exhaustive
 	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 	t.Setenv("COMPASS_DATABASE_DSN", "")
 	t.Setenv("COMPASS_RUNTIME_BACKEND", "")
