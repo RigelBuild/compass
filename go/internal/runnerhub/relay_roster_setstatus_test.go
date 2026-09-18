@@ -83,6 +83,9 @@ func TestRelayCommsCallRosterArmForwardsUnderBoundAccount(t *testing.T) {
 // TestRelayCommsCallRosterArmErrorIsInBandNotStreamError: a roster caller
 // failure is rendered as a CommsCallError while RelayCommsCall itself remains
 // successful and preserves the request call_id.
+//
+// Mutation: dropping caller error handling makes the in-band roster error absent,
+// so this test fails.
 func TestRelayCommsCallRosterArmErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
 	comms.rosterErr = connect.NewError(connect.CodePermissionDenied, errors.New("roster denied"))

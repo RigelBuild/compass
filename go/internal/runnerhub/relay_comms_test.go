@@ -160,9 +160,11 @@ func TestRelayCommsCallHappyListForwardsUnderBoundAccountAndStampsCallID(t *test
 	}
 }
 
-// TestRelayCommsCallListToolErrorIsInBandNotStreamError: a list caller
-// failure is rendered as a CommsCallError while RelayCommsCall itself remains
-// successful and preserves the request call_id.
+// 3b. A list caller failure is rendered as a CommsCallError while RelayCommsCall
+// itself remains successful and preserves the request call_id.
+//
+// Mutation: dropping caller error handling makes the in-band list error absent,
+// so this test fails.
 func TestRelayCommsCallListToolErrorIsInBandNotStreamError(t *testing.T) {
 	hub, comms := newHubWithComms()
 	comms.listErr = connect.NewError(connect.CodePermissionDenied, errors.New("list denied"))
