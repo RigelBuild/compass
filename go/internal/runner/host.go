@@ -336,7 +336,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	if sessionID == "" {
 		if freshSessionID == "" {
 			h.mu.Unlock()
-			return "", fmt.Errorf("fresh session start missing server-minted session id")
+			return "", errors.New("fresh session start missing server-minted session id")
 		}
 		sessionID = freshSessionID
 	} else if _, live := h.sessions[sessionID]; live {
