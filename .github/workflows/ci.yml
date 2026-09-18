@@ -2029,9 +2029,10 @@ jobs:
     #   - GitHub's `$GITHUB_PATH` / `$GITHUB_OUTPUT` are runner-created files owned
     #     by root (mode 644). The steps below append to them (toolchain bin dirs,
     #     the image_affected flag), which the non-root podman user cannot do — so
-    #     the wrapper first `chmod`s the per-step file-command dir writable while
-    #     it is still root, then execs the body as podman. Doing this in the
-    #     wrapper (not a step) is what lets every step keep using the standard
+    #     the wrapper first `chown`s the per-step file-command files to podman while
+    #     it is still root, leaving the directory root-owned so the runner keeps
+    #     creating each step's files there, then execs the body as podman. Doing
+    #     this in the wrapper (not a step) is what lets every step keep using the
     #     `>>"$GITHUB_PATH"` idiom unchanged.
     #   - `sudo -u podman -E` preserves the runner env across the user switch
     #     (the `$GITHUB_*` vars, `$GITHUB_BASE_REF` for moon's detection); `-E` is
@@ -2100,7 +2101,7 @@ jobs:
         #     runner's .NET path parser ("Second path fragment must not be a
         #     drive or UNC name"). It lands in /usr/bin (always on the runner's
         #     PATH) and is written here, while root, because it must exist before
-        #     the first podman step and only root can install it and chmod the
+        #     the first podman step and only root can install it and chown the
         #     runner's file-command files.
         shell: bash -e {0}
         run: |
@@ -2119,11 +2120,11 @@ jobs:
           cat >/usr/bin/podman-step <<'WRAP'
           #!/usr/bin/env bash
           # Run one GitHub step as the rootless podman user. The runner spawns
-          # this as root; make the per-step file-command files (owned root, 644)
-          # writable so the podman body can append to $GITHUB_PATH/$GITHUB_OUTPUT,
+          # this as root; hand the per-step file-command files (owned root, 644)
+          # to podman so the body can append to $GITHUB_PATH/$GITHUB_OUTPUT,
           # then drop to podman preserving env, fixing PATH, and pinning HOME.
           set -e
-          [ -n "$RUNNER_TEMP" ] && chmod -R a+rw "$RUNNER_TEMP/_runner_file_commands" 2>/dev/null || true
+          [ -n "$RUNNER_TEMP" ] && find "$RUNNER_TEMP/_runner_file_commands" -type f -exec chown podman:podman {} + 2>/dev/null || true
           exec sudo -u podman -E env "PATH=$PATH:/usr/local/bin:/usr/bin:/bin" HOME=/home/podman /usr/bin/bash -e "$1"
           WRAP
           chmod 0755 /usr/bin/podman-step
