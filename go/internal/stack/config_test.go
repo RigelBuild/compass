@@ -71,34 +71,6 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "guest artifact and dir mutually exclusive",
-			mutate: func(c *Config) {
-				c.RuntimeBackend = "microvm"
-				c.GuestArtifact = "repo/image@sha256:" + strings.Repeat("a", 64)
-				c.GuestDir = "/state/guest"
-			},
-			wantErr:    true,
-			errSubstrs: []string{"GuestArtifact", "GuestDir"},
-		},
-		{
-			name: "guest artifact must be digest pinned",
-			mutate: func(c *Config) {
-				c.RuntimeBackend = "microvm"
-				c.GuestArtifact = "repo/image:latest"
-			},
-			wantErr:    true,
-			errSubstrs: []string{"GuestArtifact", "digest"},
-		},
-		{
-			name: "guest artifact rejects uppercase digest hex",
-			mutate: func(c *Config) {
-				c.RuntimeBackend = "microvm"
-				c.GuestArtifact = "repo/image@sha256:" + strings.Repeat("A", 64)
-			},
-			wantErr:    true,
-			errSubstrs: []string{"GuestArtifact", "digest"},
-		},
-		{
 			name: "guest fields require microvm backend",
 			mutate: func(c *Config) {
 				c.RuntimeBackend = "container"
@@ -117,14 +89,6 @@ func TestConfigValidate(t *testing.T) {
 			mutate: func(c *Config) {
 				c.RuntimeBackend = "microvm"
 				c.GuestDir = "/state/guest"
-			},
-			wantErr: false,
-		},
-		{
-			name: "microvm with digest pinned guest artifact",
-			mutate: func(c *Config) {
-				c.RuntimeBackend = "microvm"
-				c.GuestArtifact = "repo/image@sha256:" + strings.Repeat("a", 64)
 			},
 			wantErr: false,
 		},

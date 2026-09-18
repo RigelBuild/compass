@@ -116,15 +116,9 @@ type Config struct {
 	// Empty omits --backend entirely, leaving the runner on its own resolution
 	// — the core applies no default, the CLI slice resolves one if it wants.
 	RuntimeBackend string
-	// GuestArtifact is the digest-pinned repo@sha256:... guest image the
-	// stack materialises before spawning the runner. A tag-pinned ref is
-	// rejected: a mutable tag would defeat the content-addressed state dir.
-	// Mutually exclusive with GuestDir; empty means no artifact is fetched.
-	GuestArtifact string
 	// GuestDir points the stack at an already-materialised guest directory and
-	// skips all fetching — the air-gapped path, where no pull is ever
-	// mandatory. Mutually exclusive with GuestArtifact. Empty leaves the guest
-	// paths unset, which keeps the assets baked into the Runner image live.
+	// skips all fetching — the air-gapped path, where no pull is ever mandatory.
+	// Empty leaves the guest paths unset, which keeps baked Runner assets live.
 	GuestDir string
 }
 
@@ -157,19 +151,12 @@ func (c Config) Validate() error {
 	if _, port, ok := splitPort(c.ListenAddr); ok && port == "0" {
 		return fmt.Errorf("stack config: ListenAddr %q must be a fixed port, not :0 (no bound-address discovery API exists)", c.ListenAddr)
 	}
-	if c.GuestArtifact != "" && c.GuestDir != "" {
-		return fmt.Errorf("stack config: GuestArtifact %q and GuestDir %q are mutually exclusive", c.GuestArtifact, c.GuestDir)
+	if c.RuntimeBackend != "microvm" && c.GuestDir != "" {
+		return fmt.Errorf("stack config: GuestDir requires RuntimeBackend %q, got %q", "microvm", c.RuntimeBackend)
 	}
-	if c.GuestArtifact != "" && !isDigestPinned(c.GuestArtifact) {
-		return fmt.Errorf("stack config: GuestArtifact %q must be a digest-pinned repo@sha256:<64 hex> reference", c.GuestArtifact)
+	if c.RuntimeBackend == "microvm" && c.GuestDir != "" && !filepath.IsAbs(c.GuestDir) {
+		return fmt.Errorf("stack config: GuestDir %q must be an absolute path", c.GuestDir)
 	}
-	if c.RuntimeBackend != "microvm" && (c.GuestArtifact != "" || c.GuestDir != "") {
-		return fmt.Errorf("stack config: GuestArtifact/GuestDir require RuntimeBackend %q, got %q", "microvm", c.RuntimeBackend)
-	}
-	// The runner builds agent sockets at RuntimeDir/containers/
-	// compass-agent-<32hex>/agent.sock; the fixed tail is agentSocketTailWidth
-	// bytes, so RuntimeDir may not exceed sunPathMax-tail. Name the budget so an
-	// operator knows exactly how far to shorten it.
 	if budget := sunPathMax - agentSocketTailWidth; len(c.RuntimeDir) > budget {
 		return fmt.Errorf(
 			"stack config: RuntimeDir %q (%d bytes) is too long: the per-container agent socket tail adds %d bytes, over this platform's AF_UNIX sun_path limit of %d; RuntimeDir must be at most %d bytes (shorten it by at least %d)",
@@ -177,23 +164,6 @@ func (c Config) Validate() error {
 		)
 	}
 	return nil
-}
-
-// isDigestPinned reports whether ref carries a @sha256:<64 lowercase hex>
-// tail. Lowercase is deliberate: the pin and publish lanes emit only lowercase
-// and the digest string keys the content-addressed state dir, so accepting an
-// uppercase variant would fetch to a second dir for identical content.
-func isDigestPinned(ref string) bool {
-	i := strings.LastIndex(ref, "@sha256:")
-	if i <= 0 || len(ref)-i-len("@sha256:") != 64 {
-		return false
-	}
-	for _, ch := range ref[i+len("@sha256:"):] {
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
-			return false
-		}
-	}
-	return true
 }
 
 // splitPort extracts the port from a host:port authority without importing net's
